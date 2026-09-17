@@ -795,7 +795,7 @@ void main() {
     await controller.send(
       'Third prompt',
       strategy: 'direct',
-      executionTarget: TalkExecutionTarget.isolatedBrowser,
+      executionTarget: TalkExecutionTarget.agent,
     );
 
     expect(controller.promptQueue.map((item) => item.input), [
@@ -804,7 +804,7 @@ void main() {
     ]);
     expect(controller.promptQueue.map((item) => item.executionTarget), [
       TalkExecutionTarget.thisMac,
-      TalkExecutionTarget.isolatedBrowser,
+      TalkExecutionTarget.agent,
     ]);
     expect(repository.calls, ['First prompt']);
 
@@ -816,7 +816,7 @@ void main() {
     expect(repository.targets, [
       TalkExecutionTarget.agent,
       TalkExecutionTarget.thisMac,
-      TalkExecutionTarget.isolatedBrowser,
+      TalkExecutionTarget.agent,
     ]);
     expect(controller.promptQueue, isEmpty);
     expect(

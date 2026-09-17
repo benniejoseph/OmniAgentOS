@@ -1,7 +1,7 @@
 import type {
   AgentMode,
   ChatMessage,
-  ComputerUseTarget,
+  PersistedComputerUseTarget,
 } from "@/lib/orchestration/types";
 import type { GroundingReport } from "@/lib/rag/citations";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
@@ -49,8 +49,11 @@ export type AgentProviderToolContinuation = {
 };
 
 export type AgentRunContinuation = {
-  /** Server-selected execution surface retained across governed approvals. */
-  computerUseTarget?: ComputerUseTarget;
+  /**
+   * Server-selected execution surface retained across governed approvals.
+   * The legacy isolated value is parse-only and must terminate as retired.
+   */
+  computerUseTarget?: PersistedComputerUseTarget;
   /** Canonical root attribution retained across approval pauses. */
   executionScope?: ExecutionScope;
   /** P0.2 shadow snapshot retained only while an approval-paused run resumes. */

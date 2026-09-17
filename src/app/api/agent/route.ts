@@ -220,6 +220,21 @@ async function POSTHandler(request: Request) {
       { status: 400 },
     );
   }
+  if (parsed.data.computerUseTarget === "isolated_browser") {
+    return Response.json({
+      error: "Computer Use target retired",
+      code: "computer_use_target_retired",
+      target: "isolated_browser",
+      message:
+        "Isolated Browser has been retired. Start a new task and explicitly choose This Mac if you want Asael to operate the installed Mac.",
+    }, {
+      status: 410,
+      headers: { "cache-control": "private, no-store" },
+    });
+  }
+  const computerUseTarget = parsed.data.computerUseTarget === "local_macos"
+    ? "local_macos" as const
+    : undefined;
 
   const requestMessage = parsed.data.message || parsed.data.messages?.at(-1)?.content || "";
   const safeRequestMessage = String(redactSensitive(requestMessage));
@@ -407,7 +422,7 @@ async function POSTHandler(request: Request) {
   let workflowBudgetLimits;
   try {
     const agentBudgetAuthority =
-      parsed.data.computerUseTarget === "local_macos"
+      computerUseTarget === "local_macos"
         ? LOCAL_COMPUTER_RUN_BUDGET_LIMITS
         : AGENT_RUN_BUDGET_LIMITS;
     budgetLimits = narrowRunBudgetLimits(
@@ -455,7 +470,7 @@ async function POSTHandler(request: Request) {
     );
   }
 
-  if (parsed.data.computerUseTarget === "local_macos") {
+  if (computerUseTarget === "local_macos") {
     try {
       await startLocalComputerSession(context, requestId);
     } catch (error) {
@@ -587,7 +602,7 @@ async function POSTHandler(request: Request) {
   });
   const preliminaryDecision = applySupervisorStrategy(
     semanticResolution.decision,
-    parsed.data.computerUseTarget === "local_macos"
+    computerUseTarget === "local_macos"
       ? "direct"
       : parsed.data.strategy,
   );
@@ -633,8 +648,8 @@ async function POSTHandler(request: Request) {
         model: semanticResolution.receipt.model || null,
         fallbackReasonCode:
           semanticResolution.receipt.fallbackReasonCode || null,
-        selectedTargetIds: parsed.data.computerUseTarget
-          ? [`computer:${parsed.data.computerUseTarget}`]
+        selectedTargetIds: computerUseTarget
+          ? [`computer:${computerUseTarget}`]
           : [],
         selectedToolIds: [],
         effectCount: 0,
@@ -724,7 +739,7 @@ async function POSTHandler(request: Request) {
         let loopV2ContextTextEnrollment;
         try {
           loopV2CanaryEnrollment = parsed.data.budgets || parsed.data.contextScope ||
-              parsed.data.voiceInput || parsed.data.computerUseTarget
+              parsed.data.voiceInput || computerUseTarget
             ? undefined
             :
             await resolveLoopV2ReadOnlyCanaryEnrollment({
@@ -746,7 +761,7 @@ async function POSTHandler(request: Request) {
             !loopV2CanaryEnrollment &&
             !parsed.data.budgets &&
             !parsed.data.voiceInput &&
-            !parsed.data.computerUseTarget
+            !computerUseTarget
           ) {
             if (parsed.data.contextScope) {
               loopV2ContextTextEnrollment =
@@ -1300,7 +1315,7 @@ async function POSTHandler(request: Request) {
                 mode: parsed.data.mode,
                 threadId,
                 messages: safeMessages,
-                computerUseTarget: parsed.data.computerUseTarget,
+                computerUseTarget,
                 securityContext: context,
                 semanticRouting: {
                   capabilitySearchQuery:
@@ -1326,7 +1341,7 @@ async function POSTHandler(request: Request) {
                 agentProfile,
                 budgetLimits,
                 maxToolSteps:
-                  parsed.data.computerUseTarget === "local_macos"
+                  computerUseTarget === "local_macos"
                     ? LOCAL_COMPUTER_MAX_TOOL_STEPS
                     : AGENT_MAX_TOOL_STEPS,
                 voiceInput: parsed.data.voiceInput,

@@ -8,6 +8,7 @@ import {
   nativeContractDiscovery,
   nativeContractSchemas,
   nativeConversationEventSchema,
+  nativeConversationRequestSchema,
   nativeLocalComputerClaimResponseForClient,
   nativeLoginRequestSchema,
   nativeOperationsForVersion,
@@ -38,6 +39,19 @@ describe("native API contracts", () => {
     expect(nativeContractSchemas.NativeContractDiscovery.parse(
       nativeContractDiscovery(),
     ).supportedVersions).toEqual([13, 12]);
+  });
+
+  it("exposes only explicit local Computer Use in the v13 request schema", () => {
+    const request = {
+      message: "Open the chart on this Mac.",
+      requestId: "native-local-computer-a",
+      computerUseTarget: "local_macos",
+    };
+    expect(nativeConversationRequestSchema.safeParse(request).success).toBe(true);
+    expect(nativeConversationRequestSchema.safeParse({
+      ...request,
+      computerUseTarget: "isolated_browser",
+    }).success).toBe(false);
   });
 
   it("does not advertise unenrolled native mutations in v8", () => {

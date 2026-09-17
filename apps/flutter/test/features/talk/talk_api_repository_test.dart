@@ -31,12 +31,12 @@ void main() {
           .send(
             message: 'Open example.com read only',
             mode: 'orchestrate',
-            executionTarget: TalkExecutionTarget.isolatedBrowser,
+            executionTarget: TalkExecutionTarget.thisMac,
           )
           .toList();
 
       expect(api.sendCount, 1);
-      expect(api.lastData?['computerUseTarget'], 'isolated_browser');
+      expect(api.lastData?['computerUseTarget'], 'local_macos');
       expect(events.map((event) => event.event), ['status', 'run', 'done']);
       expect(events.last.data['threadId'], 'thread-recovered');
       expect(events.last.data['response'], 'Example Domain');

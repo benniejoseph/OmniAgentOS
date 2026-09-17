@@ -1131,6 +1131,14 @@ function domainEventPayload(event: AgentEvent): Record<string, unknown> {
         requiresAuthorization: event.requiresAuthorization,
         ...hashedTextFields("message", event.message),
       };
+    case "execution_target_retired":
+      return {
+        schemaVersion,
+        type: event.type,
+        code: event.code,
+        target: event.target,
+        ...hashedTextFields("message", event.message),
+      };
     case "done":
       return {
         schemaVersion,

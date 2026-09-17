@@ -292,7 +292,7 @@ export const nativeConversationRequestSchema = z.object({
   threadId: z.string().uuid().optional(),
   mode: z.enum(["orchestrate", "research", "execute", "learn"]).optional(),
   strategy: z.enum(["auto", "direct", "durable"]).optional(),
-  computerUseTarget: z.enum(["local_macos", "isolated_browser"]).optional(),
+  computerUseTarget: z.literal("local_macos").optional(),
   requestId: z.string().min(1).max(200).regex(/^[A-Za-z0-9._:-]+$/),
 }).strict();
 

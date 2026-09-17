@@ -3,7 +3,6 @@ import {
   AUTONOMY_RETRIEVAL_QUERY_MAX_LENGTH,
   buildAutomaticRetrievalQuery,
   buildCapabilitySearchQuery,
-  analyzeBrowserCapabilityIntent,
   formatWorkspaceAccessContext,
   loadWorkspaceAccessSnapshot,
   type WorkspaceAccessDependencies,
@@ -42,73 +41,14 @@ describe("capability-aware autonomy", () => {
     expect(query).toMatch(/workflow|action/);
   });
 
-  it("expands natural browser work into Playwright discovery terms", () => {
+  it("keeps natural browser wording as capability search, not target authority", () => {
     const query = buildCapabilitySearchQuery({
       request: "Sign in to the portal and submit the form",
     });
 
     expect(query).toMatch(/browser/);
     expect(query).toMatch(/navigate|click|form|automation/);
-  });
-
-  it("keeps denied browser interactions out of direct navigation intent", () => {
-    const intent = analyzeBrowserCapabilityIntent(
-      "Open https://example.com and report the title. Do not click, type, sign in, or submit anything.",
-    );
-
-    expect(intent).toEqual({
-      requiredOperationNames: [
-        "browser_navigate",
-        "browser_snapshot",
-        "browser_find",
-      ],
-      excludedOperationNames: expect.arrayContaining([
-        "browser_click",
-        "browser_type",
-        "browser_fill_form",
-        "browser_press_key",
-      ]),
-      excludeWebSearch: true,
-    });
-  });
-
-  it("adds only the interaction contract explicitly requested for browser work", () => {
-    const intent = analyzeBrowserCapabilityIntent(
-      "Open YouTube and play a video, but do not type or submit anything.",
-    );
-
-    expect(intent.requiredOperationNames).toEqual([
-      "browser_navigate",
-      "browser_snapshot",
-      "browser_find",
-      "browser_click",
-    ]);
-    expect(intent.excludedOperationNames).toContain("browser_type");
-    expect(intent.excludedOperationNames).toContain("browser_press_key");
-  });
-
-  it("routes an explicit Computer Use request into the isolated browser contract", () => {
-    const intent = analyzeBrowserCapabilityIntent(
-      "Use the computer to review my authenticated portal without submitting anything.",
-    );
-
-    expect(intent.requiredOperationNames).toEqual([
-      "browser_navigate",
-      "browser_snapshot",
-      "browser_find",
-    ]);
-    expect(intent.excludeWebSearch).toBe(true);
-    expect(intent.excludedOperationNames).toContain("browser_fill_form");
-  });
-
-  it("keeps a direct interaction follow-up on the Computer Use route", () => {
-    const intent = analyzeBrowserCapabilityIntent(
-      "Click Continue, then take a screenshot. Do not type or submit anything.",
-    );
-
-    expect(intent.requiredOperationNames).toContain("browser_click");
-    expect(intent.excludedOperationNames).toContain("browser_type");
-    expect(intent.excludedOperationNames).toContain("browser_fill_form");
+    expect(query).not.toMatch(/playwright/i);
   });
 
   it("keeps the newest useful history when discovery reaches its query limit", () => {

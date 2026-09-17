@@ -3,7 +3,10 @@ import { agentPromptMemoryAccessFromSecurityContext } from "@/lib/memory/request
 import { personalContextMemoryAccessFromSecurityContext } from "@/lib/memory/personal-context-access";
 import { buildPersonalContextConsentAuthorityV1 } from "@/lib/memory/personal-context-consent";
 import type { RequestSharedMemoryAccessV1 } from "@/lib/memory/shared-context";
-import { runAgent } from "@/lib/orchestration/agent-runner";
+import {
+  resumeAgentRunAfterToolApproval,
+  runAgent,
+} from "@/lib/orchestration/agent-runner";
 import type { AgentEvent, AgentRunRequest } from "@/lib/orchestration/types";
 import { DEFAULT_CUSTOM_AGENT_PERSONA } from "@/lib/agents/persona";
 import { AUTHORIZED_CONTEXT_RETRIEVAL_SOURCES } from "@/lib/rag/context-engine";
@@ -33,6 +36,11 @@ const mocks = vi.hoisted(() => ({
   runCouncilRound: vi.fn(),
   streamResponseTurn: vi.fn(),
   executeGovernedTool: vi.fn(),
+  failAgentRun: vi.fn(),
+  findAgentRunWaitingForToolApproval: vi.fn(),
+  getAgentRunExecutionScope: vi.fn(),
+  getToolExecutionScopeBinding: vi.fn(),
+  syncMissionExecutorSafely: vi.fn(),
   updateRunContextCount: vi.fn(),
 }));
 
@@ -93,6 +101,14 @@ vi.mock("@/lib/tools/executor", async (importOriginal) => ({
   executeGovernedTool: mocks.executeGovernedTool,
 }));
 
+vi.mock("@/lib/tools/execution-scope", () => ({
+  getToolExecutionScopeBinding: mocks.getToolExecutionScopeBinding,
+}));
+
+vi.mock("@/lib/missions/runtime", () => ({
+  syncMissionExecutorSafely: mocks.syncMissionExecutorSafely,
+}));
+
 vi.mock("@/lib/observability/store", () => ({
   recordRuntimeEventSafely: mocks.recordRuntimeEventSafely,
 }));
@@ -139,9 +155,11 @@ vi.mock("@/lib/runs/store", () => ({
   cancelAgentRun: vi.fn(),
   completeAgentRun: mocks.completeAgentRun,
   createAgentRun: mocks.createAgentRun,
-  failAgentRun: vi.fn(),
-  findAgentRunWaitingForToolApproval: vi.fn(),
+  failAgentRun: mocks.failAgentRun,
+  findAgentRunWaitingForToolApproval:
+    mocks.findAgentRunWaitingForToolApproval,
   getAgentRun: vi.fn(),
+  getAgentRunExecutionScope: mocks.getAgentRunExecutionScope,
   listAgentRunSummaries: vi.fn(),
   markAgentRunResuming: vi.fn(),
   markAgentRunWaitingForApproval: mocks.markAgentRunWaitingForApproval,
@@ -181,6 +199,11 @@ describe("agent memory scope", () => {
     mocks.markAgentRunWaitingForApproval.mockResolvedValue({ parked: true });
     mocks.recordRuntimeEventSafely.mockResolvedValue(undefined);
     mocks.executeGovernedTool.mockReset();
+    mocks.failAgentRun.mockResolvedValue({ id: "run-memory-scope" });
+    mocks.findAgentRunWaitingForToolApproval.mockReset();
+    mocks.getAgentRunExecutionScope.mockResolvedValue(undefined);
+    mocks.getToolExecutionScopeBinding.mockResolvedValue(undefined);
+    mocks.syncMissionExecutorSafely.mockResolvedValue(undefined);
     mocks.resolvePersonalContextMemoryAccess.mockImplementation(async (value) =>
       value?.databaseAccessScope
     );
@@ -473,6 +496,101 @@ describe("agent memory scope", () => {
       type: "council_verdict",
       status: "revised",
     }));
+  });
+
+  it("does not infer computer authority from natural browser wording", async () => {
+    const scopedRequest = request("session");
+    scopedRequest.messages = [{
+      role: "user",
+      content: "Open Chrome and show me the chart at https://example.test/chart",
+    }];
+
+    const events = await collectRequest(scopedRequest);
+
+    expect(events).not.toContainEqual(expect.objectContaining({
+      type: "status",
+      label: "This Mac connected",
+    }));
+    expect(mocks.loadProgressiveAgentTools).toHaveBeenCalledWith(
+      expect.objectContaining({ preferredToolIds: [] }),
+    );
+    expect(JSON.stringify(mocks.streamResponseTurn.mock.calls[0]?.[0]))
+      .not.toContain("Computer Use — This Mac");
+  });
+
+  it("terminates a persisted Isolated Browser continuation without retargeting", async () => {
+    const continuation = {
+      computerUseTarget: "isolated_browser" as const,
+      conversationItems: [],
+      instructions: "Legacy instructions.",
+      response: "",
+      toolSteps: 1,
+      outputsBeforeApproval: [],
+      pendingToolCall: {
+        callId: "call-retired-browser",
+        toolId: "mcp:playwright:browser_click",
+        toolName: "Click",
+        executionId: "execution-retired-browser",
+      },
+      context: {
+        tenantId: "paid-test-tenant",
+        actorId: "paid-test-actor",
+        role: "admin" as const,
+      },
+      createdAt: "2026-09-17T00:00:00.000Z",
+    };
+    mocks.findAgentRunWaitingForToolApproval.mockResolvedValue({
+      id: "run-retired-browser",
+      tenantId: "paid-test-tenant",
+      ownerActorId: "paid-test-actor",
+      mode: "execute",
+      status: "waiting_approval",
+      prompt: "Continue in the old browser.",
+      messages: [{ role: "user", content: "Continue." }],
+      memoryContextCount: 0,
+      startedAt: "2026-09-17T00:00:00.000Z",
+      continuation,
+    });
+
+    const outcome = await resumeAgentRunAfterToolApproval({
+      executionId: "execution-retired-browser",
+      tenantId: "paid-test-tenant",
+      toolExecution: {
+        record: {
+          id: "execution-retired-browser",
+          tenantId: "paid-test-tenant",
+          toolId: "mcp:playwright:browser_click",
+          toolName: "Click",
+          riskLevel: 2,
+          status: "executed",
+          dryRun: false,
+          approvalRequired: true,
+          input: {},
+          createdAt: "2026-09-17T00:00:00.000Z",
+        },
+      },
+    });
+
+    expect(outcome).toMatchObject({
+      resumed: true,
+      status: "failed",
+      code: "computer_use_target_retired",
+    });
+    expect(mocks.appendRunEvent).toHaveBeenCalledWith(
+      "run-retired-browser",
+      expect.objectContaining({
+        type: "execution_target_retired",
+        target: "isolated_browser",
+      }),
+      expect.any(Object),
+    );
+    expect(mocks.failAgentRun).toHaveBeenCalledWith(
+      "run-retired-browser",
+      expect.stringContaining("without executing or being redirected"),
+      expect.any(Object),
+    );
+    expect(mocks.streamResponseTurn).not.toHaveBeenCalled();
+    expect(mocks.executeGovernedTool).not.toHaveBeenCalled();
   });
 
   it("retains the exact This Mac target when a governed action pauses", async () => {

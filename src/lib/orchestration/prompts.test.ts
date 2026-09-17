@@ -179,18 +179,6 @@ describe("agent prompt provenance", () => {
     expect(instructions).toContain("use live web evidence");
   });
 
-  it("keeps Computer Use inside the governed isolated workspace", () => {
-    const instructions = buildAgentInstructions({
-      mode: "execute",
-      computerUse: true,
-    });
-
-    expect(instructions).toContain("Computer Use — Isolated browser:");
-    expect(instructions).toContain("isolated actor- and run-scoped session");
-    expect(instructions).toContain("do not control the owner's wider macOS desktop");
-    expect(instructions).toContain("captured evidence establish it");
-  });
-
   it("keeps local Computer Use on the explicitly selected installed Mac", () => {
     const instructions = buildAgentInstructions({
       mode: "execute",
@@ -211,5 +199,6 @@ describe("agent prompt provenance", () => {
     expect(instructions).toContain("set presentScreenshot to true on the final");
     expect(instructions).toContain("Otherwise leave it false");
     expect(instructions).toContain("Never say a screenshot was shown");
+    expect(instructions).not.toContain("Isolated browser");
   });
 });

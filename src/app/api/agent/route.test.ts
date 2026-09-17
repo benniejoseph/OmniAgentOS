@@ -409,12 +409,7 @@ describe("agent semantic intent routing", () => {
     );
   });
 
-  it.each([
-    { label: "ordinary", computerUseTarget: undefined },
-    { label: "isolated browser", computerUseTarget: "isolated_browser" as const },
-  ])("keeps $label runs at six tool steps and seven model turns", async ({
-    computerUseTarget,
-  }) => {
+  it("keeps ordinary runs at six tool steps and seven model turns", async () => {
     routeMocks.runAgent.mockImplementation(async function* () {
       yield { type: "run", runId: "run-standard-cap", threadId: "thread-a" };
       yield { type: "done", response: "Bounded result." };
@@ -425,11 +420,8 @@ describe("agent semantic intent routing", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         message: "Inspect the requested context.",
-        requestId: computerUseTarget
-          ? "isolated-browser-budget-a"
-          : "ordinary-budget-a",
+        requestId: "ordinary-budget-a",
         strategy: "direct",
-        ...(computerUseTarget ? { computerUseTarget } : {}),
       }),
     }));
 
@@ -437,12 +429,33 @@ describe("agent semantic intent routing", () => {
     await response.text();
     expect(routeMocks.runAgent).toHaveBeenCalledWith(
       expect.objectContaining({
-        computerUseTarget,
+        computerUseTarget: undefined,
         maxToolSteps: 6,
         budgetLimits: expect.objectContaining({ modelTurns: 7 }),
       }),
       expect.any(AbortSignal),
     );
+  });
+
+  it("retires legacy Isolated Browser requests without retargeting This Mac", async () => {
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        message: "Open the existing browser session.",
+        requestId: "legacy-isolated-browser-a",
+        computerUseTarget: "isolated_browser",
+      }),
+    }));
+
+    expect(response.status).toBe(410);
+    await expect(response.json()).resolves.toMatchObject({
+      code: "computer_use_target_retired",
+      target: "isolated_browser",
+    });
+    expect(routeMocks.authorizeRequest).not.toHaveBeenCalled();
+    expect(routeMocks.startLocalComputerSession).not.toHaveBeenCalled();
+    expect(routeMocks.runAgent).not.toHaveBeenCalled();
   });
 
   it("binds a reviewed voice command to its owned conversation and governed runner", async () => {

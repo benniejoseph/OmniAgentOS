@@ -80,11 +80,16 @@ describe("agent run approval continuations (file mode)", () => {
       ...continuationFor("exec-local-target"),
       computerUseTarget: "local_macos",
     });
+    const retired = store.parseAgentRunContinuation({
+      ...continuationFor("exec-retired-target"),
+      computerUseTarget: "isolated_browser",
+    });
     const legacy = store.parseAgentRunContinuation(
       continuationFor("exec-no-target"),
     );
 
     expect(local?.computerUseTarget).toBe("local_macos");
+    expect(retired?.computerUseTarget).toBe("isolated_browser");
     expect(legacy?.computerUseTarget).toBeUndefined();
     expect(store.parseAgentRunContinuation({
       ...continuationFor("exec-invalid-target"),

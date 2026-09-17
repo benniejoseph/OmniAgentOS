@@ -43,10 +43,8 @@ const defaultDependencies: ProgressiveToolboxDependencies = {
 export type ProgressiveAgentToolboxInput = {
   tenantId?: string;
   excludeToolIds?: readonly string[];
-  excludedExternalOperationNames?: readonly string[];
   query?: string;
   preferredToolIds?: readonly string[];
-  requiredExternalOperationNames?: readonly string[];
 };
 
 export type ToolSchemaBudgetResult = {
@@ -66,12 +64,6 @@ export async function loadProgressiveAgentTools(
   dependencies: ProgressiveToolboxDependencies = defaultDependencies,
 ): Promise<ToolSchemaBudgetResult> {
   const excluded = new Set(input.excludeToolIds || []);
-  const excludedOperationNames = normalizeExternalOperationNames(
-    input.excludedExternalOperationNames,
-  );
-  const requiredOperationNames = normalizeExternalOperationNames(
-    input.requiredExternalOperationNames,
-  );
   const hasExplicitAllowlist = input.preferredToolIds !== undefined;
   const preferred = new Set(input.preferredToolIds || []);
   const nativeDefinitions = dependencies.listNative().filter(
@@ -113,45 +105,10 @@ export async function loadProgressiveAgentTools(
       );
     }
 
-    const operationCandidates = capabilities.filter(
-      (capability) =>
-        isEligibleExternalCapability(capability, excluded) &&
-        !excludedOperationNames.has(externalOperationName(capability.id)),
-    );
-    if (
-      requiredOperationNames.size > 0 &&
-      !hasConnectorWithRequiredOperations(
-        operationCandidates,
-        requiredOperationNames,
-      )
-    ) {
-      const candidateConnectorKeys = requiredOperationConnectorKeys(
-        operationCandidates,
-        requiredOperationNames,
-      );
-      const supplemental = await searchExternalMetadata(
-        {
-          tenantId: input.tenantId || "default",
-          query: buildRequiredOperationDiscoveryQuery(
-            requiredOperationNames,
-            candidateConnectorKeys,
-          ),
-          limit: 50,
-          allowlist: externalAllowlist,
-          sources: candidateConnectorKeys.length
-            ? connectorSources(candidateConnectorKeys)
-            : ["mcp", "openapi"],
-        },
-        dependencies.search,
-      );
-      capabilities = deduplicateDescriptors([...capabilities, ...supplemental]);
-    }
-
     const eligibleCapabilities = capabilities
       .filter(
         (capability) =>
-          isEligibleExternalCapability(capability, excluded) &&
-          !excludedOperationNames.has(externalOperationName(capability.id)),
+          isEligibleExternalCapability(capability, excluded),
       );
 
     if (hasExplicitAllowlist) {
@@ -200,15 +157,6 @@ export async function loadProgressiveAgentTools(
         externalLimit,
       );
     }
-
-    if (requiredOperationNames.size > 0) {
-      descriptors = prioritizeRequiredOperationDescriptors(
-        descriptors,
-        eligibleCapabilities,
-        requiredOperationNames,
-        externalLimit,
-      );
-    }
   }
 
   const hydrated = await Promise.all(
@@ -229,7 +177,6 @@ export async function loadProgressiveAgentTools(
         tool.status === "active" &&
         tool.riskLevel < 3 &&
         !excluded.has(tool.id) &&
-        !excludedOperationNames.has(externalOperationName(tool.id)) &&
         (!hasExplicitAllowlist || preferred.has(tool.id)),
       ),
   );
@@ -342,114 +289,6 @@ function isEligibleExternalCapability(
   return isExternalCapabilityId(capability.id) &&
     capability.riskLevel < 3 &&
     !excluded.has(capability.id);
-}
-
-function externalOperationName(id: string) {
-  const operationId = id.split(":")[2];
-  return operationId ? decodeCapabilityText(operationId).trim().toLowerCase() : "";
-}
-
-function normalizeExternalOperationNames(values?: readonly string[]) {
-  return new Set(
-    (values || [])
-      .map((value) => value.trim().toLowerCase())
-      .filter((value) => /^[a-z0-9][a-z0-9_-]{0,119}$/.test(value)),
-  );
-}
-
-function hasConnectorWithRequiredOperations(
-  capabilities: readonly CapabilityDescriptor[],
-  requiredOperationNames: ReadonlySet<string>,
-) {
-  const matches = new Map<string, Set<string>>();
-  for (const capability of capabilities) {
-    const key = connectorKey(capability.id);
-    const operationName = externalOperationName(capability.id);
-    if (!key || !requiredOperationNames.has(operationName)) continue;
-    const operations = matches.get(key) || new Set<string>();
-    operations.add(operationName);
-    matches.set(key, operations);
-    if (operations.size === requiredOperationNames.size) return true;
-  }
-  return false;
-}
-
-function requiredOperationConnectorKeys(
-  capabilities: readonly CapabilityDescriptor[],
-  requiredOperationNames: ReadonlySet<string>,
-) {
-  const keys: string[] = [];
-  for (const capability of capabilities) {
-    if (!requiredOperationNames.has(externalOperationName(capability.id))) continue;
-    const key = connectorKey(capability.id);
-    if (key && !keys.includes(key)) keys.push(key);
-  }
-  return keys.slice(0, AGENT_EXTERNAL_RESOLVER_RESERVE);
-}
-
-function buildRequiredOperationDiscoveryQuery(
-  requiredOperationNames: ReadonlySet<string>,
-  connectorKeys: readonly string[],
-) {
-  const connectors = connectorKeys
-    .map((key) => key.slice(key.indexOf(":") + 1))
-    .filter(Boolean)
-    .join(" ");
-  const operations = [...requiredOperationNames]
-    .flatMap((name) => [name, name.replaceAll("_", " ")])
-    .join(" ");
-  return `${connectors} playwright browser ${operations}`
-    .trim()
-    .slice(0, CAPABILITY_MAX_QUERY_LENGTH);
-}
-
-function prioritizeRequiredOperationDescriptors(
-  primary: readonly CapabilityDescriptor[],
-  eligible: readonly CapabilityDescriptor[],
-  requiredOperationNames: ReadonlySet<string>,
-  limit: number,
-) {
-  const connectorStats = new Map<
-    string,
-    { firstIndex: number; operations: Set<string> }
-  >();
-  eligible.forEach((capability, index) => {
-    const key = connectorKey(capability.id);
-    const operationName = externalOperationName(capability.id);
-    if (!key || !requiredOperationNames.has(operationName)) return;
-    const current = connectorStats.get(key) || {
-      firstIndex: index,
-      operations: new Set<string>(),
-    };
-    current.operations.add(operationName);
-    connectorStats.set(key, current);
-  });
-  const selectedConnector = [...connectorStats.entries()]
-    .sort((left, right) =>
-      right[1].operations.size - left[1].operations.size ||
-      left[1].firstIndex - right[1].firstIndex,
-    )[0]?.[0];
-  if (!selectedConnector) return primary.slice(0, limit);
-
-  const required = [...requiredOperationNames].flatMap((operationName) => {
-    const match = eligible.find(
-      (capability) =>
-        connectorKey(capability.id) === selectedConnector &&
-        externalOperationName(capability.id) === operationName,
-    );
-    return match ? [match] : [];
-  });
-  return deduplicateDescriptors([
-    ...required,
-    ...primary.filter(
-      (capability) => connectorKey(capability.id) === selectedConnector,
-    ),
-    ...eligible.filter(
-      (capability) => connectorKey(capability.id) === selectedConnector,
-    ),
-    ...primary,
-    ...eligible,
-  ]).slice(0, limit);
 }
 
 function relevantActionConnectorKeys(

@@ -18,7 +18,6 @@ import {
 } from "@/lib/config";
 import { getActiveAgentAdaptationGuidance } from "@/lib/agents/adaptation-store";
 import {
-  analyzeBrowserCapabilityIntent,
   buildAutomaticRetrievalQuery,
   buildCapabilitySearchQuery,
   formatWorkspaceAccessContext,
@@ -42,7 +41,6 @@ import {
   ModelProviderError,
 } from "@/lib/models/types";
 import type { ModelBrowserObservation } from "@/lib/models/browser-observation";
-import { loadRunBrowserModelObservation } from "@/lib/browser/frames";
 import {
   createMemoryAccessContext,
   usesDurableMemory,
@@ -339,15 +337,11 @@ export async function* runAgent(
     request.semanticRouting?.capabilitySearchQuery,
     buildCapabilitySearchQuery(autonomyQuery),
   );
-  const browserCapabilityIntent = analyzeBrowserCapabilityIntent(query);
   const automaticRetrievalQuery = buildAutomaticRetrievalQuery(autonomyQuery);
-  const computerUseRequested = Boolean(request.computerUseTarget) ||
-    browserCapabilityIntent.requiredOperationNames.length > 0;
-  const computerUseTarget = localComputerUseRequested
-    ? "local_macos" as const
-    : computerUseRequested
-      ? "isolated_browser" as const
-      : undefined;
+  // Computer Use is an explicit owner-selected authority boundary. Natural
+  // browser wording never chooses a control surface on the user's behalf.
+  const computerUseRequested = localComputerUseRequested;
+  const computerUseTarget = request.computerUseTarget;
   const deploymentModelRoute = computerUseRequested
     ? {
         provider: "openai" as const,
@@ -901,15 +895,11 @@ export async function* runAgent(
         ? `Specialist team: ${request.specialistIds.map(agentDisplayName).join(", ")}.`
         : "Primary specialist selected by Atlas.",
     });
-    if (computerUseTarget) {
+    if (computerUseTarget === "local_macos") {
       yield await emit({
         type: "status",
-        label: computerUseTarget === "local_macos"
-          ? "This Mac connected"
-          : "Computer Use workspace ready",
-        detail: computerUseTarget === "local_macos"
-          ? "Using the explicitly selected Mac where Asael is installed. Consequential actions still pause for approval."
-          : "Using an isolated, actor-scoped browser session. Consequential actions still pause for approval.",
+        label: "This Mac connected",
+        detail: "Using the explicitly selected Mac where Asael is installed. Consequential actions still pause for approval.",
       });
     }
     if (sharedPromptMemoryAccessScope) {
@@ -936,7 +926,6 @@ export async function* runAgent(
       });
     }
     const useLiveWeb = !personalPromptMemoryAccessScope &&
-      !browserCapabilityIntent.excludeWebSearch &&
       shouldUseLiveWebSearch(query);
     if (durableMemoryEnabled) {
       reserveBudget({
@@ -1056,11 +1045,6 @@ export async function* runAgent(
         : buildAgentToolbox(request.tenantId, {
             query: baseCapabilitySearchQuery || query,
             preferredToolIds: configuredToolIds,
-            requiredExternalOperationNames: localComputerUseRequested
-              ? []
-              : browserCapabilityIntent.requiredOperationNames,
-            excludedExternalOperationNames:
-              browserCapabilityIntent.excludedOperationNames,
           });
     const workspaceAccessPromise = providerConfigured
       ? settleOptionalWithin(
@@ -1139,11 +1123,6 @@ export async function* runAgent(
     const resolvedToolboxPromise = toolboxPromise || buildAgentToolbox(request.tenantId, {
       query: capabilitySearchQuery || query,
       preferredToolIds: configuredToolIds,
-      requiredExternalOperationNames: localComputerUseRequested
-        ? []
-        : browserCapabilityIntent.requiredOperationNames,
-      excludedExternalOperationNames:
-        browserCapabilityIntent.excludedOperationNames,
     });
     if (durableMemoryEnabled) {
       await updateRunContextCount(run.id, retrieval.results.length);
@@ -1193,9 +1172,7 @@ export async function* runAgent(
     let toolbox = filterAgentToolbox(
       await resolvedToolboxPromise,
       [
-        ...(liveWebContext || browserCapabilityIntent.excludeWebSearch
-          ? ["web.search"]
-          : []),
+        ...(liveWebContext ? ["web.search"] : []),
         ...(!localComputerUseRequested
           ? localComputerToolIds
           : []),
@@ -3346,14 +3323,6 @@ async function resumeAgentRunAfterToolApprovalInScope({
     toolExecution.record,
     executionScope,
   );
-  const approvedBrowserObservation = await loadRunBrowserModelObservation(
-    run.id,
-    toolExecution.record.id,
-    {
-      tenantId: normalizeTenantId(tenantId),
-      actorId: continuation.context.actorId,
-    },
-  ).catch(() => undefined);
   assertCheckpointResumeFence(
     run,
     continuation,
@@ -3366,7 +3335,41 @@ async function resumeAgentRunAfterToolApprovalInScope({
     executionScope,
     runContractEnvelope: continuation.runContractEnvelope,
   };
-
+  if (continuation.computerUseTarget === "isolated_browser") {
+    const message =
+      "Isolated Browser has been retired. This saved run was stopped without executing or being redirected to This Mac. Start a new task and explicitly choose This Mac if local Computer Use is intended.";
+    await appendRunEvent(run.id, {
+      type: "execution_target_retired",
+      code: "computer_use_target_retired",
+      target: "isolated_browser",
+      message,
+    }, {
+      tenantId,
+      executionScope,
+      runContractEnvelope: continuation.runContractEnvelope,
+    });
+    const failed = await failAgentRun(run.id, message, runMutationOptions);
+    if (!failed) {
+      return { resumed: false, reason: "Checkpoint resume fence was lost." };
+    }
+    await appendRunEvent(run.id, { type: "error", message }, {
+      tenantId,
+      executionScope,
+      runContractEnvelope: continuation.runContractEnvelope,
+    });
+    await syncMissionExecutorSafely({
+      executorType: "agent_run",
+      executorId: run.id,
+      status: "failed",
+      error: message,
+    }, { tenantId, actorId: continuation.context.actorId });
+    return {
+      resumed: true,
+      status: "failed" as const,
+      error: message,
+      code: "computer_use_target_retired" as const,
+    };
+  }
   if (continuation.providerToolState) {
     return resumeProviderBoundAgentRunAfterApproval({
       run,
@@ -3377,7 +3380,6 @@ async function resumeAgentRunAfterToolApprovalInScope({
       abortSignal,
       executionScope,
       resumeFence,
-      approvedBrowserObservation,
     });
   }
 
@@ -3515,8 +3517,8 @@ async function resumeAgentRunAfterToolApprovalInScope({
   });
   const resumeTier = resumeDeploymentRoute.tier;
   const resumeModel = run.model || resumeDeploymentRoute.model;
-  const resumeComputerUseRequested = Boolean(continuation.computerUseTarget) ||
-    analyzeBrowserCapabilityIntent(run.prompt).requiredOperationNames.length > 0;
+  const resumeComputerUseRequested =
+    continuation.computerUseTarget === "local_macos";
   const resumeRuntimeModel = await resolveRuntimeModelAssignment({
     tenantId: normalizeTenantId(tenantId),
     actorId: continuation.context.actorId,
@@ -3609,14 +3611,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
       result: toolExecution.result,
     }),
   ];
-  let pendingBrowserObservations: PendingOpenAIBrowserObservation[] =
-    approvedBrowserObservation &&
-      approvedBrowserObservation.source !== "local_macos"
-      ? [{
-          callId: continuation.pendingToolCall.callId,
-          observation: approvedBrowserObservation,
-        }]
-      : [];
+  let pendingBrowserObservations: PendingOpenAIBrowserObservation[] = [];
   let latestLocalObservation: EphemeralLocalObservationState | undefined;
 
   // Buffer delta writes onto a background chain — a blocking DB write per
@@ -4246,7 +4241,6 @@ async function resumeProviderBoundAgentRunAfterApproval({
   abortSignal,
   executionScope,
   resumeFence,
-  approvedBrowserObservation,
 }: {
   run: AgentRunRecord;
   continuation: AgentRunContinuation;
@@ -4256,7 +4250,6 @@ async function resumeProviderBoundAgentRunAfterApproval({
   abortSignal?: AbortSignal;
   executionScope?: ExecutionScope;
   resumeFence?: AgentRunResumeFence;
-  approvedBrowserObservation?: ModelBrowserObservation;
 }) {
   const providerState = continuation.providerToolState;
   const maxToolSteps = resolveMaxToolSteps(
@@ -4426,8 +4419,8 @@ async function resumeProviderBoundAgentRunAfterApproval({
     run.model ||
     deploymentAdapter?.targets(providerState.tier)[0]?.model ||
     "provider-continuation";
-  const resumeComputerUseRequested = Boolean(continuation.computerUseTarget) ||
-    analyzeBrowserCapabilityIntent(run.prompt).requiredOperationNames.length > 0;
+  const resumeComputerUseRequested =
+    continuation.computerUseTarget === "local_macos";
   const resumeRuntimeModel = await resolveRuntimeModelAssignment({
     tenantId: normalizeTenantId(tenantId),
     actorId: continuation.context.actorId,
@@ -4543,9 +4536,6 @@ async function resumeProviderBoundAgentRunAfterApproval({
       },
       toolExecution.record.status !== "executed" &&
         toolExecution.record.status !== "dry_run",
-      approvedBrowserObservation?.source === "local_macos"
-        ? undefined
-        : approvedBrowserObservation,
     ),
   ];
   let latestLocalObservation: EphemeralLocalObservationState | undefined;
@@ -5114,10 +5104,8 @@ async function buildAgentToolbox(
   tenantId?: string,
   options?: {
     excludeToolIds?: readonly string[];
-    excludedExternalOperationNames?: readonly string[];
     query?: string;
     preferredToolIds?: readonly string[];
-    requiredExternalOperationNames?: readonly string[];
   },
 ): Promise<{
   tools: ToolboxEntry[];
@@ -5127,10 +5115,8 @@ async function buildAgentToolbox(
   const { definitions } = await loadProgressiveAgentTools({
     tenantId,
     excludeToolIds: options?.excludeToolIds,
-    excludedExternalOperationNames: options?.excludedExternalOperationNames,
     query: options?.query,
     preferredToolIds: options?.preferredToolIds,
-    requiredExternalOperationNames: options?.requiredExternalOperationNames,
   });
   const tools: ToolboxEntry[] = definitions.map((definition) => {
     return {

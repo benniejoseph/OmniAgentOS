@@ -20,7 +20,16 @@ export type ChatMessage = {
 };
 
 export type AgentMode = "orchestrate" | "research" | "execute" | "learn";
-export type ComputerUseTarget = "isolated_browser" | "local_macos";
+/** Active Computer Use surfaces. Local control is always owner-selected. */
+export type ComputerUseTarget = "local_macos";
+/**
+ * Persisted runs can outlive a release. Keep the retired value readable so a
+ * legacy continuation can be terminated explicitly instead of being dropped
+ * or, more dangerously, reinterpreted as authority over the local Mac.
+ */
+export type PersistedComputerUseTarget =
+  | ComputerUseTarget
+  | "isolated_browser";
 
 export type AgentToolEvent = {
   type: "tool";
@@ -143,6 +152,12 @@ export type AgentEvent =
       limit: number;
       attempted: number;
       requiresAuthorization: true;
+      message: string;
+    }
+  | {
+      type: "execution_target_retired";
+      code: "computer_use_target_retired";
+      target: "isolated_browser";
       message: string;
     }
   | { type: "done"; response: string; grounding?: GroundingReport }

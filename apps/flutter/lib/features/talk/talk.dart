@@ -175,31 +175,27 @@ enum TalkRole { user, assistant }
 
 enum TalkActivityState { active, succeeded, waiting, failed, info }
 
-enum TalkExecutionTarget { agent, thisMac, isolatedBrowser }
+enum TalkExecutionTarget { agent, thisMac }
 
 extension TalkExecutionTargetPresentation on TalkExecutionTarget {
   String get label => switch (this) {
     TalkExecutionTarget.agent => 'Asael only',
     TalkExecutionTarget.thisMac => 'This Mac',
-    TalkExecutionTarget.isolatedBrowser => 'Isolated browser',
   };
 
   String get detail => switch (this) {
     TalkExecutionTarget.agent => 'No computer control',
     TalkExecutionTarget.thisMac => 'Use this installed Mac',
-    TalkExecutionTarget.isolatedBrowser => 'Use the remote private browser',
   };
 
   String? get apiValue => switch (this) {
     TalkExecutionTarget.agent => null,
     TalkExecutionTarget.thisMac => 'local_macos',
-    TalkExecutionTarget.isolatedBrowser => 'isolated_browser',
   };
 
   IconData get icon => switch (this) {
     TalkExecutionTarget.agent => Icons.auto_awesome_outlined,
     TalkExecutionTarget.thisMac => Icons.laptop_mac_rounded,
-    TalkExecutionTarget.isolatedBrowser => Icons.language_rounded,
   };
 }
 

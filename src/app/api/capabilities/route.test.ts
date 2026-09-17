@@ -93,6 +93,23 @@ beforeEach(() => {
 });
 
 describe("Settings capabilities cache fill", () => {
+  it("advertises the explicitly selected installed Mac runtime", async () => {
+    routeMocks.loadSettingsSnapshot.mockResolvedValue(degradedSnapshot);
+
+    const response = await GET(
+      new Request("http://localhost/api/capabilities?view=settings"),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      computerUseRoute: {
+        runtime: "installed_macos_app",
+        target: "local_macos",
+        authority: "explicit_selection_required",
+      },
+    });
+  });
+
   it("keeps the exact shared fill alive after a bounded degraded response", async () => {
     let resolveFill!: (value: unknown) => void;
     const fill = new Promise((resolve) => {
