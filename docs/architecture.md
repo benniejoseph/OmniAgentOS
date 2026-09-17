@@ -211,9 +211,11 @@ control and persists one explicit target through queue and retry:
 - `isolated_browser` keeps the existing actor/run-scoped Playwright session and P9.5/
   P9.6 observation boundary. Browser Use remains only a rollback-compatible
   connector during its own removal gate.
-- `local_macos` requires an authenticated macOS native-v11 client and a current
-  device lease with both Accessibility and Screen Recording granted. It never
-  switches to Playwright when the Mac, helper, permission, or action is unavailable.
+- `local_macos` requires an authenticated compatible macOS client (current v13
+  or previous v12) and a current device lease with both Accessibility and Screen
+  Recording granted. The purpose-built browser URL action additionally requires
+  v13. It never switches to Playwright when the Mac, helper, permission, or
+  action is unavailable.
 
 Both targets resolve the tenant-configured `computer_use` model and enter the same
 governed executor. Only the local target exposes `local.macos.*` tools; the isolated
@@ -231,7 +233,7 @@ sequenceDiagram
 
   U->>A: prompt + explicit local_macos target
   A->>Q: enqueue exact governed execution
-  F->>Q: claim with native-v11 device session
+  F->>Q: claim with an exact compatible native device session
   F->>H: expiring action over child pipes
   H->>M: ScreenCaptureKit / AX / Quartz
   H-->>F: bounded result + optional observation
@@ -251,9 +253,11 @@ The host spawns `AsaelComputerUseHelper.app` on demand from `Contents/Helpers`. 
 helper verifies its signed parent and bundle containment, receives a stripped
 environment and no credential, and has no server, socket, shell, filesystem, or
 Apple Events interface. Its closed action set is observe, list apps, activate an
-already-running app, press, click, type, key, and scroll. Terminal applications,
+already-running app, open one validated HTTP(S) URL in allowlisted Chrome,
+press, click, type, key, and scroll. Terminal applications,
 System Settings, secure fields, Secure Event Input, and stale screen/Accessibility
-revisions fail closed. Risk-two press, click, type, and key actions remain
+revisions fail closed. Risk-two browser navigation, press, click, type, and key
+actions remain
 approval-gated. A persistent ready/active menu-bar indicator and immediate stop
 terminate the helper and cancel pending work.
 

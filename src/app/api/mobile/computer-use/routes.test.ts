@@ -57,7 +57,7 @@ const context = {
     platform: "macos" as const,
     appVersion: "1.6.0",
     buildNumber: 7,
-    clientContractVersion: 12,
+    clientContractVersion: 13,
     clientAttestedAt: "2026-09-17T08:00:00.000Z",
   },
 };
@@ -121,7 +121,7 @@ describe("local macOS Computer Use native routes", () => {
       activityState: "idle",
     }));
     expect(update.status).toBe(200);
-    expect(update.headers.get("x-asael-native-contract-version")).toBe("12");
+    expect(update.headers.get("x-asael-native-contract-version")).toBe("13");
     expect(mocks.updateDevice).toHaveBeenCalledWith(context, expect.objectContaining({
       enabled: true,
       helperVersion: "1.0.0",
@@ -162,10 +162,10 @@ describe("local macOS Computer Use native routes", () => {
     );
   });
 
-  it("preserves the frozen command envelope for a compatible v11 Mac", async () => {
+  it("preserves the complete command envelope for a compatible v12 Mac", async () => {
     mocks.authorizeRequest.mockResolvedValueOnce({
       ...context,
-      native: { ...context.native, clientContractVersion: 11 },
+      native: { ...context.native, clientContractVersion: 12 },
     });
     mocks.claimCommand.mockResolvedValueOnce({
       schemaVersion: 1,
@@ -194,8 +194,11 @@ describe("local macOS Computer Use native routes", () => {
       command: {
         schemaVersion: 1,
         id: commandId,
+        runId,
+        executionId,
         action: "observe",
         input: { includeScreenshot: true },
+        presentScreenshot: true,
         claimToken: "claim-token-that-is-long-enough-123456",
         claimGeneration: 1,
         expiresAt: "2026-09-17T08:00:30.000Z",

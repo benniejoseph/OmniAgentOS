@@ -39,7 +39,14 @@ Set these through the platform secret/configuration store, never in source contr
 - `NEXT_PUBLIC_APP_URL`: canonical HTTPS origin. Set it to exactly `https://asael.bennierichard.com`. It is public and build-inlined, not a secret.
 - `OMNIAGENT_NATIVE_MIN_ANDROID_VERSION`, `OMNIAGENT_NATIVE_MIN_IOS_VERSION`, and `OMNIAGENT_NATIVE_MIN_MACOS_VERSION`: optional stable `major.minor.patch` minimums for native compatibility telemetry. An absent or empty value defaults to `1.0.0`; a malformed configured value invalidates the policy and holds adoption unavailable. These settings do not authorize Agent enrollment.
 
-Native contract artifacts are committed release inputs under `public/native-contracts/v8` and `public/native-contracts/v9`; v1-v7 remain unadvertised archives. Run `npm run check:native-contracts` before a native-contract release; the check fails if the generated OpenAPI, event schema, fixtures, integrity manifests, Dart SDK, or frozen v7/v8 document hashes drift. Keep v9 current and v8 supported as the previous version during this rollout. Removing an archived version requires a separately reviewed adoption decision and is not implied by a Vercel deployment.
+Native contract artifacts are committed immutable release inputs. Contract v13 is
+current and v12 is the one supported previous version; v1-v12 remain historical
+archives and a published version is never regenerated in place. Run
+`npm run check:native-contracts` before a native-contract release; the check
+fails if the generated OpenAPI, event schema, fixtures, integrity manifests,
+Dart SDK, or frozen v7-v12 document hashes drift. Removing an archived version
+requires a separately reviewed adoption decision and is not implied by a
+Vercel deployment.
 
 ### Licensed TradingView chart assets
 
@@ -107,12 +114,16 @@ remote Computer Use frame read used by the native artifact rail.
 
 The installed-Mac P13.3 slice additionally requires
 `20260917110000_p13_3_local_computer_runtime.sql` (internal schema version 179)
-before publishing native contract v11 or enabling **This Mac**. It installs
+before publishing the original native contract v11 or enabling **This Mac**. It installs
 actor-scoped forced-RLS device, session, and command routing tables; it stores no
 helper credential and grants no action-creation API to the native client. Migration
-179 is installed in production. Contract v11 is the production current contract and
-retains frozen v10 as the supported previous version; its four courier capabilities
-are macOS-only and have an independent v11 minimum. The canonical origin serves
+179 is installed in production. Contract v13 is the source current contract and
+retains published v12 byte-for-byte as the supported previous version. V12 added
+exact run/execution screenshot-preview routing; v13 adds the approval-gated
+`local.macos.open_url` command and requires an exact active v13 Mac session for
+that action. The four courier capabilities remain macOS-only with their original
+v11 capability floor, while authentication advertises only v13 and v12. The
+original owner-Mac production proof serves
 exact revision `7a4bd41d0c42abad8f8da0911258ac341e2318f3` through Vercel
 deployment `dpl_64Hw4o58FyC1hfB645oo2J6mXGeB`. Vercel does not distribute or
 sign the binary, and this slice required no Fly worker or Playwright-service release.

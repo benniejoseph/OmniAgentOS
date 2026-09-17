@@ -10,8 +10,8 @@ import {
 } from "@/lib/local-computer/contracts";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 12 as const;
-export const NATIVE_API_PREVIOUS_VERSION = 11 as const;
+export const NATIVE_API_CURRENT_VERSION = 13 as const;
+export const NATIVE_API_PREVIOUS_VERSION = 12 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -725,6 +725,12 @@ const v12Operations: readonly NativeOperation[] = [
   ...v11Operations,
 ];
 
+// Contract v13 adds the governed, approval-gated local browser navigation
+// action to the strict command enum. The route set itself is unchanged.
+const v13Operations: readonly NativeOperation[] = [
+  ...v12Operations,
+];
+
 export const nativeContractSchemas = Object.freeze({
   JsonObject: jsonObject,
   NativeClientAttestation: nativeClientAttestationSchema,
@@ -792,6 +798,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 10) return v10Operations;
   if (version === 11) return v11Operations;
   if (version === 12) return v12Operations;
+  if (version === 13) return v13Operations;
   return undefined;
 }
 
@@ -801,7 +808,7 @@ export function nativeContractDiscovery() {
     contractId: NATIVE_API_CONTRACT_ID,
     currentVersion: NATIVE_API_CURRENT_VERSION,
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
-    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [12, 11],
+    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [13, 12],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,
       state: version === NATIVE_API_CURRENT_VERSION ? "current" as const : "previous" as const,

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   LOCAL_COMPUTER_MAX_SCREENSHOT_BYTES,
+  LOCAL_COMPUTER_OPEN_URL_CONTRACT_VERSION,
+  LOCAL_COMPUTER_PRESENT_SCREENSHOT_CONTRACT_VERSION,
   localComputerClaimRequestSchema,
   localComputerCommandSchema,
   localComputerCompletionRequestSchema,
@@ -9,6 +11,11 @@ import {
 } from "@/lib/local-computer/contracts";
 
 describe("local computer protocol", () => {
+  it("keeps published native capability floors independent", () => {
+    expect(LOCAL_COMPUTER_PRESENT_SCREENSHOT_CONTRACT_VERSION).toBe(12);
+    expect(LOCAL_COMPUTER_OPEN_URL_CONTRACT_VERSION).toBe(13);
+  });
+
   it("requires both explicit enablement and bounded permission state", () => {
     expect(localComputerDeviceUpdateSchema.parse({
       schemaVersion: 1,

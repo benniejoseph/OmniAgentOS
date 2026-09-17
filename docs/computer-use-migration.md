@@ -1,6 +1,7 @@
 # Computer Use targets
 
-Status: production-published and owner-Mac canary-proven · 2026-09-17
+Status: base runtime production-published and owner-Mac canary-proven; v13
+browser navigation is source-ready and awaits its release canary · 2026-09-17
 
 ## Decision
 
@@ -10,7 +11,7 @@ Computer Use has two deliberately separate execution targets:
   Playwright MCP service on Fly. It is the remote private browser; it does not
   control the owner's macOS desktop.
 - **This Mac** operates the Mac on which the authenticated Asael app is
-  installed. It uses the native-v11 device courier and a separately signed,
+  installed. It uses the compatible native device courier and a separately signed,
   credential-free helper spawned on demand by Asael.
 
 Native Talk defaults to **Asael only**, which grants no local computer-control
@@ -43,11 +44,16 @@ separate removal gate. It is not an implementation of **This Mac**.
 
 ### Device courier
 
-Only an authenticated macOS client on native contract v11 or later may publish
+Only an authenticated compatible macOS client (current v13 or previous v12) may publish
 a local-device readiness lease, claim a command, return its completion receipt,
 or stop the device. The Flutter app holds the native bearer. The helper receives
 neither that bearer nor any server, connector, model, App Group, or Keychain
 credential.
+
+The browser URL action is new in v13 and requires the exact active device and
+native login session to attest v13 in the same transaction that enqueues it.
+V12 remains compatible for the earlier action set and screenshot-preview
+routing, but cannot receive `open_url`.
 
 The server binds each local session to the exact tenant, actor, native device,
 mobile session, and agent-run correlation ID. Three forced-RLS tables retain
@@ -85,10 +91,11 @@ The helper uses:
 - ScreenCaptureKit for a bounded screenshot of an active display;
 - macOS Accessibility APIs for a bounded, redacted element snapshot and exact
   element presses;
-- `NSWorkspace` only to list and activate an already-running visible app; and
+- `NSWorkspace` only to list or activate visible apps and to deliver one
+  credential-free absolute HTTP(S) URL to allowlisted Chrome; and
 - Quartz events for bounded clicks, text, keys, and scrolling.
 
-Every effect after observation must carry the exact current snapshot revision.
+Every pointer or keyboard effect after observation must carry the exact current snapshot revision.
 Element actions use an exact element identifier when available. Changing the
 frontmost app, focused window, or display layout makes the observation stale
 and causes the helper to refuse the action.
@@ -106,9 +113,13 @@ This slice intentionally has no authority to:
   permission; or
 - accept an arbitrary local tool or unbounded key/mouse operation.
 
-The agent-visible allowlist is `observe`, `list_apps`, `activate_app`, `press`,
-`click`, `type`, `key`, and `scroll`. Observation and listing are read-only;
-press, click, type, and key remain risk-two and approval-gated. Accessibility
+The agent-visible allowlist is `observe`, `list_apps`, `activate_app`,
+`open_url`, `press`, `click`, `type`, `key`, and `scroll`. Observation and
+listing are read-only; browser URL delivery, press, click, type, and key remain
+risk-two and approval-gated. `open_url` accepts only allowlisted Chrome and an
+absolute HTTP(S) URL without embedded credentials, waits for at most 15 seconds,
+then returns a fresh observation and a closed effect verdict without claiming
+the page finished loading. Accessibility
 and Screen Recording must both be granted by the user in macOS before the
 server accepts the Mac as ready.
 

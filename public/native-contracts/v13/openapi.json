@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Asael native API",
-    "version": "12",
+    "version": "13",
     "description": "Generated current native contract. Domain behavior remains in the authoritative server services used by web and native clients."
   },
   "servers": [
@@ -8424,11 +8424,11 @@
             "prefixItems": [
               {
                 "type": "number",
-                "const": 12
+                "const": 13
               },
               {
                 "type": "number",
-                "const": 11
+                "const": 12
               }
             ]
           },
@@ -8835,11 +8835,11 @@
                 "prefixItems": [
                   {
                     "type": "number",
-                    "const": 12
+                    "const": 13
                   },
                   {
                     "type": "number",
-                    "const": 11
+                    "const": 12
                   }
                 ]
               },
@@ -8998,11 +8998,11 @@
                 "prefixItems": [
                   {
                     "type": "number",
-                    "const": 12
+                    "const": 13
                   },
                   {
                     "type": "number",
-                    "const": 11
+                    "const": 12
                   }
                 ]
               },
@@ -9362,22 +9362,22 @@
                   },
                   "currentVersion": {
                     "type": "number",
-                    "const": 12
+                    "const": 13
                   },
                   "previousVersion": {
                     "type": "number",
-                    "const": 11
+                    "const": 12
                   },
                   "supportedVersions": {
                     "type": "array",
                     "prefixItems": [
                       {
                         "type": "number",
-                        "const": 12
+                        "const": 13
                       },
                       {
                         "type": "number",
-                        "const": 11
+                        "const": 12
                       }
                     ]
                   },
@@ -9466,11 +9466,11 @@
                 "prefixItems": [
                   {
                     "type": "number",
-                    "const": 12
+                    "const": 13
                   },
                   {
                     "type": "number",
-                    "const": 11
+                    "const": 12
                   }
                 ]
               },
@@ -11209,6 +11209,7 @@
                       "observe",
                       "list_apps",
                       "activate_app",
+                      "open_url",
                       "press",
                       "click",
                       "type",
@@ -11522,22 +11523,22 @@
           },
           "currentVersion": {
             "type": "number",
-            "const": 12
+            "const": 13
           },
           "previousVersion": {
             "type": "number",
-            "const": 11
+            "const": 12
           },
           "supportedVersions": {
             "type": "array",
             "prefixItems": [
               {
                 "type": "number",
-                "const": 12
+                "const": 13
               },
               {
                 "type": "number",
-                "const": 11
+                "const": 12
               }
             ]
           },

@@ -324,7 +324,7 @@ describe("agent semantic intent routing", () => {
       native: {
         deviceId: "mac-device-local",
         platform: "macos" as const,
-        clientContractVersion: 11,
+        clientContractVersion: 12,
       },
     };
     routeMocks.authorizeRequest.mockResolvedValue(macContext);
