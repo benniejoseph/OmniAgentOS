@@ -105,8 +105,86 @@ class AppDelegate: FlutterAppDelegate, UNUserNotificationCenterDelegate {
 /// Synchronous Security.framework calls occur only in the child. If securityd
 /// wedges, the host fails every pending call and terminates (then SIGKILLs)
 /// the broker. No environment credential or error detail crosses the pipes.
+///
+/// Broker v1 is immutable and its verified Keychain marker is not exposed by
+/// the frozen protocol. The host therefore keeps a non-secret, monotonic
+/// shadow receipt only after `migrate` succeeds. Once committed, the broker
+/// target stays canonical even when logout rotates/removes target credentials
+/// or the legacy file-Keychain shim leaves an old row behind. Counts alone are
+/// never accepted as proof of migration.
+protocol CredentialBrokerCutoverReceiptStoring: AnyObject {
+  func receipt() -> Any?
+  func persist(_ receipt: [String: String]) -> Bool
+}
+
+final class UserDefaultsCredentialBrokerCutoverReceiptStore:
+  CredentialBrokerCutoverReceiptStoring
+{
+  init(defaults: UserDefaults = .standard) {
+    self.defaults = defaults
+  }
+
+  private let defaults: UserDefaults
+
+  func receipt() -> Any? {
+    defaults.object(forKey: CredentialBrokerCutoverPolicy.receiptKey)
+  }
+
+  func persist(_ receipt: [String: String]) -> Bool {
+    defaults.set(receipt, forKey: CredentialBrokerCutoverPolicy.receiptKey)
+    guard defaults.synchronize(),
+          CredentialBrokerCutoverPolicy.hasExactReceipt(defaults.object(
+            forKey: CredentialBrokerCutoverPolicy.receiptKey
+          ))
+    else {
+      defaults.removeObject(forKey: CredentialBrokerCutoverPolicy.receiptKey)
+      _ = defaults.synchronize()
+      return false
+    }
+    return true
+  }
+}
+
+enum CredentialBrokerCutoverPolicy {
+  static let receiptKey = "asael.credential-broker.cutover-receipt.v1"
+  static let receipt: [String: String] = [
+    "schema": "asael.credential-broker.cutover-receipt",
+    "version": "1",
+    "broker": "1.0.0+1",
+    "source": "app.omniagent.omniagent.file-keychain.v2",
+    "target": "app.omniagent.omniagent.credential-broker.v1",
+  ]
+
+  static func hasExactReceipt(_ value: Any?) -> Bool {
+    guard let value = value as? [String: String], value.count == receipt.count else {
+      return false
+    }
+    return value == receipt
+  }
+
+  static func normalizeSucceeded(
+    action: String,
+    response: [String: Any],
+    store: CredentialBrokerCutoverReceiptStoring
+  ) -> [String: Any]? {
+    if action == "migrate" {
+      return store.persist(receipt) ? response : nil
+    }
+    guard action == "probe", hasExactReceipt(store.receipt()) else {
+      return response
+    }
+
+    var normalized = response
+    normalized["migrationRequired"] = false
+    normalized["state"] = "ready"
+    normalized["legacyCleanupPending"] = response["migrationRequired"] as? Bool == true
+    return normalized
+  }
+}
+
 private final class CredentialBrokerController: NSObject {
   private struct PendingRequest {
+    let action: String
     let result: FlutterResult
     let timeout: DispatchWorkItem
   }
@@ -140,6 +218,7 @@ private final class CredentialBrokerController: NSObject {
   private var queued: [QueuedRequest] = []
   private var activeAction: String?
   private var expectedTermination = false
+  private let cutoverReceiptStore = UserDefaultsCredentialBrokerCutoverReceiptStore()
 
   func attach(channel: FlutterMethodChannel) {
     dispatchPrecondition(condition: .onQueue(.main))
@@ -218,6 +297,7 @@ private final class CredentialBrokerController: NSObject {
     guard pending.isEmpty, !queued.isEmpty else { return }
     let requestToDispatch = queued.removeFirst()
     guard let id = requestToDispatch.envelope["id"] as? String,
+          let action = requestToDispatch.envelope["action"] as? String,
           var data = try? JSONSerialization.data(withJSONObject: requestToDispatch.envelope),
           ensureBroker(), let inputPipe
     else {
@@ -231,8 +311,12 @@ private final class CredentialBrokerController: NSObject {
       request.result(Self.flutterFailure("secure_store_timeout"))
       self.terminate(expected: false, code: "secure_store_timeout")
     }
-    pending[id] = PendingRequest(result: requestToDispatch.result, timeout: deadline)
-    activeAction = requestToDispatch.envelope["action"] as? String
+    pending[id] = PendingRequest(
+      action: action,
+      result: requestToDispatch.result,
+      timeout: deadline
+    )
+    activeAction = action
     DispatchQueue.main.asyncAfter(
       deadline: .now() + requestToDispatch.timeout,
       execute: deadline
@@ -318,7 +402,15 @@ private final class CredentialBrokerController: NSObject {
       if outcome == "succeeded" {
         var value = response
         value.removeValue(forKey: "id"); value.removeValue(forKey: "outcome")
-        request.result(value)
+        if let normalized = CredentialBrokerCutoverPolicy.normalizeSucceeded(
+          action: request.action,
+          response: value,
+          store: cutoverReceiptStore
+        ) {
+          request.result(normalized)
+        } else {
+          request.result(Self.flutterFailure("secure_store_unavailable"))
+        }
       } else if outcome == "failed", let code = response["code"] as? String {
         request.result(Self.flutterFailure(Self.allowedErrorCode(code)))
       } else {
