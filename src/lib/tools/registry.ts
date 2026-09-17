@@ -801,7 +801,7 @@ function localMacComputerTools(): ToolDefinition[] {
       id: "local.macos.observe",
       name: "Observe This Mac",
       description:
-        "Observe the frontmost application on the explicitly selected installed Mac. Returns one bounded, untrusted Accessibility snapshot and optional screenshot for this model turn only. Set presentScreenshot only when the user explicitly asks to see the captured image; the installed app then offers a short-lived in-memory preview without adding it to run history.",
+        "Observe the frontmost application on the explicitly selected installed Mac. Returns one bounded, untrusted Accessibility snapshot and optional screenshot for this model turn only. A v13 screenshot declares its exact pixel width, height, and screenshot_pixel coordinate space; private display provenance maps those pixels back to the captured Mac display. Set presentScreenshot only when the user explicitly asks to see the captured image; the installed app then offers a short-lived in-memory preview without adding it to run history.",
       riskLevel: 0,
       approvalRequired: false,
       operationClass: "read_only",
@@ -892,25 +892,47 @@ function localMacComputerTools(): ToolDefinition[] {
       id: "local.macos.click",
       name: "Click on This Mac",
       description:
-        "Click an exact accessibility element or bounded screen coordinate from the latest installed-Mac observation. Prefer elementId when available.",
+        "Click an exact accessibility element or a pixel location in the latest v13 screenshot. Prefer elementId. For an image click, x and y are positions inside the exact captured image, measured from its upper-left corner, and coordinateSpace must be screenshot_pixel. Never pass macOS global coordinates; Asael validates and privately maps the bound screenshot point back to the captured display.",
       riskLevel: 2,
       approvalRequired: true,
       operationClass: "mutation",
       properties: {
         snapshotRevision,
         elementId,
-        x: { type: "number", minimum: 0, maximum: 32_768 },
-        y: { type: "number", minimum: 0, maximum: 32_768 },
+        coordinateSpace: {
+          type: "string",
+          enum: ["screenshot_pixel"],
+          description:
+            "Required for x/y clicks. Coordinates refer only to the exact latest screenshot, with origin at its upper-left corner.",
+        },
+        x: {
+          type: "number",
+          minimum: 0,
+          maximum: 32_768,
+          description: "Horizontal pixel position inside the latest screenshot width.",
+        },
+        y: {
+          type: "number",
+          minimum: 0,
+          maximum: 32_768,
+          description: "Vertical pixel position inside the latest screenshot height.",
+        },
       },
       required: ["snapshotRevision"],
       constraints: {
         oneOf: [
           {
             required: ["elementId"],
-            not: { anyOf: [{ required: ["x"] }, { required: ["y"] }] },
+            not: {
+              anyOf: [
+                { required: ["coordinateSpace"] },
+                { required: ["x"] },
+                { required: ["y"] },
+              ],
+            },
           },
           {
-            required: ["x", "y"],
+            required: ["coordinateSpace", "x", "y"],
             not: { required: ["elementId"] },
           },
         ],

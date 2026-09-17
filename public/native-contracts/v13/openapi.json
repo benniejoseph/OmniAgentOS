@@ -11369,6 +11369,213 @@
                         "type": "string",
                         "minLength": 4,
                         "maxLength": 1733336
+                      },
+                      "widthPixels": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 32768
+                      },
+                      "heightPixels": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 32768
+                      },
+                      "coordinateSpace": {
+                        "type": "string",
+                        "const": "screenshot_pixel"
+                      },
+                      "coordinateContract": {
+                        "type": "object",
+                        "properties": {
+                          "schemaVersion": {
+                            "type": "number",
+                            "const": 1
+                          },
+                          "snapshotRevision": {
+                            "type": "string",
+                            "pattern": "^[a-f0-9]{64}$"
+                          },
+                          "capturedAt": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                          },
+                          "screenshotOrigin": {
+                            "type": "string",
+                            "const": "top_left"
+                          },
+                          "targetSpace": {
+                            "type": "string",
+                            "const": "macos_global_logical_top_left"
+                          },
+                          "display": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 4294967295
+                              },
+                              "logicalBounds": {
+                                "type": "object",
+                                "properties": {
+                                  "x": {
+                                    "type": "number",
+                                    "minimum": -131072,
+                                    "maximum": 131072
+                                  },
+                                  "y": {
+                                    "type": "number",
+                                    "minimum": -131072,
+                                    "maximum": 131072
+                                  },
+                                  "width": {
+                                    "type": "number",
+                                    "exclusiveMinimum": 0,
+                                    "maximum": 131072
+                                  },
+                                  "height": {
+                                    "type": "number",
+                                    "exclusiveMinimum": 0,
+                                    "maximum": 131072
+                                  }
+                                },
+                                "required": [
+                                  "x",
+                                  "y",
+                                  "width",
+                                  "height"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "logicalBounds"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "logicalPointsPerPixel": {
+                            "type": "object",
+                            "properties": {
+                              "x": {
+                                "type": "number",
+                                "exclusiveMinimum": 0,
+                                "maximum": 64
+                              },
+                              "y": {
+                                "type": "number",
+                                "exclusiveMinimum": 0,
+                                "maximum": 64
+                              }
+                            },
+                            "required": [
+                              "x",
+                              "y"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "quality": {
+                            "type": "object",
+                            "properties": {
+                              "degradation": {
+                                "type": "string",
+                                "enum": [
+                                  "jpeg_compressed",
+                                  "downscaled_jpeg"
+                                ]
+                              },
+                              "occlusion": {
+                                "type": "string",
+                                "enum": [
+                                  "not_assessed",
+                                  "possible",
+                                  "none_detected"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "degradation",
+                              "occlusion"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "target": {
+                            "type": "object",
+                            "properties": {
+                              "pid": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 2147483647
+                              },
+                              "bundleId": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 240
+                              },
+                              "window": {
+                                "type": "object",
+                                "properties": {
+                                  "identitySha256": {
+                                    "type": "string",
+                                    "pattern": "^[a-f0-9]{64}$"
+                                  },
+                                  "logicalBounds": {
+                                    "type": "object",
+                                    "properties": {
+                                      "x": {
+                                        "type": "number",
+                                        "minimum": -131072,
+                                        "maximum": 131072
+                                      },
+                                      "y": {
+                                        "type": "number",
+                                        "minimum": -131072,
+                                        "maximum": 131072
+                                      },
+                                      "width": {
+                                        "type": "number",
+                                        "exclusiveMinimum": 0,
+                                        "maximum": 131072
+                                      },
+                                      "height": {
+                                        "type": "number",
+                                        "exclusiveMinimum": 0,
+                                        "maximum": 131072
+                                      }
+                                    },
+                                    "required": [
+                                      "x",
+                                      "y",
+                                      "width",
+                                      "height"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                },
+                                "required": [
+                                  "identitySha256"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "required": [
+                              "pid"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "required": [
+                          "schemaVersion",
+                          "snapshotRevision",
+                          "capturedAt",
+                          "screenshotOrigin",
+                          "targetSpace",
+                          "display",
+                          "logicalPointsPerPixel",
+                          "quality"
+                        ],
+                        "additionalProperties": false
                       }
                     },
                     "required": [

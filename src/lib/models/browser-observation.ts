@@ -31,6 +31,9 @@ export type ModelBrowserObservation = Readonly<{
   screenshot?: Readonly<{
     mimeType: "image/jpeg" | "image/png" | "image/webp";
     dataBase64: string;
+    widthPixels?: number;
+    heightPixels?: number;
+    coordinateSpace?: "screenshot_pixel";
   }>;
 }>;
 
@@ -139,7 +142,7 @@ export function renderModelBrowserObservation(
           escapeText(observation.accessibilitySnapshot),
         ]
       : ["Redacted accessibility snapshot: unavailable"]),
-    `Screenshot: ${observation.screenshot ? "attached" : "not disclosed"}`,
+    `Screenshot: ${renderScreenshotState(observation.screenshot)}`,
     `[End untrusted ${local ? "local Mac" : "browser"} observation.]`,
   ];
   return lines.join("\n");
@@ -166,10 +169,40 @@ function sanitizeScreenshot(value: unknown) {
   ) {
     return undefined;
   }
+  const widthPixels = boundedImageDimension(candidate.widthPixels);
+  const heightPixels = boundedImageDimension(candidate.heightPixels);
+  const coordinateSpace = candidate.coordinateSpace === "screenshot_pixel"
+    ? "screenshot_pixel" as const
+    : undefined;
+  const hasCompleteCoordinateMetadata = Boolean(
+    widthPixels && heightPixels && coordinateSpace,
+  );
   return {
     mimeType: mimeType as "image/jpeg" | "image/png" | "image/webp",
     dataBase64,
+    ...(hasCompleteCoordinateMetadata
+      ? { widthPixels, heightPixels, coordinateSpace }
+      : {}),
   };
+}
+
+function boundedImageDimension(value: unknown) {
+  return Number.isInteger(value) && Number(value) > 0 && Number(value) <= 32_768
+    ? Number(value)
+    : undefined;
+}
+
+function renderScreenshotState(
+  screenshot: ModelBrowserObservation["screenshot"],
+) {
+  if (!screenshot) return "not disclosed";
+  if (
+    screenshot.coordinateSpace === "screenshot_pixel" &&
+    screenshot.widthPixels && screenshot.heightPixels
+  ) {
+    return `attached (${screenshot.widthPixels} × ${screenshot.heightPixels} pixels; screenshot_pixel origin is upper-left)`;
+  }
+  return "attached (coordinate metadata unavailable; use an Accessibility element, not x/y)";
 }
 
 function hasImageSignature(bytes: Uint8Array, mimeType: string) {

@@ -227,6 +227,85 @@ describe("local Computer Use command binding", () => {
       "native_session.client_contract_version >=",
     );
   });
+
+  it("requires v13 for an exact screenshot-pixel click", async () => {
+    const transactionSql = vi.fn().mockResolvedValueOnce([]);
+    const sql = Object.assign(vi.fn(), {
+      transaction: vi.fn(
+        async (operation: (client: typeof transactionSql) => unknown) =>
+          operation(transactionSql),
+      ),
+    });
+    mocks.getSql.mockReturnValue(sql);
+
+    await expect(executeLocalComputerCommand({
+      action: "click",
+      toolInput: {
+        snapshotRevision: "a".repeat(64),
+        coordinateSpace: "screenshot_pixel",
+        x: 720,
+        y: 450,
+      },
+      executionId: "run-v13-authorized:screenshot-click",
+      runId: "run-v13-authorized",
+      executionScope: boundExecutionScope("run-v13-authorized"),
+    })).rejects.toMatchObject({
+      name: "LocalComputerUnavailableError",
+      status: 409,
+    });
+
+    expect(transactionSql.mock.calls[0]?.slice(1)).toContain(13);
+  });
+
+  it("keeps exact accessibility-element clicks compatible with v12", async () => {
+    const transactionSql = vi.fn().mockResolvedValueOnce([]);
+    const sql = Object.assign(vi.fn(), {
+      transaction: vi.fn(
+        async (operation: (client: typeof transactionSql) => unknown) =>
+          operation(transactionSql),
+      ),
+    });
+    mocks.getSql.mockReturnValue(sql);
+
+    await expect(executeLocalComputerCommand({
+      action: "click",
+      toolInput: {
+        snapshotRevision: "a".repeat(64),
+        elementId: "e:aaaaaaaaaaaa:7",
+      },
+      executionId: "run-v12-authorized:element-click",
+      runId: "run-v12-authorized",
+      executionScope: boundExecutionScope("run-v12-authorized"),
+    })).rejects.toMatchObject({
+      name: "LocalComputerUnavailableError",
+      status: 409,
+    });
+
+    expect(transactionSql.mock.calls[0]?.slice(1)).toContain(11);
+    expect(transactionSql.mock.calls[0]?.slice(1)).not.toContain(13);
+  });
+
+  it("refuses ambiguous raw coordinate clicks before opening a transaction", async () => {
+    const sql = Object.assign(vi.fn(), { transaction: vi.fn() });
+    mocks.getSql.mockReturnValue(sql);
+
+    await expect(executeLocalComputerCommand({
+      action: "click",
+      toolInput: {
+        snapshotRevision: "a".repeat(64),
+        x: 720,
+        y: 450,
+      },
+      executionId: "run-v12-authorized:ambiguous-click",
+      runId: "run-v12-authorized",
+      executionScope: boundExecutionScope("run-v12-authorized"),
+    })).rejects.toMatchObject({
+      name: "LocalComputerCommandError",
+      code: "invalid_input",
+    });
+
+    expect(sql.transaction).not.toHaveBeenCalled();
+  });
 });
 
 function boundExecutionScope(runId: string) {

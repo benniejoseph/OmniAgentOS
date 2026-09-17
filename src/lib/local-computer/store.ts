@@ -15,7 +15,9 @@ import {
   LOCAL_COMPUTER_OPEN_URL_CONTRACT_VERSION,
   LOCAL_COMPUTER_PRESENT_SCREENSHOT_CONTRACT_VERSION,
   LOCAL_COMPUTER_PROTOCOL_VERSION,
+  LOCAL_COMPUTER_SCREENSHOT_COORDINATE_CONTRACT_VERSION,
   localComputerActionSchema,
+  localComputerClickInputSchema,
   localComputerResultSchema,
   type LocalComputerAction,
   type LocalComputerCompletionRequest,
@@ -512,6 +514,16 @@ async function enqueueLocalComputerCommand(input: {
   executionScope: ExecutionScope;
 }) {
   const action = localComputerActionSchema.parse(input.action);
+  const clickInput = action === "click"
+    ? localComputerClickInputSchema.safeParse(input.toolInput)
+    : undefined;
+  if (clickInput && !clickInput.success) {
+    throw new LocalComputerCommandError(
+      "invalid_input",
+      "A local Mac click must identify one observed element or one exact screenshot-pixel point.",
+    );
+  }
+  const toolInput = clickInput?.success ? clickInput.data : input.toolInput;
   const executionId = opaque(input.executionId, "execution id", 240);
   const runId = opaque(input.runId, "run id", 240);
   const commandId = `local_computer_command_${digest([
@@ -523,9 +535,9 @@ async function enqueueLocalComputerCommand(input: {
   const expiresAt = new Date(
     now.getTime() + LOCAL_COMPUTER_COMMAND_TIMEOUT_MS,
   ).toISOString();
-  const inputSha256 = canonicalJsonSha256(input.toolInput);
+  const inputSha256 = canonicalJsonSha256(toolInput);
   const requiredNativeContractVersion =
-    requiredNativeContractVersionForCommand(action, input.toolInput);
+    requiredNativeContractVersionForCommand(action, toolInput);
   // Approval resume deliberately carries no native-version authority. Resolve
   // compatibility from the exact v180 run-bound local session and its current
   // server-side device/native-login rows in the same transaction as enqueue.
@@ -670,7 +682,7 @@ async function enqueueLocalComputerCommand(input: {
       deviceIdSha256: digest([String(row.device_id)]),
       executionId,
       action,
-      inputSha256: canonicalJsonSha256(input.toolInput),
+      inputSha256: canonicalJsonSha256(toolInput),
       expiresAt: dateText(row.expires_at),
     },
   });
@@ -900,6 +912,9 @@ function requiredNativeContractVersionForCommand(
 ) {
   if (action === "open_url") {
     return LOCAL_COMPUTER_OPEN_URL_CONTRACT_VERSION;
+  }
+  if (action === "click" && input.coordinateSpace === "screenshot_pixel") {
+    return LOCAL_COMPUTER_SCREENSHOT_COORDINATE_CONTRACT_VERSION;
   }
   if (action === "observe" && input.presentScreenshot === true) {
     return LOCAL_COMPUTER_PRESENT_SCREENSHOT_CONTRACT_VERSION;

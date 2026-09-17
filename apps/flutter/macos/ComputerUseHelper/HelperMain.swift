@@ -60,6 +60,85 @@ struct SnapshotElementIdentity: Equatable {
   let frame: CGRect?
 }
 
+/// The only coordinate bridge accepted for image-based clicks.
+///
+/// ScreenCaptureKit returns image pixels while Accessibility and CGEvent use
+/// macOS global logical coordinates. The captured display's logical bounds and
+/// the *actual* CGImage dimensions define one reversible affine mapping. A
+/// click must carry the same snapshot revision and a point inside that exact
+/// image; raw global coordinates are never accepted as screenshot coordinates.
+struct ScreenshotCoordinateMapping: Equatable {
+  static let screenshotSpace = "screenshot_pixel"
+  static let targetSpace = "macos_global_logical_top_left"
+
+  let snapshotRevision: String
+  let displayID: CGDirectDisplayID
+  let displayLogicalBounds: CGRect
+  let imageWidth: Int
+  let imageHeight: Int
+  let logicalPointsPerPixelX: Double
+  let logicalPointsPerPixelY: Double
+
+  init?(
+    snapshotRevision: String,
+    displayID: CGDirectDisplayID,
+    displayLogicalBounds: CGRect,
+    imageWidth: Int,
+    imageHeight: Int
+  ) {
+    guard snapshotRevision.count == 64,
+          snapshotRevision.range(
+            of: #"^[a-f0-9]{64}$"#,
+            options: .regularExpression
+          ) != nil,
+          displayID > 0,
+          displayLogicalBounds.origin.x.isFinite,
+          displayLogicalBounds.origin.y.isFinite,
+          displayLogicalBounds.width.isFinite,
+          displayLogicalBounds.height.isFinite,
+          displayLogicalBounds.width > 0,
+          displayLogicalBounds.height > 0,
+          imageWidth > 0,
+          imageHeight > 0,
+          imageWidth <= 32_768,
+          imageHeight <= 32_768
+    else { return nil }
+
+    let scaleX = displayLogicalBounds.width / Double(imageWidth)
+    let scaleY = displayLogicalBounds.height / Double(imageHeight)
+    guard scaleX.isFinite, scaleY.isFinite, scaleX > 0, scaleY > 0,
+          scaleX <= 64, scaleY <= 64
+    else { return nil }
+
+    self.snapshotRevision = snapshotRevision
+    self.displayID = displayID
+    self.displayLogicalBounds = displayLogicalBounds
+    self.imageWidth = imageWidth
+    self.imageHeight = imageHeight
+    self.logicalPointsPerPixelX = scaleX
+    self.logicalPointsPerPixelY = scaleY
+  }
+
+  func globalLogicalPoint(
+    screenshotX: Double,
+    screenshotY: Double,
+    revision: String
+  ) -> CGPoint? {
+    guard revision == snapshotRevision,
+          screenshotX.isFinite,
+          screenshotY.isFinite,
+          screenshotX >= 0,
+          screenshotY >= 0,
+          screenshotX < Double(imageWidth),
+          screenshotY < Double(imageHeight)
+    else { return nil }
+    let x = displayLogicalBounds.minX + screenshotX * logicalPointsPerPixelX
+    let y = displayLogicalBounds.minY + screenshotY * logicalPointsPerPixelY
+    guard x.isFinite, y.isFinite else { return nil }
+    return CGPoint(x: x, y: y)
+  }
+}
+
 enum SafeBrowserNavigationPolicy {
   private static let browserBundleIdentifiers = [
     "chrome": "com.google.Chrome",
@@ -197,6 +276,11 @@ private final class ComputerUseExecutor {
     let expiresAt: Date
   }
 
+  private struct CapturedScreenshot {
+    let payload: [String: Any]
+    let coordinateMapping: ScreenshotCoordinateMapping
+  }
+
   private static let allowedActions: Set<String> = [
     "status", "request_permissions", "observe", "list_apps", "activate_app",
     "open_url", "press", "click", "type", "key", "scroll",
@@ -230,6 +314,7 @@ private final class ComputerUseExecutor {
   private var snapshotFocusedElementIdentity: SnapshotElementIdentity?
   private var snapshotWindowIdentity: SnapshotElementIdentity?
   private var snapshotDisplayBounds: [CGRect] = []
+  private var snapshotScreenshotMapping: ScreenshotCoordinateMapping?
   // Accessibility references and identities live only for this helper process.
   // They are never included in a command completion or persisted by the host.
   private var elements: [String: AXUIElement] = [:]
@@ -488,6 +573,7 @@ private final class ComputerUseExecutor {
     snapshotFocusedElementIdentity = snapshotFocusedElement.flatMap(elementIdentity)
     snapshotWindowIdentity = snapshotFocusedWindow.flatMap(elementIdentity)
     snapshotDisplayBounds = activeDisplayBounds()
+    snapshotScreenshotMapping = nil
     let frontmost = app.map(frontmostApplication)
     let accessibility = app.map { accessibilitySnapshot(pid: $0.processIdentifier) }
       ?? "No frontmost application is available."
@@ -503,7 +589,8 @@ private final class ComputerUseExecutor {
         throw HelperFailure.rejected("screen_recording_denied")
       }
       let screenshot = try await captureScreenshot()
-      observation["screenshot"] = screenshot
+      snapshotScreenshotMapping = screenshot.coordinateMapping
+      observation["screenshot"] = screenshot.payload
     }
     return result(summary: "Observed the active Mac workspace.", observation: observation)
   }
@@ -606,17 +693,35 @@ private final class ComputerUseExecutor {
       point = CGPoint(x: targetFrame.midX, y: targetFrame.midY)
       expectedElement = element
       expectedIdentity = identity
-    } else if let x = number(input["x"]),
-              let y = number(input["y"]),
-              input.keys.allSatisfy({ $0 == "x" || $0 == "y" || $0 == "snapshotRevision" }),
-              pointIsOnActiveDisplay(CGPoint(x: x, y: y)),
-              let observedTarget = observedTarget(at: CGPoint(x: x, y: y)) {
-      point = CGPoint(x: x, y: y)
+    } else if input["x"] != nil || input["y"] != nil || input["coordinateSpace"] != nil {
+      guard input.keys.allSatisfy({
+              $0 == "x" || $0 == "y" || $0 == "coordinateSpace"
+                || $0 == "snapshotRevision"
+            }),
+            input.count == 4,
+            input["coordinateSpace"] as? String
+              == ScreenshotCoordinateMapping.screenshotSpace,
+            let x = coordinateNumber(input["x"]),
+            let y = coordinateNumber(input["y"]),
+            let mapping = snapshotScreenshotMapping,
+            mapping.snapshotRevision == revision,
+            displayMappingIsCurrent(mapping),
+            let globalPoint = mapping.globalLogicalPoint(
+              screenshotX: x,
+              screenshotY: y,
+              revision: revision
+            ),
+            pointIsOnActiveDisplay(globalPoint),
+            let observedTarget = observedTarget(at: globalPoint)
+      else { throw HelperFailure.rejected("screenshot_coordinate_refused") }
+      point = globalPoint
       expectedElement = observedTarget.element
       expectedIdentity = observedTarget.identity
     } else {
       throw HelperFailure.rejected("invalid_input")
     }
+    guard !isSecure(role: expectedIdentity.role, subrole: expectedIdentity.subrole)
+    else { throw HelperFailure.rejected("secure_input_refused") }
     try verifyObservedTarget(
       revision: revision,
       expectedElement: expectedElement,
@@ -745,7 +850,7 @@ private final class ComputerUseExecutor {
     }
   }
 
-  private func captureScreenshot() async throws -> [String: Any] {
+  private func captureScreenshot() async throws -> CapturedScreenshot {
     let content = try await SCShareableContent.excludingDesktopWindows(
       false,
       onScreenWindowsOnly: true
@@ -756,17 +861,35 @@ private final class ComputerUseExecutor {
     }) ?? content.displays.first else {
       throw HelperFailure.rejected("display_unavailable")
     }
+    let logicalBounds = display.frame
+    guard approximatelyEqual(logicalBounds, CGDisplayBounds(display.displayID)) else {
+      throw HelperFailure.rejected("coordinate_mapping_unavailable")
+    }
     let filter = SCContentFilter(display: display, excludingWindows: [])
     let configuration = SCStreamConfiguration()
     let scale = min(1, 1_440 / max(1, CGFloat(display.width)))
     configuration.width = max(1, Int(CGFloat(display.width) * scale))
     configuration.height = max(1, Int(CGFloat(display.height) * scale))
     configuration.showsCursor = true
+    // Fill the entire output surface so the independently derived x/y scales
+    // remain an exact affine inverse with no aspect-ratio padding.
+    configuration.preservesAspectRatio = false
     configuration.captureResolution = .best
     let image = try await SCScreenshotManager.captureImage(
       contentFilter: filter,
       configuration: configuration
     )
+    let capturedAt = Date()
+    guard captureTargetIsCurrent(),
+          let mapping = ScreenshotCoordinateMapping(
+            snapshotRevision: snapshotRevision,
+            displayID: display.displayID,
+            displayLogicalBounds: logicalBounds,
+            imageWidth: image.width,
+            imageHeight: image.height
+          ),
+          displayMappingIsCurrent(mapping)
+    else { throw HelperFailure.rejected("stale_observation") }
     let representation = NSBitmapImageRep(cgImage: image)
     let compressionLevels: [CGFloat] = [0.66, 0.52, 0.4, 0.3]
     let data = compressionLevels.lazy.compactMap { compression in
@@ -778,10 +901,39 @@ private final class ComputerUseExecutor {
     guard let data else {
       throw HelperFailure.rejected("screenshot_too_large")
     }
-    return [
+    let degradation = image.width < display.width || image.height < display.height
+      ? "downscaled_jpeg"
+      : "jpeg_compressed"
+    var coordinateContract: [String: Any] = [
+      "schemaVersion": 1,
+      "snapshotRevision": snapshotRevision,
+      "capturedAt": iso8601(capturedAt),
+      "screenshotOrigin": "top_left",
+      "targetSpace": ScreenshotCoordinateMapping.targetSpace,
+      "display": [
+        "id": Int(display.displayID),
+        "logicalBounds": rectangle(logicalBounds),
+      ],
+      "logicalPointsPerPixel": [
+        "x": mapping.logicalPointsPerPixelX,
+        "y": mapping.logicalPointsPerPixelY,
+      ],
+      "quality": [
+        "degradation": degradation,
+        "occlusion": "not_assessed",
+      ],
+    ]
+    if let target = screenshotTarget() {
+      coordinateContract["target"] = target
+    }
+    return CapturedScreenshot(payload: [
       "mimeType": "image/jpeg",
       "dataBase64": data.base64EncodedString(),
-    ]
+      "widthPixels": image.width,
+      "heightPixels": image.height,
+      "coordinateSpace": ScreenshotCoordinateMapping.screenshotSpace,
+      "coordinateContract": coordinateContract,
+    ], coordinateMapping: mapping)
   }
 
   private func result(
@@ -985,6 +1137,14 @@ private final class ComputerUseExecutor {
     return result.isFinite ? result : nil
   }
 
+  private func coordinateNumber(_ value: Any?) -> Double? {
+    guard let number = value as? NSNumber,
+          CFGetTypeID(number) != CFBooleanGetTypeID()
+    else { return nil }
+    let result = number.doubleValue
+    return result.isFinite ? result : nil
+  }
+
   private func boundedLoadWaitSeconds(_ value: Any?) -> Int? {
     guard let value else { return 3 }
     guard let number = value as? NSNumber,
@@ -1163,6 +1323,74 @@ private final class ComputerUseExecutor {
     return fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value)
   }
 
+  private func iso8601(_ value: Date) -> String {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter.string(from: value)
+  }
+
+  private func rectangle(_ value: CGRect) -> [String: Any] {
+    [
+      "x": Double(value.origin.x),
+      "y": Double(value.origin.y),
+      "width": Double(value.width),
+      "height": Double(value.height),
+    ]
+  }
+
+  private func screenshotTarget() -> [String: Any]? {
+    guard let pid = snapshotFrontmostPID else { return nil }
+    var target: [String: Any] = ["pid": Int(pid)]
+    if let bundleIdentifier = snapshotFrontmostBundleIdentifier,
+       !bundleIdentifier.isEmpty {
+      target["bundleId"] = bounded(bundleIdentifier, limit: 240)
+    }
+    if let identity = snapshotWindowIdentity {
+      var window: [String: Any] = [
+        "identitySha256": snapshotIdentitySha256(identity),
+      ]
+      if let bounds = identity.frame {
+        window["logicalBounds"] = rectangle(bounds)
+      }
+      target["window"] = window
+    }
+    return target
+  }
+
+  private func snapshotIdentitySha256(_ identity: SnapshotElementIdentity) -> String {
+    let frameValue = identity.frame.map { bounds in
+      [bounds.origin.x, bounds.origin.y, bounds.width, bounds.height]
+        .map { String(Double($0).bitPattern, radix: 16) }
+        .joined(separator: ",")
+    } ?? ""
+    return CryptoKit.SHA256.hash(data: Data([
+      identity.role,
+      identity.subrole ?? "",
+      identity.label ?? "",
+      identity.value ?? "",
+      frameValue,
+    ].joined(separator: "\u{0000}").utf8))
+      .map { String(format: "%02x", $0) }
+      .joined()
+  }
+
+  private func captureTargetIsCurrent() -> Bool {
+    guard activeDisplayBounds() == snapshotDisplayBounds else { return false }
+    let frontmost = NSWorkspace.shared.frontmostApplication
+    guard let expectedPID = snapshotFrontmostPID else { return frontmost == nil }
+    return frontmost?.processIdentifier == expectedPID
+      && frontmost?.bundleIdentifier == snapshotFrontmostBundleIdentifier
+      && observedWindowIsCurrent(pid: expectedPID)
+  }
+
+  private func approximatelyEqual(_ left: CGRect, _ right: CGRect) -> Bool {
+    let tolerance: CGFloat = 0.01
+    return abs(left.origin.x - right.origin.x) <= tolerance
+      && abs(left.origin.y - right.origin.y) <= tolerance
+      && abs(left.width - right.width) <= tolerance
+      && abs(left.height - right.height) <= tolerance
+  }
+
   private func isSafeIdentifier(_ value: String) -> Bool {
     value.count <= 300
       && value.range(of: #"^[A-Za-z0-9][A-Za-z0-9.-]+$"#, options: .regularExpression) != nil
@@ -1170,6 +1398,21 @@ private final class ComputerUseExecutor {
 
   private func pointIsOnActiveDisplay(_ point: CGPoint) -> Bool {
     activeDisplayBounds().contains { $0.contains(point) }
+  }
+
+  private func displayMappingIsCurrent(_ mapping: ScreenshotCoordinateMapping) -> Bool {
+    var count: UInt32 = 0
+    guard CGGetActiveDisplayList(0, nil, &count) == .success, count > 0 else {
+      return false
+    }
+    var displays = [CGDirectDisplayID](repeating: 0, count: Int(count))
+    guard CGGetActiveDisplayList(count, &displays, &count) == .success,
+          displays.prefix(Int(count)).contains(mapping.displayID)
+    else { return false }
+    return approximatelyEqual(
+      CGDisplayBounds(mapping.displayID),
+      mapping.displayLogicalBounds
+    )
   }
 
   private func activeDisplayBounds() -> [CGRect] {

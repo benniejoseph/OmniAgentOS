@@ -35,6 +35,12 @@ describe("governed local Mac tools", () => {
           dataBase64: Buffer.from([
             0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
           ]).toString("base64"),
+          widthPixels: 1_440,
+          heightPixels: 900,
+          coordinateSpace: "screenshot_pixel",
+          coordinateContract: {
+            display: { id: 42, logicalBounds: { x: -1_512, y: 0 } },
+          },
         },
       },
     });
@@ -79,8 +85,16 @@ describe("governed local Mac tools", () => {
         name: "Finder",
         bundleId: "com.apple.finder",
       },
-      screenshot: { mimeType: "image/png" },
+      screenshot: {
+        mimeType: "image/png",
+        widthPixels: 1_440,
+        heightPixels: 900,
+        coordinateSpace: "screenshot_pixel",
+      },
     });
+    expect(execution.browserObservation).not.toHaveProperty(
+      "screenshot.coordinateContract",
+    );
   });
 
   it("exposes preview presentation as an explicit, default-off tool input", async () => {
@@ -141,7 +155,13 @@ describe("governed local Mac tools", () => {
     expect(result.browserObservation?.screenshot).toEqual({
       mimeType: "image/png",
       dataBase64: expect.any(String),
+      widthPixels: 1_440,
+      heightPixels: 900,
+      coordinateSpace: "screenshot_pixel",
     });
+    expect(result.browserObservation).not.toHaveProperty(
+      "screenshot.coordinateContract",
+    );
     expect(result.record.output).not.toHaveProperty("observation");
     expect(mocks.executeLocalComputerCommand).toHaveBeenCalledWith(
       expect.objectContaining({

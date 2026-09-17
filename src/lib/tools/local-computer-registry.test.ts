@@ -34,4 +34,29 @@ describe("local Mac browser navigation registry", () => {
     });
     expect(tool?.description).toContain("does not claim that the page finished loading");
   });
+
+  it("makes screenshot coordinates explicit and keeps element clicks preferred", () => {
+    const observe = getGovernedTool("local.macos.observe");
+    const click = getGovernedTool("local.macos.click");
+    const properties = click?.inputSchema.properties as
+      | Record<string, Record<string, unknown>>
+      | undefined;
+    const alternatives = click?.inputSchema.oneOf as
+      | Array<Record<string, unknown>>
+      | undefined;
+
+    expect(observe?.description).toContain("exact pixel width, height");
+    expect(click?.description).toContain("Prefer elementId");
+    expect(click?.description).toContain("upper-left corner");
+    expect(click?.description).toContain("Never pass macOS global coordinates");
+    expect(properties?.coordinateSpace).toMatchObject({
+      type: "string",
+      enum: ["screenshot_pixel"],
+    });
+    expect(alternatives).toHaveLength(2);
+    expect(alternatives?.[1]).toMatchObject({
+      required: ["coordinateSpace", "x", "y"],
+      not: { required: ["elementId"] },
+    });
+  });
 });

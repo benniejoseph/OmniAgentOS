@@ -5,6 +5,7 @@ export const LOCAL_COMPUTER_PROTOCOL_VERSION = 1 as const;
 export const LOCAL_COMPUTER_NATIVE_CONTRACT_VERSION = 11 as const;
 export const LOCAL_COMPUTER_PRESENT_SCREENSHOT_CONTRACT_VERSION = 12 as const;
 export const LOCAL_COMPUTER_OPEN_URL_CONTRACT_VERSION = 13 as const;
+export const LOCAL_COMPUTER_SCREENSHOT_COORDINATE_CONTRACT_VERSION = 13 as const;
 export const LOCAL_COMPUTER_DEVICE_LEASE_SECONDS = 24;
 export const LOCAL_COMPUTER_COMMAND_LEASE_SECONDS = 30;
 export const LOCAL_COMPUTER_COMMAND_TIMEOUT_MS = 45_000;
@@ -72,6 +73,19 @@ export const localComputerOpenUrlInputSchema = z.object({
   loadWaitSeconds: z.number().int().min(0).max(15).optional(),
 }).strict();
 
+export const localComputerClickInputSchema = z.union([
+  z.object({
+    snapshotRevision: sha256,
+    elementId: z.string().min(3).max(120).regex(/^[A-Za-z0-9_.:-]+$/),
+  }).strict(),
+  z.object({
+    snapshotRevision: sha256,
+    coordinateSpace: z.literal("screenshot_pixel"),
+    x: z.number().finite().min(0).max(32_768),
+    y: z.number().finite().min(0).max(32_768),
+  }).strict(),
+]);
+
 export const localComputerCommandSchema = z.object({
   schemaVersion: z.literal(LOCAL_COMPUTER_PROTOCOL_VERSION),
   id: z.string().regex(/^local_computer_command_[a-f0-9]{48}$/),
@@ -94,6 +108,16 @@ export const localComputerCommandSchema = z.object({
       message: "The browser navigation input is invalid.",
     });
   }
+  if (
+    value.action === "click" &&
+    !localComputerClickInputSchema.safeParse(value.input).success
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["input"],
+      message: "The local computer click input is invalid or ambiguous.",
+    });
+  }
 });
 
 const frontmostApplicationSchema = z.object({
@@ -102,9 +126,50 @@ const frontmostApplicationSchema = z.object({
   pid: z.number().int().positive().max(2_147_483_647),
 }).strict();
 
+const logicalCoordinate = z.number().finite().min(-131_072).max(131_072);
+const logicalDimension = z.number().finite().positive().max(131_072);
+const logicalRectangleSchema = z.object({
+  x: logicalCoordinate,
+  y: logicalCoordinate,
+  width: logicalDimension,
+  height: logicalDimension,
+}).strict();
+const screenshotDimension = z.number().int().positive().max(32_768);
+const screenshotCoordinateContractSchema = z.object({
+  schemaVersion: z.literal(1),
+  snapshotRevision: sha256,
+  capturedAt: z.string().datetime({ offset: true }),
+  screenshotOrigin: z.literal("top_left"),
+  targetSpace: z.literal("macos_global_logical_top_left"),
+  display: z.object({
+    id: z.number().int().positive().max(4_294_967_295),
+    logicalBounds: logicalRectangleSchema,
+  }).strict(),
+  logicalPointsPerPixel: z.object({
+    x: z.number().finite().positive().max(64),
+    y: z.number().finite().positive().max(64),
+  }).strict(),
+  quality: z.object({
+    degradation: z.enum(["jpeg_compressed", "downscaled_jpeg"]),
+    occlusion: z.enum(["not_assessed", "possible", "none_detected"]),
+  }).strict(),
+  target: z.object({
+    pid: z.number().int().positive().max(2_147_483_647),
+    bundleId: z.string().trim().min(1).max(240).optional(),
+    window: z.object({
+      identitySha256: sha256,
+      logicalBounds: logicalRectangleSchema.optional(),
+    }).strict().optional(),
+  }).strict().optional(),
+}).strict();
+
 const screenshotSchema = z.object({
   mimeType: z.enum(["image/jpeg", "image/png", "image/webp"]),
   dataBase64: z.string().min(4).max(1_733_336),
+  widthPixels: screenshotDimension.optional(),
+  heightPixels: screenshotDimension.optional(),
+  coordinateSpace: z.literal("screenshot_pixel").optional(),
+  coordinateContract: screenshotCoordinateContractSchema.optional(),
 }).strict().superRefine((value, context) => {
   const bytes = Buffer.from(value.dataBase64, "base64");
   const canonical = bytes.toString("base64").replace(/=+$/g, "");
@@ -118,6 +183,41 @@ const screenshotSchema = z.object({
       code: "custom",
       message: "The local computer screenshot is invalid or too large.",
     });
+  }
+  const coordinateFields = [
+    value.widthPixels,
+    value.heightPixels,
+    value.coordinateSpace,
+    value.coordinateContract,
+  ];
+  const hasCoordinateMetadata = coordinateFields.some(
+    (field) => field !== undefined,
+  );
+  if (
+    hasCoordinateMetadata &&
+    coordinateFields.some((field) => field === undefined)
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "The screenshot coordinate contract is incomplete.",
+    });
+  }
+  if (
+    value.widthPixels && value.heightPixels && value.coordinateContract
+  ) {
+    const { logicalBounds } = value.coordinateContract.display;
+    const expectedX = logicalBounds.width / value.widthPixels;
+    const expectedY = logicalBounds.height / value.heightPixels;
+    const actual = value.coordinateContract.logicalPointsPerPixel;
+    const closeEnough = (left: number, right: number) =>
+      Math.abs(left - right) <= Number.EPSILON * 64 * Math.max(1, left, right);
+    if (!closeEnough(expectedX, actual.x) || !closeEnough(expectedY, actual.y)) {
+      context.addIssue({
+        code: "custom",
+        path: ["coordinateContract", "logicalPointsPerPixel"],
+        message: "The screenshot coordinate mapping is inconsistent.",
+      });
+    }
   }
 });
 
@@ -156,6 +256,19 @@ export const localComputerResultSchema = z.object({
     context.addIssue({
       code: "custom",
       message: "The combined local computer result is too large.",
+    });
+  }
+  const observation = value.observation;
+  const screenshotRevision = observation?.screenshot?.coordinateContract
+    ?.snapshotRevision;
+  if (
+    screenshotRevision !== undefined &&
+    screenshotRevision !== observation?.snapshotRevision
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["observation", "screenshot", "coordinateContract", "snapshotRevision"],
+      message: "The screenshot is not bound to the enclosing snapshot.",
     });
   }
 });

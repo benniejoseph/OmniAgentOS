@@ -117,6 +117,63 @@ private enum FocusSafeSnapshotPolicyTests {
       ),
       "a moved target remains stale"
     )
+
+    let revision = String(repeating: "a", count: 64)
+    let screenshotMapping = ScreenshotCoordinateMapping(
+      snapshotRevision: revision,
+      displayID: 42,
+      displayLogicalBounds: CGRect(x: -1512, y: 0, width: 1512, height: 945),
+      imageWidth: 1440,
+      imageHeight: 900
+    )
+    expect(screenshotMapping != nil, "a finite display-to-image mapping is valid")
+    expect(
+      screenshotMapping?.logicalPointsPerPixelX == 1.05
+        && screenshotMapping?.logicalPointsPerPixelY == 1.05,
+      "the mapping derives an independent logical-point scale for each image axis"
+    )
+    let mappedCenter = screenshotMapping?.globalLogicalPoint(
+      screenshotX: 720,
+      screenshotY: 450,
+      revision: revision
+    )
+    expect(
+      mappedCenter == CGPoint(x: -756, y: 472.5),
+      "Retina/downscaled screenshot pixels map into negative-origin global logical space"
+    )
+    expect(
+      screenshotMapping?.globalLogicalPoint(
+        screenshotX: 1,
+        screenshotY: 1,
+        revision: String(repeating: "b", count: 64)
+      ) == nil,
+      "a screenshot coordinate cannot cross snapshot revisions"
+    )
+    for refusedPoint in [
+      CGPoint(x: -1, y: 1),
+      CGPoint(x: 1, y: -1),
+      CGPoint(x: 1440, y: 1),
+      CGPoint(x: 1, y: 900),
+    ] {
+      expect(
+        screenshotMapping?.globalLogicalPoint(
+          screenshotX: refusedPoint.x,
+          screenshotY: refusedPoint.y,
+          revision: revision
+        ) == nil,
+        "a screenshot click must remain inside the exact captured image"
+      )
+    }
+    expect(
+      ScreenshotCoordinateMapping(
+        snapshotRevision: revision,
+        displayID: 0,
+        displayLogicalBounds: CGRect(x: 0, y: 0, width: 100, height: 100),
+        imageWidth: 100,
+        imageHeight: 100
+      ) == nil,
+      "an unidentified display cannot authorize image-coordinate clicks"
+    )
     expect(
       sanitizedLocalComputerText("A\u{0000}B\u{001f}C\u{007f}D", limit: 7)
         == "A B C D",
