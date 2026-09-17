@@ -231,7 +231,10 @@ class ApiLocalComputerRepository implements LocalComputerRepository {
   Future<LocalComputerClaimResponse> claim() async {
     final json = await api.postJson(
       NativePaths.localComputerCommandClaim,
-      data: const {'schemaVersion': localComputerProtocolVersion},
+      data: const {
+        'schemaVersion': localComputerProtocolVersion,
+        'waitSeconds': 15,
+      },
     );
     return LocalComputerClaimResponse.fromJson(json);
   }
@@ -640,12 +643,32 @@ class LocalComputerCoordinator extends ChangeNotifier {
   @override
   void dispose() {
     if (_disposed) return;
+    final stopForSignOut = authenticated && host.supported;
     _disposed = true;
     authenticated = false;
     _loopGeneration += 1;
     host.attachStoppedHandler(null);
-    unawaited(host.dispose());
+    if (stopForSignOut) {
+      // SessionController enters its signed-out/loading state before erasing
+      // credentials. Trip the local kill switch immediately, then make a
+      // best-effort actor-scoped stop receipt while that session still exists.
+      unawaited(_stopForSignOut());
+    }
     super.dispose();
+  }
+
+  Future<void> _stopForSignOut() async {
+    try {
+      await host.stop();
+    } catch (_) {
+      // AppDelegate owns the process-level kill switch if Flutter is exiting.
+    }
+    try {
+      await repository.stop('sign_out');
+    } catch (_) {
+      // The 24-second device lease is the final fail-closed boundary if the
+      // signed-out credential disappeared before this receipt was accepted.
+    }
   }
 }
 
