@@ -169,6 +169,266 @@ describe("non-OpenAI governed provider tool loop", () => {
     expect(generateTurn).toHaveBeenCalledTimes(2);
   });
 
+  it("carries a local Mac observation across exactly one sole app-list turn", async () => {
+    let turnIndex = 0;
+    const generateTurn = vi.fn(async (request: ModelToolTurnRequest) => {
+      turnIndex += 1;
+      if (turnIndex === 1) {
+        expect(request.toolResults).toBeUndefined();
+        return turn({
+          toolCalls: [{
+            callId: "call-observe",
+            name: "local_observe",
+            argumentsJson: "{}",
+          }],
+        });
+      }
+      if (turnIndex === 2) {
+        expect(request.toolResults).toEqual([
+          expect.objectContaining({
+            callId: "call-observe",
+            browserObservation: expect.objectContaining({
+              source: "local_macos",
+              snapshotRevision: "c".repeat(64),
+            }),
+          }),
+        ]);
+        return turn({
+          toolCalls: [{
+            callId: "call-list-once",
+            name: "local_list_apps",
+            argumentsJson: "{}",
+          }],
+        });
+      }
+      if (turnIndex === 3) {
+        expect(request.toolResults).toEqual([
+          expect.objectContaining({
+            callId: "call-list-once",
+            browserObservation: expect.objectContaining({
+              source: "local_macos",
+              executionId: "execution-local-observe",
+            }),
+          }),
+        ]);
+        return turn({
+          toolCalls: [{
+            callId: "call-list-twice",
+            name: "local_list_apps",
+            argumentsJson: "{}",
+          }],
+        });
+      }
+      expect(request.toolResults).toEqual([
+        expect.not.objectContaining({ browserObservation: expect.anything() }),
+      ]);
+      return turn({ text: "The observation expired after one app-list hop." });
+    });
+    const executeTool = vi.fn(async (request: { toolId: string }) =>
+      request.toolId === "local.macos.observe"
+        ? {
+            record: executionRecord(request.toolId, "executed", {
+              id: "execution-local-observe",
+            }),
+            result: { summary: "Observed Finder." },
+            browserObservation: localObservation(),
+          }
+        : {
+            record: executionRecord(request.toolId, "executed"),
+            result: { applications: ["Finder", "Chrome"] },
+          }
+    );
+    const loop = runNonOpenAIProviderToolLoop({
+      provider: "google",
+      tier: "reasoning",
+      instructions: "Use fresh local evidence.",
+      prompt: "Inspect this Mac.",
+      tools: [modelTool("local_observe"), modelTool("local_list_apps")],
+      toolbox: {
+        byFunctionName: new Map([
+          ["local_observe", {
+            definition: toolDefinition("local.macos.observe"),
+            functionName: "local_observe",
+          }],
+          ["local_list_apps", {
+            definition: toolDefinition("local.macos.list_apps"),
+            functionName: "local_list_apps",
+          }],
+        ]),
+      },
+      securityContext: {
+        tenantId: "tenant-local",
+        actorId: "owner-local",
+        role: "admin",
+        source: "default",
+      },
+      runId: "run-local-observation-hop",
+      generateTurn,
+      executeTool: executeTool as never,
+    });
+
+    const collected = await collect(loop);
+    expect(collected.result.text).toBe(
+      "The observation expired after one app-list hop.",
+    );
+    expect(generateTurn).toHaveBeenCalledTimes(4);
+  });
+
+  it("invalidates local Mac evidence after a state-changing action", async () => {
+    let turnIndex = 0;
+    const generateTurn = vi.fn(async (request: ModelToolTurnRequest) => {
+      turnIndex += 1;
+      if (turnIndex === 1) {
+        return turn({
+          toolCalls: [{
+            callId: "call-observe",
+            name: "local_observe",
+            argumentsJson: "{}",
+          }],
+        });
+      }
+      if (turnIndex === 2) {
+        expect(request.toolResults?.[0]?.browserObservation).toMatchObject({
+          source: "local_macos",
+        });
+        return turn({
+          toolCalls: [{
+            callId: "call-activate",
+            name: "local_activate_app",
+            argumentsJson: "{\"bundleId\":\"com.google.Chrome\"}",
+          }],
+        });
+      }
+      expect(request.toolResults?.[0]).not.toHaveProperty(
+        "browserObservation",
+      );
+      return turn({ text: "A fresh observation is required." });
+    });
+    const loop = runNonOpenAIProviderToolLoop({
+      provider: "google",
+      tier: "reasoning",
+      instructions: "Observe after every state change.",
+      prompt: "Open Chrome.",
+      tools: [modelTool("local_observe"), modelTool("local_activate_app")],
+      toolbox: {
+        byFunctionName: new Map([
+          ["local_observe", {
+            definition: toolDefinition("local.macos.observe"),
+            functionName: "local_observe",
+          }],
+          ["local_activate_app", {
+            definition: toolDefinition("local.macos.activate_app"),
+            functionName: "local_activate_app",
+          }],
+        ]),
+      },
+      securityContext: {
+        tenantId: "tenant-local",
+        actorId: "owner-local",
+        role: "admin",
+        source: "default",
+      },
+      runId: "run-local-observation-invalidated",
+      generateTurn,
+      executeTool: vi.fn(async (request: { toolId: string }) =>
+        request.toolId === "local.macos.observe"
+          ? {
+              record: executionRecord(request.toolId, "executed", {
+                id: "execution-local-observe",
+              }),
+              result: { summary: "Observed Finder." },
+              browserObservation: localObservation(),
+            }
+          : {
+              record: executionRecord(request.toolId, "executed"),
+              result: { activated: true },
+            }
+      ) as never,
+    });
+
+    const collected = await collect(loop);
+    expect(collected.result.text).toBe("A fresh observation is required.");
+  });
+
+  it("drops local Mac evidence before an approval continuation", async () => {
+    let turnIndex = 0;
+    const generateTurn = vi.fn(async (request: ModelToolTurnRequest) => {
+      turnIndex += 1;
+      if (turnIndex === 1) {
+        return turn({
+          toolCalls: [{
+            callId: "call-observe",
+            name: "local_observe",
+            argumentsJson: "{}",
+          }],
+        });
+      }
+      expect(request.toolResults?.[0]?.browserObservation).toMatchObject({
+        source: "local_macos",
+      });
+      return turn({
+        toolCalls: [{
+          callId: "call-approval",
+          name: "local_press",
+          argumentsJson: "{}",
+        }],
+      });
+    });
+    const loop = runNonOpenAIProviderToolLoop({
+      provider: "google",
+      tier: "reasoning",
+      instructions: "Pause for consequential actions.",
+      prompt: "Inspect then press.",
+      tools: [modelTool("local_observe"), modelTool("local_press")],
+      toolbox: {
+        byFunctionName: new Map([
+          ["local_observe", {
+            definition: toolDefinition("local.macos.observe"),
+            functionName: "local_observe",
+          }],
+          ["local_press", {
+            definition: toolDefinition("local.macos.press", {
+              riskLevel: 2,
+              approvalRequired: true,
+            }),
+            functionName: "local_press",
+          }],
+        ]),
+      },
+      securityContext: {
+        tenantId: "tenant-local",
+        actorId: "owner-local",
+        role: "admin",
+        source: "default",
+      },
+      runId: "run-local-observation-approval",
+      serializeToolCalls: true,
+      generateTurn,
+      executeTool: vi.fn(async (request: { toolId: string }) =>
+        request.toolId === "local.macos.observe"
+          ? {
+              record: executionRecord(request.toolId, "executed", {
+                id: "execution-local-observe",
+              }),
+              result: { summary: "Observed Finder." },
+              browserObservation: localObservation(),
+            }
+          : {
+              record: executionRecord(request.toolId, "approval_required"),
+              result: null,
+            }
+      ) as never,
+    });
+
+    const collected = await collect(loop);
+    expect(JSON.stringify(collected.result.waitingApproval)).not.toContain(
+      "LOCAL_PRIVATE_SNAPSHOT",
+    );
+    expect(
+      collected.result.waitingApproval?.providerState.toolResultsBeforeApproval,
+    ).toEqual([]);
+  });
+
   it("removes ephemeral browser evidence before parking provider state", async () => {
     const browserDefinition = toolDefinition("mcp:browser:browser_snapshot");
     const approvalDefinition = toolDefinition("http.request", {
@@ -626,6 +886,27 @@ function browserObservation() {
     screenshot: {
       mimeType: "image/webp" as const,
       dataBase64: "UklGRgAAAABXRUJQ",
+    },
+  };
+}
+
+function localObservation() {
+  return {
+    schemaVersion: 1 as const,
+    source: "local_macos" as const,
+    trust: "untrusted_data" as const,
+    executionId: "execution-local-observe",
+    operation: "observe",
+    snapshotRevision: "c".repeat(64),
+    applicationState: {
+      name: "Finder",
+      bundleId: "com.apple.finder",
+      pid: 123,
+    },
+    accessibilitySnapshot: "LOCAL_PRIVATE_SNAPSHOT",
+    screenshot: {
+      mimeType: "image/png" as const,
+      dataBase64: "iVBORw0KGgo=",
     },
   };
 }

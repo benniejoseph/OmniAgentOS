@@ -395,6 +395,17 @@ export class ToolInputValidationError extends Error {
   }
 }
 
+export class LocalComputerObservationExpiredError extends Error {
+  readonly code = "local_computer_observation_expired";
+
+  constructor() {
+    super(
+      "The local Mac observation was already consumed or did not include fresh visual evidence. Run local.macos.observe again with a new tool call.",
+    );
+    this.name = "LocalComputerObservationExpiredError";
+  }
+}
+
 export async function executeGovernedTool({
   toolId,
   input,
@@ -951,6 +962,9 @@ export async function executeGovernedTool({
           throw new EffectReceiptFinalizationError({ cause: error });
         }
         throw error;
+      }
+      if (tool.id === "local.macos.observe") {
+        throw new LocalComputerObservationExpiredError();
       }
       const reconciled = (await reconcileExistingMemoryWriteEffect({
         record: existing,
@@ -1627,6 +1641,12 @@ export async function executeGovernedTool({
       throw error;
     }
     const localComputerResult = asLocalComputerToolResult(result);
+    if (
+      tool.id === "local.macos.observe" &&
+      !localComputerResult?.observation
+    ) {
+      throw new LocalComputerObservationExpiredError();
+    }
     const durableResult = localComputerResult?.publicResult ?? result;
     let effectReceipt: ToolExecutionRecord["effectReceipt"];
     try {

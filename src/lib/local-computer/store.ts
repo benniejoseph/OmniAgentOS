@@ -535,6 +535,12 @@ async function waitForLocalComputerCommand(
       );
     }
     if (row.state === "completed" || row.state === "consumed") {
+      if (row.state === "consumed" && row.action === "observe") {
+        throw new LocalComputerCommandError(
+          "observation_consumed",
+          "The local Mac observation was already consumed. Run a fresh observe command.",
+        );
+      }
       const parsed = localComputerResultSchema.safeParse(row.result);
       if (!parsed.success) {
         throw new LocalComputerCommandError(
@@ -545,7 +551,7 @@ async function waitForLocalComputerCommand(
       const result = parsed.data;
       const publicResult = stripObservation(result);
       if (row.state === "completed") {
-        await getSql()`
+        const consumed = await getSql()`
           UPDATE omni_local_computer_commands
           SET state = 'consumed', result = ${publicResult}::jsonb,
               consumed_at = NOW(), updated_at = NOW()
@@ -553,7 +559,14 @@ async function waitForLocalComputerCommand(
             AND owner_actor_id = ${input.executionScope.initiatingActorId || ""}
             AND id = ${command.id}
             AND state = 'completed'
+          RETURNING id
         `;
+        if (row.action === "observe" && !consumed[0]) {
+          throw new LocalComputerCommandError(
+            "observation_consumed",
+            "The local Mac observation was already consumed. Run a fresh observe command.",
+          );
+        }
       }
       await appendLocalComputerEvent({
         executionScope: deriveExecutionScope(input.executionScope, {

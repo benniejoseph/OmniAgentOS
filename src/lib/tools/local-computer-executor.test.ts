@@ -77,6 +77,52 @@ describe("governed local Mac tools", () => {
     });
   });
 
+  it("fails closed when an idempotent observe call tries to replay consumed evidence", async () => {
+    const { executeGovernedTool } = await import("@/lib/tools/executor");
+    const input = {
+      toolId: "local.macos.observe",
+      input: { includeScreenshot: true },
+      dryRun: false,
+      context: securityContext(),
+      executionScope: executionScope("observe-replay"),
+      idempotencyKey: "local-mac-observe-replay",
+    } as const;
+
+    const first = await executeGovernedTool(input);
+    expect(first.browserObservation).toBeDefined();
+
+    await expect(executeGovernedTool(input)).rejects.toMatchObject({
+      name: "LocalComputerObservationExpiredError",
+      code: "local_computer_observation_expired",
+    });
+    expect(mocks.executeLocalComputerCommand).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a successful observe command that has no fresh observation", async () => {
+    mocks.executeLocalComputerCommand.mockResolvedValueOnce({
+      publicResult: { summary: "Observation already consumed." },
+    });
+    const { executeGovernedTool } = await import("@/lib/tools/executor");
+
+    const result = await executeGovernedTool({
+      toolId: "local.macos.observe",
+      input: { includeScreenshot: true },
+      dryRun: false,
+      context: securityContext(),
+      executionScope: executionScope("observe-empty"),
+      idempotencyKey: "local-mac-observe-empty",
+    });
+
+    expect(result).toMatchObject({
+      record: {
+        status: "failed",
+        reason: expect.stringContaining("fresh visual evidence"),
+      },
+      result: null,
+    });
+    expect(result).not.toHaveProperty("browserObservation");
+  });
+
   it("does not enqueue a consequential local action before approval", async () => {
     const executor = await import("@/lib/tools/executor");
     const store = await import("@/lib/tools/audit-store");

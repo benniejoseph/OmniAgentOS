@@ -10,6 +10,7 @@ import { AUTHORIZED_CONTEXT_RETRIEVAL_SOURCES } from "@/lib/rag/context-engine";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
 import { sourceContractSha256 } from "@/lib/sources/contracts";
+import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
 
 const mocks = vi.hoisted(() => ({
   appendContextCompilerV2CanaryEvent: vi.fn(),
@@ -30,6 +31,7 @@ const mocks = vi.hoisted(() => ({
   resolvePersonalContextMemoryAccess: vi.fn(),
   runCouncilRound: vi.fn(),
   streamResponseTurn: vi.fn(),
+  executeGovernedTool: vi.fn(),
   updateRunContextCount: vi.fn(),
 }));
 
@@ -71,6 +73,11 @@ vi.mock("@/lib/openai/model-router", () => ({
     tier: "fast",
     reason: "Test route",
   }),
+}));
+
+vi.mock("@/lib/tools/executor", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/tools/executor")>()),
+  executeGovernedTool: mocks.executeGovernedTool,
 }));
 
 vi.mock("@/lib/observability/store", () => ({
@@ -159,6 +166,7 @@ describe("agent memory scope", () => {
     mocks.getActiveAgentAdaptationGuidance.mockResolvedValue([]);
     mocks.loadProgressiveAgentTools.mockResolvedValue({ definitions: [] });
     mocks.recordRuntimeEventSafely.mockResolvedValue(undefined);
+    mocks.executeGovernedTool.mockReset();
     mocks.resolvePersonalContextMemoryAccess.mockImplementation(async (value) =>
       value?.databaseAccessScope
     );
@@ -451,6 +459,87 @@ describe("agent memory scope", () => {
       type: "council_verdict",
       status: "revised",
     }));
+  });
+
+  it("carries direct OpenAI local evidence through one immediate app list without persisting it", async () => {
+    const scopedRequest = request("session");
+    scopedRequest.computerUseTarget = "local_macos";
+    scopedRequest.agentProfile!.toolIds = [
+      "local.macos.observe",
+      "local.macos.list_apps",
+    ];
+    mocks.loadProgressiveAgentTools.mockResolvedValue({
+      definitions: [
+        localToolDefinition("local.macos.observe"),
+        localToolDefinition("local.macos.list_apps"),
+      ],
+    });
+    mocks.executeGovernedTool.mockImplementation(async ({ toolId }) =>
+      toolId === "local.macos.observe"
+        ? {
+            record: localExecutionRecord(toolId, "execution-local-observe"),
+            result: { summary: "Observed Finder." },
+            browserObservation: localObservation(),
+          }
+        : {
+            record: localExecutionRecord(toolId, "execution-local-list"),
+            result: { applications: ["Finder", "Chrome"] },
+          }
+    );
+    let modelTurn = 0;
+    mocks.streamResponseTurn.mockImplementation(async (modelRequest) => {
+      modelTurn += 1;
+      if (modelTurn === 1) {
+        return openAITurn({
+          callId: "call-observe",
+          name: "local.macos.observe",
+        });
+      }
+      if (modelTurn === 2) {
+        expect(modelRequest.input).toEqual(expect.arrayContaining([
+          expect.objectContaining({
+            type: "ephemeral_browser_function_output",
+            call_id: "call-observe",
+            observation: expect.objectContaining({
+              source: "local_macos",
+              snapshotRevision: "f".repeat(64),
+            }),
+          }),
+        ]));
+        return openAITurn({
+          callId: "call-list-apps",
+          name: "local.macos.list_apps",
+        });
+      }
+      expect(modelRequest.input).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          type: "ephemeral_browser_function_output",
+          call_id: "call-list-apps",
+          observation: expect.objectContaining({
+            source: "local_macos",
+            executionId: "execution-local-observe",
+          }),
+        }),
+      ]));
+      await modelRequest.onDelta("Done.");
+      return openAITurn({ text: "Done." });
+    });
+
+    const events = await collectRequest(scopedRequest);
+
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "done",
+      response: "Done.",
+    }));
+    expect(mocks.streamResponseTurn).toHaveBeenCalledTimes(3);
+    expect(mocks.executeGovernedTool).toHaveBeenCalledTimes(2);
+    const durableWrites = JSON.stringify({
+      events: mocks.appendRunEvent.mock.calls,
+      completion: mocks.completeAgentRun.mock.calls,
+    });
+    expect(durableWrites).not.toContain("LOCAL_OPENAI_PRIVATE_SNAPSHOT");
+    expect(durableWrites).not.toContain("iVBORw0KGgo=");
+    expect(durableWrites).not.toContain("ephemeral_browser_function_output");
   });
 
   it("revalidates standing consent and isolates automatic personal context", async () => {
@@ -828,6 +917,108 @@ function request(
       toolIds: [],
       skills: [],
     },
+  };
+}
+
+function localToolDefinition(id: string): ToolDefinition {
+  return {
+    id,
+    name: id,
+    description: id,
+    category: "app",
+    status: "active",
+    riskLevel: 0,
+    dryRunSupported: true,
+    approvalRequired: false,
+    operationClass: "read_only",
+    reversible: true,
+    inputSchema: { type: "object" },
+  };
+}
+
+function localExecutionRecord(
+  toolId: string,
+  id: string,
+): ToolExecutionRecord {
+  return {
+    id,
+    toolId,
+    toolName: toolId,
+    riskLevel: 0,
+    status: "executed",
+    dryRun: false,
+    approvalRequired: false,
+    input: {},
+    createdAt: "2026-09-17T00:00:00.000Z",
+  };
+}
+
+function localObservation() {
+  return {
+    schemaVersion: 1 as const,
+    source: "local_macos" as const,
+    trust: "untrusted_data" as const,
+    executionId: "execution-local-observe",
+    operation: "observe",
+    snapshotRevision: "f".repeat(64),
+    applicationState: {
+      name: "Finder",
+      bundleId: "com.apple.finder",
+      pid: 123,
+    },
+    accessibilitySnapshot: "LOCAL_OPENAI_PRIVATE_SNAPSHOT",
+    screenshot: {
+      mimeType: "image/png" as const,
+      dataBase64: "iVBORw0KGgo=",
+    },
+  };
+}
+
+function openAITurn(input: {
+  callId?: string;
+  name?: string;
+  text?: string;
+}) {
+  const functionCalls = input.callId && input.name
+    ? [{
+        callId: input.callId,
+        name: input.name,
+        argumentsJson: "{}",
+      }]
+    : [];
+  return {
+    responseId: `response-${input.callId || "done"}`,
+    functionCalls,
+    functionCallItems: functionCalls.map((call) => ({
+      type: "function_call" as const,
+      id: `item-${call.callId}`,
+      call_id: call.callId,
+      name: call.name,
+      arguments: call.argumentsJson,
+    })),
+    text: input.text || "",
+    model: "gpt-test",
+    fallbackUsed: false,
+    latencyMs: 1,
+    usage: {
+      inputTokens: 5,
+      outputTokens: 2,
+      cachedInputTokens: 0,
+      totalTokens: 7,
+    },
+    attempts: [{
+      provider: "openai" as const,
+      model: "gpt-test",
+      status: "completed" as const,
+      latencyMs: 1,
+      usage: {
+        inputTokens: 5,
+        outputTokens: 2,
+        cachedInputTokens: 0,
+        totalTokens: 7,
+      },
+    }],
+    usageReceiptRecorded: false,
   };
 }
 

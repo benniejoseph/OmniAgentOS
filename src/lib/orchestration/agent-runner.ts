@@ -200,6 +200,99 @@ type PendingOpenAIBrowserObservation = Readonly<{
   observation: ModelBrowserObservation;
 }>;
 
+type EphemeralLocalObservationState = Readonly<{
+  observation: ModelBrowserObservation;
+  /** A fresh observe may cross at most one sole list-apps turn. */
+  listAppsCarryAvailable: boolean;
+}>;
+
+type EphemeralObservationTransition = Readonly<{
+  nextState?: EphemeralLocalObservationState;
+  disclosedObservation?: ModelBrowserObservation;
+  discardPriorLocalObservations: boolean;
+}>;
+
+function transitionEphemeralLocalObservation(
+  latest: EphemeralLocalObservationState | undefined,
+  toolId: string,
+  execution: GovernedToolExecutionResult,
+  soleToolInTurn: boolean,
+): EphemeralObservationTransition {
+  if (toolId === "local.macos.observe") {
+    const fresh =
+      execution.record.status === "executed" &&
+        execution.browserObservation?.source === "local_macos"
+        ? execution.browserObservation
+        : undefined;
+    if (!soleToolInTurn || !fresh) {
+      return { discardPriorLocalObservations: true };
+    }
+    return {
+      nextState: {
+        observation: fresh,
+        listAppsCarryAvailable: true,
+      },
+      disclosedObservation: fresh,
+      discardPriorLocalObservations: true,
+    };
+  }
+  if (
+    toolId === "local.macos.list_apps" &&
+    soleToolInTurn &&
+    execution.record.status === "executed" &&
+    latest?.listAppsCarryAvailable
+  ) {
+    return {
+      nextState: {
+        observation: latest.observation,
+        listAppsCarryAvailable: false,
+      },
+      disclosedObservation: latest.observation,
+      discardPriorLocalObservations: false,
+    };
+  }
+  if (toolId.startsWith("local.macos.")) {
+    return { discardPriorLocalObservations: true };
+  }
+  return {
+    disclosedObservation: execution.browserObservation,
+    discardPriorLocalObservations: true,
+  };
+}
+
+function withoutLocalOpenAIObservations(
+  observations: readonly PendingOpenAIBrowserObservation[],
+) {
+  return observations.filter(
+    ({ observation }) => observation.source !== "local_macos",
+  );
+}
+
+function withoutLocalProviderObservations(
+  results: readonly ModelToolResult[],
+) {
+  return results.map((result) =>
+    result.browserObservation?.source === "local_macos"
+      ? withoutProviderObservation(result)
+      : result
+  );
+}
+
+function withoutProviderObservation(result: ModelToolResult): ModelToolResult {
+  const { browserObservation: _browserObservation, ...durable } = result;
+  void _browserObservation;
+  return durable;
+}
+
+function isSoleLocalAppListCall(
+  calls: readonly { name: string }[],
+  byFunctionName: ReadonlyMap<string, ToolboxEntry>,
+) {
+  return calls.length === 1 &&
+    byFunctionName.get(calls[0].name)?.definition.id ===
+      "local.macos.list_apps";
+}
+
 type ContinuationQueueMarker = {
   type: "omni_continuation_queue";
   provenance: "model_function_calls";
@@ -1380,7 +1473,7 @@ export async function* runAgent(
         type: "status",
         label: "This Mac evidence isolated",
         detail:
-          "The assigned agent receives each local observation once; sibling review cannot see or rewrite private screen evidence.",
+          "The assigned agent may carry a fresh local observation across exactly one immediate app-list check in this in-memory run; sibling review cannot see or rewrite private screen evidence.",
       });
     }
     const councilCheckpointHooks: CouncilCheckpointHooks =
@@ -1797,6 +1890,7 @@ export async function* runAgent(
       // relying on previous_response_id (blocked when org has Zero Data Retention).
       let conversationItems: ConversationItem[] | null = null;
       let pendingBrowserObservations: PendingOpenAIBrowserObservation[] = [];
+      let latestLocalObservation: EphemeralLocalObservationState | undefined;
       let toolSteps = 0;
 
       // Tool loop: stream a turn; if the model called tools, execute them
@@ -1966,6 +2060,12 @@ export async function* runAgent(
         const outputs: Array<{ type: "function_call_output"; call_id: string; output: string }> = [];
 
         const callsThisTurn = turn.functionCalls.slice(0, MAX_TOOL_CALLS_PER_TURN);
+        if (
+          latestLocalObservation &&
+          !isSoleLocalAppListCall(turn.functionCalls, toolbox.byFunctionName)
+        ) {
+          latestLocalObservation = undefined;
+        }
         const parallelCalls = callsThisTurn.map((call) => {
           const entry = toolbox.byFunctionName.get(call.name);
           if (!entry || entry.definition.riskLevel !== 0 || entry.definition.approvalRequired) return null;
@@ -2047,10 +2147,23 @@ export async function* runAgent(
               note: execution.record.status === "executed" ? "Executed concurrently with other safe read-only tools." : execution.record.reason,
               result: execution.result,
             }));
-            if (execution.browserObservation) {
+            const observationTransition = transitionEphemeralLocalObservation(
+              latestLocalObservation,
+              item.entry.definition.id,
+              execution,
+              turn.functionCalls.length === 1,
+            );
+            latestLocalObservation =
+              observationTransition.nextState;
+            if (observationTransition.discardPriorLocalObservations) {
+              pendingBrowserObservations = withoutLocalOpenAIObservations(
+                pendingBrowserObservations,
+              );
+            }
+            if (observationTransition.disclosedObservation) {
               pendingBrowserObservations.push({
                 callId: item.call.callId,
-                observation: execution.browserObservation,
+                observation: observationTransition.disclosedObservation,
               });
             }
           }
@@ -2075,6 +2188,7 @@ export async function* runAgent(
           try {
             input = parseFunctionArguments(call.argumentsJson);
           } catch (error) {
+            latestLocalObservation = undefined;
             outputs.push(functionCallOutput(call, {
               error: error instanceof Error ? error.message : "Tool arguments were rejected.",
             }));
@@ -2190,10 +2304,23 @@ export async function* runAgent(
               result: execution.result,
             }),
           );
-          if (execution.browserObservation) {
+          const observationTransition = transitionEphemeralLocalObservation(
+            latestLocalObservation,
+            definition.id,
+            execution,
+            turn.functionCalls.length === 1,
+          );
+          latestLocalObservation =
+            observationTransition.nextState;
+          if (observationTransition.discardPriorLocalObservations) {
+            pendingBrowserObservations = withoutLocalOpenAIObservations(
+              pendingBrowserObservations,
+            );
+          }
+          if (observationTransition.disclosedObservation) {
             pendingBrowserObservations.push({
               callId: call.callId,
-              observation: execution.browserObservation,
+              observation: observationTransition.disclosedObservation,
             });
           }
         }
@@ -2454,6 +2581,8 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   forceApprovalAboveRisk?: number;
   continuation?: ModelToolTurnResult["continuation"];
   toolResults?: readonly ModelToolResult[];
+  /** In-memory only; never place this observation state in a provider continuation. */
+  ephemeralLocalObservation?: EphemeralLocalObservationState;
   toolSteps?: number;
   maxToolSteps?: number;
   modelAttemptOffset?: number;
@@ -2498,6 +2627,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   let continuation = input.continuation;
   let toolResults = input.toolResults ? [...input.toolResults] : undefined;
   let toolSteps = Math.max(0, input.toolSteps || 0);
+  let latestLocalObservation = input.ephemeralLocalObservation;
   const modelAttemptOffset = Math.max(0, input.modelAttemptOffset || 0);
   let turns = 0;
   let text = "";
@@ -2663,7 +2793,13 @@ export async function* runNonOpenAIProviderToolLoop(input: {
 
     toolSteps += 1;
     const callsThisTurn = turn.toolCalls.slice(0, MAX_TOOL_CALLS_PER_TURN);
-    const outputs: ModelToolResult[] = [];
+    if (
+      latestLocalObservation &&
+      !isSoleLocalAppListCall(turn.toolCalls, input.toolbox.byFunctionName)
+    ) {
+      latestLocalObservation = undefined;
+    }
+    let outputs: ModelToolResult[] = [];
     const parallelCalls = callsThisTurn.map((call) => {
       const entry = input.toolbox.byFunctionName.get(call.name);
       if (
@@ -2749,12 +2885,22 @@ export async function* runNonOpenAIProviderToolLoop(input: {
           citationSourcesFromToolResult(item.entry.definition.id, execution.result),
         );
         yield toolEventForExecution(item.entry.definition, execution.record);
+        const observationTransition = transitionEphemeralLocalObservation(
+          latestLocalObservation,
+          item.entry.definition.id,
+          execution,
+          turn.toolCalls.length === 1,
+        );
+        latestLocalObservation = observationTransition.nextState;
+        if (observationTransition.discardPriorLocalObservations) {
+          outputs = withoutLocalProviderObservations(outputs);
+        }
         outputs.push(providerToolResult(
           item.call,
           executionPayload(execution),
           execution.record.status !== "executed" &&
             execution.record.status !== "dry_run",
-          execution.browserObservation,
+          observationTransition.disclosedObservation,
         ));
       }
     } else {
@@ -2780,6 +2926,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
         try {
           parsedArguments = parseFunctionArguments(call.argumentsJson);
         } catch (error) {
+          latestLocalObservation = undefined;
           const message = error instanceof Error
             ? error.message
             : "Tool arguments were rejected.";
@@ -2867,11 +3014,21 @@ export async function* runNonOpenAIProviderToolLoop(input: {
         const isError =
           execution.record.status !== "executed" &&
           execution.record.status !== "dry_run";
+        const observationTransition = transitionEphemeralLocalObservation(
+          latestLocalObservation,
+          definition.id,
+          execution,
+          turn.toolCalls.length === 1,
+        );
+        latestLocalObservation = observationTransition.nextState;
+        if (observationTransition.discardPriorLocalObservations) {
+          outputs = withoutLocalProviderObservations(outputs);
+        }
         outputs.push(providerToolResult(
           call,
           executionPayload(execution),
           isError,
-          execution.browserObservation,
+          observationTransition.disclosedObservation,
         ));
       }
     }
@@ -3429,12 +3586,14 @@ async function resumeAgentRunAfterToolApprovalInScope({
     }),
   ];
   let pendingBrowserObservations: PendingOpenAIBrowserObservation[] =
-    approvedBrowserObservation
+    approvedBrowserObservation &&
+      approvedBrowserObservation.source !== "local_macos"
       ? [{
           callId: continuation.pendingToolCall.callId,
           observation: approvedBrowserObservation,
         }]
       : [];
+  let latestLocalObservation: EphemeralLocalObservationState | undefined;
 
   // Buffer delta writes onto a background chain — a blocking DB write per
   // delta clamps streaming to one delta per write round-trip (see runAgent).
@@ -3607,10 +3766,22 @@ async function resumeAgentRunAfterToolApprovalInScope({
         note: execution.record.status === "executed" ? "Executed for real." : execution.record.reason,
         result: execution.result,
       }));
-      if (execution.browserObservation) {
+      const observationTransition = transitionEphemeralLocalObservation(
+        latestLocalObservation,
+        definition.id,
+        execution,
+        queuedCalls.length === 1,
+      );
+      latestLocalObservation = observationTransition.nextState;
+      if (observationTransition.discardPriorLocalObservations) {
+        pendingBrowserObservations = withoutLocalOpenAIObservations(
+          pendingBrowserObservations,
+        );
+      }
+      if (observationTransition.disclosedObservation) {
         pendingBrowserObservations.push({
           callId: call.callId,
-          observation: execution.browserObservation,
+          observation: observationTransition.disclosedObservation,
         });
       }
     }
@@ -3768,6 +3939,12 @@ async function resumeAgentRunAfterToolApprovalInScope({
       const outputs: AgentRunContinuation["outputsBeforeApproval"] = [];
 
       const callsThisTurn = turn.functionCalls.slice(0, MAX_TOOL_CALLS_PER_TURN);
+      if (
+        latestLocalObservation &&
+        !isSoleLocalAppListCall(turn.functionCalls, toolbox.byFunctionName)
+      ) {
+        latestLocalObservation = undefined;
+      }
       for (let callIndex = 0; callIndex < callsThisTurn.length; callIndex += 1) {
         const call = callsThisTurn[callIndex];
         const entry = toolbox.byFunctionName.get(call.name);
@@ -3790,6 +3967,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
         try {
           input = parseFunctionArguments(call.argumentsJson);
         } catch (error) {
+          latestLocalObservation = undefined;
           outputs.push(functionCallOutput(call, {
             error: error instanceof Error ? error.message : "Tool arguments were rejected.",
           }));
@@ -3901,10 +4079,22 @@ async function resumeAgentRunAfterToolApprovalInScope({
           note: execution.record.status === "executed" ? "Executed for real." : execution.record.reason,
           result: execution.result,
         }));
-        if (execution.browserObservation) {
+        const observationTransition = transitionEphemeralLocalObservation(
+          latestLocalObservation,
+          definition.id,
+          execution,
+          turn.functionCalls.length === 1,
+        );
+        latestLocalObservation = observationTransition.nextState;
+        if (observationTransition.discardPriorLocalObservations) {
+          pendingBrowserObservations = withoutLocalOpenAIObservations(
+            pendingBrowserObservations,
+          );
+        }
+        if (observationTransition.disclosedObservation) {
           pendingBrowserObservations.push({
             callId: call.callId,
-            observation: execution.browserObservation,
+            observation: observationTransition.disclosedObservation,
           });
         }
       }
@@ -4301,7 +4491,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
       toolExecution.result,
     ),
   );
-  const carriedResults: ModelToolResult[] = [
+  let carriedResults: ModelToolResult[] = [
     ...providerState.toolResultsBeforeApproval,
     providerToolResult(
       providerState.pendingCall,
@@ -4316,9 +4506,12 @@ async function resumeProviderBoundAgentRunAfterApproval({
       },
       toolExecution.record.status !== "executed" &&
         toolExecution.record.status !== "dry_run",
-      approvedBrowserObservation,
+      approvedBrowserObservation?.source === "local_macos"
+        ? undefined
+        : approvedBrowserObservation,
     ),
   ];
+  let latestLocalObservation: EphemeralLocalObservationState | undefined;
 
   const runId = run.id;
   let pendingDeltaText = "";
@@ -4508,12 +4701,22 @@ async function resumeProviderBoundAgentRunAfterApproval({
           },
         });
       }
+      const observationTransition = transitionEphemeralLocalObservation(
+        latestLocalObservation,
+        definition.id,
+        execution,
+        providerState.queuedCalls.length === 1,
+      );
+      latestLocalObservation = observationTransition.nextState;
+      if (observationTransition.discardPriorLocalObservations) {
+        carriedResults = withoutLocalProviderObservations(carriedResults);
+      }
       carriedResults.push(providerToolResult(
         call,
         executionPayload(execution),
         execution.record.status !== "executed" &&
           execution.record.status !== "dry_run",
-        execution.browserObservation,
+        observationTransition.disclosedObservation,
       ));
     }
 
@@ -4545,6 +4748,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
         continuation.toolPolicy?.forceApprovalAboveRisk,
       continuation: providerState.continuation,
       toolResults: carriedResults,
+      ephemeralLocalObservation: latestLocalObservation,
       toolSteps,
       maxToolSteps,
       modelAttemptOffset: toolSteps,
