@@ -102,12 +102,20 @@ before a contract-v8 macOS client signs in. It widens only attested native
 session and push-registration platform checks to include `macos`; direct APNs
 registrations may originate from iOS or macOS. Contract v8 removes unenrolled
 legacy mutation declarations from its generated surface and does not activate
-new route capabilities. Contract v10 is current and retains frozen v9 as the
-supported previous version. It adds only the actor-scoped, exact-run Computer
-Use frame read used by the native artifact rail; v9 continues to provide
-actor-scoped thread, thread-memory, and integrity-verified Capture asset reads.
-Publish the schema migration and server contract before distributing the macOS
-binary; Vercel does not distribute or sign that binary.
+new route capabilities. Contract v10 adds only the actor-scoped, exact-run
+remote Computer Use frame read used by the native artifact rail.
+
+The installed-Mac P13.3 slice additionally requires
+`20260917110000_p13_3_local_computer_runtime.sql` (internal schema version 179)
+before publishing native contract v11 or enabling **This Mac**. It installs
+actor-scoped forced-RLS device, session, and command routing tables; it stores no
+helper credential and grants no action-creation API to the native client. Contract
+v11 is current in source and retains frozen v10 as the supported previous version.
+Its four courier capabilities are macOS-only and have an independent v11 minimum.
+Publish migration 179 and the server contract/routes before distributing the v11
+macOS binary. Source availability does not mean production discovery already
+advertises v11. Vercel does not distribute or sign the binary, and this slice does
+not require a Fly worker or Playwright-service release.
 
 macOS development and private packaging require the full Xcode application, not
 only Command Line Tools. Run `flutter run -d macos` for the signed development
@@ -123,12 +131,29 @@ keychain, signs nested code before the application, verifies the result strictly
 creates `build/distribution/macos/Asael-<version>-macOS.dmg`, and prints its
 SHA-256. The local self-signed mode is owner-Mac-only: it changes no system trust,
 cannot be notarized, and omits Hardened Runtime because the certificate has no Apple
-Team Identifier. The sandbox and release entitlements are still applied. After a
-private signing update, the first launch may briefly show the securing state while
-macOS reauthorizes existing ordinary-Keychain items; every credential operation is
-bounded and later launches use the restored session normally. On macOS 27 the
+Team Identifier. It also uses `LocalRelease.entitlements`, which deliberately omits
+`com.apple.security.app-sandbox`; the owner-only main application is not sandboxed.
+The Apple-issued Release path still uses the sandboxed `Release.entitlements` file.
+After a private signing update, the first launch may briefly show the securing state
+while macOS reauthorizes existing ordinary-Keychain items; every credential operation
+is bounded and later launches use the restored session normally. On macOS 27 the
 packager uses `diskutil image create`, with `hdiutil` retained as the compatible
 fallback.
+
+The same packager compiles `AsaelComputerUseHelper.app` for every architecture in
+the host, embeds it under `Contents/Helpers`, signs it separately with the host's
+stable identity, then signs the host. The helper is a direct child process with a
+stripped environment and no bearer, Keychain, App Group, connector, HTTP, shell,
+filesystem, or Apple Events interface. Stable signing is required because changing
+the helper's code identity can invalidate macOS TCC grants.
+
+After installing that exact build, open Asael Settings → Local Computer Use,
+choose **Grant macOS access**, complete the Accessibility and
+Screen Recording prompts, then explicitly enable **This Mac**. Confirm the persistent
+menu-bar indicator and its immediate stop action before running a local canary. Do not
+claim a completed release until an installed build proves permission denial, bounded
+observation, an approval-gated action, stale/secure-input refusal, idempotent
+completion, timeout/stop, reconnect, and no fallback to the isolated browser.
 
 Distribution to another Mac sets `ASAEL_MACOS_SIGNING_IDENTITY` and
 `ASAEL_MACOS_NOTARY_PROFILE`, which enables Hardened Runtime and makes Developer ID

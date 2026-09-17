@@ -10,9 +10,10 @@ object-storage plane, preserve Asael's internal delegation contract across the
 A2A adapter, keep AP2 deterministic and human-present first, converge work on
 `Workspace -> Project -> WorkItem`, and keep native clients on one
 server-authoritative versioned API while implementing macOS as a shared Flutter
-client with a thin, sandboxed AppKit host. Each decision includes additive migration,
-rollback, and security floors. Recording the decisions changes no runtime,
-schema, grant, event, rollout, or held authority.
+client with a thin AppKit host, release-path-specific sandboxing, and a separately
+signed local Computer Use helper. Each decision includes additive migration,
+rollback, and security floors. Recording the decisions changes no runtime, schema,
+grant, event, rollout, or held authority.
 
 `src/lib/architecture/decision-registry.ts` is the schema-versioned runtime
 index of those seven accepted decisions. The Phase 0 production gate combines
@@ -201,11 +202,67 @@ conversations, or persisted approval continuations. Approval resumes rehydrate
 only exact actor/run/execution-owned internal evidence and retain the same
 one-turn rule.
 
-The [Computer Use migration](computer-use-migration.md) keeps this isolated
-Playwright and observation boundary as the execution runtime while moving agent
-control to the configurable `computer_use` model scope. Browser Use is a
-temporary connector fallback during the canary; neither path can bypass the
-governed executor, approval policy, scoped session, or untrusted-content rules.
+### Computer Use execution targets
+
+The [Computer Use target decision](computer-use-migration.md) separates remote
+browser automation from control of the installed Mac. Talk defaults to no computer
+control and persists one explicit target through queue and retry:
+
+- `isolated_browser` keeps the existing actor/run-scoped Playwright session and P9.5/
+  P9.6 observation boundary. Browser Use remains only a rollback-compatible
+  connector during its own removal gate.
+- `local_macos` requires an authenticated macOS native-v11 client and a current
+  device lease with both Accessibility and Screen Recording granted. It never
+  switches to Playwright when the Mac, helper, permission, or action is unavailable.
+
+Both targets resolve the tenant-configured `computer_use` model and enter the same
+governed executor. Only the local target exposes `local.macos.*` tools; the isolated
+target does not receive them, and the local target does not receive remote browser
+operations.
+
+```mermaid
+sequenceDiagram
+  participant U as User in Asael for macOS
+  participant A as Agent API / governed executor
+  participant Q as Local command ledger
+  participant F as Authenticated Flutter courier
+  participant H as Signed credential-free helper
+  participant M as Installed Mac
+
+  U->>A: prompt + explicit local_macos target
+  A->>Q: enqueue exact governed execution
+  F->>Q: claim with native-v11 device session
+  F->>H: expiring action over child pipes
+  H->>M: ScreenCaptureKit / AX / Quartz
+  H-->>F: bounded result + optional observation
+  F->>Q: idempotent completion receipt
+  Q-->>A: public result + one-turn observation
+```
+
+Migration 179 adds forced-RLS device, session, and command routing tables. Device,
+session, claim, execution, and correlation identities are checked independently.
+The command input comes from the sealed governed tool record and must match its
+digest before claim. Uncertain state-changing claims are not replayed after lease
+expiry. The primary Flutter engine is the only claimant and uses a bounded courier
+long poll instead of high-frequency empty requests; auxiliary workspace engines can
+observe status and invoke stop.
+
+The host spawns `AsaelComputerUseHelper.app` on demand from `Contents/Helpers`. The
+helper verifies its signed parent and bundle containment, receives a stripped
+environment and no credential, and has no server, socket, shell, filesystem, or
+Apple Events interface. Its closed action set is observe, list apps, activate an
+already-running app, press, click, type, key, and scroll. Terminal applications,
+System Settings, secure fields, Secure Event Input, and stale screen/Accessibility
+revisions fail closed. Risk-two press, click, type, and key actions remain
+approval-gated. A persistent ready/active menu-bar indicator and immediate stop
+terminate the helper and cancel pending work.
+
+The local screenshot and Accessibility snapshot are treated as untrusted, bounded
+one-turn model input. They may transit the command row while the governed call waits,
+then are stripped; tool ledgers, canonical conversations, approval continuations,
+and typed events retain only public metadata and digests. Source implementation does
+not by itself establish migration publication, signed installation, TCC grants, or a
+real installed-Mac canary.
 
 P0.2 builds and validates a versioned run-contract envelope in shadow mode
 while the legacy run record stays authoritative. The envelope binds the scoped

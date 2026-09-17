@@ -1216,28 +1216,35 @@ build. Phase 13 is now active as the private macOS client sequence.
 
 | ID | Vertical slice | Reuse / Modify / Create | Isolation and compatibility | Done when |
 |---|---|---|---|---|
-| P13.1 | Choose native Swift versus a shared shell through an ADR and prototype only device-specific risks. | Reuse native API/design tokens; create macOS client foundation. | Choice cannot fork domain logic or security policy. | Architecture supports sandboxing, accessibility, updates, Keychain, and the required capture/browser integrations. |
+| P13.1 | Choose native Swift versus a shared shell through an ADR and prototype only device-specific risks. | Reuse native API/design tokens; create macOS client foundation. | Choice cannot fork domain logic or security policy. | Architecture documents and supports the Apple-issued sandbox path, owner-only signing exception, Accessibility, updates, Keychain, and required capture/browser integrations. |
 | P13.2 | Add menu-bar Today, global capture, share extension, drag/drop, microphone, file intake, and notification actions. | Reuse Workspace/Capture/voice/outbox; create macOS surfaces. | Every local permission is opt-in, scoped, visible, and revocable. | User can capture and supervise work without giving unrestricted filesystem or microphone access. |
-| P13.3 | Add consented local browser handoff/computer bridge if still necessary. | Reuse browser grants/takeover; create signed local bridge. | Domain/action allowlist, user-visible indicator, kill switch, and session isolation are mandatory. | Asael can operate approved local surfaces without exporting browser credentials or bypassing governed execution. |
+| P13.3 | Add consented Computer Use for the Mac where Asael is installed, while retaining the remote isolated browser as a separate target. | Reuse the governed executor, approvals, native device identity, and one-turn observations; create a signed credential-free local helper and v11 device courier. | Explicit target, actor/device/session binding, closed action allowlist, stable signing, user-granted Accessibility and Screen Recording, visible indicator, kill switch, no silent fallback, and session isolation are mandatory. | Asael can operate an approved non-secure local app through the governed executor; stale/secure targets fail closed, stop is immediate, and a signed installed-Mac canary proves the boundary. |
 | P13.4 | Add offline cache and state reconciliation. | Reuse native contract/events. | Server remains authoritative; conflicts are visible and recoverable. | macOS, mobile, and web converge on identical work, memory, approval, and run state after reconnect. |
 
-**Current status:** P13.1, P13.3, and P13.4 are implemented for the private
-owner-Mac product. ADR 012 selects the shared Flutter client with a deliberately
-thin AppKit host, migration 178 enrolls `macos` without adding a second backend,
-and native contract v10 publishes the exact actor/run Computer Use frame read
-while retaining frozen v9 compatibility. The sandboxed host provides persistent
-menu-bar and multi-window lifecycle, Today, Command, Quick Entry, Capture, and
-Inbox commands, configurable global shortcuts, a bounded editable prompt queue,
-and a richer artifact/file preview and save rail. A dedicated owner-only signing
-identity produces a strictly verified local release without changing system
-trust; Developer ID signing and notarization remain necessary only to distribute
-the build to another Mac.
+**Current status:** P13.1 and P13.4 are implemented for the private owner-Mac
+product, and P13.2 is code-complete. The prior P13.3 status described only the
+remote Playwright browser and therefore did not satisfy installed-Mac Computer
+Use. The real local implementation now exists in source, but its publication,
+signed installation, TCC grants, and installed-Mac canary remain open release
+evidence.
+
+ADR 012 selects the shared Flutter client with a deliberately thin AppKit host,
+and migration 178 enrolls `macos` without adding a second backend. Production
+native contract v10 publishes the exact actor/run remote Computer Use frame read.
+The host provides persistent menu-bar and multi-window lifecycle, Today, Command,
+Quick Entry, Capture, and Inbox commands, configurable global shortcuts, a bounded
+editable prompt queue, and a richer artifact/file preview and save rail. A
+dedicated owner-only signing identity produces a strictly verified local release
+without changing system trust. Its `LocalRelease.entitlements` path is not App
+Sandbox enabled; the Apple-issued Release path remains sandboxed. Developer ID
+signing and notarization remain necessary only to distribute the build to another
+Mac.
 
 P13.2 is code-complete. Capture accepts up to 25 transcript, document, image, or
 supported-media files, encrypts the local queue, uploads three concurrently with
 bounded transient retries, and retains each item until actor-scoped server
-indexing is confirmed. Sandboxed drag/drop and the registered `AsaelShare`
-extension both stream security-scoped files into that same queue through App
+indexing is confirmed. Security-scoped drag/drop and the sandboxed registered
+`AsaelShare` extension both stream files into that same queue through App
 Group `group.app.omniagent.omniagent`; the group container is present on the
 owner Mac. Native notification categories perform causal open, approve, reject,
 and acknowledgement actions. APNs registration persists the real token,
@@ -1246,21 +1253,39 @@ retry. The only remaining operational proof is one provider-delivered APNs
 notification: the owner-only self-signed identity has no Apple Team Identifier
 or `aps-environment`, and no APNs provider credential is available.
 
-P13.3 uses the existing isolated, persistent Computer Use runtime rather than
-granting Asael broad control of macOS. Direct Computer Use requests and UI
-follow-ups resolve the tenant-configured `computer_use` model, execute browser
-actions only through the governed executor, treat page content as untrusted, and
-project private redacted visual checkpoints into the native artifact rail.
-Ordinary Asael operation still receives no Accessibility, screen-recording,
-Apple Events, or broad filesystem authority; native whole-computer control would
-remain a separate reviewed helper if it is ever requested.
+P13.3 now separates **Isolated browser** from **This Mac**. Native Talk defaults
+to no local control, preserves an explicit target through queue and retry, and
+never switches targets after a failure. The isolated target retains the existing
+actor/run-scoped Fly Playwright runtime. The local target resolves the same
+tenant-configured `computer_use` model but exposes only the governed
+`local.macos.*` action allowlist.
+
+Source migration 179 adds forced-RLS device, session, and command-routing ledgers,
+and source native contract v11 retains frozen v10 while adding macOS-only device
+readiness, claim, idempotent completion, and stop. The Flutter client keeps the
+native bearer and only its primary window engine may claim an exact governed
+command. A separately signed helper under `Contents/Helpers` is spawned over
+child-only pipes with no credential or server interface. It uses ScreenCaptureKit,
+Accessibility, `NSWorkspace`, and Quartz for bounded observation, app activation,
+press, click, type, key, and scroll. Terminal applications, System Settings,
+secure fields, Secure Event Input, shell, arbitrary AppleScript, general filesystem,
+Apple Events, and unbounded input are refused. Risk-two effects remain approval-
+gated, stale observations fail closed, one-turn visual/Accessibility data is stripped
+from durable ledgers, and a ready/active menu-bar indicator provides immediate stop.
+
+P13.3 remains release-open until migration 179 and v11 are published, the stable-
+signed host/helper build is installed, the owner grants Accessibility and Screen
+Recording, and focused local action, approval, stop, timeout, reconnect, secure/
+stale refusal, and no-fallback canaries pass. No production deployment or installed
+canary is inferred from the source implementation.
 
 P13.4 now stores encrypted actor/tenant-bound offline projections, exposes
 freshness and stale state, preserves the user's conflicting edit for recovery,
 and performs one bounded full reconciliation when connectivity, focus, or the
 authenticated principal changes. Server truth remains authoritative. Xcode 27
-on macOS 27 builds the owner release, production serves native v10, and Asael
-`1.5.0` build `6` is installed and running at `/Applications/Asael.app`.
+on macOS 27 built the prior owner release; production still serves native v10,
+and Asael `1.5.0` build `6` is the last installed release proof. That release has
+remote isolated-browser Computer Use only, not the new **This Mac** helper.
 
 **Phase gate:** native clients are alternate interaction surfaces for one core—not independent products with divergent truth or policy.
 
@@ -3259,4 +3284,4 @@ The task tables above are the source of truth. A phase is checked only after eve
 - [x] **Phase 10 — Workspaces and Salesforce-connected CSM:** P10.1–P10.14 complete; live Salesforce activation remains external configuration, not implementation.
 - [x] **Phase 11 — cohesive product projections:** P11.1–P11.9 complete.
 - [x] **Phase 12 — mobile application:** P12.1–P12.6 and the private Android operational gate are complete; iOS and app-store publication are owner-excluded.
-- [ ] **Phase 13 — macOS application:** P13.1, P13.3, and P13.4 are complete for the private owner-Mac product. P13.2 is code-complete with bulk Capture, drag/drop, registered Share Extension/App Group intake, native notification actions, APNs token/environment/receipt handling, and governed acknowledgement; one real provider-delivered APNs receipt remains externally blocked by the absent Apple Team push entitlement and APNs provider credential. Developer ID/notarized distribution is outside the private-install scope.
+- [ ] **Phase 13 — macOS application:** P13.1 and P13.4 are complete for the private owner-Mac product. P13.2 is code-complete with bulk Capture, drag/drop, registered Share Extension/App Group intake, native notification actions, APNs token/environment/receipt handling, and governed acknowledgement; one real provider-delivered APNs receipt remains externally blocked by the absent Apple Team push entitlement and APNs provider credential. P13.3 installed-Mac Computer Use is implemented in source but remains open for migration 179/v11 publication, stable-signed packaging and installation, Accessibility and Screen Recording grants, and the focused installed-Mac canary. Developer ID/notarized distribution is outside the private-install scope.
