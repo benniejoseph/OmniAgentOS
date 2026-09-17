@@ -299,7 +299,7 @@ class MacOsFileKeychainStore implements AsaelSecureValueStore {
   });
 
   static const _channelName = 'plugins.it_nomads.com/flutter_secure_storage';
-  static const _serviceName = 'app.omniagent.omniagent.secure-store.v1';
+  static const _serviceName = 'app.omniagent.omniagent.file-keychain.v2';
   final MethodChannel channel;
 
   @visibleForTesting

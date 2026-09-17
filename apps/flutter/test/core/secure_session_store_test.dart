@@ -16,7 +16,7 @@ void main() {
     final options = (storage as MacOsFileKeychainStore).channelOptions;
 
     expect(options['usesDataProtectionKeychain'], 'false');
-    expect(options['accountName'], 'app.omniagent.omniagent.secure-store.v1');
+    expect(options['accountName'], 'app.omniagent.omniagent.file-keychain.v2');
     expect(options, isNot(contains('groupId')));
     expect(options, isNot(contains('synchronizable')));
     expect(options, isNot(contains('accessibility')));
