@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ConnectorContractReviewConflictError } from "@/lib/connectors/contract-review";
-import { promoteMcpContracts } from "@/lib/connectors/store";
+import { assertMcpConnectorIsSupported } from "@/lib/connectors/mcp-trust";
+import { getMcpConnector, promoteMcpContracts } from "@/lib/connectors/store";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { createRequestTelemetry } from "@/lib/observability/store";
@@ -47,6 +48,22 @@ async function POSTHandler(
     });
   } catch (error) {
     return forbiddenResponse(error);
+  }
+
+  const connector = await getMcpConnector(id, {
+    tenantId: securityContext.tenantId,
+  });
+  if (!connector) {
+    return Response.json({ error: "MCP connector not found." }, { status: 404 });
+  }
+  try {
+    assertMcpConnectorIsSupported(connector);
+  } catch (error) {
+    return Response.json({
+      error: "Remote browser connector retired.",
+      code: "isolated_browser_retired",
+      message: error instanceof Error ? error.message : "This connector is retired.",
+    }, { status: 410 });
   }
 
   try {

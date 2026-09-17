@@ -1,6 +1,9 @@
 import { discoverMcpTools } from "@/lib/connectors/mcp-client";
 import { mcpContractReviewSummary } from "@/lib/connectors/contract-review";
-import { isOfficialGitHubMcpEndpoint } from "@/lib/connectors/mcp-trust";
+import {
+  assertMcpConnectorIsSupported,
+  isOfficialGitHubMcpEndpoint,
+} from "@/lib/connectors/mcp-trust";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import {
   getMcpConnector,
@@ -36,6 +39,15 @@ async function POSTHandler(
 
   if (!connector) {
     return Response.json({ error: "MCP connector not found." }, { status: 404 });
+  }
+  try {
+    assertMcpConnectorIsSupported(connector);
+  } catch (error) {
+    return Response.json({
+      error: "Remote browser connector retired.",
+      code: "isolated_browser_retired",
+      message: error instanceof Error ? error.message : "This connector is retired.",
+    }, { status: 410 });
   }
   if (
     connector.authType === "bearer_vault" &&

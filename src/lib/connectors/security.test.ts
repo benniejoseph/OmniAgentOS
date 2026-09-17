@@ -43,6 +43,7 @@ import {
   preserveReviewedMcpToolPolicy,
   promoteMcpContracts,
   saveMcpConnector,
+  saveMcpDiscovery,
   saveMcpTool,
 } from "@/lib/connectors/store";
 import type { McpConnectorRecord, McpToolRecord } from "@/lib/connectors/types";
@@ -490,6 +491,58 @@ describe("connector security", () => {
     }
   });
 
+  it("keeps retired browser contracts out of low-level discovery and promotion", async () => {
+    const dataDirectory = await mkdtemp(join(tmpdir(), "omni-browser-retirement-"));
+    const previousDataDirectory = process.env.OMNIAGENT_DATA_DIR;
+    const previousDatabaseUrl = process.env.DATABASE_URL;
+    process.env.OMNIAGENT_DATA_DIR = dataDirectory;
+    delete process.env.DATABASE_URL;
+
+    try {
+      const normalConnector = await saveMcpConnector(
+        connectorRecord(),
+        connectorMutationOptions,
+      );
+      await expect(saveMcpDiscovery({
+        connector: normalConnector,
+        tools: [toolRecord({
+          name: "perform_action",
+          description: "Click a CSS selector in the current browser tab.",
+        })],
+      }, connectorMutationOptions)).rejects.toThrow(/retired/i);
+
+      const retiredConnector = await saveMcpConnector(
+        connectorRecord({
+          id: "retired-by-name",
+          name: "Playwright Browser",
+          endpoint: "https://mcp.example.test/mcp",
+          status: "disabled",
+        }),
+        connectorMutationOptions,
+      );
+      const pending = await saveMcpTool(
+        toolRecord({
+          id: "mcp:retired-by-name:search",
+          connectorId: retiredConnector.id,
+          connectorName: retiredConnector.name,
+          status: "pending_review",
+        }),
+        connectorMutationOptions,
+      );
+      const review = mcpContractReviewSummary([pending], retiredConnector);
+      await expect(promoteMcpContracts({
+        connectorId: retiredConnector.id,
+        expectedFingerprint: review.fingerprint!,
+      }, connectorMutationOptions)).rejects.toThrow(/retired/i);
+    } finally {
+      if (previousDataDirectory === undefined) delete process.env.OMNIAGENT_DATA_DIR;
+      else process.env.OMNIAGENT_DATA_DIR = previousDataDirectory;
+      if (previousDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = previousDatabaseUrl;
+      await rm(dataDirectory, { recursive: true, force: true });
+    }
+  });
+
   it("binds approval fingerprints to the exact connector endpoint", () => {
     const tool = toolRecord({
       inputSchema: {
@@ -588,7 +641,9 @@ describe("connector security", () => {
   });
 });
 
-function connectorRecord(): McpConnectorRecord {
+function connectorRecord(
+  overrides: Partial<McpConnectorRecord> = {},
+): McpConnectorRecord {
   return {
     id: "connector-1",
     tenantId: "tenant-a",
@@ -603,6 +658,7 @@ function connectorRecord(): McpConnectorRecord {
     capabilities: {},
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
+    ...overrides,
   };
 }
 

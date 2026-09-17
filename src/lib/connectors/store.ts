@@ -15,7 +15,12 @@ import {
   credentialMetadata,
 } from "@/lib/connectors/credential-store";
 import { appendScopedDomainEvent } from "@/lib/events/store";
-import { isOfficialGitHubMcpEndpoint } from "@/lib/connectors/mcp-trust";
+import {
+  assertMcpConnectorIsSupported,
+  isOfficialGitHubMcpEndpoint,
+  isRemoteBrowserMcpTool,
+  RETIRED_REMOTE_BROWSER_MCP_MESSAGE,
+} from "@/lib/connectors/mcp-trust";
 import { recordRuntimeEventSafely } from "@/lib/observability/store";
 import {
   assertExecutionScopeTenant,
@@ -499,6 +504,7 @@ export async function saveMcpDiscovery({
   serverVersion?: Record<string, unknown>;
   resetReviewedPolicy?: boolean;
 }, options: McpConnectorMutationOptions) {
+  assertMcpDiscoveryIsSupported(connector, tools);
   const executionScope = requireMcpMutationScope(
     options.executionScope,
     normalizeTenantId(connector.tenantId),
@@ -638,6 +644,16 @@ export function preserveReviewedMcpToolPolicy({
   });
 }
 
+function assertMcpDiscoveryIsSupported(
+  connector: McpConnectorRecord,
+  tools: readonly McpToolRecord[],
+) {
+  assertMcpConnectorIsSupported(connector);
+  if (tools.some((tool) => isRemoteBrowserMcpTool(tool))) {
+    throw new Error(RETIRED_REMOTE_BROWSER_MCP_MESSAGE);
+  }
+}
+
 export async function promoteMcpContracts(
   {
     connectorId,
@@ -668,6 +684,7 @@ export async function promoteMcpContracts(
         return null;
       }
       const connector = connectorFromRow(connectorRows[0]);
+      assertMcpConnectorIsSupported(connector);
       assertMcpCredentialAuthority(connector);
       const toolRows = await sql`
         SELECT *
@@ -678,6 +695,7 @@ export async function promoteMcpContracts(
         FOR UPDATE
       `;
       const tools = toolRows.map(toolFromRow);
+      assertMcpDiscoveryIsSupported(connector, tools);
       const review = mcpContractReviewSummary(tools, connector);
       if (!review.pendingCount) {
         return { connector, tools, promoted: 0 };
@@ -744,6 +762,7 @@ export async function promoteMcpContracts(
         normalizeTenantId(tool.tenantId) === tenantId,
     );
     const effectiveConnector = connectorWithFileCredentialMetadata(connector, ledger);
+    assertMcpDiscoveryIsSupported(effectiveConnector, tools);
     assertMcpCredentialAuthority(effectiveConnector);
     const review = mcpContractReviewSummary(tools, effectiveConnector);
     if (!review.pendingCount) {
