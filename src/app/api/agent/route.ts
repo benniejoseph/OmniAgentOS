@@ -96,7 +96,11 @@ import { redactSensitive } from "@/lib/security/context";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
-import { getCustomAgent, listAgentSkills } from "@/lib/skills/store";
+import {
+  getCustomAgent,
+  isAgentSkillRuntimeActive,
+  listAgentSkills,
+} from "@/lib/skills/store";
 import {
   bindDurableSpecialistsToWorkflow,
   prepareDurableSpecialistDelegation,
@@ -499,7 +503,7 @@ async function POSTHandler(request: Request) {
     return Response.json({ error: "Agent paused", message: "Resume this agent in the Agent Builder before assigning work." }, { status: 409 });
   }
   const customSkills = customAgent
-    ? (await listAgentSkills({ tenantId: context.tenantId, actorId: context.actorId })).filter((skill) => customAgent.skillIds.includes(skill.id) && skill.status === "active")
+    ? (await listAgentSkills({ tenantId: context.tenantId, actorId: context.actorId })).filter((skill) => customAgent.skillIds.includes(skill.id) && isAgentSkillRuntimeActive(skill))
     : [];
   let requestedCustomIdentity;
   try {

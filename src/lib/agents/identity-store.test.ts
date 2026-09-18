@@ -15,6 +15,7 @@ vi.mock("@/lib/events/store", () => ({
 
 import {
   AGENT_IDENTITY_EVENT_TYPES,
+  AgentIdentityResolutionError,
   agentAuthorityChanged,
   agentDefinitionChanged,
   createAgentIdentityMutationScope,
@@ -377,6 +378,96 @@ describe("P7.1 custom agent identity store", () => {
     expect(identity.definition).toEqual(snapshot);
     expect(identity.definition.instructions).toBe("Use promoted evidence policy v2.");
     expect(database.statements).toHaveLength(1);
+  });
+
+  it("fails closed when a promoted snapshot references a disabled Plugin Skill", async () => {
+    const pluginSkill = {
+      id: "plugin.skill.1111111111111111111111111111111111111111",
+      tenantId: "tenant-one",
+      actorId: "owner@example.test",
+      slug: "plugin-repository-triage",
+      name: "Repository triage",
+      description: "Triages repository work.",
+      instructions: "Review repository evidence before recommending changes.",
+      category: "automation" as const,
+      status: "active" as const,
+      version: 1,
+      toolIds: ["runs.list"],
+      tags: ["repository"],
+      knowledgeTags: [],
+      sourcePluginInstallationId: "plugin-installation:11111111111111111111",
+      sourcePluginId: "asael.github-project-kit",
+      sourcePluginVersion: "1.0.0",
+      sourcePluginSkillKey: "repository-triage",
+      sourcePluginManifestSha256: "a".repeat(64),
+      sourcePluginSkillSha256: "b".repeat(64),
+      createdAt: "2026-09-07T01:00:00.000Z",
+      updatedAt: "2026-09-07T01:00:00.000Z",
+    };
+    const promotedAgent = {
+      ...agent(),
+      skillIds: [pluginSkill.id],
+      updatedAt: "2026-09-07T04:00:00.000Z",
+    };
+    const snapshot = buildCustomAgentIdentityV1({
+      agent: promotedAgent,
+      skills: [pluginSkill],
+      ownerActorId: canonicalActorId,
+      definitionVersion: 2,
+      definitionPublishedAt: promotedAgent.updatedAt,
+      principalGeneration: 2,
+    }).definition;
+    const database = fakeSql([[
+      {
+        schema_version: 1,
+        tenant_id: promotedAgent.tenantId,
+        agent_definition_id: promotedAgent.id,
+        definition_version: 2,
+        previous_definition_version: 1,
+        owner_actor_id: canonicalActorId,
+        slug: promotedAgent.slug,
+        name: promotedAgent.name,
+        role: promotedAgent.role,
+        description: promotedAgent.description,
+        instructions: promotedAgent.instructions,
+        persona_profile: promotedAgent.persona,
+        status: promotedAgent.status,
+        accent: promotedAgent.accent,
+        model_policy: promotedAgent.modelPolicy,
+        skill_ids: promotedAgent.skillIds,
+        published_at: promotedAgent.updatedAt,
+        principal_id: "agent:agent-one",
+        principal_generation: 2,
+        controller_actor_id: canonicalActorId,
+        principal_state: "active",
+        principal_created_at: "2026-09-07T03:00:00.000Z",
+        principal_revoked_at: null,
+        authority_mode: "explicit_grants",
+        autonomy: "governed",
+        approval_policy: "risk_based",
+        memory_scope: "all",
+        tool_grant_ids: ["runs.list"],
+        context_grant_ids: [],
+        capability_grant_ids: [],
+        budget_policy_version_id: "agent-run-budget:2",
+        expires_at: null,
+        definition_snapshot: snapshot,
+      },
+    ], [{
+      id: pluginSkill.id,
+      status: "disabled",
+      source_plugin_installation_id: pluginSkill.sourcePluginInstallationId,
+      source_plugin_state: "disabled",
+    }]]);
+
+    await expect(resolveCustomAgentIdentityWithSql({
+      tenantId: promotedAgent.tenantId,
+      agentId: promotedAgent.id,
+      ownerActorId: canonicalActorId,
+      sql: database.sql,
+    })).rejects.toBeInstanceOf(AgentIdentityResolutionError);
+    expect(database.statements[1].text).toMatch(/omni_plugin_installations/);
+    expect(database.statements[1].text).toMatch(/omni_actor_scope_v1_allows/);
   });
 
   it("classifies behavioral and authority edits independently", () => {

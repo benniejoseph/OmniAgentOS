@@ -25,7 +25,11 @@ import {
 } from "@/lib/runs/store";
 import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
-import { getCustomAgent, listAgentSkills } from "@/lib/skills/store";
+import {
+  getCustomAgent,
+  isAgentSkillRuntimeActive,
+  listAgentSkills,
+} from "@/lib/skills/store";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -227,7 +231,7 @@ async function resolveAgentProfile(
     return { error: "Resume the source run's custom agent before forking this checkpoint.", status: 409 as const };
   }
   const skills = (await listAgentSkills(owner)).filter(
-    (skill) => agent.skillIds.includes(skill.id) && skill.status === "active",
+    (skill) => agent.skillIds.includes(skill.id) && isAgentSkillRuntimeActive(skill),
   );
   const identity = await resolveAgentIdentityForExecution({
     ...owner,

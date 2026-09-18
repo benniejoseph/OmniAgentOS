@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { arsenalAgents } from "@/lib/agents/arsenal";
 import { parseAgentPersonaV1 } from "@/lib/agents/persona";
 import {
@@ -20,6 +20,12 @@ import { skillActorReadOrder } from "@/lib/skills/actor-scope";
 import { builtInSkills } from "@/lib/skills/catalog";
 import type { AgentBuilderLedger, AgentSkill, CustomAgentDefinition, RequestCustomAgentDefinition } from "@/lib/skills/types";
 import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
+import {
+  PLUGIN_SKILL_ID_PREFIX,
+  type PluginInstallationState,
+  type PluginManifest,
+} from "@/lib/plugins/contracts";
+import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
 type Scope = { tenantId?: string; actorId: string };
 type CustomAgentCreateInput = Omit<
@@ -112,7 +118,7 @@ export async function createAgentSkill(input: Omit<AgentSkill, "id" | "tenantId"
 
 export async function updateAgentSkill(id: string, input: Partial<Pick<AgentSkill, "name" | "description" | "instructions" | "category" | "status" | "toolIds" | "tags" | "knowledgeTags">>, options: Scope) {
   const current = await getAgentSkill(id, options);
-  if (!current || current.builtIn) return undefined;
+  if (!current || current.builtIn || current.sourcePluginInstallationId) return undefined;
   const normalized = normalizeSkill({ ...current, ...input });
   const next = { ...current, ...normalized, slug: input.name ? slug(input.name) : current.slug, version: current.version + 1, updatedAt: new Date().toISOString() };
   if (hasDatabaseUrl()) {
@@ -141,6 +147,13 @@ export async function deleteAgentSkill(id: string, options: Scope) {
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      const sourceRows = await sql`
+        SELECT source_plugin_installation_id
+        FROM omni_custom_skills
+        WHERE id = ${id} AND tenant_id = ${tenantId} AND actor_id = ${actorId}
+        FOR KEY SHARE
+      `;
+      if (sourceRows[0]?.source_plugin_installation_id) return [];
       await versionCustomAgentsForSkillChangeWithSql({
         tenantId,
         actorId,
@@ -166,6 +179,7 @@ export async function restoreAgentSkill(
   const actorId = safe(options.actorId, 200);
   if (
     skill.builtIn ||
+    skill.sourcePluginInstallationId ||
     skill.tenantId !== tenantId ||
     skill.actorId !== actorId ||
     builtInSkills.some((item) => item.id === skill.id)
@@ -257,6 +271,154 @@ export async function restoreAgentSkill(
     };
   });
   return restored;
+}
+
+/**
+ * Projects enabled declarative Plugin Skills into the existing actor-owned
+ * Skill store. MCP and workflow declarations deliberately never enter this
+ * path. The caller must hold the surrounding plugin-installation transaction.
+ */
+export async function syncPluginSkillTemplatesWithSql(input: {
+  tenantId: string;
+  actorId: string;
+  installationId: string;
+  manifest: PluginManifest;
+  installationState: PluginInstallationState;
+  occurredAt: string;
+  sql: ReturnType<typeof getSql>;
+}) {
+  const tenantId = exactPluginProjectionIdentity(input.tenantId, "tenant", 120);
+  const actorId = exactPluginProjectionIdentity(input.actorId, "actor", 200);
+  const installationId = exactPluginProjectionIdentity(
+    input.installationId,
+    "installation",
+    200,
+  );
+  if (input.manifest.pluginId.length > 120) {
+    throw new Error("Plugin Skill projection identity is invalid.");
+  }
+  const desiredStatus = pluginSkillStatusForInstallation(input.installationState);
+  const existingRows = await input.sql`
+    SELECT *
+    FROM omni_custom_skills
+    WHERE tenant_id = ${tenantId}
+      AND actor_id = ${actorId}
+      AND source_plugin_installation_id = ${installationId}
+    ORDER BY source_plugin_skill_key
+    FOR UPDATE
+  `;
+  const existingByKey = new Map(existingRows.map((row) => [
+    String(row.source_plugin_skill_key),
+    skillFromRow(row),
+  ]));
+  const desiredKeys = new Set(input.manifest.skills.map((template) => template.key));
+  const projected: AgentSkill[] = [];
+
+  for (const template of input.manifest.skills) {
+    const skillId = pluginSkillIdForInstallation(installationId, template.key);
+    const skillSha256 = canonicalJsonSha256({
+      schemaVersion: 1,
+      pluginId: input.manifest.pluginId,
+      pluginVersion: input.manifest.version,
+      manifestSha256: canonicalJsonSha256(input.manifest),
+      template,
+    });
+    const existing = existingByKey.get(template.key);
+    if (existing && (
+      existing.id !== skillId ||
+      existing.sourcePluginInstallationId !== installationId ||
+      existing.sourcePluginId !== input.manifest.pluginId
+    )) {
+      throw new Error("Plugin Skill projection identity changed unexpectedly.");
+    }
+    const nextValues = {
+      slug: pluginSkillSlug(input.manifest.pluginId, template.key),
+      name: template.name,
+      description: template.description,
+      instructions: template.instructions,
+      category: template.category,
+      status: desiredStatus,
+      toolIds: [...template.toolIds],
+      tags: [...template.tags],
+      knowledgeTags: [...template.knowledgeTags],
+    };
+    const changed = !existing || pluginSkillChanged(existing, nextValues) ||
+      existing.sourcePluginSkillSha256 !== skillSha256;
+    const version = existing ? existing.version + (changed ? 1 : 0) : 1;
+    const createdAt = existing?.createdAt || input.occurredAt;
+    const updatedAt = changed ? input.occurredAt : existing?.updatedAt || input.occurredAt;
+    const rows = existing
+      ? await input.sql`
+          UPDATE omni_custom_skills
+          SET slug = ${nextValues.slug}, name = ${nextValues.name},
+              description = ${nextValues.description},
+              instructions = ${nextValues.instructions},
+              category = ${nextValues.category}, status = ${nextValues.status},
+              version = ${version}, tool_ids = ${nextValues.toolIds},
+              tags = ${nextValues.tags}, knowledge_tags = ${nextValues.knowledgeTags},
+              source_plugin_version = ${input.manifest.version},
+              source_plugin_manifest_sha256 = ${canonicalJsonSha256(input.manifest)},
+              source_plugin_skill_sha256 = ${skillSha256}, updated_at = ${updatedAt}
+          WHERE tenant_id = ${tenantId} AND actor_id = ${actorId}
+            AND id = ${skillId}
+          RETURNING *
+        `
+      : await input.sql`
+          INSERT INTO omni_custom_skills (
+            id, tenant_id, actor_id, slug, name, description, instructions,
+            category, status, version, tool_ids, tags, knowledge_tags,
+            source_plugin_installation_id, source_plugin_id,
+            source_plugin_version, source_plugin_skill_key,
+            source_plugin_manifest_sha256, source_plugin_skill_sha256,
+            created_at, updated_at
+          ) VALUES (
+            ${skillId}, ${tenantId}, ${actorId}, ${nextValues.slug},
+            ${nextValues.name}, ${nextValues.description}, ${nextValues.instructions},
+            ${nextValues.category}, ${nextValues.status}, ${version},
+            ${nextValues.toolIds}, ${nextValues.tags}, ${nextValues.knowledgeTags},
+            ${installationId}, ${input.manifest.pluginId}, ${input.manifest.version},
+            ${template.key}, ${canonicalJsonSha256(input.manifest)}, ${skillSha256},
+            ${createdAt}, ${updatedAt}
+          ) RETURNING *
+        `;
+    const skill = skillFromRow(rows[0]);
+    projected.push(skill);
+    if (existing && changed) {
+      await versionCustomAgentsForSkillChangeWithSql({
+        tenantId,
+        actorId,
+        skillId,
+        removeSkill: false,
+        sql: input.sql,
+      });
+    }
+  }
+
+  for (const row of existingRows) {
+    const existing = skillFromRow(row);
+    const key = existing.sourcePluginSkillKey || "";
+    if (desiredKeys.has(key) || existing.status === "disabled") continue;
+    const rows = await input.sql`
+      UPDATE omni_custom_skills
+      SET status = 'disabled', version = version + 1,
+          source_plugin_version = ${input.manifest.version},
+          source_plugin_manifest_sha256 = ${canonicalJsonSha256(input.manifest)},
+          updated_at = ${input.occurredAt}
+      WHERE tenant_id = ${tenantId} AND actor_id = ${actorId}
+        AND id = ${existing.id}
+      RETURNING *
+    `;
+    if (rows[0]) {
+      await versionCustomAgentsForSkillChangeWithSql({
+        tenantId,
+        actorId,
+        skillId: existing.id,
+        removeSkill: false,
+        sql: input.sql,
+      });
+    }
+  }
+  return projected;
 }
 
 export async function listCustomAgents(options: Scope) {
@@ -643,8 +805,8 @@ function skillForRequest(skill: AgentSkill, requestActorId: string): AgentSkill 
   return {
     ...skill,
     actorId: requestActorId,
-    selectable: exactOwner,
-    manageable: exactOwner,
+    selectable: exactOwner && isAgentSkillRuntimeActive(skill),
+    manageable: exactOwner && !skill.sourcePluginInstallationId,
   };
 }
 
@@ -655,7 +817,11 @@ function skillForBuiltInRequest(skill: AgentSkill): AgentSkill {
 function skillForExactFileRequest(skill: AgentSkill): AgentSkill {
   return skill.builtIn
     ? skillForBuiltInRequest(skill)
-    : { ...skill, selectable: true, manageable: true };
+    : {
+        ...skill,
+        selectable: isAgentSkillRuntimeActive(skill),
+        manageable: !skill.sourcePluginInstallationId,
+      };
 }
 
 const builtInSkillIds = new Set(builtInSkills.map((skill) => skill.id));
@@ -783,10 +949,13 @@ async function resolveAgentSkillAssignmentsWithSql(
       `
     : [];
   const requested = new Set(customSkillIds);
-  if (rows.some((row) =>
-    String(row.tenant_id) !== tenantId ||
-    String(row.actor_id) !== actorId ||
-    !requested.has(String(row.id))
+  if (rows.some((row) => {
+    const skill = skillFromRow(row);
+    return String(row.tenant_id) !== tenantId ||
+      String(row.actor_id) !== actorId ||
+      !requested.has(String(row.id)) ||
+      (skill.sourcePluginInstallationId && !isAgentSkillRuntimeActive(skill));
+  }
   )) {
     throw new AgentSkillAssignmentError();
   }
@@ -851,7 +1020,7 @@ function readLedger() { return readJsonFile<AgentBuilderLedger>(getDataPath("age
 function updateLedger(mutate: (ledger: AgentBuilderLedger) => AgentBuilderLedger) { return updateJsonFile<AgentBuilderLedger>(getDataPath("agent-builder.json"), { skills: [], agents: [] }, mutate); }
 function normalizeSkill(input: Pick<AgentSkill, "name" | "description" | "instructions" | "category" | "status" | "toolIds" | "tags" | "knowledgeTags">) { return { name: safe(input.name, 120), description: safe(input.description, 500), instructions: safe(input.instructions, 12_000), category: input.category, status: input.status, toolIds: ids(input.toolIds, 40), tags: ids(input.tags, 30), knowledgeTags: ids(input.knowledgeTags, 30) }; }
 function normalizeAgent(input: Pick<CustomAgentDefinition, "name" | "role" | "description" | "instructions" | "status" | "accent" | "modelPolicy" | "autonomy" | "approvalPolicy" | "memoryScope" | "skillIds" | "toolIds"> & { persona?: CustomAgentDefinition["persona"] }) { return { name: safe(input.name, 120), role: safe(input.role, 120), description: safe(input.description, 700), instructions: safe(input.instructions, 12_000), persona: normalizePersona(input.persona), status: input.status, accent: input.accent, modelPolicy: input.modelPolicy, autonomy: input.autonomy, approvalPolicy: input.approvalPolicy, memoryScope: input.memoryScope, skillIds: ids(input.skillIds, 30), toolIds: ids(input.toolIds, 50) }; }
-function skillFromRow(row: Record<string, unknown>): AgentSkill { return { id: String(row.id), tenantId: String(row.tenant_id), actorId: String(row.actor_id), slug: String(row.slug), name: String(row.name), description: String(row.description), instructions: String(row.instructions), category: String(row.category) as AgentSkill["category"], status: String(row.status) as AgentSkill["status"], version: Number(row.version), toolIds: strings(row.tool_ids), tags: strings(row.tags), knowledgeTags: strings(row.knowledge_tags), createdAt: date(row.created_at), updatedAt: date(row.updated_at) }; }
+function skillFromRow(row: Record<string, unknown>): AgentSkill { return { id: String(row.id), tenantId: String(row.tenant_id), actorId: String(row.actor_id), slug: String(row.slug), name: String(row.name), description: String(row.description), instructions: String(row.instructions), category: String(row.category) as AgentSkill["category"], status: String(row.status) as AgentSkill["status"], version: Number(row.version), toolIds: strings(row.tool_ids), tags: strings(row.tags), knowledgeTags: strings(row.knowledge_tags), ...(row.source_plugin_installation_id ? { sourcePluginInstallationId: String(row.source_plugin_installation_id), sourcePluginId: String(row.source_plugin_id), sourcePluginVersion: String(row.source_plugin_version), sourcePluginSkillKey: String(row.source_plugin_skill_key), sourcePluginManifestSha256: String(row.source_plugin_manifest_sha256), sourcePluginSkillSha256: String(row.source_plugin_skill_sha256) } : {}), createdAt: date(row.created_at), updatedAt: date(row.updated_at) }; }
 function agentFromRow(row: Record<string, unknown>): CustomAgentDefinition { return { id: String(row.id), tenantId: String(row.tenant_id), actorId: String(row.actor_id), slug: String(row.slug), name: String(row.name), role: String(row.role), description: String(row.description), instructions: String(row.instructions), persona: parseAgentPersonaV1(row.persona_profile), status: String(row.status) as CustomAgentDefinition["status"], accent: String(row.accent) as CustomAgentDefinition["accent"], modelPolicy: String(row.model_policy) as CustomAgentDefinition["modelPolicy"], autonomy: String(row.autonomy) as CustomAgentDefinition["autonomy"], approvalPolicy: String(row.approval_policy) as CustomAgentDefinition["approvalPolicy"], memoryScope: String(row.memory_scope) as CustomAgentDefinition["memoryScope"], skillIds: strings(row.skill_ids), toolIds: strings(row.tool_ids), createdAt: date(row.created_at), updatedAt: date(row.updated_at) }; }
 function tenant(value?: string) { return (value || getDatabaseTenantContext() || process.env.OMNIAGENT_DEFAULT_TENANT || "default").trim().replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 120) || "default"; }
 function safe(value: unknown, max: number) { return String(redactSensitive(value || "")).trim().slice(0, max); }
@@ -863,3 +1032,9 @@ function uniqueText(values: readonly string[], max: number, maxLength: number) {
 function strings(value: unknown) { return Array.isArray(value) ? value.map(String) : []; }
 function date(value: unknown) { return value instanceof Date ? value.toISOString() : String(value); }
 function monotonicTimestamp(previous: string) { const now = Date.now(); const before = new Date(previous).getTime(); return new Date(Number.isFinite(before) ? Math.max(now, before + 1) : now).toISOString(); }
+export function pluginSkillIdForInstallation(installationId: string, key: string) { return `${PLUGIN_SKILL_ID_PREFIX}${createHash("sha256").update(`${installationId}:${key}`, "utf8").digest("hex").slice(0, 40)}`; }
+export function pluginSkillStatusForInstallation(state: PluginInstallationState): AgentSkill["status"] { return state === "enabled" ? "active" : "disabled"; }
+export function isAgentSkillRuntimeActive(skill: Pick<AgentSkill, "status">) { return skill.status === "active"; }
+function pluginSkillSlug(pluginId: string, key: string) { return `plugin-${createHash("sha256").update(pluginId, "utf8").digest("hex").slice(0, 12)}-${slug(key).slice(0, 50)}`; }
+function pluginSkillChanged(current: AgentSkill, next: Pick<AgentSkill, "slug" | "name" | "description" | "instructions" | "category" | "status" | "toolIds" | "tags" | "knowledgeTags">) { return current.slug !== next.slug || current.name !== next.name || current.description !== next.description || current.instructions !== next.instructions || current.category !== next.category || current.status !== next.status || JSON.stringify(current.toolIds) !== JSON.stringify(next.toolIds) || JSON.stringify(current.tags) !== JSON.stringify(next.tags) || JSON.stringify(current.knowledgeTags) !== JSON.stringify(next.knowledgeTags); }
+function exactPluginProjectionIdentity(value: string, label: string, max: number) { if (!value || value !== value.trim() || value.length > max) throw new Error(`Plugin Skill projection ${label} is invalid.`); return value; }

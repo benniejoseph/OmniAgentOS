@@ -18,6 +18,7 @@ import { appendScopedDomainEvent } from "@/lib/events/store";
 import { createExecutionScope, type ExecutionScope } from "@/lib/security/execution-scope";
 import { builtInSkills } from "@/lib/skills/catalog";
 import { parseAgentPersonaV1 } from "@/lib/agents/persona";
+import { PLUGIN_SKILL_ID_PREFIX } from "@/lib/plugins/contracts";
 import type { AgentSkill, CustomAgentDefinition } from "@/lib/skills/types";
 
 type IdentitySql = ReturnType<typeof getSql>;
@@ -362,10 +363,17 @@ export async function resolveCustomAgentIdentityWithSql(input: {
       "The active Agent release snapshot is inconsistent.",
     );
   }
-  const identity = identityFromJoinedRow(
-    rows[0],
-    releaseSnapshot ? [] : await resolveDefinitionSkills(rows[0], input.sql),
-  );
+  const skills = releaseSnapshot
+    ? []
+    : await resolveDefinitionSkills(rows[0], input.sql);
+  if (releaseSnapshot) {
+    await assertSnapshotPluginSkillsEnabled({
+      tenantId: input.tenantId,
+      skillIds: releaseSnapshot.declaredSkills.map((skill) => skill.skillId),
+      sql: input.sql,
+    });
+  }
+  const identity = identityFromJoinedRow(rows[0], skills);
   return releaseSnapshot
     ? Object.freeze({ definition: releaseSnapshot, principal: identity.principal })
     : identity;
@@ -678,8 +686,12 @@ async function resolveDefinitionSkills(
   );
   const customRows = customIds.length
     ? await sql`
-        SELECT skill.*
+        SELECT skill.*, installation.state AS source_plugin_state
         FROM omni_custom_skills skill
+        LEFT JOIN omni_plugin_installations installation
+          ON installation.tenant_id = skill.tenant_id
+          AND installation.owner_actor_id = skill.actor_id
+          AND installation.id = skill.source_plugin_installation_id
         WHERE skill.tenant_id = ${String(definitionRow.tenant_id)}
           AND skill.id = ANY(${customIds}::text[])
           AND omni_actor_scope_v1_allows(
@@ -699,7 +711,49 @@ async function resolveDefinitionSkills(
       "One or more exact agent skill versions are unavailable.",
     );
   }
+  assertPluginSkillRowsEnabled(customRows);
   return [...selectedBuiltIns, ...customSkills];
+}
+
+async function assertSnapshotPluginSkillsEnabled(input: {
+  tenantId: string;
+  skillIds: readonly string[];
+  sql: IdentitySql;
+}) {
+  const pluginSkillIds = [...new Set(input.skillIds.filter((skillId) =>
+    skillId.startsWith(PLUGIN_SKILL_ID_PREFIX)
+  ))];
+  if (!pluginSkillIds.length) return;
+  const rows = await input.sql`
+    SELECT skill.id, skill.status, skill.source_plugin_installation_id,
+           installation.state AS source_plugin_state
+    FROM omni_custom_skills skill
+    JOIN omni_plugin_installations installation
+      ON installation.tenant_id = skill.tenant_id
+      AND installation.owner_actor_id = skill.actor_id
+      AND installation.id = skill.source_plugin_installation_id
+    WHERE skill.tenant_id = ${input.tenantId}
+      AND skill.id = ANY(${pluginSkillIds}::text[])
+      AND omni_actor_scope_v1_allows(skill.tenant_id, skill.actor_id)
+    ORDER BY skill.id
+  `;
+  if (rows.length !== pluginSkillIds.length) {
+    throw new AgentIdentityResolutionError(
+      "One or more Plugin Skills are unavailable for execution.",
+    );
+  }
+  assertPluginSkillRowsEnabled(rows);
+}
+
+function assertPluginSkillRowsEnabled(rows: readonly Record<string, unknown>[]) {
+  if (rows.some((row) =>
+    row.source_plugin_installation_id &&
+    (row.status !== "active" || row.source_plugin_state !== "enabled")
+  )) {
+    throw new AgentIdentityResolutionError(
+      "One or more Plugin Skills are disabled or uninstalled.",
+    );
+  }
 }
 
 async function resolveCompatibilityAgentSkills(
@@ -853,6 +907,14 @@ function skillFromRow(row: Record<string, unknown>): AgentSkill {
     toolIds: stringArray(row.tool_ids),
     tags: stringArray(row.tags),
     knowledgeTags: stringArray(row.knowledge_tags),
+    ...(row.source_plugin_installation_id ? {
+      sourcePluginInstallationId: String(row.source_plugin_installation_id),
+      sourcePluginId: String(row.source_plugin_id),
+      sourcePluginVersion: String(row.source_plugin_version),
+      sourcePluginSkillKey: String(row.source_plugin_skill_key),
+      sourcePluginManifestSha256: String(row.source_plugin_manifest_sha256),
+      sourcePluginSkillSha256: String(row.source_plugin_skill_sha256),
+    } : {}),
     createdAt: timestamp(row.created_at),
     updatedAt: timestamp(row.updated_at),
   };

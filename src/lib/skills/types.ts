@@ -18,6 +18,12 @@ export type AgentSkill = {
   tags: string[];
   knowledgeTags: string[];
   builtIn?: boolean;
+  sourcePluginInstallationId?: string;
+  sourcePluginId?: string;
+  sourcePluginVersion?: string;
+  sourcePluginSkillKey?: string;
+  sourcePluginManifestSha256?: string;
+  sourcePluginSkillSha256?: string;
   selectable?: boolean;
   manageable?: boolean;
   createdAt: string;

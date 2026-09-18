@@ -761,9 +761,9 @@ describe("ordered database schema versions", () => {
       checksum: "30f4769a6fcccd41aa457882b6be2752583d7d5920be75597e3b2121e91604d0",
     });
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 185,
-      name: "mobile_push_receipt_canary_v1",
-      checksum: "a4840325f34b054c01c953bc8253a2123df4cc0d87369ce386ac69a6c8b11f03",
+      version: 186,
+      name: "declarative_plugins_v1",
+      checksum: "0cb2bc195736819e3fd5c3a6ab44a8c48ca3dcc55b63d097a69aaf9824b06825",
     });
     expect(databaseSchemaMigrations.find((migration) => migration.version === 139)).toEqual({
       version: 139,

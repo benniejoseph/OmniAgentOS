@@ -36,12 +36,12 @@ Set these through the platform secret/configuration store, never in source contr
 - `NEXT_PUBLIC_APP_URL`: canonical HTTPS origin. Set it to exactly `https://asael.bennierichard.com`. It is public and build-inlined, not a secret.
 - `OMNIAGENT_NATIVE_MIN_ANDROID_VERSION`, `OMNIAGENT_NATIVE_MIN_IOS_VERSION`, and `OMNIAGENT_NATIVE_MIN_MACOS_VERSION`: optional stable `major.minor.patch` minimums for native compatibility telemetry. An absent or empty value defaults to `1.0.0`; a malformed configured value invalidates the policy and holds adoption unavailable. These settings do not authorize Agent enrollment.
 
-Native contract artifacts are committed immutable release inputs. Source contract v15
-is the release candidate and frozen v14 is the one supported previous version; older
+Native contract artifacts are committed immutable release inputs. Source contract v16
+is the release candidate and frozen v15 is the one supported previous version; older
 versions remain historical archives and a published version is never regenerated in place. Run
 `npm run check:native-contracts` before a native-contract release; the check
 fails if the generated OpenAPI, event schema, fixtures, integrity manifests,
-Dart SDK, or frozen v7-v14 document hashes drift. Removing an archived version
+Dart SDK, or frozen v7-v15 document hashes drift. Removing an archived version
 requires a separately reviewed adoption decision and is not implied by a
 Vercel deployment.
 
@@ -81,7 +81,7 @@ truthfully to the registered device without exposing credentials. The existing
 worker calls the Vercel workflow tick, so this change does not require a Fly
 image release.
 
-Native contract v15 receipt canaries require ordered migration
+Native contract v15-or-later receipt canaries require ordered migration
 `20260918140000_mobile_push_receipt_canary.sql` (internal schema version 185)
 after the exact v184 Jev shadow predecessor. It adds immutable, actor-scoped
 `received`, `opened`, and `action` observations plus explicit provider-acceptance
@@ -92,7 +92,7 @@ hours, and meeting lead time; repeated ticks deduplicate by the source occurrenc
 They intentionally do not insert those domain events into the Today-only in-app
 reminder table, whose Complete action is bound to a Today item. A unified in-app
 attention-center expansion requires its own source/action/deep-link contract.
-Run the live canary only after the server migration and v15 native build are both
+Run the live canary only after the server migration and a v15-or-later native build are both
 installed. An APNs/FCM success is `providerState: accepted`, not proof of device
 delivery; only the native app receipt advances `appState`, and its absence must be
 reported as `timed_out`.
@@ -783,6 +783,28 @@ For an application rollback, stop workers, redeploy the previous known-good arti
 Production defaults remove expired authentication sessions, expire undecided tool approvals after 7 days, redact unreviewed access requests after 30 days, delete reviewed access requests after 365 days, remove raw episode memory and retrieval traces after 30 days and consolidated memory after 365 days, remove terminal run content after 30 days, and remove completed workflows, webhook events, queue jobs, terminal tool payloads, AI usage receipts, and domain events after 90 days. AI usage retention also removes its typed receipt and redacts granular model metrics from longer-lived run and observability compatibility events. Observability events default to 30 days and security audits to 365 days. Affected memory graphs are rebuilt from retained evidence through generation-fenced leases. The maintenance lane also physically scrubs descendants already hidden by immutable memory-deletion receipts in bounded batches; the receipt is the durable retry manifest and `OMNIAGENT_MEMORY_DELETION_SCRUB_SLA_HOURS` sets the reported completion SLA (24 hours by default). Expiring an approval redacts its raw arguments and closes the paused agent run; executing work is never deleted. Configure the `OMNIAGENT_RETENTION_*_DAYS` values—including `OMNIAGENT_RETENTION_AI_USAGE_DAYS`—to meet organizational and legal requirements and `OMNIAGENT_RETENTION_BATCH_SIZE` to bound each data-class mutation. When a batch is full, the dedicated worker schedules another pass after one minute instead of waiting for the normal retention interval. The worker runs the sweep; system automation can also call `POST /api/security/retention` with `{"scope":"all_tenants"}`. Admins can inspect the policy and sweep their tenant.
 
 Local JSON mode is bounded and mutable: domain events retain up to 5,000 records, security audits up to 1,000, and tool executions up to 250. It is disposable demo storage rather than a retention-compliant backend. Signed reports establish integrity evidence but are not WORM storage; use object lock or an equivalent external control when required.
+
+## Declarative Plugin v1
+
+Plugin lifecycle routes require ordered migration
+`20260918150000_declarative_plugins.sql` (internal schema version 186) after
+the exact mobile-push receipt v185 predecessor. It installs actor-private,
+forced-RLS preview, installation, and immutable mutation-receipt records plus
+the Plugin source binding on existing custom Skills. Apply the migration before
+deploying the Plugin API. This release is a Vercel and database change; it adds
+no worker task and requires no Fly release or new environment secret.
+
+An installed, enabled Plugin materializes only its declared Skills through the
+existing actor-owned Skill store. Stable Skill identity includes the exact
+tenant/actor installation, so two users installing the same manifest cannot
+collide. Disable and uninstall make those Skills unavailable to new assignment,
+Agent execution, and fork recovery without deleting durable Agent or Plugin
+history. MCP entries remain setup templates: a human must separately supply a
+credential, discover contracts, review them, and activate the connector through
+the existing governed connector routes. Workflow entries remain metadata-only
+and cannot plan, approve, enqueue, or execute work. Plugin manifests and database
+snapshots must never contain tokens, private keys, passwords, or executable
+entrypoints.
 
 ## Connector risk controls
 

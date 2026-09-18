@@ -923,5 +923,10 @@
     "version": 185,
     "name": "mobile_push_receipt_canary_v1",
     "checksum": "a4840325f34b054c01c953bc8253a2123df4cc0d87369ce386ac69a6c8b11f03"
+  },
+  {
+    "version": 186,
+    "name": "declarative_plugins_v1",
+    "checksum": "0cb2bc195736819e3fd5c3a6ab44a8c48ca3dcc55b63d097a69aaf9824b06825"
   }
 ]

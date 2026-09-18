@@ -242,7 +242,7 @@ export async function previewSkillDeleteService(caller: AppServiceCaller, input:
   const value = idSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.skills.delete.preview"));
   const [skill, agents] = await Promise.all([getAgentSkill(value.id, exactOwner(caller)), listCustomAgents(exactOwner(caller))]);
-  const target = skill && !skill.builtIn ? {
+  const target = skill && !skill.builtIn && !skill.sourcePluginInstallationId ? {
     id: skill.id, name: skill.name, slug: skill.slug,
     affectedAgents: agents.filter((agent) => agent.skillIds.includes(skill.id)).map((agent) => ({ id: agent.id, name: agent.name })).sort((a, b) => a.id.localeCompare(b.id)),
   } : null;
@@ -281,7 +281,7 @@ export async function deleteSkillService(caller: AppServiceCaller, input: z.inpu
     getAgentSkill(value.id, exactOwner(caller)),
     listCustomAgents(exactOwner(caller)),
   ]);
-  const target = skill && !skill.builtIn ? {
+  const target = skill && !skill.builtIn && !skill.sourcePluginInstallationId ? {
     id: skill.id,
     name: skill.name,
     slug: skill.slug,

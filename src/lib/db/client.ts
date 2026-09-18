@@ -25,6 +25,7 @@ import {
 } from "@/lib/db/local-computer-schema";
 import { ensureSemanticDecisionShadowPilotV1 } from "@/lib/db/semantic-decision-schema";
 import { ensureMobilePushReceiptCanaryV1 } from "@/lib/db/mobile-push-receipt-schema";
+import { ensureDeclarativePluginsV1 } from "@/lib/db/plugin-schema";
 import schemaMigrationManifest from "../../../schema-migrations.json";
 
 // ---------------------------------------------------------------------------
@@ -126,6 +127,9 @@ export const tenantRootPolicyTables = [
   "omni_run_forks",
   "omni_threads",
   "omni_tool_executions",
+  "omni_plugin_install_previews",
+  "omni_plugin_installations",
+  "omni_plugin_mutation_receipts",
   "omni_mcp_connectors",
   "omni_mcp_tools",
   "omni_openapi_connectors",
@@ -1630,6 +1634,10 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[184],
       up: ensureMobilePushReceiptCanaryV1,
+    },
+    {
+      ...databaseSchemaMigrations[185],
+      up: ensureDeclarativePluginsV1,
     },
   ];
 }
