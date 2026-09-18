@@ -80,7 +80,9 @@ only for a non-web macOS target.
   and 32–38pt desktop control heights.
 - Prefer a three-part desktop workspace: searchable or filterable source list,
   dominant working canvas, and a resizable 270–460pt inspector. Collapse the
-  inspector to an explicit sheet below the minimum useful width.
+  inspector to an explicit sheet below the minimum useful width. Inspector
+  dividers must support pointer drag, keyboard arrows, focus indication, and
+  adjustable accessibility semantics.
 - Use border-separated tables and ledgers for repeatable records. Avoid mobile
   card stacks, oversized touch spacing, pull-to-refresh, marketing heroes,
   ornamental glass, and decorative 3D scenes.
