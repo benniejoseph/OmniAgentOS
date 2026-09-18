@@ -1073,6 +1073,62 @@ participants, or key authorities; its four activation blockers are the reviewed
 merchant adapter, WebAuthn attestation policy, isolated credential provider,
 and merchant payment processor.
 
+#### Automation capability model and declarative Plugins
+
+The current source release reconciles the previously fragmented Automation
+surfaces into one understandable capability chain:
+
+```text
+Connection or reviewed MCP server
+  -> governed Tool
+  -> optional Skill guidance
+  -> triggered, repeatable Automation
+
+Plugin
+  -> declarative Skills
+  -> MCP connection templates
+  -> workflow metadata
+```
+
+A Connection authorizes an account or API. An MCP server exposes external tools
+or resources, but its contracts still require explicit discovery and review. A
+Tool is one governed action. A Skill is reusable guidance and cannot grant
+authority. An Automation is a trigger plus a repeatable workflow whose effects
+continue through governed Tools. A Plugin is a reviewed declarative package; it
+cannot contain executable code or credentials and cannot bypass connector,
+approval, idempotency, tenant, actor, or tool-policy boundaries.
+
+The full-width responsive Automation Studio now provides Overview, Automations,
+Skills, Connections & MCP, Plugins, and Advanced audit views while retaining the
+former detailed routes as advanced deep links. It loads each owner-scoped
+inventory independently and exposes the inbound, currently read-only MCP path
+for connecting Codex or Claude to Asael without implying write authority.
+
+Plugin v1 accepts strict schema-v1 manifests up to 128,000 UTF-8 bytes and
+rejects unknown executable fields, credential patterns, invalid references,
+unsafe endpoints, and retired browser MCP endpoints. Installation is bound to a
+15-minute actor-private exact-digest preview and an idempotency key; enable,
+disable, and uninstall are revision-fenced. Enabled Plugin Skills materialize in
+the existing actor-owned Skill store. Disabled or uninstalled Plugin Skills fail
+closed for assignment, new and forked runs, and previously promoted Agent
+identity snapshots. MCP entries remain setup templates and workflow entries
+remain metadata only, so they do not create credentials, reviewed Tool
+contracts, approvals, or executable workflows. Version-one updates require an
+uninstall and fresh preview rather than an in-place mutation.
+
+Migration v186 (`declarative_plugins_v1`, checksum
+`0cb2bc195736819e3fd5c3a6ab44a8c48ca3dcc55b63d097a69aaf9824b06825`) is
+installed and the subsequent Supabase dry run is aligned. Native contract v16
+retains frozen v15 and adds authenticated read-only Plugin inventory to the
+Flutter Capabilities surface. The focused implementation gates pass: 103
+server/web checks across 12 files, 17 native server checks across three files,
+six Flutter checks, native-contract drift, targeted lint, TypeScript, targeted
+Flutter analysis, and diff validation. No full suite or broad audit was run.
+Application deployment, canonical health/revision verification, native v16
+discovery promotion, and a new installed native package remain pending
+verification and are not claimed by this source-complete checkpoint. No Fly
+release is required because the Plugin slice adds no worker task or protocol.
+
 #### Browser and computer use
 
 | ID | Vertical slice | Reuse / Modify / Create | Isolation and compatibility | Done when |
@@ -1212,6 +1268,12 @@ acceptance but the disconnected client returned no app receipt within 12
 seconds, so that attempt is not counted as delivery. The owner has explicitly deferred iOS implementation and all
 app-store publication; neither is a completion blocker for this private Android
 build. Phase 13 is now active as the private macOS client sequence.
+
+The next source-complete native release advances the generated contract to v16,
+retains frozen v15, and adds the authenticated read-only Plugin inventory to the
+Capabilities surface. Production discovery remains v15/v14 until the matching
+application deployment and exact health verification complete; no v16
+production promotion or new native package is claimed yet.
 
 **Phase gate:** revoked-device, reconnect, token rotation, offline capture, push, voice interruption, and cross-tenant isolation scenarios pass before public release.
 
