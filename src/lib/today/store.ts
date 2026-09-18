@@ -61,11 +61,13 @@ export async function listTodayItems(
     tenantId?: string;
     actorId: string;
     requestActorBinding?: CanonicalRequestActorBindingV1;
+    offset?: number;
   },
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
   const actorId = safeText(options.actorId, 200);
   const bounded = Math.min(Math.max(limit, 1), 250);
+  const offset = Math.max(Math.floor(options.offset || 0), 0);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const actorReadOrder = todayActorReadOrder(
@@ -85,6 +87,7 @@ export async function listTodayItems(
         created_at DESC,
         id ASC
       LIMIT ${bounded}
+      OFFSET ${offset}
     `;
     return rows.map((row) =>
       projectTodayItemForRequest(itemFromRow(row), exactActorId),
@@ -94,7 +97,7 @@ export async function listTodayItems(
   return ledger.items
     .filter((item) => item.tenantId === tenantId && item.actorId === actorId)
     .sort(compareItems)
-    .slice(0, bounded)
+    .slice(offset, offset + bounded)
     .map((item) => projectTodayItemForRequest(item, actorId));
 }
 

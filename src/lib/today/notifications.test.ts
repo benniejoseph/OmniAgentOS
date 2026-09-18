@@ -107,6 +107,64 @@ describe("personal notification center", () => {
     });
   });
 
+  it("processes enabled reminders when the daily brief is disabled", async () => {
+    await updateTodayPreferences({
+      briefEnabled: false,
+      timezone: "UTC",
+      quietHoursEnabled: false,
+      notificationsEnabled: true,
+      reminderLeadMinutes: 30,
+    }, { tenantId: "notification-no-brief", actorId: "owner" });
+    await createTodayItem({
+      tenantId: "notification-no-brief",
+      actorId: "owner",
+      title: "Reminder independent of the daily brief",
+      dueAt: "2026-08-25T08:00:00.000Z",
+    });
+
+    await expect(processDueNotifications({
+      tenantId: "notification-no-brief",
+      now: new Date("2026-08-25T09:00:00.000Z"),
+    })).resolves.toEqual([
+      expect.objectContaining({ title: "Reminder independent of the daily brief" }),
+    ]);
+  });
+
+  it("advances past unchanged occurrences so later reminders are not starved", async () => {
+    const tenantId = "notification-pagination";
+    const actorId = "owner";
+    await updateTodayPreferences({
+      timezone: "UTC",
+      quietHoursEnabled: false,
+      notificationsEnabled: true,
+      reminderLeadMinutes: 30,
+    }, { tenantId, actorId });
+    for (let index = 0; index < 101; index += 1) {
+      await createTodayItem({
+        tenantId,
+        actorId,
+        title: `Reminder ${index + 1}`,
+        dueAt: new Date(Date.UTC(2026, 7, 25, 6, index)).toISOString(),
+      });
+    }
+    const now = new Date("2026-08-25T09:00:00.000Z");
+
+    await expect(processDueNotifications({
+      tenantId,
+      actorId,
+      now,
+      limit: 100,
+    })).resolves.toHaveLength(100);
+    await expect(processDueNotifications({
+      tenantId,
+      actorId,
+      now,
+      limit: 1,
+    })).resolves.toEqual([
+      expect.objectContaining({ title: "Reminder 101" }),
+    ]);
+  });
+
   it("keeps request-bound notification reads exact in file mode", async () => {
     const authUserId = "11111111-1111-4111-8111-111111111111";
     const actorId = "notification-owner@example.test";
@@ -169,6 +227,52 @@ describe("personal notification center", () => {
     })).resolves.toMatchObject({ status: "acted" });
     await expect(listTodayItems(10, { tenantId: "personal", actorId: "owner" }))
       .resolves.toEqual([expect.objectContaining({ title: "Review the agent result", status: "done" })]);
+  });
+
+  it("does not let a delivery acknowledgement overwrite a prior native action", async () => {
+    const tenantId = "notification-native-actions";
+    const actorId = "owner";
+    await updateTodayPreferences({
+      timezone: "UTC",
+      quietHoursEnabled: false,
+      notificationsEnabled: true,
+    }, { tenantId, actorId });
+    const cases = [
+      { title: "Snooze from native notification", action: "snooze" as const, status: "snoozed" },
+      { title: "Dismiss from native notification", action: "dismiss" as const, status: "dismissed" },
+      { title: "Complete from native notification", action: "complete" as const, status: "acted" },
+    ];
+    for (const item of cases) {
+      await createTodayItem({
+        tenantId,
+        actorId,
+        title: item.title,
+        dueAt: "2026-08-25T08:00:00.000Z",
+      });
+    }
+    await processDueNotifications({
+      tenantId,
+      actorId,
+      now: new Date("2026-08-25T09:00:00.000Z"),
+    });
+    const notifications = await listNotifications(10, { tenantId, actorId });
+
+    for (const item of cases) {
+      const notification = notifications.find((candidate) => candidate.title === item.title);
+      expect(notification).toBeDefined();
+      await updatePersonalNotification(notification!.id, item.action, {
+        tenantId,
+        actorId,
+        snoozeMinutes: 15,
+        now: new Date("2026-08-25T09:01:00.000Z"),
+      });
+      await expect(updatePersonalNotification(notification!.id, "read", {
+        tenantId,
+        actorId,
+        onlyIfUnread: true,
+        now: new Date("2026-08-25T09:02:00.000Z"),
+      })).resolves.toMatchObject({ status: item.status });
+    }
   });
 
   it("records an idempotent metadata-only event for a scoped notification action", async () => {

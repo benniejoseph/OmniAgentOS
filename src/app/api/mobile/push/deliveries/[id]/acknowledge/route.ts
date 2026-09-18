@@ -52,10 +52,11 @@ async function POSTHandler(
         { status: 404, headers: mobileNoStoreHeaders },
       );
     }
-    if (candidate.notificationId) {
+    if (candidate.notificationId && candidate.status === "delivered") {
       await updatePersonalNotification(candidate.notificationId, "read", {
         tenantId: context.tenantId,
         actorId: context.actorId,
+        onlyIfUnread: true,
         mutation: notificationMutationFromRequest(
           new Request(request.url, {
             headers: new Headers({

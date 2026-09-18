@@ -97,35 +97,43 @@ export async function processDueNotifications(options: {
     : await listTodayPreferencesForTenant(options.tenantId);
   const generated: PersonalNotification[] = [];
   const limit = Math.min(Math.max(options.limit || 20, 1), 100);
+  const scanPageSize = 100;
 
   for (const preference of preferences) {
     if (!preference.notificationsEnabled || isQuietHoursActive(preference, now)) continue;
     const ownerActorId = options.actorId ?? preference.actorId;
-    const items = await listTodayItems(100, {
-      tenantId: preference.tenantId,
-      actorId: ownerActorId,
-    });
-    for (const item of items) {
-      if (generated.length >= limit) return generated;
-      if (item.status !== "open" || !item.dueAt) continue;
-      const dueAt = Date.parse(item.dueAt);
-      if (!Number.isFinite(dueAt) || dueAt > now.getTime() + preference.reminderLeadMinutes * 60_000) continue;
-      generated.push(await upsertNotification({
+    let offset = 0;
+    while (generated.length < limit) {
+      const items = await listTodayItems(scanPageSize, {
         tenantId: preference.tenantId,
         actorId: ownerActorId,
-        title: item.title,
-        sourceId: item.id,
-        occurrenceKey: item.dueAt,
-        urgency: dueAt <= now.getTime() ? "overdue" : "due_soon",
-        dueAt: item.dueAt,
-        now,
-        mutation: dueNotificationMutation({
+        offset,
+      });
+      for (const item of items) {
+        if (generated.length >= limit) return generated;
+        if (item.status !== "open" || !item.dueAt) continue;
+        const dueAt = Date.parse(item.dueAt);
+        if (!Number.isFinite(dueAt) || dueAt > now.getTime() + preference.reminderLeadMinutes * 60_000) continue;
+        const result = await upsertNotification({
           tenantId: preference.tenantId,
           actorId: ownerActorId,
+          title: item.title,
           sourceId: item.id,
           occurrenceKey: item.dueAt,
-        }),
-      }));
+          urgency: dueAt <= now.getTime() ? "overdue" : "due_soon",
+          dueAt: item.dueAt,
+          now,
+          mutation: dueNotificationMutation({
+            tenantId: preference.tenantId,
+            actorId: ownerActorId,
+            sourceId: item.id,
+            occurrenceKey: item.dueAt,
+          }),
+        });
+        if (result.changed) generated.push(result.notification);
+      }
+      offset += items.length;
+      if (items.length < scanPageSize) break;
     }
   }
   return generated;
@@ -200,6 +208,7 @@ export async function updatePersonalNotification(
     snoozeMinutes?: number;
     now?: Date;
     mutation?: NotificationMutationContext;
+    onlyIfUnread?: boolean;
   },
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
@@ -216,6 +225,9 @@ export async function updatePersonalNotification(
       forUpdate: Boolean(sql),
     });
     if (!notification) return undefined;
+    if (action === "read" && options.onlyIfUnread && notification.status !== "unread") {
+      return notification;
+    }
 
     if (action === "complete") {
       const item = await updateTodayItem(
@@ -351,14 +363,14 @@ async function upsertNotification(input: {
     const existing = await findNotificationByOccurrence(input, sql, Boolean(sql));
     if (existing) {
       if (existing.status === "dismissed" || existing.status === "acted") {
-        return existing;
+        return { notification: existing, changed: false };
       }
       if (
         existing.status === "snoozed" &&
         existing.snoozedUntil &&
         Date.parse(existing.snoozedUntil) > input.now.getTime()
       ) {
-        return existing;
+        return { notification: existing, changed: false };
       }
       const next = {
         ...existing,
@@ -375,7 +387,7 @@ async function upsertNotification(input: {
         next.snoozedUntil === existing.snoozedUntil &&
         next.dueAt === existing.dueAt
       ) {
-        return existing;
+        return { notification: existing, changed: false };
       }
       const saved = await saveNotification(next, sql);
       await appendNotificationDueMutationEvent(
@@ -394,7 +406,7 @@ async function upsertNotification(input: {
           sql,
         });
       }
-      return saved;
+      return { notification: saved, changed: true };
     }
     const notification: PersonalNotification = {
       id: `notification_${notificationSha256({
@@ -433,13 +445,13 @@ async function upsertNotification(input: {
         sql,
       });
     }
-    return saved;
+    return { notification: saved, changed: true };
   };
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     return getSql().transaction(
       (sql: NotificationSqlClient) => apply(sql),
-    ) as Promise<PersonalNotification>;
+    ) as Promise<{ notification: PersonalNotification; changed: boolean }>;
   }
   return apply();
 }

@@ -29,6 +29,20 @@ const eventMocks = vi.hoisted(() => ({
   appendScopedDomainEvent: vi.fn(async () => ({ id: "push-event" })),
 }));
 
+const providerMocks = vi.hoisted(() => ({
+  deliverMobilePush: vi.fn(async () => ({ messageId: "provider-message" })),
+  mobilePushProviderConfiguration: vi.fn(() => ({
+    apns: "configured",
+    fcm: "configured",
+  })),
+}));
+
+const credentialMocks = vi.hoisted(() => ({
+  credentialBinding: vi.fn((input: unknown) => input),
+  openCredentialBundle: vi.fn(() => ({ token: "fcm-token-for-test-delivery" })),
+  sealCredentialBundle: vi.fn(() => ({ sealed: true })),
+}));
+
 vi.mock("@/lib/db/client", () => ({
   ensureDatabaseSchema: dbMocks.ensureDatabaseSchema,
   getSql: dbMocks.getSql,
@@ -43,8 +57,34 @@ vi.mock("@/lib/events/store", () => ({
   appendScopedDomainEvent: eventMocks.appendScopedDomainEvent,
 }));
 
+vi.mock("@/lib/mobile/push-providers", () => {
+  class MobilePushProviderError extends Error {
+    constructor(
+      message: string,
+      readonly permanent: boolean,
+      readonly code: string,
+    ) {
+      super(message);
+      this.name = "MobilePushProviderError";
+    }
+  }
+  return {
+    deliverMobilePush: providerMocks.deliverMobilePush,
+    MobilePushProviderError,
+    mobilePushProviderConfiguration:
+      providerMocks.mobilePushProviderConfiguration,
+  };
+});
+
+vi.mock("@/lib/settings/credential-vault", () => ({
+  credentialBinding: credentialMocks.credentialBinding,
+  openCredentialBundle: credentialMocks.openCredentialBundle,
+  sealCredentialBundle: credentialMocks.sealCredentialBundle,
+}));
+
 import {
   acknowledgeMobilePushDelivery,
+  dispatchMobilePushDeliveries,
   getMobilePushAcknowledgementCandidate,
 } from "@/lib/mobile/push-store";
 
@@ -57,6 +97,13 @@ beforeEach(() => {
   dbMocks.sql.mockClear();
   dbMocks.transaction.mockClear();
   eventMocks.appendScopedDomainEvent.mockClear();
+  providerMocks.deliverMobilePush.mockReset().mockResolvedValue({
+    messageId: "provider-message",
+  });
+  providerMocks.mobilePushProviderConfiguration.mockClear();
+  credentialMocks.credentialBinding.mockClear();
+  credentialMocks.openCredentialBundle.mockClear();
+  credentialMocks.sealCredentialBundle.mockClear();
 });
 
 describe("mobile push acknowledgement storage", () => {
@@ -145,6 +192,81 @@ describe("mobile push acknowledgement storage", () => {
   });
 });
 
+describe("mobile push delivery leases", () => {
+  it("leases each delivery immediately before its serial provider call", async () => {
+    dbMocks.responses.push(
+      [],
+      [deliveryRow("running", { id: "delivery-one", leaseOwner: "lease-one" })],
+      [registrationRow()],
+      [{ id: "delivery-one" }],
+      [],
+      [deliveryRow("running", { id: "delivery-two", leaseOwner: "lease-two" })],
+      [registrationRow()],
+      [{ id: "delivery-two" }],
+      [],
+    );
+
+    await expect(
+      dispatchMobilePushDeliveries({ tenantId: "tenant-one", limit: 2 }),
+    ).resolves.toEqual({
+      processed: 2,
+      delivered: 2,
+      retried: 0,
+      failed: 0,
+      unsettled: 0,
+    });
+
+    const leaseStatements = dbMocks.statements.filter((statement) =>
+      statement.text.includes("WITH next_deliveries AS"),
+    );
+    expect(leaseStatements).toHaveLength(2);
+    expect(leaseStatements.every((statement) => statement.text.includes("LIMIT 1")))
+      .toBe(true);
+    const settlementStatements = dbMocks.statements.filter((statement) =>
+      statement.text.includes("SET status = 'delivered'") &&
+      statement.text.includes("lease_owner ="),
+    );
+    expect(settlementStatements).toHaveLength(2);
+    expect(settlementStatements.every((statement) =>
+      statement.text.includes("owner_actor_id ="),
+    )).toBe(true);
+    expect(providerMocks.deliverMobilePush).toHaveBeenCalledTimes(2);
+  });
+
+  it("continues with the next delivery when failure settlement loses its lease", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    providerMocks.deliverMobilePush
+      .mockRejectedValueOnce(new Error("provider unavailable"))
+      .mockResolvedValueOnce({ messageId: "provider-message-two" });
+    dbMocks.responses.push(
+      [],
+      [deliveryRow("running", { id: "delivery-one", leaseOwner: "lease-one" })],
+      [registrationRow()],
+      [],
+      [deliveryRow("running", { id: "delivery-two", leaseOwner: "lease-two" })],
+      [registrationRow()],
+      [{ id: "delivery-two" }],
+      [],
+    );
+
+    await expect(
+      dispatchMobilePushDeliveries({ tenantId: "tenant-one", limit: 2 }),
+    ).resolves.toEqual({
+      processed: 2,
+      delivered: 1,
+      retried: 0,
+      failed: 0,
+      unsettled: 1,
+    });
+    expect(providerMocks.deliverMobilePush).toHaveBeenCalledTimes(2);
+    expect(warning).toHaveBeenCalledWith(
+      "Mobile push delivery failure settlement failed.",
+      "Error",
+    );
+    warning.mockRestore();
+  });
+});
+
 function context(overrides: { deviceId?: string; sessionId?: string } = {}) {
   return {
     tenantId: "tenant-one",
@@ -167,29 +289,65 @@ function context(overrides: { deviceId?: string; sessionId?: string } = {}) {
   } satisfies SecurityContext;
 }
 
-function deliveryRow(status: "delivered" | "acknowledged") {
+function deliveryRow(
+  status: "running" | "delivered" | "acknowledged",
+  overrides: { id?: string; leaseOwner?: string } = {},
+) {
   const timestamp = "2026-09-08T12:00:00.000Z";
+  const id = overrides.id || "delivery-one";
   return {
-    id: "delivery-one",
+    id,
     tenant_id: "tenant-one",
     owner_actor_id: "actor-one",
     registration_id: "registration-one",
-    notification_id: "notification-one",
+    notification_id: status === "running" ? null : "notification-one",
     cause_kind: "meeting",
     cause_id: "meeting-one",
     parent_id: null,
     deep_link: "/meetings/meeting-one",
     dedupe_key: "a".repeat(64),
-    payload: { schemaVersion: 1 },
+    payload: {
+      schemaVersion: "1",
+      deliveryId: id,
+      causeKind: "meeting",
+      causeId: "meeting-one",
+      deepLink: "/meetings/meeting-one",
+    },
     status,
     attempt: 1,
     max_attempts: 5,
     run_at: timestamp,
-    lease_owner: null,
-    lease_expires_at: null,
+    lease_owner: status === "running" ? overrides.leaseOwner || "lease-one" : null,
+    lease_expires_at: status === "running" ? "2026-09-08T12:00:30.000Z" : null,
     last_error: null,
-    delivered_at: timestamp,
+    delivered_at: status === "running" ? null : timestamp,
     acknowledged_at: status === "acknowledged" ? timestamp : null,
+    created_at: timestamp,
+    updated_at: timestamp,
+  };
+}
+
+function registrationRow() {
+  const timestamp = "2026-09-08T12:00:00.000Z";
+  return {
+    id: "registration-one",
+    tenant_id: "tenant-one",
+    owner_actor_id: "actor-one",
+    user_id: "user-one",
+    mobile_session_id: "session-one",
+    device_id: "device-one",
+    platform: "android",
+    provider: "fcm",
+    environment: "production",
+    token_sha256: "b".repeat(64),
+    credential_version: 1,
+    token_bundle: { sealed: true },
+    preview_policy: "hidden",
+    state: "active",
+    lifecycle_revision: 1,
+    last_registered_at: timestamp,
+    last_delivered_at: null,
+    revoked_at: null,
     created_at: timestamp,
     updated_at: timestamp,
   };

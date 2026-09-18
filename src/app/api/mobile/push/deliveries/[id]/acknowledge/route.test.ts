@@ -43,6 +43,7 @@ const context = {
 };
 const delivery = {
   id: "delivery-one",
+  status: "delivered" as const,
   notificationId: "notification-one",
   target: { kind: "meeting" as const, id: "meeting-one" },
   deepLink: "/meetings/meeting-one",
@@ -76,6 +77,11 @@ describe("mobile push acknowledgement route", () => {
     expect(mocks.updateNotification.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.acknowledge.mock.invocationCallOrder[0],
     );
+    expect(mocks.updateNotification).toHaveBeenCalledWith(
+      "notification-one",
+      "read",
+      expect.objectContaining({ onlyIfUnread: true }),
+    );
     expect(mocks.authorizeRequest).toHaveBeenCalledWith(
       expect.objectContaining({
         nativeMutationCapability: "push.delivery.acknowledge",
@@ -84,8 +90,12 @@ describe("mobile push acknowledgement route", () => {
   });
 
   it("returns the stable prior acknowledgement on response retry", async () => {
+    mocks.getCandidate.mockResolvedValue({
+      ...delivery,
+      status: "acknowledged",
+    });
     mocks.acknowledge.mockResolvedValue({
-      delivery,
+      delivery: { ...delivery, status: "acknowledged" },
       newlyAcknowledged: false,
     });
     const response = await POST(
@@ -96,6 +106,7 @@ describe("mobile push acknowledgement route", () => {
       acknowledged: true,
       newlyAcknowledged: false,
     });
+    expect(mocks.updateNotification).not.toHaveBeenCalled();
   });
 });
 

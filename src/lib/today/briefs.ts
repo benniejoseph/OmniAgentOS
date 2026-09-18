@@ -748,12 +748,12 @@ export async function listTodayPreferencesForTenant(tenantId?: string) {
   const normalizedTenant = normalizeTenantId(tenantId);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`SELECT * FROM omni_today_preferences WHERE tenant_id = ${normalizedTenant} AND brief_enabled = TRUE ORDER BY updated_at ASC`;
+    const rows = await getSql()`SELECT * FROM omni_today_preferences WHERE tenant_id = ${normalizedTenant} ORDER BY updated_at ASC`;
     return rows.map(preferencesFromRow);
   }
   const ledger = await readBriefLedger();
   return ledger.preferences
-    .filter((item) => item.tenantId === normalizedTenant && item.briefEnabled)
+    .filter((item) => item.tenantId === normalizedTenant)
     .map(sanitizePreferences);
 }
 

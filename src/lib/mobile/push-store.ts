@@ -31,6 +31,9 @@ type PushSql = ReturnType<typeof getSql>;
 type PushProvider = "apns" | "fcm";
 type PushEnvironment = "sandbox" | "production";
 
+const maxPushDispatchBatchSize = 50;
+const pushDeliveryLeaseMs = 30_000;
+
 export type MobilePushRegistrationInput = Readonly<{
   provider: PushProvider;
   environment: PushEnvironment;
@@ -360,12 +363,20 @@ export async function dispatchMobilePushDeliveries(options: {
     `Dispatch actor-private mobile push outbox for tenant ${options.tenantId}.`,
     async () => {
       await repairExpiredPushLeases(options.tenantId);
-      const deliveries = await leasePushDeliveries(
-        options.tenantId,
-        options.limit,
-      );
-      const outcome = { processed: deliveries.length, delivered: 0, retried: 0, failed: 0 };
-      for (const delivery of deliveries) {
+      const limit = boundedPushDispatchLimit(options.limit);
+      const outcome = {
+        processed: 0,
+        delivered: 0,
+        retried: 0,
+        failed: 0,
+        unsettled: 0,
+      };
+      while (outcome.processed < limit) {
+        // Claim only the delivery that is about to be sent. A shared batch lease
+        // can expire while later rows wait behind serial provider calls.
+        const delivery = await leaseNextPushDelivery(options.tenantId);
+        if (!delivery) break;
+        outcome.processed += 1;
         try {
           const registration = await activeRegistrationForDelivery(delivery);
           if (!registration) {
@@ -401,8 +412,20 @@ export async function dispatchMobilePushDeliveries(options: {
           await completePushDelivery(delivery, registration, result.messageId);
           outcome.delivered += 1;
         } catch (error) {
-          const result = await failPushDelivery(delivery, error);
-          outcome[result] += 1;
+          try {
+            const result = await failPushDelivery(delivery, error);
+            outcome[result] += 1;
+          } catch (settlementError) {
+            // Keep draining independent rows. The still-running row remains
+            // recoverable by the existing expired-lease repair on the next tick.
+            outcome.unsettled += 1;
+            console.warn(
+              "Mobile push delivery failure settlement failed.",
+              settlementError instanceof Error
+                ? settlementError.name
+                : "UnknownError",
+            );
+          }
         }
       }
       return outcome;
@@ -513,10 +536,9 @@ export async function getMobilePushAcknowledgementCandidate(
   return rows[0] ? deliveryFromRow(rows[0]) : undefined;
 }
 
-async function leasePushDeliveries(tenantId: string, limit = 20) {
-  const bounded = Math.min(Math.max(limit, 1), 50);
+async function leaseNextPushDelivery(tenantId: string) {
   const leaseOwner = `mobile-push:${randomUUID()}`;
-  const leaseExpiresAt = new Date(Date.now() + 30_000).toISOString();
+  const leaseExpiresAt = new Date(Date.now() + pushDeliveryLeaseMs).toISOString();
   const rows = await getSql()`
     WITH next_deliveries AS (
       SELECT id
@@ -525,7 +547,7 @@ async function leasePushDeliveries(tenantId: string, limit = 20) {
         AND status = 'queued'
         AND run_at <= NOW()
       ORDER BY run_at, created_at, id COLLATE "C"
-      LIMIT ${bounded}
+      LIMIT 1
       FOR UPDATE SKIP LOCKED
     )
     UPDATE omni_mobile_push_deliveries delivery
@@ -539,7 +561,7 @@ async function leasePushDeliveries(tenantId: string, limit = 20) {
     WHERE delivery.id = next_deliveries.id
     RETURNING delivery.*
   `;
-  return rows.map(deliveryFromRow);
+  return rows[0] ? deliveryFromRow(rows[0]) : undefined;
 }
 
 async function activeRegistrationForDelivery(delivery: MobilePushDelivery) {
@@ -590,9 +612,9 @@ async function completePushDelivery(
           updated_at = NOW()
       WHERE id = ${delivery.id}
         AND tenant_id = ${delivery.tenantId}
+        AND owner_actor_id = ${delivery.ownerActorId}
         AND status = 'running'
         AND lease_owner = ${delivery.leaseOwner}
-        AND lease_expires_at > NOW()
       RETURNING id
     `;
     if (!rows[0]) throw new Error("Push delivery lease was lost before completion.");
@@ -633,9 +655,9 @@ async function failPushDelivery(
         updated_at = NOW()
     WHERE id = ${delivery.id}
       AND tenant_id = ${delivery.tenantId}
+      AND owner_actor_id = ${delivery.ownerActorId}
       AND status = 'running'
       AND lease_owner = ${delivery.leaseOwner}
-      AND lease_expires_at > NOW()
     RETURNING id
   `;
   if (!rows[0]) throw new Error("Push delivery lease was lost before failure handling.");
@@ -668,6 +690,10 @@ async function repairExpiredPushLeases(tenantId: string) {
       AND status = 'running'
       AND lease_expires_at <= NOW()
   `;
+}
+
+function boundedPushDispatchLimit(limit = 20) {
+  return Math.min(Math.max(Math.trunc(limit), 1), maxPushDispatchBatchSize);
 }
 
 async function appendPushEvent(input: {
