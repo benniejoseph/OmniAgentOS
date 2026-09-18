@@ -725,20 +725,25 @@ function AssignmentEditor({ scope, models, providers, current, receipt, busy, sa
     item.source === "tenant_vault" &&
     item.manageable === true &&
     item.status === "connected" &&
-    item.enabled
+    item.enabled &&
+    (scope !== "semantic_decision" || item.provider === "typesafe")
   );
-  const defaultProvider = current?.provider || selectableModels[0]?.provider || selectableProviders[0]?.provider || (scope === "semantic_decision" ? "typesafe" : "openai");
+  const defaultProvider = current?.provider || (scope === "semantic_decision"
+    ? "typesafe"
+    : selectableModels[0]?.provider || selectableProviders[0]?.provider || "openai");
   const [provider, setProvider] = useState<SettingsModelProvider>(defaultProvider);
   const [modelId, setModelId] = useState(current?.modelId || "");
   const [fallbackProvider, setFallbackProvider] = useState<SettingsModelProvider | "">(supportsFallback ? current?.fallbackProvider || "" : "");
   const [fallbackModelId, setFallbackModelId] = useState(supportsFallback ? current?.fallbackModelId || "" : "");
   const [consent, setConsent] = useState(supportsFallback && Boolean(current?.allowCrossProviderFallback));
-  const providerOptions = [...new Set<SettingsModelProvider>([
-    ...selectableProviders.map((item) => item.provider),
-    ...selectableModels.map((item) => item.provider),
-    ...(current?.provider ? [current.provider] : []),
-    ...(current?.fallbackProvider ? [current.fallbackProvider] : []),
-  ])];
+  const providerOptions = scope === "semantic_decision"
+    ? ["typesafe" as const]
+    : [...new Set<SettingsModelProvider>([
+        ...selectableProviders.map((item) => item.provider),
+        ...selectableModels.map((item) => item.provider),
+        ...(current?.provider ? [current.provider] : []),
+        ...(current?.fallbackProvider ? [current.fallbackProvider] : []),
+      ])];
   const primaryModels = selectableModels.filter((item) => item.provider === provider);
   const fallbackModels = selectableModels.filter((item) => item.provider === fallbackProvider);
   const crossesBoundary = Boolean(fallbackProvider && fallbackProvider !== provider);
