@@ -95,47 +95,18 @@ class _MacosAdminWorkspaceViewState
               : const Icon(Icons.refresh_rounded),
         ),
       ],
-      toolbar: Row(
-        children: [
-          SizedBox(
-            width: 280,
-            child: TextField(
-              key: const ValueKey('macos-admin-search'),
-              onChanged: (value) => setState(() => _query = value.trim()),
-              decoration: const InputDecoration(
-                hintText: 'Search system areas',
-                prefixIcon: Icon(Icons.search_rounded, size: 17),
-              ),
-            ),
-          ),
-          const SizedBox(width: 14),
-          SegmentedButton<_AreaFilter>(
-            segments: const [
-              ButtonSegment(value: _AreaFilter.all, label: Text('All')),
-              ButtonSegment(
-                value: _AreaFilter.attention,
-                label: Text('Needs attention'),
-              ),
-              ButtonSegment(
-                value: _AreaFilter.available,
-                label: Text('Available'),
-              ),
-            ],
-            selected: {_filter},
-            showSelectedIcon: false,
-            onSelectionChanged: (value) => setState(() {
-              _filter = value.first;
-              _selectedPath = null;
-            }),
-          ),
-          const Spacer(),
-          Text(
-            '${visible.length} of ${module.endpoints.length} areas',
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
-        ],
+      toolbar: _AdminToolbar(
+        filter: _filter,
+        visibleCount: visible.length,
+        totalCount: module.endpoints.length,
+        onQueryChanged: (value) => setState(() => _query = value.trim()),
+        onFilterChanged: (value) => setState(() {
+          _filter = value;
+          _selectedPath = null;
+        }),
       ),
       inspectorWidth: 340,
+      inspectorCollapseBelow: 1120,
       inspector: _OperationsInspector(
         module: module,
         controller: controller,
@@ -170,37 +141,12 @@ class _MacosAdminWorkspaceViewState
                       child: const Text('Clear filters'),
                     ),
                   )
-                : Row(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      SizedBox(
-                        width: 330,
-                        child: _AreaList(
-                          endpoints: visible,
-                          snapshot: snapshot,
-                          selectedPath: selected?.path,
-                          onSelected: (endpoint) =>
-                              setState(() => _selectedPath = endpoint.path),
-                        ),
-                      ),
-                      VerticalDivider(
-                        width: 1,
-                        color: MacosThemeColors.of(context).divider,
-                      ),
-                      Expanded(
-                        child: selected == null
-                            ? const MacosEmptyState(
-                                icon: Icons.view_list_outlined,
-                                title: 'Select a system area',
-                                message: 'Status, evidence, and endpoint information will appear here.',
-                              )
-                            : _AreaEvidence(
-                                endpoint: selected,
-                                value: snapshot?.values[selected.path],
-                                error: snapshot?.failures[selected.path],
-                              ),
-                      ),
-                    ],
+                : _AreaWorkspace(
+                    endpoints: visible,
+                    snapshot: snapshot,
+                    selected: selected,
+                    onSelected: (endpoint) =>
+                        setState(() => _selectedPath = endpoint.path),
                   ),
           ),
         ],
@@ -222,6 +168,171 @@ class _MacosAdminWorkspaceViewState
   }
 }
 
+class _AdminToolbar extends StatelessWidget {
+  const _AdminToolbar({
+    required this.filter,
+    required this.visibleCount,
+    required this.totalCount,
+    required this.onQueryChanged,
+    required this.onFilterChanged,
+  });
+
+  final _AreaFilter filter;
+  final int visibleCount;
+  final int totalCount;
+  final ValueChanged<String> onQueryChanged;
+  final ValueChanged<_AreaFilter> onFilterChanged;
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) {
+      final compact = constraints.maxWidth < 1120;
+      final countLabel = compact
+          ? '$visibleCount / $totalCount'
+          : '$visibleCount of $totalCount areas';
+      final searchField = TextField(
+        key: const ValueKey('macos-admin-search'),
+        onChanged: onQueryChanged,
+        decoration: const InputDecoration(
+          hintText: 'Search system areas',
+          prefixIcon: Icon(Icons.search_rounded, size: 17),
+        ),
+      );
+      if (compact) {
+        return Row(
+          key: const ValueKey('macos-admin-toolbar-compact'),
+          children: [
+            Expanded(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(minWidth: 180),
+                child: searchField,
+              ),
+            ),
+            const SizedBox(width: 8),
+            PopupMenuButton<_AreaFilter>(
+              key: const ValueKey('macos-admin-filter-menu'),
+              tooltip: 'Filter system areas',
+              initialValue: filter,
+              onSelected: onFilterChanged,
+              itemBuilder: (context) => const [
+                PopupMenuItem(value: _AreaFilter.all, child: Text('All')),
+                PopupMenuItem(
+                  value: _AreaFilter.attention,
+                  child: Text('Needs attention'),
+                ),
+                PopupMenuItem(
+                  value: _AreaFilter.available,
+                  child: Text('Available'),
+                ),
+              ],
+              icon: Icon(
+                filter == _AreaFilter.all
+                    ? Icons.filter_list_rounded
+                    : Icons.filter_alt_rounded,
+                size: 19,
+              ),
+            ),
+            if (constraints.maxWidth >= 520) ...[
+              const SizedBox(width: 10),
+              Text(countLabel, style: Theme.of(context).textTheme.bodySmall),
+            ],
+          ],
+        );
+      }
+      return Row(
+        key: const ValueKey('macos-admin-toolbar-wide'),
+        children: [
+          SizedBox(width: 280, child: searchField),
+          const SizedBox(width: 14),
+          SegmentedButton<_AreaFilter>(
+            segments: const [
+              ButtonSegment(value: _AreaFilter.all, label: Text('All')),
+              ButtonSegment(
+                value: _AreaFilter.attention,
+                label: Text('Needs attention'),
+              ),
+              ButtonSegment(
+                value: _AreaFilter.available,
+                label: Text('Available'),
+              ),
+            ],
+            selected: {filter},
+            showSelectedIcon: false,
+            onSelectionChanged: (value) => onFilterChanged(value.first),
+          ),
+          const Spacer(),
+          Text(countLabel, style: Theme.of(context).textTheme.bodySmall),
+        ],
+      );
+    },
+  );
+}
+
+class _AreaWorkspace extends StatelessWidget {
+  const _AreaWorkspace({
+    required this.endpoints,
+    required this.snapshot,
+    required this.selected,
+    required this.onSelected,
+  });
+
+  final List<AdminEndpoint> endpoints;
+  final AdminSnapshot? snapshot;
+  final AdminEndpoint? selected;
+  final ValueChanged<AdminEndpoint> onSelected;
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) {
+      final dividerColor = MacosThemeColors.of(context).divider;
+      final list = _AreaList(
+        endpoints: endpoints,
+        snapshot: snapshot,
+        selectedPath: selected?.path,
+        onSelected: onSelected,
+      );
+      final evidence = selected == null
+          ? const MacosEmptyState(
+              icon: Icons.view_list_outlined,
+              title: 'Select a system area',
+              message: 'Status, evidence, and endpoint information will appear here.',
+            )
+          : _AreaEvidence(
+              endpoint: selected!,
+              value: snapshot?.values[selected!.path],
+              error: snapshot?.failures[selected!.path],
+            );
+
+      if (constraints.maxWidth < 700) {
+        final listHeight = (constraints.maxHeight * .4).clamp(170.0, 260.0);
+        return Column(
+          key: const ValueKey('macos-admin-area-workspace-stacked'),
+          children: [
+            SizedBox(height: listHeight, child: list),
+            Divider(height: 1, color: dividerColor),
+            Expanded(child: evidence),
+          ],
+        );
+      }
+
+      final listWidth = constraints.maxWidth < 820
+          ? 250.0
+          : constraints.maxWidth < 1040
+          ? 290.0
+          : 330.0;
+      return Row(
+        key: const ValueKey('macos-admin-area-workspace-split'),
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SizedBox(width: listWidth, child: list),
+          VerticalDivider(width: 1, color: dividerColor),
+          Expanded(child: evidence),
+        ],
+      );
+    },
+  );
+}
+
 class _HealthStrip extends StatelessWidget {
   const _HealthStrip({
     required this.controller,
@@ -240,44 +351,64 @@ class _HealthStrip extends StatelessWidget {
     final mac = MacosThemeColors.of(context);
     final updated = controller.snapshot?.updatedAt;
     final unknown = (total - available - failed).clamp(0, total);
+    final metrics = [
+      _StatusMetric(
+        icon: failed > 0
+            ? Icons.warning_amber_rounded
+            : Icons.check_circle_outline_rounded,
+        color: failed > 0 ? Theme.of(context).colorScheme.error : mac.positive,
+        label: failed > 0 ? '$failed need attention' : 'No failures',
+      ),
+      _StatusMetric(
+        icon: Icons.cloud_done_outlined,
+        color: mac.positive,
+        label: '$available available',
+      ),
+      _StatusMetric(
+        icon: Icons.help_outline_rounded,
+        color: Theme.of(context).colorScheme.onSurfaceVariant,
+        label: '$unknown not checked',
+      ),
+    ];
+    final updatedLabel = updated == null
+        ? 'Status has not been checked'
+        : 'Checked ${TimeOfDay.fromDateTime(updated).format(context)}';
     return Container(
-      height: 56,
-      padding: const EdgeInsets.symmetric(horizontal: 18),
+      key: const ValueKey('macos-admin-health-strip'),
+      constraints: const BoxConstraints(minHeight: 56),
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surface,
         border: Border(bottom: BorderSide(color: mac.divider)),
       ),
-      child: Row(
-        children: [
-          _StatusMetric(
-            icon: failed > 0
-                ? Icons.warning_amber_rounded
-                : Icons.check_circle_outline_rounded,
-            color: failed > 0
-                ? Theme.of(context).colorScheme.error
-                : mac.positive,
-            label: failed > 0 ? '$failed need attention' : 'No failures',
-          ),
-          const SizedBox(width: 24),
-          _StatusMetric(
-            icon: Icons.cloud_done_outlined,
-            color: mac.positive,
-            label: '$available available',
-          ),
-          const SizedBox(width: 24),
-          _StatusMetric(
-            icon: Icons.help_outline_rounded,
-            color: Theme.of(context).colorScheme.onSurfaceVariant,
-            label: '$unknown not checked',
-          ),
-          const Spacer(),
-          Text(
-            updated == null
-                ? 'Status has not been checked'
-                : 'Checked ${TimeOfDay.fromDateTime(updated).format(context)}',
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
-        ],
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          if (constraints.maxWidth >= 980) {
+            return Row(
+              key: const ValueKey('macos-admin-health-wide'),
+              children: [
+                for (var index = 0; index < metrics.length; index++) ...[
+                  metrics[index],
+                  if (index != metrics.length - 1) const SizedBox(width: 24),
+                ],
+                const Spacer(),
+                Text(
+                  updatedLabel,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+            );
+          }
+          return Column(
+            key: const ValueKey('macos-admin-health-compact'),
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Wrap(spacing: 20, runSpacing: 8, children: metrics),
+              const SizedBox(height: 8),
+              Text(updatedLabel, style: Theme.of(context).textTheme.bodySmall),
+            ],
+          );
+        },
       ),
     );
   }

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../theme/macos_app_theme.dart';
 
@@ -19,6 +20,7 @@ class MacosPageScaffold extends StatelessWidget {
     this.inspectorWidth = 330,
     this.inspectorMinWidth = 270,
     this.inspectorMaxWidth = 460,
+    this.inspectorCollapseBelow = 880,
     this.maxContentWidth,
   });
 
@@ -33,6 +35,7 @@ class MacosPageScaffold extends StatelessWidget {
   final double inspectorWidth;
   final double inspectorMinWidth;
   final double inspectorMaxWidth;
+  final double inspectorCollapseBelow;
   final double? maxContentWidth;
 
   @override
@@ -74,6 +77,7 @@ class MacosPageScaffold extends StatelessWidget {
                     initialWidth: inspectorWidth,
                     minWidth: inspectorMinWidth,
                     maxWidth: inspectorMaxWidth,
+                    collapseBelow: inspectorCollapseBelow,
                     body: _ConstrainedDesktopBody(
                       maxWidth: maxContentWidth,
                       child: body,
@@ -199,10 +203,22 @@ class MacosResizableInspector extends StatefulWidget {
 }
 
 class _MacosResizableInspectorState extends State<MacosResizableInspector> {
+  static const _keyboardStep = 24.0;
+
+  final FocusNode _dividerFocusNode = FocusNode(
+    debugLabel: 'macOS inspector resize divider',
+  );
+  bool _dividerFocused = false;
   late double _width = widget.initialWidth.clamp(
     widget.minWidth,
     widget.maxWidth,
   );
+
+  @override
+  void dispose() {
+    _dividerFocusNode.dispose();
+    super.dispose();
+  }
 
   @override
   void didUpdateWidget(covariant MacosResizableInspector oldWidget) {
@@ -221,23 +237,61 @@ class _MacosResizableInspectorState extends State<MacosResizableInspector> {
         return Row(
           children: [
             Expanded(child: widget.body),
-            MouseRegion(
-              cursor: SystemMouseCursors.resizeColumn,
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onHorizontalDragUpdate: (details) => setState(
-                  () => _width = (_width - details.delta.dx).clamp(
-                    widget.minWidth,
-                    widget.maxWidth,
+            Focus(
+              focusNode: _dividerFocusNode,
+              onFocusChange: (focused) =>
+                  setState(() => _dividerFocused = focused),
+              onKeyEvent: _handleDividerKey,
+              child: Semantics(
+                key: const ValueKey('macos-inspector-resize-divider'),
+                container: true,
+                slider: true,
+                focusable: true,
+                focused: _dividerFocused,
+                label: 'Resize inspector',
+                value: '${_width.round()} pixels wide',
+                increasedValue: _width < widget.maxWidth
+                    ? '${(_width + _keyboardStep).clamp(widget.minWidth, widget.maxWidth).round()} pixels wide'
+                    : null,
+                decreasedValue: _width > widget.minWidth
+                    ? '${(_width - _keyboardStep).clamp(widget.minWidth, widget.maxWidth).round()} pixels wide'
+                    : null,
+                hint: 'Use the Left and Right Arrow keys to resize.',
+                minValue: '${widget.minWidth.round()} pixels wide',
+                maxValue: '${widget.maxWidth.round()} pixels wide',
+                onFocus: _dividerFocusNode.requestFocus,
+                onIncrease: _width < widget.maxWidth
+                    ? () => _adjustWidth(_keyboardStep)
+                    : null,
+                onDecrease: _width > widget.minWidth
+                    ? () => _adjustWidth(-_keyboardStep)
+                    : null,
+                child: MouseRegion(
+                  cursor: SystemMouseCursors.resizeColumn,
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: _dividerFocusNode.requestFocus,
+                    onHorizontalDragStart: (_) =>
+                        _dividerFocusNode.requestFocus(),
+                    onHorizontalDragUpdate: (details) =>
+                        _adjustWidth(-details.delta.dx),
+                    child: SizedBox(
+                      width: 9,
+                      child: Center(
+                        child: Container(
+                          width: _dividerFocused ? 2 : 1,
+                          color: _dividerFocused
+                              ? Theme.of(context).colorScheme.primary
+                              : mac.divider,
+                        ),
+                      ),
+                    ),
                   ),
-                ),
-                child: SizedBox(
-                  width: 7,
-                  child: Center(child: Container(width: 1, color: mac.divider)),
                 ),
               ),
             ),
             SizedBox(
+              key: const ValueKey('macos-inspector-pane'),
               width: _width,
               child: DecoratedBox(
                 decoration: BoxDecoration(color: mac.sidebar),
@@ -248,6 +302,28 @@ class _MacosResizableInspectorState extends State<MacosResizableInspector> {
         );
       },
     );
+  }
+
+  KeyEventResult _handleDividerKey(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    final delta = switch (event.logicalKey) {
+      LogicalKeyboardKey.arrowLeft ||
+      LogicalKeyboardKey.arrowUp => _keyboardStep,
+      LogicalKeyboardKey.arrowRight ||
+      LogicalKeyboardKey.arrowDown => -_keyboardStep,
+      _ => null,
+    };
+    if (delta == null) return KeyEventResult.ignored;
+    _adjustWidth(delta);
+    return KeyEventResult.handled;
+  }
+
+  void _adjustWidth(double delta) {
+    final next = (_width + delta).clamp(widget.minWidth, widget.maxWidth);
+    if (next == _width) return;
+    setState(() => _width = next);
   }
 
   Widget bodyWithInspectorSheet(BuildContext context) => Stack(
