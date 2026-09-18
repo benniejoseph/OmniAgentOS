@@ -26,12 +26,12 @@ function context(
 }
 
 describe("native mutation capability enrollment", () => {
-  it("retains existing capability floors on supported v14 and v15 clients", () => {
-    expect(nativeMutationEnrollment(context(14), "markets.update", asOf)).toMatchObject({
+  it("retains existing capability floors on supported v15 and v16 clients", () => {
+    expect(nativeMutationEnrollment(context(15), "markets.update", asOf)).toMatchObject({
       state: "active",
       minimumContractVersion: 6,
     });
-    expect(nativeMutationEnrollment(context(15), "settings.update", asOf)).toMatchObject({
+    expect(nativeMutationEnrollment(context(16), "settings.update", asOf)).toMatchObject({
       state: "active",
       minimumContractVersion: 6,
     });
@@ -39,11 +39,11 @@ describe("native mutation capability enrollment", () => {
       state: "held",
       minimumContractVersion: 6,
     });
-    expect(nativeMutationEnrollment(context(14), "markets.backtest.run", asOf)).toMatchObject({
+    expect(nativeMutationEnrollment(context(15), "markets.backtest.run", asOf)).toMatchObject({
       state: "active",
       minimumContractVersion: 7,
     });
-    expect(nativeMutationEnrollment(context(15), "markets.backtest.run", asOf)).toMatchObject({
+    expect(nativeMutationEnrollment(context(16), "markets.backtest.run", asOf)).toMatchObject({
       state: "active",
       minimumContractVersion: 7,
     });
@@ -54,12 +54,12 @@ describe("native mutation capability enrollment", () => {
   });
 
   it("retains earlier workspace capability minimum on a supported client", () => {
-    expect(nativeMutationEnrollment(context(14), "workspaces.update", asOf)).toMatchObject({
+    expect(nativeMutationEnrollment(context(15), "workspaces.update", asOf)).toMatchObject({
       state: "active",
       minimumContractVersion: 3,
     });
     expect(
-      nativeMutationCapabilityPolicy(context(14, new Date().toISOString()))[
+      nativeMutationCapabilityPolicy(context(15, new Date().toISOString()))[
         "settings.update"
       ].state,
     ).toBe("active");
@@ -74,26 +74,30 @@ describe("native mutation capability enrollment", () => {
     ] as const;
     for (const capability of capabilities) {
       expect(
-        nativeMutationEnrollment(context(15, undefined, "macos"), capability, asOf),
+        nativeMutationEnrollment(context(16, undefined, "macos"), capability, asOf),
       ).toMatchObject({ state: "active", minimumContractVersion: 11 });
       expect(
-        nativeMutationEnrollment(context(14, undefined, "macos"), capability, asOf),
+        nativeMutationEnrollment(context(15, undefined, "macos"), capability, asOf),
       ).toMatchObject({ state: "active", minimumContractVersion: 11 });
       expect(
         nativeMutationEnrollment(context(13, undefined, "macos"), capability, asOf),
       ).toMatchObject({ state: "held", minimumContractVersion: 11 });
       expect(
-        nativeMutationEnrollment(context(14), capability, asOf),
+        nativeMutationEnrollment(context(15), capability, asOf),
       ).toMatchObject({ state: "held", minimumContractVersion: 11 });
     }
   });
 
-  it("enrolls typed push receipts and canaries only on contract v15", () => {
+  it("keeps typed push receipts and canaries active from contract v15", () => {
     for (const capability of [
       "push.delivery.receipt",
       "push.canary.run",
     ] as const) {
       expect(nativeMutationEnrollment(context(15), capability, asOf)).toMatchObject({
+        state: "active",
+        minimumContractVersion: 15,
+      });
+      expect(nativeMutationEnrollment(context(16), capability, asOf)).toMatchObject({
         state: "active",
         minimumContractVersion: 15,
       });

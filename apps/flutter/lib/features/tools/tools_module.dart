@@ -7,13 +7,17 @@ const toolsModule = AdminModule(
   id: 'tools',
   label: 'Capabilities',
   icon: Icons.build_circle_outlined,
-  description:
-      'Skills teach agents how to work. Tools are the individual governed actions they may request.',
+  description: 'Skills teach agents how to work. Tools are the individual governed actions they may request.',
   endpoints: [
     AdminEndpoint(
       'Skills',
       NativePaths.skillsList,
       description: 'Reusable instructions assigned to agents',
+    ),
+    AdminEndpoint(
+      'Plugins',
+      NativePaths.pluginsList,
+      description: 'Reviewed bundles of Skills, MCP setup templates, and automation templates',
     ),
     AdminEndpoint(
       'Effective capabilities',

@@ -31,20 +31,28 @@ void main() {
     expect(modules['automation']?.label, 'Automations');
     expect(
       modules['automation']?.endpoints.map((item) => item.label),
-      containsAll(<String>['Runs', 'Schedules and triggers', 'Advanced operations']),
+      containsAll(<String>[
+        'Runs',
+        'Schedules and triggers',
+        'Advanced operations',
+      ]),
     );
 
     expect(modules['integrations']?.label, 'Connections');
     expect(
       modules['integrations']?.endpoints.map((item) => item.label),
-      containsAll(<String>['Accounts and personal sources', 'External MCP servers', 'REST APIs']),
+      containsAll(<String>[
+        'Accounts and personal sources',
+        'External MCP servers',
+        'REST APIs',
+      ]),
     );
 
     expect(modules['tools']?.label, 'Capabilities');
     expect(modules['tools']?.endpoints.first.label, 'Skills');
     expect(
       modules['tools']?.endpoints.map((item) => item.label),
-      contains('Advanced tool audit'),
+      containsAll(<String>['Plugins', 'Advanced tool audit']),
     );
   });
 

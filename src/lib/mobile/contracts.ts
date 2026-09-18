@@ -11,8 +11,8 @@ import {
 import { mobilePushReceiptRequestSchema } from "@/lib/mobile/push-contract";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 15 as const;
-export const NATIVE_API_PREVIOUS_VERSION = 14 as const;
+export const NATIVE_API_CURRENT_VERSION = 16 as const;
+export const NATIVE_API_PREVIOUS_VERSION = 15 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -841,6 +841,22 @@ const v15Operations: readonly NativeOperation[] = [
   ),
 ];
 
+// Contract v16 exposes the actor-scoped declarative Plugin inventory to native
+// clients. This is a read-only catalog projection; installation and lifecycle
+// mutations remain on the governed web control plane.
+const v16Operations: readonly NativeOperation[] = [
+  ...v15Operations,
+  operation(
+    "plugins.list",
+    "GET",
+    "/api/plugins",
+    "Read the actor-scoped declarative Plugin catalog and installation state.",
+    "bearer",
+    undefined,
+    "JsonObject",
+  ),
+];
+
 export const nativeContractSchemas = Object.freeze({
   JsonObject: jsonObject,
   NativeClientAttestation: nativeClientAttestationSchema,
@@ -915,6 +931,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 13) return v13Operations;
   if (version === 14) return v14Operations;
   if (version === 15) return v15Operations;
+  if (version === 16) return v16Operations;
   return undefined;
 }
 
@@ -924,7 +941,7 @@ export function nativeContractDiscovery() {
     contractId: NATIVE_API_CONTRACT_ID,
     currentVersion: NATIVE_API_CURRENT_VERSION,
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
-    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [15, 14],
+    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [16, 15],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,
       state: version === NATIVE_API_CURRENT_VERSION ? "current" as const : "previous" as const,
