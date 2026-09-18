@@ -1,5 +1,6 @@
 import {
   Activity,
+  Blocks,
   Inbox,
   Brain,
   Bot,
@@ -129,6 +130,13 @@ export const appNav: AppNavItem[] = [
     icon: FileText,
   },
   {
+    href: "/app/automation",
+    label: "Automation Studio",
+    shortLabel: "Automate",
+    description: "Skills, connections, MCP servers, plugins, and repeatable work.",
+    icon: Blocks,
+  },
+  {
     href: "/app/workflows",
     label: "Workflows",
     description: "Multi-step jobs that run in the background with retries and approvals.",
@@ -204,13 +212,7 @@ export const appNavGroups: AppNavGroup[] = [
   {
     label: "Automation",
     collapsible: true,
-    items: appNav.filter((item) =>
-      [
-        "/app/workflows",
-        "/app/connectors",
-        "/app/tools",
-      ].includes(item.href),
-    ),
+    items: [appNav.find((item) => item.href === "/app/automation")!],
   },
   {
     label: "Review",
