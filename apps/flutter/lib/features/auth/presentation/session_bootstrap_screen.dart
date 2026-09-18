@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -150,7 +152,7 @@ class SessionBootstrapScreen extends ConsumerWidget {
   }
 }
 
-class _MacosSessionBootstrap extends StatelessWidget {
+class _MacosSessionBootstrap extends StatefulWidget {
   const _MacosSessionBootstrap({
     required this.session,
     required this.biometricLocked,
@@ -166,16 +168,60 @@ class _MacosSessionBootstrap extends StatelessWidget {
   final VoidCallback? onClear;
 
   @override
+  State<_MacosSessionBootstrap> createState() => _MacosSessionBootstrapState();
+}
+
+class _MacosSessionBootstrapState extends State<_MacosSessionBootstrap> {
+  static const _longRestoreThreshold = Duration(seconds: 12);
+
+  Timer? _longRestoreTimer;
+  bool _isTakingLonger = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _scheduleLongRestoreMessage();
+  }
+
+  @override
+  void didUpdateWidget(covariant _MacosSessionBootstrap oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.session.hasError != widget.session.hasError) {
+      _scheduleLongRestoreMessage();
+    }
+  }
+
+  @override
+  void dispose() {
+    _longRestoreTimer?.cancel();
+    super.dispose();
+  }
+
+  void _scheduleLongRestoreMessage() {
+    _longRestoreTimer?.cancel();
+    _isTakingLonger = false;
+    if (widget.session.hasError) {
+      return;
+    }
+    _longRestoreTimer = Timer(_longRestoreThreshold, () {
+      if (!mounted || widget.session.hasError) {
+        return;
+      }
+      setState(() => _isTakingLonger = true);
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final failed = session.hasError;
-    final title = migrationRequired
+    final failed = widget.session.hasError;
+    final title = widget.migrationRequired
         ? 'Upgrade your protected session'
-        : biometricLocked
+        : widget.biometricLocked
         ? 'Unlock Asael'
         : 'This session needs attention';
-    final detail = migrationRequired
+    final detail = widget.migrationRequired
         ? 'Move the previous credential into this Mac’s protected storage before continuing.'
-        : biometricLocked
+        : widget.biometricLocked
         ? 'Use the enrolled biometric on this Mac to release your workspace credential.'
         : 'Asael could not confirm the saved session. Retry the secure check or clear it and sign in again.';
     return Scaffold(
@@ -211,25 +257,25 @@ class _MacosSessionBootstrap extends StatelessWidget {
                           Row(
                             mainAxisAlignment: MainAxisAlignment.end,
                             children: [
-                              if (onClear != null)
+                              if (widget.onClear != null)
                                 TextButton(
-                                  onPressed: onClear,
+                                  onPressed: widget.onClear,
                                   child: const Text('Sign in again'),
                                 ),
                               const SizedBox(width: 8),
                               FilledButton.icon(
-                                onPressed: onPrimary,
+                                onPressed: widget.onPrimary,
                                 icon: Icon(
-                                  migrationRequired
+                                  widget.migrationRequired
                                       ? Icons.upgrade_rounded
-                                      : biometricLocked
+                                      : widget.biometricLocked
                                       ? Icons.fingerprint_rounded
                                       : Icons.refresh_rounded,
                                 ),
                                 label: Text(
-                                  migrationRequired
+                                  widget.migrationRequired
                                       ? 'Upgrade securely'
-                                      : biometricLocked
+                                      : widget.biometricLocked
                                       ? 'Unlock'
                                       : 'Retry session',
                                 ),
@@ -249,15 +295,38 @@ class _MacosSessionBootstrap extends StatelessWidget {
                             style: Theme.of(context).textTheme.titleLarge,
                           ),
                           const SizedBox(height: 8),
+                          Semantics(
+                            liveRegion: true,
+                            child: AnimatedSwitcher(
+                              duration: const Duration(milliseconds: 160),
+                              child: Text(
+                                _isTakingLonger
+                                    ? 'Still checking this Mac. A one-time protected-storage upgrade can take a little longer on first launch.'
+                                    : 'Verifying this Mac and restoring your protected session.',
+                                key: ValueKey(_isTakingLonger),
+                                textAlign: TextAlign.center,
+                                style: Theme.of(context).textTheme.bodyMedium
+                                    ?.copyWith(
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onSurfaceVariant,
+                                    ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 10),
                           Text(
-                            'Verifying this Mac and reconciling protected session state.',
-                            textAlign: TextAlign.center,
-                            style: Theme.of(context).textTheme.bodyMedium
+                            _isTakingLonger
+                                ? 'Protected storage check · Taking longer than usual'
+                                : 'Protected session check · Started just now',
+                            key: const ValueKey('macos-bootstrap-phase'),
+                            style: Theme.of(context).textTheme.labelMedium
                                 ?.copyWith(
                                   color: Theme.of(context)
                                       .colorScheme
                                       .onSurfaceVariant,
                                 ),
+                            textAlign: TextAlign.center,
                           ),
                           const SizedBox(height: 20),
                           const LinearProgressIndicator(minHeight: 2),

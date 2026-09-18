@@ -85,9 +85,51 @@ void main() {
 
     expect(find.text('Opening your private workspace'), findsOneWidget);
     expect(
+      find.text('Protected session check · Started just now'),
+      findsOneWidget,
+    );
+    expect(
       find.byKey(const ValueKey('macos-bootstrap-loading')),
       findsOneWidget,
     );
+    expect(tester.takeException(), isNull);
+    debugDefaultTargetPlatformOverride = null;
+  });
+
+  testWidgets('Mac bootstrap explains a longer protected-session restore', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    tester.view.physicalSize = const Size(1024, 700);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          sessionControllerProvider.overrideWith(_SessionController.new),
+        ],
+        child: MaterialApp(
+          theme: MacosAppTheme.light(),
+          home: const SessionBootstrapScreen(),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.textContaining('Still checking this Mac'), findsNothing);
+
+    await tester.pump(const Duration(seconds: 12));
+    await tester.pump(const Duration(milliseconds: 160));
+
+    expect(find.textContaining('Still checking this Mac'), findsOneWidget);
+    expect(
+      find.text('Protected storage check · Taking longer than usual'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('on first launch'), findsOneWidget);
     expect(tester.takeException(), isNull);
     debugDefaultTargetPlatformOverride = null;
   });
