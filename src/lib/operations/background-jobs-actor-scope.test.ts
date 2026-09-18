@@ -29,6 +29,7 @@ beforeEach(() => {
       document: { id: "knowledge-document" },
       chunks: [],
       memories: [],
+      retired: { documents: 0, memories: 0 },
     };
   });
 });

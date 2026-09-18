@@ -23,7 +23,7 @@ describe("conversation summary enrichment migration", () => {
       checksum: string;
     }>;
 
-    expect(manifest.at(-1)).toEqual({
+    expect(manifest.find((entry) => entry.version === 156)).toEqual({
       version: 156,
       name: "conversation_summary_enrichments_v1",
       checksum:

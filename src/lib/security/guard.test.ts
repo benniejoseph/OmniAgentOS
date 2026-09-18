@@ -26,6 +26,10 @@ import {
   authorizeRequest,
   shouldDeferAllowedAudit,
 } from "@/lib/security/guard";
+import {
+  NATIVE_API_CURRENT_VERSION,
+  NATIVE_API_PREVIOUS_VERSION,
+} from "@/lib/mobile/contracts";
 import { SecurityPolicyError } from "@/lib/security/context";
 
 const originalAppUrl = process.env.NEXT_PUBLIC_APP_URL;
@@ -168,7 +172,7 @@ describe("cookie-authenticated mutation origin checks", () => {
     ).toThrow(/native mutations remain held/i);
   });
 
-  it("keeps v3 product mutations active while reserving push for v4", () => {
+  it("keeps established capability floors on supported native contracts", () => {
     const request = new Request("https://app.example.test/api/agent", { method: "POST" });
     const currentNativeContext = {
       source: "mobile" as const,
@@ -177,7 +181,7 @@ describe("cookie-authenticated mutation origin checks", () => {
         platform: "ios" as const,
         appVersion: "1.0.0",
         buildNumber: 1,
-        clientContractVersion: 4,
+        clientContractVersion: NATIVE_API_CURRENT_VERSION,
         clientAttestedAt: new Date().toISOString(),
       },
     };
@@ -195,10 +199,37 @@ describe("cookie-authenticated mutation origin checks", () => {
       request,
       {
         ...currentNativeContext,
-        native: { ...currentNativeContext.native, clientContractVersion: 3 },
+        native: {
+          ...currentNativeContext.native,
+          clientContractVersion: NATIVE_API_PREVIOUS_VERSION,
+        },
       },
       "conversation.send",
     )).not.toThrow();
+    expect(() => assertTrustedSessionMutation(
+      request,
+      currentNativeContext,
+      "push.registration.update",
+    )).not.toThrow();
+    expect(() => assertTrustedSessionMutation(
+      request,
+      {
+        ...currentNativeContext,
+        native: {
+          ...currentNativeContext.native,
+          clientContractVersion: NATIVE_API_PREVIOUS_VERSION,
+        },
+      },
+      "push.registration.update",
+    )).not.toThrow();
+    expect(() => assertTrustedSessionMutation(
+      request,
+      {
+        ...currentNativeContext,
+        native: { ...currentNativeContext.native, clientContractVersion: 3 },
+      },
+      "conversation.send",
+    )).toThrow(/contract v3/i);
     expect(() => assertTrustedSessionMutation(
       request,
       {

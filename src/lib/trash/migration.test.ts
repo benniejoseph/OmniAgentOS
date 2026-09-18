@@ -12,9 +12,9 @@ describe("P9.3 trash migration", () => {
       new URL("../db/client.ts", import.meta.url),
       "utf8",
     );
-    const embeddedMigration = databaseClient.slice(
-      databaseClient.indexOf("async function ensureTrashLifecycleV1"),
-      databaseClient.indexOf("async function ensureGraphQueryTelemetryV1"),
+    const embeddedMigration = extractEmbeddedMigration(
+      databaseClient,
+      "ensureTrashLifecycleV1",
     );
 
     expect(migration).toContain("owner_actor_id TEXT NOT NULL");
@@ -29,3 +29,10 @@ describe("P9.3 trash migration", () => {
     );
   });
 });
+
+function extractEmbeddedMigration(source: string, functionName: string) {
+  const start = source.indexOf(`async function ${functionName}`);
+  expect(start).toBeGreaterThanOrEqual(0);
+  const next = source.indexOf("\nasync function ", start + 1);
+  return source.slice(start, next < 0 ? undefined : next);
+}

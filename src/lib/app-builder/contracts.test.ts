@@ -5,6 +5,7 @@ import { scanBuilderFilesForSecrets } from "@/lib/app-builder/secret-scan";
 import { appBuilderStarterTemplate } from "@/lib/app-builder/templates";
 import { APP_SERVICE_OPERATION_CONTRACTS, MAIN_AGENT_APP_SERVICE_BINDINGS } from "@/lib/app-services/registry";
 import { databaseSchemaMigrations } from "@/lib/db/client";
+import { modelAssignmentScopeForAgent } from "@/lib/orchestration/computer-use-routing";
 import { modelAssignmentRoleContracts } from "@/lib/settings/model-assignment-contract";
 import { FIRST_PARTY_APP_TOOLS } from "@/lib/tools/app-registry";
 
@@ -261,8 +262,7 @@ describe("project App Builder boundary", () => {
     const repositoryGitPreview = await readFile(new URL("../../../supabase/migrations/20260916093000_app_builder_repository_git_previews.sql", import.meta.url), "utf8");
     expect(repositoryGitPreview).toContain("file_count BETWEEN 1 AND 10000");
     expect(repositoryGitPreview).toContain("App Builder repository Git preview capacity is invalid");
-    const runner = await readFile(new URL("../orchestration/agent-runner.ts", import.meta.url), "utf8");
-    expect(runner).toContain('agentId === "sentinel"');
-    expect(runner).toContain('? "verifier" as const');
+    expect(modelAssignmentScopeForAgent("forge")).toBe("code_builder");
+    expect(modelAssignmentScopeForAgent("sentinel")).toBe("verifier");
   });
 });

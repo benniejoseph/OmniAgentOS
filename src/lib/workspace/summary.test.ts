@@ -100,6 +100,7 @@ describe("workspace summary", () => {
             workflowType: "research",
             status: "completed",
             goal: "Prepare a report",
+            input: { goal: "Prepare a report" },
             currentStep: "persist_report",
             attempt: 1,
             maxAttempts: 1,

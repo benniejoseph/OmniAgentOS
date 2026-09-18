@@ -1,5 +1,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 
+import { NATIVE_API_CURRENT_VERSION } from "@/lib/mobile/contracts";
+
 beforeAll(() => {
   delete process.env.DATABASE_URL;
   process.env.OMNIAGENT_AUTH_ENABLED = "true";
@@ -54,7 +56,9 @@ describe("mobile auth route contract", () => {
     );
     expect(response.status).toBe(400);
     expect(response.headers.get("cache-control")).toBe("private, no-store");
-    expect(response.headers.get("x-asael-native-contract-version")).toBe("13");
+    expect(response.headers.get("x-asael-native-contract-version")).toBe(
+      String(NATIVE_API_CURRENT_VERSION),
+    );
     await expect(response.json()).resolves.toEqual({
       error: {
         code: "invalid_request",
@@ -70,7 +74,9 @@ describe("mobile auth route contract", () => {
     );
     expect(response.status).toBe(401);
     expect(response.headers.get("cache-control")).toBe("private, no-store");
-    expect(response.headers.get("x-asael-native-contract-version")).toBe("13");
+    expect(response.headers.get("x-asael-native-contract-version")).toBe(
+      String(NATIVE_API_CURRENT_VERSION),
+    );
     await expect(response.json()).resolves.toEqual({
       error: {
         code: "unauthorized",

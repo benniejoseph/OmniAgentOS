@@ -15,9 +15,9 @@ describe("P9.4 approval grant migration", () => {
       new URL("../db/client.ts", import.meta.url),
       "utf8",
     );
-    const embeddedMigration = databaseClient.slice(
-      databaseClient.indexOf("async function ensureApprovalGrantsV1"),
-      databaseClient.indexOf("async function ensureGraphQueryTelemetryV1"),
+    const embeddedMigration = extractEmbeddedMigration(
+      databaseClient,
+      "ensureApprovalGrantsV1",
     );
 
     for (const source of [migration, embeddedMigration]) {
@@ -38,3 +38,10 @@ describe("P9.4 approval grant migration", () => {
     }
   });
 });
+
+function extractEmbeddedMigration(source: string, functionName: string) {
+  const start = source.indexOf(`async function ${functionName}`);
+  expect(start).toBeGreaterThanOrEqual(0);
+  const next = source.indexOf("\nasync function ", start + 1);
+  return source.slice(start, next < 0 ? undefined : next);
+}
