@@ -52,6 +52,20 @@ const databaseDescribe = databaseUrl && resetAllowed ? describe : describe.skip;
 const rlsRole = "omniagent_integration_rls";
 const runtimeRole = "omniagent_integration_runtime";
 const maintenanceRole = "omniagent_integration_maintenance";
+const actorRlsRepairTables = [
+  "omni_a2a_peer_rollouts",
+  "omni_a2a_task_mappings",
+  "omni_a2a_exchanges",
+  "omni_a2a_safety_reservations",
+  "omni_a2a_tool_call_claims",
+  "omni_trash_items",
+  "omni_trash_effect_receipts",
+  "omni_approval_grants",
+  "omni_approval_grant_claims",
+  "omni_browser_profiles",
+  "omni_browser_profile_bindings",
+  "omni_browser_takeovers",
+] as const;
 
 databaseDescribe("Postgres schema integration", () => {
   let admin: ReturnType<typeof postgres>;
@@ -518,6 +532,51 @@ databaseDescribe("Postgres schema integration", () => {
 
     expect(rows).toHaveLength(tenantPolicyTables.length);
     expect(rows.every((row) => row.relrowsecurity && row.relforcerowsecurity)).toBe(true);
+  });
+
+  test("composes tenant and actor RLS for repaired actor-owned tables", async () => {
+    const policies = await admin`
+      SELECT
+        relation.relname AS table_name,
+        policy.polname AS policy_name,
+        policy.polpermissive AS permissive,
+        policy.polcmd::TEXT AS command,
+        pg_get_expr(policy.polqual, policy.polrelid) AS using_expression,
+        pg_get_expr(policy.polwithcheck, policy.polrelid) AS check_expression
+      FROM pg_policy policy
+      JOIN pg_class relation ON relation.oid = policy.polrelid
+      WHERE relation.relnamespace = 'public'::regnamespace
+        AND relation.relname = ANY(${actorRlsRepairTables as readonly string[]})
+      ORDER BY relation.relname, policy.polname
+    `;
+
+    expect(policies).toHaveLength(actorRlsRepairTables.length * 2);
+    for (const tableName of actorRlsRepairTables) {
+      const tablePolicies = policies.filter(
+        (policy) => policy.table_name === tableName,
+      );
+      expect(tablePolicies).toHaveLength(2);
+      expect(tablePolicies).toEqual(expect.arrayContaining([
+        {
+          table_name: tableName,
+          policy_name: `${tableName}_actor`,
+          permissive: false,
+          command: "*",
+          using_expression:
+            "(omni_system_scope_enabled() OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id))",
+          check_expression:
+            "(omni_system_scope_enabled() OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id))",
+        },
+        {
+          table_name: tableName,
+          policy_name: "omni_tenant_isolation",
+          permissive: true,
+          command: "*",
+          using_expression: "omni_tenant_visible(tenant_id)",
+          check_expression: "omni_tenant_visible(tenant_id)",
+        },
+      ]));
+    }
   });
 
   test("keeps the execution-principal registry empty, owner-only, and activation-held", async () => {
