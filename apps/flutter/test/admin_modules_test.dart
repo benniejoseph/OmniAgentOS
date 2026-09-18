@@ -25,6 +25,29 @@ void main() {
     expect(paths, contains('/api/openapi-connectors'));
   });
 
+  test('automation administration uses the user-facing capability model', () {
+    final modules = {for (final module in adminModules) module.id: module};
+
+    expect(modules['automation']?.label, 'Automations');
+    expect(
+      modules['automation']?.endpoints.map((item) => item.label),
+      containsAll(<String>['Runs', 'Schedules and triggers', 'Advanced operations']),
+    );
+
+    expect(modules['integrations']?.label, 'Connections');
+    expect(
+      modules['integrations']?.endpoints.map((item) => item.label),
+      containsAll(<String>['Accounts and personal sources', 'External MCP servers', 'REST APIs']),
+    );
+
+    expect(modules['tools']?.label, 'Capabilities');
+    expect(modules['tools']?.endpoints.first.label, 'Skills');
+    expect(
+      modules['tools']?.endpoints.map((item) => item.label),
+      contains('Advanced tool audit'),
+    );
+  });
+
   test('only privileged workspace roles can manage the control plane', () {
     const base = AppSession(
       tenantId: 'tenant-1',

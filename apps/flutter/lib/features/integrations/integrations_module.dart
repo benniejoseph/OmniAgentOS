@@ -5,13 +5,30 @@ import '../settings/admin_models.dart';
 
 const integrationsModule = AdminModule(
   id: 'integrations',
-  label: 'Integrations',
+  label: 'Connections',
   icon: Icons.cable_rounded,
-  description: 'OAuth connections, MCP services, and OpenAPI connectors.',
+  description:
+      'Accounts and external services Asael may read from or act in. Every connection keeps its own credentials and permissions.',
   endpoints: [
-    AdminEndpoint('Connection catalog', NativePaths.adminConnectionCatalog),
-    AdminEndpoint('Connected services', NativePaths.adminConnectors),
-    AdminEndpoint('OAuth providers', NativePaths.adminOauth),
-    AdminEndpoint('OpenAPI connectors', NativePaths.adminOpenapiConnectors),
+    AdminEndpoint(
+      'Accounts and personal sources',
+      NativePaths.adminOauth,
+      description: 'OAuth accounts such as Google Workspace',
+    ),
+    AdminEndpoint(
+      'External MCP servers',
+      NativePaths.adminConnectors,
+      description: 'Servers that supply reviewed tools and resources to Asael',
+    ),
+    AdminEndpoint(
+      'REST APIs',
+      NativePaths.adminOpenapiConnectors,
+      description: 'OpenAPI services imported as governed tools',
+    ),
+    AdminEndpoint(
+      'Connection library',
+      NativePaths.adminConnectionCatalog,
+      description: 'Available connection templates',
+    ),
   ],
 );

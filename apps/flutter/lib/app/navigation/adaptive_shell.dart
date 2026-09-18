@@ -182,7 +182,7 @@ class _DesktopSidebar extends StatelessWidget {
                         ),
                         const SizedBox(height: 16),
                         _DrawerGroup(
-                          label: 'Automation',
+                          label: 'Extend & automate',
                           indices: AdaptiveShell._automationBranches,
                           currentIndex: currentIndex,
                           onSelect: onSelect,
@@ -411,7 +411,7 @@ class _WorkspaceDrawer extends StatelessWidget {
                   ),
                   const SizedBox(height: 16),
                   _DrawerGroup(
-                    label: 'Automation',
+                    label: 'Extend & automate',
                     indices: AdaptiveShell._automationBranches,
                     currentIndex: currentIndex,
                     onSelect: (index) => _select(context, index),

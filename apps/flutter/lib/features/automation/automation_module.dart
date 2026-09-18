@@ -5,24 +5,25 @@ import '../settings/admin_models.dart';
 
 const automationModule = AdminModule(
   id: 'automation',
-  label: 'Automation',
+  label: 'Automations',
   icon: Icons.account_tree_outlined,
-  description: 'Workflows, triggers, executions, and worker operations.',
+  description:
+      'Repeatable work and the schedules or events that start it. Advanced queue controls stay available for recovery.',
   endpoints: [
     AdminEndpoint(
-      'Workflows',
+      'Runs',
       NativePaths.adminWorkflows,
-      description: 'Versioned automation plans',
+      description: 'Current and recent automation runs',
     ),
     AdminEndpoint(
-      'Triggers',
+      'Schedules and triggers',
       NativePaths.adminTriggers,
-      description: 'Schedules and event rules',
+      description: 'Time-based and event-based starting rules',
     ),
     AdminEndpoint(
-      'Operations',
+      'Advanced operations',
       NativePaths.adminOperations,
-      description: 'Background execution health',
+      description: 'Queue, retry, lease, and recovery health',
     ),
   ],
   actions: [],

@@ -181,7 +181,7 @@ class _MacosSidebar extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final groups = <(String, AppDestinationGroup)>[
       ('Workspaces', AppDestinationGroup.workspace),
-      ('Automation', AppDestinationGroup.automation),
+      ('Extend & automate', AppDestinationGroup.automation),
       ('Review', AppDestinationGroup.review),
       ('System', AppDestinationGroup.system),
     ];

@@ -17,15 +17,20 @@
 - Agents `/agents`, `/agents/:id`, `/skills/:id`
 - Knowledge `/knowledge`
   - Memory `/memory`, `/memory/:id`, `/memory/graph`
-- Automation `/automation`
-  - Workflows `/workflows`, `/workflows/:id`
-  - Triggers `/triggers`
-  - Operations `/operations`
-- Integrations `/integrations`
-  - Personal sources `/integrations/personal`
-  - MCP `/integrations/mcp/:id`
-  - OpenAPI `/integrations/openapi/:id`
-- Tools `/tools`, `/tools/:id`
+- Automation Studio `/automation`
+  - Overview `/automation?view=overview`
+  - Automations `/automation?view=automations`
+    - Runs `/workflows`, `/workflows/:id`
+    - Triggers `/triggers`
+  - Skills `/automation?view=skills`, `/skills/:id`
+  - Connections `/automation?view=connections`
+    - Personal sources `/integrations/personal`
+    - External MCP servers `/integrations/mcp/:id`
+    - REST APIs `/integrations/openapi/:id`
+  - Plugins `/automation?view=plugins`, `/plugins/:id`
+  - Advanced capability audit `/automation?view=advanced`
+    - Tools `/tools`, `/tools/:id`
+    - Operations `/operations`
 - Quality `/quality`, `/quality/evaluations/:id`
 - Monitoring `/monitoring`
   - SLOs, incidents, alerts, diagnostics
@@ -39,7 +44,7 @@
 
 - **Phone primary**: Today, Talk, Capture, Work, Inbox.
 - **Phone secondary**: drawer exposes Agents, Knowledge, Automation, Integrations, Tools, Quality, Monitoring, Security, Settings according to permission.
-- **Tablet/desktop primary**: grouped rail/sidebar: Workspace, Automation, Review, System.
+- **Tablet/desktop primary**: grouped rail/sidebar: Workspace, Extend & Automate, Review, System. Automation Studio is the primary entry; legacy Workflow, Integration, and Tool routes remain deep links rather than competing mental models.
 - **Utility**: global search/command palette, notifications, readiness, tenant/role, appearance, account.
 - **Context**: tabs within a domain; sheets on phone and persistent inspectors at wide breakpoints.
 
@@ -81,6 +86,12 @@
 3. Selected resource configuration and actions
 4. Audit/evidence history
 
+### Automation Studio
+1. Plain-language capability map and items needing attention
+2. Automations, Skills, Connections, MCP servers, and Plugins by user intent
+3. Exact permissions, versions, connection health, and recent execution state
+4. Advanced tool registry, queue, recovery, and audit evidence
+
 ## Critical User Flows
 
 ### Start and supervise agent work
@@ -106,11 +117,18 @@
 5. Verify result evidence.
 
 ### Administer a governed integration
-1. Open Integrations and choose OAuth, MCP, or OpenAPI.
+1. Open Automation Studio → Connections and choose an account, MCP server, or REST API.
 2. Register/import without exposing credentials.
 3. Discover and review contract/tool risk.
 4. Activate and run a governed test.
 5. Resolve approval if required and inspect audit evidence.
+
+### Install a declarative plugin
+1. Open Automation Studio → Plugins and inspect the publisher, version, integrity digest, and included resources.
+2. Review requested Skills, external MCP requirements, automation templates, and effective permissions.
+3. Confirm the exact installation preview; credentials are never carried in the plugin manifest.
+4. Install the pinned manifest. Skills remain actor-owned, connections still require their normal credential and contract review, and every resulting tool remains governed.
+5. Disable, upgrade, or remove the plugin without bypassing the existing resource lifecycle or audit ledger.
 
 ## Naming Conventions
 
@@ -123,6 +141,12 @@
 | Agent and skill management | Agents | "Arsenal" may remain as a branded subtitle. |
 | Stored organizational context | Knowledge | Memory is its structured subdomain. |
 | Proof attached to an action | Evidence | Used consistently across runs, artifacts, audits, evaluations. |
+| Reusable agent instructions | Skill | Teaches an Agent how to perform a kind of work; never grants authority. |
+| External protocol connection | MCP server | Supplies tools or resources to Asael. “Asael MCP server” is reserved for the opposite direction in Settings. |
+| Single callable operation | Tool | The governed action an Agent can request. Kept under Advanced for most users. |
+| Triggered repeatable procedure | Automation | A reusable procedure plus schedule/event trigger and its run history. |
+| Versioned extension bundle | Plugin | Declarative package of Skills, connection requirements, and automation templates; never arbitrary server code. |
+| Account, source, or API authorization | Connection | Replaces the broad “Integration” label in primary navigation. |
 
 ## Component Reuse Map
 
@@ -135,13 +159,15 @@
 | EvidenceInspector | Talk, Work, Results, Quality, Security | Typed evidence renderers. |
 | RiskDecisionSheet | Inbox, tools, workflows, integrations | Quorum and break-glass variants. |
 | ResponsiveMasterDetail | Most admin/list domains | Route drill-down on phone, split pane on wide screens. |
+| AutomationStudio | Automation overview and its six views | Tabs on wide screens; compact view menu on narrow screens; advanced operational controls stay disclosed. |
 
 ## Content Growth Plan
 
-All ledgers use cursor pagination, filtering, search, and virtualized lists. Active work is separated from archive. Graphs load bounded neighborhoods. Reports and media use lazy detail retrieval. Dashboard aggregates use stale-while-revalidate caches.
+All ledgers use cursor pagination, filtering, search, and virtualized lists. Active work is separated from archive. Graphs load bounded neighborhoods. Reports and media use lazy detail retrieval. Dashboard aggregates use stale-while-revalidate caches. Plugin installations pin an exact manifest version and digest; catalog growth uses publisher/category filters and never auto-enables newly added permissions.
 
 ## URL Strategy
 
 - Flutter named routes mirror domain nouns and opaque resource IDs.
+- Web uses `/app/automation?view=<view>` as the canonical Automation Studio URL while legacy `/app/workflows`, `/app/connectors`, and `/app/tools` remain compatible deep links.
 - Deep links support missions, projects, threads, runs, approvals, notifications, OAuth completion, and shared capture.
 - Filters use query parameters; sensitive state and session material never appears in links.
