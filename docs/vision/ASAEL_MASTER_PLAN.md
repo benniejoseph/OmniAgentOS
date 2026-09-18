@@ -1182,7 +1182,7 @@ The domain is provider-neutral; Salesforce is the first CRM adapter, not the int
 
 **Current status:** P12.1 through P12.6 are implemented and server-deployed. The signed private
 Android client has been installed and proven on a physical Samsung Android 16
-device. Native contract v7 adds the governed deterministic market-backtest lab
+device. Native contract v7 added the governed deterministic market-backtest lab
 while retaining frozen v6 compatibility. The signed private Android `1.2.0`
 build `3` APK is packaged with SHA-256
 `22fc8cd88a235b6cb89757167e7ffa2ace753b5a997f7c786fe6bff55f196d7e`;
@@ -1200,11 +1200,16 @@ information architecture as the web workspace. P12 completion hardening
 cancels an interrupted voice draft, binds a push acknowledgement to the
 delivery registration's exact current device and mobile session, and safely
 reconstructs every discriminated causal target. Schema v146 and native
-contract v7 are live. The Android client preserves those foundations while
+contract v7 were the completion checkpoint. Schema v185 and native contract
+v15 are now current, with frozen v14 compatibility, durable per-stage receipts,
+cold-launch causal restoration, and approval, meeting, customer-risk, and
+terminal-run producers. The Android client preserves those foundations while
 adding the post-P12 web navigation and task workspaces through the same API. A
 real FCM delivery opened its exact causal target and persisted the
 acknowledgement against the current device registration, closing the former
-operational gate. The owner has explicitly deferred iOS implementation and all
+operational gate. The latest authenticated v15 canary reached FCM provider
+acceptance but the disconnected client returned no app receipt within 12
+seconds, so that attempt is not counted as delivery. The owner has explicitly deferred iOS implementation and all
 app-store publication; neither is a completion blocker for this private Android
 build. Phase 13 is now active as the private macOS client sequence.
 
@@ -1223,29 +1228,37 @@ build. Phase 13 is now active as the private macOS client sequence.
 
 **Current status:** P13.1 and P13.4 are implemented for the private owner-Mac
 product and P13.2 is code-complete, with its real provider-delivered APNs receipt
-still open. P13.3 is complete: migrations 181-182 and canonical v14/v13 are live;
-Asael 1.6.8+15 is installed; cutover fixes `0f5477a` and `590b213` pass the
+still open. Canonical native v15 retains frozen v14 and adds exact received,
+opened, and action receipts plus cold-launch routing. P13.3 is complete:
+migrations 181-182 remain live; cutover fixes `0f5477a` and `590b213` pass the
 credential-restart and natural-language Chrome screenshot canaries; durable
 inspection retains no screenshot or Accessibility snapshot content; and the
 obsolete Playwright Fly app, machine, volume, and secrets are removed. The
 separate worker/OpenAI egress service remains healthy at `v335`. The earlier
 native-v11 TextEdit canary remains valid historical first-slice evidence.
 
-The macOS presentation is now independently designed rather than stretching the
-Android/web composition. Asael 1.7.1 build 17 at source revision `9a365b0`
+The macOS presentation is independently designed rather than stretching the
+Android/web composition. Asael 1.8.0 build 18 includes the v15 notification and
+receipt work on top of the presentation checkpoint at revision `9a365b0`, which
 covers every current main destination, detail route, authentication state,
 Quick Entry, and device-management surface with a native labelled sidebar,
 desktop density, keyboard/pointer behavior, searchable master-detail layouts,
 stable graph interaction, and keyboard-accessible resizable inspectors. The
 40-case presentation gate plus the 14-case responsive patch gate pass, and the
 owner-only package is installed with strict nested signing. The previous
-1.7.0+16 application remains recoverable in Trash.
-This presentation slice does not change the remaining external APNs receipt.
+1.7.1+17 application remains recoverable in Trash. The current package is
+`Asael-1.8.0-18-macOS.dmg`, SHA-256
+`a7f87e2f567484843cbbdddf7fd46e96194ebd9efc37aec003f5f5a1b5b16371`,
+and the installed app has CDHash
+`7366ebb43ee65c58036fd9801ab169172df10e46`. Its host and frozen credential
+broker survive a cold launch; rendered-session inspection still requires an
+unlocked Mac. This release does not misstate the remaining external APNs proof.
 
 ADR 012 selects the shared Flutter client with a deliberately thin AppKit host,
 and migration 178 enrolls `macos` without adding a second backend. Production
-native contract v14 retains frozen v13 and publishes only the macOS local-device
-courier; the retired remote Computer Use frame read is absent.
+native contract v15 retains frozen v14, publishes the macOS local-device courier
+and durable notification receipts, and keeps the retired remote Computer Use
+frame read absent.
 The host provides persistent menu-bar and multi-window lifecycle, Today, Command,
 Quick Entry, Capture, and Inbox commands, configurable global shortcuts, a bounded
 editable prompt queue, and a richer artifact/file preview and save rail. A
@@ -1262,11 +1275,20 @@ indexing is confirmed. Security-scoped drag/drop and the sandboxed registered
 `AsaelShare` extension both stream files into that same queue through App
 Group `group.app.omniagent.omniagent`; the group container is present on the
 owner Mac. Native notification categories perform causal open, approve, reject,
-and acknowledgement actions. APNs registration persists the real token,
-environment, delivery receipt, and governed acknowledgement with encrypted
-retry. The only remaining operational proof is one provider-delivered APNs
-notification: the owner-only self-signed identity has no Apple Team Identifier
-or `aps-environment`, and no APNs provider credential is available.
+and acknowledgement actions. Native v15 persists immutable tenant/actor/device/
+session-scoped received, opened, and action receipts, migrates v14 payloads,
+queues each stage durably across restart, and restores the exact causal target on
+cold launch. The approval, meeting, customer-risk, and terminal-run producers
+apply pagination, deduplication, preferences, and quiet hours. APNs registration
+persists the real token and environment when Apple grants them, while the
+governed receipt/acknowledgement path retries safely. Debug/Profile and the
+owner-only self-signed LocalRelease contain no restricted APS entitlement;
+explicit DebugApns requests development, and the Apple-provisioned Release path
+requests production and validates its embedded profile. The only remaining
+operational proof is one provider-delivered APNs notification: the owner-only
+self-signed identity has no Apple Team Identifier or `aps-environment`, this Mac
+has no valid Apple identity or provisioning profile, and no APNs provider
+credential is available.
 
 P13.3 now has one product Computer Use target: **This Mac**. Native Talk defaults
 to no local control, preserves an explicit target through queue and retry, and
@@ -3345,12 +3367,25 @@ The task tables above are the source of truth. A phase is checked only after eve
 - [ ] **Phase 9 — app control, browser, voice, notifications, communications, and AP2:** P9.1–P9.18 complete for the selected private-app scope; P9.19 remains held behind reviewed live adapters and human-present proof.
 - [x] **Phase 10 — Workspaces and Salesforce-connected CSM:** P10.1–P10.14 complete; live Salesforce activation remains external configuration, not implementation.
 - [x] **Phase 11 — cohesive product projections:** P11.1–P11.9 complete.
-- [x] **Phase 12 — mobile application:** P12.1–P12.6 and the private Android operational gate are complete; iOS and app-store publication are owner-excluded.
-- [ ] **Phase 13 — macOS application:** P13.1, P13.3, and P13.4 are complete for the private owner-Mac product. P13.2 is code-complete with bulk Capture, drag/drop, registered Share Extension/App Group intake, native notification actions, APNs token/environment/receipt handling, and governed acknowledgement; one real provider-delivered APNs receipt remains externally blocked by the absent Apple Team push entitlement and APNs provider credential. P13.3 has proven source/runtime Playwright removal, installed migrations 181-182 with zero active remote-browser authority and the repaired `open_url` boundary, canonical native v14/v13, signed Asael `1.6.8` build `15`, credential-restart and natural-language Chrome screenshot canaries, zero durable screenshot/Accessibility content, and deletion of the obsolete Fly browser app, machine, volume, and secrets. The surviving worker/OpenAI egress service is healthy at `v335`. Developer ID/notarized distribution is outside the private-install scope.
+- [x] **Phase 12 — mobile application:** P12.1–P12.6 and the private Android operational gate are complete; native v15 adds durable received/opened/action receipts, cold-launch handling, and complete approval/meeting/customer-risk/terminal-run producers while retaining frozen v14. The latest live FCM canary reached provider acceptance but is not counted as delivery because the disconnected Android client returned no v15 receipt within 12 seconds. iOS and app-store publication are owner-excluded.
+- [ ] **Phase 13 — macOS application:** P13.1, P13.3, and P13.4 are complete for the private owner-Mac product. P13.2 is code-complete with bulk Capture, drag/drop, registered Share Extension/App Group intake, native notification actions, durable v15 receipts/cold-launch handling, APNs token/environment handling, and governed acknowledgement. Its entitlement split now makes restricted APS authority explicit and fail-closed, but one real provider-delivered APNs receipt remains externally blocked by the absent Apple Team identity/profile and APNs provider credential. P13.3 has proven source/runtime Playwright removal, installed migrations 181-182 with zero active remote-browser authority and the repaired `open_url` boundary, credential-restart and natural-language Chrome screenshot canaries, zero durable screenshot/Accessibility content, and deletion of the obsolete Fly browser app, machine, volume, and secrets. Asael `1.8.0` build `18` is installed with APS correctly absent from the private self-signed package. The surviving worker/OpenAI egress service is healthy at `v335`. Developer ID/notarized distribution is outside the private-install scope.
 
-The latest installed presentation checkpoint is Asael 1.7.1 build 17 at
-revision `9a365b0`; it adds no new Phase 13 infrastructure gate. The unchecked
-Phase 13 state continues to mean only the external provider-delivered APNs proof.
+The latest installed native checkpoint is Asael 1.8.0 build 18. Migrations
+183–185 are installed, Vercel deployment `dpl_DbYxMeehWu24JFLLrJ95tW8mf5om`
+is canonical and healthy at exact revision
+`0f0a3f2fa64d08b5f3384c44943771d77d36af21`, and discovery reports native v15
+current/v14 previous. The unchecked Phase 13 state continues to mean only the
+external provider-delivered APNs proof.
+
+The same release introduces TypeSafe Jev as a Settings-discovered provider and
+reserves it as the only provider for the dedicated `semantic_decision` scope.
+The 1.8-second bounded shadow runs only after explicit enrollment with a sealed
+tenant credential and exact discovered model, records typed digest-only
+agreement/disagreement, timeout, and usage evidence, and cannot influence the
+live route, risk, approval, tool, or mutation. Its offline pilot gates pass. No
+live Jev call is claimed because no TypeSafe API key or semantic-decision model
+assignment is configured; `OMNIAGENT_SEMANTIC_DECISION_SHADOW_DISABLED=true`
+remains the immediate kill switch.
 
 ## 16. Native-only Computer Use cutover addendum
 
