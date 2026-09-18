@@ -1,0 +1,12 @@
+title = "OmniAgent secret scanning"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Firebase native client configuration contains public project-identification API keys."
+targetRules = ["gcp-api-key", "generic-api-key"]
+paths = [
+  '''^apps/flutter/android/app/google-services\.json$''',
+  '''^apps/flutter/(ios|macos)/Runner/GoogleService-Info\.plist$''',
+]
