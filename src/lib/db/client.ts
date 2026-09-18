@@ -1616,6 +1616,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[181],
       up: ensureLocalComputerOpenUrlActionV1,
     },
+    {
+      ...databaseSchemaMigrations[182],
+      up: ensureActorRlsPolicyCompositionRepairV1,
+    },
   ];
 }
 
@@ -13779,6 +13783,116 @@ async function ensureActorRlsPolicyRepairV1(sql: SqlClient) {
           AND relation.relname = ANY(expected_tables)
       ) <> 2 * cardinality(expected_tables) THEN
         RAISE EXCEPTION 'Actor-owned RLS policy boundary is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$;
+  `);
+}
+
+async function ensureActorRlsPolicyCompositionRepairV1(sql: SqlClient) {
+  // Existing databases can have either the historical standalone v123 policy
+  // or the embedded v123 composition. Rebuild both policy names so every path
+  // converges on one permissive tenant boundary AND one restrictive actor
+  // boundary without widening access during an in-place upgrade.
+  await sql.query(`
+    DO $migration$
+    DECLARE
+      table_name TEXT;
+      policy_schema TEXT := current_schema();
+      expected_tables CONSTANT TEXT[] := ARRAY[
+        'omni_a2a_peer_rollouts',
+        'omni_a2a_task_mappings',
+        'omni_a2a_exchanges',
+        'omni_a2a_safety_reservations',
+        'omni_a2a_tool_call_claims',
+        'omni_trash_items',
+        'omni_trash_effect_receipts',
+        'omni_approval_grants',
+        'omni_approval_grant_claims',
+        'omni_browser_profiles',
+        'omni_browser_profile_bindings',
+        'omni_browser_takeovers'
+      ];
+    BEGIN
+      FOREACH table_name IN ARRAY expected_tables LOOP
+        IF to_regclass(format('%I.%I', policy_schema, table_name)) IS NULL THEN
+          RAISE EXCEPTION 'Actor-owned RLS table % is missing', table_name
+            USING ERRCODE = '55000';
+        END IF;
+
+        EXECUTE format(
+          'ALTER TABLE %I.%I ENABLE ROW LEVEL SECURITY',
+          policy_schema, table_name
+        );
+        EXECUTE format(
+          'ALTER TABLE %I.%I FORCE ROW LEVEL SECURITY',
+          policy_schema, table_name
+        );
+        EXECUTE format(
+          'DROP POLICY IF EXISTS omni_tenant_isolation ON %I.%I',
+          policy_schema, table_name
+        );
+        EXECUTE format(
+          'DROP POLICY IF EXISTS %I ON %I.%I',
+          table_name || '_actor', policy_schema, table_name
+        );
+        EXECUTE format(
+          'CREATE POLICY omni_tenant_isolation ON %I.%I AS PERMISSIVE FOR ALL TO PUBLIC USING (omni_tenant_visible(tenant_id)) WITH CHECK (omni_tenant_visible(tenant_id))',
+          policy_schema, table_name
+        );
+        EXECUTE format(
+          'CREATE POLICY %I ON %I.%I AS RESTRICTIVE FOR ALL TO PUBLIC USING (omni_system_scope_enabled() OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)) WITH CHECK (omni_system_scope_enabled() OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id))',
+          table_name || '_actor', policy_schema, table_name
+        );
+      END LOOP;
+
+      IF EXISTS (
+        SELECT 1
+        FROM pg_class relation
+        JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+        WHERE namespace.nspname = policy_schema
+          AND relation.relname = ANY(expected_tables)
+          AND (NOT relation.relrowsecurity OR NOT relation.relforcerowsecurity)
+      ) OR (
+        SELECT count(*)
+        FROM pg_policy policy
+        JOIN pg_class relation ON relation.oid = policy.polrelid
+        JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+        WHERE namespace.nspname = policy_schema
+          AND relation.relname = ANY(expected_tables)
+          AND policy.polname = relation.relname || '_actor'
+          AND NOT policy.polpermissive
+          AND policy.polcmd = '*'
+          AND policy.polroles = ARRAY[0::OID]
+          AND pg_get_expr(policy.polqual, policy.polrelid) =
+            '(omni_system_scope_enabled() OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id))'
+          AND pg_get_expr(policy.polwithcheck, policy.polrelid) =
+            '(omni_system_scope_enabled() OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id))'
+      ) <> cardinality(expected_tables) OR (
+        SELECT count(*)
+        FROM pg_policy policy
+        JOIN pg_class relation ON relation.oid = policy.polrelid
+        JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+        WHERE namespace.nspname = policy_schema
+          AND relation.relname = ANY(expected_tables)
+          AND policy.polname = 'omni_tenant_isolation'
+          AND policy.polpermissive
+          AND policy.polcmd = '*'
+          AND policy.polroles = ARRAY[0::OID]
+          AND pg_get_expr(policy.polqual, policy.polrelid) =
+            'omni_tenant_visible(tenant_id)'
+          AND pg_get_expr(policy.polwithcheck, policy.polrelid) =
+            'omni_tenant_visible(tenant_id)'
+      ) <> cardinality(expected_tables) OR (
+        SELECT count(*)
+        FROM pg_policy policy
+        JOIN pg_class relation ON relation.oid = policy.polrelid
+        JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+        WHERE namespace.nspname = policy_schema
+          AND relation.relname = ANY(expected_tables)
+      ) <> 2 * cardinality(expected_tables) THEN
+        RAISE EXCEPTION 'Actor-owned RLS policy composition is invalid'
           USING ERRCODE = '55000';
       END IF;
     END

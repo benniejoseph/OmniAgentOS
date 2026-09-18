@@ -534,13 +534,14 @@ databaseDescribe("Postgres schema integration", () => {
     expect(rows.every((row) => row.relrowsecurity && row.relforcerowsecurity)).toBe(true);
   });
 
-  test("composes tenant and actor RLS for repaired actor-owned tables", async () => {
+  test("converges repaired tables on exact tenant and actor RLS", async () => {
     const policies = await admin`
       SELECT
         relation.relname AS table_name,
         policy.polname AS policy_name,
         policy.polpermissive AS permissive,
         policy.polcmd::TEXT AS command,
+        policy.polroles = ARRAY[0::OID] AS public_role,
         pg_get_expr(policy.polqual, policy.polrelid) AS using_expression,
         pg_get_expr(policy.polwithcheck, policy.polrelid) AS check_expression
       FROM pg_policy policy
@@ -562,6 +563,7 @@ databaseDescribe("Postgres schema integration", () => {
           policy_name: `${tableName}_actor`,
           permissive: false,
           command: "*",
+          public_role: true,
           using_expression:
             "(omni_system_scope_enabled() OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id))",
           check_expression:
@@ -572,6 +574,7 @@ databaseDescribe("Postgres schema integration", () => {
           policy_name: "omni_tenant_isolation",
           permissive: true,
           command: "*",
+          public_role: true,
           using_expression: "omni_tenant_visible(tenant_id)",
           check_expression: "omni_tenant_visible(tenant_id)",
         },
