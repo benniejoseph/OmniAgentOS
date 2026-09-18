@@ -66,7 +66,7 @@ describe("embedded actor RLS policy repair", () => {
   });
 
   it("appends a production repair after v182", () => {
-    expect(migrationManifest.at(-1)).toEqual({
+    expect(migrationManifest.find((migration) => migration.version === 183)).toEqual({
       version: 183,
       name: "actor_rls_policy_composition_repair_v1",
       checksum:

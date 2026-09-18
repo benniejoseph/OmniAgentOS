@@ -56,6 +56,12 @@ describe("functional model assignment contract", () => {
     expect(modelSupportsAssignmentRole("web_search", "anthropic", {
       capabilities: ["text", "tools"],
     })).toBe(false);
+    expect(modelSupportsAssignmentRole("semantic_decision", "typesafe", {
+      capabilities: ["semantic_decision"],
+    })).toBe(true);
+    expect(modelSupportsAssignmentRole("orchestrator", "typesafe", {
+      capabilities: ["semantic_decision"],
+    })).toBe(false);
   });
 
   it("exposes fallback only where the runtime executes and receipts attempts", () => {
@@ -72,6 +78,7 @@ describe("functional model assignment contract", () => {
     expect(modelAssignmentRoleSupportsFallback("computer_use")).toBe(false);
     expect(modelAssignmentRoleSupportsFallback("speech_synthesis")).toBe(false);
     expect(modelAssignmentRoleSupportsFallback("realtime_transcription")).toBe(false);
+    expect(modelAssignmentRoleSupportsFallback("semantic_decision")).toBe(false);
   });
 
   it("binds activation identity, revision, and validation time into the digest", () => {

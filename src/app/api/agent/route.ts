@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { after } from "next/server";
 import { z } from "zod";
 import {
   AGENT_MAX_MESSAGE_CHARS,
@@ -90,6 +91,7 @@ import {
   routeAgentRequest,
 } from "@/lib/orchestration/supervisor";
 import { resolveSemanticIntent } from "@/lib/orchestration/semantic-intent-resolver";
+import { runRoutingSemanticDecisionShadow } from "@/lib/semantic-decisions/routing-shadow";
 import { redactSensitive } from "@/lib/security/context";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
@@ -606,6 +608,36 @@ async function POSTHandler(request: Request) {
       ? "direct"
       : parsed.data.strategy,
   );
+  const semanticDecisionShadowScope = executionScopeFromSecurityContext(context, {
+    executingPrincipalType: "agent",
+    executingPrincipalId:
+      customAgent?.id || requestedBuiltInAgent || "atlas",
+    projectId: parsed.data.projectId,
+    correlationId: requestId,
+    purpose: "agent.intent.semantic_decision_shadow",
+  });
+  after(async () => {
+    try {
+      await runRoutingSemanticDecisionShadow({
+        tenantId: context.tenantId,
+        actorId: context.actorId,
+        requestId,
+        message: safeRequestMessage,
+        deterministicFallbackRoute: deterministicDecision.route,
+        observedLiveRoute: preliminaryDecision.route,
+        executionScope: semanticDecisionShadowScope,
+      });
+    } catch (error) {
+      console.warn(
+        "Semantic decision shadow receipt persistence failed.",
+        String(redactSensitive(
+          error instanceof Error
+            ? error.message
+            : "Unknown semantic decision shadow error.",
+        )),
+      );
+    }
+  });
 
   try {
     await appendScopedDomainEvent({

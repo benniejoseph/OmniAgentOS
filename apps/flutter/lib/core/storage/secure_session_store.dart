@@ -28,6 +28,8 @@ class SecureSessionStore {
   static const _pushPreviewPolicyKey = 'asael.push_preview_policy_v1';
   static const _pendingPushAcknowledgementKey =
       'asael.pending_push_acknowledgement_v1';
+  static const pendingPushReceiptRecordKeyPrefix =
+      'asael.pending_push_receipt_v1.';
   static const _legacyTokenKey = 'omniagent.session_token';
   final AsaelSecureValueStore _storage;
   bool _biometricReleaseUnlocked = false;
@@ -159,6 +161,56 @@ class SecureSessionStore {
   Future<void> clearPendingPushAcknowledgement() =>
       _delete(_pendingPushAcknowledgementKey);
 
+  bool get supportsPendingPushReceiptRecords =>
+      _storage is AsaelEnumerableSecureValueStore;
+
+  Future<Map<String, String>> readAllPendingPushReceiptRecords() async {
+    final storage = _storage;
+    if (storage is! AsaelEnumerableSecureValueStore) {
+      throw UnsupportedError(
+        'This secure store cannot enumerate push receipt records.',
+      );
+    }
+    final values = await _bounded(storage.readAll());
+    return Map.unmodifiable(
+      Map.fromEntries(
+        values.entries.where(
+          (entry) => entry.key.startsWith(pendingPushReceiptRecordKeyPrefix),
+        ),
+      ),
+    );
+  }
+
+  Future<String?> readPendingPushReceiptRecord(String key) {
+    _validatePendingPushReceiptRecordKey(key);
+    return _read(key);
+  }
+
+  Future<void> writePendingPushReceiptRecord(String key, String value) {
+    _validatePendingPushReceiptRecordKey(key);
+    return _write(key, value);
+  }
+
+  Future<void> clearPendingPushReceiptRecord(String key) {
+    _validatePendingPushReceiptRecordKey(key);
+    return _delete(key);
+  }
+
+  void _validatePendingPushReceiptRecordKey(String key) {
+    final suffix = key.startsWith(pendingPushReceiptRecordKeyPrefix)
+        ? key.substring(pendingPushReceiptRecordKeyPrefix.length)
+        : '';
+    if (!RegExp(r'^[A-Za-z0-9_-]{43}$').hasMatch(suffix)) {
+      throw ArgumentError.value(key, 'key', 'Invalid push receipt record key.');
+    }
+  }
+
+  Future<void> _clearPendingPushReceiptRecords() async {
+    if (!supportsPendingPushReceiptRecords) return;
+    final records = await readAllPendingPushReceiptRecords();
+    await Future.wait(records.keys.map(clearPendingPushReceiptRecord));
+  }
+
   Future<DeviceSecretMaterial> readOrCreateCaptureOutboxSecret() =>
       _readOrCreateDeviceSecret(_captureOutboxSecretKey);
 
@@ -252,6 +304,7 @@ class SecureSessionStore {
       _delete(_legacyTokenKey),
       _delete(_pushRegistrationIdKey),
       _delete(_pendingPushAcknowledgementKey),
+      _clearPendingPushReceiptRecords(),
     ]);
     _biometricReleaseUnlocked = false;
   }
@@ -270,6 +323,7 @@ class SecureSessionStore {
       _delete(_pushRegistrationIdKey),
       _delete(_pushPreviewPolicyKey),
       _delete(_pendingPushAcknowledgementKey),
+      _clearPendingPushReceiptRecords(),
     ]);
     _biometricReleaseUnlocked = false;
   }
@@ -287,7 +341,12 @@ abstract interface class AsaelSecureValueStore {
   Future<void> delete({required String key});
 }
 
-class FlutterSecureValueStore implements AsaelSecureValueStore {
+abstract interface class AsaelEnumerableSecureValueStore
+    implements AsaelSecureValueStore {
+  Future<Map<String, String>> readAll();
+}
+
+class FlutterSecureValueStore implements AsaelEnumerableSecureValueStore {
   const FlutterSecureValueStore(this.storage);
 
   final FlutterSecureStorage storage;
@@ -307,6 +366,9 @@ class FlutterSecureValueStore implements AsaelSecureValueStore {
 
   @override
   Future<void> delete({required String key}) => storage.delete(key: key);
+
+  @override
+  Future<Map<String, String>> readAll() => storage.readAll();
 }
 
 /// Debug-only adapter for ordinary `flutter run`, whose Xcode product does not

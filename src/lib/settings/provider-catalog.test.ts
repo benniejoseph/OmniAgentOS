@@ -1,6 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { inferProviderModelCapabilities } from "@/lib/settings/provider-catalog";
+import {
+  discoverProviderModels,
+  inferProviderModelCapabilities,
+} from "@/lib/settings/provider-catalog";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("provider model capability inference", () => {
   it("recognizes configurable image, video, and current computer-use families", () => {
@@ -11,6 +18,37 @@ describe("provider model capability inference", () => {
     );
     expect(inferProviderModelCapabilities("gemini-2.5-computer-use-preview")).toEqual(
       expect.arrayContaining(["computer_use"]),
+    );
+  });
+
+  it("discovers TypeSafe models as semantic-decision-only catalog entries", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      models: [{
+        name: "jev-release-2026-09",
+        description: "Typed semantic decision model",
+        release_date: "2026-09-01",
+      }],
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const models = await discoverProviderModels("typesafe", {
+      apiKey: "typesafe-test-key-not-a-real-secret",
+    });
+
+    expect(models).toEqual([
+      expect.objectContaining({
+        modelId: "jev-release-2026-09",
+        displayName: "jev-release-2026-09",
+        capabilities: ["semantic_decision"],
+      }),
+    ]);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.typesafe.ai/v1/models",
+      expect.objectContaining({
+        headers: {
+          authorization: "Bearer typesafe-test-key-not-a-real-secret",
+        },
+      }),
     );
   });
 });

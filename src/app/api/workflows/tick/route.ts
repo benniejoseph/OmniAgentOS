@@ -49,6 +49,7 @@ import {
 import { processDueDailyBriefs } from "@/lib/today/briefs";
 import { processDueNotifications } from "@/lib/today/notifications";
 import { dispatchMobilePushDeliveries } from "@/lib/mobile/push-store";
+import { processDomainMobilePushProducers } from "@/lib/mobile/push-producers";
 import { processActiveProjectExecutions } from "@/lib/projects/execution";
 import { syncDuePersonalProviders } from "@/lib/connectors/personal-sync";
 import { syncDueSalesforceConnections } from "@/lib/customer-success/salesforce-sync";
@@ -441,6 +442,10 @@ async function POSTHandler(request: Request) {
       tenantId: context.tenantId,
       limit: 20,
     });
+    const domainNotifications = await processDomainMobilePushProducers({
+      tenantId: context.tenantId,
+      limit: 20,
+    });
     const mobilePush = await dispatchMobilePushDeliveries({
       tenantId: context.tenantId,
       limit: 20,
@@ -506,7 +511,8 @@ async function POSTHandler(request: Request) {
         alertEnqueued: alerts?.enqueued.length || 0,
         alertProcessed: alerts?.dispatch.processed.length || 0,
         mobilePushProcessed: mobilePush.processed,
-        mobilePushDelivered: mobilePush.delivered,
+        domainNotificationsQueued: domainNotifications.queued,
+        mobilePushProviderAccepted: mobilePush.providerAccepted,
       },
     });
     return Response.json({
@@ -517,6 +523,7 @@ async function POSTHandler(request: Request) {
       recoveredToolClaims,
       dailyBriefs,
       personalNotifications,
+      domainNotifications,
       mobilePush,
       projectExecutions,
       connectedSourceSyncs,
@@ -598,6 +605,14 @@ function summarizeScheduledOutcome(
     maintenanceFailures: scheduled.maintenance.filter(
       (item) => Boolean(item.maintenanceError),
     ).length,
+    domainNotificationsQueued: scheduled.maintenance.reduce(
+      (total, item) => total + item.domainNotificationsQueued,
+      0,
+    ),
+    mobilePushProviderAccepted: scheduled.maintenance.reduce(
+      (total, item) => total + item.mobilePushProviderAccepted,
+      0,
+    ),
   };
   const activityCount = Object.values(counts).reduce(
     (total, value) => total + value,
@@ -757,7 +772,8 @@ async function runAllTenantScheduledWork({
     dailyBriefsGenerated: number;
     personalNotificationsProcessed: number;
     mobilePushProcessed: number;
-    mobilePushDelivered: number;
+    domainNotificationsQueued: number;
+    mobilePushProviderAccepted: number;
     projectExecutionsProcessed: number;
     connectedSourcesSynced: number;
     salesforceConnectionsSynced: number;
@@ -884,7 +900,8 @@ async function runTenantMaintenance({
     dailyBriefsGenerated: number;
     personalNotificationsProcessed: number;
     mobilePushProcessed: number;
-    mobilePushDelivered: number;
+    domainNotificationsQueued: number;
+    mobilePushProviderAccepted: number;
     projectExecutionsProcessed: number;
     connectedSourcesSynced: number;
     salesforceConnectionsSynced: number;
@@ -901,7 +918,8 @@ async function runTenantMaintenance({
     dailyBriefsGenerated: 0,
     personalNotificationsProcessed: 0,
     mobilePushProcessed: 0,
-    mobilePushDelivered: 0,
+    domainNotificationsQueued: 0,
+    mobilePushProviderAccepted: 0,
     projectExecutionsProcessed: 0,
     connectedSourcesSynced: 0,
     salesforceConnectionsSynced: 0,
@@ -946,9 +964,14 @@ async function runTenantMaintenance({
     ).length;
   }
   if (Date.now() < deadlineAt) {
+    result.domainNotificationsQueued = (
+      await processDomainMobilePushProducers({ tenantId, limit: 20 })
+    ).queued;
+  }
+  if (Date.now() < deadlineAt) {
     const mobilePush = await dispatchMobilePushDeliveries({ tenantId, limit: 20 });
     result.mobilePushProcessed = mobilePush.processed;
-    result.mobilePushDelivered = mobilePush.delivered;
+    result.mobilePushProviderAccepted = mobilePush.providerAccepted;
   }
   if (Date.now() < deadlineAt) {
     result.projectExecutionsProcessed = (
@@ -999,7 +1022,8 @@ function failedTenantMaintenance(
     dailyBriefsGenerated: 0,
     personalNotificationsProcessed: 0,
     mobilePushProcessed: 0,
-    mobilePushDelivered: 0,
+    domainNotificationsQueued: 0,
+    mobilePushProviderAccepted: 0,
     projectExecutionsProcessed: 0,
     connectedSourcesSynced: 0,
     salesforceConnectionsSynced: 0,

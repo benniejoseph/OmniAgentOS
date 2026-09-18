@@ -117,6 +117,139 @@ class RunnerTests: XCTestCase {
     XCTAssertTrue(CredentialBrokerCutoverPolicy.hasExactReceipt(persisted))
   }
 
+  func testNotificationBridgeStorePersistsDeduplicatesAndRemovesEvents() throws {
+    let suiteName = "app.omniagent.omniagent.RunnerTests.push.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+    defaults.removePersistentDomain(forName: suiteName)
+    defer {
+      defaults.removePersistentDomain(forName: suiteName)
+      _ = defaults.synchronize()
+    }
+    let store = NativeNotificationBridgeEventStore(defaults: defaults)
+    let arguments: [String: Any] = [
+      "data": [
+        "asael": [
+          "schemaVersion": "1",
+          "deliveryId": "delivery-one",
+          "causeKind": "meeting",
+          "causeId": "meeting-one",
+          "deepLink": "/meetings/meeting-one",
+        ],
+      ],
+      "appLifecycle": "foreground",
+      "observedAt": "2026-09-18T12:00:00Z",
+    ]
+
+    XCTAssertTrue(store.enqueue(method: "notificationReceived", arguments: arguments))
+    XCTAssertTrue(store.enqueue(method: "notificationReceived", arguments: arguments))
+    XCTAssertEqual(store.count, 1)
+
+    let reloaded = NativeNotificationBridgeEventStore(defaults: defaults)
+    let event = try XCTUnwrap(reloaded.first())
+    XCTAssertEqual(event["method"] as? String, "notificationReceived")
+    let id = try XCTUnwrap(event["id"] as? String)
+    reloaded.remove(id: id)
+    XCTAssertEqual(reloaded.count, 0)
+  }
+
+  func testNotificationBridgeStorePrioritizesUserActionWhenFull() throws {
+    let suiteName = "app.omniagent.omniagent.RunnerTests.push-full.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+    defaults.removePersistentDomain(forName: suiteName)
+    defer {
+      defaults.removePersistentDomain(forName: suiteName)
+      _ = defaults.synchronize()
+    }
+    let store = NativeNotificationBridgeEventStore(defaults: defaults)
+    for index in 0..<NativeNotificationBridgeEventStore.maximumEvents {
+      XCTAssertTrue(
+        store.enqueue(
+          method: "notificationReceived",
+          arguments: notificationArguments(deliveryId: "delivery-\(index)")
+        )
+      )
+    }
+
+    XCTAssertTrue(
+      store.enqueue(
+        method: "notificationAction",
+        arguments: notificationArguments(
+          deliveryId: "delivery-action",
+          action: "complete"
+        )
+      )
+    )
+    XCTAssertEqual(store.count, NativeNotificationBridgeEventStore.maximumEvents)
+
+    var receivedCount = 0
+    var actionCount = 0
+    while let event = store.first(), let id = event["id"] as? String {
+      switch event["method"] as? String {
+      case "notificationReceived": receivedCount += 1
+      case "notificationAction": actionCount += 1
+      default: XCTFail("Unexpected notification bridge method")
+      }
+      store.remove(id: id)
+    }
+    XCTAssertEqual(receivedCount, NativeNotificationBridgeEventStore.maximumEvents - 1)
+    XCTAssertEqual(actionCount, 1)
+  }
+
+  func testNotificationBridgeStoreRejectsActionWhenOnlyActionsAreRetained() throws {
+    let suiteName = "app.omniagent.omniagent.RunnerTests.push-actions.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+    defaults.removePersistentDomain(forName: suiteName)
+    defer {
+      defaults.removePersistentDomain(forName: suiteName)
+      _ = defaults.synchronize()
+    }
+    let store = NativeNotificationBridgeEventStore(defaults: defaults)
+    for index in 0..<NativeNotificationBridgeEventStore.maximumEvents {
+      XCTAssertTrue(
+        store.enqueue(
+          method: "notificationAction",
+          arguments: notificationArguments(
+            deliveryId: "delivery-action-\(index)",
+            action: "complete"
+          )
+        )
+      )
+    }
+
+    XCTAssertFalse(
+      store.enqueue(
+        method: "notificationAction",
+        arguments: notificationArguments(
+          deliveryId: "delivery-overflow",
+          action: "dismiss"
+        )
+      )
+    )
+    XCTAssertEqual(store.count, NativeNotificationBridgeEventStore.maximumEvents)
+  }
+
+  func testNotificationBridgeStoreRollsBackFailedPersistence() throws {
+    let suiteName = "app.omniagent.omniagent.RunnerTests.push-failure.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+    defaults.removePersistentDomain(forName: suiteName)
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let store = NativeNotificationBridgeEventStore(
+      defaults: defaults,
+      synchronize: { false }
+    )
+
+    XCTAssertFalse(
+      store.enqueue(
+        method: "notificationAction",
+        arguments: notificationArguments(
+          deliveryId: "delivery-failure",
+          action: "snooze15"
+        )
+      )
+    )
+    XCTAssertEqual(store.count, 0)
+  }
+
   private func migrationRequiredProbe() -> [String: Any] {
     [
       "state": "migration_required",
@@ -124,5 +257,26 @@ class RunnerTests: XCTestCase {
       "legacyItemCount": 7,
       "targetItemCount": 7,
     ]
+  }
+
+  private func notificationArguments(
+    deliveryId: String,
+    action: String? = nil
+  ) -> [String: Any] {
+    var arguments: [String: Any] = [
+      "data": [
+        "asael": [
+          "schemaVersion": "1",
+          "deliveryId": deliveryId,
+          "causeKind": "meeting",
+          "causeId": "meeting-one",
+          "deepLink": "/meetings/meeting-one",
+        ],
+      ],
+      "appLifecycle": "background",
+      "observedAt": "2026-09-18T12:00:00Z",
+    ]
+    if let action { arguments["action"] = action }
+    return arguments
   }
 }

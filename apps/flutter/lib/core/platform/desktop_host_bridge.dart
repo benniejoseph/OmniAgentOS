@@ -8,6 +8,9 @@ typedef DesktopRouteOpener = void Function(String route);
 typedef DesktopNotificationActionHandler = Future<void> Function(
   DesktopNotificationAction action,
 );
+typedef DesktopNotificationReceivedHandler = Future<void> Function(
+  DesktopNotificationReceived delivery,
+);
 typedef DesktopApnsRegistrationHandler = Future<void> Function(
   DesktopApnsRegistration registration,
 );
@@ -61,10 +64,18 @@ class DesktopShortcutState {
 }
 
 class DesktopNotificationAction {
-  const DesktopNotificationAction({required this.command, required this.data});
+  const DesktopNotificationAction({
+    required this.command,
+    required this.data,
+    required this.appLifecycle,
+    required this.observedAt,
+  });
 
   factory DesktopNotificationAction.fromArguments(Object? arguments) {
-    if (arguments is! Map || arguments.length != 2) {
+    if (arguments is! Map ||
+        (arguments.length != 2 &&
+            arguments.length != 3 &&
+            arguments.length != 4)) {
       throw const FormatException('The native notification action is invalid.');
     }
     final command = DesktopNotificationCommand.values.firstWhere(
@@ -79,14 +90,72 @@ class DesktopNotificationAction {
         'The native notification payload is invalid.',
       );
     }
+    final appLifecycle = _desktopNotificationLifecycle(
+      arguments['appLifecycle'],
+    );
     return DesktopNotificationAction(
       command: command,
       data: Map<String, dynamic>.from(data),
+      appLifecycle: appLifecycle,
+      observedAt: _desktopNotificationObservedAt(arguments['observedAt']),
     );
   }
 
   final DesktopNotificationCommand command;
   final Map<String, dynamic> data;
+  final String appLifecycle;
+  final DateTime observedAt;
+}
+
+class DesktopNotificationReceived {
+  const DesktopNotificationReceived({
+    required this.data,
+    required this.appLifecycle,
+    required this.observedAt,
+  });
+
+  factory DesktopNotificationReceived.fromArguments(Object? arguments) {
+    if (arguments is! Map ||
+        (arguments.length != 2 && arguments.length != 3) ||
+        arguments['data'] is! Map) {
+      throw const FormatException(
+        'The native notification delivery is invalid.',
+      );
+    }
+    return DesktopNotificationReceived(
+      data: Map<String, dynamic>.from(arguments['data'] as Map),
+      appLifecycle: _desktopNotificationLifecycle(arguments['appLifecycle']),
+      observedAt: _desktopNotificationObservedAt(arguments['observedAt']),
+    );
+  }
+
+  final Map<String, dynamic> data;
+  final String appLifecycle;
+  final DateTime observedAt;
+}
+
+String _desktopNotificationLifecycle(Object? value) => switch (value) {
+  'foreground' || 'background' || 'terminated' || 'unknown' => value as String,
+  null => 'unknown',
+  _ => throw const FormatException(
+    'The native notification lifecycle is invalid.',
+  ),
+};
+
+DateTime _desktopNotificationObservedAt(Object? value) {
+  if (value == null) return DateTime.now().toUtc();
+  if (value is! String || value.length > 64) {
+    throw const FormatException(
+      'The native notification observation time is invalid.',
+    );
+  }
+  final parsed = DateTime.tryParse(value);
+  if (parsed == null) {
+    throw const FormatException(
+      'The native notification observation time is invalid.',
+    );
+  }
+  return parsed.toUtc();
 }
 
 class DesktopApnsRegistration {
@@ -182,6 +251,9 @@ class DesktopHostBridge {
   String? _pendingRoute;
   DesktopNotificationActionHandler? _notificationHandler;
   final List<DesktopNotificationAction> _pendingNotificationActions = [];
+  DesktopNotificationReceivedHandler? _notificationReceivedHandler;
+  final List<DesktopNotificationReceived> _pendingNotificationDeliveries = [];
+  bool _notificationHandlerSignaled = false;
   DesktopApnsRegistrationHandler? _apnsHandler;
   DesktopApnsRegistration? _pendingApnsRegistration;
   DesktopSharedCaptureHandler? _sharedCaptureHandler;
@@ -249,6 +321,29 @@ class DesktopHostBridge {
         } on FormatException catch (error) {
           throw PlatformException(
             code: 'invalid_notification_action',
+            message: error.message,
+          );
+        }
+      case 'notificationReceived':
+        try {
+          final delivery = DesktopNotificationReceived.fromArguments(
+            call.arguments,
+          );
+          final handler = _notificationReceivedHandler;
+          if (handler == null) {
+            if (_pendingNotificationDeliveries.length >= 32) {
+              throw const FormatException(
+                'The native notification delivery queue is full.',
+              );
+            }
+            _pendingNotificationDeliveries.add(delivery);
+          } else {
+            await handler(delivery);
+          }
+          return null;
+        } on FormatException catch (error) {
+          throw PlatformException(
+            code: 'invalid_notification_delivery',
             message: error.message,
           );
         }
@@ -337,6 +432,37 @@ class DesktopHostBridge {
         }
       }());
     }
+    _signalNotificationHandlerReadiness();
+  }
+
+  void attachNotificationReceivedHandler(
+    DesktopNotificationReceivedHandler? handler,
+  ) {
+    _notificationReceivedHandler = handler;
+    if (handler != null && _pendingNotificationDeliveries.isNotEmpty) {
+      final pending = List<DesktopNotificationReceived>.of(
+        _pendingNotificationDeliveries,
+      );
+      _pendingNotificationDeliveries.clear();
+      unawaited(() async {
+        for (final delivery in pending) {
+          await handler(delivery);
+        }
+      }());
+    }
+    _signalNotificationHandlerReadiness();
+  }
+
+  void _signalNotificationHandlerReadiness() {
+    final ready =
+        _notificationHandler != null && _notificationReceivedHandler != null;
+    if (!_enabled || ready == _notificationHandlerSignaled) return;
+    _notificationHandlerSignaled = ready;
+    unawaited(
+      _invokePresentationMethod(
+        ready ? 'notificationHandlerReady' : 'notificationHandlerPaused',
+      ),
+    );
   }
 
   void attachApnsRegistrationHandler(DesktopApnsRegistrationHandler? handler) {
@@ -462,6 +588,9 @@ class DesktopHostBridge {
     _pendingRoute = null;
     _notificationHandler = null;
     _pendingNotificationActions.clear();
+    _notificationReceivedHandler = null;
+    _pendingNotificationDeliveries.clear();
+    _notificationHandlerSignaled = false;
     _apnsHandler = null;
     _pendingApnsRegistration = null;
     _sharedCaptureHandler = null;

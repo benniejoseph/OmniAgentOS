@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const routeMocks = vi.hoisted(() => ({
+  after: vi.fn(),
   appendScopedDomainEvent: vi.fn(),
   appendThreadTurn: vi.fn(),
   authorizeRequest: vi.fn(),
@@ -29,6 +30,11 @@ const routeMocks = vi.hoisted(() => ({
   startLocalComputerSession: vi.fn(),
   syncMissionExecutor: vi.fn(),
   transitionMission: vi.fn(),
+}));
+
+vi.mock("next/server", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("next/server")>()),
+  after: routeMocks.after,
 }));
 
 vi.mock("@/lib/db/client", async (importOriginal) => ({
@@ -147,6 +153,7 @@ const context = {
 
 beforeEach(() => {
   vi.stubEnv("OMNIAGENT_INTERNAL_AUTH_SECRET", "agent-route-context-lock-test-secret");
+  routeMocks.after.mockReset();
   routeMocks.appendScopedDomainEvent.mockReset().mockResolvedValue(undefined);
   routeMocks.appendThreadTurn.mockReset()
     .mockResolvedValueOnce({ id: "turn-user" })

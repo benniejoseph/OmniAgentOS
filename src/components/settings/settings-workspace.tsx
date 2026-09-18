@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { PersonalDataControls } from "@/components/settings/personal-data-controls";
+import { PushCanaryPanel } from "@/components/settings/push-canary-panel";
 import { TrashRecoveryControls } from "@/components/settings/trash-recovery-controls";
 import { AgentGrantSettingsPanel } from "@/components/agents/agent-grant-editor";
 import { permissionMessage, useWorkspaceSession } from "@/components/app-shell/session-context";
@@ -102,6 +103,11 @@ const providerDetails: Record<SettingsModelProvider, {
       { name: "sessionToken", label: "Session token (optional)", placeholder: "Temporary session token", secret: true },
     ],
   },
+  typesafe: {
+    name: "TypeSafe Jev",
+    note: "Opt-in shadow routing: sends a bounded, redacted request for typed evaluation and never controls execution.",
+    fields: [{ name: "apiKey", label: "API key", placeholder: "TypeSafe API key", secret: true }],
+  },
 };
 
 const assignmentLabels: Record<ModelAssignmentScope, { title: string; description: string }> = {
@@ -123,6 +129,7 @@ const assignmentLabels: Record<ModelAssignmentScope, { title: string; descriptio
   computer_use: { title: "Computer use", description: "Governed browser and desktop interaction" },
   speech_synthesis: { title: "Speech synthesis", description: "Spoken Agent responses" },
   realtime_transcription: { title: "Realtime transcription", description: "Live voice-command transcription" },
+  semantic_decision: { title: "Semantic decisions", description: "Shadow-only typed routing classification; never controls execution" },
 };
 
 export type McpConfigurationGate = {
@@ -614,6 +621,7 @@ function OverviewSection({ snapshot, onNavigate }: { snapshot: SettingsSnapshot;
       <div className={clsx("rounded-lg bg-surface p-5 ring-1 ring-line", styles.summaryCard)}><p className="text-[10px] font-bold uppercase tracking-[0.15em] text-muted">Tenant credentials</p><p className="mt-3 text-3xl font-semibold tracking-[-0.04em]">{tenantProviders.length}</p><p className="mt-1 text-sm text-muted">Current sealed provider connections{retainedProviders.length ? ` · ${retainedProviders.length} retained read only` : ""}</p></div>
       <div className={clsx("rounded-lg bg-surface p-5 ring-1 ring-line", styles.summaryCard)}><p className="text-[10px] font-bold uppercase tracking-[0.15em] text-muted">Service identities</p><p className="mt-3 text-3xl font-semibold tracking-[-0.04em]">{snapshot.apiKeys.filter((item) => item.status === "active").length}</p><p className="mt-1 text-sm text-muted">Active hash-only API keys</p></div>
     </div>
+    <PushCanaryPanel />
   </section>;
 }
 
@@ -719,7 +727,7 @@ function AssignmentEditor({ scope, models, providers, current, receipt, busy, sa
     item.status === "connected" &&
     item.enabled
   );
-  const defaultProvider = current?.provider || selectableModels[0]?.provider || selectableProviders[0]?.provider || "openai";
+  const defaultProvider = current?.provider || selectableModels[0]?.provider || selectableProviders[0]?.provider || (scope === "semantic_decision" ? "typesafe" : "openai");
   const [provider, setProvider] = useState<SettingsModelProvider>(defaultProvider);
   const [modelId, setModelId] = useState(current?.modelId || "");
   const [fallbackProvider, setFallbackProvider] = useState<SettingsModelProvider | "">(supportsFallback ? current?.fallbackProvider || "" : "");
@@ -776,7 +784,9 @@ function modelSupportsUiRole(
 ) {
   const genericProviders: SettingsModelProvider[] = ["openai", "google", "anthropic", "aws_bedrock"];
   const structuredProviders: SettingsModelProvider[] = ["openai", "anthropic"];
-  const contract = scope === "main_agent"
+  const contract = scope === "semantic_decision"
+    ? { providers: ["typesafe"] as SettingsModelProvider[], capabilities: ["semantic_decision"] }
+    : scope === "main_agent"
     ? { providers: genericProviders, capabilities: ["tools", "text"] }
     : scope === "orchestrator"
       ? { providers: genericProviders, capabilities: ["text"] }
@@ -902,7 +912,7 @@ function SettingsField({ label, children }: { label: string; children: ReactNode
 }
 
 function ProviderMark({ provider }: { provider: SettingsModelProvider }) {
-  const initials = provider === "aws_bedrock" ? "AWS" : provider === "anthropic" ? "AI" : provider === "google" ? "G" : "O";
+  const initials = provider === "aws_bedrock" ? "AWS" : provider === "anthropic" ? "AI" : provider === "google" ? "G" : provider === "typesafe" ? "TS" : "O";
   return <span className={clsx("grid size-10 shrink-0 place-items-center rounded-lg bg-surface-raised text-xs font-bold text-foreground ring-1 ring-line", styles.providerMark)}>{initials}</span>;
 }
 

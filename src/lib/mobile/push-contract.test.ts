@@ -4,6 +4,7 @@ import {
   mobilePushDeepLink,
   mobilePushEnvelopeSchema,
   mobilePushPreview,
+  mobilePushReceiptRequestSchema,
 } from "@/lib/mobile/push-contract";
 
 describe("mobile push causal contract", () => {
@@ -14,6 +15,7 @@ describe("mobile push causal contract", () => {
     [{ kind: "meeting", id: "meeting/one" }, "/meetings/meeting%2Fone"],
     [{ kind: "customer", id: "account/one" }, "/customers/account%2Fone"],
     [{ kind: "run", id: "run/one" }, "/results/agent%3Arun%2Fone"],
+    [{ kind: "canary", id: "canary/one" }, "/settings?pushCanary=canary%2Fone"],
   ] as const)("builds an exact allowlisted deep link", (target, expected) => {
     expect(mobilePushDeepLink(target)).toBe(expected);
   });
@@ -40,6 +42,29 @@ describe("mobile push causal contract", () => {
     expect(mobilePushEnvelopeSchema.safeParse({
       ...envelope,
       parentId: "not-allowed",
+    }).success).toBe(false);
+  });
+
+  it("requires typed lifecycle evidence and an action only for action receipts", () => {
+    const receipt = {
+      schemaVersion: 1,
+      kind: "received",
+      observedAt: "2026-09-18T12:00:00.000+05:30",
+      appLifecycle: "background",
+    } as const;
+    expect(mobilePushReceiptRequestSchema.safeParse(receipt).success).toBe(true);
+    expect(mobilePushReceiptRequestSchema.safeParse({
+      ...receipt,
+      action: "open",
+    }).success).toBe(false);
+    expect(mobilePushReceiptRequestSchema.safeParse({
+      ...receipt,
+      kind: "action",
+      action: "complete",
+    }).success).toBe(true);
+    expect(mobilePushReceiptRequestSchema.safeParse({
+      ...receipt,
+      kind: "action",
     }).success).toBe(false);
   });
 });

@@ -1,6 +1,6 @@
 # Jev and Herd — Asael architecture assessment
 
-Status: researched on 2026-09-18. No provider dependency or runtime integration has been added.
+Status: researched on 2026-09-18. The Stage 2 routing pilot is implemented as an opt-in, shadow-only integration; it remains inactive until an owner connects TypeSafe in Settings and assigns a discovered model to the Semantic decisions scope.
 
 ## Decision
 
@@ -81,6 +81,14 @@ Do not run Herd beside Asael as an equal orchestrator. Dual mission, retry, appr
 - Run closed-field semantic and routing judgments without changing behavior.
 - Persist content-minimized decision receipts and compare them with actual outcomes.
 - Add per-tenant opt-in, strict timeouts, current-path fallback, and an instant kill switch.
+
+Implemented boundary:
+
+- `SemanticDecisionProvider` is separate from the generative model gateway and exposes no tools or mutation surface.
+- TypeSafe credentials and the exact model come only from the actor-owned sealed Settings connection and validated catalog assignment. There is no environment or hardcoded-model fallback.
+- The first pilot classifies `direct`, `durable_workflow`, or `clarify` after the live route is chosen. Its answer never changes that route, approval, risk, or authority.
+- Calls are capped at 1.8 seconds and fall back to the existing deterministic route. The emergency switch is `OMNIAGENT_SEMANTIC_DECISION_SHADOW_DISABLED=true`.
+- Typed `intent.semantic_decision_shadowed` events and `semantic_decision` usage receipts store assignment revision, configured and response model versions, probability/confidence, latency, outcome, and content digests rather than the raw request.
 
 ### Stage 3 — bounded activation
 

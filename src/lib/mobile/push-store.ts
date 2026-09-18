@@ -10,8 +10,10 @@ import {
   createMobilePushEnvelope,
   mobilePushDedupeKey,
   mobilePushEnvelopeSchema,
+  mobilePushReceiptRequestSchema,
   mobilePushTargetSchema,
   type MobilePushPreviewPolicy,
+  type MobilePushReceiptInput,
   type MobilePushTarget,
 } from "@/lib/mobile/push-contract";
 import {
@@ -24,7 +26,12 @@ import {
   openCredentialBundle,
   sealCredentialBundle,
 } from "@/lib/settings/credential-vault";
-import { createExecutionScope } from "@/lib/security/execution-scope";
+import {
+  assertExecutionScopeTenant,
+  createExecutionScope,
+  parsePersistedExecutionScope,
+  type ExecutionScope,
+} from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
 
 type PushSql = ReturnType<typeof getSql>;
@@ -83,9 +90,28 @@ type MobilePushDelivery = Readonly<{
   leaseExpiresAt?: string;
   lastError?: string;
   deliveredAt?: string;
+  providerAcceptedAt?: string;
   acknowledgedAt?: string;
   createdAt: string;
   updatedAt: string;
+}>;
+
+export type MobilePushReceipt = Readonly<{
+  id: string;
+  tenantId: string;
+  ownerActorId: string;
+  deliveryId: string;
+  registrationId: string;
+  deviceId: string;
+  mobileSessionId: string;
+  platform: "android" | "ios" | "macos";
+  kind: "received" | "opened" | "action";
+  action?: "open" | "complete" | "snooze" | "dismiss";
+  appLifecycle: "foreground" | "background" | "terminated" | "unknown";
+  observedAt: string;
+  recordedAt: string;
+  idempotencyKeySha256: string;
+  requestSha256: string;
 }>;
 
 export class MobilePushStorageRequiredError extends Error {
@@ -94,6 +120,15 @@ export class MobilePushStorageRequiredError extends Error {
   constructor() {
     super("Durable database storage is required for mobile push delivery.");
     this.name = "MobilePushStorageRequiredError";
+  }
+}
+
+export class MobilePushConflictError extends Error {
+  readonly status = 409;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "MobilePushConflictError";
   }
 }
 
@@ -294,11 +329,30 @@ export async function enqueueMobilePush(input: {
   target: MobilePushTarget;
   occurrenceKey: string;
   notificationId?: string;
+  registrationId?: string;
+  maxAttempts?: number;
+  executionScope?: ExecutionScope;
   sql?: PushSql;
-}) {
+}): Promise<MobilePushDelivery[]> {
   requirePushStorage();
   const target = mobilePushTargetSchema.parse(input.target);
-  if (!input.sql) await ensureDatabaseSchema();
+  const executionScope = input.executionScope
+    ? exactPushExecutionScope(input.executionScope, input.tenantId, input.actorId)
+    : undefined;
+  const maxAttempts = Math.min(
+    Math.max(Math.trunc(input.maxAttempts ?? 5), 1),
+    20,
+  );
+  if (!input.sql) {
+    await ensureDatabaseSchema();
+    if (executionScope) {
+      return getSql().transaction((sql: PushSql) => enqueueMobilePush({
+        ...input,
+        executionScope,
+        sql,
+      })) as Promise<MobilePushDelivery[]>;
+    }
+  }
   const sql = input.sql || getSql();
   const registrations = await sql`
     SELECT registration.*
@@ -313,6 +367,7 @@ export async function enqueueMobilePush(input: {
     WHERE registration.tenant_id = ${input.tenantId}
       AND registration.owner_actor_id = ${input.actorId}
       AND registration.state = 'active'
+      AND (${input.registrationId || null}::TEXT IS NULL OR registration.id = ${input.registrationId || null})
     ORDER BY registration.id COLLATE "C"
     LIMIT 20
   `;
@@ -343,12 +398,35 @@ export async function enqueueMobilePush(input: {
         ${input.notificationId || null}, ${target.kind}, ${target.id},
         ${target.kind === "work_item" ? target.parentId || null : null},
         ${envelope.deepLink}, ${dedupeKey}, ${envelope}::jsonb,
-        'queued', 0, 5, NOW(), NOW(), NOW()
+        'queued', 0, ${maxAttempts}, NOW(), NOW(), NOW()
       )
-      ON CONFLICT (dedupe_key) DO NOTHING
+      ON CONFLICT DO NOTHING
       RETURNING *
     `;
-    if (rows[0]) queued.push(deliveryFromRow(rows[0]));
+    if (rows[0]) {
+      const delivery = deliveryFromRow(rows[0]);
+      if (executionScope) {
+        await appendScopedDomainEvent({
+          id: `mobile_push_event_${mobilePushDedupeKey({
+            type: "mobile.push_delivery_queued",
+            deliveryId: delivery.id,
+          })}`,
+          streamId: `mobile-push-delivery:${delivery.id}`,
+          type: "mobile.push_delivery_queued",
+          executionScope,
+          payload: {
+            schemaVersion: 1,
+            deliveryId: delivery.id,
+            registrationId: delivery.registrationId,
+            causeKind: delivery.target.kind,
+            causeIdSha256: sha256(delivery.target.id),
+            occurrenceKeySha256: sha256(input.occurrenceKey),
+            deepLinkSha256: sha256(delivery.deepLink),
+          },
+        }, { sql });
+      }
+      queued.push(delivery);
+    }
   }
   return queued;
 }
@@ -366,7 +444,7 @@ export async function dispatchMobilePushDeliveries(options: {
       const limit = boundedPushDispatchLimit(options.limit);
       const outcome = {
         processed: 0,
-        delivered: 0,
+        providerAccepted: 0,
         retried: 0,
         failed: 0,
         unsettled: 0,
@@ -378,39 +456,8 @@ export async function dispatchMobilePushDeliveries(options: {
         if (!delivery) break;
         outcome.processed += 1;
         try {
-          const registration = await activeRegistrationForDelivery(delivery);
-          if (!registration) {
-            throw new MobilePushProviderError(
-              "The registered native session is no longer active.",
-              true,
-              "registration_inactive",
-            );
-          }
-          const credentials = openCredentialBundle(
-            registration.tokenBundle,
-            pushCredentialBinding({
-              tenantId: registration.tenantId,
-              actorId: registration.ownerActorId,
-              registrationId: registration.id,
-              provider: registration.provider,
-              credentialVersion: registration.credentialVersion,
-            }),
-          );
-          validatePushToken(registration.provider, credentials.token || "");
-          const title = delivery.notificationId
-            ? await notificationTitle(delivery)
-            : undefined;
-          const result = await deliverMobilePush({
-            provider: registration.provider,
-            environment: registration.environment,
-            token: credentials.token,
-            target: delivery.target,
-            envelope: mobilePushEnvelopeSchema.parse(delivery.payload),
-            previewPolicy: registration.previewPolicy,
-            sensitiveTitle: title,
-          });
-          await completePushDelivery(delivery, registration, result.messageId);
-          outcome.delivered += 1;
+          await deliverLeasedMobilePush(delivery);
+          outcome.providerAccepted += 1;
         } catch (error) {
           try {
             const result = await failPushDelivery(delivery, error);
@@ -433,42 +480,414 @@ export async function dispatchMobilePushDeliveries(options: {
   );
 }
 
+export async function dispatchMobilePushDelivery(options: {
+  tenantId: string;
+  deliveryId: string;
+}) {
+  requirePushStorage();
+  await ensureDatabaseSchema();
+  return runWithDatabaseSystemScope(
+    `Dispatch one actor-private mobile push canary for tenant ${options.tenantId}.`,
+    async () => {
+      await repairExpiredPushLeases(options.tenantId);
+      const delivery = await leaseNextPushDelivery(
+        options.tenantId,
+        options.deliveryId,
+      );
+      if (!delivery) return { processed: false, providerAccepted: false };
+      try {
+        await deliverLeasedMobilePush(delivery);
+        return { processed: true, providerAccepted: true };
+      } catch (error) {
+        const settlement = await failPushDelivery(delivery, error);
+        return {
+          processed: true,
+          providerAccepted: false,
+          settlement,
+        };
+      }
+    },
+  );
+}
+
+async function deliverLeasedMobilePush(delivery: MobilePushDelivery) {
+  const registration = await activeRegistrationForDelivery(delivery);
+  if (!registration) {
+    throw new MobilePushProviderError(
+      "The registered native session is no longer active.",
+      true,
+      "registration_inactive",
+    );
+  }
+  const credentials = openCredentialBundle(
+    registration.tokenBundle,
+    pushCredentialBinding({
+      tenantId: registration.tenantId,
+      actorId: registration.ownerActorId,
+      registrationId: registration.id,
+      provider: registration.provider,
+      credentialVersion: registration.credentialVersion,
+    }),
+  );
+  validatePushToken(registration.provider, credentials.token || "");
+  const title = delivery.notificationId
+    ? await notificationTitle(delivery)
+    : undefined;
+  const result = await deliverMobilePush({
+    provider: registration.provider,
+    environment: registration.environment,
+    token: credentials.token,
+    target: delivery.target,
+    envelope: mobilePushEnvelopeSchema.parse(delivery.payload),
+    previewPolicy: registration.previewPolicy,
+    sensitiveTitle: title,
+  });
+  await completePushDelivery(delivery, registration, result.messageId);
+}
+
+export async function runMobilePushReceiptCanary(
+  context: SecurityContext,
+  idempotencyKey: string,
+  options: { timeoutMs?: number; registrationId?: string } = {},
+) {
+  requirePushStorage();
+  await ensureDatabaseSchema();
+  const native = context.source === "mobile" ? exactNativeContext(context) : undefined;
+  if (!native && !options.registrationId) {
+    throw new MobilePushConflictError(
+      "Choose an actor-owned push registration before running the canary.",
+    );
+  }
+  const registrationRows = await getSql()`
+    SELECT registration.*
+    FROM omni_mobile_push_registrations registration
+    JOIN omni_mobile_sessions session
+      ON session.id = registration.mobile_session_id
+      AND session.tenant_id = registration.tenant_id
+      AND session.user_id = registration.user_id
+      AND session.device_id = registration.device_id
+      AND session.revoked_at IS NULL
+      AND session.refresh_expires_at > NOW()
+    WHERE registration.tenant_id = ${context.tenantId}
+      AND registration.owner_actor_id = ${context.actorId}
+      AND (${options.registrationId || null}::TEXT IS NULL OR registration.id = ${options.registrationId || null})
+      AND (${native?.deviceId || null}::TEXT IS NULL OR registration.device_id = ${native?.deviceId || null})
+      AND (${native?.sessionId || null}::TEXT IS NULL OR registration.mobile_session_id = ${native?.sessionId || null})
+      AND registration.state = 'active'
+    ORDER BY
+      CASE
+        WHEN ${native?.platform || null} IN ('ios', 'macos') AND registration.provider = 'apns' THEN 0
+        WHEN ${native?.platform || null} = 'android' AND registration.provider = 'fcm' THEN 0
+        ELSE 1
+      END,
+      registration.updated_at DESC,
+      registration.id COLLATE "C"
+    LIMIT 1
+  `;
+  if (!registrationRows[0]) {
+    throw new MobilePushConflictError(
+      "Register this installation for push notifications before running the canary.",
+    );
+  }
+  const registration = registrationFromRow(registrationRows[0]);
+  const canaryId = `mobile_push_canary_${mobilePushDedupeKey({
+    tenantId: context.tenantId,
+    actorId: context.actorId,
+    idempotencyKey,
+  }).slice(0, 48)}`;
+  const target = mobilePushTargetSchema.parse({ kind: "canary", id: canaryId });
+  const occurrenceKey = `canary:${idempotencyKey}`;
+  const executionScope = createExecutionScope({
+    tenantId: context.tenantId,
+    initiatingActorId: context.actorId,
+    executingPrincipalType: "user",
+    executingPrincipalId: context.actorId,
+    correlationId: idempotencyKey,
+    causationId: canaryId,
+    purpose: "mobile.push_canary.run",
+  });
+  await enqueueMobilePush({
+    tenantId: context.tenantId,
+    actorId: context.actorId,
+    target,
+    occurrenceKey,
+    registrationId: registration.id,
+    maxAttempts: 1,
+    executionScope,
+  });
+  const boundRows = await getSql()`
+    SELECT id, registration_id
+    FROM omni_mobile_push_deliveries
+    WHERE tenant_id = ${context.tenantId}
+      AND owner_actor_id = ${context.actorId}
+      AND cause_kind = 'canary'
+      AND cause_id = ${canaryId}
+    LIMIT 1
+  `;
+  const deliveryId = boundRows[0]?.id ? String(boundRows[0].id) : "";
+  if (!deliveryId) {
+    throw new Error("The push canary could not create a durable delivery.");
+  }
+  if (String(boundRows[0].registration_id) !== registration.id) {
+    throw new MobilePushConflictError(
+      "The push canary idempotency key is already bound to another registration.",
+    );
+  }
+  await dispatchMobilePushDelivery({ tenantId: context.tenantId, deliveryId });
+
+  const timeoutMs = Math.min(Math.max(Math.trunc(options.timeoutMs ?? 8_000), 0), 20_000);
+  const deadline = Date.now() + timeoutMs;
+  let state = await getMobilePushDeliveryStateForRegistration(
+    context,
+    deliveryId,
+    registration,
+  );
+  while (
+    state &&
+    state.appState === "none" &&
+    state.providerState !== "failed" &&
+    Date.now() < deadline
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    state = await getMobilePushDeliveryStateForRegistration(
+      context,
+      deliveryId,
+      registration,
+    );
+  }
+  if (!state) {
+    throw new Error("The push canary delivery could not be resolved.");
+  }
+  const received = state.appState !== "none";
+  return {
+    schemaVersion: 1 as const,
+    canaryId,
+    deliveryId,
+    outcome: received
+      ? "received" as const
+      : state.providerState === "failed"
+        ? "provider_failed" as const
+        : "timed_out" as const,
+    timedOut: !received && state.providerState !== "failed",
+    state,
+  };
+}
+
+export async function listMobilePushCanaryTargets(context: SecurityContext) {
+  requirePushStorage();
+  await ensureDatabaseSchema();
+  const native = context.source === "mobile" ? exactNativeContext(context) : undefined;
+  const rows = await getSql()`
+    SELECT registration.*
+    FROM omni_mobile_push_registrations registration
+    JOIN omni_mobile_sessions session
+      ON session.id = registration.mobile_session_id
+      AND session.tenant_id = registration.tenant_id
+      AND session.user_id = registration.user_id
+      AND session.device_id = registration.device_id
+      AND session.revoked_at IS NULL
+      AND session.refresh_expires_at > NOW()
+    WHERE registration.tenant_id = ${context.tenantId}
+      AND registration.owner_actor_id = ${context.actorId}
+      AND registration.state = 'active'
+      AND (${native?.deviceId || null}::TEXT IS NULL OR registration.device_id = ${native?.deviceId || null})
+      AND (${native?.sessionId || null}::TEXT IS NULL OR registration.mobile_session_id = ${native?.sessionId || null})
+    ORDER BY registration.updated_at DESC, registration.id COLLATE "C"
+    LIMIT 20
+  `;
+  return {
+    schemaVersion: 1 as const,
+    registrations: rows.map((row) => publicRegistration(registrationFromRow(row))),
+    providers: mobilePushProviderConfiguration(),
+  };
+}
+
+export async function getMobilePushDeliveryState(
+  context: SecurityContext,
+  deliveryId: string,
+) {
+  const native = exactNativeContext(context);
+  requirePushStorage();
+  await ensureDatabaseSchema();
+  const deliveryRows = await getSql()`
+    SELECT delivery.*
+    FROM omni_mobile_push_deliveries delivery
+    JOIN omni_mobile_push_registrations registration
+      ON registration.id = delivery.registration_id
+      AND registration.tenant_id = delivery.tenant_id
+      AND registration.owner_actor_id = delivery.owner_actor_id
+    WHERE delivery.id = ${deliveryId}
+      AND delivery.tenant_id = ${context.tenantId}
+      AND delivery.owner_actor_id = ${context.actorId}
+      AND registration.device_id = ${native.deviceId}
+      AND registration.mobile_session_id = ${native.sessionId}
+    LIMIT 1
+  `;
+  if (!deliveryRows[0]) return undefined;
+  const receiptRows = await getSql()`
+    SELECT * FROM omni_mobile_push_delivery_receipts
+    WHERE tenant_id = ${context.tenantId}
+      AND owner_actor_id = ${context.actorId}
+      AND delivery_id = ${deliveryId}
+      AND device_id = ${native.deviceId}
+      AND mobile_session_id = ${native.sessionId}
+    ORDER BY recorded_at ASC, id COLLATE "C"
+    LIMIT 100
+  `;
+  return publicDeliveryState(
+    deliveryFromRow(deliveryRows[0]),
+    receiptRows.map(pushReceiptFromRow),
+  );
+}
+
+async function getMobilePushDeliveryStateForRegistration(
+  context: SecurityContext,
+  deliveryId: string,
+  registration: MobilePushRegistration,
+) {
+  const deliveryRows = await getSql()`
+    SELECT * FROM omni_mobile_push_deliveries
+    WHERE id = ${deliveryId}
+      AND tenant_id = ${context.tenantId}
+      AND owner_actor_id = ${context.actorId}
+      AND registration_id = ${registration.id}
+    LIMIT 1
+  `;
+  if (!deliveryRows[0]) return undefined;
+  const receiptRows = await getSql()`
+    SELECT * FROM omni_mobile_push_delivery_receipts
+    WHERE tenant_id = ${context.tenantId}
+      AND owner_actor_id = ${context.actorId}
+      AND delivery_id = ${deliveryId}
+      AND registration_id = ${registration.id}
+    ORDER BY recorded_at ASC, id COLLATE "C"
+    LIMIT 100
+  `;
+  return publicDeliveryState(
+    deliveryFromRow(deliveryRows[0]),
+    receiptRows.map(pushReceiptFromRow),
+  );
+}
+
 export async function acknowledgeMobilePushDelivery(
   context: SecurityContext,
   deliveryId: string,
   idempotencyKey: string,
 ) {
+  const candidate = await getMobilePushAcknowledgementCandidate(
+    context,
+    deliveryId,
+  );
+  if (!candidate) return undefined;
+  const recorded = await recordMobilePushDeliveryReceipt(
+    context,
+    deliveryId,
+    {
+      schemaVersion: 1,
+      kind: "opened",
+      observedAt: candidate.providerAcceptedAt ||
+        candidate.deliveredAt ||
+        candidate.acknowledgedAt ||
+        candidate.updatedAt,
+      appLifecycle: "unknown",
+    },
+    idempotencyKey,
+  );
+  return recorded
+    ? {
+        delivery: recorded.internalDelivery,
+        newlyAcknowledged: recorded.newlyRecorded,
+      }
+    : undefined;
+}
+
+export async function recordMobilePushDeliveryReceipt(
+  context: SecurityContext,
+  deliveryId: string,
+  receiptInput: MobilePushReceiptInput,
+  idempotencyKey: string,
+) {
   const native = exactNativeContext(context);
   requirePushStorage();
+  const input = mobilePushReceiptRequestSchema.parse(receiptInput);
+  validateObservedAt(input.observedAt);
   await ensureDatabaseSchema();
   return getSql().transaction(async (sql: PushSql) => {
     const currentRows = await sql`
-      SELECT * FROM omni_mobile_push_deliveries
-      WHERE id = ${deliveryId}
-        AND tenant_id = ${context.tenantId}
-        AND owner_actor_id = ${context.actorId}
-        AND EXISTS (
-          SELECT 1 FROM omni_mobile_push_registrations registration
-          WHERE registration.id = omni_mobile_push_deliveries.registration_id
-            AND registration.tenant_id = omni_mobile_push_deliveries.tenant_id
-            AND registration.owner_actor_id = omni_mobile_push_deliveries.owner_actor_id
-            AND registration.device_id = ${native.deviceId}
-            AND registration.mobile_session_id = ${native.sessionId}
-        )
+      SELECT delivery.*, registration.device_id, registration.mobile_session_id,
+        registration.platform
+      FROM omni_mobile_push_deliveries delivery
+      JOIN omni_mobile_push_registrations registration
+        ON registration.id = delivery.registration_id
+        AND registration.tenant_id = delivery.tenant_id
+        AND registration.owner_actor_id = delivery.owner_actor_id
+      WHERE delivery.id = ${deliveryId}
+        AND delivery.tenant_id = ${context.tenantId}
+        AND delivery.owner_actor_id = ${context.actorId}
+        AND registration.device_id = ${native.deviceId}
+        AND registration.mobile_session_id = ${native.sessionId}
       LIMIT 1
-      FOR UPDATE
+      FOR UPDATE OF delivery
     `;
     const current = currentRows[0]
       ? deliveryFromRow(currentRows[0])
       : undefined;
     if (!current) return undefined;
-    if (current.status === "acknowledged") {
-      return { delivery: current, newlyAcknowledged: false };
+    if (current.status !== "delivered" && current.status !== "acknowledged") {
+      throw new Error("The push has not been accepted by its provider.");
     }
-    if (current.status !== "delivered") {
-      throw new Error("Push delivery is not ready to acknowledge.");
+    // The OS may report the same lifecycle stage more than once with a later
+    // callback timestamp. Bind idempotency to the semantic stage/action and
+    // retain the immutable first observation's timestamp and lifecycle.
+    const requestSha256 = mobilePushDedupeKey({
+      schemaVersion: input.schemaVersion,
+      kind: input.kind,
+      action: input.action || null,
+    });
+    const receiptId = `mobile_push_receipt_${mobilePushDedupeKey({
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      deliveryId,
+      idempotencyKey,
+    }).slice(0, 48)}`;
+    const idempotencyKeySha256 = sha256(idempotencyKey);
+    const insertedRows = await sql`
+      INSERT INTO omni_mobile_push_delivery_receipts (
+        id, tenant_id, owner_actor_id, delivery_id, registration_id,
+        device_id, mobile_session_id, platform, receipt_kind, action,
+        app_lifecycle, observed_at, idempotency_key_sha256, request_sha256,
+        recorded_at
+      ) VALUES (
+        ${receiptId}, ${context.tenantId}, ${context.actorId}, ${deliveryId},
+        ${current.registrationId}, ${native.deviceId}, ${native.sessionId},
+        ${native.platform}, ${input.kind}, ${input.action || null},
+        ${input.appLifecycle}, ${input.observedAt}, ${idempotencyKeySha256},
+        ${requestSha256}, NOW()
+      )
+      ON CONFLICT (id) DO NOTHING
+      RETURNING *
+    `;
+    const receiptRows = insertedRows[0]
+      ? insertedRows
+      : await sql`
+          SELECT * FROM omni_mobile_push_delivery_receipts
+          WHERE id = ${receiptId}
+            AND tenant_id = ${context.tenantId}
+            AND owner_actor_id = ${context.actorId}
+            AND delivery_id = ${deliveryId}
+          LIMIT 1
+        `;
+    const receipt = receiptRows[0]
+      ? pushReceiptFromRow(receiptRows[0])
+      : undefined;
+    if (!receipt || receipt.requestSha256 !== requestSha256) {
+      throw new MobilePushConflictError(
+        "The push receipt idempotency key was already used for another observation.",
+      );
     }
-    const rows = await sql`
+    const shouldAcknowledge = input.kind === "opened" || input.kind === "action";
+    const rows = shouldAcknowledge && current.status === "delivered"
+      ? await sql`
       UPDATE omni_mobile_push_deliveries
       SET status = 'acknowledged', acknowledged_at = NOW(), updated_at = NOW()
       WHERE id = ${deliveryId}
@@ -484,29 +903,55 @@ export async function acknowledgeMobilePushDelivery(
             AND registration.mobile_session_id = ${native.sessionId}
         )
       RETURNING *
+      `
+      : [];
+    const delivery = rows[0] ? deliveryFromRow(rows[0]) : current;
+    if (insertedRows[0]) {
+      await appendPushEvent({
+        type: `mobile.push_delivery_${input.kind}`,
+        context,
+        idempotencyKey,
+        causationId: delivery.id,
+        streamId: `mobile-push-delivery:${delivery.id}`,
+        eventKey: receipt.id,
+        payload: {
+          schemaVersion: 1,
+          receiptId: receipt.id,
+          deliveryId: delivery.id,
+          notificationId: delivery.notificationId || null,
+          causeKind: delivery.target.kind,
+          receiptKind: receipt.kind,
+          action: receipt.action || null,
+          appLifecycle: receipt.appLifecycle,
+          platform: receipt.platform,
+          observedAt: receipt.observedAt,
+          requestSha256: receipt.requestSha256,
+        },
+        sql,
+      });
+    }
+    const allReceiptRows = await sql`
+      SELECT * FROM omni_mobile_push_delivery_receipts
+      WHERE tenant_id = ${context.tenantId}
+        AND owner_actor_id = ${context.actorId}
+        AND delivery_id = ${deliveryId}
+      ORDER BY recorded_at ASC, id COLLATE "C"
+      LIMIT 100
     `;
-    const delivery = deliveryFromRow(rows[0]);
-    await appendPushEvent({
-      type: "mobile.push_delivery_acknowledged",
-      context,
-      idempotencyKey,
-      causationId: delivery.id,
-      streamId: `mobile-push-delivery:${delivery.id}`,
-      eventKey: delivery.id,
-      payload: {
-        schemaVersion: 1,
-        deliveryId: delivery.id,
-        notificationId: delivery.notificationId || null,
-        causeKind: delivery.target.kind,
-        causeId: delivery.target.id,
-        deepLinkSha256: sha256(delivery.deepLink),
-      },
-      sql,
-    });
-    return { delivery, newlyAcknowledged: true };
+    return {
+      receipt,
+      newlyRecorded: Boolean(insertedRows[0]),
+      delivery: publicDeliveryState(
+        delivery,
+        allReceiptRows.map(pushReceiptFromRow),
+      ),
+      internalDelivery: delivery,
+    };
   }) as Promise<{
-    delivery: MobilePushDelivery;
-    newlyAcknowledged: boolean;
+    receipt: MobilePushReceipt;
+    newlyRecorded: boolean;
+    delivery: ReturnType<typeof publicDeliveryState>;
+    internalDelivery: MobilePushDelivery;
   } | undefined>;
 }
 
@@ -536,7 +981,7 @@ export async function getMobilePushAcknowledgementCandidate(
   return rows[0] ? deliveryFromRow(rows[0]) : undefined;
 }
 
-async function leaseNextPushDelivery(tenantId: string) {
+async function leaseNextPushDelivery(tenantId: string, deliveryId?: string) {
   const leaseOwner = `mobile-push:${randomUUID()}`;
   const leaseExpiresAt = new Date(Date.now() + pushDeliveryLeaseMs).toISOString();
   const rows = await getSql()`
@@ -546,6 +991,7 @@ async function leaseNextPushDelivery(tenantId: string) {
       WHERE tenant_id = ${tenantId}
         AND status = 'queued'
         AND run_at <= NOW()
+        AND (${deliveryId || null}::TEXT IS NULL OR id = ${deliveryId || null})
       ORDER BY run_at, created_at, id COLLATE "C"
       LIMIT 1
       FOR UPDATE SKIP LOCKED
@@ -608,6 +1054,7 @@ async function completePushDelivery(
           lease_owner = NULL,
           lease_expires_at = NULL,
           provider_message_id_sha256 = ${sha256(providerMessageId)},
+          provider_accepted_at = NOW(),
           delivered_at = NOW(),
           updated_at = NOW()
       WHERE id = ${delivery.id}
@@ -620,7 +1067,8 @@ async function completePushDelivery(
     if (!rows[0]) throw new Error("Push delivery lease was lost before completion.");
     await sql`
       UPDATE omni_mobile_push_registrations
-      SET last_delivered_at = NOW(), updated_at = NOW()
+      SET last_provider_accepted_at = NOW(), last_delivered_at = NOW(),
+          updated_at = NOW()
       WHERE id = ${registration.id}
         AND tenant_id = ${registration.tenantId}
         AND owner_actor_id = ${registration.ownerActorId}
@@ -813,9 +1261,85 @@ function deliveryFromRow(row: Record<string, unknown>): MobilePushDelivery {
     leaseExpiresAt: optionalDate(row.lease_expires_at),
     lastError: row.last_error ? String(row.last_error) : undefined,
     deliveredAt: optionalDate(row.delivered_at),
+    providerAcceptedAt: optionalDate(
+      row.provider_accepted_at || row.delivered_at,
+    ),
     acknowledgedAt: optionalDate(row.acknowledged_at),
     createdAt: dateValue(row.created_at),
     updatedAt: dateValue(row.updated_at),
+  };
+}
+
+function pushReceiptFromRow(row: Record<string, unknown>): MobilePushReceipt {
+  const action = row.action === "open" || row.action === "complete" ||
+      row.action === "snooze" || row.action === "dismiss"
+    ? row.action
+    : undefined;
+  const kind = row.receipt_kind === "opened" || row.receipt_kind === "action"
+    ? row.receipt_kind
+    : "received";
+  return {
+    id: String(row.id),
+    tenantId: String(row.tenant_id),
+    ownerActorId: String(row.owner_actor_id),
+    deliveryId: String(row.delivery_id),
+    registrationId: String(row.registration_id),
+    deviceId: String(row.device_id),
+    mobileSessionId: String(row.mobile_session_id),
+    platform: mobilePushPlatform(row.platform),
+    kind,
+    action,
+    appLifecycle: appLifecycle(row.app_lifecycle),
+    observedAt: dateValue(row.observed_at),
+    recordedAt: dateValue(row.recorded_at),
+    idempotencyKeySha256: String(row.idempotency_key_sha256),
+    requestSha256: String(row.request_sha256),
+  };
+}
+
+function publicDeliveryState(
+  delivery: MobilePushDelivery,
+  receipts: readonly MobilePushReceipt[],
+) {
+  const received = receipts.find((receipt) => receipt.kind === "received");
+  const opened = receipts.find((receipt) => receipt.kind === "opened");
+  const actions = receipts.filter((receipt) => receipt.kind === "action");
+  const lastAction = actions.at(-1);
+  const appState = lastAction
+    ? "action" as const
+    : opened
+      ? "opened" as const
+      : received
+        ? "received" as const
+        : "none" as const;
+  const providerState = delivery.status === "failed"
+    ? "failed" as const
+    : delivery.status === "running"
+      ? "sending" as const
+      : delivery.status === "delivered" || delivery.status === "acknowledged"
+        ? "accepted" as const
+        : "queued" as const;
+  return {
+    id: delivery.id,
+    notificationId: delivery.notificationId || null,
+    causeKind: delivery.target.kind,
+    causeId: delivery.target.id,
+    deepLink: delivery.deepLink,
+    providerState,
+    providerAcceptedAt: delivery.providerAcceptedAt || null,
+    appState,
+    receivedAt: received?.observedAt || null,
+    openedAt: opened?.observedAt || null,
+    lastAction: lastAction
+      ? {
+          action: lastAction.action!,
+          observedAt: lastAction.observedAt,
+          recordedAt: lastAction.recordedAt,
+        }
+      : null,
+    failureCode: providerState === "failed"
+      ? safeProviderFailureCode(delivery.lastError)
+      : null,
   };
 }
 
@@ -853,6 +1377,48 @@ function mobilePushPlatform(
     return value;
   }
   throw new Error("Native push registration platform is invalid.");
+}
+
+function appLifecycle(
+  value: unknown,
+): MobilePushReceipt["appLifecycle"] {
+  return value === "foreground" || value === "background" ||
+      value === "terminated"
+    ? value
+    : "unknown";
+}
+
+function exactPushExecutionScope(
+  value: ExecutionScope,
+  tenantId: string,
+  actorId: string,
+) {
+  const scope = parsePersistedExecutionScope(value);
+  if (!scope) throw new Error("Mobile push enqueue requires an execution scope.");
+  assertExecutionScopeTenant(scope, tenantId);
+  if (scope.initiatingActorId !== actorId) {
+    throw new Error("Mobile push enqueue scope changed its actor.");
+  }
+  return scope;
+}
+
+function validateObservedAt(value: string) {
+  const observedAt = Date.parse(value);
+  const now = Date.now();
+  if (
+    !Number.isFinite(observedAt) ||
+    observedAt > now + 5 * 60_000 ||
+    observedAt < now - 30 * 24 * 60 * 60_000
+  ) {
+    throw new Error(
+      "Push receipt observedAt must be within the last 30 days and not in the future.",
+    );
+  }
+}
+
+function safeProviderFailureCode(value?: string) {
+  const code = value?.split(":", 1)[0]?.trim() || "provider_failed";
+  return /^[A-Za-z0-9_.-]{1,120}$/.test(code) ? code : "provider_failed";
 }
 
 function invalidTokenCode(code: string) {

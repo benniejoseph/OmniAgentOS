@@ -167,6 +167,10 @@ void main() {
       await store.writePushRegistrationId('registration-one');
       await store.writePushPreviewPolicy('generic');
       await store.writePendingPushAcknowledgement('pending-one');
+      const receiptKey =
+          '${SecureSessionStore.pendingPushReceiptRecordKeyPrefix}'
+          'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+      await store.writePendingPushReceiptRecord(receiptKey, 'receipt-one');
       await store.writeTokens(
         accessToken: 'access-token',
         refreshToken: 'refresh-token',
@@ -183,6 +187,7 @@ void main() {
       expect(await store.readPushRegistrationId(), isNull);
       expect(await store.readPushPreviewPolicy(), 'generic');
       expect(await store.readPendingPushAcknowledgement(), isNull);
+      expect(await store.readPendingPushReceiptRecord(receiptKey), isNull);
 
       await store.writeTokens(
         accessToken: 'replacement-access',

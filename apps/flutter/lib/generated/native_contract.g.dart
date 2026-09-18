@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 14;
-  static const previousVersion = 13;
-  static const supportedVersions = <int>[14, 13];
+  static const currentVersion = 15;
+  static const previousVersion = 14;
+  static const supportedVersions = <int>[15, 14];
   static const discoveryPath = '/api/mobile/contracts';
   static const operationIds = <String>{
     'auth.login',
@@ -119,6 +119,9 @@ abstract final class NativeContract {
     'localComputer.command.claim',
     'localComputer.command.complete',
     'localComputer.stop',
+    'push.delivery.receipts',
+    'push.canary.targets',
+    'push.canary.run',
   };
 
   static bool supports(int version) => supportedVersions.contains(version);
@@ -284,6 +287,9 @@ abstract final class NativePaths {
   static const localComputerCommandClaim = '/api/mobile/computer-use/commands/claim';
   static String localComputerCommandComplete(String id) => '/api/mobile/computer-use/commands/${Uri.encodeComponent(id)}/complete';
   static const localComputerStop = '/api/mobile/computer-use/stop';
+  static String pushDeliveryReceipts(String id) => '/api/mobile/push/deliveries/${Uri.encodeComponent(id)}/receipts';
+  static const pushCanaryTargets = '/api/mobile/push/canary';
+  static const pushCanaryRun = '/api/mobile/push/canary';
 }
 
 abstract final class NativeConversationEvents {

@@ -8,10 +8,11 @@ import {
   localComputerDeviceUpdateSchema,
   localComputerStopRequestSchema,
 } from "@/lib/local-computer/contracts";
+import { mobilePushReceiptRequestSchema } from "@/lib/mobile/push-contract";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 14 as const;
-export const NATIVE_API_PREVIOUS_VERSION = 13 as const;
+export const NATIVE_API_CURRENT_VERSION = 15 as const;
+export const NATIVE_API_PREVIOUS_VERSION = 14 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -20,6 +21,7 @@ export const NATIVE_API_SUPPORTED_VERSIONS = [
 const positiveDatabaseInteger = z.number().int().min(1).max(2_147_483_647);
 const isoDateTime = z.string().datetime({ offset: true });
 const opaqueId = z.string().trim().min(1).max(200);
+const mobilePushOpaqueId = z.string().trim().min(1).max(240);
 const jsonObject = z.record(z.string(), z.unknown());
 const LOCAL_COMPUTER_PREVIEW_BINDING_CONTRACT_VERSION = 12;
 
@@ -281,10 +283,77 @@ export const nativePushAcknowledgementResponseSchema = z.object({
   schemaVersion: z.literal(1),
   acknowledged: z.literal(true),
   newlyAcknowledged: z.boolean(),
-  notificationId: opaqueId.nullable(),
-  causeKind: z.enum(["approval", "work_item", "meeting", "customer", "run"]),
-  causeId: opaqueId,
+  notificationId: mobilePushOpaqueId.nullable(),
+  causeKind: z.enum([
+    "approval",
+    "work_item",
+    "meeting",
+    "customer",
+    "run",
+    "canary",
+  ]),
+  causeId: mobilePushOpaqueId,
   deepLink: z.string().min(2).max(1_000),
+}).strict();
+
+const nativePushCauseKindSchema = z.enum([
+  "approval",
+  "work_item",
+  "meeting",
+  "customer",
+  "run",
+  "canary",
+]);
+
+const nativePushDeliveryStateSchema = z.object({
+  id: opaqueId,
+  notificationId: mobilePushOpaqueId.nullable(),
+  causeKind: nativePushCauseKindSchema,
+  causeId: mobilePushOpaqueId,
+  deepLink: z.string().min(2).max(1_000),
+  providerState: z.enum(["queued", "sending", "accepted", "failed"]),
+  providerAcceptedAt: isoDateTime.nullable(),
+  appState: z.enum(["none", "received", "opened", "action"]),
+  receivedAt: isoDateTime.nullable(),
+  openedAt: isoDateTime.nullable(),
+  lastAction: z.object({
+    action: z.enum(["open", "complete", "snooze", "dismiss"]),
+    observedAt: isoDateTime,
+    recordedAt: isoDateTime,
+  }).strict().nullable(),
+  failureCode: z.string().min(1).max(120).nullable(),
+}).strict();
+
+const nativePushReceiptSchema = z.object({
+  id: opaqueId,
+  kind: z.enum(["received", "opened", "action"]),
+  action: z.enum(["open", "complete", "snooze", "dismiss"]).nullable(),
+  observedAt: isoDateTime,
+  recordedAt: isoDateTime,
+  appLifecycle: z.enum(["foreground", "background", "terminated", "unknown"]),
+  platform: z.enum(["android", "ios", "macos"]),
+}).strict();
+
+export const nativePushReceiptResponseSchema = z.object({
+  schemaVersion: z.literal(1),
+  recorded: z.literal(true),
+  newlyRecorded: z.boolean(),
+  receipt: nativePushReceiptSchema,
+  delivery: nativePushDeliveryStateSchema,
+}).strict();
+
+export const nativePushCanaryRequestSchema = z.object({
+  registrationId: opaqueId.optional(),
+  timeoutSeconds: z.number().int().min(1).max(20).optional(),
+}).strict();
+
+export const nativePushCanaryResponseSchema = z.object({
+  schemaVersion: z.literal(1),
+  canaryId: opaqueId,
+  deliveryId: opaqueId,
+  outcome: z.enum(["received", "provider_failed", "timed_out"]),
+  timedOut: z.boolean(),
+  state: nativePushDeliveryStateSchema,
 }).strict();
 
 export const nativeConversationRequestSchema = z.object({
@@ -739,6 +808,39 @@ const v14Operations: readonly NativeOperation[] = v13Operations.filter(
   (operation) => operation.id !== "evidence.run.computerFrame",
 );
 
+// Contract v15 adds first-class app receipt evidence and the live push canary.
+// Frozen v14 remains byte-for-byte unchanged after its Computer Use cutover.
+const v15Operations: readonly NativeOperation[] = [
+  ...v14Operations,
+  operation(
+    "push.delivery.receipts",
+    "POST",
+    "/api/mobile/push/deliveries/{id}/receipts",
+    "Record one idempotent app-observed received, opened, or action receipt.",
+    "bearer",
+    "NativePushReceiptRequest",
+    "NativePushReceiptResponse",
+  ),
+  operation(
+    "push.canary.targets",
+    "GET",
+    "/api/mobile/push/canary",
+    "List this actor's eligible push registrations for a live receipt canary.",
+    "bearer",
+    undefined,
+    "JsonObject",
+  ),
+  operation(
+    "push.canary.run",
+    "POST",
+    "/api/mobile/push/canary",
+    "Send a live provider-to-app push canary and wait for its app receipt.",
+    "bearer",
+    "NativePushCanaryRequest",
+    "NativePushCanaryResponse",
+  ),
+];
+
 export const nativeContractSchemas = Object.freeze({
   JsonObject: jsonObject,
   NativeClientAttestation: nativeClientAttestationSchema,
@@ -762,6 +864,10 @@ export const nativeContractSchemas = Object.freeze({
   NativePushRegistrationResponse: nativePushRegistrationResponseSchema,
   NativePushRegistrationListResponse: nativePushRegistrationListResponseSchema,
   NativePushAcknowledgementResponse: nativePushAcknowledgementResponseSchema,
+  NativePushReceiptRequest: mobilePushReceiptRequestSchema,
+  NativePushReceiptResponse: nativePushReceiptResponseSchema,
+  NativePushCanaryRequest: nativePushCanaryRequestSchema,
+  NativePushCanaryResponse: nativePushCanaryResponseSchema,
   NativeConversationRequest: nativeConversationRequestSchema,
   NativeConversationEvent: nativeConversationEventSchema,
   NativeLocalComputerDeviceUpdateRequest: localComputerDeviceUpdateSchema,
@@ -808,6 +914,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 12) return v12Operations;
   if (version === 13) return v13Operations;
   if (version === 14) return v14Operations;
+  if (version === 15) return v15Operations;
   return undefined;
 }
 
@@ -817,7 +924,7 @@ export function nativeContractDiscovery() {
     contractId: NATIVE_API_CONTRACT_ID,
     currentVersion: NATIVE_API_CURRENT_VERSION,
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
-    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [14, 13],
+    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [15, 14],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,
       state: version === NATIVE_API_CURRENT_VERSION ? "current" as const : "previous" as const,

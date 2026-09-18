@@ -246,6 +246,51 @@ if [[ -n "$task_signing_identity" ]]; then
     "$task_staged_app"
 fi
 
+task_host_entitlements="$task_stage_dir/host-entitlements.plist"
+codesign -d --xml --entitlements "$task_host_entitlements" "$task_staged_app" 2>/dev/null
+task_observed_apns_environment="$(
+  /usr/libexec/PlistBuddy \
+    -c 'Print :com.apple.developer.aps-environment' \
+    "$task_host_entitlements" 2>/dev/null || true
+)"
+if [[ "$task_signing_mode" == "developer" ]]; then
+  if [[ "$task_observed_apns_environment" != "production" ]]; then
+    echo "The Apple-signed app is missing its production APNs entitlement." >&2
+    exit 1
+  fi
+  # A restricted entitlement in the code signature is not sufficient: APNs
+  # also requires an Apple-issued profile that binds the topic to this app.
+  task_embedded_profile="$task_staged_app/Contents/embedded.provisionprofile"
+  task_profile_plist="$task_stage_dir/embedded-provisioning-profile.plist"
+  if [[ ! -f "$task_embedded_profile" ]]; then
+    echo "The Apple-signed app has no embedded APNs provisioning profile." >&2
+    exit 1
+  fi
+  security cms -D -i "$task_embedded_profile" -o "$task_profile_plist"
+  task_profile_apns_environment="$(
+    /usr/libexec/PlistBuddy \
+      -c 'Print :Entitlements:com.apple.developer.aps-environment' \
+      "$task_profile_plist" 2>/dev/null || true
+  )"
+  task_profile_application_identifier="$(
+    /usr/libexec/PlistBuddy \
+      -c 'Print :Entitlements:com.apple.application-identifier' \
+      "$task_profile_plist" 2>/dev/null || true
+  )"
+  if [[ "$task_profile_apns_environment" != "production" || \
+        "$task_profile_application_identifier" != *.app.omniagent.omniagent ]]; then
+    echo "The embedded profile does not authorize production APNs for Asael." >&2
+    exit 1
+  fi
+else
+  if [[ -n "$task_observed_apns_environment" ]]; then
+    echo "The owner-only package contains an unauthorized APNs entitlement." >&2
+    exit 1
+  fi
+  echo "APNs delivery is unavailable in the owner-only self-signed package."
+  echo "Use an Apple-issued identity and APNs provisioning profile for the live canary."
+fi
+
 task_observed_broker_cdhash="$(codesign -d -vvv "$task_credential_broker_app" 2>&1 | awk -F= '/^CDHash=/{value=$2} END{print value}')"
 if [[ "$task_observed_broker_cdhash" != "$task_expected_broker_cdhash" || \
       "$(credential_broker_bundle_digest "$task_credential_broker_app")" != "$task_expected_broker_bundle_digest" ]]; then

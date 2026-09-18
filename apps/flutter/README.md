@@ -23,6 +23,31 @@ sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
 flutter run -d macos
 ```
 
+The default Debug/Profile and owner-only LocalRelease builds intentionally omit
+the restricted APNs entitlement, so a local or self-signed build cannot claim
+authority that its signature does not have. To test sandbox APNs, sign an
+explicit opt-in Debug build with an Apple team whose App ID and provisioning
+profile enable Push Notifications:
+
+```bash
+flutter build macos --debug --config-only
+xcodebuild \
+  -workspace macos/Runner.xcworkspace \
+  -scheme Runner \
+  -configuration Debug \
+  -destination 'platform=macOS' \
+  -allowProvisioningUpdates \
+  DEVELOPMENT_TEAM="$ASAEL_APPLE_TEAM_ID" \
+  CODE_SIGN_STYLE=Automatic \
+  ASAEL_MACOS_DEBUG_ENTITLEMENTS=Runner/DebugApns.entitlements \
+  build
+```
+
+`ASAEL_APPLE_TEAM_ID` is supplied only in the operator environment. Do not put a
+team, certificate, provisioning profile, or APNs provider key in this repository.
+The production packager requires `Release.entitlements` plus a matching embedded
+production profile and fails closed if either authorization is missing.
+
 For a private DMG, run `tool/build_macos_private_release.sh`. With no signing
 environment it packages the local Xcode-signed build for this Mac. Distribution
 to another Mac requires `ASAEL_MACOS_SIGNING_IDENTITY` and the Keychain profile

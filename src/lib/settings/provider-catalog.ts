@@ -113,14 +113,35 @@ export async function validateAndRefreshProvider(input: {
   }
 }
 
-async function discoverProviderModels(
+export async function discoverProviderModels(
   provider: SettingsModelProvider,
   credentials: Record<string, string>,
 ): Promise<CatalogModel[]> {
   if (provider === "openai") return discoverOpenAI(credentials.apiKey);
   if (provider === "google") return discoverGemini(credentials.apiKey);
   if (provider === "anthropic") return discoverAnthropic(credentials.apiKey);
+  if (provider === "typesafe") return discoverTypeSafe(credentials.apiKey);
   return discoverBedrock(credentials);
+}
+
+async function discoverTypeSafe(apiKey: string): Promise<CatalogModel[]> {
+  const body = await providerJson("https://api.typesafe.ai/v1/models", {
+    headers: { authorization: `Bearer ${apiKey}` },
+  });
+  const models = Array.isArray(body.models) ? body.models : [];
+  return models
+    .map(recordValue)
+    .filter((item) => typeof item.name === "string" && item.name.trim())
+    .slice(0, 1_000)
+    .map((item) => {
+      const modelId = String(item.name).trim();
+      return catalogModel(
+        modelId,
+        modelId,
+        ["semantic_decision"],
+        typeof item.description === "string" ? item.description : "",
+      );
+    });
 }
 
 async function discoverOpenAI(apiKey: string): Promise<CatalogModel[]> {

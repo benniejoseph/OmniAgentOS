@@ -3,6 +3,7 @@ export const MODEL_PROVIDERS = [
   "google",
   "anthropic",
   "aws_bedrock",
+  "typesafe",
 ] as const;
 
 export type SettingsModelProvider = (typeof MODEL_PROVIDERS)[number];
@@ -26,6 +27,7 @@ export const MODEL_ASSIGNMENT_SCOPES = [
   "computer_use",
   "speech_synthesis",
   "realtime_transcription",
+  "semantic_decision",
 ] as const;
 
 export type ModelAssignmentScope = (typeof MODEL_ASSIGNMENT_SCOPES)[number];
@@ -41,6 +43,7 @@ export const SPECIALIZED_MODEL_ASSIGNMENT_SCOPES = [
   "computer_use",
   "speech_synthesis",
   "realtime_transcription",
+  "semantic_decision",
 ] as const satisfies readonly ModelAssignmentScope[];
 
 export const SERVICE_API_SCOPES = [

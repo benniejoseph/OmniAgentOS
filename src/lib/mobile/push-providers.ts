@@ -81,8 +81,10 @@ async function deliverFcm(input: {
         body: JSON.stringify({
           message: {
             token: input.token,
-            data: stringRecord(input.envelope),
-            ...(input.preview ? { notification: input.preview } : {}),
+            // Keep Android data-only so the Flutter background handler always
+            // receives the causal envelope and can install native actions.
+            // FCM notification payloads are rendered by the OS without Dart.
+            data: stringRecord(input.envelope, input.preview),
             android: { priority: "HIGH" },
             apns: {
               headers: {
@@ -91,7 +93,14 @@ async function deliverFcm(input: {
               },
               payload: {
                 aps: input.preview
-                  ? { sound: "default", category: asaelNotificationCategory }
+                  ? {
+                      alert: input.preview,
+                      sound: "default",
+                      ...(input.envelope.notificationId
+                        ? { category: asaelNotificationCategory }
+                        : {}),
+                      "content-available": 1,
+                    }
                   : { "content-available": 1 },
               },
             },
@@ -160,7 +169,10 @@ async function deliverApns(input: {
       ? {
           alert: input.preview,
           sound: "default",
-          category: asaelNotificationCategory,
+          ...(input.envelope.notificationId
+            ? { category: asaelNotificationCategory }
+            : {}),
+          "content-available": 1,
         }
       : { "content-available": 1 },
     asael: input.envelope,
@@ -365,9 +377,24 @@ function base64UrlJson(value: Record<string, unknown>) {
   return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
 }
 
-function stringRecord(envelope: MobilePushEnvelope) {
+function stringRecord(
+  envelope: MobilePushEnvelope,
+  preview?: { title: string; body: string },
+) {
+  const entries: Array<[string, unknown]> = [
+    ...Object.entries(envelope),
+    ...(preview
+      ? [
+          ["asaelTitle", preview.title] as [string, unknown],
+          ["asaelBody", preview.body] as [string, unknown],
+          ...(envelope.notificationId
+            ? [["asaelCategory", asaelNotificationCategory] as [string, unknown]]
+            : []),
+        ]
+      : []),
+  ];
   return Object.fromEntries(
-    Object.entries(envelope)
+    entries
       .filter(([, value]) => value !== undefined)
       .map(([key, value]) => [key, String(value)]),
   );

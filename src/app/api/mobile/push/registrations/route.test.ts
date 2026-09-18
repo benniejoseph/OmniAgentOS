@@ -18,6 +18,7 @@ vi.mock("@/lib/security/guard", () => ({
   ),
 }));
 vi.mock("@/lib/mobile/push-store", () => ({
+  MobilePushConflictError: class extends Error { readonly status = 409; },
   MobilePushStorageRequiredError: class extends Error { readonly status = 503; },
   listMobilePushDevices: mocks.listMobilePushDevices,
   registerMobilePushDevice: mocks.registerMobilePushDevice,

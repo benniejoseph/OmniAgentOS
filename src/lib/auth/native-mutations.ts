@@ -19,6 +19,8 @@ export const NATIVE_MUTATION_CAPABILITIES = [
   "evidence.cancel",
   "push.registration.update",
   "push.delivery.acknowledge",
+  "push.delivery.receipt",
+  "push.canary.run",
   "computer.use.device.update",
   "computer.use.command.claim",
   "computer.use.command.complete",
@@ -94,6 +96,10 @@ function minimumVersion(capability: NativeMutationCapability) {
     capability === "push.registration.update" ||
     capability === "push.delivery.acknowledge"
   ) return 4;
+  if (
+    capability === "push.delivery.receipt" ||
+    capability === "push.canary.run"
+  ) return 15;
   if (capability === "markets.update" || capability === "settings.update") return 6;
   return 3;
 }

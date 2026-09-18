@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mobilePushDedupeKey } from "@/lib/mobile/push-contract";
 import type { SecurityContext } from "@/lib/security/types";
 
 const dbMocks = vi.hoisted(() => {
@@ -83,9 +84,9 @@ vi.mock("@/lib/settings/credential-vault", () => ({
 }));
 
 import {
-  acknowledgeMobilePushDelivery,
   dispatchMobilePushDeliveries,
   getMobilePushAcknowledgementCandidate,
+  recordMobilePushDeliveryReceipt,
 } from "@/lib/mobile/push-store";
 
 beforeEach(() => {
@@ -144,43 +145,99 @@ describe("mobile push acknowledgement storage", () => {
     ]);
   });
 
-  it("acknowledges once and returns the stable result on retry", async () => {
+  it("records immutable lifecycle evidence once and returns it on retry", async () => {
+    const observedAt = new Date().toISOString();
+    const input = {
+      schemaVersion: 1 as const,
+      kind: "opened" as const,
+      observedAt,
+      appLifecycle: "background" as const,
+    };
+    const receipt = receiptRow(
+      "opened",
+      observedAt,
+      mobilePushDedupeKey({
+        schemaVersion: 1,
+        kind: "opened",
+        action: null,
+      }),
+    );
+    const retryInput = {
+      ...input,
+      observedAt: new Date(Date.parse(observedAt) + 1_000).toISOString(),
+      appLifecycle: "foreground" as const,
+    };
     dbMocks.responses.push(
       [deliveryRow("delivered")],
+      [receipt],
       [deliveryRow("acknowledged")],
+      [receipt],
       [deliveryRow("acknowledged")],
+      [],
+      [receipt],
+      [receipt],
+      [deliveryRow("acknowledged")],
+      [],
+      [receipt],
     );
 
     await expect(
-      acknowledgeMobilePushDelivery(
+      recordMobilePushDeliveryReceipt(
         context(),
         "delivery-one",
+        input,
         "push-open-delivery-one",
       ),
-    ).resolves.toMatchObject({ newlyAcknowledged: true });
+    ).resolves.toMatchObject({
+      newlyRecorded: true,
+      receipt: { kind: "opened", appLifecycle: "background" },
+      delivery: {
+        providerState: "accepted",
+        appState: "opened",
+        openedAt: observedAt,
+      },
+    });
     await expect(
-      acknowledgeMobilePushDelivery(
+      recordMobilePushDeliveryReceipt(
         context(),
         "delivery-one",
+        retryInput,
         "push-open-delivery-one",
       ),
-    ).resolves.toMatchObject({ newlyAcknowledged: false });
+    ).resolves.toMatchObject({
+      newlyRecorded: false,
+      receipt: { observedAt, appLifecycle: "background" },
+    });
 
-    expect(dbMocks.statements).toHaveLength(3);
+    await expect(
+      recordMobilePushDeliveryReceipt(
+        context(),
+        "delivery-one",
+        {
+          schemaVersion: 1,
+          kind: "received",
+          observedAt,
+          appLifecycle: "background",
+        },
+        "push-open-delivery-one",
+      ),
+    ).rejects.toThrow(
+      "idempotency key was already used for another observation",
+    );
+
+    expect(dbMocks.statements[0].text).toContain(
+      "FOR UPDATE OF delivery",
+    );
     expect(dbMocks.statements[1].text).toContain(
+      "INSERT INTO omni_mobile_push_delivery_receipts",
+    );
+    expect(dbMocks.statements[2].text).toContain(
       "UPDATE omni_mobile_push_deliveries",
     );
-    expect(dbMocks.statements[1].params).toEqual([
-      "delivery-one",
-      "tenant-one",
-      "actor-one",
-      "device-one",
-      "session-one",
-    ]);
     expect(eventMocks.appendScopedDomainEvent).toHaveBeenCalledOnce();
     expect(eventMocks.appendScopedDomainEvent).toHaveBeenCalledWith(
       expect.objectContaining({
-        type: "mobile.push_delivery_acknowledged",
+        type: "mobile.push_delivery_opened",
         streamId: "mobile-push-delivery:delivery-one",
         executionScope: expect.objectContaining({
           tenantId: "tenant-one",
@@ -210,7 +267,7 @@ describe("mobile push delivery leases", () => {
       dispatchMobilePushDeliveries({ tenantId: "tenant-one", limit: 2 }),
     ).resolves.toEqual({
       processed: 2,
-      delivered: 2,
+      providerAccepted: 2,
       retried: 0,
       failed: 0,
       unsettled: 0,
@@ -253,7 +310,7 @@ describe("mobile push delivery leases", () => {
       dispatchMobilePushDeliveries({ tenantId: "tenant-one", limit: 2 }),
     ).resolves.toEqual({
       processed: 2,
-      delivered: 1,
+      providerAccepted: 1,
       retried: 0,
       failed: 0,
       unsettled: 1,
@@ -287,6 +344,30 @@ function context(overrides: { deviceId?: string; sessionId?: string } = {}) {
       clientContractVersion: 4,
     },
   } satisfies SecurityContext;
+}
+
+function receiptRow(
+  kind: "received" | "opened" | "action",
+  observedAt: string,
+  requestSha256: string,
+) {
+  return {
+    id: `mobile_push_receipt_${"c".repeat(48)}`,
+    tenant_id: "tenant-one",
+    owner_actor_id: "actor-one",
+    delivery_id: "delivery-one",
+    registration_id: "registration-one",
+    device_id: "device-one",
+    mobile_session_id: "session-one",
+    platform: "ios",
+    receipt_kind: kind,
+    action: null,
+    app_lifecycle: "background",
+    observed_at: observedAt,
+    idempotency_key_sha256: "d".repeat(64),
+    request_sha256: requestSha256,
+    recorded_at: observedAt,
+  };
 }
 
 function deliveryRow(

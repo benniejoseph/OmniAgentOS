@@ -13,16 +13,43 @@ export const mobilePushTargetSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("meeting"), id: opaqueId }).strict(),
   z.object({ kind: z.literal("customer"), id: opaqueId }).strict(),
   z.object({ kind: z.literal("run"), id: opaqueId }).strict(),
+  z.object({ kind: z.literal("canary"), id: opaqueId }).strict(),
 ]);
 
 export type MobilePushTarget = z.infer<typeof mobilePushTargetSchema>;
 export type MobilePushPreviewPolicy = "hidden" | "generic" | "title";
 
+export const mobilePushReceiptRequestSchema = z.object({
+  schemaVersion: z.literal(1),
+  kind: z.enum(["received", "opened", "action"]),
+  action: z.enum(["open", "complete", "snooze", "dismiss"]).optional(),
+  observedAt: z.string().datetime({ offset: true }),
+  appLifecycle: z.enum(["foreground", "background", "terminated", "unknown"]),
+}).strict().superRefine((value, refinement) => {
+  if ((value.kind === "action") === (value.action !== undefined)) return;
+  refinement.addIssue({
+    code: "custom",
+    path: ["action"],
+    message: "An action is required only for an action receipt.",
+  });
+});
+
+export type MobilePushReceiptInput = z.infer<
+  typeof mobilePushReceiptRequestSchema
+>;
+
 export const mobilePushEnvelopeSchema = z.object({
   schemaVersion: z.literal("1"),
   deliveryId: opaqueId,
   notificationId: opaqueId.optional(),
-  causeKind: z.enum(["approval", "work_item", "meeting", "customer", "run"]),
+  causeKind: z.enum([
+    "approval",
+    "work_item",
+    "meeting",
+    "customer",
+    "run",
+    "canary",
+  ]),
   causeId: opaqueId,
   parentId: opaqueId.optional(),
   deepLink: z.string().min(2).max(1_000),
@@ -53,6 +80,8 @@ export function mobilePushDeepLink(input: MobilePushTarget) {
       return `/customers/${id}`;
     case "run":
       return `/results/${encodeURIComponent(`agent:${target.id}`)}`;
+    case "canary":
+      return `/settings?pushCanary=${id}`;
   }
 }
 
@@ -100,7 +129,9 @@ export function mobilePushPreview(
         ? "A meeting update is ready."
         : target.kind === "customer"
           ? "A customer update needs your attention."
-          : "A run update is ready.";
+          : target.kind === "run"
+            ? "A run update is ready."
+            : "Push notification verification is ready.";
   return { title: "Asael", body: subject } as const;
 }
 

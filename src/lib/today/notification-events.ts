@@ -8,6 +8,7 @@ export const NOTIFICATION_EVENT_SCHEMA_VERSION = 1 as const;
 
 const opaqueIdSchema = z.string().trim().min(1).max(240);
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
+const isoDateTimeSchema = z.string().datetime({ offset: true });
 
 export const notificationMutationEventPayloadSchema = z.object({
   schemaVersion: z.literal(NOTIFICATION_EVENT_SCHEMA_VERSION),
@@ -17,6 +18,12 @@ export const notificationMutationEventPayloadSchema = z.object({
   action: z.enum(["read", "dismiss", "snooze", "complete"]),
   status: z.enum(["read", "dismissed", "snoozed", "acted"]),
   idempotencyKeySha256: sha256Schema,
+  effect: z.object({
+    status: z.enum(["read", "dismissed", "snoozed", "acted"]),
+    snoozedUntil: isoDateTimeSchema.nullable(),
+    readAt: isoDateTimeSchema.nullable(),
+    updatedAt: isoDateTimeSchema,
+  }).strict().optional(),
 }).strict();
 
 export const notificationBulkMutationEventPayloadSchema = z.object({

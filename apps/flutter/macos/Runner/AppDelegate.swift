@@ -82,11 +82,25 @@ class AppDelegate: FlutterAppDelegate, UNUserNotificationCenterDelegate {
     desktopHostController.reportApnsFailure("registration_\(code)")
   }
 
+  override func application(
+    _ application: NSApplication,
+    didReceiveRemoteNotification userInfo: [String: Any]
+  ) {
+    desktopHostController.handleNotificationReceived(
+      userInfo,
+      lifecycle: application.isActive ? "foreground" : "background"
+    )
+  }
+
   func userNotificationCenter(
     _ center: UNUserNotificationCenter,
     willPresent notification: UNNotification,
     withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
   ) {
+    desktopHostController.handleNotificationReceived(
+      notification.request.content.userInfo,
+      lifecycle: "foreground"
+    )
     completionHandler([.banner, .sound, .badge])
   }
 
@@ -95,8 +109,10 @@ class AppDelegate: FlutterAppDelegate, UNUserNotificationCenterDelegate {
     didReceive response: UNNotificationResponse,
     withCompletionHandler completionHandler: @escaping () -> Void
   ) {
-    desktopHostController.handleNotificationResponse(response)
-    completionHandler()
+    desktopHostController.handleNotificationResponse(
+      response,
+      completionHandler: completionHandler
+    )
   }
 }
 
@@ -1118,6 +1134,141 @@ private final class LocalComputerController: NSObject {
   }
 }
 
+/// A content-minimal, crash-safe handoff for notification lifecycle events.
+///
+/// APNs may launch the process and deliver a response before Flutter has created
+/// its channel or restored the authenticated session. The host therefore keeps
+/// only the causal Asael envelope plus an action/lifecycle marker, never the APS
+/// alert title/body. Flutter removes an event only after it has durably queued
+/// the corresponding governed API receipt.
+final class NativeNotificationBridgeEventStore {
+  static let defaultsKey = "AsaelPendingNotificationBridgeEventsV1"
+  static let maximumEvents = 32
+
+  init(
+    defaults: UserDefaults = .standard,
+    synchronize: (() -> Bool)? = nil
+  ) {
+    self.defaults = defaults
+    self.synchronize = synchronize ?? { defaults.synchronize() }
+  }
+
+  private let defaults: UserDefaults
+  private let synchronize: () -> Bool
+
+  func enqueue(method: String, arguments: [String: Any]) -> Bool {
+    guard Self.allowedMethods.contains(method),
+          PropertyListSerialization.propertyList(arguments, isValidFor: .binary),
+          let encoded = try? JSONSerialization.data(withJSONObject: arguments),
+          encoded.count <= 24 * 1_024,
+          let dedupeKey = Self.dedupeKey(method: method, arguments: arguments)
+    else { return false }
+
+    let originalRecords = load()
+    var records = originalRecords
+    if records.contains(where: { $0["dedupeKey"] as? String == dedupeKey }) {
+      return true
+    }
+    if records.count >= Self.maximumEvents {
+      guard method == "notificationAction",
+            let receivedIndex = records.firstIndex(where: {
+              $0["method"] as? String == "notificationReceived"
+            })
+      else { return false }
+      // A direct user action is stronger evidence than a receipt-only event.
+      // If the bounded cold-launch store is full, retain that action by
+      // evicting only the oldest passive delivery observation.
+      records.remove(at: receivedIndex)
+    }
+    let id = UUID().uuidString.lowercased()
+    records.append([
+      "schemaVersion": 1,
+      "id": id,
+      "dedupeKey": dedupeKey,
+      "method": method,
+      "arguments": arguments,
+    ])
+    defaults.set(records, forKey: Self.defaultsKey)
+    guard synchronize(),
+          load().contains(where: { $0["id"] as? String == id })
+    else {
+      if originalRecords.isEmpty {
+        defaults.removeObject(forKey: Self.defaultsKey)
+      } else {
+        defaults.set(originalRecords, forKey: Self.defaultsKey)
+      }
+      _ = synchronize()
+      return false
+    }
+    return true
+  }
+
+  func first() -> [String: Any]? {
+    load().first
+  }
+
+  func remove(id: String) {
+    let retained = load().filter { $0["id"] as? String != id }
+    if retained.isEmpty {
+      defaults.removeObject(forKey: Self.defaultsKey)
+    } else {
+      defaults.set(retained, forKey: Self.defaultsKey)
+    }
+    _ = synchronize()
+  }
+
+  var count: Int { load().count }
+
+  private func load() -> [[String: Any]] {
+    guard let values = defaults.array(forKey: Self.defaultsKey) else { return [] }
+    return values.compactMap { value in
+      guard let record = value as? [String: Any],
+            record.count == 5,
+            record["schemaVersion"] as? Int == 1,
+            let id = record["id"] as? String,
+            UUID(uuidString: id) != nil,
+            let dedupeKey = record["dedupeKey"] as? String,
+            !dedupeKey.isEmpty,
+            dedupeKey.utf8.count <= 640,
+            let method = record["method"] as? String,
+            Self.allowedMethods.contains(method),
+            let arguments = record["arguments"] as? [String: Any],
+            PropertyListSerialization.propertyList(arguments, isValidFor: .binary)
+      else { return nil }
+      return record
+    }
+  }
+
+  private static let allowedMethods: Set<String> = [
+    "notificationReceived", "notificationAction",
+  ]
+
+  private static func dedupeKey(
+    method: String,
+    arguments: [String: Any]
+  ) -> String? {
+    guard let data = arguments["data"] as? [String: Any],
+          let deliveryId = envelopeValue("deliveryId", data: data),
+          !deliveryId.isEmpty,
+          deliveryId.utf8.count <= 240
+    else { return nil }
+    let action = arguments["action"] as? String ?? "received"
+    return "\(method):\(deliveryId):\(action)"
+  }
+
+  private static func envelopeValue(_ name: String, data: [String: Any]) -> String? {
+    if let envelope = data["asael"] as? [String: Any] {
+      return envelope[name] as? String
+    }
+    if let encoded = data["asael"] as? String,
+       let bytes = encoded.data(using: .utf8), bytes.count <= 16 * 1_024,
+       let envelope = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any] {
+      return envelope[name] as? String
+    }
+    return data[name] as? String
+  }
+}
+
 /// Owns Asael's small native desktop surface. Product behavior remains in Flutter;
 /// this controller only keeps the app available and forwards explicit navigation.
 private final class DesktopHostController: NSObject {
@@ -1221,6 +1372,9 @@ private final class DesktopHostController: NSObject {
   private var shortcutRegistered = false
   private var pendingRoute: Route?
   private var isDartReady = false
+  private var isNotificationHandlerReady = false
+  private var notificationDeliveryInFlight = false
+  private let notificationBridgeEvents = NativeNotificationBridgeEventStore()
   private var hasStarted = false
   private var isQuickEntryPresented = false
   private var regularWindowFrame: NSRect?
@@ -1242,6 +1396,8 @@ private final class DesktopHostController: NSObject {
     channel?.setMethodCallHandler(nil)
     channel = nil
     isDartReady = false
+    isNotificationHandlerReady = false
+    notificationDeliveryInFlight = false
     deliveredSharedCaptureIds.removeAll()
     sharedCaptureDeliveryInFlight = false
 
@@ -1274,6 +1430,7 @@ private final class DesktopHostController: NSObject {
     self.channel = channel
     self.window = window
     isDartReady = false
+    isNotificationHandlerReady = false
 
     channel.setMethodCallHandler { [weak self] call, result in
       guard let self else {
@@ -1288,6 +1445,23 @@ private final class DesktopHostController: NSObject {
           self.flushPendingRoute()
           self.deliverNextSharedCapture()
         }
+        result(nil)
+      case "notificationHandlerReady":
+        guard call.arguments == nil else {
+          result(FlutterError(code: "invalid_notification_handler", message: "The notification handler handshake is invalid.", details: nil))
+          return
+        }
+        DispatchQueue.main.async {
+          self.isNotificationHandlerReady = true
+          self.deliverNextNotificationEvent()
+        }
+        result(nil)
+      case "notificationHandlerPaused":
+        guard call.arguments == nil else {
+          result(FlutterError(code: "invalid_notification_handler", message: "The notification handler handshake is invalid.", details: nil))
+          return
+        }
+        self.isNotificationHandlerReady = false
         result(nil)
       case "showMainPresentation":
         DispatchQueue.main.async {
@@ -1649,7 +1823,10 @@ private final class DesktopHostController: NSObject {
     UNUserNotificationCenter.current().setNotificationCategories([category])
   }
 
-  func handleNotificationResponse(_ response: UNNotificationResponse) {
+  func handleNotificationResponse(
+    _ response: UNNotificationResponse,
+    completionHandler: @escaping () -> Void
+  ) {
     let action: NotificationAction
     switch response.actionIdentifier {
     case UNNotificationDefaultActionIdentifier:
@@ -1661,15 +1838,156 @@ private final class DesktopHostController: NSObject {
     case Self.dismissNotificationAction, UNNotificationDismissActionIdentifier:
       action = .dismiss
     default:
+      completionHandler()
       return
     }
-    let data = Self.channelValue(response.notification.request.content.userInfo)
-    guard let data = data as? [String: Any] else { return }
+    guard let data = Self.notificationEnvelope(
+      response.notification.request.content.userInfo
+    ) else {
+      completionHandler()
+      return
+    }
+    let observedAt = ISO8601DateFormatter().string(from: Date())
     DispatchQueue.main.async { [weak self] in
-      self?.channel?.invokeMethod(
-        "notificationAction",
-        arguments: ["action": action.rawValue, "data": data]
+      guard let self else {
+        completionHandler()
+        return
+      }
+      let lifecycle = self.channel == nil || !self.isDartReady
+        ? "terminated"
+        : (NSApp.isActive ? "foreground" : "background")
+      self.persistNotificationAction(
+        arguments: [
+          "action": action.rawValue,
+          "data": data,
+          "appLifecycle": lifecycle,
+          "observedAt": observedAt,
+        ],
+        attemptsRemaining: 3,
+        completionHandler: completionHandler
       )
+    }
+  }
+
+  func handleNotificationReceived(
+    _ userInfo: [AnyHashable: Any],
+    lifecycle: String
+  ) {
+    guard let data = Self.notificationEnvelope(userInfo),
+          lifecycle == "foreground" || lifecycle == "background"
+    else { return }
+    let observedAt = ISO8601DateFormatter().string(from: Date())
+    DispatchQueue.main.async { [weak self] in
+      guard let self else { return }
+      let effectiveLifecycle = self.channel == nil || !self.isDartReady
+        ? "terminated"
+        : lifecycle
+      self.persistNotificationReceived(
+        arguments: [
+          "data": data,
+          "appLifecycle": effectiveLifecycle,
+          "observedAt": observedAt,
+        ],
+        attemptsRemaining: 2
+      )
+    }
+  }
+
+  private func persistNotificationAction(
+    arguments: [String: Any],
+    attemptsRemaining: Int,
+    completionHandler: @escaping () -> Void
+  ) {
+    dispatchPrecondition(condition: .onQueue(.main))
+    if notificationBridgeEvents.enqueue(
+      method: "notificationAction",
+      arguments: arguments
+    ) {
+      deliverNextNotificationEvent()
+      // enqueue synchronizes and reads back the row. Complete the OS response
+      // only after that durable handoff so a cold-launched process cannot be
+      // suspended before Flutter has a chance to start.
+      completionHandler()
+      return
+    }
+    deliverNextNotificationEvent()
+    guard attemptsRemaining > 1 else {
+      // UNUserNotificationCenter requires eventual completion even when local
+      // persistence is unavailable. Emit no envelope data in diagnostics.
+      NSLog("Asael could not durably retain a notification action after bounded retries.")
+      completionHandler()
+      return
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+      guard let self else {
+        completionHandler()
+        return
+      }
+      self.persistNotificationAction(
+        arguments: arguments,
+        attemptsRemaining: attemptsRemaining - 1,
+        completionHandler: completionHandler
+      )
+    }
+  }
+
+  private func persistNotificationReceived(
+    arguments: [String: Any],
+    attemptsRemaining: Int
+  ) {
+    dispatchPrecondition(condition: .onQueue(.main))
+    if notificationBridgeEvents.enqueue(
+      method: "notificationReceived",
+      arguments: arguments
+    ) {
+      deliverNextNotificationEvent()
+      return
+    }
+    deliverNextNotificationEvent()
+    guard attemptsRemaining > 1 else {
+      NSLog("Asael could not durably retain a notification delivery observation.")
+      return
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+      self?.persistNotificationReceived(
+        arguments: arguments,
+        attemptsRemaining: attemptsRemaining - 1
+      )
+    }
+  }
+
+  private func deliverNextNotificationEvent() {
+    dispatchPrecondition(condition: .onQueue(.main))
+    guard isDartReady,
+          isNotificationHandlerReady,
+          !notificationDeliveryInFlight,
+          let channel,
+          let event = notificationBridgeEvents.first(),
+          let id = event["id"] as? String,
+          let method = event["method"] as? String,
+          let arguments = event["arguments"] as? [String: Any]
+    else { return }
+    notificationDeliveryInFlight = true
+    channel.invokeMethod(method, arguments: arguments) { [weak self] response in
+      DispatchQueue.main.async {
+        guard let self else { return }
+        self.notificationDeliveryInFlight = false
+        if response is FlutterError {
+          // Dart rejected only the durable queue handoff (for example, a
+          // temporarily unavailable Keychain). Retain the native event and
+          // retry without invalidating an otherwise live method handler.
+          DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            self?.deliverNextNotificationEvent()
+          }
+          return
+        }
+        if (response as AnyObject?) === FlutterMethodNotImplemented {
+          self.isNotificationHandlerReady = false
+          return
+        }
+        self.notificationBridgeEvents.remove(id: id)
+        self.deliverNextNotificationEvent()
+      }
     }
   }
 
@@ -1735,6 +2053,35 @@ private final class DesktopHostController: NSObject {
     default:
       return nil
     }
+  }
+
+  private static func notificationEnvelope(
+    _ userInfo: [AnyHashable: Any]
+  ) -> [String: Any]? {
+    if let envelope = userInfo["asael"], let safe = channelValue(envelope) {
+      let data = ["asael": safe]
+      guard JSONSerialization.isValidJSONObject(data),
+            let encoded = try? JSONSerialization.data(withJSONObject: data),
+            encoded.count <= 16 * 1_024
+      else { return nil }
+      return data
+    }
+    let keys = [
+      "schemaVersion", "deliveryId", "notificationId", "causeKind",
+      "causeId", "parentId", "deepLink",
+    ]
+    var data: [String: Any] = [:]
+    for key in keys {
+      if let value = userInfo[key], let safe = channelValue(value) {
+        data[key] = safe
+      }
+    }
+    guard data["deliveryId"] != nil,
+          JSONSerialization.isValidJSONObject(data),
+          let encoded = try? JSONSerialization.data(withJSONObject: data),
+          encoded.count <= 16 * 1_024
+    else { return nil }
+    return data
   }
 
   func showMainWindow() {

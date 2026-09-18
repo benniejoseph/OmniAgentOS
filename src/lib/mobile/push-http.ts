@@ -1,5 +1,8 @@
 import { mobileNoStoreHeaders } from "@/lib/auth/mobile-http";
-import { MobilePushStorageRequiredError } from "@/lib/mobile/push-store";
+import {
+  MobilePushConflictError,
+  MobilePushStorageRequiredError,
+} from "@/lib/mobile/push-store";
 import { forbiddenResponse } from "@/lib/security/guard";
 
 export function requireMobilePushIdempotencyKey(request: Request) {
@@ -23,9 +26,12 @@ export function mobilePushErrorResponse(error: unknown) {
   const message = error instanceof Error
     ? error.message
     : "Mobile push request failed.";
-  const status = error instanceof MobilePushStorageRequiredError
+  const status = error instanceof MobilePushStorageRequiredError ||
+      error instanceof MobilePushConflictError
     ? error.status
-    : message.startsWith("Idempotency-Key") || message.includes("token is invalid")
+    : message.startsWith("Idempotency-Key") ||
+        message.includes("token is invalid") ||
+        message.startsWith("Push receipt observedAt")
       ? 400
       : message.includes("not eligible") || message.includes("requires an iOS")
         ? 409

@@ -913,5 +913,15 @@
     "version": 183,
     "name": "actor_rls_policy_composition_repair_v1",
     "checksum": "06e06bfc319278f8e676d14c30bfc34f60cdda305ff48b0c4f4944a01e53ba97"
+  },
+  {
+    "version": 184,
+    "name": "semantic_decision_shadow_pilot_v1",
+    "checksum": "142047c12f42ba8135d7bfd95edde467ebcedf4d42f5c69937b4fe797a865223"
+  },
+  {
+    "version": 185,
+    "name": "mobile_push_receipt_canary_v1",
+    "checksum": "a4840325f34b054c01c953bc8253a2123df4cc0d87369ce386ac69a6c8b11f03"
   }
 ]

@@ -10,6 +10,7 @@ import { redactSensitive } from "@/lib/security/context";
 import {
   assertExecutionScopeTenant,
   createExecutionScope,
+  executionScopesEqual,
   parsePersistedExecutionScope,
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
@@ -225,6 +226,15 @@ export async function updatePersonalNotification(
       forUpdate: Boolean(sql),
     });
     if (!notification) return undefined;
+    if (mutation && sql) {
+      const prior = await priorNotificationMutation(
+        notification,
+        action,
+        mutation,
+        sql,
+      );
+      if (prior) return prior;
+    }
     if (action === "read" && options.onlyIfUnread && notification.status !== "unread") {
       return notification;
     }
@@ -705,6 +715,12 @@ async function appendNotificationMutationEvent(
       actorId: notification.actorId,
       idempotencyKey: mutation.idempotencyKey,
     }),
+    effect: {
+      status: notification.status,
+      snoozedUntil: notification.snoozedUntil || null,
+      readAt: notification.readAt || null,
+      updatedAt: notification.updatedAt,
+    },
   });
   await appendScopedDomainEvent({
     id: notificationMutationEventId({
@@ -717,6 +733,75 @@ async function appendNotificationMutationEvent(
     executionScope: mutation.executionScope,
     payload,
   }, sql ? { sql } : {});
+}
+
+async function priorNotificationMutation(
+  notification: PersonalNotification,
+  action: "read" | "dismiss" | "snooze" | "complete",
+  mutation: ReturnType<typeof exactNotificationMutation>,
+  sql: NotificationSqlClient,
+) {
+  const eventId = notificationMutationEventId({
+    tenantId: notification.tenantId,
+    actorId: notification.actorId,
+    idempotencyKey: mutation.idempotencyKey,
+  });
+  const rows = await sql.query(
+    `SELECT stream_id, type, payload, causation_id, correlation_id
+     FROM omni_events
+     WHERE id = $1 AND tenant_id = $2 AND actor_id = $3
+     LIMIT 1`,
+    [eventId, notification.tenantId, notification.actorId],
+  );
+  if (!rows[0]) return undefined;
+  const row = rows[0];
+  const persistedPayload = row.payload;
+  if (
+    !persistedPayload ||
+    typeof persistedPayload !== "object" ||
+    Array.isArray(persistedPayload)
+  ) {
+    throw new Error("Notification mutation idempotency evidence is invalid.");
+  }
+  const {
+    _executionScope: rawExecutionScope,
+    ...domainPayload
+  } = persistedPayload as Record<string, unknown>;
+  const payload = notificationMutationEventPayloadSchema.parse(domainPayload);
+  const persistedScope = parsePersistedExecutionScope(rawExecutionScope);
+  const expectedKeySha256 = notificationSha256({
+    tenantId: notification.tenantId,
+    actorId: notification.actorId,
+    idempotencyKey: mutation.idempotencyKey,
+  });
+  if (
+    String(row.stream_id) !== `notification:${notification.id}` ||
+    String(row.type) !== "notification.updated" ||
+    String(row.causation_id || "") !==
+      String(mutation.executionScope.causationId || "") ||
+    String(row.correlation_id || "") !== mutation.executionScope.correlationId ||
+    !persistedScope ||
+    !executionScopesEqual(persistedScope, mutation.executionScope) ||
+    payload.notificationId !== notification.id ||
+    payload.sourceType !== notification.sourceType ||
+    payload.sourceId !== notification.sourceId ||
+    payload.action !== action ||
+    payload.idempotencyKeySha256 !== expectedKeySha256 ||
+    (payload.effect && payload.effect.status !== payload.status)
+  ) {
+    throw new Error(
+      "Notification mutation idempotency key is bound to another effect.",
+    );
+  }
+  return payload.effect
+    ? {
+        ...notification,
+        status: payload.effect.status,
+        snoozedUntil: payload.effect.snoozedUntil || undefined,
+        readAt: payload.effect.readAt || undefined,
+        updatedAt: payload.effect.updatedAt,
+      }
+    : notification;
 }
 
 function readLedger() {

@@ -36,12 +36,12 @@ Set these through the platform secret/configuration store, never in source contr
 - `NEXT_PUBLIC_APP_URL`: canonical HTTPS origin. Set it to exactly `https://asael.bennierichard.com`. It is public and build-inlined, not a secret.
 - `OMNIAGENT_NATIVE_MIN_ANDROID_VERSION`, `OMNIAGENT_NATIVE_MIN_IOS_VERSION`, and `OMNIAGENT_NATIVE_MIN_MACOS_VERSION`: optional stable `major.minor.patch` minimums for native compatibility telemetry. An absent or empty value defaults to `1.0.0`; a malformed configured value invalidates the policy and holds adoption unavailable. These settings do not authorize Agent enrollment.
 
-Native contract artifacts are committed immutable release inputs. Contract v14 is
-canonical-current and v13 is the one supported previous version; older versions remain
-historical archives and a published version is never regenerated in place. Run
+Native contract artifacts are committed immutable release inputs. Source contract v15
+is the release candidate and frozen v14 is the one supported previous version; older
+versions remain historical archives and a published version is never regenerated in place. Run
 `npm run check:native-contracts` before a native-contract release; the check
 fails if the generated OpenAPI, event schema, fixtures, integrity manifests,
-Dart SDK, or frozen v7-v13 document hashes drift. Removing an archived version
+Dart SDK, or frozen v7-v14 document hashes drift. Removing an archived version
 requires a separately reviewed adoption decision and is not implied by a
 Vercel deployment.
 
@@ -80,6 +80,22 @@ never a Firebase service-account key. Provider configuration is reported
 truthfully to the registered device without exposing credentials. The existing
 worker calls the Vercel workflow tick, so this change does not require a Fly
 image release.
+
+Native contract v15 receipt canaries require ordered migration
+`20260918140000_mobile_push_receipt_canary.sql` (internal schema version 185)
+after the exact v184 Jev shadow predecessor. It adds immutable, actor-scoped
+`received`, `opened`, and `action` observations plus explicit provider-acceptance
+timestamps. The workflow tick also scans pending approvals, upcoming meetings,
+at-risk customer revisions, and terminal Agent runs into the existing durable
+mobile-push outbox. These producers honor Today notification enablement, quiet
+hours, and meeting lead time; repeated ticks deduplicate by the source occurrence.
+They intentionally do not insert those domain events into the Today-only in-app
+reminder table, whose Complete action is bound to a Today item. A unified in-app
+attention-center expansion requires its own source/action/deep-link contract.
+Run the live canary only after the server migration and v15 native build are both
+installed. An APNs/FCM success is `providerState: accepted`, not proof of device
+delivery; only the native app receipt advances `appState`, and its absence must be
+reported as `timed_out`.
 
 Production uses Firebase only as notification transport for the existing Asael
 backend. Firebase is enabled on the existing `asael-private-ai` Google Cloud

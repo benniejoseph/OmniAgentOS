@@ -13,6 +13,7 @@ export const AI_USAGE_OPERATIONS = [
   "transcription",
   "speech_synthesis",
   "browser_automation",
+  "semantic_decision",
 ] as const;
 
 export type AiUsageOperation = (typeof AI_USAGE_OPERATIONS)[number];

@@ -3,6 +3,8 @@ import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-ac
 
 const dbMocks = vi.hoisted(() => {
   const rows: Record<string, unknown>[] = [];
+  const queryResponses: Record<string, unknown>[][] = [];
+  const queries: Array<{ text: string; params: unknown[] }> = [];
   const statements: Array<{ text: string; params: unknown[] }> = [];
   const sql = vi.fn(
     (strings: TemplateStringsArray, ...params: unknown[]) => {
@@ -10,14 +12,26 @@ const dbMocks = vi.hoisted(() => {
       return Promise.resolve([...rows]);
     },
   );
+  const query = vi.fn((text: string, params: unknown[]) => {
+    queries.push({ text, params });
+    return Promise.resolve(queryResponses.shift() || []);
+  });
+  const transaction = vi.fn(
+    (operation: (transactionSql: typeof sql) => unknown) => operation(sql),
+  );
+  Object.assign(sql, { query, transaction });
   return {
     ensureDatabaseSchema: vi.fn(async () => undefined),
     getDatabaseTenantContext: vi.fn(() => undefined),
     getSql: vi.fn(() => sql),
     hasDatabaseUrl: vi.fn(() => true),
     rows,
+    queries,
+    query,
+    queryResponses,
     sql,
     statements,
+    transaction,
   };
 });
 
@@ -72,12 +86,16 @@ const binding: CanonicalRequestActorBindingV1 = {
 
 beforeEach(() => {
   dbMocks.rows.splice(0);
+  dbMocks.queryResponses.splice(0);
+  dbMocks.queries.splice(0);
   dbMocks.statements.splice(0);
   dbMocks.ensureDatabaseSchema.mockClear();
   dbMocks.getDatabaseTenantContext.mockClear();
   dbMocks.getSql.mockClear();
   dbMocks.hasDatabaseUrl.mockClear();
   dbMocks.sql.mockClear();
+  dbMocks.query.mockClear();
+  dbMocks.transaction.mockClear();
   dependencyMocks.getTodayPreferences.mockReset().mockResolvedValue({
     tenantId: "tenant-a",
     actorId,
@@ -102,6 +120,74 @@ beforeEach(() => {
 });
 
 describe("Postgres personal notification owner reads", () => {
+  it("returns the first snooze effect without extending it on a lost-response retry", async () => {
+    const notification = notificationRow("notification-a", actorId);
+    const executionScope = {
+      version: 1 as const,
+      tenantId: "tenant-a",
+      initiatingActorId: actorId,
+      executingPrincipalType: "user" as const,
+      executingPrincipalId: actorId,
+      workspaceId: null,
+      projectId: null,
+      missionId: null,
+      delegationId: null,
+      correlationId: "push-action-delivery-a-snooze",
+      causationId: "notification-a",
+      contextGrantIds: [] as string[],
+      capabilityGrantIds: [] as string[],
+      purpose: "notification.update",
+    };
+    const originalSnooze = "2026-09-04T12:15:00.000Z";
+    dbMocks.queryResponses.push(
+      [notification],
+      [{
+        stream_id: "notification:notification-a",
+        type: "notification.updated",
+        causation_id: "notification-a",
+        correlation_id: "push-action-delivery-a-snooze",
+        payload: {
+          schemaVersion: 1,
+          notificationId: "notification-a",
+          sourceType: "today_item",
+          sourceId: "source-notification-a",
+          action: "snooze",
+          status: "snoozed",
+          idempotencyKeySha256:
+            "7c0a14bbb0bdcc11ff62b89981e9e4d315aca3f62a8db3ba59f2aadaf10019f1",
+          effect: {
+            status: "snoozed",
+            snoozedUntil: originalSnooze,
+            readAt: null,
+            updatedAt: "2026-09-04T12:00:00.000Z",
+          },
+          _executionScope: executionScope,
+        },
+      }],
+    );
+
+    await expect(updatePersonalNotification("notification-a", "snooze", {
+      tenantId: "tenant-a",
+      actorId,
+      snoozeMinutes: 15,
+      now: new Date("2026-09-04T13:00:00.000Z"),
+      mutation: {
+        executionScope,
+        idempotencyKey: "push-action-delivery-a-snooze",
+      },
+    })).resolves.toMatchObject({
+      id: "notification-a",
+      status: "snoozed",
+      snoozedUntil: originalSnooze,
+      updatedAt: "2026-09-04T12:00:00.000Z",
+    });
+
+    expect(dbMocks.queries[0].text).toContain("FOR UPDATE");
+    expect(dbMocks.queries[1].text).toContain("FROM omni_events");
+    expect(dbMocks.sql).not.toHaveBeenCalled();
+    expect(dependencyMocks.updateTodayItem).not.toHaveBeenCalled();
+  });
+
   it("rejects production notification mutations without an event envelope", async () => {
     await expect(updatePersonalNotification("notification-a", "read", {
       tenantId: "tenant-a",

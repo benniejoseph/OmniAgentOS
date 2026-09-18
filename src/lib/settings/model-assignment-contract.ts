@@ -151,6 +151,13 @@ export const modelAssignmentRoleContracts: Readonly<
     supportedProviders: ["openai"],
     acceptedCapabilities: ["audio", "transcription"],
   }),
+  semantic_decision: assignmentRoleContract({
+    title: "Semantic decisions",
+    description: "Typed shadow classification for routing evaluation",
+    runtimePurpose: "Advisory semantic decisions that never control live execution",
+    supportedProviders: ["typesafe"],
+    acceptedCapabilities: ["semantic_decision"],
+  }),
 });
 
 export function modelAssignmentRoleSupportsFallback(

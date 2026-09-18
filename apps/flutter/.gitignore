@@ -10,8 +10,9 @@
 .history
 .svn/
 .swiftpm/
-# Xcode writes a duplicate SwiftPM resolution beneath the project workspace.
-# The canonical app-level resolution is committed under Runner.xcworkspace.
+# Xcode writes duplicate SwiftPM resolutions beneath the project workspaces.
+# The canonical app-level resolutions are committed under Runner.xcworkspace.
+/ios/Runner.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/
 /macos/Runner.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/
 migrate_working_dir/
 

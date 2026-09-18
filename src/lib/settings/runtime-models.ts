@@ -132,6 +132,11 @@ export async function resolveRuntimeModelAssignment(input: {
       "The saved route is a legacy or unvalidated configuration, so deployment-environment routing remains in effect.",
     ]);
   }
+  if (assignment.provider === "typesafe") {
+    return withWarnings(environment, [
+      "TypeSafe semantic decisions run only through the dedicated shadow resolver and cannot replace a generative model route.",
+    ]);
+  }
   const provider = runtimeProvider(assignment.provider);
 
   const warnings: string[] = [];
@@ -170,46 +175,52 @@ export async function resolveRuntimeModelAssignment(input: {
   let crossProviderFallback = false;
 
   if (assignment.fallbackProvider && assignment.fallbackModelId) {
-    const candidateProvider = runtimeProvider(assignment.fallbackProvider);
-    addLifecycleWarning(
-      warnings,
-      catalog,
-      assignment.fallbackProvider,
-      assignment.fallbackModelId,
-      "Fallback",
-    );
-    if (candidateProvider === provider) {
-      fallbackProvider = candidateProvider;
-      fallbackModel = assignment.fallbackModelId;
-      targets.push(modelTarget(candidateProvider, assignment.fallbackModelId, input.tier));
-    } else if (!assignment.allowCrossProviderFallback) {
+    if (assignment.fallbackProvider === "typesafe") {
       warnings.push(
-        "The cross-provider fallback was not enabled because explicit disclosure consent is not stored.",
+        "A TypeSafe semantic-decision provider cannot be used as a generative fallback.",
       );
     } else {
-      const fallbackConnection = connections.find((connection) =>
-        connection.provider === assignment.fallbackProvider &&
-        connection.source === "tenant_vault" &&
-        connection.enabled &&
-        connection.status === "connected"
+      const candidateProvider = runtimeProvider(assignment.fallbackProvider);
+      addLifecycleWarning(
+        warnings,
+        catalog,
+        assignment.fallbackProvider,
+        assignment.fallbackModelId,
+        "Fallback",
       );
-      const fallbackCredentials = fallbackConnection
-        ? await readProviderCredential(assignment.fallbackProvider, {
-            tenantId,
-            actorId,
-            connectionId: fallbackConnection.id,
-          })
-        : undefined;
-      if (!fallbackCredentials) {
-        warnings.push(
-          "The consented cross-provider fallback is unavailable because its workspace connection is not enabled and validated.",
-        );
-      } else {
+      if (candidateProvider === provider) {
         fallbackProvider = candidateProvider;
         fallbackModel = assignment.fallbackModelId;
-        crossProviderFallback = true;
         targets.push(modelTarget(candidateProvider, assignment.fallbackModelId, input.tier));
-        Object.assign(credentials, { [candidateProvider]: fallbackCredentials });
+      } else if (!assignment.allowCrossProviderFallback) {
+        warnings.push(
+          "The cross-provider fallback was not enabled because explicit disclosure consent is not stored.",
+        );
+      } else {
+        const fallbackConnection = connections.find((connection) =>
+          connection.provider === assignment.fallbackProvider &&
+          connection.source === "tenant_vault" &&
+          connection.enabled &&
+          connection.status === "connected"
+        );
+        const fallbackCredentials = fallbackConnection
+          ? await readProviderCredential(assignment.fallbackProvider, {
+              tenantId,
+              actorId,
+              connectionId: fallbackConnection.id,
+            })
+          : undefined;
+        if (!fallbackCredentials) {
+          warnings.push(
+            "The consented cross-provider fallback is unavailable because its workspace connection is not enabled and validated.",
+          );
+        } else {
+          fallbackProvider = candidateProvider;
+          fallbackModel = assignment.fallbackModelId;
+          crossProviderFallback = true;
+          targets.push(modelTarget(candidateProvider, assignment.fallbackModelId, input.tier));
+          Object.assign(credentials, { [candidateProvider]: fallbackCredentials });
+        }
       }
     }
   }
@@ -375,6 +386,11 @@ function modelTarget(
 function runtimeProvider(
   provider: SettingsModelProvider,
 ): RuntimeProviderId {
+  if (provider === "typesafe") {
+    throw new Error(
+      "TypeSafe semantic decisions require the dedicated shadow resolver.",
+    );
+  }
   return provider;
 }
 

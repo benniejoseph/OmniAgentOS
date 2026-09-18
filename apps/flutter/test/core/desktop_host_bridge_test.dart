@@ -76,6 +76,7 @@ void main() {
     expect(received, hasLength(1));
     expect(received.single.command, DesktopNotificationCommand.snooze15);
     expect(received.single.data['deliveryId'], 'delivery-one');
+    expect(received.single.appLifecycle, 'unknown');
     await expectLater(
       bridge.handleNativeCall(
         const MethodCall('notificationAction', {
@@ -92,6 +93,31 @@ void main() {
       ),
     );
   });
+
+  test(
+    'queues a bounded native delivery until its receipt handler is ready',
+    () async {
+      final received = <DesktopNotificationReceived>[];
+      final bridge = DesktopHostBridge(enabled: false);
+
+      await bridge.handleNativeCall(
+        const MethodCall('notificationReceived', {
+          'data': {'schemaVersion': '1', 'deliveryId': 'delivery-one'},
+          'appLifecycle': 'foreground',
+          'observedAt': '2026-09-18T12:00:00Z',
+        }),
+      );
+      bridge.attachNotificationReceivedHandler((delivery) async {
+        received.add(delivery);
+      });
+      await Future<void>.delayed(Duration.zero);
+
+      expect(received, hasLength(1));
+      expect(received.single.appLifecycle, 'foreground');
+      expect(received.single.observedAt, DateTime.utc(2026, 9, 18, 12));
+      expect(received.single.data['deliveryId'], 'delivery-one');
+    },
+  );
 
   test('reports only bounded APNs registration receipts', () async {
     final received = <DesktopApnsRegistration>[];

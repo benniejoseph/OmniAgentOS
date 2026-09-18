@@ -93,6 +93,9 @@ class _AsaelAppState extends ConsumerState<AsaelApp>
     _desktopHostBridge.attachNotificationHandler(
       push?.handleDesktopNotificationAction,
     );
+    _desktopHostBridge.attachNotificationReceivedHandler(
+      push?.handleDesktopNotificationReceived,
+    );
     _desktopHostBridge.attachApnsRegistrationHandler(
       push?.handleDesktopApnsRegistration,
     );

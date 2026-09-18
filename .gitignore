@@ -8,6 +8,7 @@ node_modules/
 Pods/
 DerivedData/
 .gradle/
+.kotlin/
 .swiftpm/
 /.pnp
 .pnp.*
