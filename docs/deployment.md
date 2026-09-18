@@ -252,6 +252,16 @@ presentation-only responsive/accessibility patch over the same native v14
 courier and server runtime. The prior 1.7.0+16 application bundle is retained in
 Trash for rollback.
 
+The current packaged checkpoint is Asael `1.9.0` build `19` at
+`apps/flutter/build/distribution/macos/Asael-1.9.0-19-macOS.dmg`, with SHA-256
+`cf8f9bcc79d2ababe057d8237ea6deaca155e3e1b6bb5338849a80d51e93b555`.
+Strict nested signing passes, native discovery is production-live at current
+v16 with frozen v15, and the canonical server reports exact revision
+`52f3e5bbf38b7c5ef9cdd0aefabdcb54c0a6822a`. This package has not replaced the
+recorded installed checkpoint. It uses the owner-only local identity, so it
+deliberately contains no production APNs entitlement and is not evidence of an
+APNs delivery canary.
+
 Distribution to another Mac sets `ASAEL_MACOS_SIGNING_IDENTITY` and
 `ASAEL_MACOS_NOTARY_PROFILE`, which enables Hardened Runtime and makes Developer ID
 signing, notarization, stapling, and verification mandatory. The Firebase Apple

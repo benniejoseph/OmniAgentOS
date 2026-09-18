@@ -1124,9 +1124,16 @@ Flutter Capabilities surface. The focused implementation gates pass: 103
 server/web checks across 12 files, 17 native server checks across three files,
 six Flutter checks, native-contract drift, targeted lint, TypeScript, targeted
 Flutter analysis, and diff validation. No full suite or broad audit was run.
-Application deployment, canonical health/revision verification, native v16
-discovery promotion, and a new installed native package remain pending
-verification and are not claimed by this source-complete checkpoint. No Fly
+Vercel deployment `dpl_FY2Q6eSz2ScKruS8cdLS3nhgZCom` is promoted to the
+canonical domain. `/api/health` reports `healthy` at exact revision
+`52f3e5bbf38b7c5ef9cdd0aefabdcb54c0a6822a`; anonymous `/api/plugins` returns
+`401`, the protected Automation page redirects to login, and native discovery
+serves current v16 with frozen v15 plus a reachable v16 manifest. The locally
+signed `Asael-1.9.0-19-macOS.dmg` package passed strict nested signature
+verification and has SHA-256
+`cf8f9bcc79d2ababe057d8237ea6deaca155e3e1b6bb5338849a80d51e93b555`.
+This is a packaged artifact rather than an installed native checkpoint, and its
+owner-only signature deliberately has no production APNs entitlement. No Fly
 release is required because the Plugin slice adds no worker task or protocol.
 
 #### Browser and computer use
@@ -1269,11 +1276,12 @@ seconds, so that attempt is not counted as delivery. The owner has explicitly de
 app-store publication; neither is a completion blocker for this private Android
 build. Phase 13 is now active as the private macOS client sequence.
 
-The next source-complete native release advances the generated contract to v16,
-retains frozen v15, and adds the authenticated read-only Plugin inventory to the
-Capabilities surface. Production discovery remains v15/v14 until the matching
-application deployment and exact health verification complete; no v16
-production promotion or new native package is claimed yet.
+The current native release advances the generated contract to v16, retains
+frozen v15, and adds authenticated read-only Plugin inventory to the
+Capabilities surface. Production discovery now serves v16/v15 at exact web
+revision `52f3e5bbf38b7c5ef9cdd0aefabdcb54c0a6822a`. The locally signed macOS
+`1.9.0+19` package is built and verified but is not yet claimed as the installed
+checkpoint; its owner-only signature does not authorize production APNs.
 
 **Phase gate:** revoked-device, reconnect, token rotation, offline capture, push, voice interruption, and cross-tenant isolation scenarios pass before public release.
 
