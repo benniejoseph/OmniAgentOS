@@ -293,18 +293,28 @@ databaseDescribe("Postgres schema integration", () => {
 
   test("returns newly inserted and replayed bulk memories", async () => {
     const tenantId = "bulk_memory_tenant";
+    const executionScope = createExecutionScope({
+      tenantId,
+      initiatingActorId: null,
+      executingPrincipalType: "system",
+      executingPrincipalId: "database-integration-test",
+      correlationId: "bulk-memory-integration",
+      purpose: "memory.persistence.integration",
+    });
     const input = [
       {
         id: "bulk-memory-one",
         tenantId,
         title: "First bulk memory",
         content: "First integration memory.",
+        executionScope,
       },
       {
         id: "bulk-memory-two",
         tenantId,
         title: "Second bulk memory",
         content: "Second integration memory.",
+        executionScope,
       },
     ];
     const first = await runWithDatabaseTenantScope(
@@ -582,7 +592,7 @@ databaseDescribe("Postgres schema integration", () => {
     }
   });
 
-  test("keeps the execution-principal registry empty, owner-only, and activation-held", async () => {
+  test("keeps the execution-principal registry empty, owner-only, and actor-governed", async () => {
     const [surface] = await admin`
       SELECT
         (SELECT count(*)::int FROM omni_tenant_execution_principals) AS rows,
@@ -594,37 +604,201 @@ databaseDescribe("Postgres schema integration", () => {
             AND table_name = 'omni_tenant_execution_principals'
             AND grantee <> current_user
         ) AS owner_only,
-        EXISTS (
+        NOT EXISTS (
           SELECT 1 FROM pg_constraint
           WHERE conrelid = 'omni_tenant_execution_principals'::regclass
             AND conname = 'omni_execution_principal_activation_hold_check'
-            AND convalidated
-            AND pg_get_expr(conbin, conrelid) = '(state <> ''active''::text)'
-        ) AS activation_held
+        ) AS activation_hold_removed
     `;
-
+    const policies = await admin`
+      SELECT
+        policy.polname AS policy_name,
+        policy.polpermissive AS permissive,
+        policy.polcmd::text AS command,
+        policy.polroles = ARRAY[0::oid] AS public_role,
+        pg_get_expr(policy.polqual, policy.polrelid) AS using_expression,
+        pg_get_expr(policy.polwithcheck, policy.polrelid) AS check_expression
+      FROM pg_policy policy
+      WHERE policy.polrelid = 'omni_tenant_execution_principals'::regclass
+      ORDER BY policy.polname
+    `;
+    const triggers = await admin`
+      SELECT trigger.tgname AS trigger_name,
+        procedure.proname AS function_name
+      FROM pg_trigger trigger
+      JOIN pg_proc procedure ON procedure.oid = trigger.tgfoid
+      WHERE trigger.tgrelid = 'omni_tenant_execution_principals'::regclass
+        AND NOT trigger.tgisinternal
+        AND trigger.tgenabled = 'O'
+      ORDER BY trigger.tgname
+    `;
     expect(surface).toEqual({
       rows: 0,
-      policies: 2,
+      policies: 4,
       owner_only: true,
-      activation_held: true,
+      activation_hold_removed: true,
     });
-    await expect(admin`
-      INSERT INTO omni_tenant_execution_principals (
-        tenant_id, principal_kind, principal_id, principal_generation,
-        controller_actor_id, agent_definition_id, system_principal_class,
-        state, lifecycle_revision, created_by_actor_id,
-        activated_by_actor_id, activated_at
-      ) VALUES (
-        'tenant:forbidden', 'system', 'service:forbidden', 1,
-        'actor:00000000-0000-4000-8000-000000000001', NULL, 'worker',
-        'active', 1, 'actor:00000000-0000-4000-8000-000000000001',
-        'actor:00000000-0000-4000-8000-000000000001', statement_timestamp()
-      )
-    `).rejects.toMatchObject({ code: "23514" });
+    const actorExpression =
+      "(omni_system_scope_enabled() OR omni_actor_scope_v1_allows(tenant_id, controller_actor_id))";
+    expect(policies).toEqual([
+      {
+        policy_name: "omni_execution_principal_actor_insert",
+        permissive: false,
+        command: "a",
+        public_role: true,
+        using_expression: null,
+        check_expression: actorExpression,
+      },
+      {
+        policy_name: "omni_execution_principal_actor_select",
+        permissive: false,
+        command: "r",
+        public_role: true,
+        using_expression: actorExpression,
+        check_expression: null,
+      },
+      {
+        policy_name: "omni_execution_principal_actor_update",
+        permissive: false,
+        command: "w",
+        public_role: true,
+        using_expression: actorExpression,
+        check_expression: actorExpression,
+      },
+      {
+        policy_name: "omni_tenant_isolation",
+        permissive: true,
+        command: "*",
+        public_role: true,
+        using_expression: "omni_tenant_visible(tenant_id)",
+        check_expression: "omni_tenant_visible(tenant_id)",
+      },
+    ]);
+    expect(triggers).toEqual([
+      {
+        trigger_name: "omni_execution_principal_no_truncate",
+        function_name: "omni_protect_execution_principal",
+      },
+      {
+        trigger_name: "omni_execution_principal_policy_activation",
+        function_name: "omni_validate_agent_principal_activation_v1",
+      },
+      {
+        trigger_name: "omni_execution_principal_protect",
+        function_name: "omni_protect_execution_principal",
+      },
+      {
+        trigger_name: "omni_execution_principal_validate_insert",
+        function_name: "omni_validate_execution_principal_insert",
+      },
+    ]);
+
+    const userId = "00000000-0000-4000-8000-000000000021";
+    const actorId = `actor:${userId}`;
+    await expect(
+      admin.begin(async (transaction) => {
+        await transaction`
+          INSERT INTO omni_auth_tenants (id, name, slug)
+          VALUES (
+            'execution-principal-lifecycle',
+            'Execution principal lifecycle',
+            'execution-principal-lifecycle'
+          )
+        `;
+        await transaction`
+          INSERT INTO omni_auth_users (id, email, password_hash)
+          VALUES (
+            ${userId}, 'execution-principal-lifecycle@example.test',
+            'test-only'
+          )
+        `;
+        await transaction`
+          INSERT INTO omni_auth_memberships (id, tenant_id, user_id, role)
+          VALUES (
+            'execution-principal-lifecycle-membership',
+            'execution-principal-lifecycle', ${userId}, 'admin'
+          )
+        `;
+        await transaction`
+          INSERT INTO omni_tenant_execution_principals (
+            tenant_id, principal_kind, principal_id, principal_generation,
+            controller_actor_id, system_principal_class, state,
+            lifecycle_revision, created_by_actor_id, activated_by_actor_id,
+            activated_at
+          ) VALUES (
+            'execution-principal-lifecycle', 'system',
+            'service:integration-direct-active', 1, ${actorId}, 'worker',
+            'active', 1, ${actorId}, ${actorId}, statement_timestamp()
+          )
+        `;
+      }),
+    ).rejects.toMatchObject({ code: "23514" });
+
+    const authorizedUserId = "00000000-0000-4000-8000-000000000026";
+    const authorizedActorId = `actor:${authorizedUserId}`;
+    let activatedPrincipal:
+      | { state: string; lifecycle_revision: string; activated_by_actor_id: string }
+      | undefined;
+    const rollbackActivatedPrincipal = new Error(
+      "Rollback activated execution principal integration fixture",
+    );
+    await admin
+      .begin(async (transaction) => {
+        await transaction`
+          INSERT INTO omni_auth_tenants (id, name, slug)
+          VALUES (
+            'execution-principal-authorized',
+            'Execution principal authorized',
+            'execution-principal-authorized'
+          )
+        `;
+        await transaction`
+          INSERT INTO omni_auth_users (id, email, password_hash)
+          VALUES (
+            ${authorizedUserId}, 'execution-principal-authorized@example.test',
+            'test-only'
+          )
+        `;
+        await transaction`
+          INSERT INTO omni_auth_memberships (id, tenant_id, user_id, role)
+          VALUES (
+            'execution-principal-authorized-membership',
+            'execution-principal-authorized', ${authorizedUserId}, 'admin'
+          )
+        `;
+        await transaction`
+          INSERT INTO omni_tenant_execution_principals (
+            tenant_id, principal_kind, principal_id, principal_generation,
+            controller_actor_id, system_principal_class, state,
+            lifecycle_revision, created_by_actor_id
+          ) VALUES (
+            'execution-principal-authorized', 'system',
+            'service:integration-authorized', 1, ${authorizedActorId}, 'worker',
+            'held', 0, ${authorizedActorId}
+          )
+        `;
+        [activatedPrincipal] = await transaction`
+          UPDATE omni_tenant_execution_principals
+          SET state = 'active', lifecycle_revision = 1,
+              activated_by_actor_id = ${authorizedActorId}
+          WHERE tenant_id = 'execution-principal-authorized'
+            AND principal_id = 'service:integration-authorized'
+            AND principal_generation = 1
+          RETURNING state, lifecycle_revision, activated_by_actor_id
+        `;
+        throw rollbackActivatedPrincipal;
+      })
+      .catch((error) => {
+        if (error !== rollbackActivatedPrincipal) throw error;
+      });
+    expect(activatedPrincipal).toEqual({
+      state: "active",
+      lifecycle_revision: "1",
+      activated_by_actor_id: authorizedActorId,
+    });
   });
 
-  test("keeps workspace membership explicit, empty, owner-only, and activation-held", async () => {
+  test("keeps workspace membership explicit, empty, owner-only, and lifecycle-governed", async () => {
     const [surface] = await admin`
       SELECT
         (SELECT count(*)::int FROM omni_tenant_workspaces) AS workspaces,
@@ -644,8 +818,8 @@ databaseDescribe("Postgres schema integration", () => {
             )
             AND grantee <> current_user
         ) AS owner_only,
-        (
-          SELECT count(*)::int FROM pg_constraint
+        NOT EXISTS (
+          SELECT 1 FROM pg_constraint
           WHERE (conrelid, conname) IN (
             (
               'omni_tenant_workspaces'::regclass,
@@ -655,9 +829,47 @@ databaseDescribe("Postgres schema integration", () => {
               'omni_tenant_workspace_memberships'::regclass,
               'omni_workspace_membership_activation_hold_check'
             )
-          ) AND convalidated
-            AND pg_get_expr(conbin, conrelid) = '(state <> ''active''::text)'
-        ) AS activation_holds
+          )
+        ) AS activation_holds_removed
+    `;
+    const triggers = await admin`
+      SELECT relation.relname AS table_name, trigger.tgname AS trigger_name,
+        procedure.proname AS function_name
+      FROM pg_trigger trigger
+      JOIN pg_class relation ON relation.oid = trigger.tgrelid
+      JOIN pg_proc procedure ON procedure.oid = trigger.tgfoid
+      WHERE trigger.tgrelid IN (
+        'omni_tenant_workspaces'::regclass,
+        'omni_tenant_workspace_memberships'::regclass
+      )
+        AND trigger.tgname IN (
+          'omni_workspace_protect',
+          'omni_workspace_no_truncate',
+          'omni_workspace_membership_protect',
+          'omni_workspace_membership_no_truncate'
+        )
+        AND NOT trigger.tgisinternal
+        AND trigger.tgenabled = 'O'
+      ORDER BY relation.relname, trigger.tgname
+    `;
+    const rowContracts = await admin`
+      SELECT relation.relname AS table_name,
+        constraint_record.conname AS constraint_name
+      FROM pg_constraint constraint_record
+      JOIN pg_class relation ON relation.oid = constraint_record.conrelid
+      WHERE (constraint_record.conrelid, constraint_record.conname) IN (
+        (
+          'omni_tenant_workspaces'::regclass,
+          'omni_workspace_authority_row_check'
+        ),
+        (
+          'omni_tenant_workspace_memberships'::regclass,
+          'omni_workspace_membership_row_check'
+        )
+      )
+        AND constraint_record.contype = 'c'
+        AND constraint_record.convalidated
+      ORDER BY relation.relname, constraint_record.conname
     `;
 
     expect(surface).toEqual({
@@ -665,22 +877,221 @@ databaseDescribe("Postgres schema integration", () => {
       memberships: 0,
       policies: 4,
       owner_only: true,
-      activation_holds: 2,
+      activation_holds_removed: true,
     });
-    await expect(admin`
-      INSERT INTO omni_tenant_workspaces (
-        tenant_id, workspace_id, state, lifecycle_revision,
-        created_by_actor_id, activated_by_actor_id, activated_at
-      ) VALUES (
-        'tenant:forbidden', 'workspace:forbidden', 'active', 1,
-        'actor:00000000-0000-4000-8000-000000000001',
-        'actor:00000000-0000-4000-8000-000000000001',
-        statement_timestamp()
-      )
-    `).rejects.toMatchObject({ code: "23514" });
+    expect(triggers).toEqual([
+      {
+        table_name: "omni_tenant_workspace_memberships",
+        trigger_name: "omni_workspace_membership_no_truncate",
+        function_name: "omni_protect_workspace_authority_v1",
+      },
+      {
+        table_name: "omni_tenant_workspace_memberships",
+        trigger_name: "omni_workspace_membership_protect",
+        function_name: "omni_protect_workspace_authority_v1",
+      },
+      {
+        table_name: "omni_tenant_workspaces",
+        trigger_name: "omni_workspace_no_truncate",
+        function_name: "omni_protect_workspace_authority_v1",
+      },
+      {
+        table_name: "omni_tenant_workspaces",
+        trigger_name: "omni_workspace_protect",
+        function_name: "omni_protect_workspace_authority_v1",
+      },
+    ]);
+    expect(rowContracts).toEqual([
+      {
+        table_name: "omni_tenant_workspace_memberships",
+        constraint_name: "omni_workspace_membership_row_check",
+      },
+      {
+        table_name: "omni_tenant_workspaces",
+        constraint_name: "omni_workspace_authority_row_check",
+      },
+    ]);
+
+    const authorizedUserId = "00000000-0000-4000-8000-000000000022";
+    const authorizedActorId = `actor:${authorizedUserId}`;
+    let authorizedWorkspace:
+      | { workspace_id: string; state: string; lifecycle_revision: string }
+      | undefined;
+    let authorizedWorkspaceMembership:
+      | { subject_key: string; state: string; lifecycle_revision: string }
+      | undefined;
+    const rollbackAuthorizedWorkspace = new Error(
+      "Rollback authorized workspace integration fixture",
+    );
+    await admin
+      .begin(async (transaction) => {
+        await transaction`
+          INSERT INTO omni_auth_tenants (id, name, slug)
+          VALUES (
+            'workspace-lifecycle-authorized', 'Workspace lifecycle authorized',
+            'workspace-lifecycle-authorized'
+          )
+        `;
+        await transaction`
+          INSERT INTO omni_auth_users (id, email, password_hash)
+          VALUES (
+            ${authorizedUserId}, 'workspace-lifecycle-authorized@example.test',
+            'test-only'
+          )
+        `;
+        await transaction`
+          INSERT INTO omni_auth_memberships (id, tenant_id, user_id, role)
+          VALUES (
+            'workspace-lifecycle-authorized-membership',
+            'workspace-lifecycle-authorized', ${authorizedUserId}, 'admin'
+          )
+        `;
+        [authorizedWorkspace] = await transaction`
+          INSERT INTO omni_tenant_workspaces (
+            tenant_id, workspace_id, display_name, owner_actor_id, state,
+            lifecycle_revision, created_by_actor_id, activated_by_actor_id,
+            created_at, activated_at, updated_at
+          ) VALUES (
+            'workspace-lifecycle-authorized', 'workspace:integration-authorized',
+            'Authorized integration workspace', ${authorizedActorId}, 'active',
+            1, ${authorizedActorId}, ${authorizedActorId},
+            statement_timestamp(), statement_timestamp(), statement_timestamp()
+          )
+          RETURNING workspace_id, state, lifecycle_revision
+        `;
+        [authorizedWorkspaceMembership] = await transaction`
+          INSERT INTO omni_tenant_workspace_memberships (
+            tenant_id, workspace_id, subject_kind, subject_key,
+            subject_actor_id, membership_generation, access_level, state,
+            lifecycle_revision, created_by_actor_id, activated_by_actor_id,
+            created_at, activated_at, updated_at
+          ) VALUES (
+            'workspace-lifecycle-authorized', 'workspace:integration-authorized',
+            'user', ${authorizedActorId}, ${authorizedActorId}, 1, 'manager',
+            'active', 1, ${authorizedActorId}, ${authorizedActorId},
+            statement_timestamp(), statement_timestamp(), statement_timestamp()
+          )
+          RETURNING subject_key, state, lifecycle_revision
+        `;
+        throw rollbackAuthorizedWorkspace;
+      })
+      .catch((error) => {
+        if (error !== rollbackAuthorizedWorkspace) throw error;
+      });
+    expect(authorizedWorkspace).toEqual({
+      workspace_id: "workspace:integration-authorized",
+      state: "active",
+      lifecycle_revision: "1",
+    });
+    expect(authorizedWorkspaceMembership).toEqual({
+      subject_key: authorizedActorId,
+      state: "active",
+      lifecycle_revision: "1",
+    });
+
+    const unauthorizedUserId = "00000000-0000-4000-8000-000000000023";
+    const unauthorizedActorId = `actor:${unauthorizedUserId}`;
+    await expect(
+      admin.begin(async (transaction) => {
+        await transaction`
+          INSERT INTO omni_auth_tenants (id, name, slug)
+          VALUES (
+            'workspace-lifecycle-unauthorized',
+            'Workspace lifecycle unauthorized',
+            'workspace-lifecycle-unauthorized'
+          )
+        `;
+        await transaction`
+          INSERT INTO omni_auth_users (id, email, password_hash)
+          VALUES (
+            ${unauthorizedUserId},
+            'workspace-lifecycle-unauthorized@example.test', 'test-only'
+          )
+        `;
+        await transaction`
+          INSERT INTO omni_tenant_workspaces (
+            tenant_id, workspace_id, display_name, owner_actor_id, state,
+            lifecycle_revision, created_by_actor_id, activated_by_actor_id,
+            created_at, activated_at, updated_at
+          ) VALUES (
+            'workspace-lifecycle-unauthorized',
+            'workspace:integration-unauthorized',
+            'Unauthorized integration workspace', ${unauthorizedActorId},
+            'active', 1, ${unauthorizedActorId}, ${unauthorizedActorId},
+            statement_timestamp(), statement_timestamp(), statement_timestamp()
+          )
+        `;
+      }),
+    ).rejects.toMatchObject({ code: "42501" });
+
+    const workspaceOwnerUserId = "00000000-0000-4000-8000-000000000027";
+    const workspaceOwnerActorId = `actor:${workspaceOwnerUserId}`;
+    const unauthorizedCreatorUserId =
+      "00000000-0000-4000-8000-000000000028";
+    const unauthorizedCreatorActorId = `actor:${unauthorizedCreatorUserId}`;
+    await expect(
+      admin.begin(async (transaction) => {
+        await transaction`
+          INSERT INTO omni_auth_tenants (id, name, slug)
+          VALUES (
+            'workspace-membership-unauthorized',
+            'Workspace membership unauthorized',
+            'workspace-membership-unauthorized'
+          )
+        `;
+        await transaction`
+          INSERT INTO omni_auth_users (id, email, password_hash)
+          VALUES
+            (
+              ${workspaceOwnerUserId}, 'workspace-membership-owner@example.test',
+              'test-only'
+            ),
+            (
+              ${unauthorizedCreatorUserId},
+              'workspace-membership-unauthorized@example.test', 'test-only'
+            )
+        `;
+        await transaction`
+          INSERT INTO omni_auth_memberships (id, tenant_id, user_id, role)
+          VALUES (
+            'workspace-membership-owner-membership',
+            'workspace-membership-unauthorized', ${workspaceOwnerUserId}, 'admin'
+          )
+        `;
+        await transaction`
+          INSERT INTO omni_tenant_workspaces (
+            tenant_id, workspace_id, display_name, owner_actor_id, state,
+            lifecycle_revision, created_by_actor_id, activated_by_actor_id,
+            created_at, activated_at, updated_at
+          ) VALUES (
+            'workspace-membership-unauthorized',
+            'workspace:membership-unauthorized',
+            'Workspace membership authorization fixture',
+            ${workspaceOwnerActorId}, 'active', 1, ${workspaceOwnerActorId},
+            ${workspaceOwnerActorId}, statement_timestamp(),
+            statement_timestamp(), statement_timestamp()
+          )
+        `;
+        await transaction`
+          INSERT INTO omni_tenant_workspace_memberships (
+            tenant_id, workspace_id, subject_kind, subject_key,
+            subject_actor_id, membership_generation, access_level, state,
+            lifecycle_revision, created_by_actor_id, activated_by_actor_id,
+            created_at, activated_at, updated_at
+          ) VALUES (
+            'workspace-membership-unauthorized',
+            'workspace:membership-unauthorized', 'user',
+            ${workspaceOwnerActorId}, ${workspaceOwnerActorId}, 1, 'reader',
+            'active', 1, ${unauthorizedCreatorActorId},
+            ${unauthorizedCreatorActorId}, statement_timestamp(),
+            statement_timestamp(), statement_timestamp()
+          )
+        `;
+      }),
+    ).rejects.toMatchObject({ code: "42501" });
   });
 
-  test("keeps context and capability grants explicit, bounded, and activation-held", async () => {
+  test("keeps context and capability grants explicit, bounded, and lifecycle-governed", async () => {
     const [surface] = await admin`
       SELECT
         (SELECT count(*)::int FROM omni_tenant_memory_access_grants) AS rows,
@@ -693,13 +1104,11 @@ databaseDescribe("Postgres schema integration", () => {
             AND table_name = 'omni_tenant_memory_access_grants'
             AND grantee <> current_user
         ) AS owner_only,
-        EXISTS (
+        NOT EXISTS (
           SELECT 1 FROM pg_constraint
           WHERE conrelid = 'omni_tenant_memory_access_grants'::regclass
             AND conname = 'omni_memory_access_grant_activation_hold_check'
-            AND convalidated
-            AND pg_get_expr(conbin, conrelid) = '(state <> ''active''::text)'
-        ) AS activation_held,
+        ) AS activation_hold_removed,
         EXISTS (
           SELECT 1 FROM pg_constraint
           WHERE conrelid = 'omni_tenant_memory_access_grants'::regclass
@@ -709,36 +1118,186 @@ databaseDescribe("Postgres schema integration", () => {
               '%omni_memory_access_grant_binding_is_valid%'
         ) AS binding_validated
     `;
+    const triggers = await admin`
+      SELECT trigger.tgname AS trigger_name,
+        procedure.proname AS function_name
+      FROM pg_trigger trigger
+      JOIN pg_proc procedure ON procedure.oid = trigger.tgfoid
+      WHERE trigger.tgrelid = 'omni_tenant_memory_access_grants'::regclass
+        AND NOT trigger.tgisinternal
+        AND trigger.tgenabled = 'O'
+      ORDER BY trigger.tgname
+    `;
+    const policies = await admin`
+      SELECT
+        policy.polname AS policy_name,
+        policy.polpermissive AS permissive,
+        policy.polcmd::text AS command,
+        policy.polroles = ARRAY[0::oid] AS public_role,
+        pg_get_expr(policy.polqual, policy.polrelid) AS using_expression,
+        pg_get_expr(policy.polwithcheck, policy.polrelid) AS check_expression
+      FROM pg_policy policy
+      WHERE policy.polrelid = 'omni_tenant_memory_access_grants'::regclass
+      ORDER BY policy.polname
+    `;
 
     expect(surface).toEqual({
       rows: 0,
       policies: 2,
       owner_only: true,
-      activation_held: true,
+      activation_hold_removed: true,
       binding_validated: true,
     });
-    await expect(admin`
-      INSERT INTO omni_tenant_memory_access_grants (
-        tenant_id, grant_kind, grant_id, grant_generation,
-        grantee_kind, grantee_key, grantee_actor_id, purpose_id,
-        target_visibility, owner_actor_id, resource_ids,
-        max_items, max_bytes, not_before, expires_at,
-        state, lifecycle_revision, created_by_actor_id,
-        activated_by_actor_id, activated_at
-      ) VALUES (
-        'tenant:forbidden', 'context', 'context:forbidden', 1,
-        'user', 'actor:00000000-0000-4000-8000-000000000001',
-        'actor:00000000-0000-4000-8000-000000000001',
-        'memory.retrieve.v1', 'user_private',
-        'actor:00000000-0000-4000-8000-000000000001',
-        ARRAY['memory:forbidden'], 1, 1,
-        statement_timestamp(), statement_timestamp() + INTERVAL '1 hour',
-        'active', 1,
-        'actor:00000000-0000-4000-8000-000000000001',
-        'actor:00000000-0000-4000-8000-000000000001',
-        statement_timestamp()
-      )
-    `).rejects.toMatchObject({ code: "23514" });
+    expect(triggers).toEqual([
+      {
+        trigger_name: "omni_memory_access_grant_lifecycle_protect",
+        function_name: "omni_protect_memory_access_grant_lifecycle_v1",
+      },
+      {
+        trigger_name: "omni_memory_access_grant_no_truncate",
+        function_name: "omni_reject_memory_access_grant_mutation",
+      },
+      {
+        trigger_name: "omni_memory_access_grant_validate_insert",
+        function_name: "omni_validate_memory_access_grant_insert",
+      },
+    ]);
+    const actorExpression =
+      "(omni_system_scope_enabled() OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id))";
+    expect(policies).toEqual([
+      {
+        policy_name: "omni_memory_access_grant_actor",
+        permissive: false,
+        command: "*",
+        public_role: true,
+        using_expression: actorExpression,
+        check_expression: actorExpression,
+      },
+      {
+        policy_name: "omni_tenant_isolation",
+        permissive: true,
+        command: "*",
+        public_role: true,
+        using_expression: "omni_tenant_visible(tenant_id)",
+        check_expression: "omni_tenant_visible(tenant_id)",
+      },
+    ]);
+
+    const authorizedUserId = "00000000-0000-4000-8000-000000000024";
+    const authorizedActorId = `actor:${authorizedUserId}`;
+    let activatedGrant:
+      | { state: string; lifecycle_revision: string; activated_by_actor_id: string }
+      | undefined;
+    const rollbackActivatedGrant = new Error(
+      "Rollback activated memory grant integration fixture",
+    );
+    await admin
+      .begin(async (transaction) => {
+        await transaction`
+          INSERT INTO omni_auth_tenants (id, name, slug)
+          VALUES (
+            'memory-grant-lifecycle-authorized',
+            'Memory grant lifecycle authorized',
+            'memory-grant-lifecycle-authorized'
+          )
+        `;
+        await transaction`
+          INSERT INTO omni_auth_users (id, email, password_hash)
+          VALUES (
+            ${authorizedUserId}, 'memory-grant-lifecycle-authorized@example.test',
+            'test-only'
+          )
+        `;
+        await transaction`
+          INSERT INTO omni_auth_memberships (id, tenant_id, user_id, role)
+          VALUES (
+            'memory-grant-lifecycle-authorized-membership',
+            'memory-grant-lifecycle-authorized', ${authorizedUserId}, 'admin'
+          )
+        `;
+        await transaction`
+          INSERT INTO omni_tenant_memory_access_grants (
+            tenant_id, grant_kind, grant_id, grant_generation,
+            grantee_kind, grantee_key, grantee_actor_id, purpose_id,
+            target_visibility, owner_actor_id, resource_ids, max_items,
+            max_bytes, not_before, expires_at, state, lifecycle_revision,
+            created_by_actor_id
+          ) VALUES (
+            'memory-grant-lifecycle-authorized', 'context',
+            'context:integration-authorized', 1, 'user', ${authorizedActorId},
+            ${authorizedActorId}, 'memory.retrieve.v1', 'user_private',
+            ${authorizedActorId}, ARRAY['memory:integration-authorized'],
+            10, 4096, statement_timestamp(),
+            statement_timestamp() + INTERVAL '1 hour', 'held', 0,
+            ${authorizedActorId}
+          )
+        `;
+        [activatedGrant] = await transaction`
+          UPDATE omni_tenant_memory_access_grants
+          SET state = 'active', lifecycle_revision = 1,
+              activated_by_actor_id = ${authorizedActorId}
+          WHERE tenant_id = 'memory-grant-lifecycle-authorized'
+            AND grant_kind = 'context'
+            AND grant_id = 'context:integration-authorized'
+            AND grant_generation = 1
+          RETURNING state, lifecycle_revision, activated_by_actor_id
+        `;
+        throw rollbackActivatedGrant;
+      })
+      .catch((error) => {
+        if (error !== rollbackActivatedGrant) throw error;
+      });
+    expect(activatedGrant).toEqual({
+      state: "active",
+      lifecycle_revision: "1",
+      activated_by_actor_id: authorizedActorId,
+    });
+
+    const rejectedUserId = "00000000-0000-4000-8000-000000000025";
+    const rejectedActorId = `actor:${rejectedUserId}`;
+    await expect(
+      admin.begin(async (transaction) => {
+        await transaction`
+          INSERT INTO omni_auth_tenants (id, name, slug)
+          VALUES (
+            'memory-grant-lifecycle-rejected',
+            'Memory grant lifecycle rejected',
+            'memory-grant-lifecycle-rejected'
+          )
+        `;
+        await transaction`
+          INSERT INTO omni_auth_users (id, email, password_hash)
+          VALUES (
+            ${rejectedUserId}, 'memory-grant-lifecycle-rejected@example.test',
+            'test-only'
+          )
+        `;
+        await transaction`
+          INSERT INTO omni_auth_memberships (id, tenant_id, user_id, role)
+          VALUES (
+            'memory-grant-lifecycle-rejected-membership',
+            'memory-grant-lifecycle-rejected', ${rejectedUserId}, 'admin'
+          )
+        `;
+        await transaction`
+          INSERT INTO omni_tenant_memory_access_grants (
+            tenant_id, grant_kind, grant_id, grant_generation,
+            grantee_kind, grantee_key, grantee_actor_id, purpose_id,
+            target_visibility, owner_actor_id, resource_ids, max_items,
+            max_bytes, not_before, expires_at, state, lifecycle_revision,
+            created_by_actor_id, activated_by_actor_id, activated_at
+          ) VALUES (
+            'memory-grant-lifecycle-rejected', 'context',
+            'context:integration-direct-active', 1, 'user', ${rejectedActorId},
+            ${rejectedActorId}, 'memory.retrieve.v1', 'user_private',
+            ${rejectedActorId}, ARRAY['memory:integration-direct-active'],
+            10, 4096, statement_timestamp(),
+            statement_timestamp() + INTERVAL '1 hour', 'active', 1,
+            ${rejectedActorId}, ${rejectedActorId}, statement_timestamp()
+          )
+        `;
+      }),
+    ).rejects.toMatchObject({ code: "23514" });
   });
 
   test("keeps operation policies empty, owner-only, and unable to waive gates", async () => {
@@ -1483,9 +2042,9 @@ databaseDescribe("Postgres schema integration", () => {
         claim_status: "active",
       },
     ]);
-    expect(remainingGraphNodes).toEqual([]);
-    expect(rebuiltGraph.count).toBeGreaterThan(0);
-    expect(pendingGraphRebuilds).toEqual([]);
+    expect(remainingGraphNodes).toEqual([{ id: "retained-memory-node" }]);
+    expect(rebuiltGraph.count).toBe(0);
+    expect(pendingGraphRebuilds).toEqual([{ tenant_id: "tenant_a" }]);
     expect(remainingTraces).toEqual([]);
     expect(remainingWorkflows).toEqual([{ id: "active-workflow" }]);
     expect(remainingWorkflowPlans).toEqual([{ id: "active-plan" }]);
@@ -1545,6 +2104,9 @@ databaseDescribe("Postgres schema integration", () => {
     await admin.unsafe(`GRANT USAGE ON SCHEMA public TO ${rlsRole}`);
     await admin.unsafe(`GRANT SELECT, INSERT ON omni_memories TO ${rlsRole}`);
     await admin.unsafe(`GRANT SELECT, INSERT ON omni_auth_memberships, omni_auth_sessions TO ${rlsRole}`);
+    await admin.unsafe(
+      `GRANT SELECT, INSERT, UPDATE ON omni_tenant_execution_principals TO ${rlsRole}`,
+    );
     await admin`
       INSERT INTO omni_memories (id, tenant_id, type, title, content, scope, source)
       VALUES
@@ -1570,6 +2132,11 @@ databaseDescribe("Postgres schema integration", () => {
           '00000000-0000-4000-8000-000000000011',
           'integration-b@example.test',
           'test-only'
+        ),
+        (
+          '00000000-0000-4000-8000-000000000012',
+          'integration-a-other-actor@example.test',
+          'test-only'
         )
     `;
     await admin`
@@ -1582,6 +2149,32 @@ databaseDescribe("Postgres schema integration", () => {
         (
           'integration-membership-b', 'tenant_b',
           '00000000-0000-4000-8000-000000000011', 'admin'
+        ),
+        (
+          'integration-membership-a-other-actor', 'tenant_a',
+          '00000000-0000-4000-8000-000000000012', 'member'
+        )
+    `;
+    await admin`
+      INSERT INTO omni_tenant_execution_principals (
+        tenant_id, principal_kind, principal_id, principal_generation,
+        controller_actor_id, system_principal_class, state,
+        lifecycle_revision, created_by_actor_id
+      ) VALUES
+        (
+          'tenant_a', 'system', 'service:integration-actor-a', 1,
+          'actor:00000000-0000-4000-8000-000000000010', 'worker',
+          'held', 0, 'actor:00000000-0000-4000-8000-000000000010'
+        ),
+        (
+          'tenant_a', 'system', 'service:integration-actor-a-other', 1,
+          'actor:00000000-0000-4000-8000-000000000012', 'worker',
+          'held', 0, 'actor:00000000-0000-4000-8000-000000000012'
+        ),
+        (
+          'tenant_b', 'system', 'service:integration-actor-b', 1,
+          'actor:00000000-0000-4000-8000-000000000011', 'worker',
+          'held', 0, 'actor:00000000-0000-4000-8000-000000000011'
         )
     `;
     await admin`
@@ -1634,11 +2227,61 @@ databaseDescribe("Postgres schema integration", () => {
     expect(visibleIdentityRows).toEqual({
       memberships: [
         { id: "integration-membership-a", tenant_id: "tenant_a" },
+        {
+          id: "integration-membership-a-other-actor",
+          tenant_id: "tenant_a",
+        },
       ],
       sessions: [
         { id: "integration-session-a", tenant_id: "tenant_a" },
       ],
     });
+
+    const actorScope = JSON.stringify({
+      version: 1,
+      tenantId: "tenant_a",
+      actorIds: ["actor:00000000-0000-4000-8000-000000000010"],
+    });
+    const visiblePrincipals = await admin.begin(async (transaction) => {
+      await transaction.unsafe(`SET LOCAL ROLE ${rlsRole}`);
+      await transaction`SELECT set_config('omni.tenant_id', 'tenant_a', true)`;
+      await transaction`SELECT set_config('omni.actor_scope_v1', ${actorScope}, true)`;
+      return transaction`
+        SELECT principal_id, controller_actor_id
+        FROM omni_tenant_execution_principals
+        WHERE principal_id IN (
+          'service:integration-actor-a',
+          'service:integration-actor-a-other',
+          'service:integration-actor-b'
+        )
+        ORDER BY principal_id
+      `;
+    });
+    expect(visiblePrincipals).toEqual([
+      {
+        principal_id: "service:integration-actor-a",
+        controller_actor_id: "actor:00000000-0000-4000-8000-000000000010",
+      },
+    ]);
+
+    await expect(
+      admin.begin(async (transaction) => {
+        await transaction.unsafe(`SET LOCAL ROLE ${rlsRole}`);
+        await transaction`SELECT set_config('omni.tenant_id', 'tenant_a', true)`;
+        await transaction`SELECT set_config('omni.actor_scope_v1', ${actorScope}, true)`;
+        await transaction`
+          INSERT INTO omni_tenant_execution_principals (
+            tenant_id, principal_kind, principal_id, principal_generation,
+            controller_actor_id, system_principal_class, state,
+            lifecycle_revision, created_by_actor_id
+          ) VALUES (
+            'tenant_a', 'system', 'service:integration-cross-actor', 1,
+            'actor:00000000-0000-4000-8000-000000000012', 'worker',
+            'held', 0, 'actor:00000000-0000-4000-8000-000000000012'
+          )
+        `;
+      }),
+    ).rejects.toMatchObject({ code: "42501" });
 
     const attemptedBypass = await admin.begin(async (transaction) => {
       await transaction.unsafe(`SET LOCAL ROLE ${rlsRole}`);
