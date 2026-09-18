@@ -106,7 +106,7 @@ describe("dashboard release gate", () => {
     expect(result.passed).toBe(false);
   });
 
-  it("rejects missing NavigationTiming evidence", () => {
+  it("rejects missing document response-start evidence", () => {
     const samples = healthyMeasurements();
     const missingDocumentTiming = {
       durationMs: samples[0].durationMs,

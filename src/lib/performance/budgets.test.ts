@@ -103,8 +103,8 @@ describe("frontend performance budgets", () => {
     });
   });
 
-  it("uses finalized Web Vitals and a browser dashboard release gate", async () => {
-    const [reporter, deployment, previewBenchmark, dashboardBenchmark, healthBadge, workspaceSummary, todayRoute, todaySnapshot, todaySnapshotCache, capabilitiesRoute, settingsCache, domainConsole] =
+  it("uses finalized Web Vitals and a browser-independent SSR dashboard release gate", async () => {
+    const [reporter, deployment, previewBenchmark, dashboardBenchmark, healthBadge, workspaceSummary, todayRoute, todayService, todaySnapshot, todaySnapshotCache, capabilitiesRoute, settingsCache, domainConsole] =
       await Promise.all([
         readFile(
           path.resolve(
@@ -126,6 +126,7 @@ describe("frontend performance budgets", () => {
           "utf8",
         ),
         readFile(path.resolve("src/app/api/today/route.ts"), "utf8"),
+        readFile(path.resolve("src/lib/app-services/today.ts"), "utf8"),
         readFile(path.resolve("src/lib/today/snapshot.ts"), "utf8"),
         readFile(path.resolve("src/lib/today/snapshot-cache.ts"), "utf8"),
         readFile(path.resolve("src/app/api/capabilities/route.ts"), "utf8"),
@@ -179,26 +180,37 @@ describe("frontend performance budgets", () => {
       "budgets.releaseDashboardDocumentP95Ms",
     );
     expect(dashboardBenchmark).not.toContain("budgets.authenticatedReadP95Ms");
-    expect(dashboardBenchmark).toContain("BENCHMARK_BROWSER_SAMPLES");
+    expect(dashboardBenchmark).toContain("BENCHMARK_DASHBOARD_SAMPLES");
     expect(dashboardBenchmark).toContain("Math.max(requestedSamples, 20)");
-    expect(dashboardBenchmark).toContain("BENCHMARK_BROWSER_WARMUPS");
+    expect(dashboardBenchmark).toContain("BENCHMARK_DASHBOARD_WARMUPS");
     expect(dashboardBenchmark).toContain(
       "enforce && requestedWarmups !== 2",
     );
-    expect(dashboardBenchmark).toContain("const firstLoad = await measureDashboard(page)");
+    expect(dashboardBenchmark).toContain("const firstLoad = await measureDashboardDocument()");
     expect(dashboardBenchmark).toContain(
-      "const warmup = await measureDashboard(page)",
+      "const warmup = await measureDashboardDocument()",
     );
     expect(dashboardBenchmark).toContain("recoveryLoad = warmup");
-    expect(dashboardBenchmark).toContain('data-hydrated="true"');
-    expect(dashboardBenchmark).toContain("performance.getEntriesByType");
+    expect(dashboardBenchmark).toContain(
+      "hasReadyWorkspaceOpeningTag(document)",
+    );
+    expect(dashboardBenchmark).toContain(
+      "for (const [tag] of openingTags)",
+    );
+    expect(dashboardBenchmark).toContain("activity-workspace\\1/i.test(tag)");
+    expect(dashboardBenchmark).toContain("false\\1/i.test(tag)");
     expect(dashboardBenchmark).toContain("documentResponseMs");
     expect(dashboardBenchmark).toContain("hotMeasurements: measurements");
-    expect(dashboardBenchmark).toContain('pathname === "/api/today"');
-    expect(dashboardBenchmark).toContain('pathname === "/api/workspace-summary"');
-    expect(dashboardBenchmark).toContain("dashboard performed duplicate hydration reads");
-    expect(dashboardBenchmark).toContain("const response = await page.goto");
-    expect(dashboardBenchmark).not.toContain("page.waitForResponse(");
+    expect(dashboardBenchmark).toContain(
+      'const response = await smokeFetch(baseUrl, "/app"',
+    );
+    expect(dashboardBenchmark).toContain("readTextLimited(");
+    expect(dashboardBenchmark).toContain(
+      'response.headers.get("server-timing")',
+    );
+    expect(dashboardBenchmark).not.toContain('from "playwright"');
+    expect(dashboardBenchmark).not.toContain("chromium.launch");
+    expect(dashboardBenchmark).not.toContain("page.");
     expect(deployment).toContain(
       '["promote", stagedBaseUrl, "--yes", "--scope", VERCEL_SCOPE]',
     );
@@ -208,8 +220,9 @@ describe("frontend performance budgets", () => {
     expect(workspaceSummary).toContain('["workspace-summary-v1"]');
     expect(workspaceSummary).toContain("{ revalidate: 15 }");
     expect(todayRoute).not.toContain("unstable_cache");
-    expect(todayRoute).toContain("await loadTodaySnapshot(");
+    expect(todayRoute).toContain("showTodayService(");
     expect(todayRoute).toContain('"cache-control": "private, no-store"');
+    expect(todayService).toContain("await loadTodaySnapshot(");
     expect(todaySnapshot).toContain("loadCachedTodaySnapshot(");
     expect(todaySnapshot).toContain("loadPostgresTodaySnapshot(");
     expect(todaySnapshotCache).toContain("unstable_cache(");

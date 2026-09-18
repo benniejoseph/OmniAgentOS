@@ -39,6 +39,9 @@ const OPENAI_GATEWAY_INITIAL_CUTOVER_ENV =
   "OMNIAGENT_OPENAI_GATEWAY_INITIAL_CUTOVER";
 const PAID_INFERENCE_SENTINEL = "ASAEL_RELEASE_OK";
 const PAID_INFERENCE_MAX_OUTPUT_TOKENS = 16;
+// This identifier is never sent to OpenAI. The gateway rejects the request at
+// its missing-Authorization boundary after authenticating the gateway token.
+const GATEWAY_AUTHORIZATION_PROBE_ID = "authorization-probe";
 const WORKER_PID_FILE = "/tmp/asael-worker.pid";
 const WORKER_RELEASE_ACTIVATION_FILE =
   "/tmp/asael-worker-release-activated";
@@ -94,11 +97,6 @@ const paidInferenceTimeoutMs = boundedInteger(
   60_000,
   5_000,
   120_000,
-);
-const paidInferenceModel = normalizeModelIdentifier(
-  process.env.OMNIAGENT_DEPLOY_OPENAI_SMOKE_MODEL ||
-    process.env.OPENAI_FAST_MODEL ||
-    process.env.OPENAI_AGENT_MODEL,
 );
 const workerStartupSettleMs = boundedInteger(
   process.env.OMNIAGENT_DEPLOY_WORKER_STARTUP_SETTLE_MS,
@@ -164,6 +162,7 @@ if (gatewayPaidProbeIndex >= 0) {
   const expectedRevision = normalizeExpectedRevision(
     process.argv[gatewayPaidProbeIndex + 2],
   );
+  const paidInferenceModel = resolvePaidInferenceModel();
   const openAIKey = validateOpenAIKey(process.env.OPENAI_API_KEY, true);
   const readiness = await waitForOpenAIGatewayReadiness(
     gateway,
@@ -175,6 +174,7 @@ if (gatewayPaidProbeIndex >= 0) {
     openAIKey,
     expectedRevision,
     readiness,
+    paidInferenceModel,
     label: "Gateway paid probe",
   }).catch((error) => fail(errorMessage(error)));
   process.exit(0);
@@ -1221,7 +1221,7 @@ async function probeOpenAIGatewayToken(gateway, remainingMs) {
   // yields 400 only when the gateway token was accepted and never reaches
   // OpenAI, so pairing is verified without an API key or a paid request.
   const probeUrl = new URL(
-    `/v1/models/${encodeURIComponent(paidInferenceModel)}`,
+    `/v1/models/${GATEWAY_AUTHORIZATION_PROBE_ID}`,
     gateway.baseUrl.origin,
   );
   let response;
@@ -1249,6 +1249,7 @@ async function runPaidOpenAIGatewayInference({
   openAIKey,
   expectedRevision,
   readiness,
+  paidInferenceModel,
   label,
 }) {
   if (
@@ -1633,6 +1634,14 @@ function normalizeModelIdentifier(value) {
     );
   }
   return normalized;
+}
+
+function resolvePaidInferenceModel() {
+  return normalizeModelIdentifier(
+    process.env.OMNIAGENT_DEPLOY_OPENAI_SMOKE_MODEL ||
+      process.env.OPENAI_FAST_MODEL ||
+      process.env.OPENAI_AGENT_MODEL,
+  );
 }
 
 function boundedInteger(value, fallback, minimum, maximum) {

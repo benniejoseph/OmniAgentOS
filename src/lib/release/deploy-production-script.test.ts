@@ -403,6 +403,33 @@ describe("paired production deployment", () => {
     }
   });
 
+  it("requires a configured model only for the optional paid gateway diagnostic", async () => {
+    const token = "gateway_token_abcdefghijklmnopqrstuvwxyz123456";
+    const result = await runProcess(
+      process.execPath,
+      [
+        "scripts/deploy-production.mjs",
+        "--gateway-paid-probe",
+        "http://127.0.0.1:1/v1",
+        "release-ready",
+      ],
+      {
+        ...process.env,
+        OMNIAGENT_OPENAI_GATEWAY_TOKEN: token,
+        OMNIAGENT_DEPLOY_OPENAI_SMOKE_MODEL: "",
+        OPENAI_FAST_MODEL: "",
+        OPENAI_AGENT_MODEL: "",
+        OPENAI_API_KEY: "",
+      },
+    );
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain(
+      "OMNIAGENT_DEPLOY_OPENAI_SMOKE_MODEL must be a bounded model identifier.",
+    );
+    expect(`${result.stdout}\n${result.stderr}`).not.toContain(token);
+  });
+
   it("waits through transient health failures and revision propagation", async () => {
     let requests = 0;
     let bypassHeader: string | undefined;
@@ -527,15 +554,17 @@ describe("paired production deployment", () => {
     const previousToken = "gateway_previous_abcdefghijklmnopqrstuvwxyz987654";
     let healthRequests = 0;
     const observedTokens: string[] = [];
+    const observedAuthorizations: Array<string | undefined> = [];
     const observedPaths: string[] = [];
     await withHealthServer((request, response) => {
       const observedToken = request.headers["x-asael-gateway-token"] as
         | string
         | undefined;
       observedTokens.push(observedToken || "missing");
+      observedAuthorizations.push(request.headers.authorization);
       observedPaths.push(request.url || "missing");
       response.setHeader("content-type", "application/json");
-      if (request.url === "/v1/models/gpt-5") {
+      if (request.url === "/v1/models/authorization-probe") {
         response.writeHead(
           observedToken === token || observedToken === previousToken
             ? 400
@@ -585,9 +614,12 @@ describe("paired production deployment", () => {
       expect(result.code, `${result.stdout}\n${result.stderr}`).toBe(0);
       expect(healthRequests).toBe(4);
       expect(observedPaths.filter((value) => value === "/healthz")).toHaveLength(4);
-      expect(observedPaths.filter((value) => value === "/v1/models/gpt-5")).toHaveLength(2);
+      expect(observedPaths.filter((value) => value === "/v1/models/authorization-probe")).toHaveLength(2);
       expect(observedTokens).toContain(token);
       expect(observedTokens).toContain(previousToken);
+      expect(observedAuthorizations.every((value) => value === undefined)).toBe(
+        true,
+      );
       expect(result.stdout).toContain("http=503");
       expect(result.stdout).toContain("region=false");
       expect(result.stdout).toContain(
@@ -624,7 +656,7 @@ describe("paired production deployment", () => {
         }));
         return;
       }
-      if (request.url === "/v1/models/gpt-5") {
+      if (request.url === "/v1/models/authorization-probe") {
         response.writeHead(400);
         response.end(JSON.stringify({ error: "authorization required" }));
         return;
@@ -682,7 +714,7 @@ describe("paired production deployment", () => {
       expect(result.code, `${result.stdout}\n${result.stderr}`).toBe(0);
       expect(observedPaths).toEqual([
         "/healthz",
-        "/v1/models/gpt-5",
+        "/v1/models/authorization-probe",
         "/v1/responses",
       ]);
       expect(paidAuthorization).toBe(`Bearer ${openAIKey}`);
@@ -807,7 +839,9 @@ describe("paired production deployment", () => {
     expect(deployScript).toContain("OMNIAGENT_OPENAI_GATEWAY_INITIAL_CUTOVER");
     expect(deployScript).toContain('"x-asael-gateway-token"');
     expect(deployScript).toContain('new URL("/healthz"');
-    expect(deployScript).toContain('new URL("/v1/models/gpt-5"');
+    expect(deployScript).toContain(
+      '`/v1/models/${GATEWAY_AUTHORIZATION_PROBE_ID}`',
+    );
     expect(deployScript).toContain("waitForOpenAIGatewayReadiness");
     expect(deployScript).toContain("waitForOpenAIGatewayTokenPair");
     expect(deployScript).toContain("stageFlyGatewayTokenOverlap");
@@ -851,6 +885,10 @@ describe("paired production deployment", () => {
     expect(securitySmoke).toContain("SMOKE_SESSION_OUTPUT");
     expect(previewBenchmark).toContain("BENCHMARK_SESSION_FILE");
     expect(dashboardBenchmark).toContain("BENCHMARK_SESSION_FILE");
+    expect(dashboardBenchmark).toContain(
+      'const response = await smokeFetch(baseUrl, "/app"',
+    );
+    expect(dashboardBenchmark).not.toContain('from "playwright"');
     expect(sessionRoute).toContain("resolveWorkspaceSession");
     expect(workspaceSession).toContain('headerContext?.source === "headers"');
     expect(evaluationSmoke).toContain("response.status === 202");
