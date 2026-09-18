@@ -1,7 +1,14 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
-# dependencies
-/node_modules
+# dependency trees and package-manager caches (at any depth)
+node_modules/
+.dart_tool/
+.pub-cache/
+.pub/
+Pods/
+DerivedData/
+.gradle/
+.swiftpm/
 /.pnp
 .pnp.*
 .yarn/*
@@ -11,19 +18,32 @@
 !.yarn/versions
 
 # testing
-/coverage
-/test-results/
+coverage/
+test-results/
 
-# next.js
-/.next/
-/out/
-
-# production
-/build
+# generated application output
+.next/
+out/
+build/
+*.app/
+*.dmg
+*.xcarchive/
+*.ipa
+*.apk
+*.aab
 
 # misc
 .DS_Store
+.cursor/
+.superpowers/brainstorm/
+.superpowers/sdd/
 *.pem
+*.key
+*.p8
+*.p12
+*.pfx
+*.jks
+*.keystore
 
 # debug
 npm-debug.log*
