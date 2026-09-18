@@ -469,9 +469,25 @@ class _MacosDestinationTile extends StatelessWidget {
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 2),
-      child: collapsed
-          ? Tooltip(message: destination.label, child: content)
-          : Semantics(selected: selected, child: content),
+      child: Semantics(
+        key: ValueKey('macos-destination-${destination.path}'),
+        container: true,
+        button: true,
+        selected: selected,
+        label: destination.label,
+        hint: shortcut == null
+            ? 'Open workspace'
+            : 'Open workspace with $shortcut',
+        onTap: onTap,
+        excludeSemantics: true,
+        child: collapsed
+            ? Tooltip(
+                message: destination.label,
+                excludeFromSemantics: true,
+                child: content,
+              )
+            : content,
+      ),
     );
   }
 }

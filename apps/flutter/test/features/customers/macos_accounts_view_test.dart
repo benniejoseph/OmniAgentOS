@@ -78,6 +78,15 @@ void main() {
     expect(tester.takeException(), isNull);
     expect(api.listReads, 1);
     expect(api.portfolioReads, 1);
+    expect(find.byTooltip('Open inspector'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('Open inspector'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('macos-accounts-inspector')), findsOneWidget);
+    Navigator.of(
+      tester.element(find.byKey(const Key('macos-accounts-inspector'))),
+    ).pop();
+    await tester.pumpAndSettle();
 
     await tester.tap(find.byKey(const Key('macos-accounts-refresh')));
     await tester.pumpAndSettle();

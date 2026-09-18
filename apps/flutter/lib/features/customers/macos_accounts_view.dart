@@ -166,7 +166,6 @@ class _MacosAccountsViewState extends State<MacosAccountsView> {
             initialWidth: 360,
             minWidth: 300,
             maxWidth: 460,
-            collapseBelow: 0,
             inspector: _AccountInspector(
               account: selected,
               onOpen: widget.onOpen,

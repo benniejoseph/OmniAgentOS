@@ -160,7 +160,6 @@ class _MacosPaymentsViewState extends State<MacosPaymentsView> {
             initialWidth: 360,
             minWidth: 310,
             maxWidth: 500,
-            collapseBelow: 0,
             inspector: _PaymentInspector(section: _section, value: selected),
             body: _PaymentsBrowser(
               section: _section,

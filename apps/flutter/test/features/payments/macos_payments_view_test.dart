@@ -65,6 +65,15 @@ void main() {
     expect(find.byType(FilledButton), findsNothing);
     expect(tester.takeException(), isNull);
     expect(api.reads, 4);
+    expect(find.byTooltip('Open inspector'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('Open inspector'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('macos-payments-inspector')), findsOneWidget);
+    Navigator.of(
+      tester.element(find.byKey(const Key('macos-payments-inspector'))),
+    ).pop();
+    await tester.pumpAndSettle();
 
     await tester.tap(find.byKey(const Key('macos-payments-refresh')));
     await tester.pumpAndSettle();

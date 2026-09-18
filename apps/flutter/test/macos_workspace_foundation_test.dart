@@ -69,30 +69,7 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
-    final router = GoRouter(
-      initialLocation: '/today',
-      routes: [
-        GoRoute(
-          path: '/devices',
-          builder: (_, _) => const Text('Devices body'),
-        ),
-        StatefulShellRoute.indexedStack(
-          builder: (_, _, shell) => AdaptiveShell(navigationShell: shell),
-          branches: [
-            for (final destination in appDestinations)
-              StatefulShellBranch(
-                routes: [
-                  GoRoute(
-                    path: destination.path,
-                    builder: (_, _) =>
-                        Center(child: Text('Body ${destination.label}')),
-                  ),
-                ],
-              ),
-          ],
-        ),
-      ],
-    );
+    final router = _workspaceRouter();
     addTearDown(router.dispose);
 
     await tester.pumpWidget(
@@ -105,6 +82,13 @@ void main() {
     expect(find.text('Ask Asael or run a command'), findsOneWidget);
     expect(find.text('Body Today'), findsOneWidget);
     expect(find.byType(NavigationBar), findsNothing);
+    _expectDestinationSemantics(
+      tester,
+      path: '/today',
+      label: 'Today',
+      hint: 'Open workspace with ⌘1',
+      selected: true,
+    );
 
     await tester.tap(find.text('Projects'));
     await tester.pumpAndSettle();
@@ -112,4 +96,94 @@ void main() {
     expect(tester.takeException(), isNull);
     debugDefaultTargetPlatformOverride = null;
   });
+
+  testWidgets('collapsed Mac navigation keeps explicit destination semantics', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    tester.view.physicalSize = const Size(900, 700);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final router = _workspaceRouter();
+    addTearDown(router.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp.router(theme: MacosAppTheme.light(), routerConfig: router),
+    );
+    await tester.pumpAndSettle();
+
+    final projectsTile = find.byKey(
+      const ValueKey('macos-destination-/projects'),
+    );
+    expect(find.text('Workspaces'), findsNothing);
+    _expectDestinationSemantics(
+      tester,
+      path: '/today',
+      label: 'Today',
+      hint: 'Open workspace with ⌘1',
+      selected: true,
+    );
+    _expectDestinationSemantics(
+      tester,
+      path: '/projects',
+      label: 'Projects',
+      hint: 'Open workspace with ⌘4',
+      selected: false,
+    );
+
+    await tester.tap(projectsTile);
+    await tester.pumpAndSettle();
+    expect(find.text('Body Projects'), findsOneWidget);
+    _expectDestinationSemantics(
+      tester,
+      path: '/projects',
+      label: 'Projects',
+      hint: 'Open workspace with ⌘4',
+      selected: true,
+    );
+    expect(tester.takeException(), isNull);
+    debugDefaultTargetPlatformOverride = null;
+  });
+}
+
+GoRouter _workspaceRouter() => GoRouter(
+  initialLocation: '/today',
+  routes: [
+    GoRoute(path: '/devices', builder: (_, _) => const Text('Devices body')),
+    StatefulShellRoute.indexedStack(
+      builder: (_, _, shell) => AdaptiveShell(navigationShell: shell),
+      branches: [
+        for (final destination in appDestinations)
+          StatefulShellBranch(
+            routes: [
+              GoRoute(
+                path: destination.path,
+                builder: (_, _) =>
+                    Center(child: Text('Body ${destination.label}')),
+              ),
+            ],
+          ),
+      ],
+    ),
+  ],
+);
+
+void _expectDestinationSemantics(
+  WidgetTester tester, {
+  required String path,
+  required String label,
+  required String hint,
+  required bool selected,
+}) {
+  final finder = find.byKey(ValueKey('macos-destination-$path'));
+  expect(finder, findsOneWidget);
+  final properties = tester.widget<Semantics>(finder).properties;
+  expect(properties.button, isTrue);
+  expect(properties.selected, selected);
+  expect(properties.label, label);
+  expect(properties.hint, hint);
+  expect(properties.onTap, isNotNull);
 }
