@@ -23,9 +23,28 @@ describe("P8.5 internal Agent discovery", () => {
     expect(receipt).toMatchObject({
       version: "p8.5-agent-discovery-receipt:1",
       authorityImpact: "none",
-      matches: [{ agentId: "scout", matchedTaskKinds: ["research"] }],
+    });
+    expect(receipt.matches.map((match) => match.agentId)).toEqual([
+      "scout",
+      "meridian",
+    ]);
+    expect(receipt.matches[0]).toMatchObject({
+      agentId: "scout",
+      matchedTaskKinds: ["research"],
     });
     expect(receipt.receiptSha256).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("prefers the market specialist when the query carries domain evidence", () => {
+    const receipt = discoverInternalAgentsV1({
+      cards,
+      request: request("research", "Analyze XAUUSD ICT market structure"),
+    });
+
+    expect(receipt.matches[0]).toMatchObject({
+      agentId: "meridian",
+      matchedTaskKinds: ["research"],
+    });
   });
 
   it("selects and verifies a complete multi-specialist team", () => {

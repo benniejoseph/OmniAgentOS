@@ -12,6 +12,15 @@ import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 export const AGENT_DISCOVERY_RECEIPT_VERSION =
   "p8.5-agent-discovery-receipt:1" as const;
 
+// When semantic evidence is tied, prefer the broad internal specialist before
+// a narrower domain specialist. A domain-specific query still wins on overlap
+// (for example, market/ICT terms route to Meridian rather than Scout).
+const agentDiscoveryTieBreakPriority = new Map<string, number>(
+  ["atlas", "scout", "meridian", "forge", "sentinel", "mnemosyne"].map(
+    (agentId, index) => [agentId, index],
+  ),
+);
+
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const taskKindSchema = z.enum([
   "general",
@@ -129,7 +138,10 @@ export function discoverInternalAgentsV1(input: {
     }));
   }
   matches.sort((left, right) =>
-    right.score - left.score || left.agentId.localeCompare(right.agentId)
+    right.score - left.score ||
+    (agentDiscoveryTieBreakPriority.get(left.agentId) ?? Number.MAX_SAFE_INTEGER) -
+      (agentDiscoveryTieBreakPriority.get(right.agentId) ?? Number.MAX_SAFE_INTEGER) ||
+    left.agentId.localeCompare(right.agentId)
   );
   const body = {
     schemaVersion: 1 as const,

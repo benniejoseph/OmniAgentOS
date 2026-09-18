@@ -30,7 +30,14 @@ describe("internal Agent Card discovery route", () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("private, no-store");
-    expect(body.cards).toHaveLength(5);
+    expect(body.cards.map((card: { logicalAgentId: string }) => card.logicalAgentId)).toEqual([
+      "atlas",
+      "scout",
+      "meridian",
+      "forge",
+      "sentinel",
+      "mnemosyne",
+    ]);
     expect(body.cards[0]).toMatchObject({
       version: "p8.5-agent-card:1",
       externalA2AEnabled: false,
@@ -49,9 +56,11 @@ describe("internal Agent Card discovery route", () => {
     expect(response.status).toBe(200);
     expect(body.discovery).toMatchObject({
       version: "p8.5-agent-discovery-receipt:1",
-      matches: [{ agentId: "scout" }],
       authorityImpact: "none",
     });
+    expect(body.discovery.matches.map(
+      (match: { agentId: string }) => match.agentId,
+    )).toEqual(["scout", "meridian"]);
   });
 
   it("fails closed when the caller is not authorized", async () => {
