@@ -25,7 +25,7 @@ describe("Phase 1 production gate", () => {
       mutationDomainCount: 11,
       eventedMutationDomainCount: 10,
       noMutationSurfaceCount: 1,
-      mutationEventTypeCount: 75,
+      mutationEventTypeCount: 94,
       projectionCount: 10,
       matchedProjectionCount: 10,
       projectionReplayBasisPoints: 10_000,

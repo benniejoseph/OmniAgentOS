@@ -38,7 +38,10 @@ in `src/lib/evals2/p05-observer.ts`. All 16 cases now pass (10,000 basis
 points). The calendar positive-control is backed by the production
 `calendar.create` governed tool: exact approval material, deterministic Google
 event IDs, a persisted effect intent, idempotent reconciliation, and
-read-after-write verification are all required before success. The portfolio automation case flows
+read-after-write verification are all required before success. A reviewed
+change to that tool's approval schema intentionally derives a new effect
+receipt ID; the normative assertion and digest-bound observation may be
+advanced together only after that contract change is inspected. The portfolio automation case flows
 through the same strict saved-procedure contract used by production routing;
 its required GitHub tool binding is fixture input, not copied from the expected
 output. Scope and actor visibility, transactional
