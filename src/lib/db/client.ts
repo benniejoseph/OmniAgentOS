@@ -5586,7 +5586,8 @@ async function ensureToolExecutionRetentionRedactionV1(sql: SqlClient) {
         AND NEW.approval_decision = 'rejected'
         AND NEW.approval_reason = 'Expired by retention policy.'
         AND NEW.effect_receipt IS NULL
-        AND NEW.completed_at IS NOT NULL;
+        AND NEW.completed_at IS NOT NULL
+      ), FALSE);
 
       IF ROW(
         OLD.id,
@@ -5632,7 +5633,7 @@ async function ensureToolExecutionRetentionRedactionV2(sql: SqlClient) {
     DECLARE
       is_expired_approval_redaction BOOLEAN;
     BEGIN
-      is_expired_approval_redaction :=
+      is_expired_approval_redaction := COALESCE((
         OLD.input IS DISTINCT FROM NEW.input
         AND OLD.status = 'approval_required'
         AND OLD.approval_decision IS NULL
