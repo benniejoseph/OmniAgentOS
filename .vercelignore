@@ -8,7 +8,7 @@ coverage
 test-results
 screenshots
 backups
-artifacts
+/artifacts/
 apps/flutter
 .design
 out
