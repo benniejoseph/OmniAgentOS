@@ -109,6 +109,7 @@ describe("run feedback effects", () => {
     expect(JSON.stringify(body.mediaArtifacts)).not.toContain("untrusted.example");
     expect(JSON.stringify(body.mediaArtifacts)).not.toContain("private-image-bytes");
     expect(JSON.stringify(body.mediaArtifacts)).not.toContain("private prompt");
+    expect(body.fileArtifacts).toEqual([]);
     expect(body).not.toHaveProperty("computerUseEvidence");
   });
 
@@ -155,7 +156,10 @@ describe("run feedback effects", () => {
       { params: Promise.resolve({ id: run.id }) },
     );
     expect(ownerResponse.status).toBe(200);
-    await expect(ownerResponse.json()).resolves.toMatchObject({ mediaArtifacts: [] });
+    await expect(ownerResponse.json()).resolves.toMatchObject({
+      mediaArtifacts: [],
+      fileArtifacts: [],
+    });
 
     const siblingResponse = await GET(
       runRequest(run.id, tenantId, siblingActorId, true),

@@ -26,11 +26,11 @@ import {
   useWorkspaceSession,
 } from "@/components/app-shell/session-context";
 import { useLiveRefresh } from "@/components/use-live-refresh";
+import { GeneratedArtifactsShelf } from "@/components/generated-artifacts-shelf";
 import { WorkspaceLibrary } from "@/components/workspace-library";
 import styles from "./daybook-workspaces.module.css";
 
 const RESULT_LIBRARY_KINDS = [
-  "generated_artifact",
   "image",
   "transcript",
 ] as const;
@@ -541,9 +541,11 @@ export function ResultsCenter() {
         </ResultPanel>
       </section>
 
+      <GeneratedArtifactsShelf refreshKey={lastRefresh} />
+
       <WorkspaceLibrary
         title="Reusable outputs"
-        description="Generated artifacts, images, and transcripts remain attached to their source, stable citation, and relevant work."
+        description="Images and transcripts remain attached to their source, stable citation, and relevant work."
         kinds={RESULT_LIBRARY_KINDS}
         compact
         limit={12}

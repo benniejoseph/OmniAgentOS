@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../../app/macos/macos_page_scaffold.dart';
 import '../../app/theme/macos_app_theme.dart';
+import 'created_files_section.dart';
 import 'results.dart';
 
 /// A searchable macOS evidence ledger with a persistent output inspector.
@@ -329,6 +330,12 @@ class _ResultsBody extends StatelessWidget {
             message:
                 'Some sources could not be verified: ${snapshot!.sourceErrors.join(', ')}',
             onRetry: controller.refresh,
+          ),
+        if (snapshot != null)
+          CreatedFilesSection(
+            controller: controller,
+            files: snapshot.createdFiles,
+            dense: true,
           ),
         _LedgerSummary(snapshot: snapshot),
         const _ResultColumnHeader(),

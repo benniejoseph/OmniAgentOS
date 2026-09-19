@@ -25,7 +25,10 @@ export const ASSET_OBJECT_CONTRACT_VERSION = 1 as const;
 export const ASSET_OBJECT_STORAGE_PROVIDER = "vercel_blob_private" as const;
 export const ASSET_DELIVERY_TTL_SECONDS = 5 * 60;
 
-export type AssetObjectSourceKind = "capture_asset" | "capture_segment";
+export type AssetObjectSourceKind =
+  | "capture_asset"
+  | "capture_segment"
+  | "generated_artifact";
 export type AssetObjectStatus = "pending" | "ready" | "failed" | "deleted";
 
 export type AssetObjectRecord = Readonly<{
@@ -266,17 +269,19 @@ export async function retryFailedAssetObjectCommit(
     ownerActorId: string;
     sourceKind: AssetObjectSourceKind;
     sourceId: string;
+    objectVersion?: number;
   },
   options: { sql: ReturnType<typeof getSql> },
 ) {
   const tenantId = requiredText(input.tenantId, 160);
   const ownerActorId = requiredText(input.ownerActorId, 320);
   const sourceId = requiredText(input.sourceId, 200);
+  const objectVersion = positiveInteger(input.objectVersion || 1);
   const rows = await options.sql`
     SELECT * FROM omni_asset_objects
     WHERE tenant_id = ${tenantId} AND owner_actor_id = ${ownerActorId}
       AND source_kind = ${input.sourceKind} AND source_id = ${sourceId}
-      AND object_version = 1 AND status = 'failed'
+      AND object_version = ${objectVersion} AND status = 'failed'
     LIMIT 1
   `;
   if (!rows[0]) return null;
@@ -630,6 +635,7 @@ export async function readReadyAssetObject(input: {
   sourceKind: AssetObjectSourceKind;
   sourceId: string;
   purpose: string;
+  objectVersion?: number;
   adapter?: PrivateAssetBlobAdapter;
 }) {
   if (!input.adapter && !privateObjectStorageConfigured()) {
@@ -642,12 +648,13 @@ export async function readReadyAssetObject(input: {
   const ownerActorId = requiredText(input.ownerActorId, 320);
   const sourceId = requiredText(input.sourceId, 200);
   const purpose = requiredText(input.purpose, 160);
+  const objectVersion = positiveInteger(input.objectVersion || 1);
   await ensureDatabaseSchema();
   const rows = await getSql()`
     SELECT * FROM omni_asset_objects
     WHERE tenant_id = ${tenantId} AND owner_actor_id = ${ownerActorId}
       AND source_kind = ${input.sourceKind} AND source_id = ${sourceId}
-      AND object_version = 1 AND status = 'ready'
+      AND object_version = ${objectVersion} AND status = 'ready'
     LIMIT 2
   `;
   if (rows.length !== 1) {
@@ -705,14 +712,22 @@ function normalizedStageInput(input: StageAssetObjectInput) {
   const permissionGrantIds = normalizedStringSet(
     input.permissionGrantIds?.length
       ? input.permissionGrantIds
-      : ["first_party.capture"],
+      : [
+          input.sourceKind === "generated_artifact"
+            ? "first_party.generated_artifacts"
+            : "first_party.capture",
+        ],
     120,
   );
   const allowedPurposeIds = normalizedStringSet(input.allowedPurposeIds, 160);
   if (!permissionGrantIds.length || !allowedPurposeIds.length) {
     throw new AssetObjectError("Asset object grants and purposes are required.", "invalid_contract");
   }
-  if (input.sourceKind !== "capture_asset" && input.sourceKind !== "capture_segment") {
+  if (
+    input.sourceKind !== "capture_asset" &&
+    input.sourceKind !== "capture_segment" &&
+    input.sourceKind !== "generated_artifact"
+  ) {
     throw new AssetObjectError("Asset object source kind is invalid.", "invalid_contract");
   }
   const sensitivity = input.sensitivity || "confidential";
@@ -865,10 +880,23 @@ async function readLegacyAssetBytes(
           AND actor_id = ${object.ownerActorId}
         LIMIT 1
       `
-    : await sql`
+    : object.sourceKind === "capture_segment"
+      ? await sql`
         SELECT audio_data AS bytes FROM omni_capture_segments
         WHERE id = ${object.sourceId} AND tenant_id = ${object.tenantId}
           AND actor_id = ${object.ownerActorId}
+        LIMIT 1
+      `
+      : await sql`
+        SELECT content_bytes AS bytes
+        FROM omni_generated_artifact_versions
+        WHERE artifact_id = ${object.sourceId}
+          AND artifact_version = ${object.objectVersion}
+          AND tenant_id = ${object.tenantId}
+          AND owner_actor_id = ${object.ownerActorId}
+          AND render_status = 'ready'
+          AND content_sha256 = ${object.contentSha256}
+          AND byte_count = ${object.byteCount}
         LIMIT 1
       `;
   if (!rows[0]?.bytes) {
@@ -888,10 +916,22 @@ async function assertSourceStillCurrent(
           AND actor_id = ${object.ownerActorId}
         LIMIT 1
       `
-    : await sql`
+    : object.sourceKind === "capture_segment"
+      ? await sql`
         SELECT 1 FROM omni_capture_segments
         WHERE id = ${object.sourceId} AND tenant_id = ${object.tenantId}
           AND actor_id = ${object.ownerActorId}
+        LIMIT 1
+      `
+      : await sql`
+        SELECT 1 FROM omni_generated_artifact_versions
+        WHERE artifact_id = ${object.sourceId}
+          AND artifact_version = ${object.objectVersion}
+          AND tenant_id = ${object.tenantId}
+          AND owner_actor_id = ${object.ownerActorId}
+          AND render_status = 'ready'
+          AND content_sha256 = ${object.contentSha256}
+          AND byte_count = ${object.byteCount}
         LIMIT 1
       `;
   if (rows.length !== 1) {

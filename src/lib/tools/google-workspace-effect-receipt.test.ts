@@ -2,9 +2,10 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createExecutionScope } from "@/lib/security/execution-scope";
+import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
 const access = vi.hoisted(() => ({
   getActive: vi.fn(),
@@ -25,6 +26,10 @@ describe("Google Workspace executor effect receipts", () => {
       accessToken: "workspace-access-token",
       grant: { id: "grant-workspace" },
     });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("approval-gates a Drive mutation and records a verified provider receipt", async () => {
@@ -79,6 +84,287 @@ describe("Google Workspace executor effect receipts", () => {
         verificationState: "verified",
         verificationReasonCode: "state_matched",
       },
+    });
+  });
+
+  it("approval-gates native Docs creation and records its verified creation effect", async () => {
+    const harness = await executorHarness("docs-create");
+    const input = {
+      title: "Governed research note",
+      bodyText: "Only one provider-native document is created.",
+    };
+    let executionId = "";
+    let documentReadCount = 0;
+    const fetchMock = vi.fn(async (request: string | URL | Request, init?: RequestInit) => {
+      const url = String(request);
+      if (url.includes("/drive/v3/files?") && init?.method === "GET") {
+        return json({ files: [] });
+      }
+      if (url.includes("/drive/v3/files?") && init?.method === "POST") {
+        return json({ id: "document_effect_1" });
+      }
+      if (url.includes("documents/document_effect_1:batchUpdate")) return json({});
+      if (url.includes("/drive/v3/files/document_effect_1")) {
+        return json({
+          id: "document_effect_1",
+          name: input.title,
+          mimeType: "application/vnd.google-apps.document",
+          trashed: false,
+          appProperties: docsCreateProperties(input, executionId),
+        });
+      }
+      if (new URL(url).pathname.endsWith("/documents/document_effect_1")) {
+        documentReadCount += 1;
+        return documentReadCount === 1
+          ? json({
+              documentId: "document_effect_1",
+              title: input.title,
+              revisionId: "revision-pristine",
+              body: { content: [] },
+            })
+          : json({
+              documentId: "document_effect_1",
+              title: input.title,
+              revisionId: "revision-created",
+              body: {
+                content: [{
+                  startIndex: 1,
+                  endIndex: input.bodyText.length + 2,
+                  paragraph: {
+                    elements: [{ textRun: { content: `${input.bodyText}\n` } }],
+                  },
+                }],
+              },
+            });
+      }
+      throw new Error(`Unexpected Google request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const pending = await harness.executor.executeGovernedTool({
+      toolId: "google.docs.create",
+      input,
+      dryRun: false,
+      context: harness.context,
+      executionScope: harness.scope,
+    });
+    expect(pending.record.status).toBe("approval_required");
+    executionId = pending.record.id;
+    const claimToken = "docs-create-claim";
+    const claim = await harness.store.approveAndClaimToolExecution({
+      id: pending.record.id,
+      tenantId: harness.tenantId,
+      approvedBy: "workspace-reviewer",
+      approvedRole: "admin",
+      claimToken,
+    });
+    const executed = await harness.executor.executeGovernedTool({
+      toolId: "google.docs.create",
+      input: harness.store.openToolExecutionInput(claim.record!),
+      dryRun: false,
+      approved: true,
+      context: harness.context,
+      existingRecord: claim.record,
+      executionClaimToken: claimToken,
+    });
+
+    expect(access.getActive).toHaveBeenCalledWith({
+      tenantId: harness.tenantId,
+      actorId: harness.actorId,
+      capability: "docs.write",
+    });
+    expect(fetchMock.mock.calls.filter(([request, init]) =>
+      String(request).includes("/drive/v3/files?") && init?.method === "POST"))
+      .toHaveLength(1);
+    expect(executed.result).toMatchObject({
+      toolId: "google.docs.create",
+      resourceId: "document_effect_1",
+      editorUrl: "https://docs.google.com/document/d/document_effect_1/edit",
+    });
+    expect(executed.record).toMatchObject({
+      status: "executed",
+      effectReceipt: {
+        schemaVersion: 2,
+        toolId: "google.docs.create",
+        targetType: "google_workspace_resource",
+        providerAcknowledgement: "provider_response",
+        verificationState: "verified",
+        verificationReasonCode: "state_matched",
+      },
+    });
+  });
+
+  it("reclaims a crashed stale Docs create and repairs its exact marker without duplication", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-19T06:00:00.000Z"));
+    const harness = await executorHarness("docs-create-repair");
+    const input = {
+      title: "Governed research note",
+      bodyText: "Resume this exact provider-native document.",
+    };
+    let executionId = "";
+    let searchCount = 0;
+    let createCount = 0;
+    let batchCount = 0;
+    let documentReadCount = 0;
+    const fetchMock = vi.fn(async (request: string | URL | Request, init?: RequestInit) => {
+      const url = String(request);
+      if (url.includes("/drive/v3/files?") && init?.method === "GET") {
+        searchCount += 1;
+        return searchCount === 1
+          ? json({ files: [] })
+          : json({
+              files: [{
+                id: "document_partial_effect",
+                name: input.title,
+                mimeType: "application/vnd.google-apps.document",
+                trashed: false,
+                appProperties: docsCreateProperties(input, executionId),
+              }],
+            });
+      }
+      if (url.includes("/drive/v3/files?") && init?.method === "POST") {
+        createCount += 1;
+        return json({ id: "document_partial_effect" });
+      }
+      if (url.includes("/drive/v3/files/document_partial_effect")) {
+        return json({
+          id: "document_partial_effect",
+          name: input.title,
+          mimeType: "application/vnd.google-apps.document",
+          trashed: false,
+          appProperties: docsCreateProperties(input, executionId),
+        });
+      }
+      if (url.includes("documents/document_partial_effect:batchUpdate")) {
+        batchCount += 1;
+        return batchCount === 1
+          ? Response.json({ error: { message: "response lost" } }, { status: 503 })
+          : json({});
+      }
+      if (new URL(url).pathname.endsWith("/documents/document_partial_effect")) {
+        documentReadCount += 1;
+        return documentReadCount < 4
+          ? json({
+              documentId: "document_partial_effect",
+              title: input.title,
+              revisionId: "revision-partial",
+              body: { content: [] },
+            })
+          : json({
+              documentId: "document_partial_effect",
+              title: input.title,
+              revisionId: "revision-complete",
+              body: {
+                content: [{
+                  startIndex: 1,
+                  endIndex: input.bodyText.length + 2,
+                  paragraph: {
+                    elements: [{ textRun: { content: `${input.bodyText}\n` } }],
+                  },
+                }],
+              },
+            });
+      }
+      throw new Error(`Unexpected Google request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const pending = await harness.executor.executeGovernedTool({
+      toolId: "google.docs.create",
+      input,
+      dryRun: false,
+      context: harness.context,
+      executionScope: harness.scope,
+    });
+    executionId = pending.record.id;
+    const claimToken = "docs-create-repair-claim";
+    const claim = await harness.store.approveAndClaimToolExecution({
+      id: executionId,
+      tenantId: harness.tenantId,
+      approvedBy: "workspace-reviewer",
+      approvedRole: "admin",
+      claimToken,
+    });
+
+    await expect(harness.executor.executeGovernedTool({
+      toolId: "google.docs.create",
+      input: harness.store.openToolExecutionInput(claim.record!),
+      dryRun: false,
+      approved: true,
+      context: harness.context,
+      existingRecord: claim.record,
+      executionClaimToken: claimToken,
+    })).rejects.toBeInstanceOf(harness.executor.EffectReceiptFinalizationError);
+
+    const retained = await harness.store.getToolExecution(executionId, {
+      tenantId: harness.tenantId,
+    });
+    expect(retained?.status).toBe("executing");
+    expect(harness.store.getToolExecutionEffectIntentV2(retained!)).toMatchObject({
+      toolId: "google.docs.create",
+      targetType: "google_workspace_resource",
+    });
+
+    vi.setSystemTime(new Date("2026-09-19T06:06:00.000Z"));
+    const retryClaimToken = "docs-create-repair-reclaimed";
+    await expect(harness.store
+      .reclaimStaleGoogleWorkspaceCreateToolExecutionClaim(retained!, {
+        tenantId: harness.tenantId,
+        claimToken: "wrong-actor-reclaim",
+        executionScope: {
+          ...harness.scope,
+          initiatingActorId: "another-actor",
+          executingPrincipalId: "another-actor",
+        },
+        idempotencyKey: "approval:docs-create-repair:wrong-actor",
+      })).resolves.toBeUndefined();
+    const reclaimed = await harness.store
+      .reclaimStaleGoogleWorkspaceCreateToolExecutionClaim(retained!, {
+        tenantId: harness.tenantId,
+        claimToken: retryClaimToken,
+        executionScope: harness.scope,
+        idempotencyKey: "approval:docs-create-repair",
+      });
+    expect(reclaimed).toBeDefined();
+    await expect(harness.store
+      .reclaimStaleGoogleWorkspaceCreateToolExecutionClaim(retained!, {
+        tenantId: harness.tenantId,
+        claimToken: "competing-reclaim",
+        executionScope: harness.scope,
+        idempotencyKey: "approval:docs-create-repair:competing",
+      })).resolves.toBeUndefined();
+
+    const repaired = await harness.executor.executeGovernedTool({
+      toolId: "google.docs.create",
+      input: harness.store.openToolExecutionInput(reclaimed!),
+      dryRun: false,
+      approved: true,
+      context: harness.context,
+      existingRecord: reclaimed,
+      executionClaimToken: retryClaimToken,
+    });
+
+    expect(createCount).toBe(1);
+    expect(searchCount).toBe(3);
+    expect(batchCount).toBe(2);
+    const repairWrite = fetchMock.mock.calls.filter(([request]) =>
+      String(request).includes("documents/document_partial_effect:batchUpdate"))[1];
+    expect(JSON.parse(String(repairWrite?.[1]?.body)).writeControl).toEqual({
+      requiredRevisionId: "revision-partial",
+    });
+    expect(repaired.record).toMatchObject({
+      status: "executed",
+      effectReceipt: {
+        toolId: "google.docs.create",
+        providerAcknowledgement: "provider_response",
+        verificationState: "verified",
+      },
+    });
+    expect(repaired.result).toMatchObject({
+      resourceId: "document_partial_effect",
+      editorUrl:
+        "https://docs.google.com/document/d/document_partial_effect/edit",
     });
   });
 
@@ -213,4 +499,23 @@ function driveFile(name: string) {
 
 function json(value: unknown) {
   return Response.json(value, { status: 200 });
+}
+
+function sha256(value: string) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function docsCreateProperties(input: Record<string, unknown>, executionId: string) {
+  return {
+    asaelExecution: sha256(executionId),
+    asaelIntent: canonicalJsonSha256({
+      toolId: "google.docs.create",
+      input,
+    }),
+    asaelScope: canonicalJsonSha256({
+      tenantId: "tenant-workspace",
+      actorId: "owner-workspace",
+    }),
+    asaelCreateVersion: "2",
+  };
 }

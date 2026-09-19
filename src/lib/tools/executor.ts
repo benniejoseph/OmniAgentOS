@@ -60,9 +60,11 @@ import {
   googleWorkspaceEffectResultSchema,
   googleWorkspaceEffectTarget,
   isGoogleWorkspaceActionToolId,
+  isGoogleWorkspaceCreationToolId,
   isGoogleWorkspaceMutationToolId,
   parseGoogleWorkspaceActionInput,
   reconcileGoogleWorkspaceMutation,
+  resumeGoogleWorkspaceCreation,
 } from "@/lib/connectors/google-workspace-actions";
 import { getMcpGovernedTool, getOpenApiGovernedTool } from "@/lib/connectors/governed-tools";
 import { validateConnectorInput } from "@/lib/connectors/input-validation";
@@ -654,10 +656,23 @@ export async function executeGovernedTool({
     if (reconciled) {
       return { record: reconciled, result: reconciled.output };
     }
-    // Once a Google mutation may have reached the provider, an inconclusive
-    // read cannot authorize replay: the user may have changed the resource
-    // after the first attempt. Keep the claimed execution pending for later
-    // reconciliation instead of re-emitting the approved effect.
+    if (isGoogleWorkspaceCreationToolId(tool.id)) {
+      const resumed = await resumeClaimedGoogleWorkspaceCreationEffect({
+        record: existingRecord,
+        tool,
+        preparedInput: parsedGoogleInput,
+        effectBinding,
+        executionScope: scopedGoogleRequest.executionScope,
+        executionClaimToken,
+        abortSignal,
+      });
+      if (resumed) {
+        return { record: resumed, result: resumed.output };
+      }
+    }
+    // An inconclusive read never authorizes a generic mutation replay. Native
+    // create repair is isolated above and requires the exact persisted intent,
+    // an atomically revalidated live claim, and a marker-owned safe state.
     return { record: existingRecord, result: null };
   }
   if (
@@ -2319,6 +2334,105 @@ async function reconcileExistingGoogleWorkspaceEffect(input: {
     const saved = await completeClaimedToolExecution(
       terminalRecord,
       claimToken,
+      { executionScope: input.executionScope },
+    );
+    if (saved) return saved;
+    const current = await getToolExecution(input.record.id, {
+      tenantId: input.executionScope.tenantId,
+    });
+    return current?.status === "executed" && current.effectReceipt
+      ? current
+      : undefined;
+  } catch (error) {
+    throw new EffectReceiptFinalizationError({ cause: error });
+  }
+}
+
+async function resumeClaimedGoogleWorkspaceCreationEffect(input: {
+  record: ToolExecutionRecord;
+  tool: ToolDefinition;
+  preparedInput: Record<string, unknown>;
+  effectBinding?: GovernedToolEffectBinding;
+  executionScope?: ExecutionScope;
+  executionClaimToken: string;
+  abortSignal?: AbortSignal;
+}): Promise<ToolExecutionRecord | undefined> {
+  if (
+    input.record.status !== "executing" ||
+    !isGoogleWorkspaceCreationToolId(input.tool.id) ||
+    !input.executionScope?.initiatingActorId ||
+    executionClaimTokenFromRecord(input.record) !== input.executionClaimToken
+  ) return undefined;
+
+  let intent: EffectIntentV2;
+  let claimedRecord: ToolExecutionRecord;
+  try {
+    intent = getToolExecutionEffectIntentV2(input.record) as EffectIntentV2;
+    const material = prepareProviderEffectMaterial(
+      input.tool,
+      input.preparedInput,
+      input.record.id,
+    );
+    if (!material) return undefined;
+    const expected = buildProviderEffectIntent({
+      record: input.record,
+      tool: input.tool,
+      material,
+      executionScope: input.executionScope,
+      effectBinding: input.effectBinding,
+    });
+    if (intent.effectIntentSha256 !== expected.effectIntentSha256) {
+      throw new Error(
+        "Google Workspace create repair does not match the persisted effect intent.",
+      );
+    }
+    const revalidated = await persistClaimedToolEffectIntentV2({
+      recordId: input.record.id,
+      tenantId: input.executionScope.tenantId,
+      claimToken: input.executionClaimToken,
+      intent,
+      executionScope: input.executionScope,
+    });
+    if (!revalidated) return undefined;
+    claimedRecord = revalidated;
+  } catch (error) {
+    throw new EffectReceiptFinalizationError({ cause: error });
+  }
+
+  let result;
+  try {
+    result = await resumeGoogleWorkspaceCreation(
+      input.tool.id,
+      input.preparedInput,
+      {
+        tenantId: input.executionScope.tenantId,
+        actorId: input.executionScope.initiatingActorId,
+        executionId: claimedRecord.id,
+        abortSignal: input.abortSignal,
+      },
+    );
+  } catch (error) {
+    throw new EffectReceiptFinalizationError({ cause: error });
+  }
+  if (!result) return undefined;
+
+  let effectReceipt: ToolExecutionRecord["effectReceipt"];
+  try {
+    effectReceipt = finalizeProviderEffectIntent(input.tool, intent, result);
+  } catch (error) {
+    throw new EffectReceiptFinalizationError({ cause: error });
+  }
+  const terminalRecord: ToolExecutionRecord = {
+    ...claimedRecord,
+    status: "executed",
+    output: redactSensitive(result),
+    effectReceipt,
+    completedAt: new Date().toISOString(),
+  };
+  try {
+    const saved = await completeClaimedToolExecution(
+      terminalRecord,
+      input.executionClaimToken,
       { executionScope: input.executionScope },
     );
     if (saved) return saved;

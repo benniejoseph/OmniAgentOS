@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 17;
-  static const previousVersion = 16;
-  static const supportedVersions = <int>[17, 16];
+  static const currentVersion = 18;
+  static const previousVersion = 17;
+  static const supportedVersions = <int>[18, 17];
   static const discoveryPath = '/api/mobile/contracts';
   static const operationIds = <String>{
     'auth.login',
@@ -128,6 +128,8 @@ abstract final class NativeContract {
     'plugins.install',
     'plugins.change',
     'plugins.uninstall',
+    'artifacts.list',
+    'artifacts.content',
   };
 
   static bool supports(int version) => supportedVersions.contains(version);
@@ -312,6 +314,29 @@ abstract final class NativePaths {
   static const pluginsInstall = '/api/plugins/install';
   static String pluginsChange(String id) => '/api/plugins/${Uri.encodeComponent(id)}';
   static String pluginsUninstall(String id) => '/api/plugins/${Uri.encodeComponent(id)}';
+  static String artifactsList({String? kind, int? limit}) {
+    final path = '/api/artifacts';
+    final query = <String, String>{
+      'kind': ?kind,
+      if (limit != null) 'limit': limit.toString(),
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static String artifactsContent(String id, {int? version}) {
+    final path = '/api/artifacts/${Uri.encodeComponent(id)}/content';
+    final query = <String, String>{
+      if (version != null) 'version': version.toString(),
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
 }
 
 abstract final class NativeConversationEvents {

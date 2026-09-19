@@ -760,10 +760,20 @@ describe("ordered database schema versions", () => {
       name: "app_builder_repository_workspaces_v1",
       checksum: "30f4769a6fcccd41aa457882b6be2752583d7d5920be75597e3b2121e91604d0",
     });
-    expect(databaseSchemaMigrations.at(-1)).toEqual({
+    expect(databaseSchemaMigrations.find((migration) => migration.version === 187)).toEqual({
       version: 187,
       name: "builtin_skill_catalog_v2",
       checksum: "fe690251c625bd3a55932b5a58c26509df6bc283cb24a1dd7c6373a1ce0a3a9c",
+    });
+    expect(databaseSchemaMigrations.find((migration) => migration.version === 188)).toEqual({
+      version: 188,
+      name: "builtin_skill_catalog_v3",
+      checksum: "4c206314533b7812aff807d551f1b1514987582b64c21e1c17378ac0c592deb1",
+    });
+    expect(databaseSchemaMigrations.at(-1)).toEqual({
+      version: 189,
+      name: "generated_artifact_persistence_v1",
+      checksum: "4065c615c77bf4baf5921d5dcd468359ed8113bc49ba5291908bdfc3b9f36ebf",
     });
     expect(databaseSchemaMigrations.find((migration) => migration.version === 139)).toEqual({
       version: 139,

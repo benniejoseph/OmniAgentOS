@@ -933,5 +933,15 @@
     "version": 187,
     "name": "builtin_skill_catalog_v2",
     "checksum": "fe690251c625bd3a55932b5a58c26509df6bc283cb24a1dd7c6373a1ce0a3a9c"
+  },
+  {
+    "version": 188,
+    "name": "builtin_skill_catalog_v3",
+    "checksum": "4c206314533b7812aff807d551f1b1514987582b64c21e1c17378ac0c592deb1"
+  },
+  {
+    "version": 189,
+    "name": "generated_artifact_persistence_v1",
+    "checksum": "4065c615c77bf4baf5921d5dcd468359ed8113bc49ba5291908bdfc3b9f36ebf"
   }
 ]

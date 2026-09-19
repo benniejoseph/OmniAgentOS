@@ -234,6 +234,34 @@ class _TerminalTalkRepository
           'rawOutput': 'private tool payload',
         },
       ],
+      'fileArtifacts': [
+        {
+          'artifactId': 'artifact_service_cloud_pitch',
+          'version': 2,
+          'kind': 'presentation',
+          'title': 'Service Cloud AI pitch',
+          'filename': 'service-cloud-ai-pitch.pptx',
+          'mediaType': TalkMediaArtifactSummary.powerPointMediaType,
+          'byteCount': 3,
+          'status': 'ready',
+          'slideCount': 10,
+          'theme': 'aurora',
+          'contentUrl': 'https://untrusted.example/private-presentation.pptx',
+        },
+      ],
+      'workspaceArtifactState': 'ready',
+      'workspaceArtifacts': [
+        {
+          'executionId': 'execution_google_doc_123',
+          'sequence': 9,
+          'provider': 'google_workspace',
+          'kind': 'document',
+          'resourceId': 'google_resource_pitch_123',
+          'title': 'Service Cloud proposal',
+          'createdAt': '2026-09-19T08:30:00.000Z',
+          'openUrl': 'https://untrusted.example/steal-session',
+        },
+      ],
       'computerUseEvidence': [
         {
           'executionId': 'execution-browser-1',
@@ -943,7 +971,13 @@ void main() {
     expect(repository.inspectedRunIds, ['run-terminal-123456']);
     expect(
       controller.activities.map((activity) => activity.title),
-      containsAll(['Atlas', 'Evidence verified', 'Image Generate']),
+      containsAll([
+        'Atlas',
+        'Evidence verified',
+        'Image Generate',
+        'Presentation ready',
+        'Google Doc ready',
+      ]),
     );
     final projection = controller.activities
         .map((activity) => '${activity.title} ${activity.detail}')
@@ -951,6 +985,10 @@ void main() {
     expect(projection, contains('Orchestrator · definition v4'));
     expect(projection, contains('1 source · 1 cited · 1 context items used'));
     expect(projection, contains('portrait.png · image/png · 2.0 KB'));
+    expect(
+      projection,
+      contains('Service Cloud AI pitch · 10 slides · 3 B · Private'),
+    );
     expect(projection, isNot(contains('Untrusted source title')));
     expect(projection, isNot(contains('private source content')));
     expect(projection, isNot(contains('untrusted.example')));
@@ -958,10 +996,23 @@ void main() {
     expect(projection, isNot(contains('Computer Use evidence captured')));
     expect(projection, isNot(contains('Open website')));
     expect(projection, isNot(contains('example.com')));
+    final workspaceActivity = controller.activities.singleWhere(
+      (activity) => activity.title == 'Google Doc ready',
+    );
+    expect(workspaceActivity.actionLabel, 'Open in Google');
+    expect(
+      workspaceActivity.externalUri.toString(),
+      'https://docs.google.com/document/d/google_resource_pitch_123/edit',
+    );
+    expect(workspaceActivity.actionRoute, isNull);
     await _settleAsync();
-    expect(controller.artifacts.map((item) => item.filename), ['portrait.png']);
-    expect(repository.loadedAssetIds, ['capture_asset_portrait']);
+    expect(controller.artifacts.map((item) => item.filename), [
+      'service-cloud-ai-pitch.pptx',
+      'portrait.png',
+    ]);
+    expect(repository.loadedAssetIds, ['artifact_service_cloud_pitch']);
     expect(repository.loadedAssetIds, isNot(contains('computer_frame_1')));
+    expect(controller.selectedArtifact?.isPresentation, isTrue);
     expect(controller.selectedArtifactContent?.bytes, [1, 2, 3]);
   });
 

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'created_files_section.dart';
 import 'results.dart';
 
 class ResultsView extends StatelessWidget {
@@ -46,6 +47,13 @@ class ResultsView extends StatelessWidget {
               : CustomScrollView(
                   slivers: [
                     SliverToBoxAdapter(child: _Header(snapshot: snapshot)),
+                    if (snapshot != null)
+                      SliverToBoxAdapter(
+                        child: CreatedFilesSection(
+                          controller: controller,
+                          files: snapshot.createdFiles,
+                        ),
+                      ),
                     SliverToBoxAdapter(child: _Filters(controller: controller)),
                     if (controller.error != null && snapshot != null)
                       SliverToBoxAdapter(

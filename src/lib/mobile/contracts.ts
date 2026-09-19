@@ -12,8 +12,8 @@ import { mobilePushReceiptRequestSchema } from "@/lib/mobile/push-contract";
 import { pluginManifestSchema } from "@/lib/plugins/contracts";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 17 as const;
-export const NATIVE_API_PREVIOUS_VERSION = 16 as const;
+export const NATIVE_API_CURRENT_VERSION = 18 as const;
+export const NATIVE_API_PREVIOUS_VERSION = 17 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -964,6 +964,46 @@ const v17Operations: readonly NativeOperation[] = [
   ),
 ];
 
+// Contract v18 exposes actor-scoped generated-file inventory and the
+// integrity-verified bytes for one exact version. Creation still flows through
+// the governed agent loop; these reads grant no new mutation authority.
+const v18Operations: readonly NativeOperation[] = [
+  ...v17Operations,
+  operation(
+    "artifacts.list",
+    "GET",
+    "/api/artifacts",
+    "List actor-owned generated files across governed runs.",
+    "bearer",
+    undefined,
+    "JsonObject",
+    {
+      queryParameters: [
+        queryParameter("kind", "string", { minLength: 1, maxLength: 32 }),
+        queryParameter("limit", "integer", { minimum: 1, maximum: 100 }),
+      ],
+    },
+  ),
+  operation(
+    "artifacts.content",
+    "GET",
+    "/api/artifacts/{id}/content",
+    "Download one exact actor-owned generated artifact version.",
+    "bearer",
+    undefined,
+    "JsonObject",
+    {
+      queryParameters: [
+        queryParameter("version", "integer", {
+          minimum: 1,
+          maximum: 2_147_483_647,
+        }),
+      ],
+      binaryResponse: true,
+    },
+  ),
+];
+
 export const nativeContractSchemas = Object.freeze({
   JsonObject: jsonObject,
   NativeClientAttestation: nativeClientAttestationSchema,
@@ -1044,6 +1084,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 15) return v15Operations;
   if (version === 16) return v16Operations;
   if (version === 17) return v17Operations;
+  if (version === 18) return v18Operations;
   return undefined;
 }
 
@@ -1053,7 +1094,7 @@ export function nativeContractDiscovery() {
     contractId: NATIVE_API_CONTRACT_ID,
     currentVersion: NATIVE_API_CURRENT_VERSION,
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
-    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [17, 16],
+    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [18, 17],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,
       state: version === NATIVE_API_CURRENT_VERSION ? "current" as const : "previous" as const,

@@ -39,8 +39,10 @@ function extractPinnedCatalogs(sql: string) {
 }
 
 describe("built-in Skill catalog v2 migration", () => {
-  it("pins the database allowlist to the complete TypeScript catalog", () => {
-    expect(BUILTIN_SKILL_CATALOG_V2_IDS).toEqual(BUILT_IN_SKILL_IDS);
+  it("keeps the released v2 allowlist immutable", () => {
+    expect(BUILTIN_SKILL_CATALOG_V2_IDS).toEqual(
+      BUILT_IN_SKILL_IDS.slice(0, 18),
+    );
     expect(BUILTIN_SKILL_CATALOG_V2_IDS).toHaveLength(18);
 
     for (const sql of [
@@ -50,7 +52,7 @@ describe("built-in Skill catalog v2 migration", () => {
       const pinnedCatalogs = extractPinnedCatalogs(sql);
       expect(pinnedCatalogs).toHaveLength(2);
       for (const pinnedCatalog of pinnedCatalogs) {
-        expect(pinnedCatalog).toEqual(BUILT_IN_SKILL_IDS);
+        expect(pinnedCatalog).toEqual(BUILTIN_SKILL_CATALOG_V2_IDS);
       }
     }
   });
@@ -59,7 +61,7 @@ describe("built-in Skill catalog v2 migration", () => {
     expect(migrationChecksum).toBe(
       "fe690251c625bd3a55932b5a58c26509df6bc283cb24a1dd7c6373a1ce0a3a9c",
     );
-    expect(migrationManifest.at(-1)).toEqual({
+    expect(migrationManifest.find((migration) => migration.version === 187)).toEqual({
       version: 187,
       name: migrationName,
       checksum: migrationChecksum,

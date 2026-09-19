@@ -787,6 +787,13 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
       expiresAt: { type: "string", format: "date-time" },
     }, ["merchant", "merchantOrderId", "items", "totals", "shipping", "paymentInstrument", "paymentConstraints", "expiresAt"]),
   }, ["shoppingAgentPrincipalId", "intentSha256", "merchantCheckoutJwt", "terms"]), { reversible: true }),
+  mutationTool(
+    "app.artifacts.presentations.create",
+    "Create editable presentation",
+    "Create a polished, editable PowerPoint presentation inside Asael from a bounded high-level slide blueprint. Use this for presentations, pitch decks, slide decks, PowerPoint files, and client proposals; it returns a private artifact link rather than binary content.",
+    presentationArtifactToolSchema(),
+    { riskLevel: 1, approvalRequired: false, reversible: false },
+  ),
   readTool("app.assets.list", "List captured files and imported Google Photos", "List actor-readable uploaded files, recordings, and photos explicitly imported through Google Photos Picker without copying stored binary content into the transcript.", objectSchema({
     kind: assetKind(), limit: integer(1, 100, 50),
   })),
@@ -1376,6 +1383,117 @@ function recordingProperties(): Record<string, unknown> {
   return {
     title: text(0, 240), language: text(0, 35),
     tags: { type: "array", maxItems: 50, uniqueItems: true, items: text(1, 80) },
+  };
+}
+
+function presentationArtifactToolSchema() {
+  const speakerNotes = presentationMultiline(1, 2_000);
+  const bullet = presentationMultiline(1, 120);
+  const columnBullet = presentationMultiline(1, 110);
+  const column = {
+    ...requiredObjectSchema({
+      heading: presentationSingleLine(64),
+      body: presentationMultiline(1, 260),
+      bullets: { type: "array", minItems: 1, maxItems: 4, items: columnBullet },
+    }, ["heading"]),
+    anyOf: [{ required: ["body"] }, { required: ["bullets"] }],
+  };
+  const slides = {
+    type: "array",
+    minItems: 2,
+    maxItems: 24,
+    items: {
+      anyOf: [
+        requiredObjectSchema({
+          kind: { type: "string", enum: ["title"] },
+          title: presentationSingleLine(100),
+          subtitle: presentationMultiline(1, 240),
+          eyebrow: presentationSingleLine(64),
+          speakerNotes,
+        }, ["kind", "title"]),
+        requiredObjectSchema({
+          kind: { type: "string", enum: ["section"] },
+          title: presentationSingleLine(90),
+          subtitle: presentationMultiline(1, 260),
+          speakerNotes,
+        }, ["kind", "title"]),
+        {
+          ...requiredObjectSchema({
+            kind: { type: "string", enum: ["content"] },
+            title: presentationSingleLine(90),
+            kicker: presentationSingleLine(64),
+            body: presentationMultiline(1, 420),
+            bullets: { type: "array", minItems: 1, maxItems: 5, items: bullet },
+            speakerNotes,
+          }, ["kind", "title"]),
+          anyOf: [{ required: ["body"] }, { required: ["bullets"] }],
+        },
+        requiredObjectSchema({
+          kind: { type: "string", enum: ["two_column"] },
+          title: presentationSingleLine(90),
+          subtitle: presentationMultiline(1, 260),
+          left: column,
+          right: column,
+          speakerNotes,
+        }, ["kind", "title", "left", "right"]),
+        requiredObjectSchema({
+          kind: { type: "string", enum: ["quote"] },
+          title: presentationSingleLine(90),
+          quote: presentationMultiline(1, 360),
+          attribution: presentationSingleLine(100),
+          role: presentationSingleLine(100),
+          speakerNotes,
+        }, ["kind", "title", "quote", "attribution"]),
+        requiredObjectSchema({
+          kind: { type: "string", enum: ["metrics"] },
+          title: presentationSingleLine(90),
+          subtitle: presentationMultiline(1, 260),
+          metrics: {
+            type: "array",
+            minItems: 2,
+            maxItems: 4,
+            items: requiredObjectSchema({
+              value: presentationSingleLine(24),
+              label: presentationSingleLine(56),
+              detail: presentationMultiline(1, 120),
+            }, ["value", "label"]),
+          },
+          speakerNotes,
+        }, ["kind", "title", "metrics"]),
+        requiredObjectSchema({
+          kind: { type: "string", enum: ["closing"] },
+          title: presentationSingleLine(90),
+          subtitle: presentationMultiline(1, 260),
+          callToAction: presentationSingleLine(120),
+          contact: presentationSingleLine(120),
+          speakerNotes,
+        }, ["kind", "title"]),
+      ],
+    },
+  };
+  return requiredObjectSchema({
+    title: presentationSingleLine(120),
+    subtitle: presentationMultiline(1, 280),
+    theme: { type: "string", enum: ["light", "dark", "aurora"] },
+    slides,
+  }, ["title", "theme", "slides"]);
+}
+
+function presentationSingleLine(maxLength: number) {
+  return {
+    type: "string",
+    minLength: 1,
+    maxLength,
+    pattern: "^[^\\r\\n\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F]+$",
+  };
+}
+
+function presentationMultiline(minLength: number, maxLength: number) {
+  return {
+    type: "string",
+    minLength,
+    maxLength,
+    pattern: "^[^\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F]+$",
   };
 }
 

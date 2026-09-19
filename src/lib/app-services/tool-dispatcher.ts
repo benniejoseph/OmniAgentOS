@@ -237,6 +237,7 @@ import {
   showAp2PaymentTransactionService,
   showAp2ReadinessService,
 } from "@/lib/app-services/payments";
+import { createPresentationArtifactService } from "@/lib/app-services/artifacts";
 
 export type FirstPartyAppToolDispatch =
   | { handled: false }
@@ -444,6 +445,7 @@ export async function executeFirstPartyAppTool(input: {
     "app.payments.ap2.transactions.show": () => showAp2PaymentTransactionService(caller, input.toolInput as never),
     "app.payments.ap2.mandates.list": () => listAp2MandateReviewsService(caller, input.toolInput as never),
     "app.payments.ap2.mandates.prepare": () => prepareAp2MandateReviewService(caller, input.toolInput as never),
+    "app.artifacts.presentations.create": () => createPresentationArtifactService(caller, input.toolInput as never),
     "app.assets.list": () => listAssetsService(caller, input.toolInput as never),
     "app.assets.show": () => showAssetService(caller, input.toolInput as never),
     "app.assets.index": () => indexStoredAssetService(caller, input.toolInput as never),

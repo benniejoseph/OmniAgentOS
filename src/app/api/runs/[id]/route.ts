@@ -6,7 +6,9 @@ import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { foldRunProjection } from "@/lib/events/projections";
 import { listStreamEvents } from "@/lib/events/store";
+import { listRunGeneratedArtifacts } from "@/lib/runs/generated-artifacts";
 import { listRunMediaArtifacts } from "@/lib/runs/media-artifacts";
+import { listRunWorkspaceArtifacts } from "@/lib/runs/workspace-artifacts";
 import { publicAgentRun } from "@/lib/runs/public";
 import { getAgentRun } from "@/lib/runs/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -55,15 +57,34 @@ async function GETHandler(
   // long event projection during the three-second active-run polling loop.
   const terminal = ["completed", "failed", "canceled"].includes(run.status);
   const owner = { tenantId: auth.tenantId, actorId: run.ownerActorId };
-  const mediaArtifacts = terminal
-    ? await listRunMediaArtifacts(run.id, owner).catch(() => [])
-    : [];
+  const artifactProjection = terminal
+    ? await terminalArtifactProjections(run.id, owner)
+    : {
+        mediaArtifacts: [],
+        fileArtifacts: [],
+        fileArtifactState: "pending" as const,
+        workspaceArtifacts: [],
+        // A running task is not necessarily creating a Google file. Avoid a
+        // misleading Workspace spinner until governed create evidence exists.
+        workspaceArtifactState: "none" as const,
+      };
+  const {
+    mediaArtifacts,
+    fileArtifacts,
+    fileArtifactState,
+    workspaceArtifacts,
+    workspaceArtifactState,
+  } = artifactProjection;
 
   const url = new URL(request.url);
   if (url.searchParams.get("replay") !== "true") {
     return Response.json({
       ...result.data,
       mediaArtifacts,
+      fileArtifacts,
+      fileArtifactState,
+      workspaceArtifacts,
+      workspaceArtifactState,
       serviceReceipt: result.receipt,
     });
   }
@@ -92,10 +113,64 @@ async function GETHandler(
   return Response.json({
     run: publicAgentRun(run),
     mediaArtifacts,
+    fileArtifacts,
+    fileArtifactState,
+    workspaceArtifacts,
+    workspaceArtifactState,
     eventCount: events.length,
     replayed,
     consistent,
   });
+}
+
+async function terminalArtifactProjections(
+  runId: string,
+  owner: { tenantId: string; actorId: string },
+) {
+  const [mediaResult, fileResult, workspaceResult] = await Promise.allSettled([
+    listRunMediaArtifacts(runId, owner),
+    listRunGeneratedArtifacts(runId, owner),
+    listRunWorkspaceArtifacts(runId, owner),
+  ]);
+  const mediaArtifacts = mediaResult.status === "fulfilled"
+    ? mediaResult.value
+    : [];
+  const workspaceArtifacts = workspaceResult.status === "fulfilled"
+    ? workspaceResult.value
+    : [];
+  const workspaceArtifactState = workspaceResult.status === "rejected"
+    ? "unavailable" as const
+    : workspaceArtifacts.length
+      ? "ready" as const
+      : "none" as const;
+  if (workspaceResult.status === "rejected") {
+    console.error(
+      "Google Workspace artifact projection failed.",
+      { runId, error: workspaceResult.reason instanceof Error ? workspaceResult.reason.name : "UnknownError" },
+    );
+  }
+  if (fileResult.status === "rejected") {
+    console.error(
+      "Generated artifact projection failed.",
+      { runId, error: fileResult.reason instanceof Error ? fileResult.reason.name : "UnknownError" },
+    );
+    return {
+      mediaArtifacts,
+      fileArtifacts: [],
+      fileArtifactState: "unavailable" as const,
+      workspaceArtifacts,
+      workspaceArtifactState,
+    };
+  }
+  return {
+    mediaArtifacts,
+    fileArtifacts: fileResult.value,
+    fileArtifactState: fileResult.value.length
+      ? "ready" as const
+      : "none" as const,
+    workspaceArtifacts,
+    workspaceArtifactState,
+  };
 }
 
 async function PATCHHandler(

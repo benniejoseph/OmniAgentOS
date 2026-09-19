@@ -205,6 +205,8 @@ describe("agent prompt provenance", () => {
     expect(instructions).toContain("recent conversation");
     expect(instructions).toContain("safe read-only tool discovery");
     expect(instructions).toContain("do not add a redundant conversational confirmation");
+    expect(instructions).toContain("use the matching governed creator");
+    expect(instructions).toContain("Do not substitute a prose draft");
     expect(instructions).toContain("connection status only");
     expect(instructions).toContain("Connectors at /app/connectors");
     expect(instructions).toContain("Never ask the user to paste a secret into chat");

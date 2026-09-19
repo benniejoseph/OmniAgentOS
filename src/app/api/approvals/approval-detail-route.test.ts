@@ -2,11 +2,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   authorizeRequest: vi.fn(),
+  approveAndClaimToolExecution: vi.fn(),
+  executeGovernedTool: vi.fn(),
+  findAgentRunWaitingForToolApproval: vi.fn(),
+  getToolExecutionEffectIntentV2: vi.fn(),
   getToolExecution: vi.fn(),
+  getToolExecutionScopeBinding: vi.fn(),
   getGovernedTool: vi.fn(),
   getMcpGovernedTool: vi.fn(),
   getOpenApiGovernedTool: vi.fn(),
+  openToolExecutionInput: vi.fn(),
   publicToolExecution: vi.fn(),
+  reclaimStaleGoogleWorkspaceCreateToolExecutionClaim: vi.fn(),
+  wakeOperationJobByDedupeKey: vi.fn(),
 }));
 
 vi.mock("@/lib/db/client", async (importOriginal) => ({
@@ -22,8 +30,36 @@ vi.mock("@/lib/security/guard", async (importOriginal) => ({
 
 vi.mock("@/lib/tools/audit-store", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/tools/audit-store")>()),
+  approveAndClaimToolExecution: mocks.approveAndClaimToolExecution,
+  getToolExecutionEffectIntentV2: mocks.getToolExecutionEffectIntentV2,
   getToolExecution: mocks.getToolExecution,
+  openToolExecutionInput: mocks.openToolExecutionInput,
   publicToolExecution: mocks.publicToolExecution,
+  reclaimStaleGoogleWorkspaceCreateToolExecutionClaim:
+    mocks.reclaimStaleGoogleWorkspaceCreateToolExecutionClaim,
+}));
+
+vi.mock("@/lib/tools/execution-scope", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/tools/execution-scope")>()),
+  getToolExecutionScopeBinding: mocks.getToolExecutionScopeBinding,
+}));
+
+vi.mock("@/lib/tools/executor", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/tools/executor")>()),
+  executeGovernedTool: mocks.executeGovernedTool,
+}));
+
+vi.mock("@/lib/runs/store", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/runs/store")>()),
+  findAgentRunWaitingForToolApproval:
+    mocks.findAgentRunWaitingForToolApproval,
+}));
+
+vi.mock("@/lib/operations/job-queue", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/operations/job-queue")>()),
+  getAgentResumeJobDedupeKey: (executionId: string) =>
+    `agent-resume:${executionId}`,
+  wakeOperationJobByDedupeKey: mocks.wakeOperationJobByDedupeKey,
 }));
 
 vi.mock("@/lib/tools/registry", async (importOriginal) => ({
@@ -37,7 +73,7 @@ vi.mock("@/lib/connectors/governed-tools", async (importOriginal) => ({
   getOpenApiGovernedTool: mocks.getOpenApiGovernedTool,
 }));
 
-import { GET } from "@/app/api/approvals/[id]/route";
+import { GET, POST } from "@/app/api/approvals/[id]/route";
 
 const pendingRecord = {
   id: "execution-voice",
@@ -62,6 +98,14 @@ beforeEach(() => {
     source: "session",
   });
   mocks.getToolExecution.mockReset().mockResolvedValue(pendingRecord);
+  mocks.getToolExecutionEffectIntentV2.mockReset().mockReturnValue(undefined);
+  mocks.approveAndClaimToolExecution.mockReset();
+  mocks.openToolExecutionInput.mockReset();
+  mocks.reclaimStaleGoogleWorkspaceCreateToolExecutionClaim.mockReset();
+  mocks.getToolExecutionScopeBinding.mockReset();
+  mocks.executeGovernedTool.mockReset();
+  mocks.findAgentRunWaitingForToolApproval.mockReset().mockResolvedValue(undefined);
+  mocks.wakeOperationJobByDedupeKey.mockReset().mockResolvedValue([]);
   mocks.getGovernedTool.mockReset().mockReturnValue({
     id: pendingRecord.toolId,
     name: "Create calendar event",
@@ -128,6 +172,114 @@ describe("tool approval detail route", () => {
       canReject: true,
       approvalProgress: { approvals: 0, required: 2 },
       blockReason: expect.stringMatching(/cannot approve their own/i),
+    });
+  });
+
+  it("reclaims a stale approved native create before resuming its exact execution", async () => {
+    const executionScope = {
+      version: 1 as const,
+      tenantId: "tenant-a",
+      initiatingActorId: "requester-a",
+      executingPrincipalType: "user" as const,
+      executingPrincipalId: "requester-a",
+      correlationId: "original-create",
+      purpose: "tool.google.docs.create",
+    };
+    const executingRecord = {
+      ...pendingRecord,
+      toolId: "google.docs.create",
+      toolName: "Create Google Document",
+      riskLevel: 2 as const,
+      status: "executing" as const,
+      approvalDecision: "approved" as const,
+      approvedBy: "requester-a",
+      approvedAt: "2026-09-19T06:00:00.000Z",
+      output: {
+        __executionClaim: {
+          token: "expired-token",
+          claimedAt: "2026-09-19T06:00:00.000Z",
+        },
+        __effectIntentV2: { schemaVersion: 2 },
+      },
+    };
+    const toolInput = {
+      title: "Recovered note",
+      bodyText: "Resume only this exact approved create.",
+    };
+    mocks.getToolExecution.mockResolvedValue(executingRecord);
+    mocks.getToolExecutionEffectIntentV2.mockReturnValue({ schemaVersion: 2 });
+    mocks.getToolExecutionScopeBinding.mockResolvedValue({
+      executionScope,
+      requesterRole: "operator",
+      toolId: executingRecord.toolId,
+      inputSha256: "a".repeat(64),
+    });
+    mocks.reclaimStaleGoogleWorkspaceCreateToolExecutionClaim
+      .mockImplementation(async (record, options) => ({
+        ...record,
+        output: {
+          ...record.output,
+          __executionClaim: {
+            token: options.claimToken,
+            claimedAt: "2026-09-19T06:06:00.000Z",
+          },
+        },
+      }));
+    mocks.openToolExecutionInput.mockReturnValue(toolInput);
+    mocks.executeGovernedTool.mockImplementation(async (options) => ({
+      record: {
+        ...options.existingRecord,
+        status: "executed",
+        output: {
+          toolId: "google.docs.create",
+          resourceId: "document_recovered",
+        },
+      },
+      result: {
+        toolId: "google.docs.create",
+        resourceId: "document_recovered",
+      },
+    }));
+
+    const response = await POST(new Request(
+      `http://asael.test/api/approvals/${executingRecord.id}`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "approval-retry-docs-create",
+        },
+        body: JSON.stringify({
+          kind: "tool",
+          decision: "approve",
+          reason: "Resume the previously approved create.",
+        }),
+      },
+    ), routeContext());
+
+    expect(response.status).toBe(200);
+    expect(mocks.approveAndClaimToolExecution).not.toHaveBeenCalled();
+    expect(
+      mocks.reclaimStaleGoogleWorkspaceCreateToolExecutionClaim,
+    ).toHaveBeenCalledWith(
+      executingRecord,
+      expect.objectContaining({
+        tenantId: "tenant-a",
+        executionScope,
+        idempotencyKey: "approval-retry-docs-create",
+        claimToken: expect.any(String),
+      }),
+    );
+    expect(mocks.executeGovernedTool).toHaveBeenCalledWith(expect.objectContaining({
+      toolId: "google.docs.create",
+      input: toolInput,
+      existingRecord: expect.objectContaining({ status: "executing" }),
+      executionClaimToken: expect.any(String),
+    }));
+    await expect(response.json()).resolves.toMatchObject({
+      record: { status: "executed" },
+      result: { resourceId: "document_recovered" },
+      continuation: { scheduled: true },
     });
   });
 });

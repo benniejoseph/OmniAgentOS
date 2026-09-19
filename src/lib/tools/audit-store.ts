@@ -55,6 +55,11 @@ type SqlClient = ReturnType<typeof getSql>;
 type EffectReceipt = EffectReceiptV1 | EffectReceiptV2;
 
 const DEFAULT_STALE_TOOL_EXECUTION_CLAIM_MS = 5 * 60_000;
+const GOOGLE_WORKSPACE_CREATE_TOOL_IDS = new Set([
+  "google.docs.create",
+  "google.sheets.create",
+  "google.slides.create",
+]);
 
 export type ToolExecutionMutationOptions = {
   executionScope?: ExecutionScope;
@@ -799,6 +804,104 @@ export async function reclaimStaleMemoryForgetToolExecutionClaim(
             current,
             expected,
             nextClaim,
+            staleAfterMs,
+          )
+        : undefined;
+      return reclaimed ? replaceLedgerRecord(ledger, reclaimed) : ledger;
+    },
+  );
+  if (reclaimed) {
+    await appendToolExecutionMutationEvent({
+      record: reclaimed,
+      operation: "reclaimed",
+      executionScope: options.executionScope,
+      idempotencyKey: options.idempotencyKey || expected.id,
+    });
+  }
+  return reclaimed;
+}
+
+/**
+ * Reclaims only a stale, already-approved native Google Workspace create whose
+ * immutable v2 provider intent is present. This is intentionally separate from
+ * generic stale recovery: the executor must still revalidate the exact intent
+ * and provider marker before it can repair the pristine native resource.
+ */
+export async function reclaimStaleGoogleWorkspaceCreateToolExecutionClaim(
+  expected: ToolExecutionRecord,
+  options: {
+    tenantId?: string;
+    claimToken: string;
+    staleAfterMs?: number;
+    executionScope: ExecutionScope;
+    idempotencyKey?: string;
+  },
+): Promise<ToolExecutionRecord | undefined> {
+  if (!options.claimToken.trim()) {
+    throw new Error("A Google Workspace create reclaim requires a claim token.");
+  }
+  const tenantId = normalizeTenantId(options.tenantId || expected.tenantId);
+  assertExecutionScopeTenant(options.executionScope, tenantId);
+  const staleAfterMs = Math.max(
+    60_000,
+    options.staleAfterMs || DEFAULT_STALE_TOOL_EXECUTION_CLAIM_MS,
+  );
+  const nextClaim = {
+    token: options.claimToken,
+    claimedAt: new Date().toISOString(),
+  };
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    return getSql().transaction(async (sql: SqlClient) => {
+      const rows = await sql`
+        SELECT *
+        FROM omni_tool_executions
+        WHERE id = ${expected.id}
+          AND COALESCE(tenant_id, 'default') = ${tenantId}
+        FOR UPDATE
+      `;
+      const reclaimed = rows[0]
+        ? reclaimStaleGoogleWorkspaceCreateExecutionRecord(
+            recordFromRow(rows[0]),
+            expected,
+            nextClaim,
+            options.executionScope,
+            staleAfterMs,
+          )
+        : undefined;
+      if (reclaimed) {
+        await writeToolExecutionDb(sql, reclaimed, {
+          persistEffectIntentV2: true,
+        });
+        await appendToolExecutionMutationEvent({
+          record: reclaimed,
+          operation: "reclaimed",
+          executionScope: options.executionScope,
+          idempotencyKey: options.idempotencyKey || expected.id,
+          sql,
+        });
+      }
+      return reclaimed;
+    }) as Promise<ToolExecutionRecord | undefined>;
+  }
+
+  let reclaimed: ToolExecutionRecord | undefined;
+  await updateJsonFile<ToolExecutionLedger>(
+    getToolLedgerFile(),
+    { records: [] },
+    (ledger) => {
+      const current = ledger.records.find(
+        (item) =>
+          item.id === expected.id &&
+          normalizeTenantId(item.tenantId) === tenantId,
+      );
+      reclaimed = current
+        ? reclaimStaleGoogleWorkspaceCreateExecutionRecord(
+            current,
+            expected,
+            nextClaim,
+            options.executionScope,
             staleAfterMs,
           )
         : undefined;
@@ -2170,6 +2273,91 @@ function reclaimStaleMemoryForgetExecutionRecord(
     ...existing,
     output: {
       ...executionIntentWithoutClaim(existing),
+      __executionClaim: nextClaim,
+    },
+    completedAt: undefined,
+  } satisfies ToolExecutionRecord;
+}
+
+function reclaimStaleGoogleWorkspaceCreateExecutionRecord(
+  existing: ToolExecutionRecord,
+  expected: ToolExecutionRecord,
+  nextClaim: { token: string; claimedAt: string },
+  executionScope: ExecutionScope,
+  staleAfterMs = DEFAULT_STALE_TOOL_EXECUTION_CLAIM_MS,
+) {
+  const existingClaim = executionClaimFrom(existing);
+  let intent: EffectIntentV2;
+  let expectedIntent: EffectIntentV2;
+  try {
+    intent = getToolExecutionEffectIntentV2(existing) as EffectIntentV2;
+    expectedIntent = getToolExecutionEffectIntentV2(expected) as EffectIntentV2;
+  } catch {
+    return undefined;
+  }
+  const output = executionIntentWithoutClaim(existing);
+  const tenantId = normalizeTenantId(existing.tenantId);
+  if (
+    !existingClaim ||
+    !nextClaim.token.trim() ||
+    nextClaim.token === existingClaim.token ||
+    !Number.isFinite(Date.parse(existingClaim.claimedAt)) ||
+    Date.now() - Date.parse(existingClaim.claimedAt) < staleAfterMs ||
+    existing.id !== expected.id ||
+    normalizeTenantId(expected.tenantId) !== tenantId ||
+    executionScope.tenantId !== tenantId ||
+    !existing.actorId ||
+    existing.actorId !== expected.actorId ||
+    executionScope.initiatingActorId !== existing.actorId ||
+    intent.tenantId !== tenantId ||
+    intent.actorId !== existing.actorId ||
+    intent.executionId !== existing.id ||
+    intent.executingPrincipalType !== executionScope.executingPrincipalType ||
+    intent.executingPrincipalId !== executionScope.executingPrincipalId ||
+    intent.toolId !== existing.toolId ||
+    intent.approvalState !== "approved" ||
+    !intent.approvalBindingSha256 ||
+    intent.effectIntentSha256 !== expectedIntent.effectIntentSha256 ||
+    !GOOGLE_WORKSPACE_CREATE_TOOL_IDS.has(existing.toolId) ||
+    existing.toolId !== expected.toolId ||
+    existing.toolName !== expected.toolName ||
+    existing.riskLevel !== 2 ||
+    existing.riskLevel !== expected.riskLevel ||
+    existing.status !== "executing" ||
+    expected.status !== "executing" ||
+    existing.dryRun ||
+    expected.dryRun ||
+    !existing.approvalRequired ||
+    existing.approvalRequired !== expected.approvalRequired ||
+    existing.approvalDecision !== "approved" ||
+    existing.approvalDecision !== expected.approvalDecision ||
+    !existing.approvedBy ||
+    existing.approvedBy !== expected.approvedBy ||
+    !existing.approvedAt ||
+    existing.approvedAt !== expected.approvedAt ||
+    existing.approvalReason !== expected.approvalReason ||
+    existing.reason !== expected.reason ||
+    existing.createdAt !== expected.createdAt ||
+    existing.completedAt !== expected.completedAt ||
+    existing.effectReceipt !== undefined ||
+    expected.effectReceipt !== undefined ||
+    !output.__sealedInput ||
+    typeof output.__sealedInput !== "object" ||
+    Array.isArray(output.__sealedInput) ||
+    typeof output.__approvalFingerprint !== "string" ||
+    !isSha256(output[APPROVAL_MATERIAL_BINDING_OUTPUT_KEY]) ||
+    toolInputSha256(existing.input) !== toolInputSha256(expected.input) ||
+    canonicalJsonSha256(existing.approvals || []) !==
+      canonicalJsonSha256(expected.approvals || []) ||
+    canonicalJsonSha256(output) !==
+      canonicalJsonSha256(executionIntentWithoutClaim(expected))
+  ) {
+    return undefined;
+  }
+  return {
+    ...existing,
+    output: {
+      ...output,
       __executionClaim: nextClaim,
     },
     completedAt: undefined,

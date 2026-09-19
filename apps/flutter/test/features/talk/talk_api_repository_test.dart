@@ -118,6 +118,88 @@ void main() {
     );
     expect(api.byteReads, isEmpty);
   });
+
+  test(
+    'accepts only bounded ready presentation artifacts from run evidence',
+    () {
+      final inspection = TalkRunInspection.fromJson({
+        'run': {'id': 'run-presentation', 'status': 'completed'},
+        'fileArtifacts': [
+          {
+            'artifactId': 'artifact_pitch_deck',
+            'version': 3,
+            'kind': 'presentation',
+            'title': 'Service Cloud AI transformation',
+            'filename': 'service-cloud-ai.pptx',
+            'mediaType': TalkMediaArtifactSummary.powerPointMediaType,
+            'byteCount': 2048,
+            'status': 'ready',
+            'slideCount': 12,
+            'theme': 'aurora',
+            'contentUrl': 'https://untrusted.example/private.pptx',
+          },
+          {
+            'artifactId': '../cross-actor',
+            'version': 1,
+            'kind': 'presentation',
+            'title': 'Unsafe',
+            'filename': 'unsafe.pptx',
+            'mediaType': TalkMediaArtifactSummary.powerPointMediaType,
+            'byteCount': 20,
+            'status': 'ready',
+          },
+          {
+            'artifactId': 'artifact_not_ready',
+            'version': 1.5,
+            'kind': 'presentation',
+            'title': 'Invalid version',
+            'filename': 'invalid.pptx',
+            'mediaType': TalkMediaArtifactSummary.powerPointMediaType,
+            'byteCount': 20,
+            'status': 'ready',
+          },
+        ],
+      });
+
+      expect(inspection.fileArtifacts, hasLength(1));
+      final artifact = inspection.fileArtifacts.single;
+      expect(artifact.assetId, 'artifact_pitch_deck');
+      expect(artifact.artifactVersion, 3);
+      expect(artifact.title, 'Service Cloud AI transformation');
+      expect(artifact.slideCount, 12);
+      expect(artifact.theme, 'aurora');
+      expect(artifact.isPresentation, isTrue);
+      expect(artifact.contextLabel, 'PowerPoint presentation · Private');
+    },
+  );
+
+  test(
+    'downloads an exact presentation version through the native route',
+    () async {
+      final api = _ArtifactApiClient();
+      final repository = ApiTalkRepository(api);
+      const artifact = TalkMediaArtifactSummary(
+        assetId: 'artifact_pitch_deck',
+        kind: 'presentation',
+        operation: 'create',
+        filename: 'pitch.pptx',
+        mediaType: TalkMediaArtifactSummary.powerPointMediaType,
+        byteCount: 1,
+        status: 'ready',
+        artifactVersion: 4,
+        title: 'Pitch deck',
+        slideCount: 9,
+      );
+
+      final content = await repository.loadArtifact(artifact);
+
+      expect(content.assetId, 'artifact_pitch_deck');
+      expect(content.bytes, [1]);
+      expect(api.byteReads, [
+        '/api/artifacts/artifact_pitch_deck/content?version=4',
+      ]);
+    },
+  );
 }
 
 class _ArtifactApiClient extends ApiClient {

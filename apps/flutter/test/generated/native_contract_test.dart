@@ -3,9 +3,9 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   test('retains current and previous contract compatibility', () {
-    expect(NativeContract.currentVersion, 17);
-    expect(NativeContract.previousVersion, 16);
-    expect(NativeContract.supportedVersions, [17, 16]);
+    expect(NativeContract.currentVersion, 18);
+    expect(NativeContract.previousVersion, 17);
+    expect(NativeContract.supportedVersions, [18, 17]);
     expect(
       NativePaths.workspacesTasksUpdate('project one', 'task/two'),
       '/api/projects/project%20one/tasks/task%2Ftwo',
@@ -17,6 +17,14 @@ void main() {
     expect(
       NativePaths.captureAssetGet('asset one', content: true),
       '/api/capture/assets/asset%20one?content=1',
+    );
+    expect(
+      NativePaths.artifactsContent('artifact one', version: 3),
+      '/api/artifacts/artifact%20one/content?version=3',
+    );
+    expect(
+      NativePaths.artifactsList(kind: 'presentation', limit: 50),
+      '/api/artifacts?kind=presentation&limit=50',
     );
     expect(
       NativeContract.supportsOperation('evidence.run.computerFrame'),
@@ -34,7 +42,7 @@ void main() {
         'api': {
           'nativeContract': {
             'id': NativeContract.id,
-            'supportedVersions': [17, 16],
+            'supportedVersions': [18, 17],
           },
         },
       }),
@@ -69,6 +77,15 @@ void main() {
     expect(
       NativePaths.pluginsUninstall('installation/one'),
       '/api/plugins/installation%2Fone',
+    );
+  });
+
+  test('publishes authenticated generated artifact inventory and bytes', () {
+    expect(NativeContract.supportsOperation('artifacts.list'), isTrue);
+    expect(NativeContract.supportsOperation('artifacts.content'), isTrue);
+    expect(
+      NativePaths.artifactsContent('artifact/one'),
+      '/api/artifacts/artifact%2Fone/content',
     );
   });
 

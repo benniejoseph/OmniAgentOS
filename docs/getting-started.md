@@ -59,7 +59,32 @@ Without it, agent runs stream a clearly labeled simulated response. With it, the
 
 Press **⌘K** (macOS) or **Ctrl+K** (Windows/Linux) anywhere in the app to jump between workspaces.
 
-## 5. Make it durable (optional)
+## 5. Create documents and presentations
+
+Use ordinary language in **Work**; Asael selects the governed creator and keeps
+the result attached to the conversation. For example:
+
+- *"Create an eight-slide editable PowerPoint pitch for AIForce in Salesforce
+  Service Cloud. Use the aurora theme and include speaker notes."*
+- *"Create a collaborative Google Doc proposal from this conversation, with an
+  executive summary, recommendations, and action items."*
+- *"Create a Google Sheet rollout tracker with columns for phase, owner, due
+  date, status, and risk."*
+- *"Create a six-slide Google Slides presentation for this client brief."*
+
+Asael-owned PowerPoint files appear inline after the task and in **Results →
+Created files**, where web and native clients can download the exact private
+version. Native Google Docs, Sheets, and Slides require the owner's connected
+Google Workspace account and one approval for the Drive write. Asael verifies
+the provider result before showing **Open in Google**; retrying an interrupted
+creation repairs or reuses only the exact execution-owned file instead of
+creating a duplicate.
+
+Ask in the same conversation to revise an existing Google file. Asael reads its
+current revision first and uses the governed digest-bound update tool, so an
+out-of-date edit fails instead of overwriting a newer change.
+
+## 6. Make it durable (optional)
 
 Without `DATABASE_URL`, data lives in `.omniagent/` JSON files locally. Hosted production requires Postgres; no-DB hosted mode is blocked unless `OMNIAGENT_ALLOW_DEMO_STORAGE=true` is set for a disposable demo. For real persistence:
 
@@ -69,7 +94,7 @@ DATABASE_URL=postgres://...
 
 The schema, pgvector columns, and HNSW indexes are created automatically on first use.
 
-## 6. Verify your setup
+## 7. Verify your setup
 
 ```bash
 npm run typecheck

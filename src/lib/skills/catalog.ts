@@ -212,6 +212,16 @@ export const builtInSkills: AgentSkill[] = [
     toolIds: ["web.search", "knowledge.search", "knowledge.ingest", "memory.search", "memory.write", "app.knowledge.list", "app.knowledge.search", "app.knowledge.ingest", "app.memory.search", "app.memory.write"],
     tags: ["learning", "knowledge", "synthesis", "research"],
   }),
+  builtInSkill({
+    id: "creation.document-studio",
+    slug: "document-presentation-studio",
+    name: "Document studio",
+    description: "Create clear, polished, editable PowerPoint files and native Google Docs, Sheets, or Slides from an ordinary request.",
+    instructions: "Translate the user's audience, purpose, evidence, and desired outcome into a concise artifact structure. Choose an Asael-owned editable PowerPoint when the user wants a downloadable deck. Choose native Google Docs, Sheets, or Slides when the user asks for a collaborative Workspace file. Use one governed creator, preserve project and evidence context, return the private artifact or verified Google editor link, and never claim unsupported evidence or expose binary content in the conversation.",
+    category: "creation",
+    toolIds: ["web.search", "knowledge.search", "memory.search", "app.artifacts.presentations.create", "google.docs.create", "google.sheets.create", "google.slides.create"],
+    tags: ["documents", "presentations", "slides", "spreadsheets", "powerpoint", "google-workspace", "creation"],
+  }),
 ];
 
 export const BUILT_IN_SKILL_IDS = Object.freeze(

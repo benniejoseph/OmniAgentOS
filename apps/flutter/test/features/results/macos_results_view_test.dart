@@ -160,4 +160,66 @@ void main() {
       findsNothing,
     );
   });
+
+  testWidgets('browses ready and pending created files outside the ledger', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1500, 920);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final ready = _file(
+      'generated_artifact_${List.filled(48, 'd').join()}',
+      GeneratedArtifactStatus.ready,
+    );
+    final pending = _file(
+      'generated_artifact_${List.filled(48, 'e').join()}',
+      GeneratedArtifactStatus.rendering,
+    );
+    final snapshot = ResultsSnapshot(
+      items: const [],
+      evaluations: const [],
+      sourceErrors: const [],
+      createdFiles: [ready, pending],
+    );
+    final controller = ResultsController(_ResultsRepository(snapshot))
+      ..snapshot = snapshot;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: MacosAppTheme.light(),
+        home: MacosResultsView(controller: controller, onOpen: (_) {}),
+      ),
+    );
+
+    expect(find.byKey(const Key('created-files-section')), findsOneWidget);
+    expect(find.text('Created files'), findsOneWidget);
+    expect(find.text('Private · Ready'), findsOneWidget);
+    expect(find.text('Private · Rendering'), findsOneWidget);
+    expect(find.byKey(Key('created-file-save-${ready.id}')), findsOneWidget);
+    expect(find.byKey(Key('created-file-save-${pending.id}')), findsNothing);
+  });
 }
+
+GeneratedArtifactSummary _file(String id, GeneratedArtifactStatus status) =>
+    GeneratedArtifactSummary(
+      id: id,
+      kind: GeneratedArtifactKind.presentation,
+      title: status == GeneratedArtifactStatus.ready
+          ? 'Service Cloud pitch'
+          : 'Quarterly review',
+      filename: status == GeneratedArtifactStatus.ready
+          ? 'Service Cloud pitch.pptx'
+          : 'Quarterly review.pptx',
+      version: 1,
+      status: status,
+      mediaType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      byteCount: status == GeneratedArtifactStatus.ready ? 2048 : null,
+      createdAt: DateTime.utc(2026, 9, 19, 2),
+      updatedAt: DateTime.utc(2026, 9, 19, 2, 1),
+      queuedAt: DateTime.utc(2026, 9, 19, 2),
+      readyAt: status == GeneratedArtifactStatus.ready
+          ? DateTime.utc(2026, 9, 19, 2, 1)
+          : null,
+      failedAt: null,
+    );

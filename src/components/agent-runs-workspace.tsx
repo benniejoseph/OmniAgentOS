@@ -12,6 +12,7 @@ import {
   Clock3,
   Database,
   Download,
+  ExternalLink,
   FileText,
   Film,
   GitBranch,
@@ -71,11 +72,25 @@ import {
 } from "@/lib/command/client-projection";
 import { startProgressiveThreadLoad } from "@/lib/command/progressive-thread-load";
 import {
+  commandArtifactContentUrl,
+  projectCommandFileArtifactState,
+  projectCommandFileArtifacts,
+  type CommandFileArtifact,
+  type CommandFileArtifactState,
+} from "@/lib/command/artifact-projection";
+import {
   extractLegacyCommandMedia,
   mergeCommandMediaArtifacts,
   projectCommandMediaArtifacts,
   type CommandMediaArtifact,
 } from "@/lib/command/media-projection";
+import {
+  commandWorkspaceArtifactUrl,
+  projectCommandWorkspaceArtifactState,
+  projectCommandWorkspaceArtifacts,
+  type CommandWorkspaceArtifact,
+  type CommandWorkspaceArtifactState,
+} from "@/lib/command/workspace-artifact-projection";
 
 type JsonRecord = Record<string, unknown>;
 type ThreadSummary = { id: string; title: string; updatedAt: string; mode: AgentMode };
@@ -419,7 +434,18 @@ export function AgentRunsWorkspace({
   const [runMediaProjection, setRunMediaProjection] = useState<{
     runId: string;
     artifacts: CommandMediaArtifact[];
-  }>({ runId: "", artifacts: [] });
+    files: CommandFileArtifact[];
+    fileState: CommandFileArtifactState;
+    workspaceArtifacts: CommandWorkspaceArtifact[];
+    workspaceArtifactState: CommandWorkspaceArtifactState;
+  }>({
+    runId: "",
+    artifacts: [],
+    files: [],
+    fileState: "none",
+    workspaceArtifacts: [],
+    workspaceArtifactState: "none",
+  });
   const [grounding, setGrounding] = useState<GroundingReport>();
   const [activeAgentRunId, setActiveAgentRunId] = useState("");
   const [runFeedback, setRunFeedback] = useState<RunFeedback>();
@@ -927,6 +953,10 @@ export function AgentRunsWorkspace({
         setRunMediaProjection({
           runId: activeAgentRunId,
           artifacts: projectCommandMediaArtifacts(payload),
+          files: projectCommandFileArtifacts(payload),
+          fileState: projectCommandFileArtifactState(payload),
+          workspaceArtifacts: projectCommandWorkspaceArtifacts(payload),
+          workspaceArtifactState: projectCommandWorkspaceArtifactState(payload),
         });
         setContextUseReceipt(contextUseReceiptFromPayload(payload));
         const run = asRecord(payload.run);
@@ -1171,6 +1201,10 @@ export function AgentRunsWorkspace({
       setRunMediaProjection({
         runId,
         artifacts: projectCommandMediaArtifacts(payload),
+        files: projectCommandFileArtifacts(payload),
+        fileState: projectCommandFileArtifactState(payload),
+        workspaceArtifacts: projectCommandWorkspaceArtifacts(payload),
+        workspaceArtifactState: projectCommandWorkspaceArtifactState(payload),
       });
       setGrounding(nextGrounding);
       setRunFeedback(undefined);
@@ -1701,7 +1735,14 @@ export function AgentRunsWorkspace({
     setLoading("workflow");
     setError(undefined);
     setAgentResponse("");
-    setRunMediaProjection({ runId: "", artifacts: [] });
+    setRunMediaProjection({
+      runId: "",
+      artifacts: [],
+      files: [],
+      fileState: "none",
+      workspaceArtifacts: [],
+      workspaceArtifactState: "none",
+    });
     setGrounding(undefined);
     setContextUseReceipt(undefined);
     setStreamEvents([{ type: "status", label: "Starting workflow", detail: "Preparing durable work." }]);
@@ -1827,7 +1868,14 @@ export function AgentRunsWorkspace({
     setWorkflowRun(undefined);
     setWorkflowSyncError(undefined);
     setAgentResponse("");
-    setRunMediaProjection({ runId: "", artifacts: [] });
+    setRunMediaProjection({
+      runId: "",
+      artifacts: [],
+      files: [],
+      fileState: "none",
+      workspaceArtifacts: [],
+      workspaceArtifactState: "none",
+    });
     setGrounding(undefined);
     if (!resumeRunId) setContextUseReceipt(undefined);
     setActiveAgentRunId(resumeRunId || "");
@@ -2170,6 +2218,10 @@ export function AgentRunsWorkspace({
       setRunMediaProjection({
         runId: id,
         artifacts: projectCommandMediaArtifacts(payload),
+        files: projectCommandFileArtifacts(payload),
+        fileState: projectCommandFileArtifactState(payload),
+        workspaceArtifacts: projectCommandWorkspaceArtifacts(payload),
+        workspaceArtifactState: projectCommandWorkspaceArtifactState(payload),
       });
     } catch {
       // The text response stays usable; a later run poll or reopen retries the
@@ -2211,7 +2263,14 @@ export function AgentRunsWorkspace({
           setMode((stringValue(thread.mode, "orchestrate") as AgentMode));
           setTurns(loadedTurns);
           setAgentResponse("");
-          setRunMediaProjection({ runId: latestRunId || "", artifacts: [] });
+          setRunMediaProjection({
+            runId: latestRunId || "",
+            artifacts: [],
+            files: [],
+            fileState: "none",
+            workspaceArtifacts: [],
+            workspaceArtifactState: "none",
+          });
           contextControllerRef.current?.abort();
           contextVersionRef.current += 1;
           setContextPack(undefined);
@@ -2243,6 +2302,10 @@ export function AgentRunsWorkspace({
           setRunMediaProjection({
             runId: latestRunId,
             artifacts: projectCommandMediaArtifacts(runPayload),
+            files: projectCommandFileArtifacts(runPayload),
+            fileState: projectCommandFileArtifactState(runPayload),
+            workspaceArtifacts: projectCommandWorkspaceArtifacts(runPayload),
+            workspaceArtifactState: projectCommandWorkspaceArtifactState(runPayload),
           });
           setContextUseReceipt(contextUseReceiptFromPayload(runPayload));
           const run = asRecord(runPayload.run);
@@ -2307,6 +2370,10 @@ export function AgentRunsWorkspace({
       setRunMediaProjection({
         runId: id,
         artifacts: projectCommandMediaArtifacts(payload),
+        files: projectCommandFileArtifacts(payload),
+        fileState: projectCommandFileArtifactState(payload),
+        workspaceArtifacts: projectCommandWorkspaceArtifacts(payload),
+        workspaceArtifactState: projectCommandWorkspaceArtifactState(payload),
       });
       setGrounding(nextGrounding);
       setContextUseReceipt(contextUseReceiptFromPayload(payload));
@@ -2352,7 +2419,14 @@ export function AgentRunsWorkspace({
     setContextLoading(false);
     setContextError(undefined);
     setAgentResponse("");
-    setRunMediaProjection({ runId: "", artifacts: [] });
+    setRunMediaProjection({
+      runId: "",
+      artifacts: [],
+      files: [],
+      fileState: "none",
+      workspaceArtifacts: [],
+      workspaceArtifactState: "none",
+    });
     setStreamEvents([]);
     setWorkflowPlan(undefined);
     setWorkflowRun(undefined);
@@ -2670,6 +2744,18 @@ export function AgentRunsWorkspace({
                         mediaArtifacts={turn.runId && turn.runId === runMediaProjection.runId
                           ? runMediaProjection.artifacts
                           : undefined}
+                        fileArtifacts={turn.runId && turn.runId === runMediaProjection.runId
+                          ? runMediaProjection.files
+                          : undefined}
+                        fileArtifactState={turn.runId && turn.runId === runMediaProjection.runId
+                          ? runMediaProjection.fileState
+                          : undefined}
+                        workspaceArtifacts={turn.runId && turn.runId === runMediaProjection.runId
+                          ? runMediaProjection.workspaceArtifacts
+                          : undefined}
+                        workspaceArtifactState={turn.runId && turn.runId === runMediaProjection.runId
+                          ? runMediaProjection.workspaceArtifactState
+                          : undefined}
                       />
                       {turn.runId ? (
                         <button
@@ -2732,6 +2818,10 @@ export function AgentRunsWorkspace({
                         content={currentAssistantResponse}
                         grounding={grounding}
                         mediaArtifacts={runMediaProjection.artifacts}
+                        fileArtifacts={runMediaProjection.files}
+                        fileArtifactState={runMediaProjection.fileState}
+                        workspaceArtifacts={runMediaProjection.workspaceArtifacts}
+                        workspaceArtifactState={runMediaProjection.workspaceArtifactState}
                       />
                     </div>
                     <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-line/70 pt-3">
@@ -2830,10 +2920,27 @@ export function AgentRunsWorkspace({
               ) : null}
               {!turns.length && !currentAssistantResponse ? (
                 <div className={clsx("grid min-h-64 place-items-center text-center", workspaceStyles.emptyConversation)}>
-                  <div>
+                  <div className="w-full max-w-2xl px-4">
                     <span className={clsx("mx-auto grid size-11 place-items-center rounded-full bg-primary/10 text-primary", workspaceStyles.emptyOrb)}><Sparkles size={18} aria-hidden="true" /></span>
                     <h2 className="mt-4 text-xl font-semibold tracking-tight">What should we work through?</h2>
                     <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-muted">Start with a question or outcome. Follow up naturally, and Asael keeps this conversation together.</p>
+                    <div className="mt-5 grid gap-2 text-left sm:grid-cols-3" aria-label="Document creation examples">
+                      {[
+                        "Create an editable PowerPoint presentation",
+                        "Draft a collaborative Google Doc",
+                        "Build a Google Sheet rollout tracker",
+                      ].map((prompt) => (
+                        <button
+                          key={prompt}
+                          type="button"
+                          onClick={() => changeGoal(prompt)}
+                          className="flex min-h-14 items-center gap-2 rounded-xl border border-line/80 bg-surface px-3 py-2.5 text-xs font-semibold leading-5 text-foreground transition hover:border-primary/40 hover:bg-primary/5"
+                        >
+                          <FileText size={15} className="shrink-0 text-primary" aria-hidden="true" />
+                          <span>{prompt}</span>
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 </div>
               ) : null}
@@ -3639,10 +3746,18 @@ function ConversationMessageContent({
   content,
   grounding,
   mediaArtifacts = [],
+  fileArtifacts = [],
+  fileArtifactState = "none",
+  workspaceArtifacts = [],
+  workspaceArtifactState = "none",
 }: {
   content: string;
   grounding?: GroundingReport;
   mediaArtifacts?: readonly CommandMediaArtifact[];
+  fileArtifacts?: readonly CommandFileArtifact[];
+  fileArtifactState?: CommandFileArtifactState;
+  workspaceArtifacts?: readonly CommandWorkspaceArtifact[];
+  workspaceArtifactState?: CommandWorkspaceArtifactState;
 }) {
   const safeContent = typeof content === "string" ? content : "";
   const recoveredMedia = extractLegacyCommandMedia(safeContent);
@@ -3775,7 +3890,207 @@ function ConversationMessageContent({
           ))}
         </div>
       ) : null}
+      {fileArtifacts.length ? (
+        <div className={clsx(
+          "space-y-4",
+          blocks.length || renderedMedia.length ? "mt-5" : "mt-0",
+        )}>
+          {fileArtifacts.map((artifact) => (
+            <CommandFileArtifactCard
+              key={`${artifact.artifactId}:v${artifact.version}`}
+              artifact={artifact}
+            />
+          ))}
+        </div>
+      ) : null}
+      {fileArtifactState === "unavailable" ? (
+        <div className={clsx(
+          "flex max-w-2xl items-start gap-3 rounded-xl border border-warning/40 bg-warning/10 px-4 py-3 text-sm",
+          blocks.length || renderedMedia.length ? "mt-5" : "mt-0",
+        )} role="status">
+          <AlertTriangle size={16} className="mt-0.5 shrink-0 text-warning" aria-hidden="true" />
+          <div>
+            <p className="font-semibold">The created file preview is temporarily unavailable</p>
+            <p className="mt-1 text-xs leading-5 text-muted">
+              The task result remains available. Refresh this conversation or open Results to retry the private file projection.
+            </p>
+          </div>
+        </div>
+      ) : null}
+      {workspaceArtifacts.length ? (
+        <div className={clsx(
+          "grid gap-3 sm:grid-cols-2",
+          blocks.length || renderedMedia.length || fileArtifacts.length ? "mt-5" : "mt-0",
+        )}>
+          {workspaceArtifacts.map((artifact) => (
+            <CommandWorkspaceArtifactCard
+              key={`${artifact.kind}:${artifact.resourceId}`}
+              artifact={artifact}
+            />
+          ))}
+        </div>
+      ) : null}
+      {workspaceArtifactState === "pending" ? (
+        <div className={clsx(
+          "flex max-w-2xl items-start gap-3 rounded-xl border border-line bg-surface-raised/60 px-4 py-3 text-sm",
+          blocks.length || renderedMedia.length || fileArtifacts.length || workspaceArtifacts.length
+            ? "mt-5"
+            : "mt-0",
+        )} role="status" aria-live="polite">
+          <Loader2 size={16} className="mt-0.5 shrink-0 animate-spin text-primary" aria-hidden="true" />
+          <div>
+            <p className="font-semibold">Checking for a Google Workspace result</p>
+            <p className="mt-1 text-xs leading-5 text-muted">
+              Asael is still finalizing this task. Any verified Google file will appear here automatically.
+            </p>
+          </div>
+        </div>
+      ) : null}
+      {workspaceArtifactState === "unavailable" ? (
+        <div className={clsx(
+          "flex max-w-2xl items-start gap-3 rounded-xl border border-warning/40 bg-warning/10 px-4 py-3 text-sm",
+          blocks.length || renderedMedia.length || fileArtifacts.length || workspaceArtifacts.length
+            ? "mt-5"
+            : "mt-0",
+        )} role="status">
+          <AlertTriangle size={16} className="mt-0.5 shrink-0 text-warning" aria-hidden="true" />
+          <div>
+            <p className="font-semibold">The Google Workspace file link is temporarily unavailable</p>
+            <p className="mt-1 text-xs leading-5 text-muted">
+              The task result remains intact. Refresh this conversation to retry its verified Google file projection.
+            </p>
+          </div>
+        </div>
+      ) : null}
     </div>
+  );
+}
+
+function CommandFileArtifactCard({ artifact }: { artifact: CommandFileArtifact }) {
+  const downloadUrl = commandArtifactContentUrl(
+    artifact.artifactId,
+    artifact.version,
+    { download: true },
+  );
+  const typeLabel = artifact.kind === "presentation"
+    ? "PowerPoint presentation"
+    : artifact.kind === "spreadsheet"
+      ? "Excel workbook"
+      : artifact.kind === "pdf"
+        ? "PDF document"
+        : "Word document";
+  const detail = artifact.kind === "presentation" && artifact.slideCount
+    ? `${artifact.slideCount} ${artifact.slideCount === 1 ? "slide" : "slides"}`
+    : formatMediaBytes(artifact.byteCount);
+
+  return (
+    <section
+      className="group overflow-hidden rounded-2xl border border-line bg-surface shadow-sm"
+      aria-label={`${typeLabel}: ${artifact.filename}`}
+    >
+      <div className="grid min-h-52 bg-[radial-gradient(circle_at_72%_18%,color-mix(in_srgb,var(--color-primary)_18%,transparent),transparent_38%),linear-gradient(135deg,var(--color-foreground),color-mix(in_srgb,var(--color-foreground)_88%,var(--color-primary)))] px-5 py-6 text-background sm:grid-cols-[minmax(0,1fr)_14rem] sm:items-center sm:gap-8 sm:px-7">
+        <div className="min-w-0">
+          <span className="inline-flex items-center gap-2 rounded-full border border-background/15 bg-background/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-background/75 backdrop-blur">
+            <FileText size={13} aria-hidden="true" />
+            Created by Asael
+          </span>
+          <h3 className="mt-5 max-w-xl text-balance text-2xl font-semibold tracking-tight text-background">
+            {artifact.title}
+          </h3>
+          <p className="mt-3 text-sm leading-6 text-background/70">
+            {typeLabel} · {detail} · Editable · Private
+          </p>
+        </div>
+        <div className="relative mx-auto mt-7 h-28 w-48 sm:mt-0" aria-hidden="true">
+          <span className="absolute inset-x-4 bottom-0 top-5 rotate-6 rounded-lg border border-background/20 bg-background/10 shadow-2xl" />
+          <span className="absolute inset-x-2 bottom-2 top-3 -rotate-3 rounded-lg border border-background/25 bg-background/15 shadow-2xl" />
+          <span className="absolute inset-0 grid rounded-lg border border-background/30 bg-background/95 p-3 text-foreground shadow-2xl transition-transform duration-300 group-hover:-translate-y-1 group-hover:rotate-1">
+            <span className="h-1.5 w-10 rounded-full bg-primary/75" />
+            <span className="mt-2 h-2 w-4/5 rounded-full bg-foreground/80" />
+            <span className="mt-1 h-1 w-3/5 rounded-full bg-foreground/20" />
+            <span className="mt-auto grid grid-cols-3 gap-1.5">
+              <span className="h-7 rounded bg-primary/20" />
+              <span className="h-7 rounded bg-foreground/10" />
+              <span className="h-7 rounded bg-primary/10" />
+            </span>
+          </span>
+        </div>
+      </div>
+      <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-line/80 bg-background/70 px-4 py-3 sm:px-5">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold">{artifact.filename}</p>
+          <p className="mt-0.5 text-xs text-muted">
+            Version {artifact.version} · {formatMediaBytes(artifact.byteCount)} · Ready
+          </p>
+        </div>
+        <a href={downloadUrl} className="action-button">
+          <Download size={14} aria-hidden="true" />
+          Download
+        </a>
+      </footer>
+    </section>
+  );
+}
+
+function CommandWorkspaceArtifactCard({
+  artifact,
+}: {
+  artifact: CommandWorkspaceArtifact;
+}) {
+  const openUrl = commandWorkspaceArtifactUrl(artifact.kind, artifact.resourceId);
+  const typeLabel = artifact.kind === "document"
+    ? "Google Doc"
+    : artifact.kind === "spreadsheet"
+      ? "Google Sheet"
+      : "Google Slides";
+  const description = artifact.kind === "document"
+    ? "Collaborative document"
+    : artifact.kind === "spreadsheet"
+      ? "Collaborative spreadsheet"
+      : "Collaborative presentation";
+
+  return (
+    <section
+      className="group flex min-w-0 flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-sm transition duration-200 hover:-translate-y-0.5 hover:border-primary/35 hover:shadow-md"
+      aria-label={`${typeLabel}: ${artifact.title}`}
+    >
+      <div className="relative flex-1 overflow-hidden px-5 pb-5 pt-4">
+        <span
+          className="pointer-events-none absolute -right-8 -top-12 size-36 rounded-full bg-primary/10 blur-2xl transition-transform duration-300 group-hover:scale-125"
+          aria-hidden="true"
+        />
+        <div className="relative flex items-start justify-between gap-3">
+          <span className="grid size-11 shrink-0 place-items-center rounded-xl border border-primary/15 bg-primary/10 text-primary shadow-sm">
+            <FileText size={20} aria-hidden="true" />
+          </span>
+          <span className="rounded-full border border-line bg-background/80 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted backdrop-blur">
+            Google Workspace
+          </span>
+        </div>
+        <h3 className="relative mt-5 line-clamp-2 text-balance text-lg font-semibold tracking-tight">
+          {artifact.title}
+        </h3>
+        <p className="relative mt-2 text-sm leading-6 text-muted">
+          {typeLabel} · {description} · Saved to Drive
+        </p>
+      </div>
+      <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-line/80 bg-background/65 px-4 py-3">
+        <span className="inline-flex items-center gap-1.5 text-xs font-medium text-muted">
+          <CheckCircle2 size={13} className="text-success" aria-hidden="true" />
+          Verified and ready
+        </span>
+        <a
+          href={openUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="action-button"
+          aria-label={`Open ${artifact.title} in ${typeLabel}`}
+        >
+          Open in Google
+          <ExternalLink size={14} aria-hidden="true" />
+        </a>
+      </footer>
+    </section>
   );
 }
 

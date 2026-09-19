@@ -66,6 +66,7 @@
     "openai": "^6.49.0",
     "pdf-parse": "^2.4.5",
     "postgres": "^3.4.9",
+    "pptxgenjs": "^4.0.1",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "server-only": "0.0.1",

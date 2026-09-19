@@ -12,7 +12,7 @@ import type { ToolDefinition } from "@/lib/tools/types";
 import { getGovernedTools } from "@/lib/tools/registry";
 
 describe("progressive agent toolbox", () => {
-  it("keeps Google Workspace and imported Photos tools discoverable from Command language", async () => {
+  it("keeps Google Workspace, document creation, and imported Photos discoverable from Command language", async () => {
     const dependencies = {
       listNative: getGovernedTools,
       search: vi.fn(async () => ({
@@ -55,6 +55,22 @@ describe("progressive agent toolbox", () => {
       "app.assets.list",
       "app.assets.show",
     ]));
+
+    const presentation = await loadProgressiveAgentTools(
+      { tenantId: "tenant-private", query: "create a polished editable PowerPoint pitch deck presentation" },
+      dependencies,
+    );
+    expect(presentation.definitions.map((item) => item.id)).toContain(
+      "app.artifacts.presentations.create",
+    );
+
+    const collaborativeDocument = await loadProgressiveAgentTools(
+      { tenantId: "tenant-private", query: "create a native Google Doc I can edit with my team" },
+      dependencies,
+    );
+    expect(collaborativeDocument.definitions.map((item) => item.id)).toContain(
+      "google.docs.create",
+    );
   });
 
   it("caps model-facing tools while retaining relevant native and external tools", async () => {

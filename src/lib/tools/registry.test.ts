@@ -138,6 +138,9 @@ describe("governed native tool schemas", () => {
       "google.drive.move",
       "google.drive.rename",
       "google.drive.trash",
+      "google.docs.create",
+      "google.sheets.create",
+      "google.slides.create",
     ]) {
       expect(getGovernedTool(id)).toMatchObject({
         category: "connector",
@@ -195,6 +198,49 @@ describe("governed native tool schemas", () => {
     expect(getGovernedTool("google.drive.create")?.inputSchema).toMatchObject({
       properties: { contentBase64: { maxLength: 213_342 } },
     });
+    expect(getGovernedTool("google.docs.create")?.inputSchema).toMatchObject({
+      additionalProperties: false,
+      required: ["title"],
+      properties: {
+        bodyText: { type: "string", minLength: 1, maxLength: 100_000 },
+        blocks: { type: "array", minItems: 1, maxItems: 100 },
+      },
+      oneOf: [
+        { required: ["bodyText"], not: { required: ["blocks"] } },
+        { required: ["blocks"], not: { required: ["bodyText"] } },
+      ],
+    });
+    expect(getGovernedTool("google.docs.create")?.inputSchema)
+      .not.toHaveProperty("properties.contentBase64");
+    expect(getGovernedTool("google.sheets.create")?.inputSchema).toMatchObject({
+      required: ["title", "sheetName", "values"],
+      properties: {
+        sheetName: { type: "string", minLength: 1, maxLength: 100 },
+        values: { type: "array", minItems: 1, maxItems: 50 },
+      },
+    });
+    expect(getGovernedTool("google.slides.create")?.inputSchema).toMatchObject({
+      required: ["title", "slides"],
+      properties: {
+        slides: {
+          type: "array",
+          minItems: 1,
+          maxItems: 24,
+          items: {
+            additionalProperties: false,
+            required: ["title"],
+            anyOf: [{ required: ["body"] }, { required: ["bullets"] }],
+            properties: {
+              title: { maxLength: 240 },
+              body: { maxLength: 2_000 },
+              bullets: { minItems: 1, maxItems: 12 },
+            },
+          },
+        },
+      },
+    });
+    expect(getGovernedTool("google.slides.create")?.inputSchema)
+      .not.toHaveProperty("properties.slides.items.properties.imageBase64");
     expect(getGovernedTool("google.sheets.update")?.inputSchema).toMatchObject({
       properties: {
         values: {

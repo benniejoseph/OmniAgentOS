@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import '../../core/network/api_client.dart';
 import '../../generated/native_contract.g.dart';
 import 'results.dart';
@@ -14,11 +16,13 @@ Object? _readPath(Object? source, String path) {
   return value;
 }
 
-class ApiResultsRepository implements ResultsRepository {
+class ApiResultsRepository
+    implements ResultsRepository, GeneratedArtifactResultsRepository {
   const ApiResultsRepository(this.api);
   final ApiClient api;
   @override
   Future<ResultsSnapshot> list() async {
+    final artifactRequest = _loadGeneratedArtifacts();
     final responses = await Future.wait([
       api.getJson(
         NativePaths.workspaceSummary,
@@ -43,6 +47,27 @@ class ApiResultsRepository implements ResultsRepository {
     source('runs', 'runs', ResultItem.agent);
     source('workflows', 'runs', ResultItem.workflow);
     source('approvals', 'items', ResultItem.approval);
+    final artifactResponse = await artifactRequest;
+    final createdFiles = <GeneratedArtifactSummary>[];
+    if (artifactResponse.error != null) {
+      errors.add('created files unavailable');
+    } else {
+      final rawArtifacts = artifactResponse.value?['artifacts'];
+      if (rawArtifacts is! List) {
+        errors.add('created files unavailable');
+      } else {
+        final seen = <String>{};
+        for (final raw in rawArtifacts.take(50)) {
+          final artifact = GeneratedArtifactSummary.tryParse(raw);
+          if (artifact != null && seen.add(artifact.id)) {
+            createdFiles.add(artifact);
+          }
+        }
+        createdFiles.sort(
+          (left, right) => right.updatedAt.compareTo(left.updatedAt),
+        );
+      }
+    }
     final unique = <String, ResultItem>{};
     for (final i in items) {
       final old = unique[i.key];
@@ -67,7 +92,45 @@ class ApiResultsRepository implements ResultsRepository {
       items: sorted,
       evaluations: evals,
       sourceErrors: errors,
+      createdFiles: List.unmodifiable(createdFiles),
     );
+  }
+
+  Future<({Map<String, dynamic>? value, Object? error})>
+  _loadGeneratedArtifacts() async {
+    try {
+      return (
+        value: await api.getJson(NativePaths.artifactsList(limit: 50)),
+        error: null,
+      );
+    } catch (error) {
+      return (value: null, error: error);
+    }
+  }
+
+  @override
+  Future<Uint8List> downloadGeneratedArtifact(
+    GeneratedArtifactSummary artifact,
+  ) async {
+    if (!RegExp(r'^generated_artifact_[a-f0-9]{48}$').hasMatch(artifact.id) ||
+        artifact.version < 1 ||
+        artifact.version > 2_147_483_647 ||
+        artifact.byteCount == null ||
+        artifact.byteCount! < 1 ||
+        artifact.byteCount! > 64 * 1024 * 1024 ||
+        !artifact.ready) {
+      throw StateError('This generated file is not ready to download.');
+    }
+    final bytes = await api.getBytes(
+      NativePaths.artifactsContent(artifact.id, version: artifact.version),
+      maximumBytes: artifact.byteCount!,
+    );
+    if (bytes.length != artifact.byteCount) {
+      throw const FormatException(
+        'The generated file did not match its verified metadata.',
+      );
+    }
+    return bytes;
   }
 
   @override

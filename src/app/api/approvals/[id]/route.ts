@@ -24,9 +24,11 @@ import { findAgentRunWaitingForToolApproval } from "@/lib/runs/store";
 import {
   approveAndClaimToolExecution,
   failClaimedToolExecution,
+  getToolExecutionEffectIntentV2,
   getToolExecution,
   openToolExecutionInput,
   publicToolExecution,
+  reclaimStaleGoogleWorkspaceCreateToolExecutionClaim,
   recoverStaleToolExecutionClaim,
   rejectPendingToolExecution,
 } from "@/lib/tools/audit-store";
@@ -36,6 +38,8 @@ import {
   type GovernedToolCheckpointInput,
 } from "@/lib/tools/executor";
 import { getGovernedTool } from "@/lib/tools/registry";
+import { getToolExecutionScopeBinding } from "@/lib/tools/execution-scope";
+import { isGoogleWorkspaceCreationToolId } from "@/lib/connectors/google-workspace-actions";
 import { RISK3_QUORUM, type ToolExecutionRecord } from "@/lib/tools/types";
 import { toolApprovalMutationFromRequest } from "@/lib/tools/approval-events";
 import { actionClassFor, recordActionOutcome } from "@/lib/trust/ledger";
@@ -153,6 +157,14 @@ function toolApprovalBlockReason(
     }
   }
   return undefined;
+}
+
+function hasPersistedEffectIntent(record: ToolExecutionRecord) {
+  try {
+    return Boolean(getToolExecutionEffectIntentV2(record));
+  } catch {
+    return false;
+  }
 }
 
 async function POSTHandler(
@@ -357,7 +369,17 @@ async function POSTHandler(
     record.status === "executing" &&
     record.toolId === "memory.forget" &&
     !record.dryRun;
-  if (record.status !== "approval_required" && !retryingMemoryForget) {
+  const retryingGoogleWorkspaceCreate =
+    parsed.data.decision === "approve" &&
+    record.status === "executing" &&
+    isGoogleWorkspaceCreationToolId(record.toolId) &&
+    !record.dryRun &&
+    hasPersistedEffectIntent(record);
+  if (
+    record.status !== "approval_required" &&
+    !retryingMemoryForget &&
+    !retryingGoogleWorkspaceCreate
+  ) {
     const recovered = record.status === "executing"
       ? await recoverStaleToolExecutionClaim(record.id, {
           tenantId: securityContext.tenantId,
@@ -448,15 +470,33 @@ async function POSTHandler(
   }
 
   const claimToken = randomUUID();
-  const claim = await approveAndClaimToolExecution({
-    id: record.id,
-    tenantId: securityContext.tenantId,
-    approvedBy: securityContext.actorId,
-    approvedRole: securityContext.role,
-    approvalReason: parsed.data.reason,
-    claimToken,
-    mutation: approvalMutation,
-  });
+  let claim: Awaited<ReturnType<typeof approveAndClaimToolExecution>>;
+  if (retryingGoogleWorkspaceCreate) {
+    const binding = await getToolExecutionScopeBinding(record.id, {
+      tenantId: securityContext.tenantId,
+    });
+    const reclaimed = binding
+      ? await reclaimStaleGoogleWorkspaceCreateToolExecutionClaim(record, {
+          tenantId: securityContext.tenantId,
+          claimToken,
+          executionScope: binding.executionScope,
+          idempotencyKey: approvalMutation.idempotencyKey,
+        })
+      : undefined;
+    claim = reclaimed
+      ? { outcome: "claimed", record: reclaimed }
+      : { outcome: "conflict", record };
+  } else {
+    claim = await approveAndClaimToolExecution({
+      id: record.id,
+      tenantId: securityContext.tenantId,
+      approvedBy: securityContext.actorId,
+      approvedRole: securityContext.role,
+      approvalReason: parsed.data.reason,
+      claimToken,
+      mutation: approvalMutation,
+    });
+  }
   if (claim.outcome === "not_found") {
     return Response.json({ error: "Tool approval record not found." }, { status: 404 });
   }

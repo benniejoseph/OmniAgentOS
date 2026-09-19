@@ -18,8 +18,8 @@ import {
 
 describe("native API contracts", () => {
   it("retains exactly the current and previous rollout versions", () => {
-    expect(NATIVE_API_CURRENT_VERSION).toBe(17);
-    expect(NATIVE_API_PREVIOUS_VERSION).toBe(16);
+    expect(NATIVE_API_CURRENT_VERSION).toBe(18);
+    expect(NATIVE_API_PREVIOUS_VERSION).toBe(17);
     expect(nativeOperationsForVersion(8)?.length).toBeLessThan(
       nativeOperationsForVersion(7)?.length || 0,
     );
@@ -50,9 +50,12 @@ describe("native API contracts", () => {
     expect(nativeOperationsForVersion(17)?.length).toBe(
       (nativeOperationsForVersion(16)?.length || 0) + 5,
     );
+    expect(nativeOperationsForVersion(18)?.length).toBe(
+      (nativeOperationsForVersion(17)?.length || 0) + 2,
+    );
     expect(nativeContractSchemas.NativeContractDiscovery.parse(
       nativeContractDiscovery(),
-    ).supportedVersions).toEqual([17, 16]);
+    ).supportedVersions).toEqual([18, 17]);
   });
 
   it("exposes only explicit local Computer Use in the current request schema", () => {
@@ -152,9 +155,45 @@ describe("native API contracts", () => {
     expect(dart).toContain("static const pluginsInstall = '/api/plugins/install';");
     expect(dart).toContain("static String pluginsChange(String id)");
     expect(dart).toContain("static String pluginsUninstall(String id)");
+    expect(dart).toContain("'artifacts.content',");
+    expect(dart).toContain("'artifacts.list',");
+    expect(dart).toContain("static String artifactsList({String? kind, int? limit})");
+    expect(dart).toContain("static String artifactsContent(String id, {int? version})");
     expect(dart).toContain("static String memoryList({String? threadId, int? limit})");
     expect(dart).not.toContain("'agents.create',");
     expect(dart).not.toContain("'admin.workflows.tick',");
+  });
+
+  it("keeps v17 immutable while v18 adds only generated artifact reads", async () => {
+    const [v17, v17Manifest, v18] = await Promise.all([
+      readFile(
+        new URL("../../../public/native-contracts/v17/openapi.json", import.meta.url),
+        "utf8",
+      ),
+      readFile(
+        new URL("../../../public/native-contracts/v17/manifest.json", import.meta.url),
+        "utf8",
+      ),
+      readFile(
+        new URL("../../../public/native-contracts/v18/openapi.json", import.meta.url),
+        "utf8",
+      ),
+    ]);
+
+    expect(sha256(v17)).toBe(
+      "4cac8cadf63061626fce1a18d215a8b7fe2069ef8707aec6eaa4ad9d24aa94d8",
+    );
+    expect(sha256(v17Manifest)).toBe(
+      "8101958ab99d8bd73a943a26aa7eac3293478f1ef0604da278f8e20c43d3ec74",
+    );
+    expect(v17).not.toContain('"artifacts.content"');
+    expect(v17).not.toContain('"artifacts.list"');
+    expect(v18).toContain('"artifacts.content"');
+    expect(v18).toContain('"artifacts.list"');
+    expect(v18).toContain('"/api/artifacts"');
+    expect(v18).toContain('"/api/artifacts/{id}/content"');
+    expect(v18).toContain('"name": "version"');
+    expect(v18).toContain('"format": "binary"');
   });
 
   it("keeps v16 immutable while v17 adds the native Automation control plane", async () => {
@@ -385,7 +424,7 @@ describe("native API contracts", () => {
       user: { id: "user-one", email: "operator@example.test", status: "active", createdAt: timestamp, updatedAt: timestamp },
       tenant: { id: "tenant-one", name: "Example", slug: "example", createdAt: timestamp, updatedAt: timestamp },
       membership: { id: "membership-one", tenantId: "tenant-one", userId: "user-one", role: "operator", status: "active", createdAt: timestamp, updatedAt: timestamp },
-      device: { id: "device-one", name: "Asael on macOS", platform: "macos", appVersion: "1.0.0", buildNumber: 2, clientContractVersion: 16 },
+      device: { id: "device-one", name: "Asael on macOS", platform: "macos", appVersion: "1.0.0", buildNumber: 2, clientContractVersion: 18 },
     };
     expect(nativeBootstrapResponseSchema.parse({
       authenticated: true,
@@ -397,9 +436,9 @@ describe("native API contracts", () => {
         mobileBasePath: "/api/mobile",
         nativeContract: {
           id: "asael.native-api",
-          currentVersion: 17,
-          previousVersion: 16,
-          supportedVersions: [17, 16],
+          currentVersion: 18,
+          previousVersion: 17,
+          supportedVersions: [18, 17],
           discoveryPath: "/api/mobile/contracts",
         },
       },
@@ -408,15 +447,15 @@ describe("native API contracts", () => {
         platform: "macos",
         appVersion: "1.0.0",
         buildNumber: 2,
-        clientContractVersion: 16,
+        clientContractVersion: 18,
         minimumVersion: "1.0.0",
-        requiredContractVersion: 17,
-        supportedContractVersions: [17, 16],
+        requiredContractVersion: 18,
+        supportedContractVersions: [18, 17],
         status: "compatible",
         agentCatalogEnrollment: { state: "held", clientReady: true },
       },
       nativeClientPolicy: { schemaVersion: 1 },
-    }).api.nativeContract.currentVersion).toBe(17);
+    }).api.nativeContract.currentVersion).toBe(18);
   });
 });
 

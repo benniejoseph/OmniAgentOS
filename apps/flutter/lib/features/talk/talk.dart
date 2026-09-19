@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:go_router/go_router.dart';
 import 'package:record/record.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../app/brand/asael_mark.dart';
 import '../../app/platform/macos_presentation.dart';
@@ -30,6 +31,17 @@ String _boundedDisplayText(Object? value, int maximum) {
   if (value is! String) return '';
   final normalized = value.replaceAll(RegExp(r'\s+'), ' ').trim();
   return normalized.length <= maximum ? normalized : '';
+}
+
+String _boundedArtifactText(Object? value, int maximum) {
+  if (value is! String) return '';
+  final normalized = value
+      .replaceAll(RegExp(r'[\u0000-\u001F\u007F]'), ' ')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+  return normalized.isNotEmpty && normalized.length <= maximum
+      ? normalized
+      : '';
 }
 
 String _boundedRunText(Object? value, int maximum) {
@@ -196,6 +208,7 @@ class TalkActivity {
     required this.state,
     this.actionLabel,
     this.actionRoute,
+    this.externalUri,
   });
 
   final String key;
@@ -204,6 +217,7 @@ class TalkActivity {
   final TalkActivityState state;
   final String? actionLabel;
   final String? actionRoute;
+  final Uri? externalUri;
 }
 
 class TalkWorkflowSnapshot {
@@ -286,6 +300,10 @@ class TalkMediaArtifactSummary {
     required this.status,
     this.sourceRunId,
     this.contextLabel,
+    this.artifactVersion,
+    this.title,
+    this.slideCount,
+    this.theme,
   });
 
   final String assetId;
@@ -297,6 +315,51 @@ class TalkMediaArtifactSummary {
   final String status;
   final String? sourceRunId;
   final String? contextLabel;
+  final int? artifactVersion;
+  final String? title;
+  final int? slideCount;
+  final String? theme;
+
+  bool get isPresentation => kind == 'presentation' && artifactVersion != null;
+
+  String get identityKey =>
+      artifactVersion == null ? assetId : '$assetId:$artifactVersion';
+
+  static const powerPointMediaType =
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+}
+
+class TalkWorkspaceArtifactSummary {
+  const TalkWorkspaceArtifactSummary({
+    required this.executionId,
+    required this.sequence,
+    required this.kind,
+    required this.resourceId,
+    required this.title,
+    required this.createdAt,
+  });
+
+  final String executionId;
+  final int sequence;
+  final String kind;
+  final String resourceId;
+  final String title;
+  final DateTime createdAt;
+
+  String get typeLabel => switch (kind) {
+    'document' => 'Google Doc',
+    'spreadsheet' => 'Google Sheet',
+    _ => 'Google Slides',
+  };
+
+  Uri get editorUri {
+    final product = switch (kind) {
+      'document' => 'document',
+      'spreadsheet' => 'spreadsheets',
+      _ => 'presentation',
+    };
+    return Uri.https('docs.google.com', '/$product/d/$resourceId/edit');
+  }
 }
 
 class TalkArtifactContent {
@@ -357,6 +420,9 @@ class TalkRunInspection {
     required this.grounding,
     required this.agentIdentity,
     required this.mediaArtifacts,
+    required this.fileArtifacts,
+    required this.workspaceArtifacts,
+    required this.workspaceArtifactState,
     this.threadId,
     this.response,
     this.error,
@@ -372,6 +438,9 @@ class TalkRunInspection {
   final TalkGroundingSummary grounding;
   final TalkAgentIdentitySummary agentIdentity;
   final List<TalkMediaArtifactSummary> mediaArtifacts;
+  final List<TalkMediaArtifactSummary> fileArtifacts;
+  final List<TalkWorkspaceArtifactSummary> workspaceArtifacts;
+  final String workspaceArtifactState;
 
   bool get terminal =>
       const {'completed', 'failed', 'canceled'}.contains(status);
@@ -518,6 +587,151 @@ class TalkRunInspection {
       }
     }
 
+    final fileArtifacts = <TalkMediaArtifactSummary>[];
+    final seenFileVersions = <String>{};
+    final rawFileArtifacts = payload['fileArtifacts'];
+    if (rawFileArtifacts is List) {
+      for (final candidate in rawFileArtifacts.take(32)) {
+        final artifact = _jsonRecord(candidate);
+        final artifactId = _boundedDisplayText(artifact['artifactId'], 200);
+        final versionValue = artifact['version'];
+        final version =
+            versionValue is int &&
+                versionValue >= 1 &&
+                versionValue <= 2_147_483_647
+            ? versionValue
+            : null;
+        final kind = _boundedDisplayText(artifact['kind'], 32).toLowerCase();
+        final title = _boundedArtifactText(artifact['title'], 200);
+        final filename = _boundedArtifactText(artifact['filename'], 240);
+        final mediaType = _boundedDisplayText(
+          artifact['mediaType'],
+          160,
+        ).toLowerCase();
+        final artifactStatus = _boundedDisplayText(
+          artifact['status'],
+          30,
+        ).toLowerCase();
+        final byteCountValue = artifact['byteCount'];
+        final byteCount =
+            byteCountValue is int &&
+                byteCountValue > 0 &&
+                byteCountValue <= 64 * 1024 * 1024
+            ? byteCountValue
+            : null;
+        final slideCountValue = artifact['slideCount'];
+        final slideCount = slideCountValue == null
+            ? null
+            : slideCountValue is int &&
+                  slideCountValue >= 1 &&
+                  slideCountValue <= 24
+            ? slideCountValue
+            : -1;
+        final themeValue = artifact['theme'];
+        final theme = themeValue == null
+            ? null
+            : _boundedDisplayText(themeValue, 40).toLowerCase();
+        final coordinate = '$artifactId:${version ?? 0}';
+        if (artifactId.isEmpty ||
+            !RegExp(r'^[a-zA-Z0-9_-]+$').hasMatch(artifactId) ||
+            version == null ||
+            !seenFileVersions.add(coordinate) ||
+            kind != 'presentation' ||
+            title.isEmpty ||
+            filename.isEmpty ||
+            !RegExp(
+              r'^[^/\\]+\.pptx$',
+              caseSensitive: false,
+            ).hasMatch(filename) ||
+            mediaType != TalkMediaArtifactSummary.powerPointMediaType ||
+            artifactStatus != 'ready' ||
+            byteCount == null ||
+            slideCount == -1 ||
+            (theme != null &&
+                !const {'light', 'dark', 'aurora'}.contains(theme))) {
+          continue;
+        }
+        fileArtifacts.add(
+          TalkMediaArtifactSummary(
+            assetId: artifactId,
+            kind: kind,
+            operation: 'create',
+            filename: filename,
+            mediaType: mediaType,
+            byteCount: byteCount,
+            status: artifactStatus,
+            contextLabel: 'PowerPoint presentation · Private',
+            artifactVersion: version,
+            title: title,
+            slideCount: slideCount,
+            theme: theme,
+          ),
+        );
+      }
+    }
+
+    final workspaceArtifacts = <TalkWorkspaceArtifactSummary>[];
+    final seenWorkspaceResources = <String>{};
+    final rawWorkspaceArtifacts = payload['workspaceArtifacts'];
+    if (rawWorkspaceArtifacts is List) {
+      for (final candidate in rawWorkspaceArtifacts.take(64)) {
+        final artifact = _jsonRecord(candidate);
+        final executionIdValue = artifact['executionId'];
+        final executionId = executionIdValue is String
+            ? executionIdValue.trim()
+            : '';
+        final sequence = artifact['sequence'];
+        final kind = artifact['kind'];
+        final resourceIdValue = artifact['resourceId'];
+        final resourceId = resourceIdValue is String
+            ? resourceIdValue.trim()
+            : '';
+        final titleValue = artifact['title'];
+        final title = titleValue is String ? titleValue.trim() : '';
+        final createdAtValue = artifact['createdAt'];
+        final createdAt =
+            createdAtValue is String &&
+                RegExp(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$')
+                    .hasMatch(createdAtValue)
+            ? DateTime.tryParse(createdAtValue)?.toUtc()
+            : null;
+        if (!RegExp(r'^[A-Za-z0-9_.:@-]{1,240}$').hasMatch(executionId) ||
+            sequence is! int ||
+            sequence < 0 ||
+            sequence > 100000 ||
+            artifact['provider'] != 'google_workspace' ||
+            !const {'document', 'spreadsheet', 'presentation'}.contains(kind) ||
+            !RegExp(r'^[A-Za-z0-9_-]{10,240}$').hasMatch(resourceId) ||
+            title.isEmpty ||
+            title.length > 240 ||
+            RegExp(r'[\u0000-\u001F\u007F]').hasMatch(title) ||
+            createdAt == null ||
+            !seenWorkspaceResources.add(resourceId)) {
+          continue;
+        }
+        workspaceArtifacts.add(
+          TalkWorkspaceArtifactSummary(
+            executionId: executionId,
+            sequence: sequence,
+            kind: kind as String,
+            resourceId: resourceId,
+            title: title,
+            createdAt: createdAt,
+          ),
+        );
+      }
+      workspaceArtifacts.sort(
+        (left, right) => left.sequence.compareTo(right.sequence),
+      );
+    }
+    final rawWorkspaceArtifactState = payload['workspaceArtifactState'];
+    final workspaceArtifactState =
+        rawWorkspaceArtifactState == 'ready' ||
+            rawWorkspaceArtifactState == 'none' ||
+            rawWorkspaceArtifactState == 'unavailable'
+        ? rawWorkspaceArtifactState as String
+        : 'none';
+
     return TalkRunInspection(
       runId: runId,
       status: status,
@@ -554,6 +768,9 @@ class TalkRunInspection {
         definitionVersion: definitionVersion > 0 ? definitionVersion : null,
       ),
       mediaArtifacts: List.unmodifiable(mediaArtifacts),
+      fileArtifacts: List.unmodifiable(fileArtifacts),
+      workspaceArtifacts: List.unmodifiable(workspaceArtifacts),
+      workspaceArtifactState: workspaceArtifactState,
     );
   }
 }
@@ -808,7 +1025,9 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   }
 
   Future<void> selectArtifact(TalkMediaArtifactSummary artifact) async {
-    if (!artifacts.any((item) => item.assetId == artifact.assetId)) return;
+    if (!artifacts.any((item) => item.identityKey == artifact.identityKey)) {
+      return;
+    }
     selectedArtifact = artifact;
     selectedArtifactContent = null;
     artifactError = null;
@@ -1717,8 +1936,11 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     _projectAgentIdentity(inspection, route);
     _projectGrounding(inspection, route);
     _projectMediaArtifacts(inspection, route);
+    _projectFileArtifacts(inspection, route);
+    _projectWorkspaceArtifacts(inspection, route);
     artifacts
       ..clear()
+      ..addAll(inspection.fileArtifacts)
       ..addAll(inspection.mediaArtifacts)
       ..addAll(_localPreviewArtifacts);
     if (artifacts.isEmpty) {
@@ -1926,6 +2148,68 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     }
   }
 
+  void _projectFileArtifacts(TalkRunInspection inspection, String route) {
+    for (final artifact in inspection.fileArtifacts.take(8)) {
+      final slides = artifact.slideCount == null
+          ? 'PowerPoint presentation'
+          : '${artifact.slideCount} slide${artifact.slideCount == 1 ? '' : 's'}';
+      _recordActivity(
+        key: 'artifact:${artifact.identityKey}',
+        title: 'Presentation ready',
+        detail:
+            '${artifact.title ?? artifact.filename} · $slides · ${_humanBytes(artifact.byteCount)} · Private',
+        state: TalkActivityState.succeeded,
+        actionLabel: 'Open result',
+        actionRoute: route,
+      );
+    }
+    final remaining = inspection.fileArtifacts.length - 8;
+    if (remaining > 0) {
+      _recordActivity(
+        key: 'artifact-more:${inspection.runId}',
+        title: '$remaining more generated files',
+        detail: 'Open the result to inspect the complete bounded projection.',
+        state: TalkActivityState.info,
+        actionLabel: 'Open result',
+        actionRoute: route,
+      );
+    }
+  }
+
+  void _projectWorkspaceArtifacts(TalkRunInspection inspection, String route) {
+    for (final artifact in inspection.workspaceArtifacts.take(8)) {
+      _recordActivity(
+        key: 'workspace-artifact:${artifact.resourceId}',
+        title: '${artifact.typeLabel} ready',
+        detail: '${artifact.title} · Collaborative · Google Workspace',
+        state: TalkActivityState.succeeded,
+        actionLabel: 'Open in Google',
+        externalUri: artifact.editorUri,
+      );
+    }
+    final remaining = inspection.workspaceArtifacts.length - 8;
+    if (remaining > 0) {
+      _recordActivity(
+        key: 'workspace-artifact-more:${inspection.runId}',
+        title: '$remaining more Google Workspace files',
+        detail: 'Open the result to inspect the complete verified projection.',
+        state: TalkActivityState.info,
+        actionLabel: 'Open result',
+        actionRoute: route,
+      );
+    }
+    if (inspection.workspaceArtifactState == 'unavailable') {
+      _recordActivity(
+        key: 'workspace-artifact-unavailable:${inspection.runId}',
+        title: 'Google Workspace link unavailable',
+        detail: 'The run remains intact. Open Results later to retry its verified file projection.',
+        state: TalkActivityState.info,
+        actionLabel: 'Open result',
+        actionRoute: route,
+      );
+    }
+  }
+
   static String _resultRoute(String kind, String id) =>
       '/results/${Uri.encodeComponent('$kind:$id')}';
 
@@ -1942,6 +2226,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     required TalkActivityState state,
     String? actionLabel,
     String? actionRoute,
+    Uri? externalUri,
   }) {
     final activity = TalkActivity(
       key: key,
@@ -1950,6 +2235,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       state: state,
       actionLabel: actionLabel,
       actionRoute: actionRoute,
+      externalUri: externalUri,
     );
     final existing = activities.indexWhere((item) => item.key == key);
     if (existing >= 0) {
@@ -3394,7 +3680,9 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
                                     is LegacyComputerPreviewRetired
                                 ? 'Legacy browser preview retired'
                                 : controller.artifactError == null
-                                ? 'Ready to save'
+                                ? selected.isPresentation
+                                      ? 'Private presentation ready to save'
+                                      : 'Ready to save'
                                 : 'Preview unavailable',
                           ),
                   ),
@@ -3408,7 +3696,7 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              selected.filename,
+                              selected.title ?? selected.filename,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: const TextStyle(
@@ -3417,7 +3705,9 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
                               ),
                             ),
                             Text(
-                              '${selected.mediaType} · ${TalkController._humanBytes(selected.byteCount)}',
+                              selected.isPresentation
+                                  ? '${selected.filename} · ${selected.slideCount == null ? 'PowerPoint' : '${selected.slideCount} slides'} · Private · ${TalkController._humanBytes(selected.byteCount)}'
+                                  : '${selected.mediaType} · ${TalkController._humanBytes(selected.byteCount)}',
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: TextStyle(
@@ -3448,7 +3738,7 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
             separatorBuilder: (_, _) => const SizedBox(height: 7),
             itemBuilder: (context, index) {
               final artifact = controller.artifacts[index];
-              final isSelected = selected?.assetId == artifact.assetId;
+              final isSelected = selected?.identityKey == artifact.identityKey;
               return Material(
                 color: isSelected
                     ? scheme.primaryContainer.withValues(alpha: .7)
@@ -3462,18 +3752,22 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
                   leading: Icon(
                     artifact.kind == 'computer'
                         ? Icons.screenshot_monitor_outlined
+                        : artifact.isPresentation
+                        ? Icons.slideshow_rounded
                         : artifact.kind == 'image'
                         ? Icons.image_outlined
                         : Icons.movie_outlined,
                     color: isSelected ? scheme.primary : null,
                   ),
                   title: Text(
-                    artifact.filename,
+                    artifact.title ?? artifact.filename,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
                   subtitle: Text(
-                    '${artifact.contextLabel ?? TalkController._sentenceCase(artifact.operation)} · ${artifact.status}',
+                    artifact.isPresentation
+                        ? '${artifact.slideCount == null ? 'PowerPoint' : '${artifact.slideCount} slides'} · Private · ${TalkController._sentenceCase(artifact.status)}'
+                        : '${artifact.contextLabel ?? TalkController._sentenceCase(artifact.operation)} · ${artifact.status}',
                     maxLines: 1,
                   ),
                   onTap: () => controller.selectArtifact(artifact),
@@ -3499,6 +3793,8 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
           Icon(
             artifact.kind == 'computer'
                 ? Icons.screenshot_monitor_outlined
+                : artifact.isPresentation
+                ? Icons.slideshow_rounded
                 : artifact.kind == 'video'
                 ? Icons.play_circle_outline_rounded
                 : Icons.broken_image_outlined,
@@ -3851,13 +4147,19 @@ class _TalkActivityCard extends StatelessWidget {
                   ),
                 ),
                 if (activity.actionLabel != null &&
-                    activity.actionRoute != null) ...[
+                    (activity.actionRoute != null ||
+                        activity.externalUri != null)) ...[
                   const SizedBox(height: 7),
                   Row(
                     children: [
                       TextButton.icon(
-                        onPressed: () => context.go(activity.actionRoute!),
-                        icon: const Icon(Icons.arrow_forward_rounded, size: 15),
+                        onPressed: () => _activate(context),
+                        icon: Icon(
+                          activity.externalUri == null
+                              ? Icons.arrow_forward_rounded
+                              : Icons.open_in_new_rounded,
+                          size: 15,
+                        ),
                         label: Text(activity.actionLabel!),
                         style: TextButton.styleFrom(
                           padding: const EdgeInsets.symmetric(
@@ -3868,7 +4170,8 @@ class _TalkActivityCard extends StatelessWidget {
                           tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                         ),
                       ),
-                      if (appDesktopHostBridge.supported &&
+                      if (activity.actionRoute != null &&
+                          appDesktopHostBridge.supported &&
                           DesktopHostBridge.isWorkspaceRoute(
                             activity.actionRoute!,
                           ))
@@ -3886,6 +4189,28 @@ class _TalkActivityCard extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Future<void> _activate(BuildContext context) async {
+    final route = activity.actionRoute;
+    if (route != null) {
+      context.go(route);
+      return;
+    }
+    final uri = activity.externalUri;
+    if (uri == null) return;
+    var opened = false;
+    try {
+      opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (_) {
+      opened = false;
+    }
+    if (opened || !context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Asael could not open this Google Workspace file.'),
       ),
     );
   }

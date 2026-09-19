@@ -65,53 +65,76 @@ const deleteScope = createExecutionScope({
 
 type ObjectRow = Record<string, unknown>;
 
-function createObjectHarness() {
+function createObjectHarness(options: {
+  sourceKind?: "capture_asset" | "generated_artifact";
+  sourceId?: string;
+  objectVersion?: number;
+  bytes?: Uint8Array;
+  mediaType?: string;
+  executionScope?: typeof scope;
+  permissionGrantIds?: string[];
+  allowedPurposeIds?: string[];
+  retentionPolicyId?: string;
+  extractionState?: "pending" | "completed";
+  projectId?: string | null;
+} = {}) {
+  const harnessSourceKind = options.sourceKind || "capture_asset";
+  const harnessSourceId = options.sourceId || sourceId;
+  const harnessObjectVersion = options.objectVersion || 1;
+  const harnessBytes = options.bytes || bytes;
+  const harnessContentSha256 = createHash("sha256")
+    .update(harnessBytes)
+    .digest("hex");
+  const harnessScope = options.executionScope || scope;
   const objectId = `asset_object_${sha256(JSON.stringify({
     schemaVersion: 1,
     tenantId,
     ownerActorId: actorId,
-    sourceKind: "capture_asset",
-    sourceId,
-    objectVersion: 1,
-    contentSha256,
+    sourceKind: harnessSourceKind,
+    sourceId: harnessSourceId,
+    objectVersion: harnessObjectVersion,
+    contentSha256: harnessContentSha256,
   })).slice(0, 48)}`;
   const locator = [
     "v1",
     sha256(tenantId).slice(0, 32),
     sha256(actorId).slice(0, 32),
-    "capture_asset",
-    sha256(sourceId).slice(0, 48),
-    "v1",
-    `${contentSha256}.bin`,
+    harnessSourceKind,
+    sha256(harnessSourceId).slice(0, 48),
+    `v${harnessObjectVersion}`,
+    `${harnessContentSha256}.bin`,
   ].join("/");
   let row: ObjectRow = {
     id: objectId,
     tenant_id: tenantId,
     owner_actor_id: actorId,
     workspace_id: null,
-    project_id: null,
+    project_id: options.projectId || null,
     mission_id: null,
-    source_kind: "capture_asset",
-    source_id: sourceId,
-    object_version: 1,
+    source_kind: harnessSourceKind,
+    source_id: harnessSourceId,
+    object_version: harnessObjectVersion,
     storage_provider: "vercel_blob_private",
     storage_locator: locator,
     storage_etag: null,
     status: "pending",
-    content_sha256: contentSha256,
-    byte_count: bytes.byteLength,
-    media_type: "application/pdf",
+    content_sha256: harnessContentSha256,
+    byte_count: harnessBytes.byteLength,
+    media_type: options.mediaType || "application/pdf",
     visibility: "user_private",
     sensitivity: "confidential",
-    permission_grant_ids: ["first_party.capture"],
-    allowed_purpose_ids: ["capture.asset.download", "capture.asset.extract"],
-    retention_policy_id: "retention.capture.owner-controlled",
+    permission_grant_ids: options.permissionGrantIds || ["first_party.capture"],
+    allowed_purpose_ids: options.allowedPurposeIds || [
+      "capture.asset.download",
+      "capture.asset.extract",
+    ],
+    retention_policy_id: options.retentionPolicyId || "retention.capture.owner-controlled",
     retention_expires_at: null,
-    extraction_state: "pending",
+    extraction_state: options.extractionState || "pending",
     upload_job_id: null,
     failure_count: 0,
     failure_code: null,
-    execution_scope: scope,
+    execution_scope: harnessScope,
     ready_at: null,
     deleted_at: null,
     scrubbed_at: null,
@@ -138,7 +161,10 @@ function createObjectHarness() {
         };
         return [row];
       }
-      if (query.includes("SELECT content AS bytes")) return [{ bytes }];
+      if (
+        query.includes("SELECT content AS bytes") ||
+        query.includes("SELECT content_bytes AS bytes")
+      ) return [{ bytes: harnessBytes }];
       if (query.includes("SET status = 'ready'")) {
         row = {
           ...row,
@@ -171,6 +197,9 @@ function createObjectHarness() {
         return row.status === "ready" ? [row] : [];
       }
       if (query.includes("SELECT 1 FROM omni_capture_assets")) return [{}];
+      if (query.includes("SELECT 1 FROM omni_generated_artifact_versions")) {
+        return [{}];
+      }
       if (query.includes("SELECT * FROM omni_asset_objects")) return [row];
       throw new Error(`Unexpected object-plane query: ${query}`);
     }),
@@ -178,7 +207,14 @@ function createObjectHarness() {
       transaction: vi.fn(async (callback: (tx: unknown) => unknown) => callback(sql)),
     },
   );
-  return { objectId, locator, sql, getRow: () => row };
+  return {
+    objectId,
+    locator,
+    sql,
+    bytes: harnessBytes,
+    contentSha256: harnessContentSha256,
+    getRow: () => row,
+  };
 }
 
 beforeEach(() => {
@@ -252,6 +288,79 @@ describe("tenant-scoped private asset object plane", () => {
       expect.objectContaining({ type: "asset_object.ready" }),
       { sql: harness.sql },
     );
+  });
+
+  it("keeps generated artifact versions private and reads their exact canonical source", async () => {
+    const artifactId = `generated_artifact_${"b".repeat(48)}`;
+    const artifactBytes = new Uint8Array(Buffer.from("generated presentation bytes"));
+    const artifactScope = createExecutionScope({
+      tenantId,
+      initiatingActorId: actorId,
+      executingPrincipalType: "system",
+      executingPrincipalId: "artifact-renderer",
+      projectId: "project:proposal-a",
+      correlationId: "artifact-render-a",
+      capabilityGrantIds: ["first_party.generated_artifacts"],
+      purpose: "artifact.render",
+    });
+    const harness = createObjectHarness({
+      sourceKind: "generated_artifact",
+      sourceId: artifactId,
+      objectVersion: 3,
+      bytes: artifactBytes,
+      mediaType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      executionScope: artifactScope,
+      permissionGrantIds: ["first_party.generated_artifacts"],
+      allowedPurposeIds: ["artifact.download", "artifact.preview"],
+      retentionPolicyId: "retention.generated_artifact.owner_controlled",
+      extractionState: "completed",
+      projectId: "project:proposal-a",
+    });
+    mocks.getSql.mockReturnValue(harness.sql);
+    await stageAssetObject({
+      tenantId,
+      ownerActorId: actorId,
+      sourceKind: "generated_artifact",
+      sourceId: artifactId,
+      objectVersion: 3,
+      contentSha256: harness.contentSha256,
+      byteCount: artifactBytes.byteLength,
+      mediaType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      extractionState: "completed",
+      executionScope: artifactScope,
+      projectId: "project:proposal-a",
+      allowedPurposeIds: ["artifact.download", "artifact.preview"],
+      retentionPolicyId: "retention.generated_artifact.owner_controlled",
+    }, { sql: harness.sql as never });
+    const commitJob = await mocks.enqueueOperationJob.mock.results[0].value;
+    const stored = new Map<string, Uint8Array>();
+    const adapter: PrivateAssetBlobAdapter = {
+      read: vi.fn(async (locator) => stored.has(locator)
+        ? { bytes: stored.get(locator)!, etag: "etag-generated-a" }
+        : null),
+      put: vi.fn(async (locator, body) => {
+        stored.set(locator, new Uint8Array(body));
+      }),
+      delete: vi.fn(async (locator) => {
+        stored.delete(locator);
+      }),
+    };
+
+    await commitAssetObjectJob(commitJob, { adapter });
+    await expect(readReadyAssetObject({
+      tenantId,
+      ownerActorId: actorId,
+      sourceKind: "generated_artifact",
+      sourceId: artifactId,
+      objectVersion: 3,
+      purpose: "artifact.preview",
+      adapter,
+    })).resolves.toMatchObject({ bytes: artifactBytes });
+    expect(harness.locator).toContain("/generated_artifact/");
+    expect(harness.sql.mock.calls.some(([strings]) =>
+      (strings as TemplateStringsArray).join(" ")
+        .includes("FROM omni_generated_artifact_versions")
+    )).toBe(true);
   });
 
   it("binds delivery to owner and purpose, then revokes it before scrubbing", async () => {

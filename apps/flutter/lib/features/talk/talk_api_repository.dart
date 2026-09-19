@@ -72,9 +72,19 @@ class ApiTalkRepository
     final path = switch (artifact.kind) {
       'computer' => throw const LegacyComputerPreviewRetired(),
       'image' || 'video' => NativePaths.captureAssetGet(assetId, content: true),
+      'presentation' when artifact.isPresentation =>
+        NativePaths.artifactsContent(
+          assetId,
+          version: artifact.artifactVersion,
+        ),
       _ => throw StateError('This artifact source is not supported.'),
     };
     final bytes = await api.getBytes(path);
+    if (artifact.isPresentation && bytes.length != artifact.byteCount) {
+      throw const FormatException(
+        'The generated artifact did not match its verified projection.',
+      );
+    }
     return TalkArtifactContent(assetId: assetId, bytes: bytes);
   }
 

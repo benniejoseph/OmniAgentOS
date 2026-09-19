@@ -172,6 +172,64 @@ export const governedTools: ToolDefinition[] = [
     },
   },
   ...googleDriveMutationTools(),
+  googleMutationTool({
+    id: "google.docs.create",
+    name: "Create Google Document",
+    description: "Create one native Google document from either bounded plain text or structured headings, paragraphs, and bullet lists. Exactly one of bodyText or blocks is required; no binary payload is accepted.",
+    properties: {
+      title: { type: "string", minLength: 1, maxLength: 255 },
+      bodyText: {
+        type: "string",
+        minLength: 1,
+        maxLength: 100_000,
+        description: "Plain document body. Use this or blocks, never both.",
+      },
+      blocks: {
+        type: "array",
+        minItems: 1,
+        maxItems: 100,
+        description: "Structured document body. Use this or bodyText, never both.",
+        items: {
+          anyOf: [
+            {
+              ...objectSchema({
+                type: { type: "string", enum: ["heading"] },
+                level: { type: "integer", minimum: 1, maximum: 3 },
+                text: { type: "string", minLength: 1, maxLength: 10_000 },
+              }),
+              required: ["type", "level", "text"],
+            },
+            {
+              ...objectSchema({
+                type: { type: "string", enum: ["paragraph"] },
+                text: { type: "string", minLength: 1, maxLength: 10_000 },
+              }),
+              required: ["type", "text"],
+            },
+            {
+              ...objectSchema({
+                type: { type: "string", enum: ["bullets"] },
+                items: {
+                  type: "array",
+                  minItems: 1,
+                  maxItems: 30,
+                  items: { type: "string", minLength: 1, maxLength: 2_000 },
+                },
+              }),
+              required: ["type", "items"],
+            },
+          ],
+        },
+      },
+    },
+    required: ["title"],
+    constraints: {
+      oneOf: [
+        { required: ["bodyText"], not: { required: ["blocks"] } },
+        { required: ["blocks"], not: { required: ["bodyText"] } },
+      ],
+    },
+  }),
   {
     id: "google.docs.read",
     name: "Read Google Document",
@@ -194,6 +252,22 @@ export const governedTools: ToolDefinition[] = [
     description: "Replace the bounded first-tab body text of one exact text-only Google document only if its prior text and structure digests still match. Refuses tables and embedded objects.",
     resourceKey: "documentId",
     resourceDescription: "Exact Google document ID.",
+  }),
+  googleMutationTool({
+    id: "google.sheets.create",
+    name: "Create Google Spreadsheet",
+    description: "Create one native Google spreadsheet and add a deterministic Asael-owned tab with a bounded sheet name and up to 5,000 RAW values. The provider's default tab is left untouched to avoid overwriting concurrent collaborator changes; formula-like strings beginning with '=' are refused for exact verification.",
+    properties: {
+      title: { type: "string", minLength: 1, maxLength: 255 },
+      sheetName: {
+        type: "string",
+        minLength: 1,
+        maxLength: 100,
+        pattern: "^[^\\[\\]:*?/\\\\\\u0000-\\u001f\\u007f]+$",
+      },
+      values: googleSheetValuesSchema(),
+    },
+    required: ["title", "sheetName", "values"],
   }),
   {
     id: "google.sheets.read",
@@ -229,29 +303,40 @@ export const governedTools: ToolDefinition[] = [
       ...objectSchema({
         spreadsheetId: googleResourceId("Exact Google spreadsheet ID."),
         range: googleSheetRange(),
-        values: {
-          type: "array",
-          minItems: 1,
-          maxItems: 50,
-          items: {
-            type: "array",
-            minItems: 1,
-            maxItems: 100,
-            items: {
-              description: "A RAW cell value. Strings beginning with '=' are refused because they are indistinguishable from formulas during exact verification.",
-              anyOf: [
-                { type: "string", maxLength: 50_000, pattern: "^(?:[^=]|$)" },
-                { type: "number" },
-                { type: "boolean" },
-              ],
-            },
-          },
-        },
+        values: googleSheetValuesSchema(),
         expectedCurrentSha256: sha256Schema("Digest returned by google.sheets.read."),
       }),
       required: ["spreadsheetId", "range", "values", "expectedCurrentSha256"],
     },
   },
+  googleMutationTool({
+    id: "google.slides.create",
+    name: "Create Google Slides Presentation",
+    description: "Create one native Google presentation containing 1 to 24 clean themed slides with bounded editable title, body, and bullet text shapes. No image, binary payload, or arbitrary rendering code is accepted.",
+    properties: {
+      title: { type: "string", minLength: 1, maxLength: 255 },
+      slides: {
+        type: "array",
+        minItems: 1,
+        maxItems: 24,
+        items: {
+          ...objectSchema({
+            title: { type: "string", minLength: 1, maxLength: 240 },
+            body: { type: "string", minLength: 1, maxLength: 2_000 },
+            bullets: {
+              type: "array",
+              minItems: 1,
+              maxItems: 12,
+              items: { type: "string", minLength: 1, maxLength: 500 },
+            },
+          }),
+          required: ["title"],
+          anyOf: [{ required: ["body"] }, { required: ["bullets"] }],
+        },
+      },
+    },
+    required: ["title", "slides"],
+  }),
   {
     id: "google.slides.read",
     name: "Read Google Slides Text",
@@ -1035,6 +1120,28 @@ function googleSheetRange() {
   };
 }
 
+function googleSheetValuesSchema() {
+  return {
+    type: "array",
+    description: "At most 5,000 cells and 200,000 total string characters; exact aggregate limits are enforced before credentials are opened.",
+    minItems: 1,
+    maxItems: 50,
+    items: {
+      type: "array",
+      minItems: 1,
+      maxItems: 100,
+      items: {
+        description: "A RAW cell value. Strings beginning with '=' are refused because they are indistinguishable from formulas during exact verification.",
+        anyOf: [
+          { type: "string", maxLength: 50_000, pattern: "^(?:[^=]|$)" },
+          { type: "number" },
+          { type: "boolean" },
+        ],
+      },
+    },
+  };
+}
+
 function sha256Schema(description: string) {
   return {
     type: "string",
@@ -1052,6 +1159,7 @@ function googleMutationTool(input: {
   properties: Record<string, unknown>;
   required: string[];
   reversible?: boolean;
+  constraints?: Record<string, unknown>;
 }): ToolDefinition {
   return {
     id: input.id,
@@ -1067,6 +1175,7 @@ function googleMutationTool(input: {
     inputSchema: {
       ...objectSchema(input.properties),
       required: input.required,
+      ...(input.constraints || {}),
     },
   };
 }

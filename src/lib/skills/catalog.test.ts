@@ -23,6 +23,7 @@ const curatedSkillIds = [
   "communication.clear-writing",
   "automation.workflow-design",
   "learning.knowledge-synthesis",
+  "creation.document-studio",
 ];
 
 describe("built-in Skill catalog", () => {
@@ -94,6 +95,7 @@ describe("built-in Skill catalog", () => {
       "communication.clear-writing": "14407562a2c6a97b4c587cc492536d1702ea9ed6e42144aba5e861a47d94c0ec",
       "automation.workflow-design": "403054176ec73262579d3f90b0c8f50c0b4c978385bae2684a3d8bc00ac7629b",
       "learning.knowledge-synthesis": "5effb4af8fd1ba83b9a9a6fcf54a9171172f1c7278ecdf668a443066277a23f1",
+      "creation.document-studio": "15ecba4cd67d7eb8fb5c19f09a98a602de47c4c735259e0ed935e33321bc2542",
     } as const;
 
     expect(Object.keys(expectedSkillDigests)).toEqual(BUILT_IN_SKILL_IDS);

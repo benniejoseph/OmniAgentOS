@@ -36,12 +36,12 @@ Set these through the platform secret/configuration store, never in source contr
 - `NEXT_PUBLIC_APP_URL`: canonical HTTPS origin. Set it to exactly `https://asael.bennierichard.com`. It is public and build-inlined, not a secret.
 - `OMNIAGENT_NATIVE_MIN_ANDROID_VERSION`, `OMNIAGENT_NATIVE_MIN_IOS_VERSION`, and `OMNIAGENT_NATIVE_MIN_MACOS_VERSION`: optional stable `major.minor.patch` minimums for native compatibility telemetry. An absent or empty value defaults to `1.0.0`; a malformed configured value invalidates the policy and holds adoption unavailable. These settings do not authorize Agent enrollment.
 
-Native contract artifacts are committed immutable release inputs. Source contract v17
-is the release candidate and frozen v16 is the one supported previous version; older
+Native contract artifacts are committed immutable release inputs. Source contract v18
+is the release candidate and frozen v17 is the one supported previous version; older
 versions remain historical archives and a published version is never regenerated in place. Run
 `npm run check:native-contracts` before a native-contract release; the check
 fails if the generated OpenAPI, event schema, fixtures, integrity manifests,
-Dart SDK, or frozen v7-v16 document hashes drift. Removing an archived version
+Dart SDK, or frozen v7-v17 document hashes drift. Removing an archived version
 requires a separately reviewed adoption decision and is not implied by a
 Vercel deployment.
 
