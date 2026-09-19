@@ -1729,6 +1729,16 @@ class _MacosAgentDialogState extends State<_MacosAgentDialog> {
                   padding: const EdgeInsets.symmetric(vertical: 4),
                   child: Column(
                     children: [
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(12, 6, 12, 4),
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            '${_selectedSkills.length}/$maxAssignedAgentSkills selected · every assigned Skill stays in the Agent context',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ),
+                      ),
                       for (final skill in _selectableSkills)
                         CheckboxListTile(
                           dense: true,
@@ -1741,11 +1751,14 @@ class _MacosAgentDialogState extends State<_MacosAgentDialog> {
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                 ),
-                          onChanged: (value) => setState(() {
-                            value == true
-                                ? _selectedSkills.add(skill.id)
-                                : _selectedSkills.remove(skill.id);
-                          }),
+                          onChanged:
+                              canSelectAgentSkill(_selectedSkills, skill.id)
+                              ? (value) => setState(() {
+                                  value == true
+                                      ? _selectedSkills.add(skill.id)
+                                      : _selectedSkills.remove(skill.id);
+                                })
+                              : null,
                         ),
                     ],
                   ),
@@ -1762,7 +1775,9 @@ class _MacosAgentDialogState extends State<_MacosAgentDialog> {
       ),
       FilledButton(
         key: const Key('macos-agent-save'),
-        onPressed: _save,
+        onPressed: _selectedSkills.length > maxAssignedAgentSkills
+            ? null
+            : _save,
         child: const Text('Save agent'),
       ),
     ],

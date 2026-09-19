@@ -18,6 +18,7 @@ import {
 import { generateModelStructured } from "@/lib/models/gateway";
 import { buildAgentInstructions } from "@/lib/orchestration/prompts";
 import type { AgentRunRequest } from "@/lib/orchestration/types";
+import { assignedSkillsWithinRuntimeLimit } from "@/lib/skills/limits";
 import {
   AUTHORIZED_CONTEXT_RETRIEVAL_SOURCES,
   AUTHORIZED_MEMORY_ONLY_RETRIEVAL_SOURCES,
@@ -1443,6 +1444,7 @@ async function buildPlan(
   budget: WorkflowBudgetSession,
 ) {
   const profile = workflowAgentProfile(detail);
+  const runtimeSkills = assignedSkillsWithinRuntimeLimit(profile?.skills || []);
   const contextSelection = workflowContextSelection(detail);
   const durableContext = await workflowDurableContextForRun(detail);
   const savedProcedure = workflowSavedProcedure(detail);
@@ -1536,10 +1538,10 @@ async function buildPlan(
       requiredAcceptanceCriteria: savedProcedure?.schemaVersion === 2
         ? savedProcedure.acceptanceCriteria
         : undefined,
-      allowedToolIds: profile ? [...new Set([...profile.toolIds, ...profile.skills.flatMap((skill) => skill.toolIds)])] : undefined,
+      allowedToolIds: profile ? [...new Set([...profile.toolIds, ...runtimeSkills.flatMap((skill) => skill.toolIds)])] : undefined,
       readOnlyTools: profile ? profile.approvalPolicy === "read_only" || profile.autonomy === "assist" : undefined,
       agentInstructions: [
-        profile ? [profile.instructions, ...profile.skills.map((skill) => `${skill.name}: ${skill.instructions}`)].join("\n\n") : "",
+        profile ? [profile.instructions, ...runtimeSkills.map((skill) => `${skill.name}: ${skill.instructions}`)].join("\n\n") : "",
         replanFeedback.trim(),
       ].filter(Boolean).join("\n\n") || undefined,
       ...(replanDirective && previousPlan

@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 
 typedef Json = Map<String, dynamic>;
 
+const maxAssignedAgentSkills = 8;
+
 List<String> _strings(Object? value) =>
     (value as List? ?? const []).map((e) => e.toString()).toList();
 
@@ -51,6 +53,10 @@ Set<String> filterSelectableSkillIds(
       .toSet();
   return selectedIds.where(selectableIds.contains).toSet();
 }
+
+bool canSelectAgentSkill(Set<String> selectedIds, String skillId) =>
+    selectedIds.contains(skillId) ||
+    selectedIds.length < maxAssignedAgentSkills;
 
 class AgentProfile {
   const AgentProfile({
@@ -739,14 +745,25 @@ class _AgentDialogState extends State<_AgentDialog> {
                 child: Text('Assigned skills'),
               ),
             ),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                '${selected.length}/$maxAssignedAgentSkills selected',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ),
             ...selectableSkills.map(
               (s) => CheckboxListTile(
                 dense: true,
                 value: selected.contains(s.id),
                 title: Text(s.name),
-                onChanged: (v) => setState(
-                  () => v == true ? selected.add(s.id) : selected.remove(s.id),
-                ),
+                onChanged: canSelectAgentSkill(selected, s.id)
+                    ? (v) => setState(
+                        () => v == true
+                            ? selected.add(s.id)
+                            : selected.remove(s.id),
+                      )
+                    : null,
               ),
             ),
           ],
@@ -759,27 +776,29 @@ class _AgentDialogState extends State<_AgentDialog> {
         child: const Text('Cancel'),
       ),
       FilledButton(
-        onPressed: () {
-          if (name.text.trim().isEmpty ||
-              role.text.trim().isEmpty ||
-              instructions.text.trim().length < 10) {
-            return;
-          }
-          Navigator.pop(context, {
-            'name': name.text.trim(),
-            'role': role.text.trim(),
-            'description': description.text.trim(),
-            'instructions': instructions.text.trim(),
-            'status': status,
-            'accent': accent,
-            'modelPolicy': model,
-            'autonomy': autonomy,
-            'approvalPolicy': approval,
-            'memoryScope': memory,
-            'skillIds': selected.toList(),
-            'toolIds': <String>[],
-          });
-        },
+        onPressed: selected.length > maxAssignedAgentSkills
+            ? null
+            : () {
+                if (name.text.trim().isEmpty ||
+                    role.text.trim().isEmpty ||
+                    instructions.text.trim().length < 10) {
+                  return;
+                }
+                Navigator.pop(context, {
+                  'name': name.text.trim(),
+                  'role': role.text.trim(),
+                  'description': description.text.trim(),
+                  'instructions': instructions.text.trim(),
+                  'status': status,
+                  'accent': accent,
+                  'modelPolicy': model,
+                  'autonomy': autonomy,
+                  'approvalPolicy': approval,
+                  'memoryScope': memory,
+                  'skillIds': selected.toList(),
+                  'toolIds': <String>[],
+                });
+              },
         child: const Text('Save'),
       ),
     ],

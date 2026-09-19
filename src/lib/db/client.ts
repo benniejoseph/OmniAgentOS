@@ -26,6 +26,7 @@ import {
 import { ensureSemanticDecisionShadowPilotV1 } from "@/lib/db/semantic-decision-schema";
 import { ensureMobilePushReceiptCanaryV1 } from "@/lib/db/mobile-push-receipt-schema";
 import { ensureDeclarativePluginsV1 } from "@/lib/db/plugin-schema";
+import { ensureBuiltinSkillCatalogV2 } from "@/lib/db/builtin-skill-catalog-schema";
 import schemaMigrationManifest from "../../../schema-migrations.json";
 
 // ---------------------------------------------------------------------------
@@ -1638,6 +1639,10 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[185],
       up: ensureDeclarativePluginsV1,
+    },
+    {
+      ...databaseSchemaMigrations[186],
+      up: ensureBuiltinSkillCatalogV2,
     },
   ];
 }

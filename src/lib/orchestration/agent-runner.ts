@@ -70,7 +70,11 @@ import {
 import { selectAgentModel } from "@/lib/openai/model-router";
 import { recordRuntimeEventSafely } from "@/lib/observability/store";
 import { enqueueMemoryConsolidationJob } from "@/lib/operations/background-jobs";
-import { buildAgentInput, buildAgentInstructions } from "@/lib/orchestration/prompts";
+import {
+  buildAgentInput,
+  buildAgentInstructions,
+} from "@/lib/orchestration/prompts";
+import { assignedSkillsWithinRuntimeLimit } from "@/lib/skills/limits";
 import { modelAssignmentScopeForAgent } from "@/lib/orchestration/computer-use-routing";
 import {
   formatCouncilContributions,
@@ -1002,9 +1006,12 @@ export async function* runAgent(
               }),
         })
       : Promise.resolve(fallbackContextPack(query));
+    const runtimeAgentSkills = assignedSkillsWithinRuntimeLimit(
+      request.agentProfile?.skills || [],
+    );
     const profileConfiguredToolIds = request.agentProfile ? [...new Set([
       ...request.agentProfile.toolIds,
-      ...request.agentProfile.skills.flatMap((skill) => skill.toolIds),
+      ...runtimeAgentSkills.flatMap((skill) => skill.toolIds),
     ])] : undefined;
     const localComputerToolIds = [
       "local.macos.observe",
@@ -1247,7 +1254,9 @@ export async function* runAgent(
       agentId: request.agentId,
       specialistIds: request.specialistIds,
       adaptationGuidance,
-      profile: request.agentProfile,
+      profile: request.agentProfile
+        ? { ...request.agentProfile, skills: runtimeAgentSkills }
+        : undefined,
       computerUse: computerUseTarget,
     });
     const toolIds = toolbox.tools
@@ -1305,7 +1314,7 @@ export async function* runAgent(
           modelTier: modelRoute.tier,
           modelRouteId: runtimeModel.assignmentId,
           toolIds,
-          skillIds: (request.agentProfile?.skills || []).map((skill) => skill.id),
+          skillIds: runtimeAgentSkills.map((skill) => skill.id),
           policyIds: [
             request.agentProfile?.approvalPolicy || "risk_based",
             request.agentProfile?.autonomy || "governed",
@@ -1383,7 +1392,7 @@ export async function* runAgent(
       toolCount: toolIds.length,
       toolIds,
       approvalToolCount,
-      skillIds: (request.agentProfile?.skills || [])
+      skillIds: runtimeAgentSkills
         .map((skill) => skill.id)
         .sort((left, right) => left.localeCompare(right)),
       toolboxSha256: stableToolboxFingerprint(toolbox.tools),
@@ -5870,6 +5879,7 @@ function buildCompatibilityAgentIdentity(
   const actorId = request.securityContext?.actorId ||
     request.executionScope?.initiatingActorId || request.actorId?.trim();
   if (!profile || !logicalAgentId || !actorId) return undefined;
+  const runtimeSkills = assignedSkillsWithinRuntimeLimit(profile.skills);
   const effectiveAt = "2026-09-07T00:00:00.000Z";
   return buildCustomAgentIdentityV1({
     agent: {
@@ -5888,12 +5898,12 @@ function buildCompatibilityAgentIdentity(
       autonomy: profile.autonomy,
       approvalPolicy: profile.approvalPolicy,
       memoryScope: profile.memoryScope,
-      skillIds: profile.skills.map((skill) => skill.id),
+      skillIds: runtimeSkills.map((skill) => skill.id),
       toolIds: profile.toolIds,
       createdAt: effectiveAt,
       updatedAt: effectiveAt,
     },
-    skills: profile.skills.map((skill) => ({
+    skills: runtimeSkills.map((skill) => ({
       ...skill,
       tenantId,
       actorId,

@@ -39,6 +39,7 @@ import type {
   CustomAgentDefinition,
   RequestCustomAgentDefinition,
 } from "@/lib/skills/types";
+import { MAX_ASSIGNED_SKILLS } from "@/lib/skills/limits";
 import styles from "@/components/agent-arsenal-workspace.module.css";
 import type { TrashActionPreviewV1 } from "@/lib/trash/contracts";
 
@@ -664,6 +665,8 @@ function BuilderDialog({
       skills.some((skill) => skill.id === id && skill.selectable),
     ),
   );
+  const assignedSkillLimitReached =
+    selectedSkills.length >= MAX_ASSIGNED_SKILLS;
   const [selectedTools, setSelectedTools] = useState(
     existingAgent?.toolIds || existingSkill?.toolIds || [],
   );
@@ -1008,7 +1011,14 @@ function BuilderDialog({
                 </select>
               </label>
               <fieldset className="full">
-                <legend>Skills</legend>
+                <legend>
+                  Skills · {selectedSkills.length}/{MAX_ASSIGNED_SKILLS}
+                </legend>
+                <p className="builder-field-note" aria-live="polite">
+                  Choose up to {MAX_ASSIGNED_SKILLS} focused playbooks. This
+                  keeps every assigned Skill visible to the Agent as well as
+                  available through its governed tools.
+                </p>
                 <div className="builder-choice-grid">
                   {skills
                     .filter((skill) =>
@@ -1020,6 +1030,10 @@ function BuilderDialog({
                         checked={selectedSkills.includes(skill.id)}
                         label={skill.name}
                         meta={skill.builtIn ? "core" : `v${skill.version}`}
+                        disabled={
+                          assignedSkillLimitReached &&
+                          !selectedSkills.includes(skill.id)
+                        }
                         onChange={() =>
                           setSelectedSkills(toggle(selectedSkills, skill.id))
                         }
@@ -1080,18 +1094,31 @@ function BuilderDialog({
 
 function Choice({
   checked,
+  disabled = false,
   label,
   meta,
   onChange,
 }: {
   checked: boolean;
+  disabled?: boolean;
   label: string;
   meta: string;
   onChange: () => void;
 }) {
   return (
-    <label className={clsx("builder-choice", checked && "is-selected")}>
-      <input type="checkbox" checked={checked} onChange={onChange} />
+    <label
+      className={clsx(
+        "builder-choice",
+        checked && "is-selected",
+        disabled && "is-disabled",
+      )}
+    >
+      <input
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        onChange={onChange}
+      />
       <span>
         <strong>{label}</strong>
         <small>{meta}</small>

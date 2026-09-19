@@ -4,6 +4,8 @@ import {
   openAIResponseInput,
 } from "@/lib/openai/client";
 import { buildAgentInput, buildAgentInstructions } from "@/lib/orchestration/prompts";
+import { DEFAULT_CUSTOM_AGENT_PERSONA } from "@/lib/agents/persona";
+import { MAX_ASSIGNED_SKILLS } from "@/lib/skills/limits";
 
 describe("agent prompt provenance", () => {
   it("keeps retrieved and web content out of privileged instructions", () => {
@@ -147,6 +149,38 @@ describe("agent prompt provenance", () => {
     expect(instructions).toContain("Allowed subject domains: Research; Source comparison");
     expect(instructions).toContain("Escalation behavior:");
     expect(instructions).toContain("Success measures:");
+  });
+
+  it("includes only the bounded assigned Skill set in deterministic order", () => {
+    const skills = Array.from(
+      { length: MAX_ASSIGNED_SKILLS + 1 },
+      (_, index) => ({
+        name: `Skill ${index + 1}`,
+        description: `Description ${index + 1}`,
+        instructions: `Instruction ${index + 1}`,
+      }),
+    );
+    const instructions = buildAgentInstructions({
+      mode: "execute",
+      agentId: "custom-agent",
+      profile: {
+        name: "Custom Agent",
+        role: "Specialist",
+        description: "Executes one bounded assignment.",
+        instructions: "Follow the assigned Skills in order.",
+        persona: DEFAULT_CUSTOM_AGENT_PERSONA,
+        autonomy: "governed",
+        approvalPolicy: "risk_based",
+        memoryScope: "all",
+        skills,
+      },
+    });
+
+    expect(instructions).toContain(`Skill ${MAX_ASSIGNED_SKILLS}`);
+    expect(instructions).not.toContain(`Skill ${MAX_ASSIGNED_SKILLS + 1}`);
+    expect(instructions.indexOf("Skill 1")).toBeLessThan(
+      instructions.indexOf(`Skill ${MAX_ASSIGNED_SKILLS}`),
+    );
   });
 
   it("includes owner-activated adaptations without treating them as authority", () => {

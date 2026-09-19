@@ -14,6 +14,7 @@ import { createExecutionScope } from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
 import { sourceContractSha256 } from "@/lib/sources/contracts";
 import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
+import { MAX_ASSIGNED_SKILLS } from "@/lib/skills/limits";
 
 const mocks = vi.hoisted(() => ({
   appendContextCompilerV2CanaryEvent: vi.fn(),
@@ -340,6 +341,45 @@ describe("agent memory scope", () => {
         preferredToolIds: [],
       }),
     );
+  });
+
+  it("never exposes tools from assigned Skills omitted from the runtime prompt", async () => {
+    const scopedRequest = request("session");
+    const skills = Array.from(
+      { length: MAX_ASSIGNED_SKILLS + 1 },
+      (_, index) => ({
+        id: `skill-${index + 1}`,
+        name: `Skill ${index + 1}`,
+        description: `Description ${index + 1}`,
+        instructions: `Instruction ${index + 1}`,
+        toolIds: [`skill.tool.${index + 1}`],
+      }),
+    );
+    scopedRequest.agentProfile!.skills = skills;
+    mocks.loadProgressiveAgentTools.mockResolvedValue({
+      definitions: skills.map((skill) => localToolDefinition(skill.toolIds[0])),
+    });
+
+    const events = await collectRequest(scopedRequest);
+    const runtimeSkills = skills.slice(0, MAX_ASSIGNED_SKILLS);
+    const runtimeToolIds = runtimeSkills.map((skill) => skill.toolIds[0]);
+
+    expect(mocks.loadProgressiveAgentTools).toHaveBeenCalledWith(
+      expect.objectContaining({ preferredToolIds: runtimeToolIds }),
+    );
+    expect(mocks.streamResponseTurn.mock.calls[0]?.[0].instructions).toContain(
+      `Skill ${MAX_ASSIGNED_SKILLS}`,
+    );
+    expect(mocks.streamResponseTurn.mock.calls[0]?.[0].instructions).not.toContain(
+      `Skill ${MAX_ASSIGNED_SKILLS + 1}`,
+    );
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "harness",
+      skillIds: runtimeSkills.map((skill) => skill.id),
+      toolIds: [...runtimeToolIds].sort((left, right) =>
+        left.localeCompare(right)
+      ),
+    }));
   });
 
   it("fails project mode closed instead of broadening it to tenant memory", async () => {

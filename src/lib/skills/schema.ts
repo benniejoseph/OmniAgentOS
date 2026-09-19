@@ -3,8 +3,12 @@ import {
   agentPersonaV1Schema,
   DEFAULT_CUSTOM_AGENT_PERSONA,
 } from "@/lib/agents/persona";
+import { MAX_ASSIGNED_SKILLS } from "@/lib/skills/limits";
 
 const ids = z.array(z.string().min(1).max(120)).max(50);
+const assignedSkillIds = z
+  .array(z.string().min(1).max(120))
+  .max(MAX_ASSIGNED_SKILLS);
 const tags = z.array(z.string().min(1).max(100)).max(30);
 
 const skillFields = {
@@ -40,7 +44,7 @@ const customAgentFields = {
   autonomy: z.enum(["assist", "governed", "execute"]),
   approvalPolicy: z.enum(["always", "risk_based", "read_only"]),
   memoryScope: z.enum(["session", "project", "all"]),
-  skillIds: ids,
+  skillIds: assignedSkillIds,
   toolIds: ids,
 };
 

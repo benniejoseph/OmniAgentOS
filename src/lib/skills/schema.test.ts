@@ -5,6 +5,7 @@ import {
   skillInputSchema,
   skillPatchSchema,
 } from "@/lib/skills/schema";
+import { MAX_ASSIGNED_SKILLS } from "@/lib/skills/limits";
 
 describe("skill and agent input schemas", () => {
   it("applies defaults when creating an agent or skill", () => {
@@ -55,5 +56,32 @@ describe("skill and agent input schemas", () => {
       description: "Updated skill description",
     });
     expect(skillPatchSchema.safeParse({}).success).toBe(false);
+  });
+
+  it("rejects create and update inputs above the assigned Skill limit", () => {
+    const atLimit = Array.from(
+      { length: MAX_ASSIGNED_SKILLS },
+      (_, index) => `skill-${index + 1}`,
+    );
+    const overLimit = [...atLimit, "skill-over-limit"];
+    const agent = {
+      name: "Researcher",
+      role: "Research agent",
+      description: "Finds and synthesizes evidence.",
+      instructions: "Return concise, cited findings.",
+    };
+
+    expect(customAgentInputSchema.safeParse({
+      ...agent,
+      skillIds: atLimit,
+    }).success).toBe(true);
+    expect(customAgentInputSchema.safeParse({
+      ...agent,
+      skillIds: overLimit,
+    }).success).toBe(false);
+    expect(customAgentPatchSchema.safeParse({ skillIds: atLimit }).success)
+      .toBe(true);
+    expect(customAgentPatchSchema.safeParse({ skillIds: overLimit }).success)
+      .toBe(false);
   });
 });

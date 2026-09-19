@@ -758,9 +758,11 @@ summary:focus-visible,
 .builder-dialog .full { grid-column: 1 / -1; }
 .builder-dialog fieldset { padding-top: .25rem; }
 .builder-dialog legend { margin-bottom: .45rem; }
+.builder-field-note { margin: -.1rem 0 .65rem; color: var(--muted); font-size: .62rem; font-weight: 520; line-height: 1.55; letter-spacing: normal; }
 .builder-choice-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .45rem; }
 .builder-choice { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: .65rem; min-height: 3.2rem; padding: .55rem .65rem; border: 1px solid var(--line); border-radius: .55rem; color: var(--muted); background: var(--background); cursor: pointer; transition: border-color 160ms ease, background-color 160ms ease; }
 .builder-choice.is-selected { border-color: oklch(from var(--primary) l c h / .55); color: var(--foreground); background: oklch(from var(--primary) l c h / .07); }
+.builder-choice.is-disabled { cursor: not-allowed; opacity: .48; }
 .builder-choice input { width: .95rem; height: .95rem; accent-color: var(--primary); }
 .builder-choice strong, .builder-choice small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .builder-choice strong { font-size: .68rem; }.builder-choice small { margin-top: .12rem; color: var(--muted); font-size: .54rem; font-weight: 500; }

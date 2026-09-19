@@ -5,6 +5,7 @@ import type {
   ChatMessage,
   ComputerUseTarget,
 } from "@/lib/orchestration/types";
+import { assignedSkillsWithinRuntimeLimit } from "@/lib/skills/limits";
 
 export const AGENT_PROMPT_CONTRACT_VERSION_ID =
   "agent-instructions:1" as const;
@@ -56,7 +57,7 @@ export function buildAgentInstructions({
     ? {
         ...rawProfile,
         instructions: rawProfile.instructions.slice(0, 8_000),
-        skills: rawProfile.skills.slice(0, 8).map((skill) => ({
+        skills: assignedSkillsWithinRuntimeLimit(rawProfile.skills).map((skill) => ({
           ...skill,
           description: skill.description.slice(0, 500),
           instructions: skill.instructions.slice(0, 1_200),

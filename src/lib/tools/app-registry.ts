@@ -1,4 +1,5 @@
 import type { ToolDefinition } from "@/lib/tools/types";
+import { MAX_ASSIGNED_SKILLS } from "@/lib/skills/limits";
 
 export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   readTool("app.workspaces.summary", "Workspace summary", "Read the current tenant workspace summary, including recent runs, workflows, and permitted approval items.", objectSchema({
@@ -1337,7 +1338,7 @@ function agentProperties(): Record<string, unknown> {
     autonomy: { type: "string", enum: ["assist", "governed", "execute"], default: "governed" },
     approvalPolicy: { type: "string", enum: ["always", "risk_based", "read_only"], default: "risk_based" },
     memoryScope: { type: "string", enum: ["session", "project", "all"], default: "all" },
-    skillIds: idList(), toolIds: idList(),
+    skillIds: idList(MAX_ASSIGNED_SKILLS), toolIds: idList(),
   };
 }
 

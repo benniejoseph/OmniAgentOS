@@ -91,6 +91,18 @@ void main() {
     );
   });
 
+  test('agent Skill selection stops at the shared prompt limit', () {
+    final selected = {
+      for (var index = 0; index < maxAssignedAgentSkills; index++)
+        'skill-$index',
+    };
+
+    expect(canSelectAgentSkill(selected, 'skill-0'), isTrue);
+    expect(canSelectAgentSkill(selected, 'skill-new'), isFalse);
+    selected.remove('skill-0');
+    expect(canSelectAgentSkill(selected, 'skill-new'), isTrue);
+  });
+
   test('performance accepts normalized API fields', () {
     final metric = AgentPerformance.fromJson({
       'agentId': 'a',

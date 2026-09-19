@@ -6,6 +6,7 @@ import { builtInSkills } from "@/lib/skills/catalog";
 import { DEFAULT_CUSTOM_AGENT_PERSONA } from "@/lib/agents/persona";
 import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
 import { customAgentPatchSchema } from "@/lib/skills/schema";
+import { MAX_ASSIGNED_SKILLS } from "@/lib/skills/limits";
 import {
   AgentSkillAssignmentError,
   createAgentSkill,
@@ -130,6 +131,33 @@ describe("agent and skill studio store", () => {
       id: agent.id,
       description: agent.description,
       skillIds: [builtInSkills[0].id, exactSkill.id],
+    }]);
+  });
+
+  it("rejects over-limit Skill assignments instead of truncating them", async () => {
+    const scope = { tenantId: "private", actorId: "owner" };
+    const atLimit = builtInSkills
+      .slice(0, MAX_ASSIGNED_SKILLS)
+      .map((skill) => skill.id);
+    const overLimit = builtInSkills
+      .slice(0, MAX_ASSIGNED_SKILLS + 1)
+      .map((skill) => skill.id);
+    const agent = await createCustomAgent({
+      ...agentInput("Bounded Agent"),
+      skillIds: atLimit,
+    }, scope);
+
+    expect(agent.skillIds).toEqual(atLimit);
+    await expect(createCustomAgent({
+      ...agentInput("Over-limit Agent"),
+      skillIds: overLimit,
+    }, scope)).rejects.toBeInstanceOf(AgentSkillAssignmentError);
+    await expect(updateCustomAgent(agent.id, {
+      skillIds: overLimit,
+    }, scope)).rejects.toBeInstanceOf(AgentSkillAssignmentError);
+    expect(await listCustomAgents(scope)).toMatchObject([{
+      id: agent.id,
+      skillIds: atLimit,
     }]);
   });
 

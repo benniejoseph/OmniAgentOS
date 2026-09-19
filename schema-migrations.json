@@ -928,5 +928,10 @@
     "version": 186,
     "name": "declarative_plugins_v1",
     "checksum": "0cb2bc195736819e3fd5c3a6ab44a8c48ca3dcc55b63d097a69aaf9824b06825"
+  },
+  {
+    "version": 187,
+    "name": "builtin_skill_catalog_v2",
+    "checksum": "fe690251c625bd3a55932b5a58c26509df6bc283cb24a1dd7c6373a1ce0a3a9c"
   }
 ]
