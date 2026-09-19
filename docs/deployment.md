@@ -852,6 +852,43 @@ worker remains compatible because the database rejects profiles above the same
 eight-Skill bound, while the runtime's additional defensive cap will ship in
 the next paired worker release.
 
+## Document Studio and generated artifacts
+
+The Document Studio release requires ordered migrations
+`20260919143000_builtin_skill_catalog_v3.sql` (internal schema version 188)
+and `20260919150000_generated_artifact_persistence.sql` (internal schema
+version 189). Version 188 adds the built-in `creation.document-studio` Skill
+and keeps the exact-owner Agent assignment guards. Version 189 creates the
+actor-private artifact head, immutable version, and mutation-receipt ledgers,
+plus private content locators for generated files. Apply both migrations before
+deploying native contract v18 or exposing generated-file projections.
+
+`app.artifacts.presentations.create` renders editable PowerPoint files inside
+Asael without an external write approval. `google.docs.create`,
+`google.sheets.create`, and `google.slides.create` are consequential Drive
+writes and must remain risk-two, approval-gated governed tools. Their recovery
+markers, provider revision fences, readback digests, and exact execution scope
+must not be bypassed by direct connector calls. Generated content responses are
+private, `no-store`, attachment-only, and owner scoped; specs, hashes, storage
+locators, and execution authority are never part of the public projection.
+
+Production installed schema versions 188 and 189 on 2026-09-19. Version 188
+has checksum `4c206314533b7812aff807d551f1b1514987582b64c21e1c17378ac0c592deb1`;
+version 189 has checksum
+`4065c615c77bf4baf5921d5dcd468359ed8113bc49ba5291908bdfc3b9f36ebf`.
+Vercel deployment `dpl_GN9qpGAuoqrveQrXMSwKtKeLLFTq` and Fly worker machine
+`89590dc6671498` are paired at exact revision
+`5c0a13b2b78d4ed6345e73a6b48e18e79c30fbbb`; canonical web and gateway health
+both report that revision and the worker release hold was explicitly activated.
+The matching owner-only macOS package is `Asael-1.11.0-21-macOS.dmg`, SHA-256
+`b7a5ee77b8d6a32c4c72afe40570ba1a6bf842f47be780ddf0b7896af4894d2b`.
+It is installed at `/Applications/Asael.app`, self-signed for the owner's Mac,
+and is neither notarized nor APNs-enabled. An authenticated native-session
+canary created the editable presentation `How to Create Documents with Asael`
+and exposed it in **Results → Created files**. The stored 20,423-byte OOXML
+payload has matching persisted and independently observed SHA-256
+`05d9331c6c789981ec62200c63123fe5ed5ea12444dfd5314476b9078f1d5a49`.
+
 ## Connector risk controls
 
 Connector endpoints are SSRF-checked and secret references are restricted, but operators still control a powerful outbound boundary:
