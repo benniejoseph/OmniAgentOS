@@ -33,6 +33,7 @@ import {
   automationResourceDefinitions,
   buildCapabilitySummary,
   importedPluginPreviewPayload,
+  integrationsOverviewAt,
   isJsonRecord,
   MAX_PLUGIN_MANIFEST_BYTES,
   numberAt,
@@ -453,7 +454,10 @@ function SkillsPanel({ ledger }: { ledger: ResourceLedger }) {
 }
 
 function ConnectionsPanel({ ledger }: { ledger: ResourceLedger }) {
-  const connections = recordsAt(ledger.connections.data, "installed").filter(
+  const connections = recordsAt(
+    integrationsOverviewAt(ledger.connections.data),
+    "installed",
+  ).filter(
     (item) => textAt(item, ["kind"], "") !== "mcp",
   );
   const connectors = recordsAt(ledger.mcp.data, "connectors");

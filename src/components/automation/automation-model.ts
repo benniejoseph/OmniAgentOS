@@ -103,6 +103,13 @@ export function recordAt(value: unknown, key: string): JsonRecord | undefined {
   return isJsonRecord(candidate) ? candidate : undefined;
 }
 
+export function integrationsOverviewAt(
+  value: unknown,
+): JsonRecord | undefined {
+  const nested = recordAt(value, "overview");
+  return nested ?? (isJsonRecord(value) ? value : undefined);
+}
+
 export function textAt(
   value: unknown,
   keys: readonly string[],
@@ -157,7 +164,10 @@ function displayCount(
 export function buildCapabilitySummary(
   snapshot: AutomationSnapshot,
 ): CapabilitySummary[] {
-  const connections = recordsAt(snapshot.connections, "installed").filter(
+  const connections = recordsAt(
+    integrationsOverviewAt(snapshot.connections),
+    "installed",
+  ).filter(
     (item) => textAt(item, ["kind"], "") !== "mcp",
   );
   const connectedAccounts = connections.filter(

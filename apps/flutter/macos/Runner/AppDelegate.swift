@@ -1358,7 +1358,7 @@ private final class DesktopHostController: NSObject {
     pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
   )
   private static let workspaceRoutePattern = try! NSRegularExpression(
-    pattern: "^/(talk|today|capture|inbox|knowledge|projects|meetings|results)(/[A-Za-z0-9._~%:-]{1,500})?$"
+    pattern: "^/(talk|today|capture|inbox|knowledge|projects|meetings|results|automation)(/[A-Za-z0-9._~%:-]{1,500})?$"
   )
 
   private weak var window: NSWindow?

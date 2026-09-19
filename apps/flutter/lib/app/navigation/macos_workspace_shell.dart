@@ -33,7 +33,10 @@ class _MacosWorkspaceShellState extends State<MacosWorkspaceShell> {
   final _sidebarScrollController = ScrollController();
   bool _sidebarCollapsed = false;
 
-  static final _primaryIndices = destinationIndices(primary: true);
+  static final _primaryIndices = destinationIndices(
+    primary: true,
+    macosVisible: true,
+  );
 
   @override
   void dispose() {
@@ -339,7 +342,7 @@ class _MacosDestinationGroup extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final normalized = query.trim().toLowerCase();
-    final indices = destinationIndices(group: group)
+    final indices = destinationIndices(group: group, macosVisible: true)
         .where((index) {
           if (normalized.isEmpty) return true;
           final destination = appDestinations[index];
@@ -384,7 +387,7 @@ class _MacosDestinationGroup extends StatelessWidget {
   }
 
   String? _shortcutFor(int index) {
-    final primary = destinationIndices(primary: true);
+    final primary = destinationIndices(primary: true, macosVisible: true);
     final position = primary.indexOf(index);
     return position < 0 ? null : '⌘${position + 1}';
   }
@@ -694,6 +697,7 @@ class _MacosWorkspaceViewport extends StatelessWidget {
     '/talk',
     '/knowledge',
     '/markets',
+    '/automation',
     '/workflows',
     '/integrations',
     '/tools',

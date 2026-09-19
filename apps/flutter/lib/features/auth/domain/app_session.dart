@@ -54,5 +54,10 @@ class AppSession {
   final String displayName;
   final String workspaceName;
   final String role;
-  bool get canManage => const {'owner', 'admin'}.contains(role.toLowerCase());
+  bool get canManage => const {
+    'operator',
+    'admin',
+    'system',
+    'owner',
+  }.contains(role.toLowerCase());
 }

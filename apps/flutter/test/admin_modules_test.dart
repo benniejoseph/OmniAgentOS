@@ -74,7 +74,17 @@ void main() {
       workspaceName: 'Workspace',
       role: 'owner',
     );
+    const operator = AppSession(
+      tenantId: 'tenant-1',
+      actorId: 'actor:operator',
+      userId: 'u3',
+      email: 'operator@test.dev',
+      displayName: 'Operator',
+      workspaceName: 'Workspace',
+      role: 'operator',
+    );
     expect(base.canManage, isFalse);
     expect(owner.canManage, isTrue);
+    expect(operator.canManage, isTrue);
   });
 }

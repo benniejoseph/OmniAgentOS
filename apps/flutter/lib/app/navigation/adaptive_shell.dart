@@ -15,19 +15,27 @@ class AdaptiveShell extends StatelessWidget {
 
   // Derive branch positions from destination metadata so adding a workspace
   // cannot silently break the phone dock or attention shortcut.
-  static final _everydayBranches = destinationIndices(primary: true);
+  static final _everydayBranches = destinationIndices(
+    primary: true,
+    adaptiveVisible: true,
+  );
   static final _workspaceBranches = destinationIndices(
     group: AppDestinationGroup.workspace,
+    adaptiveVisible: true,
   );
   static final _automationBranches = destinationIndices(
     group: AppDestinationGroup.automation,
+    adaptiveVisible: true,
   );
   static final _reviewBranches = destinationIndices(
     group: AppDestinationGroup.review,
+    adaptiveVisible: true,
   );
   static final _systemBranches = destinationIndices(
     group: AppDestinationGroup.system,
+    adaptiveVisible: true,
   );
+  static final _adaptiveBranches = destinationIndices(adaptiveVisible: true);
 
   void _select(int index) => navigationShell.goBranch(
     index,
@@ -205,10 +213,12 @@ class _DesktopSidebar extends StatelessWidget {
                     )
                   : ListView.builder(
                       padding: const EdgeInsets.symmetric(vertical: 10),
-                      itemCount: appDestinations.length,
+                      itemCount: AdaptiveShell._adaptiveBranches.length,
                       itemBuilder: (context, index) {
-                        final destination = appDestinations[index];
-                        final selected = currentIndex == index;
+                        final branchIndex =
+                            AdaptiveShell._adaptiveBranches[index];
+                        final destination = appDestinations[branchIndex];
+                        final selected = currentIndex == branchIndex;
                         return Padding(
                           padding: const EdgeInsets.symmetric(
                             horizontal: 10,
@@ -226,7 +236,7 @@ class _DesktopSidebar extends StatelessWidget {
                                     ? scheme.primary.withValues(alpha: .12)
                                     : Colors.transparent,
                               ),
-                              onPressed: () => onSelect(index),
+                              onPressed: () => onSelect(branchIndex),
                               icon: Icon(destination.icon),
                               selectedIcon: Icon(destination.selectedIcon),
                             ),

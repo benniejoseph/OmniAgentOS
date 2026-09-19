@@ -12,6 +12,8 @@ class AppDestination {
     required this.description,
     required this.group,
     this.primary = false,
+    this.macosVisible = true,
+    this.adaptiveVisible = true,
   });
 
   final String label;
@@ -22,6 +24,8 @@ class AppDestination {
   final String description;
   final AppDestinationGroup group;
   final bool primary;
+  final bool macosVisible;
+  final bool adaptiveVisible;
 }
 
 const appDestinations = <AppDestination>[
@@ -112,6 +116,16 @@ const appDestinations = <AppDestination>[
     group: AppDestinationGroup.workspace,
   ),
   AppDestination(
+    label: 'Automation Studio',
+    path: '/automation',
+    icon: Icons.auto_awesome_motion_outlined,
+    selectedIcon: Icons.auto_awesome_motion_rounded,
+    eyebrow: 'CAPABILITY SYSTEM',
+    description: 'Connections, MCP, tools, skills, plugins, triggers, and runs in one workspace.',
+    group: AppDestinationGroup.automation,
+    adaptiveVisible: false,
+  ),
+  AppDestination(
     label: 'Automations',
     path: '/workflows',
     icon: Icons.account_tree_outlined,
@@ -119,6 +133,7 @@ const appDestinations = <AppDestination>[
     eyebrow: 'ROUTINES & RUNS',
     description: 'Repeatable work, schedules, event triggers, and run history.',
     group: AppDestinationGroup.automation,
+    macosVisible: false,
   ),
   AppDestination(
     label: 'Connections',
@@ -126,8 +141,10 @@ const appDestinations = <AppDestination>[
     icon: Icons.cable_outlined,
     selectedIcon: Icons.cable_rounded,
     eyebrow: 'ACCOUNTS, MCP & APIS',
-    description: 'Accounts, data sources, MCP servers, and REST APIs Asael may use.',
+    description:
+        'Accounts, data sources, MCP servers, and REST APIs Asael may use.',
     group: AppDestinationGroup.automation,
+    macosVisible: false,
   ),
   AppDestination(
     label: 'Capabilities',
@@ -137,6 +154,7 @@ const appDestinations = <AppDestination>[
     eyebrow: 'SKILLS, PLUGINS & TOOLS',
     description: 'How agents work, what they can call, and the policy around each action.',
     group: AppDestinationGroup.automation,
+    macosVisible: false,
   ),
   AppDestination(
     label: 'Inbox',
@@ -206,9 +224,18 @@ const appDestinations = <AppDestination>[
 int destinationIndex(String path) =>
     appDestinations.indexWhere((destination) => destination.path == path);
 
-List<int> destinationIndices({AppDestinationGroup? group, bool? primary}) => [
+List<int> destinationIndices({
+  AppDestinationGroup? group,
+  bool? primary,
+  bool? macosVisible,
+  bool? adaptiveVisible,
+}) => [
   for (var index = 0; index < appDestinations.length; index++)
     if ((group == null || appDestinations[index].group == group) &&
-        (primary == null || appDestinations[index].primary == primary))
+        (primary == null || appDestinations[index].primary == primary) &&
+        (macosVisible == null ||
+            appDestinations[index].macosVisible == macosVisible) &&
+        (adaptiveVisible == null ||
+            appDestinations[index].adaptiveVisible == adaptiveVisible))
       index,
 ];

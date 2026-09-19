@@ -61,6 +61,20 @@ void main() {
           .map((index) => appDestinations[index].path),
       ['/monitoring', '/security', '/settings'],
     );
+    expect(
+      destinationIndices(
+        group: AppDestinationGroup.automation,
+        macosVisible: true,
+      ).map((index) => appDestinations[index].path),
+      ['/automation'],
+    );
+    expect(
+      destinationIndices(
+        group: AppDestinationGroup.automation,
+        adaptiveVisible: true,
+      ).map((index) => appDestinations[index].path),
+      ['/workflows', '/integrations', '/tools'],
+    );
     expect(destinationIndex('/inbox'), isNonNegative);
   });
 }

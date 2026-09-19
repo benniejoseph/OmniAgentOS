@@ -12,9 +12,29 @@ void main() {
       '/results/agent%3Arun-123',
     );
     expect(
+      initialAppLocation(const ['--asael-route=/automation']),
+      '/automation',
+    );
+    expect(
       initialAppLocation(const ['--asael-route=/settings?token=private']),
       appHomePath(),
     );
+  });
+
+  test('consolidates legacy Mac automation routes without changing mobile', () {
+    expect(
+      legacyAutomationRedirect('/workflows', macos: true),
+      '/automation?section=automations',
+    );
+    expect(
+      legacyAutomationRedirect('/integrations', macos: true),
+      '/automation?section=connections',
+    );
+    expect(
+      legacyAutomationRedirect('/tools', macos: true),
+      '/automation?section=skills',
+    );
+    expect(legacyAutomationRedirect('/tools', macos: false), isNull);
   });
 
   test('accepts only allowlisted desktop routes', () async {
@@ -324,6 +344,8 @@ void main() {
     await bridge.openWorkspaceWindow('/results/agent%3Arun-123');
     expect(calls.single.method, 'openWorkspaceWindow');
     expect(calls.single.arguments, {'route': '/results/agent%3Arun-123'});
+    await bridge.openWorkspaceWindow('/automation');
+    expect(calls.last.arguments, {'route': '/automation'});
     await expectLater(
       bridge.openWorkspaceWindow('/settings?token=private'),
       throwsArgumentError,

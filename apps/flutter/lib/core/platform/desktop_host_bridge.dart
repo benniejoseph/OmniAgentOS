@@ -235,7 +235,7 @@ class DesktopHostBridge {
   };
 
   static final _workspaceRoute = RegExp(
-    r'^/(talk|today|capture|inbox|knowledge|projects|meetings|results)(/[A-Za-z0-9._~%:-]{1,500})?$',
+    r'^/(talk|today|capture|inbox|knowledge|projects|meetings|results|automation)(/[A-Za-z0-9._~%:-]{1,500})?$',
   );
 
   static bool isWorkspaceRoute(String route) =>

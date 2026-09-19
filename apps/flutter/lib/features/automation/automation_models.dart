@@ -85,6 +85,10 @@ class AutomationSnapshot {
   }
 
   int get failureCount => sources.where((source) => source.hasError).length;
+  bool get connectionsPartial =>
+      !connections.hasError &&
+      connections.data?.state.toLowerCase() == 'partial';
+  int get attentionCount => failureCount + (connectionsPartial ? 1 : 0);
   bool get loading => sources.any((source) => source.isLoading);
 
   AutomationSnapshot copyWith({
@@ -399,6 +403,7 @@ class AutomationPlugin {
     required this.name,
     required this.description,
     required this.publisherName,
+    required this.catalogSource,
     required this.manifestSha256,
     required this.installed,
     required this.status,
@@ -421,10 +426,10 @@ class AutomationPlugin {
       name: _text(value, const ['name'], fallback: 'Unnamed Plugin'),
       description: _text(value, const ['description']),
       publisherName: _text(publisher, const ['name'], fallback: 'Unknown'),
+      catalogSource: _text(value, const ['catalogSource'], fallback: 'catalog'),
       manifestSha256: _text(value, const ['manifestSha256']),
       installed: value['installed'] == true,
-      status:
-          _nullableText(value['status']) ?? _nullableText(value['state']),
+      status: _nullableText(value['status']) ?? _nullableText(value['state']),
       installationId: _nullableText(value['installationId']),
       revision: _integer(value['revision']),
       skillCount: _integer(counts['skills']) ?? 0,
@@ -441,6 +446,7 @@ class AutomationPlugin {
       name,
       description,
       publisherName,
+      catalogSource,
       manifestSha256;
   final bool installed, updateRequiresUninstall;
   final String? status, installationId;

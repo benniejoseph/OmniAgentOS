@@ -64,6 +64,15 @@ void main() {
       }).status,
       'disabled',
     );
+    expect(
+      AutomationPlugin.fromJson({
+        'pluginId': 'plugin.imported',
+        'version': '1.0.0',
+        'name': 'Imported Plugin',
+        'catalogSource': 'installed_manifest',
+      }).catalogSource,
+      'installed_manifest',
+    );
   });
 
   test(
@@ -182,6 +191,32 @@ void main() {
     },
   );
 
+  test(
+    'controller re-previews a retained imported manifest directly',
+    () async {
+      final repository = _ControllerRepository();
+      final controller = AutomationController(
+        repository,
+        canManage: true,
+        mutationsAvailable: true,
+      );
+      final imported = AutomationPlugin.fromJson({
+        'pluginId': 'plugin.imported',
+        'version': '1.0.0',
+        'name': 'Imported Plugin',
+        'catalogSource': 'installed_manifest',
+        'manifestSha256': _sha,
+        'installed': false,
+        'status': 'uninstalled',
+        'manifest': {'schemaVersion': 1, 'pluginId': 'plugin.imported'},
+      });
+
+      expect(await controller.previewCatalogPlugin(imported), isNotNull);
+      expect(repository.previewedManifests, [imported.manifest]);
+      expect(repository.catalogPreviews, 0);
+    },
+  );
+
   test('rejects oversized or non-object Plugin manifests locally', () {
     expect(() => parseAutomationPluginManifest('[]'), throwsFormatException);
     expect(
@@ -270,6 +305,8 @@ class _MutationApiClient extends ApiClient {
 
 class _ControllerRepository implements AutomationRepository {
   final idempotencyKeys = <String>[];
+  final previewedManifests = <AutomationJson>[];
+  int catalogPreviews = 0;
   int pluginLoads = 0;
 
   @override
@@ -308,6 +345,7 @@ class _ControllerRepository implements AutomationRepository {
     AutomationPlugin plugin, {
     required String idempotencyKey,
   }) async {
+    catalogPreviews += 1;
     idempotencyKeys.add(idempotencyKey);
     return AutomationPluginPreview.fromResponse(_previewResponse());
   }
@@ -316,7 +354,11 @@ class _ControllerRepository implements AutomationRepository {
   Future<AutomationPluginPreview> previewManifest(
     AutomationJson manifest, {
     required String idempotencyKey,
-  }) => previewCatalogPlugin(_plugin(), idempotencyKey: idempotencyKey);
+  }) async {
+    previewedManifests.add(manifest);
+    idempotencyKeys.add(idempotencyKey);
+    return AutomationPluginPreview.fromResponse(_previewResponse());
+  }
 
   @override
   Future<AutomationPluginMutation> installPlugin(

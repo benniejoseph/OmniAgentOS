@@ -13,6 +13,7 @@ import '../../features/auth/presentation/session_bootstrap_screen.dart';
 import '../../features/agents/agents.dart';
 import '../../features/agents/macos_agents_view.dart';
 import '../../features/agents/agents_providers.dart';
+import '../../features/automation/macos_automation_studio_view.dart';
 import '../../features/capture/capture.dart';
 import '../../features/capture/capture_providers.dart';
 import '../../features/computer_use/local_computer.dart';
@@ -76,6 +77,17 @@ final appInitialLocationProvider = Provider<String>((_) => appHomePath());
 bool isInboxLocation(Uri location) {
   final path = location.path;
   return path == '/inbox' || path.startsWith('/inbox/');
+}
+
+@visibleForTesting
+String? legacyAutomationRedirect(String path, {bool? macos}) {
+  if (!(macos ?? usesMacosPresentation())) return null;
+  return switch (path) {
+    '/workflows' => '/automation?section=automations',
+    '/integrations' => '/automation?section=connections',
+    '/tools' => '/automation?section=skills',
+    _ => null,
+  };
 }
 
 /// Keeps a mounted Conversation surface bound to the current authenticated
@@ -190,6 +202,8 @@ final appRouterProvider = Provider<GoRouter>((ref) {
               routes: [
                 GoRoute(
                   path: destination.path,
+                  redirect: (_, _) =>
+                      legacyAutomationRedirect(destination.path),
                   builder: (context, state) => switch (destination.path) {
                     '/today' =>
                       usesMacosPresentation()
@@ -286,6 +300,13 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                       usesMacosPresentation()
                           ? MacosPaymentsView(api: ref.read(apiClientProvider))
                           : PaymentsView(api: ref.read(apiClientProvider)),
+                    '/automation' =>
+                      usesMacosPresentation()
+                          ? MacosAutomationStudioView(
+                              initialSection:
+                                  state.uri.queryParameters['section'],
+                            )
+                          : const AdminWorkspaceView(moduleId: 'automation'),
                     '/workflows' =>
                       usesMacosPresentation()
                           ? const MacosAdminWorkspaceView(

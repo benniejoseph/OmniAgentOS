@@ -54,10 +54,13 @@ class AutomationController extends ChangeNotifier {
   ) async {
     if (!_beginPluginMutation('preview:${plugin.pluginId}')) return null;
     try {
-      final preview = await repository.previewCatalogPlugin(
-        plugin,
-        idempotencyKey: _idempotencyKey('preview'),
-      );
+      final idempotencyKey = _idempotencyKey('preview');
+      final preview = plugin.catalogSource == 'installed_manifest'
+          ? await _previewRetainedManifest(plugin, idempotencyKey)
+          : await repository.previewCatalogPlugin(
+              plugin,
+              idempotencyKey: idempotencyKey,
+            );
       pluginPreview = preview;
       notice = 'Review the exact effects before installing ${preview.name}.';
       return preview;
@@ -67,6 +70,21 @@ class AutomationController extends ChangeNotifier {
     } finally {
       _finishPluginMutation();
     }
+  }
+
+  Future<AutomationPluginPreview> _previewRetainedManifest(
+    AutomationPlugin plugin,
+    String idempotencyKey,
+  ) {
+    if (plugin.manifest.isEmpty) {
+      throw StateError(
+        'The retained Plugin manifest is unavailable. Import it again to continue.',
+      );
+    }
+    return repository.previewManifest(
+      plugin.manifest,
+      idempotencyKey: idempotencyKey,
+    );
   }
 
   Future<AutomationPluginPreview?> previewManifest(String source) async {

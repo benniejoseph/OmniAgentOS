@@ -5,6 +5,7 @@ import { appNav, appNavGroups } from "@/lib/navigation";
 import {
   buildCapabilitySummary,
   importedPluginPreviewPayload,
+  integrationsOverviewAt,
   MAX_PLUGIN_MANIFEST_BYTES,
   parseImportedPluginManifest,
   pluginManifestByteLength,
@@ -17,11 +18,13 @@ describe("Automation Studio capability projection", () => {
   it("keeps access, actions, guidance, repetition, and bundles distinct", () => {
     const snapshot: AutomationSnapshot = {
       connections: {
-        installed: [
-          { id: "gmail", kind: "google_service", connected: true },
-          { id: "drive", kind: "google_service", connected: false },
-          { id: "legacy-mcp", kind: "mcp", connected: true },
-        ],
+        overview: {
+          installed: [
+            { id: "gmail", kind: "google_service", connected: true },
+            { id: "drive", kind: "google_service", connected: false },
+            { id: "legacy-mcp", kind: "mcp", connected: true },
+          ],
+        },
       },
       mcp: {
         connectors: [
@@ -95,6 +98,13 @@ describe("Automation Studio capability projection", () => {
     expect(recordsAt({ skills: [null, "unsafe", { id: "safe" }] }, "skills")).toEqual([
       { id: "safe" },
     ]);
+  });
+
+  it("reads the canonical nested integrations overview response", () => {
+    expect(integrationsOverviewAt({
+      overview: { installed: [{ id: "google" }] },
+      serviceReceipt: { schemaVersion: 1 },
+    })).toEqual({ installed: [{ id: "google" }] });
   });
 
   it("parses a bounded declarative Plugin manifest before network review", () => {
