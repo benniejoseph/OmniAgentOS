@@ -233,7 +233,7 @@ BEGIN
           AND trigger_record.tgname = 'omni_custom_skills_no_truncate'
           AND trigger_record.tgtype = 34
           AND trigger_record.tgfoid =
-            'public.omni_protect_custom_skill_reference_identity()'::regprocedure
+            'public.omni_reject_custom_skills_truncate()'::regprocedure
         )
       )
   ) <> 3 OR EXISTS (

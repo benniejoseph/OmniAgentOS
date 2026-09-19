@@ -85,6 +85,9 @@ describe("built-in Skill catalog v3 migration", () => {
       expect(sql).toContain("trigger_record.tgtype = 23");
       expect(sql).toContain("trigger_record.tgtype = 31");
       expect(sql).toContain("trigger_record.tgtype = 34");
+      expect(sql).toContain(
+        "'public.omni_reject_custom_skills_truncate()'::regprocedure",
+      );
       expect(sql).toContain("NOT relation.relrowsecurity");
       expect(sql).toContain("NOT relation.relforcerowsecurity");
     }
