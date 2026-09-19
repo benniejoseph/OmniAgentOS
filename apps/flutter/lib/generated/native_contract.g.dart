@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 16;
-  static const previousVersion = 15;
-  static const supportedVersions = <int>[16, 15];
+  static const currentVersion = 17;
+  static const previousVersion = 16;
+  static const supportedVersions = <int>[17, 16];
   static const discoveryPath = '/api/mobile/contracts';
   static const operationIds = <String>{
     'auth.login',
@@ -123,6 +123,11 @@ abstract final class NativeContract {
     'push.canary.targets',
     'push.canary.run',
     'plugins.list',
+    'integrations.overview',
+    'plugins.preview',
+    'plugins.install',
+    'plugins.change',
+    'plugins.uninstall',
   };
 
   static bool supports(int version) => supportedVersions.contains(version);
@@ -292,6 +297,21 @@ abstract final class NativePaths {
   static const pushCanaryTargets = '/api/mobile/push/canary';
   static const pushCanaryRun = '/api/mobile/push/canary';
   static const pluginsList = '/api/plugins';
+  static String integrationsOverview({String? workspaceId}) {
+    final path = '/api/integrations/overview';
+    final query = <String, String>{
+      'workspaceId': ?workspaceId,
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static const pluginsPreview = '/api/plugins/preview';
+  static const pluginsInstall = '/api/plugins/install';
+  static String pluginsChange(String id) => '/api/plugins/${Uri.encodeComponent(id)}';
+  static String pluginsUninstall(String id) => '/api/plugins/${Uri.encodeComponent(id)}';
 }
 
 abstract final class NativeConversationEvents {

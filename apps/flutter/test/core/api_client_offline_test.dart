@@ -112,6 +112,24 @@ void main() {
     expect(await body.stream.expand((chunk) => chunk).toList(), [1]);
   });
 
+  test('sends a bounded JSON body and headers with DELETE', () async {
+    final secureStore = SecureSessionStore(const FlutterSecureStorage());
+    final adapter = _DeleteBodyAdapter();
+    final dio = Dio(BaseOptions(baseUrl: 'https://asael.example'))
+      ..httpClientAdapter = adapter;
+    final client = ApiClient(dio, Dio(), secureStore);
+
+    await client.deleteJson(
+      '/api/plugins/plugin-one',
+      data: const {'expectedRevision': 4},
+      headers: const {'Idempotency-Key': 'plugin-uninstall-one'},
+    );
+
+    expect(adapter.method, 'DELETE');
+    expect(adapter.data, {'expectedRevision': 4});
+    expect(adapter.idempotencyKey, 'plugin-uninstall-one');
+  });
+
   test('classifies a live response timeout without claiming offline', () {
     final error = ApiException.fromDio(
       DioException(
@@ -158,6 +176,32 @@ class _BytesAdapter implements HttpClientAdapter {
       Headers.contentTypeHeader: ['application/octet-stream'],
     },
   );
+
+  @override
+  void close({bool force = false}) {}
+}
+
+class _DeleteBodyAdapter implements HttpClientAdapter {
+  String? method, idempotencyKey;
+  Object? data;
+
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<List<int>>? requestStream,
+    Future<void>? cancelFuture,
+  ) async {
+    method = options.method;
+    data = options.data;
+    idempotencyKey = options.headers['Idempotency-Key']?.toString();
+    return ResponseBody.fromString(
+      '{"ok":true}',
+      200,
+      headers: {
+        Headers.contentTypeHeader: ['application/json'],
+      },
+    );
+  }
 
   @override
   void close({bool force = false}) {}

@@ -92,6 +92,9 @@ describe("Plugin API routes", () => {
       "preview-route",
     ));
     expect(previewResponse.status).toBe(201);
+    expect(mocks.authorize).toHaveBeenLastCalledWith(expect.objectContaining({
+      nativeMutationCapability: "plugins.manage",
+    }));
     expect(mocks.preview).toHaveBeenCalledWith(
       expect.objectContaining({ idempotencyKey: "preview-route" }),
       expect.objectContaining({ manifestSha256: catalog.manifestSha256 }),
@@ -106,6 +109,9 @@ describe("Plugin API routes", () => {
       "install-route",
     ));
     expect(installResponse.status).toBe(201);
+    expect(mocks.authorize).toHaveBeenLastCalledWith(expect.objectContaining({
+      nativeMutationCapability: "plugins.manage",
+    }));
     expect(mocks.install).toHaveBeenCalledWith(
       expect.objectContaining({ idempotencyKey: "install-route" }),
       expect.objectContaining({ manifestSha256: catalog.manifestSha256 }),
@@ -123,6 +129,9 @@ describe("Plugin API routes", () => {
         { params: Promise.resolve({ id: installationId }) },
       );
       expect(response.status).toBe(200);
+      expect(mocks.authorize).toHaveBeenLastCalledWith(expect.objectContaining({
+        nativeMutationCapability: "plugins.manage",
+      }));
       expect(mocks.transition).toHaveBeenLastCalledWith(
         expect.objectContaining({ idempotencyKey: `${action}-route` }),
         { installationId, action, expectedRevision: 2 },
@@ -135,10 +144,37 @@ describe("Plugin API routes", () => {
       { params: Promise.resolve({ id: installationId }) },
     );
     expect(response.status).toBe(200);
+    expect(mocks.authorize).toHaveBeenLastCalledWith(expect.objectContaining({
+      nativeMutationCapability: "plugins.manage",
+    }));
     expect(mocks.transition).toHaveBeenLastCalledWith(
       expect.objectContaining({ idempotencyKey: "uninstall-route" }),
       { installationId, action: "uninstall", expectedRevision: 3 },
     );
+  });
+
+  it("rejects every Plugin mutation without an explicit Idempotency-Key", async () => {
+    const preview = await POSTPreview(requestWithoutIdempotency(
+      "http://localhost/api/plugins/preview",
+      { pluginId: catalog.pluginId, version: catalog.version, manifestSha256: catalog.manifestSha256 },
+    ));
+    const install = await POSTInstall(requestWithoutIdempotency(
+      "http://localhost/api/plugins/install",
+      { previewId: "plugin-preview:route-test-111111", manifestSha256: catalog.manifestSha256 },
+    ));
+    const lifecycle = await PATCHPlugin(
+      requestWithoutIdempotency(
+        "http://localhost/api/plugins/plugin-installation%3Atest",
+        { action: "disable", expectedRevision: 1 },
+        "PATCH",
+      ),
+      { params: Promise.resolve({ id: "plugin-installation:test" }) },
+    );
+
+    expect([preview.status, install.status, lifecycle.status]).toEqual([400, 400, 400]);
+    expect(mocks.preview).not.toHaveBeenCalled();
+    expect(mocks.install).not.toHaveBeenCalled();
+    expect(mocks.transition).not.toHaveBeenCalled();
   });
 });
 
@@ -154,6 +190,18 @@ function jsonRequest(
       "content-type": "application/json",
       "idempotency-key": idempotencyKey,
     },
+    body: JSON.stringify(body),
+  });
+}
+
+function requestWithoutIdempotency(
+  url: string,
+  body: unknown,
+  method = "POST",
+) {
+  return new Request(url, {
+    method,
+    headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
 }

@@ -3,9 +3,9 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   test('retains current and previous contract compatibility', () {
-    expect(NativeContract.currentVersion, 16);
-    expect(NativeContract.previousVersion, 15);
-    expect(NativeContract.supportedVersions, [16, 15]);
+    expect(NativeContract.currentVersion, 17);
+    expect(NativeContract.previousVersion, 16);
+    expect(NativeContract.supportedVersions, [17, 16]);
     expect(
       NativePaths.workspacesTasksUpdate('project one', 'task/two'),
       '/api/projects/project%20one/tasks/task%2Ftwo',
@@ -34,7 +34,7 @@ void main() {
         'api': {
           'nativeContract': {
             'id': NativeContract.id,
-            'supportedVersions': [16, 15],
+            'supportedVersions': [17, 16],
           },
         },
       }),
@@ -50,6 +50,25 @@ void main() {
         },
       }),
       throwsFormatException,
+    );
+  });
+
+  test('publishes the native Automation Studio operations', () {
+    expect(NativeContract.supportsOperation('integrations.overview'), isTrue);
+    expect(NativeContract.supportsOperation('plugins.preview'), isTrue);
+    expect(NativeContract.supportsOperation('plugins.install'), isTrue);
+    expect(NativeContract.supportsOperation('plugins.change'), isTrue);
+    expect(NativeContract.supportsOperation('plugins.uninstall'), isTrue);
+    expect(NativePaths.integrationsOverview(), '/api/integrations/overview');
+    expect(NativePaths.pluginsPreview, '/api/plugins/preview');
+    expect(NativePaths.pluginsInstall, '/api/plugins/install');
+    expect(
+      NativePaths.pluginsChange('installation/one'),
+      '/api/plugins/installation%2Fone',
+    );
+    expect(
+      NativePaths.pluginsUninstall('installation/one'),
+      '/api/plugins/installation%2Fone',
     );
   });
 

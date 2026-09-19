@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "contractId": "asael.native-api",
+  "version": 17,
+  "state": "current",
+  "compatibility": {
+    "currentVersion": 17,
+    "previousVersion": 16,
+    "supportedVersions": [
+      17,
+      16
+    ]
+  },
+  "documents": {
+    "openapi": {
+      "path": "openapi.json",
+      "sha256": "4cac8cadf63061626fce1a18d215a8b7fe2069ef8707aec6eaa4ad9d24aa94d8"
+    },
+    "events": {
+      "path": "events.schema.json",
+      "sha256": "54ad4d7e0a686efecd0b3a436ab16df640755c7c4da9b20f4f703cb45a835049"
+    },
+    "fixtures": {
+      "path": "fixtures.json",
+      "sha256": "f20afbb058cf4a31be372194692cab2ac76069a4e553b68432e6f8376f8a58c8"
+    }
+  }
+}

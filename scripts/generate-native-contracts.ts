@@ -71,6 +71,12 @@ const frozenDocumentSha256ByVersion = Object.freeze({
     "fixtures.json": "668f94b502e5edb31d94acb3c7edec2d0f98eb500dd8d7f59bd87ffe670f1f9c",
     "manifest.json": "96271696b5df123078fc716c59420c9ae46ae342046ac07fd61bbf4005a12144",
   }),
+  16: Object.freeze({
+    "openapi.json": "a2076a807873ef4d15f6867084c2fff34ec0af79e405b87a1dbbe0da61a48bfe",
+    "events.schema.json": "54ad4d7e0a686efecd0b3a436ab16df640755c7c4da9b20f4f703cb45a835049",
+    "fixtures.json": "0393ab11ac51bb98ebb584460b9f5e6109f8dfc82708804d2eda882e55764075",
+    "manifest.json": "f07374ccf6409d3e8da0bdd047e710d8f0e431eaca0560cd0768ca09c219031d",
+  }),
 });
 
 const fixtures = Object.freeze({
@@ -221,7 +227,18 @@ function openApiDocument(version: number, operations: readonly NativeOperation[]
       required: parameter.required || false,
       schema: openApiQueryParameterSchema(parameter),
     }));
-    const parameters = [...pathParameters, ...queryParameters];
+    const headerParameters = (operation.headerParameters || []).map((parameter) => ({
+      name: parameter.name,
+      in: "header",
+      required: parameter.required,
+      schema: {
+        type: "string",
+        ...(parameter.minLength !== undefined ? { minLength: parameter.minLength } : {}),
+        ...(parameter.maxLength !== undefined ? { maxLength: parameter.maxLength } : {}),
+        ...(parameter.pattern !== undefined ? { pattern: parameter.pattern } : {}),
+      },
+    }));
+    const parameters = [...pathParameters, ...queryParameters, ...headerParameters];
     const mediaType = operation.mediaType || "application/json";
     const requestBody = operation.requestSchema && operation.method !== "GET"
       ? {

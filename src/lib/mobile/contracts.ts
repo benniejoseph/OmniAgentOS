@@ -9,10 +9,11 @@ import {
   localComputerStopRequestSchema,
 } from "@/lib/local-computer/contracts";
 import { mobilePushReceiptRequestSchema } from "@/lib/mobile/push-contract";
+import { pluginManifestSchema } from "@/lib/plugins/contracts";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 16 as const;
-export const NATIVE_API_PREVIOUS_VERSION = 15 as const;
+export const NATIVE_API_CURRENT_VERSION = 17 as const;
+export const NATIVE_API_PREVIOUS_VERSION = 16 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -23,6 +24,7 @@ const isoDateTime = z.string().datetime({ offset: true });
 const opaqueId = z.string().trim().min(1).max(200);
 const mobilePushOpaqueId = z.string().trim().min(1).max(240);
 const jsonObject = z.record(z.string(), z.unknown());
+const sha256Digest = z.string().regex(/^[a-f0-9]{64}$/);
 const LOCAL_COMPUTER_PREVIEW_BINDING_CONTRACT_VERSION = 12;
 
 export const nativeClientAttestationSchema = z.object({
@@ -356,6 +358,29 @@ export const nativePushCanaryResponseSchema = z.object({
   state: nativePushDeliveryStateSchema,
 }).strict();
 
+export const nativePluginPreviewRequestSchema = z.union([
+  z.object({ manifest: pluginManifestSchema }).strict(),
+  z.object({
+    pluginId: z.string().trim().min(3).max(120),
+    version: z.string().trim().min(5).max(80),
+    manifestSha256: sha256Digest,
+  }).strict(),
+]);
+
+export const nativePluginInstallRequestSchema = z.object({
+  previewId: z.string().trim().min(16).max(200),
+  manifestSha256: sha256Digest,
+}).strict();
+
+export const nativePluginChangeRequestSchema = z.object({
+  action: z.enum(["enable", "disable"]),
+  expectedRevision: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+}).strict();
+
+export const nativePluginUninstallRequestSchema = z.object({
+  expectedRevision: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+}).strict();
+
 export const nativeConversationRequestSchema = z.object({
   message: z.string().min(1).max(120_000),
   threadId: z.string().uuid().optional(),
@@ -480,6 +505,7 @@ export type NativeOperation = Readonly<{
   responseSchema: string;
   mediaType?: "application/json" | "text/event-stream" | "multipart/form-data";
   queryParameters?: readonly NativeQueryParameter[];
+  headerParameters?: readonly NativeHeaderParameter[];
   binaryResponse?: boolean;
 }>;
 
@@ -491,6 +517,14 @@ export type NativeQueryParameter = Readonly<{
   maxLength?: number;
   minimum?: number;
   maximum?: number;
+}>;
+
+export type NativeHeaderParameter = Readonly<{
+  name: string;
+  required: true;
+  minLength?: number;
+  maxLength?: number;
+  pattern?: string;
 }>;
 
 const v1Operations = [
@@ -857,6 +891,79 @@ const v16Operations: readonly NativeOperation[] = [
   ),
 ];
 
+// Contract v17 gives the native Automation Studio the same truthful read
+// inventory and digest-bound declarative Plugin lifecycle as the web control
+// plane. Plugin mutations require the ordinary role check, an explicit native
+// capability enrollment, and a required Idempotency-Key. They do not create
+// credentials, review MCP contracts, or grant tool execution authority.
+const pluginMutationHeaders = [
+  {
+    name: "Idempotency-Key",
+    required: true,
+    minLength: 1,
+    maxLength: 512,
+    pattern: "^[A-Za-z0-9][A-Za-z0-9._:@/+~-]{0,511}$",
+  },
+] as const satisfies readonly NativeHeaderParameter[];
+
+const v17Operations: readonly NativeOperation[] = [
+  ...v16Operations,
+  operation(
+    "integrations.overview",
+    "GET",
+    "/api/integrations/overview",
+    "Read the truthful nested account, API, and MCP connection overview.",
+    "bearer",
+    undefined,
+    "JsonObject",
+    {
+      queryParameters: [
+        queryParameter("workspaceId", "string", { minLength: 1, maxLength: 240 }),
+      ],
+    },
+  ),
+  operation(
+    "plugins.preview",
+    "POST",
+    "/api/plugins/preview",
+    "Create an expiring exact-digest review of one declarative Plugin manifest.",
+    "bearer",
+    "NativePluginPreviewRequest",
+    "JsonObject",
+    { headerParameters: pluginMutationHeaders },
+  ),
+  operation(
+    "plugins.install",
+    "POST",
+    "/api/plugins/install",
+    "Install the exact manifest bound to an unexpired actor-private Plugin preview.",
+    "bearer",
+    "NativePluginInstallRequest",
+    "JsonObject",
+    { headerParameters: pluginMutationHeaders },
+  ),
+  operation(
+    "plugins.change",
+    "PATCH",
+    "/api/plugins/{id}",
+    "Enable or disable one exact revision of an actor-owned Plugin installation.",
+    "bearer",
+    "NativePluginChangeRequest",
+    "JsonObject",
+    { headerParameters: pluginMutationHeaders },
+  ),
+  operation(
+    "plugins.uninstall",
+    "DELETE",
+    "/api/plugins/{id}",
+    "Uninstall one exact revision of an actor-owned Plugin installation.",
+    "bearer",
+    "NativePluginUninstallRequest",
+    "JsonObject",
+    { headerParameters: pluginMutationHeaders },
+  ),
+];
+
 export const nativeContractSchemas = Object.freeze({
   JsonObject: jsonObject,
   NativeClientAttestation: nativeClientAttestationSchema,
@@ -884,6 +991,10 @@ export const nativeContractSchemas = Object.freeze({
   NativePushReceiptResponse: nativePushReceiptResponseSchema,
   NativePushCanaryRequest: nativePushCanaryRequestSchema,
   NativePushCanaryResponse: nativePushCanaryResponseSchema,
+  NativePluginPreviewRequest: nativePluginPreviewRequestSchema,
+  NativePluginInstallRequest: nativePluginInstallRequestSchema,
+  NativePluginChangeRequest: nativePluginChangeRequestSchema,
+  NativePluginUninstallRequest: nativePluginUninstallRequestSchema,
   NativeConversationRequest: nativeConversationRequestSchema,
   NativeConversationEvent: nativeConversationEventSchema,
   NativeLocalComputerDeviceUpdateRequest: localComputerDeviceUpdateSchema,
@@ -932,6 +1043,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 14) return v14Operations;
   if (version === 15) return v15Operations;
   if (version === 16) return v16Operations;
+  if (version === 17) return v17Operations;
   return undefined;
 }
 
@@ -941,7 +1053,7 @@ export function nativeContractDiscovery() {
     contractId: NATIVE_API_CONTRACT_ID,
     currentVersion: NATIVE_API_CURRENT_VERSION,
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
-    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [16, 15],
+    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [17, 16],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,
       state: version === NATIVE_API_CURRENT_VERSION ? "current" as const : "previous" as const,
@@ -973,7 +1085,7 @@ function operation(
   auth: NativeOperation["auth"],
   requestSchema: string | undefined,
   responseSchema: string,
-  options: Pick<NativeOperation, "queryParameters" | "binaryResponse"> = {},
+  options: Pick<NativeOperation, "queryParameters" | "headerParameters" | "binaryResponse"> = {},
 ): NativeOperation {
   return {
     id,

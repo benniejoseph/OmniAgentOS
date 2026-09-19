@@ -1,0 +1,382 @@
+import 'dart:async';
+
+import 'package:asael/core/network/api_client.dart';
+import 'package:asael/core/network/api_exception.dart';
+import 'package:asael/core/storage/secure_session_store.dart';
+import 'package:asael/features/automation/automation_api_repository.dart';
+import 'package:asael/features/automation/automation_controller.dart';
+import 'package:asael/features/automation/automation_models.dart';
+import 'package:asael/generated/native_contract.g.dart';
+import 'package:dio/dio.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+const _sha = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const _previewSha =
+    'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+
+void main() {
+  setUp(() => FlutterSecureStorage.setMockInitialValues({}));
+
+  test('parses the nested truthful integrations overview', () {
+    final inventory = AutomationConnectionInventory.fromResponse({
+      'overview': {
+        'state': 'partial',
+        'generatedAt': '2026-09-19T09:00:00.000Z',
+        'installed': [
+          {
+            'id': 'gmail',
+            'name': 'Gmail',
+            'kind': 'google_service',
+            'adapter': 'native',
+            'state': 'working',
+            'connected': true,
+            'manageable': true,
+            'permissions': {'mode': 'read_write'},
+            'sync': {'status': 'current'},
+            'nextAction': 'No action needed.',
+          },
+        ],
+        'suggestions': [
+          {
+            'id': 'github',
+            'name': 'GitHub',
+            'adapter': 'mcp',
+            'state': 'setup_available',
+            'detail': 'Connect when needed.',
+            'capabilities': ['Repositories'],
+          },
+        ],
+      },
+    });
+
+    expect(inventory.state, 'partial');
+    expect(inventory.installed.single.name, 'Gmail');
+    expect(inventory.installed.single.permissionMode, 'read_write');
+    expect(inventory.installed.single.syncStatus, 'current');
+    expect(inventory.suggestions.single.capabilities, ['Repositories']);
+    expect(
+      AutomationPlugin.fromJson({
+        'pluginId': 'plugin.state-only',
+        'version': '1.0.0',
+        'name': 'State-only Plugin',
+        'state': 'disabled',
+      }).status,
+      'disabled',
+    );
+  });
+
+  test(
+    'loads every source concurrently and retains a source-level failure',
+    () async {
+      final api = _ConcurrentApiClient();
+      final future = ApiAutomationRepository(api).load();
+      await Future<void>.delayed(Duration.zero);
+
+      expect(api.pending.keys, {
+        NativePaths.skillsList,
+        NativePaths.integrationsOverview(),
+        NativePaths.adminConnectors,
+        NativePaths.adminTools,
+        NativePaths.adminWorkflows,
+        NativePaths.adminTriggers,
+        NativePaths.pluginsList,
+      });
+      expect(api.queries[NativePaths.adminWorkflows], {'limit': 24});
+      expect(api.queries[NativePaths.adminTriggers], {'limit': 48});
+
+      api.complete(NativePaths.skillsList, {'skills': const []});
+      api.complete(NativePaths.integrationsOverview(), {
+        'overview': {
+          'state': 'empty',
+          'generatedAt': '2026-09-19T09:00:00.000Z',
+          'installed': const [],
+          'suggestions': const [],
+        },
+      });
+      api.complete(NativePaths.adminConnectors, {'connectors': const []});
+      api.fail(
+        NativePaths.adminTools,
+        const ApiException('Tool inventory is unavailable.', statusCode: 503),
+      );
+      api.complete(NativePaths.adminWorkflows, {'runs': const []});
+      api.complete(NativePaths.adminTriggers, {'triggers': const []});
+      api.complete(NativePaths.pluginsList, {
+        'plugins': const [],
+        'installations': const [],
+        'storage': 'canonical_database',
+      });
+
+      final snapshot = await future;
+      expect(snapshot.failureCount, 1);
+      expect(snapshot.tools.hasError, isTrue);
+      expect(snapshot.tools.error, contains('Tool inventory is unavailable'));
+      expect(snapshot.skills.isReady, isTrue);
+      expect(snapshot.connections.isReady, isTrue);
+      expect(snapshot.plugins.isReady, isTrue);
+    },
+  );
+
+  test('binds Plugin mutations to idempotency, digest, and revision', () async {
+    final api = _MutationApiClient();
+    final repository = ApiAutomationRepository(api);
+    final plugin = _plugin();
+
+    final preview = await repository.previewCatalogPlugin(
+      plugin,
+      idempotencyKey: 'preview-one',
+    );
+    expect(api.lastPath, NativePaths.pluginsPreview);
+    expect(api.lastHeaders?['Idempotency-Key'], 'preview-one');
+    expect(api.lastData?['manifestSha256'], _sha);
+    expect(preview.previewSha256, _previewSha);
+
+    await repository.installPlugin(preview, idempotencyKey: 'install-one');
+    expect(api.lastPath, NativePaths.pluginsInstall);
+    expect(api.lastHeaders?['Idempotency-Key'], 'install-one');
+    expect(api.lastData, {
+      'previewId': 'plugin-preview:test-111111',
+      'manifestSha256': _sha,
+    });
+
+    await repository.setPluginEnabled(
+      plugin,
+      enabled: false,
+      idempotencyKey: 'disable-one',
+    );
+    expect(api.lastMethod, 'PATCH');
+    expect(api.lastData, {'action': 'disable', 'expectedRevision': 4});
+
+    await repository.uninstallPlugin(plugin, idempotencyKey: 'uninstall-one');
+    expect(api.lastMethod, 'DELETE');
+    expect(api.lastHeaders?['Idempotency-Key'], 'uninstall-one');
+    expect(api.lastData, {'expectedRevision': 4});
+  });
+
+  test(
+    'controller exposes partial refresh state and completes reviewed install',
+    () async {
+      final repository = _ControllerRepository();
+      final now = DateTime.utc(2026, 9, 19, 10);
+      final controller = AutomationController(
+        repository,
+        canManage: true,
+        mutationsAvailable: true,
+        now: () => now,
+      );
+
+      await controller.refresh();
+      expect(controller.snapshot.failureCount, 1);
+      expect(controller.refreshedAt, now);
+
+      final preview = await controller.previewCatalogPlugin(_plugin());
+      expect(preview?.previewSha256, _previewSha);
+      expect(
+        repository.idempotencyKeys.single,
+        startsWith('native-plugin-preview-'),
+      );
+      expect(await controller.installPreview(), isTrue);
+      expect(controller.pluginPreview, isNull);
+      expect(controller.notice, contains('installed'));
+      expect(repository.pluginLoads, 1);
+    },
+  );
+
+  test('rejects oversized or non-object Plugin manifests locally', () {
+    expect(() => parseAutomationPluginManifest('[]'), throwsFormatException);
+    expect(
+      () => parseAutomationPluginManifest(
+        '{"schemaVersion":1,"value":"${List.filled(automationPluginManifestMaxBytes, 'x').join()}"}',
+      ),
+      throwsFormatException,
+    );
+  });
+}
+
+class _ConcurrentApiClient extends ApiClient {
+  _ConcurrentApiClient()
+    : super(Dio(), Dio(), SecureSessionStore(const FlutterSecureStorage()));
+
+  final pending = <String, Completer<Map<String, dynamic>>>{};
+  final queries = <String, Map<String, dynamic>?>{};
+
+  @override
+  Future<Map<String, dynamic>> getJson(
+    String path, {
+    Map<String, dynamic>? query,
+  }) {
+    queries[path] = query;
+    return (pending[path] = Completer<Map<String, dynamic>>()).future;
+  }
+
+  void complete(String path, Map<String, dynamic> value) =>
+      pending[path]!.complete(value);
+
+  void fail(String path, Object error) => pending[path]!.completeError(error);
+}
+
+class _MutationApiClient extends ApiClient {
+  _MutationApiClient()
+    : super(Dio(), Dio(), SecureSessionStore(const FlutterSecureStorage()));
+
+  String? lastMethod, lastPath;
+  Map<String, dynamic>? lastData, lastHeaders;
+
+  @override
+  Future<Map<String, dynamic>> postJson(
+    String path, {
+    Map<String, dynamic>? data,
+    Map<String, dynamic>? headers,
+  }) async {
+    _record('POST', path, data, headers);
+    return path == NativePaths.pluginsPreview
+        ? _previewResponse()
+        : _mutationResponse();
+  }
+
+  @override
+  Future<Map<String, dynamic>> patchJson(
+    String path, {
+    Map<String, dynamic>? data,
+    Map<String, dynamic>? headers,
+  }) async {
+    _record('PATCH', path, data, headers);
+    return _mutationResponse();
+  }
+
+  @override
+  Future<Map<String, dynamic>> deleteJson(
+    String path, {
+    Map<String, dynamic>? data,
+    Map<String, dynamic>? query,
+    Map<String, dynamic>? headers,
+  }) async {
+    _record('DELETE', path, data, headers);
+    return _mutationResponse();
+  }
+
+  void _record(
+    String method,
+    String path,
+    Map<String, dynamic>? data,
+    Map<String, dynamic>? headers,
+  ) {
+    lastMethod = method;
+    lastPath = path;
+    lastData = data;
+    lastHeaders = headers;
+  }
+}
+
+class _ControllerRepository implements AutomationRepository {
+  final idempotencyKeys = <String>[];
+  int pluginLoads = 0;
+
+  @override
+  Future<AutomationSnapshot> load() async => const AutomationSnapshot(
+    skills: AutomationResource.ready([]),
+    connections: AutomationResource.failed('Connections unavailable.'),
+    mcp: AutomationResource.ready([]),
+    tools: AutomationResource.ready([]),
+    workflows: AutomationResource.ready([]),
+    triggers: AutomationResource.ready([]),
+    plugins: AutomationResource.ready(
+      AutomationPluginCatalog(
+        plugins: [],
+        installations: [],
+        storage: 'canonical_database',
+        raw: {},
+      ),
+    ),
+  );
+
+  @override
+  Future<AutomationResource<AutomationPluginCatalog>> loadPlugins() async {
+    pluginLoads += 1;
+    return const AutomationResource.ready(
+      AutomationPluginCatalog(
+        plugins: [],
+        installations: [],
+        storage: 'canonical_database',
+        raw: {},
+      ),
+    );
+  }
+
+  @override
+  Future<AutomationPluginPreview> previewCatalogPlugin(
+    AutomationPlugin plugin, {
+    required String idempotencyKey,
+  }) async {
+    idempotencyKeys.add(idempotencyKey);
+    return AutomationPluginPreview.fromResponse(_previewResponse());
+  }
+
+  @override
+  Future<AutomationPluginPreview> previewManifest(
+    AutomationJson manifest, {
+    required String idempotencyKey,
+  }) => previewCatalogPlugin(_plugin(), idempotencyKey: idempotencyKey);
+
+  @override
+  Future<AutomationPluginMutation> installPlugin(
+    AutomationPluginPreview preview, {
+    required String idempotencyKey,
+  }) async => AutomationPluginMutation.fromResponse(_mutationResponse());
+
+  @override
+  Future<AutomationPluginMutation> setPluginEnabled(
+    AutomationPlugin plugin, {
+    required bool enabled,
+    required String idempotencyKey,
+  }) async => AutomationPluginMutation.fromResponse(_mutationResponse());
+
+  @override
+  Future<AutomationPluginMutation> uninstallPlugin(
+    AutomationPlugin plugin, {
+    required String idempotencyKey,
+  }) async => AutomationPluginMutation.fromResponse(_mutationResponse());
+}
+
+AutomationPlugin _plugin() => AutomationPlugin.fromJson({
+  'pluginId': 'plugin.test',
+  'version': '1.0.0',
+  'name': 'Test Plugin',
+  'description': 'A test declarative Plugin.',
+  'publisher': {'name': 'Test'},
+  'manifestSha256': _sha,
+  'installed': true,
+  'status': 'enabled',
+  'installationId': 'plugin-installation:test-111111',
+  'revision': 4,
+  'componentCounts': {'skills': 1, 'mcpTemplates': 0, 'workflowTemplates': 0},
+  'manifest': {'schemaVersion': 1},
+});
+
+Map<String, dynamic> _previewResponse() => {
+  'preview': {
+    'previewId': 'plugin-preview:test-111111',
+    'pluginId': 'plugin.test',
+    'pluginVersion': '1.0.0',
+    'name': 'Test Plugin',
+    'manifestSha256': _sha,
+    'previewSha256': _previewSha,
+    'effects': ['Creates one Skill.'],
+    'limitations': ['Creates no credentials.'],
+    'expiresAt': '2099-09-19T10:15:00.000Z',
+  },
+  'manifest': {'schemaVersion': 1},
+};
+
+Map<String, dynamic> _mutationResponse() => {
+  'installation': {
+    'installationId': 'plugin-installation:test-111111',
+    'pluginId': 'plugin.test',
+    'name': 'Test Plugin',
+    'state': 'enabled',
+    'revision': 5,
+    'manifestSha256': _sha,
+  },
+  'manifest': {'schemaVersion': 1},
+  'activation': {'explanation': 'Test Plugin was installed.'},
+};

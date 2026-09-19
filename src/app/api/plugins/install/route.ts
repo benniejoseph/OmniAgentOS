@@ -11,6 +11,7 @@ import {
   PluginPreviewExpiredError,
   PluginUnavailableError,
 } from "@/lib/plugins/store";
+import { pluginIdempotencyErrorResponse } from "@/lib/plugins/http";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
@@ -27,11 +28,14 @@ async function POSTHandler(request: Request) {
       action: "manage.workflow",
       resourceType: "plugin",
       riskLevel: 1,
+      nativeMutationCapability: "plugins.manage",
       metadata: { operation: "install_exact_preview" },
     });
   } catch (error) {
     return forbiddenResponse(error);
   }
+  const idempotencyError = pluginIdempotencyErrorResponse(request);
+  if (idempotencyError) return idempotencyError;
   let body: unknown;
   try {
     body = await parseJsonBody(request, 8_000);

@@ -260,11 +260,13 @@ class ApiClient {
 
   Future<Map<String, dynamic>> deleteJson(
     String path, {
+    Map<String, dynamic>? data,
     Map<String, dynamic>? query,
     Map<String, dynamic>? headers,
   }) => _json(
     () => _dio.delete<Object?>(
       path,
+      data: data,
       queryParameters: query,
       options: Options(headers: headers),
     ),

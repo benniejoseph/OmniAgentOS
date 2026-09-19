@@ -12,6 +12,7 @@ import {
   PluginNotFoundError,
   PluginUnavailableError,
 } from "@/lib/plugins/store";
+import { pluginIdempotencyErrorResponse } from "@/lib/plugins/http";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import type { SecurityContext } from "@/lib/security/types";
 
@@ -33,6 +34,8 @@ async function PATCHHandler(request: Request, context: RouteContext<"/api/plugin
   const { id } = await context.params;
   const authorized = await authorizeLifecycleRequest(request, id, "change_state");
   if (authorized instanceof Response) return authorized;
+  const idempotencyError = pluginIdempotencyErrorResponse(request);
+  if (idempotencyError) return idempotencyError;
   const parsed = await parseBody(request, patchSchema);
   if (parsed instanceof Response) return parsed;
   return lifecycle(request, authorized, id, parsed.action, parsed.expectedRevision);
@@ -42,6 +45,8 @@ async function DELETEHandler(request: Request, context: RouteContext<"/api/plugi
   const { id } = await context.params;
   const authorized = await authorizeLifecycleRequest(request, id, "uninstall");
   if (authorized instanceof Response) return authorized;
+  const idempotencyError = pluginIdempotencyErrorResponse(request);
+  if (idempotencyError) return idempotencyError;
   const parsed = await parseBody(request, deleteSchema);
   if (parsed instanceof Response) return parsed;
   return lifecycle(request, authorized, id, "uninstall", parsed.expectedRevision);
@@ -107,6 +112,7 @@ async function authorizeLifecycleRequest(
       resourceType: "plugin",
       resourceId: installationId,
       riskLevel: 1,
+      nativeMutationCapability: "plugins.manage",
       metadata: { operation },
     });
   } catch (error) {

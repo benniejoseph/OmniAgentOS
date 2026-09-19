@@ -18,8 +18,8 @@ import {
 
 describe("native API contracts", () => {
   it("retains exactly the current and previous rollout versions", () => {
-    expect(NATIVE_API_CURRENT_VERSION).toBe(16);
-    expect(NATIVE_API_PREVIOUS_VERSION).toBe(15);
+    expect(NATIVE_API_CURRENT_VERSION).toBe(17);
+    expect(NATIVE_API_PREVIOUS_VERSION).toBe(16);
     expect(nativeOperationsForVersion(8)?.length).toBeLessThan(
       nativeOperationsForVersion(7)?.length || 0,
     );
@@ -47,9 +47,12 @@ describe("native API contracts", () => {
     expect(nativeOperationsForVersion(16)?.length).toBe(
       (nativeOperationsForVersion(15)?.length || 0) + 1,
     );
+    expect(nativeOperationsForVersion(17)?.length).toBe(
+      (nativeOperationsForVersion(16)?.length || 0) + 5,
+    );
     expect(nativeContractSchemas.NativeContractDiscovery.parse(
       nativeContractDiscovery(),
-    ).supportedVersions).toEqual([16, 15]);
+    ).supportedVersions).toEqual([17, 16]);
   });
 
   it("exposes only explicit local Computer Use in the current request schema", () => {
@@ -142,9 +145,51 @@ describe("native API contracts", () => {
     expect(dart).toContain("static const pushCanaryRun = '/api/mobile/push/canary';");
     expect(dart).toContain("'plugins.list',");
     expect(dart).toContain("static const pluginsList = '/api/plugins';");
+    expect(dart).toContain("'integrations.overview',");
+    expect(dart).toContain("static String integrationsOverview({String? workspaceId})");
+    expect(dart).toContain("'plugins.preview',");
+    expect(dart).toContain("static const pluginsPreview = '/api/plugins/preview';");
+    expect(dart).toContain("static const pluginsInstall = '/api/plugins/install';");
+    expect(dart).toContain("static String pluginsChange(String id)");
+    expect(dart).toContain("static String pluginsUninstall(String id)");
     expect(dart).toContain("static String memoryList({String? threadId, int? limit})");
     expect(dart).not.toContain("'agents.create',");
     expect(dart).not.toContain("'admin.workflows.tick',");
+  });
+
+  it("keeps v16 immutable while v17 adds the native Automation control plane", async () => {
+    const [v16, v16Manifest, v17] = await Promise.all([
+      readFile(
+        new URL("../../../public/native-contracts/v16/openapi.json", import.meta.url),
+        "utf8",
+      ),
+      readFile(
+        new URL("../../../public/native-contracts/v16/manifest.json", import.meta.url),
+        "utf8",
+      ),
+      readFile(
+        new URL("../../../public/native-contracts/v17/openapi.json", import.meta.url),
+        "utf8",
+      ),
+    ]);
+
+    expect(sha256(v16)).toBe(
+      "a2076a807873ef4d15f6867084c2fff34ec0af79e405b87a1dbbe0da61a48bfe",
+    );
+    expect(sha256(v16Manifest)).toBe(
+      "f07374ccf6409d3e8da0bdd047e710d8f0e431eaca0560cd0768ca09c219031d",
+    );
+    expect(v16).not.toContain('"integrations.overview"');
+    expect(v16).not.toContain('"plugins.preview"');
+    expect(v17).toContain('"integrations.overview"');
+    expect(v17).toContain('"plugins.preview"');
+    expect(v17).toContain('"plugins.install"');
+    expect(v17).toContain('"plugins.change"');
+    expect(v17).toContain('"plugins.uninstall"');
+    expect(v17).toContain('"name": "Idempotency-Key"');
+    expect(v17).toContain('"required": true');
+    expect(v17).toContain('"expectedRevision"');
+    expect(v17).toContain('"manifestSha256"');
   });
 
   it("keeps v15 immutable while v16 adds only the Plugin inventory read", async () => {
@@ -227,13 +272,13 @@ describe("native API contracts", () => {
         platform: "macos",
         appVersion: "1.0.0",
         buildNumber: 2,
-        clientContractVersion: 16,
+        clientContractVersion: 17,
       },
     };
     expect(nativeLoginRequestSchema.safeParse(request).success).toBe(true);
     expect(nativeLoginRequestSchema.safeParse({
       ...request,
-      device: { ...request.device, clientContractVersion: 15 },
+      device: { ...request.device, clientContractVersion: 16 },
     }).success).toBe(true);
     expect(nativeLoginRequestSchema.safeParse({
       ...request,
@@ -340,7 +385,7 @@ describe("native API contracts", () => {
       user: { id: "user-one", email: "operator@example.test", status: "active", createdAt: timestamp, updatedAt: timestamp },
       tenant: { id: "tenant-one", name: "Example", slug: "example", createdAt: timestamp, updatedAt: timestamp },
       membership: { id: "membership-one", tenantId: "tenant-one", userId: "user-one", role: "operator", status: "active", createdAt: timestamp, updatedAt: timestamp },
-      device: { id: "device-one", name: "Asael on macOS", platform: "macos", appVersion: "1.0.0", buildNumber: 2, clientContractVersion: 15 },
+      device: { id: "device-one", name: "Asael on macOS", platform: "macos", appVersion: "1.0.0", buildNumber: 2, clientContractVersion: 16 },
     };
     expect(nativeBootstrapResponseSchema.parse({
       authenticated: true,
@@ -352,9 +397,9 @@ describe("native API contracts", () => {
         mobileBasePath: "/api/mobile",
         nativeContract: {
           id: "asael.native-api",
-          currentVersion: 16,
-          previousVersion: 15,
-          supportedVersions: [16, 15],
+          currentVersion: 17,
+          previousVersion: 16,
+          supportedVersions: [17, 16],
           discoveryPath: "/api/mobile/contracts",
         },
       },
@@ -363,15 +408,15 @@ describe("native API contracts", () => {
         platform: "macos",
         appVersion: "1.0.0",
         buildNumber: 2,
-        clientContractVersion: 15,
+        clientContractVersion: 16,
         minimumVersion: "1.0.0",
-        requiredContractVersion: 16,
-        supportedContractVersions: [16, 15],
+        requiredContractVersion: 17,
+        supportedContractVersions: [17, 16],
         status: "compatible",
         agentCatalogEnrollment: { state: "held", clientReady: true },
       },
       nativeClientPolicy: { schemaVersion: 1 },
-    }).api.nativeContract.currentVersion).toBe(16);
+    }).api.nativeContract.currentVersion).toBe(17);
   });
 });
 
