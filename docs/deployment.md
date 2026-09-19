@@ -269,10 +269,12 @@ The current installed checkpoint is Asael `1.10.0` build `20` at
 Strict nested signing passes and the installed host CDHash is
 `3b37c910c60da364cf3f87bc2cacfe0fffb1e854`. The old 1.8.0+18 bundle is retained
 in Trash for rollback. Native discovery is production-live at current v17 with
-frozen v16 on Vercel deployment `dpl_4GoUPJgEbXVqzdSbNYUJAqoYb5xk`, exact
-revision `cebbf10a17be90b7bca8f6e3fb065e3112423be4`. This build adds the native
-six-section Automation Studio and governed Plugin lifecycle. The owner-only
-identity still deliberately contains no production APNs entitlement.
+frozen v16. The installed binary still provides the native six-section
+Automation Studio and governed Plugin lifecycle, while its live server-backed
+Skill catalog is now served by Vercel deployment
+`dpl_31wUhFtP8pxP5GEc8q46Kq3p2Ms9`, exact revision
+`ed615fe3b0a3a894628b28905a13865f05cd7d8a`. The owner-only identity still
+deliberately contains no production APNs entitlement.
 
 Distribution to another Mac sets `ASAEL_MACOS_SIGNING_IDENTITY` and
 `ASAEL_MACOS_NOTARY_PROFILE`, which enables Hardened Runtime and makes Developer ID
@@ -827,6 +829,28 @@ the existing governed connector routes. Workflow entries remain metadata-only
 and cannot plan, approve, enqueue, or execute work. Plugin manifests and database
 snapshots must never contain tokens, private keys, passwords, or executable
 entrypoints.
+
+## Built-in Skill catalog v2
+
+The curated built-in Skill library requires ordered migration
+`20260919120000_builtin_skill_catalog_v2.sql` (internal schema version 187)
+after the exact declarative-Plugin v186 predecessor. The migration pins all 18
+released built-in IDs, reserves them against custom Skill insertion, and
+rebuilds the exact-owner Agent reference guards. It also enforces a maximum of
+eight assigned Skills so prompt instructions and the governed-tool allowlist
+cannot diverge. Existing over-limit assignments make the migration fail
+closed; the migration never truncates user configuration.
+
+Production installed v187 on 2026-09-19 and promoted Vercel deployment
+`dpl_31wUhFtP8pxP5GEc8q46Kq3p2Ms9` at exact revision
+`ed615fe3b0a3a894628b28905a13865f05cd7d8a`. Canonical health reported healthy,
+and an authenticated private/no-store catalog read returned 18 selectable,
+non-manageable built-ins with the productivity, design, engineering, writing,
+automation, and learning entries present. The catalog and assignment boundary
+are Vercel/database changes; they add no worker protocol or task. The existing
+worker remains compatible because the database rejects profiles above the same
+eight-Skill bound, while the runtime's additional defensive cap will ship in
+the next paired worker release.
 
 ## Connector risk controls
 
