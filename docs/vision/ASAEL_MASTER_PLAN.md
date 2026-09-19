@@ -3438,14 +3438,18 @@ The task tables above are the source of truth. A phase is checked only after eve
 - [x] **Phase 10 — Workspaces and Salesforce-connected CSM:** P10.1–P10.14 complete; live Salesforce activation remains external configuration, not implementation.
 - [x] **Phase 11 — cohesive product projections:** P11.1–P11.9 complete.
 - [x] **Phase 12 — mobile application:** P12.1–P12.6 and the private Android operational gate are complete; native v15 adds durable received/opened/action receipts, cold-launch handling, and complete approval/meeting/customer-risk/terminal-run producers while retaining frozen v14. The latest live FCM canary reached provider acceptance but is not counted as delivery because the disconnected Android client returned no v15 receipt within 12 seconds. iOS and app-store publication are owner-excluded.
-- [ ] **Phase 13 — macOS application:** P13.1, P13.3, and P13.4 are complete for the private owner-Mac product. P13.2 is code-complete with bulk Capture, drag/drop, registered Share Extension/App Group intake, native notification actions, durable v15 receipts/cold-launch handling, APNs token/environment handling, and governed acknowledgement. Its entitlement split now makes restricted APS authority explicit and fail-closed, but one real provider-delivered APNs receipt remains externally blocked by the absent Apple Team identity/profile and APNs provider credential. P13.3 has proven source/runtime Playwright removal, installed migrations 181-182 with zero active remote-browser authority and the repaired `open_url` boundary, credential-restart and natural-language Chrome screenshot canaries, zero durable screenshot/Accessibility content, and deletion of the obsolete Fly browser app, machine, volume, and secrets. Asael `1.8.0` build `18` is installed with APS correctly absent from the private self-signed package. The surviving worker/OpenAI egress service is healthy at `v335`. Developer ID/notarized distribution is outside the private-install scope.
+- [ ] **Phase 13 — macOS application:** P13.1, P13.3, and P13.4 are complete for the private owner-Mac product. P13.2 is code-complete with bulk Capture, drag/drop, registered Share Extension/App Group intake, native notification actions, durable v15 receipts/cold-launch handling, APNs token/environment handling, and governed acknowledgement. Its entitlement split now makes restricted APS authority explicit and fail-closed, but one real provider-delivered APNs receipt remains externally blocked by the absent Apple Team identity/profile and APNs provider credential. P13.3 has proven source/runtime Playwright removal, installed migrations 181-182 with zero active remote-browser authority and the repaired `open_url` boundary, credential-restart and natural-language Chrome screenshot canaries, zero durable screenshot/Accessibility content, and deletion of the obsolete Fly browser app, machine, volume, and secrets. Asael `1.10.0` build `20` is installed with the native Automation Studio and APS correctly absent from the private self-signed package. The surviving worker/OpenAI egress service remains protocol-compatible. Developer ID/notarized distribution is outside the private-install scope.
 
-The latest installed native checkpoint is Asael 1.8.0 build 18. Migrations
-183–185 are installed, Vercel deployment `dpl_DbYxMeehWu24JFLLrJ95tW8mf5om`
-is canonical and healthy at exact revision
-`0f0a3f2fa64d08b5f3384c44943771d77d36af21`, and discovery reports native v15
-current/v14 previous. The unchecked Phase 13 state continues to mean only the
-external provider-delivered APNs proof.
+The latest installed native checkpoint is Asael 1.10.0 build 20, package
+SHA-256 `4cce04a64e0392d0fb3a116fc73786c4433fde729fd3656a7a6dcec200a9829b`
+and host CDHash `3b37c910c60da364cf3f87bc2cacfe0fffb1e854`. Migrations 183–186 are
+installed. Vercel deployment `dpl_4GoUPJgEbXVqzdSbNYUJAqoYb5xk` is canonical
+and healthy at exact revision `cebbf10a17be90b7bca8f6e3fb065e3112423be4`,
+and discovery reports native v17 current/v16 previous. The native six-section
+Automation Studio was visually verified with live connections, MCP, governed
+tools, Skills, workflows, triggers, and Plugin inventory. The old 1.8.0+18 app
+is recoverable in Trash. The unchecked Phase 13 state continues to mean only
+the external provider-delivered APNs proof.
 
 The same release introduces TypeSafe Jev as a Settings-discovered provider and
 reserves it as the only provider for the dedicated `semantic_decision` scope.

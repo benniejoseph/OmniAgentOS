@@ -36,12 +36,12 @@ Set these through the platform secret/configuration store, never in source contr
 - `NEXT_PUBLIC_APP_URL`: canonical HTTPS origin. Set it to exactly `https://asael.bennierichard.com`. It is public and build-inlined, not a secret.
 - `OMNIAGENT_NATIVE_MIN_ANDROID_VERSION`, `OMNIAGENT_NATIVE_MIN_IOS_VERSION`, and `OMNIAGENT_NATIVE_MIN_MACOS_VERSION`: optional stable `major.minor.patch` minimums for native compatibility telemetry. An absent or empty value defaults to `1.0.0`; a malformed configured value invalidates the policy and holds adoption unavailable. These settings do not authorize Agent enrollment.
 
-Native contract artifacts are committed immutable release inputs. Source contract v16
-is the release candidate and frozen v15 is the one supported previous version; older
+Native contract artifacts are committed immutable release inputs. Source contract v17
+is the release candidate and frozen v16 is the one supported previous version; older
 versions remain historical archives and a published version is never regenerated in place. Run
 `npm run check:native-contracts` before a native-contract release; the check
 fails if the generated OpenAPI, event schema, fixtures, integrity manifests,
-Dart SDK, or frozen v7-v15 document hashes drift. Removing an archived version
+Dart SDK, or frozen v7-v16 document hashes drift. Removing an archived version
 requires a separately reviewed adoption decision and is not implied by a
 Vercel deployment.
 
@@ -261,6 +261,18 @@ v16 with frozen v15, and the canonical server reports exact revision
 recorded installed checkpoint. It uses the owner-only local identity, so it
 deliberately contains no production APNs entitlement and is not evidence of an
 APNs delivery canary.
+
+The current installed checkpoint is Asael `1.10.0` build `20` at
+`/Applications/Asael.app`, packaged as
+`apps/flutter/build/distribution/macos/Asael-1.10.0-20-macOS.dmg` with SHA-256
+`4cce04a64e0392d0fb3a116fc73786c4433fde729fd3656a7a6dcec200a9829b`.
+Strict nested signing passes and the installed host CDHash is
+`3b37c910c60da364cf3f87bc2cacfe0fffb1e854`. The old 1.8.0+18 bundle is retained
+in Trash for rollback. Native discovery is production-live at current v17 with
+frozen v16 on Vercel deployment `dpl_4GoUPJgEbXVqzdSbNYUJAqoYb5xk`, exact
+revision `cebbf10a17be90b7bca8f6e3fb065e3112423be4`. This build adds the native
+six-section Automation Studio and governed Plugin lifecycle. The owner-only
+identity still deliberately contains no production APNs entitlement.
 
 Distribution to another Mac sets `ASAEL_MACOS_SIGNING_IDENTITY` and
 `ASAEL_MACOS_NOTARY_PROFILE`, which enables Hardened Runtime and makes Developer ID
