@@ -3,9 +3,9 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   test('retains current and previous contract compatibility', () {
-    expect(NativeContract.currentVersion, 18);
-    expect(NativeContract.previousVersion, 17);
-    expect(NativeContract.supportedVersions, [18, 17]);
+    expect(NativeContract.currentVersion, 20);
+    expect(NativeContract.previousVersion, 19);
+    expect(NativeContract.supportedVersions, [20, 19]);
     expect(
       NativePaths.workspacesTasksUpdate('project one', 'task/two'),
       '/api/projects/project%20one/tasks/task%2Ftwo',
@@ -42,7 +42,7 @@ void main() {
         'api': {
           'nativeContract': {
             'id': NativeContract.id,
-            'supportedVersions': [18, 17],
+            'supportedVersions': [20, 19],
           },
         },
       }),

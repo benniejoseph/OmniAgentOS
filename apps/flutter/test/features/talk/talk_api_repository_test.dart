@@ -1,4 +1,5 @@
 import 'package:asael/core/network/api_client.dart';
+import 'package:asael/core/network/api_exception.dart';
 import 'package:asael/core/storage/secure_session_store.dart';
 import 'package:asael/features/talk/talk.dart';
 import 'package:asael/features/talk/talk_api_repository.dart';
@@ -37,10 +38,40 @@ void main() {
 
       expect(api.sendCount, 1);
       expect(api.lastData?['computerUseTarget'], 'local_macos');
+      expect(api.lastData?.containsKey('agentId'), isFalse);
       expect(events.map((event) => event.event), ['status', 'run', 'done']);
       expect(events.last.data['threadId'], 'thread-recovered');
       expect(events.last.data['response'], 'Example Domain');
       expect(history.threadReads, 1);
+    },
+  );
+
+  test(
+    'fails closed instead of adopting concurrent history for an assigned Agent',
+    () async {
+      final api = _DisconnectingStreamApiClient();
+      final history = _RecoveryHistoryRepository();
+      final repository = ApiTalkRepository(
+        api,
+        history: history,
+        recoveryPollInterval: Duration.zero,
+        recoveryPollLimit: 3,
+      );
+
+      await expectLater(
+        repository
+            .send(
+              message: 'Open example.com read only',
+              agentId: 'agent-moltbook',
+            )
+            .toList(),
+        throwsA(isA<ApiException>()),
+      );
+
+      expect(api.sendCount, 1);
+      expect(api.lastData?['agentId'], 'agent-moltbook');
+      expect(history.listReads, 1, reason: 'only the preflight anchor is read');
+      expect(history.threadReads, 0);
     },
   );
 
@@ -63,6 +94,19 @@ void main() {
       expect(history.threadReads, 0);
     },
   );
+
+  test('rejects an invalid assigned Agent before network I/O', () async {
+    final api = _DisconnectingStreamApiClient();
+    final repository = ApiTalkRepository(api);
+
+    await expectLater(
+      repository
+          .send(message: 'Read the feed', agentId: '../another-owner')
+          .toList(),
+      throwsArgumentError,
+    );
+    expect(api.sendCount, 0);
+  });
 
   test('parses bounded exact-run recovery state', () async {
     final api = _RunProjectionApiClient({

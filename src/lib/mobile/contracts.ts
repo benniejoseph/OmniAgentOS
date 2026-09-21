@@ -12,8 +12,8 @@ import { mobilePushReceiptRequestSchema } from "@/lib/mobile/push-contract";
 import { pluginManifestSchema } from "@/lib/plugins/contracts";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 19 as const;
-export const NATIVE_API_PREVIOUS_VERSION = 18 as const;
+export const NATIVE_API_CURRENT_VERSION = 20 as const;
+export const NATIVE_API_PREVIOUS_VERSION = 19 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -386,6 +386,7 @@ export const nativeConversationRequestSchema = z.object({
   threadId: z.string().uuid().optional(),
   mode: z.enum(["orchestrate", "research", "execute", "learn"]).optional(),
   strategy: z.enum(["auto", "direct", "durable"]).optional(),
+  agentId: z.string().trim().min(1).max(120).regex(/^[a-zA-Z0-9_.:-]+$/).optional(),
   computerUseTarget: z.literal("local_macos").optional(),
   requestId: z.string().min(1).max(200).regex(/^[A-Za-z0-9._:-]+$/),
 }).strict();
@@ -1054,6 +1055,12 @@ const v19Operations: readonly NativeOperation[] = [
   ),
 ];
 
+// Contract v20 preserves the v19 operation surface while extending the strict
+// conversation envelope with an optional exact Agent identity. Selection does
+// not broaden authority: /api/agent still resolves the actor-owned Agent and
+// pins its definition, principal, grants, and policy before execution.
+const v20Operations: readonly NativeOperation[] = [...v19Operations];
+
 export const nativeContractSchemas = Object.freeze({
   JsonObject: jsonObject,
   NativeClientAttestation: nativeClientAttestationSchema,
@@ -1136,6 +1143,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 17) return v17Operations;
   if (version === 18) return v18Operations;
   if (version === 19) return v19Operations;
+  if (version === 20) return v20Operations;
   return undefined;
 }
 
@@ -1145,7 +1153,7 @@ export function nativeContractDiscovery() {
     contractId: NATIVE_API_CONTRACT_ID,
     currentVersion: NATIVE_API_CURRENT_VERSION,
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
-    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [19, 18],
+    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [20, 19],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,
       state: version === NATIVE_API_CURRENT_VERSION ? "current" as const : "previous" as const,

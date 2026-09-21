@@ -36,12 +36,12 @@ Set these through the platform secret/configuration store, never in source contr
 - `NEXT_PUBLIC_APP_URL`: canonical HTTPS origin. Set it to exactly `https://asael.bennierichard.com`. It is public and build-inlined, not a secret.
 - `OMNIAGENT_NATIVE_MIN_ANDROID_VERSION`, `OMNIAGENT_NATIVE_MIN_IOS_VERSION`, and `OMNIAGENT_NATIVE_MIN_MACOS_VERSION`: optional stable `major.minor.patch` minimums for native compatibility telemetry. An absent or empty value defaults to `1.0.0`; a malformed configured value invalidates the policy and holds adoption unavailable. These settings do not authorize Agent enrollment.
 
-Native contract artifacts are committed immutable release inputs. Source contract v19
-is the release candidate and frozen v18 is the one supported previous version; older
+Native contract artifacts are committed immutable release inputs. Source contract v20
+is the release candidate and frozen v19 is the one supported previous version; older
 versions remain historical archives and a published version is never regenerated in place. Run
 `npm run check:native-contracts` before a native-contract release; the check
 fails if the generated OpenAPI, event schema, fixtures, integrity manifests,
-Dart SDK, or frozen v7-v18 document hashes drift. Removing an archived version
+Dart SDK, or frozen v7-v19 document hashes drift. Removing an archived version
 requires a separately reviewed adoption decision and is not implied by a
 Vercel deployment.
 
@@ -934,9 +934,11 @@ The Agent inspector and native v19 console expose claim/health state, bounded
 activity, refresh, pause, and resume without exposing the API key or untrusted
 provider instructions. macOS v19 admits only `agents.create`, `agents.update`,
 and `agents.moltbook.manage` for this lifecycle; it intentionally provides no
-native Agent-delete capability. The native console manages the Moltbook
-lifecycle, while starting a run for the selected custom Agent remains a web
-Command action in this release. Apply
+native Agent-delete capability. Native v20 keeps that operation surface and adds
+only the optional bounded `agentId` field to the strict Conversation request.
+The macOS Agent inspector can therefore start a clean direct Command run pinned
+to the exact actor-owned custom Agent; queued prompts and retries retain that
+selection, and clearing it returns to ordinary supervisor routing. Apply
 `20260921120000_moltbook_agent_connections.sql` before promoting the web/native
 release; its ordered/runtime schema identity is version 190 with checksum
 `e0b8c00ca8f4fce6139735623366cacfa97675419a57c1666b4bf0fe4bbe8e46`.

@@ -389,6 +389,14 @@ class TalkWaitingApprovalSummary {
   final String toolName;
 }
 
+@immutable
+class TalkAssignedAgent {
+  const TalkAssignedAgent({required this.id, required this.name});
+
+  final String id;
+  final String name;
+}
+
 class TalkQueuedPrompt {
   const TalkQueuedPrompt({
     required this.id,
@@ -396,6 +404,7 @@ class TalkQueuedPrompt {
     required this.mode,
     required this.strategy,
     required this.executionTarget,
+    this.assignedAgent,
   });
 
   final String id;
@@ -403,6 +412,7 @@ class TalkQueuedPrompt {
   final String mode;
   final String strategy;
   final TalkExecutionTarget executionTarget;
+  final TalkAssignedAgent? assignedAgent;
 
   TalkQueuedPrompt copyWith({String? input}) => TalkQueuedPrompt(
     id: id,
@@ -410,6 +420,7 @@ class TalkQueuedPrompt {
     mode: mode,
     strategy: strategy,
     executionTarget: executionTarget,
+    assignedAgent: assignedAgent,
   );
 }
 
@@ -801,6 +812,7 @@ abstract interface class TalkRepository {
     String mode = 'orchestrate',
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
+    String? agentId,
   });
   Future<String> transcribeVoice(Uint8List bytes);
   Future<void> cancelRun(String runId);
@@ -852,6 +864,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   TalkMediaArtifactSummary? selectedArtifact;
   TalkArtifactContent? selectedArtifactContent;
   Object? voiceError;
+  TalkAssignedAgent? assignedAgent;
   bool _disposed = false;
   bool _drainingQueue = false;
   int _promptSequence = 0;
@@ -860,6 +873,28 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   Set<String> get monitoringWorkflowIds =>
       Set.unmodifiable(_workflowMonitorTokens.keys);
   bool get monitoringAcceptedRun => _runMonitorToken != null;
+  bool get hasPendingConversationWork =>
+      sending ||
+      (runId != null && !_acceptedRunIsTerminal) ||
+      promptQueue.isNotEmpty;
+
+  void assignAgent({required String id, required String name}) {
+    final exactId = id.trim();
+    final exactName = name.trim();
+    if (!RegExp(r'^[a-zA-Z0-9_.:-]{1,120}$').hasMatch(exactId) ||
+        exactName.isEmpty ||
+        exactName.length > 160) {
+      throw ArgumentError('The selected Agent identity is invalid.');
+    }
+    assignedAgent = TalkAssignedAgent(id: exactId, name: exactName);
+    notifyListeners();
+  }
+
+  void clearAssignedAgent() {
+    if (assignedAgent == null) return;
+    assignedAgent = null;
+    notifyListeners();
+  }
 
   @override
   TalkHistoryRepository? get talkHistoryRepository =>
@@ -868,7 +903,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       : null;
 
   @override
-  bool get historyInteractionBusy => sending;
+  bool get historyInteractionBusy => hasPendingConversationWork;
 
   @override
   void applyHistoryThreadProjection(TalkThreadDetail detail) {
@@ -894,6 +929,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     _retryMode = null;
     _retryStrategy = null;
     _retryExecutionTarget = null;
+    _retryAssignedAgent = null;
     status = null;
     canceling = false;
   }
@@ -912,6 +948,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     _retryMode = null;
     _retryStrategy = null;
     _retryExecutionTarget = null;
+    _retryAssignedAgent = null;
     status = null;
   }
 
@@ -923,12 +960,14 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   }) async {
     final text = input.trim();
     if (_disposed || text.isEmpty) return;
+    final targetAgent = assignedAgent;
     if (sending) {
       enqueuePrompt(
         text,
         mode: mode,
-        strategy: strategy,
+        strategy: targetAgent == null ? strategy : 'direct',
         executionTarget: executionTarget,
+        assignedAgent: targetAgent,
       );
       return;
     }
@@ -936,8 +975,9 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     return _send(
       input,
       mode: mode,
-      strategy: strategy,
+      strategy: targetAgent == null ? strategy : 'direct',
       executionTarget: executionTarget,
+      assignedAgent: targetAgent,
     );
   }
 
@@ -946,6 +986,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     String mode = 'orchestrate',
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
+    TalkAssignedAgent? assignedAgent,
   }) {
     final text = input.trim();
     if (_disposed ||
@@ -961,6 +1002,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
         mode: mode,
         strategy: strategy,
         executionTarget: executionTarget,
+        assignedAgent: assignedAgent ?? this.assignedAgent,
       ),
     );
     notifyListeners();
@@ -1021,6 +1063,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       mode: item.mode,
       strategy: item.strategy,
       executionTarget: item.executionTarget,
+      assignedAgent: item.assignedAgent,
     );
   }
 
@@ -1107,6 +1150,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   String? _retryMode;
   String? _retryStrategy;
   TalkExecutionTarget? _retryExecutionTarget;
+  TalkAssignedAgent? _retryAssignedAgent;
 
   bool get canRetry => !sending && _retryInput != null;
   bool get _acceptedRunIsTerminal =>
@@ -1117,6 +1161,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     _retryMode = null;
     _retryStrategy = null;
     _retryExecutionTarget = null;
+    _retryAssignedAgent = null;
   }
 
   void _abandonAcceptedRun() {
@@ -1169,6 +1214,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       mode: _retryMode ?? 'orchestrate',
       strategy: _retryStrategy ?? 'auto',
       executionTarget: _retryExecutionTarget ?? TalkExecutionTarget.agent,
+      assignedAgent: _retryAssignedAgent,
       replaceFailedResponse: true,
     );
   }
@@ -1198,6 +1244,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     String mode = 'orchestrate',
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
+    TalkAssignedAgent? assignedAgent,
     bool replaceFailedResponse = false,
   }) async {
     final text = input.trim();
@@ -1228,6 +1275,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
         mode: mode,
         strategy: strategy,
         executionTarget: executionTarget,
+        agentId: assignedAgent?.id,
       )) {
         if (_disposed) return;
         adoptConversationThreadId(event.data['threadId']);
@@ -1534,6 +1582,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
         _retryMode = mode;
         _retryStrategy = strategy;
         _retryExecutionTarget = executionTarget;
+        _retryAssignedAgent = assignedAgent;
         _recordActivity(
           key: 'run',
           title: 'Main agent',
@@ -1570,6 +1619,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
           mode: next.mode,
           strategy: next.strategy,
           executionTarget: next.executionTarget,
+          assignedAgent: next.assignedAgent,
         );
       }
     } finally {
@@ -2656,12 +2706,38 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                           const SizedBox(height: 10),
                           Align(
                             alignment: Alignment.centerLeft,
-                            child: _ExecutionTargetMenu(
-                              value: executionTarget,
-                              compact: true,
-                              localComputer: widget.localComputer,
-                              onChanged: (value) =>
-                                  setState(() => executionTarget = value),
+                            child: Wrap(
+                              spacing: 8,
+                              runSpacing: 8,
+                              crossAxisAlignment: WrapCrossAlignment.center,
+                              children: [
+                                if (widget.controller.assignedAgent
+                                    case final assignedAgent?)
+                                  InputChip(
+                                    key: const ValueKey(
+                                      'quick-entry-assigned-agent',
+                                    ),
+                                    avatar: const Icon(
+                                      Icons.smart_toy_outlined,
+                                      size: 17,
+                                    ),
+                                    label: Text(
+                                      '${assignedAgent.name} · Direct',
+                                    ),
+                                    tooltip:
+                                        'Commands run directly as ${assignedAgent.name}',
+                                    onDeleted: widget.controller.sending
+                                        ? null
+                                        : widget.controller.clearAssignedAgent,
+                                  ),
+                                _ExecutionTargetMenu(
+                                  value: executionTarget,
+                                  compact: true,
+                                  localComputer: widget.localComputer,
+                                  onChanged: (value) =>
+                                      setState(() => executionTarget = value),
+                                ),
+                              ],
                             ),
                           ),
                           const SizedBox(height: 9),
@@ -2801,6 +2877,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
         listenable: widget.controller,
         builder: (_, _) => LayoutBuilder(
           builder: (context, constraints) {
+            final assignedAgent = widget.controller.assignedAgent;
             final conversation = Column(
               children: [
                 AnimatedSwitcher(
@@ -2946,7 +3023,14 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                               icon: const Icon(
                                                 Icons.refresh_rounded,
                                               ),
-                                              label: const Text('Retry'),
+                                              label: Text(
+                                                widget
+                                                            .controller
+                                                            ._retryAssignedAgent ==
+                                                        null
+                                                    ? 'Retry'
+                                                    : 'Retry as ${widget.controller._retryAssignedAgent!.name}',
+                                              ),
                                             ),
                                           ],
                                         ],
@@ -2998,6 +3082,26 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                 runSpacing: 8,
                                 crossAxisAlignment: WrapCrossAlignment.center,
                                 children: [
+                                  if (assignedAgent != null)
+                                    InputChip(
+                                      key: const ValueKey(
+                                        'talk-assigned-agent',
+                                      ),
+                                      avatar: const Icon(
+                                        Icons.smart_toy_outlined,
+                                        size: 17,
+                                      ),
+                                      label: Text(
+                                        '${assignedAgent.name} · selected Agent',
+                                      ),
+                                      tooltip:
+                                          'Commands run directly as ${assignedAgent.name}',
+                                      onDeleted: widget.controller.sending
+                                          ? null
+                                          : widget
+                                                .controller
+                                                .clearAssignedAgent,
+                                    ),
                                   SegmentedButton<String>(
                                     segments: const [
                                       ButtonSegment(
@@ -3017,13 +3121,20 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                         ),
                                       ),
                                     ],
-                                    selected: {strategy},
+                                    selected: {
+                                      assignedAgent == null
+                                          ? strategy
+                                          : 'direct',
+                                    },
                                     showSelectedIcon: false,
                                     style: const ButtonStyle(
                                       visualDensity: VisualDensity.compact,
                                     ),
-                                    onSelectionChanged: (value) =>
-                                        setState(() => strategy = value.first),
+                                    onSelectionChanged: assignedAgent != null
+                                        ? null
+                                        : (value) => setState(
+                                            () => strategy = value.first,
+                                          ),
                                   ),
                                   _ExecutionTargetMenu(
                                     value: executionTarget,
@@ -3935,7 +4046,9 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
                                   const SizedBox(width: 5),
                                   Expanded(
                                     child: Text(
-                                      prompt.executionTarget.label,
+                                      prompt.assignedAgent == null
+                                          ? prompt.executionTarget.label
+                                          : '${prompt.assignedAgent!.name} · Direct · ${prompt.executionTarget.label}',
                                       style: TextStyle(
                                         color: scheme.onSurfaceVariant,
                                         fontSize: 10.5,

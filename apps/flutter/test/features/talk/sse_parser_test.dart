@@ -15,6 +15,7 @@ class _TalkRepository implements TalkRepository {
           String mode,
           String strategy,
           TalkExecutionTarget executionTarget,
+          String? agentId,
         })
       >[];
   var failNext = false;
@@ -44,12 +45,14 @@ class _TalkRepository implements TalkRepository {
     String mode = 'orchestrate',
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
+    String? agentId,
   }) async* {
     calls.add((
       message: message,
       mode: mode,
       strategy: strategy,
       executionTarget: executionTarget,
+      agentId: agentId,
     ));
     if (failNext) {
       failNext = false;
@@ -86,6 +89,7 @@ class _ActivityTalkRepository implements TalkRepository {
     String mode = 'orchestrate',
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
+    String? agentId,
   }) async* {
     yield const SseEvent(
       event: 'run',
@@ -165,6 +169,7 @@ class _DelegatedTalkRepository implements TalkRepository {
     String mode = 'orchestrate',
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
+    String? agentId,
   }) async* {
     yield const SseEvent(
       event: 'delegated',
@@ -305,6 +310,7 @@ class _TerminalTalkRepository
     String mode = 'orchestrate',
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
+    String? agentId,
   }) async* {
     yield const SseEvent(
       event: 'run',
@@ -342,6 +348,7 @@ class _LocalPreviewTalkRepository implements TalkRepository {
     String mode = 'orchestrate',
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
+    String? agentId,
   }) async* {
     yield const SseEvent(
       event: 'run',
@@ -388,6 +395,7 @@ class _HeldLocalPreviewTalkRepository implements TalkRepository {
     String mode = 'orchestrate',
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
+    String? agentId,
   }) => events.stream;
 
   @override
@@ -447,6 +455,7 @@ class _LocalPreviewSource implements LocalComputerPreviewSource {
 class _QueuedTalkRepository implements TalkRepository {
   final calls = <String>[];
   final targets = <TalkExecutionTarget>[];
+  final agentIds = <String?>[];
   final firstRun = Completer<void>();
 
   @override
@@ -467,9 +476,11 @@ class _QueuedTalkRepository implements TalkRepository {
     String mode = 'orchestrate',
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
+    String? agentId,
   }) async* {
     calls.add(message);
     targets.add(executionTarget);
+    agentIds.add(agentId);
     if (calls.length == 1) await firstRun.future;
     yield SseEvent(
       event: 'done',
@@ -532,6 +543,7 @@ class _DisconnectedAcceptedRunRepository implements TalkRepository {
     String mode = 'orchestrate',
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
+    String? agentId,
   }) async* {
     sends += 1;
     yield const SseEvent(
@@ -594,6 +606,7 @@ class _ApprovalRecoveryRepository implements TalkRepository {
     String mode = 'orchestrate',
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
+    String? agentId,
   }) async* {
     sends += 1;
     yield const SseEvent(
@@ -644,6 +657,7 @@ class _ReentryRecoveryRepository implements TalkRepository {
     String mode = 'orchestrate',
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
+    String? agentId,
   }) async* {
     yield const SseEvent(
       event: 'run',
@@ -711,13 +725,37 @@ void main() {
           mode: 'orchestrate',
           strategy: 'direct',
           executionTarget: TalkExecutionTarget.thisMac,
+          agentId: null,
         ),
         (
           message: 'Do this',
           mode: 'orchestrate',
           strategy: 'direct',
           executionTarget: TalkExecutionTarget.thisMac,
+          agentId: null,
         ),
+      ]);
+    },
+  );
+
+  test(
+    'pins an assigned Agent through a failed request and exact retry',
+    () async {
+      final repository = _TalkRepository()..failNext = true;
+      final controller = TalkController(repository)
+        ..assignAgent(id: 'agent-moltbook', name: 'Moltbook Steward');
+
+      await controller.send('Read the home feed');
+      controller.clearAssignedAgent();
+      await controller.retryLast();
+
+      expect(repository.calls.map((call) => call.agentId), [
+        'agent-moltbook',
+        'agent-moltbook',
+      ]);
+      expect(repository.calls.map((call) => call.strategy), [
+        'direct',
+        'direct',
       ]);
     },
   );
@@ -816,10 +854,12 @@ void main() {
 
     final first = controller.send('First prompt');
     await _settleAsync(2);
+    controller.assignAgent(id: 'agent-a', name: 'Agent A');
     await controller.send(
       'Second prompt',
       executionTarget: TalkExecutionTarget.thisMac,
     );
+    controller.assignAgent(id: 'agent-b', name: 'Agent B');
     await controller.send(
       'Third prompt',
       strategy: 'direct',
@@ -846,11 +886,34 @@ void main() {
       TalkExecutionTarget.thisMac,
       TalkExecutionTarget.agent,
     ]);
+    expect(repository.agentIds, [null, 'agent-a', 'agent-b']);
     expect(controller.promptQueue, isEmpty);
     expect(
       controller.messages.where((item) => item.role == TalkRole.user),
       hasLength(3),
     );
+  });
+
+  test('runs a queued prompt now with its exact assigned Agent', () async {
+    final repository = _QueuedTalkRepository();
+    final controller = TalkController(repository);
+
+    final first = controller.send('First prompt');
+    await _settleAsync(2);
+    controller.assignAgent(id: 'agent-moltbook', name: 'Moltbook Steward');
+    await controller.send('Read the home feed');
+    final queuedId = controller.promptQueue.single.id;
+    controller.pauseQueue();
+
+    repository.firstRun.complete();
+    await first;
+    await _settleAsync(4);
+    controller.clearAssignedAgent();
+    await controller.runQueuedPrompt(queuedId);
+
+    expect(repository.calls, ['First prompt', 'Read the home feed']);
+    expect(repository.agentIds, [null, 'agent-moltbook']);
+    expect(controller.promptQueue, isEmpty);
   });
 
   test('pauses queued prompts behind a governed approval', () async {
@@ -1220,6 +1283,34 @@ void main() {
     expect(find.textContaining('Governed run run-observab'), findsOneWidget);
   });
 
+  testWidgets('shows the captured Agent on queued and retry work', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1400, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final repository = _TalkRepository()..failNext = true;
+    final controller = TalkController(repository)
+      ..assignAgent(id: 'agent-moltbook', name: 'Moltbook Steward');
+    controller.enqueuePrompt('Read the home feed', strategy: 'direct');
+    await controller.send('Read the selected thread');
+    controller.clearAssignedAgent();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TalkView(
+          controller: controller,
+          voiceRecorder: _VoiceDraftRecorder(),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('Retry as Moltbook Steward'), findsOneWidget);
+    await tester.tap(find.byTooltip('Prompt queue'));
+    await tester.pump();
+    expect(find.text('Moltbook Steward · Direct · Asael only'), findsOneWidget);
+  });
+
   testWidgets('Conversation re-entry resumes an accepted exact run', (
     tester,
   ) async {
@@ -1257,7 +1348,8 @@ void main() {
     'Quick Entry exits on submit and Escape while retaining its controller',
     (tester) async {
       final repository = _TalkRepository();
-      final controller = TalkController(repository);
+      final controller = TalkController(repository)
+        ..assignAgent(id: 'agent-moltbook', name: 'Moltbook Steward');
       var exits = 0;
       var presentationReady = 0;
       await tester.pumpWidget(
@@ -1276,6 +1368,7 @@ void main() {
       expect(presentationReady, 1);
       expect(find.text('Quick Entry'), findsOneWidget);
       expect(find.text('Conversation'), findsNothing);
+      expect(find.text('Moltbook Steward · Direct'), findsOneWidget);
       await tester.tap(find.byKey(const ValueKey('talk-execution-target')));
       await tester.pumpAndSettle();
       await tester.tap(find.text('This Mac').last);
@@ -1293,6 +1386,7 @@ void main() {
         repository.calls.single.executionTarget,
         TalkExecutionTarget.thisMac,
       );
+      expect(repository.calls.single.agentId, 'agent-moltbook');
       expect(controller.messages.first.text, 'Prepare my briefing');
 
       await tester.sendKeyEvent(LogicalKeyboardKey.escape);

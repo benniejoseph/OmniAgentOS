@@ -66,19 +66,21 @@ class ApiAgentsRepository
   @override
   Future<AgentSkill> saveSkill(Json input, {String? id}) => Future.error(
     UnsupportedError(
-      'Skill mutations are not published by native contract v19.',
+      'Skill mutations are not published by the current native contract.',
     ),
   );
 
   @override
   Future<void> deleteAgent(String id) => Future.error(
-    UnsupportedError('Agent deletion is not published by native contract v19.'),
+    UnsupportedError(
+      'Agent deletion is not published by the current native contract.',
+    ),
   );
 
   @override
   Future<void> deleteSkill(String id) => Future.error(
     UnsupportedError(
-      'Skill mutations are not published by native contract v19.',
+      'Skill mutations are not published by the current native contract.',
     ),
   );
 

@@ -89,6 +89,12 @@ const frozenDocumentSha256ByVersion = Object.freeze({
     "fixtures.json": "4ef814152731bd3e594880a605e3087a17891600ca59163e61d3e70f395bfa24",
     "manifest.json": "3ad8ac174c0acaa53f9581782e0762f20ad111f0e13a45348b6af75440d3615e",
   }),
+  19: Object.freeze({
+    "openapi.json": "7c6e8283a7ad06f2b4525ababa350de23d1f7a57ce293f7917058fd2e0bbcdaf",
+    "events.schema.json": "54ad4d7e0a686efecd0b3a436ab16df640755c7c4da9b20f4f703cb45a835049",
+    "fixtures.json": "b00c944c55afa4137b30d6cdd42f7fef3887962ad9425805307655ca3de1f9e7",
+    "manifest.json": "d69b15a524ede1e83af3fac712ed4d938f37053e50dacb3f77863e3a5c857c57",
+  }),
 });
 
 const fixtures = Object.freeze({
@@ -118,6 +124,7 @@ const fixtures = Object.freeze({
     message: "Summarize what needs my attention.",
     mode: "orchestrate",
     strategy: "auto",
+    agentId: "agent-fixture",
     requestId: "native-fixture-request",
   },
   conversationEvents: [

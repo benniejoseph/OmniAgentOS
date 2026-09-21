@@ -109,7 +109,13 @@ class ApiTalkRepository
     String mode = 'orchestrate',
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
+    String? agentId,
   }) async* {
+    final exactAgentId = agentId?.trim();
+    if (exactAgentId != null &&
+        !RegExp(r'^[a-zA-Z0-9_.:-]{1,120}$').hasMatch(exactAgentId)) {
+      throw ArgumentError.value(agentId, 'agentId');
+    }
     final recoveryAnchor = _captureRecoveryAnchor(threadId);
     String? observedThreadId = threadId;
     String? observedRunId;
@@ -122,6 +128,7 @@ class ApiTalkRepository
           'threadId': ?threadId,
           'mode': mode,
           'strategy': strategy,
+          'agentId': ?exactAgentId,
           'computerUseTarget': ?executionTarget.apiValue,
           'requestId': 'flutter-${DateTime.now().microsecondsSinceEpoch}',
         },
@@ -174,7 +181,13 @@ class ApiTalkRepository
       // Only this no-run-id branch may use actor-scoped thread history, and it
       // remains fail-closed if a single exact turn cannot be identified.
       final fallbackAnchor = await recoveryAnchor;
-      if (!receivedTerminalEvent && fallbackAnchor != null) {
+      // A custom-Agent request must never adopt an actor-concurrent history
+      // turn without first proving that turn's logical Agent identity. The
+      // native history projection does not carry that proof, so this legacy
+      // no-run-id heuristic is available only to ordinary supervisor routing.
+      if (!receivedTerminalEvent &&
+          fallbackAnchor != null &&
+          exactAgentId == null) {
         yield SseEvent(
           event: 'status',
           data: {

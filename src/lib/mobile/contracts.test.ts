@@ -18,8 +18,8 @@ import {
 
 describe("native API contracts", () => {
   it("retains exactly the current and previous rollout versions", () => {
-    expect(NATIVE_API_CURRENT_VERSION).toBe(19);
-    expect(NATIVE_API_PREVIOUS_VERSION).toBe(18);
+    expect(NATIVE_API_CURRENT_VERSION).toBe(20);
+    expect(NATIVE_API_PREVIOUS_VERSION).toBe(19);
     expect(nativeOperationsForVersion(8)?.length).toBeLessThan(
       nativeOperationsForVersion(7)?.length || 0,
     );
@@ -56,9 +56,12 @@ describe("native API contracts", () => {
     expect(nativeOperationsForVersion(19)?.length).toBe(
       (nativeOperationsForVersion(18)?.length || 0) + 4,
     );
+    expect(nativeOperationsForVersion(20)?.length).toBe(
+      nativeOperationsForVersion(19)?.length,
+    );
     expect(nativeContractSchemas.NativeContractDiscovery.parse(
       nativeContractDiscovery(),
-    ).supportedVersions).toEqual([19, 18]);
+    ).supportedVersions).toEqual([20, 19]);
   });
 
   it("exposes only explicit local Computer Use in the current request schema", () => {
@@ -72,6 +75,54 @@ describe("native API contracts", () => {
       ...request,
       computerUseTarget: "isolated_browser",
     }).success).toBe(false);
+  });
+
+  it("admits only a bounded exact Agent identity in the native conversation envelope", () => {
+    const request = {
+      message: "Read the Moltbook home feed.",
+      requestId: "native-agent-target-a",
+      strategy: "direct",
+      agentId: "agent-moltbook.steward:1",
+    };
+    expect(nativeConversationRequestSchema.safeParse(request).success).toBe(true);
+    expect(nativeConversationRequestSchema.safeParse({
+      ...request,
+      agentId: "../another-owner",
+    }).success).toBe(false);
+  });
+
+  it("keeps v19 immutable while v20 adds only exact Agent selection to Conversation", async () => {
+    const [v19, v19Manifest, v20] = await Promise.all([
+      readFile(
+        new URL("../../../public/native-contracts/v19/openapi.json", import.meta.url),
+        "utf8",
+      ),
+      readFile(
+        new URL("../../../public/native-contracts/v19/manifest.json", import.meta.url),
+        "utf8",
+      ),
+      readFile(
+        new URL("../../../public/native-contracts/v20/openapi.json", import.meta.url),
+        "utf8",
+      ),
+    ]);
+
+    expect(sha256(v19)).toBe(
+      "7c6e8283a7ad06f2b4525ababa350de23d1f7a57ce293f7917058fd2e0bbcdaf",
+    );
+    expect(sha256(v19Manifest)).toBe(
+      "d69b15a524ede1e83af3fac712ed4d938f37053e50dacb3f77863e3a5c857c57",
+    );
+    const v19Conversation = JSON.parse(v19).components.schemas.NativeConversationRequest;
+    const v20Conversation = JSON.parse(v20).components.schemas.NativeConversationRequest;
+    expect(v19Conversation.properties).not.toHaveProperty("agentId");
+    expect(v20Conversation.properties.agentId).toMatchObject({
+      type: "string",
+      minLength: 1,
+      maxLength: 120,
+      pattern: "^[a-zA-Z0-9_.:-]+$",
+    });
+    expect(nativeOperationsForVersion(20)).toEqual(nativeOperationsForVersion(19));
   });
 
   it("does not advertise unenrolled native mutations in v8", () => {
@@ -462,7 +513,7 @@ describe("native API contracts", () => {
       user: { id: "user-one", email: "operator@example.test", status: "active", createdAt: timestamp, updatedAt: timestamp },
       tenant: { id: "tenant-one", name: "Example", slug: "example", createdAt: timestamp, updatedAt: timestamp },
       membership: { id: "membership-one", tenantId: "tenant-one", userId: "user-one", role: "operator", status: "active", createdAt: timestamp, updatedAt: timestamp },
-      device: { id: "device-one", name: "Asael on macOS", platform: "macos", appVersion: "1.0.0", buildNumber: 2, clientContractVersion: 19 },
+      device: { id: "device-one", name: "Asael on macOS", platform: "macos", appVersion: "1.0.0", buildNumber: 2, clientContractVersion: 20 },
     };
     expect(nativeBootstrapResponseSchema.parse({
       authenticated: true,
@@ -474,9 +525,9 @@ describe("native API contracts", () => {
         mobileBasePath: "/api/mobile",
         nativeContract: {
           id: "asael.native-api",
-          currentVersion: 19,
-          previousVersion: 18,
-          supportedVersions: [19, 18],
+          currentVersion: 20,
+          previousVersion: 19,
+          supportedVersions: [20, 19],
           discoveryPath: "/api/mobile/contracts",
         },
       },
@@ -485,15 +536,15 @@ describe("native API contracts", () => {
         platform: "macos",
         appVersion: "1.0.0",
         buildNumber: 2,
-        clientContractVersion: 19,
+        clientContractVersion: 20,
         minimumVersion: "1.0.0",
-        requiredContractVersion: 19,
-        supportedContractVersions: [19, 18],
+        requiredContractVersion: 20,
+        supportedContractVersions: [20, 19],
         status: "compatible",
         agentCatalogEnrollment: { state: "held", clientReady: true },
       },
       nativeClientPolicy: { schemaVersion: 1 },
-    }).api.nativeContract.currentVersion).toBe(19);
+    }).api.nativeContract.currentVersion).toBe(20);
   });
 });
 

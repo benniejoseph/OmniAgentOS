@@ -22,9 +22,14 @@ const _agentModelPolicies = <String>[
 /// dense search/filter tools, a stable selection model, and a persistent
 /// configuration/activity inspector without changing Android or web.
 class MacosAgentsView extends StatefulWidget {
-  const MacosAgentsView({super.key, required this.controller});
+  const MacosAgentsView({
+    super.key,
+    required this.controller,
+    this.onAssignWork,
+  });
 
   final AgentsController controller;
+  final ValueChanged<AgentProfile>? onAssignWork;
 
   @override
   State<MacosAgentsView> createState() => _MacosAgentsViewState();
@@ -41,7 +46,9 @@ class _MacosAgentsViewState extends State<MacosAgentsView> {
   @override
   void initState() {
     super.initState();
-    if (widget.controller.ledger == null) widget.controller.refresh();
+    if (widget.controller.ledger == null && !widget.controller.loading) {
+      widget.controller.refresh();
+    }
   }
 
   @override
@@ -151,6 +158,13 @@ class _MacosAgentsViewState extends State<MacosAgentsView> {
                   selectedAgent.name,
                   () => controller.removeAgent(selectedAgent.id),
                 ),
+          onAssignWork:
+              selectedAgent == null ||
+                  !selectedAgent.selectable ||
+                  selectedAgent.status == 'paused' ||
+                  widget.onAssignWork == null
+              ? null
+              : () => widget.onAssignWork?.call(selectedAgent),
           onEditSkill: selectedSkill == null
               ? null
               : () => _editSkill(selectedSkill),
@@ -964,6 +978,7 @@ class _AgentInspector extends StatelessWidget {
     required this.canMutate,
     required this.onEditAgent,
     required this.onDeleteAgent,
+    required this.onAssignWork,
     required this.onEditSkill,
     required this.onDeleteSkill,
   });
@@ -975,7 +990,11 @@ class _AgentInspector extends StatelessWidget {
   final AgentLedger? ledger;
   final AgentsController controller;
   final bool canMutate;
-  final VoidCallback? onEditAgent, onDeleteAgent, onEditSkill, onDeleteSkill;
+  final VoidCallback? onEditAgent,
+      onDeleteAgent,
+      onAssignWork,
+      onEditSkill,
+      onDeleteSkill;
 
   @override
   Widget build(BuildContext context) => switch (workspace) {
@@ -993,6 +1012,7 @@ class _AgentInspector extends StatelessWidget {
               canMutate: canMutate,
               onEdit: onEditAgent,
               onDelete: onDeleteAgent,
+              onAssignWork: onAssignWork,
             ),
     _AgentWorkspace.skills =>
       skill == null
@@ -1029,13 +1049,14 @@ class _AgentDetail extends StatelessWidget {
     required this.canMutate,
     required this.onEdit,
     required this.onDelete,
+    required this.onAssignWork,
   });
 
   final AgentProfile agent;
   final AgentLedger? ledger;
   final AgentsController controller;
   final bool canMutate;
-  final VoidCallback? onEdit, onDelete;
+  final VoidCallback? onEdit, onDelete, onAssignWork;
 
   @override
   Widget build(BuildContext context) {
@@ -1087,6 +1108,16 @@ class _AgentDetail extends StatelessWidget {
             ),
             _StatusIndicator(status: agent.status),
           ],
+        ),
+        const SizedBox(height: 14),
+        SizedBox(
+          width: double.infinity,
+          child: FilledButton.icon(
+            key: const Key('macos-agent-assign-work'),
+            onPressed: onAssignWork,
+            icon: const Icon(Icons.arrow_forward_rounded, size: 17),
+            label: Text('Assign work to ${agent.name}'),
+          ),
         ),
         const SizedBox(height: 18),
         _InspectorSection(

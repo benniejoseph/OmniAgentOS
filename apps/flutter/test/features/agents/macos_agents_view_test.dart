@@ -70,6 +70,12 @@ class _MoltbookRepository extends _AgentsRepository
   }
 }
 
+class _PausedAgentsRepository extends _AgentsRepository {
+  @override
+  Future<AgentLedger> load() async =>
+      const AgentLedger(agents: [_pausedAgent], skills: [], performance: []);
+}
+
 const _atlas = AgentProfile(
   id: 'atlas',
   name: 'Atlas',
@@ -101,6 +107,22 @@ const _mnemosyne = AgentProfile(
   approvalPolicy: 'always',
   memoryScope: 'all',
   skillIds: ['memory'],
+  toolIds: [],
+);
+
+const _pausedAgent = AgentProfile(
+  id: 'paused-agent',
+  name: 'Paused Agent',
+  role: 'Paused specialist',
+  description: 'Cannot accept new work while paused.',
+  instructions: 'Wait for an explicit resume.',
+  status: 'paused',
+  accent: 'amber',
+  modelPolicy: 'auto',
+  autonomy: 'governed',
+  approvalPolicy: 'always',
+  memoryScope: 'session',
+  skillIds: [],
   toolIds: [],
 );
 
@@ -313,6 +335,61 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('1.4 s'), findsWidgets);
+  });
+
+  testWidgets('assigns work to the exact selected Agent', (tester) async {
+    await _useDesktopViewport(tester);
+    final controller = AgentsController(
+      _AgentsRepository(),
+      canManage: true,
+      mutationsAvailable: true,
+      skillMutationsAvailable: true,
+    );
+    await controller.refresh();
+    AgentProfile? assigned;
+
+    await tester.pumpWidget(
+      _app(
+        MacosAgentsView(
+          controller: controller,
+          onAssignWork: (agent) => assigned = agent,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('macos-agent-row-mnemosyne')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('macos-agent-assign-work')));
+
+    expect(assigned?.id, 'mnemosyne');
+    expect(assigned?.name, 'Mnemosyne');
+  });
+
+  testWidgets('does not assign work to a paused Agent', (tester) async {
+    await _useDesktopViewport(tester);
+    final controller = AgentsController(
+      _PausedAgentsRepository(),
+      canManage: true,
+      mutationsAvailable: true,
+    );
+    await controller.refresh();
+    AgentProfile? assigned;
+
+    await tester.pumpWidget(
+      _app(
+        MacosAgentsView(
+          controller: controller,
+          onAssignWork: (agent) => assigned = agent,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final button = tester.widget<FilledButton>(
+      find.byKey(const Key('macos-agent-assign-work')),
+    );
+    expect(button.onPressed, isNull);
+    expect(assigned, isNull);
   });
 
   testWidgets(

@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/widgets.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
@@ -271,6 +271,25 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                       usesMacosPresentation()
                           ? MacosAgentsView(
                               controller: ref.read(agentsControllerProvider),
+                              onAssignWork: (agent) {
+                                final talk = ref.read(talkControllerProvider);
+                                if (talk.hasPendingConversationWork) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content: Text(
+                                        'Finish, stop, or clear pending Conversation work before assigning another Agent.',
+                                      ),
+                                    ),
+                                  );
+                                  return;
+                                }
+                                talk.newConversation();
+                                talk.assignAgent(
+                                  id: agent.id,
+                                  name: agent.name,
+                                );
+                                context.go('/talk');
+                              },
                             )
                           : AgentsView(
                               controller: ref.read(agentsControllerProvider),
