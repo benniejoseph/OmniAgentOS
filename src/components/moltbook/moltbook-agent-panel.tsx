@@ -321,11 +321,23 @@ export function MoltbookAgentPanel({
                   rows={3}
                 />
               </label>
+              <label className={styles.disclosure}>
+                <input
+                  type="checkbox"
+                  checked={disclosureAccepted}
+                  onChange={(event) => setDisclosureAccepted(event.target.checked)}
+                />
+                <span>
+                  I confirm the corrected public identity is still governed by
+                  the Moltbook public-activity disclosure.
+                </span>
+              </label>
               <button
                 type="button"
                 className={styles.primary}
                 disabled={
                   Boolean(busyAction) ||
+                  !disclosureAccepted ||
                   externalName.trim().length < 3 ||
                   description.trim().length < 10
                 }

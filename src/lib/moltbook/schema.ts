@@ -468,6 +468,9 @@ export async function ensureMoltbookAgentConnectionsV1(sql: MigrationSql) {
     DO $grants$
     BEGIN
       IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_runtime') THEN
+        GRANT EXECUTE ON FUNCTION omni_moltbook_agent_boundary_is_exact_v1(
+          TEXT[], TEXT[], TEXT, TEXT, TEXT
+        ) TO omni_runtime;
         GRANT SELECT, INSERT ON omni_moltbook_connections TO omni_runtime;
         GRANT UPDATE (
           external_name, description, status, claim_state, heartbeat_enabled,
@@ -481,6 +484,9 @@ export async function ensureMoltbookAgentConnectionsV1(sql: MigrationSql) {
         GRANT SELECT, INSERT ON omni_moltbook_effect_receipts TO omni_runtime;
       END IF;
       IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_maintenance') THEN
+        GRANT EXECUTE ON FUNCTION omni_moltbook_agent_boundary_is_exact_v1(
+          TEXT[], TEXT[], TEXT, TEXT, TEXT
+        ) TO omni_maintenance;
         GRANT SELECT, INSERT ON omni_moltbook_connections TO omni_maintenance;
         GRANT UPDATE (
           external_name, description, status, claim_state, heartbeat_enabled,

@@ -299,6 +299,9 @@ describe("custom Agent Skill integrity route responses", () => {
     ));
 
     expect(response.status).toBe(409);
+    expect(routeMocks.authorizeRequest).toHaveBeenCalledWith(expect.objectContaining({
+      nativeMutationCapability: "agents.create",
+    }));
     expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(await response.json()).toEqual({
       error: "One or more selected skills are unavailable for this agent.",
@@ -317,6 +320,9 @@ describe("custom Agent Skill integrity route responses", () => {
     );
 
     expect(response.status).toBe(409);
+    expect(routeMocks.authorizeRequest).toHaveBeenCalledWith(expect.objectContaining({
+      nativeMutationCapability: "agents.update",
+    }));
     expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(await response.json()).toEqual({
       error: "One or more selected skills are unavailable for this agent.",

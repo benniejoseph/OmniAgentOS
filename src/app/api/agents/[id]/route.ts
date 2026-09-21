@@ -13,6 +13,7 @@ import {
   AgentSkillAssignmentError,
   CustomAgentReadConflictError,
 } from "@/lib/skills/store";
+import { MoltbookConnectionError } from "@/lib/moltbook/store";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
@@ -51,13 +52,19 @@ async function GETHandler(request: Request, context: RouteContext<"/api/agents/[
         { status: 409, headers: privateNoStoreHeaders },
       );
     }
+    if (error instanceof MoltbookConnectionError) {
+      return Response.json(
+        { error: error.message, code: error.code },
+        { status: error.status, headers: privateNoStoreHeaders },
+      );
+    }
     throw error;
   }
 }
 
 async function PATCHHandler(request: Request, context: RouteContext<"/api/agents/[id]">) {
   let auth;
-  try { auth = await authorizeRequest({ request, action: "manage.workflow", resourceType: "custom_agent", metadata: { operation: "update" } }); }
+  try { auth = await authorizeRequest({ request, action: "manage.workflow", resourceType: "custom_agent", nativeMutationCapability: "agents.update", metadata: { operation: "update" } }); }
   catch (error) { return forbiddenResponse(error); }
   let body: unknown;
   try { body = await parseJsonBody(request, 28_000); } catch (error) { return jsonBodyErrorResponse(error); }

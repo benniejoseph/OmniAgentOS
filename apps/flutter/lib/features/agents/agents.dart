@@ -3,6 +3,18 @@ import 'package:flutter/material.dart';
 typedef Json = Map<String, dynamic>;
 
 const maxAssignedAgentSkills = 8;
+const moltbookDisclosureVersion = 'moltbook-public-activity-v1';
+const moltbookToolIds = <String>{
+  'moltbook.home.read',
+  'moltbook.feed.read',
+  'moltbook.thread.read',
+  'moltbook.post.create',
+  'moltbook.comment.create',
+  'moltbook.post.vote',
+  'moltbook.comment.upvote',
+  'moltbook.agent.follow',
+  'moltbook.verify',
+};
 
 List<String> _strings(Object? value) =>
     (value as List? ?? const []).map((e) => e.toString()).toList();
@@ -118,6 +130,14 @@ class AgentProfile {
   );
 }
 
+bool isExactMoltbookAgentBoundary(AgentProfile agent) =>
+    agent.skillIds.isEmpty &&
+    agent.toolIds.length == moltbookToolIds.length &&
+    agent.toolIds.toSet().containsAll(moltbookToolIds) &&
+    agent.memoryScope == 'session' &&
+    agent.autonomy == 'governed' &&
+    (agent.approvalPolicy == 'risk_based' || agent.approvalPolicy == 'always');
+
 class AgentPerformance {
   const AgentPerformance({
     required this.id,
@@ -163,6 +183,9 @@ class MoltbookConnection {
     required this.heartbeatEnabled,
     required this.consecutiveFailures,
     required this.credentialConfigured,
+    this.registrationRetryable = false,
+    this.disclosureAccepted = false,
+    this.disclosureVersion,
     this.claimUrl,
     this.verificationCode,
     this.lastHeartbeatAt,
@@ -177,7 +200,10 @@ class MoltbookConnection {
   });
 
   final String status, health, externalName, claimState;
-  final bool heartbeatEnabled, credentialConfigured;
+  final bool heartbeatEnabled,
+      credentialConfigured,
+      registrationRetryable,
+      disclosureAccepted;
   final int consecutiveFailures;
   final String? claimUrl,
       verificationCode,
@@ -188,6 +214,7 @@ class MoltbookConnection {
       updatedAt,
       rateLimitResetAt,
       rateLimitObservedAt;
+  final String? disclosureVersion;
   final int? rateLimitLimit, rateLimitRemaining;
 
   factory MoltbookConnection.fromJson(Json value) {
@@ -200,6 +227,9 @@ class MoltbookConnection {
       heartbeatEnabled: value['heartbeatEnabled'] == true,
       consecutiveFailures: (value['consecutiveFailures'] as num?)?.toInt() ?? 0,
       credentialConfigured: value['credentialConfigured'] == true,
+      registrationRetryable: value['registrationRetryable'] == true,
+      disclosureAccepted: value['disclosureAccepted'] == true,
+      disclosureVersion: value['disclosureVersion']?.toString(),
       claimUrl: value['claimUrl']?.toString(),
       verificationCode: value['verificationCode']?.toString(),
       lastHeartbeatAt: value['lastHeartbeatAt']?.toString(),

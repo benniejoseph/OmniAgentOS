@@ -39,7 +39,7 @@ async function GETHandler(request: Request) {
 
 async function POSTHandler(request: Request) {
   let context;
-  try { context = await authorizeRequest({ request, action: "manage.workflow", resourceType: "custom_agent", metadata: { operation: "create" } }); }
+  try { context = await authorizeRequest({ request, action: "manage.workflow", resourceType: "custom_agent", nativeMutationCapability: "agents.create", metadata: { operation: "create" } }); }
   catch (error) { return forbiddenResponse(error); }
   let body: unknown;
   try { body = await parseJsonBody(request, 28_000); } catch (error) { return jsonBodyErrorResponse(error); }

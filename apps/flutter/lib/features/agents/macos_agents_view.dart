@@ -1043,15 +1043,7 @@ class _AgentDetail extends StatelessWidget {
       for (final skill in ledger?.skills ?? const <AgentSkill>[])
         skill.id: skill,
     };
-    final hasMoltbookCapability =
-        agent.toolIds.any((tool) => tool.startsWith('moltbook.')) ||
-        agent.skillIds.any(
-          (skillId) =>
-              skillsById[skillId]?.toolIds.any(
-                (tool) => tool.startsWith('moltbook.'),
-              ) ??
-              false,
-        );
+    final isExactMoltbookAgent = isExactMoltbookAgentBoundary(agent);
     AgentPerformance? performance;
     for (final item in ledger?.performance ?? const <AgentPerformance>[]) {
       if (item.id == agent.id || item.name == agent.name) {
@@ -1158,7 +1150,7 @@ class _AgentDetail extends StatelessWidget {
             child: SelectableText(agent.toolIds.join('\n')),
           ),
         ],
-        if (hasMoltbookCapability) ...[
+        if (isExactMoltbookAgent) ...[
           const SizedBox(height: 18),
           _MoltbookAgentConsole(
             key: ValueKey('moltbook-console-${agent.id}'),
@@ -1166,7 +1158,7 @@ class _AgentDetail extends StatelessWidget {
             controller: controller,
           ),
         ],
-        if (canMutate && agent.manageable) ...[
+        if (canMutate && agent.manageable && !isExactMoltbookAgent) ...[
           const SizedBox(height: 22),
           const Divider(),
           const SizedBox(height: 10),
@@ -1295,16 +1287,18 @@ class _MoltbookAgentConsoleState extends State<_MoltbookAgentConsole> {
     }
   }
 
-  Future<void> _register() async {
+  Future<void> _register({bool retry = false}) async {
     if (!(_registrationKey.currentState?.validate() ?? false) ||
         !_disclosureAccepted) {
       return;
     }
     await _change({
-      'action': 'register',
+      'action': retry ? 'retry_registration' : 'register',
       'externalName': _externalName.text.trim(),
       'description': _description.text.trim(),
       'heartbeatEnabled': _heartbeatEnabled,
+      'disclosureAccepted': true,
+      'disclosureVersion': moltbookDisclosureVersion,
     });
   }
 
@@ -1362,13 +1356,16 @@ class _MoltbookAgentConsoleState extends State<_MoltbookAgentConsole> {
           )
         else if (_projection?.connection == null)
           _registration(context)
+        else if (_projection!.connection!.status == 'error' &&
+            _projection!.connection!.registrationRetryable)
+          _registration(context, retry: true)
         else
           _connection(context, _projection!.connection!),
       ],
     ),
   );
 
-  Widget _registration(BuildContext context) => Form(
+  Widget _registration(BuildContext context, {bool retry = false}) => Form(
     key: _registrationKey,
     child: MacosPane(
       padding: const EdgeInsets.all(12),
@@ -1381,7 +1378,7 @@ class _MoltbookAgentConsoleState extends State<_MoltbookAgentConsole> {
               const SizedBox(width: 7),
               Expanded(
                 child: Text(
-                  'Join Moltbook',
+                  retry ? 'Retry Moltbook registration' : 'Join Moltbook',
                   style: Theme.of(context).textTheme.titleSmall,
                 ),
               ),
@@ -1389,7 +1386,9 @@ class _MoltbookAgentConsoleState extends State<_MoltbookAgentConsole> {
           ),
           const SizedBox(height: 5),
           Text(
-            'Registration creates an external Moltbook Agent identity. Asael stores its credential privately and never displays it here.',
+            retry
+                ? 'Moltbook definitively rejected the previous registration. Correct the public identity and explicitly accept the disclosure again.'
+                : 'Registration creates an external Moltbook Agent identity. Asael stores its credential privately and never displays it here.',
             style: Theme.of(context).textTheme.bodySmall,
           ),
           const SizedBox(height: 12),
@@ -1462,12 +1461,14 @@ class _MoltbookAgentConsoleState extends State<_MoltbookAgentConsole> {
           SizedBox(
             width: double.infinity,
             child: FilledButton.icon(
-              key: const Key('moltbook-register'),
+              key: Key(
+                retry ? 'moltbook-retry-registration' : 'moltbook-register',
+              ),
               onPressed:
                   widget.controller.canManageMoltbook &&
                       _disclosureAccepted &&
                       !_acting
-                  ? _register
+                  ? () => _register(retry: retry)
                   : null,
               icon: _acting
                   ? const SizedBox.square(
@@ -1475,7 +1476,9 @@ class _MoltbookAgentConsoleState extends State<_MoltbookAgentConsole> {
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
                   : const Icon(Icons.public_rounded, size: 16),
-              label: const Text('Create Moltbook identity'),
+              label: Text(
+                retry ? 'Retry registration' : 'Create Moltbook identity',
+              ),
             ),
           ),
         ],
@@ -1644,15 +1647,6 @@ class _MoltbookAgentConsoleState extends State<_MoltbookAgentConsole> {
                       : 'Refresh',
                 ),
               ),
-              if (connection.claimState == 'claimed')
-                OutlinedButton.icon(
-                  key: const Key('moltbook-heartbeat'),
-                  onPressed: _acting
-                      ? null
-                      : () => _change(const {'action': 'heartbeat'}),
-                  icon: const Icon(Icons.monitor_heart_outlined, size: 16),
-                  label: const Text('Check now'),
-                ),
               TextButton.icon(
                 key: const Key('moltbook-pause'),
                 onPressed: _acting

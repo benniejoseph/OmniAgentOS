@@ -50,6 +50,12 @@ describe("Moltbook v190 migration", () => {
     expect(migration).toContain("omni_moltbook_agent_boundary_is_exact_v1");
     expect(migration).toContain("Linked Moltbook Agents cannot be deleted");
     expect(migration).toContain("Linked Moltbook Agent capability cannot be widened");
+    expect(migration).toContain(
+      "GRANT EXECUTE ON FUNCTION omni_moltbook_agent_boundary_is_exact_v1(\n      TEXT[], TEXT[], TEXT, TEXT, TEXT\n    ) TO omni_runtime",
+    );
+    expect(migration).toContain(
+      "GRANT EXECUTE ON FUNCTION omni_moltbook_agent_boundary_is_exact_v1(\n      TEXT[], TEXT[], TEXT, TEXT, TEXT\n    ) TO omni_maintenance",
+    );
     expect(migration).toContain("OLD.last_error_code LIKE 'registration_rejected.%'");
     expect(migration).toContain("disclosure_version = 'moltbook-public-activity-v1'");
     expect(migration).toContain("registration_request_sha256 ~ '^[a-f0-9]{64}$'");
@@ -59,9 +65,9 @@ describe("Moltbook v190 migration", () => {
     expect(migrationManifest.at(-1)).toEqual({
       version: 190,
       name: "moltbook_agent_connections_v1",
-      checksum: "f929a4ebfecc081e2c0eb545f16a068910dd0a8917cc621deba65e8e22775d19",
+      checksum: "bd398f225fbc42f4ec0bc2079796b4c38b49158852558b3e5aa3d43c7db4ef95",
     });
-    expect(migration).toContain("190,\n  'moltbook_agent_connections_v1',\n  'f929a4ebfecc081e2c0eb545f16a068910dd0a8917cc621deba65e8e22775d19'");
+    expect(migration).toContain("190,\n  'moltbook_agent_connections_v1',\n  'bd398f225fbc42f4ec0bc2079796b4c38b49158852558b3e5aa3d43c7db4ef95'");
     expect(databaseClient).toContain("up: ensureMoltbookAgentConnectionsV1");
     expect(databaseClient).toContain("...databaseSchemaMigrations[189]");
   });
@@ -88,6 +94,7 @@ describe("Moltbook v190 migration", () => {
       "moltbook-public-activity-v1",
       "AS RESTRICTIVE FOR ALL TO PUBLIC",
       "GRANT SELECT, INSERT ON omni_moltbook_activities TO omni_runtime",
+      "GRANT EXECUTE ON FUNCTION omni_moltbook_agent_boundary_is_exact_v1",
     ]) {
       expect(runtimeSchema).toContain(fragment);
     }

@@ -41,6 +41,7 @@ import type {
   RequestCustomAgentDefinition,
 } from "@/lib/skills/types";
 import { MAX_ASSIGNED_SKILLS } from "@/lib/skills/limits";
+import { isExactMoltbookAgentCapabilityBoundary } from "@/lib/moltbook/contracts";
 import styles from "@/components/agent-arsenal-workspace.module.css";
 import type { TrashActionPreviewV1 } from "@/lib/trash/contracts";
 
@@ -105,15 +106,8 @@ export function AgentArsenalWorkspace() {
     (item) => item.agentId === selected.id,
   );
   const selectedIdentity = getAgentMascotIdentity(selected.id);
-  const selectedHasMoltbook = Boolean(
-    selected.custom && (
-      selected.custom.toolIds.some((toolId) => toolId.startsWith("moltbook.")) ||
-      selected.custom.skillIds.some((skillId) =>
-        skills.find((skill) => skill.id === skillId)?.toolIds.some((toolId) =>
-          toolId.startsWith("moltbook."),
-        ),
-      )
-    ),
+  const selectedIsExactMoltbook = Boolean(
+    selected.custom && isExactMoltbookAgentCapabilityBoundary(selected.custom),
   );
 
   async function load(saved?: BuilderSaveResult) {
@@ -427,17 +421,17 @@ export function AgentArsenalWorkspace() {
             performance={selectedPerformance}
             state={state}
           />
-          {selectedHasMoltbook ? (
+          {selectedIsExactMoltbook ? (
             <MoltbookAgentPanel
               key={selected.id}
               agentId={selected.id}
               agentName={selected.name}
             />
           ) : null}
-          {!selected.custom || (
+          {!selectedIsExactMoltbook && (!selected.custom || (
             selected.custom.manageable === true &&
             selected.custom.releaseState !== "retired"
-          ) ? (
+          )) ? (
             <div className="mt-4">
               <AgentAdaptationEditor
                 agentId={selected.id}
@@ -462,7 +456,7 @@ export function AgentArsenalWorkspace() {
             }
             icon="eye"
           />
-          {selected.custom?.manageable === true ? (
+          {selected.custom?.manageable === true && !selectedIsExactMoltbook ? (
             <div className="mt-4 grid gap-4">
               <AgentReleaseEditor
                 agentId={selected.id}
@@ -516,7 +510,7 @@ export function AgentArsenalWorkspace() {
                 Read-only compatibility profile
               </p>
             )}
-            {selected.custom?.manageable === true ? (
+          {selected.custom?.manageable === true && !selectedIsExactMoltbook ? (
               <div className="grid grid-cols-2 gap-2">
                 <button
                   type="button"
@@ -534,6 +528,16 @@ export function AgentArsenalWorkspace() {
                   <Trash2 size={14} aria-hidden="true" />
                   Delete
                 </button>
+              </div>
+            ) : null}
+            {selected.custom?.manageable === true && selectedIsExactMoltbook ? (
+              <div className="autonomy-note">
+                <strong>Isolated Moltbook identity</strong>
+                <p>
+                  Its exact tools and lifecycle are locked while its private
+                  connection and append-only activity history are retained.
+                  Pause or resume the connection from the Moltbook console.
+                </p>
               </div>
             ) : null}
           </div>

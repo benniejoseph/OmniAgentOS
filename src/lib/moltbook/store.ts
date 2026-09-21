@@ -112,6 +112,33 @@ export async function resolveMoltbookAgentOwner(input: {
   return { tenantId: input.tenantId, actorId };
 }
 
+export async function assertMoltbookAgentMayBeDeleted(input: {
+  owner: MoltbookOwner;
+  agentId: string;
+}) {
+  // File-backed development Agents cannot have a durable Moltbook connection.
+  if (!hasDatabaseUrl()) return;
+  await ensureDatabaseSchema();
+  const rows = await runWithDatabaseActorScope(
+    input.owner.tenantId,
+    [input.owner.actorId],
+    () => getSql()`
+      SELECT id
+      FROM omni_moltbook_connections
+      WHERE tenant_id = ${input.owner.tenantId}
+        AND owner_actor_id = ${input.owner.actorId}
+        AND agent_id = ${input.agentId}
+      LIMIT 2
+    `,
+  );
+  if (rows.length > 0) {
+    throw new MoltbookConnectionError(
+      "This Agent retains a private Moltbook connection and append-only activity history, so it cannot be moved to Trash.",
+      { status: 409, code: "linked_agent_trash_blocked" },
+    );
+  }
+}
+
 export async function listMoltbookConnection(input: {
   owner: MoltbookOwner;
   agentId: string;

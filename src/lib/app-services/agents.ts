@@ -13,6 +13,7 @@ import {
 import { getAppServiceOperationContract } from "@/lib/app-services/registry";
 import { runWithDatabaseActorScope } from "@/lib/db/client";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
+import { assertMoltbookAgentMayBeDeleted } from "@/lib/moltbook/store";
 import { redactSensitive } from "@/lib/security/context";
 import { customAgentInputSchema, customAgentPatchSchema, skillInputSchema, skillPatchSchema } from "@/lib/skills/schema";
 import {
@@ -153,6 +154,12 @@ export async function previewAgentDeleteService(caller: AppServiceCaller, input:
   const value = idSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.agents.delete.preview"));
   const agent = await getCustomAgent(value.id, exactOwner(caller));
+  if (agent) {
+    await assertMoltbookAgentMayBeDeleted({
+      owner: { tenantId: agent.tenantId, actorId: agent.actorId },
+      agentId: agent.id,
+    });
+  }
   const target = agent ? agentDeleteTarget(agent) : null;
   const preview = target ? createTrashPreview({
     resourceType: "custom_agent",
@@ -188,6 +195,10 @@ export async function deleteAgentService(caller: AppServiceCaller, input: z.inpu
   const agent = await getCustomAgent(value.id, exactOwner(caller));
   const target = agent ? agentDeleteTarget(agent) : null;
   if (!target) throw new Error("Custom Agent not found.");
+  await assertMoltbookAgentMayBeDeleted({
+    owner: { tenantId: agent!.tenantId, actorId: agent!.actorId },
+    agentId: agent!.id,
+  });
   const snapshot = await captureRestorableResource(
     "custom_agent",
     value.id,

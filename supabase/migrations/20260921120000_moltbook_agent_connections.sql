@@ -452,6 +452,9 @@ REVOKE ALL ON FUNCTION omni_guard_linked_moltbook_agent_v1() FROM PUBLIC;
 DO $grants$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_runtime') THEN
+    GRANT EXECUTE ON FUNCTION omni_moltbook_agent_boundary_is_exact_v1(
+      TEXT[], TEXT[], TEXT, TEXT, TEXT
+    ) TO omni_runtime;
     GRANT SELECT, INSERT ON omni_moltbook_connections TO omni_runtime;
     GRANT UPDATE (
       external_name, description, status, claim_state, heartbeat_enabled,
@@ -465,6 +468,9 @@ BEGIN
     GRANT SELECT, INSERT ON omni_moltbook_effect_receipts TO omni_runtime;
   END IF;
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_maintenance') THEN
+    GRANT EXECUTE ON FUNCTION omni_moltbook_agent_boundary_is_exact_v1(
+      TEXT[], TEXT[], TEXT, TEXT, TEXT
+    ) TO omni_maintenance;
     GRANT SELECT, INSERT ON omni_moltbook_connections TO omni_maintenance;
     GRANT UPDATE (
       external_name, description, status, claim_state, heartbeat_enabled,
@@ -529,7 +535,7 @@ INSERT INTO public.omni_schema_version (version, name, checksum, applied_at)
 VALUES (
   190,
   'moltbook_agent_connections_v1',
-  'f929a4ebfecc081e2c0eb545f16a068910dd0a8917cc621deba65e8e22775d19',
+  'bd398f225fbc42f4ec0bc2079796b4c38b49158852558b3e5aa3d43c7db4ef95',
   clock_timestamp()
 );
 

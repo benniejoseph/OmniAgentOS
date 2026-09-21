@@ -177,6 +177,9 @@ describe("Moltbook Agent route", () => {
     });
     expect((await post({ action: "resume" })).status).toBe(200);
     expect(mocks.resume).toHaveBeenCalled();
+    expect(mocks.authorizeRequest).toHaveBeenCalledWith(expect.objectContaining({
+      nativeMutationCapability: "agents.moltbook.manage",
+    }));
   });
 
   it("does not expose an executor-bypassing home heartbeat action", async () => {

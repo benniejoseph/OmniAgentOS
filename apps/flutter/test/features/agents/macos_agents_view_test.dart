@@ -51,7 +51,8 @@ class _MoltbookRepository extends _AgentsRepository
   @override
   Future<void> changeMoltbook(String agentId, Json input) async {
     changes.add(Map<String, dynamic>.from(input));
-    if (input['action'] == 'register') {
+    if (input['action'] == 'register' ||
+        input['action'] == 'retry_registration') {
       projection = const MoltbookProjection(
         connection: _pendingMoltbookConnection,
         activities: [],
@@ -115,9 +116,19 @@ const _moltbookAgent = AgentProfile(
   modelPolicy: 'auto',
   autonomy: 'governed',
   approvalPolicy: 'risk_based',
-  memoryScope: 'all',
-  skillIds: ['moltbook-presence'],
-  toolIds: [],
+  memoryScope: 'session',
+  skillIds: [],
+  toolIds: [
+    'moltbook.home.read',
+    'moltbook.feed.read',
+    'moltbook.thread.read',
+    'moltbook.post.create',
+    'moltbook.comment.create',
+    'moltbook.post.vote',
+    'moltbook.comment.upvote',
+    'moltbook.agent.follow',
+    'moltbook.verify',
+  ],
 );
 
 const _moltbookSkill = AgentSkill(
@@ -165,6 +176,20 @@ const _pausedMoltbookConnection = MoltbookConnection(
   heartbeatEnabled: true,
   consecutiveFailures: 0,
   credentialConfigured: true,
+);
+
+const _retryableMoltbookConnection = MoltbookConnection(
+  status: 'error',
+  health: 'error',
+  externalName: 'Moltbook_Steward',
+  claimState: 'unavailable',
+  heartbeatEnabled: true,
+  consecutiveFailures: 1,
+  credentialConfigured: false,
+  registrationRetryable: true,
+  disclosureAccepted: true,
+  disclosureVersion: moltbookDisclosureVersion,
+  lastErrorCode: 'registration_rejected.provider_conflict',
 );
 
 const _heartbeatActivity = MoltbookActivity(
@@ -335,6 +360,8 @@ void main() {
         'externalName': 'Moltbook_Steward',
         'description': _moltbookAgent.description,
         'heartbeatEnabled': true,
+        'disclosureAccepted': true,
+        'disclosureVersion': moltbookDisclosureVersion,
       });
       expect(find.text('verify-1234'), findsOneWidget);
       expect(find.byKey(const Key('moltbook-open-claim')), findsOneWidget);
@@ -343,7 +370,7 @@ void main() {
     },
   );
 
-  testWidgets('shows health and governs refresh, heartbeat, and pause', (
+  testWidgets('shows health and governs status refresh, pause, and resume', (
     tester,
   ) async {
     await _useDesktopViewport(tester);
@@ -367,10 +394,11 @@ void main() {
     expect(find.textContaining('Healthy · Claimed'), findsOneWidget);
     expect(find.textContaining('92 of 100 remaining'), findsOneWidget);
     expect(find.text(_heartbeatActivity.summary), findsOneWidget);
+    expect(find.byKey(const Key('moltbook-heartbeat')), findsNothing);
+    expect(find.byKey(const Key('macos-agent-edit')), findsNothing);
+    expect(find.byKey(const Key('macos-agent-delete')), findsNothing);
 
     await tester.tap(find.byKey(const Key('moltbook-refresh')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('moltbook-heartbeat')));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('moltbook-pause')));
     await tester.pumpAndSettle();
@@ -380,11 +408,49 @@ void main() {
 
     expect(repository.changes.map((change) => change['action']), [
       'refresh',
-      'heartbeat',
       'pause',
       'resume',
     ]);
     expect(find.byKey(const Key('moltbook-pause')), findsOneWidget);
+  });
+
+  testWidgets('requires renewed disclosure before a safe registration retry', (
+    tester,
+  ) async {
+    await _useDesktopViewport(tester);
+    final repository = _MoltbookRepository(
+      const MoltbookProjection(
+        connection: _retryableMoltbookConnection,
+        activities: [],
+      ),
+    );
+    final controller = AgentsController(
+      repository,
+      canManage: true,
+      mutationsAvailable: true,
+      moltbookAvailable: true,
+    );
+    await controller.refresh();
+    await tester.pumpWidget(_app(MacosAgentsView(controller: controller)));
+    await tester.pumpAndSettle();
+
+    await _showMoltbook(tester, const Key('moltbook-disclosure'));
+    final retry = find.byKey(const Key('moltbook-retry-registration'));
+    expect(tester.widget<FilledButton>(retry).onPressed, isNull);
+    await tester.tap(find.byKey(const Key('moltbook-disclosure')));
+    await tester.pump();
+    expect(tester.widget<FilledButton>(retry).onPressed, isNotNull);
+    await tester.tap(retry);
+    await tester.pumpAndSettle();
+
+    expect(repository.changes.single, {
+      'action': 'retry_registration',
+      'externalName': 'Moltbook_Steward',
+      'description': _moltbookAgent.description,
+      'heartbeatEnabled': true,
+      'disclosureAccepted': true,
+      'disclosureVersion': moltbookDisclosureVersion,
+    });
   });
 }
 

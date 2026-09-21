@@ -82,6 +82,7 @@ async function POSTHandler(
       request,
       action: "manage.workflow",
       resourceType: "moltbook_agent_connection",
+      nativeMutationCapability: "agents.moltbook.manage",
       metadata: { operation: "manage_moltbook_connection" },
     });
   } catch (error) {
