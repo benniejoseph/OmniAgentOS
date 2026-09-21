@@ -1588,6 +1588,8 @@ export async function* runAgent(
             dryRun: false,
             approved: false,
             context: securityContext,
+            requestActorBinding: request.requestActorBinding,
+            moltbookAutonomy: request.moltbookAutonomy,
             abortSignal: delegatedAbortSignal || runAbortSignal,
             idempotencyKey,
             forceApproval: forceApprovalForTool(agentToolPolicy, tool.riskLevel),
@@ -1712,6 +1714,8 @@ export async function* runAgent(
           })),
           toolbox,
           securityContext,
+          requestActorBinding: request.requestActorBinding,
+          moltbookAutonomy: request.moltbookAutonomy,
           executionScope,
           runId: run.id,
           assignmentId: runtimeModel.assignmentId,
@@ -1741,9 +1745,8 @@ export async function* runAgent(
           checkpointBeforeTool: checkpointBeforeGovernedTool,
           checkpointAfterTool: checkpointAfterGovernedTool,
           reserveTools: reserveToolBudget,
-          serializeToolCalls: isExpandedCheckpointShadowEnrollment(
-            checkpointShadowEnrollment,
-          ),
+          serializeToolCalls: Boolean(request.moltbookAutonomy) ||
+            isExpandedCheckpointShadowEnrollment(checkpointShadowEnrollment),
           maxToolSteps,
         });
         let result: NonOpenAIProviderLoopResult;
@@ -2076,6 +2079,7 @@ export async function* runAgent(
         });
         const canRunInParallel =
           !isExpandedCheckpointShadowEnrollment(checkpointShadowEnrollment) &&
+          !request.moltbookAutonomy &&
           parallelCalls.length > 1 &&
           parallelCalls.every(Boolean);
 
@@ -2097,6 +2101,8 @@ export async function* runAgent(
             dryRun: false,
             approved: false,
             context: securityContext,
+            requestActorBinding: request.requestActorBinding,
+            moltbookAutonomy: request.moltbookAutonomy,
             abortSignal: runAbortSignal,
             idempotencyKey: `${run.id}:${item.call.callId}`,
             forceApproval: forceApprovalForTool(
@@ -2208,6 +2214,8 @@ export async function* runAgent(
             dryRun: false,
             approved: false,
             context: securityContext,
+            requestActorBinding: request.requestActorBinding,
+            moltbookAutonomy: request.moltbookAutonomy,
             abortSignal: runAbortSignal,
             idempotencyKey: `${run.id}:${call.callId}`,
             forceApproval: forceApprovalForTool(
@@ -2576,6 +2584,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   };
   securityContext: SecurityContext;
   requestActorBinding?: CanonicalRequestActorBindingV1;
+  moltbookAutonomy?: AgentRunRequest["moltbookAutonomy"];
   executionScope?: ExecutionScope;
   runId: string;
   assignmentId?: string;
@@ -2851,6 +2860,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
             approved: false,
             context: input.securityContext,
             requestActorBinding: input.requestActorBinding,
+            moltbookAutonomy: input.moltbookAutonomy,
             abortSignal: input.abortSignal,
             idempotencyKey:
               `${input.runId}:${activeProvider}:${item.call.callId}`,
@@ -2959,6 +2969,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
           approved: false,
           context: input.securityContext,
           requestActorBinding: input.requestActorBinding,
+          moltbookAutonomy: input.moltbookAutonomy,
           abortSignal: input.abortSignal,
           idempotencyKey: `${input.runId}:${activeProvider}:${call.callId}`,
           forceApproval: forceApprovalForRisk(
@@ -3078,7 +3089,9 @@ function agentToolExecutionScope(
 ) {
   return deriveExecutionScope(runScope, {
     causationId: callId,
-    purpose: "agent.tool.execute",
+    purpose: runScope.purpose === "moltbook.autonomy.cycle.v1"
+      ? runScope.purpose
+      : "agent.tool.execute",
   });
 }
 
@@ -5709,11 +5722,29 @@ function agentToolSecurityContext(request: AgentRunRequest): SecurityContext {
   };
   const live = request.securityContext;
   if (!live) return fallback;
+  const backgroundBinding = request.requestActorBinding;
+  const trustedBackgroundService = live.source === "service" && Boolean(
+    backgroundBinding &&
+    backgroundBinding.version === 1 &&
+    backgroundBinding.kind === "auth_user" &&
+    backgroundBinding.canonicalActorId ===
+      `actor:${backgroundBinding.authUserId}` &&
+    backgroundBinding.legacyOwnerActorIds.length === 1 &&
+    backgroundBinding.legacyOwnerActorIds[0] === live.actorId &&
+    backgroundBinding.readableOwnerActorIds.length === 2 &&
+    backgroundBinding.readableOwnerActorIds[0] ===
+      backgroundBinding.canonicalActorId &&
+    backgroundBinding.readableOwnerActorIds[1] === live.actorId
+  );
   if (
     live.tenantId !== fallback.tenantId ||
     live.actorId !== fallback.actorId ||
     live.role !== fallback.role ||
-    (live.source !== "session" && live.source !== "mobile")
+    (
+      live.source !== "session" &&
+      live.source !== "mobile" &&
+      !trustedBackgroundService
+    )
   ) {
     throw new Error("Live tool identity does not match the agent run owner.");
   }

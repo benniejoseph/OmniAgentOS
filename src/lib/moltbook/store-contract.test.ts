@@ -4,7 +4,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   isExactMoltbookAgentCapabilityBoundary,
+  isExactMoltbookToolSet,
+  MOLTBOOK_LEGACY_TOOL_IDS,
   MOLTBOOK_TOOL_IDS,
+  parseMoltbookToolInput,
 } from "@/lib/moltbook/contracts";
 
 import {
@@ -47,11 +50,22 @@ describe("Moltbook store contracts", () => {
     })).toBe(true);
     expect(isExactMoltbookAgentCapabilityBoundary({
       ...exact,
+      toolIds: [...MOLTBOOK_LEGACY_TOOL_IDS],
+    })).toBe(true);
+    expect(isExactMoltbookAgentCapabilityBoundary({
+      ...exact,
       skillIds: ["moltbook-skill"],
     })).toBe(false);
     expect(isExactMoltbookAgentCapabilityBoundary({
       ...exact,
       toolIds: [...MOLTBOOK_TOOL_IDS, "web.search"],
+    })).toBe(false);
+    expect(isExactMoltbookAgentCapabilityBoundary({
+      ...exact,
+      toolIds: [
+        ...MOLTBOOK_LEGACY_TOOL_IDS,
+        "moltbook.submolt.read",
+      ],
     })).toBe(false);
     expect(isExactMoltbookAgentCapabilityBoundary({
       ...exact,
@@ -61,6 +75,47 @@ describe("Moltbook store contracts", () => {
       ...exact,
       autonomy: "execute",
     })).toBe(false);
+    expect(isExactMoltbookToolSet(MOLTBOOK_TOOL_IDS)).toBe(true);
+    expect(isExactMoltbookToolSet(MOLTBOOK_LEGACY_TOOL_IDS)).toBe(true);
+    expect(isExactMoltbookToolSet([
+      ...MOLTBOOK_LEGACY_TOOL_IDS,
+      "moltbook.submolt.read",
+    ])).toBe(false);
+  });
+
+  it("keeps community discovery and subscription inputs exact and bounded", () => {
+    expect(parseMoltbookToolInput("moltbook.submolts.list", {})).toEqual({});
+    expect(parseMoltbookToolInput("moltbook.submolt.read", {
+      name: "agent-tools",
+    })).toEqual({ name: "agent-tools" });
+    expect(parseMoltbookToolInput("moltbook.submolt.feed", {
+      name: "agent-tools",
+      sort: "rising",
+      limit: 25,
+    })).toEqual({ name: "agent-tools", sort: "rising", limit: 25 });
+    expect(parseMoltbookToolInput("moltbook.submolt.subscribe", {
+      name: "agent-tools",
+      subscribe: true,
+    })).toEqual({ name: "agent-tools", subscribe: true });
+
+    expect(() => parseMoltbookToolInput("moltbook.submolts.list", {
+      cursor: "provider-controlled-pagination",
+    })).toThrow();
+    expect(() => parseMoltbookToolInput("moltbook.submolt.feed", {
+      name: "../admin",
+      sort: "new",
+      limit: 10,
+    })).toThrow();
+    expect(() => parseMoltbookToolInput("moltbook.submolt.feed", {
+      name: "agent-tools",
+      sort: "new",
+      limit: 26,
+    })).toThrow();
+    expect(() => parseMoltbookToolInput("moltbook.submolt.subscribe", {
+      name: "agent-tools",
+      subscribe: true,
+      create: true,
+    })).toThrow();
   });
 
   it("keeps scheduled and manual connection checks status-only", () => {

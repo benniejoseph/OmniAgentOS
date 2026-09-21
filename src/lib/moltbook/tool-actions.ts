@@ -264,19 +264,7 @@ async function executeRead(
 ): Promise<MoltbookUntrustedReadResult> {
   const publicAccess = withoutApiKey(access);
   try {
-    const result = input.toolId === "moltbook.home.read"
-      ? await client.home()
-      : input.toolId === "moltbook.feed.read"
-        ? await client.feed(toolInput as {
-            sort: "new" | "hot" | "top";
-            limit: number;
-            filter?: "following";
-          })
-        : await client.thread(toolInput as {
-            postId: string;
-            sort: "best" | "new" | "old";
-            limit: number;
-          });
+    const result = await callRead(input.toolId, toolInput, client);
     await observeMoltbookRateLimit({ access: publicAccess, rateLimit: result.rateLimit });
     await appendMoltbookToolActivity({
       access: publicAccess,
@@ -297,6 +285,44 @@ async function executeRead(
   } catch (error) {
     await recordToolFailure(input, publicAccess, error, false);
     throw error;
+  }
+}
+
+function callRead(
+  toolId: MoltbookToolId,
+  toolInput: Record<string, unknown>,
+  client: ReturnType<typeof createMoltbookClient>,
+) {
+  switch (toolId) {
+    case "moltbook.home.read":
+      return client.home();
+    case "moltbook.feed.read":
+      return client.feed(toolInput as {
+        sort: "new" | "hot" | "top";
+        limit: number;
+        filter?: "following";
+      });
+    case "moltbook.thread.read":
+      return client.thread(toolInput as {
+        postId: string;
+        sort: "best" | "new" | "old";
+        limit: number;
+      });
+    case "moltbook.submolts.list":
+      return client.listSubmolts();
+    case "moltbook.submolt.read":
+      return client.readSubmolt(String(toolInput.name));
+    case "moltbook.submolt.feed":
+      return client.submoltFeed(toolInput as {
+        name: string;
+        sort: "new" | "hot" | "top" | "rising";
+        limit: number;
+      });
+    default:
+      throw new MoltbookConnectionError(
+        "Moltbook mutation reached the read boundary.",
+        { status: 400, code: "tool_operation_mismatch" },
+      );
   }
 }
 
@@ -607,6 +633,11 @@ function callMutation(
       return client.upvoteComment(String(toolInput.commentId));
     case "moltbook.agent.follow":
       return client.followAgent(String(toolInput.name), Boolean(toolInput.follow));
+    case "moltbook.submolt.subscribe":
+      return client.subscribeSubmolt(
+        String(toolInput.name),
+        Boolean(toolInput.subscribe),
+      );
     case "moltbook.verify":
       return client.verify(
         String(toolInput.verificationCode),
@@ -858,7 +889,10 @@ async function exactToolAuthority(
       { code: "tool_identity_pin_mismatch" },
     );
   }
-  const identityPin = moltbookConnectionIdentityPinFromRunPin(runPin);
+  const identityPin = moltbookConnectionIdentityPinFromRunPin(
+    runPin,
+    principal.toolIds,
+  );
   return {
     ownerActorId: principal.owner.actorId,
     executingAgentId: principal.logicalAgentId,
@@ -991,6 +1025,10 @@ function targetObjectFromInput(
     const ref = boundedProviderId(toolInput.name);
     return ref ? { type: "agent", ref } : undefined;
   }
+  if (toolId === "moltbook.submolt.subscribe") {
+    const ref = boundedProviderId(toolInput.name);
+    return ref ? { type: "submolt", ref } : undefined;
+  }
   return undefined;
 }
 
@@ -1022,7 +1060,10 @@ function withoutApiKey(access: MoltbookConnectionAccess) {
 function isReadTool(toolId: MoltbookToolId) {
   return toolId === "moltbook.home.read" ||
     toolId === "moltbook.feed.read" ||
-    toolId === "moltbook.thread.read";
+    toolId === "moltbook.thread.read" ||
+    toolId === "moltbook.submolts.list" ||
+    toolId === "moltbook.submolt.read" ||
+    toolId === "moltbook.submolt.feed";
 }
 
 function publishStatus(toolId: MoltbookToolId): "published" | "succeeded" {
@@ -1039,7 +1080,14 @@ function toolKind(toolId: MoltbookToolId) {
 function readSummary(toolId: MoltbookToolId) {
   if (toolId === "moltbook.home.read") return "Moltbook home was read.";
   if (toolId === "moltbook.feed.read") return "Moltbook feed was read.";
-  return "A Moltbook thread was read.";
+  if (toolId === "moltbook.thread.read") return "A Moltbook thread was read.";
+  if (toolId === "moltbook.submolts.list") {
+    return "Moltbook communities were listed.";
+  }
+  if (toolId === "moltbook.submolt.read") {
+    return "A Moltbook community was read.";
+  }
+  return "A Moltbook community feed was read.";
 }
 
 function mutationSummary(
@@ -1056,6 +1104,9 @@ function mutationSummary(
   }
   if (toolId === "moltbook.agent.follow") {
     return `${toolInput.follow ? "Followed" : "Unfollowed"} Moltbook agent ${String(toolInput.name)}.`;
+  }
+  if (toolId === "moltbook.submolt.subscribe") {
+    return `${toolInput.subscribe ? "Joined" : "Left"} Moltbook community ${String(toolInput.name)}.`;
   }
   return "Moltbook mutation completed.";
 }

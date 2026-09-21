@@ -169,6 +169,17 @@ export function createMoltbookClient(
         rateLimit: comments.rateLimit || post.rateLimit,
       } satisfies MoltbookHttpResult;
     },
+    listSubmolts: () => request("GET", "/submolts"),
+    readSubmolt: (name: string) =>
+      request("GET", `/submolts/${encodeURIComponent(name)}`),
+    submoltFeed: (options: {
+      name: string;
+      sort: "new" | "hot" | "top" | "rising";
+      limit: number;
+    }) => request("GET", withQuery(
+      `/submolts/${encodeURIComponent(options.name)}/feed`,
+      { sort: options.sort, limit: options.limit },
+    )),
     createPost: (post: {
       submoltName: string;
       title: string;
@@ -187,6 +198,8 @@ export function createMoltbookClient(
       mutation("moltbook.comment.upvote", { commentId }),
     followAgent: (name: string, follow: boolean) =>
       mutation("moltbook.agent.follow", { name, follow }),
+    subscribeSubmolt: (name: string, subscribe: boolean) =>
+      mutation("moltbook.submolt.subscribe", { name, subscribe }),
     verify: (verificationCode: string, answer: string) =>
       mutation("moltbook.verify", { verificationCode, answer }),
   });
@@ -351,6 +364,11 @@ function moltbookMutationRequest(
       return {
         method: input.follow === true ? "POST" : "DELETE",
         path: `/agents/${encodeURIComponent(String(input.name))}/follow`,
+      };
+    case "moltbook.submolt.subscribe":
+      return {
+        method: input.subscribe === true ? "POST" : "DELETE",
+        path: `/submolts/${encodeURIComponent(String(input.name))}/subscribe`,
       };
     case "moltbook.verify":
       return {

@@ -22,6 +22,7 @@ const routeMocks = vi.hoisted(() => ({
   syncDuePersonalProviders: vi.fn(),
   syncDueSalesforceConnections: vi.fn(),
   processDueMoltbookHeartbeats: vi.fn(),
+  processDueMoltbookAutonomyCycles: vi.fn(),
   recordSecurityAudit: vi.fn(),
   recordRuntimeEventSafely: vi.fn(),
   recordWorkerHeartbeat: vi.fn(),
@@ -153,6 +154,11 @@ vi.mock("@/lib/customer-success/salesforce-sync", async (importOriginal) => ({
 vi.mock("@/lib/moltbook/store", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/moltbook/store")>()),
   processDueMoltbookHeartbeats: routeMocks.processDueMoltbookHeartbeats,
+}));
+
+vi.mock("@/lib/moltbook/autonomy-runner", () => ({
+  processDueMoltbookAutonomyCycles:
+    routeMocks.processDueMoltbookAutonomyCycles,
 }));
 
 vi.mock("@/lib/subagents/worker", async (importOriginal) => ({
@@ -291,6 +297,13 @@ beforeEach(() => {
     healthy: 0,
     failed: 0,
     skipped: 0,
+  });
+  routeMocks.processDueMoltbookAutonomyCycles.mockReset().mockResolvedValue({
+    processed: 0,
+    succeeded: 0,
+    failed: 0,
+    paused: 0,
+    results: [],
   });
   routeMocks.recordRuntimeEventSafely.mockReset().mockResolvedValue(undefined);
   routeMocks.recordSecurityAudit.mockReset().mockResolvedValue(undefined);
@@ -489,6 +502,57 @@ describe("dedicated worker heartbeat timing", () => {
     expect(routeMocks.processDueMoltbookHeartbeats).toHaveBeenCalledWith({
       tenantId: "tenant-a",
       limit: 2,
+    });
+  });
+
+  it("prioritizes a due Moltbook autonomy cycle before slower tenant maintenance", async () => {
+    const order: string[] = [];
+    routeMocks.listMaintenanceTenantIds.mockResolvedValue(["tenant-a"]);
+    routeMocks.processDueMoltbookAutonomyCycles.mockImplementation(async () => {
+      order.push("moltbook-autonomy");
+      return {
+        processed: 1,
+        succeeded: 1,
+        failed: 0,
+        paused: 0,
+        results: [],
+      };
+    });
+    routeMocks.runTenantMemoryMaintenance.mockImplementation(async () => {
+      order.push("memory-maintenance");
+      return {
+        report: {
+          policyVersion: 1,
+          scanned: 0,
+          eligible: 0,
+          exactDuplicateGroups: 0,
+          autoArchivedDuplicates: 0,
+          pinnedDuplicateConflicts: 0,
+          promotionReviewsCreated: 0,
+          expiredArchived: 0,
+          duplicateRateBefore: 0,
+          duplicateRateAfter: 0,
+          duplicateRateTarget: 0.01,
+        },
+        reviews: [],
+      };
+    });
+
+    const response = await POST(workerRequest({
+      startup: false,
+      lane: "maintenance",
+      timeBudgetMs: 240_000,
+    }));
+
+    expect(response.status).toBe(200);
+    expect(order).toEqual(["moltbook-autonomy", "memory-maintenance"]);
+    expect(routeMocks.processDueMoltbookAutonomyCycles).toHaveBeenCalledWith({
+      tenantId: "tenant-a",
+      limit: 1,
+      abortSignal: expect.any(AbortSignal),
+    });
+    await expect(response.json()).resolves.toMatchObject({
+      maintenance: [{ moltbookAutonomyCyclesProcessed: 1 }],
     });
   });
 

@@ -6,7 +6,10 @@ import {
 } from "@/lib/agents/identity-contracts";
 import {
   isExactMoltbookAgentCapabilityBoundary,
+  isExactMoltbookToolSet,
+  MOLTBOOK_LEGACY_TOOL_IDS,
   MOLTBOOK_TOOL_IDS,
+  type MoltbookToolId,
 } from "@/lib/moltbook/contracts";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
@@ -42,13 +45,23 @@ export function moltbookConnectionIdentityPinFromIdentity(
     identity.principal.capabilityGrantIds.length !== 0) {
     throw new Error("The Agent does not have the exact Moltbook capability boundary.");
   }
-  return moltbookConnectionIdentityPinFromRunPin(pin);
+  return moltbookConnectionIdentityPinFromRunPin(
+    pin,
+    identity.principal.toolGrantIds,
+  );
 }
 
 export function moltbookConnectionIdentityPinFromRunPin(
   value: AgentRunIdentityPinV1,
+  toolIds: readonly string[],
 ): MoltbookConnectionIdentityPin {
   const pin = parseAgentRunIdentityPinV1(value);
+  if (!isExactMoltbookToolSet(toolIds)) {
+    throw new Error("The Agent run does not have an exact Moltbook tool boundary.");
+  }
+  const canonicalToolIds = toolIds.length === MOLTBOOK_LEGACY_TOOL_IDS.length
+    ? MOLTBOOK_LEGACY_TOOL_IDS
+    : MOLTBOOK_TOOL_IDS;
   const material = {
     version: "moltbook.connection-policy-boundary.v1" as const,
     logicalAgentId: pin.logicalAgentId,
@@ -59,7 +72,7 @@ export function moltbookConnectionIdentityPinFromRunPin(
     principalSha256: pin.principalSha256,
     policyPins: pin.policyPins,
     skillPins: pin.skillPins,
-    toolIds: [...MOLTBOOK_TOOL_IDS],
+    toolIds: [...canonicalToolIds] as MoltbookToolId[],
   };
   return Object.freeze({
     logicalAgentId: pin.logicalAgentId,

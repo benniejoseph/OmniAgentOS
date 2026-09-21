@@ -98,6 +98,12 @@ import {
   parseMoltbookToolInput,
   reconcileGovernedMoltbookToolAction,
 } from "@/lib/tools/moltbook-adapter";
+import {
+  authorizeMoltbookAutonomyAction,
+  MOLTBOOK_AUTONOMY_EXECUTION_PURPOSE,
+  type ClaimedMoltbookAutonomyCycle,
+  type MoltbookAutonomyMutationToolId,
+} from "@/lib/moltbook/autonomy-store";
 import { recordRuntimeEventSafely } from "@/lib/observability/store";
 import { redactSensitive } from "@/lib/security/context";
 import {
@@ -439,6 +445,7 @@ export async function executeGovernedTool({
   agentRunId,
   effectBinding,
   approvalGrantClaim,
+  moltbookAutonomy,
   checkpointBeforeEffect,
 }: {
   toolId: string;
@@ -465,6 +472,11 @@ export async function executeGovernedTool({
   effectBinding?: GovernedToolEffectBinding;
   /** Consumed P9.4 authority for a non-user principal executing a plan. */
   approvalGrantClaim?: ApprovalGrantClaimEvidence;
+  /** Ephemeral standing authority for exactly one leased Moltbook cycle. */
+  moltbookAutonomy?: Pick<
+    ClaimedMoltbookAutonomyCycle,
+    "authority" | "leaseToken" | "leaseExpiresAt"
+  >;
   /** Dormant checkpoint shadow hook invoked after intent persistence. */
   checkpointBeforeEffect?: (
     input: GovernedToolCheckpointInput,
@@ -1109,6 +1121,7 @@ export async function executeGovernedTool({
             agentRunId,
             effectBinding,
             approvalGrantClaim,
+            moltbookAutonomy,
             checkpointBeforeEffect,
           });
         }
@@ -1187,11 +1200,27 @@ export async function executeGovernedTool({
       }),
     );
   }
+  const moltbookStandingMandateApproval =
+    await authorizeMoltbookStandingMandate({
+      authority: moltbookAutonomy,
+      tool,
+      preparedInput,
+      dryRun,
+      context,
+      requestActorBinding,
+      executionScope: scopedRequest.executionScope,
+      agentRunId,
+      idempotencyKey,
+    });
   const effectiveApproved =
-    approved &&
-    durableApprovalClaim &&
-    (persistedSingleApproval || directUserApproval || boundPlanGrantApproval) &&
-    (tool.riskLevel < 3 || hasRisk3Quorum(existingRecord));
+    (approved &&
+      durableApprovalClaim &&
+      (persistedSingleApproval || directUserApproval || boundPlanGrantApproval) &&
+      (tool.riskLevel < 3 || hasRisk3Quorum(existingRecord))) ||
+    moltbookStandingMandateApproval;
+  const effectiveApprovalReason = moltbookStandingMandateApproval
+    ? "Owner-enabled Moltbook autonomy charter authorized this bounded public action."
+    : approvalReason;
 
   // Trust profiles remain advisory evidence. Automatic execution now requires
   // a consumed grant with an exact plan, principal, contract, target, budget,
@@ -1417,7 +1446,7 @@ export async function executeGovernedTool({
       approvedAt: decision.approvalRequired
         ? new Date().toISOString()
         : undefined,
-      approvalReason,
+      approvalReason: effectiveApprovalReason,
     });
     intent.id = intendedExecutionId;
     intent.output = {
@@ -1770,7 +1799,7 @@ export async function executeGovernedTool({
         (decision.approvalRequired ? context?.actorId : undefined),
       approvedAt: executionRecord?.approvedAt ||
         (decision.approvalRequired ? new Date().toISOString() : undefined),
-      approvalReason: executionRecord?.approvalReason ?? approvalReason,
+      approvalReason: executionRecord?.approvalReason ?? effectiveApprovalReason,
       effectReceipt,
       completedAt: new Date().toISOString(),
     });
@@ -3023,6 +3052,177 @@ function normalizeTenantId(value?: string) {
   return (value || process.env.OMNIAGENT_DEFAULT_TENANT || "default").trim() || "default";
 }
 
+async function authorizeMoltbookStandingMandate(input: {
+  authority?: Pick<
+    ClaimedMoltbookAutonomyCycle,
+    "authority" | "leaseToken" | "leaseExpiresAt"
+  >;
+  tool: ToolDefinition;
+  preparedInput: Record<string, unknown>;
+  dryRun: boolean;
+  context?: SecurityContext;
+  requestActorBinding?: CanonicalRequestActorBindingV1;
+  executionScope?: ExecutionScope;
+  agentRunId?: string;
+  idempotencyKey?: string;
+}) {
+  const grant = input.authority;
+  if (!grant || input.dryRun) return false;
+  if (!isMoltbookAutonomyMutationToolId(input.tool.id)) return false;
+  assertMoltbookStandingMandateToolContract(input.tool, input.preparedInput);
+  const authority = grant.authority;
+  const context = input.context;
+  const binding = input.requestActorBinding;
+  const scope = input.executionScope;
+  const agentRunId = input.agentRunId?.trim();
+  const idempotencyKey = input.idempotencyKey?.trim();
+  if (
+    !context ||
+    !binding ||
+    !scope ||
+    !agentRunId ||
+    !idempotencyKey ||
+    authority.executionPurpose !== MOLTBOOK_AUTONOMY_EXECUTION_PURPOSE ||
+    authority.correlationId !== authority.cycleId ||
+    context.source !== "service" ||
+    context.tenantId !== authority.tenantId ||
+    context.actorId !== authority.ownerActorId ||
+    context.role !== authority.membershipRole ||
+    binding.version !== 1 ||
+    binding.kind !== "auth_user" ||
+    binding.authUserId !== authority.authUserId ||
+    binding.canonicalActorId !== authority.canonicalActorId ||
+    binding.legacyOwnerActorIds.length !== 1 ||
+    binding.legacyOwnerActorIds[0] !== authority.ownerActorId ||
+    binding.readableOwnerActorIds.length !== 2 ||
+    binding.readableOwnerActorIds[0] !== authority.canonicalActorId ||
+    binding.readableOwnerActorIds[1] !== authority.ownerActorId ||
+    scope.tenantId !== authority.tenantId ||
+    scope.initiatingActorId !== authority.ownerActorId ||
+    scope.executingPrincipalType !== "agent" ||
+    scope.executingPrincipalId !== authority.principalId ||
+    scope.correlationId !== authority.cycleId ||
+    scope.purpose !== MOLTBOOK_AUTONOMY_EXECUTION_PURPOSE ||
+    scope.contextGrantIds.length !== 0 ||
+    scope.capabilityGrantIds.length !== 0 ||
+    !idempotencyKey.startsWith(`${agentRunId}:`) ||
+    Date.parse(grant.leaseExpiresAt) <= Date.now()
+  ) {
+    throw new Error(
+      "Moltbook autonomy authority does not match the exact owner, Agent, run, and cycle scope.",
+    );
+  }
+  const executionId = idempotentToolExecutionId(
+    authority.tenantId,
+    idempotencyKey,
+  );
+  const material = prepareProviderEffectMaterial(
+    input.tool,
+    input.preparedInput,
+    executionId,
+  );
+  if (!material) {
+    throw new Error("Moltbook autonomy requires a bound public effect target.");
+  }
+  await authorizeMoltbookAutonomyAction({
+    authority,
+    leaseToken: grant.leaseToken,
+    toolId: input.tool.id,
+    toolInputSha256: material.inputSha256,
+    effectTargetId: material.targetId,
+    idempotencyKey,
+    toolExecutionId: executionId,
+    agentRunId,
+    executionPurpose: scope.purpose,
+    correlationId: scope.correlationId,
+    principalId: scope.executingPrincipalId,
+    principalGeneration: authority.principalGeneration,
+  });
+  return true;
+}
+
+const MOLTBOOK_AUTONOMY_EXPECTED_REVERSIBILITY = Object.freeze({
+  "moltbook.post.create": false,
+  "moltbook.comment.create": false,
+  "moltbook.post.vote": false,
+  "moltbook.comment.upvote": false,
+  "moltbook.agent.follow": true,
+  "moltbook.submolt.subscribe": true,
+} satisfies Record<MoltbookAutonomyMutationToolId, boolean>);
+
+const MOLTBOOK_EXTERNAL_LINK_PATTERN = /(?:https?:\/\/|www\.)/i;
+
+function assertMoltbookStandingMandateToolContract(
+  tool: ToolDefinition,
+  preparedInput: Record<string, unknown>,
+) {
+  if (!isMoltbookAutonomyMutationToolId(tool.id)) {
+    throw new Error(
+      "Moltbook autonomy refused a tool outside its exact public-action allowlist.",
+    );
+  }
+  if (tool.riskLevel >= 3) {
+    throw new Error(
+      "Moltbook autonomy never authorizes risk-3 or higher tools.",
+    );
+  }
+  if (
+    tool.status !== "active" ||
+    tool.approvalRequired !== true ||
+    tool.operationClass !== "mutation" ||
+    tool.riskLevel !== 2
+  ) {
+    throw new Error(
+      "Moltbook autonomy refused an inactive or unapproved tool contract.",
+    );
+  }
+  const expectedReversibility =
+    MOLTBOOK_AUTONOMY_EXPECTED_REVERSIBILITY[tool.id];
+  if (tool.reversible !== expectedReversibility) {
+    throw new Error(
+      "Moltbook autonomy refused a tool whose reversibility changed from its reviewed contract.",
+    );
+  }
+  if (
+    tool.id === "moltbook.post.create" &&
+    (Object.hasOwn(preparedInput, "url") ||
+      (preparedInput.type !== undefined && preparedInput.type !== "text"))
+  ) {
+    throw new Error(
+      "Moltbook autonomy permits text-only posts without URL, link, or image payloads.",
+    );
+  }
+  const autonomousText =
+    tool.id === "moltbook.post.create"
+      ? [preparedInput.title, preparedInput.content]
+      : tool.id === "moltbook.comment.create"
+        ? [preparedInput.content]
+        : [];
+  if (
+    autonomousText.some(
+      (value) =>
+        typeof value === "string" && MOLTBOOK_EXTERNAL_LINK_PATTERN.test(value),
+    )
+  ) {
+    throw new Error(
+      "Moltbook autonomy does not permit external links in authored post or comment text.",
+    );
+  }
+}
+
+function isMoltbookAutonomyMutationToolId(
+  toolId: string,
+): toolId is MoltbookAutonomyMutationToolId {
+  return (
+    toolId === "moltbook.post.create" ||
+    toolId === "moltbook.comment.create" ||
+    toolId === "moltbook.post.vote" ||
+    toolId === "moltbook.comment.upvote" ||
+    toolId === "moltbook.agent.follow" ||
+    toolId === "moltbook.submolt.subscribe"
+  );
+}
+
 function idempotentToolExecutionId(
   tenantId: string,
   idempotencyKey: string,
@@ -4214,6 +4414,8 @@ function moltbookProviderTargetIdentity(
       return { toolId, commentId: input.commentId };
     case "moltbook.agent.follow":
       return { toolId, name: input.name, follow: input.follow };
+    case "moltbook.submolt.subscribe":
+      return { toolId, name: input.name, subscribe: input.subscribe };
     case "moltbook.verify":
       return { toolId, verificationCode: input.verificationCode };
     default:

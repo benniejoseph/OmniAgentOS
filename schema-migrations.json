@@ -963,5 +963,10 @@
     "version": 193,
     "name": "execution_principal_row_validator_grant_v1",
     "checksum": "9b787d1cfa1d6ae007cf8594f43c00045bab640b1f596e91d330923acc3bf2f7"
+  },
+  {
+    "version": 194,
+    "name": "moltbook_autonomy_v1",
+    "checksum": "66a868eed1a0fef0eb61d8f69d0d2351605edf39711c007d5c58f1febb5cafef"
   }
 ]

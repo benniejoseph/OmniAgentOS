@@ -11,6 +11,15 @@ const mocks = vi.hoisted(() => ({
   refresh: vi.fn(),
   pause: vi.fn(),
   resume: vi.fn(),
+  listAutonomy: vi.fn(),
+  insertAuthority: vi.fn(),
+  enableAutonomy: vi.fn(),
+  pauseAutonomy: vi.fn(),
+  resumeAutonomy: vi.fn(),
+  revokeAutonomy: vi.fn(),
+  runAutonomyOnce: vi.fn(),
+  getCustomAgent: vi.fn(),
+  updateCustomAgent: vi.fn(),
 }));
 
 vi.mock("@/lib/db/client", () => ({
@@ -38,10 +47,32 @@ vi.mock("@/lib/agents/identity-store", () => ({
 vi.mock("@/lib/moltbook/identity-boundary", () => ({
   moltbookConnectionIdentityPinFromIdentity: mocks.identityPin,
 }));
+vi.mock("@/lib/moltbook/autonomy-store", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/moltbook/autonomy-store")>(),
+  listMoltbookAutonomyProjection: mocks.listAutonomy,
+  insertCurrentMoltbookAuthorityVersion: mocks.insertAuthority,
+  enableMoltbookAutonomy: mocks.enableAutonomy,
+  pauseMoltbookAutonomy: mocks.pauseAutonomy,
+  resumeMoltbookAutonomy: mocks.resumeAutonomy,
+  revokeMoltbookAutonomy: mocks.revokeAutonomy,
+}));
+vi.mock("@/lib/moltbook/autonomy-runner", () => ({
+  MOLTBOOK_AUTONOMY_CHARTER_SHA256: "4".repeat(64),
+  runMoltbookAutonomyOnce: mocks.runAutonomyOnce,
+}));
+vi.mock("@/lib/skills/store", () => ({
+  getCustomAgent: mocks.getCustomAgent,
+  updateCustomAgent: mocks.updateCustomAgent,
+}));
 
 import { GET, POST } from "@/app/api/agents/[id]/moltbook/route";
 import { MoltbookConnectionError } from "@/lib/moltbook/store";
-import { MOLTBOOK_DISCLOSURE_VERSION } from "@/lib/moltbook/contracts";
+import {
+  MOLTBOOK_AUTONOMY_DISCLOSURE_VERSION,
+  MOLTBOOK_DISCLOSURE_VERSION,
+  MOLTBOOK_LEGACY_TOOL_IDS,
+  MOLTBOOK_TOOL_IDS,
+} from "@/lib/moltbook/contracts";
 
 const context = { params: Promise.resolve({ id: "agent_molty" }) };
 const auth = { tenantId: "tenant-one", actorId: "legacy@example.test" };
@@ -60,6 +91,12 @@ const connection = {
   disclosureVersion: MOLTBOOK_DISCLOSURE_VERSION,
   createdAt: "2026-09-21T00:00:00.000Z",
   updatedAt: "2026-09-21T00:00:00.000Z",
+};
+const autonomy = {
+  executable: true,
+  enrollment: { id: "moltbook_enrollment_test", status: "paused" },
+  interests: [],
+  recentCycles: [],
 };
 
 beforeEach(() => {
@@ -84,6 +121,26 @@ beforeEach(() => {
     policyBoundarySha256: "3".repeat(64),
   });
   mocks.list.mockResolvedValue({ connection, activities: [], nextCursor: null });
+  mocks.listAutonomy.mockResolvedValue(autonomy);
+  mocks.getCustomAgent.mockResolvedValue({
+    id: "agent_molty",
+    toolIds: [...MOLTBOOK_LEGACY_TOOL_IDS],
+  });
+  mocks.updateCustomAgent.mockResolvedValue({
+    id: "agent_molty",
+    toolIds: [...MOLTBOOK_TOOL_IDS],
+  });
+  mocks.insertAuthority.mockResolvedValue({ authorityVersion: 2 });
+  mocks.enableAutonomy.mockResolvedValue({ status: "enabled" });
+  mocks.pauseAutonomy.mockResolvedValue({ status: "paused" });
+  mocks.resumeAutonomy.mockResolvedValue({ status: "enabled" });
+  mocks.revokeAutonomy.mockResolvedValue({ status: "revoked" });
+  mocks.runAutonomyOnce.mockResolvedValue({
+    cycleId: "moltbook_cycle_test",
+    status: "succeeded",
+    interestsObserved: 2,
+    paused: false,
+  });
   for (const fn of [mocks.refresh, mocks.pause, mocks.resume]) {
     fn.mockResolvedValue(connection);
   }
@@ -107,6 +164,7 @@ describe("Moltbook Agent route", () => {
       limit: 25,
       cursor: undefined,
     });
+    expect(await response.json()).toMatchObject({ autonomy });
   });
 
   it("rejects requests when canonical actor ownership is unavailable", async () => {
@@ -175,11 +233,205 @@ describe("Moltbook Agent route", () => {
       owner: { tenantId: "tenant-one", actorId: storedOwner },
       agentId: "agent_molty",
     });
+    expect(mocks.pauseAutonomy).toHaveBeenCalledWith({
+      owner: { tenantId: "tenant-one", actorId: storedOwner },
+      agentId: "agent_molty",
+    });
+    expect(mocks.pauseAutonomy.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.pause.mock.invocationCallOrder[0]!,
+    );
     expect((await post({ action: "resume" })).status).toBe(200);
     expect(mocks.resume).toHaveBeenCalled();
     expect(mocks.authorizeRequest).toHaveBeenCalledWith(expect.objectContaining({
       nativeMutationCapability: "agents.moltbook.manage",
     }));
+  });
+
+  it("keeps autonomy paused when the connection pause step fails", async () => {
+    mocks.pause.mockRejectedValueOnce(new Error("connection pause unavailable"));
+
+    const response = await post({ action: "pause" });
+
+    expect(response.status).toBe(500);
+    expect(mocks.pauseAutonomy).toHaveBeenCalledTimes(1);
+    expect(mocks.pause).toHaveBeenCalledTimes(1);
+    expect(mocks.pauseAutonomy.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.pause.mock.invocationCallOrder[0]!,
+    );
+    expect(mocks.resume).not.toHaveBeenCalled();
+  });
+
+  it("upgrades the exact Agent boundary before enabling autonomy", async () => {
+    const response = await post({
+      action: "enable_autonomy",
+      disclosureAccepted: true,
+      disclosureVersion: MOLTBOOK_AUTONOMY_DISCLOSURE_VERSION,
+    });
+    expect(response.status).toBe(200);
+    expect(mocks.updateCustomAgent).toHaveBeenCalledWith(
+      "agent_molty",
+      { toolIds: [...MOLTBOOK_TOOL_IDS] },
+      { tenantId: "tenant-one", actorId: storedOwner },
+    );
+    expect(mocks.insertAuthority).toHaveBeenCalledWith(expect.objectContaining({
+      owner: { tenantId: "tenant-one", actorId: storedOwner },
+      agentId: "agent_molty",
+      pin: expect.objectContaining({ principalGeneration: 7 }),
+      changeRequestSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+    }));
+    expect(mocks.enableAutonomy).toHaveBeenCalledWith(expect.objectContaining({
+      owner: { tenantId: "tenant-one", actorId: storedOwner },
+      agentId: "agent_molty",
+      authorizedByCanonicalActorId: owner,
+      charterSha256: "4".repeat(64),
+    }));
+    expect(mocks.list.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.pause.mock.invocationCallOrder[0]!,
+    );
+    expect(mocks.pause.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.updateCustomAgent.mock.invocationCallOrder[0]!,
+    );
+    expect(mocks.insertAuthority.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.resume.mock.invocationCallOrder[0]!,
+    );
+    expect(mocks.resume.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.enableAutonomy.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it.each([
+    ["paused connection", { status: "paused" }],
+    ["unclaimed connection", { claimState: "pending" }],
+    ["missing credential", { credentialConfigured: false }],
+  ])("refuses autonomy enablement for a %s", async (_label, override) => {
+    mocks.list.mockResolvedValue({
+      connection: { ...connection, ...override },
+      activities: [],
+      nextCursor: null,
+    });
+
+    const response = await post({
+      action: "enable_autonomy",
+      disclosureAccepted: true,
+      disclosureVersion: MOLTBOOK_AUTONOMY_DISCLOSURE_VERSION,
+    });
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      code: "autonomy_connection_unavailable",
+    });
+    expect(mocks.getCustomAgent).not.toHaveBeenCalled();
+    expect(mocks.pause).not.toHaveBeenCalled();
+    expect(mocks.updateCustomAgent).not.toHaveBeenCalled();
+    expect(mocks.insertAuthority).not.toHaveBeenCalled();
+    expect(mocks.enableAutonomy).not.toHaveBeenCalled();
+  });
+
+  it("leaves both gates paused when authority persistence fails", async () => {
+    mocks.insertAuthority.mockRejectedValue(new Error("authority unavailable"));
+
+    const response = await post({
+      action: "enable_autonomy",
+      disclosureAccepted: true,
+      disclosureVersion: MOLTBOOK_AUTONOMY_DISCLOSURE_VERSION,
+    });
+
+    expect(response.status).toBe(500);
+    expect(mocks.resume).not.toHaveBeenCalled();
+    expect(mocks.enableAutonomy).not.toHaveBeenCalled();
+    expect(mocks.pauseAutonomy).toHaveBeenCalledTimes(1);
+    expect(mocks.pause).toHaveBeenCalledTimes(2);
+    expect(mocks.insertAuthority.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.pauseAutonomy.mock.invocationCallOrder[0]!,
+    );
+    expect(mocks.pauseAutonomy.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.pause.mock.invocationCallOrder[1]!,
+    );
+  });
+
+  it("re-pauses both gates when autonomy enrollment fails after resume", async () => {
+    mocks.enableAutonomy.mockRejectedValue(new Error("enrollment unavailable"));
+
+    const response = await post({
+      action: "enable_autonomy",
+      disclosureAccepted: true,
+      disclosureVersion: MOLTBOOK_AUTONOMY_DISCLOSURE_VERSION,
+    });
+
+    expect(response.status).toBe(500);
+    expect(mocks.resume).toHaveBeenCalledTimes(1);
+    expect(mocks.enableAutonomy).toHaveBeenCalledTimes(1);
+    expect(mocks.pauseAutonomy).toHaveBeenCalledTimes(1);
+    expect(mocks.pause).toHaveBeenCalledTimes(2);
+    expect(mocks.enableAutonomy.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.pauseAutonomy.mock.invocationCallOrder[0]!,
+    );
+    expect(mocks.pauseAutonomy.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.pause.mock.invocationCallOrder[1]!,
+    );
+  });
+
+  it("keeps autonomy controls separate from connection resume", async () => {
+    expect((await post({ action: "pause_autonomy" })).status).toBe(200);
+    expect((await post({ action: "resume_autonomy" })).status).toBe(200);
+    expect((await post({ action: "revoke_autonomy" })).status).toBe(200);
+    expect(mocks.pauseAutonomy).toHaveBeenCalledTimes(1);
+    expect(mocks.resumeAutonomy).toHaveBeenCalledTimes(1);
+    expect(mocks.revokeAutonomy).toHaveBeenCalledTimes(1);
+
+    await post({ action: "resume" });
+    expect(mocks.resume).toHaveBeenCalled();
+    expect(mocks.resumeAutonomy).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["paused connection", { status: "paused" }],
+    ["unclaimed connection", { claimState: "pending" }],
+    ["missing credential", { credentialConfigured: false }],
+  ])("refuses autonomy resume for a %s", async (_label, override) => {
+    mocks.list.mockResolvedValue({
+      connection: { ...connection, ...override },
+      activities: [],
+      nextCursor: null,
+    });
+
+    const response = await post({ action: "resume_autonomy" });
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      code: "autonomy_connection_unavailable",
+    });
+    expect(mocks.resumeAutonomy).not.toHaveBeenCalled();
+  });
+
+  it("refuses autonomy resume when the standing authority is unavailable", async () => {
+    mocks.listAutonomy.mockResolvedValue({
+      ...autonomy,
+      executable: false,
+      blockedReason: "authority_unavailable",
+    });
+
+    const response = await post({ action: "resume_autonomy" });
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ code: "stale_authority" });
+    expect(mocks.listAutonomy).toHaveBeenCalledWith({
+      owner: { tenantId: "tenant-one", actorId: storedOwner },
+      agentId: "agent_molty",
+    });
+    expect(mocks.resumeAutonomy).not.toHaveBeenCalled();
+  });
+
+  it("runs an owner-requested bounded autonomy cycle", async () => {
+    const response = await post({ action: "run_autonomy_once" });
+    expect(response.status).toBe(200);
+    expect(mocks.runAutonomyOnce).toHaveBeenCalledWith(expect.objectContaining({
+      owner: { tenantId: "tenant-one", actorId: storedOwner },
+      agentId: "agent_molty",
+    }));
+    expect(await response.json()).toMatchObject({
+      cycle: { cycleId: "moltbook_cycle_test", status: "succeeded" },
+    });
   });
 
   it("does not expose an executor-bypassing home heartbeat action", async () => {

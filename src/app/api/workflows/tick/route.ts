@@ -58,6 +58,7 @@ import {
   processDurableSpecialistQueue,
 } from "@/lib/subagents/worker";
 import { processDueMoltbookHeartbeats } from "@/lib/moltbook/store";
+import { processDueMoltbookAutonomyCycles } from "@/lib/moltbook/autonomy-runner";
 
 export const runtime = "nodejs";
 // Workflow steps run gpt-5 planning/execution that can exceed 60s; 300s is the
@@ -464,6 +465,14 @@ async function POSTHandler(request: Request) {
       tenantId: context.tenantId,
       limit: 2,
     });
+    const moltbookAutonomy = await processDueMoltbookAutonomyCycles({
+      tenantId: context.tenantId,
+      limit: 1,
+      abortSignal: AbortSignal.any([
+        request.signal,
+        AbortSignal.timeout(125_000),
+      ]),
+    });
     const slo = parsed.data.slo
       ? await runObservabilitySloMonitor({
           trigger: "operator.workflow_tick",
@@ -534,6 +543,7 @@ async function POSTHandler(request: Request) {
       connectedSourceSyncs,
       salesforceSyncs,
       moltbookHeartbeats,
+      moltbookAutonomy,
       slo,
       alerts,
       stats,
@@ -621,6 +631,10 @@ function summarizeScheduledOutcome(
     ),
     moltbookHeartbeatsProcessed: scheduled.maintenance.reduce(
       (total, item) => total + item.moltbookHeartbeatsProcessed,
+      0,
+    ),
+    moltbookAutonomyCyclesProcessed: scheduled.maintenance.reduce(
+      (total, item) => total + item.moltbookAutonomyCyclesProcessed,
       0,
     ),
   };
@@ -788,6 +802,7 @@ async function runAllTenantScheduledWork({
     connectedSourcesSynced: number;
     salesforceConnectionsSynced: number;
     moltbookHeartbeatsProcessed: number;
+    moltbookAutonomyCyclesProcessed: number;
     externalDelegationsTerminated: number;
     maintenanceError?: string;
     memoryMaintenance?: MemoryMaintenanceReport;
@@ -917,6 +932,7 @@ async function runTenantMaintenance({
     connectedSourcesSynced: number;
     salesforceConnectionsSynced: number;
     moltbookHeartbeatsProcessed: number;
+    moltbookAutonomyCyclesProcessed: number;
     externalDelegationsTerminated: number;
     maintenanceError?: string;
     memoryMaintenance?: MemoryMaintenanceReport;
@@ -936,6 +952,7 @@ async function runTenantMaintenance({
     connectedSourcesSynced: 0,
     salesforceConnectionsSynced: 0,
     moltbookHeartbeatsProcessed: 0,
+    moltbookAutonomyCyclesProcessed: 0,
     externalDelegationsTerminated: 0,
     loopV2Recovery: emptyLoopV2RecoverySummary(),
   };
@@ -956,6 +973,21 @@ async function runTenantMaintenance({
   if (Date.now() < deadlineAt) {
     const a2a = await reconcileAbandonedExternalA2ATasks({ tenantId, limit: 5 });
     result.externalDelegationsTerminated = a2a.expired + a2a.canceled;
+  }
+  // Give a due autonomy cycle its full bounded model window before connector
+  // synchronization can consume the maintenance deadline. Recovery stays
+  // first so stale leases and tool claims are fenced before new work starts.
+  if (deadlineAt - Date.now() > 125_000) {
+    const abortSignal = AbortSignal.timeout(
+      Math.max(1, deadlineAt - Date.now() - 5_000),
+    );
+    result.moltbookAutonomyCyclesProcessed = (
+      await processDueMoltbookAutonomyCycles({
+        tenantId,
+        limit: 1,
+        abortSignal,
+      })
+    ).processed;
   }
   if (Date.now() < deadlineAt) {
     result.memoryMaintenance = (
@@ -1046,6 +1078,7 @@ function failedTenantMaintenance(
     connectedSourcesSynced: 0,
     salesforceConnectionsSynced: 0,
     moltbookHeartbeatsProcessed: 0,
+    moltbookAutonomyCyclesProcessed: 0,
     externalDelegationsTerminated: 0,
     maintenanceError,
     loopV2Recovery: emptyLoopV2RecoverySummary(),

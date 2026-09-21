@@ -20,13 +20,20 @@ const moltbook = vi.hoisted(() => ({
     return publicValue;
   }),
 }));
+const autonomy = vi.hoisted(() => ({
+  authorize: vi.fn(),
+}));
 
 vi.mock("@/lib/moltbook/tool-actions", async (importOriginal) => ({
-  ...await importOriginal<typeof import("@/lib/moltbook/tool-actions")>(),
+  ...(await importOriginal<typeof import("@/lib/moltbook/tool-actions")>()),
   executeMoltbookToolAction: moltbook.execute,
   reconcileMoltbookToolAction: moltbook.reconcile,
   moltbookEffectCommitFromResult: moltbook.commitFromResult,
   moltbookPublicToolResult: moltbook.publicResult,
+}));
+vi.mock("@/lib/moltbook/autonomy-store", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/moltbook/autonomy-store")>()),
+  authorizeMoltbookAutonomyAction: autonomy.authorize,
 }));
 
 const tenantId = "tenant-moltbook-tools";
@@ -58,6 +65,67 @@ function agentScope(correlationId: string) {
   });
 }
 
+function autonomyAuthority(runId = "run-moltbook-autonomy") {
+  const cycleId = "moltbook_cycle_governed_test";
+  return {
+    authority: {
+      tenantId,
+      ownerActorId: actorId,
+      canonicalActorId: `actor:${authUserId}`,
+      authUserId,
+      connectionId: "moltbook_connection_test",
+      enrollmentId: "moltbook_enrollment_test",
+      enrollmentVersion: 1,
+      authorityVersion: 2,
+      cycleId,
+      executionPurpose: "moltbook.autonomy.cycle.v1" as const,
+      correlationId: cycleId,
+      membershipRole: "admin" as const,
+      agentId: "agent_molty",
+      principalId: "agent:moltbook-resident:g1",
+      principalGeneration: 7,
+      principalSha256: "1".repeat(64),
+      definitionVersion: 3,
+      definitionSha256: "2".repeat(64),
+      policyBoundarySha256: "3".repeat(64),
+    },
+    leaseToken: "ephemeral-cycle-lease-token-never-persist",
+    leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+    runId,
+  };
+}
+
+function autonomyScope(
+  authority: ReturnType<typeof autonomyAuthority>["authority"],
+) {
+  return createExecutionScope({
+    tenantId,
+    initiatingActorId: actorId,
+    executingPrincipalType: "agent",
+    executingPrincipalId: authority.principalId,
+    correlationId: authority.cycleId,
+    contextGrantIds: [],
+    capabilityGrantIds: [],
+    purpose: "moltbook.autonomy.cycle.v1",
+  });
+}
+
+const autonomyActorBinding = {
+  version: 1 as const,
+  kind: "auth_user" as const,
+  authUserId,
+  canonicalActorId: `actor:${authUserId}`,
+  legacyOwnerActorIds: [actorId],
+  readableOwnerActorIds: [`actor:${authUserId}`, actorId],
+};
+
+const autonomyContext = {
+  tenantId,
+  actorId,
+  role: "admin" as const,
+  source: "service" as const,
+};
+
 describe("Moltbook governed tools", () => {
   beforeEach(async () => {
     process.env.OMNIAGENT_DATA_DIR = await mkdtemp(
@@ -81,6 +149,20 @@ describe("Moltbook governed tools", () => {
       return publicValue;
     });
     moltbook.reconcile.mockResolvedValue(undefined);
+    autonomy.authorize.mockReset();
+    autonomy.authorize.mockImplementation(async (input) => ({
+      claimId: "moltbook_action_test",
+      cycleId: input.authority.cycleId,
+      agentRunId: input.agentRunId,
+      toolId: input.toolId,
+      toolInputSha256: input.toolInputSha256,
+      effectTargetId: input.effectTargetId,
+      idempotencyKey: input.idempotencyKey,
+      toolExecutionId: input.toolExecutionId,
+      claimedAt: new Date().toISOString(),
+      consumedAt: new Date().toISOString(),
+      reused: false,
+    }));
     moltbook.execute.mockResolvedValue({
       state: "complete",
       providerAcknowledged: true,
@@ -94,6 +176,9 @@ describe("Moltbook governed tools", () => {
       "moltbook.home.read",
       "moltbook.feed.read",
       "moltbook.thread.read",
+      "moltbook.submolts.list",
+      "moltbook.submolt.read",
+      "moltbook.submolt.feed",
     ]) {
       expect(getGovernedTool(toolId)).toMatchObject({
         category: "connector",
@@ -108,6 +193,7 @@ describe("Moltbook governed tools", () => {
       "moltbook.post.vote",
       "moltbook.comment.upvote",
       "moltbook.agent.follow",
+      "moltbook.submolt.subscribe",
       "moltbook.verify",
     ]) {
       expect(getGovernedTool(toolId)).toMatchObject({
@@ -124,6 +210,16 @@ describe("Moltbook governed tools", () => {
         title: { maxLength: 300 },
         content: { maxLength: 40_000 },
         url: { maxLength: 2_048, pattern: expect.stringContaining("https") },
+      },
+    });
+    expect(getGovernedTool("moltbook.post.vote")?.reversible).toBe(false);
+    expect(getGovernedTool("moltbook.comment.upvote")?.reversible).toBe(false);
+    expect(getGovernedTool("moltbook.agent.follow")?.reversible).toBe(true);
+    expect(getGovernedTool("moltbook.submolt.subscribe")).toMatchObject({
+      reversible: true,
+      inputSchema: {
+        additionalProperties: false,
+        required: ["name", "subscribe"],
       },
     });
   });
@@ -151,7 +247,8 @@ describe("Moltbook governed tools", () => {
       executionScope,
       toolExecutionId: result.record.id,
       agentRunId: "run-moltbook-read",
-    }));
+    }),
+    );
   });
 
   it("creates approval for writes without calling Moltbook", async () => {
@@ -178,6 +275,365 @@ describe("Moltbook governed tools", () => {
       },
       result: null,
     });
+    expect(moltbook.execute).not.toHaveBeenCalled();
+  });
+
+  it("executes one exactly bound autonomy mutation and reuses its receipt", async () => {
+    const grant = autonomyAuthority();
+    const idempotencyKey = `${grant.runId}:call-1`;
+    const input = { postId: "post_123", direction: "up" };
+    moltbook.execute.mockImplementationOnce(async (call) => ({
+      status: "succeeded",
+      __testMoltbookEffectCommit: testEffectCommit(call, {
+        status: "succeeded",
+        acknowledgement: "provider_response",
+      }),
+    }));
+    const { executeGovernedTool } = await import("@/lib/tools/executor");
+    const request = {
+      toolId: "moltbook.post.vote",
+      input,
+      dryRun: false,
+      approved: false,
+      context: autonomyContext,
+      requestActorBinding: autonomyActorBinding,
+      executionScope: autonomyScope(grant.authority),
+      agentRunId: grant.runId,
+      idempotencyKey,
+      moltbookAutonomy: {
+        authority: grant.authority,
+        leaseToken: grant.leaseToken,
+        leaseExpiresAt: grant.leaseExpiresAt,
+      },
+    } as const;
+
+    const first = await executeGovernedTool(request);
+    const retried = await executeGovernedTool(request);
+
+    expect(first.record).toMatchObject({
+      status: "executed",
+      approvalRequired: true,
+      approvalDecision: "approved",
+      approvedBy: actorId,
+    });
+    expect(retried.record.id).toBe(first.record.id);
+    expect(autonomy.authorize).toHaveBeenCalledTimes(1);
+    expect(autonomy.authorize).toHaveBeenCalledWith(
+      expect.objectContaining({
+        authority: grant.authority,
+        leaseToken: grant.leaseToken,
+        agentRunId: grant.runId,
+        executionPurpose: "moltbook.autonomy.cycle.v1",
+        correlationId: grant.authority.cycleId,
+        principalId: grant.authority.principalId,
+        principalGeneration: 7,
+        toolId: "moltbook.post.vote",
+        toolExecutionId: first.record.id,
+        toolInputSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        effectTargetId: expect.stringMatching(/^moltbook_target_[a-f0-9]{52}$/),
+      }),
+    );
+    expect(moltbook.execute).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(first.record)).not.toContain(grant.leaseToken);
+    expect(JSON.stringify(retried.record)).not.toContain(grant.leaseToken);
+  });
+
+  it("refuses elevated-risk standing-mandate contracts before budget authorization", async () => {
+    const grant = autonomyAuthority("run-moltbook-autonomy-risk");
+    const { executeGovernedTool } = await import("@/lib/tools/executor");
+    const { getGovernedTool } = await import("@/lib/tools/registry");
+    const tool = getGovernedTool("moltbook.post.vote");
+    expect(tool).toBeDefined();
+    const originalRisk = tool!.riskLevel;
+    try {
+      tool!.riskLevel = 3;
+      await expect(
+        executeGovernedTool({
+          toolId: "moltbook.post.vote",
+          input: { postId: "post_risk", direction: "up" },
+          dryRun: false,
+          context: autonomyContext,
+          requestActorBinding: autonomyActorBinding,
+          executionScope: autonomyScope(grant.authority),
+          agentRunId: grant.runId,
+          idempotencyKey: `${grant.runId}:call-1`,
+          moltbookAutonomy: grant,
+        }),
+      ).rejects.toThrow(/never authorizes risk-3 or higher/i);
+    } finally {
+      tool!.riskLevel = originalRisk;
+    }
+    expect(autonomy.authorize).not.toHaveBeenCalled();
+    expect(moltbook.execute).not.toHaveBeenCalled();
+  });
+
+  it("pins active approval and reversibility metadata for standing mandates", async () => {
+    const grant = autonomyAuthority("run-moltbook-autonomy-contract");
+    const { executeGovernedTool } = await import("@/lib/tools/executor");
+    const { getGovernedTool } = await import("@/lib/tools/registry");
+    const tool = getGovernedTool("moltbook.agent.follow");
+    expect(tool).toBeDefined();
+    const original = {
+      status: tool!.status,
+      approvalRequired: tool!.approvalRequired,
+      reversible: tool!.reversible,
+    };
+    const request = (call: number) =>
+      executeGovernedTool({
+        toolId: "moltbook.agent.follow",
+        input: { name: `useful_agent_${call}`, follow: true },
+        dryRun: false,
+        context: autonomyContext,
+        requestActorBinding: autonomyActorBinding,
+        executionScope: autonomyScope(grant.authority),
+        agentRunId: grant.runId,
+        idempotencyKey: `${grant.runId}:call-${call}`,
+        moltbookAutonomy: grant,
+      });
+    try {
+      tool!.status = "planned";
+      await expect(request(1)).rejects.toThrow(/inactive or unapproved/i);
+      tool!.status = original.status;
+      tool!.approvalRequired = false;
+      await expect(request(2)).rejects.toThrow(/inactive or unapproved/i);
+      tool!.approvalRequired = original.approvalRequired;
+      tool!.reversible = false;
+      await expect(request(3)).rejects.toThrow(/reversibility changed/i);
+    } finally {
+      Object.assign(tool!, original);
+    }
+    expect(autonomy.authorize).not.toHaveBeenCalled();
+    expect(moltbook.execute).not.toHaveBeenCalled();
+  });
+
+  it("limits autonomous posts to text without any URL-bearing payload", async () => {
+    const grant = autonomyAuthority("run-moltbook-autonomy-post-shape");
+    const { executeGovernedTool } = await import("@/lib/tools/executor");
+    const inputs = [
+      {
+        submoltName: "agents",
+        title: "External link",
+        content: "A link post.",
+        type: "link",
+        url: "https://example.com/research",
+      },
+      {
+        submoltName: "agents",
+        title: "External image",
+        content: "An image post.",
+        type: "image",
+        url: "https://example.com/image.png",
+      },
+      {
+        submoltName: "agents",
+        title: "Implicit link",
+        content: "A URL without an explicit type.",
+        url: "https://example.com/implicit",
+      },
+      {
+        submoltName: "agents",
+        title: "Text with URL field",
+        content: "A text post that still carries a URL field.",
+        type: "text",
+        url: "https://example.com/still-blocked",
+      },
+    ] as const;
+    for (const [index, input] of inputs.entries()) {
+      await expect(
+        executeGovernedTool({
+          toolId: "moltbook.post.create",
+          input,
+          dryRun: false,
+          context: autonomyContext,
+          requestActorBinding: autonomyActorBinding,
+          executionScope: autonomyScope(grant.authority),
+          agentRunId: grant.runId,
+          idempotencyKey: `${grant.runId}:call-${index + 1}`,
+          moltbookAutonomy: grant,
+        }),
+      ).rejects.toThrow(/text-only posts without URL, link, or image/i);
+    }
+    expect(autonomy.authorize).not.toHaveBeenCalled();
+    expect(moltbook.execute).not.toHaveBeenCalled();
+
+    moltbook.execute.mockImplementationOnce(async (call) => ({
+      status: "published",
+      __testMoltbookEffectCommit: testEffectCommit(call, {
+        status: "published",
+        acknowledgement: "provider_response",
+      }),
+    }));
+    const textResult = await executeGovernedTool({
+      toolId: "moltbook.post.create",
+      input: {
+        submoltName: "agents",
+        title: "A text-only update",
+        content: "No external payload is attached.",
+        type: "text",
+      },
+      dryRun: false,
+      context: autonomyContext,
+      requestActorBinding: autonomyActorBinding,
+      executionScope: autonomyScope(grant.authority),
+      agentRunId: grant.runId,
+      idempotencyKey: `${grant.runId}:call-5`,
+      moltbookAutonomy: grant,
+    });
+    expect(textResult.record.status).toBe("executed");
+    expect(autonomy.authorize).toHaveBeenCalledTimes(1);
+    expect(moltbook.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects external links embedded in autonomous post and comment text", async () => {
+    const grant = autonomyAuthority("run-moltbook-autonomy-authored-links");
+    const { executeGovernedTool } = await import("@/lib/tools/executor");
+    const attempts = [
+      {
+        toolId: "moltbook.post.create",
+        input: {
+          submoltName: "agents",
+          title: "Read HTTPS://example.com/research",
+          content: "A text-only post.",
+          type: "text",
+        },
+      },
+      {
+        toolId: "moltbook.post.create",
+        input: {
+          submoltName: "agents",
+          title: "An autonomous update",
+          content: "More details are available at www.example.com.",
+          type: "text",
+        },
+      },
+      {
+        toolId: "moltbook.comment.create",
+        input: {
+          postId: "post_external_link",
+          content: "The source is HTTP://example.com/source.",
+        },
+      },
+    ] as const;
+
+    for (const [index, attempt] of attempts.entries()) {
+      await expect(
+        executeGovernedTool({
+          toolId: attempt.toolId,
+          input: attempt.input,
+          dryRun: false,
+          context: autonomyContext,
+          requestActorBinding: autonomyActorBinding,
+          executionScope: autonomyScope(grant.authority),
+          agentRunId: grant.runId,
+          idempotencyKey: `${grant.runId}:call-${index + 1}`,
+          moltbookAutonomy: grant,
+        }),
+      ).rejects.toThrow(/does not permit external links/i);
+    }
+    expect(autonomy.authorize).not.toHaveBeenCalled();
+    expect(moltbook.execute).not.toHaveBeenCalled();
+  });
+
+  it("keeps DM, delete, and moderation tools outside standing authority", async () => {
+    const grant = autonomyAuthority("run-moltbook-autonomy-exclusions");
+    const { executeGovernedTool } = await import("@/lib/tools/executor");
+    for (const [index, toolId] of [
+      "moltbook.dm.send",
+      "moltbook.post.delete",
+      "moltbook.submolt.moderate",
+    ].entries()) {
+      const result = await executeGovernedTool({
+        toolId,
+        input: {},
+        dryRun: false,
+        context: autonomyContext,
+        requestActorBinding: autonomyActorBinding,
+        executionScope: autonomyScope(grant.authority),
+        agentRunId: grant.runId,
+        idempotencyKey: `${grant.runId}:call-${index + 1}`,
+        moltbookAutonomy: grant,
+      });
+      expect(result.record.status).toBe("blocked");
+    }
+    expect(autonomy.authorize).not.toHaveBeenCalled();
+    expect(moltbook.execute).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when autonomy scope is mismatched or its budget rejects", async () => {
+    const grant = autonomyAuthority("run-moltbook-autonomy-fail");
+    const { executeGovernedTool } = await import("@/lib/tools/executor");
+    await expect(
+      executeGovernedTool({
+        toolId: "moltbook.agent.follow",
+        input: { name: "useful_agent", follow: true },
+        dryRun: false,
+        context: autonomyContext,
+        requestActorBinding: autonomyActorBinding,
+        executionScope: createExecutionScope({
+          ...autonomyScope(grant.authority),
+          purpose: "agent.tool.execute",
+        }),
+        agentRunId: grant.runId,
+        idempotencyKey: `${grant.runId}:call-1`,
+        moltbookAutonomy: grant,
+      }),
+    ).rejects.toThrow(/does not match the exact owner, Agent, run, and cycle/i);
+    expect(autonomy.authorize).not.toHaveBeenCalled();
+    expect(moltbook.execute).not.toHaveBeenCalled();
+
+    await expect(
+      executeGovernedTool({
+        toolId: "moltbook.agent.follow",
+        input: { name: "useful_agent", follow: true },
+        dryRun: false,
+        context: { ...autonomyContext, role: "operator" },
+        requestActorBinding: autonomyActorBinding,
+        executionScope: autonomyScope(grant.authority),
+        agentRunId: grant.runId,
+        idempotencyKey: `${grant.runId}:call-role-mismatch`,
+        moltbookAutonomy: grant,
+      }),
+    ).rejects.toThrow(/does not match the exact owner, Agent, run, and cycle/i);
+    expect(autonomy.authorize).not.toHaveBeenCalled();
+    expect(moltbook.execute).not.toHaveBeenCalled();
+
+    autonomy.authorize.mockRejectedValueOnce(
+      Object.assign(new Error("The vote autonomy budget is exhausted."), {
+        code: "budget_exhausted",
+      }),
+    );
+    await expect(
+      executeGovernedTool({
+        toolId: "moltbook.post.vote",
+        input: { postId: "post_456", direction: "up" },
+        dryRun: false,
+        context: autonomyContext,
+        requestActorBinding: autonomyActorBinding,
+        executionScope: autonomyScope(grant.authority),
+        agentRunId: grant.runId,
+        idempotencyKey: `${grant.runId}:call-2`,
+        moltbookAutonomy: grant,
+      }),
+    ).rejects.toMatchObject({ code: "budget_exhausted" });
+    expect(moltbook.execute).not.toHaveBeenCalled();
+  });
+
+  it("never extends standing autonomy authority to verification", async () => {
+    const grant = autonomyAuthority("run-moltbook-autonomy-verify");
+    const { executeGovernedTool } = await import("@/lib/tools/executor");
+    const result = await executeGovernedTool({
+      toolId: "moltbook.verify",
+      input: { verificationCode: "verify_12345", answer: "42" },
+      dryRun: false,
+      context: autonomyContext,
+      requestActorBinding: autonomyActorBinding,
+      executionScope: autonomyScope(grant.authority),
+      agentRunId: grant.runId,
+      idempotencyKey: `${grant.runId}:call-1`,
+      moltbookAutonomy: grant,
+    });
+    expect(result.record.status).toBe("approval_required");
+    expect(autonomy.authorize).not.toHaveBeenCalled();
     expect(moltbook.execute).not.toHaveBeenCalled();
   });
 
@@ -233,7 +689,8 @@ describe("Moltbook governed tools", () => {
       context,
       executionScope,
       toolExecutionId: pending.record.id,
-    }));
+    }),
+    );
     expect(executed).toMatchObject({
       record: {
         status: "executed",
@@ -299,9 +756,11 @@ describe("Moltbook governed tools", () => {
       executionClaimToken: claimToken,
       agentRunId: "run-moltbook-vote",
       idempotencyKey,
-    })).rejects.toThrow("verification receipt is not finalized");
+    }),
+    ).rejects.toThrow("verification receipt is not finalized");
 
-    const executing = await store.getToolExecution(pending.record.id, { tenantId });
+    const executing = await store.getToolExecution(pending.record.id, { tenantId,
+    });
     expect(executing?.status).toBe("executing");
     moltbook.reconcile.mockImplementationOnce(async (call) => {
       const result = {
@@ -362,8 +821,10 @@ describe("Moltbook governed tools", () => {
       context,
       existingRecord: claim.record,
       executionClaimToken: claimToken,
-    })).rejects.toThrow("verification receipt is not finalized");
-    const executing = await store.getToolExecution(pending.record.id, { tenantId });
+    }),
+    ).rejects.toThrow("verification receipt is not finalized");
+    const executing = await store.getToolExecution(pending.record.id, { tenantId,
+    });
     moltbook.reconcile.mockResolvedValueOnce({
       kind: "held",
       status: "uncertain",
@@ -379,13 +840,15 @@ describe("Moltbook governed tools", () => {
       existingRecord: executing,
       executionClaimToken: claimToken,
     });
-    expect(retried).toMatchObject({ record: { status: "executing" }, result: null });
+    expect(retried).toMatchObject({ record: { status: "executing" }, result: null,
+    });
     expect(moltbook.execute).toHaveBeenCalledTimes(1);
     expect(moltbook.reconcile).toHaveBeenCalledTimes(1);
   });
 
   it("holds crash-recovered pending verification without losing its non-replay fence", async () => {
-    const executionScope = agentScope("moltbook-pending-verification-reconcile");
+    const executionScope = agentScope("moltbook-pending-verification-reconcile",
+    );
     const executor = await import("@/lib/tools/executor");
     const store = await import("@/lib/tools/audit-store");
     const input = { postId: "post_789", content: "A governed reply." };
@@ -413,8 +876,10 @@ describe("Moltbook governed tools", () => {
       context,
       existingRecord: claim.record,
       executionClaimToken: claimToken,
-    })).rejects.toThrow("verification receipt is not finalized");
-    const executing = await store.getToolExecution(pending.record.id, { tenantId });
+    }),
+    ).rejects.toThrow("verification receipt is not finalized");
+    const executing = await store.getToolExecution(pending.record.id, { tenantId,
+    });
     moltbook.reconcile.mockResolvedValueOnce({
       kind: "held",
       status: "pending_verification",
@@ -429,7 +894,8 @@ describe("Moltbook governed tools", () => {
       existingRecord: executing,
       executionClaimToken: claimToken,
     });
-    expect(retried).toMatchObject({ record: { status: "executing" }, result: null });
+    expect(retried).toMatchObject({ record: { status: "executing" }, result: null,
+    });
     expect(moltbook.execute).toHaveBeenCalledTimes(1);
     expect(moltbook.reconcile).toHaveBeenCalledTimes(1);
   });
@@ -442,7 +908,8 @@ describe("Moltbook governed tools", () => {
       dryRun: false,
       context,
       executionScope: agentScope("moltbook-invalid-id"),
-    })).rejects.toThrow();
+    }),
+    ).rejects.toThrow();
     await expect(executeGovernedTool({
       toolId: "moltbook.post.create",
       input: {
@@ -454,7 +921,8 @@ describe("Moltbook governed tools", () => {
       dryRun: false,
       context,
       executionScope: agentScope("moltbook-invalid-url"),
-    })).rejects.toThrow();
+    }),
+    ).rejects.toThrow();
     expect(moltbook.execute).not.toHaveBeenCalled();
   });
 
@@ -511,7 +979,8 @@ describe("Moltbook governed tools", () => {
       toolId: "moltbook.home.read",
       toolExecutionId: pending.record.id,
       agentRunId: "run-moltbook-forced-read-resume",
-    }));
+    }),
+    );
   });
 
   it("honors forceApproval and never calls Moltbook for dry runs or unknown tools", async () => {
@@ -565,7 +1034,7 @@ function testEffectCommit(
   options: {
     status: "succeeded" | "published" | "pending_verification";
     acknowledgement:
-      | "provider_response"
+      "provider_response"
       | "provider_idempotency_reconciliation";
   },
 ) {

@@ -4,6 +4,8 @@ export const MOLTBOOK_API_ORIGIN = "https://www.moltbook.com" as const;
 export const MOLTBOOK_API_BASE = `${MOLTBOOK_API_ORIGIN}/api/v1` as const;
 export const MOLTBOOK_HEARTBEAT_INTERVAL_MS = 4 * 60 * 60 * 1_000;
 export const MOLTBOOK_DISCLOSURE_VERSION = "moltbook-public-activity-v1" as const;
+export const MOLTBOOK_AUTONOMY_DISCLOSURE_VERSION =
+  "moltbook-autonomy-public-actions-v1" as const;
 
 export const moltbookConnectionStatusSchema = z.enum([
   "registering",
@@ -36,6 +38,15 @@ export const moltbookRouteActionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("refresh") }).strict(),
   z.object({ action: z.literal("pause") }).strict(),
   z.object({ action: z.literal("resume") }).strict(),
+  z.object({
+    action: z.literal("enable_autonomy"),
+    disclosureAccepted: z.literal(true),
+    disclosureVersion: z.literal(MOLTBOOK_AUTONOMY_DISCLOSURE_VERSION),
+  }).strict(),
+  z.object({ action: z.literal("pause_autonomy") }).strict(),
+  z.object({ action: z.literal("resume_autonomy") }).strict(),
+  z.object({ action: z.literal("revoke_autonomy") }).strict(),
+  z.object({ action: z.literal("run_autonomy_once") }).strict(),
 ]);
 export type MoltbookRouteAction = z.infer<typeof moltbookRouteActionSchema>;
 
@@ -43,6 +54,8 @@ const providerIdSchema = z.string().trim().min(1).max(200)
   .regex(/^[A-Za-z0-9_.:-]+$/);
 const externalAgentNameSchema = z.string().trim().min(1).max(80)
   .regex(/^[A-Za-z0-9_-]+$/);
+const submoltNameSchema = z.string().trim().min(2).max(30)
+  .regex(/^[a-z0-9-]+$/);
 
 export const moltbookToolSchemas = {
   "moltbook.home.read": z.object({}).strict(),
@@ -56,9 +69,17 @@ export const moltbookToolSchemas = {
     sort: z.enum(["best", "new", "old"]),
     limit: z.number().int().min(1).max(50),
   }).strict(),
+  "moltbook.submolts.list": z.object({}).strict(),
+  "moltbook.submolt.read": z.object({
+    name: submoltNameSchema,
+  }).strict(),
+  "moltbook.submolt.feed": z.object({
+    name: submoltNameSchema,
+    sort: z.enum(["new", "hot", "top", "rising"]),
+    limit: z.number().int().min(1).max(25),
+  }).strict(),
   "moltbook.post.create": z.object({
-    submoltName: z.string().trim().min(2).max(30)
-      .regex(/^[a-z0-9-]+$/),
+    submoltName: submoltNameSchema,
     title: z.string().trim().min(1).max(300),
     content: z.string().max(40_000).optional(),
     url: z.string().url().max(2_048).optional(),
@@ -88,6 +109,10 @@ export const moltbookToolSchemas = {
     name: externalAgentNameSchema,
     follow: z.boolean(),
   }).strict(),
+  "moltbook.submolt.subscribe": z.object({
+    name: submoltNameSchema,
+    subscribe: z.boolean(),
+  }).strict(),
   "moltbook.verify": z.object({
     verificationCode: z.string().trim().min(8).max(240)
       .regex(/^[A-Za-z0-9_.:-]+$/),
@@ -102,6 +127,23 @@ export const MOLTBOOK_TOOL_IDS = Object.freeze(
   Object.keys(moltbookToolSchemas) as MoltbookToolId[],
 );
 
+/**
+ * The original claimed-agent boundary. Existing connections remain valid on
+ * this exact set until the owner explicitly upgrades their public capability
+ * grant; subsets, supersets, and mixed v1/v2 sets still fail closed.
+ */
+export const MOLTBOOK_LEGACY_TOOL_IDS = Object.freeze([
+  "moltbook.home.read",
+  "moltbook.feed.read",
+  "moltbook.thread.read",
+  "moltbook.post.create",
+  "moltbook.comment.create",
+  "moltbook.post.vote",
+  "moltbook.comment.upvote",
+  "moltbook.agent.follow",
+  "moltbook.verify",
+] satisfies readonly MoltbookToolId[]);
+
 export function isExactMoltbookAgentCapabilityBoundary(input: {
   skillIds: unknown;
   toolIds: unknown;
@@ -110,15 +152,26 @@ export function isExactMoltbookAgentCapabilityBoundary(input: {
   approvalPolicy: unknown;
 }) {
   if (!Array.isArray(input.skillIds) || input.skillIds.length !== 0) return false;
-  if (!Array.isArray(input.toolIds) || input.toolIds.length !== MOLTBOOK_TOOL_IDS.length) {
-    return false;
-  }
-  const toolIds = new Set(input.toolIds);
-  return toolIds.size === MOLTBOOK_TOOL_IDS.length &&
-    MOLTBOOK_TOOL_IDS.every((toolId) => toolIds.has(toolId)) &&
+  return isExactMoltbookToolSet(input.toolIds) &&
     input.memoryScope === "session" &&
     input.autonomy === "governed" &&
     (input.approvalPolicy === "risk_based" || input.approvalPolicy === "always");
+}
+
+export function isExactMoltbookToolSet(toolIds: unknown) {
+  if (!Array.isArray(toolIds)) return false;
+  return hasExactToolBoundary(toolIds, MOLTBOOK_TOOL_IDS) ||
+    hasExactToolBoundary(toolIds, MOLTBOOK_LEGACY_TOOL_IDS);
+}
+
+function hasExactToolBoundary(
+  actual: readonly unknown[],
+  expected: readonly MoltbookToolId[],
+) {
+  if (actual.length !== expected.length) return false;
+  const toolIds = new Set(actual);
+  return toolIds.size === expected.length &&
+    expected.every((toolId) => toolIds.has(toolId));
 }
 
 export function isMoltbookToolId(value: string): value is MoltbookToolId {

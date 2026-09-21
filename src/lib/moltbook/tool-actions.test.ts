@@ -19,11 +19,15 @@ const mocks = vi.hoisted(() => ({
   append: vi.fn(),
   observeRate: vi.fn(),
   home: vi.fn(),
+  listSubmolts: vi.fn(),
+  readSubmolt: vi.fn(),
+  submoltFeed: vi.fn(),
   createPost: vi.fn(),
   createComment: vi.fn(),
   votePost: vi.fn(),
   upvoteComment: vi.fn(),
   followAgent: vi.fn(),
+  subscribeSubmolt: vi.fn(),
   verify: vi.fn(),
 }));
 
@@ -50,11 +54,15 @@ vi.mock("@/lib/moltbook/http-client", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/lib/moltbook/http-client")>(),
   createMoltbookClient: () => ({
     home: mocks.home,
+    listSubmolts: mocks.listSubmolts,
+    readSubmolt: mocks.readSubmolt,
+    submoltFeed: mocks.submoltFeed,
     createPost: mocks.createPost,
     createComment: mocks.createComment,
     votePost: mocks.votePost,
     upvoteComment: mocks.upvoteComment,
     followAgent: mocks.followAgent,
+    subscribeSubmolt: mocks.subscribeSubmolt,
     verify: mocks.verify,
   }),
 }));
@@ -93,6 +101,17 @@ beforeEach(() => {
     logicalAgentId: "agent_molty",
     principalId: "agent:agent_molty",
     principalGeneration: 7,
+    toolIds: [
+      "moltbook.home.read",
+      "moltbook.feed.read",
+      "moltbook.thread.read",
+      "moltbook.post.create",
+      "moltbook.comment.create",
+      "moltbook.post.vote",
+      "moltbook.comment.upvote",
+      "moltbook.agent.follow",
+      "moltbook.verify",
+    ],
   });
   mocks.getRunPin.mockResolvedValue({
     runId: "run_moltbook_test",
@@ -132,6 +151,12 @@ beforeEach(() => {
     data: { your_account: { name: "AsaelMolty" } },
     requestSha256: "b".repeat(64),
     responseSha256: "c".repeat(64),
+    statusCode: 200,
+  });
+  mocks.submoltFeed.mockResolvedValue({
+    data: { posts: [{ id: "post-1" }] },
+    requestSha256: "d".repeat(64),
+    responseSha256: "e".repeat(64),
     statusCode: 200,
   });
 });
@@ -327,6 +352,33 @@ describe("Moltbook tool owner mapping", () => {
 });
 
 describe("Moltbook effect truth and monitoring targets", () => {
+  it("keeps a community feed read untrusted and records only a bounded summary", async () => {
+    const result = await executeMoltbookToolAction({
+      toolId: "moltbook.submolt.feed",
+      toolInput: { name: "agent-tools", sort: "new", limit: 10 },
+      context,
+      executionScope: scope("owner@example.test"),
+      toolExecutionId: "tool_execution_submolt_feed",
+      agentRunId: "run_moltbook_test",
+    });
+
+    expect(result).toMatchObject({
+      source: "moltbook",
+      untrusted: true,
+      data: { posts: [{ id: "post-1" }] },
+    });
+    expect(mocks.submoltFeed).toHaveBeenCalledWith({
+      name: "agent-tools",
+      sort: "new",
+      limit: 10,
+    });
+    expect(mocks.append).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "submolt_feed",
+      summary: "A Moltbook community feed was read.",
+      status: "succeeded",
+    }));
+  });
+
   it("records a 2xx provider rejection as failed and never calls it published", async () => {
     const toolInput = {
       submoltName: "asael",
@@ -448,6 +500,27 @@ describe("Moltbook effect truth and monitoring targets", () => {
       summary: "Unfollowed Moltbook agent HelpfulAgent.",
       providerObjectType: "agent",
       providerObjectRef: "HelpfulAgent",
+    }));
+  });
+
+  it("projects the exact community and requested subscription state", async () => {
+    const toolInput = { name: "agent-tools", subscribe: true };
+    mocks.subscribeSubmolt.mockResolvedValue(httpResult(
+      "moltbook.submolt.subscribe",
+      toolInput,
+      { success: true },
+    ));
+
+    await executeMoltbookToolAction(mutationArgs(
+      "moltbook.submolt.subscribe",
+      toolInput,
+      "tool_execution_subscribe",
+    ));
+
+    expect(mocks.append).toHaveBeenCalledWith(expect.objectContaining({
+      summary: "Joined Moltbook community agent-tools.",
+      providerObjectType: "submolt",
+      providerObjectRef: "agent-tools",
     }));
   });
 

@@ -57,6 +57,7 @@ export type MoltbookPrincipalAuthority = Readonly<{
   logicalAgentId: string;
   principalId: string;
   principalGeneration: number;
+  toolIds: readonly string[];
 }>;
 
 export class MoltbookConnectionError extends Error {
@@ -180,7 +181,9 @@ export async function resolveMoltbookPrincipalAuthority(input: {
     () => getSql()`
       SELECT principal.principal_id, principal.principal_generation,
              principal.controller_actor_id,
-             principal.agent_definition_id, agent.actor_id
+             principal.agent_definition_id, agent.actor_id,
+             policy.tool_grant_ids, policy.memory_scope,
+             policy.autonomy, policy.approval_policy
       FROM omni_tenant_execution_principals principal
       JOIN omni_agent_principal_policies policy
         ON policy.tenant_id = principal.tenant_id
@@ -217,12 +220,24 @@ export async function resolveMoltbookPrincipalAuthority(input: {
   const ownerActorId = String(rows[0].actor_id || "");
   const logicalAgentId = String(rows[0].agent_definition_id || "");
   const principalGeneration = Number(rows[0].principal_generation);
+  const toolIds = Array.isArray(rows[0].tool_grant_ids)
+    ? rows[0].tool_grant_ids.filter(
+        (value): value is string => typeof value === "string",
+      )
+    : [];
   if (
     String(rows[0].principal_id || "") !== input.principalId ||
     principalGeneration !== input.principalGeneration ||
     String(rows[0].controller_actor_id || "") !== input.canonicalActorId ||
     !readableOwnerActorIds.includes(ownerActorId) ||
     !logicalAgentId ||
+    !isExactMoltbookAgentCapabilityBoundary({
+      skillIds: [],
+      toolIds,
+      memoryScope: rows[0].memory_scope,
+      autonomy: rows[0].autonomy,
+      approvalPolicy: rows[0].approval_policy,
+    }) ||
     !Number.isSafeInteger(principalGeneration) ||
     principalGeneration < 1
   ) {
@@ -233,6 +248,7 @@ export async function resolveMoltbookPrincipalAuthority(input: {
     logicalAgentId,
     principalId: input.principalId,
     principalGeneration,
+    toolIds: Object.freeze([...toolIds]),
   });
 }
 
@@ -963,12 +979,29 @@ async function exactMoltbookConnectionRow(
   const rows = await sql`
     SELECT connection.*, agent.status AS agent_status,
       agent.skill_ids, agent.tool_ids, agent.memory_scope,
-      agent.autonomy, agent.approval_policy
+      agent.autonomy, agent.approval_policy,
+      authority.principal_id AS active_principal_id,
+      authority.principal_generation AS active_principal_generation,
+      authority.principal_sha256 AS active_principal_sha256,
+      authority.definition_version AS active_definition_version,
+      authority.definition_sha256 AS active_definition_sha256,
+      authority.policy_boundary_sha256 AS active_policy_boundary_sha256
     FROM omni_moltbook_connections connection
     JOIN omni_custom_agents agent
       ON agent.tenant_id = connection.tenant_id
      AND agent.actor_id = connection.owner_actor_id
      AND agent.id = connection.agent_id
+    LEFT JOIN LATERAL (
+      SELECT version.principal_id, version.principal_generation,
+        version.principal_sha256, version.definition_version,
+        version.definition_sha256, version.policy_boundary_sha256
+      FROM omni_moltbook_authority_versions version
+      WHERE version.tenant_id = connection.tenant_id
+        AND version.owner_actor_id = connection.owner_actor_id
+        AND version.connection_id = connection.id
+      ORDER BY version.authority_version DESC
+      LIMIT 1
+    ) authority ON TRUE
     WHERE connection.tenant_id = ${input.tenantId}
       AND connection.owner_actor_id = ${input.ownerActorId}
       AND connection.agent_id = ${input.executingAgentId}
@@ -1070,12 +1103,22 @@ function storedIdentityPinMatches(
   try {
     return moltbookConnectionIdentityPinsEqual({
       logicalAgentId: String(row.agent_id),
-      principalId: String(row.principal_id),
-      principalGeneration: Number(row.principal_generation),
-      principalSha256: String(row.principal_sha256),
-      definitionVersion: Number(row.definition_version),
-      definitionSha256: String(row.definition_sha256),
-      policyBoundarySha256: String(row.policy_boundary_sha256),
+      principalId: String(row.active_principal_id || row.principal_id),
+      principalGeneration: Number(
+        row.active_principal_generation || row.principal_generation,
+      ),
+      principalSha256: String(
+        row.active_principal_sha256 || row.principal_sha256,
+      ),
+      definitionVersion: Number(
+        row.active_definition_version || row.definition_version,
+      ),
+      definitionSha256: String(
+        row.active_definition_sha256 || row.definition_sha256,
+      ),
+      policyBoundarySha256: String(
+        row.active_policy_boundary_sha256 || row.policy_boundary_sha256,
+      ),
     }, expected);
   } catch {
     return false;

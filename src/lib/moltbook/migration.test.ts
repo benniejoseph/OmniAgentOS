@@ -94,7 +94,7 @@ describe("Moltbook v190 migration", () => {
   });
 
   it("registers the same v190 identity with the ordered runtime migrator", () => {
-    expect(migrationManifest.at(-1)).toEqual({
+    expect(migrationManifest.find((entry) => entry.version === 190)).toEqual({
       version: 190,
       name: "moltbook_agent_connections_v1",
       checksum: "e0b8c00ca8f4fce6139735623366cacfa97675419a57c1666b4bf0fe4bbe8e46",

@@ -29,6 +29,7 @@ import { ensureDeclarativePluginsV1 } from "@/lib/db/plugin-schema";
 import { ensureBuiltinSkillCatalogV2 } from "@/lib/db/builtin-skill-catalog-schema";
 import { ensureBuiltinSkillCatalogV3 } from "@/lib/db/builtin-skill-catalog-v3-schema";
 import { ensureMoltbookAgentConnectionsV1 } from "@/lib/moltbook/schema";
+import { ensureMoltbookAutonomyV1 } from "@/lib/moltbook/autonomy-schema";
 import {
   ensureAgentIdentityValidatorPrivilegeRepairV1,
   ensureAgentPrivateTriggerPrivilegeRepairV1,
@@ -1683,6 +1684,10 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[192],
       up: ensureExecutionPrincipalRowValidatorGrantV1,
+    },
+    {
+      ...databaseSchemaMigrations[193],
+      up: ensureMoltbookAutonomyV1,
     },
   ];
 }

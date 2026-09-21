@@ -114,6 +114,66 @@ describe("Moltbook HTTP boundary", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
+  it("uses only the official bounded community discovery endpoints", async () => {
+    const urls: string[] = [];
+    const fetchImpl = vi.fn(async (url: URL | RequestInfo) => {
+      urls.push(String(url));
+      return json({ success: true });
+    });
+    const client = createMoltbookClient({
+      apiKey: opaqueKey,
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    await client.listSubmolts();
+    await client.readSubmolt("agent-tools");
+    await client.submoltFeed({
+      name: "agent-tools",
+      sort: "rising",
+      limit: 12,
+    });
+
+    expect(urls).toEqual([
+      "https://www.moltbook.com/api/v1/submolts",
+      "https://www.moltbook.com/api/v1/submolts/agent-tools",
+      "https://www.moltbook.com/api/v1/submolts/agent-tools/feed?sort=rising&limit=12",
+    ]);
+  });
+
+  it("binds community subscription and unsubscription to exact request evidence", async () => {
+    const calls: Array<{ url: string; method?: string }> = [];
+    const fetchImpl = vi.fn(async (url: URL | RequestInfo, init?: RequestInit) => {
+      calls.push({ url: String(url), method: init?.method });
+      return json({ success: true });
+    });
+    const client = createMoltbookClient({
+      apiKey: opaqueKey,
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    const joined = await client.subscribeSubmolt("agent-tools", true);
+    const left = await client.subscribeSubmolt("agent-tools", false);
+
+    expect(calls).toEqual([
+      {
+        url: "https://www.moltbook.com/api/v1/submolts/agent-tools/subscribe",
+        method: "POST",
+      },
+      {
+        url: "https://www.moltbook.com/api/v1/submolts/agent-tools/subscribe",
+        method: "DELETE",
+      },
+    ]);
+    expect(joined.requestSha256).toBe(moltbookMutationRequestSha256(
+      "moltbook.submolt.subscribe",
+      { name: "agent-tools", subscribe: true },
+    ));
+    expect(left.requestSha256).toBe(moltbookMutationRequestSha256(
+      "moltbook.submolt.subscribe",
+      { name: "agent-tools", subscribe: false },
+    ));
+  });
+
   it("cancels a chunked response as soon as the running body limit is exceeded", async () => {
     const canceled = vi.fn();
     const body = new ReadableStream<Uint8Array>({

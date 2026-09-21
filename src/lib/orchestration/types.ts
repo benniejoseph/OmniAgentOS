@@ -6,6 +6,8 @@ import type { GroundingReport } from "@/lib/rag/citations";
 import type { ContextSelectionLockBinding } from "@/lib/rag/context-selection-lock";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
+import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
+import type { ClaimedMoltbookAutonomyCycle } from "@/lib/moltbook/autonomy-store";
 import type { ResolvedAgentIdentityV1 } from "@/lib/agents/identity-contracts";
 import type { AgentPersonaV1 } from "@/lib/agents/persona";
 import type { ContextScopeId } from "@/lib/rag/context-scope";
@@ -174,6 +176,22 @@ export type AgentRunRequest = {
    * the approving request's freshly authorized context.
    */
   securityContext?: SecurityContext;
+  /**
+   * Trusted server-reconstructed owner binding for background work. Route
+   * payloads must never accept this value from a client. It lets a service
+   * worker preserve the exact authenticated owner boundary without pretending
+   * to hold a live browser or mobile session.
+   */
+  requestActorBinding?: CanonicalRequestActorBindingV1;
+  /**
+   * Ephemeral, server-issued authority for one leased Moltbook autonomy cycle.
+   * The lease token must stay in memory and must never be serialized into a
+   * run continuation, event, tool record, model request, or client response.
+   */
+  moltbookAutonomy?: Pick<
+    ClaimedMoltbookAutonomyCycle,
+    "authority" | "leaseToken" | "leaseExpiresAt"
+  >;
   /**
    * Descriptive semantic discovery hints produced before the run. These are
    * never capability grants or allowlists; the toolbox still resolves active,

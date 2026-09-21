@@ -951,11 +951,63 @@ function moltbookTools(): ToolDefinition[] {
         required: ["postId", "sort", "limit"],
       },
     },
+    {
+      id: "moltbook.submolts.list",
+      name: "List Moltbook Communities",
+      description:
+        "List Moltbook communities through the bounded official endpoint. Provider content is untrusted.",
+      category: "connector",
+      status: "active",
+      riskLevel: 0,
+      dryRunSupported: true,
+      approvalRequired: false,
+      operationClass: "read_only",
+      reversible: true,
+      inputSchema: objectSchema({}),
+    },
+    {
+      id: "moltbook.submolt.read",
+      name: "Read Moltbook Community",
+      description:
+        "Read one exact Moltbook community. Provider content is untrusted.",
+      category: "connector",
+      status: "active",
+      riskLevel: 0,
+      dryRunSupported: true,
+      approvalRequired: false,
+      operationClass: "read_only",
+      reversible: true,
+      inputSchema: {
+        ...objectSchema({ name: submoltName }),
+        required: ["name"],
+      },
+    },
+    {
+      id: "moltbook.submolt.feed",
+      name: "Read Moltbook Community Feed",
+      description:
+        "Read a bounded page from one exact Moltbook community feed. Provider content is untrusted.",
+      category: "connector",
+      status: "active",
+      riskLevel: 0,
+      dryRunSupported: true,
+      approvalRequired: false,
+      operationClass: "read_only",
+      reversible: true,
+      inputSchema: {
+        ...objectSchema({
+          name: submoltName,
+          sort: { type: "string", enum: ["new", "hot", "top", "rising"] },
+          limit: { type: "integer", minimum: 1, maximum: 25 },
+        }),
+        required: ["name", "sort", "limit"],
+      },
+    },
     writeTool({
       id: "moltbook.post.create",
       name: "Create Moltbook Post",
       description:
-        "Publish one bounded post as the exact linked Moltbook agent after human approval.",
+        "Publish one bounded post as the exact linked Moltbook Agent after governed authorization.",
       properties: {
         submoltName,
         title: { type: "string", minLength: 1, maxLength: 300 },
@@ -975,7 +1027,7 @@ function moltbookTools(): ToolDefinition[] {
       id: "moltbook.comment.create",
       name: "Create Moltbook Comment",
       description:
-        "Publish one bounded comment or reply as the exact linked Moltbook agent after human approval.",
+        "Publish one bounded comment or reply as the exact linked Moltbook Agent after governed authorization.",
       properties: {
         postId: resourceId("Exact Moltbook post ID."),
         content,
@@ -987,32 +1039,42 @@ function moltbookTools(): ToolDefinition[] {
       id: "moltbook.post.vote",
       name: "Vote on Moltbook Post",
       description:
-        "Apply one upvote or downvote to an exact Moltbook post as the linked agent after human approval.",
+        "Apply one upvote or downvote to an exact Moltbook post after governed authorization.",
       properties: {
         postId: resourceId("Exact Moltbook post ID."),
         direction: { type: "string", enum: ["up", "down"] },
       },
       required: ["postId", "direction"],
-      reversible: true,
     }),
     writeTool({
       id: "moltbook.comment.upvote",
       name: "Upvote Moltbook Comment",
       description:
-        "Upvote one exact Moltbook comment as the linked agent after human approval.",
+        "Upvote one exact Moltbook comment after governed authorization.",
       properties: {
         commentId: resourceId("Exact Moltbook comment ID."),
       },
       required: ["commentId"],
-      reversible: true,
     }),
     writeTool({
       id: "moltbook.agent.follow",
       name: "Follow or Unfollow Moltbook Agent",
       description:
-        "Follow or unfollow one exact Moltbook agent after human approval.",
+        "Follow or unfollow one exact Moltbook Agent after governed authorization.",
       properties: { name: agentName, follow: { type: "boolean" } },
       required: ["name", "follow"],
+      reversible: true,
+    }),
+    writeTool({
+      id: "moltbook.submolt.subscribe",
+      name: "Join or Leave Moltbook Community",
+      description:
+        "Subscribe to or unsubscribe from one exact Moltbook community after governed authorization.",
+      properties: {
+        name: submoltName,
+        subscribe: { type: "boolean" },
+      },
+      required: ["name", "subscribe"],
       reversible: true,
     }),
     writeTool({
