@@ -51,8 +51,7 @@ class _MoltbookRepository extends _AgentsRepository
   @override
   Future<void> changeMoltbook(String agentId, Json input) async {
     changes.add(Map<String, dynamic>.from(input));
-    if (input['action'] == 'register' ||
-        input['action'] == 'retry_registration') {
+    if (input['action'] == 'register') {
       projection = const MoltbookProjection(
         connection: _pendingMoltbookConnection,
         activities: [],
@@ -178,7 +177,7 @@ const _pausedMoltbookConnection = MoltbookConnection(
   credentialConfigured: true,
 );
 
-const _retryableMoltbookConnection = MoltbookConnection(
+const _heldMoltbookConnection = MoltbookConnection(
   status: 'error',
   health: 'error',
   externalName: 'Moltbook_Steward',
@@ -186,7 +185,6 @@ const _retryableMoltbookConnection = MoltbookConnection(
   heartbeatEnabled: true,
   consecutiveFailures: 1,
   credentialConfigured: false,
-  registrationRetryable: true,
   disclosureAccepted: true,
   disclosureVersion: moltbookDisclosureVersion,
   lastErrorCode: 'registration_rejected.provider_conflict',
@@ -438,13 +436,13 @@ void main() {
     expect(find.byKey(const Key('moltbook-pause')), findsOneWidget);
   });
 
-  testWidgets('requires renewed disclosure before a safe registration retry', (
+  testWidgets('holds ambiguous registration for provider recovery', (
     tester,
   ) async {
     await _useDesktopViewport(tester);
     final repository = _MoltbookRepository(
       const MoltbookProjection(
-        connection: _retryableMoltbookConnection,
+        connection: _heldMoltbookConnection,
         activities: [],
       ),
     );
@@ -458,23 +456,23 @@ void main() {
     await tester.pumpWidget(_app(MacosAgentsView(controller: controller)));
     await tester.pumpAndSettle();
 
-    await _showMoltbook(tester, const Key('moltbook-disclosure'));
-    final retry = find.byKey(const Key('moltbook-retry-registration'));
-    expect(tester.widget<FilledButton>(retry).onPressed, isNull);
-    await tester.tap(find.byKey(const Key('moltbook-disclosure')));
-    await tester.pump();
-    expect(tester.widget<FilledButton>(retry).onPressed, isNotNull);
-    await tester.tap(retry);
+    await _showMoltbook(tester, const Key('moltbook-refresh'));
+    expect(
+      find.text('Registration held for provider recovery'),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining('will not retry the registration'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('Moltbook recovery or support'), findsOneWidget);
+    expect(find.byKey(const Key('moltbook-retry-registration')), findsNothing);
+    expect(find.byKey(const Key('moltbook-disclosure')), findsNothing);
+
+    await tester.tap(find.byKey(const Key('moltbook-refresh')));
     await tester.pumpAndSettle();
 
-    expect(repository.changes.single, {
-      'action': 'retry_registration',
-      'externalName': 'Moltbook_Steward',
-      'description': _moltbookAgent.description,
-      'heartbeatEnabled': true,
-      'disclosureAccepted': true,
-      'disclosureVersion': moltbookDisclosureVersion,
-    });
+    expect(repository.changes.single, {'action': 'refresh'});
   });
 }
 

@@ -183,7 +183,6 @@ class MoltbookConnection {
     required this.heartbeatEnabled,
     required this.consecutiveFailures,
     required this.credentialConfigured,
-    this.registrationRetryable = false,
     this.disclosureAccepted = false,
     this.disclosureVersion,
     this.claimUrl,
@@ -200,10 +199,7 @@ class MoltbookConnection {
   });
 
   final String status, health, externalName, claimState;
-  final bool heartbeatEnabled,
-      credentialConfigured,
-      registrationRetryable,
-      disclosureAccepted;
+  final bool heartbeatEnabled, credentialConfigured, disclosureAccepted;
   final int consecutiveFailures;
   final String? claimUrl,
       verificationCode,
@@ -227,7 +223,6 @@ class MoltbookConnection {
       heartbeatEnabled: value['heartbeatEnabled'] == true,
       consecutiveFailures: (value['consecutiveFailures'] as num?)?.toInt() ?? 0,
       credentialConfigured: value['credentialConfigured'] == true,
-      registrationRetryable: value['registrationRetryable'] == true,
       disclosureAccepted: value['disclosureAccepted'] == true,
       disclosureVersion: value['disclosureVersion']?.toString(),
       claimUrl: value['claimUrl']?.toString(),

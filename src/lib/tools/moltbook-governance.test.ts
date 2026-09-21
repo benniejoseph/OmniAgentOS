@@ -384,6 +384,56 @@ describe("Moltbook governed tools", () => {
     expect(moltbook.reconcile).toHaveBeenCalledTimes(1);
   });
 
+  it("holds crash-recovered pending verification without losing its non-replay fence", async () => {
+    const executionScope = agentScope("moltbook-pending-verification-reconcile");
+    const executor = await import("@/lib/tools/executor");
+    const store = await import("@/lib/tools/audit-store");
+    const input = { postId: "post_789", content: "A governed reply." };
+    const pending = await executor.executeGovernedTool({
+      toolId: "moltbook.comment.create",
+      input,
+      dryRun: false,
+      context,
+      executionScope,
+    });
+    const claimToken = "moltbook-pending-verification-claim";
+    const claim = await store.approveAndClaimToolExecution({
+      id: pending.record.id,
+      tenantId,
+      approvedBy: actorId,
+      approvedRole: "admin",
+      claimToken,
+    });
+    moltbook.execute.mockRejectedValueOnce(new Error("worker interrupted"));
+    await expect(executor.executeGovernedTool({
+      toolId: "moltbook.comment.create",
+      input: store.openToolExecutionInput(claim.record!),
+      dryRun: false,
+      approved: true,
+      context,
+      existingRecord: claim.record,
+      executionClaimToken: claimToken,
+    })).rejects.toThrow("verification receipt is not finalized");
+    const executing = await store.getToolExecution(pending.record.id, { tenantId });
+    moltbook.reconcile.mockResolvedValueOnce({
+      kind: "held",
+      status: "pending_verification",
+    });
+
+    const retried = await executor.executeGovernedTool({
+      toolId: "moltbook.comment.create",
+      input: store.openToolExecutionInput(executing!),
+      dryRun: false,
+      approved: true,
+      context,
+      existingRecord: executing,
+      executionClaimToken: claimToken,
+    });
+    expect(retried).toMatchObject({ record: { status: "executing" }, result: null });
+    expect(moltbook.execute).toHaveBeenCalledTimes(1);
+    expect(moltbook.reconcile).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects invalid IDs and non-HTTPS URLs before the adapter", async () => {
     const { executeGovernedTool } = await import("@/lib/tools/executor");
     await expect(executeGovernedTool({

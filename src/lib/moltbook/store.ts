@@ -29,6 +29,10 @@ import {
   registerMoltbookAgent,
 } from "@/lib/moltbook/http-client";
 import {
+  moltbookConnectionIdentityPinsEqual,
+  type MoltbookConnectionIdentityPin,
+} from "@/lib/moltbook/identity-boundary";
+import {
   credentialBinding,
   credentialVaultStatus,
   openCredentialBundle,
@@ -46,6 +50,13 @@ const MAX_ACTIVITY_LIMIT = 100;
 export type MoltbookOwner = Readonly<{
   tenantId: string;
   actorId: string;
+}>;
+
+export type MoltbookPrincipalAuthority = Readonly<{
+  owner: MoltbookOwner;
+  logicalAgentId: string;
+  principalId: string;
+  principalGeneration: number;
 }>;
 
 export class MoltbookConnectionError extends Error {
@@ -132,6 +143,98 @@ export async function resolveMoltbookAgentOwner(input: {
   return { tenantId: input.tenantId, actorId };
 }
 
+/** Resolves an immutable execution principal to its logical Agent and physical owner. */
+export async function resolveMoltbookPrincipalAuthority(input: {
+  tenantId: string;
+  principalId: string;
+  principalGeneration: number;
+  authUserId: string;
+  canonicalActorId: string;
+  readableOwnerActorIds: readonly string[];
+}): Promise<MoltbookPrincipalAuthority> {
+  requireDatabase();
+  await ensureDatabaseSchema();
+  const readableOwnerActorIds = [...new Set(
+    input.readableOwnerActorIds.map((actorId) => actorId.trim()),
+  )].filter(Boolean);
+  if (
+    !input.principalId.trim() ||
+    input.principalId.length > 240 ||
+    !Number.isSafeInteger(input.principalGeneration) ||
+    input.principalGeneration < 1 ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
+      input.authUserId,
+    ) ||
+    input.canonicalActorId !== `actor:${input.authUserId}` ||
+    !readableOwnerActorIds.length ||
+    readableOwnerActorIds.length > 8 ||
+    readableOwnerActorIds.some((actorId) =>
+      actorId.length > 320 || actorId.includes("\0")
+    )
+  ) {
+    throw unresolvedAgentOwner();
+  }
+  const rows = await runWithDatabaseActorScope(
+    input.tenantId,
+    readableOwnerActorIds,
+    () => getSql()`
+      SELECT principal.principal_id, principal.principal_generation,
+             principal.controller_actor_id,
+             principal.agent_definition_id, agent.actor_id
+      FROM omni_tenant_execution_principals principal
+      JOIN omni_agent_principal_policies policy
+        ON policy.tenant_id = principal.tenant_id
+        AND policy.principal_id = principal.principal_id
+        AND policy.principal_generation = principal.principal_generation
+      JOIN omni_custom_agents agent
+        ON agent.tenant_id = principal.tenant_id
+        AND agent.id = principal.agent_definition_id
+        AND agent.actor_id = ANY(${readableOwnerActorIds}::text[])
+      JOIN omni_auth_user_actor_identifiers identifier
+        ON identifier.actor_identifier = agent.actor_id
+        AND identifier.canonical_actor_id = principal.controller_actor_id
+      JOIN omni_auth_users auth_user
+        ON auth_user.actor_id = principal.controller_actor_id
+        AND auth_user.id::text = ${input.authUserId}
+        AND auth_user.status = 'active'
+      JOIN omni_auth_memberships membership
+        ON membership.user_id = auth_user.id
+        AND membership.tenant_id = principal.tenant_id
+        AND membership.status = 'active'
+      WHERE principal.tenant_id = ${input.tenantId}
+        AND principal.principal_id = ${input.principalId}
+        AND principal.principal_generation = ${input.principalGeneration}
+        AND principal.controller_actor_id = ${input.canonicalActorId}
+        AND principal.principal_kind = 'agent'
+        AND principal.state = 'active'
+        AND cardinality(policy.context_grant_ids) = 0
+        AND cardinality(policy.capability_grant_ids) = 0
+      LIMIT 2
+    `,
+  );
+  if (rows.length !== 1) throw unresolvedAgentOwner();
+  const ownerActorId = String(rows[0].actor_id || "");
+  const logicalAgentId = String(rows[0].agent_definition_id || "");
+  const principalGeneration = Number(rows[0].principal_generation);
+  if (
+    String(rows[0].principal_id || "") !== input.principalId ||
+    principalGeneration !== input.principalGeneration ||
+    String(rows[0].controller_actor_id || "") !== input.canonicalActorId ||
+    !readableOwnerActorIds.includes(ownerActorId) ||
+    !logicalAgentId ||
+    !Number.isSafeInteger(principalGeneration) ||
+    principalGeneration < 1
+  ) {
+    throw unresolvedAgentOwner();
+  }
+  return Object.freeze({
+    owner: { tenantId: input.tenantId, actorId: ownerActorId },
+    logicalAgentId,
+    principalId: input.principalId,
+    principalGeneration,
+  });
+}
+
 export async function assertMoltbookAgentMayBeDeleted(input: {
   owner: MoltbookOwner;
   agentId: string;
@@ -205,6 +308,7 @@ export async function listMoltbookConnection(input: {
 export async function registerMoltbookConnection(input: {
   owner: MoltbookOwner;
   agentId: string;
+  identityPin: MoltbookConnectionIdentityPin;
   externalName: string;
   description: string;
   heartbeatEnabled?: boolean;
@@ -232,6 +336,7 @@ export async function registerMoltbookConnection(input: {
         requireActive: true,
         requireMoltbookBoundary: true,
       });
+      assertRegistrationIdentityPin(input.agentId, input.identityPin);
       const existing = await sql`
         SELECT id FROM omni_moltbook_connections
         WHERE tenant_id = ${input.owner.tenantId}
@@ -248,6 +353,8 @@ export async function registerMoltbookConnection(input: {
       await sql`
         INSERT INTO omni_moltbook_connections (
           id, tenant_id, owner_actor_id, agent_id, external_name,
+          principal_id, principal_generation, principal_sha256,
+          definition_version, definition_sha256, policy_boundary_sha256,
           description, status, claim_state, heartbeat_enabled,
           disclosure_version, disclosure_accepted_at,
           registration_request_sha256,
@@ -255,7 +362,14 @@ export async function registerMoltbookConnection(input: {
           consecutive_failures, rate_limit_projection, created_at, updated_at
         ) VALUES (
           ${connectionId}, ${input.owner.tenantId}, ${input.owner.actorId},
-          ${input.agentId}, ${input.externalName}, ${input.description},
+          ${input.agentId}, ${input.externalName},
+          ${input.identityPin.principalId},
+          ${input.identityPin.principalGeneration},
+          ${input.identityPin.principalSha256},
+          ${input.identityPin.definitionVersion},
+          ${input.identityPin.definitionSha256},
+          ${input.identityPin.policyBoundarySha256},
+          ${input.description},
           'registering', 'unavailable', ${input.heartbeatEnabled !== false},
           ${input.disclosureVersion}, ${now}, ${registrationRequestSha256},
           ${CREDENTIAL_VERSION}, NULL, NULL, 0, NULL, ${now}, ${now}
@@ -264,82 +378,6 @@ export async function registerMoltbookConnection(input: {
     }),
   );
 
-  return completeMoltbookRegistration({ ...input, connectionId });
-}
-
-export async function retryMoltbookRegistration(input: {
-  owner: MoltbookOwner;
-  agentId: string;
-  externalName: string;
-  description: string;
-  heartbeatEnabled?: boolean;
-  disclosureAccepted: true;
-  disclosureVersion: typeof MOLTBOOK_DISCLOSURE_VERSION;
-  fetchImpl?: FetchLike;
-  abortSignal?: AbortSignal;
-}) {
-  requireDatabase();
-  await ensureDatabaseSchema();
-  if (!credentialVaultStatus().configured) {
-    throw new MoltbookConnectionError(
-      "The credential vault must be configured before joining Moltbook.",
-      { status: 503, code: "credential_vault_unavailable" },
-    );
-  }
-  const connectionId = connectionIdFor(input.owner, input.agentId);
-  const now = new Date().toISOString();
-  const registrationRequestSha256 = registrationRequestDigest(input);
-  await runWithDatabaseActorScope(
-    input.owner.tenantId,
-    [input.owner.actorId],
-    () => getSql().transaction(async (sql: Sql) => {
-      await assertOwnedAgent(sql, input.owner, input.agentId, {
-        requireActive: true,
-        requireMoltbookBoundary: true,
-      });
-      const rows = await sql`
-        SELECT status, claim_state, sealed_credentials, last_error_code
-        FROM omni_moltbook_connections
-        WHERE id = ${connectionId}
-          AND tenant_id = ${input.owner.tenantId}
-          AND owner_actor_id = ${input.owner.actorId}
-          AND agent_id = ${input.agentId}
-        LIMIT 2
-        FOR UPDATE
-      `;
-      if (rows.length !== 1 || !isRetryableMoltbookRegistrationRow(rows[0])) {
-        throw new MoltbookConnectionError(
-          "Registration retry is blocked because the prior provider outcome may have taken effect.",
-          { code: "registration_retry_held" },
-        );
-      }
-      const updated = await sql`
-        UPDATE omni_moltbook_connections SET
-          external_name = ${input.externalName},
-          description = ${input.description},
-          heartbeat_enabled = ${input.heartbeatEnabled !== false},
-          disclosure_version = ${input.disclosureVersion},
-          disclosure_accepted_at = ${now},
-          registration_request_sha256 = ${registrationRequestSha256},
-          status = 'registering', last_error_code = NULL,
-          rate_limit_projection = NULL, next_heartbeat_at = NULL,
-          updated_at = ${now}
-        WHERE id = ${connectionId}
-          AND tenant_id = ${input.owner.tenantId}
-          AND owner_actor_id = ${input.owner.actorId}
-          AND agent_id = ${input.agentId}
-          AND status = 'error'
-          AND last_error_code LIKE 'registration_rejected.%'
-        RETURNING id
-      `;
-      if (updated.length !== 1) {
-        throw new MoltbookConnectionError(
-          "Registration retry could not claim the prior rejected attempt.",
-          { code: "registration_retry_conflict" },
-        );
-      }
-    }),
-  );
   return completeMoltbookRegistration({ ...input, connectionId });
 }
 
@@ -460,6 +498,7 @@ export async function resolveMoltbookConnectionForTool(input: {
   tenantId: string;
   ownerActorId: string;
   executingAgentId: string;
+  identityPin: MoltbookConnectionIdentityPin;
 }): Promise<MoltbookConnectionAccess> {
   requireDatabase();
   await ensureDatabaseSchema();
@@ -482,6 +521,7 @@ export async function resolveMoltbookConnectionForReceipt(input: {
   tenantId: string;
   ownerActorId: string;
   executingAgentId: string;
+  identityPin: MoltbookConnectionIdentityPin;
 }): Promise<Omit<MoltbookConnectionAccess, "apiKey">> {
   requireDatabase();
   await ensureDatabaseSchema();
@@ -916,6 +956,7 @@ async function exactMoltbookConnectionRow(
     tenantId: string;
     ownerActorId: string;
     executingAgentId: string;
+    identityPin: MoltbookConnectionIdentityPin;
   },
 ) {
   const rows = await sql`
@@ -939,6 +980,12 @@ async function exactMoltbookConnectionRow(
     );
   }
   const row = rows[0];
+  if (!storedIdentityPinMatches(row, input.identityPin)) {
+    throw new MoltbookConnectionError(
+      "The Moltbook connection is bound to another Agent authority generation.",
+      { code: "connection_identity_pin_mismatch" },
+    );
+  }
   if (String(row.agent_status) === "paused") {
     throw new MoltbookConnectionError(
       "The linked Asael Agent is paused.",
@@ -986,6 +1033,52 @@ function assertExactMoltbookBoundary(row: SqlRow) {
       `risk-based or always approval, and exactly ${MOLTBOOK_TOOL_IDS.length} Moltbook tools.`,
     { code: "agent_capability_boundary_invalid" },
   );
+}
+
+function assertRegistrationIdentityPin(
+  logicalAgentId: string,
+  pin: MoltbookConnectionIdentityPin,
+) {
+  if (
+    pin.logicalAgentId !== logicalAgentId ||
+    !pin.principalId ||
+    pin.principalId.length > 240 ||
+    !Number.isSafeInteger(pin.principalGeneration) ||
+    pin.principalGeneration < 1 ||
+    !Number.isSafeInteger(pin.definitionVersion) ||
+    pin.definitionVersion < 1 ||
+    !isSha256(pin.principalSha256) ||
+    !isSha256(pin.definitionSha256) ||
+    !isSha256(pin.policyBoundarySha256)
+  ) {
+    throw new MoltbookConnectionError(
+      "The Moltbook connection identity pin is invalid.",
+      { code: "connection_identity_pin_invalid" },
+    );
+  }
+}
+
+function isSha256(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+}
+
+function storedIdentityPinMatches(
+  row: SqlRow,
+  expected: MoltbookConnectionIdentityPin,
+) {
+  try {
+    return moltbookConnectionIdentityPinsEqual({
+      logicalAgentId: String(row.agent_id),
+      principalId: String(row.principal_id),
+      principalGeneration: Number(row.principal_generation),
+      principalSha256: String(row.principal_sha256),
+      definitionVersion: Number(row.definition_version),
+      definitionSha256: String(row.definition_sha256),
+      policyBoundarySha256: String(row.policy_boundary_sha256),
+    }, expected);
+  } catch {
+    return false;
+  }
 }
 
 async function listActivities(
@@ -1144,10 +1237,10 @@ async function recordRegistrationFailure(input: {
   const provider = input.error instanceof MoltbookProviderError
     ? input.error
     : undefined;
-  const retryable = isDefiniteMoltbookRegistrationRejection(provider);
-  const errorCode = retryable
-    ? `registration_rejected.${safeToken(provider?.code, "provider_rejected")}`
-    : safeToken(provider?.code || "registration_outcome_unknown", "registration_outcome_unknown");
+  const errorCode = safeToken(
+    provider?.code || "registration_outcome_unknown",
+    "registration_outcome_unknown",
+  );
   return runWithDatabaseActorScope(
     input.owner.tenantId,
     [input.owner.actorId],
@@ -1170,28 +1263,14 @@ async function recordRegistrationFailure(input: {
         connectionId: input.connectionId,
         kind: "registration",
         status: "failed",
-        summary: retryable
-          ? "Moltbook rejected registration without creating an identity; corrected details may be retried."
-          : "Moltbook registration outcome is unverified; retry is blocked to prevent a duplicate identity.",
+        summary:
+          "Moltbook registration outcome is unverified; retry is blocked to prevent a duplicate identity.",
         requestSha256: provider?.requestSha256,
         responseSha256: provider?.responseSha256,
         errorCode,
       });
     }),
   );
-}
-
-export function isDefiniteMoltbookRegistrationRejection(error: unknown) {
-  return error instanceof MoltbookProviderError && error.statusCode !== undefined &&
-    error.statusCode >= 400 && error.statusCode <= 499;
-}
-
-export function isRetryableMoltbookRegistrationRow(row: SqlRow) {
-  return row.status === "error" &&
-    row.claim_state === "unavailable" &&
-    (row.sealed_credentials === null || row.sealed_credentials === undefined) &&
-    typeof row.last_error_code === "string" &&
-    row.last_error_code.startsWith("registration_rejected.");
 }
 
 async function recordObservationFailure(input: {
@@ -1289,8 +1368,6 @@ function projectConnection(
       ? { rateLimit: rateLimitFromRow(row.rate_limit_projection) }
       : {}),
     consecutiveFailures: Math.max(0, Number(row.consecutive_failures || 0)),
-    registrationRetryable: status === "error" &&
-      optionalString(row.last_error_code)?.startsWith("registration_rejected.") === true,
     disclosureAccepted: Boolean(row.disclosure_accepted_at),
     disclosureVersion: MOLTBOOK_DISCLOSURE_VERSION,
     ...(optionalString(row.last_error_code)

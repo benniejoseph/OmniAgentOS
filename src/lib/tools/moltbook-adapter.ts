@@ -13,6 +13,7 @@ import {
 } from "@/lib/moltbook/tool-actions";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
+import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
 import type { SecurityContext } from "@/lib/security/types";
 import type { ToolExecutionRecord } from "@/lib/tools/types";
 import { toolInputSha256 } from "@/lib/tools/execution-scope";
@@ -54,6 +55,7 @@ export async function executeGovernedMoltbookToolAction(input: {
   effectTargetId?: string;
   agentRunId?: string;
   abortSignal?: AbortSignal;
+  requestActorBinding?: CanonicalRequestActorBindingV1;
 }) {
   assertGovernedMoltbookAuthority(input);
   const parsed = parseMoltbookToolInput(input.toolId, input.toolInput);
@@ -68,6 +70,7 @@ export async function executeGovernedMoltbookToolAction(input: {
     effectTargetId: input.effectTargetId,
     toolInputSha256: toolInputSha256(parsed),
     abortSignal: input.abortSignal,
+    requestActorBinding: input.requestActorBinding,
   });
 }
 
@@ -79,6 +82,7 @@ export async function reconcileGovernedMoltbookToolAction(input: {
   executionRecord?: ToolExecutionRecord;
   effectTargetId?: string;
   agentRunId?: string;
+  requestActorBinding?: CanonicalRequestActorBindingV1;
 }) {
   assertGovernedMoltbookAuthority(input);
   const parsed = parseMoltbookToolInput(input.toolId, input.toolInput);
@@ -91,6 +95,7 @@ export async function reconcileGovernedMoltbookToolAction(input: {
     agentRunId: input.agentRunId,
     effectTargetId: input.effectTargetId,
     toolInputSha256: toolInputSha256(parsed),
+    requestActorBinding: input.requestActorBinding,
   });
 }
 
@@ -98,6 +103,7 @@ function assertGovernedMoltbookAuthority(input: {
   context?: SecurityContext;
   executionScope?: ExecutionScope;
   executionRecord?: ToolExecutionRecord;
+  requestActorBinding?: CanonicalRequestActorBindingV1;
 }) {
   if (!input.context || !input.executionScope || !input.executionRecord) {
     throw new Error(
@@ -109,7 +115,7 @@ function assertGovernedMoltbookAuthority(input: {
   );
   if (
     input.context.tenantId !== input.executionScope.tenantId ||
-    !actorBinding ||
+    (!actorBinding && !input.requestActorBinding) ||
     input.context.actorId !== input.executionScope.initiatingActorId
   ) {
     throw new Error(

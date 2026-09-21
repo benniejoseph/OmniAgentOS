@@ -4,7 +4,6 @@ import {
   pauseMoltbookConnection,
   refreshMoltbookConnection,
   registerMoltbookConnection,
-  retryMoltbookRegistration,
   resolveMoltbookAgentOwner,
   resumeMoltbookConnection,
 } from "@/lib/moltbook/store";
@@ -13,6 +12,8 @@ import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
+import { resolveAgentIdentityForExecution } from "@/lib/agents/identity-store";
+import { moltbookConnectionIdentityPinFromIdentity } from "@/lib/moltbook/identity-boundary";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
@@ -110,26 +111,35 @@ async function POSTHandler(
       agentId: id,
       readableOwnerActorIds: ownerBinding.readableOwnerActorIds,
     });
+    const identityPin = parsed.data.action === "register"
+      ? moltbookConnectionIdentityPinFromIdentity(
+          await resolveAgentIdentityForExecution({
+            tenantId: auth.tenantId,
+            actorId: auth.actorId,
+            agentId: id,
+          }),
+        )
+      : undefined;
+    if (
+      identityPin &&
+      identityPin.logicalAgentId !== id
+    ) {
+      throw new MoltbookConnectionError(
+        "The active Agent identity does not match this connection.",
+        { code: "connection_identity_pin_mismatch" },
+      );
+    }
     const result = parsed.data.action === "register"
       ? await registerMoltbookConnection({
           owner,
           agentId: id,
+          identityPin: identityPin!,
           externalName: parsed.data.externalName,
           description: parsed.data.description,
           heartbeatEnabled: parsed.data.heartbeatEnabled,
           disclosureAccepted: parsed.data.disclosureAccepted,
           disclosureVersion: parsed.data.disclosureVersion,
         })
-      : parsed.data.action === "retry_registration"
-        ? await retryMoltbookRegistration({
-            owner,
-            agentId: id,
-            externalName: parsed.data.externalName,
-            description: parsed.data.description,
-            heartbeatEnabled: parsed.data.heartbeatEnabled,
-            disclosureAccepted: parsed.data.disclosureAccepted,
-            disclosureVersion: parsed.data.disclosureVersion,
-          })
       : parsed.data.action === "refresh"
         ? { connection: await refreshMoltbookConnection({ owner, agentId: id }) }
         : parsed.data.action === "pause"

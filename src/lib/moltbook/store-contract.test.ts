@@ -9,12 +9,9 @@ import {
 
 import {
   createMoltbookActivityCursor,
-  isDefiniteMoltbookRegistrationRejection,
-  isRetryableMoltbookRegistrationRow,
   MoltbookConnectionError,
   parseMoltbookActivityCursor,
 } from "@/lib/moltbook/store";
-import { MoltbookProviderError } from "@/lib/moltbook/http-client";
 
 describe("Moltbook store contracts", () => {
   it("round-trips a bounded keyset cursor without accepting arbitrary offsets", () => {
@@ -102,32 +99,31 @@ describe("Moltbook store contracts", () => {
     expect(reader).toContain("String(row.request_sha256) !== input.requestSha256");
   });
 
-  it("allows registration retry only after a definite non-effecting rejection", () => {
-    expect(isDefiniteMoltbookRegistrationRejection(new MoltbookProviderError({
-      code: "provider_http_409",
-      message: "rejected",
-      statusCode: 409,
-    }))).toBe(true);
-    expect(isDefiniteMoltbookRegistrationRejection(new MoltbookProviderError({
-      code: "provider_http_500",
-      message: "unknown outcome",
-      statusCode: 500,
-    }))).toBe(false);
-    expect(isDefiniteMoltbookRegistrationRejection(new MoltbookProviderError({
-      code: "provider_timeout",
-      message: "unknown outcome",
-    }))).toBe(false);
-    expect(isRetryableMoltbookRegistrationRow({
-      status: "error",
-      claim_state: "unavailable",
-      sealed_credentials: null,
-      last_error_code: "registration_rejected.provider_http_409",
-    })).toBe(true);
-    expect(isRetryableMoltbookRegistrationRow({
-      status: "error",
-      claim_state: "unavailable",
-      sealed_credentials: null,
-      last_error_code: "provider_timeout",
-    })).toBe(false);
+  it("exposes no provider registration replay path", () => {
+    const source = readFileSync(resolve(
+      process.cwd(),
+      "src/lib/moltbook/store.ts",
+    ), "utf8");
+    expect(source).not.toContain("retryMoltbookRegistration");
+    expect(source).not.toContain("Registration retry could not claim");
+    expect(source).toContain("retry is blocked to prevent a duplicate identity");
+  });
+
+  it("revalidates the canonical controller, active owner membership, and empty principal grants", () => {
+    const source = readFileSync(resolve(
+      process.cwd(),
+      "src/lib/moltbook/store.ts",
+    ), "utf8");
+    const resolver = source.slice(
+      source.indexOf("export async function resolveMoltbookPrincipalAuthority"),
+      source.indexOf("export async function assertMoltbookAgentMayBeDeleted"),
+    );
+    expect(resolver).toContain("principal.controller_actor_id = ${input.canonicalActorId}");
+    expect(resolver).toContain("principal.principal_generation = ${input.principalGeneration}");
+    expect(resolver).toContain("auth_user.status = 'active'");
+    expect(resolver).toContain("membership.status = 'active'");
+    expect(resolver).toContain("membership.tenant_id = principal.tenant_id");
+    expect(resolver).toContain("cardinality(policy.context_grant_ids) = 0");
+    expect(resolver).toContain("cardinality(policy.capability_grant_ids) = 0");
   });
 });

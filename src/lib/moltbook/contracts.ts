@@ -31,14 +31,8 @@ export const moltbookRegisterInputSchema = z.object({
   ...moltbookRegistrationFields,
 }).strict();
 
-export const moltbookRetryRegistrationInputSchema = z.object({
-  action: z.literal("retry_registration"),
-  ...moltbookRegistrationFields,
-}).strict();
-
 export const moltbookRouteActionSchema = z.discriminatedUnion("action", [
   moltbookRegisterInputSchema,
-  moltbookRetryRegistrationInputSchema,
   z.object({ action: z.literal("refresh") }).strict(),
   z.object({ action: z.literal("pause") }).strict(),
   z.object({ action: z.literal("resume") }).strict(),
@@ -159,7 +153,6 @@ export type MoltbookConnectionProjection = Readonly<{
   nextHeartbeatAt?: string;
   rateLimit?: MoltbookRateLimitProjection;
   consecutiveFailures: number;
-  registrationRetryable: boolean;
   disclosureAccepted: boolean;
   disclosureVersion: typeof MOLTBOOK_DISCLOSURE_VERSION;
   lastErrorCode?: string;

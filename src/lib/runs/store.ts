@@ -2442,6 +2442,15 @@ export function parseAgentRunContinuation(
   } catch {
     return undefined;
   }
+  let authUserBinding: AgentRunContinuation["context"]["authUserBinding"];
+  try {
+    authUserBinding = parseContinuationAuthUserBinding(
+      (candidate.context as { authUserBinding?: unknown } | undefined)
+        ?.authUserBinding,
+    );
+  } catch {
+    return undefined;
+  }
   let runContractEnvelope: RunContractEnvelopeV1 | undefined;
   try {
     runContractEnvelope = parseRunContractEnvelopeV1(
@@ -2527,6 +2536,7 @@ export function parseAgentRunContinuation(
       tenantId: String((candidate.context as { tenantId?: unknown })?.tenantId || "default"),
       actorId: String((candidate.context as { actorId?: unknown })?.actorId || "agent"),
       role: normalizeRole((candidate.context as { role?: unknown })?.role),
+      authUserBinding,
     },
     toolPolicy: parseToolPolicy(candidate.toolPolicy),
     memoryScope:
@@ -2543,6 +2553,47 @@ export function parseAgentRunContinuation(
         ? candidate.resumeClaimedAt
         : undefined,
   };
+}
+
+function parseContinuationAuthUserBinding(
+  value: unknown,
+): AgentRunContinuation["context"]["authUserBinding"] {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Continuation auth-user binding is invalid.");
+  }
+  const candidate = value as Record<string, unknown>;
+  const keys = Object.keys(candidate).sort();
+  if (
+    keys.join("\0") !== [
+      "authUserId",
+      "canonicalActorId",
+      "email",
+      "source",
+      "version",
+    ].sort().join("\0") ||
+    candidate.version !== 1 ||
+    (candidate.source !== "session" && candidate.source !== "mobile") ||
+    typeof candidate.authUserId !== "string" ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
+      candidate.authUserId,
+    ) ||
+    typeof candidate.email !== "string" ||
+    candidate.email !== candidate.email.trim() ||
+    candidate.email.length < 3 ||
+    candidate.email.length > 320 ||
+    candidate.email.includes("\0") ||
+    candidate.canonicalActorId !== `actor:${candidate.authUserId}`
+  ) {
+    throw new Error("Continuation auth-user binding is invalid.");
+  }
+  return Object.freeze({
+    version: 1,
+    source: candidate.source,
+    authUserId: candidate.authUserId,
+    email: candidate.email,
+    canonicalActorId: candidate.canonicalActorId,
+  });
 }
 
 function parseCheckpointResumeClaimMetadata(

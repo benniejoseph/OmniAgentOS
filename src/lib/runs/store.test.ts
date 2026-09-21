@@ -97,6 +97,41 @@ describe("agent run approval continuations (file mode)", () => {
     })).toBeUndefined();
   });
 
+  it("retains only the reduced authenticated owner binding across approval pauses", async () => {
+    const store = await import("@/lib/runs/store");
+    const authUserBinding = {
+      version: 1 as const,
+      source: "mobile" as const,
+      authUserId: "11111111-1111-4111-8111-111111111111",
+      email: "owner@example.test",
+      canonicalActorId: "actor:11111111-1111-4111-8111-111111111111",
+    };
+    const parsed = store.parseAgentRunContinuation({
+      ...continuationFor("exec-auth-owner"),
+      context: {
+        tenantId: "tenant-one",
+        actorId: "owner@example.test",
+        role: "operator",
+        authUserBinding,
+      },
+    });
+    expect(parsed?.context.authUserBinding).toEqual(authUserBinding);
+    expect(JSON.stringify(parsed)).not.toContain("sessionId");
+    expect(store.parseAgentRunContinuation({
+      ...continuationFor("exec-auth-tampered"),
+      context: {
+        tenantId: "tenant-one",
+        actorId: "owner@example.test",
+        role: "operator",
+        authUserBinding: {
+          ...authUserBinding,
+          source: "default",
+          sessionId: "must-not-survive",
+        },
+      },
+    })).toBeUndefined();
+  });
+
   it("keeps validated continuation token budgets numeric when reading a parked run", async () => {
     const store = await import("@/lib/runs/store");
     const run = await store.createAgentRun({

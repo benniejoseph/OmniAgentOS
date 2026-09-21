@@ -1287,13 +1287,13 @@ class _MoltbookAgentConsoleState extends State<_MoltbookAgentConsole> {
     }
   }
 
-  Future<void> _register({bool retry = false}) async {
+  Future<void> _register() async {
     if (!(_registrationKey.currentState?.validate() ?? false) ||
         !_disclosureAccepted) {
       return;
     }
     await _change({
-      'action': retry ? 'retry_registration' : 'register',
+      'action': 'register',
       'externalName': _externalName.text.trim(),
       'description': _description.text.trim(),
       'heartbeatEnabled': _heartbeatEnabled,
@@ -1356,16 +1356,13 @@ class _MoltbookAgentConsoleState extends State<_MoltbookAgentConsole> {
           )
         else if (_projection?.connection == null)
           _registration(context)
-        else if (_projection!.connection!.status == 'error' &&
-            _projection!.connection!.registrationRetryable)
-          _registration(context, retry: true)
         else
           _connection(context, _projection!.connection!),
       ],
     ),
   );
 
-  Widget _registration(BuildContext context, {bool retry = false}) => Form(
+  Widget _registration(BuildContext context) => Form(
     key: _registrationKey,
     child: MacosPane(
       padding: const EdgeInsets.all(12),
@@ -1378,7 +1375,7 @@ class _MoltbookAgentConsoleState extends State<_MoltbookAgentConsole> {
               const SizedBox(width: 7),
               Expanded(
                 child: Text(
-                  retry ? 'Retry Moltbook registration' : 'Join Moltbook',
+                  'Join Moltbook',
                   style: Theme.of(context).textTheme.titleSmall,
                 ),
               ),
@@ -1386,9 +1383,7 @@ class _MoltbookAgentConsoleState extends State<_MoltbookAgentConsole> {
           ),
           const SizedBox(height: 5),
           Text(
-            retry
-                ? 'Moltbook definitively rejected the previous registration. Correct the public identity and explicitly accept the disclosure again.'
-                : 'Registration creates an external Moltbook Agent identity. Asael stores its credential privately and never displays it here.',
+            'Registration creates an external Moltbook Agent identity. Asael stores its credential privately and never displays it here.',
             style: Theme.of(context).textTheme.bodySmall,
           ),
           const SizedBox(height: 12),
@@ -1461,14 +1456,12 @@ class _MoltbookAgentConsoleState extends State<_MoltbookAgentConsole> {
           SizedBox(
             width: double.infinity,
             child: FilledButton.icon(
-              key: Key(
-                retry ? 'moltbook-retry-registration' : 'moltbook-register',
-              ),
+              key: const Key('moltbook-register'),
               onPressed:
                   widget.controller.canManageMoltbook &&
                       _disclosureAccepted &&
                       !_acting
-                  ? () => _register(retry: retry)
+                  ? _register
                   : null,
               icon: _acting
                   ? const SizedBox.square(
@@ -1476,9 +1469,7 @@ class _MoltbookAgentConsoleState extends State<_MoltbookAgentConsole> {
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
                   : const Icon(Icons.public_rounded, size: 16),
-              label: Text(
-                retry ? 'Retry registration' : 'Create Moltbook identity',
-              ),
+              label: const Text('Create Moltbook identity'),
             ),
           ),
         ],
@@ -1491,6 +1482,14 @@ class _MoltbookAgentConsoleState extends State<_MoltbookAgentConsole> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        if (connection.status == 'error') ...[
+          const _MoltbookNotice(
+            icon: Icons.report_gmailerrorred_rounded,
+            title: 'Registration held for provider recovery',
+            message: 'Asael cannot prove whether Moltbook created this identity, so it will not retry the registration. Refresh to check the provider state. If it remains unresolved, use Moltbook recovery or support before continuing.',
+          ),
+          const SizedBox(height: 10),
+        ],
         MacosPane(
           padding: const EdgeInsets.all(12),
           child: Column(

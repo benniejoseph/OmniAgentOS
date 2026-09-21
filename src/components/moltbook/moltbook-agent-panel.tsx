@@ -37,7 +37,7 @@ type MoltbookMutationResponse = {
   claim?: { url: string; verificationCode: string };
 };
 
-type Action = "refresh" | "pause" | "resume" | "retry_registration";
+type Action = "refresh" | "pause" | "resume";
 
 export function MoltbookAgentPanel({
   agentId,
@@ -127,9 +127,9 @@ export function MoltbookAgentPanel({
     }
   }
 
-  async function register(retry = false) {
+  async function register() {
     if (!disclosureAccepted) return;
-    const action = retry ? "retry_registration" : "register";
+    const action = "register";
     setBusyAction(action);
     setError(undefined);
     try {
@@ -294,69 +294,13 @@ export function MoltbookAgentPanel({
             </div>
           ) : null}
 
-          {connection?.status === "error" && connection.registrationRetryable ? (
-            <div className={styles.join}>
-              <p>
-                Moltbook definitively rejected the previous registration. Correct
-                the public details and retry; prior activity remains in the ledger.
-              </p>
-              <label>
-                <span>Public agent name</span>
-                <input
-                  value={externalName}
-                  onChange={(event) => setExternalName(event.target.value)}
-                  minLength={3}
-                  maxLength={32}
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-              </label>
-              <label>
-                <span>Public bio</span>
-                <textarea
-                  value={description}
-                  onChange={(event) => setDescription(event.target.value)}
-                  minLength={10}
-                  maxLength={500}
-                  rows={3}
-                />
-              </label>
-              <label className={styles.disclosure}>
-                <input
-                  type="checkbox"
-                  checked={disclosureAccepted}
-                  onChange={(event) => setDisclosureAccepted(event.target.checked)}
-                />
-                <span>
-                  I confirm the corrected public identity is still governed by
-                  the Moltbook public-activity disclosure.
-                </span>
-              </label>
-              <button
-                type="button"
-                className={styles.primary}
-                disabled={
-                  Boolean(busyAction) ||
-                  !disclosureAccepted ||
-                  externalName.trim().length < 3 ||
-                  description.trim().length < 10
-                }
-                onClick={() => void register(true)}
-              >
-                {busyAction === "retry_registration" ? (
-                  <Loader2 size={15} className={styles.spin} />
-                ) : (
-                  <RefreshCw size={15} />
-                )}
-                Retry registration
-              </button>
-            </div>
-          ) : connection?.status === "error" ? (
+          {connection?.status === "error" ? (
             <div className={styles.warning}>
               <AlertTriangle size={15} aria-hidden="true" />
               <span>
-                The provider outcome may have taken effect, so automatic retry is
-                blocked to prevent creating a duplicate public identity.
+                The provider outcome may have taken effect. Registration is held
+                to prevent a duplicate public identity; inspect the Moltbook account
+                and recover it with the provider before creating another Agent.
               </span>
             </div>
           ) : null}
@@ -506,7 +450,13 @@ export function safeMoltbookUrl(value?: string | null) {
   if (!value) return undefined;
   try {
     const parsed = new URL(value);
-    if (parsed.protocol !== "https:" || parsed.hostname !== "www.moltbook.com") {
+    if (
+      parsed.protocol !== "https:" ||
+      parsed.hostname !== "www.moltbook.com" ||
+      parsed.username ||
+      parsed.password ||
+      parsed.port
+    ) {
       return undefined;
     }
     return parsed.toString();

@@ -125,7 +125,6 @@ void main() {
         'heartbeatEnabled': true,
         'consecutiveFailures': 0,
         'credentialConfigured': true,
-        'registrationRetryable': false,
         'disclosureAccepted': true,
         'disclosureVersion': moltbookDisclosureVersion,
         'lastHeartbeatAt': '2026-09-21T08:00:00.000Z',

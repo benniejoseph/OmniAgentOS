@@ -3,6 +3,7 @@ import "server-only";
 import type { SecurityContext } from "@/lib/security/types";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
+import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
 import {
   isMoltbookToolId,
   parseMoltbookToolInput,
@@ -20,12 +21,19 @@ import {
   MoltbookConnectionError,
   observeMoltbookRateLimit,
   readMoltbookEffectEvidence,
-  resolveMoltbookAgentOwner,
+  resolveMoltbookPrincipalAuthority,
   resolveMoltbookConnectionForReceipt,
   resolveMoltbookConnectionForTool,
   type MoltbookConnectionAccess,
   type MoltbookEffectEvidence,
 } from "@/lib/moltbook/store";
+import {
+  moltbookConnectionIdentityPinFromRunPin,
+} from "@/lib/moltbook/identity-boundary";
+import {
+  getAgentRunExecutionScope,
+  getAgentRunIdentityPin,
+} from "@/lib/runs/store";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { toolInputSha256 as canonicalToolInputSha256 } from "@/lib/tools/execution-scope";
 
@@ -84,7 +92,7 @@ export type MoltbookReconciliationResult =
     }>
   | Readonly<{
       kind: "held";
-      status: "failed" | "uncertain";
+      status: "failed" | "uncertain" | "pending_verification";
       errorCode?: string;
     }>;
 
@@ -98,6 +106,7 @@ type MoltbookToolActionInput = Readonly<{
   effectTargetId?: string;
   toolInputSha256?: string;
   abortSignal?: AbortSignal;
+  requestActorBinding?: CanonicalRequestActorBindingV1;
 }>;
 
 type MoltbookEffectBinding = Readonly<{
@@ -128,6 +137,7 @@ export async function executeMoltbookToolAction(
     tenantId: input.executionScope.tenantId,
     ownerActorId: authority.ownerActorId,
     executingAgentId: authority.executingAgentId,
+    identityPin: authority.identityPin,
   });
   const client = createMoltbookClient({
     apiKey: access.apiKey,
@@ -161,6 +171,7 @@ export async function reconcileMoltbookToolAction(
     tenantId: input.executionScope.tenantId,
     ownerActorId: authority.ownerActorId,
     executingAgentId: authority.executingAgentId,
+    identityPin: authority.identityPin,
   });
   const evidence = await readMoltbookEffectEvidence({
     access,
@@ -171,7 +182,11 @@ export async function reconcileMoltbookToolAction(
     requestSha256: binding.requestSha256,
   });
   if (!evidence) return undefined;
-  if (evidence.status === "failed" || evidence.status === "uncertain") {
+  if (
+    evidence.status === "failed" ||
+    evidence.status === "uncertain" ||
+    evidence.status === "pending_verification"
+  ) {
     return {
       kind: "held",
       status: evidence.status,
@@ -185,17 +200,10 @@ export async function reconcileMoltbookToolAction(
     );
   }
   const providerObject = publicProviderObject(input.toolId, evidence.providerObject);
-  const result = evidence.status === "pending_verification"
-    ? {
-        source: "moltbook" as const,
-        untrusted: true as const,
-        status: "pending_verification" as const,
-        ...(providerObject ? { providerObject } : {}),
-      }
-    : {
-        status: evidence.status,
-        ...(providerObject ? { providerObject } : {}),
-      };
+  const result: MoltbookMutationResult = {
+    status: evidence.status,
+    ...(providerObject ? { providerObject } : {}),
+  };
   return {
     kind: "completed",
     result: withEffectCommit(result, effectCommit({
@@ -781,33 +789,136 @@ async function exactToolAuthority(
   input: Parameters<typeof executeMoltbookToolAction>[0],
 ) {
   const scope = input.executionScope;
-  const actorBinding = canonicalRequestActorBindingFromSecurityContext(input.context);
+  const liveActorBinding = canonicalRequestActorBindingFromSecurityContext(
+    input.context,
+  );
+  const actorBinding = input.requestActorBinding || liveActorBinding;
   if (
     input.context.tenantId !== scope.tenantId ||
     !actorBinding ||
+    !isExactCanonicalActorBinding(actorBinding, input.context.actorId) ||
+    (liveActorBinding && !sameCanonicalActorBinding(
+      liveActorBinding,
+      actorBinding,
+    )) ||
     !scope.initiatingActorId ||
     input.context.actorId !== scope.initiatingActorId ||
     scope.executingPrincipalType !== "agent" ||
     !scope.executingPrincipalId ||
     !input.toolExecutionId.trim() ||
     input.toolExecutionId.length > 240 ||
-    (input.agentRunId !== undefined &&
-      (!input.agentRunId.trim() || input.agentRunId.length > 240))
+    !input.agentRunId ||
+    !input.agentRunId.trim() ||
+    input.agentRunId.length > 240
   ) {
     throw new MoltbookConnectionError(
       "Moltbook tool authority does not match the exact owner and Agent scope.",
       { code: "tool_authority_mismatch" },
     );
   }
-  const owner = await resolveMoltbookAgentOwner({
+  const runPin = await getAgentRunIdentityPin(input.agentRunId, {
     tenantId: scope.tenantId,
-    agentId: scope.executingPrincipalId,
+  });
+  const runScope = await getAgentRunExecutionScope(input.agentRunId, {
+    tenantId: scope.tenantId,
+  });
+  if (
+    !runPin ||
+    runPin.runId !== input.agentRunId ||
+    runPin.tenantId !== scope.tenantId ||
+    runPin.actorId !== actorBinding.canonicalActorId ||
+    runPin.principalId !== scope.executingPrincipalId ||
+    !runScope ||
+    !toolScopeMatchesRunScope(scope, runScope) ||
+    scope.contextGrantIds.length !== 0 ||
+    scope.capabilityGrantIds.length !== 0 ||
+    runScope.contextGrantIds.length !== 0 ||
+    runScope.capabilityGrantIds.length !== 0
+  ) {
+    throw new MoltbookConnectionError(
+      "Moltbook tool authority is not pinned to the active Agent identity.",
+      { code: "tool_identity_pin_mismatch" },
+    );
+  }
+  const principal = await resolveMoltbookPrincipalAuthority({
+    tenantId: scope.tenantId,
+    principalId: runPin.principalId,
+    principalGeneration: runPin.principalGeneration,
+    authUserId: actorBinding.authUserId,
+    canonicalActorId: actorBinding.canonicalActorId,
     readableOwnerActorIds: actorBinding.readableOwnerActorIds,
   });
+  if (
+    runPin.logicalAgentId !== principal.logicalAgentId ||
+    runPin.principalId !== principal.principalId ||
+    runPin.principalGeneration !== principal.principalGeneration
+  ) {
+    throw new MoltbookConnectionError(
+      "Moltbook tool authority is not pinned to the active Agent identity.",
+      { code: "tool_identity_pin_mismatch" },
+    );
+  }
+  const identityPin = moltbookConnectionIdentityPinFromRunPin(runPin);
   return {
-    ownerActorId: owner.actorId,
-    executingAgentId: scope.executingPrincipalId,
+    ownerActorId: principal.owner.actorId,
+    executingAgentId: principal.logicalAgentId,
+    identityPin,
   };
+}
+
+function isExactCanonicalActorBinding(
+  binding: CanonicalRequestActorBindingV1,
+  actorId: string,
+) {
+  return binding.version === 1 &&
+    binding.kind === "auth_user" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
+      binding.authUserId,
+    ) &&
+    binding.canonicalActorId === `actor:${binding.authUserId}` &&
+    binding.legacyOwnerActorIds.length === 1 &&
+    binding.legacyOwnerActorIds[0] === actorId &&
+    binding.readableOwnerActorIds.length === 2 &&
+    binding.readableOwnerActorIds[0] === binding.canonicalActorId &&
+    binding.readableOwnerActorIds[1] === actorId;
+}
+
+function sameCanonicalActorBinding(
+  left: CanonicalRequestActorBindingV1,
+  right: CanonicalRequestActorBindingV1,
+) {
+  return left.authUserId === right.authUserId &&
+    left.canonicalActorId === right.canonicalActorId &&
+    left.legacyOwnerActorIds.length === right.legacyOwnerActorIds.length &&
+    left.legacyOwnerActorIds.every((value, index) =>
+      value === right.legacyOwnerActorIds[index]
+    ) &&
+    left.readableOwnerActorIds.length === right.readableOwnerActorIds.length &&
+    left.readableOwnerActorIds.every((value, index) =>
+      value === right.readableOwnerActorIds[index]
+    );
+}
+
+function toolScopeMatchesRunScope(
+  toolScope: ExecutionScope,
+  runScope: ExecutionScope,
+) {
+  return toolScope.tenantId === runScope.tenantId &&
+    toolScope.initiatingActorId === runScope.initiatingActorId &&
+    toolScope.executingPrincipalType === runScope.executingPrincipalType &&
+    toolScope.executingPrincipalId === runScope.executingPrincipalId &&
+    toolScope.workspaceId === runScope.workspaceId &&
+    toolScope.projectId === runScope.projectId &&
+    toolScope.missionId === runScope.missionId &&
+    toolScope.delegationId === runScope.delegationId &&
+    toolScope.correlationId === runScope.correlationId &&
+    sameStrings(toolScope.contextGrantIds, runScope.contextGrantIds) &&
+    sameStrings(toolScope.capabilityGrantIds, runScope.capabilityGrantIds);
+}
+
+function sameStrings(left: readonly string[], right: readonly string[]) {
+  return left.length === right.length &&
+    left.every((value, index) => value === right[index]);
 }
 
 function verificationFromResponse(

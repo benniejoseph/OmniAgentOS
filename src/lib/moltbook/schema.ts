@@ -28,6 +28,12 @@ export async function ensureMoltbookAgentConnectionsV1(sql: MigrationSql) {
       tenant_id TEXT NOT NULL,
       owner_actor_id TEXT NOT NULL,
       agent_id TEXT NOT NULL,
+      principal_id TEXT NOT NULL,
+      principal_generation BIGINT NOT NULL,
+      principal_sha256 TEXT NOT NULL,
+      definition_version BIGINT NOT NULL,
+      definition_sha256 TEXT NOT NULL,
+      policy_boundary_sha256 TEXT NOT NULL,
       external_name TEXT NOT NULL,
       description TEXT NOT NULL,
       status TEXT NOT NULL,
@@ -53,10 +59,32 @@ export async function ensureMoltbookAgentConnectionsV1(sql: MigrationSql) {
       FOREIGN KEY (tenant_id, owner_actor_id, agent_id)
         REFERENCES omni_custom_agents (tenant_id, actor_id, id)
         ON UPDATE RESTRICT ON DELETE RESTRICT,
+      CONSTRAINT omni_moltbook_connections_principal_fkey
+        FOREIGN KEY (tenant_id, principal_id, principal_generation)
+        REFERENCES omni_tenant_execution_principals (
+          tenant_id, principal_id, principal_generation
+        ) ON UPDATE RESTRICT ON DELETE RESTRICT,
+      CONSTRAINT omni_moltbook_connections_definition_fkey
+        FOREIGN KEY (tenant_id, agent_id, definition_version)
+        REFERENCES omni_agent_definition_versions (
+          tenant_id, agent_definition_id, definition_version
+        ) ON UPDATE RESTRICT ON DELETE RESTRICT,
       CHECK (id ~ '^moltbook_connection_[a-f0-9]{48}$'),
       CHECK (char_length(tenant_id) BETWEEN 1 AND 160),
       CHECK (char_length(owner_actor_id) BETWEEN 1 AND 320),
       CHECK (char_length(agent_id) BETWEEN 1 AND 240),
+      CONSTRAINT omni_moltbook_connections_principal_id_valid
+        CHECK (char_length(principal_id) BETWEEN 1 AND 240),
+      CONSTRAINT omni_moltbook_connections_principal_generation_valid
+        CHECK (principal_generation BETWEEN 1 AND 9007199254740991),
+      CONSTRAINT omni_moltbook_connections_principal_sha256_valid
+        CHECK (principal_sha256 ~ '^[a-f0-9]{64}$'),
+      CONSTRAINT omni_moltbook_connections_definition_version_valid
+        CHECK (definition_version BETWEEN 1 AND 9007199254740991),
+      CONSTRAINT omni_moltbook_connections_definition_sha256_valid
+        CHECK (definition_sha256 ~ '^[a-f0-9]{64}$'),
+      CONSTRAINT omni_moltbook_connections_policy_boundary_sha256_valid
+        CHECK (policy_boundary_sha256 ~ '^[a-f0-9]{64}$'),
       CHECK (
         char_length(external_name) BETWEEN 2 AND 32
         AND external_name = btrim(external_name)
@@ -114,6 +142,112 @@ export async function ensureMoltbookAgentConnectionsV1(sql: MigrationSql) {
       CHECK ((status = 'revoked') = (revoked_at IS NOT NULL)),
       CHECK (updated_at >= created_at)
     );
+
+    ALTER TABLE omni_moltbook_connections
+      ADD COLUMN IF NOT EXISTS principal_id TEXT,
+      ADD COLUMN IF NOT EXISTS principal_generation BIGINT,
+      ADD COLUMN IF NOT EXISTS principal_sha256 TEXT,
+      ADD COLUMN IF NOT EXISTS definition_version BIGINT,
+      ADD COLUMN IF NOT EXISTS definition_sha256 TEXT,
+      ADD COLUMN IF NOT EXISTS policy_boundary_sha256 TEXT;
+    DO $identity_pin$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM omni_moltbook_connections
+        WHERE principal_id IS NULL OR principal_generation IS NULL
+          OR principal_sha256 IS NULL OR definition_version IS NULL
+          OR definition_sha256 IS NULL OR policy_boundary_sha256 IS NULL
+      ) THEN
+        RAISE EXCEPTION 'Existing Moltbook connections lack an immutable Agent identity pin'
+          USING ERRCODE = '55000';
+      END IF;
+      ALTER TABLE omni_moltbook_connections
+        ALTER COLUMN principal_id SET NOT NULL,
+        ALTER COLUMN principal_generation SET NOT NULL,
+        ALTER COLUMN principal_sha256 SET NOT NULL,
+        ALTER COLUMN definition_version SET NOT NULL,
+        ALTER COLUMN definition_sha256 SET NOT NULL,
+        ALTER COLUMN policy_boundary_sha256 SET NOT NULL;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'omni_moltbook_connections'::regclass
+          AND conname = 'omni_moltbook_connections_principal_fkey'
+      ) THEN
+        ALTER TABLE omni_moltbook_connections
+          ADD CONSTRAINT omni_moltbook_connections_principal_fkey
+          FOREIGN KEY (tenant_id, principal_id, principal_generation)
+          REFERENCES omni_tenant_execution_principals (
+            tenant_id, principal_id, principal_generation
+          ) ON UPDATE RESTRICT ON DELETE RESTRICT;
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'omni_moltbook_connections'::regclass
+          AND conname = 'omni_moltbook_connections_definition_fkey'
+      ) THEN
+        ALTER TABLE omni_moltbook_connections
+          ADD CONSTRAINT omni_moltbook_connections_definition_fkey
+          FOREIGN KEY (tenant_id, agent_id, definition_version)
+          REFERENCES omni_agent_definition_versions (
+            tenant_id, agent_definition_id, definition_version
+          ) ON UPDATE RESTRICT ON DELETE RESTRICT;
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'omni_moltbook_connections'::regclass
+          AND conname = 'omni_moltbook_connections_principal_id_valid'
+      ) THEN
+        ALTER TABLE omni_moltbook_connections
+          ADD CONSTRAINT omni_moltbook_connections_principal_id_valid
+          CHECK (char_length(principal_id) BETWEEN 1 AND 240);
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'omni_moltbook_connections'::regclass
+          AND conname = 'omni_moltbook_connections_principal_generation_valid'
+      ) THEN
+        ALTER TABLE omni_moltbook_connections
+          ADD CONSTRAINT omni_moltbook_connections_principal_generation_valid
+          CHECK (principal_generation BETWEEN 1 AND 9007199254740991);
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'omni_moltbook_connections'::regclass
+          AND conname = 'omni_moltbook_connections_principal_sha256_valid'
+      ) THEN
+        ALTER TABLE omni_moltbook_connections
+          ADD CONSTRAINT omni_moltbook_connections_principal_sha256_valid
+          CHECK (principal_sha256 ~ '^[a-f0-9]{64}$');
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'omni_moltbook_connections'::regclass
+          AND conname = 'omni_moltbook_connections_definition_version_valid'
+      ) THEN
+        ALTER TABLE omni_moltbook_connections
+          ADD CONSTRAINT omni_moltbook_connections_definition_version_valid
+          CHECK (definition_version BETWEEN 1 AND 9007199254740991);
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'omni_moltbook_connections'::regclass
+          AND conname = 'omni_moltbook_connections_definition_sha256_valid'
+      ) THEN
+        ALTER TABLE omni_moltbook_connections
+          ADD CONSTRAINT omni_moltbook_connections_definition_sha256_valid
+          CHECK (definition_sha256 ~ '^[a-f0-9]{64}$');
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'omni_moltbook_connections'::regclass
+          AND conname = 'omni_moltbook_connections_policy_boundary_sha256_valid'
+      ) THEN
+        ALTER TABLE omni_moltbook_connections
+          ADD CONSTRAINT omni_moltbook_connections_policy_boundary_sha256_valid
+          CHECK (policy_boundary_sha256 ~ '^[a-f0-9]{64}$');
+      END IF;
+    END
+    $identity_pin$;
 
     CREATE TABLE IF NOT EXISTS omni_moltbook_activities (
       id TEXT PRIMARY KEY,
@@ -353,6 +487,37 @@ export async function ensureMoltbookAgentConnectionsV1(sql: MigrationSql) {
         RAISE EXCEPTION 'Linked Moltbook Agent capability boundary is invalid'
           USING ERRCODE = '23514';
       END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM public.omni_tenant_execution_principals principal
+        JOIN public.omni_agent_principal_policies policy
+          ON policy.tenant_id = principal.tenant_id
+          AND policy.principal_id = principal.principal_id
+          AND policy.principal_generation = principal.principal_generation
+        JOIN public.omni_auth_user_actor_identifiers owner_identifier
+          ON owner_identifier.actor_identifier COLLATE "C" =
+            NEW.owner_actor_id COLLATE "C"
+          AND owner_identifier.canonical_actor_id = principal.controller_actor_id
+        WHERE principal.tenant_id = NEW.tenant_id
+          AND principal.principal_id = NEW.principal_id
+          AND principal.principal_generation = NEW.principal_generation
+          AND principal.agent_definition_id = NEW.agent_id
+          AND principal.principal_kind = 'agent'
+          AND principal.state = 'active'
+          AND policy.owner_actor_id = principal.controller_actor_id
+          AND policy.agent_definition_id = NEW.agent_id
+          AND policy.agent_definition_version = NEW.definition_version
+          AND policy.authority_mode = 'explicit_grants'
+          AND cardinality(policy.context_grant_ids) = 0
+          AND cardinality(policy.capability_grant_ids) = 0
+          AND public.omni_moltbook_agent_boundary_is_exact_v1(
+            ARRAY[]::TEXT[], policy.tool_grant_ids, policy.memory_scope,
+            policy.autonomy, policy.approval_policy
+          )
+      ) THEN
+        RAISE EXCEPTION 'Linked Moltbook Agent principal boundary is invalid'
+          USING ERRCODE = '23514';
+      END IF;
       RETURN NEW;
     END
     $function$;
@@ -404,17 +569,20 @@ export async function ensureMoltbookAgentConnectionsV1(sql: MigrationSql) {
         RAISE EXCEPTION 'Moltbook connections cannot be removed'
           USING ERRCODE = '55000';
       END IF;
-      safe_registration_retry := OLD.status = 'error'
-        AND NEW.status = 'registering'
-        AND OLD.claim_state = 'unavailable'
-        AND NEW.claim_state = 'unavailable'
-        AND OLD.sealed_credentials IS NULL
-        AND NEW.sealed_credentials IS NULL
-        AND OLD.last_error_code LIKE 'registration_rejected.%';
+      -- No current Moltbook response proves that a failed registration created
+      -- no provider identity. Keep every prior HTTP failure held until the
+      -- provider offers an explicit non-effect receipt.
+      safe_registration_retry := FALSE;
       IF OLD.id IS DISTINCT FROM NEW.id
         OR OLD.tenant_id IS DISTINCT FROM NEW.tenant_id
         OR OLD.owner_actor_id IS DISTINCT FROM NEW.owner_actor_id
         OR OLD.agent_id IS DISTINCT FROM NEW.agent_id
+        OR OLD.principal_id IS DISTINCT FROM NEW.principal_id
+        OR OLD.principal_generation IS DISTINCT FROM NEW.principal_generation
+        OR OLD.principal_sha256 IS DISTINCT FROM NEW.principal_sha256
+        OR OLD.definition_version IS DISTINCT FROM NEW.definition_version
+        OR OLD.definition_sha256 IS DISTINCT FROM NEW.definition_sha256
+        OR OLD.policy_boundary_sha256 IS DISTINCT FROM NEW.policy_boundary_sha256
         OR ((OLD.external_name IS DISTINCT FROM NEW.external_name
           OR OLD.description IS DISTINCT FROM NEW.description)
           AND NOT safe_registration_retry)
@@ -479,7 +647,9 @@ export async function ensureMoltbookAgentConnectionsV1(sql: MigrationSql) {
     DROP TRIGGER IF EXISTS omni_moltbook_connections_agent_boundary
       ON omni_moltbook_connections;
     CREATE TRIGGER omni_moltbook_connections_agent_boundary
-      BEFORE INSERT OR UPDATE OF tenant_id, owner_actor_id, agent_id
+      BEFORE INSERT OR UPDATE OF tenant_id, owner_actor_id, agent_id,
+        principal_id, principal_generation, principal_sha256,
+        definition_version, definition_sha256, policy_boundary_sha256
       ON omni_moltbook_connections
       FOR EACH ROW
       EXECUTE FUNCTION omni_enforce_moltbook_connection_agent_boundary_v1();

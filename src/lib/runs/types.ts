@@ -91,6 +91,13 @@ export type AgentRunContinuation = {
     tenantId: string;
     actorId: string;
     role: "viewer" | "operator" | "admin" | "system";
+    authUserBinding?: {
+      version: 1;
+      source: "session" | "mobile";
+      authUserId: string;
+      email: string;
+      canonicalActorId: string;
+    };
   };
   toolPolicy?: {
     allowedToolIds: string[];

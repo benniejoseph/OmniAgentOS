@@ -9,7 +9,10 @@ import {
 
 const mocks = vi.hoisted(() => ({
   canonical: vi.fn(),
-  resolveOwner: vi.fn(),
+  resolvePrincipal: vi.fn(),
+  getRunPin: vi.fn(),
+  getRunScope: vi.fn(),
+  identityPinFromRun: vi.fn(),
   resolve: vi.fn(),
   resolveReceipt: vi.fn(),
   readEvidence: vi.fn(),
@@ -27,9 +30,16 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/lib/security/canonical-actor", () => ({
   canonicalRequestActorBindingFromSecurityContext: mocks.canonical,
 }));
+vi.mock("@/lib/runs/store", () => ({
+  getAgentRunIdentityPin: mocks.getRunPin,
+  getAgentRunExecutionScope: mocks.getRunScope,
+}));
+vi.mock("@/lib/moltbook/identity-boundary", () => ({
+  moltbookConnectionIdentityPinFromRunPin: mocks.identityPinFromRun,
+}));
 vi.mock("@/lib/moltbook/store", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/lib/moltbook/store")>(),
-  resolveMoltbookAgentOwner: mocks.resolveOwner,
+  resolveMoltbookPrincipalAuthority: mocks.resolvePrincipal,
   resolveMoltbookConnectionForTool: mocks.resolve,
   resolveMoltbookConnectionForReceipt: mocks.resolveReceipt,
   readMoltbookEffectEvidence: mocks.readEvidence,
@@ -68,15 +78,39 @@ beforeEach(() => {
   mocks.append.mockResolvedValue(undefined);
   mocks.observeRate.mockResolvedValue(undefined);
   mocks.canonical.mockReturnValue({
+    version: 1,
+    kind: "auth_user",
+    authUserId: "11111111-1111-4111-8111-111111111111",
     canonicalActorId: "actor:11111111-1111-4111-8111-111111111111",
+    legacyOwnerActorIds: ["owner@example.test"],
     readableOwnerActorIds: [
       "actor:11111111-1111-4111-8111-111111111111",
       "owner@example.test",
     ],
   });
-  mocks.resolveOwner.mockResolvedValue({
+  mocks.resolvePrincipal.mockResolvedValue({
+    owner: { tenantId: "tenant-one", actorId: "owner@example.test" },
+    logicalAgentId: "agent_molty",
+    principalId: "agent:agent_molty",
+    principalGeneration: 7,
+  });
+  mocks.getRunPin.mockResolvedValue({
+    runId: "run_moltbook_test",
     tenantId: "tenant-one",
-    actorId: "owner@example.test",
+    actorId: "actor:11111111-1111-4111-8111-111111111111",
+    logicalAgentId: "agent_molty",
+    principalId: "agent:agent_molty",
+    principalGeneration: 7,
+  });
+  mocks.getRunScope.mockResolvedValue(scope("owner@example.test"));
+  mocks.identityPinFromRun.mockReturnValue({
+    logicalAgentId: "agent_molty",
+    principalId: "agent:agent_molty",
+    principalGeneration: 7,
+    principalSha256: "1".repeat(64),
+    definitionVersion: 3,
+    definitionSha256: "2".repeat(64),
+    policyBoundarySha256: "3".repeat(64),
   });
   mocks.resolve.mockResolvedValue({
     connectionId: `moltbook_connection_${"a".repeat(48)}`,
@@ -110,11 +144,15 @@ describe("Moltbook tool owner mapping", () => {
       context,
       executionScope: scope("owner@example.test"),
       toolExecutionId: "tool_execution_one",
+      agentRunId: "run_moltbook_test",
     });
     expect(result).toMatchObject({ source: "moltbook", untrusted: true });
-    expect(mocks.resolveOwner).toHaveBeenCalledWith({
+    expect(mocks.resolvePrincipal).toHaveBeenCalledWith({
       tenantId: "tenant-one",
-      agentId: "agent_molty",
+      principalId: "agent:agent_molty",
+      principalGeneration: 7,
+      authUserId: "11111111-1111-4111-8111-111111111111",
+      canonicalActorId: "actor:11111111-1111-4111-8111-111111111111",
       readableOwnerActorIds: [
         "actor:11111111-1111-4111-8111-111111111111",
         "owner@example.test",
@@ -124,7 +162,66 @@ describe("Moltbook tool owner mapping", () => {
       tenantId: "tenant-one",
       ownerActorId: "owner@example.test",
       executingAgentId: "agent_molty",
+      identityPin: expect.objectContaining({
+        principalId: "agent:agent_molty",
+        principalGeneration: 7,
+      }),
     });
+  });
+
+  it("accepts an approval-resumed read only with its run-verified owner binding", async () => {
+    mocks.canonical.mockReturnValueOnce(undefined);
+    const resumedBinding = {
+      version: 1 as const,
+      kind: "auth_user" as const,
+      authUserId: "11111111-1111-4111-8111-111111111111",
+      canonicalActorId: "actor:11111111-1111-4111-8111-111111111111",
+      legacyOwnerActorIds: ["owner@example.test"],
+      readableOwnerActorIds: [
+        "actor:11111111-1111-4111-8111-111111111111",
+        "owner@example.test",
+      ],
+    };
+    const result = await executeMoltbookToolAction({
+      toolId: "moltbook.home.read",
+      toolInput: {},
+      context: { ...context, source: "service" },
+      requestActorBinding: resumedBinding,
+      executionScope: scope("owner@example.test"),
+      toolExecutionId: "tool_execution_resumed_read",
+      agentRunId: "run_moltbook_test",
+    });
+    expect(result).toMatchObject({ source: "moltbook", untrusted: true });
+    expect(mocks.resolvePrincipal).toHaveBeenCalledWith(expect.objectContaining({
+      authUserId: resumedBinding.authUserId,
+      canonicalActorId: resumedBinding.canonicalActorId,
+    }));
+    expect(mocks.home).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a tampered approval-resume owner binding before authority lookup", async () => {
+    mocks.canonical.mockReturnValueOnce(undefined);
+    await expect(executeMoltbookToolAction({
+      toolId: "moltbook.home.read",
+      toolInput: {},
+      context: { ...context, source: "service" },
+      requestActorBinding: {
+        version: 1,
+        kind: "auth_user",
+        authUserId: "11111111-1111-4111-8111-111111111111",
+        canonicalActorId: "actor:11111111-1111-4111-8111-111111111111",
+        legacyOwnerActorIds: ["attacker@example.test"],
+        readableOwnerActorIds: [
+          "actor:11111111-1111-4111-8111-111111111111",
+          "attacker@example.test",
+        ],
+      },
+      executionScope: scope("owner@example.test"),
+      toolExecutionId: "tool_execution_tampered_resume",
+      agentRunId: "run_moltbook_test",
+    })).rejects.toMatchObject({ code: "tool_authority_mismatch" });
+    expect(mocks.resolvePrincipal).not.toHaveBeenCalled();
+    expect(mocks.home).not.toHaveBeenCalled();
   });
 
   it("fails closed when the initiating request actor does not match the run", async () => {
@@ -134,9 +231,98 @@ describe("Moltbook tool owner mapping", () => {
       context,
       executionScope: scope("other@example.test"),
       toolExecutionId: "tool_execution_two",
+      agentRunId: "run_moltbook_test",
     })).rejects.toThrow("authority does not match");
-    expect(mocks.resolveOwner).not.toHaveBeenCalled();
+    expect(mocks.resolvePrincipal).not.toHaveBeenCalled();
     expect(mocks.resolve).not.toHaveBeenCalled();
+  });
+
+  it("rejects a revoked/replaced principal generation before opening credentials", async () => {
+    mocks.getRunPin.mockResolvedValueOnce({
+      runId: "run_moltbook_test",
+      tenantId: "tenant-one",
+      actorId: "actor:11111111-1111-4111-8111-111111111111",
+      logicalAgentId: "agent_molty",
+      principalId: "agent:agent_molty",
+      principalGeneration: 6,
+    });
+    await expect(executeMoltbookToolAction({
+      toolId: "moltbook.home.read",
+      toolInput: {},
+      context,
+      executionScope: scope("owner@example.test"),
+      toolExecutionId: "tool_execution_old_generation",
+      agentRunId: "run_moltbook_test",
+    })).rejects.toMatchObject({ code: "tool_identity_pin_mismatch" });
+    expect(mocks.resolvePrincipal).toHaveBeenCalledWith(expect.objectContaining({
+      principalGeneration: 6,
+    }));
+    expect(mocks.resolve).not.toHaveBeenCalled();
+  });
+
+  it("rejects a run pin borrowed from another immutable run scope", async () => {
+    mocks.getRunScope.mockResolvedValueOnce(createExecutionScope({
+      tenantId: "tenant-one",
+      initiatingActorId: "owner@example.test",
+      executingPrincipalType: "agent",
+      executingPrincipalId: "agent:agent_molty",
+      correlationId: "different-run-correlation",
+      purpose: "agent.run",
+    }));
+    await expect(executeMoltbookToolAction({
+      toolId: "moltbook.home.read",
+      toolInput: {},
+      context,
+      executionScope: scope("owner@example.test"),
+      toolExecutionId: "tool_execution_cross_run",
+      agentRunId: "run_moltbook_test",
+    })).rejects.toMatchObject({ code: "tool_identity_pin_mismatch" });
+    expect(mocks.resolve).not.toHaveBeenCalled();
+  });
+
+  it("rejects unrelated context or capability grants before opening credentials", async () => {
+    mocks.getRunScope.mockResolvedValueOnce(createExecutionScope({
+      tenantId: "tenant-one",
+      initiatingActorId: "owner@example.test",
+      executingPrincipalType: "agent",
+      executingPrincipalId: "agent:agent_molty",
+      correlationId: "moltbook-correlation",
+      purpose: "moltbook.home.read",
+      contextGrantIds: ["grant:unrelated"],
+    }));
+    await expect(executeMoltbookToolAction({
+      toolId: "moltbook.home.read",
+      toolInput: {},
+      context,
+      executionScope: createExecutionScope({
+        tenantId: "tenant-one",
+        initiatingActorId: "owner@example.test",
+        executingPrincipalType: "agent",
+        executingPrincipalId: "agent:agent_molty",
+        correlationId: "moltbook-correlation",
+        purpose: "moltbook.home.read",
+        contextGrantIds: ["grant:unrelated"],
+      }),
+      toolExecutionId: "tool_execution_broader_grants",
+      agentRunId: "run_moltbook_test",
+    })).rejects.toMatchObject({ code: "tool_identity_pin_mismatch" });
+    expect(mocks.resolve).not.toHaveBeenCalled();
+  });
+
+  it("rejects disabled owner membership before opening the connection credential", async () => {
+    mocks.resolvePrincipal.mockRejectedValueOnce(new Error(
+      "Moltbook Agent ownership could not be resolved.",
+    ));
+    await expect(executeMoltbookToolAction({
+      toolId: "moltbook.home.read",
+      toolInput: {},
+      context,
+      executionScope: scope("owner@example.test"),
+      toolExecutionId: "tool_execution_disabled_membership",
+      agentRunId: "run_moltbook_test",
+    })).rejects.toThrow("ownership could not be resolved");
+    expect(mocks.resolve).not.toHaveBeenCalled();
+    expect(mocks.home).not.toHaveBeenCalled();
   });
 });
 
@@ -417,6 +603,36 @@ describe("Moltbook effect truth and monitoring targets", () => {
     expect(mocks.votePost).not.toHaveBeenCalled();
   });
 
+  it("holds a pending-verification receipt whose challenge is not crash-recoverable", async () => {
+    const toolInput = { postId: "post-42", direction: "up" as const };
+    const action = mutationArgs(
+      "moltbook.post.vote",
+      toolInput,
+      "tool_execution_pending_verification",
+    );
+    mocks.readEvidence.mockResolvedValue({
+      status: "pending_verification",
+      toolId: action.toolId,
+      toolExecutionId: action.toolExecutionId,
+      toolInputSha256: action.toolInputSha256,
+      effectTargetId: action.effectTargetId,
+      requestSha256: moltbookMutationRequestSha256(action.toolId, toolInput),
+      responseSha256: "f".repeat(64),
+      providerObject: {
+        type: "post",
+        ref: "post-42",
+        url: "https://www.moltbook.com/post/post-42",
+      },
+    });
+
+    await expect(reconcileMoltbookToolAction(action)).resolves.toEqual({
+      kind: "held",
+      status: "pending_verification",
+    });
+    expect(mocks.resolve).not.toHaveBeenCalled();
+    expect(mocks.votePost).not.toHaveBeenCalled();
+  });
+
   it("rejects a private acknowledgement whose provenance enum was relabeled", async () => {
     const toolInput = { postId: "post-42", direction: "down" as const };
     mocks.votePost.mockResolvedValue(httpResult(
@@ -447,7 +663,7 @@ function scope(initiatingActorId: string) {
     tenantId: "tenant-one",
     initiatingActorId,
     executingPrincipalType: "agent",
-    executingPrincipalId: "agent_molty",
+    executingPrincipalId: "agent:agent_molty",
     correlationId: "moltbook-correlation",
     purpose: "moltbook.home.read",
   });
@@ -466,6 +682,7 @@ function mutationArgs<
     context,
     executionScope: scope("owner@example.test"),
     toolExecutionId,
+    agentRunId: "run_moltbook_test",
     toolInputSha256: toolInputSha256(toolInput),
     effectTargetId: `moltbook_target_${toolExecutionId}`,
   };

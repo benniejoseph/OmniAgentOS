@@ -6,7 +6,8 @@ const mocks = vi.hoisted(() => ({
   resolveOwner: vi.fn(),
   list: vi.fn(),
   register: vi.fn(),
-  retryRegistration: vi.fn(),
+  resolveIdentity: vi.fn(),
+  identityPin: vi.fn(),
   refresh: vi.fn(),
   pause: vi.fn(),
   resume: vi.fn(),
@@ -27,10 +28,15 @@ vi.mock("@/lib/moltbook/store", async (importOriginal) => ({
   resolveMoltbookAgentOwner: mocks.resolveOwner,
   listMoltbookConnection: mocks.list,
   registerMoltbookConnection: mocks.register,
-  retryMoltbookRegistration: mocks.retryRegistration,
   refreshMoltbookConnection: mocks.refresh,
   pauseMoltbookConnection: mocks.pause,
   resumeMoltbookConnection: mocks.resume,
+}));
+vi.mock("@/lib/agents/identity-store", () => ({
+  resolveAgentIdentityForExecution: mocks.resolveIdentity,
+}));
+vi.mock("@/lib/moltbook/identity-boundary", () => ({
+  moltbookConnectionIdentityPinFromIdentity: mocks.identityPin,
 }));
 
 import { GET, POST } from "@/app/api/agents/[id]/moltbook/route";
@@ -50,7 +56,6 @@ const connection = {
   heartbeatEnabled: true,
   consecutiveFailures: 0,
   credentialConfigured: true,
-  registrationRetryable: false,
   disclosureAccepted: true,
   disclosureVersion: MOLTBOOK_DISCLOSURE_VERSION,
   createdAt: "2026-09-21T00:00:00.000Z",
@@ -67,6 +72,16 @@ beforeEach(() => {
   mocks.resolveOwner.mockResolvedValue({
     tenantId: "tenant-one",
     actorId: storedOwner,
+  });
+  mocks.resolveIdentity.mockResolvedValue({ definition: {}, principal: {} });
+  mocks.identityPin.mockReturnValue({
+    logicalAgentId: "agent_molty",
+    principalId: "agent:agent_molty",
+    principalGeneration: 7,
+    principalSha256: "1".repeat(64),
+    definitionVersion: 3,
+    definitionSha256: "2".repeat(64),
+    policyBoundarySha256: "3".repeat(64),
   });
   mocks.list.mockResolvedValue({ connection, activities: [], nextCursor: null });
   for (const fn of [mocks.refresh, mocks.pause, mocks.resume]) {
@@ -142,14 +157,7 @@ describe("Moltbook Agent route", () => {
     });
   });
 
-  it("routes an explicit safe registration retry with corrected details", async () => {
-    mocks.retryRegistration.mockResolvedValue({
-      connection: { ...connection, status: "pending_claim", claimState: "pending" },
-      claim: {
-        url: "https://www.moltbook.com/claim/claim_456",
-        verificationCode: "reef-Y7C9",
-      },
-    });
+  it("rejects registration retry because no provider non-effect receipt exists", async () => {
     const response = await post({
       action: "retry_registration",
       externalName: "AsaelMolty2",
@@ -157,16 +165,8 @@ describe("Moltbook Agent route", () => {
       disclosureAccepted: true,
       disclosureVersion: MOLTBOOK_DISCLOSURE_VERSION,
     });
-    expect(response.status).toBe(200);
-    expect(mocks.retryRegistration).toHaveBeenCalledWith({
-      owner: { tenantId: "tenant-one", actorId: storedOwner },
-      agentId: "agent_molty",
-      externalName: "AsaelMolty2",
-      description: "A corrected private Asael Agent identity.",
-      heartbeatEnabled: undefined,
-      disclosureAccepted: true,
-      disclosureVersion: MOLTBOOK_DISCLOSURE_VERSION,
-    });
+    expect(response.status).toBe(400);
+    expect(mocks.register).not.toHaveBeenCalled();
   });
 
   it("routes pause and resume as explicit human configuration actions", async () => {

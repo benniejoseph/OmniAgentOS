@@ -174,7 +174,12 @@ import type {
 } from "@/lib/runs/types";
 import type { SecurityContext, SecurityRole } from "@/lib/security/types";
 import { redactSensitive } from "@/lib/security/context";
+import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
 import { resolveRuntimeModelAssignment } from "@/lib/settings/runtime-models";
+import {
+  continuationAuthUserBinding,
+  resolveContinuationAuthAuthority,
+} from "@/lib/orchestration/continuation-authority";
 import {
   executeGovernedTool,
   governedToolOperationClass,
@@ -1845,6 +1850,7 @@ export async function* runAgent(
               tenantId: securityContext.tenantId,
               actorId: securityContext.actorId,
               role: securityContext.role,
+              authUserBinding: continuationAuthUserBinding(securityContext),
             },
             toolPolicy: agentToolPolicy,
             memoryScope: request.agentProfile?.memoryScope || "all",
@@ -2266,6 +2272,7 @@ export async function* runAgent(
                 tenantId: securityContext.tenantId,
                 actorId: securityContext.actorId,
                 role: securityContext.role,
+                authUserBinding: continuationAuthUserBinding(securityContext),
               },
               toolPolicy: agentToolPolicy,
               memoryScope: request.agentProfile?.memoryScope || "all",
@@ -2568,6 +2575,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
     byFunctionName: Map<string, ToolboxEntry>;
   };
   securityContext: SecurityContext;
+  requestActorBinding?: CanonicalRequestActorBindingV1;
   executionScope?: ExecutionScope;
   runId: string;
   assignmentId?: string;
@@ -2842,6 +2850,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
             dryRun: false,
             approved: false,
             context: input.securityContext,
+            requestActorBinding: input.requestActorBinding,
             abortSignal: input.abortSignal,
             idempotencyKey:
               `${input.runId}:${activeProvider}:${item.call.callId}`,
@@ -2949,6 +2958,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
           dryRun: false,
           approved: false,
           context: input.securityContext,
+          requestActorBinding: input.requestActorBinding,
           abortSignal: input.abortSignal,
           idempotencyKey: `${input.runId}:${activeProvider}:${call.callId}`,
           forceApproval: forceApprovalForRisk(
@@ -3370,6 +3380,11 @@ async function resumeAgentRunAfterToolApprovalInScope({
       code: "computer_use_target_retired" as const,
     };
   }
+  const resumeAuthority = await resolveContinuationAuthAuthority(
+    run,
+    continuation,
+    executionScope,
+  );
   if (continuation.providerToolState) {
     return resumeProviderBoundAgentRunAfterApproval({
       run,
@@ -3380,6 +3395,8 @@ async function resumeAgentRunAfterToolApprovalInScope({
       abortSignal,
       executionScope,
       resumeFence,
+      resumeSecurityContext: resumeAuthority.securityContext,
+      resumeActorBinding: resumeAuthority.actorBinding,
     });
   }
 
@@ -3689,12 +3706,8 @@ async function resumeAgentRunAfterToolApprovalInScope({
         input,
         dryRun: false,
         approved: false,
-        context: {
-          tenantId: continuation.context.tenantId,
-          actorId: continuation.context.actorId,
-          role: continuation.context.role,
-          source: "default",
-        },
+        context: resumeAuthority.securityContext,
+        requestActorBinding: resumeAuthority.actorBinding,
         abortSignal: resumeAbortSignal,
         idempotencyKey: `${run.id}:${call.callId}`,
         forceApproval: forceApprovalForTool(
@@ -4003,12 +4016,8 @@ async function resumeAgentRunAfterToolApprovalInScope({
           input,
           dryRun: false,
           approved: false,
-          context: {
-            tenantId: continuation.context.tenantId,
-            actorId: continuation.context.actorId,
-            role: continuation.context.role,
-            source: "default",
-          },
+          context: resumeAuthority.securityContext,
+          requestActorBinding: resumeAuthority.actorBinding,
           abortSignal: resumeAbortSignal,
           idempotencyKey: `${run.id}:${call.callId}`,
           forceApproval: forceApprovalForTool(
@@ -4241,6 +4250,8 @@ async function resumeProviderBoundAgentRunAfterApproval({
   abortSignal,
   executionScope,
   resumeFence,
+  resumeSecurityContext,
+  resumeActorBinding,
 }: {
   run: AgentRunRecord;
   continuation: AgentRunContinuation;
@@ -4250,6 +4261,8 @@ async function resumeProviderBoundAgentRunAfterApproval({
   abortSignal?: AbortSignal;
   executionScope?: ExecutionScope;
   resumeFence?: AgentRunResumeFence;
+  resumeSecurityContext: SecurityContext;
+  resumeActorBinding?: CanonicalRequestActorBindingV1;
 }) {
   const providerState = continuation.providerToolState;
   const maxToolSteps = resolveMaxToolSteps(
@@ -4679,12 +4692,8 @@ async function resumeProviderBoundAgentRunAfterApproval({
         input: parsedArguments,
         dryRun: false,
         approved: false,
-        context: {
-          tenantId: continuation.context.tenantId,
-          actorId: continuation.context.actorId,
-          role: continuation.context.role,
-          source: "default",
-        },
+        context: resumeSecurityContext,
+        requestActorBinding: resumeActorBinding,
         abortSignal: resumeAbortSignal,
         idempotencyKey:
           `${run.id}:${providerState.provider}:${call.callId}`,
@@ -4761,12 +4770,8 @@ async function resumeProviderBoundAgentRunAfterApproval({
         parameters: tool.parameters,
       })),
       toolbox,
-      securityContext: {
-        tenantId: continuation.context.tenantId,
-        actorId: continuation.context.actorId,
-        role: continuation.context.role,
-        source: "default",
-      },
+      securityContext: resumeSecurityContext,
+      requestActorBinding: resumeActorBinding,
       executionScope,
       runId: run.id,
       assignmentId: resumeRuntimeModel.assignmentId,

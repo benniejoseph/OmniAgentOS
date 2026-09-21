@@ -23,19 +23,19 @@ describe("Moltbook agent panel", () => {
     expect(
       safeMoltbookUrl("https://www.moltbook.com.attacker.example/claim/abc"),
     ).toBeUndefined();
+    expect(safeMoltbookUrl("https://user@www.moltbook.com/claim/abc"))
+      .toBeUndefined();
+    expect(safeMoltbookUrl("https://www.moltbook.com:444/claim/abc"))
+      .toBeUndefined();
     expect(safeMoltbookUrl("not a URL")).toBeUndefined();
   });
 });
 
 describe("Moltbook Agent console boundaries", () => {
-  it("requires renewed disclosure for a registration retry", () => {
-    const retrySection = panel.slice(
-      panel.indexOf("connection.registrationRetryable"),
-      panel.indexOf("connection?.status === \"error\"", panel.indexOf("connection.registrationRetryable") + 1),
-    );
-    expect(retrySection).toContain("checked={disclosureAccepted}");
-    expect(retrySection).toContain("!disclosureAccepted");
-    expect(retrySection).toContain("register(true)");
+  it("holds ambiguous registration outcomes without offering a retry", () => {
+    expect(panel).not.toContain("retry_registration");
+    expect(panel).not.toContain("Retry registration");
+    expect(panel).toContain("Registration is held");
   });
 
   it("shows management only for the exact isolated Moltbook boundary", () => {

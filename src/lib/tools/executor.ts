@@ -126,6 +126,7 @@ import { approvalMaterialBindingSha256 } from "@/lib/tools/approval-binding";
 import { toolApprovalFingerprint } from "@/lib/tools/fingerprint";
 import { evaluateToolPolicy } from "@/lib/tools/policy";
 import type { SecurityContext } from "@/lib/security/types";
+import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
 import {
   assertToolExecutionBindingMatchesRequest,
   bindToolExecutionScope,
@@ -426,6 +427,7 @@ export async function executeGovernedTool({
   dryRun = true,
   approved = false,
   context,
+  requestActorBinding,
   existingRecord,
   approvalReason,
   executionClaimToken,
@@ -444,6 +446,8 @@ export async function executeGovernedTool({
   dryRun?: boolean;
   approved?: boolean;
   context?: SecurityContext;
+  /** Run-verified non-secret owner binding for an approval continuation. */
+  requestActorBinding?: CanonicalRequestActorBindingV1;
   existingRecord?: ToolExecutionRecord;
   approvalReason?: string;
   executionClaimToken?: string;
@@ -721,6 +725,7 @@ export async function executeGovernedTool({
       executionScope: scopedMoltbookRequest.executionScope,
       context,
       agentRunId,
+      requestActorBinding,
     });
     const record = reconciled || existingRecord;
     return {
@@ -1718,6 +1723,7 @@ export async function executeGovernedTool({
         executionRecord?.createdAt,
         agentRunId,
         executionRecord,
+        requestActorBinding,
       );
     } catch (error) {
       if (effectContext || providerEffectIntent) {
@@ -2270,6 +2276,7 @@ async function reconcileExistingMoltbookEffect(input: {
   executionScope?: ExecutionScope;
   context?: SecurityContext;
   agentRunId?: string;
+  requestActorBinding?: CanonicalRequestActorBindingV1;
 }): Promise<ToolExecutionRecord | undefined> {
   if (
     input.record.status !== "executing" ||
@@ -2318,6 +2325,7 @@ async function reconcileExistingMoltbookEffect(input: {
       executionRecord: input.record,
       effectTargetId: material.targetId,
       agentRunId: input.agentRunId,
+      requestActorBinding: input.requestActorBinding,
     });
   } catch (error) {
     throw new EffectReceiptFinalizationError({ cause: error });
@@ -3406,6 +3414,7 @@ async function runTool(
   executionObservedAt?: string,
   agentRunId?: string,
   executionRecord?: ToolExecutionRecord,
+  requestActorBinding?: CanonicalRequestActorBindingV1,
 ) {
   const parsed = parseInput(tool, input);
   const aiUsageScope = (
@@ -3438,6 +3447,7 @@ async function runTool(
       effectTargetId,
       agentRunId,
       abortSignal,
+      requestActorBinding,
     });
   }
 

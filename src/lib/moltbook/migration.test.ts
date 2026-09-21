@@ -26,6 +26,33 @@ describe("Moltbook v190 migration", () => {
     expect(migration).toContain("UNIQUE (tenant_id, owner_actor_id, agent_id)");
   });
 
+  it("pins one immutable principal generation, definition, and exact policy boundary", () => {
+    for (const fragment of [
+      "principal_id TEXT NOT NULL",
+      "principal_generation BIGINT NOT NULL",
+      "principal_sha256 TEXT NOT NULL",
+      "definition_version BIGINT NOT NULL",
+      "definition_sha256 TEXT NOT NULL",
+      "policy_boundary_sha256 TEXT NOT NULL",
+      "CONSTRAINT omni_moltbook_connections_principal_fkey",
+      "FOREIGN KEY (tenant_id, principal_id, principal_generation)",
+      "CONSTRAINT omni_moltbook_connections_definition_fkey",
+      "FOREIGN KEY (tenant_id, agent_id, definition_version)",
+      "principal.state = 'active'",
+      "JOIN public.omni_auth_user_actor_identifiers owner_identifier",
+      "owner_identifier.actor_identifier COLLATE \"C\" =",
+      "owner_identifier.canonical_actor_id = principal.controller_actor_id",
+      "policy.owner_actor_id = principal.controller_actor_id",
+      "policy.authority_mode = 'explicit_grants'",
+      "cardinality(policy.context_grant_ids) = 0",
+      "cardinality(policy.capability_grant_ids) = 0",
+    ]) {
+      expect(migration).toContain(fragment);
+    }
+    expect(migration).toContain("OLD.principal_generation IS DISTINCT FROM NEW.principal_generation");
+    expect(migration).toContain("OLD.policy_boundary_sha256 IS DISTINCT FROM NEW.policy_boundary_sha256");
+  });
+
   it("forces tenant-permissive plus actor-restrictive RLS", () => {
     expect(migration.match(/FORCE ROW LEVEL SECURITY/g)).toHaveLength(1);
     expect(migration).toContain("omni_actor_scope_v1_allows(tenant_id, owner_actor_id)");
@@ -60,7 +87,8 @@ describe("Moltbook v190 migration", () => {
     expect(migration).toContain(
       "GRANT EXECUTE ON FUNCTION omni_moltbook_agent_boundary_is_exact_v1(\n      TEXT[], TEXT[], TEXT, TEXT, TEXT\n    ) TO omni_maintenance",
     );
-    expect(migration).toContain("OLD.last_error_code LIKE 'registration_rejected.%'");
+    expect(migration).toContain("safe_registration_retry := FALSE");
+    expect(migration).not.toContain("OLD.last_error_code LIKE 'registration_rejected.%'");
     expect(migration).toContain("disclosure_version = 'moltbook-public-activity-v1'");
     expect(migration).toContain("registration_request_sha256 ~ '^[a-f0-9]{64}$'");
   });
@@ -69,9 +97,9 @@ describe("Moltbook v190 migration", () => {
     expect(migrationManifest.at(-1)).toEqual({
       version: 190,
       name: "moltbook_agent_connections_v1",
-      checksum: "94e09279f1c3906a1a2e7532282030009df130a148be4d74db104fecc701a548",
+      checksum: "e0b8c00ca8f4fce6139735623366cacfa97675419a57c1666b4bf0fe4bbe8e46",
     });
-    expect(migration).toContain("190,\n  'moltbook_agent_connections_v1',\n  '94e09279f1c3906a1a2e7532282030009df130a148be4d74db104fecc701a548'");
+    expect(migration).toContain("190,\n  'moltbook_agent_connections_v1',\n  'e0b8c00ca8f4fce6139735623366cacfa97675419a57c1666b4bf0fe4bbe8e46'");
     expect(databaseClient).toContain("up: ensureMoltbookAgentConnectionsV1");
     expect(databaseClient).toContain("...databaseSchemaMigrations[189]");
   });
@@ -90,11 +118,17 @@ describe("Moltbook v190 migration", () => {
       "CREATE TABLE IF NOT EXISTS omni_moltbook_activities",
       "CREATE TABLE IF NOT EXISTS omni_moltbook_effect_receipts",
       "FOREIGN KEY (tenant_id, owner_actor_id, agent_id)",
+      "CONSTRAINT omni_moltbook_connections_principal_fkey",
+      "CONSTRAINT omni_moltbook_connections_definition_fkey",
+      "omni_moltbook_connections_principal_generation_valid",
+      "omni_moltbook_connections_policy_boundary_sha256_valid",
       "Moltbook connection lifecycle transition is invalid",
       "Moltbook activities and effect receipts are immutable",
       "omni_moltbook_agent_boundary_is_exact_v1",
       "omni_custom_agents_moltbook_guard",
-      "registration_rejected.%",
+      "safe_registration_retry := FALSE",
+      "cardinality(policy.context_grant_ids) = 0",
+      "cardinality(policy.capability_grant_ids) = 0",
       "moltbook-public-activity-v1",
       "AS RESTRICTIVE FOR ALL TO PUBLIC",
       "GRANT SELECT, INSERT ON omni_moltbook_activities TO omni_runtime",
