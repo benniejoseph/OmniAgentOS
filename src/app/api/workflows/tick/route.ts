@@ -57,6 +57,7 @@ import {
   processAllTenantDurableSpecialistQueues,
   processDurableSpecialistQueue,
 } from "@/lib/subagents/worker";
+import { processDueMoltbookHeartbeats } from "@/lib/moltbook/store";
 
 export const runtime = "nodejs";
 // Workflow steps run gpt-5 planning/execution that can exceed 60s; 300s is the
@@ -459,6 +460,10 @@ async function POSTHandler(request: Request) {
       tenantId: context.tenantId,
       limit: 2,
     });
+    const moltbookHeartbeats = await processDueMoltbookHeartbeats({
+      tenantId: context.tenantId,
+      limit: 2,
+    });
     const slo = parsed.data.slo
       ? await runObservabilitySloMonitor({
           trigger: "operator.workflow_tick",
@@ -528,6 +533,7 @@ async function POSTHandler(request: Request) {
       projectExecutions,
       connectedSourceSyncs,
       salesforceSyncs,
+      moltbookHeartbeats,
       slo,
       alerts,
       stats,
@@ -611,6 +617,10 @@ function summarizeScheduledOutcome(
     ),
     mobilePushProviderAccepted: scheduled.maintenance.reduce(
       (total, item) => total + item.mobilePushProviderAccepted,
+      0,
+    ),
+    moltbookHeartbeatsProcessed: scheduled.maintenance.reduce(
+      (total, item) => total + item.moltbookHeartbeatsProcessed,
       0,
     ),
   };
@@ -777,6 +787,7 @@ async function runAllTenantScheduledWork({
     projectExecutionsProcessed: number;
     connectedSourcesSynced: number;
     salesforceConnectionsSynced: number;
+    moltbookHeartbeatsProcessed: number;
     externalDelegationsTerminated: number;
     maintenanceError?: string;
     memoryMaintenance?: MemoryMaintenanceReport;
@@ -905,6 +916,7 @@ async function runTenantMaintenance({
     projectExecutionsProcessed: number;
     connectedSourcesSynced: number;
     salesforceConnectionsSynced: number;
+    moltbookHeartbeatsProcessed: number;
     externalDelegationsTerminated: number;
     maintenanceError?: string;
     memoryMaintenance?: MemoryMaintenanceReport;
@@ -923,6 +935,7 @@ async function runTenantMaintenance({
     projectExecutionsProcessed: 0,
     connectedSourcesSynced: 0,
     salesforceConnectionsSynced: 0,
+    moltbookHeartbeatsProcessed: 0,
     externalDelegationsTerminated: 0,
     loopV2Recovery: emptyLoopV2RecoverySummary(),
   };
@@ -991,6 +1004,11 @@ async function runTenantMaintenance({
       await syncDueSalesforceConnections({ tenantId, limit: 2 })
     ).filter((item) => item.status === "healthy").length;
   }
+  if (Date.now() < deadlineAt) {
+    result.moltbookHeartbeatsProcessed = (
+      await processDueMoltbookHeartbeats({ tenantId, limit: 2 })
+    ).processed;
+  }
   if (enableSlo && Date.now() < deadlineAt) {
     result.slo = await runObservabilitySloMonitor({
       trigger,
@@ -1027,6 +1045,7 @@ function failedTenantMaintenance(
     projectExecutionsProcessed: 0,
     connectedSourcesSynced: 0,
     salesforceConnectionsSynced: 0,
+    moltbookHeartbeatsProcessed: 0,
     externalDelegationsTerminated: 0,
     maintenanceError,
     loopV2Recovery: emptyLoopV2RecoverySummary(),

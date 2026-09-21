@@ -770,10 +770,15 @@ describe("ordered database schema versions", () => {
       name: "builtin_skill_catalog_v3",
       checksum: "4c206314533b7812aff807d551f1b1514987582b64c21e1c17378ac0c592deb1",
     });
-    expect(databaseSchemaMigrations.at(-1)).toEqual({
+    expect(databaseSchemaMigrations.find((migration) => migration.version === 189)).toEqual({
       version: 189,
       name: "generated_artifact_persistence_v1",
       checksum: "4065c615c77bf4baf5921d5dcd468359ed8113bc49ba5291908bdfc3b9f36ebf",
+    });
+    expect(databaseSchemaMigrations.at(-1)).toEqual({
+      version: 190,
+      name: "moltbook_agent_connections_v1",
+      checksum: "26386c7278e889ecafbb35d8bc35d17f4e519e0b0fb6da43b3e72295152c4147",
     });
     expect(databaseSchemaMigrations.find((migration) => migration.version === 139)).toEqual({
       version: 139,

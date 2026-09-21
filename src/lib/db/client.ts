@@ -28,6 +28,7 @@ import { ensureMobilePushReceiptCanaryV1 } from "@/lib/db/mobile-push-receipt-sc
 import { ensureDeclarativePluginsV1 } from "@/lib/db/plugin-schema";
 import { ensureBuiltinSkillCatalogV2 } from "@/lib/db/builtin-skill-catalog-schema";
 import { ensureBuiltinSkillCatalogV3 } from "@/lib/db/builtin-skill-catalog-v3-schema";
+import { ensureMoltbookAgentConnectionsV1 } from "@/lib/moltbook/schema";
 import schemaMigrationManifest from "../../../schema-migrations.json";
 
 // ---------------------------------------------------------------------------
@@ -232,6 +233,9 @@ export const tenantRootPolicyTables = [
   "omni_mission_artifacts",
   "omni_custom_skills",
   "omni_custom_agents",
+  "omni_moltbook_connections",
+  "omni_moltbook_activities",
+  "omni_moltbook_effect_receipts",
   "omni_capture_recordings",
   "omni_capture_segments",
   "omni_capture_assets",
@@ -1658,6 +1662,10 @@ function schemaMigrations(): SchemaMigration[] {
         await ensureGeneratedArtifactPersistenceV1(sql);
         await ensureTenantIsolationPolicies(sql);
       },
+    },
+    {
+      ...databaseSchemaMigrations[189],
+      up: ensureMoltbookAgentConnectionsV1,
     },
   ];
 }

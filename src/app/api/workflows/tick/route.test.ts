@@ -21,6 +21,7 @@ const routeMocks = vi.hoisted(() => ({
   processActiveProjectExecutions: vi.fn(),
   syncDuePersonalProviders: vi.fn(),
   syncDueSalesforceConnections: vi.fn(),
+  processDueMoltbookHeartbeats: vi.fn(),
   recordSecurityAudit: vi.fn(),
   recordRuntimeEventSafely: vi.fn(),
   recordWorkerHeartbeat: vi.fn(),
@@ -147,6 +148,11 @@ vi.mock("@/lib/connectors/personal-sync", async (importOriginal) => ({
 vi.mock("@/lib/customer-success/salesforce-sync", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/customer-success/salesforce-sync")>()),
   syncDueSalesforceConnections: routeMocks.syncDueSalesforceConnections,
+}));
+
+vi.mock("@/lib/moltbook/store", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/moltbook/store")>()),
+  processDueMoltbookHeartbeats: routeMocks.processDueMoltbookHeartbeats,
 }));
 
 vi.mock("@/lib/subagents/worker", async (importOriginal) => ({
@@ -280,6 +286,12 @@ beforeEach(() => {
   routeMocks.processActiveProjectExecutions.mockReset().mockResolvedValue([]);
   routeMocks.syncDuePersonalProviders.mockReset().mockResolvedValue([]);
   routeMocks.syncDueSalesforceConnections.mockReset().mockResolvedValue([]);
+  routeMocks.processDueMoltbookHeartbeats.mockReset().mockResolvedValue({
+    processed: 0,
+    healthy: 0,
+    failed: 0,
+    skipped: 0,
+  });
   routeMocks.recordRuntimeEventSafely.mockReset().mockResolvedValue(undefined);
   routeMocks.recordSecurityAudit.mockReset().mockResolvedValue(undefined);
   routeMocks.recordWorkerHeartbeat.mockReset().mockImplementation(async (input) => ({
@@ -473,6 +485,10 @@ describe("dedicated worker heartbeat timing", () => {
     expect(routeMocks.reconcileAbandonedExternalA2ATasks).toHaveBeenCalledWith({
       tenantId: "tenant-a",
       limit: 5,
+    });
+    expect(routeMocks.processDueMoltbookHeartbeats).toHaveBeenCalledWith({
+      tenantId: "tenant-a",
+      limit: 2,
     });
   });
 
