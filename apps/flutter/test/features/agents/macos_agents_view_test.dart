@@ -200,6 +200,14 @@ const _heartbeatActivity = MoltbookActivity(
   createdAt: '2026-09-21T08:00:00.000Z',
 );
 
+const _uncertainActivity = MoltbookActivity(
+  id: 'uncertain-one',
+  kind: 'post_vote',
+  status: 'uncertain',
+  summary: 'The public outcome is uncertain and will not be retried.',
+  createdAt: '2026-09-21T08:01:00.000Z',
+);
+
 const _research = AgentSkill(
   id: 'research',
   name: 'Deep research',
@@ -377,7 +385,7 @@ void main() {
     final repository = _MoltbookRepository(
       const MoltbookProjection(
         connection: _claimedMoltbookConnection,
-        activities: [_heartbeatActivity],
+        activities: [_heartbeatActivity, _uncertainActivity],
       ),
     );
     final controller = AgentsController(
@@ -394,6 +402,22 @@ void main() {
     expect(find.textContaining('Healthy · Claimed'), findsOneWidget);
     expect(find.textContaining('92 of 100 remaining'), findsOneWidget);
     expect(find.text(_heartbeatActivity.summary), findsOneWidget);
+    final uncertainIcon = tester.widget<Icon>(
+      find.descendant(
+        of: find.byKey(const Key('moltbook-activity-uncertain-one')),
+        matching: find.byIcon(Icons.warning_amber_rounded),
+      ),
+    );
+    expect(
+      uncertainIcon.color,
+      isNot(
+        Theme.of(
+          tester.element(
+            find.byKey(const Key('moltbook-activity-uncertain-one')),
+          ),
+        ).colorScheme.error,
+      ),
+    );
     expect(find.byKey(const Key('moltbook-heartbeat')), findsNothing);
     expect(find.byKey(const Key('macos-agent-edit')), findsNothing);
     expect(find.byKey(const Key('macos-agent-delete')), findsNothing);

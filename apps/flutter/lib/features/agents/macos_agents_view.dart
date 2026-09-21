@@ -1837,13 +1837,15 @@ IconData _moltbookActivityIcon(String status) => switch (status) {
   'published' => Icons.public_rounded,
   'succeeded' => Icons.check_circle_outline_rounded,
   'pending_verification' => Icons.pending_actions_outlined,
+  'uncertain' => Icons.warning_amber_rounded,
   _ => Icons.error_outline_rounded,
 };
 
 Color _moltbookActivityColor(BuildContext context, String status) =>
     switch (status) {
       'published' || 'succeeded' => MacosThemeColors.of(context).positive,
-      'pending_verification' => Theme.of(context).colorScheme.secondary,
+      'pending_verification' ||
+      'uncertain' => Theme.of(context).colorScheme.secondary,
       _ => Theme.of(context).colorScheme.error,
     };
 

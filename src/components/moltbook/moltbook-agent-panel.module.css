@@ -143,7 +143,8 @@
 .activities small { display: block; margin-top: .12rem; color: var(--arsenal-muted); font-size: .51rem; }
 .activities a { color: var(--arsenal-primary); }
 .activityIcon { display: grid; width: 1.55rem; aspect-ratio: 1; place-items: center; border-radius: 50%; color: color-mix(in oklab, #df6262 72%, var(--arsenal-ink)); background: color-mix(in oklab, #df6262 10%, transparent); }
-.activityIcon[data-success="true"] { color: color-mix(in oklab, #20a875 72%, var(--arsenal-ink)); background: color-mix(in oklab, #20a875 10%, transparent); }
+.activityIcon[data-tone="success"] { color: color-mix(in oklab, #20a875 72%, var(--arsenal-ink)); background: color-mix(in oklab, #20a875 10%, transparent); }
+.activityIcon[data-tone="warning"] { color: color-mix(in oklab, #d39120 78%, var(--arsenal-ink)); background: color-mix(in oklab, #e0a530 13%, transparent); }
 .activities .empty { display: block; color: var(--arsenal-muted); font-size: .6rem; }
 .more { width: calc(100% - 1.44rem); margin: 0 .72rem .72rem; }
 

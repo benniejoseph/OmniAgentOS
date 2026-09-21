@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -83,6 +85,23 @@ describe("Moltbook store contracts", () => {
     expect(observation).not.toContain("client.home");
   });
 
+  it("looks up effect evidence by unique execution identity before checking bindings", () => {
+    const source = readFileSync(resolve(
+      process.cwd(),
+      "src/lib/moltbook/store.ts",
+    ), "utf8");
+    const reader = source.slice(
+      source.indexOf("export async function readMoltbookEffectEvidence"),
+      source.indexOf("export async function observeMoltbookRateLimit"),
+    );
+    const where = reader.slice(reader.indexOf("WHERE"), reader.indexOf("LIMIT 2"));
+    expect(where).toContain("tool_execution_id = ${input.toolExecutionId}");
+    expect(where).not.toContain("tool_input_sha256 =");
+    expect(where).not.toContain("request_sha256 =");
+    expect(reader).toContain("String(row.tool_input_sha256) !== input.toolInputSha256");
+    expect(reader).toContain("String(row.request_sha256) !== input.requestSha256");
+  });
+
   it("allows registration retry only after a definite non-effecting rejection", () => {
     expect(isDefiniteMoltbookRegistrationRejection(new MoltbookProviderError({
       code: "provider_http_409",
@@ -112,5 +131,3 @@ describe("Moltbook store contracts", () => {
     })).toBe(false);
   });
 });
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";

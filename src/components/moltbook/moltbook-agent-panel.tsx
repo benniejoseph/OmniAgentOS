@@ -471,9 +471,11 @@ function ConnectionBadge({
 function ActivityRow({ activity }: { activity: MoltbookActivityProjection }) {
   const externalUrl = safeMoltbookUrl(activity.providerObject?.url);
   const successful = ["succeeded", "published"].includes(activity.status);
+  const warning = ["uncertain", "pending_verification"].includes(activity.status);
+  const tone = successful ? "success" : warning ? "warning" : "error";
   return (
     <li>
-      <span className={styles.activityIcon} data-success={successful}>
+      <span className={styles.activityIcon} data-tone={tone}>
         {successful ? <CheckCircle2 size={13} /> : <AlertTriangle size={13} />}
       </span>
       <span>

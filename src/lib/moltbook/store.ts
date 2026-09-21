@@ -20,6 +20,7 @@ import {
   type MoltbookConnectionProjection,
   type MoltbookConnectionStatus,
   type MoltbookRateLimitProjection,
+  type MoltbookToolId,
 } from "@/lib/moltbook/contracts";
 import {
   createMoltbookClient,
@@ -73,6 +74,25 @@ export type MoltbookConnectionAccess = Readonly<{
   agentId: string;
   externalName: string;
   apiKey: string;
+}>;
+
+export type MoltbookEffectStatus =
+  | "succeeded"
+  | "failed"
+  | "uncertain"
+  | "pending_verification"
+  | "published";
+
+export type MoltbookEffectEvidence = Readonly<{
+  status: MoltbookEffectStatus;
+  toolId: MoltbookToolId;
+  toolExecutionId: string;
+  toolInputSha256: string;
+  effectTargetId: string;
+  requestSha256: string;
+  responseSha256?: string;
+  providerObject?: Readonly<{ type: string; ref: string; url?: string }>;
+  errorCode?: string;
 }>;
 
 export async function resolveMoltbookAgentOwner(input: {
@@ -447,63 +467,37 @@ export async function resolveMoltbookConnectionForTool(input: {
     input.tenantId,
     [input.ownerActorId],
     async () => {
-      const rows = await getSql()`
-        SELECT connection.*, agent.status AS agent_status,
-          agent.skill_ids, agent.tool_ids, agent.memory_scope,
-          agent.autonomy, agent.approval_policy
-        FROM omni_moltbook_connections connection
-        JOIN omni_custom_agents agent
-          ON agent.tenant_id = connection.tenant_id
-         AND agent.actor_id = connection.owner_actor_id
-         AND agent.id = connection.agent_id
-        WHERE connection.tenant_id = ${input.tenantId}
-          AND connection.owner_actor_id = ${input.ownerActorId}
-          AND connection.agent_id = ${input.executingAgentId}
-        LIMIT 2
-      `;
-      if (rows.length !== 1) {
-        throw new MoltbookConnectionError(
-          "The exact Moltbook Agent connection could not be resolved.",
-          { status: 404, code: "connection_not_found" },
-        );
-      }
-      const row = rows[0];
-      if (String(row.agent_status) === "paused") {
-        throw new MoltbookConnectionError(
-          "The linked Asael Agent is paused.",
-          { code: "agent_paused" },
-        );
-      }
-      assertExactMoltbookBoundary(row);
-      if (String(row.status) === "paused") {
-        throw new MoltbookConnectionError(
-          "The Moltbook connection is paused.",
-          { code: "connection_paused" },
-        );
-      }
-      if (String(row.status) !== "claimed" || String(row.claim_state) !== "claimed") {
-        throw new MoltbookConnectionError(
-          "The Moltbook Agent must be claimed before it can use social tools.",
-          { code: "connection_unclaimed" },
-        );
-      }
+      const row = await exactMoltbookConnectionRow(getSql(), input);
       const credentials = openMoltbookCredentials(row);
-      return {
-        connectionId: String(row.id),
-        tenantId: String(row.tenant_id),
-        ownerActorId: String(row.owner_actor_id),
-        agentId: String(row.agent_id),
-        externalName: String(row.external_name),
-        apiKey: credentials.apiKey,
-      };
+      return { ...publicConnectionAccess(row), apiKey: credentials.apiKey };
     },
+  );
+}
+
+/**
+ * Resolves the exact linked connection without opening its credential. Receipt
+ * reconciliation is deliberately credential-free so it cannot call Moltbook.
+ */
+export async function resolveMoltbookConnectionForReceipt(input: {
+  tenantId: string;
+  ownerActorId: string;
+  executingAgentId: string;
+}): Promise<Omit<MoltbookConnectionAccess, "apiKey">> {
+  requireDatabase();
+  await ensureDatabaseSchema();
+  return runWithDatabaseActorScope(
+    input.tenantId,
+    [input.ownerActorId],
+    async () => publicConnectionAccess(
+      await exactMoltbookConnectionRow(getSql(), input),
+    ),
   );
 }
 
 export async function appendMoltbookToolActivity(input: {
   access: Omit<MoltbookConnectionAccess, "apiKey">;
   kind: string;
-  status: "succeeded" | "failed" | "pending_verification" | "published";
+  status: MoltbookEffectStatus;
   summary: string;
   providerObjectType?: string;
   providerObjectRef?: string;
@@ -514,6 +508,9 @@ export async function appendMoltbookToolActivity(input: {
   responseSha256?: string;
   errorCode?: string;
   effect?: boolean;
+  toolId?: MoltbookToolId;
+  toolInputSha256?: string;
+  effectTargetId?: string;
 }) {
   return runWithDatabaseActorScope(
     input.access.tenantId,
@@ -542,6 +539,85 @@ export async function appendMoltbookToolActivity(input: {
         await appendEffectReceipt(sql, input);
       }
     }),
+  );
+}
+
+export async function readMoltbookEffectEvidence(input: {
+  access: Omit<MoltbookConnectionAccess, "apiKey">;
+  toolId: MoltbookToolId;
+  toolExecutionId: string;
+  toolInputSha256: string;
+  effectTargetId: string;
+  requestSha256: string;
+}): Promise<MoltbookEffectEvidence | undefined> {
+  requireDatabase();
+  await ensureDatabaseSchema();
+  return runWithDatabaseActorScope(
+    input.access.tenantId,
+    [input.access.ownerActorId],
+    async () => {
+      const rows = await getSql()`
+        SELECT connection_id, effect_status, tool_id, tool_execution_id,
+          tool_input_sha256, effect_target_id, request_sha256,
+          response_sha256, provider_object_type, provider_object_ref,
+          error_code
+        FROM omni_moltbook_effect_receipts
+        WHERE tenant_id = ${input.access.tenantId}
+          AND owner_actor_id = ${input.access.ownerActorId}
+          AND agent_id = ${input.access.agentId}
+          AND tool_execution_id = ${input.toolExecutionId}
+        LIMIT 2
+      `;
+      if (rows.length > 1) {
+        throw new MoltbookConnectionError(
+          "Moltbook effect evidence is ambiguous for this execution.",
+          { code: "effect_receipt_ambiguous" },
+        );
+      }
+      const row = rows[0];
+      if (!row) return undefined;
+      const status = String(row.effect_status) as MoltbookEffectStatus;
+      const responseSha256 = optionalDigest(row.response_sha256);
+      const errorCode = optionalSafeToken(row.error_code) || undefined;
+      if (
+        !["succeeded", "failed", "uncertain", "pending_verification", "published"].includes(status) ||
+        String(row.connection_id) !== input.access.connectionId ||
+        String(row.tool_id) !== input.toolId ||
+        String(row.tool_execution_id) !== input.toolExecutionId ||
+        String(row.tool_input_sha256) !== input.toolInputSha256 ||
+        String(row.effect_target_id) !== input.effectTargetId ||
+        String(row.request_sha256) !== input.requestSha256 ||
+        (["succeeded", "pending_verification", "published"].includes(status) && !responseSha256) ||
+        (["failed", "uncertain"].includes(status) !== Boolean(errorCode))
+      ) {
+        throw new MoltbookConnectionError(
+          "Moltbook effect evidence failed its exact execution binding.",
+          { code: "effect_receipt_invalid" },
+        );
+      }
+      const providerType = optionalSafeToken(row.provider_object_type);
+      const providerRef = optionalProviderRef(row.provider_object_ref);
+      const providerObject = providerType && providerRef
+        ? {
+            type: providerType,
+            ref: providerRef,
+            ...(providerType === "post"
+              ? { url: `${MOLTBOOK_API_ORIGIN}/post/${encodeURIComponent(providerRef)}` }
+              : {}),
+          }
+        : undefined;
+      return {
+        status,
+        toolId: input.toolId,
+        toolExecutionId: input.toolExecutionId,
+        toolInputSha256: input.toolInputSha256,
+        effectTargetId: input.effectTargetId,
+        requestSha256: input.requestSha256,
+        ...(responseSha256 ? { responseSha256 } : {}),
+        ...(providerObject ? { providerObject } : {}),
+        ...(errorCode ? { errorCode } : {}),
+      };
+    },
   );
 }
 
@@ -834,6 +910,69 @@ async function assertOwnedAgent(
   if (options.requireMoltbookBoundary) assertExactMoltbookBoundary(rows[0]);
 }
 
+async function exactMoltbookConnectionRow(
+  sql: Sql,
+  input: {
+    tenantId: string;
+    ownerActorId: string;
+    executingAgentId: string;
+  },
+) {
+  const rows = await sql`
+    SELECT connection.*, agent.status AS agent_status,
+      agent.skill_ids, agent.tool_ids, agent.memory_scope,
+      agent.autonomy, agent.approval_policy
+    FROM omni_moltbook_connections connection
+    JOIN omni_custom_agents agent
+      ON agent.tenant_id = connection.tenant_id
+     AND agent.actor_id = connection.owner_actor_id
+     AND agent.id = connection.agent_id
+    WHERE connection.tenant_id = ${input.tenantId}
+      AND connection.owner_actor_id = ${input.ownerActorId}
+      AND connection.agent_id = ${input.executingAgentId}
+    LIMIT 2
+  `;
+  if (rows.length !== 1) {
+    throw new MoltbookConnectionError(
+      "The exact Moltbook Agent connection could not be resolved.",
+      { status: 404, code: "connection_not_found" },
+    );
+  }
+  const row = rows[0];
+  if (String(row.agent_status) === "paused") {
+    throw new MoltbookConnectionError(
+      "The linked Asael Agent is paused.",
+      { code: "agent_paused" },
+    );
+  }
+  assertExactMoltbookBoundary(row);
+  if (String(row.status) === "paused") {
+    throw new MoltbookConnectionError(
+      "The Moltbook connection is paused.",
+      { code: "connection_paused" },
+    );
+  }
+  if (String(row.status) !== "claimed" || String(row.claim_state) !== "claimed") {
+    throw new MoltbookConnectionError(
+      "The Moltbook Agent must be claimed before it can use social tools.",
+      { code: "connection_unclaimed" },
+    );
+  }
+  return row;
+}
+
+function publicConnectionAccess(
+  row: SqlRow,
+): Omit<MoltbookConnectionAccess, "apiKey"> {
+  return {
+    connectionId: String(row.id),
+    tenantId: String(row.tenant_id),
+    ownerActorId: String(row.owner_actor_id),
+    agentId: String(row.agent_id),
+    externalName: String(row.external_name),
+  };
+}
+
 function assertExactMoltbookBoundary(row: SqlRow) {
   if (isExactMoltbookAgentCapabilityBoundary({
     skillIds: row.skill_ids,
@@ -898,7 +1037,7 @@ async function appendActivity(
     agentId: string;
     connectionId: string;
     kind: string;
-    status: "succeeded" | "failed" | "pending_verification" | "published";
+    status: MoltbookEffectStatus;
     summary: string;
     providerObjectType?: string;
     providerObjectRef?: string;
@@ -938,7 +1077,7 @@ async function appendEffectReceipt(
   input: {
     access: Omit<MoltbookConnectionAccess, "apiKey">;
     kind: string;
-    status: "succeeded" | "failed" | "pending_verification" | "published";
+    status: MoltbookEffectStatus;
     providerObjectType?: string;
     providerObjectRef?: string;
     toolExecutionId: string;
@@ -946,9 +1085,17 @@ async function appendEffectReceipt(
     requestSha256?: string;
     responseSha256?: string;
     errorCode?: string;
+    toolId?: MoltbookToolId;
+    toolInputSha256?: string;
+    effectTargetId?: string;
   },
 ) {
-  if (!input.requestSha256) {
+  if (
+    !input.requestSha256 ||
+    !input.toolId ||
+    !input.toolInputSha256 ||
+    !input.effectTargetId
+  ) {
     throw new MoltbookConnectionError(
       "Moltbook mutation receipts require a request digest.",
       { code: "effect_digest_missing" },
@@ -958,20 +1105,34 @@ async function appendEffectReceipt(
     INSERT INTO omni_moltbook_effect_receipts (
       id, tenant_id, owner_actor_id, agent_id, connection_id,
       effect_kind, effect_status, provider_object_type, provider_object_ref,
-      tool_execution_id, agent_run_id, request_sha256, response_sha256,
-      error_code, created_at
+      tool_id, tool_execution_id, tool_input_sha256, effect_target_id,
+      agent_run_id, request_sha256, response_sha256, error_code, created_at
     ) VALUES (
-      ${randomId("moltbook_effect")}, ${input.access.tenantId},
+      ${effectReceiptId(input)}, ${input.access.tenantId},
       ${input.access.ownerActorId}, ${input.access.agentId},
       ${input.access.connectionId}, ${safeToken(input.kind, "effect")},
       ${input.status}, ${optionalSafeToken(input.providerObjectType)},
       ${optionalProviderRef(input.providerObjectRef)},
+      ${input.toolId},
       ${optionalOpaqueId(input.toolExecutionId)},
+      ${input.toolInputSha256}, ${input.effectTargetId},
       ${optionalOpaqueId(input.agentRunId)}, ${input.requestSha256},
       ${optionalDigest(input.responseSha256)},
       ${optionalSafeToken(input.errorCode)}, ${new Date().toISOString()}
     )
   `;
+}
+
+function effectReceiptId(input: {
+  access: Omit<MoltbookConnectionAccess, "apiKey">;
+  toolExecutionId: string;
+}) {
+  return `moltbook_effect_${createHash("sha256").update([
+    input.access.tenantId,
+    input.access.ownerActorId,
+    input.access.agentId,
+    input.toolExecutionId,
+  ].join("\0")).digest("hex").slice(0, 48)}`;
 }
 
 async function recordRegistrationFailure(input: {

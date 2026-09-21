@@ -48,4 +48,9 @@ describe("Moltbook Agent console boundaries", () => {
     );
     expect(arsenal).not.toContain("selectedHasMoltbook");
   });
+
+  it("renders uncertain and pending-verification activity as warnings", () => {
+    expect(panel).toContain('["uncertain", "pending_verification"]');
+    expect(panel).toContain('data-tone={tone}');
+  });
 });

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   createMoltbookClient,
+  moltbookMutationRequestSha256,
   MoltbookProviderError,
   registerMoltbookAgent,
 } from "@/lib/moltbook/http-client";
@@ -73,6 +74,22 @@ describe("Moltbook HTTP boundary", () => {
     expect(error).toBeInstanceOf(MoltbookProviderError);
     expect(serializedThrowableGraph(error)).not.toContain(opaqueKey);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("binds the precomputed mutation digest to the exact outbound request", async () => {
+    const fetchImpl = vi.fn(async (_url: URL | RequestInfo) =>
+      json({ success: true }));
+    const input = { postId: "post_123", direction: "down" as const };
+    const result = await createMoltbookClient({
+      apiKey: opaqueKey,
+      fetchImpl: fetchImpl as typeof fetch,
+    }).votePost(input.postId, input.direction);
+    expect(result.requestSha256).toBe(
+      moltbookMutationRequestSha256("moltbook.post.vote", input),
+    );
+    expect(String(fetchImpl.mock.calls[0][0])).toBe(
+      "https://www.moltbook.com/api/v1/posts/post_123/downvote",
+    );
   });
 
   it("reads an exact thread as the documented post plus comments without retries", async () => {

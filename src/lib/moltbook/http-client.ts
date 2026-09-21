@@ -6,6 +6,7 @@ import {
   MOLTBOOK_API_BASE,
   MOLTBOOK_API_ORIGIN,
   type MoltbookRateLimitProjection,
+  type MoltbookToolId,
 } from "@/lib/moltbook/contracts";
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -33,6 +34,14 @@ export type MoltbookRegistration = Readonly<{
   claimUrl: string;
   verificationCode: string;
 }>;
+
+export function moltbookMutationRequestSha256(
+  toolId: MoltbookToolId,
+  toolInput: Record<string, unknown>,
+) {
+  const request = moltbookMutationRequest(toolId, toolInput);
+  return requestSha256For(request.method, request.path, request.body);
+}
 
 export class MoltbookProviderError extends Error {
   readonly code: string;
@@ -120,6 +129,13 @@ export function createMoltbookClient(
     timeoutMs: input.timeoutMs,
     abortSignal: input.abortSignal,
   });
+  const mutation = (
+    toolId: MoltbookToolId,
+    toolInput: Record<string, unknown>,
+  ) => {
+    const operation = moltbookMutationRequest(toolId, toolInput);
+    return request(operation.method, operation.path, operation.body);
+  };
 
   return Object.freeze({
     status: () => request("GET", "/agents/status"),
@@ -159,39 +175,20 @@ export function createMoltbookClient(
       content?: string;
       url?: string;
       type?: "text" | "link" | "image";
-    }) => request("POST", "/posts", compactObject({
-      submolt_name: post.submoltName,
-      title: post.title,
-      content: post.content,
-      url: post.url,
-      type: post.type,
-    })),
+    }) => mutation("moltbook.post.create", post),
     createComment: (comment: {
       postId: string;
       content: string;
       parentId?: string;
-    }) => request(
-      "POST",
-      `/posts/${encodeURIComponent(comment.postId)}/comments`,
-      compactObject({ content: comment.content, parent_id: comment.parentId }),
-    ),
-    votePost: (postId: string, direction: "up" | "down") => request(
-      "POST",
-      `/posts/${encodeURIComponent(postId)}/${direction === "up" ? "upvote" : "downvote"}`,
-    ),
-    upvoteComment: (commentId: string) => request(
-      "POST",
-      `/comments/${encodeURIComponent(commentId)}/upvote`,
-    ),
-    followAgent: (name: string, follow: boolean) => request(
-      follow ? "POST" : "DELETE",
-      `/agents/${encodeURIComponent(name)}/follow`,
-    ),
-    verify: (verificationCode: string, answer: string) => request(
-      "POST",
-      "/verify",
-      { verification_code: verificationCode, answer },
-    ),
+    }) => mutation("moltbook.comment.create", comment),
+    votePost: (postId: string, direction: "up" | "down") =>
+      mutation("moltbook.post.vote", { postId, direction }),
+    upvoteComment: (commentId: string) =>
+      mutation("moltbook.comment.upvote", { commentId }),
+    followAgent: (name: string, follow: boolean) =>
+      mutation("moltbook.agent.follow", { name, follow }),
+    verify: (verificationCode: string, answer: string) =>
+      mutation("moltbook.verify", { verificationCode, answer }),
   });
 }
 
@@ -206,11 +203,7 @@ async function moltbookRequest(input: {
 }): Promise<MoltbookHttpResult> {
   const url = exactApiUrl(input.path);
   const bodyText = input.body === undefined ? undefined : JSON.stringify(input.body);
-  const requestSha256 = sha256([
-    input.method,
-    url.pathname + url.search,
-    bodyText || "",
-  ].join("\n"));
+  const requestSha256 = requestSha256For(input.method, input.path, input.body);
   const timeoutMs = Math.min(
     Math.max(Math.trunc(input.timeoutMs || DEFAULT_TIMEOUT_MS), 1_000),
     MAX_TIMEOUT_MS,
@@ -312,6 +305,82 @@ async function moltbookRequest(input: {
     statusCode: response.status,
     rateLimit,
   };
+}
+
+function moltbookMutationRequest(
+  toolId: MoltbookToolId,
+  input: Record<string, unknown>,
+): Readonly<{
+  method: "POST" | "DELETE";
+  path: string;
+  body?: Record<string, unknown>;
+}> {
+  switch (toolId) {
+    case "moltbook.post.create":
+      return {
+        method: "POST",
+        path: "/posts",
+        body: compactObject({
+          submolt_name: input.submoltName,
+          title: input.title,
+          content: input.content,
+          url: input.url,
+          type: input.type,
+        }),
+      };
+    case "moltbook.comment.create":
+      return {
+        method: "POST",
+        path: `/posts/${encodeURIComponent(String(input.postId))}/comments`,
+        body: compactObject({
+          content: input.content,
+          parent_id: input.parentId,
+        }),
+      };
+    case "moltbook.post.vote":
+      return {
+        method: "POST",
+        path: `/posts/${encodeURIComponent(String(input.postId))}/${input.direction === "up" ? "upvote" : "downvote"}`,
+      };
+    case "moltbook.comment.upvote":
+      return {
+        method: "POST",
+        path: `/comments/${encodeURIComponent(String(input.commentId))}/upvote`,
+      };
+    case "moltbook.agent.follow":
+      return {
+        method: input.follow === true ? "POST" : "DELETE",
+        path: `/agents/${encodeURIComponent(String(input.name))}/follow`,
+      };
+    case "moltbook.verify":
+      return {
+        method: "POST",
+        path: "/verify",
+        body: {
+          verification_code: input.verificationCode,
+          answer: input.answer,
+        },
+      };
+    default:
+      throw new MoltbookProviderError({
+        code: "provider_operation_invalid",
+        message: "The Moltbook operation does not have a public mutation request.",
+      });
+  }
+}
+
+function requestSha256For(
+  method: "GET" | "POST" | "DELETE",
+  path: string,
+  body?: Record<string, unknown>,
+) {
+  const url = exactApiUrl(path);
+  const bodyText = body === undefined ? undefined : JSON.stringify(body);
+  return sha256([
+    method,
+    url.pathname + url.search,
+    bodyText || "",
+  ].join("\n"));
 }
 
 async function readBoundedResponseBytes(response: Response, maximumBytes: number) {

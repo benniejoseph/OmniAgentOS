@@ -39,6 +39,10 @@ describe("Moltbook v190 migration", () => {
     expect(migration).toContain("BEFORE UPDATE OR DELETE ON omni_moltbook_effect_receipts");
     expect(migration).toContain("GRANT SELECT, INSERT ON omni_moltbook_activities TO omni_runtime");
     expect(migration).not.toContain("GRANT DELETE ON omni_moltbook");
+    expect(migration).toContain("effect_status IN ('succeeded', 'failed', 'uncertain', 'pending_verification', 'published')");
+    expect(migration).toContain("tool_input_sha256 TEXT NOT NULL");
+    expect(migration).toContain("effect_target_id TEXT NOT NULL");
+    expect(migration).toContain("CREATE UNIQUE INDEX omni_moltbook_effect_receipts_execution_idx");
   });
 
   it("bounds JSON, protects the sealed credential, and fences lifecycle transitions", () => {
@@ -65,9 +69,9 @@ describe("Moltbook v190 migration", () => {
     expect(migrationManifest.at(-1)).toEqual({
       version: 190,
       name: "moltbook_agent_connections_v1",
-      checksum: "bd398f225fbc42f4ec0bc2079796b4c38b49158852558b3e5aa3d43c7db4ef95",
+      checksum: "94e09279f1c3906a1a2e7532282030009df130a148be4d74db104fecc701a548",
     });
-    expect(migration).toContain("190,\n  'moltbook_agent_connections_v1',\n  'bd398f225fbc42f4ec0bc2079796b4c38b49158852558b3e5aa3d43c7db4ef95'");
+    expect(migration).toContain("190,\n  'moltbook_agent_connections_v1',\n  '94e09279f1c3906a1a2e7532282030009df130a148be4d74db104fecc701a548'");
     expect(databaseClient).toContain("up: ensureMoltbookAgentConnectionsV1");
     expect(databaseClient).toContain("...databaseSchemaMigrations[189]");
   });
@@ -95,10 +99,22 @@ describe("Moltbook v190 migration", () => {
       "AS RESTRICTIVE FOR ALL TO PUBLIC",
       "GRANT SELECT, INSERT ON omni_moltbook_activities TO omni_runtime",
       "GRANT EXECUTE ON FUNCTION omni_moltbook_agent_boundary_is_exact_v1",
+      "DROP CONSTRAINT IF EXISTS omni_moltbook_activities_status_v1",
+      "CREATE UNIQUE INDEX omni_moltbook_effect_receipts_execution_idx",
     ]) {
       expect(runtimeSchema).toContain(fragment);
     }
     expect(runtimeSchema).toContain("DROP POLICY IF EXISTS omni_tenant_isolation");
     expect(runtimeSchema).toContain("DROP TRIGGER IF EXISTS omni_moltbook_activities_immutable");
+    expect(runtimeSchema.indexOf(
+      "DROP CONSTRAINT IF EXISTS omni_moltbook_activities_status_v1",
+    )).toBeLessThan(runtimeSchema.lastIndexOf(
+      "ADD CONSTRAINT omni_moltbook_activities_status_v1",
+    ));
+    expect(runtimeSchema.indexOf(
+      "DROP CONSTRAINT IF EXISTS omni_moltbook_effect_receipts_status_v1",
+    )).toBeLessThan(runtimeSchema.lastIndexOf(
+      "ADD CONSTRAINT omni_moltbook_effect_receipts_status_v1",
+    ));
   });
 });

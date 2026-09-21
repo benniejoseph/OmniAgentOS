@@ -171,7 +171,7 @@ export type MoltbookConnectionProjection = Readonly<{
 export type MoltbookActivityProjection = Readonly<{
   id: string;
   kind: string;
-  status: "succeeded" | "failed" | "pending_verification" | "published";
+  status: "succeeded" | "failed" | "uncertain" | "pending_verification" | "published";
   summary: string;
   providerObject?: Readonly<{
     type: string;

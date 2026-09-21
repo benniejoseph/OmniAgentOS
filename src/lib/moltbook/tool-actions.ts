@@ -11,6 +11,7 @@ import {
 } from "@/lib/moltbook/contracts";
 import {
   createMoltbookClient,
+  moltbookMutationRequestSha256,
   MoltbookProviderError,
   type MoltbookHttpResult,
 } from "@/lib/moltbook/http-client";
@@ -18,10 +19,15 @@ import {
   appendMoltbookToolActivity,
   MoltbookConnectionError,
   observeMoltbookRateLimit,
+  readMoltbookEffectEvidence,
   resolveMoltbookAgentOwner,
+  resolveMoltbookConnectionForReceipt,
   resolveMoltbookConnectionForTool,
   type MoltbookConnectionAccess,
+  type MoltbookEffectEvidence,
 } from "@/lib/moltbook/store";
+import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
+import { toolInputSha256 as canonicalToolInputSha256 } from "@/lib/tools/execution-scope";
 
 export type { MoltbookToolId } from "@/lib/moltbook/contracts";
 
@@ -37,7 +43,7 @@ export type MoltbookPendingVerificationResult = Readonly<{
   untrusted: true;
   status: "pending_verification";
   providerObject?: Readonly<{ type: string; ref: string; url?: string }>;
-  verification: Readonly<{
+  verification?: Readonly<{
     verificationCode: string;
     challengeText: string;
     expiresAt?: string;
@@ -54,17 +60,59 @@ export type MoltbookToolActionResult =
   | MoltbookPendingVerificationResult
   | MoltbookMutationResult;
 
-class RecordedMoltbookEffectError extends MoltbookConnectionError {}
+export type MoltbookEffectCommit = Readonly<{
+  version: "moltbook.effect-commit.v1";
+  providerAcknowledgement:
+    | "provider_response"
+    | "provider_idempotency_reconciliation";
+  providerAcknowledgementId: string;
+  providerAcknowledgementSha256: string;
+  toolExecutionId: string;
+  toolId: MoltbookToolId;
+  toolInputSha256: string;
+  effectTargetId: string;
+  requestSha256: string;
+  responseSha256: string;
+  status: "succeeded" | "published" | "pending_verification";
+  providerObject?: Readonly<{ type: string; ref: string; url?: string }>;
+}>;
 
-export async function executeMoltbookToolAction(input: {
+export type MoltbookReconciliationResult =
+  | Readonly<{
+      kind: "completed";
+      result: MoltbookMutationResult | MoltbookPendingVerificationResult;
+    }>
+  | Readonly<{
+      kind: "held";
+      status: "failed" | "uncertain";
+      errorCode?: string;
+    }>;
+
+type MoltbookToolActionInput = Readonly<{
   toolId: MoltbookToolId;
   toolInput: unknown;
   context: SecurityContext;
   executionScope: ExecutionScope;
   toolExecutionId: string;
   agentRunId?: string;
+  effectTargetId?: string;
+  toolInputSha256?: string;
   abortSignal?: AbortSignal;
-}): Promise<MoltbookToolActionResult> {
+}>;
+
+type MoltbookEffectBinding = Readonly<{
+  toolInputSha256: string;
+  effectTargetId: string;
+  requestSha256: string;
+}>;
+
+const MOLTBOOK_EFFECT_COMMIT = Symbol("asael.moltbook.effect-commit.v1");
+
+class RecordedMoltbookEffectError extends MoltbookConnectionError {}
+
+export async function executeMoltbookToolAction(
+  input: MoltbookToolActionInput,
+): Promise<MoltbookToolActionResult> {
   if (!isMoltbookToolId(input.toolId)) {
     throw new MoltbookConnectionError("Unknown Moltbook tool action.", {
       status: 400,
@@ -73,6 +121,9 @@ export async function executeMoltbookToolAction(input: {
   }
   const authority = await exactToolAuthority(input);
   const toolInput = parseMoltbookToolInput(input.toolId, input.toolInput);
+  const binding = isReadTool(input.toolId)
+    ? undefined
+    : exactEffectBinding(input, toolInput);
   const access = await resolveMoltbookConnectionForTool({
     tenantId: input.executionScope.tenantId,
     ownerActorId: authority.ownerActorId,
@@ -86,7 +137,115 @@ export async function executeMoltbookToolAction(input: {
   if (isReadTool(input.toolId)) {
     return executeRead(input, toolInput, access, client);
   }
-  return executeMutation(input, toolInput, access, client);
+  if (!binding) {
+    throw new MoltbookConnectionError("Moltbook mutation binding is unavailable.", {
+      code: "effect_binding_missing",
+    });
+  }
+  return executeMutation(input, toolInput, binding, access, client);
+}
+
+/**
+ * Reconciles one already-attempted mutation exclusively from Asael's durable
+ * actor-private receipt. This path never opens the provider credential and
+ * therefore cannot repeat the public operation.
+ */
+export async function reconcileMoltbookToolAction(
+  input: MoltbookToolActionInput,
+): Promise<MoltbookReconciliationResult | undefined> {
+  if (!isMoltbookToolId(input.toolId) || isReadTool(input.toolId)) return undefined;
+  const toolInput = parseMoltbookToolInput(input.toolId, input.toolInput);
+  const binding = exactEffectBinding(input, toolInput);
+  const authority = await exactToolAuthority(input);
+  const access = await resolveMoltbookConnectionForReceipt({
+    tenantId: input.executionScope.tenantId,
+    ownerActorId: authority.ownerActorId,
+    executingAgentId: authority.executingAgentId,
+  });
+  const evidence = await readMoltbookEffectEvidence({
+    access,
+    toolId: input.toolId,
+    toolExecutionId: input.toolExecutionId,
+    toolInputSha256: binding.toolInputSha256,
+    effectTargetId: binding.effectTargetId,
+    requestSha256: binding.requestSha256,
+  });
+  if (!evidence) return undefined;
+  if (evidence.status === "failed" || evidence.status === "uncertain") {
+    return {
+      kind: "held",
+      status: evidence.status,
+      ...(evidence.errorCode ? { errorCode: evidence.errorCode } : {}),
+    };
+  }
+  if (!evidence.responseSha256) {
+    throw new MoltbookConnectionError(
+      "Moltbook effect evidence is missing its provider response digest.",
+      { code: "effect_receipt_invalid" },
+    );
+  }
+  const providerObject = publicProviderObject(input.toolId, evidence.providerObject);
+  const result = evidence.status === "pending_verification"
+    ? {
+        source: "moltbook" as const,
+        untrusted: true as const,
+        status: "pending_verification" as const,
+        ...(providerObject ? { providerObject } : {}),
+      }
+    : {
+        status: evidence.status,
+        ...(providerObject ? { providerObject } : {}),
+      };
+  return {
+    kind: "completed",
+    result: withEffectCommit(result, effectCommit({
+      acknowledgement: "provider_idempotency_reconciliation",
+      input,
+      binding,
+      result: {
+        requestSha256: evidence.requestSha256,
+        responseSha256: evidence.responseSha256,
+      },
+      status: evidence.status,
+      providerObject: evidence.providerObject,
+    })),
+  };
+}
+
+export function moltbookEffectCommitFromResult(
+  value: unknown,
+): MoltbookEffectCommit | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const commit = (value as { [MOLTBOOK_EFFECT_COMMIT]?: unknown })[
+    MOLTBOOK_EFFECT_COMMIT
+  ];
+  if (!commit || typeof commit !== "object" || Array.isArray(commit)) return undefined;
+  const candidate = commit as MoltbookEffectCommit;
+  if (
+    candidate.version !== "moltbook.effect-commit.v1" ||
+    !isMoltbookToolId(candidate.toolId) ||
+    isReadTool(candidate.toolId) ||
+    !["provider_response", "provider_idempotency_reconciliation"].includes(
+      candidate.providerAcknowledgement,
+    ) ||
+    !["succeeded", "published", "pending_verification"].includes(candidate.status) ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:@/+~-]{0,239}$/.test(candidate.effectTargetId) ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:@/+~-]{0,239}$/.test(candidate.toolExecutionId) ||
+    !isDigest(candidate.toolInputSha256) ||
+    !isDigest(candidate.requestSha256) ||
+    !isDigest(candidate.responseSha256) ||
+    !isDigest(candidate.providerAcknowledgementSha256) ||
+    candidate.providerAcknowledgementId !==
+      `moltbook_ack_${candidate.providerAcknowledgementSha256.slice(0, 50)}` ||
+    candidate.providerAcknowledgementSha256 !== commitSha256(candidate) ||
+    !isCommitProviderObject(candidate.providerObject)
+  ) return undefined;
+  return candidate;
+}
+
+export function moltbookPublicToolResult(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>));
 }
 
 async function executeRead(
@@ -136,14 +295,29 @@ async function executeRead(
 async function executeMutation(
   input: Parameters<typeof executeMoltbookToolAction>[0],
   toolInput: Record<string, unknown>,
+  binding: MoltbookEffectBinding,
   access: MoltbookConnectionAccess,
   client: ReturnType<typeof createMoltbookClient>,
 ): Promise<MoltbookMutationResult | MoltbookPendingVerificationResult> {
   const publicAccess = withoutApiKey(access);
+  let providerResult: MoltbookHttpResult | undefined;
   try {
     const result = await callMutation(input.toolId, toolInput, client);
+    providerResult = result;
+    if (result.requestSha256 !== binding.requestSha256) {
+      throw new MoltbookConnectionError(
+        "Moltbook response evidence does not match the exact requested mutation.",
+        { code: "effect_request_digest_mismatch" },
+      );
+    }
     if (input.toolId === "moltbook.verify") {
-      const settled = await settleVerification(input, toolInput, publicAccess, result);
+      const settled = await settleVerification(
+        input,
+        toolInput,
+        binding,
+        publicAccess,
+        result,
+      );
       await observeRateLimitAfterEffect(publicAccess, result.rateLimit);
       return settled;
     }
@@ -152,6 +326,7 @@ async function executeMutation(
     const activityObject = providerObject || targetObject;
     await assertSuccessfulProviderEffect({
       input,
+      binding,
       access: publicAccess,
       result,
       providerObject: activityObject,
@@ -172,16 +347,26 @@ async function executeMutation(
         agentRunId: input.agentRunId,
         requestSha256: result.requestSha256,
         responseSha256: result.responseSha256,
+        toolId: input.toolId,
+        toolInputSha256: binding.toolInputSha256,
+        effectTargetId: binding.effectTargetId,
         effect: true,
       });
       await observeRateLimitAfterEffect(publicAccess, result.rateLimit);
-      return {
+      return withEffectCommit({
         source: "moltbook",
         untrusted: true,
         status: "pending_verification",
         providerObject,
         verification,
-      };
+      }, effectCommit({
+        acknowledgement: "provider_response",
+        input,
+        binding,
+        result,
+        status: "pending_verification",
+        providerObject: activityObject,
+      }));
     }
     const status = publishStatus(input.toolId);
     await appendMoltbookToolActivity({
@@ -196,20 +381,67 @@ async function executeMutation(
       agentRunId: input.agentRunId,
       requestSha256: result.requestSha256,
       responseSha256: result.responseSha256,
+      toolId: input.toolId,
+      toolInputSha256: binding.toolInputSha256,
+      effectTargetId: binding.effectTargetId,
       effect: true,
     });
     await observeRateLimitAfterEffect(publicAccess, result.rateLimit);
-    return { status, providerObject };
+    return withEffectCommit(
+      { status, providerObject },
+      effectCommit({
+        acknowledgement: "provider_response",
+        input,
+        binding,
+        result,
+        status,
+        providerObject: activityObject,
+      }),
+    );
   } catch (error) {
     if (error instanceof RecordedMoltbookEffectError) throw error;
-    await recordToolFailure(input, publicAccess, error, true);
+    if (providerResult) {
+      await recordProviderResultUncertainty(
+        input,
+        binding,
+        publicAccess,
+        providerResult,
+      );
+      throw error;
+    }
+    await recordToolFailure(input, publicAccess, error, true, binding);
     throw error;
   }
+}
+
+async function recordProviderResultUncertainty(
+  input: MoltbookToolActionInput,
+  binding: MoltbookEffectBinding,
+  access: Omit<MoltbookConnectionAccess, "apiKey">,
+  result: MoltbookHttpResult,
+) {
+  await appendMoltbookToolActivity({
+    access,
+    kind: toolKind(input.toolId),
+    status: "uncertain",
+    summary: "Moltbook returned a response, but its durable public-effect evidence could not be finalized. It will not be retried.",
+    toolExecutionId: input.toolExecutionId,
+    agentRunId: input.agentRunId,
+    requestSha256: result.requestSha256,
+    responseSha256: result.responseSha256,
+    errorCode: "provider_effect_evidence_unavailable",
+    toolId: input.toolId,
+    toolInputSha256: binding.toolInputSha256,
+    effectTargetId: binding.effectTargetId,
+    effect: true,
+  });
+  await observeRateLimitAfterEffect(access, result.rateLimit);
 }
 
 async function settleVerification(
   input: Parameters<typeof executeMoltbookToolAction>[0],
   toolInput: Record<string, unknown>,
+  binding: MoltbookEffectBinding,
   access: Omit<MoltbookConnectionAccess, "apiKey">,
   result: MoltbookHttpResult,
 ): Promise<MoltbookMutationResult> {
@@ -217,11 +449,14 @@ async function settleVerification(
   const providerObject = verificationProviderObject(record) ||
     targetObjectFromInput(input.toolId, toolInput);
   if (record.success !== true) {
+    const explicitRejection = record.success === false;
     await appendMoltbookToolActivity({
       access,
       kind: "verification",
-      status: "failed",
-      summary: "Moltbook did not accept the verification answer.",
+      status: explicitRejection ? "failed" : "uncertain",
+      summary: explicitRejection
+        ? "Moltbook did not accept the verification answer."
+        : "Moltbook returned an incomplete verification acknowledgement; the public outcome is uncertain.",
       providerObjectType: providerObject?.type,
       providerObjectRef: providerObject?.ref,
       providerObjectUrl: providerObject?.url,
@@ -229,13 +464,24 @@ async function settleVerification(
       agentRunId: input.agentRunId,
       requestSha256: result.requestSha256,
       responseSha256: result.responseSha256,
-      errorCode: "verification_failed",
+      errorCode: explicitRejection
+        ? "verification_failed"
+        : "verification_outcome_uncertain",
+      toolId: input.toolId,
+      toolInputSha256: binding.toolInputSha256,
+      effectTargetId: binding.effectTargetId,
       effect: true,
     });
     await observeRateLimitAfterEffect(access, result.rateLimit);
     throw new RecordedMoltbookEffectError(
-      "Moltbook did not accept the verification answer.",
-      { code: "verification_failed" },
+      explicitRejection
+        ? "Moltbook did not accept the verification answer."
+        : "Moltbook did not return enough evidence to determine the verification outcome.",
+      {
+        code: explicitRejection
+          ? "verification_failed"
+          : "verification_outcome_uncertain",
+      },
     );
   }
   await appendMoltbookToolActivity({
@@ -250,32 +496,51 @@ async function settleVerification(
     agentRunId: input.agentRunId,
     requestSha256: result.requestSha256,
     responseSha256: result.responseSha256,
+    toolId: input.toolId,
+    toolInputSha256: binding.toolInputSha256,
+    effectTargetId: binding.effectTargetId,
     effect: true,
   });
-  return { status: "published", providerObject };
+  return withEffectCommit(
+    { status: "published", providerObject },
+    effectCommit({
+      acknowledgement: "provider_response",
+      input,
+      binding,
+      result,
+      status: "published",
+      providerObject,
+    }),
+  );
 }
 
 async function assertSuccessfulProviderEffect(input: {
   input: Parameters<typeof executeMoltbookToolAction>[0];
+  binding: MoltbookEffectBinding;
   access: Omit<MoltbookConnectionAccess, "apiKey">;
   result: MoltbookHttpResult;
   providerObject?: Readonly<{ type: string; ref: string; url?: string }>;
   identityRequired: boolean;
 }) {
   const record = providerRecord(input.result.data);
-  const errorCode = record.success !== true
+  const errorCode = record.success === false
     ? "provider_effect_rejected"
-    : input.identityRequired && !input.providerObject
-      ? "provider_effect_identity_missing"
-      : undefined;
+    : record.success !== true
+      ? "provider_effect_outcome_uncertain"
+      : input.identityRequired && !input.providerObject
+        ? "provider_effect_identity_missing"
+        : undefined;
   if (!errorCode) return;
+  const definitive = errorCode === "provider_effect_rejected";
   await appendMoltbookToolActivity({
     access: input.access,
     kind: toolKind(input.input.toolId),
-    status: "failed",
-    summary: errorCode === "provider_effect_rejected"
+    status: definitive ? "failed" : "uncertain",
+    summary: definitive
       ? "Moltbook did not confirm the requested public change."
-      : "Moltbook confirmed the request without a valid public object identity.",
+      : errorCode === "provider_effect_identity_missing"
+        ? "Moltbook acknowledged the request without a valid public object identity; the public outcome is uncertain."
+        : "Moltbook returned an incomplete mutation acknowledgement; the public outcome is uncertain.",
     providerObjectType: input.providerObject?.type,
     providerObjectRef: input.providerObject?.ref,
     providerObjectUrl: input.providerObject?.url,
@@ -284,13 +549,16 @@ async function assertSuccessfulProviderEffect(input: {
     requestSha256: input.result.requestSha256,
     responseSha256: input.result.responseSha256,
     errorCode,
+    toolId: input.input.toolId,
+    toolInputSha256: input.binding.toolInputSha256,
+    effectTargetId: input.binding.effectTargetId,
     effect: true,
   });
   await observeRateLimitAfterEffect(input.access, input.result.rateLimit);
   throw new RecordedMoltbookEffectError(
-    errorCode === "provider_effect_rejected"
+    definitive
       ? "Moltbook did not confirm the requested public change."
-      : "Moltbook did not return a valid identity for the created content.",
+      : "Moltbook did not return enough evidence to determine the public outcome.",
     { code: errorCode },
   );
 }
@@ -349,28 +617,164 @@ async function recordToolFailure(
   access: Omit<MoltbookConnectionAccess, "apiKey">,
   error: unknown,
   effect: boolean,
+  binding?: MoltbookEffectBinding,
 ) {
   const provider = error instanceof MoltbookProviderError ? error : undefined;
   const code = provider?.code ||
     (error instanceof MoltbookConnectionError ? error.code : "tool_failed");
+  const uncertain = effect && Boolean(provider?.requestSha256) &&
+    isAmbiguousProviderMutationFailure(provider);
+  const activity = appendMoltbookToolActivity({
+    access,
+    kind: toolKind(input.toolId),
+    status: uncertain ? "uncertain" : "failed",
+    summary: effect
+      ? uncertain
+        ? "Moltbook received the request, but the public outcome is uncertain. It will not be retried."
+        : "Moltbook definitively rejected the mutation. It was not retried."
+      : "The Moltbook read did not complete.",
+    toolExecutionId: input.toolExecutionId,
+    agentRunId: input.agentRunId,
+    requestSha256: provider?.requestSha256 || binding?.requestSha256,
+    responseSha256: provider?.responseSha256,
+    errorCode: code,
+    effect: effect && Boolean(provider?.requestSha256) && Boolean(binding),
+    ...(binding
+      ? {
+          toolId: input.toolId,
+          toolInputSha256: binding.toolInputSha256,
+          effectTargetId: binding.effectTargetId,
+        }
+      : {}),
+  });
+  if (effect && provider?.requestSha256 && binding) {
+    // The provider outcome is persisted before auxiliary health metadata. A
+    // receipt failure must leave the governed execution held as uncertain.
+    await activity;
+  } else {
+    await activity.catch(() => undefined);
+  }
   if (provider?.rateLimit) {
     await observeMoltbookRateLimit({ access, rateLimit: provider.rateLimit })
       .catch(() => undefined);
   }
-  await appendMoltbookToolActivity({
-    access,
-    kind: toolKind(input.toolId),
-    status: "failed",
-    summary: effect
-      ? "The Moltbook mutation did not complete. It was not retried."
-      : "The Moltbook read did not complete.",
-    toolExecutionId: input.toolExecutionId,
-    agentRunId: input.agentRunId,
-    requestSha256: provider?.requestSha256,
-    responseSha256: provider?.responseSha256,
-    errorCode: code,
-    effect: effect && Boolean(provider?.requestSha256),
-  }).catch(() => undefined);
+}
+
+function isAmbiguousProviderMutationFailure(
+  error: MoltbookProviderError | undefined,
+) {
+  if (!error) return false;
+  if (error.statusCode === undefined || error.statusCode >= 500) return true;
+  return [
+    "provider_timeout",
+    "provider_unavailable",
+    "provider_response_too_large",
+    "provider_response_unavailable",
+    "provider_response_invalid",
+  ].includes(error.code);
+}
+
+function exactEffectBinding(
+  input: MoltbookToolActionInput,
+  toolInput: Record<string, unknown>,
+): MoltbookEffectBinding {
+  const actualInputSha256 = canonicalToolInputSha256(toolInput);
+  if (
+    input.toolInputSha256 !== actualInputSha256 ||
+    !input.effectTargetId ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:@/+~-]{0,239}$/.test(input.effectTargetId)
+  ) {
+    throw new MoltbookConnectionError(
+      "Moltbook mutation authority is not bound to the exact governed input and target.",
+      { code: "effect_binding_mismatch" },
+    );
+  }
+  return Object.freeze({
+    toolInputSha256: actualInputSha256,
+    effectTargetId: input.effectTargetId,
+    requestSha256: moltbookMutationRequestSha256(input.toolId, toolInput),
+  });
+}
+
+function effectCommit(input: {
+  acknowledgement: MoltbookEffectCommit["providerAcknowledgement"];
+  input: MoltbookToolActionInput;
+  binding: MoltbookEffectBinding;
+  result: Pick<MoltbookHttpResult, "requestSha256" | "responseSha256">;
+  status: MoltbookEffectCommit["status"];
+  providerObject?: Readonly<{ type: string; ref: string; url?: string }>;
+}): MoltbookEffectCommit {
+  const material = {
+    version: "moltbook.effect-commit.v1" as const,
+    providerAcknowledgement: input.acknowledgement,
+    toolExecutionId: input.input.toolExecutionId,
+    toolId: input.input.toolId,
+    toolInputSha256: input.binding.toolInputSha256,
+    effectTargetId: input.binding.effectTargetId,
+    requestSha256: input.result.requestSha256,
+    responseSha256: input.result.responseSha256,
+    status: input.status,
+    ...(input.providerObject ? { providerObject: input.providerObject } : {}),
+  };
+  const providerAcknowledgementSha256 = canonicalJsonSha256(material);
+  return Object.freeze({
+    ...material,
+    providerAcknowledgementId:
+      `moltbook_ack_${providerAcknowledgementSha256.slice(0, 50)}`,
+    providerAcknowledgementSha256,
+  });
+}
+
+function commitSha256(commit: MoltbookEffectCommit) {
+  return canonicalJsonSha256({
+    version: commit.version,
+    providerAcknowledgement: commit.providerAcknowledgement,
+    toolExecutionId: commit.toolExecutionId,
+    toolId: commit.toolId,
+    toolInputSha256: commit.toolInputSha256,
+    effectTargetId: commit.effectTargetId,
+    requestSha256: commit.requestSha256,
+    responseSha256: commit.responseSha256,
+    status: commit.status,
+    ...(commit.providerObject ? { providerObject: commit.providerObject } : {}),
+  });
+}
+
+function withEffectCommit<T extends object>(
+  result: T,
+  commit: MoltbookEffectCommit,
+) {
+  Object.defineProperty(result, MOLTBOOK_EFFECT_COMMIT, {
+    value: commit,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  return result;
+}
+
+function publicProviderObject(
+  toolId: MoltbookToolId,
+  providerObject: MoltbookEffectEvidence["providerObject"],
+) {
+  return toolId === "moltbook.post.create" ||
+      toolId === "moltbook.comment.create" ||
+      toolId === "moltbook.verify"
+    ? providerObject
+    : undefined;
+}
+
+function isDigest(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+}
+
+function isCommitProviderObject(
+  value: MoltbookEffectCommit["providerObject"],
+) {
+  if (value === undefined) return true;
+  return /^[a-z0-9_.:-]{1,80}$/.test(value.type) &&
+    /^[A-Za-z0-9_.:-]{1,240}$/.test(value.ref) &&
+    (value.url === undefined || value.url.startsWith("https://www.moltbook.com/"));
 }
 
 async function exactToolAuthority(

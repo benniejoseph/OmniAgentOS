@@ -4,12 +4,24 @@ import {
 } from "@/lib/moltbook/contracts";
 import {
   executeMoltbookToolAction,
+  moltbookEffectCommitFromResult,
+  moltbookPublicToolResult,
+  reconcileMoltbookToolAction,
+  type MoltbookEffectCommit,
+  type MoltbookReconciliationResult,
   type MoltbookToolId,
 } from "@/lib/moltbook/tool-actions";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import type { SecurityContext } from "@/lib/security/types";
 import type { ToolExecutionRecord } from "@/lib/tools/types";
+import { toolInputSha256 } from "@/lib/tools/execution-scope";
+
+export {
+  moltbookEffectCommitFromResult,
+  moltbookPublicToolResult,
+};
+export type { MoltbookEffectCommit, MoltbookReconciliationResult };
 
 export function isMoltbookToolId(toolId: string): toolId is MoltbookToolId {
   return isCoreMoltbookToolId(toolId);
@@ -39,8 +51,53 @@ export async function executeGovernedMoltbookToolAction(input: {
   context?: SecurityContext;
   executionScope?: ExecutionScope;
   executionRecord?: ToolExecutionRecord;
+  effectTargetId?: string;
   agentRunId?: string;
   abortSignal?: AbortSignal;
+}) {
+  assertGovernedMoltbookAuthority(input);
+  const parsed = parseMoltbookToolInput(input.toolId, input.toolInput);
+
+  return executeMoltbookToolAction({
+    toolId: input.toolId,
+    toolInput: parsed,
+    context: input.context!,
+    executionScope: input.executionScope!,
+    toolExecutionId: input.executionRecord!.id,
+    agentRunId: input.agentRunId,
+    effectTargetId: input.effectTargetId,
+    toolInputSha256: toolInputSha256(parsed),
+    abortSignal: input.abortSignal,
+  });
+}
+
+export async function reconcileGovernedMoltbookToolAction(input: {
+  toolId: MoltbookToolId;
+  toolInput: Record<string, unknown>;
+  context?: SecurityContext;
+  executionScope?: ExecutionScope;
+  executionRecord?: ToolExecutionRecord;
+  effectTargetId?: string;
+  agentRunId?: string;
+}) {
+  assertGovernedMoltbookAuthority(input);
+  const parsed = parseMoltbookToolInput(input.toolId, input.toolInput);
+  return reconcileMoltbookToolAction({
+    toolId: input.toolId,
+    toolInput: parsed,
+    context: input.context!,
+    executionScope: input.executionScope!,
+    toolExecutionId: input.executionRecord!.id,
+    agentRunId: input.agentRunId,
+    effectTargetId: input.effectTargetId,
+    toolInputSha256: toolInputSha256(parsed),
+  });
+}
+
+function assertGovernedMoltbookAuthority(input: {
+  context?: SecurityContext;
+  executionScope?: ExecutionScope;
+  executionRecord?: ToolExecutionRecord;
 }) {
   if (!input.context || !input.executionScope || !input.executionRecord) {
     throw new Error(
@@ -62,16 +119,6 @@ export async function executeGovernedMoltbookToolAction(input: {
   if (!input.executionScope.correlationId) {
     throw new Error("Moltbook actions require an exact correlation ID.");
   }
-
-  return executeMoltbookToolAction({
-    toolId: input.toolId,
-    toolInput: parseMoltbookToolInput(input.toolId, input.toolInput),
-    context: input.context,
-    executionScope: input.executionScope,
-    toolExecutionId: input.executionRecord.id,
-    agentRunId: input.agentRunId,
-    abortSignal: input.abortSignal,
-  });
 }
 
 function assertCredentialFreeHttpsUrl(value: unknown) {

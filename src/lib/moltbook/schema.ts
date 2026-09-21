@@ -140,7 +140,8 @@ export async function ensureMoltbookAgentConnectionsV1(sql: MigrationSql) {
       CHECK (id ~ '^moltbook_activity_[a-f0-9]{48}$'),
       CHECK (char_length(agent_id) BETWEEN 1 AND 240),
       CHECK (kind ~ '^[a-z0-9_.:-]{1,80}$'),
-      CHECK (status IN ('succeeded', 'failed', 'pending_verification', 'published')),
+      CONSTRAINT omni_moltbook_activities_status_v1
+        CHECK (status IN ('succeeded', 'failed', 'uncertain', 'pending_verification', 'published')),
       CHECK (char_length(summary) BETWEEN 1 AND 1000),
       CHECK (provider_object_type IS NULL OR provider_object_type ~ '^[a-z0-9_.:-]{1,80}$'),
       CHECK (provider_object_ref IS NULL OR provider_object_ref ~ '^[A-Za-z0-9_.:-]{1,240}$'),
@@ -160,7 +161,8 @@ export async function ensureMoltbookAgentConnectionsV1(sql: MigrationSql) {
       CHECK (request_sha256 IS NULL OR request_sha256 ~ '^[a-f0-9]{64}$'),
       CHECK (response_sha256 IS NULL OR response_sha256 ~ '^[a-f0-9]{64}$'),
       CHECK (error_code IS NULL OR error_code ~ '^[a-z0-9_.:-]{1,80}$'),
-      CHECK ((status = 'failed') = (error_code IS NOT NULL))
+      CONSTRAINT omni_moltbook_activities_error_v1
+        CHECK ((status IN ('failed', 'uncertain')) = (error_code IS NOT NULL))
     );
 
     CREATE TABLE IF NOT EXISTS omni_moltbook_effect_receipts (
@@ -173,7 +175,10 @@ export async function ensureMoltbookAgentConnectionsV1(sql: MigrationSql) {
       effect_status TEXT NOT NULL,
       provider_object_type TEXT,
       provider_object_ref TEXT,
+      tool_id TEXT NOT NULL,
       tool_execution_id TEXT NOT NULL,
+      tool_input_sha256 TEXT NOT NULL,
+      effect_target_id TEXT NOT NULL,
       agent_run_id TEXT,
       request_sha256 TEXT NOT NULL,
       response_sha256 TEXT,
@@ -186,17 +191,100 @@ export async function ensureMoltbookAgentConnectionsV1(sql: MigrationSql) {
       CHECK (id ~ '^moltbook_effect_[a-f0-9]{48}$'),
       CHECK (char_length(agent_id) BETWEEN 1 AND 240),
       CHECK (effect_kind ~ '^[a-z0-9_.:-]{1,80}$'),
-      CHECK (effect_status IN ('succeeded', 'failed', 'pending_verification', 'published')),
+      CONSTRAINT omni_moltbook_effect_receipts_status_v1
+        CHECK (effect_status IN ('succeeded', 'failed', 'uncertain', 'pending_verification', 'published')),
       CHECK (provider_object_type IS NULL OR provider_object_type ~ '^[a-z0-9_.:-]{1,80}$'),
       CHECK (provider_object_ref IS NULL OR provider_object_ref ~ '^[A-Za-z0-9_.:-]{1,240}$'),
       CHECK ((provider_object_type IS NULL) = (provider_object_ref IS NULL)),
+      CHECK (tool_id ~ '^moltbook\.[a-z0-9_.:-]{1,80}$'),
       CHECK (char_length(tool_execution_id) BETWEEN 1 AND 240),
+      CHECK (tool_input_sha256 ~ '^[a-f0-9]{64}$'),
+      CHECK (effect_target_id ~ '^[A-Za-z0-9][A-Za-z0-9._:@/+~-]{0,239}$'),
       CHECK (agent_run_id IS NULL OR char_length(agent_run_id) BETWEEN 1 AND 240),
       CHECK (request_sha256 ~ '^[a-f0-9]{64}$'),
       CHECK (response_sha256 IS NULL OR response_sha256 ~ '^[a-f0-9]{64}$'),
       CHECK (error_code IS NULL OR error_code ~ '^[a-z0-9_.:-]{1,80}$'),
-      CHECK ((effect_status = 'failed') = (error_code IS NOT NULL))
+      CONSTRAINT omni_moltbook_effect_receipts_error_v1
+        CHECK ((effect_status IN ('failed', 'uncertain')) = (error_code IS NOT NULL))
     );
+
+    ALTER TABLE omni_moltbook_effect_receipts
+      ADD COLUMN IF NOT EXISTS tool_id TEXT,
+      ADD COLUMN IF NOT EXISTS tool_input_sha256 TEXT,
+      ADD COLUMN IF NOT EXISTS effect_target_id TEXT;
+    UPDATE omni_moltbook_effect_receipts SET
+      tool_id = COALESCE(tool_id, 'moltbook.' || replace(effect_kind, '_', '.')),
+      tool_input_sha256 = COALESCE(tool_input_sha256, request_sha256),
+      effect_target_id = COALESCE(
+        effect_target_id,
+        'moltbook_legacy_' || substring(request_sha256 FROM 1 FOR 48)
+      )
+    WHERE tool_id IS NULL OR tool_input_sha256 IS NULL OR effect_target_id IS NULL;
+    ALTER TABLE omni_moltbook_effect_receipts
+      ALTER COLUMN tool_id SET NOT NULL,
+      ALTER COLUMN tool_input_sha256 SET NOT NULL,
+      ALTER COLUMN effect_target_id SET NOT NULL;
+
+    DO $receipt_constraints$
+    DECLARE constraint_name TEXT;
+    BEGIN
+      ALTER TABLE omni_moltbook_activities
+        DROP CONSTRAINT IF EXISTS omni_moltbook_activities_status_v1,
+        DROP CONSTRAINT IF EXISTS omni_moltbook_activities_error_v1;
+      FOR constraint_name IN
+        SELECT conname FROM pg_constraint
+        WHERE conrelid = 'omni_moltbook_activities'::regclass
+          AND contype = 'c'
+          AND (
+            (
+              pg_get_constraintdef(oid) ILIKE '%status%'
+              AND pg_get_constraintdef(oid) ILIKE '%succeeded%'
+              AND pg_get_constraintdef(oid) ILIKE '%pending_verification%'
+              AND pg_get_constraintdef(oid) ILIKE '%published%'
+            )
+            OR (
+              pg_get_constraintdef(oid) ILIKE '%status%'
+              AND pg_get_constraintdef(oid) ILIKE '%error_code%'
+            )
+          )
+      LOOP
+        EXECUTE format('ALTER TABLE omni_moltbook_activities DROP CONSTRAINT %I', constraint_name);
+      END LOOP;
+      ALTER TABLE omni_moltbook_activities
+        ADD CONSTRAINT omni_moltbook_activities_status_v1
+          CHECK (status IN ('succeeded', 'failed', 'uncertain', 'pending_verification', 'published')),
+        ADD CONSTRAINT omni_moltbook_activities_error_v1
+          CHECK ((status IN ('failed', 'uncertain')) = (error_code IS NOT NULL));
+
+      ALTER TABLE omni_moltbook_effect_receipts
+        DROP CONSTRAINT IF EXISTS omni_moltbook_effect_receipts_status_v1,
+        DROP CONSTRAINT IF EXISTS omni_moltbook_effect_receipts_error_v1;
+      FOR constraint_name IN
+        SELECT conname FROM pg_constraint
+        WHERE conrelid = 'omni_moltbook_effect_receipts'::regclass
+          AND contype = 'c'
+          AND (
+            (
+              pg_get_constraintdef(oid) ILIKE '%effect_status%'
+              AND pg_get_constraintdef(oid) ILIKE '%succeeded%'
+              AND pg_get_constraintdef(oid) ILIKE '%pending_verification%'
+              AND pg_get_constraintdef(oid) ILIKE '%published%'
+            )
+            OR (
+              pg_get_constraintdef(oid) ILIKE '%effect_status%'
+              AND pg_get_constraintdef(oid) ILIKE '%error_code%'
+            )
+          )
+      LOOP
+        EXECUTE format('ALTER TABLE omni_moltbook_effect_receipts DROP CONSTRAINT %I', constraint_name);
+      END LOOP;
+      ALTER TABLE omni_moltbook_effect_receipts
+        ADD CONSTRAINT omni_moltbook_effect_receipts_status_v1
+          CHECK (effect_status IN ('succeeded', 'failed', 'uncertain', 'pending_verification', 'published')),
+        ADD CONSTRAINT omni_moltbook_effect_receipts_error_v1
+          CHECK ((effect_status IN ('failed', 'uncertain')) = (error_code IS NOT NULL));
+    END
+    $receipt_constraints$;
 
     CREATE INDEX IF NOT EXISTS omni_moltbook_connections_due_idx
       ON omni_moltbook_connections (
@@ -206,9 +294,10 @@ export async function ensureMoltbookAgentConnectionsV1(sql: MigrationSql) {
       ON omni_moltbook_activities (
         tenant_id, owner_actor_id, agent_id, created_at DESC, id DESC
       );
-    CREATE INDEX IF NOT EXISTS omni_moltbook_effect_receipts_execution_idx
+    DROP INDEX IF EXISTS omni_moltbook_effect_receipts_execution_idx;
+    CREATE UNIQUE INDEX omni_moltbook_effect_receipts_execution_idx
       ON omni_moltbook_effect_receipts (
-        tenant_id, owner_actor_id, tool_execution_id, created_at, id
+        tenant_id, owner_actor_id, agent_id, tool_execution_id
       );
 
     CREATE OR REPLACE FUNCTION omni_moltbook_agent_boundary_is_exact_v1(

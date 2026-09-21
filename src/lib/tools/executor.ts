@@ -93,7 +93,10 @@ import type { MemoryRecord } from "@/lib/memory/types";
 import {
   executeGovernedMoltbookToolAction,
   isMoltbookToolId,
+  moltbookEffectCommitFromResult,
+  moltbookPublicToolResult,
   parseMoltbookToolInput,
+  reconcileGovernedMoltbookToolAction,
 } from "@/lib/tools/moltbook-adapter";
 import { recordRuntimeEventSafely } from "@/lib/observability/store";
 import { redactSensitive } from "@/lib/security/context";
@@ -112,6 +115,7 @@ import {
   getToolExecutionApprovalFingerprint,
   getToolExecutionEffectIntentV2,
   persistClaimedToolEffectIntentV2,
+  publicToolExecution,
   reclaimStaleMemoryForgetToolExecutionClaim,
   repairFileToolEffectReceiptEvent,
   recoverStaleToolExecutionClaim,
@@ -682,6 +686,52 @@ export async function executeGovernedTool({
   }
   if (
     !dryRun &&
+    isMoltbookToolId(tool.id) &&
+    governedToolOperationClass(tool, input) === "mutation" &&
+    existingRecord?.status === "executing" &&
+    executionClaimToken &&
+    executionClaimTokenFromRecord(existingRecord) === executionClaimToken &&
+    Boolean(getToolExecutionEffectIntentV2(existingRecord))
+  ) {
+    let parsedMoltbookInput: Record<string, unknown>;
+    try {
+      parsedMoltbookInput = parseMoltbookToolInput(tool.id, input);
+    } catch (error) {
+      return completeClaimedInputValidationFailure(
+        existingRecord,
+        executionClaimToken,
+        error,
+        executionScope,
+        idempotencyKey,
+      );
+    }
+    const scopedMoltbookRequest = await resolveToolExecutionScopeRequest({
+      record: existingRecord,
+      toolInput: parsedMoltbookInput,
+      requestedScope: executionScope,
+      context,
+      executionClaimToken,
+      mcpSessionScope,
+    });
+    const reconciled = await reconcileExistingMoltbookEffect({
+      record: existingRecord,
+      tool,
+      preparedInput: parsedMoltbookInput,
+      effectBinding,
+      executionScope: scopedMoltbookRequest.executionScope,
+      context,
+      agentRunId,
+    });
+    const record = reconciled || existingRecord;
+    return {
+      record,
+      result: record.status === "executed"
+        ? publicToolExecution(record).output
+        : null,
+    };
+  }
+  if (
+    !dryRun &&
     isSalesforceRecordWriteToolId(tool.id) &&
     existingRecord?.status === "executing" &&
     executionClaimToken &&
@@ -1001,6 +1051,14 @@ export async function executeGovernedTool({
         effectBinding,
         executionScope: scopedRequest.executionScope,
         abortSignal,
+      })) ?? (await reconcileExistingMoltbookEffect({
+        record: existing,
+        tool,
+        preparedInput,
+        effectBinding,
+        executionScope: scopedRequest.executionScope,
+        context,
+        agentRunId,
       })) ?? (await reconcileExistingSalesforceEffect({
         record: existing,
         tool,
@@ -1067,7 +1125,11 @@ export async function executeGovernedTool({
       }
       return {
         record,
-        result: record.status === "executed" ? record.output : null,
+        result: record.status === "executed"
+          ? isMoltbookToolId(tool.id)
+            ? publicToolExecution(record).output
+            : record.output
+          : null,
       };
     }
   }
@@ -1437,6 +1499,14 @@ export async function executeGovernedTool({
         effectBinding,
         executionScope: scopedRequest.executionScope,
         abortSignal,
+      })) ?? (await reconcileExistingMoltbookEffect({
+        record: claim.record,
+        tool,
+        preparedInput,
+        effectBinding,
+        executionScope: scopedRequest.executionScope,
+        context,
+        agentRunId,
       })) ?? (await reconcileExistingSalesforceEffect({
         record: claim.record,
         tool,
@@ -1469,7 +1539,11 @@ export async function executeGovernedTool({
       }
       return {
         record,
-        result: record.status === "executed" ? record.output : null,
+        result: record.status === "executed"
+          ? isMoltbookToolId(tool.id)
+            ? publicToolExecution(record).output
+            : record.output
+          : null,
       };
     }
     executionRecord = claim.record;
@@ -2186,6 +2260,107 @@ async function reconcileExistingMemoryWriteEffect(input: {
     throw new EffectReceiptFinalizationError({ cause: error });
   }
   return current;
+}
+
+async function reconcileExistingMoltbookEffect(input: {
+  record: ToolExecutionRecord;
+  tool: ToolDefinition;
+  preparedInput: Record<string, unknown>;
+  effectBinding?: GovernedToolEffectBinding;
+  executionScope?: ExecutionScope;
+  context?: SecurityContext;
+  agentRunId?: string;
+}): Promise<ToolExecutionRecord | undefined> {
+  if (
+    input.record.status !== "executing" ||
+    !isMoltbookToolId(input.tool.id) ||
+    governedToolOperationClass(input.tool, input.preparedInput) !== "mutation"
+  ) return undefined;
+  const claimToken = executionClaimTokenFromRecord(input.record);
+  if (!claimToken || !input.executionScope || !input.context) {
+    // An existing effect-bound Moltbook execution is never safe to replay
+    // without the exact original authority and claim.
+    return input.record;
+  }
+  let intent: EffectIntentV2;
+  let material: ProviderEffectMaterial;
+  try {
+    intent = getToolExecutionEffectIntentV2(input.record) as EffectIntentV2;
+    const prepared = prepareProviderEffectMaterial(
+      input.tool,
+      input.preparedInput,
+      input.record.id,
+    );
+    if (!intent || !prepared) return input.record;
+    material = prepared;
+    const expected = buildProviderEffectIntent({
+      record: input.record,
+      tool: input.tool,
+      material,
+      executionScope: input.executionScope,
+      effectBinding: input.effectBinding,
+    });
+    if (intent.effectIntentSha256 !== expected.effectIntentSha256) {
+      throw new Error(
+        "Moltbook reconciliation does not match the persisted effect intent.",
+      );
+    }
+  } catch (error) {
+    throw new EffectReceiptFinalizationError({ cause: error });
+  }
+  let reconciliation;
+  try {
+    reconciliation = await reconcileGovernedMoltbookToolAction({
+      toolId: input.tool.id,
+      toolInput: input.preparedInput,
+      context: input.context,
+      executionScope: input.executionScope,
+      executionRecord: input.record,
+      effectTargetId: material.targetId,
+      agentRunId: input.agentRunId,
+    });
+  } catch (error) {
+    throw new EffectReceiptFinalizationError({ cause: error });
+  }
+  // Missing, failed, or uncertain durable evidence never permits a second
+  // provider call. Only a positive immutable receipt can complete it.
+  if (!reconciliation || reconciliation.kind === "held") return input.record;
+  const publicResult = redactSensitive(
+    moltbookPublicToolResult(reconciliation.result),
+  );
+  let effectReceipt: ToolExecutionRecord["effectReceipt"];
+  try {
+    effectReceipt = finalizeProviderEffectIntent(
+      input.tool,
+      intent,
+      reconciliation.result,
+    );
+  } catch (error) {
+    throw new EffectReceiptFinalizationError({ cause: error });
+  }
+  const terminalRecord: ToolExecutionRecord = {
+    ...input.record,
+    status: "executed",
+    output: publicResult,
+    effectReceipt,
+    completedAt: new Date().toISOString(),
+  };
+  try {
+    const saved = await completeClaimedToolExecution(
+      terminalRecord,
+      claimToken,
+      { executionScope: input.executionScope },
+    );
+    if (saved) return saved;
+    const current = await getToolExecution(input.record.id, {
+      tenantId: input.executionScope.tenantId,
+    });
+    return current?.status === "executed" && current.effectReceipt
+      ? current
+      : input.record;
+  } catch (error) {
+    throw new EffectReceiptFinalizationError({ cause: error });
+  }
 }
 
 async function reconcileExistingGoogleCalendarEffect(input: {
@@ -3119,6 +3294,9 @@ function isLegacyExecutionForEffectCanary(record: ToolExecutionRecord) {
 }
 
 function withoutEffectCommitMetadata(result: unknown) {
+  if (moltbookEffectCommitFromResult(result)) {
+    return moltbookPublicToolResult(result);
+  }
   if (!result || typeof result !== "object" || Array.isArray(result)) {
     return result;
   }
@@ -3257,6 +3435,7 @@ async function runTool(
       context,
       executionScope,
       executionRecord,
+      effectTargetId,
       agentRunId,
       abortSignal,
     });
@@ -4177,15 +4356,22 @@ function finalizeProviderEffectIntent(
     });
   }
   if (isMoltbookToolId(tool.id)) {
-    const acknowledgementSha256 = canonicalJsonSha256({
-      toolId: tool.id,
-      result: resultValue,
-    });
+    const commit = moltbookEffectCommitFromResult(resultValue);
+    if (
+      !commit ||
+      commit.toolId !== tool.id ||
+      commit.toolExecutionId !== intent.executionId ||
+      commit.toolInputSha256 !== intent.inputSha256 ||
+      commit.effectTargetId !== intent.targetId
+    ) {
+      throw new Error(
+        "Moltbook provider acknowledgement does not match its persisted effect intent.",
+      );
+    }
     return finalizeEffectIntentV2(intent, {
-      providerAcknowledgement: "provider_response",
-      providerAcknowledgementId:
-        `moltbook_ack_${acknowledgementSha256.slice(0, 50)}`,
-      providerAcknowledgementSha256: acknowledgementSha256,
+      providerAcknowledgement: commit.providerAcknowledgement,
+      providerAcknowledgementId: commit.providerAcknowledgementId,
+      providerAcknowledgementSha256: commit.providerAcknowledgementSha256,
       verificationMethod: "read_after_write",
       verificationState: "unverifiable",
       verificationReasonCode: "read_unavailable",

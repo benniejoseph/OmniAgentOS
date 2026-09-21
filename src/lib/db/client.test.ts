@@ -778,7 +778,7 @@ describe("ordered database schema versions", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
       version: 190,
       name: "moltbook_agent_connections_v1",
-      checksum: "bd398f225fbc42f4ec0bc2079796b4c38b49158852558b3e5aa3d43c7db4ef95",
+      checksum: "94e09279f1c3906a1a2e7532282030009df130a148be4d74db104fecc701a548",
     });
     expect(databaseSchemaMigrations.find((migration) => migration.version === 139)).toEqual({
       version: 139,

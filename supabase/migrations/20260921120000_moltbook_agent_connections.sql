@@ -147,7 +147,8 @@ CREATE TABLE omni_moltbook_activities (
   CHECK (id ~ '^moltbook_activity_[a-f0-9]{48}$'),
   CHECK (char_length(agent_id) BETWEEN 1 AND 240),
   CHECK (kind ~ '^[a-z0-9_.:-]{1,80}$'),
-  CHECK (status IN ('succeeded', 'failed', 'pending_verification', 'published')),
+  CONSTRAINT omni_moltbook_activities_status_v1
+    CHECK (status IN ('succeeded', 'failed', 'uncertain', 'pending_verification', 'published')),
   CHECK (char_length(summary) BETWEEN 1 AND 1000),
   CHECK (provider_object_type IS NULL OR provider_object_type ~ '^[a-z0-9_.:-]{1,80}$'),
   CHECK (provider_object_ref IS NULL OR provider_object_ref ~ '^[A-Za-z0-9_.:-]{1,240}$'),
@@ -167,7 +168,8 @@ CREATE TABLE omni_moltbook_activities (
   CHECK (request_sha256 IS NULL OR request_sha256 ~ '^[a-f0-9]{64}$'),
   CHECK (response_sha256 IS NULL OR response_sha256 ~ '^[a-f0-9]{64}$'),
   CHECK (error_code IS NULL OR error_code ~ '^[a-z0-9_.:-]{1,80}$'),
-  CHECK ((status = 'failed') = (error_code IS NOT NULL))
+  CONSTRAINT omni_moltbook_activities_error_v1
+    CHECK ((status IN ('failed', 'uncertain')) = (error_code IS NOT NULL))
 );
 
 CREATE TABLE omni_moltbook_effect_receipts (
@@ -180,7 +182,10 @@ CREATE TABLE omni_moltbook_effect_receipts (
   effect_status TEXT NOT NULL,
   provider_object_type TEXT,
   provider_object_ref TEXT,
+  tool_id TEXT NOT NULL,
   tool_execution_id TEXT NOT NULL,
+  tool_input_sha256 TEXT NOT NULL,
+  effect_target_id TEXT NOT NULL,
   agent_run_id TEXT,
   request_sha256 TEXT NOT NULL,
   response_sha256 TEXT,
@@ -193,16 +198,21 @@ CREATE TABLE omni_moltbook_effect_receipts (
   CHECK (id ~ '^moltbook_effect_[a-f0-9]{48}$'),
   CHECK (char_length(agent_id) BETWEEN 1 AND 240),
   CHECK (effect_kind ~ '^[a-z0-9_.:-]{1,80}$'),
-  CHECK (effect_status IN ('succeeded', 'failed', 'pending_verification', 'published')),
+  CONSTRAINT omni_moltbook_effect_receipts_status_v1
+    CHECK (effect_status IN ('succeeded', 'failed', 'uncertain', 'pending_verification', 'published')),
   CHECK (provider_object_type IS NULL OR provider_object_type ~ '^[a-z0-9_.:-]{1,80}$'),
   CHECK (provider_object_ref IS NULL OR provider_object_ref ~ '^[A-Za-z0-9_.:-]{1,240}$'),
   CHECK ((provider_object_type IS NULL) = (provider_object_ref IS NULL)),
+  CHECK (tool_id ~ '^moltbook\.[a-z0-9_.:-]{1,80}$'),
   CHECK (char_length(tool_execution_id) BETWEEN 1 AND 240),
+  CHECK (tool_input_sha256 ~ '^[a-f0-9]{64}$'),
+  CHECK (effect_target_id ~ '^[A-Za-z0-9][A-Za-z0-9._:@/+~-]{0,239}$'),
   CHECK (agent_run_id IS NULL OR char_length(agent_run_id) BETWEEN 1 AND 240),
   CHECK (request_sha256 ~ '^[a-f0-9]{64}$'),
   CHECK (response_sha256 IS NULL OR response_sha256 ~ '^[a-f0-9]{64}$'),
   CHECK (error_code IS NULL OR error_code ~ '^[a-z0-9_.:-]{1,80}$'),
-  CHECK ((effect_status = 'failed') = (error_code IS NOT NULL))
+  CONSTRAINT omni_moltbook_effect_receipts_error_v1
+    CHECK ((effect_status IN ('failed', 'uncertain')) = (error_code IS NOT NULL))
 );
 
 CREATE INDEX omni_moltbook_connections_due_idx
@@ -213,9 +223,9 @@ CREATE INDEX omni_moltbook_activities_owner_cursor_idx
   ON omni_moltbook_activities (
     tenant_id, owner_actor_id, agent_id, created_at DESC, id DESC
   );
-CREATE INDEX omni_moltbook_effect_receipts_execution_idx
+CREATE UNIQUE INDEX omni_moltbook_effect_receipts_execution_idx
   ON omni_moltbook_effect_receipts (
-    tenant_id, owner_actor_id, tool_execution_id, created_at, id
+    tenant_id, owner_actor_id, agent_id, tool_execution_id
   );
 
 CREATE FUNCTION omni_moltbook_agent_boundary_is_exact_v1(
@@ -535,7 +545,7 @@ INSERT INTO public.omni_schema_version (version, name, checksum, applied_at)
 VALUES (
   190,
   'moltbook_agent_connections_v1',
-  'bd398f225fbc42f4ec0bc2079796b4c38b49158852558b3e5aa3d43c7db4ef95',
+  '94e09279f1c3906a1a2e7532282030009df130a148be4d74db104fecc701a548',
   clock_timestamp()
 );
 
