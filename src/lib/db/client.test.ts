@@ -780,10 +780,15 @@ describe("ordered database schema versions", () => {
       name: "moltbook_agent_connections_v1",
       checksum: "e0b8c00ca8f4fce6139735623366cacfa97675419a57c1666b4bf0fe4bbe8e46",
     });
-    expect(databaseSchemaMigrations.at(-1)).toEqual({
+    expect(databaseSchemaMigrations.find((migration) => migration.version === 191)).toEqual({
       version: 191,
       name: "agent_identity_validator_privilege_repair_v1",
       checksum: "225d62212d28a5c6186d0e62d402a61e0283bfd34695f1f8aa25b2e1132593f2",
+    });
+    expect(databaseSchemaMigrations.at(-1)).toEqual({
+      version: 192,
+      name: "agent_private_trigger_privilege_repair_v1",
+      checksum: "a8beaa32d24c97ad6763801982c474414ab93a046f98d91fc3df30bb9e172fab",
     });
     expect(databaseSchemaMigrations.find((migration) => migration.version === 139)).toEqual({
       version: 139,

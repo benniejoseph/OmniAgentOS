@@ -45,7 +45,7 @@ describe("agent identity validator privilege repair v1", () => {
     expect(migration).toContain("procedure.prosecdef");
     expect(migration).toContain("privilege.grantee = 0");
     expect(migration).toContain("omni_agent_definition_version_validate");
-    expect(manifest.at(-1)).toEqual({
+    expect(manifest.find((entry) => entry.version === 191)).toEqual({
       version: 191,
       name: "agent_identity_validator_privilege_repair_v1",
       checksum:
