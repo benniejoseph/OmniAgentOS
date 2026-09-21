@@ -4,7 +4,8 @@ typedef Json = Map<String, dynamic>;
 
 const maxAssignedAgentSkills = 8;
 const moltbookDisclosureVersion = 'moltbook-public-activity-v1';
-const moltbookToolIds = <String>{
+const moltbookAutonomyDisclosureVersion = 'moltbook-autonomy-public-actions-v1';
+const moltbookLegacyToolIds = <String>{
   'moltbook.home.read',
   'moltbook.feed.read',
   'moltbook.thread.read',
@@ -13,6 +14,21 @@ const moltbookToolIds = <String>{
   'moltbook.post.vote',
   'moltbook.comment.upvote',
   'moltbook.agent.follow',
+  'moltbook.verify',
+};
+const moltbookToolIds = <String>{
+  'moltbook.home.read',
+  'moltbook.feed.read',
+  'moltbook.thread.read',
+  'moltbook.submolts.list',
+  'moltbook.submolt.read',
+  'moltbook.submolt.feed',
+  'moltbook.post.create',
+  'moltbook.comment.create',
+  'moltbook.post.vote',
+  'moltbook.comment.upvote',
+  'moltbook.agent.follow',
+  'moltbook.submolt.subscribe',
   'moltbook.verify',
 };
 
@@ -132,8 +148,14 @@ class AgentProfile {
 
 bool isExactMoltbookAgentBoundary(AgentProfile agent) =>
     agent.skillIds.isEmpty &&
-    agent.toolIds.length == moltbookToolIds.length &&
-    agent.toolIds.toSet().containsAll(moltbookToolIds) &&
+    (_isExactToolSet(agent.toolIds, moltbookToolIds) ||
+        _isExactToolSet(agent.toolIds, moltbookLegacyToolIds)) &&
+    _hasExactMoltbookPolicyBoundary(agent);
+
+bool _isExactToolSet(List<String> actual, Set<String> expected) =>
+    actual.length == expected.length && actual.toSet().containsAll(expected);
+
+bool _hasExactMoltbookPolicyBoundary(AgentProfile agent) =>
     agent.memoryScope == 'session' &&
     agent.autonomy == 'governed' &&
     (agent.approvalPolicy == 'risk_based' || agent.approvalPolicy == 'always');
@@ -286,15 +308,281 @@ class MoltbookActivity {
   }
 }
 
+class MoltbookActionBudget {
+  const MoltbookActionBudget({
+    required this.key,
+    required this.label,
+    required this.used,
+    required this.limit,
+  });
+
+  final String key, label;
+  final int used, limit;
+  int get remaining => (limit - used).clamp(0, limit).toInt();
+}
+
+class MoltbookInterest {
+  const MoltbookInterest({
+    required this.topic,
+    required this.score,
+    required this.confidence,
+    required this.evidenceCount,
+  });
+
+  final String topic;
+  final double score, confidence;
+  final int evidenceCount;
+}
+
+class MoltbookCycleReceipt {
+  const MoltbookCycleReceipt({
+    required this.id,
+    required this.status,
+    this.trigger,
+    this.createdAt,
+    this.completedAt,
+    this.runId,
+  });
+
+  final String id, status;
+  final String? trigger, createdAt, completedAt, runId;
+}
+
+class MoltbookAutonomy {
+  const MoltbookAutonomy({
+    required this.status,
+    required this.cadenceMs,
+    required this.budgets,
+    required this.interests,
+    required this.cycles,
+    this.executable = false,
+    this.blockedReason,
+    this.lastCycleAt,
+    this.nextCycleAt,
+    this.lastRunId,
+    this.budgetResetAt,
+  });
+
+  final String status;
+  final bool executable;
+  final int cadenceMs;
+  final List<MoltbookActionBudget> budgets;
+  final List<MoltbookInterest> interests;
+  final List<MoltbookCycleReceipt> cycles;
+  final String? blockedReason;
+  final String? lastCycleAt, nextCycleAt, lastRunId, budgetResetAt;
+
+  factory MoltbookAutonomy.fromJson(Json value) {
+    final enrollment = _jsonMap(value['enrollment']) ?? value;
+    final enrollmentBudgets = _jsonMap(enrollment['budgets']);
+    final rawStatus = _firstString([value['status'], enrollment['status']])
+        ?.toLowerCase();
+    final status = rawStatus == 'active' ? 'enabled' : rawStatus;
+    if (!const {'enabled', 'paused', 'revoked', 'running'}.contains(status)) {
+      throw const FormatException('Unsupported Moltbook autonomy status.');
+    }
+    final executableValue = value.containsKey('executable')
+        ? value['executable']
+        : enrollment['executable'];
+    final executable = executableValue == true;
+    final rawBlockedReason = _firstString([
+      value['blockedReason'],
+      enrollment['blockedReason'],
+    ])?.toLowerCase();
+    final blockedReason =
+        const {
+          'connection_unavailable',
+          'authority_unavailable',
+        }.contains(rawBlockedReason)
+        ? rawBlockedReason
+        : null;
+    final cadenceMs =
+        _firstNumber([value['cadenceMs'], enrollment['cadenceMs']])?.toInt() ??
+        ((_firstNumber([
+                  value['cycleIntervalSeconds'],
+                  enrollment['cycleIntervalSeconds'],
+                  enrollmentBudgets?['cycleIntervalSeconds'],
+                ])?.toInt() ??
+                14400) *
+            1000);
+    final budgetsValue = _jsonMap(value['budgets']);
+    final budgetsSource =
+        _jsonMap(budgetsValue?['daily']) ??
+        _jsonMap(value['dailyBudgets']) ??
+        budgetsValue ??
+        _jsonMap(value['budget']);
+    final usageSource =
+        _jsonMap(value['dailyUsage']) ??
+        _jsonMap(value['usage']) ??
+        _jsonMap(value['budgetUsage']);
+    final limitsSource =
+        _jsonMap(value['dailyLimits']) ??
+        _jsonMap(value['limits']) ??
+        _jsonMap(enrollment['dailyLimits']) ??
+        _jsonMap(enrollmentBudgets?['daily']);
+    final specs = <(String, String, List<String>)>[
+      ('post', 'Posts', ['post', 'posts']),
+      ('comment', 'Replies', ['comment', 'comments', 'reply', 'replies']),
+      ('vote', 'Votes', ['vote', 'votes']),
+      ('follow', 'Follows', ['follow', 'follows']),
+      (
+        'subscribe',
+        'Community joins',
+        [
+          'subscribe',
+          'subscribes',
+          'subscription',
+          'subscriptions',
+          'communityJoin',
+          'communityJoins',
+        ],
+      ),
+    ];
+    final budgets = specs
+        .map((spec) {
+          final (key, label, aliases) = spec;
+          Json? item;
+          for (final alias in aliases) {
+            item ??= _jsonMap(budgetsSource?[alias]);
+          }
+          final limitValues = <Object?>[item?['limit'], item?['total']];
+          final usedValues = <Object?>[item?['used']];
+          for (final alias in aliases) {
+            final upper = '${alias[0].toUpperCase()}${alias.substring(1)}';
+            final snake = alias
+                .replaceAllMapped(
+                  RegExp(r'([a-z0-9])([A-Z])'),
+                  (match) => '${match[1]}_${match[2]}',
+                )
+                .toLowerCase();
+            limitValues.addAll([
+              limitsSource?[alias],
+              value['daily${upper}Limit'],
+              enrollment['daily${upper}Limit'],
+              value['daily_${snake}_limit'],
+              enrollment['daily_${snake}_limit'],
+            ]);
+            usedValues.addAll([
+              usageSource?[alias],
+              value['daily${upper}Used'],
+              value['daily_${snake}_used'],
+            ]);
+          }
+          final limit = _nonNegativeInt(_firstNumber(limitValues) ?? 0);
+          final explicitUsed = _firstNumber(usedValues);
+          final remaining = _firstNumber([item?['remaining']]);
+          final used = _nonNegativeInt(
+            explicitUsed ??
+                (remaining == null ? 0 : (limit - remaining).clamp(0, limit)),
+          );
+          return MoltbookActionBudget(
+            key: key,
+            label: label,
+            used: used,
+            limit: limit,
+          );
+        })
+        .toList(growable: false);
+
+    final interestValues = _firstList([
+      value['interests'],
+      value['developingInterests'],
+      value['interestProfile'],
+    ]);
+    final interests = interestValues.map(_jsonMap).whereType<Json>().map((
+      interest,
+    ) {
+      final evidence = _firstList([
+        interest['evidence'],
+        interest['evidenceSha256s'],
+        interest['evidenceIds'],
+      ]);
+      return MoltbookInterest(
+        topic:
+            _firstString([
+              interest['topic'],
+              interest['name'],
+              interest['label'],
+            ]) ??
+            'Emerging topic',
+        score: _unit(
+          _firstNumber([interest['score'], interest['weight']]) ?? 0,
+        ),
+        confidence: _unit(_firstNumber([interest['confidence']]) ?? 0),
+        evidenceCount: _nonNegativeInt(
+          _firstNumber([interest['evidenceCount']]) ?? evidence.length,
+        ),
+      );
+    }).toList()..sort((a, b) => b.score.compareTo(a.score));
+
+    final cycleValues = _firstList([
+      value['recentCycles'],
+      value['cycles'],
+      value['cycleReceipts'],
+    ]);
+    final cycles = <MoltbookCycleReceipt>[];
+    for (var index = 0; index < cycleValues.length && index < 8; index += 1) {
+      final cycle = _jsonMap(cycleValues[index]);
+      if (cycle == null) continue;
+      cycles.add(
+        MoltbookCycleReceipt(
+          id: _firstString([cycle['id'], cycle['cycleId']]) ?? 'cycle-$index',
+          status:
+              _firstString([cycle['status'], cycle['outcome']]) ?? 'unknown',
+          trigger: _firstString([cycle['trigger'], cycle['triggerKind']]),
+          createdAt: _firstString([
+            cycle['createdAt'],
+            cycle['startedAt'],
+            cycle['scheduledFor'],
+          ]),
+          completedAt: _firstString([cycle['completedAt']]),
+          runId: _firstString([cycle['runId'], cycle['agentRunId']]),
+        ),
+      );
+    }
+    final lastCycle = cycles.isEmpty ? null : cycles.first;
+    return MoltbookAutonomy(
+      status: status!,
+      executable: executable,
+      blockedReason: executable ? null : blockedReason,
+      cadenceMs: cadenceMs.clamp(0, 86400000).toInt(),
+      budgets: budgets,
+      interests: interests.take(8).toList(growable: false),
+      cycles: cycles,
+      lastCycleAt: _firstString([
+        value['lastCycleAt'],
+        enrollment['lastCycleAt'],
+        lastCycle?.completedAt,
+        lastCycle?.createdAt,
+      ]),
+      nextCycleAt: _firstString([
+        value['nextCycleAt'],
+        enrollment['nextCycleAt'],
+      ]),
+      lastRunId: _firstString([
+        value['lastRunId'],
+        value['agentRunId'],
+        lastCycle?.runId,
+      ]),
+      budgetResetAt: _firstString([
+        usageSource?['resetAt'],
+        value['budgetResetAt'],
+      ]),
+    );
+  }
+}
+
 class MoltbookProjection {
   const MoltbookProjection({
     required this.connection,
     required this.activities,
+    this.autonomy,
     this.nextCursor,
   });
 
   final MoltbookConnection? connection;
   final List<MoltbookActivity> activities;
+  final MoltbookAutonomy? autonomy;
   final String? nextCursor;
 
   factory MoltbookProjection.fromJson(Json value) {
@@ -310,10 +598,52 @@ class MoltbookProjection {
                 MoltbookActivity.fromJson(Map<String, dynamic>.from(item)),
           )
           .toList(),
+      autonomy: _parseMoltbookAutonomy(value['autonomy']),
       nextCursor: value['nextCursor']?.toString(),
     );
   }
 }
+
+MoltbookAutonomy? _parseMoltbookAutonomy(Object? value) {
+  final map = _jsonMap(value);
+  if (map == null) return null;
+  try {
+    return MoltbookAutonomy.fromJson(map);
+  } on FormatException {
+    return null;
+  }
+}
+
+Json? _jsonMap(Object? value) =>
+    value is Map ? Map<String, dynamic>.from(value) : null;
+
+String? _firstString(Iterable<Object?> values) {
+  for (final value in values) {
+    if (value is String && value.trim().isNotEmpty) return value.trim();
+  }
+  return null;
+}
+
+num? _firstNumber(Iterable<Object?> values) {
+  for (final value in values) {
+    if (value is num && value.isFinite) return value;
+    if (value is String) {
+      final parsed = num.tryParse(value);
+      if (parsed != null && parsed.isFinite) return parsed;
+    }
+  }
+  return null;
+}
+
+List<Object?> _firstList(Iterable<Object?> values) {
+  for (final value in values) {
+    if (value is List) return value;
+  }
+  return const [];
+}
+
+int _nonNegativeInt(num value) => value.floor().clamp(0, 1 << 31).toInt();
+double _unit(num value) => value.toDouble().clamp(0, 1).toDouble();
 
 Uri? exactMoltbookUri(String? value) {
   if (value == null || value.isEmpty) return null;

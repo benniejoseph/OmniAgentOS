@@ -892,12 +892,14 @@ payload has matching persisted and independently observed SHA-256
 ## Moltbook Agent boundary
 
 The Moltbook integration is a dedicated public-social identity boundary, not a
-general connector. A linked custom Agent must keep the exact nine reviewed
-`moltbook.*` tools, no Skills, session-only memory, governed autonomy, and an
-`always` or `risk_based` approval policy. Database guards reject a connection
-or later Agent-policy edit that would broaden that boundary. A linked Agent
-cannot be retired or moved to Trash; pause the connection instead so its
-credential, public identity, and append-only activity evidence remain
+general connector. A linked custom Agent must keep either the exact legacy
+nine-tool boundary or the exact current thirteen-tool boundary, no Skills,
+session-only memory, governed autonomy, and an `always` or `risk_based`
+approval policy. The current boundary adds only bounded community discovery
+and subscription operations. Database guards reject subsets, supersets, mixed
+boundaries, or later Agent-policy edits that would broaden that authority. A
+linked Agent cannot be retired or moved to Trash; pause the connection instead
+so its credential, public identity, and append-only activity evidence remain
 reconcilable.
 
 Registration is an explicit authenticated owner control-plane action. It must
@@ -914,12 +916,27 @@ created accidentally. Moltbook ownership claiming remains a separate human
 action at the exact provider claim URL; Asael must not automate email, X, or
 other proof-of-ownership steps.
 
-The maintenance lane performs only a bounded provider status check for due
-connections. It does not read the home/feed or author social content. Feed and
-thread reads occur only during an authenticated run of the linked Agent and
-still pass through the governed tool executor. Every post, comment, vote,
-follow, and verification is risk two and waits for human approval. Provider
-content and verification text remain untrusted data, never instructions.
+The maintenance lane performs the connection heartbeat and, only for an
+explicitly owner-enrolled autonomy mandate, may claim one leased social cycle
+at the stored four-hour cadence. Feed, thread, and community reads still pass
+through the governed tool executor. The mandate is versioned and revocable,
+requires a live operator/admin membership plus the exact current Agent
+definition, principal, policy, connection, and lease at action time, and allows
+at most one total public mutation per cycle within the displayed rolling daily
+budgets. It covers only text posts without links, comments without links,
+votes, follow changes, and community subscription changes. Direct messages,
+verification, deletion, moderation, external links, private Asael data, and Mac
+control remain excluded. Without an active mandate, every public mutation
+continues to wait for human approval. Provider content and verification text
+remain untrusted data, never instructions.
+
+Every autonomy action atomically consumes a digest-bound action claim before
+provider dispatch. Idempotent reuse revalidates the live cycle and authority;
+an expired lease cannot authorize or complete work. Expired cycles produce a
+typed digest-only completion event, and three consecutive failed cycles pause
+the enrollment. The owner can pause, resume, revoke, or request one immediate
+cycle from the Agent inspector; revocation requires a new explicit enrollment
+and never restores itself.
 
 Every approved public mutation persists its effect intent before network
 dispatch and binds the tenant, physical owner, Agent principal, tool execution,
@@ -939,9 +956,12 @@ only the optional bounded `agentId` field to the strict Conversation request.
 The macOS Agent inspector can therefore start a clean direct Command run pinned
 to the exact actor-owned custom Agent; queued prompts and retries retain that
 selection, and clearing it returns to ordinary supervisor routing. Apply
-`20260921120000_moltbook_agent_connections.sql` before promoting the web/native
-release; its ordered/runtime schema identity is version 190 with checksum
-`e0b8c00ca8f4fce6139735623366cacfa97675419a57c1666b4bf0fe4bbe8e46`.
+`20260921120000_moltbook_agent_connections.sql` and then
+`20260921170000_moltbook_autonomy.sql` before promoting the web/native release.
+Their ordered/runtime schema identities are respectively version 190 checksum
+`e0b8c00ca8f4fce6139735623366cacfa97675419a57c1666b4bf0fe4bbe8e46`
+and version 194 checksum
+`66a868eed1a0fef0eb61d8f69d0d2351605edf39711c007d5c58f1febb5cafef`.
 Run the focused Moltbook, Agent-route, native-contract, Flutter Agent,
 TypeScript, and changed-file lint checks. Paired web/Fly promotion remains the
 default for releases that touch the worker protocol or worker-owned sources.

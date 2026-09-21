@@ -151,6 +151,48 @@ void main() {
           },
         },
       ],
+      'autonomy': {
+        'executable': true,
+        'enrollment': {
+          'status': 'enabled',
+          'budgets': {
+            'cycleIntervalSeconds': 14400,
+            'daily': {
+              'posts': 1,
+              'comments': 6,
+              'votes': 12,
+              'follows': 2,
+              'subscriptions': 2,
+            },
+          },
+          'nextCycleAt': '2026-09-21T16:00:00.000Z',
+        },
+        'dailyUsage': {
+          'posts': 1,
+          'comments': 2,
+          'votes': 3,
+          'follows': 0,
+          'subscriptions': 1,
+          'resetAt': '2026-09-22T01:00:00.000Z',
+        },
+        'interests': [
+          {
+            'topic': 'agent safety',
+            'score': .82,
+            'confidence': .7,
+            'evidenceSha256s': ['digest-one', 'digest-two'],
+          },
+        ],
+        'recentCycles': [
+          {
+            'id': 'cycle-1',
+            'status': 'succeeded',
+            'triggerKind': 'scheduled',
+            'completedAt': '2026-09-21T12:00:00.000Z',
+            'agentRunId': 'run-1',
+          },
+        ],
+      },
       'nextCursor': 'older-page',
     });
 
@@ -162,8 +204,56 @@ void main() {
     expect(projection.activities.single.providerType, 'post');
     expect(projection.activities.single.providerRef, 'post-1');
     expect(projection.activities.single.runId, 'run-1');
+    expect(projection.autonomy?.status, 'enabled');
+    expect(projection.autonomy?.executable, isTrue);
+    expect(projection.autonomy?.blockedReason, isNull);
+    expect(projection.autonomy?.cadenceMs, 14400000);
+    expect(projection.autonomy?.lastRunId, 'run-1');
+    expect(projection.autonomy?.budgetResetAt, '2026-09-22T01:00:00.000Z');
+    expect(projection.autonomy?.budgets[2].used, 3);
+    expect(projection.autonomy?.budgets[4].label, 'Community joins');
+    expect(projection.autonomy?.interests.single.topic, 'agent safety');
+    expect(projection.autonomy?.interests.single.evidenceCount, 2);
+    expect(projection.autonomy?.cycles.single.trigger, 'scheduled');
     expect(projection.nextCursor, 'older-page');
   });
+
+  test('Moltbook autonomy parser fails closed on an unknown status', () {
+    final projection = MoltbookProjection.fromJson({
+      'connection': null,
+      'activities': const [],
+      'autonomy': {'status': 'unexpected'},
+    });
+    expect(projection.autonomy, isNull);
+  });
+
+  test(
+    'Moltbook autonomy parser fails closed and only exposes safe blockers',
+    () {
+      final blocked = MoltbookProjection.fromJson({
+        'connection': null,
+        'activities': const [],
+        'autonomy': {
+          'status': 'enabled',
+          'executable': false,
+          'blockedReason': 'connection_unavailable',
+        },
+      });
+      final untrusted = MoltbookProjection.fromJson({
+        'connection': null,
+        'activities': const [],
+        'autonomy': {
+          'status': 'enabled',
+          'blockedReason': '<script>provider detail</script>',
+        },
+      });
+
+      expect(blocked.autonomy?.executable, isFalse);
+      expect(blocked.autonomy?.blockedReason, 'connection_unavailable');
+      expect(untrusted.autonomy?.executable, isFalse);
+      expect(untrusted.autonomy?.blockedReason, isNull);
+    },
+  );
 
   test('Moltbook links are limited to the exact official HTTPS host', () {
     expect(
@@ -214,6 +304,16 @@ void main() {
       ],
     );
     expect(isExactMoltbookAgentBoundary(exact), isTrue);
+    final expanded = AgentProfile.fromJson({
+      'id': exact.id,
+      'name': exact.name,
+      'autonomy': exact.autonomy,
+      'approvalPolicy': exact.approvalPolicy,
+      'memoryScope': exact.memoryScope,
+      'skillIds': const [],
+      'toolIds': moltbookToolIds.toList(),
+    });
+    expect(isExactMoltbookAgentBoundary(expanded), isTrue);
     expect(
       isExactMoltbookAgentBoundary(
         AgentProfile.fromJson({

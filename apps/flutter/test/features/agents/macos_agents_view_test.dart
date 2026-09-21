@@ -66,6 +66,26 @@ class _MoltbookRepository extends _AgentsRepository
         connection: _claimedMoltbookConnection,
         activities: [_heartbeatActivity],
       );
+    } else if (input['action'] == 'enable_autonomy' ||
+        input['action'] == 'resume_autonomy' ||
+        input['action'] == 'run_autonomy_once') {
+      projection = MoltbookProjection(
+        connection: projection.connection,
+        activities: projection.activities,
+        autonomy: _enabledMoltbookAutonomy,
+      );
+    } else if (input['action'] == 'pause_autonomy') {
+      projection = MoltbookProjection(
+        connection: projection.connection,
+        activities: projection.activities,
+        autonomy: _pausedMoltbookAutonomy,
+      );
+    } else if (input['action'] == 'revoke_autonomy') {
+      projection = MoltbookProjection(
+        connection: projection.connection,
+        activities: projection.activities,
+        autonomy: _revokedMoltbookAutonomy,
+      );
     }
   }
 }
@@ -210,6 +230,76 @@ const _heldMoltbookConnection = MoltbookConnection(
   disclosureAccepted: true,
   disclosureVersion: moltbookDisclosureVersion,
   lastErrorCode: 'registration_rejected.provider_conflict',
+);
+
+const _moltbookBudgets = <MoltbookActionBudget>[
+  MoltbookActionBudget(key: 'post', label: 'Posts', used: 1, limit: 1),
+  MoltbookActionBudget(key: 'comment', label: 'Replies', used: 2, limit: 6),
+  MoltbookActionBudget(key: 'vote', label: 'Votes', used: 3, limit: 12),
+  MoltbookActionBudget(key: 'follow', label: 'Follows', used: 0, limit: 2),
+  MoltbookActionBudget(
+    key: 'subscribe',
+    label: 'Community joins',
+    used: 1,
+    limit: 2,
+  ),
+];
+const _moltbookInterests = <MoltbookInterest>[
+  MoltbookInterest(
+    topic: 'agent safety',
+    score: .82,
+    confidence: .7,
+    evidenceCount: 2,
+  ),
+];
+const _moltbookCycles = <MoltbookCycleReceipt>[
+  MoltbookCycleReceipt(
+    id: 'cycle-one',
+    status: 'succeeded',
+    trigger: 'scheduled',
+    completedAt: '2026-09-21T08:00:00.000Z',
+    runId: 'run-autonomy-one',
+  ),
+];
+
+const _enabledMoltbookAutonomy = MoltbookAutonomy(
+  status: 'enabled',
+  executable: true,
+  cadenceMs: 14400000,
+  lastCycleAt: '2026-09-21T08:00:00.000Z',
+  nextCycleAt: '2026-09-21T12:00:00.000Z',
+  lastRunId: 'run-autonomy-one',
+  budgetResetAt: '2026-09-22T01:00:00.000Z',
+  budgets: _moltbookBudgets,
+  interests: _moltbookInterests,
+  cycles: _moltbookCycles,
+);
+
+const _pausedMoltbookAutonomy = MoltbookAutonomy(
+  status: 'paused',
+  executable: true,
+  cadenceMs: 14400000,
+  budgets: _moltbookBudgets,
+  interests: _moltbookInterests,
+  cycles: _moltbookCycles,
+);
+
+const _revokedMoltbookAutonomy = MoltbookAutonomy(
+  status: 'revoked',
+  cadenceMs: 14400000,
+  budgets: _moltbookBudgets,
+  interests: _moltbookInterests,
+  cycles: _moltbookCycles,
+);
+
+const _blockedMoltbookAutonomy = MoltbookAutonomy(
+  status: 'enabled',
+  executable: false,
+  blockedReason: 'connection_unavailable',
+  cadenceMs: 14400000,
+  budgets: _moltbookBudgets,
+  interests: _moltbookInterests,
+  cycles: _moltbookCycles,
 );
 
 const _heartbeatActivity = MoltbookActivity(
@@ -511,6 +601,312 @@ void main() {
       'resume',
     ]);
     expect(find.byKey(const Key('moltbook-pause')), findsOneWidget);
+  });
+
+  testWidgets(
+    'requires explicit standing-authority disclosure before enabling autonomy',
+    (tester) async {
+      await _useDesktopViewport(tester);
+      final repository = _MoltbookRepository(
+        const MoltbookProjection(
+          connection: _claimedMoltbookConnection,
+          activities: [],
+        ),
+      );
+      final controller = AgentsController(
+        repository,
+        canManage: true,
+        mutationsAvailable: true,
+        moltbookAvailable: true,
+      );
+      await controller.refresh();
+      await tester.pumpWidget(_app(MacosAgentsView(controller: controller)));
+      await tester.pumpAndSettle();
+
+      await _showMoltbook(tester, const Key('moltbook-autonomy-disclosure'));
+      expect(
+        find.textContaining('independently read, post, reply, vote, follow'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('at most one public action'), findsOneWidget);
+      expect(find.textContaining('join communities'), findsOneWidget);
+      expect(
+        find.textContaining('control of this Mac remain excluded'),
+        findsOneWidget,
+      );
+      expect(
+        tester
+            .widget<FilledButton>(
+              find.byKey(const Key('moltbook-enable-autonomy')),
+            )
+            .onPressed,
+        isNull,
+      );
+
+      await tester.tap(find.byKey(const Key('moltbook-autonomy-disclosure')));
+      await tester.pump();
+      expect(
+        tester
+            .widget<FilledButton>(
+              find.byKey(const Key('moltbook-enable-autonomy')),
+            )
+            .onPressed,
+        isNotNull,
+      );
+      await tester.tap(find.byKey(const Key('moltbook-enable-autonomy')));
+      await tester.pumpAndSettle();
+
+      expect(repository.changes.single, {
+        'action': 'enable_autonomy',
+        'disclosureAccepted': true,
+        'disclosureVersion': moltbookAutonomyDisclosureVersion,
+      });
+      expect(find.text('Autonomous engagement is active'), findsOneWidget);
+      expect(find.byKey(const Key('moltbook-pause-autonomy')), findsOneWidget);
+    },
+  );
+
+  testWidgets('does not offer first-time autonomy on a paused connection', (
+    tester,
+  ) async {
+    await _useDesktopViewport(tester);
+    final repository = _MoltbookRepository(
+      const MoltbookProjection(
+        connection: _pausedMoltbookConnection,
+        activities: [],
+      ),
+    );
+    final controller = AgentsController(
+      repository,
+      canManage: true,
+      mutationsAvailable: true,
+      moltbookAvailable: true,
+    );
+    await controller.refresh();
+    await tester.pumpWidget(_app(MacosAgentsView(controller: controller)));
+    await tester.pumpAndSettle();
+
+    await _showMoltbook(tester, const Key('moltbook-enable-autonomy'));
+    expect(find.byKey(const Key('moltbook-autonomy-blocked')), findsOneWidget);
+    expect(
+      find.textContaining('Restore the connection before resuming autonomy'),
+      findsOneWidget,
+    );
+    expect(
+      tester
+          .widget<CheckboxListTile>(
+            find.byKey(const Key('moltbook-autonomy-disclosure')),
+          )
+          .onChanged,
+      isNull,
+    );
+    expect(
+      tester
+          .widget<FilledButton>(
+            find.byKey(const Key('moltbook-enable-autonomy')),
+          )
+          .onPressed,
+      isNull,
+    );
+    expect(repository.changes, isEmpty);
+  });
+
+  testWidgets('shows autonomy budgets, interests, receipts, and controls', (
+    tester,
+  ) async {
+    await _useDesktopViewport(tester);
+    final repository = _MoltbookRepository(
+      const MoltbookProjection(
+        connection: _claimedMoltbookConnection,
+        activities: [_heartbeatActivity],
+        autonomy: _enabledMoltbookAutonomy,
+      ),
+    );
+    final controller = AgentsController(
+      repository,
+      canManage: true,
+      mutationsAvailable: true,
+      moltbookAvailable: true,
+    );
+    await controller.refresh();
+    await tester.pumpWidget(_app(MacosAgentsView(controller: controller)));
+    await tester.pumpAndSettle();
+
+    await _showMoltbook(tester, const Key('moltbook-pause-autonomy'));
+    expect(find.text('Every 4h'), findsOneWidget);
+    expect(find.text('Daily action budget'), findsOneWidget);
+    expect(find.text('Rolling 24h'), findsOneWidget);
+    expect(find.text('Community joins'), findsOneWidget);
+    expect(find.text('agent safety'), findsOneWidget);
+    expect(find.text('Recent cycle receipts'), findsOneWidget);
+    expect(find.byKey(const Key('moltbook-cycle-cycle-one')), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('moltbook-pause-autonomy')));
+    await tester.pumpAndSettle();
+    await _showMoltbook(tester, const Key('moltbook-resume-autonomy'));
+    await tester.tap(find.byKey(const Key('moltbook-resume-autonomy')));
+    await tester.pumpAndSettle();
+    await _showMoltbook(tester, const Key('moltbook-run-autonomy-once'));
+    await tester.tap(find.byKey(const Key('moltbook-run-autonomy-once')));
+    await tester.pumpAndSettle();
+    await _showMoltbook(tester, const Key('moltbook-revoke-autonomy'));
+    await tester.tap(find.byKey(const Key('moltbook-revoke-autonomy')));
+    await tester.pumpAndSettle();
+
+    expect(repository.changes.map((change) => change['action']), [
+      'pause_autonomy',
+      'resume_autonomy',
+      'run_autonomy_once',
+      'revoke_autonomy',
+    ]);
+    expect(
+      find.byKey(const Key('moltbook-autonomy-disclosure')),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('shows enabled but unexecutable autonomy as blocked', (
+    tester,
+  ) async {
+    await _useDesktopViewport(tester);
+    final repository = _MoltbookRepository(
+      const MoltbookProjection(
+        connection: _claimedMoltbookConnection,
+        activities: [],
+        autonomy: _blockedMoltbookAutonomy,
+      ),
+    );
+    final controller = AgentsController(
+      repository,
+      canManage: true,
+      mutationsAvailable: true,
+      moltbookAvailable: true,
+    );
+    await controller.refresh();
+    await tester.pumpWidget(_app(MacosAgentsView(controller: controller)));
+    await tester.pumpAndSettle();
+
+    await _showMoltbook(tester, const Key('moltbook-autonomy-blocked'));
+    expect(find.text('Autonomous engagement is blocked'), findsOneWidget);
+    expect(find.text('Blocked'), findsOneWidget);
+    expect(
+      find.textContaining('paused, unclaimed, or missing'),
+      findsOneWidget,
+    );
+    expect(
+      tester
+          .widget<FilledButton>(
+            find.byKey(const Key('moltbook-run-autonomy-once')),
+          )
+          .onPressed,
+      isNull,
+    );
+    expect(
+      tester
+          .widget<FilledButton>(
+            find.byKey(const Key('moltbook-pause-autonomy')),
+          )
+          .onPressed,
+      isNotNull,
+    );
+  });
+
+  testWidgets('renders Moltbook management as visibly read-only', (
+    tester,
+  ) async {
+    await _useDesktopViewport(tester);
+    final repository = _MoltbookRepository(
+      const MoltbookProjection(
+        connection: _pausedMoltbookConnection,
+        activities: [],
+        autonomy: _pausedMoltbookAutonomy,
+      ),
+    );
+    final controller = AgentsController(
+      repository,
+      canManage: false,
+      mutationsAvailable: true,
+      moltbookAvailable: true,
+    );
+    await controller.refresh();
+    await tester.pumpWidget(_app(MacosAgentsView(controller: controller)));
+    await tester.pumpAndSettle();
+
+    await _showMoltbook(tester, const Key('moltbook-resume-autonomy'));
+    expect(find.text('Read-only Moltbook access'), findsOneWidget);
+    expect(
+      tester
+          .widget<FilledButton>(find.byKey(const Key('moltbook-resume')))
+          .onPressed,
+      isNull,
+    );
+    expect(
+      tester
+          .widget<FilledButton>(
+            find.byKey(const Key('moltbook-resume-autonomy')),
+          )
+          .onPressed,
+      isNull,
+    );
+    expect(
+      tester
+          .widget<FilledButton>(
+            find.byKey(const Key('moltbook-run-autonomy-once')),
+          )
+          .onPressed,
+      isNull,
+    );
+    expect(
+      tester
+          .widget<OutlinedButton>(
+            find.byKey(const Key('moltbook-revoke-autonomy')),
+          )
+          .onPressed,
+      isNull,
+    );
+    expect(repository.changes, isEmpty);
+  });
+
+  testWidgets('disables Moltbook registration fields in read-only mode', (
+    tester,
+  ) async {
+    await _useDesktopViewport(tester);
+    final repository = _MoltbookRepository(
+      const MoltbookProjection(connection: null, activities: []),
+    );
+    final controller = AgentsController(
+      repository,
+      canManage: false,
+      mutationsAvailable: true,
+      moltbookAvailable: true,
+    );
+    await controller.refresh();
+    await tester.pumpWidget(_app(MacosAgentsView(controller: controller)));
+    await tester.pumpAndSettle();
+
+    await _showMoltbook(tester, const Key('moltbook-register'));
+    expect(
+      tester
+          .widget<TextFormField>(
+            find.byKey(const Key('moltbook-external-name')),
+          )
+          .enabled,
+      isFalse,
+    );
+    expect(
+      tester
+          .widget<CheckboxListTile>(
+            find.byKey(const Key('moltbook-disclosure')),
+          )
+          .onChanged,
+      isNull,
+    );
+    expect(
+      tester
+          .widget<FilledButton>(find.byKey(const Key('moltbook-register')))
+          .onPressed,
+      isNull,
+    );
   });
 
   testWidgets('holds ambiguous registration for provider recovery', (

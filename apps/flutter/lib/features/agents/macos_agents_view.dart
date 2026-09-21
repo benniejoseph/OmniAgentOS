@@ -1247,6 +1247,7 @@ class _MoltbookAgentConsoleState extends State<_MoltbookAgentConsole> {
   bool _loading = false;
   bool _acting = false;
   bool _disclosureAccepted = false;
+  bool _autonomyDisclosureAccepted = false;
   bool _heartbeatEnabled = true;
 
   @override
@@ -1288,6 +1289,7 @@ class _MoltbookAgentConsoleState extends State<_MoltbookAgentConsole> {
           _projection = MoltbookProjection(
             connection: page.connection ?? _projection!.connection,
             activities: byId.values.toList(),
+            autonomy: page.autonomy ?? _projection!.autonomy,
             nextCursor: page.nextCursor,
           );
         } else {
@@ -1302,7 +1304,15 @@ class _MoltbookAgentConsoleState extends State<_MoltbookAgentConsole> {
   }
 
   Future<void> _change(Json input) async {
-    if (_acting || !widget.controller.canManageMoltbook) return;
+    if (_acting) return;
+    if (!widget.controller.canManageMoltbook) {
+      setState(
+        () => _error = StateError(
+          'Moltbook controls are read-only for this account.',
+        ),
+      );
+      return;
+    }
     setState(() {
       _acting = true;
       _error = null;
@@ -1333,6 +1343,16 @@ class _MoltbookAgentConsoleState extends State<_MoltbookAgentConsole> {
     });
   }
 
+  Future<void> _enableAutonomy() async {
+    if (!_autonomyDisclosureAccepted) return;
+    await _change(const {
+      'action': 'enable_autonomy',
+      'disclosureAccepted': true,
+      'disclosureVersion': moltbookAutonomyDisclosureVersion,
+    });
+    if (mounted) setState(() => _autonomyDisclosureAccepted = false);
+  }
+
   Future<void> _openOfficial(String? value) async {
     final uri = exactMoltbookUri(value);
     if (uri == null) {
@@ -1356,10 +1376,19 @@ class _MoltbookAgentConsoleState extends State<_MoltbookAgentConsole> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          'A separate public identity for this Agent. Reads are logged; posts, comments, reactions, follows, and verification still require Asael approval.',
+          'A separate, observable public identity. Connection controls, autonomous engagement, daily limits, developing interests, and every external receipt remain visible here.',
           style: Theme.of(context).textTheme.bodySmall,
         ),
         const SizedBox(height: 10),
+        if (widget.controller.moltbookAvailable &&
+            !widget.controller.canManageMoltbook) ...[
+          const _MoltbookNotice(
+            icon: Icons.visibility_outlined,
+            title: 'Read-only Moltbook access',
+            message: 'You can inspect connection health, autonomy, budgets, interests, and receipts. An operator or admin must make changes.',
+          ),
+          const SizedBox(height: 10),
+        ],
         if (!widget.controller.moltbookAvailable)
           const _MoltbookNotice(
             icon: Icons.lock_clock_outlined,
@@ -1421,7 +1450,7 @@ class _MoltbookAgentConsoleState extends State<_MoltbookAgentConsole> {
           TextFormField(
             key: const Key('moltbook-external-name'),
             controller: _externalName,
-            enabled: !_acting,
+            enabled: !_acting && widget.controller.canManageMoltbook,
             decoration: const InputDecoration(
               labelText: 'Public Agent name',
               helperText: '2–32 letters, numbers, underscores, or hyphens',
@@ -1435,7 +1464,7 @@ class _MoltbookAgentConsoleState extends State<_MoltbookAgentConsole> {
           TextFormField(
             key: const Key('moltbook-description'),
             controller: _description,
-            enabled: !_acting,
+            enabled: !_acting && widget.controller.canManageMoltbook,
             minLines: 2,
             maxLines: 4,
             maxLength: 1000,
@@ -1457,7 +1486,7 @@ class _MoltbookAgentConsoleState extends State<_MoltbookAgentConsole> {
               contentPadding: EdgeInsets.zero,
               dense: true,
               value: _heartbeatEnabled,
-              onChanged: _acting
+              onChanged: _acting || !widget.controller.canManageMoltbook
                   ? null
                   : (value) => setState(() => _heartbeatEnabled = value),
               title: const Text('Monitor every four hours'),
@@ -1474,7 +1503,7 @@ class _MoltbookAgentConsoleState extends State<_MoltbookAgentConsole> {
               dense: true,
               controlAffinity: ListTileControlAffinity.leading,
               value: _disclosureAccepted,
-              onChanged: _acting
+              onChanged: _acting || !widget.controller.canManageMoltbook
                   ? null
                   : (value) =>
                         setState(() => _disclosureAccepted = value == true),
@@ -1510,6 +1539,10 @@ class _MoltbookAgentConsoleState extends State<_MoltbookAgentConsole> {
 
   Widget _connection(BuildContext context, MoltbookConnection connection) {
     final claimUri = exactMoltbookUri(connection.claimUrl);
+    final connectionReady =
+        connection.status == 'claimed' &&
+        connection.claimState == 'claimed' &&
+        connection.credentialConfigured;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1632,7 +1665,8 @@ class _MoltbookAgentConsoleState extends State<_MoltbookAgentConsole> {
                 const SizedBox(height: 10),
                 FilledButton.tonalIcon(
                   key: const Key('moltbook-open-claim'),
-                  onPressed: claimUri == null
+                  onPressed:
+                      claimUri == null || !widget.controller.canManageMoltbook
                       ? null
                       : () => _openOfficial(connection.claimUrl),
                   icon: const Icon(Icons.open_in_new_rounded, size: 16),
@@ -1650,7 +1684,18 @@ class _MoltbookAgentConsoleState extends State<_MoltbookAgentConsole> {
             ),
           ),
         ],
+        if ((connection.status == 'claimed' || connection.status == 'paused') &&
+            connection.claimState == 'claimed') ...[
+          const SizedBox(height: 12),
+          _autonomy(
+            context,
+            _projection!.autonomy,
+            connectionReady: connectionReady,
+          ),
+        ],
         const SizedBox(height: 10),
+        Text('Connection', style: Theme.of(context).textTheme.labelLarge),
+        const SizedBox(height: 6),
         Wrap(
           spacing: 7,
           runSpacing: 7,
@@ -1658,7 +1703,7 @@ class _MoltbookAgentConsoleState extends State<_MoltbookAgentConsole> {
             if (connection.status == 'paused')
               FilledButton.tonalIcon(
                 key: const Key('moltbook-resume'),
-                onPressed: _acting
+                onPressed: _acting || !widget.controller.canManageMoltbook
                     ? null
                     : () => _change(const {'action': 'resume'}),
                 icon: const Icon(Icons.play_arrow_rounded, size: 16),
@@ -1667,7 +1712,7 @@ class _MoltbookAgentConsoleState extends State<_MoltbookAgentConsole> {
             else if (connection.status != 'revoked') ...[
               OutlinedButton.icon(
                 key: const Key('moltbook-refresh'),
-                onPressed: _acting
+                onPressed: _acting || !widget.controller.canManageMoltbook
                     ? null
                     : () => _change(const {'action': 'refresh'}),
                 icon: const Icon(Icons.refresh_rounded, size: 16),
@@ -1679,7 +1724,7 @@ class _MoltbookAgentConsoleState extends State<_MoltbookAgentConsole> {
               ),
               TextButton.icon(
                 key: const Key('moltbook-pause'),
-                onPressed: _acting
+                onPressed: _acting || !widget.controller.canManageMoltbook
                     ? null
                     : () => _change(const {'action': 'pause'}),
                 icon: const Icon(Icons.pause_rounded, size: 16),
@@ -1732,6 +1777,319 @@ class _MoltbookAgentConsoleState extends State<_MoltbookAgentConsole> {
     );
   }
 
+  Widget _autonomy(
+    BuildContext context,
+    MoltbookAutonomy? autonomy, {
+    required bool connectionReady,
+  }) {
+    final status = autonomy?.status ?? 'not_enabled';
+    final canEnable = autonomy == null || status == 'revoked';
+    final statusCanRun = status == 'enabled' || status == 'running';
+    final blocked =
+        autonomy != null &&
+        status != 'revoked' &&
+        (!connectionReady || !autonomy.executable);
+    final showBlockedNotice = !connectionReady || blocked;
+    final active = statusCanRun && !blocked;
+    final displayedStatus = statusCanRun && blocked ? 'blocked' : status;
+    final canManage = widget.controller.canManageMoltbook;
+    final mac = MacosThemeColors.of(context);
+    return MacosPane(
+      key: const Key('moltbook-autonomy-console'),
+      padding: EdgeInsets.zero,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 13, 14, 8),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: 34,
+                  height: 34,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: active
+                        ? mac.positive.withValues(alpha: .12)
+                        : mac.hover,
+                    borderRadius: BorderRadius.circular(9),
+                  ),
+                  child: Icon(
+                    active ? Icons.auto_awesome_rounded : Icons.shield_outlined,
+                    size: 18,
+                    color: active ? mac.positive : null,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        blocked && statusCanRun
+                            ? 'Autonomous engagement is blocked'
+                            : active
+                            ? 'Autonomous engagement is active'
+                            : status == 'paused'
+                            ? 'Autonomous engagement is paused'
+                            : 'Autonomous engagement is off',
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        'This public Agent can independently read, post, reply, vote, follow, and join communities. Each check-in permits at most one public action, within strict daily budgets.',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 10),
+                _MoltbookAutonomyStatus(status: displayedStatus),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
+            child: Text(
+              'DMs, verification, deletion, moderation, private Asael memory or files, and control of this Mac remain excluded.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ),
+          if (showBlockedNotice) ...[
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
+              child: _MoltbookNotice(
+                key: const Key('moltbook-autonomy-blocked'),
+                icon: Icons.block_rounded,
+                title: 'Autonomy cannot run',
+                message: _moltbookBlockedMessage(
+                  connectionReady
+                      ? autonomy?.blockedReason
+                      : 'connection_unavailable',
+                ),
+              ),
+            ),
+          ],
+          Divider(height: 1, color: mac.divider),
+          if (canEnable) ...[
+            Material(
+              color: Colors.transparent,
+              child: CheckboxListTile(
+                key: const Key('moltbook-autonomy-disclosure'),
+                contentPadding: const EdgeInsets.fromLTRB(10, 5, 10, 0),
+                controlAffinity: ListTileControlAffinity.leading,
+                value: _autonomyDisclosureAccepted,
+                onChanged: _acting || !canManage || !connectionReady
+                    ? null
+                    : (value) => setState(
+                        () => _autonomyDisclosureAccepted = value == true,
+                      ),
+                title: const Text(
+                  'I authorize this Agent to take these public actions without asking each time. I can pause or revoke this authority here at any time.',
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 4, 14, 13),
+              child: SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  key: const Key('moltbook-enable-autonomy'),
+                  onPressed:
+                      canManage &&
+                          connectionReady &&
+                          _autonomyDisclosureAccepted &&
+                          !_acting
+                      ? _enableAutonomy
+                      : null,
+                  icon: _acting
+                      ? const SizedBox.square(
+                          dimension: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.shield_rounded, size: 16),
+                  label: Text(
+                    status == 'revoked'
+                        ? 'Grant new authority'
+                        : 'Enable autonomy',
+                  ),
+                ),
+              ),
+            ),
+          ] else ...[
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  if (status == 'paused')
+                    FilledButton.icon(
+                      key: const Key('moltbook-resume-autonomy'),
+                      onPressed:
+                          _acting || !canManage || !connectionReady || blocked
+                          ? null
+                          : () => _change(const {'action': 'resume_autonomy'}),
+                      icon: const Icon(Icons.play_arrow_rounded, size: 17),
+                      label: const Text('Resume autonomy'),
+                    )
+                  else
+                    FilledButton.icon(
+                      key: const Key('moltbook-pause-autonomy'),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: Theme.of(context).colorScheme.error,
+                        foregroundColor: Theme.of(context).colorScheme.onError,
+                      ),
+                      onPressed: _acting || !canManage
+                          ? null
+                          : () => _change(const {'action': 'pause_autonomy'}),
+                      icon: const Icon(Icons.pause_rounded, size: 17),
+                      label: const Text('Pause now'),
+                    ),
+                  FilledButton.tonalIcon(
+                    key: const Key('moltbook-run-autonomy-once'),
+                    onPressed:
+                        _acting ||
+                            !canManage ||
+                            !connectionReady ||
+                            status != 'enabled' ||
+                            !autonomy.executable
+                        ? null
+                        : () => _change(const {'action': 'run_autonomy_once'}),
+                    icon: const Icon(Icons.bolt_rounded, size: 17),
+                    label: const Text('Run once'),
+                  ),
+                  OutlinedButton.icon(
+                    key: const Key('moltbook-revoke-autonomy'),
+                    onPressed: _acting || !canManage
+                        ? null
+                        : () => _change(const {'action': 'revoke_autonomy'}),
+                    icon: const Icon(Icons.gpp_bad_outlined, size: 17),
+                    label: const Text('Revoke authority'),
+                  ),
+                ],
+              ),
+            ),
+            Divider(height: 1, color: mac.divider),
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final itemWidth = constraints.maxWidth >= 720
+                      ? (constraints.maxWidth - 24) / 4
+                      : constraints.maxWidth >= 420
+                      ? (constraints.maxWidth - 8) / 2
+                      : constraints.maxWidth;
+                  return Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      SizedBox(
+                        width: itemWidth,
+                        child: _MoltbookAutonomyMetric(
+                          icon: Icons.timer_outlined,
+                          label: 'Cadence',
+                          value: _formatMoltbookCadence(autonomy.cadenceMs),
+                        ),
+                      ),
+                      SizedBox(
+                        width: itemWidth,
+                        child: _MoltbookAutonomyMetric(
+                          icon: Icons.history_rounded,
+                          label: 'Last cycle',
+                          value: autonomy.lastCycleAt == null
+                              ? 'Not run yet'
+                              : _formatMoltbookTime(autonomy.lastCycleAt!),
+                        ),
+                      ),
+                      SizedBox(
+                        width: itemWidth,
+                        child: _MoltbookAutonomyMetric(
+                          icon: Icons.schedule_rounded,
+                          label: 'Next cycle',
+                          value: autonomy.nextCycleAt == null
+                              ? 'Not scheduled'
+                              : _formatMoltbookTime(autonomy.nextCycleAt!),
+                        ),
+                      ),
+                      SizedBox(
+                        width: itemWidth,
+                        child: _MoltbookAutonomyMetric(
+                          icon: Icons.receipt_long_outlined,
+                          label: 'Last run',
+                          value: _shortMoltbookId(autonomy.lastRunId),
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              ),
+            ),
+            Divider(height: 1, color: mac.divider),
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final wide = constraints.maxWidth >= 700;
+                final budgets = _MoltbookBudgetList(
+                  budgets: autonomy.budgets,
+                  resetAt: autonomy.budgetResetAt,
+                );
+                final interests = _MoltbookInterestList(
+                  interests: autonomy.interests,
+                );
+                if (!wide) {
+                  return Column(
+                    children: [
+                      budgets,
+                      Divider(height: 1, color: mac.divider),
+                      interests,
+                    ],
+                  );
+                }
+                return IntrinsicHeight(
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Expanded(flex: 6, child: budgets),
+                      VerticalDivider(width: 1, color: mac.divider),
+                      Expanded(flex: 4, child: interests),
+                    ],
+                  ),
+                );
+              },
+            ),
+            if (autonomy.cycles.isNotEmpty) ...[
+              Divider(height: 1, color: mac.divider),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(14, 12, 14, 5),
+                child: Row(
+                  children: [
+                    const Icon(Icons.receipt_long_outlined, size: 16),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        'Recent cycle receipts',
+                        style: Theme.of(context).textTheme.titleSmall,
+                      ),
+                    ),
+                    Text(
+                      'No private reasoning',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
+                ),
+              ),
+              ...autonomy.cycles.map(
+                (cycle) => _MoltbookCycleRow(cycle: cycle),
+              ),
+              const SizedBox(height: 7),
+            ],
+          ],
+        ],
+      ),
+    );
+  }
+
   Widget _activity(MoltbookActivity activity) {
     final uri = exactMoltbookUri(activity.externalUrl);
     return Padding(
@@ -1775,8 +2133,337 @@ class _MoltbookAgentConsoleState extends State<_MoltbookAgentConsole> {
   }
 }
 
+class _MoltbookAutonomyStatus extends StatelessWidget {
+  const _MoltbookAutonomyStatus({required this.status});
+
+  final String status;
+
+  @override
+  Widget build(BuildContext context) {
+    final mac = MacosThemeColors.of(context);
+    final color = switch (status) {
+      'enabled' || 'running' => mac.positive,
+      'blocked' => Theme.of(context).colorScheme.error,
+      'paused' => Theme.of(context).colorScheme.tertiary,
+      'revoked' => Theme.of(context).colorScheme.error,
+      _ => Theme.of(context).colorScheme.outline,
+    };
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: .09),
+        border: Border.all(color: color.withValues(alpha: .34)),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 7,
+            height: 7,
+            decoration: BoxDecoration(shape: BoxShape.circle, color: color),
+          ),
+          const SizedBox(width: 6),
+          Text(
+            _label(status),
+            style: Theme.of(context).textTheme.labelMedium
+                ?.copyWith(color: color),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MoltbookAutonomyMetric extends StatelessWidget {
+  const _MoltbookAutonomyMetric({
+    required this.icon,
+    required this.label,
+    required this.value,
+  });
+
+  final IconData icon;
+  final String label, value;
+
+  @override
+  Widget build(BuildContext context) => Row(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Padding(
+        padding: const EdgeInsets.only(top: 2),
+        child: Icon(
+          icon,
+          size: 16,
+          color: Theme.of(context).colorScheme.primary,
+        ),
+      ),
+      const SizedBox(width: 7),
+      Expanded(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(label, style: Theme.of(context).textTheme.labelSmall),
+            const SizedBox(height: 1),
+            Tooltip(
+              message: value,
+              child: Text(
+                value,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.bodyMedium
+                    ?.copyWith(fontWeight: FontWeight.w600),
+              ),
+            ),
+          ],
+        ),
+      ),
+    ],
+  );
+}
+
+class _MoltbookBudgetList extends StatelessWidget {
+  const _MoltbookBudgetList({required this.budgets, this.resetAt});
+
+  final List<MoltbookActionBudget> budgets;
+  final String? resetAt;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.all(14),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            const Icon(Icons.speed_rounded, size: 16),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                'Daily action budget',
+                style: Theme.of(context).textTheme.titleSmall,
+              ),
+            ),
+            Tooltip(
+              message: resetAt == null
+                  ? 'Actions are counted over the previous 24 hours.'
+                  : 'The oldest counted action leaves the window at ${_formatMoltbookTime(resetAt!)}.',
+              child: Text(
+                'Rolling 24h',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        ...budgets.map((budget) => _MoltbookBudgetRow(budget: budget)),
+      ],
+    ),
+  );
+}
+
+class _MoltbookBudgetRow extends StatelessWidget {
+  const _MoltbookBudgetRow({required this.budget});
+
+  final MoltbookActionBudget budget;
+
+  @override
+  Widget build(BuildContext context) {
+    final progress = budget.limit <= 0
+        ? 0.0
+        : (budget.used / budget.limit).clamp(0, 1).toDouble();
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 106,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  budget.label,
+                  style: Theme.of(context).textTheme.labelMedium,
+                ),
+                Text(
+                  '${budget.remaining} remaining',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: Semantics(
+              label: '${budget.label} used',
+              value: '${budget.used} of ${budget.limit}',
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(999),
+                child: LinearProgressIndicator(
+                  value: progress,
+                  minHeight: 5,
+                  backgroundColor: MacosThemeColors.of(context).hover,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 9),
+          SizedBox(
+            width: 38,
+            child: Text(
+              '${budget.used}/${budget.limit}',
+              textAlign: TextAlign.end,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MoltbookInterestList extends StatelessWidget {
+  const _MoltbookInterestList({required this.interests});
+
+  final List<MoltbookInterest> interests;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.all(14),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            const Icon(Icons.auto_awesome_rounded, size: 16),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                'Developing interests',
+                style: Theme.of(context).textTheme.titleSmall,
+              ),
+            ),
+            Text(
+              'Evidence-backed',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        if (interests.isEmpty)
+          Text(
+            'Interests appear after an evidence-backed reading cycle.',
+            style: Theme.of(context).textTheme.bodySmall,
+          )
+        else
+          ...interests.map(
+            (interest) => Padding(
+              padding: const EdgeInsets.symmetric(vertical: 5),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          interest.topic,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.labelMedium,
+                        ),
+                        Text(
+                          '${interest.evidenceCount} evidence signal${interest.evidenceCount == 1 ? '' : 's'} · ${(interest.confidence * 100).round()}% confidence',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Container(
+                    width: 32,
+                    height: 32,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: Theme.of(context).colorScheme.primary
+                            .withValues(alpha: .35),
+                      ),
+                    ),
+                    child: Tooltip(
+                      message:
+                          '${(interest.confidence * 100).round()}% confidence',
+                      child: Text(
+                        '${(interest.score * 100).round()}',
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: Theme.of(context).colorScheme.primary,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+      ],
+    ),
+  );
+}
+
+class _MoltbookCycleRow extends StatelessWidget {
+  const _MoltbookCycleRow({required this.cycle});
+
+  final MoltbookCycleReceipt cycle;
+
+  @override
+  Widget build(BuildContext context) {
+    final mac = MacosThemeColors.of(context);
+    final color = switch (cycle.status) {
+      'succeeded' => mac.positive,
+      'failed' => Theme.of(context).colorScheme.error,
+      _ => Theme.of(context).colorScheme.tertiary,
+    };
+    return Padding(
+      key: Key('moltbook-cycle-${cycle.id}'),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+      child: Row(
+        children: [
+          Container(
+            width: 7,
+            height: 7,
+            decoration: BoxDecoration(shape: BoxShape.circle, color: color),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  _label(cycle.status),
+                  style: Theme.of(context).textTheme.labelMedium,
+                ),
+                Text(
+                  '${_label(cycle.trigger ?? 'scheduled')} · ${_formatMoltbookTime(cycle.completedAt ?? cycle.createdAt ?? '')}',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+            ),
+          ),
+          Tooltip(
+            message: cycle.runId ?? cycle.id,
+            child: Text(
+              _shortMoltbookId(cycle.runId ?? cycle.id),
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _MoltbookNotice extends StatelessWidget {
   const _MoltbookNotice({
+    super.key,
     required this.icon,
     required this.title,
     required this.message,
@@ -1820,6 +2507,12 @@ class _MoltbookNotice extends StatelessWidget {
   }
 }
 
+String _moltbookBlockedMessage(String? reason) => switch (reason) {
+  'connection_unavailable' => 'The Moltbook connection is paused, unclaimed, or missing its private credential. Restore the connection before resuming autonomy.',
+  'authority_unavailable' => 'The standing authority no longer matches the active Agent, owner, policy, or tool boundary. Grant fresh authority before it can run.',
+  _ => 'The current execution boundary could not be verified. Review the connection and authority before it can run.',
+};
+
 class _MoltbookHealthDot extends StatelessWidget {
   const _MoltbookHealthDot({required this.health});
 
@@ -1861,6 +2554,20 @@ String _formatMoltbookTime(String value) {
   String two(int number) => number.toString().padLeft(2, '0');
   return '${parsed.year}-${two(parsed.month)}-${two(parsed.day)} '
       '${two(parsed.hour)}:${two(parsed.minute)}';
+}
+
+String _formatMoltbookCadence(int milliseconds) {
+  final hours = (milliseconds / Duration.millisecondsPerHour).round().clamp(
+    1,
+    24,
+  );
+  return 'Every ${hours}h';
+}
+
+String _shortMoltbookId(String? value) {
+  if (value == null || value.isEmpty) return 'None yet';
+  if (value.length <= 16) return value;
+  return '${value.substring(0, 8)}…${value.substring(value.length - 5)}';
 }
 
 IconData _moltbookActivityIcon(String status) => switch (status) {
