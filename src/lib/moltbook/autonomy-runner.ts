@@ -136,7 +136,9 @@ export async function runClaimedMoltbookAutonomyCycle(
         wallTimeMs: 120_000,
         toolCalls: 8,
         browserActions: 0,
-        agents: 0,
+        // The run-wide agent budget includes the assigned primary Agent.
+        // Keep fan-out disabled while admitting exactly this steward.
+        agents: 1,
         fanOut: 0,
         retries: 1,
         replans: 0,
@@ -206,7 +208,7 @@ export async function runClaimedMoltbookAutonomyCycle(
       } else if (event.type === "budget_exhausted") {
         failureCode = "run_budget_exhausted";
       } else if (event.type === "error") {
-        failureCode = "agent_run_failed";
+        failureCode ||= "agent_run_failed";
       } else if (event.type === "canceled") {
         failureCode = "agent_run_canceled";
       } else if (event.type === "done") {

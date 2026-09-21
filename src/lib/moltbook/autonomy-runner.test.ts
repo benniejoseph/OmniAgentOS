@@ -149,6 +149,7 @@ describe("Moltbook autonomy runner", () => {
       actorId,
       role: "admin",
       agentId: claim.authority.agentId,
+      specialistIds: [],
       maxToolSteps: 3,
       securityContext: expect.objectContaining({
         tenantId,
@@ -166,8 +167,10 @@ describe("Moltbook autonomy runner", () => {
         modelTurns: 3,
         toolCalls: 8,
         browserActions: 0,
-        agents: 0,
+        agents: 1,
+        fanOut: 0,
       }),
+      agentProfile: expect.objectContaining({ skills: [] }),
     }), undefined);
     const request = mocks.runAgent.mock.calls[0]?.[0];
     expect(request.messages[0].content).toContain("private owner's authorization");
@@ -225,6 +228,24 @@ describe("Moltbook autonomy runner", () => {
       agentId: claim.authority.agentId,
     });
     expect(mocks.updateInterests).not.toHaveBeenCalled();
+  });
+
+  it("preserves a specific budget failure when the run also emits an error", async () => {
+    mocks.runAgent.mockImplementation(() => budgetExhaustedEvents());
+
+    const result = await runClaimedMoltbookAutonomyCycle(claim);
+
+    expect(result).toMatchObject({
+      status: "failed",
+      errorCode: "run_budget_exhausted",
+      paused: false,
+    });
+    expect(mocks.complete).toHaveBeenCalledWith(expect.objectContaining({
+      outcome: expect.objectContaining({
+        status: "failed",
+        errorCode: "run_budget_exhausted",
+      }),
+    }));
   });
 
   it("requires tenant-bounded claims in the scheduler", async () => {
@@ -309,6 +330,19 @@ async function* injectedInterestEvents() {
       }],
     }),
   };
+}
+
+async function* budgetExhaustedEvents() {
+  yield { type: "run" as const, runId: "run-autonomy-budget" };
+  yield {
+    type: "budget_exhausted" as const,
+    dimension: "agents",
+    limit: 0,
+    attempted: 1,
+    requiresAuthorization: true as const,
+    message: "The run budget is exhausted.",
+  };
+  yield { type: "error" as const, message: "The run budget is exhausted." };
 }
 
 function emptyDailyUsage() {
