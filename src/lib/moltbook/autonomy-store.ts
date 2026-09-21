@@ -226,7 +226,7 @@ export async function listMoltbookAutonomyProjection(input: {
   const owner = exactOwner(input.owner);
   const agentId = requiredId(input.agentId, 240, "Agent id");
   await databaseReady();
-  return runWithDatabaseActorScope(owner.tenantId, [owner.actorId], async () => {
+  return runWithResolvedMoltbookOwnerActorScope(owner, async () => {
     const sql = getSql();
     const observedAt = new Date();
     const emptyDailyUsage = dailyUsageFromRow(undefined, observedAt);
@@ -848,11 +848,7 @@ export async function claimDueMoltbookAutonomyCycle(input: {
     });
   }) as Promise<ClaimedMoltbookAutonomyCycle | null>;
   return exactOwner
-    ? runWithDatabaseActorScope(
-      exactOwner.tenantId,
-      [exactOwner.actorId],
-      operation,
-    )
+    ? runWithResolvedMoltbookOwnerActorScope(exactOwner, operation)
     : runWithDatabaseSystemScope(`claim due Moltbook autonomy cycle for tenant ${tenantId}`, operation);
 }
 
@@ -1670,6 +1666,39 @@ function exactOwner(owner: MoltbookAutonomyOwner) {
 }
 
 const exactOwnerValue = exactOwner;
+
+async function runWithResolvedMoltbookOwnerActorScope<T>(
+  owner: MoltbookAutonomyOwner,
+  operation: () => T | Promise<T>,
+): Promise<T> {
+  const membership = await runWithDatabaseActorScope(
+    owner.tenantId,
+    [owner.actorId],
+    async () => {
+      const rows = await getSql()`
+        SELECT canonical_actor_id, auth_user_id, membership_role
+        FROM public.omni_resolve_moltbook_owner_membership_v1(
+          ${owner.tenantId}, ${owner.actorId}
+        )
+      `;
+      const row = exactlyOne(rows, "Moltbook owner membership");
+      return Object.freeze({
+        canonicalActorId: requiredId(
+          row.canonical_actor_id,
+          320,
+          "canonical owner actor id",
+        ),
+        authUserId: requiredId(row.auth_user_id, 80, "owner auth user id"),
+        membershipRole: requiredMembershipRole(row.membership_role),
+      });
+    },
+  );
+  return runWithDatabaseActorScope(
+    owner.tenantId,
+    [owner.actorId, membership.canonicalActorId],
+    operation,
+  );
+}
 
 function exactPin(pin: MoltbookAuthorityPin): MoltbookAuthorityPin {
   return Object.freeze({
