@@ -559,8 +559,12 @@ export async function executeGovernedTool({
     });
     return { record: saved, result: null };
   }
+  // A durable approval record is part of the execution identity even when the
+  // registry tool is normally risk 0. Reconstruct the forced policy for every
+  // risk level so approval resume cannot rewrite `approval_required` while
+  // terminalizing the claimed record.
   const effectiveForceApproval = forceApproval || Boolean(
-    existingRecord?.approvalRequired && !registeredTool.approvalRequired && registeredTool.riskLevel > 0,
+    existingRecord?.approvalRequired && !registeredTool.approvalRequired,
   );
   const registeredApprovalFingerprint = toolApprovalFingerprint(registeredTool);
   const tool = effectiveForceApproval

@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   openToolExecutionInput: vi.fn(),
   publicToolExecution: vi.fn(),
   reclaimStaleGoogleWorkspaceCreateToolExecutionClaim: vi.fn(),
+  reclaimStaleReadOnlyToolExecutionClaim: vi.fn(),
   wakeOperationJobByDedupeKey: vi.fn(),
 }));
 
@@ -37,6 +38,8 @@ vi.mock("@/lib/tools/audit-store", async (importOriginal) => ({
   publicToolExecution: mocks.publicToolExecution,
   reclaimStaleGoogleWorkspaceCreateToolExecutionClaim:
     mocks.reclaimStaleGoogleWorkspaceCreateToolExecutionClaim,
+  reclaimStaleReadOnlyToolExecutionClaim:
+    mocks.reclaimStaleReadOnlyToolExecutionClaim,
 }));
 
 vi.mock("@/lib/tools/execution-scope", async (importOriginal) => ({
@@ -102,6 +105,7 @@ beforeEach(() => {
   mocks.approveAndClaimToolExecution.mockReset();
   mocks.openToolExecutionInput.mockReset();
   mocks.reclaimStaleGoogleWorkspaceCreateToolExecutionClaim.mockReset();
+  mocks.reclaimStaleReadOnlyToolExecutionClaim.mockReset();
   mocks.getToolExecutionScopeBinding.mockReset();
   mocks.executeGovernedTool.mockReset();
   mocks.findAgentRunWaitingForToolApproval.mockReset().mockResolvedValue(undefined);
@@ -279,6 +283,117 @@ describe("tool approval detail route", () => {
     await expect(response.json()).resolves.toMatchObject({
       record: { status: "executed" },
       result: { resourceId: "document_recovered" },
+      continuation: { scheduled: true },
+    });
+  });
+
+  it("reclaims a stale approved read-only claim before resuming it", async () => {
+    const executionScope = {
+      version: 1 as const,
+      tenantId: "tenant-a",
+      initiatingActorId: "requester-a",
+      executingPrincipalType: "agent" as const,
+      executingPrincipalId: "agent:moltbook:g1",
+      correlationId: "moltbook-home-read",
+      purpose: "agent.tool.execute",
+    };
+    const executingRecord = {
+      ...pendingRecord,
+      toolId: "moltbook.home.read",
+      toolName: "Read Moltbook Home",
+      riskLevel: 0 as const,
+      status: "executing" as const,
+      approvalDecision: "approved" as const,
+      approvedBy: "requester-a",
+      approvedAt: "2026-09-21T13:00:18.681Z",
+      output: {
+        __sealedInput: { schemaVersion: 1 },
+        __approvalFingerprint: "fingerprint",
+        __executionClaim: {
+          token: "stale-read-token",
+          claimedAt: "2026-09-21T13:00:18.681Z",
+        },
+      },
+    };
+    const registeredTool = {
+      id: executingRecord.toolId,
+      name: executingRecord.toolName,
+      description: "Read the linked agent's bounded Moltbook home summary.",
+      category: "connector" as const,
+      status: "active" as const,
+      riskLevel: 0 as const,
+      dryRunSupported: true,
+      approvalRequired: false,
+      operationClass: "read_only" as const,
+      reversible: true,
+      inputSchema: { type: "object", additionalProperties: false },
+    };
+    const reclaimedRecord = {
+      ...executingRecord,
+      output: {
+        ...executingRecord.output,
+        __executionClaim: {
+          token: "reclaimed-read-token",
+          claimedAt: "2026-09-21T13:08:18.681Z",
+        },
+      },
+    };
+    mocks.getToolExecution.mockResolvedValue(executingRecord);
+    mocks.getGovernedTool.mockReturnValue(registeredTool);
+    mocks.getToolExecutionScopeBinding.mockResolvedValue({
+      executionScope,
+      requesterRole: "operator",
+      toolId: executingRecord.toolId,
+      inputSha256: "b".repeat(64),
+    });
+    mocks.reclaimStaleReadOnlyToolExecutionClaim.mockResolvedValue(
+      reclaimedRecord,
+    );
+    mocks.openToolExecutionInput.mockReturnValue({});
+    mocks.executeGovernedTool.mockResolvedValue({
+      record: {
+        ...reclaimedRecord,
+        status: "executed",
+        output: { source: "moltbook", untrusted: true, data: {} },
+      },
+      result: { source: "moltbook", untrusted: true, data: {} },
+    });
+
+    const response = await POST(new Request(
+      `http://asael.test/api/approvals/${executingRecord.id}`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "approval-retry-moltbook-home-read",
+        },
+        body: JSON.stringify({ kind: "tool", decision: "approve" }),
+      },
+    ), routeContext());
+
+    expect(response.status).toBe(200);
+    expect(mocks.approveAndClaimToolExecution).not.toHaveBeenCalled();
+    expect(mocks.reclaimStaleReadOnlyToolExecutionClaim).toHaveBeenCalledWith(
+      executingRecord,
+      expect.objectContaining({
+        tenantId: "tenant-a",
+        executionScope,
+        idempotencyKey: "approval-retry-moltbook-home-read",
+        claimToken: expect.any(String),
+        tool: registeredTool,
+      }),
+    );
+    expect(mocks.executeGovernedTool).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolId: "moltbook.home.read",
+        input: {},
+        existingRecord: reclaimedRecord,
+        executionClaimToken: expect.any(String),
+        agentRunId: undefined,
+      }),
+    );
+    await expect(response.json()).resolves.toMatchObject({
+      record: { status: "executed", approvalRequired: true },
       continuation: { scheduled: true },
     });
   });

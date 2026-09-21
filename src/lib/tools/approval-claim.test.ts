@@ -198,6 +198,78 @@ describe("tool approval claims (file mode)", () => {
     });
   });
 
+  it("reclaims only an exact stale read-only approval claim", async () => {
+    const store = await import("@/lib/tools/audit-store");
+    const { executeGovernedTool } = await import("@/lib/tools/executor");
+    const { getGovernedTool } = await import("@/lib/tools/registry");
+    const context = {
+      tenantId: "tenant-a",
+      actorId: "operator-a",
+      role: "admin" as const,
+      source: "default" as const,
+    };
+    const executionScope = createExecutionScope({
+      tenantId: context.tenantId,
+      initiatingActorId: context.actorId,
+      executingPrincipalType: "user",
+      executingPrincipalId: context.actorId,
+      correlationId: "stale-read-only-reclaim",
+      contextGrantIds: [],
+      capabilityGrantIds: [],
+      purpose: "Test stale read-only reclaim.",
+    });
+    const pending = await executeGovernedTool({
+      toolId: "moltbook.home.read",
+      input: {},
+      dryRun: false,
+      forceApproval: true,
+      context,
+      executionScope,
+    });
+    const claim = await store.approveAndClaimToolExecution({
+      id: pending.record.id,
+      tenantId: context.tenantId,
+      approvedBy: context.actorId,
+      approvedRole: context.role,
+      claimToken: "stale-read-only-original",
+    });
+    expect(claim.outcome).toBe("claimed");
+    const claimedOutput = claim.record?.output as Record<string, unknown>;
+    const stale = await store.saveToolExecution({
+      ...claim.record!,
+      output: {
+        ...claimedOutput,
+        __executionClaim: {
+          token: "stale-read-only-original",
+          claimedAt: new Date(Date.now() - 120_000).toISOString(),
+        },
+      },
+    }, { executionScope });
+    const tool = getGovernedTool("moltbook.home.read");
+    expect(tool?.operationClass).toBe("read_only");
+
+    const reclaimed = await store.reclaimStaleReadOnlyToolExecutionClaim(
+      stale,
+      {
+        tenantId: context.tenantId,
+        claimToken: "stale-read-only-reclaimed",
+        staleAfterMs: 60_000,
+        executionScope,
+        tool: tool!,
+      },
+    );
+
+    expect(reclaimed).toMatchObject({
+      id: pending.record.id,
+      status: "executing",
+      approvalRequired: true,
+      approvalDecision: "approved",
+      output: {
+        __executionClaim: { token: "stale-read-only-reclaimed" },
+      },
+    });
+  });
+
   it("sweeps abandoned approval claims without requiring a replay", async () => {
     const store = await import("@/lib/tools/audit-store");
     const record = pendingRecord("abandoned-approval", 2);
@@ -563,6 +635,8 @@ describe("tool approval claims (file mode)", () => {
     expect(executed.record).toMatchObject({
       status: "executed",
       riskLevel: 0,
+      approvalRequired: true,
+      approvalDecision: "approved",
     });
     expect(checkpointStatuses).toEqual(["executing"]);
   });

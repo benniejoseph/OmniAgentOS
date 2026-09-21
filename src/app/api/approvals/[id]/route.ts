@@ -29,6 +29,7 @@ import {
   openToolExecutionInput,
   publicToolExecution,
   reclaimStaleGoogleWorkspaceCreateToolExecutionClaim,
+  reclaimStaleReadOnlyToolExecutionClaim,
   recoverStaleToolExecutionClaim,
   rejectPendingToolExecution,
 } from "@/lib/tools/audit-store";
@@ -350,6 +351,15 @@ async function POSTHandler(
       [...new Set([...getDatabaseActorContext(), record.actorId])],
     );
   }
+  const retryTool = record.status === "executing"
+    ? getGovernedTool(record.toolId) ||
+      await getMcpGovernedTool(record.toolId, {
+        tenantId: securityContext.tenantId,
+      }) ||
+      await getOpenApiGovernedTool(record.toolId, {
+        tenantId: securityContext.tenantId,
+      })
+    : undefined;
   let approvalMutation;
   try {
     approvalMutation = toolApprovalMutationFromRequest(
@@ -375,10 +385,19 @@ async function POSTHandler(
     isGoogleWorkspaceCreationToolId(record.toolId) &&
     !record.dryRun &&
     hasPersistedEffectIntent(record);
+  const retryingReadOnly =
+    parsed.data.decision === "approve" &&
+    record.status === "executing" &&
+    record.approvalRequired &&
+    record.approvalDecision === "approved" &&
+    !record.dryRun &&
+    !hasPersistedEffectIntent(record) &&
+    retryTool?.operationClass === "read_only";
   if (
     record.status !== "approval_required" &&
     !retryingMemoryForget &&
-    !retryingGoogleWorkspaceCreate
+    !retryingGoogleWorkspaceCreate &&
+    !retryingReadOnly
   ) {
     const recovered = record.status === "executing"
       ? await recoverStaleToolExecutionClaim(record.id, {
@@ -481,6 +500,22 @@ async function POSTHandler(
           claimToken,
           executionScope: binding.executionScope,
           idempotencyKey: approvalMutation.idempotencyKey,
+        })
+      : undefined;
+    claim = reclaimed
+      ? { outcome: "claimed", record: reclaimed }
+      : { outcome: "conflict", record };
+  } else if (retryingReadOnly && retryTool) {
+    const binding = await getToolExecutionScopeBinding(record.id, {
+      tenantId: securityContext.tenantId,
+    });
+    const reclaimed = binding
+      ? await reclaimStaleReadOnlyToolExecutionClaim(record, {
+          tenantId: securityContext.tenantId,
+          claimToken,
+          executionScope: binding.executionScope,
+          idempotencyKey: approvalMutation.idempotencyKey,
+          tool: retryTool,
         })
       : undefined;
     claim = reclaimed

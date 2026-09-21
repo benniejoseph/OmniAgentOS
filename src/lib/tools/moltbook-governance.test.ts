@@ -458,6 +458,62 @@ describe("Moltbook governed tools", () => {
     expect(moltbook.execute).not.toHaveBeenCalled();
   });
 
+  it("preserves forced approval while resuming a claimed risk-0 read", async () => {
+    const { executeGovernedTool } = await import("@/lib/tools/executor");
+    const store = await import("@/lib/tools/audit-store");
+    const pending = await executeGovernedTool({
+      toolId: "moltbook.home.read",
+      input: {},
+      dryRun: false,
+      forceApproval: true,
+      context,
+      executionScope: agentScope("moltbook-forced-read-resume"),
+      agentRunId: "run-moltbook-forced-read-resume",
+    });
+    expect(pending.record).toMatchObject({
+      status: "approval_required",
+      approvalRequired: true,
+      riskLevel: 0,
+    });
+
+    const claimToken = "moltbook-forced-read-claim";
+    const claim = await store.approveAndClaimToolExecution({
+      id: pending.record.id,
+      tenantId,
+      approvedBy: actorId,
+      approvedRole: "admin",
+      claimToken,
+    });
+    expect(claim).toMatchObject({
+      outcome: "claimed",
+      record: { status: "executing", approvalRequired: true },
+    });
+
+    const executed = await executeGovernedTool({
+      toolId: "moltbook.home.read",
+      input: {},
+      dryRun: false,
+      approved: true,
+      context,
+      existingRecord: claim.record,
+      executionClaimToken: claimToken,
+      agentRunId: "run-moltbook-forced-read-resume",
+    });
+
+    expect(executed.record).toMatchObject({
+      status: "executed",
+      approvalRequired: true,
+      approvalDecision: "approved",
+      riskLevel: 0,
+    });
+    expect(moltbook.execute).toHaveBeenCalledTimes(1);
+    expect(moltbook.execute).toHaveBeenCalledWith(expect.objectContaining({
+      toolId: "moltbook.home.read",
+      toolExecutionId: pending.record.id,
+      agentRunId: "run-moltbook-forced-read-resume",
+    }));
+  });
+
   it("honors forceApproval and never calls Moltbook for dry runs or unknown tools", async () => {
     const { executeGovernedTool } = await import("@/lib/tools/executor");
     const forced = await executeGovernedTool({

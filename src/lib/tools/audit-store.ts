@@ -49,7 +49,12 @@ import {
 } from "@/lib/tools/approval-events";
 import { toolApprovalFingerprint } from "@/lib/tools/fingerprint";
 import { getGovernedTool } from "@/lib/tools/registry";
-import { RISK3_QUORUM, type ToolExecutionLedger, type ToolExecutionRecord } from "@/lib/tools/types";
+import {
+  RISK3_QUORUM,
+  type ToolDefinition,
+  type ToolExecutionLedger,
+  type ToolExecutionRecord,
+} from "@/lib/tools/types";
 
 type SqlClient = ReturnType<typeof getSql>;
 type EffectReceipt = EffectReceiptV1 | EffectReceiptV2;
@@ -902,6 +907,111 @@ export async function reclaimStaleGoogleWorkspaceCreateToolExecutionClaim(
             expected,
             nextClaim,
             options.executionScope,
+            staleAfterMs,
+          )
+        : undefined;
+      return reclaimed ? replaceLedgerRecord(ledger, reclaimed) : ledger;
+    },
+  );
+  if (reclaimed) {
+    await appendToolExecutionMutationEvent({
+      record: reclaimed,
+      operation: "reclaimed",
+      executionScope: options.executionScope,
+      idempotencyKey: options.idempotencyKey || expected.id,
+    });
+  }
+  return reclaimed;
+}
+
+/**
+ * Reclaims only a stale, already-approved read-only execution. Replaying a
+ * verified read may repeat provider observation but cannot create an external
+ * effect. The exact stored execution identity, sealed input, tool contract,
+ * actor-bound execution scope, and prior claim snapshot must all still match.
+ */
+export async function reclaimStaleReadOnlyToolExecutionClaim(
+  expected: ToolExecutionRecord,
+  options: {
+    tenantId?: string;
+    claimToken: string;
+    staleAfterMs?: number;
+    executionScope: ExecutionScope;
+    idempotencyKey?: string;
+    tool: ToolDefinition;
+  },
+): Promise<ToolExecutionRecord | undefined> {
+  if (!options.claimToken.trim()) {
+    throw new Error("A read-only execution reclaim requires a claim token.");
+  }
+  if (
+    options.tool.id !== expected.toolId ||
+    options.tool.operationClass !== "read_only"
+  ) {
+    throw new Error("Only the exact registered read-only tool can be reclaimed.");
+  }
+  const tenantId = normalizeTenantId(options.tenantId || expected.tenantId);
+  assertExecutionScopeTenant(options.executionScope, tenantId);
+  const staleAfterMs = Math.max(
+    60_000,
+    options.staleAfterMs || DEFAULT_STALE_TOOL_EXECUTION_CLAIM_MS,
+  );
+  const nextClaim = {
+    token: options.claimToken,
+    claimedAt: new Date().toISOString(),
+  };
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    return getSql().transaction(async (sql: SqlClient) => {
+      const rows = await sql`
+        SELECT *
+        FROM omni_tool_executions
+        WHERE id = ${expected.id}
+          AND COALESCE(tenant_id, 'default') = ${tenantId}
+        FOR UPDATE
+      `;
+      const reclaimed = rows[0]
+        ? reclaimStaleReadOnlyExecutionRecord(
+            recordFromRow(rows[0]),
+            expected,
+            nextClaim,
+            options.executionScope,
+            options.tool,
+            staleAfterMs,
+          )
+        : undefined;
+      if (reclaimed) {
+        await writeToolExecutionDb(sql, reclaimed);
+        await appendToolExecutionMutationEvent({
+          record: reclaimed,
+          operation: "reclaimed",
+          executionScope: options.executionScope,
+          idempotencyKey: options.idempotencyKey || expected.id,
+          sql,
+        });
+      }
+      return reclaimed;
+    }) as Promise<ToolExecutionRecord | undefined>;
+  }
+
+  let reclaimed: ToolExecutionRecord | undefined;
+  await updateJsonFile<ToolExecutionLedger>(
+    getToolLedgerFile(),
+    { records: [] },
+    (ledger) => {
+      const current = ledger.records.find(
+        (item) =>
+          item.id === expected.id &&
+          normalizeTenantId(item.tenantId) === tenantId,
+      );
+      reclaimed = current
+        ? reclaimStaleReadOnlyExecutionRecord(
+            current,
+            expected,
+            nextClaim,
+            options.executionScope,
+            options.tool,
             staleAfterMs,
           )
         : undefined;
@@ -2351,6 +2461,83 @@ function reclaimStaleGoogleWorkspaceCreateExecutionRecord(
       canonicalJsonSha256(expected.approvals || []) ||
     canonicalJsonSha256(output) !==
       canonicalJsonSha256(executionIntentWithoutClaim(expected))
+  ) {
+    return undefined;
+  }
+  return {
+    ...existing,
+    output: {
+      ...output,
+      __executionClaim: nextClaim,
+    },
+    completedAt: undefined,
+  } satisfies ToolExecutionRecord;
+}
+
+function reclaimStaleReadOnlyExecutionRecord(
+  existing: ToolExecutionRecord,
+  expected: ToolExecutionRecord,
+  nextClaim: { token: string; claimedAt: string },
+  executionScope: ExecutionScope,
+  tool: ToolDefinition,
+  staleAfterMs = DEFAULT_STALE_TOOL_EXECUTION_CLAIM_MS,
+) {
+  const existingClaim = executionClaimFrom(existing);
+  const output = executionIntentWithoutClaim(existing);
+  const expectedOutput = executionIntentWithoutClaim(expected);
+  const tenantId = normalizeTenantId(existing.tenantId);
+  const outputKeys = Object.keys(output).sort();
+  if (
+    !existingClaim ||
+    !nextClaim.token.trim() ||
+    nextClaim.token === existingClaim.token ||
+    !Number.isFinite(Date.parse(existingClaim.claimedAt)) ||
+    Date.now() - Date.parse(existingClaim.claimedAt) < staleAfterMs ||
+    existing.id !== expected.id ||
+    normalizeTenantId(expected.tenantId) !== tenantId ||
+    executionScope.tenantId !== tenantId ||
+    !existing.actorId ||
+    existing.actorId !== expected.actorId ||
+    executionScope.initiatingActorId !== existing.actorId ||
+    tool.id !== existing.toolId ||
+    tool.operationClass !== "read_only" ||
+    tool.name !== existing.toolName ||
+    tool.riskLevel !== existing.riskLevel ||
+    existing.toolId !== expected.toolId ||
+    existing.toolName !== expected.toolName ||
+    existing.riskLevel !== expected.riskLevel ||
+    existing.status !== "executing" ||
+    expected.status !== "executing" ||
+    existing.dryRun ||
+    expected.dryRun ||
+    !existing.approvalRequired ||
+    existing.approvalRequired !== expected.approvalRequired ||
+    existing.approvalDecision !== "approved" ||
+    existing.approvalDecision !== expected.approvalDecision ||
+    !existing.approvedBy ||
+    existing.approvedBy !== expected.approvedBy ||
+    !existing.approvedAt ||
+    existing.approvedAt !== expected.approvedAt ||
+    existing.approvalReason !== expected.approvalReason ||
+    existing.reason !== expected.reason ||
+    existing.createdAt !== expected.createdAt ||
+    existing.completedAt !== expected.completedAt ||
+    existing.effectReceipt !== undefined ||
+    expected.effectReceipt !== undefined ||
+    isEffectBoundExecutionIntent(existing) ||
+    isEffectBoundExecutionIntent(expected) ||
+    outputKeys.length !== 2 ||
+    outputKeys[0] !== "__approvalFingerprint" ||
+    outputKeys[1] !== "__sealedInput" ||
+    !output.__sealedInput ||
+    typeof output.__sealedInput !== "object" ||
+    Array.isArray(output.__sealedInput) ||
+    typeof output.__approvalFingerprint !== "string" ||
+    output.__approvalFingerprint !== toolApprovalFingerprint(tool) ||
+    toolInputSha256(existing.input) !== toolInputSha256(expected.input) ||
+    canonicalJsonSha256(existing.approvals || []) !==
+      canonicalJsonSha256(expected.approvals || []) ||
+    canonicalJsonSha256(output) !== canonicalJsonSha256(expectedOutput)
   ) {
     return undefined;
   }
