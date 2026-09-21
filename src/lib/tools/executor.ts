@@ -1332,12 +1332,15 @@ export async function executeGovernedTool({
         preparedInput,
         pendingRecord,
         toolApprovalFingerprint(tool),
-        pendingProviderEffect
-          ? {
-              approvalMaterialBindingSha256:
-                pendingProviderEffect.approvalBindingSha256,
-            }
-          : {},
+        {
+          operationClass: governedToolOperationClass(tool, preparedInput),
+          ...(pendingProviderEffect
+            ? {
+                approvalMaterialBindingSha256:
+                  pendingProviderEffect.approvalBindingSha256,
+              }
+            : {}),
+        },
       ),
     };
     await bindToolScopeIfPresent({

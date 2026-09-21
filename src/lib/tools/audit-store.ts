@@ -91,6 +91,7 @@ export type IdempotentToolExecutionClaimResult = {
 const EFFECT_INTENT_V2_OUTPUT_KEY = "__effectIntentV2";
 const APPROVAL_MATERIAL_BINDING_OUTPUT_KEY =
   "__approvalMaterialBindingSha256";
+const OPERATION_CLASS_OUTPUT_KEY = "__operationClass";
 
 export function createToolExecutionRecord(
   input: Omit<ToolExecutionRecord, "id" | "createdAt">,
@@ -586,7 +587,10 @@ export function sealToolExecutionInput(
     "id" | "tenantId" | "actorId" | "toolId" | "riskLevel"
   >,
   approvalFingerprint: string,
-  options: { approvalMaterialBindingSha256?: string } = {},
+  options: {
+    approvalMaterialBindingSha256?: string;
+    operationClass?: "read_only" | "mutation";
+  } = {},
 ) {
   const approvalMaterialBinding = options.approvalMaterialBindingSha256;
   if (approvalMaterialBinding !== undefined && !isSha256(approvalMaterialBinding)) {
@@ -597,6 +601,9 @@ export function sealToolExecutionInput(
   return {
     __approvalFingerprint: approvalFingerprint,
     __sealedInput: sealJsonPayload(input, toolExecutionInputBinding(record)),
+    ...(options.operationClass
+      ? { [OPERATION_CLASS_OUTPUT_KEY]: options.operationClass }
+      : {}),
     ...(approvalMaterialBinding
       ? { [APPROVAL_MATERIAL_BINDING_OUTPUT_KEY]: approvalMaterialBinding }
       : {}),
@@ -1429,6 +1436,7 @@ export function publicToolExecution(record: ToolExecutionRecord) {
     delete publicOutput.__executionClaim;
     delete publicOutput.__approvalFingerprint;
     delete publicOutput.__sealedInput;
+    delete publicOutput[OPERATION_CLASS_OUTPUT_KEY];
     delete publicOutput[APPROVAL_MATERIAL_BINDING_OUTPUT_KEY];
     delete publicOutput[EFFECT_INTENT_V2_OUTPUT_KEY];
     delete publicOutput.__idempotencyKeyHash;
@@ -2164,6 +2172,7 @@ function applyApprovalClaim(
   const internalOutput = parseObject(record.output);
   const sealedInput = internalOutput.__sealedInput;
   const approvalFingerprint = internalOutput.__approvalFingerprint;
+  const operationClass = internalOutput[OPERATION_CLASS_OUTPUT_KEY];
   const approvalMaterialBinding =
     internalOutput[APPROVAL_MATERIAL_BINDING_OUTPUT_KEY];
   return {
@@ -2182,6 +2191,9 @@ function applyApprovalClaim(
           ? { __approvalFingerprint: approvalFingerprint }
           : {}),
         ...(sealedInput ? { __sealedInput: sealedInput } : {}),
+        ...(operationClass === "read_only" || operationClass === "mutation"
+          ? { [OPERATION_CLASS_OUTPUT_KEY]: operationClass }
+          : {}),
         ...(approvalMaterialBinding
           ? {
               [APPROVAL_MATERIAL_BINDING_OUTPUT_KEY]:
@@ -2487,6 +2499,13 @@ function reclaimStaleReadOnlyExecutionRecord(
   const expectedOutput = executionIntentWithoutClaim(expected);
   const tenantId = normalizeTenantId(existing.tenantId);
   const outputKeys = Object.keys(output).sort();
+  const hasReadOnlyMarker =
+    output[OPERATION_CLASS_OUTPUT_KEY] === "read_only";
+  const validOutputKeys = outputKeys.every((key) =>
+    key === "__approvalFingerprint" ||
+    key === "__sealedInput" ||
+    key === OPERATION_CLASS_OUTPUT_KEY
+  ) && outputKeys.length === (hasReadOnlyMarker ? 3 : 2);
   if (
     !existingClaim ||
     !nextClaim.token.trim() ||
@@ -2526,9 +2545,7 @@ function reclaimStaleReadOnlyExecutionRecord(
     expected.effectReceipt !== undefined ||
     isEffectBoundExecutionIntent(existing) ||
     isEffectBoundExecutionIntent(expected) ||
-    outputKeys.length !== 2 ||
-    outputKeys[0] !== "__approvalFingerprint" ||
-    outputKeys[1] !== "__sealedInput" ||
+    !validOutputKeys ||
     !output.__sealedInput ||
     typeof output.__sealedInput !== "object" ||
     Array.isArray(output.__sealedInput) ||
@@ -2561,6 +2578,38 @@ function isSha256(value: unknown): value is string {
   return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 }
 
+function isReclaimableApprovedReadOnlyExecution(
+  record: ToolExecutionRecord,
+) {
+  if (
+    record.status !== "executing" ||
+    record.dryRun ||
+    !record.approvalRequired ||
+    record.approvalDecision !== "approved" ||
+    !record.approvedBy ||
+    !record.approvedAt ||
+    record.effectReceipt !== undefined ||
+    isEffectBoundExecutionIntent(record)
+  ) {
+    return false;
+  }
+  const output = parseObject(record.output);
+  if (
+    !output.__sealedInput ||
+    typeof output.__sealedInput !== "object" ||
+    Array.isArray(output.__sealedInput) ||
+    typeof output.__approvalFingerprint !== "string"
+  ) {
+    return false;
+  }
+  if (output[OPERATION_CLASS_OUTPUT_KEY] === "read_only") return true;
+  const registeredTool = getGovernedTool(record.toolId);
+  return Boolean(
+    registeredTool?.operationClass === "read_only" &&
+      output.__approvalFingerprint === toolApprovalFingerprint(registeredTool),
+  );
+}
+
 function recoverStaleExecutionRecord(
   record: ToolExecutionRecord,
   staleAfterMs: number,
@@ -2569,6 +2618,7 @@ function recoverStaleExecutionRecord(
   if (
     record.status !== "executing" ||
     isEffectBoundExecutionIntent(record) ||
+    isReclaimableApprovedReadOnlyExecution(record) ||
     (record.toolId === "memory.forget" && !record.dryRun) ||
     !claim ||
     !Number.isFinite(new Date(claim.claimedAt).getTime()) ||

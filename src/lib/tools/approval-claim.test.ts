@@ -248,6 +248,18 @@ describe("tool approval claims (file mode)", () => {
     const tool = getGovernedTool("moltbook.home.read");
     expect(tool?.operationClass).toBe("read_only");
 
+    const genericRecovery = await store.recoverStaleToolExecutionClaims({
+      tenantId: context.tenantId,
+      staleAfterMs: 60_000,
+      limit: 100,
+    });
+    expect(genericRecovery).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: stale.id }),
+    ]));
+    await expect(store.getToolExecution(stale.id, {
+      tenantId: context.tenantId,
+    })).resolves.toMatchObject({ status: "executing" });
+
     const reclaimed = await store.reclaimStaleReadOnlyToolExecutionClaim(
       stale,
       {
@@ -818,6 +830,7 @@ describe("tool approval claims (file mode)", () => {
         rawInput,
         recordWithoutPayload,
         "reviewed-contract-fingerprint",
+        { operationClass: "mutation" },
       ),
     };
 
