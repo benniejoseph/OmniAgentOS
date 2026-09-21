@@ -785,10 +785,15 @@ describe("ordered database schema versions", () => {
       name: "agent_identity_validator_privilege_repair_v1",
       checksum: "225d62212d28a5c6186d0e62d402a61e0283bfd34695f1f8aa25b2e1132593f2",
     });
-    expect(databaseSchemaMigrations.at(-1)).toEqual({
+    expect(databaseSchemaMigrations.find((migration) => migration.version === 192)).toEqual({
       version: 192,
       name: "agent_private_trigger_privilege_repair_v1",
       checksum: "a8beaa32d24c97ad6763801982c474414ab93a046f98d91fc3df30bb9e172fab",
+    });
+    expect(databaseSchemaMigrations.at(-1)).toEqual({
+      version: 193,
+      name: "execution_principal_row_validator_grant_v1",
+      checksum: "9b787d1cfa1d6ae007cf8594f43c00045bab640b1f596e91d330923acc3bf2f7",
     });
     expect(databaseSchemaMigrations.find((migration) => migration.version === 139)).toEqual({
       version: 139,

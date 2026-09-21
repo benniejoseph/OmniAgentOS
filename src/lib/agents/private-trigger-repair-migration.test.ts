@@ -47,7 +47,7 @@ describe("agent private trigger privilege repair v1", () => {
     expect(migration).toContain("omni_execution_principal_validate_insert");
     expect(migration).toContain("omni_moltbook_connections_agent_boundary");
     expect(migration).toContain("privilege.grantee = 0");
-    expect(manifest.at(-1)).toEqual({
+    expect(manifest.find((entry) => entry.version === 192)).toEqual({
       version: 192,
       name: "agent_private_trigger_privilege_repair_v1",
       checksum:

@@ -32,6 +32,7 @@ import { ensureMoltbookAgentConnectionsV1 } from "@/lib/moltbook/schema";
 import {
   ensureAgentIdentityValidatorPrivilegeRepairV1,
   ensureAgentPrivateTriggerPrivilegeRepairV1,
+  ensureExecutionPrincipalRowValidatorGrantV1,
 } from "@/lib/agents/identity-schema";
 import schemaMigrationManifest from "../../../schema-migrations.json";
 
@@ -1678,6 +1679,10 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[191],
       up: ensureAgentPrivateTriggerPrivilegeRepairV1,
+    },
+    {
+      ...databaseSchemaMigrations[192],
+      up: ensureExecutionPrincipalRowValidatorGrantV1,
     },
   ];
 }
