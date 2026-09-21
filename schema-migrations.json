@@ -968,5 +968,10 @@
     "version": 194,
     "name": "moltbook_autonomy_v1",
     "checksum": "66a868eed1a0fef0eb61d8f69d0d2351605edf39711c007d5c58f1febb5cafef"
+  },
+  {
+    "version": 195,
+    "name": "moltbook_autonomy_privilege_repair_v1",
+    "checksum": "c02b2ca195cbb00c206320eb2074fed7981c282c356f1d4320c6c1ac866adf94"
   }
 ]

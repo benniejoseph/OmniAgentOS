@@ -21,7 +21,7 @@ const manifest = JSON.parse(readFileSync(resolve(
 
 describe("Moltbook autonomy v194 migration", () => {
   it("registers exactly after v193 in both migration paths", async () => {
-    expect(manifest.at(-1)).toEqual({
+    expect(manifest.find((entry) => entry.version === 194)).toEqual({
       version: 194,
       name: "moltbook_autonomy_v1",
       checksum: "66a868eed1a0fef0eb61d8f69d0d2351605edf39711c007d5c58f1febb5cafef",

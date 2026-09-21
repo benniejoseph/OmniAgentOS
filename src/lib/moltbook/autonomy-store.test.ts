@@ -85,8 +85,13 @@ describe("Moltbook autonomy store contracts", () => {
     expect(listProjection).toContain("principal.state = 'active'");
     expect(listProjection).toContain("policy.expires_at IS NULL OR policy.expires_at >");
     expect(listProjection).toContain("agent.status IN ('ready', 'learning')");
-    expect(listProjection).toContain("auth_user.status = 'active'");
-    expect(listProjection).toContain("membership.role IN ('operator', 'admin')");
+    expect(listProjection).toContain("public.omni_resolve_moltbook_owner_membership_v1(");
+    expect(listProjection).toMatch(
+      /owner_membership\.canonical_actor_id\s*=\s*exact_enrollment\.authorized_by_actor_id/,
+    );
+    expect(listProjection).not.toContain("omni_auth_user_actor_identifiers");
+    expect(listProjection).not.toContain("JOIN omni_auth_users");
+    expect(listProjection).not.toContain("JOIN omni_auth_memberships");
     expect(listProjection).toContain("omni_moltbook_agent_boundary_is_exact_v1");
     expect(listProjection).not.toContain("exact_enrollment.status = 'enabled'");
     expect(listProjection).toContain('"authority_unavailable" as const');
@@ -103,12 +108,28 @@ describe("Moltbook autonomy store contracts", () => {
       source.indexOf("export async function authorizeMoltbookAutonomyAction"),
       source.indexOf("export const claimMoltbookAutonomyAction"),
     );
-    expect(claim).toContain("membership.role IN ('operator', 'admin')");
-    expect(claim).toContain("membership.role AS membership_role");
+    expect(claim).toContain("public.omni_resolve_moltbook_owner_membership_v1(");
+    expect(claim).toMatch(
+      /owner_membership\.canonical_actor_id\s*=\s*enrollment\.authorized_by_actor_id/,
+    );
+    expect(claim).toContain("owner_membership.membership_role");
     expect(claim).toContain("membershipRole: requiredMembershipRole(row.membership_role)");
-    expect(authorization).toContain("membership.status = 'active'");
-    expect(authorization).toContain("membership.role = ${authority.membershipRole}");
-    expect(authorization).toContain("membership.role IN ('operator', 'admin')");
+    expect(authorization).toContain("public.omni_resolve_moltbook_owner_membership_v1(");
+    expect(authorization).toMatch(
+      /owner_membership\.canonical_actor_id\s*=\s*enrollment\.authorized_by_actor_id/,
+    );
+    expect(authorization).toContain(
+      "owner_membership.canonical_actor_id = ${authority.canonicalActorId}",
+    );
+    expect(authorization).toContain(
+      "owner_membership.auth_user_id = ${authority.authUserId}",
+    );
+    expect(authorization).toContain(
+      "owner_membership.membership_role = ${authority.membershipRole}",
+    );
+    expect(source).not.toContain("omni_auth_user_actor_identifiers");
+    expect(source).not.toContain("JOIN omni_auth_users");
+    expect(source).not.toContain("JOIN omni_auth_memberships");
     expect(source).toContain("if (value === \"operator\" || value === \"admin\")");
     expect(source).not.toContain("membershipRole: \"admin\"");
   });

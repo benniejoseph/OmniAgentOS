@@ -307,19 +307,13 @@ export async function listMoltbookAutonomyProjection(input: {
               ON agent.tenant_id = exact_enrollment.tenant_id
               AND agent.actor_id = exact_enrollment.owner_actor_id
               AND agent.id = exact_enrollment.agent_id
-            JOIN omni_auth_user_actor_identifiers identifier
-              ON identifier.actor_identifier COLLATE "C" =
-                exact_enrollment.owner_actor_id COLLATE "C"
-              AND identifier.canonical_actor_id = principal.controller_actor_id
-              AND identifier.canonical_actor_id = exact_enrollment.authorized_by_actor_id
-            JOIN omni_auth_users auth_user
-              ON auth_user.actor_id = identifier.canonical_actor_id
-              AND auth_user.status = 'active'
-            JOIN omni_auth_memberships membership
-              ON membership.tenant_id = exact_enrollment.tenant_id
-              AND membership.user_id = auth_user.id
-              AND membership.status = 'active'
-              AND membership.role IN ('operator', 'admin')
+            JOIN LATERAL public.omni_resolve_moltbook_owner_membership_v1(
+              exact_enrollment.tenant_id,
+              exact_enrollment.owner_actor_id
+            ) owner_membership
+              ON owner_membership.canonical_actor_id = principal.controller_actor_id
+              AND owner_membership.canonical_actor_id =
+                exact_enrollment.authorized_by_actor_id
             WHERE exact_enrollment.tenant_id = ${owner.tenantId}
               AND exact_enrollment.owner_actor_id = ${owner.actorId}
               AND exact_enrollment.id = ${String(enrollmentRow.id)}
@@ -691,8 +685,9 @@ export async function claimDueMoltbookAutonomyCycle(input: {
              authority.principal_id, authority.principal_generation,
              authority.principal_sha256, authority.definition_version,
              authority.definition_sha256, authority.policy_boundary_sha256,
-             identifier.canonical_actor_id, auth_user.id AS auth_user_id,
-             membership.role AS membership_role
+             owner_membership.canonical_actor_id,
+             owner_membership.auth_user_id,
+             owner_membership.membership_role
       FROM omni_moltbook_autonomy_enrollments enrollment
       JOIN omni_moltbook_connections connection
         ON connection.tenant_id = enrollment.tenant_id
@@ -717,18 +712,13 @@ export async function claimDueMoltbookAutonomyCycle(input: {
         ON agent.tenant_id = enrollment.tenant_id
         AND agent.actor_id = enrollment.owner_actor_id
         AND agent.id = enrollment.agent_id
-      JOIN omni_auth_user_actor_identifiers identifier
-        ON identifier.actor_identifier COLLATE "C" =
-          enrollment.owner_actor_id COLLATE "C"
-        AND identifier.canonical_actor_id = principal.controller_actor_id
-      JOIN omni_auth_users auth_user
-        ON auth_user.actor_id = identifier.canonical_actor_id
-        AND auth_user.status = 'active'
-      JOIN omni_auth_memberships membership
-        ON membership.tenant_id = enrollment.tenant_id
-        AND membership.user_id = auth_user.id
-        AND membership.status = 'active'
-        AND membership.role IN ('operator', 'admin')
+      JOIN LATERAL public.omni_resolve_moltbook_owner_membership_v1(
+        enrollment.tenant_id,
+        enrollment.owner_actor_id
+      ) owner_membership
+        ON owner_membership.canonical_actor_id = principal.controller_actor_id
+        AND owner_membership.canonical_actor_id =
+          enrollment.authorized_by_actor_id
       WHERE enrollment.status = 'enabled'
         AND enrollment.tenant_id = ${tenantId}
         AND connection.status = 'claimed'
@@ -1030,7 +1020,7 @@ export async function authorizeMoltbookAutonomyAction(input: {
                enrollment.cycle_subscribe_limit, enrollment.daily_post_limit,
                enrollment.daily_comment_limit, enrollment.daily_vote_limit,
                enrollment.daily_follow_limit, enrollment.daily_subscribe_limit,
-               membership.role AS current_membership_role
+               owner_membership.membership_role AS current_membership_role
         FROM omni_moltbook_autonomy_cycles cycle
         JOIN omni_moltbook_autonomy_enrollments enrollment
           ON enrollment.tenant_id = cycle.tenant_id
@@ -1061,15 +1051,13 @@ export async function authorizeMoltbookAutonomyAction(input: {
           ON agent.tenant_id = cycle.tenant_id
           AND agent.actor_id = cycle.owner_actor_id
           AND agent.id = cycle.agent_id
-        JOIN omni_auth_user_actor_identifiers identifier
-          ON identifier.actor_identifier COLLATE "C" =
-            cycle.owner_actor_id COLLATE "C"
-          AND identifier.canonical_actor_id = principal.controller_actor_id
-        JOIN omni_auth_users auth_user
-          ON auth_user.actor_id = identifier.canonical_actor_id
-        JOIN omni_auth_memberships membership
-          ON membership.tenant_id = cycle.tenant_id
-          AND membership.user_id = auth_user.id
+        JOIN LATERAL public.omni_resolve_moltbook_owner_membership_v1(
+          cycle.tenant_id,
+          cycle.owner_actor_id
+        ) owner_membership
+          ON owner_membership.canonical_actor_id = principal.controller_actor_id
+          AND owner_membership.canonical_actor_id =
+            enrollment.authorized_by_actor_id
         WHERE cycle.tenant_id = ${authority.tenantId}
           AND cycle.owner_actor_id = ${authority.ownerActorId}
           AND cycle.id = ${authority.cycleId}
@@ -1113,12 +1101,9 @@ export async function authorizeMoltbookAutonomyAction(input: {
           )
           AND cardinality(policy.context_grant_ids) = 0
           AND cardinality(policy.capability_grant_ids) = 0
-          AND identifier.canonical_actor_id = ${authority.canonicalActorId}
-          AND auth_user.id = ${authority.authUserId}
-          AND auth_user.status = 'active'
-          AND membership.status = 'active'
-          AND membership.role = ${authority.membershipRole}
-          AND membership.role IN ('operator', 'admin')
+          AND owner_membership.canonical_actor_id = ${authority.canonicalActorId}
+          AND owner_membership.auth_user_id = ${authority.authUserId}
+          AND owner_membership.membership_role = ${authority.membershipRole}
           AND omni_moltbook_agent_boundary_is_exact_v1(
             agent.skill_ids, agent.tool_ids, agent.memory_scope,
             agent.autonomy, agent.approval_policy
