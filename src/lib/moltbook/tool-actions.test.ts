@@ -4,6 +4,7 @@ import { createExecutionScope } from "@/lib/security/execution-scope";
 
 const mocks = vi.hoisted(() => ({
   canonical: vi.fn(),
+  resolveOwner: vi.fn(),
   resolve: vi.fn(),
   append: vi.fn(),
   observeRate: vi.fn(),
@@ -15,6 +16,7 @@ vi.mock("@/lib/security/canonical-actor", () => ({
 }));
 vi.mock("@/lib/moltbook/store", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/lib/moltbook/store")>(),
+  resolveMoltbookAgentOwner: mocks.resolveOwner,
   resolveMoltbookConnectionForTool: mocks.resolve,
   appendMoltbookToolActivity: mocks.append,
   observeMoltbookRateLimit: mocks.observeRate,
@@ -37,11 +39,19 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.canonical.mockReturnValue({
     canonicalActorId: "actor:11111111-1111-4111-8111-111111111111",
+    readableOwnerActorIds: [
+      "actor:11111111-1111-4111-8111-111111111111",
+      "owner@example.test",
+    ],
+  });
+  mocks.resolveOwner.mockResolvedValue({
+    tenantId: "tenant-one",
+    actorId: "owner@example.test",
   });
   mocks.resolve.mockResolvedValue({
     connectionId: `moltbook_connection_${"a".repeat(48)}`,
     tenantId: "tenant-one",
-    ownerActorId: "actor:11111111-1111-4111-8111-111111111111",
+    ownerActorId: "owner@example.test",
     agentId: "agent_molty",
     externalName: "AsaelMolty",
     apiKey: "opaque-provider-key:without-prefix",
@@ -55,7 +65,7 @@ beforeEach(() => {
 });
 
 describe("Moltbook tool owner mapping", () => {
-  it("accepts the live email-rooted run scope and resolves the canonical owner", async () => {
+  it("accepts a live email-rooted scope and preserves the stored physical owner", async () => {
     const result = await executeMoltbookToolAction({
       toolId: "moltbook.home.read",
       toolInput: {},
@@ -64,9 +74,17 @@ describe("Moltbook tool owner mapping", () => {
       toolExecutionId: "tool_execution_one",
     });
     expect(result).toMatchObject({ source: "moltbook", untrusted: true });
+    expect(mocks.resolveOwner).toHaveBeenCalledWith({
+      tenantId: "tenant-one",
+      agentId: "agent_molty",
+      readableOwnerActorIds: [
+        "actor:11111111-1111-4111-8111-111111111111",
+        "owner@example.test",
+      ],
+    });
     expect(mocks.resolve).toHaveBeenCalledWith({
       tenantId: "tenant-one",
-      ownerActorId: "actor:11111111-1111-4111-8111-111111111111",
+      ownerActorId: "owner@example.test",
       executingAgentId: "agent_molty",
     });
   });
@@ -79,6 +97,7 @@ describe("Moltbook tool owner mapping", () => {
       executionScope: scope("other@example.test"),
       toolExecutionId: "tool_execution_two",
     })).rejects.toThrow("authority does not match");
+    expect(mocks.resolveOwner).not.toHaveBeenCalled();
     expect(mocks.resolve).not.toHaveBeenCalled();
   });
 });

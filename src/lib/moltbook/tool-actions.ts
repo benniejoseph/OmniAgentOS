@@ -18,6 +18,7 @@ import {
   appendMoltbookToolActivity,
   MoltbookConnectionError,
   observeMoltbookRateLimit,
+  resolveMoltbookAgentOwner,
   resolveMoltbookConnectionForTool,
   type MoltbookConnectionAccess,
 } from "@/lib/moltbook/store";
@@ -32,13 +33,14 @@ export type MoltbookUntrustedReadResult = Readonly<{
 }>;
 
 export type MoltbookPendingVerificationResult = Readonly<{
+  source: "moltbook";
+  untrusted: true;
   status: "pending_verification";
   providerObject?: Readonly<{ type: string; ref: string; url?: string }>;
   verification: Readonly<{
     verificationCode: string;
     challengeText: string;
     expiresAt?: string;
-    instructions?: string;
   }>;
 }>;
 
@@ -69,7 +71,7 @@ export async function executeMoltbookToolAction(input: {
       code: "tool_unknown",
     });
   }
-  const authority = exactToolAuthority(input);
+  const authority = await exactToolAuthority(input);
   const toolInput = parseMoltbookToolInput(input.toolId, input.toolInput);
   const access = await resolveMoltbookConnectionForTool({
     tenantId: input.executionScope.tenantId,
@@ -161,7 +163,13 @@ async function executeMutation(
         responseSha256: result.responseSha256,
         effect: true,
       });
-      return { status: "pending_verification", providerObject, verification };
+      return {
+        source: "moltbook",
+        untrusted: true,
+        status: "pending_verification",
+        providerObject,
+        verification,
+      };
     }
     const status = publishStatus(input.toolId);
     await appendMoltbookToolActivity({
@@ -302,7 +310,7 @@ async function recordToolFailure(
   }).catch(() => undefined);
 }
 
-function exactToolAuthority(
+async function exactToolAuthority(
   input: Parameters<typeof executeMoltbookToolAction>[0],
 ) {
   const scope = input.executionScope;
@@ -324,8 +332,13 @@ function exactToolAuthority(
       { code: "tool_authority_mismatch" },
     );
   }
+  const owner = await resolveMoltbookAgentOwner({
+    tenantId: scope.tenantId,
+    agentId: scope.executingPrincipalId,
+    readableOwnerActorIds: actorBinding.readableOwnerActorIds,
+  });
   return {
-    ownerActorId: actorBinding.canonicalActorId,
+    ownerActorId: owner.actorId,
     executingAgentId: scope.executingPrincipalId,
   };
 }
@@ -353,9 +366,6 @@ function verificationFromResponse(
     challengeText,
     ...(boundedProviderString(raw.expires_at, 100)
       ? { expiresAt: boundedProviderString(raw.expires_at, 100) }
-      : {}),
-    ...(boundedProviderString(raw.instructions, 1_000)
-      ? { instructions: boundedProviderString(raw.instructions, 1_000) }
       : {}),
   };
 }

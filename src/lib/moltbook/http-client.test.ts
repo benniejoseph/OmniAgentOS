@@ -71,7 +71,7 @@ describe("Moltbook HTTP boundary", () => {
       error = caught;
     }
     expect(error).toBeInstanceOf(MoltbookProviderError);
-    expect(String((error as Error).message)).not.toContain(opaqueKey);
+    expect(serializedThrowableGraph(error)).not.toContain(opaqueKey);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
@@ -96,6 +96,26 @@ describe("Moltbook HTTP boundary", () => {
     });
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
+
+  it("cancels a chunked response as soon as the running body limit is exceeded", async () => {
+    const canceled = vi.fn();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(300_000));
+        controller.enqueue(new Uint8Array(300_000));
+      },
+      cancel: canceled,
+    });
+    const fetchImpl = vi.fn(async () => new Response(body, {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }));
+    await expect(createMoltbookClient({
+      apiKey: opaqueKey,
+      fetchImpl: fetchImpl as typeof fetch,
+    }).home()).rejects.toMatchObject({ code: "provider_response_too_large" });
+    expect(canceled).toHaveBeenCalledOnce();
+  });
 });
 
 function json(value: unknown, headers: Record<string, string> = {}) {
@@ -103,4 +123,18 @@ function json(value: unknown, headers: Record<string, string> = {}) {
     status: 200,
     headers: { "content-type": "application/json", ...headers },
   });
+}
+
+function serializedThrowableGraph(value: unknown) {
+  const seen = new Set<object>();
+  const visit = (current: unknown): unknown => {
+    if (!current || typeof current !== "object") return String(current);
+    if (seen.has(current)) return "[cycle]";
+    seen.add(current);
+    return Object.fromEntries(Object.getOwnPropertyNames(current).map((key) => [
+      key,
+      visit((current as Record<string, unknown>)[key]),
+    ]));
+  };
+  return JSON.stringify(visit(value));
 }

@@ -1,10 +1,11 @@
 import {
-  heartbeatMoltbookConnection,
   listMoltbookConnection,
   MoltbookConnectionError,
   pauseMoltbookConnection,
   refreshMoltbookConnection,
   registerMoltbookConnection,
+  retryMoltbookRegistration,
+  resolveMoltbookAgentOwner,
   resumeMoltbookConnection,
 } from "@/lib/moltbook/store";
 import { moltbookRouteActionSchema } from "@/lib/moltbook/contracts";
@@ -33,8 +34,8 @@ async function GETHandler(
   } catch (error) {
     return forbiddenResponse(error);
   }
-  const owner = canonicalRequestActorBindingFromSecurityContext(auth);
-  if (!owner) return ownerUnavailableResponse();
+  const ownerBinding = canonicalRequestActorBindingFromSecurityContext(auth);
+  if (!ownerBinding) return ownerUnavailableResponse();
   const url = new URL(request.url);
   const parsedLimit = parseLimit(url.searchParams.get("limit"));
   if (parsedLimit === null) {
@@ -52,8 +53,13 @@ async function GETHandler(
   }
   const { id } = await context.params;
   try {
+    const owner = await resolveMoltbookAgentOwner({
+      tenantId: auth.tenantId,
+      agentId: id,
+      readableOwnerActorIds: ownerBinding.readableOwnerActorIds,
+    });
     const result = await listMoltbookConnection({
-      owner: { tenantId: auth.tenantId, actorId: owner.canonicalActorId },
+      owner,
       agentId: id,
       limit: parsedLimit || undefined,
       cursor,
@@ -68,6 +74,8 @@ async function POSTHandler(
   request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
+  // This route is the authenticated human control plane for connection setup.
+  // Agent-authored social effects remain exclusive to the governed tool executor.
   let auth;
   try {
     auth = await authorizeRequest({
@@ -95,11 +103,12 @@ async function POSTHandler(
     }, { status: 400, headers: privateNoStoreHeaders });
   }
   const { id } = await context.params;
-  const owner = {
-    tenantId: auth.tenantId,
-    actorId: ownerBinding.canonicalActorId,
-  };
   try {
+    const owner = await resolveMoltbookAgentOwner({
+      tenantId: auth.tenantId,
+      agentId: id,
+      readableOwnerActorIds: ownerBinding.readableOwnerActorIds,
+    });
     const result = parsed.data.action === "register"
       ? await registerMoltbookConnection({
           owner,
@@ -107,14 +116,24 @@ async function POSTHandler(
           externalName: parsed.data.externalName,
           description: parsed.data.description,
           heartbeatEnabled: parsed.data.heartbeatEnabled,
+          disclosureAccepted: parsed.data.disclosureAccepted,
+          disclosureVersion: parsed.data.disclosureVersion,
         })
+      : parsed.data.action === "retry_registration"
+        ? await retryMoltbookRegistration({
+            owner,
+            agentId: id,
+            externalName: parsed.data.externalName,
+            description: parsed.data.description,
+            heartbeatEnabled: parsed.data.heartbeatEnabled,
+            disclosureAccepted: parsed.data.disclosureAccepted,
+            disclosureVersion: parsed.data.disclosureVersion,
+          })
       : parsed.data.action === "refresh"
         ? { connection: await refreshMoltbookConnection({ owner, agentId: id }) }
-        : parsed.data.action === "heartbeat"
-          ? { connection: await heartbeatMoltbookConnection({ owner, agentId: id }) }
-          : parsed.data.action === "pause"
-            ? { connection: await pauseMoltbookConnection({ owner, agentId: id }) }
-            : { connection: await resumeMoltbookConnection({ owner, agentId: id }) };
+        : parsed.data.action === "pause"
+          ? { connection: await pauseMoltbookConnection({ owner, agentId: id }) }
+          : { connection: await resumeMoltbookConnection({ owner, agentId: id }) };
     return Response.json(result, { headers: privateNoStoreHeaders });
   } catch (error) {
     return moltbookErrorResponse(error);

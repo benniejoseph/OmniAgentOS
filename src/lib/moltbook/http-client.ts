@@ -18,6 +18,8 @@ const MAX_PROVIDER_DEPTH = 8;
 
 type FetchLike = typeof fetch;
 
+class MoltbookResponseLimitError extends Error {}
+
 export type MoltbookHttpResult<T = unknown> = Readonly<{
   data: T;
   requestSha256: string;
@@ -46,9 +48,8 @@ export class MoltbookProviderError extends Error {
     requestSha256?: string;
     responseSha256?: string;
     rateLimit?: MoltbookRateLimitProjection;
-    cause?: unknown;
   }) {
-    super(input.message, input.cause === undefined ? undefined : { cause: input.cause });
+    super(input.message);
     this.name = "MoltbookProviderError";
     this.code = input.code;
     this.statusCode = input.statusCode;
@@ -233,7 +234,7 @@ async function moltbookRequest(input: {
       cache: "no-store",
       signal,
     });
-  } catch (error) {
+  } catch {
     const timedOut = timeoutController.signal.aborted && !input.abortSignal?.aborted;
     throw new MoltbookProviderError({
       code: timedOut ? "provider_timeout" : "provider_unavailable",
@@ -241,7 +242,6 @@ async function moltbookRequest(input: {
         ? "Moltbook did not respond before the bounded timeout."
         : "Moltbook could not be reached safely.",
       requestSha256,
-      cause: error,
     });
   } finally {
     clearTimeout(timeout);
@@ -258,18 +258,28 @@ async function moltbookRequest(input: {
       rateLimit,
     });
   }
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  const responseSha256 = sha256(bytes);
-  if (bytes.byteLength > MAX_RESPONSE_BYTES) {
+  let bytes: Uint8Array;
+  try {
+    bytes = await readBoundedResponseBytes(response, MAX_RESPONSE_BYTES);
+  } catch (error) {
+    if (error instanceof MoltbookResponseLimitError) {
+      throw new MoltbookProviderError({
+        code: "provider_response_too_large",
+        message: "Moltbook returned more data than this operation accepts.",
+        statusCode: response.status,
+        requestSha256,
+        rateLimit,
+      });
+    }
     throw new MoltbookProviderError({
-      code: "provider_response_too_large",
-      message: "Moltbook returned more data than this operation accepts.",
+      code: "provider_response_unavailable",
+      message: "Moltbook response data could not be read safely.",
       statusCode: response.status,
       requestSha256,
-      responseSha256,
       rateLimit,
     });
   }
+  const responseSha256 = sha256(bytes);
   if (!response.ok) {
     throw new MoltbookProviderError({
       code: providerHttpCode(response.status),
@@ -285,7 +295,7 @@ async function moltbookRequest(input: {
     parsed = bytes.byteLength
       ? JSON.parse(new TextDecoder().decode(bytes)) as unknown
       : {};
-  } catch (error) {
+  } catch {
     throw new MoltbookProviderError({
       code: "provider_response_invalid",
       message: "Moltbook returned an invalid response.",
@@ -293,7 +303,6 @@ async function moltbookRequest(input: {
       requestSha256,
       responseSha256,
       rateLimit,
-      cause: error,
     });
   }
   return {
@@ -303,6 +312,34 @@ async function moltbookRequest(input: {
     statusCode: response.status,
     rateLimit,
   };
+}
+
+async function readBoundedResponseBytes(response: Response, maximumBytes: number) {
+  if (!response.body) return new Uint8Array();
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maximumBytes) {
+        await reader.cancel("bounded Moltbook response exceeded").catch(() => undefined);
+        throw new MoltbookResponseLimitError();
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const joined = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    joined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return joined;
 }
 
 function exactApiUrl(path: string) {

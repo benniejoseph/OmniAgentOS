@@ -40,6 +40,9 @@ CREATE TABLE omni_moltbook_connections (
   status TEXT NOT NULL,
   claim_state TEXT NOT NULL,
   heartbeat_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  disclosure_version TEXT NOT NULL,
+  disclosure_accepted_at TIMESTAMPTZ NOT NULL,
+  registration_request_sha256 TEXT NOT NULL,
   credential_version INTEGER NOT NULL,
   credential_key_id TEXT,
   sealed_credentials JSONB,
@@ -74,6 +77,9 @@ CREATE TABLE omni_moltbook_connections (
     'registering', 'pending_claim', 'claimed', 'paused', 'error', 'revoked'
   )),
   CHECK (claim_state IN ('unavailable', 'pending', 'claimed')),
+  CHECK (disclosure_version = 'moltbook-public-activity-v1'),
+  CHECK (disclosure_accepted_at >= created_at),
+  CHECK (registration_request_sha256 ~ '^[a-f0-9]{64}$'),
   CHECK (credential_version >= 1),
   CHECK (
     (sealed_credentials IS NULL AND credential_key_id IS NULL)
@@ -212,23 +218,127 @@ CREATE INDEX omni_moltbook_effect_receipts_execution_idx
     tenant_id, owner_actor_id, tool_execution_id, created_at, id
   );
 
-CREATE FUNCTION omni_protect_moltbook_connection_v1()
+CREATE FUNCTION omni_moltbook_agent_boundary_is_exact_v1(
+  assigned_skill_ids TEXT[], assigned_tool_ids TEXT[], agent_memory_scope TEXT,
+  agent_autonomy TEXT, agent_approval_policy TEXT
+)
+RETURNS BOOLEAN
+LANGUAGE SQL
+IMMUTABLE
+SET search_path = pg_catalog, public
+AS $function$
+  SELECT COALESCE(
+    cardinality(assigned_skill_ids) = 0
+    AND cardinality(assigned_tool_ids) = 9
+    AND assigned_tool_ids @> ARRAY[
+      'moltbook.home.read', 'moltbook.feed.read', 'moltbook.thread.read',
+      'moltbook.post.create', 'moltbook.comment.create',
+      'moltbook.post.vote', 'moltbook.comment.upvote',
+      'moltbook.agent.follow', 'moltbook.verify'
+    ]::TEXT[]
+    AND assigned_tool_ids <@ ARRAY[
+      'moltbook.home.read', 'moltbook.feed.read', 'moltbook.thread.read',
+      'moltbook.post.create', 'moltbook.comment.create',
+      'moltbook.post.vote', 'moltbook.comment.upvote',
+      'moltbook.agent.follow', 'moltbook.verify'
+    ]::TEXT[]
+    AND agent_memory_scope = 'session'
+    AND agent_autonomy = 'governed'
+    AND agent_approval_policy IN ('risk_based', 'always'),
+    FALSE
+  )
+$function$;
+
+CREATE FUNCTION omni_enforce_moltbook_connection_agent_boundary_v1()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY INVOKER
 SET search_path = pg_catalog, public
 AS $function$
 BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM public.omni_custom_agents agent
+    WHERE agent.tenant_id = NEW.tenant_id
+      AND agent.actor_id = NEW.owner_actor_id
+      AND agent.id = NEW.agent_id
+      AND public.omni_moltbook_agent_boundary_is_exact_v1(
+        agent.skill_ids, agent.tool_ids, agent.memory_scope,
+        agent.autonomy, agent.approval_policy
+      )
+  ) THEN
+    RAISE EXCEPTION 'Linked Moltbook Agent capability boundary is invalid'
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END
+$function$;
+
+CREATE FUNCTION omni_guard_linked_moltbook_agent_v1()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = pg_catalog, public
+AS $function$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    IF EXISTS (
+      SELECT 1 FROM public.omni_moltbook_connections connection
+      WHERE connection.tenant_id = OLD.tenant_id
+        AND connection.owner_actor_id = OLD.actor_id
+        AND connection.agent_id = OLD.id
+    ) THEN
+      RAISE EXCEPTION 'Linked Moltbook Agents cannot be deleted'
+        USING ERRCODE = '55000';
+    END IF;
+    RETURN OLD;
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM public.omni_moltbook_connections connection
+    WHERE connection.tenant_id = OLD.tenant_id
+      AND connection.owner_actor_id = OLD.actor_id
+      AND connection.agent_id = OLD.id
+  ) AND NOT public.omni_moltbook_agent_boundary_is_exact_v1(
+    NEW.skill_ids, NEW.tool_ids, NEW.memory_scope,
+    NEW.autonomy, NEW.approval_policy
+  ) THEN
+    RAISE EXCEPTION 'Linked Moltbook Agent capability cannot be widened'
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END
+$function$;
+
+CREATE FUNCTION omni_protect_moltbook_connection_v1()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = pg_catalog, public
+AS $function$
+DECLARE safe_registration_retry BOOLEAN;
+BEGIN
   IF TG_OP IN ('DELETE', 'TRUNCATE') THEN
     RAISE EXCEPTION 'Moltbook connections cannot be removed'
       USING ERRCODE = '55000';
   END IF;
+  safe_registration_retry := OLD.status = 'error'
+    AND NEW.status = 'registering'
+    AND OLD.claim_state = 'unavailable'
+    AND NEW.claim_state = 'unavailable'
+    AND OLD.sealed_credentials IS NULL
+    AND NEW.sealed_credentials IS NULL
+    AND OLD.last_error_code LIKE 'registration_rejected.%';
   IF OLD.id IS DISTINCT FROM NEW.id
     OR OLD.tenant_id IS DISTINCT FROM NEW.tenant_id
     OR OLD.owner_actor_id IS DISTINCT FROM NEW.owner_actor_id
     OR OLD.agent_id IS DISTINCT FROM NEW.agent_id
-    OR OLD.external_name IS DISTINCT FROM NEW.external_name
-    OR OLD.description IS DISTINCT FROM NEW.description
+    OR ((OLD.external_name IS DISTINCT FROM NEW.external_name
+      OR OLD.description IS DISTINCT FROM NEW.description)
+      AND NOT safe_registration_retry)
+    OR ((OLD.disclosure_version IS DISTINCT FROM NEW.disclosure_version
+      OR OLD.disclosure_accepted_at IS DISTINCT FROM NEW.disclosure_accepted_at
+      OR OLD.registration_request_sha256 IS DISTINCT FROM NEW.registration_request_sha256)
+      AND NOT safe_registration_retry)
     OR OLD.credential_version IS DISTINCT FROM NEW.credential_version
     OR OLD.created_at IS DISTINCT FROM NEW.created_at
     OR NEW.updated_at <= OLD.updated_at
@@ -257,6 +367,7 @@ BEGIN
     OR (OLD.status = 'claimed' AND NEW.status IN ('paused', 'error', 'revoked'))
     OR (OLD.status = 'paused' AND NEW.status IN ('pending_claim', 'claimed', 'error', 'revoked'))
     OR (OLD.status = 'error' AND NEW.status IN ('pending_claim', 'claimed', 'paused', 'revoked'))
+    OR safe_registration_retry
   ) THEN
     RAISE EXCEPTION 'Moltbook connection lifecycle transition is invalid'
       USING ERRCODE = '55000';
@@ -280,6 +391,14 @@ $function$;
 CREATE TRIGGER omni_moltbook_connections_protect
   BEFORE UPDATE OR DELETE ON omni_moltbook_connections
   FOR EACH ROW EXECUTE FUNCTION omni_protect_moltbook_connection_v1();
+CREATE TRIGGER omni_moltbook_connections_agent_boundary
+  BEFORE INSERT OR UPDATE OF tenant_id, owner_actor_id, agent_id
+  ON omni_moltbook_connections
+  FOR EACH ROW
+  EXECUTE FUNCTION omni_enforce_moltbook_connection_agent_boundary_v1();
+CREATE TRIGGER omni_custom_agents_moltbook_guard
+  BEFORE UPDATE OR DELETE ON omni_custom_agents
+  FOR EACH ROW EXECUTE FUNCTION omni_guard_linked_moltbook_agent_v1();
 CREATE TRIGGER omni_moltbook_connections_no_truncate
   BEFORE TRUNCATE ON omni_moltbook_connections
   FOR EACH STATEMENT EXECUTE FUNCTION omni_protect_moltbook_connection_v1();
@@ -323,13 +442,21 @@ REVOKE ALL ON omni_moltbook_activities FROM PUBLIC;
 REVOKE ALL ON omni_moltbook_effect_receipts FROM PUBLIC;
 REVOKE ALL ON FUNCTION omni_protect_moltbook_connection_v1() FROM PUBLIC;
 REVOKE ALL ON FUNCTION omni_reject_moltbook_receipt_mutation_v1() FROM PUBLIC;
+REVOKE ALL ON FUNCTION omni_moltbook_agent_boundary_is_exact_v1(
+  TEXT[], TEXT[], TEXT, TEXT, TEXT
+) FROM PUBLIC;
+REVOKE ALL ON FUNCTION omni_enforce_moltbook_connection_agent_boundary_v1()
+  FROM PUBLIC;
+REVOKE ALL ON FUNCTION omni_guard_linked_moltbook_agent_v1() FROM PUBLIC;
 
 DO $grants$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_runtime') THEN
     GRANT SELECT, INSERT ON omni_moltbook_connections TO omni_runtime;
     GRANT UPDATE (
-      status, claim_state, heartbeat_enabled, credential_key_id,
+      external_name, description, status, claim_state, heartbeat_enabled,
+      disclosure_version, disclosure_accepted_at, registration_request_sha256,
+      credential_key_id,
       sealed_credentials, last_heartbeat_at, next_heartbeat_at,
       consecutive_failures, last_error_code, rate_limit_projection,
       paused_at, revoked_at, updated_at
@@ -340,7 +467,9 @@ BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_maintenance') THEN
     GRANT SELECT, INSERT ON omni_moltbook_connections TO omni_maintenance;
     GRANT UPDATE (
-      status, claim_state, heartbeat_enabled, credential_key_id,
+      external_name, description, status, claim_state, heartbeat_enabled,
+      disclosure_version, disclosure_accepted_at, registration_request_sha256,
+      credential_key_id,
       sealed_credentials, last_heartbeat_at, next_heartbeat_at,
       consecutive_failures, last_error_code, rate_limit_projection,
       paused_at, revoked_at, updated_at
@@ -379,7 +508,17 @@ BEGIN
       AND NOT policy.polpermissive
       AND policy.polcmd = '*'
       AND policy.polname LIKE '%_actor'
-  ) <> 3 THEN
+  ) <> 3 OR (
+    SELECT count(*)
+    FROM pg_trigger trigger_record
+    WHERE NOT trigger_record.tgisinternal
+      AND (
+        (trigger_record.tgrelid = 'omni_moltbook_connections'::regclass
+          AND trigger_record.tgname = 'omni_moltbook_connections_agent_boundary')
+        OR (trigger_record.tgrelid = 'omni_custom_agents'::regclass
+          AND trigger_record.tgname = 'omni_custom_agents_moltbook_guard')
+      )
+  ) <> 2 THEN
     RAISE EXCEPTION 'Moltbook actor-private RLS is invalid'
       USING ERRCODE = '55000';
   END IF;
@@ -390,7 +529,7 @@ INSERT INTO public.omni_schema_version (version, name, checksum, applied_at)
 VALUES (
   190,
   'moltbook_agent_connections_v1',
-  '26386c7278e889ecafbb35d8bc35d17f4e519e0b0fb6da43b3e72295152c4147',
+  'f929a4ebfecc081e2c0eb545f16a068910dd0a8917cc621deba65e8e22775d19',
   clock_timestamp()
 );
 

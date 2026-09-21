@@ -11,7 +11,10 @@ import {
 } from "@/lib/db/client";
 import {
   MOLTBOOK_API_ORIGIN,
+  MOLTBOOK_DISCLOSURE_VERSION,
   MOLTBOOK_HEARTBEAT_INTERVAL_MS,
+  isExactMoltbookAgentCapabilityBoundary,
+  MOLTBOOK_TOOL_IDS,
   moltbookConnectionStatusSchema,
   type MoltbookActivityProjection,
   type MoltbookConnectionProjection,
@@ -72,6 +75,43 @@ export type MoltbookConnectionAccess = Readonly<{
   apiKey: string;
 }>;
 
+export async function resolveMoltbookAgentOwner(input: {
+  tenantId: string;
+  agentId: string;
+  readableOwnerActorIds: readonly string[];
+}): Promise<MoltbookOwner> {
+  requireDatabase();
+  await ensureDatabaseSchema();
+  const readableOwnerActorIds = [...new Set(
+    input.readableOwnerActorIds.map((actorId) => actorId.trim()),
+  )].filter(Boolean);
+  if (
+    !readableOwnerActorIds.length ||
+    readableOwnerActorIds.length > 8 ||
+    readableOwnerActorIds.some((actorId) =>
+      actorId.length > 320 || actorId.includes("\0")
+    )
+  ) {
+    throw unresolvedAgentOwner();
+  }
+  const rows = await runWithDatabaseActorScope(
+    input.tenantId,
+    readableOwnerActorIds,
+    () => getSql()`
+      SELECT actor_id
+      FROM omni_custom_agents
+      WHERE tenant_id = ${input.tenantId}
+        AND id = ${input.agentId}
+        AND actor_id = ANY(${readableOwnerActorIds}::text[])
+      LIMIT 2
+    `,
+  );
+  if (rows.length !== 1) throw unresolvedAgentOwner();
+  const actorId = String(rows[0].actor_id || "");
+  if (!readableOwnerActorIds.includes(actorId)) throw unresolvedAgentOwner();
+  return { tenantId: input.tenantId, actorId };
+}
+
 export async function listMoltbookConnection(input: {
   owner: MoltbookOwner;
   agentId: string;
@@ -121,6 +161,8 @@ export async function registerMoltbookConnection(input: {
   externalName: string;
   description: string;
   heartbeatEnabled?: boolean;
+  disclosureAccepted: true;
+  disclosureVersion: typeof MOLTBOOK_DISCLOSURE_VERSION;
   fetchImpl?: FetchLike;
   abortSignal?: AbortSignal;
 }) {
@@ -134,11 +176,15 @@ export async function registerMoltbookConnection(input: {
   }
   const connectionId = connectionIdFor(input.owner, input.agentId);
   const now = new Date().toISOString();
+  const registrationRequestSha256 = registrationRequestDigest(input);
   await runWithDatabaseActorScope(
     input.owner.tenantId,
     [input.owner.actorId],
     () => getSql().transaction(async (sql: Sql) => {
-      await assertOwnedAgent(sql, input.owner, input.agentId, { requireActive: true });
+      await assertOwnedAgent(sql, input.owner, input.agentId, {
+        requireActive: true,
+        requireMoltbookBoundary: true,
+      });
       const existing = await sql`
         SELECT id FROM omni_moltbook_connections
         WHERE tenant_id = ${input.owner.tenantId}
@@ -156,18 +202,109 @@ export async function registerMoltbookConnection(input: {
         INSERT INTO omni_moltbook_connections (
           id, tenant_id, owner_actor_id, agent_id, external_name,
           description, status, claim_state, heartbeat_enabled,
+          disclosure_version, disclosure_accepted_at,
+          registration_request_sha256,
           credential_version, sealed_credentials, next_heartbeat_at,
           consecutive_failures, rate_limit_projection, created_at, updated_at
         ) VALUES (
           ${connectionId}, ${input.owner.tenantId}, ${input.owner.actorId},
           ${input.agentId}, ${input.externalName}, ${input.description},
           'registering', 'unavailable', ${input.heartbeatEnabled !== false},
+          ${input.disclosureVersion}, ${now}, ${registrationRequestSha256},
           ${CREDENTIAL_VERSION}, NULL, NULL, 0, NULL, ${now}, ${now}
         )
       `;
     }),
   );
 
+  return completeMoltbookRegistration({ ...input, connectionId });
+}
+
+export async function retryMoltbookRegistration(input: {
+  owner: MoltbookOwner;
+  agentId: string;
+  externalName: string;
+  description: string;
+  heartbeatEnabled?: boolean;
+  disclosureAccepted: true;
+  disclosureVersion: typeof MOLTBOOK_DISCLOSURE_VERSION;
+  fetchImpl?: FetchLike;
+  abortSignal?: AbortSignal;
+}) {
+  requireDatabase();
+  await ensureDatabaseSchema();
+  if (!credentialVaultStatus().configured) {
+    throw new MoltbookConnectionError(
+      "The credential vault must be configured before joining Moltbook.",
+      { status: 503, code: "credential_vault_unavailable" },
+    );
+  }
+  const connectionId = connectionIdFor(input.owner, input.agentId);
+  const now = new Date().toISOString();
+  const registrationRequestSha256 = registrationRequestDigest(input);
+  await runWithDatabaseActorScope(
+    input.owner.tenantId,
+    [input.owner.actorId],
+    () => getSql().transaction(async (sql: Sql) => {
+      await assertOwnedAgent(sql, input.owner, input.agentId, {
+        requireActive: true,
+        requireMoltbookBoundary: true,
+      });
+      const rows = await sql`
+        SELECT status, claim_state, sealed_credentials, last_error_code
+        FROM omni_moltbook_connections
+        WHERE id = ${connectionId}
+          AND tenant_id = ${input.owner.tenantId}
+          AND owner_actor_id = ${input.owner.actorId}
+          AND agent_id = ${input.agentId}
+        LIMIT 2
+        FOR UPDATE
+      `;
+      if (rows.length !== 1 || !isRetryableMoltbookRegistrationRow(rows[0])) {
+        throw new MoltbookConnectionError(
+          "Registration retry is blocked because the prior provider outcome may have taken effect.",
+          { code: "registration_retry_held" },
+        );
+      }
+      const updated = await sql`
+        UPDATE omni_moltbook_connections SET
+          external_name = ${input.externalName},
+          description = ${input.description},
+          heartbeat_enabled = ${input.heartbeatEnabled !== false},
+          disclosure_version = ${input.disclosureVersion},
+          disclosure_accepted_at = ${now},
+          registration_request_sha256 = ${registrationRequestSha256},
+          status = 'registering', last_error_code = NULL,
+          rate_limit_projection = NULL, next_heartbeat_at = NULL,
+          updated_at = ${now}
+        WHERE id = ${connectionId}
+          AND tenant_id = ${input.owner.tenantId}
+          AND owner_actor_id = ${input.owner.actorId}
+          AND agent_id = ${input.agentId}
+          AND status = 'error'
+          AND last_error_code LIKE 'registration_rejected.%'
+        RETURNING id
+      `;
+      if (updated.length !== 1) {
+        throw new MoltbookConnectionError(
+          "Registration retry could not claim the prior rejected attempt.",
+          { code: "registration_retry_conflict" },
+        );
+      }
+    }),
+  );
+  return completeMoltbookRegistration({ ...input, connectionId });
+}
+
+async function completeMoltbookRegistration(input: {
+  owner: MoltbookOwner;
+  agentId: string;
+  connectionId: string;
+  externalName: string;
+  description: string;
+  fetchImpl?: FetchLike;
+  abortSignal?: AbortSignal;
+}) {
   let providerResult: Awaited<ReturnType<typeof registerMoltbookAgent>>;
   try {
     // Registration is intentionally called once. Ambiguous failures are not retried.
@@ -183,7 +320,7 @@ export async function registerMoltbookConnection(input: {
       claimUrl: providerResult.data.claimUrl,
       verificationCode: providerResult.data.verificationCode,
     }, moltbookCredentialBinding({
-      connectionId,
+      connectionId: input.connectionId,
       owner: input.owner,
     }));
     const saved = await runWithDatabaseActorScope(
@@ -196,9 +333,9 @@ export async function registerMoltbookConnection(input: {
             sealed_credentials = ${sealed}::jsonb,
             credential_key_id = ${sealed.keyId},
             rate_limit_projection = ${providerResult.rateLimit || null}::jsonb,
-            next_heartbeat_at = ${nextHeartbeatAt(now)},
+            next_heartbeat_at = ${nextHeartbeatAt(new Date().toISOString())},
             last_error_code = NULL, updated_at = ${new Date().toISOString()}
-          WHERE id = ${connectionId}
+          WHERE id = ${input.connectionId}
             AND tenant_id = ${input.owner.tenantId}
             AND owner_actor_id = ${input.owner.actorId}
             AND agent_id = ${input.agentId}
@@ -214,7 +351,7 @@ export async function registerMoltbookConnection(input: {
         await appendActivity(sql, {
           owner: input.owner,
           agentId: input.agentId,
-          connectionId,
+          connectionId: input.connectionId,
           kind: "registration",
           status: "succeeded",
           summary: "Moltbook registration created; human claim is pending.",
@@ -242,7 +379,7 @@ export async function registerMoltbookConnection(input: {
     await recordRegistrationFailure({
       owner: input.owner,
       agentId: input.agentId,
-      connectionId,
+      connectionId: input.connectionId,
       error,
     }).catch(() => undefined);
     throw normalizeConnectionError(error, "Moltbook registration did not complete.");
@@ -255,16 +392,7 @@ export async function refreshMoltbookConnection(input: {
   fetchImpl?: FetchLike;
   abortSignal?: AbortSignal;
 }) {
-  return observeMoltbookConnection({ ...input, includeHome: false });
-}
-
-export async function heartbeatMoltbookConnection(input: {
-  owner: MoltbookOwner;
-  agentId: string;
-  fetchImpl?: FetchLike;
-  abortSignal?: AbortSignal;
-}) {
-  return observeMoltbookConnection({ ...input, includeHome: true });
+  return observeMoltbookConnection(input);
 }
 
 export async function pauseMoltbookConnection(input: {
@@ -293,7 +421,9 @@ export async function resolveMoltbookConnectionForTool(input: {
     [input.ownerActorId],
     async () => {
       const rows = await getSql()`
-        SELECT connection.*, agent.status AS agent_status
+        SELECT connection.*, agent.status AS agent_status,
+          agent.skill_ids, agent.tool_ids, agent.memory_scope,
+          agent.autonomy, agent.approval_policy
         FROM omni_moltbook_connections connection
         JOIN omni_custom_agents agent
           ON agent.tenant_id = connection.tenant_id
@@ -317,6 +447,7 @@ export async function resolveMoltbookConnectionForTool(input: {
           { code: "agent_paused" },
         );
       }
+      assertExactMoltbookBoundary(row);
       if (String(row.status) === "paused") {
         throw new MoltbookConnectionError(
           "The Moltbook connection is paused.",
@@ -456,13 +587,7 @@ export async function processDueMoltbookHeartbeats(options: {
     if (options.abortSignal?.aborted) break;
     result.processed += 1;
     try {
-      const observe = moltbookDueObservationMode({
-        status: candidate.status,
-        claimState: candidate.claim_state,
-      }) === "heartbeat"
-        ? heartbeatMoltbookConnection
-        : refreshMoltbookConnection;
-      await observe({
+      await refreshMoltbookConnection({
         owner: {
           tenantId: String(candidate.tenant_id),
           actorId: String(candidate.owner_actor_id),
@@ -484,20 +609,9 @@ export async function processDueMoltbookHeartbeats(options: {
   return result;
 }
 
-/** @internal Deterministic scheduler fence: unclaimed identities never read /home. */
-export function moltbookDueObservationMode(input: {
-  status: unknown;
-  claimState: unknown;
-}): "refresh" | "heartbeat" {
-  return input.status === "claimed" && input.claimState === "claimed"
-    ? "heartbeat"
-    : "refresh";
-}
-
 async function observeMoltbookConnection(input: {
   owner: MoltbookOwner;
   agentId: string;
-  includeHome: boolean;
   fetchImpl?: FetchLike;
   abortSignal?: AbortSignal;
 }) {
@@ -510,9 +624,8 @@ async function observeMoltbookConnection(input: {
   try {
     const statusResult = await client.status();
     const claimState = claimStateFromProvider(statusResult.data);
-    const homeResult = input.includeHome ? await client.home() : undefined;
     const now = new Date().toISOString();
-    const rateLimit = homeResult?.rateLimit || statusResult.rateLimit;
+    const rateLimit = statusResult.rateLimit;
     const row = await runWithDatabaseActorScope(
       input.owner.tenantId,
       [input.owner.actorId],
@@ -522,7 +635,7 @@ async function observeMoltbookConnection(input: {
           UPDATE omni_moltbook_connections SET
             status = ${claimState === "claimed" ? "claimed" : "pending_claim"},
             claim_state = ${claimState},
-            last_heartbeat_at = ${input.includeHome ? now : access.lastHeartbeatAt || null},
+            last_heartbeat_at = ${now},
             next_heartbeat_at = ${nextHeartbeatAt(now)},
             consecutive_failures = 0, last_error_code = NULL,
             rate_limit_projection = ${rateLimit || null}::jsonb,
@@ -544,19 +657,11 @@ async function observeMoltbookConnection(input: {
           owner: input.owner,
           agentId: input.agentId,
           connectionId: access.connectionId,
-          kind: input.includeHome ? "heartbeat" : "status_refresh",
+          kind: "connection_check",
           status: "succeeded",
-          summary: input.includeHome
-            ? "Read-only Moltbook status and home check completed."
-            : "Moltbook claim status refreshed.",
-          requestSha256: combineDigests(
-            statusResult.requestSha256,
-            homeResult?.requestSha256,
-          ),
-          responseSha256: combineDigests(
-            statusResult.responseSha256,
-            homeResult?.responseSha256,
-          ),
+          summary: "Moltbook connection and claim status checked.",
+          requestSha256: statusResult.requestSha256,
+          responseSha256: statusResult.responseSha256,
         });
         return updated[0];
       }),
@@ -567,7 +672,7 @@ async function observeMoltbookConnection(input: {
       owner: input.owner,
       agentId: input.agentId,
       connectionId: access.connectionId,
-      kind: input.includeHome ? "heartbeat" : "status_refresh",
+      kind: "connection_check",
       error,
     }).catch(() => undefined);
     throw normalizeConnectionError(error, "Moltbook could not be refreshed.");
@@ -668,7 +773,6 @@ async function resolveConnectionForObservation(
     return {
       connectionId: String(rows[0].id),
       apiKey: credentials.apiKey,
-      lastHeartbeatAt: optionalString(rows[0].last_heartbeat_at),
     };
   });
 }
@@ -677,10 +781,12 @@ async function assertOwnedAgent(
   sql: Sql,
   owner: MoltbookOwner,
   agentId: string,
-  options: { requireActive?: boolean } = {},
+  options: { requireActive?: boolean; requireMoltbookBoundary?: boolean } = {},
 ) {
   const rows = await sql`
-    SELECT id, status FROM omni_custom_agents
+    SELECT id, status, skill_ids, tool_ids, memory_scope, autonomy,
+      approval_policy
+    FROM omni_custom_agents
     WHERE tenant_id = ${owner.tenantId}
       AND actor_id = ${owner.actorId}
       AND id = ${agentId}
@@ -698,6 +804,22 @@ async function assertOwnedAgent(
       { code: "agent_paused" },
     );
   }
+  if (options.requireMoltbookBoundary) assertExactMoltbookBoundary(rows[0]);
+}
+
+function assertExactMoltbookBoundary(row: SqlRow) {
+  if (isExactMoltbookAgentCapabilityBoundary({
+    skillIds: row.skill_ids,
+    toolIds: row.tool_ids,
+    memoryScope: row.memory_scope,
+    autonomy: row.autonomy,
+    approvalPolicy: row.approval_policy,
+  })) return;
+  throw new MoltbookConnectionError(
+    `Moltbook registration requires no skills, session memory, governed autonomy, ` +
+      `risk-based or always approval, and exactly ${MOLTBOOK_TOOL_IDS.length} Moltbook tools.`,
+    { code: "agent_capability_boundary_invalid" },
+  );
 }
 
 async function listActivities(
@@ -834,6 +956,10 @@ async function recordRegistrationFailure(input: {
   const provider = input.error instanceof MoltbookProviderError
     ? input.error
     : undefined;
+  const retryable = isDefiniteMoltbookRegistrationRejection(provider);
+  const errorCode = retryable
+    ? `registration_rejected.${safeToken(provider?.code, "provider_rejected")}`
+    : safeToken(provider?.code || "registration_outcome_unknown", "registration_outcome_unknown");
   return runWithDatabaseActorScope(
     input.owner.tenantId,
     [input.owner.actorId],
@@ -841,7 +967,7 @@ async function recordRegistrationFailure(input: {
       await sql`
         UPDATE omni_moltbook_connections SET
           status = 'error', consecutive_failures = consecutive_failures + 1,
-          last_error_code = ${safeToken(provider?.code || "registration_failed", "registration_failed")},
+          last_error_code = ${errorCode},
           rate_limit_projection = ${provider?.rateLimit || null}::jsonb,
           updated_at = ${new Date().toISOString()}
         WHERE id = ${input.connectionId}
@@ -856,13 +982,28 @@ async function recordRegistrationFailure(input: {
         connectionId: input.connectionId,
         kind: "registration",
         status: "failed",
-        summary: "Moltbook registration failed and was not retried.",
+        summary: retryable
+          ? "Moltbook rejected registration without creating an identity; corrected details may be retried."
+          : "Moltbook registration outcome is unverified; retry is blocked to prevent a duplicate identity.",
         requestSha256: provider?.requestSha256,
         responseSha256: provider?.responseSha256,
-        errorCode: provider?.code || "registration_failed",
+        errorCode,
       });
     }),
   );
+}
+
+export function isDefiniteMoltbookRegistrationRejection(error: unknown) {
+  return error instanceof MoltbookProviderError && error.statusCode !== undefined &&
+    error.statusCode >= 400 && error.statusCode <= 499;
+}
+
+export function isRetryableMoltbookRegistrationRow(row: SqlRow) {
+  return row.status === "error" &&
+    row.claim_state === "unavailable" &&
+    (row.sealed_credentials === null || row.sealed_credentials === undefined) &&
+    typeof row.last_error_code === "string" &&
+    row.last_error_code.startsWith("registration_rejected.");
 }
 
 async function recordObservationFailure(input: {
@@ -923,6 +1064,12 @@ function projectConnection(
       ? "pending" as const
       : "unavailable" as const;
   const credentialConfigured = Boolean(row.sealed_credentials);
+  if (row.disclosure_version !== MOLTBOOK_DISCLOSURE_VERSION) {
+    throw new MoltbookConnectionError(
+      "Stored Moltbook disclosure binding is invalid.",
+      { code: "disclosure_binding_invalid" },
+    );
+  }
   let claim: { claimUrl?: string; verificationCode?: string } = {};
   if (
     options.includeClaim &&
@@ -954,6 +1101,10 @@ function projectConnection(
       ? { rateLimit: rateLimitFromRow(row.rate_limit_projection) }
       : {}),
     consecutiveFailures: Math.max(0, Number(row.consecutive_failures || 0)),
+    registrationRetryable: status === "error" &&
+      optionalString(row.last_error_code)?.startsWith("registration_rejected.") === true,
+    disclosureAccepted: Boolean(row.disclosure_accepted_at),
+    disclosureVersion: MOLTBOOK_DISCLOSURE_VERSION,
     ...(optionalString(row.last_error_code)
       ? { lastErrorCode: optionalString(row.last_error_code) }
       : {}),
@@ -1042,6 +1193,26 @@ function connectionIdFor(owner: MoltbookOwner, agentId: string) {
   ).slice(0, 48)}`;
 }
 
+function registrationRequestDigest(input: {
+  owner: MoltbookOwner;
+  agentId: string;
+  externalName: string;
+  description: string;
+  heartbeatEnabled?: boolean;
+  disclosureVersion: typeof MOLTBOOK_DISCLOSURE_VERSION;
+}) {
+  return sha256([
+    "moltbook-registration-v1",
+    input.owner.tenantId,
+    input.owner.actorId,
+    input.agentId,
+    input.externalName,
+    input.description,
+    input.heartbeatEnabled === false ? "disabled" : "enabled",
+    input.disclosureVersion,
+  ].join("\0"));
+}
+
 function randomId(prefix: "moltbook_activity" | "moltbook_effect") {
   return `${prefix}_${randomBytes(24).toString("hex")}`;
 }
@@ -1079,10 +1250,6 @@ function connectionHealth(
 
 function nextHeartbeatAt(now: string) {
   return new Date(Date.parse(now) + MOLTBOOK_HEARTBEAT_INTERVAL_MS).toISOString();
-}
-
-function combineDigests(first: string, second?: string) {
-  return second ? sha256(`${first}\0${second}`) : first;
 }
 
 function safeProviderUrl(value: unknown) {
@@ -1200,6 +1367,13 @@ function optionalIso(value: unknown) {
 
 function optionalString(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function unresolvedAgentOwner() {
+  return new MoltbookConnectionError(
+    "The exact stored owner for this Moltbook Agent could not be resolved.",
+    { code: "agent_owner_unresolved" },
+  );
 }
 
 function normalizeConnectionError(error: unknown, fallback: string) {

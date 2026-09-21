@@ -47,15 +47,21 @@ describe("Moltbook v190 migration", () => {
     expect(migration).toContain("Moltbook credential transition is invalid");
     expect(migration).toContain("Moltbook connection lifecycle transition is invalid");
     expect(migration).toContain("'registering', 'pending_claim', 'claimed', 'paused', 'error', 'revoked'");
+    expect(migration).toContain("omni_moltbook_agent_boundary_is_exact_v1");
+    expect(migration).toContain("Linked Moltbook Agents cannot be deleted");
+    expect(migration).toContain("Linked Moltbook Agent capability cannot be widened");
+    expect(migration).toContain("OLD.last_error_code LIKE 'registration_rejected.%'");
+    expect(migration).toContain("disclosure_version = 'moltbook-public-activity-v1'");
+    expect(migration).toContain("registration_request_sha256 ~ '^[a-f0-9]{64}$'");
   });
 
   it("registers the same v190 identity with the ordered runtime migrator", () => {
     expect(migrationManifest.at(-1)).toEqual({
       version: 190,
       name: "moltbook_agent_connections_v1",
-      checksum: "26386c7278e889ecafbb35d8bc35d17f4e519e0b0fb6da43b3e72295152c4147",
+      checksum: "f929a4ebfecc081e2c0eb545f16a068910dd0a8917cc621deba65e8e22775d19",
     });
-    expect(migration).toContain("190,\n  'moltbook_agent_connections_v1',\n  '26386c7278e889ecafbb35d8bc35d17f4e519e0b0fb6da43b3e72295152c4147'");
+    expect(migration).toContain("190,\n  'moltbook_agent_connections_v1',\n  'f929a4ebfecc081e2c0eb545f16a068910dd0a8917cc621deba65e8e22775d19'");
     expect(databaseClient).toContain("up: ensureMoltbookAgentConnectionsV1");
     expect(databaseClient).toContain("...databaseSchemaMigrations[189]");
   });
@@ -76,6 +82,10 @@ describe("Moltbook v190 migration", () => {
       "FOREIGN KEY (tenant_id, owner_actor_id, agent_id)",
       "Moltbook connection lifecycle transition is invalid",
       "Moltbook activities and effect receipts are immutable",
+      "omni_moltbook_agent_boundary_is_exact_v1",
+      "omni_custom_agents_moltbook_guard",
+      "registration_rejected.%",
+      "moltbook-public-activity-v1",
       "AS RESTRICTIVE FOR ALL TO PUBLIC",
       "GRANT SELECT, INSERT ON omni_moltbook_activities TO omni_runtime",
     ]) {

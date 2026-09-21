@@ -3,6 +3,7 @@ import { z } from "zod";
 export const MOLTBOOK_API_ORIGIN = "https://www.moltbook.com" as const;
 export const MOLTBOOK_API_BASE = `${MOLTBOOK_API_ORIGIN}/api/v1` as const;
 export const MOLTBOOK_HEARTBEAT_INTERVAL_MS = 4 * 60 * 60 * 1_000;
+export const MOLTBOOK_DISCLOSURE_VERSION = "moltbook-public-activity-v1" as const;
 
 export const moltbookConnectionStatusSchema = z.enum([
   "registering",
@@ -16,18 +17,29 @@ export type MoltbookConnectionStatus = z.infer<
   typeof moltbookConnectionStatusSchema
 >;
 
-export const moltbookRegisterInputSchema = z.object({
-  action: z.literal("register"),
+const moltbookRegistrationFields = {
   externalName: z.string().trim().min(2).max(32)
     .regex(/^[A-Za-z0-9_-]+$/, "Use letters, numbers, underscores, or hyphens."),
   description: z.string().trim().min(2).max(1_000),
   heartbeatEnabled: z.boolean().optional(),
+  disclosureAccepted: z.literal(true),
+  disclosureVersion: z.literal(MOLTBOOK_DISCLOSURE_VERSION),
+} as const;
+
+export const moltbookRegisterInputSchema = z.object({
+  action: z.literal("register"),
+  ...moltbookRegistrationFields,
+}).strict();
+
+export const moltbookRetryRegistrationInputSchema = z.object({
+  action: z.literal("retry_registration"),
+  ...moltbookRegistrationFields,
 }).strict();
 
 export const moltbookRouteActionSchema = z.discriminatedUnion("action", [
   moltbookRegisterInputSchema,
+  moltbookRetryRegistrationInputSchema,
   z.object({ action: z.literal("refresh") }).strict(),
-  z.object({ action: z.literal("heartbeat") }).strict(),
   z.object({ action: z.literal("pause") }).strict(),
   z.object({ action: z.literal("resume") }).strict(),
 ]);
@@ -96,6 +108,25 @@ export const MOLTBOOK_TOOL_IDS = Object.freeze(
   Object.keys(moltbookToolSchemas) as MoltbookToolId[],
 );
 
+export function isExactMoltbookAgentCapabilityBoundary(input: {
+  skillIds: unknown;
+  toolIds: unknown;
+  memoryScope: unknown;
+  autonomy: unknown;
+  approvalPolicy: unknown;
+}) {
+  if (!Array.isArray(input.skillIds) || input.skillIds.length !== 0) return false;
+  if (!Array.isArray(input.toolIds) || input.toolIds.length !== MOLTBOOK_TOOL_IDS.length) {
+    return false;
+  }
+  const toolIds = new Set(input.toolIds);
+  return toolIds.size === MOLTBOOK_TOOL_IDS.length &&
+    MOLTBOOK_TOOL_IDS.every((toolId) => toolIds.has(toolId)) &&
+    input.memoryScope === "session" &&
+    input.autonomy === "governed" &&
+    (input.approvalPolicy === "risk_based" || input.approvalPolicy === "always");
+}
+
 export function isMoltbookToolId(value: string): value is MoltbookToolId {
   return Object.hasOwn(moltbookToolSchemas, value);
 }
@@ -128,6 +159,9 @@ export type MoltbookConnectionProjection = Readonly<{
   nextHeartbeatAt?: string;
   rateLimit?: MoltbookRateLimitProjection;
   consecutiveFailures: number;
+  registrationRetryable: boolean;
+  disclosureAccepted: boolean;
+  disclosureVersion: typeof MOLTBOOK_DISCLOSURE_VERSION;
   lastErrorCode?: string;
   credentialConfigured: boolean;
   createdAt: string;

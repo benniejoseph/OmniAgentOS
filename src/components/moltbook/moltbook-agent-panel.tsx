@@ -16,12 +16,15 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import styles from "@/components/moltbook/moltbook-agent-panel.module.css";
-import type {
-  MoltbookActivityProjection,
-  MoltbookConnectionProjection,
+import {
+  MOLTBOOK_DISCLOSURE_VERSION,
+  type MoltbookActivityProjection,
+  type MoltbookConnectionProjection,
 } from "@/lib/moltbook/contracts";
-
-type ConnectionState = "not_registered" | MoltbookConnectionProjection["status"];
+type ConnectionState =
+  | "not_registered"
+  | "unavailable"
+  | MoltbookConnectionProjection["status"];
 
 type MoltbookProjection = {
   connection?: MoltbookConnectionProjection | null;
@@ -34,7 +37,7 @@ type MoltbookMutationResponse = {
   claim?: { url: string; verificationCode: string };
 };
 
-type Action = "refresh" | "heartbeat" | "pause" | "resume";
+type Action = "refresh" | "pause" | "resume" | "retry_registration";
 
 export function MoltbookAgentPanel({
   agentId,
@@ -99,7 +102,8 @@ export function MoltbookAgentPanel({
   }, [agentId, load]);
 
   const connection = projection.connection;
-  const connectionState: ConnectionState = connection?.status || "not_registered";
+  const connectionState: ConnectionState = connection?.status ||
+    (phase === "error" ? "unavailable" : "not_registered");
   const claimUrl = safeMoltbookUrl(connection?.claimUrl);
   const verificationCode = connection?.verificationCode;
   const registered = Boolean(connection);
@@ -123,19 +127,22 @@ export function MoltbookAgentPanel({
     }
   }
 
-  async function register() {
+  async function register(retry = false) {
     if (!disclosureAccepted) return;
-    setBusyAction("register");
+    const action = retry ? "retry_registration" : "register";
+    setBusyAction(action);
     setError(undefined);
     try {
       const next = await requestJson<MoltbookMutationResponse>(endpoint, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          action: "register",
+          action,
           externalName: externalName.trim(),
           description: description.trim(),
           heartbeatEnabled: true,
+          disclosureAccepted: true,
+          disclosureVersion: MOLTBOOK_DISCLOSURE_VERSION,
         }),
       });
       setProjection((current) => ({
@@ -173,6 +180,16 @@ export function MoltbookAgentPanel({
         <div className={styles.loading} role="status">
           <Loader2 size={16} className={styles.spin} />
           Reading the private activity ledger…
+        </div>
+      ) : phase === "error" && !registered ? (
+        <div className={styles.join} role="status">
+          <p>
+            The private Moltbook connection ledger is unavailable. Its join state
+            cannot be verified, so no registration action is available yet.
+          </p>
+          <button type="button" onClick={() => void load()}>
+            <RefreshCw size={14} /> Retry connection
+          </button>
         </div>
       ) : !registered ? (
         <div className={styles.join}>
@@ -239,8 +256,8 @@ export function MoltbookAgentPanel({
               <strong>{connection?.externalName || externalName}</strong>
             </div>
             <div>
-              <span>Heartbeat</span>
-              <strong>{connection ? heartbeatLabel(connection) : "Waiting"}</strong>
+              <span>Connection health</span>
+              <strong>{connection ? connectionHealthLabel(connection) : "Waiting"}</strong>
             </div>
             <div>
               <span>Next check</span>
@@ -277,6 +294,61 @@ export function MoltbookAgentPanel({
             </div>
           ) : null}
 
+          {connection?.status === "error" && connection.registrationRetryable ? (
+            <div className={styles.join}>
+              <p>
+                Moltbook definitively rejected the previous registration. Correct
+                the public details and retry; prior activity remains in the ledger.
+              </p>
+              <label>
+                <span>Public agent name</span>
+                <input
+                  value={externalName}
+                  onChange={(event) => setExternalName(event.target.value)}
+                  minLength={3}
+                  maxLength={32}
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              </label>
+              <label>
+                <span>Public bio</span>
+                <textarea
+                  value={description}
+                  onChange={(event) => setDescription(event.target.value)}
+                  minLength={10}
+                  maxLength={500}
+                  rows={3}
+                />
+              </label>
+              <button
+                type="button"
+                className={styles.primary}
+                disabled={
+                  Boolean(busyAction) ||
+                  externalName.trim().length < 3 ||
+                  description.trim().length < 10
+                }
+                onClick={() => void register(true)}
+              >
+                {busyAction === "retry_registration" ? (
+                  <Loader2 size={15} className={styles.spin} />
+                ) : (
+                  <RefreshCw size={15} />
+                )}
+                Retry registration
+              </button>
+            </div>
+          ) : connection?.status === "error" ? (
+            <div className={styles.warning}>
+              <AlertTriangle size={15} aria-hidden="true" />
+              <span>
+                The provider outcome may have taken effect, so automatic retry is
+                blocked to prevent creating a duplicate public identity.
+              </span>
+            </div>
+          ) : null}
+
           <div className={styles.controls} aria-label="Moltbook controls">
             <button
               type="button"
@@ -290,20 +362,6 @@ export function MoltbookAgentPanel({
               )}
               Check status
             </button>
-            {connection?.status === "claimed" ? (
-              <button
-                type="button"
-                onClick={() => void act("heartbeat")}
-                disabled={Boolean(busyAction)}
-              >
-                {busyAction === "heartbeat" ? (
-                  <Loader2 size={14} className={styles.spin} />
-                ) : (
-                  <Radio size={14} />
-                )}
-                Check feed
-              </button>
-            ) : null}
             {connection?.status === "paused" ? (
               <button
                 type="button"
@@ -382,6 +440,7 @@ function ConnectionBadge({
     ? "Syncing"
     : ({
         not_registered: "Not joined",
+        unavailable: "Unavailable",
         registering: "Joining",
         pending_claim: "Claim needed",
         claimed: "Live",
@@ -420,7 +479,7 @@ function ActivityRow({ activity }: { activity: MoltbookActivityProjection }) {
   );
 }
 
-function heartbeatLabel(connection: MoltbookConnectionProjection) {
+function connectionHealthLabel(connection: MoltbookConnectionProjection) {
   if (connection.status === "paused" || connection.heartbeatEnabled === false) return "Paused";
   if (!connection.lastHeartbeatAt) return "Waiting";
   if ((connection.consecutiveFailures || 0) > 0) {
