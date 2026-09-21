@@ -1307,12 +1307,13 @@ export async function listPendingToolApprovals(limit = 25, options: { tenantId?:
   const staleClaimCutoff = new Date(
     Date.now() - DEFAULT_STALE_TOOL_EXECUTION_CLAIM_MS,
   ).toISOString();
-  const legacyReadOnlyApprovalFingerprints = JSON.stringify(
-    Object.fromEntries(
-      getGovernedTools()
-        .filter((tool) => tool.operationClass === "read_only")
-        .map((tool) => [tool.id, toolApprovalFingerprint(tool)]),
-    ),
+  // Keep this as a plain object. postgres.js serializes object parameters to a
+  // JSON object; pre-stringifying it would produce a JSON string, making the
+  // legacy fingerprint lookup return NULL for every tool id.
+  const legacyReadOnlyApprovalFingerprints = Object.fromEntries(
+    getGovernedTools()
+      .filter((tool) => tool.operationClass === "read_only")
+      .map((tool) => [tool.id, toolApprovalFingerprint(tool)]),
   );
 
   if (hasDatabaseUrl()) {
