@@ -948,5 +948,10 @@
     "version": 190,
     "name": "moltbook_agent_connections_v1",
     "checksum": "e0b8c00ca8f4fce6139735623366cacfa97675419a57c1666b4bf0fe4bbe8e46"
+  },
+  {
+    "version": 191,
+    "name": "agent_identity_validator_privilege_repair_v1",
+    "checksum": "225d62212d28a5c6186d0e62d402a61e0283bfd34695f1f8aa25b2e1132593f2"
   }
 ]

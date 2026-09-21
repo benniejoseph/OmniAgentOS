@@ -435,6 +435,9 @@ async function appendDefinitionVersion(input: {
   executionScope: ExecutionScope;
   sql: IdentitySql;
 }) {
+  // Callers serialize definition changes through the owning omni_custom_agents
+  // row. Definition history is immutable and intentionally grants no UPDATE
+  // privilege, so taking a row-update lock here would make creation fail closed.
   const latestRows = await input.sql`
     SELECT definition_version
     FROM omni_agent_definition_versions
@@ -442,7 +445,6 @@ async function appendDefinitionVersion(input: {
       AND agent_definition_id = ${input.agent.id}
     ORDER BY definition_version DESC
     LIMIT 1
-    FOR UPDATE
   `;
   const definitionVersion = latestRows[0]
     ? Number(latestRows[0].definition_version) + 1

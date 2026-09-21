@@ -66,6 +66,11 @@ describe("P7.1 custom agent identity store", () => {
     expect(database.statements.some((value) =>
       /INSERT INTO omni_agent_definition_versions/.test(value.text)
     )).toBe(true);
+    expect(database.statements.find((value) =>
+      /SELECT definition_version\s+FROM omni_agent_definition_versions/.test(
+        value.text,
+      )
+    )?.text).not.toMatch(/FOR UPDATE/);
     expect(database.statements.some((value) =>
       /INSERT INTO omni_agent_principal_policies/.test(value.text)
     )).toBe(true);
