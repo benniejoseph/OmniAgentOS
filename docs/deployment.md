@@ -36,12 +36,12 @@ Set these through the platform secret/configuration store, never in source contr
 - `NEXT_PUBLIC_APP_URL`: canonical HTTPS origin. Set it to exactly `https://asael.bennierichard.com`. It is public and build-inlined, not a secret.
 - `OMNIAGENT_NATIVE_MIN_ANDROID_VERSION`, `OMNIAGENT_NATIVE_MIN_IOS_VERSION`, and `OMNIAGENT_NATIVE_MIN_MACOS_VERSION`: optional stable `major.minor.patch` minimums for native compatibility telemetry. An absent or empty value defaults to `1.0.0`; a malformed configured value invalidates the policy and holds adoption unavailable. These settings do not authorize Agent enrollment.
 
-Native contract artifacts are committed immutable release inputs. Source contract v18
-is the release candidate and frozen v17 is the one supported previous version; older
+Native contract artifacts are committed immutable release inputs. Source contract v19
+is the release candidate and frozen v18 is the one supported previous version; older
 versions remain historical archives and a published version is never regenerated in place. Run
 `npm run check:native-contracts` before a native-contract release; the check
 fails if the generated OpenAPI, event schema, fixtures, integrity manifests,
-Dart SDK, or frozen v7-v17 document hashes drift. Removing an archived version
+Dart SDK, or frozen v7-v18 document hashes drift. Removing an archived version
 requires a separately reviewed adoption decision and is not implied by a
 Vercel deployment.
 
@@ -888,6 +888,64 @@ canary created the editable presentation `How to Create Documents with Asael`
 and exposed it in **Results → Created files**. The stored 20,423-byte OOXML
 payload has matching persisted and independently observed SHA-256
 `05d9331c6c789981ec62200c63123fe5ed5ea12444dfd5314476b9078f1d5a49`.
+
+## Moltbook Agent boundary
+
+The Moltbook integration is a dedicated public-social identity boundary, not a
+general connector. A linked custom Agent must keep the exact nine reviewed
+`moltbook.*` tools, no Skills, session-only memory, governed autonomy, and an
+`always` or `risk_based` approval policy. Database guards reject a connection
+or later Agent-policy edit that would broaden that boundary. A linked Agent
+cannot be retired or moved to Trash; pause the connection instead so its
+credential, public identity, and append-only activity evidence remain
+reconcilable.
+
+Registration is an explicit authenticated owner control-plane action. It must
+record acceptance of the versioned public-activity disclosure before sending
+the single exact registration request to
+`https://www.moltbook.com/api/v1/agents/register`. Store the returned opaque API
+key only in the existing encrypted credential vault, bound to the tenant,
+owner, Agent, connection, provider, and credential version. Never put that key
+in model context, Agent memory, logs, events, client responses, screenshots,
+environment variables, or a second connector. Asael never retries registration
+after dispatch: a provider error, transport interruption, or ambiguous response
+is held for operator reconciliation so a second public identity cannot be
+created accidentally. Moltbook ownership claiming remains a separate human
+action at the exact provider claim URL; Asael must not automate email, X, or
+other proof-of-ownership steps.
+
+The maintenance lane performs only a bounded provider status check for due
+connections. It does not read the home/feed or author social content. Feed and
+thread reads occur only during an authenticated run of the linked Agent and
+still pass through the governed tool executor. Every post, comment, vote,
+follow, and verification is risk two and waits for human approval. Provider
+content and verification text remain untrusted data, never instructions.
+
+Every approved public mutation persists its effect intent before network
+dispatch and binds the tenant, physical owner, Agent principal, tool execution,
+exact input digest, target, and idempotency digest. A validated provider
+acknowledgement is retained privately before the public activity projection is
+updated. Definite provider rejection may close as failed; a transport timeout,
+network interruption, or other ambiguous outcome stays uncertain and must not
+be blindly retried. A same-key replay reconciles from the durable receipt and
+never calls Moltbook again.
+
+The Agent inspector and native v19 console expose claim/health state, bounded
+activity, refresh, pause, and resume without exposing the API key or untrusted
+provider instructions. macOS v19 admits only `agents.create`, `agents.update`,
+and `agents.moltbook.manage` for this lifecycle; it intentionally provides no
+native Agent-delete capability. The native console manages the Moltbook
+lifecycle, while starting a run for the selected custom Agent remains a web
+Command action in this release. Apply
+`20260921120000_moltbook_agent_connections.sql` before promoting the web/native
+release; its ordered/runtime schema identity is version 190 with checksum
+`e0b8c00ca8f4fce6139735623366cacfa97675419a57c1666b4bf0fe4bbe8e46`.
+Run the focused Moltbook, Agent-route, native-contract, Flutter Agent,
+TypeScript, and changed-file lint checks. Paired web/Fly promotion remains the
+default for releases that touch the worker protocol or worker-owned sources.
+This Moltbook release changes neither, so its reviewed release path is a
+production-target Vercel canary followed by explicit promotion; keep the
+existing Fly worker release in place and verify its health separately.
 
 ## Connector risk controls
 
