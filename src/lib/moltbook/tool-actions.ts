@@ -142,11 +142,22 @@ async function executeMutation(
   const publicAccess = withoutApiKey(access);
   try {
     const result = await callMutation(input.toolId, toolInput, client);
-    await observeMoltbookRateLimit({ access: publicAccess, rateLimit: result.rateLimit });
     if (input.toolId === "moltbook.verify") {
-      return settleVerification(input, publicAccess, result);
+      const settled = await settleVerification(input, toolInput, publicAccess, result);
+      await observeRateLimitAfterEffect(publicAccess, result.rateLimit);
+      return settled;
     }
     const providerObject = providerObjectFromResponse(input.toolId, result.data);
+    const targetObject = targetObjectFromInput(input.toolId, toolInput);
+    const activityObject = providerObject || targetObject;
+    await assertSuccessfulProviderEffect({
+      input,
+      access: publicAccess,
+      result,
+      providerObject: activityObject,
+      identityRequired: input.toolId === "moltbook.post.create" ||
+        input.toolId === "moltbook.comment.create",
+    });
     const verification = verificationFromResponse(result.data);
     if (verification) {
       await appendMoltbookToolActivity({
@@ -154,15 +165,16 @@ async function executeMutation(
         kind: toolKind(input.toolId),
         status: "pending_verification",
         summary: "Moltbook accepted the content, but verification is required before publication.",
-        providerObjectType: providerObject?.type,
-        providerObjectRef: providerObject?.ref,
-        providerObjectUrl: providerObject?.url,
+        providerObjectType: activityObject?.type,
+        providerObjectRef: activityObject?.ref,
+        providerObjectUrl: activityObject?.url,
         toolExecutionId: input.toolExecutionId,
         agentRunId: input.agentRunId,
         requestSha256: result.requestSha256,
         responseSha256: result.responseSha256,
         effect: true,
       });
+      await observeRateLimitAfterEffect(publicAccess, result.rateLimit);
       return {
         source: "moltbook",
         untrusted: true,
@@ -176,16 +188,17 @@ async function executeMutation(
       access: publicAccess,
       kind: toolKind(input.toolId),
       status,
-      summary: mutationSummary(input.toolId, status),
-      providerObjectType: providerObject?.type,
-      providerObjectRef: providerObject?.ref,
-      providerObjectUrl: providerObject?.url,
+      summary: mutationSummary(input.toolId, status, toolInput),
+      providerObjectType: activityObject?.type,
+      providerObjectRef: activityObject?.ref,
+      providerObjectUrl: activityObject?.url,
       toolExecutionId: input.toolExecutionId,
       agentRunId: input.agentRunId,
       requestSha256: result.requestSha256,
       responseSha256: result.responseSha256,
       effect: true,
     });
+    await observeRateLimitAfterEffect(publicAccess, result.rateLimit);
     return { status, providerObject };
   } catch (error) {
     if (error instanceof RecordedMoltbookEffectError) throw error;
@@ -196,11 +209,13 @@ async function executeMutation(
 
 async function settleVerification(
   input: Parameters<typeof executeMoltbookToolAction>[0],
+  toolInput: Record<string, unknown>,
   access: Omit<MoltbookConnectionAccess, "apiKey">,
   result: MoltbookHttpResult,
 ): Promise<MoltbookMutationResult> {
   const record = providerRecord(result.data);
-  const providerObject = verificationProviderObject(record);
+  const providerObject = verificationProviderObject(record) ||
+    targetObjectFromInput(input.toolId, toolInput);
   if (record.success !== true) {
     await appendMoltbookToolActivity({
       access,
@@ -217,6 +232,7 @@ async function settleVerification(
       errorCode: "verification_failed",
       effect: true,
     });
+    await observeRateLimitAfterEffect(access, result.rateLimit);
     throw new RecordedMoltbookEffectError(
       "Moltbook did not accept the verification answer.",
       { code: "verification_failed" },
@@ -237,6 +253,53 @@ async function settleVerification(
     effect: true,
   });
   return { status: "published", providerObject };
+}
+
+async function assertSuccessfulProviderEffect(input: {
+  input: Parameters<typeof executeMoltbookToolAction>[0];
+  access: Omit<MoltbookConnectionAccess, "apiKey">;
+  result: MoltbookHttpResult;
+  providerObject?: Readonly<{ type: string; ref: string; url?: string }>;
+  identityRequired: boolean;
+}) {
+  const record = providerRecord(input.result.data);
+  const errorCode = record.success !== true
+    ? "provider_effect_rejected"
+    : input.identityRequired && !input.providerObject
+      ? "provider_effect_identity_missing"
+      : undefined;
+  if (!errorCode) return;
+  await appendMoltbookToolActivity({
+    access: input.access,
+    kind: toolKind(input.input.toolId),
+    status: "failed",
+    summary: errorCode === "provider_effect_rejected"
+      ? "Moltbook did not confirm the requested public change."
+      : "Moltbook confirmed the request without a valid public object identity.",
+    providerObjectType: input.providerObject?.type,
+    providerObjectRef: input.providerObject?.ref,
+    providerObjectUrl: input.providerObject?.url,
+    toolExecutionId: input.input.toolExecutionId,
+    agentRunId: input.input.agentRunId,
+    requestSha256: input.result.requestSha256,
+    responseSha256: input.result.responseSha256,
+    errorCode,
+    effect: true,
+  });
+  await observeRateLimitAfterEffect(input.access, input.result.rateLimit);
+  throw new RecordedMoltbookEffectError(
+    errorCode === "provider_effect_rejected"
+      ? "Moltbook did not confirm the requested public change."
+      : "Moltbook did not return a valid identity for the created content.",
+    { code: errorCode },
+  );
+}
+
+async function observeRateLimitAfterEffect(
+  access: Omit<MoltbookConnectionAccess, "apiKey">,
+  rateLimit: MoltbookRateLimitProjection | undefined,
+) {
+  await observeMoltbookRateLimit({ access, rateLimit }).catch(() => undefined);
 }
 
 function callMutation(
@@ -393,6 +456,29 @@ function providerObjectFromResponse(
   };
 }
 
+function targetObjectFromInput(
+  toolId: MoltbookToolId,
+  toolInput: Record<string, unknown>,
+) {
+  if (toolId === "moltbook.post.vote") {
+    const ref = boundedProviderId(toolInput.postId);
+    return ref ? {
+      type: "post",
+      ref,
+      url: `https://www.moltbook.com/post/${encodeURIComponent(ref)}`,
+    } : undefined;
+  }
+  if (toolId === "moltbook.comment.upvote") {
+    const ref = boundedProviderId(toolInput.commentId);
+    return ref ? { type: "comment", ref } : undefined;
+  }
+  if (toolId === "moltbook.agent.follow") {
+    const ref = boundedProviderId(toolInput.name);
+    return ref ? { type: "agent", ref } : undefined;
+  }
+  return undefined;
+}
+
 function verificationProviderObject(record: Record<string, unknown>) {
   const type = record.content_type === "comment" ? "comment"
     : record.content_type === "post" ? "post"
@@ -444,11 +530,18 @@ function readSummary(toolId: MoltbookToolId) {
 function mutationSummary(
   toolId: MoltbookToolId,
   status: "published" | "succeeded",
+  toolInput: Record<string, unknown>,
 ) {
   if (status === "published") return "Moltbook content was published.";
-  if (toolId === "moltbook.post.vote") return "Moltbook post vote was recorded.";
-  if (toolId === "moltbook.comment.upvote") return "Moltbook comment upvote was recorded.";
-  if (toolId === "moltbook.agent.follow") return "Moltbook follow state was updated.";
+  if (toolId === "moltbook.post.vote") {
+    return `${toolInput.direction === "down" ? "Downvoted" : "Upvoted"} Moltbook post ${String(toolInput.postId)}.`;
+  }
+  if (toolId === "moltbook.comment.upvote") {
+    return `Upvoted Moltbook comment ${String(toolInput.commentId)}.`;
+  }
+  if (toolId === "moltbook.agent.follow") {
+    return `${toolInput.follow ? "Followed" : "Unfollowed"} Moltbook agent ${String(toolInput.name)}.`;
+  }
   return "Moltbook mutation completed.";
 }
 
