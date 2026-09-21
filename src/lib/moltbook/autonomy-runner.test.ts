@@ -90,7 +90,7 @@ beforeEach(() => {
     status: "ready",
     modelPolicy: "auto",
     autonomy: "governed",
-    approvalPolicy: "risk_based",
+    approvalPolicy: "always",
     memoryScope: "session",
     toolIds: ["moltbook.home.read", "moltbook.post.vote"],
   });
@@ -170,7 +170,10 @@ describe("Moltbook autonomy runner", () => {
         agents: 1,
         fanOut: 0,
       }),
-      agentProfile: expect.objectContaining({ skills: [] }),
+      agentProfile: expect.objectContaining({
+        approvalPolicy: "always",
+        skills: [],
+      }),
     }), undefined);
     const request = mocks.runAgent.mock.calls[0]?.[0];
     expect(request.messages[0].content).toContain("private owner's authorization");

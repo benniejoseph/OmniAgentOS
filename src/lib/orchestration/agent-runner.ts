@@ -74,6 +74,7 @@ import {
   buildAgentInput,
   buildAgentInstructions,
 } from "@/lib/orchestration/prompts";
+import { resolveAgentToolPolicy } from "@/lib/orchestration/agent-tool-policy";
 import { assignedSkillsWithinRuntimeLimit } from "@/lib/skills/limits";
 import { modelAssignmentScopeForAgent } from "@/lib/orchestration/computer-use-routing";
 import {
@@ -1183,16 +1184,17 @@ export async function* runAgent(
     );
     let agentToolPolicy: AgentRunContinuation["toolPolicy"];
     if (request.agentProfile) {
+      const profileToolPolicy = resolveAgentToolPolicy({
+        allowedToolIds: configuredToolIds || [],
+        approvalPolicy: request.agentProfile.approvalPolicy,
+        autonomy: request.agentProfile.autonomy,
+      });
       toolbox = filterAgentToolboxAllowed(
         toolbox,
-        configuredToolIds || [],
-        request.agentProfile.approvalPolicy === "read_only" || request.agentProfile.autonomy === "assist",
+        profileToolPolicy.allowedToolIds,
+        profileToolPolicy.readOnly,
       );
-      agentToolPolicy = {
-        allowedToolIds: configuredToolIds || [],
-        readOnly: request.agentProfile.approvalPolicy === "read_only" || request.agentProfile.autonomy === "assist",
-        forceApproval: request.agentProfile.approvalPolicy === "always",
-      };
+      agentToolPolicy = profileToolPolicy;
     }
     agentToolPolicy ||= {
       allowedToolIds: toolbox.tools.map(({ definition }) => definition.id),
