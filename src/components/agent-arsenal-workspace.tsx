@@ -26,6 +26,7 @@ import { AgentGrantEditor } from "@/components/agents/agent-grant-editor";
 import { AgentAdaptationEditor } from "@/components/agents/agent-adaptation-editor";
 import { AgentReleaseEditor } from "@/components/agents/agent-release-editor";
 import { CouncilExecutionMap } from "@/components/agents/council-execution-map";
+import { MoltbookAgentPanel } from "@/components/moltbook/moltbook-agent-panel";
 import { upsertById } from "@/lib/agents/client-state";
 import { arsenalAgents, type ArsenalAgent } from "@/lib/agents/arsenal";
 import {
@@ -416,6 +417,15 @@ export function AgentArsenalWorkspace() {
             performance={selectedPerformance}
             state={state}
           />
+          {selected.custom?.toolIds.some((toolId) =>
+            toolId.startsWith("moltbook."),
+          ) ? (
+            <MoltbookAgentPanel
+              key={selected.id}
+              agentId={selected.id}
+              agentName={selected.name}
+            />
+          ) : null}
           {!selected.custom || (
             selected.custom.manageable === true &&
             selected.custom.releaseState !== "retired"
