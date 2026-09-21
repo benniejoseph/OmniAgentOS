@@ -127,10 +127,11 @@ export async function runClaimedMoltbookAutonomyCycle(
       securityContext,
       requestActorBinding: actorBinding,
       moltbookAutonomy: claim,
+      liveWebPolicy: "disabled",
       executionScope,
       agentIdentity: identity,
       budgetLimits: {
-        modelTurns: 3,
+        modelTurns: 4,
         tokens: 20_000,
         costMicrousd: 500_000,
         wallTimeMs: 120_000,

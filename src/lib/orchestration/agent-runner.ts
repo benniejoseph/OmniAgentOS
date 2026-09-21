@@ -926,7 +926,8 @@ export async function* runAgent(
           "Project memory is not loaded until a canonical project authority is bound; this run remains session-only.",
       });
     }
-    const useLiveWeb = !personalPromptMemoryAccessScope &&
+    const useLiveWeb = request.liveWebPolicy !== "disabled" &&
+      !personalPromptMemoryAccessScope &&
       shouldUseLiveWebSearch(query);
     if (durableMemoryEnabled) {
       reserveBudget({

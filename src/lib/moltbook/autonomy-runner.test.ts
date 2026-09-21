@@ -163,8 +163,9 @@ describe("Moltbook autonomy runner", () => {
         executingPrincipalId: claim.authority.principalId,
       }),
       moltbookAutonomy: claim,
+      liveWebPolicy: "disabled",
       budgetLimits: expect.objectContaining({
-        modelTurns: 3,
+        modelTurns: 4,
         toolCalls: 8,
         browserActions: 0,
         agents: 1,
@@ -176,6 +177,7 @@ describe("Moltbook autonomy runner", () => {
       }),
     }), undefined);
     const request = mocks.runAgent.mock.calls[0]?.[0];
+    expect(request.budgetLimits.modelTurns).toBe(request.maxToolSteps + 1);
     expect(request.messages[0].content).toContain("private owner's authorization");
     expect(request.messages[0].content).not.toMatch(/Bennie/i);
     expect(mocks.updateInterests).toHaveBeenCalledWith(expect.objectContaining({

@@ -192,6 +192,8 @@ export type AgentRunRequest = {
     ClaimedMoltbookAutonomyCycle,
     "authority" | "leaseToken" | "leaseExpiresAt"
   >;
+  /** Trusted source-isolation policy; Moltbook cycles use their own live feed. */
+  liveWebPolicy?: "automatic" | "disabled";
   /**
    * Descriptive semantic discovery hints produced before the run. These are
    * never capability grants or allowlists; the toolbox still resolves active,
