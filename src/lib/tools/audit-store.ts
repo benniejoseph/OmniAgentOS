@@ -48,7 +48,7 @@ import {
   type ToolApprovalMutationContext,
 } from "@/lib/tools/approval-events";
 import { toolApprovalFingerprint } from "@/lib/tools/fingerprint";
-import { getGovernedTool } from "@/lib/tools/registry";
+import { getGovernedTool, getGovernedTools } from "@/lib/tools/registry";
 import {
   RISK3_QUORUM,
   type ToolDefinition,
@@ -1307,6 +1307,13 @@ export async function listPendingToolApprovals(limit = 25, options: { tenantId?:
   const staleClaimCutoff = new Date(
     Date.now() - DEFAULT_STALE_TOOL_EXECUTION_CLAIM_MS,
   ).toISOString();
+  const legacyReadOnlyApprovalFingerprints = JSON.stringify(
+    Object.fromEntries(
+      getGovernedTools()
+        .filter((tool) => tool.operationClass === "read_only")
+        .map((tool) => [tool.id, toolApprovalFingerprint(tool)]),
+    ),
+  );
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
@@ -1340,13 +1347,60 @@ export async function listPendingToolApprovals(limit = 25, options: { tenantId?:
               ELSE NULL
             END <= ${staleClaimCutoff}::timestamptz
           )
+          OR (
+            status = 'executing'
+            AND NOT dry_run
+            AND approval_required
+            AND approval_decision = 'approved'
+            AND actor_id IS NOT NULL
+            AND BTRIM(actor_id) <> ''
+            AND approved_by IS NOT NULL
+            AND BTRIM(approved_by) <> ''
+            AND approved_at IS NOT NULL
+            AND effect_receipt IS NULL
+            AND jsonb_typeof(output -> '__sealedInput') = 'object'
+            AND jsonb_typeof(output -> '__approvalFingerprint') = 'string'
+            AND NOT (output ? ${EFFECT_INTENT_V2_OUTPUT_KEY})
+            AND NOT (
+              tool_id = 'memory.write'
+              AND (
+                output ? '__effectIdempotencyKeySha256'
+                OR output ? '__effectInputSha256'
+                OR output ? '__effectPlanSha256'
+                OR output ? '__effectTargetId'
+                OR output ? '__effectToolContractSha256'
+              )
+            )
+            AND (
+              output #>> '{__operationClass}' = 'read_only'
+              OR (
+                (${legacyReadOnlyApprovalFingerprints}::jsonb ->> tool_id) =
+                  output #>> '{__approvalFingerprint}'
+              )
+            )
+            AND NULLIF(BTRIM(output #>> '{__executionClaim,token}'), '') IS NOT NULL
+            AND CASE
+              WHEN output #>> '{__executionClaim,claimedAt}' ~
+                '^[0-9]{4}-[0-9]{2}-[0-9]{2}T'
+              THEN (output #>> '{__executionClaim,claimedAt}')::timestamptz
+              ELSE NULL
+            END <= ${staleClaimCutoff}::timestamptz
+          )
         )
       ORDER BY
         CASE WHEN status = 'executing' THEN 0 ELSE 1 END,
         created_at DESC
       LIMIT ${limit}
     `;
-    return rows.map(recordFromRow).map(sanitizeToolExecutionRecord);
+    return rows
+      .map(recordFromRow)
+      .filter(
+        (record) =>
+          record.status === "approval_required" ||
+          isStaleApprovedMemoryForgetExecution(record) ||
+          isStaleReclaimableApprovedReadOnlyExecution(record),
+      )
+      .map(sanitizeToolExecutionRecord);
   }
 
   const ledger = await readToolLedger();
@@ -1356,7 +1410,8 @@ export async function listPendingToolApprovals(limit = 25, options: { tenantId?:
         normalizeTenantId(record.tenantId) === tenantId &&
         (
           record.status === "approval_required" ||
-          isStaleApprovedMemoryForgetExecution(record)
+          isStaleApprovedMemoryForgetExecution(record) ||
+          isStaleReclaimableApprovedReadOnlyExecution(record)
         ),
     )
     .sort(
@@ -2608,6 +2663,18 @@ function isReclaimableApprovedReadOnlyExecution(
     registeredTool?.operationClass === "read_only" &&
       output.__approvalFingerprint === toolApprovalFingerprint(registeredTool),
   );
+}
+
+function isStaleReclaimableApprovedReadOnlyExecution(
+  record: ToolExecutionRecord,
+) {
+  const claim = executionClaimFrom(record);
+  const claimedAt = claim ? Date.parse(claim.claimedAt) : Number.NaN;
+  return isReclaimableApprovedReadOnlyExecution(record) &&
+    Boolean(record.actorId?.trim()) &&
+    Boolean(claim?.token.trim()) &&
+    Number.isFinite(claimedAt) &&
+    Date.now() - claimedAt >= DEFAULT_STALE_TOOL_EXECUTION_CLAIM_MS;
 }
 
 function recoverStaleExecutionRecord(

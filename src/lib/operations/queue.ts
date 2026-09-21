@@ -103,7 +103,7 @@ export async function getApprovalQueue(limit = 25, options: { tenantId?: string 
     workflowApprovalToQueueItem(run, workflowPlans.get(run.id) || null),
   );
   const reconciliationCount = toolApprovals.filter(
-    isMemoryForgetReconciliationRecord,
+    isToolReconciliationRecord,
   ).length;
   const items = [
     ...toolApprovals.map(toolApprovalToQueueItem),
@@ -200,7 +200,10 @@ export async function getOperationsOverview(options: { tenantId?: string } = {})
 }
 
 function toolApprovalToQueueItem(record: ToolExecutionRecord): ApprovalQueueItem {
-  const reconciliationRequired = isMemoryForgetReconciliationRecord(record);
+  const memoryForgetReconciliation = isMemoryForgetReconciliationRecord(record);
+  const readOnlyReconciliation = isReadOnlyReconciliationRecord(record);
+  const reconciliationRequired =
+    memoryForgetReconciliation || readOnlyReconciliation;
   const canonicalStatus = canonicalStatusForApproval("approval_required");
   return {
     kind: "tool",
@@ -215,9 +218,11 @@ function toolApprovalToQueueItem(record: ToolExecutionRecord): ApprovalQueueItem
     riskLevel: record.riskLevel,
     requestedBy: record.actorId,
     tenantId: record.tenantId,
-    reason: reconciliationRequired
+    reason: memoryForgetReconciliation
       ? "Approval is already recorded, but the deletion outcome was not finalized before its execution claim expired. Reconcile the immutable receipt or safely replay the same bound request."
-      : record.reason,
+      : readOnlyReconciliation
+        ? "Approval is already recorded, but this read-only action stopped before returning a result. Retry the exact approved request to fetch a fresh result; this recovery cannot perform a mutation."
+        : record.reason,
     createdAt: record.createdAt,
     input: redactSensitive(record.input) as Record<string, unknown>,
     record: {
@@ -234,6 +239,19 @@ function isMemoryForgetReconciliationRecord(record: ToolExecutionRecord) {
     !record.dryRun &&
     record.approvalRequired &&
     record.approvalDecision === "approved";
+}
+
+function isReadOnlyReconciliationRecord(record: ToolExecutionRecord) {
+  return record.status === "executing" &&
+    record.toolId !== "memory.forget" &&
+    !record.dryRun &&
+    record.approvalRequired &&
+    record.approvalDecision === "approved";
+}
+
+function isToolReconciliationRecord(record: ToolExecutionRecord) {
+  return isMemoryForgetReconciliationRecord(record) ||
+    isReadOnlyReconciliationRecord(record);
 }
 
 function workflowApprovalToQueueItem(
