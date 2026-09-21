@@ -14,12 +14,19 @@ vi.mock("@/lib/moltbook/tool-actions", () => ({
 }));
 
 const tenantId = "tenant-moltbook-tools";
-const actorId = "owner-moltbook-tools";
+const authUserId = "33333333-3333-4333-8333-333333333333";
+const actorId = "owner@moltbook-tools.test";
 const context = {
   tenantId,
   actorId,
   role: "admin" as const,
   source: "session" as const,
+  auth: {
+    userId: authUserId,
+    email: actorId,
+    sessionId: "session-moltbook-tools",
+    tenantName: "Moltbook tools",
+  },
 };
 
 function agentScope(correlationId: string) {

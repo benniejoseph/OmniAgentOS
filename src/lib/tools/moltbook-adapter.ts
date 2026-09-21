@@ -7,6 +7,7 @@ import {
   type MoltbookToolId,
 } from "@/lib/moltbook/tool-actions";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
+import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import type { SecurityContext } from "@/lib/security/types";
 import type { ToolExecutionRecord } from "@/lib/tools/types";
 
@@ -46,8 +47,12 @@ export async function executeGovernedMoltbookToolAction(input: {
       "Moltbook actions require an authenticated, scoped governed execution.",
     );
   }
+  const actorBinding = canonicalRequestActorBindingFromSecurityContext(
+    input.context,
+  );
   if (
     input.context.tenantId !== input.executionScope.tenantId ||
+    !actorBinding ||
     input.context.actorId !== input.executionScope.initiatingActorId
   ) {
     throw new Error(
