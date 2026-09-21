@@ -222,6 +222,13 @@ class ApiClient {
     }
   }
 
+  /// Reads a live private control-plane projection without writing or falling
+  /// back to the general offline projection cache.
+  Future<Map<String, dynamic>> getJsonFresh(
+    String path, {
+    Map<String, dynamic>? query,
+  }) => _json(() => _dio.get<Object?>(path, queryParameters: query));
+
   Future<Map<String, dynamic>> postJson(
     String path, {
     Map<String, dynamic>? data,

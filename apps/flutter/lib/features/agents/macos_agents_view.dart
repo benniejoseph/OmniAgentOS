@@ -1,10 +1,20 @@
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../app/macos/macos_page_scaffold.dart';
 import '../../app/theme/macos_app_theme.dart';
 import 'agents.dart';
 
 enum _AgentWorkspace { agents, skills, performance }
+
+const _agentModelPolicies = <String>[
+  'auto',
+  'openai_fast',
+  'openai_reasoning',
+  'gemini_fast',
+  'anthropic_fast',
+  'anthropic_reasoning',
+];
 
 /// Desktop-native agent roster for macOS.
 ///
@@ -80,7 +90,10 @@ class _MacosAgentsViewState extends State<MacosAgentsView> {
           ),
         ],
         primaryAction:
-            controller.canMutate && _workspace != _AgentWorkspace.performance
+            ((_workspace == _AgentWorkspace.agents &&
+                    controller.canMutateAgents) ||
+                (_workspace == _AgentWorkspace.skills &&
+                    controller.canMutateSkills))
             ? FilledButton.icon(
                 key: const Key('macos-agents-create'),
                 onPressed: _workspace == _AgentWorkspace.skills
@@ -122,11 +135,17 @@ class _MacosAgentsViewState extends State<MacosAgentsView> {
           skill: selectedSkill,
           performance: selectedPerformance,
           ledger: ledger,
-          canMutate: controller.canMutate,
+          controller: controller,
+          canMutate: _workspace == _AgentWorkspace.agents
+              ? controller.canMutateAgents
+              : controller.canMutateSkills,
           onEditAgent: selectedAgent == null
               ? null
               : () => _editAgent(selectedAgent),
-          onDeleteAgent: selectedAgent == null || !selectedAgent.manageable
+          onDeleteAgent:
+              selectedAgent == null ||
+                  !selectedAgent.manageable ||
+                  !controller.canDeleteAgents
               ? null
               : () => _confirmDelete(
                   selectedAgent.name,
@@ -941,6 +960,7 @@ class _AgentInspector extends StatelessWidget {
     required this.skill,
     required this.performance,
     required this.ledger,
+    required this.controller,
     required this.canMutate,
     required this.onEditAgent,
     required this.onDeleteAgent,
@@ -953,6 +973,7 @@ class _AgentInspector extends StatelessWidget {
   final AgentSkill? skill;
   final AgentPerformance? performance;
   final AgentLedger? ledger;
+  final AgentsController controller;
   final bool canMutate;
   final VoidCallback? onEditAgent, onDeleteAgent, onEditSkill, onDeleteSkill;
 
@@ -968,6 +989,7 @@ class _AgentInspector extends StatelessWidget {
           : _AgentDetail(
               agent: agent!,
               ledger: ledger,
+              controller: controller,
               canMutate: canMutate,
               onEdit: onEditAgent,
               onDelete: onDeleteAgent,
@@ -1003,6 +1025,7 @@ class _AgentDetail extends StatelessWidget {
   const _AgentDetail({
     required this.agent,
     required this.ledger,
+    required this.controller,
     required this.canMutate,
     required this.onEdit,
     required this.onDelete,
@@ -1010,6 +1033,7 @@ class _AgentDetail extends StatelessWidget {
 
   final AgentProfile agent;
   final AgentLedger? ledger;
+  final AgentsController controller;
   final bool canMutate;
   final VoidCallback? onEdit, onDelete;
 
@@ -1019,6 +1043,15 @@ class _AgentDetail extends StatelessWidget {
       for (final skill in ledger?.skills ?? const <AgentSkill>[])
         skill.id: skill,
     };
+    final hasMoltbookCapability =
+        agent.toolIds.any((tool) => tool.startsWith('moltbook.')) ||
+        agent.skillIds.any(
+          (skillId) =>
+              skillsById[skillId]?.toolIds.any(
+                (tool) => tool.startsWith('moltbook.'),
+              ) ??
+              false,
+        );
     AgentPerformance? performance;
     for (final item in ledger?.performance ?? const <AgentPerformance>[]) {
       if (item.id == agent.id || item.name == agent.name) {
@@ -1125,6 +1158,14 @@ class _AgentDetail extends StatelessWidget {
             child: SelectableText(agent.toolIds.join('\n')),
           ),
         ],
+        if (hasMoltbookCapability) ...[
+          const SizedBox(height: 18),
+          _MoltbookAgentConsole(
+            key: ValueKey('moltbook-console-${agent.id}'),
+            agent: agent,
+            controller: controller,
+          ),
+        ],
         if (canMutate && agent.manageable) ...[
           const SizedBox(height: 22),
           const Divider(),
@@ -1140,13 +1181,14 @@ class _AgentDetail extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 8),
-              IconButton(
-                key: const Key('macos-agent-delete'),
-                tooltip: 'Delete agent',
-                onPressed: onDelete,
-                color: Theme.of(context).colorScheme.error,
-                icon: const Icon(Icons.delete_outline_rounded),
-              ),
+              if (onDelete != null)
+                IconButton(
+                  key: const Key('macos-agent-delete'),
+                  tooltip: 'Delete agent',
+                  onPressed: onDelete,
+                  color: Theme.of(context).colorScheme.error,
+                  icon: const Icon(Icons.delete_outline_rounded),
+                ),
             ],
           ),
         ],
@@ -1154,6 +1196,662 @@ class _AgentDetail extends StatelessWidget {
     );
   }
 }
+
+class _MoltbookAgentConsole extends StatefulWidget {
+  const _MoltbookAgentConsole({
+    super.key,
+    required this.agent,
+    required this.controller,
+  });
+
+  final AgentProfile agent;
+  final AgentsController controller;
+
+  @override
+  State<_MoltbookAgentConsole> createState() => _MoltbookAgentConsoleState();
+}
+
+class _MoltbookAgentConsoleState extends State<_MoltbookAgentConsole> {
+  final _registrationKey = GlobalKey<FormState>();
+  late final _externalName = TextEditingController(
+    text: _defaultMoltbookName(widget.agent.name),
+  );
+  late final _description = TextEditingController(
+    text: _defaultMoltbookDescription(widget.agent),
+  );
+  MoltbookProjection? _projection;
+  Object? _error;
+  bool _loading = false;
+  bool _acting = false;
+  bool _disclosureAccepted = false;
+  bool _heartbeatEnabled = true;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.controller.moltbookAvailable) {
+      Future<void>.microtask(_load);
+    }
+  }
+
+  @override
+  void dispose() {
+    _externalName.dispose();
+    _description.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load({bool older = false}) async {
+    if (_loading || !widget.controller.moltbookAvailable) return;
+    final cursor = older ? _projection?.nextCursor : null;
+    if (older && cursor == null) return;
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final page = await widget.controller.loadMoltbook(
+        widget.agent.id,
+        cursor: cursor,
+      );
+      if (!mounted) return;
+      setState(() {
+        if (older && _projection != null) {
+          final byId = <String, MoltbookActivity>{
+            for (final activity in _projection!.activities)
+              activity.id: activity,
+            for (final activity in page.activities) activity.id: activity,
+          };
+          _projection = MoltbookProjection(
+            connection: page.connection ?? _projection!.connection,
+            activities: byId.values.toList(),
+            nextCursor: page.nextCursor,
+          );
+        } else {
+          _projection = page;
+        }
+      });
+    } catch (error) {
+      if (mounted) setState(() => _error = error);
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _change(Json input) async {
+    if (_acting || !widget.controller.canManageMoltbook) return;
+    setState(() {
+      _acting = true;
+      _error = null;
+    });
+    try {
+      await widget.controller.changeMoltbook(widget.agent.id, input);
+      final projection = await widget.controller.loadMoltbook(widget.agent.id);
+      if (mounted) setState(() => _projection = projection);
+    } catch (error) {
+      if (mounted) setState(() => _error = error);
+    } finally {
+      if (mounted) setState(() => _acting = false);
+    }
+  }
+
+  Future<void> _register() async {
+    if (!(_registrationKey.currentState?.validate() ?? false) ||
+        !_disclosureAccepted) {
+      return;
+    }
+    await _change({
+      'action': 'register',
+      'externalName': _externalName.text.trim(),
+      'description': _description.text.trim(),
+      'heartbeatEnabled': _heartbeatEnabled,
+    });
+  }
+
+  Future<void> _openOfficial(String? value) async {
+    final uri = exactMoltbookUri(value);
+    if (uri == null) {
+      setState(
+        () => _error = StateError(
+          'Asael refused a link that was not on the official Moltbook host.',
+        ),
+      );
+      return;
+    }
+    final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!opened && mounted) {
+      setState(() => _error = StateError('macOS could not open Moltbook.'));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => _InspectorSection(
+    title: 'Moltbook presence',
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'A separate public identity for this Agent. Reads are logged; posts, comments, reactions, follows, and verification still require Asael approval.',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+        const SizedBox(height: 10),
+        if (!widget.controller.moltbookAvailable)
+          const _MoltbookNotice(
+            icon: Icons.lock_clock_outlined,
+            title: 'Requires native contract v19',
+            message: 'Update Asael before connecting this Agent to Moltbook.',
+          )
+        else if (_projection == null && _loading)
+          const Center(
+            child: Padding(
+              padding: EdgeInsets.all(20),
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+          )
+        else if (_projection == null && _error != null)
+          _MoltbookNotice(
+            icon: Icons.cloud_off_outlined,
+            title: 'Moltbook is unavailable',
+            message: '$_error',
+            action: TextButton.icon(
+              key: const Key('moltbook-retry'),
+              onPressed: _loading ? null : _load,
+              icon: const Icon(Icons.refresh_rounded, size: 16),
+              label: const Text('Try again'),
+            ),
+          )
+        else if (_projection?.connection == null)
+          _registration(context)
+        else
+          _connection(context, _projection!.connection!),
+      ],
+    ),
+  );
+
+  Widget _registration(BuildContext context) => Form(
+    key: _registrationKey,
+    child: MacosPane(
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.public_rounded, size: 18),
+              const SizedBox(width: 7),
+              Expanded(
+                child: Text(
+                  'Join Moltbook',
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 5),
+          Text(
+            'Registration creates an external Moltbook Agent identity. Asael stores its credential privately and never displays it here.',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+          const SizedBox(height: 12),
+          TextFormField(
+            key: const Key('moltbook-external-name'),
+            controller: _externalName,
+            enabled: !_acting,
+            decoration: const InputDecoration(
+              labelText: 'Public Agent name',
+              helperText: '2–32 letters, numbers, underscores, or hyphens',
+            ),
+            validator: (value) =>
+                RegExp(r'^[A-Za-z0-9_-]{2,32}$').hasMatch(value?.trim() ?? '')
+                ? null
+                : 'Choose a valid public Agent name.',
+          ),
+          const SizedBox(height: 9),
+          TextFormField(
+            key: const Key('moltbook-description'),
+            controller: _description,
+            enabled: !_acting,
+            minLines: 2,
+            maxLines: 4,
+            maxLength: 1000,
+            decoration: const InputDecoration(
+              labelText: 'Public description',
+              alignLabelWithHint: true,
+            ),
+            validator: (value) {
+              final length = value?.trim().length ?? 0;
+              return length >= 2 && length <= 1000
+                  ? null
+                  : 'Provide 2–1000 characters.';
+            },
+          ),
+          Material(
+            color: Colors.transparent,
+            child: SwitchListTile.adaptive(
+              key: const Key('moltbook-heartbeat-enabled'),
+              contentPadding: EdgeInsets.zero,
+              dense: true,
+              value: _heartbeatEnabled,
+              onChanged: _acting
+                  ? null
+                  : (value) => setState(() => _heartbeatEnabled = value),
+              title: const Text('Monitor every four hours'),
+              subtitle: const Text(
+                'Read-only checks keep claim and connection health current.',
+              ),
+            ),
+          ),
+          Material(
+            color: Colors.transparent,
+            child: CheckboxListTile(
+              key: const Key('moltbook-disclosure'),
+              contentPadding: EdgeInsets.zero,
+              dense: true,
+              controlAffinity: ListTileControlAffinity.leading,
+              value: _disclosureAccepted,
+              onChanged: _acting
+                  ? null
+                  : (value) =>
+                        setState(() => _disclosureAccepted = value == true),
+              title: const Text(
+                'I understand Moltbook activity and posts are public, Moltbook terms apply to posted content, and I—as the human owner—remain responsible for this Agent’s actions.',
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              key: const Key('moltbook-register'),
+              onPressed:
+                  widget.controller.canManageMoltbook &&
+                      _disclosureAccepted &&
+                      !_acting
+                  ? _register
+                  : null,
+              icon: _acting
+                  ? const SizedBox.square(
+                      dimension: 14,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.public_rounded, size: 16),
+              label: const Text('Create Moltbook identity'),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+
+  Widget _connection(BuildContext context, MoltbookConnection connection) {
+    final claimUri = exactMoltbookUri(connection.claimUrl);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        MacosPane(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  _MoltbookHealthDot(health: connection.health),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          connection.externalName.isEmpty
+                              ? 'Moltbook Agent'
+                              : '@${connection.externalName}',
+                          style: Theme.of(context).textTheme.titleSmall,
+                        ),
+                        Text(
+                          '${_label(connection.health)} · ${_label(connection.status)}',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (_loading || _acting)
+                    const SizedBox.square(
+                      dimension: 15,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              _MetaLine(label: 'Claim', value: _label(connection.claimState)),
+              _MetaLine(
+                label: 'Credential',
+                value: connection.credentialConfigured
+                    ? 'Stored privately'
+                    : 'Unavailable',
+              ),
+              _MetaLine(
+                label: 'Monitor',
+                value: connection.heartbeatEnabled
+                    ? 'Every four hours'
+                    : 'Manual only',
+              ),
+              if (connection.lastHeartbeatAt != null)
+                _MetaLine(
+                  label: 'Last check',
+                  value: _formatMoltbookTime(connection.lastHeartbeatAt!),
+                ),
+              if (connection.nextHeartbeatAt != null &&
+                  connection.heartbeatEnabled)
+                _MetaLine(
+                  label: 'Next check',
+                  value: _formatMoltbookTime(connection.nextHeartbeatAt!),
+                ),
+              if (connection.rateLimitRemaining != null)
+                _MetaLine(
+                  label: 'API budget',
+                  value: connection.rateLimitLimit == null
+                      ? '${connection.rateLimitRemaining} remaining'
+                      : '${connection.rateLimitRemaining} of ${connection.rateLimitLimit} remaining',
+                ),
+              if (connection.consecutiveFailures > 0 ||
+                  connection.lastErrorCode != null)
+                _MetaLine(
+                  label: 'Attention',
+                  value:
+                      '${connection.consecutiveFailures} consecutive failure${connection.consecutiveFailures == 1 ? '' : 's'}${connection.lastErrorCode == null ? '' : ' · ${_label(connection.lastErrorCode!)}'}',
+                ),
+            ],
+          ),
+        ),
+        if (connection.claimState == 'pending') ...[
+          const SizedBox(height: 10),
+          Container(
+            key: const Key('moltbook-claim-card'),
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.secondaryContainer,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Theme.of(context).colorScheme.outline),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Claim this Agent',
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  'Moltbook requires its official claim flow before this identity can participate.',
+                ),
+                if (connection.verificationCode != null) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    'Verification code',
+                    style: Theme.of(context).textTheme.labelSmall,
+                  ),
+                  SelectableText(
+                    connection.verificationCode!,
+                    key: const Key('moltbook-verification-code'),
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                ],
+                const SizedBox(height: 10),
+                FilledButton.tonalIcon(
+                  key: const Key('moltbook-open-claim'),
+                  onPressed: claimUri == null
+                      ? null
+                      : () => _openOfficial(connection.claimUrl),
+                  icon: const Icon(Icons.open_in_new_rounded, size: 16),
+                  label: const Text('Open official claim page'),
+                ),
+                if (claimUri == null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Text(
+                      'No verified official claim link is available. Refresh the connection.',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
+        const SizedBox(height: 10),
+        Wrap(
+          spacing: 7,
+          runSpacing: 7,
+          children: [
+            if (connection.status == 'paused')
+              FilledButton.tonalIcon(
+                key: const Key('moltbook-resume'),
+                onPressed: _acting
+                    ? null
+                    : () => _change(const {'action': 'resume'}),
+                icon: const Icon(Icons.play_arrow_rounded, size: 16),
+                label: const Text('Resume'),
+              )
+            else if (connection.status != 'revoked') ...[
+              OutlinedButton.icon(
+                key: const Key('moltbook-refresh'),
+                onPressed: _acting
+                    ? null
+                    : () => _change(const {'action': 'refresh'}),
+                icon: const Icon(Icons.refresh_rounded, size: 16),
+                label: Text(
+                  connection.claimState == 'pending'
+                      ? 'Refresh claim'
+                      : 'Refresh',
+                ),
+              ),
+              if (connection.claimState == 'claimed')
+                OutlinedButton.icon(
+                  key: const Key('moltbook-heartbeat'),
+                  onPressed: _acting
+                      ? null
+                      : () => _change(const {'action': 'heartbeat'}),
+                  icon: const Icon(Icons.monitor_heart_outlined, size: 16),
+                  label: const Text('Check now'),
+                ),
+              TextButton.icon(
+                key: const Key('moltbook-pause'),
+                onPressed: _acting
+                    ? null
+                    : () => _change(const {'action': 'pause'}),
+                icon: const Icon(Icons.pause_rounded, size: 16),
+                label: const Text('Pause'),
+              ),
+            ],
+          ],
+        ),
+        if (_error != null) ...[
+          const SizedBox(height: 8),
+          _MoltbookNotice(
+            icon: Icons.warning_amber_rounded,
+            title: 'Action needs attention',
+            message: '$_error',
+          ),
+        ],
+        const SizedBox(height: 16),
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                'Recent activity',
+                style: Theme.of(context).textTheme.titleSmall,
+              ),
+            ),
+            IconButton(
+              key: const Key('moltbook-activity-refresh'),
+              tooltip: 'Refresh Moltbook activity',
+              onPressed: _loading ? null : _load,
+              icon: const Icon(Icons.refresh_rounded, size: 16),
+            ),
+          ],
+        ),
+        if (_projection!.activities.isEmpty)
+          Text(
+            'No Moltbook activity has been recorded yet.',
+            style: Theme.of(context).textTheme.bodySmall,
+          )
+        else
+          ..._projection!.activities.map(_activity),
+        if (_projection!.nextCursor != null) ...[
+          const SizedBox(height: 8),
+          TextButton(
+            key: const Key('moltbook-load-older'),
+            onPressed: _loading ? null : () => _load(older: true),
+            child: const Text('Load older activity'),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _activity(MoltbookActivity activity) {
+    final uri = exactMoltbookUri(activity.externalUrl);
+    return Padding(
+      key: Key('moltbook-activity-${activity.id}'),
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(top: 3),
+            child: Icon(
+              _moltbookActivityIcon(activity.status),
+              size: 15,
+              color: _moltbookActivityColor(context, activity.status),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(activity.summary),
+                const SizedBox(height: 2),
+                Text(
+                  '${_label(activity.kind)} · ${_formatMoltbookTime(activity.createdAt)}',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+            ),
+          ),
+          if (uri != null)
+            IconButton(
+              key: Key('moltbook-open-activity-${activity.id}'),
+              tooltip: 'Open on Moltbook',
+              onPressed: () => _openOfficial(activity.externalUrl),
+              icon: const Icon(Icons.open_in_new_rounded, size: 15),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MoltbookNotice extends StatelessWidget {
+  const _MoltbookNotice({
+    required this.icon,
+    required this.title,
+    required this.message,
+    this.action,
+  });
+
+  final IconData icon;
+  final String title, message;
+  final Widget? action;
+
+  @override
+  Widget build(BuildContext context) {
+    final mac = MacosThemeColors.of(context);
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(11),
+      decoration: BoxDecoration(
+        color: mac.hover,
+        border: Border.all(color: mac.divider),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 17),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: Theme.of(context).textTheme.titleSmall),
+                const SizedBox(height: 2),
+                Text(message, style: Theme.of(context).textTheme.bodySmall),
+                if (action != null) ...[const SizedBox(height: 5), action!],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MoltbookHealthDot extends StatelessWidget {
+  const _MoltbookHealthDot({required this.health});
+
+  final String health;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    width: 10,
+    height: 10,
+    decoration: BoxDecoration(
+      shape: BoxShape.circle,
+      color: switch (health) {
+        'healthy' => MacosThemeColors.of(context).positive,
+        'pending' => Theme.of(context).colorScheme.secondary,
+        'error' || 'revoked' => Theme.of(context).colorScheme.error,
+        _ => Theme.of(context).colorScheme.outline,
+      },
+    ),
+  );
+}
+
+String _defaultMoltbookName(String value) {
+  var name = value.trim().replaceAll(RegExp(r'[^A-Za-z0-9_-]+'), '_');
+  if (name.length > 32) name = name.substring(0, 32);
+  if (name.length < 2) name = '${name.isEmpty ? 'Asael' : name}_Agent';
+  return name;
+}
+
+String _defaultMoltbookDescription(AgentProfile agent) {
+  final value = agent.description.trim().length >= 2
+      ? agent.description.trim()
+      : '${agent.name} is an Asael Agent.';
+  return value.length <= 1000 ? value : value.substring(0, 1000);
+}
+
+String _formatMoltbookTime(String value) {
+  final parsed = DateTime.tryParse(value)?.toLocal();
+  if (parsed == null) return 'Time unavailable';
+  String two(int number) => number.toString().padLeft(2, '0');
+  return '${parsed.year}-${two(parsed.month)}-${two(parsed.day)} '
+      '${two(parsed.hour)}:${two(parsed.minute)}';
+}
+
+IconData _moltbookActivityIcon(String status) => switch (status) {
+  'published' => Icons.public_rounded,
+  'succeeded' => Icons.check_circle_outline_rounded,
+  'pending_verification' => Icons.pending_actions_outlined,
+  _ => Icons.error_outline_rounded,
+};
+
+Color _moltbookActivityColor(BuildContext context, String status) =>
+    switch (status) {
+      'published' || 'succeeded' => MacosThemeColors.of(context).positive,
+      'pending_verification' => Theme.of(context).colorScheme.secondary,
+      _ => Theme.of(context).colorScheme.error,
+    };
 
 class _SkillDetail extends StatelessWidget {
   const _SkillDetail({
@@ -1558,9 +2256,10 @@ class _MacosAgentDialogState extends State<_MacosAgentDialog> {
   late final _instructions = TextEditingController(
     text: widget.agent?.instructions,
   );
-  late final _modelPolicy = TextEditingController(
-    text: widget.agent?.modelPolicy ?? 'auto',
-  );
+  late String _modelPolicy =
+      _agentModelPolicies.contains(widget.agent?.modelPolicy)
+      ? widget.agent!.modelPolicy
+      : 'auto';
   late final _toolIds = TextEditingController(
     text: widget.agent?.toolIds.join(', '),
   );
@@ -1583,7 +2282,6 @@ class _MacosAgentDialogState extends State<_MacosAgentDialog> {
     _role.dispose();
     _description.dispose();
     _instructions.dispose();
-    _modelPolicy.dispose();
     _toolIds.dispose();
     super.dispose();
   }
@@ -1633,6 +2331,9 @@ class _MacosAgentDialogState extends State<_MacosAgentDialog> {
                   labelText: 'Purpose and responsibility',
                   alignLabelWithHint: true,
                 ),
+                validator: (value) => value == null || value.trim().length < 2
+                    ? 'Provide a short purpose of at least 2 characters.'
+                    : null,
               ),
               const SizedBox(height: 10),
               TextFormField(
@@ -1654,14 +2355,12 @@ class _MacosAgentDialogState extends State<_MacosAgentDialog> {
               Row(
                 children: [
                   Expanded(
-                    child: TextFormField(
-                      controller: _modelPolicy,
-                      decoration: const InputDecoration(
-                        labelText: 'Model policy',
-                        helperText:
-                            'Use auto or a policy configured in Settings',
-                      ),
-                      validator: _requiredField,
+                    child: _dropdown(
+                      label: 'Model policy',
+                      value: _modelPolicy,
+                      values: _agentModelPolicies,
+                      onChanged: (value) =>
+                          setState(() => _modelPolicy = value),
                     ),
                   ),
                   const SizedBox(width: 10),
@@ -1700,7 +2399,7 @@ class _MacosAgentDialogState extends State<_MacosAgentDialog> {
                     child: _dropdown(
                       label: 'Status',
                       value: _status,
-                      values: const ['ready', 'active', 'paused', 'disabled'],
+                      values: const ['ready', 'learning', 'paused'],
                       onChanged: (value) => setState(() => _status = value),
                     ),
                   ),
@@ -1808,7 +2507,7 @@ class _MacosAgentDialogState extends State<_MacosAgentDialog> {
       'instructions': _instructions.text.trim(),
       'status': _status,
       'accent': _accent,
-      'modelPolicy': _modelPolicy.text.trim(),
+      'modelPolicy': _modelPolicy,
       'autonomy': _autonomy,
       'approvalPolicy': _approval,
       'memoryScope': _memory,

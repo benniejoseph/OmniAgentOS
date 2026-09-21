@@ -12,8 +12,8 @@ import { mobilePushReceiptRequestSchema } from "@/lib/mobile/push-contract";
 import { pluginManifestSchema } from "@/lib/plugins/contracts";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 18 as const;
-export const NATIVE_API_PREVIOUS_VERSION = 17 as const;
+export const NATIVE_API_CURRENT_VERSION = 19 as const;
+export const NATIVE_API_PREVIOUS_VERSION = 18 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -1004,6 +1004,56 @@ const v18Operations: readonly NativeOperation[] = [
   ),
 ];
 
+// Contract v19 enrolls the two existing Agent definition mutations needed by
+// the macOS roster and the exact owner-scoped Moltbook connection console.
+// It does not enroll Agent deletion, skill mutation, or any generic external
+// HTTP authority.
+const v19Operations: readonly NativeOperation[] = [
+  ...v18Operations,
+  operation(
+    "agents.create",
+    "POST",
+    "/api/agents",
+    "Create one governed actor-owned Agent definition.",
+    "bearer",
+    "JsonObject",
+    "JsonObject",
+  ),
+  operation(
+    "agents.update",
+    "PATCH",
+    "/api/agents/{id}",
+    "Update one governed actor-owned Agent definition.",
+    "bearer",
+    "JsonObject",
+    "JsonObject",
+  ),
+  operation(
+    "moltbook.connection.show",
+    "GET",
+    "/api/agents/{id}/moltbook",
+    "Read one exact Agent's private Moltbook connection and sanitized activity ledger.",
+    "bearer",
+    undefined,
+    "JsonObject",
+    {
+      queryParameters: [
+        queryParameter("cursor", "string", { minLength: 1, maxLength: 512 }),
+        queryParameter("limit", "integer", { minimum: 1, maximum: 100 }),
+      ],
+    },
+  ),
+  operation(
+    "moltbook.connection.manage",
+    "POST",
+    "/api/agents/{id}/moltbook",
+    "Register, observe, pause, or resume one exact Agent's Moltbook connection.",
+    "bearer",
+    "JsonObject",
+    "JsonObject",
+  ),
+];
+
 export const nativeContractSchemas = Object.freeze({
   JsonObject: jsonObject,
   NativeClientAttestation: nativeClientAttestationSchema,
@@ -1085,6 +1135,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 16) return v16Operations;
   if (version === 17) return v17Operations;
   if (version === 18) return v18Operations;
+  if (version === 19) return v19Operations;
   return undefined;
 }
 
@@ -1094,7 +1145,7 @@ export function nativeContractDiscovery() {
     contractId: NATIVE_API_CONTRACT_ID,
     currentVersion: NATIVE_API_CURRENT_VERSION,
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
-    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [18, 17],
+    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [19, 18],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,
       state: version === NATIVE_API_CURRENT_VERSION ? "current" as const : "previous" as const,

@@ -18,8 +18,8 @@ import {
 
 describe("native API contracts", () => {
   it("retains exactly the current and previous rollout versions", () => {
-    expect(NATIVE_API_CURRENT_VERSION).toBe(18);
-    expect(NATIVE_API_PREVIOUS_VERSION).toBe(17);
+    expect(NATIVE_API_CURRENT_VERSION).toBe(19);
+    expect(NATIVE_API_PREVIOUS_VERSION).toBe(18);
     expect(nativeOperationsForVersion(8)?.length).toBeLessThan(
       nativeOperationsForVersion(7)?.length || 0,
     );
@@ -53,9 +53,12 @@ describe("native API contracts", () => {
     expect(nativeOperationsForVersion(18)?.length).toBe(
       (nativeOperationsForVersion(17)?.length || 0) + 2,
     );
+    expect(nativeOperationsForVersion(19)?.length).toBe(
+      (nativeOperationsForVersion(18)?.length || 0) + 4,
+    );
     expect(nativeContractSchemas.NativeContractDiscovery.parse(
       nativeContractDiscovery(),
-    ).supportedVersions).toEqual([18, 17]);
+    ).supportedVersions).toEqual([19, 18]);
   });
 
   it("exposes only explicit local Computer Use in the current request schema", () => {
@@ -160,40 +163,75 @@ describe("native API contracts", () => {
     expect(dart).toContain("static String artifactsList({String? kind, int? limit})");
     expect(dart).toContain("static String artifactsContent(String id, {int? version})");
     expect(dart).toContain("static String memoryList({String? threadId, int? limit})");
-    expect(dart).not.toContain("'agents.create',");
+    expect(dart).toContain("'agents.create',");
+    expect(dart).toContain("'agents.update',");
+    expect(dart).not.toContain("'agents.delete',");
+    expect(dart).toContain("'moltbook.connection.show',");
+    expect(dart).toContain("'moltbook.connection.manage',");
+    expect(dart).toContain("static String moltbookConnectionShow(String id");
+    expect(dart).toContain("static String moltbookConnectionManage(String id");
     expect(dart).not.toContain("'admin.workflows.tick',");
   });
 
-  it("keeps v17 immutable while v18 adds only generated artifact reads", async () => {
-    const [v17, v17Manifest, v18] = await Promise.all([
-      readFile(
-        new URL("../../../public/native-contracts/v17/openapi.json", import.meta.url),
-        "utf8",
-      ),
-      readFile(
-        new URL("../../../public/native-contracts/v17/manifest.json", import.meta.url),
-        "utf8",
-      ),
+  it("keeps v18 immutable while v19 enrolls only Agent and Moltbook management", async () => {
+    const [v18, v18Manifest, v19] = await Promise.all([
       readFile(
         new URL("../../../public/native-contracts/v18/openapi.json", import.meta.url),
         "utf8",
       ),
+      readFile(
+        new URL("../../../public/native-contracts/v18/manifest.json", import.meta.url),
+        "utf8",
+      ),
+      readFile(
+        new URL("../../../public/native-contracts/v19/openapi.json", import.meta.url),
+        "utf8",
+      ),
     ]);
 
-    expect(sha256(v17)).toBe(
-      "4cac8cadf63061626fce1a18d215a8b7fe2069ef8707aec6eaa4ad9d24aa94d8",
+    expect(sha256(v18)).toBe(
+      "ece0a7d0eaa566a7ec9a111feb3bf1cdfab55a467e77f34eeffc20692a0da48d",
     );
-    expect(sha256(v17Manifest)).toBe(
-      "8101958ab99d8bd73a943a26aa7eac3293478f1ef0604da278f8e20c43d3ec74",
+    expect(sha256(v18Manifest)).toBe(
+      "3ad8ac174c0acaa53f9581782e0762f20ad111f0e13a45348b6af75440d3615e",
     );
+    expect(v18).not.toContain('"agents.create"');
+    expect(v18).not.toContain('"moltbook.connection.show"');
+    expect(v19).toContain('"agents.create"');
+    expect(v19).toContain('"agents.update"');
+    expect(v19).not.toContain('"agents.delete"');
+    expect(v19).not.toContain('"skills.create"');
+    expect(v19).not.toContain('"skills.update"');
+    expect(v19).not.toContain('"skills.delete"');
+    expect(v19).toContain('"moltbook.connection.show"');
+    expect(v19).toContain('"moltbook.connection.manage"');
+    expect(v19).toContain('"/api/agents/{id}/moltbook"');
+    const v18Ids = new Set(
+      nativeOperationsForVersion(18)?.map((operation) => operation.id),
+    );
+    expect(
+      nativeOperationsForVersion(19)
+        ?.map((operation) => operation.id)
+        .filter((id) => !v18Ids.has(id)),
+    ).toEqual([
+      "agents.create",
+      "agents.update",
+      "moltbook.connection.show",
+      "moltbook.connection.manage",
+    ]);
+  });
+
+  it("keeps v17 immutable while v18 adds only generated artifact reads", async () => {
+    const [v17, v17Manifest, v18] = await Promise.all([
+      readFile(new URL("../../../public/native-contracts/v17/openapi.json", import.meta.url), "utf8"),
+      readFile(new URL("../../../public/native-contracts/v17/manifest.json", import.meta.url), "utf8"),
+      readFile(new URL("../../../public/native-contracts/v18/openapi.json", import.meta.url), "utf8"),
+    ]);
+    expect(sha256(v17)).toBe("4cac8cadf63061626fce1a18d215a8b7fe2069ef8707aec6eaa4ad9d24aa94d8");
+    expect(sha256(v17Manifest)).toBe("8101958ab99d8bd73a943a26aa7eac3293478f1ef0604da278f8e20c43d3ec74");
     expect(v17).not.toContain('"artifacts.content"');
-    expect(v17).not.toContain('"artifacts.list"');
     expect(v18).toContain('"artifacts.content"');
     expect(v18).toContain('"artifacts.list"');
-    expect(v18).toContain('"/api/artifacts"');
-    expect(v18).toContain('"/api/artifacts/{id}/content"');
-    expect(v18).toContain('"name": "version"');
-    expect(v18).toContain('"format": "binary"');
   });
 
   it("keeps v16 immutable while v17 adds the native Automation control plane", async () => {
@@ -424,7 +462,7 @@ describe("native API contracts", () => {
       user: { id: "user-one", email: "operator@example.test", status: "active", createdAt: timestamp, updatedAt: timestamp },
       tenant: { id: "tenant-one", name: "Example", slug: "example", createdAt: timestamp, updatedAt: timestamp },
       membership: { id: "membership-one", tenantId: "tenant-one", userId: "user-one", role: "operator", status: "active", createdAt: timestamp, updatedAt: timestamp },
-      device: { id: "device-one", name: "Asael on macOS", platform: "macos", appVersion: "1.0.0", buildNumber: 2, clientContractVersion: 18 },
+      device: { id: "device-one", name: "Asael on macOS", platform: "macos", appVersion: "1.0.0", buildNumber: 2, clientContractVersion: 19 },
     };
     expect(nativeBootstrapResponseSchema.parse({
       authenticated: true,
@@ -436,9 +474,9 @@ describe("native API contracts", () => {
         mobileBasePath: "/api/mobile",
         nativeContract: {
           id: "asael.native-api",
-          currentVersion: 18,
-          previousVersion: 17,
-          supportedVersions: [18, 17],
+          currentVersion: 19,
+          previousVersion: 18,
+          supportedVersions: [19, 18],
           discoveryPath: "/api/mobile/contracts",
         },
       },
@@ -447,15 +485,15 @@ describe("native API contracts", () => {
         platform: "macos",
         appVersion: "1.0.0",
         buildNumber: 2,
-        clientContractVersion: 18,
+        clientContractVersion: 19,
         minimumVersion: "1.0.0",
-        requiredContractVersion: 18,
-        supportedContractVersions: [18, 17],
+        requiredContractVersion: 19,
+        supportedContractVersions: [19, 18],
         status: "compatible",
         agentCatalogEnrollment: { state: "held", clientReady: true },
       },
       nativeClientPolicy: { schemaVersion: 1 },
-    }).api.nativeContract.currentVersion).toBe(18);
+    }).api.nativeContract.currentVersion).toBe(19);
   });
 });
 

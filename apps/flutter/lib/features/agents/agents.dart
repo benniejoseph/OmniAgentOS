@@ -7,6 +7,13 @@ const maxAssignedAgentSkills = 8;
 List<String> _strings(Object? value) =>
     (value as List? ?? const []).map((e) => e.toString()).toList();
 
+List<String> _splitCsv(String value) => value
+    .split(',')
+    .map((item) => item.trim())
+    .where((item) => item.isNotEmpty)
+    .toSet()
+    .toList();
+
 bool _capabilityFlag(Json value, String key, bool fallback) =>
     !value.containsKey(key) ? fallback : value[key] == true;
 
@@ -147,6 +154,156 @@ class AgentLedger {
   final List<AgentPerformance> performance;
 }
 
+class MoltbookConnection {
+  const MoltbookConnection({
+    required this.status,
+    required this.health,
+    required this.externalName,
+    required this.claimState,
+    required this.heartbeatEnabled,
+    required this.consecutiveFailures,
+    required this.credentialConfigured,
+    this.claimUrl,
+    this.verificationCode,
+    this.lastHeartbeatAt,
+    this.nextHeartbeatAt,
+    this.lastErrorCode,
+    this.createdAt,
+    this.updatedAt,
+    this.rateLimitLimit,
+    this.rateLimitRemaining,
+    this.rateLimitResetAt,
+    this.rateLimitObservedAt,
+  });
+
+  final String status, health, externalName, claimState;
+  final bool heartbeatEnabled, credentialConfigured;
+  final int consecutiveFailures;
+  final String? claimUrl,
+      verificationCode,
+      lastHeartbeatAt,
+      nextHeartbeatAt,
+      lastErrorCode,
+      createdAt,
+      updatedAt,
+      rateLimitResetAt,
+      rateLimitObservedAt;
+  final int? rateLimitLimit, rateLimitRemaining;
+
+  factory MoltbookConnection.fromJson(Json value) {
+    final rateLimit = value['rateLimit'];
+    return MoltbookConnection(
+      status: '${value['status'] ?? 'error'}',
+      health: '${value['health'] ?? 'error'}',
+      externalName: '${value['externalName'] ?? ''}',
+      claimState: '${value['claimState'] ?? 'unavailable'}',
+      heartbeatEnabled: value['heartbeatEnabled'] == true,
+      consecutiveFailures: (value['consecutiveFailures'] as num?)?.toInt() ?? 0,
+      credentialConfigured: value['credentialConfigured'] == true,
+      claimUrl: value['claimUrl']?.toString(),
+      verificationCode: value['verificationCode']?.toString(),
+      lastHeartbeatAt: value['lastHeartbeatAt']?.toString(),
+      nextHeartbeatAt: value['nextHeartbeatAt']?.toString(),
+      lastErrorCode: value['lastErrorCode']?.toString(),
+      createdAt: value['createdAt']?.toString(),
+      updatedAt: value['updatedAt']?.toString(),
+      rateLimitLimit: rateLimit is Map
+          ? (rateLimit['limit'] as num?)?.toInt()
+          : null,
+      rateLimitRemaining: rateLimit is Map
+          ? (rateLimit['remaining'] as num?)?.toInt()
+          : null,
+      rateLimitResetAt: rateLimit is Map
+          ? rateLimit['resetAt']?.toString()
+          : null,
+      rateLimitObservedAt: rateLimit is Map
+          ? rateLimit['observedAt']?.toString()
+          : null,
+    );
+  }
+}
+
+class MoltbookActivity {
+  const MoltbookActivity({
+    required this.id,
+    required this.kind,
+    required this.status,
+    required this.summary,
+    required this.createdAt,
+    this.externalUrl,
+    this.providerType,
+    this.providerRef,
+    this.runId,
+  });
+
+  final String id, kind, status, summary, createdAt;
+  final String? externalUrl, providerType, providerRef, runId;
+
+  factory MoltbookActivity.fromJson(Json value) {
+    final providerObject = value['providerObject'];
+    return MoltbookActivity(
+      id: '${value['id']}',
+      kind: '${value['kind'] ?? 'activity'}',
+      status: '${value['status'] ?? 'failed'}',
+      summary: '${value['summary'] ?? 'Moltbook activity'}',
+      createdAt: '${value['createdAt'] ?? ''}',
+      externalUrl: providerObject is Map
+          ? providerObject['url']?.toString()
+          : null,
+      providerType: providerObject is Map
+          ? providerObject['type']?.toString()
+          : null,
+      providerRef: providerObject is Map
+          ? providerObject['ref']?.toString()
+          : null,
+      runId: value['runId']?.toString(),
+    );
+  }
+}
+
+class MoltbookProjection {
+  const MoltbookProjection({
+    required this.connection,
+    required this.activities,
+    this.nextCursor,
+  });
+
+  final MoltbookConnection? connection;
+  final List<MoltbookActivity> activities;
+  final String? nextCursor;
+
+  factory MoltbookProjection.fromJson(Json value) {
+    final connection = value['connection'];
+    return MoltbookProjection(
+      connection: connection is Map
+          ? MoltbookConnection.fromJson(Map<String, dynamic>.from(connection))
+          : null,
+      activities: (value['activities'] as List? ?? const [])
+          .whereType<Map>()
+          .map(
+            (item) =>
+                MoltbookActivity.fromJson(Map<String, dynamic>.from(item)),
+          )
+          .toList(),
+      nextCursor: value['nextCursor']?.toString(),
+    );
+  }
+}
+
+Uri? exactMoltbookUri(String? value) {
+  if (value == null || value.isEmpty) return null;
+  final uri = Uri.tryParse(value);
+  if (uri == null ||
+      uri.scheme != 'https' ||
+      uri.host != 'www.moltbook.com' ||
+      !uri.isAbsolute ||
+      uri.userInfo.isNotEmpty ||
+      (uri.hasPort && uri.port != 443)) {
+    return null;
+  }
+  return uri;
+}
+
 abstract interface class AgentsRepository {
   Future<AgentLedger> load();
   Future<AgentProfile> saveAgent(Json input, {String? id});
@@ -155,16 +312,33 @@ abstract interface class AgentsRepository {
   Future<void> deleteSkill(String id);
 }
 
+abstract interface class MoltbookAgentsRepository {
+  Future<MoltbookProjection> loadMoltbook(
+    String agentId, {
+    String? cursor,
+    int limit = 20,
+  });
+  Future<void> changeMoltbook(String agentId, Json input);
+}
+
 class AgentsController extends ChangeNotifier {
   AgentsController(
     this.repository, {
     required this.canManage,
     required this.mutationsAvailable,
+    this.skillMutationsAvailable = false,
+    this.agentDeleteAvailable = false,
+    this.moltbookAvailable = false,
   });
   final AgentsRepository repository;
   final bool canManage;
   final bool mutationsAvailable;
-  bool get canMutate => canManage && mutationsAvailable;
+  final bool skillMutationsAvailable, agentDeleteAvailable, moltbookAvailable;
+  bool get canMutate => canMutateAgents;
+  bool get canMutateAgents => canManage && mutationsAvailable;
+  bool get canMutateSkills => canManage && skillMutationsAvailable;
+  bool get canDeleteAgents => canManage && agentDeleteAvailable;
+  bool get canManageMoltbook => canManage && moltbookAvailable;
   AgentLedger? ledger;
   bool loading = false;
   Object? error;
@@ -189,25 +363,33 @@ class AgentsController extends ChangeNotifier {
   }
 
   Future<void> saveSkill(Json value, {String? id}) async {
-    if (!canMutate) throw StateError('Agent changes are not available here.');
+    if (!canMutateSkills) {
+      throw StateError('Skill changes are not available here.');
+    }
     await repository.saveSkill(value, id: id);
     await refresh();
   }
 
   Future<void> removeAgent(String id) async {
-    _requireManageableAgent(id);
+    if (!canDeleteAgents ||
+        !(ledger?.agents.any((agent) => agent.id == id && agent.manageable) ??
+            false)) {
+      throw StateError('Agent deletion is not available here.');
+    }
     await repository.deleteAgent(id);
     await refresh();
   }
 
   Future<void> removeSkill(String id) async {
-    if (!canMutate) throw StateError('Agent changes are not available here.');
+    if (!canMutateSkills) {
+      throw StateError('Skill changes are not available here.');
+    }
     await repository.deleteSkill(id);
     await refresh();
   }
 
   void _requireManageableAgent(String? id) {
-    if (!canMutate ||
+    if (!canMutateAgents ||
         (id != null &&
             !(ledger?.agents.any(
                   (agent) => agent.id == id && agent.manageable,
@@ -215,6 +397,30 @@ class AgentsController extends ChangeNotifier {
                 false))) {
       throw StateError('This Agent is read-only.');
     }
+  }
+
+  Future<MoltbookProjection> loadMoltbook(
+    String agentId, {
+    String? cursor,
+    int limit = 20,
+  }) {
+    final source = repository;
+    if (!moltbookAvailable || source is! MoltbookAgentsRepository) {
+      throw StateError('Moltbook management is not available here.');
+    }
+    return (source as MoltbookAgentsRepository).loadMoltbook(
+      agentId,
+      cursor: cursor,
+      limit: limit,
+    );
+  }
+
+  Future<void> changeMoltbook(String agentId, Json input) {
+    final source = repository;
+    if (!canManageMoltbook || source is! MoltbookAgentsRepository) {
+      throw StateError('Moltbook management is not available here.');
+    }
+    return (source as MoltbookAgentsRepository).changeMoltbook(agentId, input);
   }
 }
 
@@ -258,10 +464,12 @@ class _AgentsViewState extends State<AgentsView>
             ],
           ),
           actions: [
-            if (c.canMutate)
+            if (c.canMutateAgents || c.canMutateSkills)
               IconButton(
                 tooltip: 'Create',
-                onPressed: () => tabs.index == 1 ? _editSkill() : _editAgent(),
+                onPressed: tabs.index == 1
+                    ? (c.canMutateSkills ? _editSkill : null)
+                    : (c.canMutateAgents ? _editAgent : null),
                 icon: const Icon(Icons.add_rounded),
               ),
             IconButton(
@@ -367,7 +575,7 @@ class _AgentsViewState extends State<AgentsView>
                               ],
                             ),
                           ),
-                          if (a.manageable && widget.controller.canMutate)
+                          if (a.manageable && widget.controller.canMutateAgents)
                             PopupMenuButton<String>(
                               onSelected: (v) => v == 'edit'
                                   ? _editAgent(a)
@@ -375,15 +583,16 @@ class _AgentsViewState extends State<AgentsView>
                                       a.name,
                                       () => widget.controller.removeAgent(a.id),
                                     ),
-                              itemBuilder: (_) => const [
-                                PopupMenuItem(
+                              itemBuilder: (_) => [
+                                const PopupMenuItem(
                                   value: 'edit',
                                   child: Text('Edit'),
                                 ),
-                                PopupMenuItem(
-                                  value: 'delete',
-                                  child: Text('Delete'),
-                                ),
+                                if (widget.controller.canDeleteAgents)
+                                  const PopupMenuItem(
+                                    value: 'delete',
+                                    child: Text('Delete'),
+                                  ),
                               ],
                             ),
                         ],
@@ -414,7 +623,7 @@ class _AgentsViewState extends State<AgentsView>
                 maxLines: 3,
               ),
               isThreeLine: true,
-              trailing: !s.manageable || !widget.controller.canMutate
+              trailing: !s.manageable || !widget.controller.canMutateSkills
                   ? _Status(s.status)
                   : PopupMenuButton<String>(
                       onSelected: (v) => v == 'edit'
@@ -657,6 +866,9 @@ class _AgentDialogState extends State<_AgentDialog> {
   late final instructions = TextEditingController(
     text: widget.agent?.instructions,
   );
+  late final toolIds = TextEditingController(
+    text: widget.agent?.toolIds.join(', '),
+  );
   late final List<AgentSkill> selectableSkills;
   late Set<String> selected;
   String model = 'auto',
@@ -687,6 +899,16 @@ class _AgentDialogState extends State<_AgentDialog> {
   }
 
   @override
+  void dispose() {
+    name.dispose();
+    role.dispose();
+    description.dispose();
+    instructions.dispose();
+    toolIds.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) => AlertDialog(
     title: Text(widget.agent == null ? 'New agent' : 'Edit agent'),
     content: SizedBox(
@@ -713,6 +935,12 @@ class _AgentDialogState extends State<_AgentDialog> {
               maxLines: 4,
               decoration: const InputDecoration(
                 labelText: 'Operating instructions',
+              ),
+            ),
+            TextField(
+              controller: toolIds,
+              decoration: const InputDecoration(
+                labelText: 'Direct tool IDs, comma separated',
               ),
             ),
             _drop('Model', model, const [
@@ -781,6 +1009,7 @@ class _AgentDialogState extends State<_AgentDialog> {
             : () {
                 if (name.text.trim().isEmpty ||
                     role.text.trim().isEmpty ||
+                    description.text.trim().length < 2 ||
                     instructions.text.trim().length < 10) {
                   return;
                 }
@@ -796,7 +1025,7 @@ class _AgentDialogState extends State<_AgentDialog> {
                   'approvalPolicy': approval,
                   'memoryScope': memory,
                   'skillIds': selected.toList(),
-                  'toolIds': <String>[],
+                  'toolIds': _splitCsv(toolIds.text),
                 });
               },
         child: const Text('Save'),

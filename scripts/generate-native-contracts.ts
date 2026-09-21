@@ -77,6 +77,18 @@ const frozenDocumentSha256ByVersion = Object.freeze({
     "fixtures.json": "0393ab11ac51bb98ebb584460b9f5e6109f8dfc82708804d2eda882e55764075",
     "manifest.json": "f07374ccf6409d3e8da0bdd047e710d8f0e431eaca0560cd0768ca09c219031d",
   }),
+  17: Object.freeze({
+    "openapi.json": "4cac8cadf63061626fce1a18d215a8b7fe2069ef8707aec6eaa4ad9d24aa94d8",
+    "events.schema.json": "54ad4d7e0a686efecd0b3a436ab16df640755c7c4da9b20f4f703cb45a835049",
+    "fixtures.json": "f20afbb058cf4a31be372194692cab2ac76069a4e553b68432e6f8376f8a58c8",
+    "manifest.json": "8101958ab99d8bd73a943a26aa7eac3293478f1ef0604da278f8e20c43d3ec74",
+  }),
+  18: Object.freeze({
+    "openapi.json": "ece0a7d0eaa566a7ec9a111feb3bf1cdfab55a467e77f34eeffc20692a0da48d",
+    "events.schema.json": "54ad4d7e0a686efecd0b3a436ab16df640755c7c4da9b20f4f703cb45a835049",
+    "fixtures.json": "4ef814152731bd3e594880a605e3087a17891600ca59163e61d3e70f395bfa24",
+    "manifest.json": "3ad8ac174c0acaa53f9581782e0762f20ad111f0e13a45348b6af75440d3615e",
+  }),
 });
 
 const fixtures = Object.freeze({

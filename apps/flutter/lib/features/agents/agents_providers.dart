@@ -20,10 +20,16 @@ final agentsControllerProvider = ChangeNotifierProvider<AgentsController>((
     mutationsAvailable: const [
       'agents.create',
       'agents.update',
-      'agents.delete',
+    ].every(NativeContract.supportsOperation),
+    agentDeleteAvailable: NativeContract.supportsOperation('agents.delete'),
+    skillMutationsAvailable: const [
       'skills.create',
       'skills.update',
       'skills.delete',
+    ].every(NativeContract.supportsOperation),
+    moltbookAvailable: const [
+      'moltbook.connection.show',
+      'moltbook.connection.manage',
     ].every(NativeContract.supportsOperation),
   );
   final unregister = ref
