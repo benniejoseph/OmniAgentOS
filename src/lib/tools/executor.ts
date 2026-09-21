@@ -90,6 +90,11 @@ import {
 } from "@/lib/memory/deletion-receipt";
 import { memoryLifecycleActionSchema } from "@/lib/memory/lifecycle";
 import type { MemoryRecord } from "@/lib/memory/types";
+import {
+  executeGovernedMoltbookToolAction,
+  isMoltbookToolId,
+  parseMoltbookToolInput,
+} from "@/lib/tools/moltbook-adapter";
 import { recordRuntimeEventSafely } from "@/lib/observability/store";
 import { redactSensitive } from "@/lib/security/context";
 import {
@@ -1633,11 +1638,12 @@ export async function executeGovernedTool({
         toolRuntimeContext,
         executionRecord?.id || idempotencyKey,
         abortSignal,
-        effectiveMcpSessionScope,
-        scopedRequest.binding?.executionScope || executionScope,
-        effectContext?.targetId || providerEffectIntent?.targetId,
+      effectiveMcpSessionScope,
+      scopedRequest.binding?.executionScope || executionScope,
+      effectContext?.targetId || providerEffectIntent?.targetId,
         executionRecord?.createdAt,
         agentRunId,
+        executionRecord,
       );
     } catch (error) {
       if (effectContext || providerEffectIntent) {
@@ -3221,6 +3227,7 @@ async function runTool(
   effectTargetId?: string,
   executionObservedAt?: string,
   agentRunId?: string,
+  executionRecord?: ToolExecutionRecord,
 ) {
   const parsed = parseInput(tool, input);
   const aiUsageScope = (
@@ -3242,6 +3249,18 @@ async function runTool(
     idempotencyKey,
   });
   if (appDispatch.handled) return appDispatch.result;
+
+  if (isMoltbookToolId(tool.id)) {
+    return executeGovernedMoltbookToolAction({
+      toolId: tool.id,
+      toolInput: parsed,
+      context,
+      executionScope,
+      executionRecord,
+      agentRunId,
+      abortSignal,
+    });
+  }
 
   const localComputerAction = localComputerActionForTool(tool.id);
   if (localComputerAction) {
@@ -3807,6 +3826,7 @@ type ProviderEffectMaterial = Readonly<{
     | "http_endpoint"
     | "google_calendar_event"
     | "google_workspace_resource"
+    | "moltbook_action"
     | "salesforce_record"
     | "mcp_operation"
     | "openapi_operation";
@@ -3901,6 +3921,19 @@ function prepareProviderEffectMaterial(
       ...target,
     });
   }
+  if (
+    isMoltbookToolId(tool.id) &&
+    governedToolOperationClass(tool, input) === "mutation"
+  ) {
+    const parsed = parseMoltbookToolInput(tool.id, input);
+    return genericProviderEffectMaterial({
+      tool,
+      input: parsed,
+      targetType: "moltbook_action",
+      targetIdentity: moltbookProviderTargetIdentity(tool.id, parsed),
+      targetIdPrefix: "moltbook_target",
+    });
+  }
   if (tool.id === "http.request") {
     const parsed = httpRequestSchema.parse(input);
     const method = parsed.method || "GET";
@@ -3966,6 +3999,32 @@ function genericProviderEffectMaterial(input: {
   });
 }
 
+function moltbookProviderTargetIdentity(
+  toolId: Parameters<typeof parseMoltbookToolInput>[0],
+  input: Record<string, unknown>,
+) {
+  switch (toolId) {
+    case "moltbook.post.create":
+      return { toolId, submoltName: input.submoltName };
+    case "moltbook.comment.create":
+      return {
+        toolId,
+        postId: input.postId,
+        parentId: input.parentId || null,
+      };
+    case "moltbook.post.vote":
+      return { toolId, postId: input.postId, direction: input.direction };
+    case "moltbook.comment.upvote":
+      return { toolId, commentId: input.commentId };
+    case "moltbook.agent.follow":
+      return { toolId, name: input.name, follow: input.follow };
+    case "moltbook.verify":
+      return { toolId, verificationCode: input.verificationCode };
+    default:
+      throw new Error("Moltbook read tools do not have provider effect targets.");
+  }
+}
+
 function buildProviderEffectIntent(input: {
   record: ToolExecutionRecord;
   tool: ToolDefinition;
@@ -3979,15 +4038,21 @@ function buildProviderEffectIntent(input: {
     executionScope.executingPrincipalType === "user" &&
     executionScope.executingPrincipalId === executionScope.initiatingActorId
   );
+  const isDirectMoltbookAgent = Boolean(
+    isMoltbookToolId(tool.id) &&
+    executionScope.initiatingActorId &&
+    executionScope.executingPrincipalType === "agent" &&
+    executionScope.executingPrincipalId
+  );
   const isBoundWorkflow = Boolean(
     effectBinding &&
     executionScope.initiatingActorId &&
     executionScope.executingPrincipalType === "system" &&
     executionScope.executingPrincipalId === `workflow:${effectBinding?.workflowRunId}`
   );
-  if (!isDirectUser && !isBoundWorkflow) {
+  if (!isDirectUser && !isDirectMoltbookAgent && !isBoundWorkflow) {
     throw new Error(
-      "Provider mutations require a directly authorized user or an exact workflow-plan binding.",
+      "Provider mutations require a directly authorized user, an approved Moltbook agent, or an exact workflow-plan binding.",
     );
   }
   const actorId = executionScope.initiatingActorId;
@@ -4104,6 +4169,22 @@ function finalizeProviderEffectIntent(
       providerAcknowledgement: "provider_response",
       providerAcknowledgementId:
         `${tool.category}_ack_${acknowledgementSha256.slice(0, 54)}`,
+      providerAcknowledgementSha256: acknowledgementSha256,
+      verificationMethod: "read_after_write",
+      verificationState: "unverifiable",
+      verificationReasonCode: "read_unavailable",
+      observedTargetStateSha256: null,
+    });
+  }
+  if (isMoltbookToolId(tool.id)) {
+    const acknowledgementSha256 = canonicalJsonSha256({
+      toolId: tool.id,
+      result: resultValue,
+    });
+    return finalizeEffectIntentV2(intent, {
+      providerAcknowledgement: "provider_response",
+      providerAcknowledgementId:
+        `moltbook_ack_${acknowledgementSha256.slice(0, 50)}`,
       providerAcknowledgementSha256: acknowledgementSha256,
       verificationMethod: "read_after_write",
       verificationState: "unverifiable",
@@ -4431,6 +4512,10 @@ function parseInput(tool: ToolDefinition, input: Record<string, unknown>) {
     return parseGoogleWorkspaceActionInput(tool.id, input);
   }
 
+  if (isMoltbookToolId(tool.id)) {
+    return parseMoltbookToolInput(tool.id, input);
+  }
+
   if (isSalesforceRecordWriteToolId(tool.id)) {
     return parseSalesforceRecordWriteInput(tool.id, input);
   }
@@ -4579,6 +4664,22 @@ function describeSideEffects(toolId: string) {
     return [
       "reads one bounded resource from the exact connected Google Workspace actor",
       "treats provider content as untrusted and enforces response-size limits",
+    ];
+  }
+
+  if (isMoltbookToolId(toolId)) {
+    if (toolId.endsWith(".read")) {
+      return [
+        "reads bounded content for the exact linked Moltbook agent",
+        "treats every post, comment, profile, and provider response as untrusted data",
+        "records the read in the actor-private Moltbook activity projection",
+      ];
+    }
+    return [
+      "performs one exact public Moltbook action as the linked custom agent",
+      "requires persisted human approval before any provider request",
+      "records the attempted action and provider outcome in the actor-private Moltbook activity projection",
+      "does not automatically retry a failed or uncertain public write",
     ];
   }
 
