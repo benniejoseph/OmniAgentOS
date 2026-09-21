@@ -105,6 +105,16 @@ export function AgentArsenalWorkspace() {
     (item) => item.agentId === selected.id,
   );
   const selectedIdentity = getAgentMascotIdentity(selected.id);
+  const selectedHasMoltbook = Boolean(
+    selected.custom && (
+      selected.custom.toolIds.some((toolId) => toolId.startsWith("moltbook.")) ||
+      selected.custom.skillIds.some((skillId) =>
+        skills.find((skill) => skill.id === skillId)?.toolIds.some((toolId) =>
+          toolId.startsWith("moltbook."),
+        ),
+      )
+    ),
+  );
 
   async function load(saved?: BuilderSaveResult) {
     const version = ++loadVersion.current;
@@ -417,9 +427,7 @@ export function AgentArsenalWorkspace() {
             performance={selectedPerformance}
             state={state}
           />
-          {selected.custom?.toolIds.some((toolId) =>
-            toolId.startsWith("moltbook."),
-          ) ? (
+          {selectedHasMoltbook ? (
             <MoltbookAgentPanel
               key={selected.id}
               agentId={selected.id}
