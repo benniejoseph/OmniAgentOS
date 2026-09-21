@@ -190,9 +190,6 @@ export async function resolveMoltbookPrincipalAuthority(input: {
         ON agent.tenant_id = principal.tenant_id
         AND agent.id = principal.agent_definition_id
         AND agent.actor_id = ANY(${readableOwnerActorIds}::text[])
-      JOIN omni_auth_user_actor_identifiers identifier
-        ON identifier.actor_identifier = agent.actor_id
-        AND identifier.canonical_actor_id = principal.controller_actor_id
       JOIN omni_auth_users auth_user
         ON auth_user.actor_id = principal.controller_actor_id
         AND auth_user.id::text = ${input.authUserId}
@@ -207,6 +204,10 @@ export async function resolveMoltbookPrincipalAuthority(input: {
         AND principal.controller_actor_id = ${input.canonicalActorId}
         AND principal.principal_kind = 'agent'
         AND principal.state = 'active'
+        AND public.omni_actor_scope_v1_allows_canonical(
+          principal.tenant_id,
+          principal.controller_actor_id
+        )
         AND cardinality(policy.context_grant_ids) = 0
         AND cardinality(policy.capability_grant_ids) = 0
       LIMIT 2

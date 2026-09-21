@@ -123,6 +123,8 @@ describe("Moltbook store contracts", () => {
     expect(resolver).toContain("auth_user.status = 'active'");
     expect(resolver).toContain("membership.status = 'active'");
     expect(resolver).toContain("membership.tenant_id = principal.tenant_id");
+    expect(resolver).toContain("public.omni_actor_scope_v1_allows_canonical(");
+    expect(resolver).not.toContain("JOIN omni_auth_user_actor_identifiers");
     expect(resolver).toContain("cardinality(policy.context_grant_ids) = 0");
     expect(resolver).toContain("cardinality(policy.capability_grant_ids) = 0");
   });
