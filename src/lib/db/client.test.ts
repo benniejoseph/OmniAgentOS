@@ -805,10 +805,15 @@ describe("ordered database schema versions", () => {
       name: "moltbook_autonomy_privilege_repair_v1",
       checksum: "c02b2ca195cbb00c206320eb2074fed7981c282c356f1d4320c6c1ac866adf94",
     });
-    expect(databaseSchemaMigrations.at(-1)).toEqual({
+    expect(databaseSchemaMigrations.find((migration) => migration.version === 196)).toEqual({
       version: 196,
       name: "delegation_execution_runtime_v1",
       checksum: "0113edbdab2a99f32d4e318c8407a5b66fb8fd7bcbbf839d4d199ded0d2ad6ac",
+    });
+    expect(databaseSchemaMigrations.at(-1)).toEqual({
+      version: 197,
+      name: "scheduled_workflow_trigger_shadow_v1",
+      checksum: "64953184d937e9b07591a8dc0aaf97fc696f00a1317ed872d8b58764eca35a16",
     });
     expect(databaseSchemaMigrations.find((migration) => migration.version === 139)).toEqual({
       version: 139,

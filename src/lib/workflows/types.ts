@@ -1,4 +1,5 @@
 import type { RunBudgetCountersV1 } from "@/lib/runs/budgets";
+import type { AgentRunIdentityPinV1 } from "@/lib/agents/identity-contracts";
 import type { WorkflowPlanContextBoundaryV1 } from "@/lib/workflows/shared-context";
 
 export type WorkflowRunStatus =
@@ -333,9 +334,83 @@ export type WorkflowTriggerStatus = "active" | "paused";
 
 export type WorkflowTriggerAuthMode = "none" | "hmac_sha256";
 
+export type WorkflowTriggerKind = "webhook" | "schedule";
+
+export type WorkflowScheduleMissedPolicy = "skip" | "run_once";
+
+export type WorkflowScheduleCircuitState = "closed" | "open" | "half_open";
+
+export type WorkflowScheduleProcedurePinV1 = Readonly<{
+  schemaVersion: 1;
+  procedureId: string;
+  snapshotSha256: string;
+  reviewedSnapshotSha256: string;
+  reviewedAt: string;
+}>;
+
+export type WorkflowScheduleConfigV1 = Readonly<{
+  schemaVersion: 1;
+  timezone: string;
+  rrule: string;
+  startsAt: string;
+  endsAt?: string;
+  maxOccurrences: number;
+  missedPolicy: WorkflowScheduleMissedPolicy;
+  procedurePin: WorkflowScheduleProcedurePinV1;
+  agentIdentityPin: AgentRunIdentityPinV1;
+  policyPinSha256: string;
+  occurrenceBudget: RunBudgetCountersV1;
+  failureLimit: number;
+  configSha256: string;
+}>;
+
+export type WorkflowScheduleStateV1 = Readonly<{
+  nextDueAt?: string;
+  occurrenceCount: number;
+  consecutiveFailureCount: number;
+  circuitState: WorkflowScheduleCircuitState;
+  pausedReason?: string;
+  lastFailureAt?: string;
+  circuitOpenedAt?: string;
+  shadowNextDueAt?: string;
+  shadowOccurrenceCount: number;
+  shadowEvaluatedAt?: string;
+}>;
+
+export type WorkflowScheduleShadowOutcome =
+  | "due"
+  | "missed_run_once"
+  | "missed_skipped"
+  | "exhausted";
+
+export type WorkflowScheduleShadowReceiptV1 = Readonly<{
+  schemaVersion: 1;
+  id: string;
+  tenantId: string;
+  ownerActorId: string;
+  triggerId: string;
+  scheduledFor: string;
+  evaluatedThrough: string;
+  outcome: WorkflowScheduleShadowOutcome;
+  wouldCreateRun: boolean;
+  occurrencesConsumed: number;
+  occurrenceCount: number;
+  nextDueAt?: string;
+  configurationSha256: string;
+  agentIdentityPinSha256: string;
+  policyPinSha256: string;
+  procedureSnapshotSha256: string;
+  reviewedSnapshotSha256: string;
+  occurrenceBudgetSha256: string;
+  evaluatedAt: string;
+  receiptSha256: string;
+}>;
+
 export type WorkflowTriggerRecord = {
   id: string;
   tenantId: string;
+  triggerKind: WorkflowTriggerKind;
+  ownerActorId?: string;
   name: string;
   source: string;
   status: WorkflowTriggerStatus;
@@ -348,6 +423,10 @@ export type WorkflowTriggerRecord = {
   triggerCount: number;
   failureCount: number;
   lastTriggeredAt?: string;
+  schedule?: Readonly<{
+    config: WorkflowScheduleConfigV1;
+    state: WorkflowScheduleStateV1;
+  }>;
   createdAt: string;
   updatedAt: string;
 };
