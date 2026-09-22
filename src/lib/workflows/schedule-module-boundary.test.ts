@@ -32,7 +32,7 @@ describe("workflow schedule module boundary", () => {
         'import { DEFAULT_READ_ONLY_SCHEDULE_BUDGET } from "@/lib/workflows/schedule-defaults";',
       );
       expect(source).not.toMatch(
-        /import\s*\{[^}]*DEFAULT_READ_ONLY_SCHEDULE_BUDGET[^}]*\}\s*from\s*["']@\/lib\/workflows\/triggers["']/s,
+        /import\s*\{[^}]*DEFAULT_READ_ONLY_SCHEDULE_BUDGET[^}]*\}\s*from\s*["']@\/lib\/workflows\/triggers["']/,
       );
     }
   });
