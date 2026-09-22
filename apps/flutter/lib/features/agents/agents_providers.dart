@@ -5,12 +5,29 @@ import '../../core/network/api_client.dart';
 import '../../core/sync/reconnect_coordinator.dart';
 import '../../generated/native_contract.g.dart';
 import '../auth/application/session_controller.dart';
+import 'agent_council.dart';
+import 'agent_council_api_repository.dart';
 import 'agents.dart';
 import 'agents_api_repository.dart';
 
 final agentsRepositoryProvider = Provider<AgentsRepository>(
   (ref) => ApiAgentsRepository(ref.watch(apiClientProvider)),
 );
+final agentCouncilRepositoryProvider = Provider<AgentCouncilRepository>(
+  (ref) => ApiAgentCouncilRepository(ref.watch(apiClientProvider)),
+);
+final agentCouncilControllerProvider =
+    ChangeNotifierProvider<AgentCouncilController>((ref) {
+      final controller = AgentCouncilController(
+        ref.watch(agentCouncilRepositoryProvider),
+      );
+      final unregister = ref
+          .read(reconnectCoordinatorProvider)
+          .register('agent-council', controller.refresh);
+      ref.onDispose(unregister);
+      controller.refresh();
+      return controller;
+    });
 final agentsControllerProvider = ChangeNotifierProvider<AgentsController>((
   ref,
 ) {

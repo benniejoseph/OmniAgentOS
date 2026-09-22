@@ -580,6 +580,23 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   readTool("app.agents.council.show", "Show Agent Council", "Read the current actor's grant-derived delegation map, messages, outputs, cost, confidence, and verifier state.", objectSchema({
     limit: integer(1, 100, 60),
   })),
+  mutationTool("app.agents.delegate", "Delegate bounded agent task", "Create one durable, one-level child task for a Settings-configured specialist. The child receives only explicitly granted read tools and its result remains proposed until verifier review.", requiredObjectSchema({
+    objective: text(3, 4_000),
+    taskKind: { type: "string", enum: ["research", "build", "verify", "memory"] },
+    acceptanceCriteria: {
+      type: "array", minItems: 1, maxItems: 8, uniqueItems: true,
+      items: text(3, 500),
+    },
+    mode: { type: "string", enum: ["isolated", "fork", "team"], default: "isolated" },
+    preferredAgentId: { type: "string", enum: ["scout", "meridian", "forge", "sentinel", "mnemosyne"] },
+  }, ["objective", "taskKind", "acceptanceCriteria"]), { reversible: false }),
+  readTool("app.agents.tasks.list", "List delegated agent tasks", "List bounded status projections for the current actor's durable delegated tasks without exposing authority contracts, capability grants, or context capsules.", objectSchema({
+    parentExecutionId: opaqueId("Optional exact parent execution ID."),
+    limit: integer(1, 100, 60),
+  })),
+  readTool("app.agents.tasks.show", "Show delegated agent task", "Read one bounded delegated-task result and verifier projection owned by the current actor without exposing authority contracts, capability grants, or context capsules.", requiredObjectSchema({
+    executionId: opaqueId("Exact delegation execution ID."),
+  }, ["executionId"])),
   mutationTool("app.agents.create", "Create custom agent", "Create one custom agent with bounded skills, tools, memory, model, and approval policy.", requiredObjectSchema(agentProperties(), ["name", "role", "description", "instructions"]), { reversible: true }),
   mutationTool("app.agents.update", "Update custom agent", "Update one exact custom agent.", requiredObjectSchema({
     id: opaqueId("Exact custom-agent ID."), change: objectSchema(agentProperties()),

@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 20;
-  static const previousVersion = 19;
-  static const supportedVersions = <int>[20, 19];
+  static const currentVersion = 21;
+  static const previousVersion = 20;
+  static const supportedVersions = <int>[21, 20];
   static const discoveryPath = '/api/mobile/contracts';
   static const operationIds = <String>{
     'auth.login',
@@ -134,6 +134,7 @@ abstract final class NativeContract {
     'agents.update',
     'moltbook.connection.show',
     'moltbook.connection.manage',
+    'agents.council',
   };
 
   static bool supports(int version) => supportedVersions.contains(version);
@@ -356,6 +357,17 @@ abstract final class NativePaths {
     return '$path?$encoded';
   }
   static String moltbookConnectionManage(String id) => '/api/agents/${Uri.encodeComponent(id)}/moltbook';
+  static String agentsCouncil({int? limit}) {
+    final path = '/api/agents/council';
+    final query = <String, String>{
+      if (limit != null) 'limit': limit.toString(),
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
 }
 
 abstract final class NativeConversationEvents {

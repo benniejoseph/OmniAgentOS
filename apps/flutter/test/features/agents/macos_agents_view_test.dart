@@ -1,8 +1,11 @@
 import 'package:asael/app/theme/macos_app_theme.dart';
+import 'package:asael/features/agents/agent_council.dart';
 import 'package:asael/features/agents/agents.dart';
 import 'package:asael/features/agents/macos_agents_view.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import 'agent_council_fixture.dart';
 
 class _AgentsRepository implements AgentsRepository {
   @override
@@ -94,6 +97,24 @@ class _PausedAgentsRepository extends _AgentsRepository {
   @override
   Future<AgentLedger> load() async =>
       const AgentLedger(agents: [_pausedAgent], skills: [], performance: []);
+}
+
+class _CouncilRepository implements AgentCouncilRepository {
+  _CouncilRepository({this.state = 'ready'});
+
+  final String state;
+  int loads = 0;
+
+  @override
+  Future<AgentCouncilProjection> load({int limit = 60}) async {
+    loads += 1;
+    return AgentCouncilProjection.fromJson(
+      agentCouncilFixtureJson(
+        state: state,
+        includeExecutions: state == 'ready',
+      ),
+    );
+  }
 }
 
 const _atlas = AgentProfile(
@@ -361,6 +382,149 @@ const _memoryPerformance = AgentPerformance(
 );
 
 void main() {
+  testWidgets(
+    'opens the macOS Agent Control Center with live work and evidence',
+    (tester) async {
+      await _useDesktopViewport(tester);
+      final controller = AgentsController(
+        _AgentsRepository(),
+        canManage: true,
+        mutationsAvailable: true,
+        skillMutationsAvailable: true,
+      );
+      final councilController = AgentCouncilController(_CouncilRepository());
+      addTearDown(controller.dispose);
+      addTearDown(councilController.dispose);
+      await controller.refresh();
+      await councilController.refresh();
+
+      await tester.pumpWidget(
+        _app(
+          MacosAgentsView(
+            controller: controller,
+            councilController: councilController,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const Key('macos-agents-live-summary')),
+        findsOneWidget,
+      );
+      expect(find.text('Execution queue'), findsOneWidget);
+      expect(find.text('Scout'), findsWidgets);
+      expect(find.text('Current work'), findsOneWidget);
+      expect(find.text('Team messages'), findsOneWidget);
+      expect(find.text('Shared outputs'), findsOneWidget);
+      expect(find.text('Independent verification'), findsOneWidget);
+      expect(find.text('82%'), findsOneWidget);
+      expect(find.text('Verified delegation receipt'), findsOneWidget);
+      expect(find.text('Read only'), findsOneWidget);
+      expect(find.byKey(const Key('macos-agents-create')), findsNothing);
+
+      await tester.tap(
+        find.byKey(const Key('macos-council-member-task-forge-one')),
+      );
+      await tester.pump();
+      expect(find.text('Forge'), findsWidgets);
+      expect(
+        find.text(
+          'Waiting for the parent Agent to provide an approved implementation boundary.',
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('Not recorded'), findsWidgets);
+
+      await tester.tap(find.text('Roster'));
+      await tester.pumpAndSettle();
+      expect(find.text('Agent and role'), findsOneWidget);
+      expect(find.byKey(const Key('macos-agent-row-atlas')), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'teaches an empty Council and reports unavailable data honestly',
+    (tester) async {
+      await _useDesktopViewport(tester);
+      final controller = AgentsController(
+        _AgentsRepository(),
+        canManage: false,
+        mutationsAvailable: false,
+      );
+      final emptyCouncil = AgentCouncilController(
+        _CouncilRepository(state: 'empty'),
+      );
+      addTearDown(controller.dispose);
+      addTearDown(emptyCouncil.dispose);
+      await controller.refresh();
+      await emptyCouncil.refresh();
+
+      await tester.pumpWidget(
+        _app(
+          MacosAgentsView(
+            controller: controller,
+            councilController: emptyCouncil,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('No delegated work yet'), findsOneWidget);
+      expect(find.textContaining('delegates a bounded task'), findsOneWidget);
+
+      final unavailableCouncil = AgentCouncilController(
+        _CouncilRepository(state: 'unavailable'),
+      );
+      addTearDown(unavailableCouncil.dispose);
+      await unavailableCouncil.refresh();
+      await tester.pumpWidget(
+        _app(
+          MacosAgentsView(
+            controller: controller,
+            councilController: unavailableCouncil,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Delegation ledger is unavailable'), findsOneWidget);
+      expect(
+        find.textContaining('No health state is inferred'),
+        findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets('keeps live work usable in a narrow macOS window', (
+    tester,
+  ) async {
+    await _useViewport(tester, const Size(760, 760));
+    final controller = AgentsController(
+      _AgentsRepository(),
+      canManage: false,
+      mutationsAvailable: false,
+    );
+    final councilController = AgentCouncilController(_CouncilRepository());
+    addTearDown(controller.dispose);
+    addTearDown(councilController.dispose);
+    await controller.refresh();
+    await councilController.refresh();
+
+    await tester.pumpWidget(
+      _app(
+        MacosAgentsView(
+          controller: controller,
+          councilController: councilController,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('macos-agents-live-rail')), findsOneWidget);
+    expect(find.byKey(const Key('macos-agents-live-canvas')), findsOneWidget);
+    expect(find.byTooltip('Open inspector'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('uses a searchable agent roster with persistent policy detail', (
     tester,
   ) async {
@@ -953,8 +1117,12 @@ Widget _app(Widget child) =>
     MaterialApp(theme: MacosAppTheme.light(), home: child);
 
 Future<void> _useDesktopViewport(WidgetTester tester) async {
+  await _useViewport(tester, const Size(1440, 900));
+}
+
+Future<void> _useViewport(WidgetTester tester, Size size) async {
   tester.view.devicePixelRatio = 1;
-  tester.view.physicalSize = const Size(1440, 900);
+  tester.view.physicalSize = size;
   addTearDown(tester.view.resetDevicePixelRatio);
   addTearDown(tester.view.resetPhysicalSize);
 }

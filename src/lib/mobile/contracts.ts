@@ -12,8 +12,8 @@ import { mobilePushReceiptRequestSchema } from "@/lib/mobile/push-contract";
 import { pluginManifestSchema } from "@/lib/plugins/contracts";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 20 as const;
-export const NATIVE_API_PREVIOUS_VERSION = 19 as const;
+export const NATIVE_API_CURRENT_VERSION = 21 as const;
+export const NATIVE_API_PREVIOUS_VERSION = 20 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -1061,6 +1061,27 @@ const v19Operations: readonly NativeOperation[] = [
 // pins its definition, principal, grants, and policy before execution.
 const v20Operations: readonly NativeOperation[] = [...v19Operations];
 
+// Contract v21 publishes the canonical, actor-scoped Council read projection
+// used by the macOS Agent Control Center. It adds no mutation or delegation
+// authority; child control remains exclusively inside governed workflows.
+const v21Operations: readonly NativeOperation[] = [
+  ...v20Operations,
+  operation(
+    "agents.council",
+    "GET",
+    "/api/agents/council",
+    "Read recent canonical delegation work, verification, and evidence summaries.",
+    "bearer",
+    undefined,
+    "JsonObject",
+    {
+      queryParameters: [
+        queryParameter("limit", "integer", { minimum: 1, maximum: 100 }),
+      ],
+    },
+  ),
+];
+
 export const nativeContractSchemas = Object.freeze({
   JsonObject: jsonObject,
   NativeClientAttestation: nativeClientAttestationSchema,
@@ -1144,6 +1165,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 18) return v18Operations;
   if (version === 19) return v19Operations;
   if (version === 20) return v20Operations;
+  if (version === 21) return v21Operations;
   return undefined;
 }
 
@@ -1153,7 +1175,7 @@ export function nativeContractDiscovery() {
     contractId: NATIVE_API_CONTRACT_ID,
     currentVersion: NATIVE_API_CURRENT_VERSION,
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
-    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [20, 19],
+    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [21, 20],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,
       state: version === NATIVE_API_CURRENT_VERSION ? "current" as const : "previous" as const,

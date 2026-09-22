@@ -1,11 +1,14 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../app/macos/macos_page_scaffold.dart';
 import '../../app/theme/macos_app_theme.dart';
+import 'agent_council.dart';
 import 'agents.dart';
 
-enum _AgentWorkspace { agents, skills, performance }
+enum _AgentWorkspace { liveWork, agents, skills, performance }
 
 const _agentModelPolicies = <String>[
   'auto',
@@ -25,47 +28,97 @@ class MacosAgentsView extends StatefulWidget {
   const MacosAgentsView({
     super.key,
     required this.controller,
+    this.councilController,
     this.onAssignWork,
   });
 
   final AgentsController controller;
+  final AgentCouncilController? councilController;
   final ValueChanged<AgentProfile>? onAssignWork;
 
   @override
   State<MacosAgentsView> createState() => _MacosAgentsViewState();
 }
 
-class _MacosAgentsViewState extends State<MacosAgentsView> {
+class _MacosAgentsViewState extends State<MacosAgentsView>
+    with WidgetsBindingObserver {
+  static const _liveRefreshInterval = Duration(seconds: 20);
+
   final _searchController = TextEditingController();
   _AgentWorkspace _workspace = _AgentWorkspace.agents;
   String _filter = 'all';
   String? _selectedAgentId;
   String? _selectedSkillId;
   String? _selectedPerformanceId;
+  String? _selectedExecutionId;
+  String? _selectedTaskId;
+  Timer? _liveRefreshTimer;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    if (widget.councilController != null) {
+      _workspace = _AgentWorkspace.liveWork;
+      if (widget.councilController?.projection == null &&
+          widget.councilController?.loading != true) {
+        widget.councilController?.refresh();
+      }
+      _syncLiveRefreshTimer();
+    }
     if (widget.controller.ledger == null && !widget.controller.loading) {
       widget.controller.refresh();
     }
   }
 
   @override
+  void didUpdateWidget(covariant MacosAgentsView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.councilController, widget.councilController)) {
+      if (widget.councilController == null &&
+          _workspace == _AgentWorkspace.liveWork) {
+        _workspace = _AgentWorkspace.agents;
+      }
+      _syncLiveRefreshTimer();
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _syncLiveRefreshTimer();
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _liveRefreshTimer?.cancel();
     _searchController.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) => ListenableBuilder(
-    listenable: widget.controller,
+    listenable: Listenable.merge([
+      widget.controller,
+      if (widget.councilController != null) widget.councilController!,
+    ]),
     builder: (context, _) {
       final controller = widget.controller;
+      final councilController = widget.councilController;
+      final council = councilController?.projection;
       final ledger = controller.ledger;
       final agents = _visibleAgents(ledger?.agents ?? const []);
       final skills = _visibleSkills(ledger?.skills ?? const []);
       final performance = _visiblePerformance(ledger?.performance ?? const []);
+      final executions = _visibleExecutions(council?.executions ?? const []);
+      final selectedExecution = _findExecution(
+        executions,
+        _selectedExecutionId,
+      );
+      final selectedMember = _findCouncilMember(
+        selectedExecution,
+        _selectedTaskId,
+      );
       final selectedAgent = _findAgent(
         ledger?.agents ?? const [],
         _selectedAgentId,
@@ -81,14 +134,24 @@ class _MacosAgentsViewState extends State<MacosAgentsView> {
 
       return MacosPageScaffold(
         title: 'Agents',
-        description: 'Inspect the roster, capability assignments, policy, and observed outcomes.',
+        description: 'Follow delegated work, inspect authority and evidence, and manage the Agent roster.',
         icon: Icons.smart_toy_outlined,
         actions: [
           IconButton(
             key: const Key('macos-agents-refresh'),
-            tooltip: 'Refresh agent roster',
-            onPressed: controller.loading ? null : controller.refresh,
-            icon: controller.loading
+            tooltip: _workspace == _AgentWorkspace.liveWork
+                ? 'Refresh live work'
+                : 'Refresh agent roster',
+            onPressed: _workspace == _AgentWorkspace.liveWork
+                ? (councilController == null || councilController.loading
+                      ? null
+                      : councilController.refresh)
+                : (controller.loading ? null : controller.refresh),
+            icon:
+                ((_workspace == _AgentWorkspace.liveWork &&
+                        councilController?.loading == true) ||
+                    (_workspace != _AgentWorkspace.liveWork &&
+                        controller.loading))
                 ? const SizedBox.square(
                     dimension: 16,
                     child: CircularProgressIndicator(strokeWidth: 2),
@@ -118,8 +181,9 @@ class _MacosAgentsViewState extends State<MacosAgentsView> {
           workspace: _workspace,
           searchController: _searchController,
           filter: _filter,
-          filters: _filtersFor(ledger),
+          filters: _filtersFor(ledger, council),
           visibleCount: switch (_workspace) {
+            _AgentWorkspace.liveWork => executions.length,
             _AgentWorkspace.agents => agents.length,
             _AgentWorkspace.skills => skills.length,
             _AgentWorkspace.performance => performance.length,
@@ -135,47 +199,59 @@ class _MacosAgentsViewState extends State<MacosAgentsView> {
         inspectorWidth: 410,
         inspectorMinWidth: 330,
         inspectorMaxWidth: 560,
-        inspector: _AgentInspector(
-          key: const Key('macos-agents-inspector'),
-          workspace: _workspace,
-          agent: selectedAgent,
-          skill: selectedSkill,
-          performance: selectedPerformance,
-          ledger: ledger,
-          controller: controller,
-          canMutate: _workspace == _AgentWorkspace.agents
-              ? controller.canMutateAgents
-              : controller.canMutateSkills,
-          onEditAgent: selectedAgent == null
-              ? null
-              : () => _editAgent(selectedAgent),
-          onDeleteAgent:
-              selectedAgent == null ||
-                  !selectedAgent.manageable ||
-                  !controller.canDeleteAgents
-              ? null
-              : () => _confirmDelete(
-                  selectedAgent.name,
-                  () => controller.removeAgent(selectedAgent.id),
-                ),
-          onAssignWork:
-              selectedAgent == null ||
-                  !selectedAgent.selectable ||
-                  selectedAgent.status == 'paused' ||
-                  widget.onAssignWork == null
-              ? null
-              : () => widget.onAssignWork?.call(selectedAgent),
-          onEditSkill: selectedSkill == null
-              ? null
-              : () => _editSkill(selectedSkill),
-          onDeleteSkill: selectedSkill == null || !selectedSkill.manageable
-              ? null
-              : () => _confirmDelete(
-                  selectedSkill.name,
-                  () => controller.removeSkill(selectedSkill.id),
-                ),
-        ),
+        inspector: _workspace == _AgentWorkspace.liveWork
+            ? _AgentCouncilInspector(
+                key: const Key('macos-agents-live-inspector'),
+                execution: selectedExecution,
+                member: selectedMember,
+              )
+            : _AgentInspector(
+                key: const Key('macos-agents-inspector'),
+                workspace: _workspace,
+                agent: selectedAgent,
+                skill: selectedSkill,
+                performance: selectedPerformance,
+                ledger: ledger,
+                controller: controller,
+                canMutate: _workspace == _AgentWorkspace.agents
+                    ? controller.canMutateAgents
+                    : controller.canMutateSkills,
+                onEditAgent: selectedAgent == null
+                    ? null
+                    : () => _editAgent(selectedAgent),
+                onDeleteAgent:
+                    selectedAgent == null ||
+                        !selectedAgent.manageable ||
+                        !controller.canDeleteAgents
+                    ? null
+                    : () => _confirmDelete(
+                        selectedAgent.name,
+                        () => controller.removeAgent(selectedAgent.id),
+                      ),
+                onAssignWork:
+                    selectedAgent == null ||
+                        !selectedAgent.selectable ||
+                        selectedAgent.status == 'paused' ||
+                        widget.onAssignWork == null
+                    ? null
+                    : () => widget.onAssignWork?.call(selectedAgent),
+                onEditSkill: selectedSkill == null
+                    ? null
+                    : () => _editSkill(selectedSkill),
+                onDeleteSkill:
+                    selectedSkill == null || !selectedSkill.manageable
+                    ? null
+                    : () => _confirmDelete(
+                        selectedSkill.name,
+                        () => controller.removeSkill(selectedSkill.id),
+                      ),
+              ),
         body: _buildBody(
+          councilController: councilController,
+          council: council,
+          executions: executions,
+          selectedExecution: selectedExecution,
+          selectedMember: selectedMember,
           ledger: ledger,
           agents: agents,
           skills: skills,
@@ -189,6 +265,11 @@ class _MacosAgentsViewState extends State<MacosAgentsView> {
   );
 
   Widget _buildBody({
+    required AgentCouncilController? councilController,
+    required AgentCouncilProjection? council,
+    required List<AgentCouncilExecution> executions,
+    required AgentCouncilExecution? selectedExecution,
+    required AgentCouncilMember? selectedMember,
     required AgentLedger? ledger,
     required List<AgentProfile> agents,
     required List<AgentSkill> skills,
@@ -197,6 +278,15 @@ class _MacosAgentsViewState extends State<MacosAgentsView> {
     required AgentSkill? selectedSkill,
     required AgentPerformance? selectedPerformance,
   }) {
+    if (_workspace == _AgentWorkspace.liveWork) {
+      return _buildLiveWork(
+        controller: councilController,
+        projection: council,
+        executions: executions,
+        selectedExecution: selectedExecution,
+        selectedMember: selectedMember,
+      );
+    }
     final controller = widget.controller;
     if (ledger == null && controller.loading) {
       return const MacosLoadingList(rows: 9);
@@ -213,6 +303,7 @@ class _MacosAgentsViewState extends State<MacosAgentsView> {
       );
     }
     return switch (_workspace) {
+      _AgentWorkspace.liveWork => const SizedBox.shrink(),
       _AgentWorkspace.agents => _AgentRoster(
         agents: agents,
         selectedId: selectedAgent?.id,
@@ -240,8 +331,15 @@ class _MacosAgentsViewState extends State<MacosAgentsView> {
   bool get _isFiltered =>
       _searchController.text.trim().isNotEmpty || _filter != 'all';
 
-  List<String> _filtersFor(AgentLedger? ledger) {
+  List<String> _filtersFor(
+    AgentLedger? ledger,
+    AgentCouncilProjection? council,
+  ) {
     final values = switch (_workspace) {
+      _AgentWorkspace.liveWork =>
+        (council?.executions ?? const <AgentCouncilExecution>[]).map(
+          (execution) => _councilStatusGroup(execution.status),
+        ),
       _AgentWorkspace.agents => (ledger?.agents ?? const <AgentProfile>[]).map(
         (agent) => agent.status,
       ),
@@ -297,17 +395,133 @@ class _MacosAgentsViewState extends State<MacosAgentsView> {
     }).toList()..sort((left, right) => right.runs.compareTo(left.runs));
   }
 
+  List<AgentCouncilExecution> _visibleExecutions(
+    List<AgentCouncilExecution> source,
+  ) {
+    final query = _searchController.text.trim().toLowerCase();
+    return source.where((execution) {
+      final matchesFilter =
+          _filter == 'all' || _councilStatusGroup(execution.status) == _filter;
+      final matchesQuery =
+          query.isEmpty ||
+          execution.parentExecutionId.toLowerCase().contains(query) ||
+          execution.currentWork.toLowerCase().contains(query) ||
+          execution.members.any(
+            (member) =>
+                member.identity.name.toLowerCase().contains(query) ||
+                member.identity.role.toLowerCase().contains(query) ||
+                member.currentWork.toLowerCase().contains(query),
+          );
+      return matchesFilter && matchesQuery;
+    }).toList()..sort(
+      (left, right) => right.updatedAt.compareTo(left.updatedAt),
+    );
+  }
+
   void _selectWorkspace(Set<_AgentWorkspace> values) {
     if (values.isEmpty) return;
     setState(() {
       _workspace = values.first;
       _filter = 'all';
+      _searchController.clear();
     });
+    if (_workspace == _AgentWorkspace.liveWork &&
+        widget.councilController?.projection == null &&
+        widget.councilController?.loading != true) {
+      widget.councilController?.refresh();
+    }
+    _syncLiveRefreshTimer();
   }
 
   void _clearFilters() {
     _searchController.clear();
     setState(() => _filter = 'all');
+  }
+
+  Widget _buildLiveWork({
+    required AgentCouncilController? controller,
+    required AgentCouncilProjection? projection,
+    required List<AgentCouncilExecution> executions,
+    required AgentCouncilExecution? selectedExecution,
+    required AgentCouncilMember? selectedMember,
+  }) {
+    if (controller == null) {
+      return const MacosEmptyState(
+        icon: Icons.account_tree_outlined,
+        title: 'Live work is unavailable',
+        message: 'This installation does not include the Agent Council read projection.',
+      );
+    }
+    if (projection == null && controller.loading) {
+      return const MacosLoadingList(rows: 8);
+    }
+    if (projection == null && controller.error != null) {
+      return MacosEmptyState(
+        icon: Icons.cloud_off_outlined,
+        title: 'Live work could not be loaded',
+        message: '${controller.error}',
+        action: FilledButton.tonalIcon(
+          onPressed: controller.refresh,
+          icon: const Icon(Icons.refresh_rounded, size: 17),
+          label: const Text('Try again'),
+        ),
+      );
+    }
+    if (projection == null || projection.state == 'unavailable') {
+      return MacosEmptyState(
+        icon: Icons.sync_problem_outlined,
+        title: 'Delegation ledger is unavailable',
+        message: 'Asael could not verify the canonical Agent work projection. No health state is inferred.',
+        action: FilledButton.tonalIcon(
+          onPressed: controller.refresh,
+          icon: const Icon(Icons.refresh_rounded, size: 17),
+          label: const Text('Retry connection'),
+        ),
+      );
+    }
+    if (projection.state == 'empty') {
+      return const MacosEmptyState(
+        icon: Icons.account_tree_outlined,
+        title: 'No delegated work yet',
+        message: 'Live work appears here after Asael delegates a bounded task to a specialist Agent.',
+      );
+    }
+    if (executions.isEmpty) {
+      return _RosterEmpty(
+        filtered: _isFiltered,
+        icon: Icons.filter_alt_off_outlined,
+        emptyTitle: 'No live work matches these filters',
+        onClearFilters: _clearFilters,
+      );
+    }
+    return _AgentCouncilWorkspace(
+      projection: projection,
+      executions: executions,
+      selectedExecution: selectedExecution!,
+      selectedMember: selectedMember!,
+      refreshError: controller.error,
+      onSelect: (execution, member) => setState(() {
+        _selectedExecutionId = execution.parentExecutionId;
+        _selectedTaskId = member.taskId;
+      }),
+    );
+  }
+
+  void _syncLiveRefreshTimer() {
+    _liveRefreshTimer?.cancel();
+    _liveRefreshTimer = null;
+    final lifecycle = WidgetsBinding.instance.lifecycleState;
+    final isVisible =
+        lifecycle == null || lifecycle == AppLifecycleState.resumed;
+    if (widget.councilController == null ||
+        _workspace != _AgentWorkspace.liveWork ||
+        !isVisible) {
+      return;
+    }
+    _liveRefreshTimer = Timer.periodic(_liveRefreshInterval, (_) {
+      final controller = widget.councilController;
+      if (controller != null && !controller.loading) controller.refresh();
+    });
   }
 
   Future<void> _editAgent([AgentProfile? agent]) async {
@@ -402,41 +616,58 @@ class _AgentsToolbar extends StatelessWidget {
   @override
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, constraints) {
-      final compact = constraints.maxWidth < 820;
+      final compact = constraints.maxWidth < 1040;
       return Row(
         children: [
           SegmentedButton<_AgentWorkspace>(
             key: const Key('macos-agents-workspace'),
             showSelectedIcon: false,
-            segments: const [
+            segments: [
+              ButtonSegment(
+                value: _AgentWorkspace.liveWork,
+                icon: const Tooltip(
+                  message: 'Live work',
+                  child: Icon(Icons.account_tree_outlined, size: 15),
+                ),
+                label: compact ? null : const Text('Live work'),
+              ),
               ButtonSegment(
                 value: _AgentWorkspace.agents,
-                icon: Icon(Icons.smart_toy_outlined, size: 15),
-                label: Text('Roster'),
+                icon: const Tooltip(
+                  message: 'Roster',
+                  child: Icon(Icons.smart_toy_outlined, size: 15),
+                ),
+                label: compact ? null : const Text('Roster'),
               ),
               ButtonSegment(
                 value: _AgentWorkspace.skills,
-                icon: Icon(Icons.bolt_outlined, size: 15),
-                label: Text('Skills'),
+                icon: const Tooltip(
+                  message: 'Skills',
+                  child: Icon(Icons.bolt_outlined, size: 15),
+                ),
+                label: compact ? null : const Text('Skills'),
               ),
               ButtonSegment(
                 value: _AgentWorkspace.performance,
-                icon: Icon(Icons.query_stats_outlined, size: 15),
-                label: Text('Outcomes'),
+                icon: const Tooltip(
+                  message: 'Outcomes',
+                  child: Icon(Icons.query_stats_outlined, size: 15),
+                ),
+                label: compact ? null : const Text('Outcomes'),
               ),
             ],
             selected: {workspace},
             onSelectionChanged: onWorkspaceChanged,
           ),
           const SizedBox(width: 12),
-          SizedBox(
-            width: compact ? 210 : 290,
+          Expanded(
             child: TextField(
               key: const Key('macos-agents-search'),
               controller: searchController,
               onChanged: onSearchChanged,
               decoration: InputDecoration(
                 hintText: switch (workspace) {
+                  _AgentWorkspace.liveWork => 'Search work or specialists',
                   _AgentWorkspace.agents => 'Search agents or models',
                   _AgentWorkspace.skills => 'Search skills or tools',
                   _AgentWorkspace.performance => 'Search outcomes',
@@ -454,7 +685,7 @@ class _AgentsToolbar extends StatelessWidget {
           ),
           const SizedBox(width: 8),
           SizedBox(
-            width: compact ? 126 : 155,
+            width: compact ? 120 : 155,
             child: DropdownButtonFormField<String>(
               key: ValueKey('macos-agents-filter-$workspace-$filter'),
               initialValue: filter,
@@ -474,15 +705,1112 @@ class _AgentsToolbar extends StatelessWidget {
               },
             ),
           ),
-          const Spacer(),
-          if (!compact)
+          if (!compact) ...[
+            const SizedBox(width: 12),
             Text(
               '$visibleCount visible',
               style: Theme.of(context).textTheme.bodySmall,
             ),
+          ],
         ],
       );
     },
+  );
+}
+
+class _AgentCouncilWorkspace extends StatelessWidget {
+  const _AgentCouncilWorkspace({
+    required this.projection,
+    required this.executions,
+    required this.selectedExecution,
+    required this.selectedMember,
+    required this.refreshError,
+    required this.onSelect,
+  });
+
+  final AgentCouncilProjection projection;
+  final List<AgentCouncilExecution> executions;
+  final AgentCouncilExecution selectedExecution;
+  final AgentCouncilMember selectedMember;
+  final Object? refreshError;
+  final void Function(
+    AgentCouncilExecution execution,
+    AgentCouncilMember member,
+  )
+  onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    final mac = MacosThemeColors.of(context);
+    return Column(
+      children: [
+        _CouncilSummaryStrip(projection: projection),
+        if (refreshError != null)
+          Container(
+            key: const Key('macos-agents-live-stale'),
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.errorContainer,
+              border: Border(bottom: BorderSide(color: mac.divider)),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  Icons.warning_amber_rounded,
+                  size: 16,
+                  color: Theme.of(context).colorScheme.onErrorContainer,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Showing the last verified projection. Refresh failed: $refreshError',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onErrorContainer,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        Expanded(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final horizontal = constraints.maxWidth >= 760;
+              final rail = _CouncilExecutionRail(
+                executions: executions,
+                selectedExecutionId: selectedExecution.parentExecutionId,
+                selectedTaskId: selectedMember.taskId,
+                horizontal: !horizontal,
+                onSelect: onSelect,
+              );
+              final canvas = _CouncilMemberCanvas(
+                execution: selectedExecution,
+                member: selectedMember,
+              );
+              if (!horizontal) {
+                return Column(
+                  children: [
+                    SizedBox(height: 154, child: rail),
+                    Expanded(child: canvas),
+                  ],
+                );
+              }
+              return Row(
+                children: [
+                  SizedBox(width: 310, child: rail),
+                  VerticalDivider(width: 1, color: mac.divider),
+                  Expanded(child: canvas),
+                ],
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _CouncilSummaryStrip extends StatelessWidget {
+  const _CouncilSummaryStrip({required this.projection});
+
+  final AgentCouncilProjection projection;
+
+  @override
+  Widget build(BuildContext context) {
+    final summary = projection.summary;
+    final mac = MacosThemeColors.of(context);
+    return Container(
+      key: const Key('macos-agents-live-summary'),
+      width: double.infinity,
+      constraints: const BoxConstraints(minHeight: 54),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      decoration: BoxDecoration(
+        color: mac.toolbar,
+        border: Border(bottom: BorderSide(color: mac.divider)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.account_tree_outlined, size: 17),
+          const SizedBox(width: 9),
+          Expanded(
+            child: Wrap(
+              spacing: 20,
+              runSpacing: 5,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                _CouncilSummaryValue(
+                  value: '${summary.executionCount}',
+                  label: 'runs',
+                ),
+                _CouncilSummaryValue(
+                  value: '${summary.activeMemberCount}',
+                  label: 'active',
+                  emphasized: summary.activeMemberCount > 0,
+                ),
+                _CouncilSummaryValue(
+                  value: '${summary.waitingMemberCount}',
+                  label: 'waiting',
+                  attention: summary.waitingMemberCount > 0,
+                ),
+                _CouncilSummaryValue(
+                  value: '${summary.acceptedMemberCount}',
+                  label: 'accepted',
+                ),
+                _CouncilSummaryValue(
+                  value: _formatKnownMicrousd(
+                    summary.knownEstimatedCostMicrousd,
+                  ),
+                  label: 'known spend',
+                ),
+              ],
+            ),
+          ),
+          Text(
+            'Updated ${_relativeTime(projection.generatedAt)}',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CouncilSummaryValue extends StatelessWidget {
+  const _CouncilSummaryValue({
+    required this.value,
+    required this.label,
+    this.emphasized = false,
+    this.attention = false,
+  });
+
+  final String value, label;
+  final bool emphasized, attention;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final color = attention
+        ? scheme.secondary
+        : emphasized
+        ? scheme.primary
+        : scheme.onSurface;
+    return Text.rich(
+      TextSpan(
+        children: [
+          TextSpan(
+            text: value,
+            style: TextStyle(color: color, fontWeight: FontWeight.w700),
+          ),
+          TextSpan(text: ' $label'),
+        ],
+      ),
+      style: Theme.of(context).textTheme.bodySmall,
+    );
+  }
+}
+
+class _CouncilExecutionRail extends StatelessWidget {
+  const _CouncilExecutionRail({
+    required this.executions,
+    required this.selectedExecutionId,
+    required this.selectedTaskId,
+    required this.horizontal,
+    required this.onSelect,
+  });
+
+  final List<AgentCouncilExecution> executions;
+  final String selectedExecutionId, selectedTaskId;
+  final bool horizontal;
+  final void Function(
+    AgentCouncilExecution execution,
+    AgentCouncilMember member,
+  )
+  onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    if (horizontal) {
+      final entries = [
+        for (final execution in executions)
+          for (final member in execution.members) (execution, member),
+      ];
+      return ListView.separated(
+        key: const Key('macos-agents-live-rail'),
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.all(10),
+        itemCount: entries.length,
+        separatorBuilder: (_, _) => const SizedBox(width: 8),
+        itemBuilder: (context, index) {
+          final (execution, member) = entries[index];
+          return SizedBox(
+            width: 260,
+            child: _CouncilMemberRailRow(
+              execution: execution,
+              member: member,
+              selected: member.taskId == selectedTaskId,
+              onTap: () => onSelect(execution, member),
+            ),
+          );
+        },
+      );
+    }
+    return Column(
+      children: [
+        _CouncilPaneHeader(
+          title: 'Execution queue',
+          detail: '${executions.length} recent · read only',
+        ),
+        Expanded(
+          child: ListView.builder(
+            key: const Key('macos-agents-live-rail'),
+            itemCount: executions.length,
+            itemBuilder: (context, index) {
+              final execution = executions[index];
+              final expanded =
+                  execution.parentExecutionId == selectedExecutionId;
+              return _CouncilExecutionGroup(
+                execution: execution,
+                expanded: expanded,
+                selectedTaskId: selectedTaskId,
+                onSelect: (member) => onSelect(execution, member),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _CouncilExecutionGroup extends StatelessWidget {
+  const _CouncilExecutionGroup({
+    required this.execution,
+    required this.expanded,
+    required this.selectedTaskId,
+    required this.onSelect,
+  });
+
+  final AgentCouncilExecution execution;
+  final bool expanded;
+  final String selectedTaskId;
+  final ValueChanged<AgentCouncilMember> onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    final mac = MacosThemeColors.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Material(
+          color: expanded ? mac.hover : Colors.transparent,
+          child: InkWell(
+            key: Key('macos-council-run-${execution.parentExecutionId}'),
+            onTap: () => onSelect(execution.members.first),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(14, 11, 12, 10),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      _CouncilStatePill(state: execution.status),
+                      const Spacer(),
+                      Text(
+                        _relativeTime(execution.updatedAt),
+                        style: Theme.of(context).textTheme.labelSmall,
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 7),
+                  Text(
+                    execution.currentWork,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '${execution.members.length} specialist${execution.members.length == 1 ? '' : 's'} · ${_shortId(execution.parentExecutionId)}',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+        if (expanded)
+          for (final member in execution.members)
+            _CouncilMemberRailRow(
+              execution: execution,
+              member: member,
+              selected: member.taskId == selectedTaskId,
+              onTap: () => onSelect(member),
+            ),
+        Divider(height: 1, color: mac.divider),
+      ],
+    );
+  }
+}
+
+class _CouncilMemberRailRow extends StatelessWidget {
+  const _CouncilMemberRailRow({
+    required this.execution,
+    required this.member,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final AgentCouncilExecution execution;
+  final AgentCouncilMember member;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final mac = MacosThemeColors.of(context);
+    return Semantics(
+      button: true,
+      selected: selected,
+      label:
+          '${member.identity.name}, ${member.identity.role}, ${_councilStatusLabel(member.state)}',
+      child: Material(
+        color: selected ? mac.selection : Colors.transparent,
+        child: InkWell(
+          key: Key('macos-council-member-${member.taskId}'),
+          onTap: onTap,
+          child: Container(
+            constraints: const BoxConstraints(minHeight: 58),
+            padding: EdgeInsets.fromLTRB(horizontalPadding, 8, 10, 8),
+            child: Row(
+              children: [
+                _CouncilAgentGlyph(identity: member.identity),
+                const SizedBox(width: 9),
+                Expanded(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        member.identity.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.titleSmall,
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        member.identity.role,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                _CouncilStateDot(state: member.state),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  double get horizontalPadding => selected ? 17 : 20;
+}
+
+class _CouncilMemberCanvas extends StatelessWidget {
+  const _CouncilMemberCanvas({required this.execution, required this.member});
+
+  final AgentCouncilExecution execution;
+  final AgentCouncilMember member;
+
+  @override
+  Widget build(BuildContext context) {
+    final mac = MacosThemeColors.of(context);
+    return Column(
+      children: [
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.fromLTRB(18, 14, 18, 13),
+          decoration: BoxDecoration(
+            border: Border(bottom: BorderSide(color: mac.divider)),
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _CouncilAgentGlyph(identity: member.identity, size: 40),
+              const SizedBox(width: 11),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            member.identity.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.titleLarge,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        _CouncilStatePill(state: member.state),
+                      ],
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      member.identity.role,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
+                ),
+              ),
+              Text(
+                'Revision ${member.lifecycleRevision}',
+                style: Theme.of(context).textTheme.labelSmall,
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: SingleChildScrollView(
+            key: const Key('macos-agents-live-canvas'),
+            padding: const EdgeInsets.fromLTRB(18, 17, 18, 24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Current work',
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+                const SizedBox(height: 6),
+                SelectableText(
+                  member.currentWork,
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+                const SizedBox(height: 18),
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final split = constraints.maxWidth >= 700;
+                    final messages = _CouncilExchangeSection.messages(
+                      member.messages,
+                    );
+                    final outputs = _CouncilExchangeSection.outputs(
+                      member.outputs,
+                    );
+                    if (!split) {
+                      return Column(
+                        children: [
+                          messages,
+                          const SizedBox(height: 18),
+                          outputs,
+                        ],
+                      );
+                    }
+                    return Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(child: messages),
+                        const SizedBox(width: 20),
+                        Expanded(child: outputs),
+                      ],
+                    );
+                  },
+                ),
+                const SizedBox(height: 20),
+                _CouncilVerificationBoundary(member: member),
+                const SizedBox(height: 14),
+                Text(
+                  'Run ${_shortId(execution.parentExecutionId)} · Task ${_shortId(member.taskId)} · Updated ${_formatTimestamp(member.updatedAt)}',
+                  style: Theme.of(context).textTheme.labelSmall,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _CouncilExchangeSection extends StatelessWidget {
+  const _CouncilExchangeSection._({
+    required this.icon,
+    required this.title,
+    required this.state,
+    required this.entries,
+    required this.emptyMessage,
+  });
+
+  factory _CouncilExchangeSection.messages(AgentCouncilMessages messages) =>
+      _CouncilExchangeSection._(
+        icon: Icons.forum_outlined,
+        title: 'Team messages',
+        state: _label(messages.state),
+        entries: messages.items
+            .take(8)
+            .map(
+              (message) => _CouncilExchangeEntry(
+                title: '${_label(message.direction)} · ${_label(message.kind)}',
+                body: message.body,
+                createdAt: message.createdAt,
+              ),
+            )
+            .toList(growable: false),
+        emptyMessage: messages.state == 'unavailable'
+            ? 'Message evidence is unavailable for this task.'
+            : 'No team messages have been recorded.',
+      );
+
+  factory _CouncilExchangeSection.outputs(
+    AgentCouncilOutputs outputs,
+  ) => _CouncilExchangeSection._(
+    icon: Icons.inventory_2_outlined,
+    title: 'Shared outputs',
+    state: _label(outputs.state),
+    entries: outputs.items
+        .take(8)
+        .map(
+          (output) => _CouncilExchangeEntry(
+            title: output.title,
+            body: output.content.isEmpty
+                ? '${_label(output.kind)} output, content not included in this projection.'
+                : output.content,
+            createdAt: output.createdAt,
+          ),
+        )
+        .toList(growable: false),
+    emptyMessage: outputs.state == 'unavailable'
+        ? 'Output evidence is unavailable for this task.'
+        : 'No shared outputs have been recorded.',
+  );
+
+  final IconData icon;
+  final String title, state, emptyMessage;
+  final List<_CouncilExchangeEntry> entries;
+
+  @override
+  Widget build(BuildContext context) {
+    final mac = MacosThemeColors.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(icon, size: 16),
+            const SizedBox(width: 7),
+            Expanded(
+              child: Text(title, style: Theme.of(context).textTheme.titleSmall),
+            ),
+            Text(state, style: Theme.of(context).textTheme.labelSmall),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Container(
+          decoration: BoxDecoration(
+            border: Border.all(color: mac.divider),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: entries.isEmpty
+              ? Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Text(
+                    emptyMessage,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                )
+              : Column(
+                  children: [
+                    for (var index = 0; index < entries.length; index++) ...[
+                      entries[index],
+                      if (index != entries.length - 1)
+                        Divider(height: 1, color: mac.divider),
+                    ],
+                  ],
+                ),
+        ),
+        const SizedBox(height: 6),
+        Row(
+          children: [
+            Icon(
+              Icons.shield_outlined,
+              size: 13,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+            const SizedBox(width: 5),
+            Expanded(
+              child: Text(
+                'Shared content is untrusted until verified.',
+                style: Theme.of(context).textTheme.labelSmall,
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _CouncilExchangeEntry extends StatelessWidget {
+  const _CouncilExchangeEntry({
+    required this.title,
+    required this.body,
+    required this.createdAt,
+  });
+
+  final String title, body, createdAt;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.all(11),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.labelMedium,
+              ),
+            ),
+            Text(
+              _relativeTime(createdAt),
+              style: Theme.of(context).textTheme.labelSmall,
+            ),
+          ],
+        ),
+        const SizedBox(height: 5),
+        Text(
+          body,
+          maxLines: 4,
+          overflow: TextOverflow.ellipsis,
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+      ],
+    ),
+  );
+}
+
+class _CouncilVerificationBoundary extends StatelessWidget {
+  const _CouncilVerificationBoundary({required this.member});
+
+  final AgentCouncilMember member;
+
+  @override
+  Widget build(BuildContext context) {
+    final mac = MacosThemeColors.of(context);
+    final verifier = member.verifier;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(13),
+      decoration: BoxDecoration(
+        color: mac.toolbar,
+        border: Border.all(color: mac.divider),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.verified_user_outlined, size: 19),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Independent verification',
+                  style: Theme.of(context).textTheme.labelMedium,
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  '${verifier.identity.name} · ${_label(verifier.method)}',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              _CouncilStatePill(state: verifier.verdict),
+              const SizedBox(height: 3),
+              Text(
+                verifier.score == null
+                    ? 'Not scored'
+                    : '${(verifier.score! * 100).round()}% score · ${(verifier.acceptanceThreshold * 100).round()}% required',
+                style: Theme.of(context).textTheme.labelSmall,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AgentCouncilInspector extends StatelessWidget {
+  const _AgentCouncilInspector({
+    super.key,
+    required this.execution,
+    required this.member,
+  });
+
+  final AgentCouncilExecution? execution;
+  final AgentCouncilMember? member;
+
+  @override
+  Widget build(BuildContext context) {
+    final execution = this.execution;
+    final member = this.member;
+    if (execution == null || member == null) {
+      return const _InspectorPlaceholder(
+        icon: Icons.account_tree_outlined,
+        title: 'Select delegated work',
+        message: 'Choose a specialist task to inspect its authority, limits, verification, and cost evidence.',
+      );
+    }
+    final authority = member.authority;
+    final budgets = authority.budgets;
+    final verifiedAuthority = authority.source == 'delegation_grants';
+    return SingleChildScrollView(
+      key: const Key('macos-agents-live-inspector-scroll'),
+      padding: const EdgeInsets.fromLTRB(18, 18, 18, 28),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              _CouncilAgentGlyph(identity: member.identity, size: 38),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      member.identity.name,
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    Text(
+                      'Definition v${member.identity.definitionVersion}',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
+                ),
+              ),
+              const _SmallBadge(label: 'Read only'),
+            ],
+          ),
+          const SizedBox(height: 18),
+          _InspectorSection(
+            title: 'Verification',
+            children: [
+              _MetaLine(
+                label: 'Verdict',
+                value: _councilStatusLabel(member.verifier.verdict),
+              ),
+              _MetaLine(
+                label: 'Verifier',
+                value: member.verifier.identity.name,
+              ),
+              _MetaLine(
+                label: 'Confidence',
+                value: member.confidence == null
+                    ? 'Not recorded'
+                    : '${(member.confidence! * 100).round()}%',
+              ),
+              _MetaLine(
+                label: 'Verifier score',
+                value: member.verifier.score == null
+                    ? 'Not scored'
+                    : '${(member.verifier.score! * 100).round()}%',
+              ),
+              _MetaLine(
+                label: 'Acceptance threshold',
+                value:
+                    '${(member.verifier.acceptanceThreshold * 100).round()}%',
+              ),
+            ],
+          ),
+          const SizedBox(height: 18),
+          _InspectorSection(
+            title: 'Authority',
+            children: [
+              Row(
+                children: [
+                  Icon(
+                    verifiedAuthority
+                        ? Icons.verified_outlined
+                        : Icons.warning_amber_rounded,
+                    size: 16,
+                    color: verifiedAuthority
+                        ? Theme.of(context).colorScheme.primary
+                        : Theme.of(context).colorScheme.secondary,
+                  ),
+                  const SizedBox(width: 7),
+                  Expanded(
+                    child: Text(
+                      verifiedAuthority
+                          ? 'Verified delegation receipt'
+                          : 'Historical authority unavailable',
+                      style: Theme.of(context).textTheme.labelMedium,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 9),
+              Text(authority.purpose),
+              const SizedBox(height: 10),
+              _MetaLine(
+                label: 'Context grants',
+                value: _authorityCount(
+                  authority.contextState,
+                  authority.contextGrantCount,
+                ),
+              ),
+              _MetaLine(
+                label: 'Capability grants',
+                value: _authorityCount(
+                  authority.capabilityState,
+                  authority.capabilityGrantCount,
+                ),
+              ),
+              _MetaLine(
+                label: 'Governed tools',
+                value: authority.toolState == 'unavailable'
+                    ? 'Unavailable'
+                    : '${authority.toolIds.length}',
+              ),
+              if (authority.toolIds.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: authority.toolIds
+                      .map((tool) => _SmallBadge(label: tool))
+                      .toList(growable: false),
+                ),
+              ],
+            ],
+          ),
+          const SizedBox(height: 18),
+          _InspectorSection(
+            title: 'Budget limits',
+            children: [
+              _MetaLine(
+                label: 'Model turns',
+                value: _budgetValue(budgets.modelTurns),
+              ),
+              _MetaLine(label: 'Tokens', value: _budgetValue(budgets.tokens)),
+              _MetaLine(
+                label: 'Tool calls',
+                value: _budgetValue(budgets.toolCalls),
+              ),
+              _MetaLine(
+                label: 'Browser actions',
+                value: _budgetValue(budgets.browserActions),
+              ),
+              _MetaLine(
+                label: 'Wall time',
+                value: budgets.wallTimeMs == null
+                    ? 'Not recorded'
+                    : _formatDuration(budgets.wallTimeMs!),
+              ),
+              _MetaLine(
+                label: 'Cost limit',
+                value: budgets.costMicrousd == null
+                    ? 'Not recorded'
+                    : _formatKnownMicrousd(budgets.costMicrousd!),
+              ),
+            ],
+          ),
+          const SizedBox(height: 18),
+          _InspectorSection(
+            title: 'Observed usage',
+            children: [
+              _MetaLine(label: 'Worker cost', value: _costLabel(member.cost)),
+              _MetaLine(
+                label: 'Verifier cost',
+                value: _costLabel(execution.verifierCost),
+              ),
+              _MetaLine(
+                label: 'Worker tokens',
+                value: member.cost.receiptCount == 0
+                    ? 'Not recorded'
+                    : '${member.cost.totalTokens}',
+              ),
+              _MetaLine(
+                label: 'Usage receipts',
+                value: '${member.cost.receiptCount}',
+              ),
+            ],
+          ),
+          const SizedBox(height: 18),
+          _InspectorSection(
+            title: 'Scope and identity',
+            children: [
+              _MetaLine(
+                label: 'Workspace',
+                value: authority.workspaceId ?? 'Not scoped',
+              ),
+              _MetaLine(
+                label: 'Project',
+                value: authority.projectId ?? 'Not scoped',
+              ),
+              _MetaLine(
+                label: 'Mission',
+                value: authority.missionId ?? 'Not scoped',
+              ),
+              const SizedBox(height: 7),
+              SelectableText(
+                'Run ${execution.parentExecutionId}\nTask ${member.taskId}\nDelegation ${member.delegationId}',
+                style: Theme.of(context).textTheme.labelSmall
+                    ?.copyWith(fontFamily: 'monospace', height: 1.5),
+              ),
+            ],
+          ),
+          const SizedBox(height: 18),
+          _InspectorSection(
+            title: 'Model route',
+            children: [
+              Text(
+                'Not recorded in this Council projection. Model assignments remain configurable in Settings and are verified on the run receipt.',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CouncilPaneHeader extends StatelessWidget {
+  const _CouncilPaneHeader({required this.title, required this.detail});
+
+  final String title, detail;
+
+  @override
+  Widget build(BuildContext context) {
+    final mac = MacosThemeColors.of(context);
+    return Container(
+      height: 45,
+      padding: const EdgeInsets.symmetric(horizontal: 14),
+      decoration: BoxDecoration(
+        color: mac.toolbar,
+        border: Border(bottom: BorderSide(color: mac.divider)),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(title, style: Theme.of(context).textTheme.labelMedium),
+          ),
+          Text(detail, style: Theme.of(context).textTheme.labelSmall),
+        ],
+      ),
+    );
+  }
+}
+
+class _CouncilAgentGlyph extends StatelessWidget {
+  const _CouncilAgentGlyph({required this.identity, this.size = 32});
+
+  final AgentCouncilIdentity identity;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final seed = identity.agentId.codeUnits.fold<int>(
+      0,
+      (sum, code) => sum + code,
+    );
+    final colors = <Color>[
+      scheme.primary,
+      scheme.secondary,
+      scheme.tertiary,
+      scheme.onSurfaceVariant,
+    ];
+    final color = colors[seed % colors.length];
+    final initial = identity.name.trim().isEmpty
+        ? '?'
+        : identity.name.trim().characters.first.toUpperCase();
+    return Container(
+      width: size,
+      height: size,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: .14),
+        borderRadius: BorderRadius.circular(size * .24),
+      ),
+      child: Text(
+        initial,
+        style: Theme.of(context).textTheme.labelLarge
+            ?.copyWith(color: color, fontWeight: FontWeight.w700),
+      ),
+    );
+  }
+}
+
+class _CouncilStatePill extends StatelessWidget {
+  const _CouncilStatePill({required this.state});
+
+  final String state;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = _councilStateColor(context, state);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: .12),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 6,
+            height: 6,
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 5),
+          Text(
+            _councilStatusLabel(state),
+            style: Theme.of(context).textTheme.labelSmall
+                ?.copyWith(color: color, fontWeight: FontWeight.w700),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CouncilStateDot extends StatelessWidget {
+  const _CouncilStateDot({required this.state});
+
+  final String state;
+
+  @override
+  Widget build(BuildContext context) => Tooltip(
+    message: _councilStatusLabel(state),
+    child: Container(
+      width: 9,
+      height: 9,
+      decoration: BoxDecoration(
+        color: _councilStateColor(context, state),
+        shape: BoxShape.circle,
+      ),
+    ),
   );
 }
 
@@ -998,6 +2326,11 @@ class _AgentInspector extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => switch (workspace) {
+    _AgentWorkspace.liveWork => const _InspectorPlaceholder(
+      icon: Icons.account_tree_outlined,
+      title: 'Select delegated work',
+      message: 'Authority and verification evidence appears here.',
+    ),
     _AgentWorkspace.agents =>
       agent == null
           ? const _InspectorPlaceholder(
@@ -2820,10 +4153,12 @@ class _InspectorPlaceholder extends StatelessWidget {
 }
 
 class _InspectorSection extends StatelessWidget {
-  const _InspectorSection({required this.title, required this.child});
+  const _InspectorSection({required this.title, this.child, this.children})
+    : assert((child == null) != (children == null));
 
   final String title;
-  final Widget child;
+  final Widget? child;
+  final List<Widget>? children;
 
   @override
   Widget build(BuildContext context) => Column(
@@ -2833,7 +4168,12 @@ class _InspectorSection extends StatelessWidget {
       const SizedBox(height: 7),
       DefaultTextStyle.merge(
         style: Theme.of(context).textTheme.bodyMedium,
-        child: child,
+        child:
+            child ??
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: children!,
+            ),
       ),
     ],
   );
@@ -3430,6 +4770,131 @@ List<String> _split(String value) => value
     .map((item) => item.trim())
     .where((item) => item.isNotEmpty)
     .toList();
+
+AgentCouncilExecution? _findExecution(
+  List<AgentCouncilExecution> values,
+  String? id,
+) {
+  if (values.isEmpty) return null;
+  if (id != null) {
+    for (final value in values) {
+      if (value.parentExecutionId == id) return value;
+    }
+  }
+  return values.first;
+}
+
+AgentCouncilMember? _findCouncilMember(
+  AgentCouncilExecution? execution,
+  String? taskId,
+) {
+  if (execution == null || execution.members.isEmpty) return null;
+  if (taskId != null) {
+    for (final member in execution.members) {
+      if (member.taskId == taskId) return member;
+    }
+  }
+  return execution.members.first;
+}
+
+String _councilStatusGroup(String status) => switch (status) {
+  'queued' || 'running' || 'resuming' => 'active',
+  'waiting' || 'waiting_clarification' || 'waiting_approval' => 'waiting',
+  'completed' || 'result_accepted' || 'accepted' => 'completed',
+  'failed' || 'rejected' || 'expired' => 'failed',
+  'canceled' => 'canceled',
+  _ => 'unavailable',
+};
+
+String _councilStatusLabel(String status) => switch (status) {
+  'waiting_clarification' => 'Needs clarification',
+  'waiting_approval' => 'Needs approval',
+  'completed_proposed' => 'Proposed result',
+  'result_accepted' => 'Accepted result',
+  'not_recorded' => 'Not recorded',
+  'receipt_only' => 'Receipt only',
+  'historical_unavailable' => 'Historical evidence unavailable',
+  _ => _label(status),
+};
+
+Color _councilStateColor(BuildContext context, String state) {
+  final scheme = Theme.of(context).colorScheme;
+  final mac = MacosThemeColors.of(context);
+  if (const {'running', 'working', 'resuming'}.contains(state)) {
+    return scheme.primary;
+  }
+  if (const {'completed', 'accepted', 'result_accepted'}.contains(state)) {
+    return mac.positive;
+  }
+  if (const {
+    'queued',
+    'proposed',
+    'pending',
+    'waiting',
+    'waiting_clarification',
+    'waiting_approval',
+    'completed_proposed',
+    'challenged',
+  }.contains(state)) {
+    return mac.warning;
+  }
+  if (const {'failed', 'rejected', 'expired'}.contains(state)) {
+    return scheme.error;
+  }
+  return scheme.onSurfaceVariant;
+}
+
+String _relativeTime(String value) {
+  final timestamp = DateTime.tryParse(value)?.toLocal();
+  if (timestamp == null) return 'Unknown time';
+  final difference = DateTime.now().difference(timestamp);
+  if (difference.isNegative || difference.inSeconds < 45) return 'just now';
+  if (difference.inMinutes < 60) return '${difference.inMinutes}m ago';
+  if (difference.inHours < 24) return '${difference.inHours}h ago';
+  if (difference.inDays < 7) return '${difference.inDays}d ago';
+  return _formatTimestamp(value);
+}
+
+String _formatTimestamp(String value) {
+  final timestamp = DateTime.tryParse(value)?.toLocal();
+  if (timestamp == null) return 'Unknown time';
+  final hour = timestamp.hour % 12 == 0 ? 12 : timestamp.hour % 12;
+  final minute = timestamp.minute.toString().padLeft(2, '0');
+  final period = timestamp.hour < 12 ? 'AM' : 'PM';
+  return '${timestamp.day}/${timestamp.month}/${timestamp.year} · $hour:$minute $period';
+}
+
+String _shortId(String value) => value.length <= 12
+    ? value
+    : '${value.substring(0, 6)}…${value.substring(value.length - 4)}';
+
+String _formatKnownMicrousd(int value) {
+  if (value <= 0) return r'$0.00';
+  if (value < 10_000) return r'<$0.01';
+  return '\$${(value / 1_000_000).toStringAsFixed(2)}';
+}
+
+String _costLabel(AgentCouncilCost cost) => switch (cost.state) {
+  'not_recorded' => 'Not recorded',
+  'unknown' => 'Unknown',
+  'partial' => '${_formatKnownMicrousd(cost.knownEstimatedCostMicrousd)} known',
+  _ => _formatKnownMicrousd(cost.knownEstimatedCostMicrousd),
+};
+
+String _budgetValue(int? value) => value == null ? 'Not recorded' : '$value';
+
+String _formatDuration(int milliseconds) {
+  if (milliseconds < 1000) return '$milliseconds ms';
+  final seconds = milliseconds / 1000;
+  if (seconds < 60) return '${seconds.toStringAsFixed(seconds < 10 ? 1 : 0)} s';
+  return '${(seconds / 60).toStringAsFixed(1)} min';
+}
+
+String _authorityCount(String state, int count) => switch (state) {
+  'unavailable' => 'Unavailable',
+  'none' => 'None',
+  _ => '$count granted',
+};
 
 AgentProfile? _findAgent(List<AgentProfile> values, String? id) {
   if (values.isEmpty) return null;

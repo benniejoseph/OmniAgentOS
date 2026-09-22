@@ -271,6 +271,9 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                       usesMacosPresentation()
                           ? MacosAgentsView(
                               controller: ref.read(agentsControllerProvider),
+                              councilController: ref.read(
+                                agentCouncilControllerProvider,
+                              ),
                               onAssignWork: (agent) {
                                 final talk = ref.read(talkControllerProvider);
                                 if (talk.hasPendingConversationWork) {

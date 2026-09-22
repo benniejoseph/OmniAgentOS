@@ -18,8 +18,8 @@ import {
 
 describe("native API contracts", () => {
   it("retains exactly the current and previous rollout versions", () => {
-    expect(NATIVE_API_CURRENT_VERSION).toBe(20);
-    expect(NATIVE_API_PREVIOUS_VERSION).toBe(19);
+    expect(NATIVE_API_CURRENT_VERSION).toBe(21);
+    expect(NATIVE_API_PREVIOUS_VERSION).toBe(20);
     expect(nativeOperationsForVersion(8)?.length).toBeLessThan(
       nativeOperationsForVersion(7)?.length || 0,
     );
@@ -59,9 +59,12 @@ describe("native API contracts", () => {
     expect(nativeOperationsForVersion(20)?.length).toBe(
       nativeOperationsForVersion(19)?.length,
     );
+    expect(nativeOperationsForVersion(21)?.length).toBe(
+      (nativeOperationsForVersion(20)?.length || 0) + 1,
+    );
     expect(nativeContractSchemas.NativeContractDiscovery.parse(
       nativeContractDiscovery(),
-    ).supportedVersions).toEqual([20, 19]);
+    ).supportedVersions).toEqual([21, 20]);
   });
 
   it("exposes only explicit local Computer Use in the current request schema", () => {
@@ -123,6 +126,33 @@ describe("native API contracts", () => {
       pattern: "^[a-zA-Z0-9_.:-]+$",
     });
     expect(nativeOperationsForVersion(20)).toEqual(nativeOperationsForVersion(19));
+  });
+
+  it("keeps v20 immutable while v21 adds only the Council read projection", async () => {
+    const v20 = await readFile(
+      new URL("../../../public/native-contracts/v20/openapi.json", import.meta.url),
+      "utf8",
+    );
+    expect(sha256(v20)).toBe(
+      "3c265c3ed4635176506e425019d20182bcb767fd424a376c5f3dd78e6e9d80d4",
+    );
+    const v20Ids = new Set(
+      nativeOperationsForVersion(20)?.map((operation) => operation.id),
+    );
+    expect(
+      nativeOperationsForVersion(21)
+        ?.map((operation) => operation.id)
+        .filter((id) => !v20Ids.has(id)),
+    ).toEqual(["agents.council"]);
+    expect(
+      nativeOperationsForVersion(21)?.find(
+        (operation) => operation.id === "agents.council",
+      ),
+    ).toMatchObject({
+      method: "GET",
+      path: "/api/agents/council",
+      auth: "bearer",
+    });
   });
 
   it("does not advertise unenrolled native mutations in v8", () => {
@@ -513,7 +543,7 @@ describe("native API contracts", () => {
       user: { id: "user-one", email: "operator@example.test", status: "active", createdAt: timestamp, updatedAt: timestamp },
       tenant: { id: "tenant-one", name: "Example", slug: "example", createdAt: timestamp, updatedAt: timestamp },
       membership: { id: "membership-one", tenantId: "tenant-one", userId: "user-one", role: "operator", status: "active", createdAt: timestamp, updatedAt: timestamp },
-      device: { id: "device-one", name: "Asael on macOS", platform: "macos", appVersion: "1.0.0", buildNumber: 2, clientContractVersion: 20 },
+      device: { id: "device-one", name: "Asael on macOS", platform: "macos", appVersion: "1.0.0", buildNumber: 2, clientContractVersion: 21 },
     };
     expect(nativeBootstrapResponseSchema.parse({
       authenticated: true,
@@ -525,9 +555,9 @@ describe("native API contracts", () => {
         mobileBasePath: "/api/mobile",
         nativeContract: {
           id: "asael.native-api",
-          currentVersion: 20,
-          previousVersion: 19,
-          supportedVersions: [20, 19],
+          currentVersion: 21,
+          previousVersion: 20,
+          supportedVersions: [21, 20],
           discoveryPath: "/api/mobile/contracts",
         },
       },
@@ -536,15 +566,15 @@ describe("native API contracts", () => {
         platform: "macos",
         appVersion: "1.0.0",
         buildNumber: 2,
-        clientContractVersion: 20,
+        clientContractVersion: 21,
         minimumVersion: "1.0.0",
-        requiredContractVersion: 20,
-        supportedContractVersions: [20, 19],
+        requiredContractVersion: 21,
+        supportedContractVersions: [21, 20],
         status: "compatible",
         agentCatalogEnrollment: { state: "held", clientReady: true },
       },
       nativeClientPolicy: { schemaVersion: 1 },
-    }).api.nativeContract.currentVersion).toBe(20);
+    }).api.nativeContract.currentVersion).toBe(21);
   });
 });
 

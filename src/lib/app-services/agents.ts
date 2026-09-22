@@ -12,6 +12,15 @@ import {
 } from "@/lib/app-services/contracts";
 import { getAppServiceOperationContract } from "@/lib/app-services/registry";
 import { runWithDatabaseActorScope } from "@/lib/db/client";
+import type { DelegationExecutionRecordV1 } from "@/lib/delegation/execution-record";
+import {
+  getDelegationExecution,
+  listDelegationExecutions,
+} from "@/lib/delegation/execution-store";
+import {
+  delegateAgentTask,
+  delegateAgentTaskInputSchema,
+} from "@/lib/delegation/runtime";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { assertMoltbookAgentMayBeDeleted } from "@/lib/moltbook/store";
 import { redactSensitive } from "@/lib/security/context";
@@ -49,6 +58,13 @@ const cardDiscoverySchema = z.object({
   query: z.string().trim().min(1).max(4_000).optional(),
   taskKind: z.enum(["general", "coordinate", "research", "build", "verify", "memory"]).optional(),
 }).strict();
+const agentTaskListSchema = z.object({
+  parentExecutionId: z.string().trim().min(1).max(240).optional(),
+  limit: z.number().int().min(1).max(100).default(60),
+}).strict();
+const agentTaskShowSchema = z.object({
+  executionId: z.string().trim().min(1).max(240),
+}).strict();
 export const agentCouncilMapServiceInputSchema = z.object({
   limit: z.number().int().min(1).max(100).default(60),
 }).strict();
@@ -63,6 +79,7 @@ const defaultAgentCouncilMapDependencies: AgentCouncilMapDependencies = Object.f
 
 export const agentCreateServiceInputSchema = customAgentInputSchema;
 export const agentUpdateServiceInputSchema = z.object({ id: z.string().trim().min(1).max(200), change: customAgentPatchSchema }).strict();
+export const agentDelegateServiceInputSchema = delegateAgentTaskInputSchema;
 export const skillCreateServiceInputSchema = skillInputSchema;
 export const skillUpdateServiceInputSchema = z.object({ id: z.string().trim().min(1).max(200), change: skillPatchSchema }).strict();
 
@@ -134,6 +151,136 @@ export async function showAgentCouncilMapService(
       });
     },
   );
+}
+
+type AgentTaskServiceDependencies = Readonly<{
+  delegateTask: typeof delegateAgentTask;
+  getExecution: typeof getDelegationExecution;
+  listExecutions: typeof listDelegationExecutions;
+}>;
+
+const defaultAgentTaskServiceDependencies: AgentTaskServiceDependencies = Object.freeze({
+  delegateTask: delegateAgentTask,
+  getExecution: getDelegationExecution,
+  listExecutions: listDelegationExecutions,
+});
+
+export async function delegateAgentTaskService(
+  caller: AppServiceCaller,
+  input: z.input<typeof agentDelegateServiceInputSchema>,
+  dependencies: AgentTaskServiceDependencies = defaultAgentTaskServiceDependencies,
+) {
+  const value = agentDelegateServiceInputSchema.parse(input);
+  const authorized = authorizeAppServiceCall(
+    caller,
+    getAppServiceOperationContract("app.agents.delegate"),
+  );
+  const execution = await dependencies.delegateTask({
+    tenantId: caller.context.tenantId,
+    actorId: caller.context.actorId,
+    parentExecutionScope: caller.executionScope!,
+    idempotencyKey: caller.idempotencyKey!,
+    input: value,
+  });
+  return completeAppServiceCall(
+    authorized,
+    { task: delegationExecutionPublicProjection(execution) },
+    { resourceCount: 1 },
+  );
+}
+
+export async function listAgentTasksService(
+  caller: AppServiceCaller,
+  input: z.input<typeof agentTaskListSchema>,
+  dependencies: AgentTaskServiceDependencies = defaultAgentTaskServiceDependencies,
+) {
+  const value = agentTaskListSchema.parse(input);
+  const authorized = authorizeAppServiceCall(
+    caller,
+    getAppServiceOperationContract("app.agents.tasks.list"),
+  );
+  const executions = await dependencies.listExecutions({
+    tenantId: caller.context.tenantId,
+    ownerActorId: caller.context.actorId,
+    parentExecutionId: value.parentExecutionId,
+    limit: value.limit,
+  });
+  const tasks = executions.map(delegationExecutionPublicProjection);
+  return completeAppServiceCall(authorized, { tasks }, { resourceCount: tasks.length });
+}
+
+export async function showAgentTaskService(
+  caller: AppServiceCaller,
+  input: z.input<typeof agentTaskShowSchema>,
+  dependencies: AgentTaskServiceDependencies = defaultAgentTaskServiceDependencies,
+) {
+  const value = agentTaskShowSchema.parse(input);
+  const authorized = authorizeAppServiceCall(
+    caller,
+    getAppServiceOperationContract("app.agents.tasks.show"),
+  );
+  const execution = await dependencies.getExecution({
+    tenantId: caller.context.tenantId,
+    ownerActorId: caller.context.actorId,
+    executionId: value.executionId,
+  });
+  return completeAppServiceCall(
+    authorized,
+    { task: delegationExecutionPublicProjection(execution) },
+    { resourceCount: 1 },
+  );
+}
+
+export function delegationExecutionPublicProjection(
+  execution: DelegationExecutionRecordV1,
+) {
+  const assignment = execution.contract.runtimeAssignment;
+  return Object.freeze({
+    executionId: execution.executionId,
+    delegationId: execution.delegationId,
+    rootExecutionId: execution.rootExecutionId,
+    parentExecutionId: execution.parentExecutionId,
+    childRunId: execution.childRunId,
+    state: execution.state,
+    lifecycleRevision: execution.lifecycleRevision,
+    mode: execution.mode,
+    objective: execution.contract.objective,
+    delegateAgentId: execution.delegateAgentId,
+    runtime: Object.freeze({
+      providerId: assignment.providerId,
+      modelId: assignment.modelId,
+      modelTier: assignment.modelTier,
+      reasoningProfileId: assignment.reasoningProfileId,
+      normalizedReasoningEffort: assignment.normalizedReasoningEffort,
+    }),
+    result: execution.result ? Object.freeze({
+      status: execution.result.status,
+      summary: execution.result.summary,
+      artifacts: execution.result.artifacts.map((artifact) => Object.freeze({
+        artifactId: artifact.artifactId,
+        kind: artifact.kind,
+        mediaType: artifact.mediaType,
+        byteCount: artifact.byteCount,
+      })),
+      acceptanceChecks: execution.result.acceptanceChecks.map((check) => Object.freeze({
+        criterionId: check.criterionId,
+        passed: check.passed,
+        note: check.note,
+      })),
+    }) : null,
+    verification: execution.verification ? Object.freeze({
+      verdict: execution.verification.verdict,
+      score: execution.verification.score,
+      note: execution.verification.note,
+      verifiedAt: execution.verification.verifiedAt,
+    }) : null,
+    failureCode: execution.failureCode,
+    createdAt: execution.createdAt,
+    acceptBy: execution.acceptBy,
+    completeBy: execution.completeBy,
+    updatedAt: execution.updatedAt,
+    terminalAt: execution.terminalAt,
+  });
 }
 
 export async function createAgentService(caller: AppServiceCaller, input: z.input<typeof agentCreateServiceInputSchema>) {
