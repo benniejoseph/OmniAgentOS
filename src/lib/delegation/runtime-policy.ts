@@ -1,4 +1,5 @@
 import {
+  RUN_BUDGET_DIMENSIONS,
   runBudgetCountersV1Schema,
   type RunBudgetCountersV1,
 } from "@/lib/runs/budgets";
@@ -39,4 +40,21 @@ export function dynamicDelegationRootReservation(
     agents: 1,
     fanOut: 1,
   });
+}
+
+/**
+ * The parent pays both for scheduling the governed app tool and for the full
+ * non-refundable child slice. Keeping this calculation shared prevents the
+ * in-process harness and durable root ledger from describing different work.
+ */
+export function dynamicDelegationParentToolReservation(
+  child: RunBudgetCountersV1 = DYNAMIC_DELEGATION_CHILD_BUDGET,
+) {
+  const rootReservation = dynamicDelegationRootReservation(child);
+  return runBudgetCountersV1Schema.parse(Object.fromEntries(
+    RUN_BUDGET_DIMENSIONS.map((dimension) => [
+      dimension,
+      rootReservation[dimension] + (dimension === "toolCalls" ? 1 : 0),
+    ]),
+  ));
 }

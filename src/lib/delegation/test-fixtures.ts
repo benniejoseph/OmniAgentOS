@@ -15,6 +15,7 @@ import {
 } from "@/lib/delegation/contracts";
 import { delegatedPrincipalIdV1 } from "@/lib/delegation/principal";
 import type { RunBudgetCountersV1 } from "@/lib/runs/budgets";
+import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
 export function buildContract(
   overrides: Partial<Parameters<typeof buildDelegationContractV1>[0]> = {},
@@ -184,6 +185,17 @@ export function buildExecutionContract(
     routingPolicySha256: "b".repeat(64),
     assignedAt: "2026-09-22T12:00:00.000Z",
   });
+  const verifierRuntimeAssignment = buildDelegationRuntimeAssignmentReceiptV1({
+    executionId: verifierRunId,
+    providerId: "configured-provider",
+    modelId: "configured-verifier-model",
+    modelTier: "reasoning",
+    reasoningProfileId: "configured-verifier-reasoning-profile",
+    normalizedReasoningEffort: "high",
+    routingPolicyId: "model-route:verifier:v1",
+    routingPolicySha256: "f".repeat(64),
+    assignedAt: "2026-09-22T12:00:00.000Z",
+  });
   const noGrants: DelegationContractV1["grants"] = {
     contextGrantIds: [],
     capabilityGrantIds: [],
@@ -211,7 +223,10 @@ export function buildExecutionContract(
       acceptanceId: "acceptance:execution:one",
       criteria: [{
         criterionId: "criterion:execution:one",
-        criterionSha256: "d".repeat(64),
+        statement: "The bounded result satisfies its exact acceptance contract.",
+        criterionSha256: canonicalJsonSha256({
+          statement: "The bounded result satisfies its exact acceptance contract.",
+        }),
         verificationMethod: "parent_verifier",
         required: true,
       }],
@@ -237,6 +252,7 @@ export function buildExecutionContract(
       verifierPolicyId: "verifier-policy:execution:one",
       verifierPolicySha256: "e".repeat(64),
       identityPin: verifierIdentityPin,
+      runtimeAssignment: verifierRuntimeAssignment,
       method: "agent_then_deterministic",
       requiredEvidenceKinds: ["artifact_digest", "acceptance_check"],
       acceptanceThreshold: 0.8,

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { z } from "zod";
 
 import { arsenalAgents } from "@/lib/agents/arsenal";
 import { buildAgentRunIdentityPinV1 } from "@/lib/agents/identity-contracts";
@@ -113,6 +114,17 @@ export async function processDelegationExecutionJob(
     await assertRuntimeAssignmentCurrent(execution);
   } catch {
     return failBeforeExecution(job, execution, childScope, "runtime_assignment_changed", run);
+  }
+  try {
+    await assertVerifierRuntimeAssignmentCurrent(execution);
+  } catch {
+    return failBeforeExecution(
+      job,
+      execution,
+      childScope,
+      "verifier_runtime_assignment_changed",
+      run,
+    );
   }
 
   if (execution.state === "queued") {
@@ -291,16 +303,31 @@ async function finalizeChildRun(
       usageReceiptId: (event.payload as Record<string, unknown>).usageReceiptId,
     })));
   const evidenceIds = unique(run.grounding?.citedIds || []).filter(safeId);
+  const toolExecutionIds = unique(runEvents
+    .filter((event) => {
+      if (event.type !== "run.tool") return false;
+      const payload = event.payload as Record<string, unknown>;
+      return payload.status === "executed" &&
+        typeof payload.executionId === "string" &&
+        safeId(payload.executionId);
+    })
+    .map((event) =>
+      String((event.payload as Record<string, unknown>).executionId)
+    ));
   const groundingValid = !run.grounding ||
     !["invalid", "missing"].includes(run.grounding.status);
-  const acceptanceChecks = execution.contract.acceptance.criteria.map((criterion) => ({
-    criterionId: criterion.criterionId,
-    passed: groundingValid,
+  const candidate = parseDelegationCandidate(response);
+  const acceptanceChecks = evaluateAcceptanceCriteria({
+    execution,
+    candidate,
+    groundingValid,
     evidenceIds,
-    note: groundingValid
-      ? "The child proposed a non-empty result; independent acceptance is pending."
-      : "The child result did not satisfy its grounding boundary.",
-  }));
+    toolExecutionIds,
+    modelReceiptSha256s,
+    usageReceiptSha256s,
+  });
+  const deterministicPass = Boolean(candidate) &&
+    acceptanceChecks.every((check) => check.passed);
   let proposed = await transitionDelegationExecution({
     tenantId: job.tenantId,
     executionId: execution.executionId,
@@ -308,8 +335,9 @@ async function finalizeChildRun(
     transition: {
       to: "completed_proposed",
       result: {
-        status: groundingValid ? "completed" : "blocked",
-        summary: response.slice(0, 4_000),
+        status: deterministicPass ? "completed" : "blocked",
+        summary: (candidate?.summary || "The child result failed its closed output contract.")
+          .slice(0, 4_000),
         artifacts: [{
           artifactId: `delegation-result:${sha256(response).slice(0, 40)}`,
           artifactSha256: sha256(response),
@@ -320,7 +348,7 @@ async function finalizeChildRun(
         }],
         acceptanceChecks,
         evidenceIds,
-        toolExecutionIds: [],
+        toolExecutionIds,
         modelReceiptSha256s,
         usageReceiptSha256s,
       },
@@ -336,7 +364,7 @@ async function finalizeChildRun(
       agentId: "sentinel",
     });
     const verifierPin = buildAgentRunIdentityPinV1({
-      runId: proposed.parentExecutionId,
+      runId: proposed.contract.verifier.identity.runId,
       identity: verifierIdentity,
     });
     if (
@@ -345,18 +373,22 @@ async function finalizeChildRun(
     ) {
       throw new Error("Verifier identity changed after contracting.");
     }
-    const deterministicPass = groundingValid &&
-      proposed.result!.artifacts.length > 0 &&
-      modelReceiptSha256s.length > 0 &&
-      acceptanceChecks.every((check) => check.passed);
+    let verifierModelReceiptSha256: string | undefined;
     const verdict = await reviewCouncilResponse({
-      goal: run.prompt
-        .split("Untrusted parent transcript for context only:")[0]
-        .slice(0, 12_000),
-      response,
+      goal: proposed.contract.objective,
+      response: candidate?.summary || response.slice(0, 16_000),
       contributions: [],
       contextBlock:
-        "Judge only the candidate result and its immutable acceptance/evidence receipts. Missing evidence must fail.",
+        JSON.stringify({
+          instruction:
+            "Judge only the candidate result and these immutable content-free acceptance/evidence receipts. Missing evidence must fail.",
+          acceptanceChecks,
+          artifactSha256: proposed.result!.artifacts[0]?.artifactSha256 || null,
+          evidenceIds,
+          toolExecutionIds,
+          modelReceiptSha256s,
+          usageReceiptSha256s,
+        }).slice(0, 8_000),
       abortSignal: AbortSignal.timeout(Math.max(
         1,
         Date.parse(proposed.completeBy) - Date.now() - 1_000,
@@ -368,9 +400,39 @@ async function finalizeChildRun(
         correlationId: execution.rootExecutionId,
         causationId: execution.executionId,
         executionScope: parentScope,
-        credentialSource: "deployment_environment",
+        credentialSource:
+          proposed.contract.verifier.runtimeAssignment.routingPolicyId
+              .endsWith(":tenant_assignment")
+            ? "tenant_vault"
+            : "deployment_environment",
+      },
+      checkpointHooks: {
+        afterModel: async (input) => {
+          if (input.status !== "completed" || !input.generated) return;
+          const assigned = proposed.contract.verifier.runtimeAssignment;
+          if (
+            input.generated.provider !== assigned.providerId ||
+            input.generated.model !== assigned.modelId ||
+            assigned.modelTier !== "reasoning"
+          ) {
+            throw new Error(
+              "Sentinel executed on a runtime other than its immutable assignment.",
+            );
+          }
+          verifierModelReceiptSha256 = canonicalJsonSha256({
+            runtimeAssignmentSha256: assigned.assignmentSha256,
+            providerId: input.generated.provider,
+            modelId: input.generated.model,
+            modelTier: assigned.modelTier,
+            usageReceiptId: input.generated.usageReceiptId || null,
+            attemptCount: input.generated.attempts.length,
+          });
+        },
       },
     });
+    if (!verifierModelReceiptSha256) {
+      throw new Error("Sentinel did not return an exact model execution receipt.");
+    }
     const accepted = deterministicPass &&
       verdict.passed &&
       verdict.score >= proposed.contract.verifier.acceptanceThreshold;
@@ -384,6 +446,17 @@ async function finalizeChildRun(
           verifierAgentId: verifierPin.logicalAgentId,
           verifierDefinitionVersion: verifierPin.definitionVersion,
           verifierPrincipalId: verifierPin.principalId,
+          verifierRuntimeAssignmentId:
+            proposed.contract.verifier.runtimeAssignment.assignmentId,
+          verifierRuntimeAssignmentSha256:
+            proposed.contract.verifier.runtimeAssignment.assignmentSha256,
+          verifierProviderId:
+            proposed.contract.verifier.runtimeAssignment.providerId,
+          verifierModelId:
+            proposed.contract.verifier.runtimeAssignment.modelId,
+          verifierModelTier:
+            proposed.contract.verifier.runtimeAssignment.modelTier,
+          verifierModelReceiptSha256,
           score: deterministicPass ? verdict.score : 0,
           acceptanceChecksSha256: canonicalJsonSha256(
             proposed.result!.acceptanceChecks,
@@ -456,6 +529,155 @@ async function assertRuntimeAssignmentCurrent(
   ) {
     throw new Error("Delegation runtime assignment changed.");
   }
+}
+
+async function assertVerifierRuntimeAssignmentCurrent(
+  execution: DelegationExecutionRecordV1,
+) {
+  const deploymentRoute = selectAgentModel({
+    message: `Verify this bounded delegated result: ${execution.contract.objective}`,
+    mode: "research",
+    specialistCount: 1,
+    modelPolicy: "auto",
+  });
+  const scope = modelAssignmentScopeForAgent("sentinel");
+  const runtimeModel = await resolveRuntimeModelAssignment({
+    tenantId: execution.tenantId,
+    actorId: execution.ownerActorId,
+    scope,
+    tier: deploymentRoute.tier,
+    requiredFeature: "json_schema",
+    deploymentFallback: {
+      provider: deploymentRoute.provider,
+      model: deploymentRoute.model,
+      fallbackModel: deploymentRoute.fallbackModel,
+      reason: deploymentRoute.reason,
+      configured: hasOpenAIKey() || hasGeminiKey() || hasAnthropicKey(),
+    },
+  });
+  if (!runtimeModel.configured) throw new Error("Verifier model is unavailable.");
+  const exact = exactDelegationRuntime({ runtimeModel, deploymentRoute, scope });
+  const assigned = execution.contract.verifier.runtimeAssignment;
+  if (
+    exact.provider !== assigned.providerId ||
+    exact.model !== assigned.modelId ||
+    exact.tier !== assigned.modelTier ||
+    exact.routingPolicyId !== assigned.routingPolicyId ||
+    exact.routingPolicySha256 !== assigned.routingPolicySha256 ||
+    assigned.normalizedReasoningEffort !== AGENT_REASONING_EFFORT
+  ) {
+    throw new Error("Verifier runtime assignment changed.");
+  }
+}
+
+const delegationCandidateSchema = z.object({
+  summary: z.string().trim().min(1).max(4_000),
+  evidenceIds: z.array(z.string().trim().min(1).max(240))
+    .max(64).refine(uniqueStrings),
+  toolExecutionIds: z.array(z.string().trim().min(1).max(240))
+    .max(64).refine(uniqueStrings),
+  acceptanceChecks: z.array(z.object({
+    criterionId: z.string().trim().min(1).max(240),
+    passed: z.boolean(),
+    note: z.string().trim().max(2_000),
+    evidenceIds: z.array(z.string().trim().min(1).max(240))
+      .max(64).refine(uniqueStrings),
+    toolExecutionIds: z.array(z.string().trim().min(1).max(240))
+      .max(64).refine(uniqueStrings),
+  }).strict()).min(1).max(24).refine(
+    (checks) => uniqueStrings(checks.map((check) => check.criterionId)),
+  ),
+}).strict();
+
+type DelegationCandidate = z.infer<typeof delegationCandidateSchema>;
+
+function parseDelegationCandidate(response: string): DelegationCandidate | undefined {
+  try {
+    return delegationCandidateSchema.parse(JSON.parse(response));
+  } catch {
+    return undefined;
+  }
+}
+
+function evaluateAcceptanceCriteria(input: {
+  execution: DelegationExecutionRecordV1;
+  candidate?: DelegationCandidate;
+  groundingValid: boolean;
+  evidenceIds: readonly string[];
+  toolExecutionIds: readonly string[];
+  modelReceiptSha256s: readonly string[];
+  usageReceiptSha256s: readonly string[];
+}) {
+  const evidence = new Set(input.evidenceIds);
+  const toolExecutions = new Set(input.toolExecutionIds);
+  const candidate = input.candidate;
+  const candidateClaimsValid = Boolean(candidate) &&
+    candidate!.evidenceIds.every((id) => evidence.has(id)) &&
+    candidate!.toolExecutionIds.every((id) => toolExecutions.has(id));
+  const candidateChecks = new Map(
+    (candidate?.acceptanceChecks || []).map((check) => [check.criterionId, check]),
+  );
+  const hasArtifactReceipt = Boolean(input.execution.contract.output.maxArtifacts > 0);
+  const hasModelReceipt = input.modelReceiptSha256s.length > 0;
+  const hasUsageReceipt = input.usageReceiptSha256s.length > 0;
+
+  return input.execution.contract.acceptance.criteria.map((criterion) => {
+    const claimed = candidateChecks.get(criterion.criterionId);
+    const claimedEvidence = unique([
+      ...(candidate?.evidenceIds || []),
+      ...(claimed?.evidenceIds || []),
+    ]);
+    const claimedTools = unique([
+      ...(candidate?.toolExecutionIds || []),
+      ...(claimed?.toolExecutionIds || []),
+    ]);
+    const evidenceClaimsValid = claimedEvidence.every((id) => evidence.has(id));
+    const toolClaimsValid = claimedTools.every((id) => toolExecutions.has(id));
+    const structural = Boolean(
+      candidate &&
+      claimed &&
+      claimed.passed &&
+      candidateClaimsValid &&
+      evidenceClaimsValid &&
+      toolClaimsValid &&
+      hasArtifactReceipt &&
+      hasModelReceipt &&
+      hasUsageReceipt,
+    );
+    const receiptSatisfied = criterion.verificationMethod === "evidence"
+      ? input.groundingValid && claimedEvidence.length > 0
+      : criterion.verificationMethod === "governed_receipt"
+        ? claimedTools.length > 0
+        : true;
+    const passed = structural && receiptSatisfied;
+    const reason = !candidate
+      ? "closed_output_missing"
+      : !claimed
+        ? "criterion_check_missing"
+        : !claimed.passed
+          ? "child_declared_unsatisfied"
+          : !candidateClaimsValid || !evidenceClaimsValid || !toolClaimsValid
+            ? "unbound_receipt_claim"
+            : !hasModelReceipt || !hasUsageReceipt
+              ? "model_usage_receipt_missing"
+              : criterion.verificationMethod === "evidence" &&
+                  (!input.groundingValid || claimedEvidence.length === 0)
+                ? "evidence_receipt_missing"
+                : criterion.verificationMethod === "governed_receipt" &&
+                    claimedTools.length === 0
+                  ? "governed_tool_receipt_missing"
+                  : "deterministic_receipts_satisfied";
+    return {
+      criterionId: criterion.criterionId,
+      passed,
+      evidenceIds: claimedEvidence.filter((id) => evidence.has(id)),
+      note: `${criterion.verificationMethod}:${reason}`,
+    };
+  });
+}
+
+function uniqueStrings(values: readonly string[]) {
+  return new Set(values).size === values.length;
 }
 
 function assertJobEnvelope(

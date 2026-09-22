@@ -91,6 +91,16 @@ describe("delegation execution lifecycle", () => {
           verifierDefinitionVersion:
             record.contract.verifier.identity.definitionVersion,
           verifierPrincipalId: record.contract.verifier.identity.principalId,
+          verifierRuntimeAssignmentId:
+            record.contract.verifier.runtimeAssignment.assignmentId,
+          verifierRuntimeAssignmentSha256:
+            record.contract.verifier.runtimeAssignment.assignmentSha256,
+          verifierProviderId:
+            record.contract.verifier.runtimeAssignment.providerId,
+          verifierModelId: record.contract.verifier.runtimeAssignment.modelId,
+          verifierModelTier:
+            record.contract.verifier.runtimeAssignment.modelTier,
+          verifierModelReceiptSha256: "3".repeat(64),
           score: 0.9,
           acceptanceChecksSha256,
           evidenceIds: ["evidence:one"],

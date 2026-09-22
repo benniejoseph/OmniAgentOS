@@ -16,6 +16,7 @@ import {
 import type { DelegationContractV1 } from "@/lib/delegation/contracts";
 import type { RunBudgetCountersV1 } from "@/lib/runs/budgets";
 import type { AgentSkill, CustomAgentDefinition } from "@/lib/skills/types";
+import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
 type BuildExecutionContractInput = Parameters<
   typeof buildDelegationExecutionContractV2
@@ -325,6 +326,20 @@ function runtimeAssignment() {
   });
 }
 
+function verifierRuntimeAssignment() {
+  return buildDelegationRuntimeAssignmentReceiptV1({
+    executionId: verifierRunId,
+    providerId: "openai",
+    modelId: "gpt-6-astra",
+    modelTier: "reasoning",
+    reasoningProfileId: "adaptive-ultra",
+    normalizedReasoningEffort: "ultra",
+    routingPolicyId: "model-route:verifier:v1",
+    routingPolicySha256: "6".repeat(64),
+    assignedAt: deadline.createdAt,
+  });
+}
+
 function build(
   overrides: Partial<Parameters<typeof buildDelegationExecutionContractV2>[0]> = {},
 ) {
@@ -379,7 +394,10 @@ function build(
       acceptanceId: "acceptance:one",
       criteria: [{
         criterionId: "criterion:one",
-        criterionSha256: "2".repeat(64),
+        statement: "The result satisfies its exact acceptance contract.",
+        criterionSha256: canonicalJsonSha256({
+          statement: "The result satisfies its exact acceptance contract.",
+        }),
         verificationMethod: "parent_verifier",
         required: true,
       }],
@@ -390,6 +408,7 @@ function build(
       verifierPolicyId: "verifier-policy:one",
       verifierPolicySha256: "3".repeat(64),
       identityPin: verifierPin,
+      runtimeAssignment: verifierRuntimeAssignment(),
       method: "agent_then_deterministic",
       requiredEvidenceKinds: ["artifact_digest", "acceptance_check"],
       acceptanceThreshold: 0.9,

@@ -112,6 +112,7 @@ export const delegationRuntimeAssignmentReceiptV1Schema =
 
 const acceptanceCriterionReferenceSchema = z.object({
   criterionId: idSchema,
+  statement: z.string().trim().min(3).max(500),
   criterionSha256: sha256Schema,
   verificationMethod: z.enum([
     "schema",
@@ -120,7 +121,17 @@ const acceptanceCriterionReferenceSchema = z.object({
     "parent_verifier",
   ]),
   required: z.literal(true),
-}).strict();
+}).strict().superRefine((criterion, context) => {
+  if (criterion.criterionSha256 !== canonicalJsonSha256({
+    statement: criterion.statement,
+  })) {
+    context.addIssue({
+      code: "custom",
+      path: ["criterionSha256"],
+      message: "Delegation acceptance criterion digest is invalid.",
+    });
+  }
+});
 
 const acceptanceReferenceBodySchema = z.object({
   acceptanceId: idSchema,
@@ -196,6 +207,7 @@ const verifierReferenceBodySchema = z.object({
   verifierPolicyId: idSchema,
   verifierPolicySha256: sha256Schema,
   identity: agentIdentityBindingSchema,
+  runtimeAssignment: delegationRuntimeAssignmentReceiptV1Schema,
   method: z.enum([
     "deterministic_schema_and_evidence",
     "agent_then_deterministic",
@@ -445,8 +457,11 @@ export function buildDelegationExecutionContractV2(input: {
   >;
   verifier: Omit<
     DelegationExecutionContractV2["verifier"],
-    "identity" | "verifierContractSha256"
-  > & { identityPin: AgentRunIdentityPinV1 };
+    "identity" | "runtimeAssignment" | "verifierContractSha256"
+  > & {
+    identityPin: AgentRunIdentityPinV1;
+    runtimeAssignment: DelegationRuntimeAssignmentReceiptV1;
+  };
   grants: DelegationExecutionContractV2["grants"];
   resourceClaims?: DelegationExecutionContractV2["resourceClaims"];
   parentAuthority: DelegationExecutionParentAuthorityV1;
@@ -493,6 +508,9 @@ export function buildDelegationExecutionContractV2(input: {
   const verifierBody = verifierReferenceBodySchema.parse({
     ...verifierInput,
     identity: bindAgentIdentity(verifierIdentityPin),
+    runtimeAssignment: parseDelegationRuntimeAssignmentReceiptV1(
+      input.verifier.runtimeAssignment,
+    ),
   });
   const verifier = verifierReferenceSchema.parse({
     ...verifierBody,
@@ -594,6 +612,16 @@ function validateContractBindings(
       code: "custom",
       path: ["delegatorIdentity"],
       message: "Delegation Agent identities are not bound to their exact executions.",
+    });
+  }
+  if (
+    contract.verifier.runtimeAssignment.executionId !==
+      contract.verifier.identity.runId
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["verifier", "runtimeAssignment"],
+      message: "Delegation verifier runtime is not bound to its exact identity.",
     });
   }
   if (

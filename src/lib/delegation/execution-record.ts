@@ -98,6 +98,12 @@ export const delegationExecutionVerificationV1Schema = z.object({
   verifierAgentId: idSchema,
   verifierDefinitionVersion: z.number().int().min(1),
   verifierPrincipalId: idSchema,
+  verifierRuntimeAssignmentId: idSchema,
+  verifierRuntimeAssignmentSha256: sha256Schema,
+  verifierProviderId: idSchema,
+  verifierModelId: idSchema,
+  verifierModelTier: z.enum(["fast", "reasoning"]),
+  verifierModelReceiptSha256: sha256Schema,
   verdict: z.enum(["verified", "rejected"]),
   score: z.number().min(0).max(1),
   resultSha256: sha256Schema,
@@ -454,6 +460,15 @@ function assertVerificationMatchesContract(
     verification.verifierAgentId !== contract.verifier.identity.logicalAgentId ||
     verification.verifierDefinitionVersion !== contract.verifier.identity.definitionVersion ||
     verification.verifierPrincipalId !== contract.verifier.identity.principalId ||
+    verification.verifierRuntimeAssignmentId !==
+      contract.verifier.runtimeAssignment.assignmentId ||
+    verification.verifierRuntimeAssignmentSha256 !==
+      contract.verifier.runtimeAssignment.assignmentSha256 ||
+    verification.verifierProviderId !==
+      contract.verifier.runtimeAssignment.providerId ||
+    verification.verifierModelId !== contract.verifier.runtimeAssignment.modelId ||
+    verification.verifierModelTier !==
+      contract.verifier.runtimeAssignment.modelTier ||
     (verdict === "verified" && verification.score < contract.verifier.acceptanceThreshold)
   ) {
     throw new Error("Delegation verification does not satisfy its verifier contract.");

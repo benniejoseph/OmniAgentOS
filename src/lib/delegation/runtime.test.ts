@@ -11,7 +11,13 @@ import {
   executionScopeFromDelegationContract,
   type DelegateAgentTaskInput,
 } from "@/lib/delegation/runtime";
-import { DYNAMIC_DELEGATION_READ_TOOL_IDS } from "@/lib/delegation/runtime-policy";
+import {
+  DYNAMIC_DELEGATION_CHILD_BUDGET,
+  DYNAMIC_DELEGATION_READ_TOOL_IDS,
+  dynamicDelegationParentToolReservation,
+  dynamicDelegationRootReservation,
+} from "@/lib/delegation/runtime-policy";
+import { buildParentDelegationBudgetAuthorityV1 } from "@/lib/delegation/parent-budget-authority";
 import type { enqueueOperationJob } from "@/lib/operations/job-queue";
 import type {
   appendAgentRunIdentityPin,
@@ -21,6 +27,12 @@ import type {
   getAgentRunIdentityPin,
 } from "@/lib/runs/store";
 import type { AgentRunRecord } from "@/lib/runs/types";
+import {
+  DEFAULT_AGENT_RUN_BUDGET_LIMITS,
+  createRunBudgetState,
+  refreshRunBudgetWallTime,
+  reserveRunBudget,
+} from "@/lib/runs/budgets";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import type { resolveRuntimeModelAssignment } from "@/lib/settings/runtime-models";
 
@@ -43,6 +55,16 @@ describe("dynamic delegation runtime", () => {
     );
     expect(harness.appendedPin?.runId).toBe(first.childRunId);
     expect(harness.scheduleDrain).toHaveBeenCalledTimes(2);
+    expect(harness.createExecution).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rootBudgetLimits: DEFAULT_AGENT_RUN_BUDGET_LIMITS,
+      }),
+    );
+    expect(first.contract.verifier.runtimeAssignment).toMatchObject({
+      providerId: "openai",
+      modelId: "configured-council-model",
+      modelTier: "reasoning",
+    });
   });
 
   it("attenuates grants, fan-out, and parent context before queueing", async () => {
@@ -130,6 +152,38 @@ describe("dynamic delegation runtime", () => {
     }), harness.dependencies)).rejects.toThrow(/idempotency key/i);
     expect(harness.createRun).toHaveBeenCalledTimes(1);
   });
+
+  it("fails before child creation when the live reservation differs from the harness", async () => {
+    const harness = runtimeHarness();
+    harness.dependencies.listParentEvents.mockResolvedValueOnce([{
+      id: "event:parent:harness:changed",
+      streamId: `run:${harness.parentRun.id}`,
+      type: "run.harness",
+      payload: {
+        budgetLimits: {
+          ...DEFAULT_AGENT_RUN_BUDGET_LIMITS,
+          agents: DEFAULT_AGENT_RUN_BUDGET_LIMITS.agents - 1,
+        },
+      },
+      createdAt: harness.parentRun.startedAt,
+    }]);
+
+    await expect(delegateAgentTask(
+      harness.request(),
+      harness.dependencies,
+    )).rejects.toThrow(/persisted harness budget/i);
+    expect(harness.createRun).not.toHaveBeenCalled();
+    expect(harness.createExecution).not.toHaveBeenCalled();
+  });
+
+  it("rejects a call that bypasses the parent-loop reservation", async () => {
+    const harness = runtimeHarness();
+    const request = { ...harness.request(), parentBudgetAuthority: undefined };
+
+    await expect(delegateAgentTask(request, harness.dependencies)).rejects
+      .toThrow(/live parent-loop budget reservation/i);
+    expect(harness.createRun).not.toHaveBeenCalled();
+  });
 });
 
 function runtimeHarness(options: {
@@ -175,6 +229,26 @@ function runtimeHarness(options: {
     capabilityGrantIds: ["capability:parent-only"],
     purpose: "agent.run",
   });
+  const reservedAtMs = Date.now();
+  const budgetBefore = refreshRunBudgetWallTime(createRunBudgetState(
+    DEFAULT_AGENT_RUN_BUDGET_LIMITS,
+    {
+      startedAt,
+      used: {
+        modelTurns: 1,
+        tokens: 4_000,
+        costMicrousd: 50_000,
+      },
+    },
+  ), reservedAtMs);
+  const parentToolReservation = dynamicDelegationParentToolReservation(
+    DYNAMIC_DELEGATION_CHILD_BUDGET,
+  );
+  const budgetAfter = reserveRunBudget(
+    budgetBefore,
+    parentToolReservation,
+    reservedAtMs,
+  );
   let existing: ReturnType<typeof buildDelegationExecutionRecordV1> | undefined;
   let boundScope: unknown;
   let appendedPin: AgentRunIdentityPinV1 | undefined;
@@ -226,6 +300,13 @@ function runtimeHarness(options: {
 
   const dependencies = {
     findExecution: vi.fn(async () => existing),
+    listParentEvents: vi.fn(async () => [{
+      id: "event:parent:harness",
+      streamId: `run:${parentRunId}`,
+      type: "run.harness",
+      payload: { budgetLimits: DEFAULT_AGENT_RUN_BUDGET_LIMITS },
+      createdAt: startedAt,
+    }]),
     getRun: vi.fn(async () => parentRun) as typeof getAgentRun,
     getRunIdentityPin: vi.fn(async () => parentPin) as typeof getAgentRunIdentityPin,
     resolveIdentity: vi.fn(async (input: { agentId: string }) =>
@@ -260,11 +341,23 @@ function runtimeHarness(options: {
       return childPrompt;
     },
     request(overrides: Partial<DelegateAgentTaskInput> = {}) {
+      const idempotencyKey = "delegate-once";
       return {
         tenantId,
         actorId,
         parentExecutionScope,
-        idempotencyKey: "delegate-once",
+        idempotencyKey,
+        parentBudgetAuthority: buildParentDelegationBudgetAuthorityV1({
+          parentExecutionScope,
+          idempotencyKey,
+          before: budgetBefore,
+          after: budgetAfter,
+          childRootReservation: dynamicDelegationRootReservation(
+            DYNAMIC_DELEGATION_CHILD_BUDGET,
+          ),
+          parentToolReservation,
+          reservedAt: new Date(reservedAtMs).toISOString(),
+        }),
         input: {
           objective: "Research the bounded evidence and return a concise finding.",
           taskKind: "research" as const,

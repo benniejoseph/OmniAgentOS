@@ -88,6 +88,7 @@ import { processDelegationExecutionJob } from "@/lib/delegation/worker";
 import type { OperationJobRecord } from "@/lib/operations/job-queue";
 import type { AgentRunRecord } from "@/lib/runs/types";
 import type { RuntimeModelResolution } from "@/lib/settings/runtime-models";
+import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
 const modelRoute = {
   provider: "openai" as const,
@@ -109,11 +110,19 @@ describe("delegation execution worker", () => {
       payload: { model: "configured-council-model", usageReceiptId: "usage:one" },
       createdAt: new Date().toISOString(),
     }]);
-    mocks.reviewCouncilResponse.mockResolvedValue({
-      passed: true,
-      score: 0.95,
-      assessment: "The proposal satisfies the bounded acceptance contract.",
-      requiredChanges: [],
+    mocks.reviewCouncilResponse.mockImplementation(async (input) => {
+      await input.checkpointHooks?.afterModel?.({
+        sourceId: "verifier:sentinel",
+        attempt: 1,
+        status: "completed",
+        generated: verifierGeneration(),
+      });
+      return {
+        passed: true,
+        score: 0.95,
+        assessment: "The proposal satisfies the bounded acceptance contract.",
+        requiredChanges: [],
+      };
     });
   });
 
@@ -150,11 +159,19 @@ describe("delegation execution worker", () => {
   });
 
   it("persists a verifier rejection instead of promoting a weak proposal", async () => {
-    mocks.reviewCouncilResponse.mockResolvedValue({
-      passed: false,
-      score: 0.4,
-      assessment: "Evidence is insufficient.",
-      requiredChanges: ["Add an independent source."],
+    mocks.reviewCouncilResponse.mockImplementation(async (input) => {
+      await input.checkpointHooks?.afterModel?.({
+        sourceId: "verifier:sentinel",
+        attempt: 1,
+        status: "completed",
+        generated: verifierGeneration(),
+      });
+      return {
+        passed: false,
+        score: 0.4,
+        assessment: "Evidence is insufficient.",
+        requiredChanges: ["Add an independent source."],
+      };
     });
     const harness = workerHarness();
 
@@ -223,9 +240,91 @@ describe("delegation execution worker", () => {
     expect(mocks.failOperationJob).toHaveBeenCalledTimes(1);
     expect(mocks.completeOperationJob).not.toHaveBeenCalled();
   });
+
+  it("fails closed before claiming when the pinned Sentinel runtime drifts", async () => {
+    const harness = workerHarness();
+    mocks.resolveRuntimeModel
+      .mockResolvedValueOnce(runtimeResolution())
+      .mockResolvedValueOnce(runtimeResolution({
+        model: "changed-verifier-model",
+        assignmentRevision: 9,
+        assignmentConfigurationSha256: "9".repeat(64),
+      }));
+
+    const result = await processDelegationExecutionJob(harness.job);
+
+    expect(result).toMatchObject({
+      status: "failed",
+      message: "verifier_runtime_assignment_changed",
+    });
+    expect(harness.transitions).toEqual(["failed"]);
+    expect(mocks.claimQueuedAgentRun).not.toHaveBeenCalled();
+  });
+
+  it("rejects an evidence criterion without an observable evidence receipt", async () => {
+    const harness = workerHarness({
+      criterion: {
+        statement: "Cite evidence for the bounded result.",
+        verificationMethod: "evidence",
+      },
+    });
+
+    const result = await processDelegationExecutionJob(harness.job);
+
+    expect(result.status).toBe("completed");
+    expect(harness.execution).toMatchObject({
+      state: "rejected",
+      result: {
+        status: "blocked",
+        acceptanceChecks: [{
+          passed: false,
+          note: "evidence:evidence_receipt_missing",
+        }],
+      },
+    });
+  });
+
+  it("projects governed tool execution IDs from durable run receipts", async () => {
+    mocks.listStreamEvents.mockResolvedValue([
+      {
+        id: "event:model:one",
+        streamId: "run:run-child",
+        type: "run.model",
+        payload: {
+          model: "configured-council-model",
+          usageReceiptId: "usage:one",
+        },
+        createdAt: new Date().toISOString(),
+      },
+      {
+        id: "event:tool:one",
+        streamId: "run:run-child",
+        type: "run.tool",
+        payload: {
+          toolId: "knowledge.search",
+          status: "executed",
+          executionId: "tool-execution:one",
+        },
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+    const harness = workerHarness();
+
+    await processDelegationExecutionJob(harness.job);
+
+    expect(harness.execution.result?.toolExecutionIds).toEqual([
+      "tool-execution:one",
+    ]);
+  });
 });
 
-function workerHarness(options: { runFailure?: Error } = {}) {
+function workerHarness(options: {
+  runFailure?: Error;
+  criterion?: {
+    statement: string;
+    verificationMethod: "schema" | "evidence" | "governed_receipt" | "parent_verifier";
+  };
+} = {}) {
   const tenantId = "tenant-one";
   const actorId = "actor-one";
   const now = Date.now();
@@ -262,7 +361,28 @@ function workerHarness(options: { runFailure?: Error } = {}) {
     runId: "run-root",
     identity: sentinelIdentity,
   });
+  const verifierExactRuntime = exactDelegationRuntime({
+    runtimeModel,
+    deploymentRoute: modelRoute,
+    scope: "verifier",
+  });
   const contract = buildExecutionContract({
+    ...(options.criterion
+      ? {
+          acceptance: {
+            acceptanceId: "acceptance:execution:worker-test",
+            criteria: [{
+              criterionId: "criterion:execution:one",
+              statement: options.criterion.statement,
+              criterionSha256: canonicalJsonSha256({
+                statement: options.criterion.statement,
+              }),
+              verificationMethod: options.criterion.verificationMethod,
+              required: true as const,
+            }],
+          },
+        }
+      : {}),
     runtimeAssignment: buildDelegationRuntimeAssignmentReceiptV1({
       executionId: "run-child",
       providerId: exactRuntime.provider,
@@ -279,6 +399,17 @@ function workerHarness(options: { runFailure?: Error } = {}) {
       verifierPolicyId: "verifier-policy:execution:one",
       verifierPolicySha256: "e".repeat(64),
       identityPin: verifierIdentityPin,
+      runtimeAssignment: buildDelegationRuntimeAssignmentReceiptV1({
+        executionId: verifierIdentityPin.runId,
+        providerId: verifierExactRuntime.provider,
+        modelId: verifierExactRuntime.model,
+        modelTier: verifierExactRuntime.tier,
+        reasoningProfileId: `agent-reasoning:${AGENT_REASONING_EFFORT}`,
+        normalizedReasoningEffort: AGENT_REASONING_EFFORT,
+        routingPolicyId: verifierExactRuntime.routingPolicyId,
+        routingPolicySha256: verifierExactRuntime.routingPolicySha256,
+        assignedAt: createdAt,
+      }),
       method: "agent_then_deterministic",
       requiredEvidenceKinds: [
         "artifact_digest",
@@ -370,7 +501,20 @@ function workerHarness(options: { runFailure?: Error } = {}) {
     run = {
       ...run,
       status: "completed",
-      response: "Evidence-backed bounded result.",
+      response: JSON.stringify({
+        summary: "Evidence-backed bounded result.",
+        evidenceIds: [],
+        toolExecutionIds: [],
+        acceptanceChecks: execution.contract.acceptance.criteria.map(
+          (criterion) => ({
+            criterionId: criterion.criterionId,
+            passed: true,
+            note: "The bounded result satisfies the requested criterion.",
+            evidenceIds: [],
+            toolExecutionIds: [],
+          }),
+        ),
+      }),
       completedAt: new Date().toISOString(),
     };
     yield { type: "done", response: run.response };
@@ -385,6 +529,36 @@ function workerHarness(options: { runFailure?: Error } = {}) {
     get run() {
       return run;
     },
+  };
+}
+
+function verifierGeneration() {
+  return {
+    text: JSON.stringify({
+      passed: true,
+      score: 0.95,
+      assessment: "Verified.",
+      requiredChanges: [],
+    }),
+    provider: "openai" as const,
+    model: "configured-council-model",
+    usage: {
+      inputTokens: 100,
+      outputTokens: 20,
+      cachedInputTokens: 0,
+      totalTokens: 120,
+    },
+    latencyMs: 10,
+    costKnown: true,
+    estimatedCostUsd: 0.001,
+    attempts: [{
+      provider: "openai" as const,
+      model: "configured-council-model",
+      status: "completed" as const,
+      latencyMs: 10,
+    }],
+    usageReceiptRecorded: true,
+    usageReceiptId: "usage:verifier:one",
   };
 }
 

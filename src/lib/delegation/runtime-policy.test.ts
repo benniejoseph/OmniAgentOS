@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   DYNAMIC_DELEGATION_CHILD_BUDGET,
   DYNAMIC_DELEGATION_READ_TOOL_IDS,
+  dynamicDelegationParentToolReservation,
   dynamicDelegationRootReservation,
 } from "@/lib/delegation/runtime-policy";
 
@@ -12,6 +13,13 @@ describe("dynamic delegation runtime policy", () => {
       ...DYNAMIC_DELEGATION_CHILD_BUDGET,
       agents: 1,
       fanOut: 1,
+    });
+  });
+
+  it("charges the parent for both the governed scheduling call and child", () => {
+    expect(dynamicDelegationParentToolReservation()).toEqual({
+      ...dynamicDelegationRootReservation(),
+      toolCalls: DYNAMIC_DELEGATION_CHILD_BUDGET.toolCalls + 1,
     });
   });
 
