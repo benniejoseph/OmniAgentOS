@@ -1082,6 +1082,96 @@ describe("database pool acquisition", () => {
     }
   });
 
+  it("rejects transaction control anywhere in a raw statement batch", async () => {
+    const pool = createMockPoolClient([]);
+    vi.doMock("postgres", () => ({ default: vi.fn(() => pool.pg) }));
+    vi.stubEnv("DATABASE_URL", "postgresql://runtime.invalid/asael");
+    vi.resetModules();
+
+    try {
+      const isolatedClient = await import("@/lib/db/client");
+      const transactionControlError =
+        "Transaction control is reserved for the database reservation manager.";
+
+      await expect(
+        isolatedClient.runWithDatabaseTenantScope("tenant-a", () =>
+          isolatedClient.getSql().unsafe(
+            "UPDATE omni_memories SET importance = 1; COMMIT",
+          ),
+        ),
+      ).rejects.toThrow(transactionControlError);
+      await expect(
+        isolatedClient.runWithDatabaseTenantScope("tenant-a", () =>
+          isolatedClient.getSql().query(
+            "SELECT 1; /* statement boundary */ START /* gap */ TRANSACTION",
+          ),
+        ),
+      ).rejects.toThrow(transactionControlError);
+      await expect(
+        isolatedClient.runWithDatabaseTenantScope("tenant-a", () =>
+          isolatedClient.getSql()`DELETE FROM omni_memories; ROLLBACK`,
+        ),
+      ).rejects.toThrow(transactionControlError);
+
+      expect(
+        pool.statements.some(({ text }) =>
+          /UPDATE omni_memories|START|DELETE FROM omni_memories/.test(text)),
+      ).toBe(false);
+      expect(transactionCommands(pool.statements)).toEqual([
+        "BEGIN",
+        "ROLLBACK",
+        "BEGIN",
+        "ROLLBACK",
+        "BEGIN",
+        "ROLLBACK",
+      ]);
+      expect(pool.reserved.release).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.doUnmock("postgres");
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
+
+  it("ignores control words inside PostgreSQL comments and quoted regions", async () => {
+    const rows = [{ ok: true }];
+    const pool = createMockPoolClient(rows);
+    vi.doMock("postgres", () => ({ default: vi.fn(() => pool.pg) }));
+    vi.stubEnv("DATABASE_URL", "postgresql://runtime.invalid/asael");
+    vi.resetModules();
+
+    try {
+      const isolatedClient = await import("@/lib/db/client");
+      const safeRawStatements = [
+        "SELECT 'COMMIT; ROLLBACK', 'it''s END'",
+        'SELECT "COMMIT; ROLLBACK", "quoted""END"',
+        "SELECT 1 /* outer ; COMMIT /* nested ; ROLLBACK */ ignored */; SELECT 2 -- ; END\n",
+        "DO $body$ BEGIN; COMMIT; ROLLBACK; END $body$",
+      ];
+      for (const statement of safeRawStatements) {
+        await expect(
+          isolatedClient.runWithDatabaseTenantScope("tenant-a", () =>
+            isolatedClient.getSql().unsafe(statement),
+          ),
+        ).resolves.toEqual(rows);
+      }
+
+      const parameterValue = "untrusted'; COMMIT";
+      await expect(
+        isolatedClient.runWithDatabaseTenantScope("tenant-a", () =>
+          isolatedClient.getSql()`SELECT ${parameterValue} AS payload`,
+        ),
+      ).resolves.toEqual(rows);
+
+      expect(pool.pg.reserve).toHaveBeenCalledTimes(5);
+      expect(pool.reserved.release).toHaveBeenCalledTimes(5);
+    } finally {
+      vi.doUnmock("postgres");
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
+
   it("rolls back instead of committing when a callback leaves a query running", async () => {
     const pool = createMockPoolClient([]);
     let finishQuery: () => void = () => undefined;

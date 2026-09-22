@@ -2686,15 +2686,156 @@ function assertDatabaseReservationState(
 }
 
 function assertNotTransactionControlStatement(statement: string) {
-  const executable = statement
-    .replace(/\/\*[\s\S]*?\*\//g, " ")
-    .replace(/--[^\r\n]*/g, " ")
-    .trim();
-  if (/^(?:begin|start\s+transaction|commit|end|rollback|abort)\b/i.test(executable)) {
+  // postgres.js raw simple-protocol calls can contain a statement batch. Scan
+  // every top-level statement boundary without treating SQL text inside quoted
+  // values, identifiers, dollar bodies, or comments as executable control.
+  const executable = databaseSqlOutsideQuotedContent(statement);
+  if (
+    /(?:^|;)\s*(?:begin|start\s+transaction|commit|end|rollback|abort|savepoint|release\s+savepoint|prepare\s+transaction|set\s+transaction)\b/i
+      .test(executable)
+  ) {
     throw new Error(
       "Transaction control is reserved for the database reservation manager.",
     );
   }
+}
+
+function databaseSqlOutsideQuotedContent(statement: string) {
+  let executable = "";
+  let index = 0;
+  while (index < statement.length) {
+    if (statement.startsWith("--", index)) {
+      index += 2;
+      while (
+        index < statement.length &&
+        statement[index] !== "\n" &&
+        statement[index] !== "\r"
+      ) {
+        index += 1;
+      }
+      executable += " ";
+      continue;
+    }
+    if (statement.startsWith("/*", index)) {
+      index = skipNestedDatabaseBlockComment(statement, index);
+      executable += " ";
+      continue;
+    }
+    if (statement[index] === "'") {
+      index = skipDatabaseQuotedValue(
+        statement,
+        index,
+        isDatabaseEscapeStringQuote(statement, index),
+      );
+      executable += "Q";
+      continue;
+    }
+    if (statement[index] === '"') {
+      index = skipDatabaseQuotedIdentifier(statement, index);
+      executable += "Q";
+      continue;
+    }
+    const dollarQuote = databaseDollarQuoteAt(statement, index);
+    if (dollarQuote) {
+      const closingIndex = statement.indexOf(
+        dollarQuote,
+        index + dollarQuote.length,
+      );
+      index = closingIndex < 0
+        ? statement.length
+        : closingIndex + dollarQuote.length;
+      executable += "Q";
+      continue;
+    }
+    executable += statement[index];
+    index += 1;
+  }
+  return executable;
+}
+
+function skipNestedDatabaseBlockComment(statement: string, start: number) {
+  let depth = 1;
+  let index = start + 2;
+  while (index < statement.length && depth > 0) {
+    if (statement.startsWith("/*", index)) {
+      depth += 1;
+      index += 2;
+    } else if (statement.startsWith("*/", index)) {
+      depth -= 1;
+      index += 2;
+    } else {
+      index += 1;
+    }
+  }
+  return index;
+}
+
+function skipDatabaseQuotedValue(
+  statement: string,
+  start: number,
+  backslashEscapes: boolean,
+) {
+  let index = start + 1;
+  while (index < statement.length) {
+    if (backslashEscapes && statement[index] === "\\") {
+      index = Math.min(index + 2, statement.length);
+      continue;
+    }
+    if (statement[index] !== "'") {
+      index += 1;
+      continue;
+    }
+    if (statement[index + 1] === "'") {
+      index += 2;
+      continue;
+    }
+    return index + 1;
+  }
+  return index;
+}
+
+function skipDatabaseQuotedIdentifier(statement: string, start: number) {
+  let index = start + 1;
+  while (index < statement.length) {
+    if (statement[index] !== '"') {
+      index += 1;
+      continue;
+    }
+    if (statement[index + 1] === '"') {
+      index += 2;
+      continue;
+    }
+    return index + 1;
+  }
+  return index;
+}
+
+function isDatabaseEscapeStringQuote(statement: string, quoteIndex: number) {
+  if (!/[eE]/.test(statement[quoteIndex - 1] || "")) return false;
+  return !isDatabaseSqlIdentifierCharacter(statement[quoteIndex - 2]);
+}
+
+function databaseDollarQuoteAt(statement: string, index: number) {
+  if (
+    statement[index] !== "$" ||
+    isDatabaseSqlIdentifierCharacter(statement[index - 1])
+  ) {
+    return undefined;
+  }
+  const tagEnd = statement.indexOf("$", index + 1);
+  if (tagEnd < 0) return undefined;
+  const tag = statement.slice(index + 1, tagEnd);
+  if (
+    tag &&
+    !/^[A-Za-z_\u0080-\uFFFF][A-Za-z0-9_\u0080-\uFFFF]*$/.test(tag)
+  ) {
+    return undefined;
+  }
+  return statement.slice(index, tagEnd + 1);
+}
+
+function isDatabaseSqlIdentifierCharacter(value: string | undefined) {
+  return Boolean(value && /[A-Za-z0-9_$\u0080-\uFFFF]/.test(value));
 }
 
 type DatabaseAdmissionGate = {
