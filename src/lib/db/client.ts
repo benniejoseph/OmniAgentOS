@@ -102,13 +102,12 @@ const MAX_DATABASE_LOCK_TIMEOUT_MS = 10_000;
 const DEFAULT_DATABASE_IDLE_TRANSACTION_TIMEOUT_MS = 15_000;
 const MIN_DATABASE_IDLE_TRANSACTION_TIMEOUT_MS = 1_000;
 const MAX_DATABASE_IDLE_TRANSACTION_TIMEOUT_MS = 60_000;
-const DEFAULT_DATABASE_POOL_IDLE_TIMEOUT_SECONDS = 20;
-// Vercel may freeze a function isolate while postgres.js's JavaScript idle
-// timer is armed. When that isolate thaws after the deadline, the timer can
-// close the sole pool connection while a new reserve is being queued. Disable
-// the driver timer there and let the platform lifecycle or a connection error
-// retire the socket; durable runtimes still reap idle connections normally.
-const VERCEL_DATABASE_POOL_IDLE_TIMEOUT_SECONDS = 0;
+// Connection close is a generation boundary while a reservation is active.
+// Disable postgres.js's local idle/lifetime timers so routine timer rotation
+// cannot retire unrelated work in a wider durable pool. The platform, upstream
+// pooler, and network can still close idle sockets; postgres.js reconnects them
+// when there is no active generation work to fence.
+const DATABASE_POOL_IDLE_TIMEOUT_SECONDS = 0;
 
 // ---------------------------------------------------------------------------
 // Public exports (unchanged API surface)
@@ -364,9 +363,7 @@ export function getDatabasePoolMax() {
 }
 
 export function getDatabasePoolIdleTimeoutSeconds() {
-  return process.env.VERCEL
-    ? VERCEL_DATABASE_POOL_IDLE_TIMEOUT_SECONDS
-    : DEFAULT_DATABASE_POOL_IDLE_TIMEOUT_SECONDS;
+  return DATABASE_POOL_IDLE_TIMEOUT_SECONDS;
 }
 
 export function getDatabaseAcquireTimeoutMs() {
@@ -2244,14 +2241,10 @@ function createPostgresClient(databaseUrl: string, label: string) {
     ssl: databaseSslConfiguration(databaseUrl, label),
     max: getDatabasePoolMax(),
     idle_timeout: getDatabasePoolIdleTimeoutSeconds(),
-    // postgres.js implements max_lifetime with another JavaScript timer. As
-    // with idle_timeout, that timer can expire while a Vercel isolate is
-    // frozen and race the first reservation after thaw. Durable processes keep
-    // the driver's randomized default so long-lived sockets are still rotated.
-    ...(process.env.VERCEL ? { max_lifetime: null } : {}),
+    max_lifetime: null,
     connect_timeout: 10,
     onclose: () => {
-      retireClosedVercelDatabaseClient(client, label);
+      retireClosedDatabaseClient(client, label);
     },
     // Under prepare:false (required by the pooler) the driver returns json/jsonb
     // columns as raw strings instead of parsed values. Parse them back to objects/
@@ -2401,16 +2394,18 @@ async function withReservedDatabaseConnection<T>(
   const lease: DatabaseReservationLease = {
     state: "active",
     inFlightUserOperations: new Set(),
+    watchdog: createInactiveDatabaseReservationWatchdog(),
   };
   lifecycle.leases.add(lease);
-  const stopWatchdog = startDatabaseReservationWatchdog(pg, lease);
+  lease.watchdog = startDatabaseReservationWatchdog(pg, lease);
   try {
     return await settleOnDatabasePoolRetirement(
       pg,
       Promise.resolve().then(() => operation(reserved, lease)),
+      lease,
     );
   } finally {
-    stopWatchdog();
+    lease.watchdog.stop();
     lifecycle.leases.delete(lease);
     if (lifecycle.retired) {
       lease.state = "retired";
@@ -2439,10 +2434,14 @@ function createDatabaseReservationUserClient(
         assertDatabaseReservationUserOperation(pg, lease);
         return operation();
       }),
+      lease,
     );
     lease.inFlightUserOperations.add(pending);
     void pending.then(
-      () => lease.inFlightUserOperations.delete(pending),
+      () => {
+        lease.inFlightUserOperations.delete(pending);
+        lease.watchdog.refresh();
+      },
       () => lease.inFlightUserOperations.delete(pending),
     );
     return pending;
@@ -2522,13 +2521,16 @@ async function executeDatabaseReservationControl(
   statement: string,
 ) {
   assertDatabaseReservationState(pg, lease, requiredState);
-  return settleOnDatabasePoolRetirement(
+  const result = await settleOnDatabasePoolRetirement(
     pg,
     Promise.resolve().then(() => {
       assertDatabaseReservationState(pg, lease, requiredState);
       return reserved.unsafe(statement);
     }),
+    lease,
   );
+  lease.watchdog.refresh();
+  return result;
 }
 
 async function rollbackDatabaseReservation(
@@ -2603,7 +2605,9 @@ function assertDatabaseReservationState(
 ) {
   const lifecycle = getDatabasePoolLifecycle(pg);
   if (lifecycle.retired || lease.state === "retired") {
-    throw lifecycle.retirementError || databaseConnectionClosedError("Database");
+    throw lease.retirementError ||
+      lifecycle.retirementError ||
+      databaseConnectionClosedError("Database");
   }
   if (lease.state !== requiredState) {
     throw Object.assign(
@@ -2654,6 +2658,13 @@ type DatabaseReservationLeaseState =
 type DatabaseReservationLease = {
   state: DatabaseReservationLeaseState;
   inFlightUserOperations: Set<Promise<unknown>>;
+  retirementError?: Error;
+  watchdog: DatabaseReservationWatchdog;
+};
+
+type DatabaseReservationWatchdog = {
+  refresh: () => void;
+  stop: () => void;
 };
 
 const databaseAdmissionGates = new WeakMap<object, DatabaseAdmissionGate>();
@@ -2690,7 +2701,7 @@ function databaseReservationTimeoutError(
   }
   return Object.assign(
     new Error(
-      `Database reserved operation timed out after ${timeoutMs}ms. Its transaction outcome is unknown; automatic retry is forbidden.`,
+      `Database reserved operation made no progress for ${timeoutMs}ms. Its transaction outcome is unknown; automatic retry is forbidden.`,
     ),
     { code: "DATABASE_RESERVATION_TIMEOUT", retryable: false },
   );
@@ -2699,18 +2710,39 @@ function databaseReservationTimeoutError(
 function startDatabaseReservationWatchdog(
   pg: AnyPg,
   lease: DatabaseReservationLease,
-) {
-  if (!process.env.VERCEL || getDatabasePoolMax() !== 1) {
-    return () => undefined;
-  }
+): DatabaseReservationWatchdog {
   const timeoutMs = getDatabaseReservationTimeoutMs();
-  const timer = setTimeout(() => {
-    retireVercelDatabaseClient(
-      pg,
-      databaseReservationTimeoutError(timeoutMs, lease),
-    );
-  }, timeoutMs);
-  return () => clearTimeout(timer);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let stopped = false;
+  const refresh = () => {
+    if (stopped) return;
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      if (stopped) return;
+      const ownerError = databaseReservationTimeoutError(timeoutMs, lease);
+      retireDatabaseClient(
+        pg,
+        databasePoolRetiredError("reservation watchdog expired"),
+        { ownerLease: lease, ownerError },
+      );
+    }, timeoutMs);
+  };
+  refresh();
+  return {
+    refresh,
+    stop: () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+    },
+  };
+}
+
+function createInactiveDatabaseReservationWatchdog(): DatabaseReservationWatchdog {
+  return {
+    refresh: () => undefined,
+    stop: () => undefined,
+  };
 }
 
 function getDatabaseAdmissionGate(pg: AnyPg): DatabaseAdmissionGate {
@@ -2744,17 +2776,17 @@ function getDatabasePoolLifecycle(pg: AnyPg): DatabasePoolLifecycle {
 function settleOnDatabasePoolRetirement<T>(
   pg: AnyPg,
   operation: Promise<T>,
+  lease?: DatabaseReservationLease,
 ): Promise<T> {
-  if (!process.env.VERCEL || getDatabasePoolMax() !== 1) {
-    return operation;
-  }
   const lifecycle = getDatabasePoolLifecycle(pg);
   if (lifecycle.retired) {
     // The caller may already have constructed a fenced promise. Observe its
     // rejection even though the generation-level error takes precedence.
     void operation.catch(() => undefined);
     return Promise.reject(
-      lifecycle.retirementError || databaseConnectionClosedError("Database"),
+      lease?.retirementError ||
+        lifecycle.retirementError ||
+        databaseConnectionClosedError("Database"),
     );
   }
   return new Promise<T>((resolve, reject) => {
@@ -2764,7 +2796,7 @@ function settleOnDatabasePoolRetirement<T>(
       if (settled) return;
       settled = true;
       cleanup();
-      reject(error);
+      reject(lease?.retirementError || error);
     };
     lifecycle.listeners.add(onRetired);
     void operation.then(
@@ -2786,7 +2818,9 @@ function settleOnDatabasePoolRetirement<T>(
     // but the second check keeps the contract explicit.
     if (lifecycle.retired) {
       onRetired(
-        lifecycle.retirementError || databaseConnectionClosedError("Database"),
+        lease?.retirementError ||
+          lifecycle.retirementError ||
+          databaseConnectionClosedError("Database"),
       );
     }
   });
@@ -2896,7 +2930,7 @@ async function reserveDatabaseConnection(pg: AnyPg): Promise<{
       if (settled) return;
       settled = true;
       const timeoutError = databaseAcquireTimeoutError(timeoutMs);
-      retireTimedOutVercelDatabaseClient(pg, timeoutError);
+      retireTimedOutDatabaseClient(pg, timeoutError);
       reject(timeoutError);
     }, remainingMs);
 
@@ -2910,7 +2944,7 @@ async function reserveDatabaseConnection(pg: AnyPg): Promise<{
             settled = true;
             clearTimeout(timer);
             const timeoutError = databaseAcquireTimeoutError(timeoutMs);
-            retireTimedOutVercelDatabaseClient(pg, timeoutError);
+            retireTimedOutDatabaseClient(pg, timeoutError);
             reject(timeoutError);
           }
           releaseReservedDatabaseConnection(pg, reserved);
@@ -2936,31 +2970,42 @@ async function reserveDatabaseConnection(pg: AnyPg): Promise<{
   });
 }
 
-function retireTimedOutVercelDatabaseClient(pg: AnyPg, error: Error) {
-  // A postgres.js reserve cannot be canceled independently. On Vercel's
-  // enforced one-slot pools, a reserve caught behind a thaw-time connection
-  // close can otherwise retain the sole admission permit indefinitely. Rotate
-  // only the exact poisoned singleton; durable and wider pools may have valid
-  // concurrent work and must never be terminated by one caller's timeout.
-  if (!process.env.VERCEL || getDatabasePoolMax() !== 1) return;
-
-  retireVercelDatabaseClient(pg, error);
+function retireTimedOutDatabaseClient(pg: AnyPg, error: Error) {
+  // A postgres.js reserve cannot be canceled independently. In any runtime, a
+  // reserve caught behind a connection close can otherwise retain its admission
+  // permit indefinitely. Rotate only the exact generation whose driver
+  // reservation failed to settle; admission waiters never reach this path and
+  // cannot retire valid owner work.
+  retireDatabaseClient(pg, error);
 }
 
-function retireClosedVercelDatabaseClient(pg: AnyPg, label: string) {
-  retireVercelDatabaseClient(pg, databaseConnectionClosedError(label));
+function retireClosedDatabaseClient(pg: AnyPg, label: string) {
+  const lifecycle = getDatabasePoolLifecycle(pg);
+  const gate = databaseAdmissionGates.get(pg as object);
+  const hasActiveGenerationWork =
+    lifecycle.leases.size > 0 ||
+    lifecycle.listeners.size > 0 ||
+    Boolean(gate && (gate.active > 0 || gate.waiters.length > 0));
+  if (!hasActiveGenerationWork) {
+    // With local idle/lifetime timers disabled, an idle upstream close can be
+    // reconnected by postgres.js without replacing the application generation.
+    return;
+  }
+  retireDatabaseClient(pg, databaseConnectionClosedError(label));
 }
 
-function retireVercelDatabaseClient(pg: AnyPg, error: Error) {
-  if (!process.env.VERCEL || getDatabasePoolMax() !== 1) return;
-
+function retireDatabaseClient(
+  pg: AnyPg,
+  error: Error,
+  options: DatabasePoolRetirementOptions = {},
+) {
   const runtimeClientRetired = sqlClient === pg;
   const maintenanceClientRetired = maintenanceSqlClient === pg;
   if (!runtimeClientRetired && !maintenanceClientRetired) return;
   const lifecycle = getDatabasePoolLifecycle(pg);
   if (lifecycle.retired) return;
 
-  retireDatabasePoolLifecycle(pg, error);
+  retireDatabasePoolLifecycle(pg, error, options);
   retireDatabaseAdmissionGate(pg, error);
 
   if (runtimeClientRetired) {
@@ -2984,13 +3029,30 @@ function retireVercelDatabaseClient(pg: AnyPg, error: Error) {
   }
 }
 
-function retireDatabasePoolLifecycle(pg: AnyPg, error: Error) {
+type DatabasePoolRetirementOptions = {
+  ownerLease?: DatabaseReservationLease;
+  ownerError?: Error;
+};
+
+function retireDatabasePoolLifecycle(
+  pg: AnyPg,
+  error: Error,
+  options: DatabasePoolRetirementOptions,
+) {
   const lifecycle = getDatabasePoolLifecycle(pg);
   if (lifecycle.retired) return;
   lifecycle.retired = true;
   lifecycle.retirementError = error;
   for (const lease of lifecycle.leases) {
+    const leaseState = lease.state;
+    lease.retirementError =
+      lease === options.ownerLease && options.ownerError
+        ? options.ownerError
+        : leaseState === "committing"
+          ? databaseCommitOutcomeUnknownError(error)
+          : error;
     lease.state = "retired";
+    lease.watchdog.stop();
   }
   const listeners = [...lifecycle.listeners];
   lifecycle.listeners.clear();
@@ -3028,6 +3090,23 @@ function databaseConnectionClosedError(label: string) {
   return Object.assign(
     new Error(`${label} database connection closed; its pool was retired.`),
     { code: "DATABASE_CONNECTION_CLOSED" },
+  );
+}
+
+function databasePoolRetiredError(reason: string) {
+  return Object.assign(
+    new Error(`The database pool was retired because ${reason}.`),
+    { code: "DATABASE_POOL_RETIRED" },
+  );
+}
+
+function databaseCommitOutcomeUnknownError(cause: Error) {
+  return Object.assign(
+    new Error(
+      "The database connection closed while COMMIT was in flight. Its outcome is unknown; automatic retry is forbidden.",
+      { cause },
+    ),
+    { code: "DATABASE_COMMIT_OUTCOME_UNKNOWN", retryable: false },
   );
 }
 
