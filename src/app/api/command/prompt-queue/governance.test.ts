@@ -41,7 +41,12 @@ describe("prompt queue governed dispatch boundary", () => {
     expect(source).toContain(
       "headers.set(PROMPT_QUEUE_DISPATCH_TOKEN_HEADER, claimed.dispatchToken)",
     );
-    expect(source).toContain("response = await runGovernedAgent(internalRequest)");
+    expect(source).toContain(
+      'response = await fetch(internalRequest, { redirect: "manual" })',
+    );
+    expect(source).not.toContain('@/app/api/agent/route');
+    expect(source).toContain('headers.set("accept-encoding", "identity")');
+    expect(source).toContain("!productionDispatchOrigins().has(requestUrl.origin)");
     expect(source).toContain("ownerActorId: authority.ownerActorId");
     expect(source).not.toMatch(/executionScope:\s*authority\.executionScope[\s\S]*body: JSON\.stringify/);
   });
