@@ -11,6 +11,7 @@ task_local_signing_dir="${ASAEL_MACOS_LOCAL_SIGNING_DIR:-${HOME}/Library/Applica
 task_local_signing_keychain="${ASAEL_MACOS_LOCAL_SIGNING_KEYCHAIN:-$task_local_signing_dir/asael-private-signing.keychain-db}"
 task_local_signing_password_file="${ASAEL_MACOS_LOCAL_SIGNING_PASSWORD_FILE:-$task_local_signing_dir/asael-private-signing.password}"
 task_local_signing_identity="${ASAEL_MACOS_LOCAL_SIGNING_IDENTITY:-Asael Private Code Signing}"
+task_local_signing_install_lock="$task_local_signing_dir/.install.lock"
 task_credential_broker_dir="${ASAEL_MACOS_CREDENTIAL_BROKER_DIR:-$task_local_signing_dir/credential-broker-v1}"
 task_credential_broker_source_app="$task_credential_broker_dir/AsaelCredentialBroker.app"
 task_credential_broker_manifest="$task_credential_broker_dir/manifest.json"
@@ -18,6 +19,8 @@ task_signing_identity="$task_developer_signing_identity"
 task_signing_mode="developer"
 task_main_entitlements="$task_flutter_dir/macos/Runner/Release.entitlements"
 task_codesign_keychain_args=()
+task_local_signing_lock_token=""
+task_stage_dir=""
 task_version_line="$(awk '/^version:/ { print $2; exit }' "$task_flutter_dir/pubspec.yaml")"
 task_version="${task_version_line%%+*}"
 task_build="${task_version_line#*+}"
@@ -30,12 +33,77 @@ task_flutter_build_args=(
   "--dart-define=APP_BUILD_NUMBER=$task_build"
 )
 
+cleanup_macos_release() {
+  local task_status=$?
+  local task_observed_lock_token=""
+  trap - EXIT
+  set +e
+  if [[ -n "$task_stage_dir" && -d "$task_stage_dir" ]]; then
+    rm -rf "$task_stage_dir"
+  fi
+  if [[ -n "$task_local_signing_lock_token" && -L "$task_local_signing_install_lock" ]]; then
+    task_observed_lock_token="$(readlink "$task_local_signing_install_lock" 2>/dev/null || true)"
+    if [[ "$task_observed_lock_token" == "$task_local_signing_lock_token" ]]; then
+      unlink "$task_local_signing_install_lock"
+    fi
+  fi
+  exit "$task_status"
+}
+trap cleanup_macos_release EXIT
+
+local_signing_lock_is_owned() {
+  local task_observed_lock_token=""
+  if [[ -z "$task_local_signing_lock_token" || ! -L "$task_local_signing_install_lock" ]]; then
+    return 1
+  fi
+  task_observed_lock_token="$(readlink "$task_local_signing_install_lock" 2>/dev/null || true)"
+  [[ "$task_observed_lock_token" == "$task_local_signing_lock_token" ]]
+}
+
+acquire_local_signing_lock() {
+  mkdir -p "$task_local_signing_dir"
+  chmod 700 "$task_local_signing_dir"
+  task_local_signing_lock_token="build:${BASHPID:-$$}:$RANDOM:$RANDOM"
+  if ! ln -s "$task_local_signing_lock_token" "$task_local_signing_install_lock" 2>/dev/null; then
+    task_local_signing_lock_token=""
+    return 1
+  fi
+}
+
+unlock_local_signing_keychain() {
+  if [[ "$task_signing_mode" != "local" ]]; then
+    return 0
+  fi
+  if ! local_signing_lock_is_owned; then
+    echo "The private macOS signing lease was lost during packaging." >&2
+    return 1
+  fi
+  if [[ ! -f "$task_local_signing_keychain" || ! -f "$task_local_signing_password_file" ]]; then
+    echo "The private macOS signing keychain became unavailable during packaging." >&2
+    return 1
+  fi
+  local task_password
+  task_password="$(<"$task_local_signing_password_file")"
+  security unlock-keychain -p "$task_password" "$task_local_signing_keychain"
+  unset task_password
+}
+
+codesign_with_active_identity() {
+  # Owner-only keychains can auto-lock while the unsigned Xcode build runs.
+  # Refresh immediately before every private-key operation instead of relying
+  # on the early availability check to remain valid for the whole release.
+  unlock_local_signing_keychain
+  codesign "$@"
+}
+
 if [[ -z "$task_developer_signing_identity" ]]; then
-  if [[ -f "$task_local_signing_keychain" && -f "$task_local_signing_password_file" ]]; then
+  if ! acquire_local_signing_lock; then
+    echo "The private macOS signing identity is being installed, validated, or used by another release." >&2
+    exit 1
+  elif [[ -f "$task_local_signing_keychain" && -f "$task_local_signing_password_file" ]]; then
     task_signing_identity="$task_local_signing_identity"
     task_signing_mode="local"
-    task_local_signing_password="$(<"$task_local_signing_password_file")"
-    security unlock-keychain -p "$task_local_signing_password" "$task_local_signing_keychain"
+    unlock_local_signing_keychain
     task_codesign_keychain_args=(--keychain "$task_local_signing_keychain")
   elif [[ -e "$task_local_signing_keychain" || -e "$task_local_signing_password_file" ]]; then
     echo "The private macOS signing keychain is incomplete. Repair it before packaging." >&2
@@ -137,7 +205,6 @@ fi
 
 mkdir -p "$task_dist_dir"
 task_stage_dir="$(mktemp -d "${TMPDIR:-/tmp}/asael-macos.XXXXXX")"
-trap 'rm -rf "$task_stage_dir"' EXIT
 task_staged_app="$task_stage_dir/Asael.app"
 task_dmg="$task_dist_dir/Asael-${task_version}-${task_build}-macOS.dmg"
 task_helper_source_dir="$task_flutter_dir/macos/ComputerUseHelper"
@@ -213,13 +280,13 @@ if [[ -n "$task_signing_identity" ]]; then
       exit 1
     fi
     if [[ "$task_nested_code" == *.appex ]]; then
-      codesign \
+      codesign_with_active_identity \
         "${task_codesign_keychain_args[@]}" \
         "${task_codesign_args[@]}" \
         --entitlements "$task_flutter_dir/macos/ShareExtension/ShareExtension.entitlements" \
         "$task_nested_code"
     else
-      codesign \
+      codesign_with_active_identity \
         "${task_codesign_keychain_args[@]}" \
         "${task_codesign_args[@]}" \
         "$task_nested_code"
@@ -233,13 +300,13 @@ if [[ -n "$task_signing_identity" ]]; then
       -print0
   )
 
-  codesign \
+  codesign_with_active_identity \
     "${task_codesign_keychain_args[@]}" \
     "${task_codesign_args[@]}" \
     --identifier "app.omniagent.omniagent.computer-use-helper" \
     "$task_helper_app"
 
-  codesign \
+  codesign_with_active_identity \
     "${task_codesign_keychain_args[@]}" \
     "${task_codesign_args[@]}" \
     --entitlements "$task_main_entitlements" \
@@ -322,7 +389,7 @@ else
 fi
 
 if [[ "$task_signing_mode" == "developer" && -n "$task_signing_identity" ]]; then
-  codesign --force --timestamp --sign "$task_signing_identity" "$task_dmg"
+  codesign_with_active_identity --force --timestamp --sign "$task_signing_identity" "$task_dmg"
   codesign --verify --strict --verbose=2 "$task_dmg"
 
   if [[ -z "$task_notary_profile" ]]; then
