@@ -1069,12 +1069,23 @@ describe("database pool acquisition", () => {
       ).rejects.toThrow(
         "Transaction control is reserved for the database reservation manager.",
       );
+      await expect(
+        isolatedClient.runWithDatabaseTenantScope("tenant-a", () =>
+          isolatedClient.getSql().unsafe(
+            "/* outer /* nested */ comment */ RELEASE tenant_savepoint",
+          ),
+        ),
+      ).rejects.toThrow(
+        "Transaction control is reserved for the database reservation manager.",
+      );
 
       expect(transactionCommands(pool.statements)).toEqual([
         "BEGIN",
         "ROLLBACK",
+        "BEGIN",
+        "ROLLBACK",
       ]);
-      expect(pool.reserved.release).toHaveBeenCalledOnce();
+      expect(pool.reserved.release).toHaveBeenCalledTimes(2);
     } finally {
       vi.doUnmock("postgres");
       vi.unstubAllEnvs();
@@ -1082,41 +1093,71 @@ describe("database pool acquisition", () => {
     }
   });
 
-  it("rejects transaction control anywhere in a raw statement batch", async () => {
+  it("uses PostgreSQL's single-statement protocol for the continued E-string exploit", async () => {
+    const exploit = String.raw`UPDATE omni_memories SET importance = 1; SELECT E'a'
+'b\\''; COMMIT; SELECT pg_sleep(30)`;
+    const singleStatementError = Object.assign(
+      new Error("cannot insert multiple commands into a prepared statement"),
+      { code: "42601" },
+    );
     const pool = createMockPoolClient([]);
-    vi.doMock("postgres", () => ({ default: vi.fn(() => pool.pg) }));
+    pool.reserved.mockImplementation(
+      (strings: TemplateStringsArray, ...params: unknown[]) => {
+        const text = strings.join("?");
+        pool.statements.push({ text, params });
+        return text.includes("COMMIT")
+          ? Promise.reject(singleStatementError)
+          : Promise.resolve([]);
+      },
+    );
+    pool.reserved.unsafe.mockImplementation((
+      text: string,
+      params: unknown[] = [],
+      options?: Record<string, unknown>,
+    ) => {
+      pool.statements.push({ text, params });
+      const command = transactionCommand(text);
+      if (command) return Promise.resolve([]);
+      if (text === exploit) {
+        return options?.simple === false
+          ? Promise.reject(singleStatementError)
+          : Promise.reject(new Error("raw batch used the simple protocol"));
+      }
+      return Promise.resolve([]);
+    });
+    const postgresFactory = vi.fn(() => pool.pg);
+    vi.doMock("postgres", () => ({ default: postgresFactory }));
     vi.stubEnv("DATABASE_URL", "postgresql://runtime.invalid/asael");
     vi.resetModules();
 
     try {
       const isolatedClient = await import("@/lib/db/client");
-      const transactionControlError =
-        "Transaction control is reserved for the database reservation manager.";
-
       await expect(
         isolatedClient.runWithDatabaseTenantScope("tenant-a", () =>
-          isolatedClient.getSql().unsafe(
-            "UPDATE omni_memories SET importance = 1; COMMIT",
-          ),
+          isolatedClient.getSql().unsafe(exploit),
         ),
-      ).rejects.toThrow(transactionControlError);
+      ).rejects.toBe(singleStatementError);
       await expect(
         isolatedClient.runWithDatabaseTenantScope("tenant-a", () =>
-          isolatedClient.getSql().query(
-            "SELECT 1; /* statement boundary */ START /* gap */ TRANSACTION",
-          ),
+          isolatedClient.getSql().query(exploit),
         ),
-      ).rejects.toThrow(transactionControlError);
+      ).rejects.toBe(singleStatementError);
       await expect(
         isolatedClient.runWithDatabaseTenantScope("tenant-a", () =>
-          isolatedClient.getSql()`DELETE FROM omni_memories; ROLLBACK`,
+          isolatedClient.getSql()`UPDATE omni_memories SET importance = 1; COMMIT`,
         ),
-      ).rejects.toThrow(transactionControlError);
+      ).rejects.toBe(singleStatementError);
 
       expect(
-        pool.statements.some(({ text }) =>
-          /UPDATE omni_memories|START|DELETE FROM omni_memories/.test(text)),
-      ).toBe(false);
+        pool.reserved.unsafe.mock.calls
+          .filter(([text]) => text === exploit)
+          .map((call) => call[2]),
+      ).toEqual([
+        { prepare: false, simple: false },
+        { prepare: false, simple: false },
+      ]);
+      expect(postgresFactory).toHaveBeenCalledOnce();
+      expect(pool.pg.end).not.toHaveBeenCalled();
       expect(transactionCommands(pool.statements)).toEqual([
         "BEGIN",
         "ROLLBACK",
@@ -1145,7 +1186,7 @@ describe("database pool acquisition", () => {
       const safeRawStatements = [
         "SELECT 'COMMIT; ROLLBACK', 'it''s END'",
         'SELECT "COMMIT; ROLLBACK", "quoted""END"',
-        "SELECT 1 /* outer ; COMMIT /* nested ; ROLLBACK */ ignored */; SELECT 2 -- ; END\n",
+        "SELECT 1 /* outer ; COMMIT /* nested ; ROLLBACK */ ignored */ -- ; END\n",
         "DO $body$ BEGIN; COMMIT; ROLLBACK; END $body$",
       ];
       for (const statement of safeRawStatements) {
@@ -1163,6 +1204,17 @@ describe("database pool acquisition", () => {
         ),
       ).resolves.toEqual(rows);
 
+      expect(
+        pool.reserved.unsafe.mock.calls
+          .filter(([text]) => safeRawStatements.includes(String(text)))
+          .map((call) => call[2]),
+      ).toEqual(safeRawStatements.map(() => ({
+        prepare: false,
+        simple: false,
+      })));
+      const taggedParameterCall = pool.reserved.mock.calls.find(([strings]) =>
+        (strings as TemplateStringsArray).join("?").includes("AS payload"));
+      expect(taggedParameterCall?.slice(1)).toEqual([parameterValue]);
       expect(pool.pg.reserve).toHaveBeenCalledTimes(5);
       expect(pool.reserved.release).toHaveBeenCalledTimes(5);
     } finally {
@@ -1626,7 +1678,11 @@ function createMockPoolClient(
       );
     }),
     {
-      unsafe: vi.fn((text: string, params: unknown[] = []) => {
+      unsafe: vi.fn((
+        text: string,
+        params: unknown[] = [],
+        _options?: Record<string, unknown>,
+      ) => {
         statements.push({ text, params });
         const command = transactionCommand(text);
         if (command && controlFailures[command]) {
@@ -1702,8 +1758,11 @@ describe("database scope application", () => {
         actorIds: ["actor-a"],
       });
       expect(calls).toHaveLength(1);
-      expect(calls[0].text.match(/set_config/g)).toHaveLength(7);
+      expect(calls[0].text.match(/set_config/g)).toHaveLength(8);
       expect(calls[0].text).toContain("set_config('omni.actor_scope_v1'");
+      expect(calls[0].text).toContain(
+        "set_config('standard_conforming_strings', 'on', true)",
+      );
       expect(calls[0].text).toContain("set_config('statement_timeout'");
       expect(calls[0].text).toContain("set_config('lock_timeout'");
       expect(calls[0].text).toContain(
@@ -1725,7 +1784,7 @@ describe("database scope application", () => {
         reason: "maintenance",
       });
       expect(calls).toHaveLength(1);
-      expect(calls[0].text.match(/set_config/g)).toHaveLength(7);
+      expect(calls[0].text.match(/set_config/g)).toHaveLength(8);
       expect(calls[0].params).toEqual([
         "",
         "",

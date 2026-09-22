@@ -108,6 +108,13 @@ const MAX_DATABASE_IDLE_TRANSACTION_TIMEOUT_MS = 60_000;
 // pooler, and network can still close idle sockets; postgres.js reconnects them
 // when there is no active generation work to fence.
 const DATABASE_POOL_IDLE_TIMEOUT_SECONDS = 0;
+// Keep Supavisor-compatible unnamed statements while forcing PostgreSQL's
+// extended-protocol Parse boundary, which rejects multi-statement raw batches
+// before any member of the batch can execute.
+const DATABASE_SINGLE_STATEMENT_QUERY_OPTIONS = Object.freeze({
+  prepare: false,
+  simple: false,
+});
 
 // ---------------------------------------------------------------------------
 // Public exports (unchanged API surface)
@@ -2301,6 +2308,8 @@ function databaseSslConfiguration(databaseUrl: string, label: string) {
 // Wraps a postgres.Sql instance (or transaction-scoped sql) into our SqlClient
 // shape, adding the .query() alias expected by helpers throughout this file.
 function wrapPg(pg: AnyPg, transactionScoped = false): SqlClient {
+  // postgres.js tagged queries use the extended protocol even with prepared
+  // statement caching disabled; interpolations remain bound parameters.
   const client = ((strings: TemplateStringsArray, ...params: unknown[]) =>
     pg(strings, ...params)) as unknown as SqlClient;
 
@@ -2510,11 +2519,19 @@ function createDatabaseReservationUserClient(
     })) as AnyPg;
   client.unsafe = (text: string, params?: unknown[]) => execute(() => {
     assertNotTransactionControlStatement(text);
-    return reserved.unsafe(text, params ?? []);
+    return reserved.unsafe(
+      text,
+      params ?? [],
+      DATABASE_SINGLE_STATEMENT_QUERY_OPTIONS,
+    );
   });
   client.query = (text: string, params?: unknown[]) => execute(() => {
     assertNotTransactionControlStatement(text);
-    return reserved.unsafe(text, params ?? []);
+    return reserved.unsafe(
+      text,
+      params ?? [],
+      DATABASE_SINGLE_STATEMENT_QUERY_OPTIONS,
+    );
   });
   return client;
 }
@@ -2686,13 +2703,13 @@ function assertDatabaseReservationState(
 }
 
 function assertNotTransactionControlStatement(statement: string) {
-  // postgres.js raw simple-protocol calls can contain a statement batch. Scan
-  // every top-level statement boundary without treating SQL text inside quoted
-  // values, identifiers, dollar bodies, or comments as executable control.
-  const executable = databaseSqlOutsideQuotedContent(statement);
+  // Raw calls use the extended protocol below, so PostgreSQL itself rejects
+  // batches before executing any statement. This local guard only has to fence
+  // a single transaction-control statement, after leading comments.
+  const executable = statement.slice(skipLeadingDatabaseSqlTrivia(statement));
   if (
-    /(?:^|;)\s*(?:begin|start\s+transaction|commit|end|rollback|abort|savepoint|release\s+savepoint|prepare\s+transaction|set\s+transaction)\b/i
-      .test(executable)
+    /^(?:begin|start|commit|end|rollback|abort|savepoint|release|prepare|set\s+transaction)\b/i
+      .test(executable.trimStart())
   ) {
     throw new Error(
       "Transaction control is reserved for the database reservation manager.",
@@ -2700,10 +2717,10 @@ function assertNotTransactionControlStatement(statement: string) {
   }
 }
 
-function databaseSqlOutsideQuotedContent(statement: string) {
-  let executable = "";
+function skipLeadingDatabaseSqlTrivia(statement: string) {
   let index = 0;
   while (index < statement.length) {
+    while (/\s/.test(statement[index] || "")) index += 1;
     if (statement.startsWith("--", index)) {
       index += 2;
       while (
@@ -2713,44 +2730,15 @@ function databaseSqlOutsideQuotedContent(statement: string) {
       ) {
         index += 1;
       }
-      executable += " ";
       continue;
     }
     if (statement.startsWith("/*", index)) {
       index = skipNestedDatabaseBlockComment(statement, index);
-      executable += " ";
       continue;
     }
-    if (statement[index] === "'") {
-      index = skipDatabaseQuotedValue(
-        statement,
-        index,
-        isDatabaseEscapeStringQuote(statement, index),
-      );
-      executable += "Q";
-      continue;
-    }
-    if (statement[index] === '"') {
-      index = skipDatabaseQuotedIdentifier(statement, index);
-      executable += "Q";
-      continue;
-    }
-    const dollarQuote = databaseDollarQuoteAt(statement, index);
-    if (dollarQuote) {
-      const closingIndex = statement.indexOf(
-        dollarQuote,
-        index + dollarQuote.length,
-      );
-      index = closingIndex < 0
-        ? statement.length
-        : closingIndex + dollarQuote.length;
-      executable += "Q";
-      continue;
-    }
-    executable += statement[index];
-    index += 1;
+    break;
   }
-  return executable;
+  return index;
 }
 
 function skipNestedDatabaseBlockComment(statement: string, start: number) {
@@ -2768,74 +2756,6 @@ function skipNestedDatabaseBlockComment(statement: string, start: number) {
     }
   }
   return index;
-}
-
-function skipDatabaseQuotedValue(
-  statement: string,
-  start: number,
-  backslashEscapes: boolean,
-) {
-  let index = start + 1;
-  while (index < statement.length) {
-    if (backslashEscapes && statement[index] === "\\") {
-      index = Math.min(index + 2, statement.length);
-      continue;
-    }
-    if (statement[index] !== "'") {
-      index += 1;
-      continue;
-    }
-    if (statement[index + 1] === "'") {
-      index += 2;
-      continue;
-    }
-    return index + 1;
-  }
-  return index;
-}
-
-function skipDatabaseQuotedIdentifier(statement: string, start: number) {
-  let index = start + 1;
-  while (index < statement.length) {
-    if (statement[index] !== '"') {
-      index += 1;
-      continue;
-    }
-    if (statement[index + 1] === '"') {
-      index += 2;
-      continue;
-    }
-    return index + 1;
-  }
-  return index;
-}
-
-function isDatabaseEscapeStringQuote(statement: string, quoteIndex: number) {
-  if (!/[eE]/.test(statement[quoteIndex - 1] || "")) return false;
-  return !isDatabaseSqlIdentifierCharacter(statement[quoteIndex - 2]);
-}
-
-function databaseDollarQuoteAt(statement: string, index: number) {
-  if (
-    statement[index] !== "$" ||
-    isDatabaseSqlIdentifierCharacter(statement[index - 1])
-  ) {
-    return undefined;
-  }
-  const tagEnd = statement.indexOf("$", index + 1);
-  if (tagEnd < 0) return undefined;
-  const tag = statement.slice(index + 1, tagEnd);
-  if (
-    tag &&
-    !/^[A-Za-z_\u0080-\uFFFF][A-Za-z0-9_\u0080-\uFFFF]*$/.test(tag)
-  ) {
-    return undefined;
-  }
-  return statement.slice(index, tagEnd + 1);
-}
-
-function isDatabaseSqlIdentifierCharacter(value: string | undefined) {
-  return Boolean(value && /[A-Za-z0-9_$\u0080-\uFFFF]/.test(value));
 }
 
 type DatabaseAdmissionGate = {
@@ -3386,6 +3306,7 @@ export async function applyDatabaseScope(sql: AnyPg, scope?: DatabaseScope) {
       set_config('omni.actor_scope_v1', ${actorScope}, true),
       set_config('omni.system_scope', ${systemScope ? "true" : "false"}, true),
       set_config('omni.system_reason', ${systemReason}, true),
+      set_config('standard_conforming_strings', 'on', true),
       set_config('statement_timeout', ${String(statementTimeoutMs)}, true),
       set_config('lock_timeout', ${String(lockTimeoutMs)}, true),
       set_config('idle_in_transaction_session_timeout', ${String(idleTransactionTimeoutMs)}, true)
