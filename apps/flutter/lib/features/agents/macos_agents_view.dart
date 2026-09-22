@@ -495,6 +495,7 @@ class _MacosAgentsViewState extends State<MacosAgentsView>
       );
     }
     return _AgentCouncilWorkspace(
+      controller: controller,
       projection: projection,
       executions: executions,
       selectedExecution: selectedExecution!,
@@ -504,7 +505,67 @@ class _MacosAgentsViewState extends State<MacosAgentsView>
         _selectedExecutionId = execution.parentExecutionId;
         _selectedTaskId = member.taskId;
       }),
+      onCancel: _confirmCancelTask,
     );
+  }
+
+  Future<void> _confirmCancelTask(AgentCouncilMember member) async {
+    final controller = widget.councilController;
+    if (controller == null || !controller.canCancel(member)) return;
+    final reasonController = TextEditingController(
+      text: 'Canceled from Agent Control.',
+    );
+    final reason = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('Cancel ${member.identity.name}\'s task?'),
+        content: SizedBox(
+          width: 440,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'The active child execution will stop. Its recorded work and evidence remain available.',
+              ),
+              const SizedBox(height: 14),
+              TextField(
+                key: const Key('macos-council-cancel-reason'),
+                controller: reasonController,
+                maxLength: 500,
+                decoration: const InputDecoration(labelText: 'Reason'),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Keep running'),
+          ),
+          FilledButton(
+            key: const Key('macos-council-confirm-cancel'),
+            onPressed: () {
+              final value = reasonController.text.trim();
+              if (value.isNotEmpty) Navigator.pop(dialogContext, value);
+            },
+            child: const Text('Cancel task'),
+          ),
+        ],
+      ),
+    );
+    reasonController.dispose();
+    if (reason == null || !mounted) return;
+    await _run(() async {
+      await controller.cancelTask(member, reason: reason);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Task canceled. Recorded evidence remains available.'),
+        ),
+      );
+      unawaited(controller.refresh());
+    });
   }
 
   void _syncLiveRefreshTimer() {
@@ -720,14 +781,17 @@ class _AgentsToolbar extends StatelessWidget {
 
 class _AgentCouncilWorkspace extends StatelessWidget {
   const _AgentCouncilWorkspace({
+    required this.controller,
     required this.projection,
     required this.executions,
     required this.selectedExecution,
     required this.selectedMember,
     required this.refreshError,
     required this.onSelect,
+    required this.onCancel,
   });
 
+  final AgentCouncilController controller;
   final AgentCouncilProjection projection;
   final List<AgentCouncilExecution> executions;
   final AgentCouncilExecution selectedExecution;
@@ -738,6 +802,7 @@ class _AgentCouncilWorkspace extends StatelessWidget {
     AgentCouncilMember member,
   )
   onSelect;
+  final ValueChanged<AgentCouncilMember> onCancel;
 
   @override
   Widget build(BuildContext context) {
@@ -789,6 +854,13 @@ class _AgentCouncilWorkspace extends StatelessWidget {
               final canvas = _CouncilMemberCanvas(
                 execution: selectedExecution,
                 member: selectedMember,
+                canceling: controller.isCanceling(selectedMember.taskId),
+                cancelError: controller.cancellationError(
+                  selectedMember.taskId,
+                ),
+                onCancel: controller.canCancel(selectedMember)
+                    ? () => onCancel(selectedMember)
+                    : null,
               );
               if (!horizontal) {
                 return Column(
@@ -961,7 +1033,7 @@ class _CouncilExecutionRail extends StatelessWidget {
       children: [
         _CouncilPaneHeader(
           title: 'Execution queue',
-          detail: '${executions.length} recent · read only',
+          detail: '${executions.length} recent · governed',
         ),
         Expanded(
           child: ListView.builder(
@@ -1123,10 +1195,19 @@ class _CouncilMemberRailRow extends StatelessWidget {
 }
 
 class _CouncilMemberCanvas extends StatelessWidget {
-  const _CouncilMemberCanvas({required this.execution, required this.member});
+  const _CouncilMemberCanvas({
+    required this.execution,
+    required this.member,
+    required this.canceling,
+    required this.cancelError,
+    required this.onCancel,
+  });
 
   final AgentCouncilExecution execution;
   final AgentCouncilMember member;
+  final bool canceling;
+  final Object? cancelError;
+  final VoidCallback? onCancel;
 
   @override
   Widget build(BuildContext context) {
@@ -1167,16 +1248,55 @@ class _CouncilMemberCanvas extends StatelessWidget {
                       member.identity.role,
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
+                    const SizedBox(height: 2),
+                    Text(
+                      member.runtime == null
+                          ? 'Runtime not recorded'
+                          : '${member.runtime!.providerId} · ${member.runtime!.modelId} · ${_label(member.runtime!.modelTier)}',
+                      style: Theme.of(context).textTheme.labelSmall,
+                    ),
                   ],
                 ),
               ),
-              Text(
-                'Revision ${member.lifecycleRevision}',
-                style: Theme.of(context).textTheme.labelSmall,
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text(
+                    'Revision ${member.lifecycleRevision}',
+                    style: Theme.of(context).textTheme.labelSmall,
+                  ),
+                  if (onCancel != null) ...[
+                    const SizedBox(height: 7),
+                    OutlinedButton.icon(
+                      key: Key('macos-council-cancel-${member.taskId}'),
+                      onPressed: canceling ? null : onCancel,
+                      icon: canceling
+                          ? const SizedBox.square(
+                              dimension: 14,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.stop_circle_outlined, size: 16),
+                      label: Text(canceling ? 'Canceling' : 'Cancel task'),
+                    ),
+                  ],
+                ],
               ),
             ],
           ),
         ),
+        if (cancelError != null)
+          Container(
+            key: const Key('macos-council-cancel-error'),
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+            color: Theme.of(context).colorScheme.errorContainer,
+            child: Text(
+              '$cancelError',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: Theme.of(context).colorScheme.onErrorContainer,
+              ),
+            ),
+          ),
         Expanded(
           child: SingleChildScrollView(
             key: const Key('macos-agents-live-canvas'),
@@ -1507,7 +1627,7 @@ class _AgentCouncilInspector extends StatelessWidget {
                   ],
                 ),
               ),
-              const _SmallBadge(label: 'Read only'),
+              const _SmallBadge(label: 'Observed ledger'),
             ],
           ),
           const SizedBox(height: 18),
@@ -1682,10 +1802,44 @@ class _AgentCouncilInspector extends StatelessWidget {
           _InspectorSection(
             title: 'Model route',
             children: [
+              if (member.runtime == null)
+                Text(
+                  'Not recorded for this historical task.',
+                  style: Theme.of(context).textTheme.bodySmall,
+                )
+              else ...[
+                _MetaLine(label: 'Provider', value: member.runtime!.providerId),
+                _MetaLine(label: 'Model', value: member.runtime!.modelId),
+                _MetaLine(
+                  label: 'Tier',
+                  value: _label(member.runtime!.modelTier),
+                ),
+              ],
+              const SizedBox(height: 9),
               Text(
-                'Not recorded in this Council projection. Model assignments remain configurable in Settings and are verified on the run receipt.',
-                style: Theme.of(context).textTheme.bodySmall,
+                'Verifier route',
+                style: Theme.of(context).textTheme.labelMedium,
               ),
+              const SizedBox(height: 5),
+              if (member.verifier.runtime == null)
+                Text(
+                  'Not recorded for this historical task.',
+                  style: Theme.of(context).textTheme.bodySmall,
+                )
+              else ...[
+                _MetaLine(
+                  label: 'Provider',
+                  value: member.verifier.runtime!.providerId,
+                ),
+                _MetaLine(
+                  label: 'Model',
+                  value: member.verifier.runtime!.modelId,
+                ),
+                _MetaLine(
+                  label: 'Tier',
+                  value: _label(member.verifier.runtime!.modelTier),
+                ),
+              ],
             ],
           ),
         ],

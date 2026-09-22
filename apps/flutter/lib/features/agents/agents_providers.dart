@@ -20,6 +20,9 @@ final agentCouncilControllerProvider =
     ChangeNotifierProvider<AgentCouncilController>((ref) {
       final controller = AgentCouncilController(
         ref.watch(agentCouncilRepositoryProvider),
+        controlAvailable: NativeContract.supportsOperation(
+          'agents.tasks.cancel',
+        ),
       );
       final unregister = ref
           .read(reconnectCoordinatorProvider)

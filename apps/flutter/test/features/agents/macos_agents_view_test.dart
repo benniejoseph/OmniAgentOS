@@ -99,11 +99,13 @@ class _PausedAgentsRepository extends _AgentsRepository {
       const AgentLedger(agents: [_pausedAgent], skills: [], performance: []);
 }
 
-class _CouncilRepository implements AgentCouncilRepository {
+class _CouncilRepository
+    implements AgentCouncilRepository, AgentCouncilControlRepository {
   _CouncilRepository({this.state = 'ready'});
 
   final String state;
   int loads = 0;
+  final canceled = <String>[];
 
   @override
   Future<AgentCouncilProjection> load({int limit = 60}) async {
@@ -114,6 +116,27 @@ class _CouncilRepository implements AgentCouncilRepository {
         includeExecutions: state == 'ready',
       ),
     );
+  }
+
+  @override
+  Future<AgentCouncilCancellation> cancel({
+    required String executionId,
+    required int expectedRevision,
+    required String reason,
+    required String idempotencyKey,
+  }) async {
+    canceled.add(executionId);
+    return AgentCouncilCancellation.fromJson({
+      'task': {
+        'executionId': executionId,
+        'state': 'canceled',
+        'lifecycleRevision': expectedRevision + 1,
+        'canCancel': false,
+        'updatedAt': '2026-09-22T08:31:00.000Z',
+        'terminalAt': '2026-09-22T08:31:00.000Z',
+      },
+      'idempotent': false,
+    });
   }
 }
 
@@ -392,7 +415,10 @@ void main() {
         mutationsAvailable: true,
         skillMutationsAvailable: true,
       );
-      final councilController = AgentCouncilController(_CouncilRepository());
+      final councilController = AgentCouncilController(
+        _CouncilRepository(),
+        controlAvailable: true,
+      );
       addTearDown(controller.dispose);
       addTearDown(councilController.dispose);
       await controller.refresh();
@@ -420,7 +446,12 @@ void main() {
       expect(find.text('Independent verification'), findsOneWidget);
       expect(find.text('82%'), findsOneWidget);
       expect(find.text('Verified delegation receipt'), findsOneWidget);
-      expect(find.text('Read only'), findsOneWidget);
+      expect(find.text('Observed ledger'), findsOneWidget);
+      expect(find.text('gpt-6-astra'), findsWidgets);
+      expect(
+        find.byKey(const Key('macos-council-cancel-task-scout-one')),
+        findsOneWidget,
+      );
       expect(find.byKey(const Key('macos-agents-create')), findsNothing);
 
       await tester.tap(
@@ -442,6 +473,46 @@ void main() {
       expect(find.byKey(const Key('macos-agent-row-atlas')), findsOneWidget);
     },
   );
+
+  testWidgets('cancels exact active work from the macOS control surface', (
+    tester,
+  ) async {
+    await _useDesktopViewport(tester);
+    final controller = AgentsController(
+      _AgentsRepository(),
+      canManage: false,
+      mutationsAvailable: false,
+    );
+    final repository = _CouncilRepository();
+    final councilController = AgentCouncilController(
+      repository,
+      controlAvailable: true,
+    );
+    addTearDown(controller.dispose);
+    addTearDown(councilController.dispose);
+    await controller.refresh();
+    await councilController.refresh();
+    await tester.pumpWidget(
+      _app(
+        MacosAgentsView(
+          controller: controller,
+          councilController: councilController,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(
+      find.byKey(const Key('macos-council-cancel-task-scout-one')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Cancel Scout'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('macos-council-confirm-cancel')));
+    await tester.pumpAndSettle();
+
+    expect(repository.canceled, ['task-scout-one']);
+    expect(find.textContaining('Task canceled'), findsOneWidget);
+  });
 
   testWidgets(
     'teaches an empty Council and reports unavailable data honestly',

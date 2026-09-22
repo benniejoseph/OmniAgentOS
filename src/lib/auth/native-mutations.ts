@@ -25,6 +25,7 @@ export const NATIVE_MUTATION_CAPABILITIES = [
   "agents.create",
   "agents.update",
   "agents.moltbook.manage",
+  "agents.tasks.cancel",
   "computer.use.device.update",
   "computer.use.command.claim",
   "computer.use.command.complete",
@@ -110,6 +111,7 @@ function minimumVersion(capability: NativeMutationCapability) {
     capability === "agents.update" ||
     capability === "agents.moltbook.manage"
   ) return 19;
+  if (capability === "agents.tasks.cancel") return 22;
   if (capability === "markets.update" || capability === "settings.update") return 6;
   return 3;
 }

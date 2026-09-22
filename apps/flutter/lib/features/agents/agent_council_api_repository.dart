@@ -2,7 +2,8 @@ import '../../core/network/api_client.dart';
 import '../../generated/native_contract.g.dart';
 import 'agent_council.dart';
 
-class ApiAgentCouncilRepository implements AgentCouncilRepository {
+class ApiAgentCouncilRepository
+    implements AgentCouncilRepository, AgentCouncilControlRepository {
   const ApiAgentCouncilRepository(this.api);
 
   final ApiClient api;
@@ -14,6 +15,38 @@ class ApiAgentCouncilRepository implements AgentCouncilRepository {
     }
     return AgentCouncilProjection.fromJson(
       await api.getJsonFresh(NativePaths.agentsCouncil(limit: limit)),
+    );
+  }
+
+  @override
+  Future<AgentCouncilCancellation> cancel({
+    required String executionId,
+    required int expectedRevision,
+    required String reason,
+    required String idempotencyKey,
+  }) async {
+    if (executionId.trim().isEmpty || executionId.length > 240) {
+      throw ArgumentError.value(executionId, 'executionId');
+    }
+    if (expectedRevision < 0) {
+      throw ArgumentError.value(expectedRevision, 'expectedRevision');
+    }
+    final normalizedReason = reason.trim();
+    if (normalizedReason.isEmpty || normalizedReason.length > 500) {
+      throw ArgumentError.value(reason, 'reason');
+    }
+    if (idempotencyKey.isEmpty || idempotencyKey.length > 512) {
+      throw ArgumentError.value(idempotencyKey, 'idempotencyKey');
+    }
+    return AgentCouncilCancellation.fromJson(
+      await api.postJson(
+        NativePaths.agentsTasksCancel(executionId),
+        data: {
+          'expectedRevision': expectedRevision,
+          'reason': normalizedReason,
+        },
+        headers: {'idempotency-key': idempotencyKey},
+      ),
     );
   }
 }

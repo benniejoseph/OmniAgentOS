@@ -18,8 +18,8 @@ import {
 
 describe("native API contracts", () => {
   it("retains exactly the current and previous rollout versions", () => {
-    expect(NATIVE_API_CURRENT_VERSION).toBe(21);
-    expect(NATIVE_API_PREVIOUS_VERSION).toBe(20);
+    expect(NATIVE_API_CURRENT_VERSION).toBe(22);
+    expect(NATIVE_API_PREVIOUS_VERSION).toBe(21);
     expect(nativeOperationsForVersion(8)?.length).toBeLessThan(
       nativeOperationsForVersion(7)?.length || 0,
     );
@@ -62,9 +62,12 @@ describe("native API contracts", () => {
     expect(nativeOperationsForVersion(21)?.length).toBe(
       (nativeOperationsForVersion(20)?.length || 0) + 1,
     );
+    expect(nativeOperationsForVersion(22)?.length).toBe(
+      (nativeOperationsForVersion(21)?.length || 0) + 1,
+    );
     expect(nativeContractSchemas.NativeContractDiscovery.parse(
       nativeContractDiscovery(),
-    ).supportedVersions).toEqual([21, 20]);
+    ).supportedVersions).toEqual([22, 21]);
   });
 
   it("exposes only explicit local Computer Use in the current request schema", () => {
@@ -152,6 +155,45 @@ describe("native API contracts", () => {
       method: "GET",
       path: "/api/agents/council",
       auth: "bearer",
+    });
+  });
+
+  it("keeps v21 immutable while v22 adds only exact child cancellation", async () => {
+    const [v21, v21Manifest] = await Promise.all([
+      readFile(
+        new URL("../../../public/native-contracts/v21/openapi.json", import.meta.url),
+        "utf8",
+      ),
+      readFile(
+        new URL("../../../public/native-contracts/v21/manifest.json", import.meta.url),
+        "utf8",
+      ),
+    ]);
+    expect(sha256(v21)).toBe(
+      "fbdd07358133c4488e92ee84f97afe6cc48422830c2897071a37aafacad9d326",
+    );
+    expect(sha256(v21Manifest)).toBe(
+      "9515ef2ea73412b97c94e5dcb2f61d7078d6171210fd59114f63d9857503fde3",
+    );
+    const v21Ids = new Set(
+      nativeOperationsForVersion(21)?.map((operation) => operation.id),
+    );
+    expect(
+      nativeOperationsForVersion(22)
+        ?.map((operation) => operation.id)
+        .filter((id) => !v21Ids.has(id)),
+    ).toEqual(["agents.tasks.cancel"]);
+    expect(
+      nativeOperationsForVersion(22)?.find(
+        (operation) => operation.id === "agents.tasks.cancel",
+      ),
+    ).toMatchObject({
+      method: "POST",
+      path: "/api/agents/tasks/{id}/cancel",
+      auth: "bearer",
+      requestSchema: "NativeAgentTaskCancelRequest",
+      responseSchema: "NativeAgentTaskCancelResponse",
+      headerParameters: [expect.objectContaining({ name: "Idempotency-Key", required: true })],
     });
   });
 
@@ -252,6 +294,8 @@ describe("native API contracts", () => {
     expect(dart).toContain("static String moltbookConnectionShow(String id");
     expect(dart).toContain("static String moltbookConnectionManage(String id");
     expect(dart).not.toContain("'admin.workflows.tick',");
+    expect(dart).toContain("'agents.tasks.cancel',");
+    expect(dart).toContain("static String agentsTasksCancel(String id)");
   });
 
   it("keeps v18 immutable while v19 enrolls only Agent and Moltbook management", async () => {
@@ -543,7 +587,7 @@ describe("native API contracts", () => {
       user: { id: "user-one", email: "operator@example.test", status: "active", createdAt: timestamp, updatedAt: timestamp },
       tenant: { id: "tenant-one", name: "Example", slug: "example", createdAt: timestamp, updatedAt: timestamp },
       membership: { id: "membership-one", tenantId: "tenant-one", userId: "user-one", role: "operator", status: "active", createdAt: timestamp, updatedAt: timestamp },
-      device: { id: "device-one", name: "Asael on macOS", platform: "macos", appVersion: "1.0.0", buildNumber: 2, clientContractVersion: 21 },
+      device: { id: "device-one", name: "Asael on macOS", platform: "macos", appVersion: "1.0.0", buildNumber: 2, clientContractVersion: 22 },
     };
     expect(nativeBootstrapResponseSchema.parse({
       authenticated: true,
@@ -555,9 +599,9 @@ describe("native API contracts", () => {
         mobileBasePath: "/api/mobile",
         nativeContract: {
           id: "asael.native-api",
-          currentVersion: 21,
-          previousVersion: 20,
-          supportedVersions: [21, 20],
+          currentVersion: 22,
+          previousVersion: 21,
+          supportedVersions: [22, 21],
           discoveryPath: "/api/mobile/contracts",
         },
       },
@@ -566,15 +610,15 @@ describe("native API contracts", () => {
         platform: "macos",
         appVersion: "1.0.0",
         buildNumber: 2,
-        clientContractVersion: 21,
+        clientContractVersion: 22,
         minimumVersion: "1.0.0",
-        requiredContractVersion: 21,
-        supportedContractVersions: [21, 20],
+        requiredContractVersion: 22,
+        supportedContractVersions: [22, 21],
         status: "compatible",
         agentCatalogEnrollment: { state: "held", clientReady: true },
       },
       nativeClientPolicy: { schemaVersion: 1 },
-    }).api.nativeContract.currentVersion).toBe(21);
+    }).api.nativeContract.currentVersion).toBe(22);
   });
 });
 

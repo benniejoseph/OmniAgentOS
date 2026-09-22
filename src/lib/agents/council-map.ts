@@ -171,6 +171,7 @@ export function buildAgentCouncilMap(input: {
         state: task.state,
         lifecycleRevision: task.lifecycleRevision,
         canCancel: false,
+        runtime: null,
         currentWork,
         updatedAt: timestamp(task.updatedAt),
         authority: authorityProjection(task, authority),
@@ -180,6 +181,7 @@ export function buildAgentCouncilMap(input: {
         confidence: memberEvent?.confidence ?? task.evaluation?.score ?? null,
         verifier: {
           identity: verifierIdentity,
+          runtime: null,
           acceptanceThreshold: task.verifierAcceptanceThreshold,
           method: authority?.verifier.method || "historical_unavailable",
           verdict: verifierVerdict(task.state),
@@ -296,6 +298,7 @@ function projectExecutionRecords(input: {
         state: executionRecordCouncilState(record.state),
         lifecycleRevision: record.lifecycleRevision,
         canCancel: ["queued", "running", "waiting"].includes(record.state),
+        runtime: publicRuntimeAssignment(contract.runtimeAssignment),
         currentWork: safeText(contract.objective, 4_000, "Delegated work"),
         updatedAt: timestamp(record.updatedAt),
         authority: {
@@ -343,6 +346,7 @@ function projectExecutionRecords(input: {
         confidence: record.verification?.score ?? null,
         verifier: {
           identity: verifierIdentity,
+          runtime: publicRuntimeAssignment(contract.verifier.runtimeAssignment),
           acceptanceThreshold: contract.verifier.acceptanceThreshold,
           method: contract.verifier.method,
           verdict: executionRecordVerifierVerdict(record.state),
@@ -365,6 +369,16 @@ function projectExecutionRecords(input: {
       members,
       verifierCost: costProjection(input.verifierUsage.get(parentExecutionId)),
     };
+  });
+}
+
+function publicRuntimeAssignment(
+  assignment: DelegationExecutionRecordV1["contract"]["runtimeAssignment"],
+) {
+  return Object.freeze({
+    providerId: assignment.providerId,
+    modelId: assignment.modelId,
+    modelTier: assignment.modelTier,
   });
 }
 

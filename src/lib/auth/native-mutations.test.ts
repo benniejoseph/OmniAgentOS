@@ -4,6 +4,10 @@ import {
   nativeMutationCapabilityPolicy,
   nativeMutationEnrollment,
 } from "@/lib/auth/native-mutations";
+import {
+  NATIVE_API_CURRENT_VERSION,
+  NATIVE_API_PREVIOUS_VERSION,
+} from "@/lib/mobile/contracts";
 
 const asOf = new Date("2026-09-15T08:00:00.000Z");
 
@@ -26,40 +30,40 @@ function context(
 }
 
 describe("native mutation capability enrollment", () => {
-  it("retains existing capability floors on supported v19 and v20 clients", () => {
-    expect(nativeMutationEnrollment(context(19), "markets.update", asOf)).toMatchObject({
+  it("retains existing capability floors on both supported clients", () => {
+    expect(nativeMutationEnrollment(context(NATIVE_API_PREVIOUS_VERSION), "markets.update", asOf)).toMatchObject({
       state: "active",
       minimumContractVersion: 6,
     });
-    expect(nativeMutationEnrollment(context(20), "settings.update", asOf)).toMatchObject({
+    expect(nativeMutationEnrollment(context(NATIVE_API_CURRENT_VERSION), "settings.update", asOf)).toMatchObject({
       state: "active",
       minimumContractVersion: 6,
     });
-    expect(nativeMutationEnrollment(context(18), "markets.update", asOf)).toMatchObject({
+    expect(nativeMutationEnrollment(context(NATIVE_API_PREVIOUS_VERSION - 1), "markets.update", asOf)).toMatchObject({
       state: "held",
       minimumContractVersion: 6,
     });
-    expect(nativeMutationEnrollment(context(19), "markets.backtest.run", asOf)).toMatchObject({
+    expect(nativeMutationEnrollment(context(NATIVE_API_PREVIOUS_VERSION), "markets.backtest.run", asOf)).toMatchObject({
       state: "active",
       minimumContractVersion: 7,
     });
-    expect(nativeMutationEnrollment(context(20), "markets.backtest.run", asOf)).toMatchObject({
+    expect(nativeMutationEnrollment(context(NATIVE_API_CURRENT_VERSION), "markets.backtest.run", asOf)).toMatchObject({
       state: "active",
       minimumContractVersion: 7,
     });
-    expect(nativeMutationEnrollment(context(18), "markets.backtest.run", asOf)).toMatchObject({
+    expect(nativeMutationEnrollment(context(NATIVE_API_PREVIOUS_VERSION - 1), "markets.backtest.run", asOf)).toMatchObject({
       state: "held",
       minimumContractVersion: 7,
     });
   });
 
   it("retains earlier workspace capability minimum on a supported client", () => {
-    expect(nativeMutationEnrollment(context(19), "workspaces.update", asOf)).toMatchObject({
+    expect(nativeMutationEnrollment(context(NATIVE_API_PREVIOUS_VERSION), "workspaces.update", asOf)).toMatchObject({
       state: "active",
       minimumContractVersion: 3,
     });
     expect(
-      nativeMutationCapabilityPolicy(context(19, new Date().toISOString()))[
+      nativeMutationCapabilityPolicy(context(NATIVE_API_PREVIOUS_VERSION, new Date().toISOString()))[
         "settings.update"
       ].state,
     ).toBe("active");
@@ -74,16 +78,16 @@ describe("native mutation capability enrollment", () => {
     ] as const;
     for (const capability of capabilities) {
       expect(
-        nativeMutationEnrollment(context(20, undefined, "macos"), capability, asOf),
+        nativeMutationEnrollment(context(NATIVE_API_CURRENT_VERSION, undefined, "macos"), capability, asOf),
       ).toMatchObject({ state: "active", minimumContractVersion: 11 });
       expect(
-        nativeMutationEnrollment(context(19, undefined, "macos"), capability, asOf),
+        nativeMutationEnrollment(context(NATIVE_API_PREVIOUS_VERSION, undefined, "macos"), capability, asOf),
       ).toMatchObject({ state: "active", minimumContractVersion: 11 });
       expect(
-        nativeMutationEnrollment(context(18, undefined, "macos"), capability, asOf),
+        nativeMutationEnrollment(context(NATIVE_API_PREVIOUS_VERSION - 1, undefined, "macos"), capability, asOf),
       ).toMatchObject({ state: "held", minimumContractVersion: 11 });
       expect(
-        nativeMutationEnrollment(context(19), capability, asOf),
+        nativeMutationEnrollment(context(NATIVE_API_PREVIOUS_VERSION), capability, asOf),
       ).toMatchObject({ state: "held", minimumContractVersion: 11 });
     }
   });
@@ -93,15 +97,15 @@ describe("native mutation capability enrollment", () => {
       "push.delivery.receipt",
       "push.canary.run",
     ] as const) {
-      expect(nativeMutationEnrollment(context(19), capability, asOf)).toMatchObject({
+      expect(nativeMutationEnrollment(context(NATIVE_API_PREVIOUS_VERSION), capability, asOf)).toMatchObject({
         state: "active",
         minimumContractVersion: 15,
       });
-      expect(nativeMutationEnrollment(context(20), capability, asOf)).toMatchObject({
+      expect(nativeMutationEnrollment(context(NATIVE_API_CURRENT_VERSION), capability, asOf)).toMatchObject({
         state: "active",
         minimumContractVersion: 15,
       });
-      expect(nativeMutationEnrollment(context(18), capability, asOf)).toMatchObject({
+      expect(nativeMutationEnrollment(context(NATIVE_API_PREVIOUS_VERSION - 1), capability, asOf)).toMatchObject({
         state: "held",
         minimumContractVersion: 15,
       });
@@ -110,17 +114,17 @@ describe("native mutation capability enrollment", () => {
 
   it("retains the governed Plugin lifecycle floor on supported clients", () => {
     expect(
-      nativeMutationEnrollment(context(20), "plugins.manage", asOf),
+      nativeMutationEnrollment(context(NATIVE_API_CURRENT_VERSION), "plugins.manage", asOf),
     ).toMatchObject({ state: "active", minimumContractVersion: 17 });
     expect(
-      nativeMutationEnrollment(context(19), "plugins.manage", asOf),
+      nativeMutationEnrollment(context(NATIVE_API_PREVIOUS_VERSION), "plugins.manage", asOf),
     ).toMatchObject({ state: "active", minimumContractVersion: 17 });
     expect(
-      nativeMutationEnrollment(context(18), "plugins.manage", asOf),
+      nativeMutationEnrollment(context(NATIVE_API_PREVIOUS_VERSION - 1), "plugins.manage", asOf),
     ).toMatchObject({ state: "held", minimumContractVersion: 17 });
   });
 
-  it("retains the scoped Agent mutations on supported v19 and v20 clients", () => {
+  it("retains the scoped Agent mutations on both supported clients", () => {
     const capabilities = [
       "agents.create",
       "agents.update",
@@ -129,22 +133,41 @@ describe("native mutation capability enrollment", () => {
 
     for (const capability of capabilities) {
       expect(
-        nativeMutationEnrollment(context(20, undefined, "macos"), capability, asOf),
+        nativeMutationEnrollment(context(NATIVE_API_CURRENT_VERSION, undefined, "macos"), capability, asOf),
       ).toMatchObject({ state: "active", minimumContractVersion: 19 });
       expect(
-        nativeMutationEnrollment(context(19, undefined, "macos"), capability, asOf),
+        nativeMutationEnrollment(context(NATIVE_API_PREVIOUS_VERSION, undefined, "macos"), capability, asOf),
       ).toMatchObject({ state: "active", minimumContractVersion: 19 });
       expect(
-        nativeMutationEnrollment(context(18, undefined, "macos"), capability, asOf),
+        nativeMutationEnrollment(context(NATIVE_API_PREVIOUS_VERSION - 1, undefined, "macos"), capability, asOf),
       ).toMatchObject({ state: "held", minimumContractVersion: 19 });
     }
 
     const policy = nativeMutationCapabilityPolicy(
-      context(20, undefined, "macos"),
+      context(NATIVE_API_CURRENT_VERSION, undefined, "macos"),
     );
     expect(Object.keys(policy)).toEqual(
       expect.arrayContaining([...capabilities]),
     );
     expect(policy).not.toHaveProperty("agents.delete");
+  });
+
+  it("enrolls exact child cancellation only on native v22", () => {
+    for (const platform of ["android", "macos"] as const) {
+      expect(
+        nativeMutationEnrollment(
+          context(NATIVE_API_CURRENT_VERSION, undefined, platform),
+          "agents.tasks.cancel",
+          asOf,
+        ),
+      ).toMatchObject({ state: "active", minimumContractVersion: 22 });
+      expect(
+        nativeMutationEnrollment(
+          context(NATIVE_API_PREVIOUS_VERSION, undefined, platform),
+          "agents.tasks.cancel",
+          asOf,
+        ),
+      ).toMatchObject({ state: "held", minimumContractVersion: 22 });
+    }
   });
 });

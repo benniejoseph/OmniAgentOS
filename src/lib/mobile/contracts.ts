@@ -12,8 +12,8 @@ import { mobilePushReceiptRequestSchema } from "@/lib/mobile/push-contract";
 import { pluginManifestSchema } from "@/lib/plugins/contracts";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 21 as const;
-export const NATIVE_API_PREVIOUS_VERSION = 20 as const;
+export const NATIVE_API_CURRENT_VERSION = 22 as const;
+export const NATIVE_API_PREVIOUS_VERSION = 21 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -26,6 +26,71 @@ const mobilePushOpaqueId = z.string().trim().min(1).max(240);
 const jsonObject = z.record(z.string(), z.unknown());
 const sha256Digest = z.string().regex(/^[a-f0-9]{64}$/);
 const LOCAL_COMPUTER_PREVIEW_BINDING_CONTRACT_VERSION = 12;
+
+export const nativeAgentTaskCancelRequestSchema = z.object({
+  expectedRevision: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+  reason: z.string().trim().min(1).max(500),
+}).strict();
+
+const nativeAgentTaskRuntimeSchema = z.object({
+  providerId: opaqueId,
+  modelId: opaqueId,
+  modelTier: z.enum(["fast", "reasoning"]),
+  reasoningProfileId: opaqueId,
+  normalizedReasoningEffort: z.enum([
+    "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+  ]),
+}).strict();
+
+const nativeAgentTaskProjectionSchema = z.object({
+  executionId: z.string().trim().min(1).max(240),
+  delegationId: opaqueId,
+  rootExecutionId: opaqueId,
+  parentExecutionId: opaqueId,
+  childRunId: opaqueId,
+  state: z.literal("canceled"),
+  lifecycleRevision: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+  canCancel: z.literal(false),
+  mode: z.enum(["isolated", "fork", "team"]),
+  objective: z.string().trim().min(1).max(4_000),
+  delegateAgentId: opaqueId,
+  runtime: nativeAgentTaskRuntimeSchema,
+  result: z.object({
+    status: z.enum(["completed", "blocked"]),
+    summary: z.string().max(8_000),
+    artifacts: z.array(z.object({
+      artifactId: opaqueId,
+      kind: opaqueId,
+      mediaType: z.string().trim().min(1).max(160),
+      byteCount: z.number().int().min(0).max(64 * 1024 * 1024),
+    }).strict()).max(20),
+    acceptanceChecks: z.array(z.object({
+      criterionId: opaqueId,
+      passed: z.boolean(),
+      note: z.string().max(2_000),
+    }).strict()).max(64),
+  }).strict().nullable(),
+  verification: z.object({
+    verdict: z.enum(["verified", "rejected"]),
+    score: z.number().min(0).max(1),
+    note: z.string().max(2_000),
+    verifiedAt: isoDateTime,
+  }).strict().nullable(),
+  failureCode: opaqueId.nullable(),
+  createdAt: isoDateTime,
+  acceptBy: isoDateTime,
+  completeBy: isoDateTime,
+  updatedAt: isoDateTime,
+  terminalAt: isoDateTime,
+}).strict();
+
+export const nativeAgentTaskCancelResponseSchema = z.object({
+  task: nativeAgentTaskProjectionSchema,
+  canceledChildRun: z.boolean(),
+  canceledDeliveryCount: z.number().int().min(0).max(1),
+  idempotent: z.boolean(),
+  serviceReceipt: jsonObject,
+}).strict();
 
 export const nativeClientAttestationSchema = z.object({
   platform: z.enum(["android", "ios", "macos"]),
@@ -907,6 +972,16 @@ const pluginMutationHeaders = [
   },
 ] as const satisfies readonly NativeHeaderParameter[];
 
+const agentTaskCancelHeaders = [
+  {
+    name: "Idempotency-Key",
+    required: true,
+    minLength: 1,
+    maxLength: 512,
+    pattern: "^[A-Za-z0-9][A-Za-z0-9._:@/+~-]{0,511}$",
+  },
+] as const satisfies readonly NativeHeaderParameter[];
+
 const v17Operations: readonly NativeOperation[] = [
   ...v16Operations,
   operation(
@@ -1082,6 +1157,24 @@ const v21Operations: readonly NativeOperation[] = [
   ),
 ];
 
+// Contract v22 keeps the canonical Council read and enrolls only exact child
+// cancellation. The operation is revision-fenced, requires stable
+// idempotency, and returns the bounded public execution projection; it grants
+// no delegation, execution, or broader Agent mutation authority.
+const v22Operations: readonly NativeOperation[] = [
+  ...v21Operations,
+  operation(
+    "agents.tasks.cancel",
+    "POST",
+    "/api/agents/tasks/{id}/cancel",
+    "Cancel one exact active V2 child execution at its expected lifecycle revision.",
+    "bearer",
+    "NativeAgentTaskCancelRequest",
+    "NativeAgentTaskCancelResponse",
+    { headerParameters: agentTaskCancelHeaders },
+  ),
+];
+
 export const nativeContractSchemas = Object.freeze({
   JsonObject: jsonObject,
   NativeClientAttestation: nativeClientAttestationSchema,
@@ -1113,6 +1206,8 @@ export const nativeContractSchemas = Object.freeze({
   NativePluginInstallRequest: nativePluginInstallRequestSchema,
   NativePluginChangeRequest: nativePluginChangeRequestSchema,
   NativePluginUninstallRequest: nativePluginUninstallRequestSchema,
+  NativeAgentTaskCancelRequest: nativeAgentTaskCancelRequestSchema,
+  NativeAgentTaskCancelResponse: nativeAgentTaskCancelResponseSchema,
   NativeConversationRequest: nativeConversationRequestSchema,
   NativeConversationEvent: nativeConversationEventSchema,
   NativeLocalComputerDeviceUpdateRequest: localComputerDeviceUpdateSchema,
@@ -1166,6 +1261,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 19) return v19Operations;
   if (version === 20) return v20Operations;
   if (version === 21) return v21Operations;
+  if (version === 22) return v22Operations;
   return undefined;
 }
 
@@ -1175,7 +1271,7 @@ export function nativeContractDiscovery() {
     contractId: NATIVE_API_CONTRACT_ID,
     currentVersion: NATIVE_API_CURRENT_VERSION,
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
-    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [21, 20],
+    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [22, 21],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,
       state: version === NATIVE_API_CURRENT_VERSION ? "current" as const : "previous" as const,

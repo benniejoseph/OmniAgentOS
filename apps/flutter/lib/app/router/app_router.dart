@@ -11,6 +11,7 @@ import '../../features/auth/application/session_controller.dart';
 import '../../features/auth/presentation/login_screen.dart';
 import '../../features/auth/presentation/session_bootstrap_screen.dart';
 import '../../features/agents/agents.dart';
+import '../../features/agents/agent_control_view.dart';
 import '../../features/agents/macos_agents_view.dart';
 import '../../features/agents/agents_providers.dart';
 import '../../features/automation/macos_automation_studio_view.dart';
@@ -296,6 +297,14 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                             )
                           : AgentsView(
                               controller: ref.read(agentsControllerProvider),
+                              liveWork: AgentControlView(
+                                controller: ref.read(
+                                  agentCouncilControllerProvider,
+                                ),
+                              ),
+                              onRefreshLiveWork: ref
+                                  .read(agentCouncilControllerProvider)
+                                  .refresh,
                             ),
                     '/knowledge' =>
                       usesMacosPresentation()

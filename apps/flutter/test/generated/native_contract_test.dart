@@ -3,9 +3,9 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   test('retains current and previous contract compatibility', () {
-    expect(NativeContract.currentVersion, 21);
-    expect(NativeContract.previousVersion, 20);
-    expect(NativeContract.supportedVersions, [21, 20]);
+    expect(NativeContract.currentVersion, 22);
+    expect(NativeContract.previousVersion, 21);
+    expect(NativeContract.supportedVersions, [22, 21]);
     expect(
       NativePaths.workspacesTasksUpdate('project one', 'task/two'),
       '/api/projects/project%20one/tasks/task%2Ftwo',
@@ -31,9 +31,14 @@ void main() {
       isFalse,
     );
     expect(NativeContract.supportsOperation('agents.council'), isTrue);
+    expect(NativeContract.supportsOperation('agents.tasks.cancel'), isTrue);
     expect(
       NativePaths.agentsCouncil(limit: 25),
       '/api/agents/council?limit=25',
+    );
+    expect(
+      NativePaths.agentsTasksCancel('execution/one'),
+      '/api/agents/tasks/execution%2Fone/cancel',
     );
   });
 
@@ -47,7 +52,7 @@ void main() {
         'api': {
           'nativeContract': {
             'id': NativeContract.id,
-            'supportedVersions': [21, 20],
+            'supportedVersions': [22, 21],
           },
         },
       }),

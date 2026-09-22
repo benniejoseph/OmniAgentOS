@@ -51,6 +51,7 @@ describe("delegated task cancellation route", () => {
       action: "run.agent",
       resourceType: "delegation_execution",
       resourceId: "run-child",
+      nativeMutationCapability: "agents.tasks.cancel",
       metadata: expect.objectContaining({ signal: "cancel", expectedRevision: 2 }),
     }));
     expect(mocks.cancel).toHaveBeenCalledWith(

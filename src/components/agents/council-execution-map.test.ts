@@ -125,6 +125,7 @@ const map: AgentCouncilMap = {
       taskId: "task-one", delegationId: "delegation-one", identity,
       state: "working", lifecycleRevision: 2,
       canCancel: true,
+      runtime: null,
       currentWork: "Verify the release evidence.", updatedAt: "2026-09-07T06:00:30.000Z",
       authority: {
         source: "delegation_grants", receiptSha256: "a".repeat(64), contractSha256: "b".repeat(64),
@@ -151,6 +152,7 @@ const map: AgentCouncilMap = {
       confidence: .91,
       verifier: {
         identity: { ...identity, agentId: "sentinel", name: "Sentinel", role: "Critic" },
+        runtime: null,
         acceptanceThreshold: .8, method: "deterministic_schema_and_evidence",
         verdict: "pending", score: null,
       },

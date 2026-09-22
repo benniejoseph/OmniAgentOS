@@ -101,6 +101,12 @@ Map<String, dynamic> _member({
   'identity': _identity(agentId: agentId, name: name, role: role),
   'state': state,
   'lifecycleRevision': state == 'working' ? 3 : 4,
+  'canCancel': state == 'working' || state == 'waiting',
+  'runtime': {
+    'providerId': 'openai',
+    'modelId': state == 'working' ? 'gpt-6-astra' : 'gpt-5.6-sol',
+    'modelTier': 'reasoning',
+  },
   'currentWork': state == 'working'
       ? 'Review sources and identify evidence-backed architecture gaps.'
       : 'Waiting for the parent Agent to provide an approved implementation boundary.',
@@ -144,6 +150,11 @@ Map<String, dynamic> _member({
       name: 'Sentinel',
       role: 'Independent verifier',
     ),
+    'runtime': {
+      'providerId': 'openai',
+      'modelId': 'gpt-6-astra',
+      'modelTier': 'reasoning',
+    },
     'acceptanceThreshold': .78,
     'method': 'agent_then_deterministic',
     'verdict': verdict,

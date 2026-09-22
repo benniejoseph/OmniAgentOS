@@ -15,6 +15,11 @@ const costSchema = z.object({
   totalTokens: z.number().int().min(0),
   knownEstimatedCostMicrousd: z.number().int().min(0),
 }).strict();
+const runtimeSchema = z.object({
+  providerId: idSchema,
+  modelId: idSchema,
+  modelTier: z.enum(["fast", "reasoning"]),
+}).strict();
 const identitySchema = z.object({
   agentId: idSchema,
   name: z.string().trim().min(1).max(160),
@@ -74,6 +79,7 @@ const authoritySchema = z.object({
 }).strict();
 const verifierSchema = z.object({
   identity: identitySchema,
+  runtime: runtimeSchema.nullable(),
   acceptanceThreshold: z.number().min(0.5).max(1),
   method: z.enum([
     "deterministic_schema_and_evidence",
@@ -101,6 +107,7 @@ const memberSchema = z.object({
   ]),
   lifecycleRevision: z.number().int().min(0).max(32),
   canCancel: z.boolean().optional(),
+  runtime: runtimeSchema.nullable(),
   currentWork: z.string().trim().min(1).max(4_000),
   updatedAt: timestampSchema,
   authority: authoritySchema,

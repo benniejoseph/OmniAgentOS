@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 21;
-  static const previousVersion = 20;
-  static const supportedVersions = <int>[21, 20];
+  static const currentVersion = 22;
+  static const previousVersion = 21;
+  static const supportedVersions = <int>[22, 21];
   static const discoveryPath = '/api/mobile/contracts';
   static const operationIds = <String>{
     'auth.login',
@@ -135,6 +135,7 @@ abstract final class NativeContract {
     'moltbook.connection.show',
     'moltbook.connection.manage',
     'agents.council',
+    'agents.tasks.cancel',
   };
 
   static bool supports(int version) => supportedVersions.contains(version);
@@ -368,6 +369,7 @@ abstract final class NativePaths {
         .join('&');
     return '$path?$encoded';
   }
+  static String agentsTasksCancel(String id) => '/api/agents/tasks/${Uri.encodeComponent(id)}/cancel';
 }
 
 abstract final class NativeConversationEvents {

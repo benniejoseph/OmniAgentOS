@@ -780,8 +780,15 @@ class AgentsController extends ChangeNotifier {
 }
 
 class AgentsView extends StatefulWidget {
-  const AgentsView({super.key, required this.controller});
+  const AgentsView({
+    super.key,
+    required this.controller,
+    this.liveWork,
+    this.onRefreshLiveWork,
+  });
   final AgentsController controller;
+  final Widget? liveWork;
+  final Future<void> Function()? onRefreshLiveWork;
   @override
   State<AgentsView> createState() => _AgentsViewState();
 }
@@ -792,15 +799,25 @@ class _AgentsViewState extends State<AgentsView>
   @override
   void initState() {
     super.initState();
-    tabs = TabController(length: 3, vsync: this);
+    tabs = TabController(length: widget.liveWork == null ? 3 : 4, vsync: this)
+      ..addListener(_onTabChanged);
     if (widget.controller.ledger == null) widget.controller.refresh();
   }
 
   @override
   void dispose() {
+    tabs.removeListener(_onTabChanged);
     tabs.dispose();
     super.dispose();
   }
+
+  void _onTabChanged() {
+    if (!tabs.indexIsChanging && mounted) setState(() {});
+  }
+
+  int get _agentsTab => widget.liveWork == null ? 0 : 1;
+  int get _skillsTab => widget.liveWork == null ? 1 : 2;
+  bool get _showingLiveWork => widget.liveWork != null && tabs.index == 0;
 
   @override
   Widget build(BuildContext context) => ListenableBuilder(
@@ -809,33 +826,41 @@ class _AgentsViewState extends State<AgentsView>
       final c = widget.controller;
       return Scaffold(
         appBar: AppBar(
-          title: const Text('Agent arsenal'),
+          title: Text(
+            tabs.index == 0 && widget.liveWork != null
+                ? 'Agent Control'
+                : 'Agent arsenal',
+          ),
           bottom: TabBar(
             controller: tabs,
-            tabs: const [
-              Tab(text: 'Agents'),
-              Tab(text: 'Skills'),
-              Tab(text: 'Performance'),
+            tabs: [
+              if (widget.liveWork != null) const Tab(text: 'Live work'),
+              const Tab(text: 'Agents'),
+              const Tab(text: 'Skills'),
+              const Tab(text: 'Performance'),
             ],
           ),
           actions: [
-            if (c.canMutateAgents || c.canMutateSkills)
+            if ((tabs.index == _agentsTab && c.canMutateAgents) ||
+                (tabs.index == _skillsTab && c.canMutateSkills))
               IconButton(
                 tooltip: 'Create',
-                onPressed: tabs.index == 1
+                onPressed: tabs.index == _skillsTab
                     ? (c.canMutateSkills ? _editSkill : null)
                     : (c.canMutateAgents ? _editAgent : null),
                 icon: const Icon(Icons.add_rounded),
               ),
             IconButton(
-              onPressed: c.refresh,
+              onPressed: tabs.index == 0 && widget.liveWork != null
+                  ? widget.onRefreshLiveWork
+                  : c.refresh,
               icon: const Icon(Icons.refresh_rounded),
             ),
           ],
         ),
-        body: c.loading && c.ledger == null
+        body: !_showingLiveWork && c.loading && c.ledger == null
             ? const _AgentSkeleton()
-            : c.error != null && c.ledger == null
+            : !_showingLiveWork && c.error != null && c.ledger == null
             ? _Retry(onTap: c.refresh)
             : AnimatedSwitcher(
                 duration: _motionDuration(context),
@@ -844,6 +869,7 @@ class _AgentsViewState extends State<AgentsView>
                   key: ValueKey(c.ledger),
                   controller: tabs,
                   children: [
+                    if (widget.liveWork != null) widget.liveWork!,
                     _agents(c.ledger?.agents ?? const []),
                     _skills(c.ledger?.skills ?? const []),
                     _performance(c.ledger?.performance ?? const []),

@@ -50,6 +50,7 @@ async function POSTHandler(
       action: "run.agent",
       resourceType: "delegation_execution",
       resourceId: id,
+      nativeMutationCapability: "agents.tasks.cancel",
       metadata: {
         operation: "app.agents.tasks.cancel",
         signal: "cancel",

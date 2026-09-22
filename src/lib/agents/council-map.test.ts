@@ -109,7 +109,11 @@ describe("P11.5 Agent Council map", () => {
     expect(map.summary).toMatchObject({ executionCount: 1, memberCount: 1, activeMemberCount: 1 });
     expect(map.executions[0].verifierCost).toMatchObject({ state: "exact", knownEstimatedCostMicrousd: 400 });
     expect(map.executions[0].members[0]).toMatchObject({
-      identity: { name: "Scout", definitionVersion: 1, source: "agent_definition" },
+      identity: {
+        name: "Scout",
+        definitionVersion: scout.definition.definitionVersion,
+        source: "agent_definition",
+      },
       authority: {
         source: "delegation_grants",
         context: { state: "granted", grantCount: 1 },
@@ -257,6 +261,11 @@ describe("P11.5 Agent Council map", () => {
       canCancel: false,
       currentWork: record.contract.objective,
       identity: { name: "Scout", source: "agent_definition" },
+      runtime: {
+        providerId: "configured-provider",
+        modelId: "configured-research-model",
+        modelTier: "reasoning",
+      },
       authority: {
         source: "delegation_grants",
         receiptSha256: record.contractSha256,
@@ -269,10 +278,18 @@ describe("P11.5 Agent Council map", () => {
       confidence: 0.92,
       verifier: {
         identity: { name: "Sentinel" },
+        runtime: {
+          providerId: "configured-provider",
+          modelId: "configured-verifier-model",
+          modelTier: "reasoning",
+        },
         verdict: "accepted",
         score: 0.92,
       },
     });
+    expect(JSON.stringify(map)).not.toMatch(
+      /assignmentId|assignmentSha256|principalId|credential/i,
+    );
   });
 
   it("exposes cancellation only for active V2 child records", () => {
@@ -304,6 +321,11 @@ describe("P11.5 Agent Council map", () => {
       state: "working",
       canCancel: true,
       lifecycleRevision: 1,
+      runtime: {
+        providerId: "configured-provider",
+        modelId: "configured-research-model",
+        modelTier: "reasoning",
+      },
     });
   });
 });

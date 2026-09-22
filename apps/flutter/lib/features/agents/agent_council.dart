@@ -1,6 +1,6 @@
 import 'package:flutter/foundation.dart';
 
-import 'agents.dart';
+typedef AgentCouncilJson = Map<String, dynamic>;
 
 const agentCouncilProjectionVersion = 'p11.5-agent-council-map:1';
 
@@ -24,7 +24,7 @@ class AgentCouncilProjection {
   final AgentCouncilSummary summary;
   final List<AgentCouncilExecution> executions;
 
-  factory AgentCouncilProjection.fromJson(Json value) {
+  factory AgentCouncilProjection.fromJson(AgentCouncilJson value) {
     final version = _string(value, 'version');
     if (version != agentCouncilProjectionVersion) {
       throw const FormatException(
@@ -51,6 +51,65 @@ class AgentCouncilProjection {
       ).map(AgentCouncilExecution.fromJson).toList(growable: false),
     );
   }
+
+  AgentCouncilProjection withCanceledTask(AgentCouncilCancellation result) {
+    var activeDelta = 0;
+    var waitingDelta = 0;
+    final nextExecutions = executions
+        .map((execution) {
+          var changed = false;
+          final nextMembers = execution.members
+              .map((member) {
+                if (member.taskId != result.executionId) return member;
+                changed = true;
+                if (const {
+                  'proposed',
+                  'accepted',
+                  'working',
+                  'waiting',
+                  'challenged',
+                  'completed_proposed',
+                }.contains(member.state)) {
+                  activeDelta = -1;
+                }
+                if (member.state == 'waiting') waitingDelta = -1;
+                return member.canceled(result);
+              })
+              .toList(growable: false);
+          return changed
+              ? AgentCouncilExecution(
+                  parentExecutionId: execution.parentExecutionId,
+                  href: execution.href,
+                  status: execution.status,
+                  currentWork: execution.currentWork,
+                  startedAt: execution.startedAt,
+                  updatedAt: result.updatedAt,
+                  members: nextMembers,
+                  verifierCost: execution.verifierCost,
+                )
+              : execution;
+        })
+        .toList(growable: false);
+    return AgentCouncilProjection(
+      version: version,
+      authority: authority,
+      generatedAt: result.updatedAt,
+      state: state,
+      summary: AgentCouncilSummary(
+        executionCount: summary.executionCount,
+        memberCount: summary.memberCount,
+        activeMemberCount: (summary.activeMemberCount + activeDelta)
+            .clamp(0, summary.memberCount)
+            .toInt(),
+        waitingMemberCount: (summary.waitingMemberCount + waitingDelta)
+            .clamp(0, summary.memberCount)
+            .toInt(),
+        acceptedMemberCount: summary.acceptedMemberCount,
+        knownEstimatedCostMicrousd: summary.knownEstimatedCostMicrousd,
+      ),
+      executions: nextExecutions,
+    );
+  }
 }
 
 @immutable
@@ -71,14 +130,18 @@ class AgentCouncilSummary {
       acceptedMemberCount,
       knownEstimatedCostMicrousd;
 
-  factory AgentCouncilSummary.fromJson(Json value) => AgentCouncilSummary(
-    executionCount: _integer(value, 'executionCount'),
-    memberCount: _integer(value, 'memberCount'),
-    activeMemberCount: _integer(value, 'activeMemberCount'),
-    waitingMemberCount: _integer(value, 'waitingMemberCount'),
-    acceptedMemberCount: _integer(value, 'acceptedMemberCount'),
-    knownEstimatedCostMicrousd: _integer(value, 'knownEstimatedCostMicrousd'),
-  );
+  factory AgentCouncilSummary.fromJson(AgentCouncilJson value) =>
+      AgentCouncilSummary(
+        executionCount: _integer(value, 'executionCount'),
+        memberCount: _integer(value, 'memberCount'),
+        activeMemberCount: _integer(value, 'activeMemberCount'),
+        waitingMemberCount: _integer(value, 'waitingMemberCount'),
+        acceptedMemberCount: _integer(value, 'acceptedMemberCount'),
+        knownEstimatedCostMicrousd: _integer(
+          value,
+          'knownEstimatedCostMicrousd',
+        ),
+      );
 }
 
 @immutable
@@ -103,19 +166,20 @@ class AgentCouncilExecution {
   final List<AgentCouncilMember> members;
   final AgentCouncilCost verifierCost;
 
-  factory AgentCouncilExecution.fromJson(Json value) => AgentCouncilExecution(
-    parentExecutionId: _string(value, 'parentExecutionId'),
-    href: _string(value, 'href'),
-    status: _string(value, 'status'),
-    currentWork: _string(value, 'currentWork'),
-    startedAt: _timestamp(value, 'startedAt'),
-    updatedAt: _timestamp(value, 'updatedAt'),
-    members: _objects(
-      value,
-      'members',
-    ).map(AgentCouncilMember.fromJson).toList(growable: false),
-    verifierCost: AgentCouncilCost.fromJson(_object(value, 'verifierCost')),
-  );
+  factory AgentCouncilExecution.fromJson(AgentCouncilJson value) =>
+      AgentCouncilExecution(
+        parentExecutionId: _string(value, 'parentExecutionId'),
+        href: _string(value, 'href'),
+        status: _string(value, 'status'),
+        currentWork: _string(value, 'currentWork'),
+        startedAt: _timestamp(value, 'startedAt'),
+        updatedAt: _timestamp(value, 'updatedAt'),
+        members: _objects(
+          value,
+          'members',
+        ).map(AgentCouncilMember.fromJson).toList(growable: false),
+        verifierCost: AgentCouncilCost.fromJson(_object(value, 'verifierCost')),
+      );
 }
 
 @immutable
@@ -126,6 +190,8 @@ class AgentCouncilMember {
     required this.identity,
     required this.state,
     required this.lifecycleRevision,
+    required this.canCancel,
+    required this.runtime,
     required this.currentWork,
     required this.updatedAt,
     required this.authority,
@@ -138,6 +204,8 @@ class AgentCouncilMember {
 
   final String taskId, delegationId, state, currentWork, updatedAt;
   final int lifecycleRevision;
+  final bool canCancel;
+  final AgentCouncilRuntime? runtime;
   final AgentCouncilIdentity identity;
   final AgentCouncilAuthority authority;
   final AgentCouncilMessages messages;
@@ -146,21 +214,68 @@ class AgentCouncilMember {
   final double? confidence;
   final AgentCouncilVerifier verifier;
 
-  factory AgentCouncilMember.fromJson(Json value) => AgentCouncilMember(
-    taskId: _string(value, 'taskId'),
-    delegationId: _string(value, 'delegationId'),
-    identity: AgentCouncilIdentity.fromJson(_object(value, 'identity')),
-    state: _string(value, 'state'),
-    lifecycleRevision: _integer(value, 'lifecycleRevision'),
-    currentWork: _string(value, 'currentWork'),
-    updatedAt: _timestamp(value, 'updatedAt'),
-    authority: AgentCouncilAuthority.fromJson(_object(value, 'authority')),
-    messages: AgentCouncilMessages.fromJson(_object(value, 'messages')),
-    outputs: AgentCouncilOutputs.fromJson(_object(value, 'outputs')),
-    cost: AgentCouncilCost.fromJson(_object(value, 'cost')),
-    confidence: _nullableDouble(value, 'confidence'),
-    verifier: AgentCouncilVerifier.fromJson(_object(value, 'verifier')),
-  );
+  factory AgentCouncilMember.fromJson(AgentCouncilJson value) =>
+      AgentCouncilMember(
+        taskId: _string(value, 'taskId'),
+        delegationId: _string(value, 'delegationId'),
+        identity: AgentCouncilIdentity.fromJson(_object(value, 'identity')),
+        state: _string(value, 'state'),
+        lifecycleRevision: _integer(value, 'lifecycleRevision'),
+        canCancel: value['canCancel'] == true,
+        runtime: _nullableObject(value, 'runtime') == null
+            ? null
+            : AgentCouncilRuntime.fromJson(_nullableObject(value, 'runtime')!),
+        currentWork: _string(value, 'currentWork'),
+        updatedAt: _timestamp(value, 'updatedAt'),
+        authority: AgentCouncilAuthority.fromJson(_object(value, 'authority')),
+        messages: AgentCouncilMessages.fromJson(_object(value, 'messages')),
+        outputs: AgentCouncilOutputs.fromJson(_object(value, 'outputs')),
+        cost: AgentCouncilCost.fromJson(_object(value, 'cost')),
+        confidence: _nullableDouble(value, 'confidence'),
+        verifier: AgentCouncilVerifier.fromJson(_object(value, 'verifier')),
+      );
+
+  AgentCouncilMember canceled(AgentCouncilCancellation result) =>
+      AgentCouncilMember(
+        taskId: taskId,
+        delegationId: delegationId,
+        identity: identity,
+        state: 'canceled',
+        lifecycleRevision: result.lifecycleRevision,
+        canCancel: false,
+        runtime: runtime,
+        currentWork: currentWork,
+        updatedAt: result.updatedAt,
+        authority: authority,
+        messages: messages,
+        outputs: outputs,
+        cost: cost,
+        confidence: confidence,
+        verifier: verifier,
+      );
+}
+
+@immutable
+class AgentCouncilRuntime {
+  const AgentCouncilRuntime({
+    required this.providerId,
+    required this.modelId,
+    required this.modelTier,
+  });
+
+  final String providerId, modelId, modelTier;
+
+  factory AgentCouncilRuntime.fromJson(AgentCouncilJson value) {
+    final tier = _string(value, 'modelTier');
+    if (!const {'fast', 'reasoning'}.contains(tier)) {
+      throw const FormatException('The Agent Council model tier is invalid.');
+    }
+    return AgentCouncilRuntime(
+      providerId: _string(value, 'providerId'),
+      modelId: _string(value, 'modelId'),
+      modelTier: tier,
+    );
+  }
 }
 
 @immutable
@@ -178,15 +293,16 @@ class AgentCouncilIdentity {
   final String agentId, name, role, charter, visualIdentity, source;
   final int definitionVersion;
 
-  factory AgentCouncilIdentity.fromJson(Json value) => AgentCouncilIdentity(
-    agentId: _string(value, 'agentId'),
-    name: _string(value, 'name'),
-    role: _string(value, 'role'),
-    charter: _string(value, 'charter'),
-    visualIdentity: _string(value, 'visualIdentity'),
-    definitionVersion: _integer(value, 'definitionVersion'),
-    source: _string(value, 'source'),
-  );
+  factory AgentCouncilIdentity.fromJson(AgentCouncilJson value) =>
+      AgentCouncilIdentity(
+        agentId: _string(value, 'agentId'),
+        name: _string(value, 'name'),
+        role: _string(value, 'role'),
+        charter: _string(value, 'charter'),
+        visualIdentity: _string(value, 'visualIdentity'),
+        definitionVersion: _integer(value, 'definitionVersion'),
+        source: _string(value, 'source'),
+      );
 }
 
 @immutable
@@ -219,7 +335,7 @@ class AgentCouncilAuthority {
   final List<String> toolIds;
   final AgentCouncilBudgets budgets;
 
-  factory AgentCouncilAuthority.fromJson(Json value) {
+  factory AgentCouncilAuthority.fromJson(AgentCouncilJson value) {
     final scope = _object(value, 'scope');
     final context = _object(value, 'context');
     final capabilities = _object(value, 'capabilities');
@@ -261,14 +377,15 @@ class AgentCouncilBudgets {
       toolCalls,
       browserActions;
 
-  factory AgentCouncilBudgets.fromJson(Json value) => AgentCouncilBudgets(
-    modelTurns: _nullableInteger(value, 'modelTurns'),
-    tokens: _nullableInteger(value, 'tokens'),
-    costMicrousd: _nullableInteger(value, 'costMicrousd'),
-    wallTimeMs: _nullableInteger(value, 'wallTimeMs'),
-    toolCalls: _nullableInteger(value, 'toolCalls'),
-    browserActions: _nullableInteger(value, 'browserActions'),
-  );
+  factory AgentCouncilBudgets.fromJson(AgentCouncilJson value) =>
+      AgentCouncilBudgets(
+        modelTurns: _nullableInteger(value, 'modelTurns'),
+        tokens: _nullableInteger(value, 'tokens'),
+        costMicrousd: _nullableInteger(value, 'costMicrousd'),
+        wallTimeMs: _nullableInteger(value, 'wallTimeMs'),
+        toolCalls: _nullableInteger(value, 'toolCalls'),
+        browserActions: _nullableInteger(value, 'browserActions'),
+      );
 }
 
 @immutable
@@ -278,13 +395,14 @@ class AgentCouncilMessages {
   final String state;
   final List<AgentCouncilMessage> items;
 
-  factory AgentCouncilMessages.fromJson(Json value) => AgentCouncilMessages(
-    state: _string(value, 'state'),
-    items: _objects(
-      value,
-      'items',
-    ).map(AgentCouncilMessage.fromJson).toList(growable: false),
-  );
+  factory AgentCouncilMessages.fromJson(AgentCouncilJson value) =>
+      AgentCouncilMessages(
+        state: _string(value, 'state'),
+        items: _objects(
+          value,
+          'items',
+        ).map(AgentCouncilMessage.fromJson).toList(growable: false),
+      );
 }
 
 @immutable
@@ -300,14 +418,15 @@ class AgentCouncilMessage {
 
   final String messageId, kind, body, direction, createdAt, trust;
 
-  factory AgentCouncilMessage.fromJson(Json value) => AgentCouncilMessage(
-    messageId: _string(value, 'messageId'),
-    kind: _string(value, 'kind'),
-    body: _string(value, 'body'),
-    direction: _string(value, 'direction'),
-    createdAt: _timestamp(value, 'createdAt'),
-    trust: _string(value, 'trust'),
-  );
+  factory AgentCouncilMessage.fromJson(AgentCouncilJson value) =>
+      AgentCouncilMessage(
+        messageId: _string(value, 'messageId'),
+        kind: _string(value, 'kind'),
+        body: _string(value, 'body'),
+        direction: _string(value, 'direction'),
+        createdAt: _timestamp(value, 'createdAt'),
+        trust: _string(value, 'trust'),
+      );
 }
 
 @immutable
@@ -322,14 +441,15 @@ class AgentCouncilOutputs {
   final List<AgentCouncilOutput> items;
   final String? proposalReceiptSha256;
 
-  factory AgentCouncilOutputs.fromJson(Json value) => AgentCouncilOutputs(
-    state: _string(value, 'state'),
-    items: _objects(
-      value,
-      'items',
-    ).map(AgentCouncilOutput.fromJson).toList(growable: false),
-    proposalReceiptSha256: _nullableString(value, 'proposalReceiptSha256'),
-  );
+  factory AgentCouncilOutputs.fromJson(AgentCouncilJson value) =>
+      AgentCouncilOutputs(
+        state: _string(value, 'state'),
+        items: _objects(
+          value,
+          'items',
+        ).map(AgentCouncilOutput.fromJson).toList(growable: false),
+        proposalReceiptSha256: _nullableString(value, 'proposalReceiptSha256'),
+      );
 }
 
 @immutable
@@ -346,15 +466,16 @@ class AgentCouncilOutput {
 
   final String artifactId, title, kind, mediaType, content, createdAt, trust;
 
-  factory AgentCouncilOutput.fromJson(Json value) => AgentCouncilOutput(
-    artifactId: _string(value, 'artifactId'),
-    title: _string(value, 'title'),
-    kind: _string(value, 'kind'),
-    mediaType: _string(value, 'mediaType'),
-    content: _string(value, 'content', allowEmpty: true),
-    createdAt: _timestamp(value, 'createdAt'),
-    trust: _string(value, 'trust'),
-  );
+  factory AgentCouncilOutput.fromJson(AgentCouncilJson value) =>
+      AgentCouncilOutput(
+        artifactId: _string(value, 'artifactId'),
+        title: _string(value, 'title'),
+        kind: _string(value, 'kind'),
+        mediaType: _string(value, 'mediaType'),
+        content: _string(value, 'content', allowEmpty: true),
+        createdAt: _timestamp(value, 'createdAt'),
+        trust: _string(value, 'trust'),
+      );
 }
 
 @immutable
@@ -374,7 +495,7 @@ class AgentCouncilCost {
       totalTokens,
       knownEstimatedCostMicrousd;
 
-  factory AgentCouncilCost.fromJson(Json value) => AgentCouncilCost(
+  factory AgentCouncilCost.fromJson(AgentCouncilJson value) => AgentCouncilCost(
     authority: _string(value, 'authority'),
     state: _string(value, 'state'),
     receiptCount: _integer(value, 'receiptCount'),
@@ -388,6 +509,7 @@ class AgentCouncilCost {
 class AgentCouncilVerifier {
   const AgentCouncilVerifier({
     required this.identity,
+    required this.runtime,
     required this.acceptanceThreshold,
     required this.method,
     required this.verdict,
@@ -395,31 +517,90 @@ class AgentCouncilVerifier {
   });
 
   final AgentCouncilIdentity identity;
+  final AgentCouncilRuntime? runtime;
   final double acceptanceThreshold;
   final String method, verdict;
   final double? score;
 
-  factory AgentCouncilVerifier.fromJson(Json value) => AgentCouncilVerifier(
-    identity: AgentCouncilIdentity.fromJson(_object(value, 'identity')),
-    acceptanceThreshold: _double(value, 'acceptanceThreshold'),
-    method: _string(value, 'method'),
-    verdict: _string(value, 'verdict'),
-    score: _nullableDouble(value, 'score'),
-  );
+  factory AgentCouncilVerifier.fromJson(AgentCouncilJson value) =>
+      AgentCouncilVerifier(
+        identity: AgentCouncilIdentity.fromJson(_object(value, 'identity')),
+        runtime: _nullableObject(value, 'runtime') == null
+            ? null
+            : AgentCouncilRuntime.fromJson(_nullableObject(value, 'runtime')!),
+        acceptanceThreshold: _double(value, 'acceptanceThreshold'),
+        method: _string(value, 'method'),
+        verdict: _string(value, 'verdict'),
+        score: _nullableDouble(value, 'score'),
+      );
 }
 
 abstract interface class AgentCouncilRepository {
   Future<AgentCouncilProjection> load({int limit = 60});
 }
 
+abstract interface class AgentCouncilControlRepository {
+  Future<AgentCouncilCancellation> cancel({
+    required String executionId,
+    required int expectedRevision,
+    required String reason,
+    required String idempotencyKey,
+  });
+}
+
+@immutable
+class AgentCouncilCancellation {
+  const AgentCouncilCancellation({
+    required this.executionId,
+    required this.lifecycleRevision,
+    required this.updatedAt,
+    required this.terminalAt,
+    required this.idempotent,
+  });
+
+  final String executionId, updatedAt, terminalAt;
+  final int lifecycleRevision;
+  final bool idempotent;
+
+  factory AgentCouncilCancellation.fromJson(AgentCouncilJson value) {
+    final task = _object(value, 'task');
+    _rejectPrivateTaskFields(task);
+    if (_string(task, 'state') != 'canceled' || task['canCancel'] != false) {
+      throw const FormatException(
+        'The Agent task cancellation was not confirmed by the service.',
+      );
+    }
+    return AgentCouncilCancellation(
+      executionId: _string(task, 'executionId'),
+      lifecycleRevision: _integer(task, 'lifecycleRevision'),
+      updatedAt: _timestamp(task, 'updatedAt'),
+      terminalAt: _timestamp(task, 'terminalAt'),
+      idempotent: value['idempotent'] == true,
+    );
+  }
+}
+
 class AgentCouncilController extends ChangeNotifier {
-  AgentCouncilController(this.repository);
+  AgentCouncilController(this.repository, {this.controlAvailable = false});
 
   final AgentCouncilRepository repository;
+  final bool controlAvailable;
   AgentCouncilProjection? projection;
   bool loading = false;
   Object? error;
+  final Set<String> _cancelingTaskIds = <String>{};
+  final Map<String, Object> _cancellationErrors = <String, Object>{};
+  final Map<String, String> _cancellationKeys = <String, String>{};
   Future<void>? _refreshInFlight;
+
+  bool canCancel(AgentCouncilMember member) =>
+      controlAvailable &&
+      repository is AgentCouncilControlRepository &&
+      member.canCancel;
+
+  bool isCanceling(String taskId) => _cancelingTaskIds.contains(taskId);
+
+  Object? cancellationError(String taskId) => _cancellationErrors[taskId];
 
   Future<void> refresh() {
     final existing = _refreshInFlight;
@@ -444,9 +625,80 @@ class AgentCouncilController extends ChangeNotifier {
       notifyListeners();
     }
   }
+
+  Future<AgentCouncilCancellation> cancelTask(
+    AgentCouncilMember member, {
+    required String reason,
+  }) async {
+    final normalizedReason = reason.trim();
+    final source = repository;
+    if (!canCancel(member) || source is! AgentCouncilControlRepository) {
+      throw StateError('This delegated task cannot be canceled here.');
+    }
+    if (normalizedReason.isEmpty || normalizedReason.length > 500) {
+      throw ArgumentError.value(reason, 'reason');
+    }
+    if (_cancelingTaskIds.contains(member.taskId)) {
+      throw StateError('This delegated task is already being canceled.');
+    }
+    final attempt =
+        '${member.taskId}|${member.lifecycleRevision}|$normalizedReason';
+    final idempotencyKey = _cancellationKeys.putIfAbsent(
+      attempt,
+      () => stableAgentTaskCancellationKey(
+        executionId: member.taskId,
+        expectedRevision: member.lifecycleRevision,
+        reason: normalizedReason,
+      ),
+    );
+    _cancelingTaskIds.add(member.taskId);
+    _cancellationErrors.remove(member.taskId);
+    notifyListeners();
+    final controlSource = source as AgentCouncilControlRepository;
+    try {
+      final result = await controlSource.cancel(
+        executionId: member.taskId,
+        expectedRevision: member.lifecycleRevision,
+        reason: normalizedReason,
+        idempotencyKey: idempotencyKey,
+      );
+      if (result.executionId != member.taskId) {
+        throw const FormatException(
+          'The service canceled a different delegated task.',
+        );
+      }
+      projection = projection?.withCanceledTask(result);
+      _cancellationErrors.remove(member.taskId);
+      return result;
+    } catch (caught) {
+      _cancellationErrors[member.taskId] = caught;
+      rethrow;
+    } finally {
+      _cancelingTaskIds.remove(member.taskId);
+      notifyListeners();
+    }
+  }
 }
 
-Json _object(Json source, String key) {
+String stableAgentTaskCancellationKey({
+  required String executionId,
+  required int expectedRevision,
+  required String reason,
+}) {
+  final canonical = '$executionId\u0000$expectedRevision\u0000${reason.trim()}';
+  var first = 0x811c9dc5;
+  var second = 0x9e3779b9;
+  for (final value in canonical.codeUnits) {
+    first = ((first ^ value) * 0x01000193) & 0xffffffff;
+    second = ((second ^ (value + 0x7f)) * 0x01000193) & 0xffffffff;
+  }
+  final digest =
+      first.toRadixString(16).padLeft(8, '0') +
+      second.toRadixString(16).padLeft(8, '0');
+  return 'native-agent-task-cancel-v1-$digest';
+}
+
+AgentCouncilJson _object(AgentCouncilJson source, String key) {
   final value = source[key];
   if (value is! Map) {
     throw FormatException('Agent Council field $key must be an object.');
@@ -454,7 +706,40 @@ Json _object(Json source, String key) {
   return Map<String, dynamic>.from(value);
 }
 
-List<Json> _objects(Json source, String key) {
+AgentCouncilJson? _nullableObject(AgentCouncilJson source, String key) {
+  final value = source[key];
+  if (value == null) return null;
+  if (value is! Map) {
+    throw FormatException(
+      'Agent Council field $key must be null or an object.',
+    );
+  }
+  return Map<String, dynamic>.from(value);
+}
+
+void _rejectPrivateTaskFields(AgentCouncilJson task) {
+  const privateFields = {
+    'tenantId',
+    'ownerActorId',
+    'contract',
+    'contextCapsule',
+    'executionScope',
+    'delegatePrincipalId',
+    'runtimeAssignmentId',
+    'runtimeAssignmentSha256',
+    'budgetLimits',
+    'budgetLimitsSha256',
+    'grants',
+    'credential',
+  };
+  if (task.keys.any(privateFields.contains)) {
+    throw const FormatException(
+      'The Agent task response exposed a private delegation field.',
+    );
+  }
+}
+
+List<AgentCouncilJson> _objects(AgentCouncilJson source, String key) {
   final value = source[key];
   if (value is! List || value.any((item) => item is! Map)) {
     throw FormatException(
@@ -467,7 +752,7 @@ List<Json> _objects(Json source, String key) {
       .toList(growable: false);
 }
 
-String _string(Json source, String key, {bool allowEmpty = false}) {
+String _string(AgentCouncilJson source, String key, {bool allowEmpty = false}) {
   final value = source[key];
   if (value is! String || (!allowEmpty && value.trim().isEmpty)) {
     throw FormatException('Agent Council field $key must be a string.');
@@ -475,7 +760,7 @@ String _string(Json source, String key, {bool allowEmpty = false}) {
   return value;
 }
 
-String? _nullableString(Json source, String key) {
+String? _nullableString(AgentCouncilJson source, String key) {
   final value = source[key];
   if (value == null) return null;
   if (value is! String || value.trim().isEmpty) {
@@ -484,7 +769,7 @@ String? _nullableString(Json source, String key) {
   return value;
 }
 
-String _timestamp(Json source, String key) {
+String _timestamp(AgentCouncilJson source, String key) {
   final value = _string(source, key);
   if (DateTime.tryParse(value) == null) {
     throw FormatException('Agent Council field $key must be a timestamp.');
@@ -492,7 +777,7 @@ String _timestamp(Json source, String key) {
   return value;
 }
 
-int _integer(Json source, String key) {
+int _integer(AgentCouncilJson source, String key) {
   final value = source[key];
   if (value is! num || value.toInt() != value || value < 0) {
     throw FormatException(
@@ -502,10 +787,10 @@ int _integer(Json source, String key) {
   return value.toInt();
 }
 
-int? _nullableInteger(Json source, String key) =>
+int? _nullableInteger(AgentCouncilJson source, String key) =>
     source[key] == null ? null : _integer(source, key);
 
-double _double(Json source, String key) {
+double _double(AgentCouncilJson source, String key) {
   final value = source[key];
   if (value is! num || !value.isFinite) {
     throw FormatException('Agent Council field $key must be a number.');
@@ -513,10 +798,10 @@ double _double(Json source, String key) {
   return value.toDouble();
 }
 
-double? _nullableDouble(Json source, String key) =>
+double? _nullableDouble(AgentCouncilJson source, String key) =>
     source[key] == null ? null : _double(source, key);
 
-List<String> _strings(Json source, String key) {
+List<String> _strings(AgentCouncilJson source, String key) {
   final value = source[key];
   if (value is! List || value.any((item) => item is! String)) {
     throw FormatException(
