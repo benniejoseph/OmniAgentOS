@@ -31,8 +31,8 @@ describe("P8.1 workflow delegation adapter", () => {
     });
 
     expect(contract).toMatchObject({
-      delegator: { agentId: "atlas", definitionVersion: 1 },
-      delegate: { agentId: "scout", definitionVersion: 1 },
+      delegator: { agentId: "atlas", definitionVersion: 2 },
+      delegate: { agentId: "scout", definitionVersion: 2 },
       purpose: "workflow.node.research.execute",
       grants: {
         contextGrantIds: [],

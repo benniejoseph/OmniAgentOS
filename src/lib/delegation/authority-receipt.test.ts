@@ -26,7 +26,7 @@ describe("P11.5 delegation authority receipt", () => {
         capabilityGrantIds: [],
         governedToolIds: [],
       },
-      verifier: { agentId: "sentinel", definitionVersion: 1 },
+      verifier: { agentId: "sentinel", definitionVersion: 2 },
     });
     expect(() => parseDelegationAuthorityReceiptV1({
       ...receipt,
