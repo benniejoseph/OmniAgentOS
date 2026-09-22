@@ -311,7 +311,7 @@ export async function persistProactiveAgentAdaptationProposal(input: {
         },
       }, { sql });
       return "inserted" as const;
-    }),
+    }) as Promise<"inserted" | "duplicate">,
   );
 }
 

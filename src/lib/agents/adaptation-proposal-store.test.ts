@@ -275,7 +275,7 @@ describe("proactive Agent adaptation evidence store", () => {
       }),
       { sql },
     );
-    const event = mocks.appendScopedDomainEvent.mock.calls[0]?.[0];
+    const event = (mocks.appendScopedDomainEvent.mock.calls as unknown[][])[0]?.[0];
     expect(JSON.stringify(event)).not.toContain(adaptation.effect.guidance);
   });
 });
