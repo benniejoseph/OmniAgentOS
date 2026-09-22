@@ -2,7 +2,11 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { CouncilExecutionMap } from "@/components/agents/council-execution-map";
+import {
+  CouncilExecutionMap,
+  TaskAuthorityGrantInspector,
+  type AgentTaskAuthorityDetail,
+} from "@/components/agents/council-execution-map";
 import type { AgentCouncilMap } from "@/lib/agents/council-map-contract";
 
 describe("Agent Control Center live work", () => {
@@ -92,7 +96,89 @@ describe("Agent Control Center live work", () => {
     expect(markup).toContain('id="current-work-title">Build the focused interface.');
     expect(markup).toContain("Forge");
   });
+
+  it("renders exact immutable Skill, Plugin, MCP, and native read pins without raw content", () => {
+    const authority = taskAuthority();
+    const authorityWithRawPrompt = { ...authority, rawPrompt: "never-render-this" };
+    const markup = renderToStaticMarkup(createElement(TaskAuthorityGrantInspector, {
+      state: "ready",
+      authority: authorityWithRawPrompt,
+    }));
+    expect(markup).toContain("Signed execution grants");
+    expect(markup).toContain("Immutable");
+    expect(markup).toContain("All signed grants are current");
+    expect(markup).toContain("Native read tools");
+    expect(markup).toContain("knowledge.search");
+    expect(markup).toContain("skill-version-one");
+    expect(markup).toContain("installation-one · rev 4");
+    expect(markup).toContain("mcp-server-version-one");
+    expect(markup).toContain("Manage source");
+    expect(markup).not.toContain("never-render-this");
+    expect(markup).not.toMatch(/edit grant|revoke grant/i);
+  });
+
+  it("has explicit loading, error, and empty grant states", () => {
+    const loading = renderToStaticMarkup(createElement(TaskAuthorityGrantInspector, {
+      state: "loading",
+    }));
+    const error = renderToStaticMarkup(createElement(TaskAuthorityGrantInspector, {
+      state: "error",
+    }));
+    const empty = renderToStaticMarkup(createElement(TaskAuthorityGrantInspector, {
+      state: "ready",
+      authority: {
+        ...taskAuthority(),
+        nativeReadTools: [], skills: [], plugins: [], mcpServers: [],
+      },
+    }));
+    expect(loading).toContain('aria-busy="true"');
+    expect(loading).toContain("Loading exact immutable pins");
+    expect(error).toContain("No authority was inferred");
+    expect(empty).toContain("No external Skill, Plugin, MCP, or native read grants");
+  });
 });
+
+function taskAuthority(): AgentTaskAuthorityDetail {
+  return {
+    immutable: true,
+    contractSha256: "a".repeat(64),
+    grantRequestSha256: "b".repeat(64),
+    validation: {
+      status: "current",
+      category: "all_grants",
+      validatedAt: "2026-09-22T12:00:15.000Z",
+    },
+    nativeReadTools: [{ toolId: "knowledge.search", managementHref: "/app/tools" }],
+    skills: [{
+      capabilityGrantId: "capability:skill",
+      skillId: "research-skill",
+      skillVersion: 3,
+      skillVersionId: "skill-version-one",
+      skillSha256: "c".repeat(64),
+      managementHref: "/app/automation?view=skills",
+    }],
+    plugins: [{
+      capabilityGrantId: "capability:plugin",
+      installationId: "installation-one",
+      installationRevision: 4,
+      installationSha256: "d".repeat(64),
+      pluginId: "research-plugin",
+      pluginVersion: "1.2.3",
+      manifestSha256: "e".repeat(64),
+      componentIds: ["skill:research"],
+      managementHref: "/app/automation?view=plugins",
+    }],
+    mcpServers: [{
+      capabilityGrantId: "capability:mcp",
+      serverId: "research-server",
+      serverVersionId: "mcp-server-version-one",
+      serverContractSha256: "f".repeat(64),
+      governedToolIds: ["mcp:research:lookup"],
+      connectorTargetIds: ["connector-one"],
+      managementHref: "/app/automation?view=connections",
+    }],
+  };
+}
 
 const identity = {
   agentId: "scout", name: "Scout", role: "Research",

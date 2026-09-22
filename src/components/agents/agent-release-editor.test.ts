@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { agentReleaseActionForSelection } from "@/components/agents/agent-release-editor";
+import {
+  agentReleaseActionForSelection,
+  agentReleaseMatchesAgent,
+  agentReleasePinMetadata,
+} from "@/components/agents/agent-release-editor";
 import type { AgentReleaseView } from "@/lib/agents/release-store";
 
 describe("P7.5 Agent release editor", () => {
@@ -65,6 +69,57 @@ describe("P7.5 Agent release editor", () => {
       definitionVersion: 1,
     });
     expect(agentReleaseActionForSelection(current, 2)).toBeUndefined();
+  });
+
+  it("projects exact safe version pins and only exposes digests present in the read model", () => {
+    const draft = release();
+    expect(agentReleasePinMetadata(draft, 2)).toEqual({
+      activeDefinitionVersionId: "definition:custom:agent-one:v1",
+      selectedDefinitionVersionId: "definition:custom:agent-one:v2",
+      selectedDefinitionSha256: null,
+      evaluationId: null,
+      evaluationSha256: null,
+    });
+    const evaluation = {
+      schemaVersion: 1 as const,
+      version: "p7.5-agent-release-evaluation:1" as const,
+      evaluationId: `agent-release-evaluation:${"a".repeat(64)}`,
+      agentId: "agent-one",
+      definitionId: "definition:custom:agent-one",
+      definitionVersion: 2,
+      definitionVersionId: "definition:custom:agent-one:v2",
+      definitionSha256: "b".repeat(64),
+      baselineDefinitionVersion: 1,
+      baselineDefinitionVersionId: "definition:custom:agent-one:v1",
+      baselineDefinitionSha256: "c".repeat(64),
+      policyVersionId: "agent-release-policy:1" as const,
+      direction: "promotion" as const,
+      changedFields: ["instructions" as const],
+      checks: {
+        exactOwnerBinding: true as const,
+        versionTransition: true as const,
+        immutableDefinitionDigest: true as const,
+        personaContract: true as const,
+        skillPins: true as const,
+        authorityExcluded: true as const,
+        materialChange: true as const,
+      },
+      verdict: "passed" as const,
+      evaluatedAt: "2026-09-07T04:00:00.000Z",
+      evaluationSha256: "d".repeat(64),
+    };
+    expect(agentReleasePinMetadata({ ...draft, evaluations: [evaluation] }, 2)).toMatchObject({
+      selectedDefinitionSha256: "b".repeat(64),
+      evaluationId: evaluation.evaluationId,
+      evaluationSha256: "d".repeat(64),
+    });
+  });
+
+  it("never reuses release or destructive state across Agent selection", () => {
+    const first = release({ agentId: "agent-one" });
+    expect(agentReleaseMatchesAgent(first, "agent-one")).toBe(true);
+    expect(agentReleaseMatchesAgent(first, "agent-two")).toBe(false);
+    expect(agentReleaseMatchesAgent(undefined, "agent-two")).toBe(false);
   });
 });
 

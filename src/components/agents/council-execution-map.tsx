@@ -20,9 +20,10 @@ import {
   PanelRight,
   ShieldCheck,
   Sparkles,
+  Wrench,
 } from "lucide-react";
 import { clsx } from "clsx";
-import { useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { AgentMascot } from "@/components/agents/agent-mascot";
 import styles from "@/components/agents/council-execution-map.module.css";
@@ -33,6 +34,61 @@ import type {
 
 type CouncilLoadState = "loading" | "ready" | "unavailable";
 type CouncilExecution = AgentCouncilMap["executions"][number];
+
+export type AgentTaskAuthorityDetail = Readonly<{
+  immutable: true;
+  contractSha256: string;
+  grantRequestSha256: string;
+  validation: Readonly<{
+    status: "not_checked" | "current" | "changed";
+    category: "all_grants" | "capability_binding" | null;
+    validatedAt: string | null;
+  }>;
+  nativeReadTools: readonly Readonly<{
+    toolId: string;
+    managementHref: string;
+  }>[];
+  skills: readonly Readonly<{
+    capabilityGrantId: string;
+    skillId: string;
+    skillVersion: number;
+    skillVersionId: string;
+    skillSha256: string;
+    managementHref: string;
+  }>[];
+  plugins: readonly Readonly<{
+    capabilityGrantId: string;
+    installationId: string;
+    installationRevision: number;
+    installationSha256: string;
+    pluginId: string;
+    pluginVersion: string;
+    manifestSha256: string;
+    componentIds: readonly string[];
+    managementHref: string;
+  }>[];
+  mcpServers: readonly Readonly<{
+    capabilityGrantId: string;
+    serverId: string;
+    serverVersionId: string;
+    serverContractSha256: string;
+    governedToolIds: readonly string[];
+    connectorTargetIds: readonly string[];
+    managementHref: string;
+  }>[];
+}>;
+
+type AgentTaskDetailPayload = Readonly<{
+  task: Readonly<{
+    executionId: string;
+    authority: AgentTaskAuthorityDetail;
+    controls: Readonly<{
+      grantsImmutable: true;
+      allowedActions: readonly string[];
+      cancelHref: string | null;
+    }>;
+  }>;
+}>;
 
 export function CouncilExecutionMap({
   map,
@@ -329,6 +385,37 @@ function ExecutionOverview({
 
 function WorkerInspector({ member }: { member: AgentCouncilMapMember }) {
   const budget = member.authority.budgets;
+  const [detailLoad, setDetailLoad] = useState<{
+    taskId: string;
+    state: "ready" | "error";
+    detail?: AgentTaskAuthorityDetail;
+  }>();
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetch(`/api/agents/tasks/${encodeURIComponent(member.taskId)}`, {
+      cache: "no-store",
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => ({})) as Partial<AgentTaskDetailPayload> & { error?: string };
+        if (!response.ok || !payload.task?.authority) {
+          throw new Error(payload.error || "Task authority could not be loaded.");
+        }
+        return payload.task.authority;
+      })
+      .then((authority) => {
+        if (controller.signal.aborted) return;
+        setDetailLoad({ taskId: member.taskId, state: "ready", detail: authority });
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          setDetailLoad({ taskId: member.taskId, state: "error" });
+        }
+      });
+    return () => controller.abort();
+  }, [member.taskId]);
+
   return (
     <>
       <div className={styles.paneHeading}>
@@ -349,6 +436,11 @@ function WorkerInspector({ member }: { member: AgentCouncilMapMember }) {
         ]} />
         {member.authority.tools.ids.length ? <div className={styles.chips}>{member.authority.tools.ids.map((toolId) => <span key={toolId}>{toolId}</span>)}</div> : null}
       </section>
+
+      <TaskAuthorityGrantInspector
+        state={detailLoad?.taskId === member.taskId ? detailLoad.state : "loading"}
+        authority={detailLoad?.taskId === member.taskId ? detailLoad.detail : undefined}
+      />
 
       <section className={styles.inspectorSection}>
         <InspectorTitle icon={<Bot size={15} />} title="Model route" />
@@ -375,6 +467,120 @@ function WorkerInspector({ member }: { member: AgentCouncilMapMember }) {
         ]} />
       </section>
     </>
+  );
+}
+
+export function TaskAuthorityGrantInspector({
+  state,
+  authority,
+}: {
+  state: "loading" | "ready" | "error";
+  authority?: AgentTaskAuthorityDetail;
+}) {
+  if (state === "loading") {
+    return (
+      <section className={styles.inspectorSection} aria-label="Signed execution grants" aria-busy="true">
+        <InspectorTitle icon={<Loader2 size={15} className={styles.spin} />} title="Signed execution grants" />
+        <p className={styles.missingFact}>Loading exact immutable pins…</p>
+      </section>
+    );
+  }
+  if (state === "error" || !authority) {
+    return (
+      <section className={styles.inspectorSection} aria-label="Signed execution grants">
+        <InspectorTitle icon={<AlertTriangle size={15} />} title="Signed execution grants" />
+        <p className={styles.missingFact}>Exact grant pins are temporarily unavailable. No authority was inferred.</p>
+      </section>
+    );
+  }
+  const grantCount = authority.nativeReadTools.length + authority.skills.length +
+    authority.plugins.length + authority.mcpServers.length;
+  return (
+    <section className={styles.grantInspector} aria-label="Signed execution grants">
+      <div className={styles.grantHeading}>
+        <InspectorTitle icon={<KeyRound size={15} />} title="Signed execution grants" />
+        <span>Immutable</span>
+      </div>
+      <p className={styles.missingFact}>These exact pins were signed when the task started. They cannot be edited or revoked in-place; cancel the task or change the source for future work.</p>
+      <GrantValidation validation={authority.validation} />
+      <InspectorRows rows={[
+        ["Execution contract", authority.contractSha256],
+        ["Grant request", authority.grantRequestSha256],
+      ]} />
+      {grantCount === 0 ? (
+        <p className={styles.emptyGrant}>No external Skill, Plugin, MCP, or native read grants are attached.</p>
+      ) : (
+        <div className={styles.grantGroups}>
+          <GrantGroup title="Native read tools" count={authority.nativeReadTools.length}>
+            {authority.nativeReadTools.map((grant) => (
+              <GrantPin key={grant.toolId} title={grant.toolId} rows={[]} href={grant.managementHref} />
+            ))}
+          </GrantGroup>
+          <GrantGroup title="Skills" count={authority.skills.length}>
+            {authority.skills.map((grant) => (
+              <GrantPin key={grant.capabilityGrantId} title={grant.skillId} href={grant.managementHref} rows={[
+                ["Version", `v${grant.skillVersion} · ${grant.skillVersionId}`],
+                ["Skill digest", grant.skillSha256],
+              ]} />
+            ))}
+          </GrantGroup>
+          <GrantGroup title="Plugins" count={authority.plugins.length}>
+            {authority.plugins.map((grant) => (
+              <GrantPin key={grant.capabilityGrantId} title={`${grant.pluginId} · ${grant.pluginVersion}`} href={grant.managementHref} rows={[
+                ["Installation", `${grant.installationId} · rev ${grant.installationRevision}`],
+                ["Install digest", grant.installationSha256],
+                ["Manifest", grant.manifestSha256],
+                ["Components", grant.componentIds.join(", ") || "None"],
+              ]} />
+            ))}
+          </GrantGroup>
+          <GrantGroup title="MCP servers" count={authority.mcpServers.length}>
+            {authority.mcpServers.map((grant) => (
+              <GrantPin key={grant.capabilityGrantId} title={grant.serverId} href={grant.managementHref} rows={[
+                ["Server version", grant.serverVersionId],
+                ["Contract", grant.serverContractSha256],
+                ["Read tools", grant.governedToolIds.join(", ") || "None"],
+                ["Targets", grant.connectorTargetIds.join(", ") || "None"],
+              ]} />
+            ))}
+          </GrantGroup>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function GrantValidation({ validation }: { validation: AgentTaskAuthorityDetail["validation"] }) {
+  const current = validation.status === "current";
+  const label = validation.status === "not_checked"
+    ? "Not validated yet"
+    : current
+      ? "All signed grants are current"
+      : "A signed capability binding changed";
+  const detail = validation.category === "all_grants"
+    ? "Full grant set"
+    : validation.category === "capability_binding"
+      ? "Capability binding"
+      : "No validation receipt";
+  return (
+    <div className={styles.grantValidation} data-status={validation.status} role="status">
+      {current ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />}
+      <span><strong>{label}</strong><small>{detail}{validation.validatedAt ? ` · ${formatTime(validation.validatedAt)}` : ""}</small></span>
+    </div>
+  );
+}
+
+function GrantGroup({ title, count, children }: { title: string; count: number; children: ReactNode }) {
+  if (!count) return null;
+  return <section className={styles.grantGroup}><h4>{title}<span>{count}</span></h4>{children}</section>;
+}
+
+function GrantPin({ title, rows, href }: { title: string; rows: [string, string][]; href: string }) {
+  return (
+    <article className={styles.grantPin}>
+      <header><strong>{title}</strong><Link href={href}><Wrench size={12} />Manage source</Link></header>
+      {rows.length ? <InspectorRows rows={rows} /> : null}
+    </article>
   );
 }
 

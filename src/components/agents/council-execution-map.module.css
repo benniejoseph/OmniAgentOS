@@ -186,6 +186,9 @@
 .destinationLinks a { display: inline-flex; min-height: 2rem; align-items: center; gap: .35rem; border: 1px solid var(--arsenal-line, var(--line)); border-radius: .6rem; padding: 0 .55rem; color: var(--arsenal-ink, var(--foreground)); background: var(--arsenal-bg, var(--background)); font-size: .7rem; font-weight: 690; text-decoration: none; }
 
 .inspectorSection { border-bottom: 1px solid var(--arsenal-line, var(--line)); padding: .9rem 1rem; }
+.grantInspector { border-bottom: 1px solid var(--arsenal-line, var(--line)); padding: .9rem 1rem; }
+.grantHeading { display: flex; align-items: center; justify-content: space-between; gap: .65rem; }
+.grantHeading > span { border: 1px solid color-mix(in oklab, var(--arsenal-primary, var(--primary)) 22%, var(--arsenal-line, var(--line))); border-radius: 999px; padding: .18rem .42rem; color: var(--arsenal-primary, var(--primary)); background: color-mix(in oklab, var(--arsenal-primary, var(--primary)) 5%, transparent); font-size: .59rem; font-weight: 760; letter-spacing: .05em; text-transform: uppercase; }
 .inspectorTitle { display: flex; align-items: center; gap: .4rem; color: var(--arsenal-primary, var(--primary)); }
 .inspectorTitle strong { color: var(--arsenal-ink, var(--foreground)); font-size: .77rem; }
 .purpose,
@@ -198,6 +201,26 @@
 .inspectorRows dd { max-width: 62%; margin: 0; overflow: hidden; font-size: .7rem; font-weight: 710; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
 .chips { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .65rem; }
 .chips span { max-width: 100%; overflow: hidden; border: 1px solid color-mix(in oklab, var(--arsenal-primary, var(--primary)) 20%, var(--arsenal-line, var(--line))); border-radius: 999px; padding: .22rem .45rem; color: var(--arsenal-primary, var(--primary)); background: color-mix(in oklab, var(--arsenal-primary, var(--primary)) 5%, transparent); font-size: .65rem; text-overflow: ellipsis; white-space: nowrap; }
+.grantValidation { display: grid; grid-template-columns: 1.2rem minmax(0, 1fr); align-items: center; gap: .45rem; margin-top: .7rem; border: 1px solid color-mix(in oklab, var(--warning) 26%, var(--arsenal-line, var(--line))); border-radius: .65rem; padding: .52rem .58rem; color: var(--warning); background: color-mix(in oklab, var(--warning) 5%, transparent); }
+.grantValidation[data-status="current"] { border-color: color-mix(in oklab, var(--success) 30%, var(--arsenal-line, var(--line))); color: var(--success); background: color-mix(in oklab, var(--success) 5%, transparent); }
+.grantValidation[data-status="changed"] { border-color: color-mix(in oklab, var(--danger) 30%, var(--arsenal-line, var(--line))); color: var(--danger); background: color-mix(in oklab, var(--danger) 5%, transparent); }
+.grantValidation > span { display: grid; min-width: 0; gap: .12rem; }
+.grantValidation strong { font-size: .66rem; }
+.grantValidation small { overflow: hidden; color: var(--arsenal-muted, var(--muted)); font-size: .6rem; text-overflow: ellipsis; white-space: nowrap; }
+.grantGroups { display: grid; gap: .65rem; margin-top: .8rem; }
+.grantGroup { display: grid; gap: .42rem; }
+.grantGroup h4 { display: flex; align-items: center; justify-content: space-between; gap: .6rem; margin: 0; color: var(--arsenal-muted, var(--muted)); font-size: .62rem; font-weight: 760; letter-spacing: .06em; text-transform: uppercase; }
+.grantGroup h4 span { display: grid; min-width: 1.25rem; height: 1.25rem; place-items: center; border-radius: 999px; color: var(--arsenal-primary, var(--primary)); background: color-mix(in oklab, var(--arsenal-primary, var(--primary)) 9%, transparent); font-variant-numeric: tabular-nums; }
+.grantPin { overflow: hidden; border: 1px solid var(--arsenal-line, var(--line)); border-radius: .65rem; padding: .55rem; background: var(--arsenal-surface, var(--surface)); }
+.grantPin > header { display: flex; align-items: flex-start; justify-content: space-between; gap: .55rem; }
+.grantPin > header strong { overflow: hidden; font-size: .68rem; text-overflow: ellipsis; white-space: nowrap; }
+.grantPin > header a { display: inline-flex; flex: none; align-items: center; gap: .22rem; color: var(--arsenal-primary, var(--primary)); font-size: .57rem; font-weight: 700; text-decoration: none; }
+.grantPin .inspectorRows { margin-top: .45rem; }
+.grantPin .inspectorRows dt,
+.grantPin .inspectorRows dd { font-size: .61rem; }
+.grantInspector > .inspectorRows dd,
+.grantPin .inspectorRows dd { overflow: visible; max-width: 68%; overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: clip; white-space: normal; }
+.emptyGrant { margin: .7rem 0 0; border: 1px dashed var(--arsenal-line, var(--line)); border-radius: .65rem; padding: .65rem; color: var(--arsenal-muted, var(--muted)); font-size: .65rem; line-height: 1.45; }
 
 .notice { display: flex; min-height: 10rem; align-items: center; gap: .9rem; padding: 1.2rem 1.35rem; }
 .notice > div { min-width: 0; }
@@ -213,7 +236,8 @@
   .inspector { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: 1px solid var(--arsenal-line, var(--line)); border-left: 0; }
   .inspector > .paneHeading { grid-column: 1 / -1; }
   .inspectorSection { border-right: 1px solid var(--arsenal-line, var(--line)); border-bottom: 0; }
-  .inspectorSection:last-child { border-right: 0; }
+  .grantInspector { grid-column: span 2; border-right: 1px solid var(--arsenal-line, var(--line)); border-bottom: 0; }
+  .grantGroups { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .workBrief { grid-template-columns: 1fr; }
   .workBrief dl { width: fit-content; }
 }
@@ -229,6 +253,7 @@
   .activityActions { justify-content: flex-start; }
   .inspector { grid-column: auto; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .inspector > .paneHeading { grid-column: 1 / -1; }
+  .grantInspector { grid-column: 1 / -1; border-bottom: 1px solid var(--arsenal-line, var(--line)); }
   .exchangeGrid { grid-template-columns: 1fr; }
   .exchange + .exchange { border-top: 1px solid var(--arsenal-line, var(--line)); border-left: 0; }
 }
@@ -253,6 +278,8 @@
   .inspector { grid-template-columns: 1fr; }
   .inspector > .paneHeading { grid-column: auto; }
   .inspectorSection { border-right: 0; border-bottom: 1px solid var(--arsenal-line, var(--line)); }
+  .grantInspector { grid-column: auto; border-right: 0; }
+  .grantGroups { grid-template-columns: 1fr; }
   .notice { align-items: flex-start; flex-direction: column; }
   .notice > a { margin-left: 0; }
 }

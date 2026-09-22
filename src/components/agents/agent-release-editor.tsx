@@ -23,6 +23,45 @@ export type AgentReleaseSelectionAction =
       evaluation: AgentReleaseEvaluationV1;
     }>;
 
+export type AgentReleasePinMetadata = Readonly<{
+  activeDefinitionVersionId: string;
+  selectedDefinitionVersionId: string | null;
+  selectedDefinitionSha256: string | null;
+  evaluationId: string | null;
+  evaluationSha256: string | null;
+}>;
+
+export function agentReleaseMatchesAgent(
+  release: AgentReleaseView | undefined,
+  agentId: string,
+) {
+  return release?.agentId === agentId;
+}
+
+export function agentReleasePinMetadata(
+  release: AgentReleaseView,
+  definitionVersion?: number,
+): AgentReleasePinMetadata {
+  const selected = definitionVersion === undefined
+    ? undefined
+    : release.versions.find((version) => version.definitionVersion === definitionVersion);
+  const evaluation = definitionVersion === undefined
+    ? undefined
+    : release.evaluations.find((candidate) =>
+        candidate.definitionVersion === definitionVersion &&
+        candidate.baselineDefinitionVersion === release.activeDefinitionVersion
+      ) || release.evaluations.find((candidate) =>
+        candidate.definitionVersion === definitionVersion
+      );
+  return Object.freeze({
+    activeDefinitionVersionId: release.activeDefinitionVersionId,
+    selectedDefinitionVersionId: selected?.definitionVersionId || null,
+    selectedDefinitionSha256: evaluation?.definitionSha256 || null,
+    evaluationId: evaluation?.evaluationId || null,
+    evaluationSha256: evaluation?.evaluationSha256 || null,
+  });
+}
+
 export function agentReleaseActionForSelection(
   release: AgentReleaseView,
   definitionVersion: number,
@@ -70,11 +109,20 @@ export function AgentReleaseEditor({
     const generation = ++loadGeneration.current;
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
+      setRelease(undefined);
+      setSelectedVersion(undefined);
       setLoading(true);
+      setBusy(undefined);
       setError(undefined);
+      setMessage(undefined);
+      setRetireOpen(false);
+      setRetireConfirmation("");
       void requestRelease(agentId, undefined, controller.signal)
         .then((next) => {
-          if (generation !== loadGeneration.current) return;
+          if (
+            generation !== loadGeneration.current ||
+            next.agentId !== agentId
+          ) return;
           setRelease(next);
           setSelectedVersion(suggestedVersion(next));
         })
@@ -101,11 +149,17 @@ export function AgentReleaseEditor({
     body: Record<string, unknown>,
     successMessage: string,
   ) {
+    const mutationAgentId = agentId;
+    if (!agentReleaseMatchesAgent(release, mutationAgentId)) {
+      setError("The selected Agent changed. Reload its release before making changes.");
+      return;
+    }
     setBusy(key);
     setError(undefined);
     setMessage(undefined);
     try {
-      const next = await requestRelease(agentId, body);
+      const next = await requestRelease(mutationAgentId, body);
+      if (next.agentId !== mutationAgentId) return;
       setRelease(next);
       setSelectedVersion(suggestedVersion(next));
       setMessage(successMessage);
@@ -118,7 +172,7 @@ export function AgentReleaseEditor({
     }
   }
 
-  if (loading) {
+  if (loading || (release !== undefined && !agentReleaseMatchesAgent(release, agentId))) {
     return <ReleaseShell compact={compact}><p className="flex items-center gap-2 text-sm text-muted"><Loader2 size={14} className="animate-spin" /> Loading release history…</p></ReleaseShell>;
   }
   if (!release) {
@@ -127,6 +181,7 @@ export function AgentReleaseEditor({
   const selected = release.versions.find((version) =>
     version.definitionVersion === selectedVersion
   );
+  const pinMetadata = agentReleasePinMetadata(release, selectedVersion);
   return (
     <ReleaseShell compact={compact}>
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -148,6 +203,16 @@ export function AgentReleaseEditor({
       <p className="mt-3 text-xs leading-5 text-muted">
         Edits create an immutable draft. New work keeps using the active version until an exact evaluation is promoted; existing runs remain pinned.
       </p>
+
+      <dl className="mt-3 grid gap-2 rounded-lg border border-border/70 bg-background/55 p-3 text-[10px]" aria-label="Exact release pins">
+        <ReleasePin label="Active version ID" value={pinMetadata.activeDefinitionVersionId} />
+        {pinMetadata.selectedDefinitionVersionId ? <ReleasePin label="Selected version ID" value={pinMetadata.selectedDefinitionVersionId} /> : null}
+        {pinMetadata.selectedDefinitionSha256 ? <ReleasePin label="Definition digest" value={pinMetadata.selectedDefinitionSha256} /> : (
+          <div className="text-muted">The read model exposes this version&apos;s exact ID. Its definition digest appears after evaluation.</div>
+        )}
+        {pinMetadata.evaluationId ? <ReleasePin label="Evaluation ID" value={pinMetadata.evaluationId} /> : null}
+        {pinMetadata.evaluationSha256 ? <ReleasePin label="Evaluation digest" value={pinMetadata.evaluationSha256} /> : null}
+      </dl>
 
       {release.state === "active" && release.versions.length > 1 ? (
         <div className="mt-4 grid gap-3">
@@ -261,6 +326,10 @@ function ReleaseShell({ compact, children }: {
 
 function ReleaseMetric({ label, value }: { label: string; value: string }) {
   return <div className="rounded-lg bg-background/70 p-2"><strong className="block text-sm">{value}</strong><span className="text-[10px] uppercase tracking-[0.08em] text-muted">{label}</span></div>;
+}
+
+function ReleasePin({ label, value }: { label: string; value: string }) {
+  return <div className="grid grid-cols-[7rem_minmax(0,1fr)] gap-2"><dt className="text-muted">{label}</dt><dd className="m-0 break-all font-mono text-foreground" title={value}>{value}</dd></div>;
 }
 
 function suggestedVersion(release: AgentReleaseView) {

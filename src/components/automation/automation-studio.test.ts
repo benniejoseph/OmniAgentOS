@@ -1,7 +1,10 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { appNav, appNavGroups } from "@/lib/navigation";
+import { ScheduleOutcomeHistory } from "./automation-studio";
 import {
   buildCapabilitySummary,
   importedPluginPreviewPayload,
@@ -187,5 +190,69 @@ describe("Automation Studio contracts", () => {
     expect(appNav.some((item) => item.href === "/app/workflows")).toBe(true);
     expect(appNav.some((item) => item.href === "/app/connectors")).toBe(true);
     expect(appNav.some((item) => item.href === "/app/tools")).toBe(true);
+  });
+
+  it("renders responsive content-free schedule outcomes and exact PolicyLease receipts", () => {
+    const markup = renderToStaticMarkup(createElement(ScheduleOutcomeHistory, {
+      id: "history-one",
+      load: {
+        status: "ready",
+        data: {
+          occurrences: [{
+            id: "occurrence-one",
+            status: "failed",
+            scheduledFor: "2026-09-22T12:00:00.000Z",
+            failureCode: "mutation_policy_changed",
+            authoritySha256: "a".repeat(64),
+            notificationContent: "never-render-this",
+          }],
+          receipts: [{
+            occurrenceId: "occurrence-one",
+            stateSha256: "b".repeat(64),
+            receiptSha256: "c".repeat(64),
+          }],
+          policyLeases: {
+            available: true,
+            contentIncluded: false,
+            outcomes: [{
+              leaseId: "lease-one",
+              status: "consumed",
+              consumedAt: "2026-09-22T12:01:00.000Z",
+              toolId: "mail.send",
+              bindingSha256: "d".repeat(64),
+              toolContractSha256: "e".repeat(64),
+              consumptionReceiptSha256: "f".repeat(64),
+              rawInput: "never-render-this",
+            }],
+          },
+        },
+      },
+    }));
+    expect(markup).toContain('aria-label="Schedule outcome history"');
+    expect(markup).toContain("Content-free receipts");
+    expect(markup).toContain("The reviewed change policy changed");
+    expect(markup).toContain("Consumed once");
+    expect(markup).toContain("Binding digest");
+    expect(markup).toContain("Consumption receipt");
+    expect(markup).not.toContain("never-render-this");
+  });
+
+  it("renders schedule history loading, error, and empty states", () => {
+    const loading = renderToStaticMarkup(createElement(ScheduleOutcomeHistory, {
+      id: "history-loading",
+      load: { status: "loading" },
+    }));
+    const error = renderToStaticMarkup(createElement(ScheduleOutcomeHistory, {
+      id: "history-error",
+      load: { status: "error", error: "History unavailable." },
+    }));
+    const empty = renderToStaticMarkup(createElement(ScheduleOutcomeHistory, {
+      id: "history-empty",
+      load: { status: "ready", data: { occurrences: [], receipts: [], policyLeases: { outcomes: [] } } },
+    }));
+    expect(loading).toContain('aria-busy="true"');
+    expect(error).toContain('role="alert"');
+    expect(error).toContain("History unavailable");
+    expect(empty).toContain("No runs or PolicyLease decisions");
   });
 });

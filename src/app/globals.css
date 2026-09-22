@@ -306,9 +306,32 @@ summary:focus-visible,
 .notification-history > div > span { display: grid; width: 1.35rem; height: 1.35rem; place-items: center; border-radius: 50%; color: var(--muted); background: var(--surface-raised); }
 .notification-history > div > span.is-complete { color: var(--success); background: oklch(from var(--success) l c h / .08); }
 .notification-history p strong, .notification-history p small { display: block; }.notification-history p strong { overflow: hidden; font-size: .66rem; text-overflow: ellipsis; white-space: nowrap; }.notification-history p small { margin-top: .15rem; color: var(--muted); font-size: .56rem; text-transform: capitalize; }
+.notification-decision-history { border-top: 1px solid var(--line); padding: 1.35rem 1.4rem 3rem; }
+.notification-decision-history .notification-section-title { align-items: flex-start; }
+.notification-decision-history .notification-section-title > div { min-width: 0; }
+.notification-decision-history .notification-section-title small { display: block; max-width: 25rem; margin-top: .18rem; color: var(--muted); font-size: .72rem; line-height: 1.45; }
+.notification-decision-boundary { display: flex; align-items: flex-start; gap: .38rem; margin: .75rem 0; border: 1px solid oklch(from var(--primary) l c h / .18); border-radius: .5rem; padding: .6rem; color: var(--muted); background: oklch(from var(--primary) l c h / .035); font-size: .72rem; line-height: 1.5; }
+.notification-decision-boundary svg { flex: none; margin-top: .05rem; color: var(--primary); }
+.notification-decision-state { display: flex; min-height: 4.5rem; align-items: center; justify-content: center; gap: .4rem; border: 1px dashed var(--line); border-radius: .55rem; padding: .8rem; color: var(--muted); font-size: .72rem; text-align: center; }
+.notification-decision-state.is-error { color: var(--danger); }
+.notification-decision-list { display: grid; gap: .55rem; }
+.notification-decision-list > article { display: grid; grid-template-columns: 1.75rem minmax(0, 1fr); gap: .55rem; border: 1px solid var(--line); border-radius: .6rem; padding: .65rem; background: var(--surface); }
+.notification-decision-icon { display: grid; width: 1.65rem; height: 1.65rem; place-items: center; border-radius: .45rem; color: var(--muted); background: var(--surface-raised); }
+.notification-decision-list article[data-outcome="send"] .notification-decision-icon { color: var(--success); background: oklch(from var(--success) l c h / .08); }
+.notification-decision-list article[data-outcome="defer"] .notification-decision-icon { color: var(--warning); background: oklch(from var(--warning) l c h / .08); }
+.notification-decision-list article[data-outcome="digest"] .notification-decision-icon { color: var(--primary); background: oklch(from var(--primary) l c h / .08); }
+.notification-decision-list article > div { min-width: 0; }
+.notification-decision-list header { display: flex; align-items: baseline; justify-content: space-between; gap: .55rem; }
+.notification-decision-list header strong { font-size: .75rem; }
+.notification-decision-list header time { flex: none; color: var(--muted); font-size: .68rem; }
+.notification-decision-list article p { margin-top: .3rem; color: var(--muted); font-size: .72rem; line-height: 1.5; }
+.notification-decision-list dl { display: grid; gap: .25rem; margin: .55rem 0 0; border-top: 1px solid var(--line); padding-top: .45rem; }
+.notification-decision-list dl > div { display: grid; grid-template-columns: 6rem minmax(0, 1fr); gap: .4rem; }
+.notification-decision-list dt { color: var(--muted); font-size: .68rem; }
+.notification-decision-list dd { overflow: hidden; margin: 0; font-family: var(--font-geist-mono), ui-monospace, monospace; font-size: .68rem; font-weight: 650; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
 @keyframes notification-fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes notification-slide { from { opacity: .55; transform: translateX(2rem); } to { opacity: 1; transform: translateX(0); } }
-@media (max-width: 36rem) { .notification-panel { width: 100vw; }.notification-header, .notification-feed, .notification-history { padding-inline: 1rem; }.notification-status-line, .notification-settings summary { padding-inline: 1rem; }.notification-settings form { padding-inline: 1rem; }.notification-header-actions button:not(.notification-close) { width: 2.6rem; justify-content: center; overflow: hidden; color: transparent; gap: 0; }.notification-header-actions button:not(.notification-close) svg { color: var(--muted); }.notification-time-grid { grid-template-columns: 1fr; } }
+@media (max-width: 36rem) { .notification-panel { width: 100vw; }.notification-header, .notification-feed, .notification-history, .notification-decision-history { padding-inline: 1rem; }.notification-status-line, .notification-settings summary { padding-inline: 1rem; }.notification-settings form { padding-inline: 1rem; }.notification-header-actions button:not(.notification-close) { width: 2.6rem; justify-content: center; overflow: hidden; color: transparent; gap: 0; }.notification-header-actions button:not(.notification-close) svg { color: var(--muted); }.notification-time-grid { grid-template-columns: 1fr; }.notification-decision-list dl > div { grid-template-columns: 1fr; gap: .08rem; }.notification-decision-list dd { text-align: left; } }
 
 /* Projects: portfolio rail and an execution canvas for personal goals. */
 .projects-shell { max-width: 96rem; min-height: calc(100svh - 4rem); margin: 0 auto; padding: 1.6rem; }

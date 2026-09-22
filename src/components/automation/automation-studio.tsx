@@ -13,6 +13,7 @@ import {
   CirclePlay,
   Clock3,
   ExternalLink,
+  Loader2,
   Pause,
   Play,
   Plug,
@@ -386,6 +387,8 @@ function AutomationsPanel({
   const [message, setMessage] = useState<string>();
   const [error, setError] = useState<string>();
   const [previews, setPreviews] = useState<Record<string, JsonRecord>>({});
+  const [historyId, setHistoryId] = useState<string>();
+  const [historyLoads, setHistoryLoads] = useState<Record<string, ResourceLoad>>({});
 
   async function controlSchedule(
     triggerId: string,
@@ -407,6 +410,7 @@ function AutomationsPanel({
           ? "Schedule paused."
           : "Schedule resumed.");
       await onRefresh();
+      if (historyId === triggerId) await loadHistory(triggerId);
     } catch (caught) {
       setError(safeMutationError(caught, "The schedule could not be changed."));
     } finally {
@@ -428,6 +432,40 @@ function AutomationsPanel({
       setError(safeMutationError(caught, "The next occurrences could not be previewed."));
     } finally {
       setMutationId(undefined);
+    }
+  }
+
+  async function toggleHistory(triggerId: string) {
+    if (historyId === triggerId) {
+      setHistoryId(undefined);
+      return;
+    }
+    setHistoryId(triggerId);
+    await loadHistory(triggerId);
+  }
+
+  async function loadHistory(triggerId: string) {
+    setHistoryLoads((current) => ({
+      ...current,
+      [triggerId]: { status: "loading" },
+    }));
+    try {
+      const data = await readAutomationResource(
+        `/api/triggers/${encodeURIComponent(triggerId)}`,
+        new AbortController().signal,
+      );
+      setHistoryLoads((current) => ({
+        ...current,
+        [triggerId]: { status: "ready", data },
+      }));
+    } catch (caught) {
+      setHistoryLoads((current) => ({
+        ...current,
+        [triggerId]: {
+          status: "error",
+          error: safeMutationError(caught, "Schedule history could not be loaded."),
+        },
+      }));
     }
   }
 
@@ -511,7 +549,7 @@ function AutomationsPanel({
             );
             const mutationPolicy = recordAt(config, "mutationPolicy");
             return (
-              <article className={styles.scheduleCard} key={id}>
+              <article className={`${styles.scheduleCard} ${historyId === id ? styles.scheduleCardExpanded : ""}`} key={id}>
                 <header>
                   <span className={styles.rowIcon}><CalendarClock size={17} aria-hidden="true" /></span>
                   <div>
@@ -545,6 +583,7 @@ function AutomationsPanel({
                 ) : null}
                 <div className={styles.scheduleActions}>
                   <button type="button" disabled={Boolean(mutationId)} onClick={() => void loadPreview(id)}><Clock3 size={14} aria-hidden="true" />Preview</button>
+                  <button type="button" aria-expanded={historyId === id} aria-controls={`schedule-history-${id}`} onClick={() => void toggleHistory(id)}><ReceiptText size={14} aria-hidden="true" />{historyId === id ? "Close history" : "History"}</button>
                   <button type="button" disabled={Boolean(mutationId) || status !== "active" || circuit !== "closed"} onClick={() => void controlSchedule(id, "run_once")}><CirclePlay size={14} aria-hidden="true" />Run once</button>
                   <button type="button" disabled={Boolean(mutationId)} onClick={() => void controlSchedule(id, status === "active" ? "pause" : "resume")}>
                     {status === "active" ? <Pause size={14} aria-hidden="true" /> : <Play size={14} aria-hidden="true" />}
@@ -556,6 +595,13 @@ function AutomationsPanel({
                     window.requestAnimationFrame(() => document.getElementById("schedule-builder")?.scrollIntoView({ behavior: "smooth", block: "start" }));
                   }}>Replace</button>
                 </div>
+                {historyId === id ? (
+                  <ScheduleOutcomeHistory
+                    id={`schedule-history-${id}`}
+                    load={historyLoads[id] || { status: "loading" }}
+                    timezone={textAt(config, ["timezone"], "UTC")}
+                  />
+                ) : null}
               </article>
             );
           })}
@@ -603,6 +649,85 @@ function AutomationsPanel({
         </InventorySection>
       </div>
     </div>
+  );
+}
+
+export function ScheduleOutcomeHistory({
+  id,
+  load,
+  timezone = "UTC",
+}: {
+  id: string;
+  load: ResourceLoad;
+  timezone?: string;
+}) {
+  if (load.status === "loading") {
+    return <section id={id} className={styles.scheduleHistory} aria-label="Schedule outcome history" aria-busy="true"><Loader2 size={16} className={styles.spin} /><p>Loading exact occurrence and PolicyLease receipts…</p></section>;
+  }
+  if (load.status === "error" || !load.data) {
+    return <section id={id} className={styles.scheduleHistory} aria-label="Schedule outcome history"><p role="alert">{load.error || "Schedule history is unavailable."}</p></section>;
+  }
+  const occurrences = recordsAt(load.data, "occurrences");
+  const receipts = recordsAt(load.data, "receipts");
+  const policyLeaseProjection = recordAt(load.data, "policyLeases");
+  const leases = recordsAt(policyLeaseProjection, "outcomes");
+  const leaseAvailable = policyLeaseProjection?.available !== false;
+  if (!occurrences.length && !receipts.length && !leases.length && leaseAvailable) {
+    return (
+      <section id={id} className={styles.scheduleHistory} aria-label="Schedule outcome history">
+        <p>No runs or PolicyLease decisions have been recorded for this schedule.</p>
+      </section>
+    );
+  }
+  return (
+    <section id={id} className={styles.scheduleHistory} aria-label="Schedule outcome history">
+      <header>
+        <div><strong>Outcome history</strong><span>Content-free receipts</span></div>
+        <small>{occurrences.length} run{occurrences.length === 1 ? "" : "s"} · {leases.length} lease{leases.length === 1 ? "" : "s"}</small>
+      </header>
+      <div className={styles.outcomeList}>
+        {occurrences.slice(0, 8).map((occurrence, index) => {
+          const occurrenceId = textAt(occurrence, ["id"], `occurrence-${index}`);
+          const receipt = receipts.find((candidate) =>
+            textAt(candidate, ["occurrenceId"], "") === occurrenceId
+          );
+          const failure = textAt(occurrence, ["failureCode"], "");
+          const status = textAt(occurrence, ["status"], "unknown");
+          return (
+            <article key={occurrenceId} className={styles.outcomeItem}>
+              <div className={styles.outcomeTitle}>
+                <span className={styles.badge} data-tone={statusTone(status)}>{plainStatus(status)}</span>
+                <time>{scheduleDate(textAt(occurrence, ["scheduledFor"], ""), timezone)}</time>
+              </div>
+              {failure ? <p><strong>Why it stopped:</strong> {plainFailure(failure)}</p> : <p>{occurrenceOutcomeCopy(status)}</p>}
+              <dl>
+                <div><dt>Authority binding</dt><dd>{textAt(occurrence, ["authoritySha256"], "Unavailable")}</dd></div>
+                {receipt ? <div><dt>State receipt</dt><dd>{textAt(receipt, ["stateSha256"], "Unavailable")}</dd></div> : null}
+                {receipt ? <div><dt>Outcome receipt</dt><dd>{textAt(receipt, ["receiptSha256"], "Unavailable")}</dd></div> : null}
+              </dl>
+            </article>
+          );
+        })}
+      </div>
+      <div className={styles.leaseHistory}>
+        <h4>PolicyLease actions <span>{leaseAvailable ? "Available" : "Temporarily unavailable"}</span></h4>
+        {leases.length ? leases.slice(0, 12).map((lease, index) => {
+          const status = textAt(lease, ["status"], "issued");
+          return (
+            <article key={textAt(lease, ["leaseId"], `lease-${index}`)}>
+              <div><strong>{policyLeaseLabel(status)}</strong><time>{scheduleDate(textAt(lease, [status === "consumed" ? "consumedAt" : status === "expired" ? "expiresAt" : "issuedAt"], ""), timezone)}</time></div>
+              <p>{policyLeaseCopy(status)}</p>
+              <dl>
+                <div><dt>Exact action</dt><dd>{textAt(lease, ["toolId"], "Unavailable")}</dd></div>
+                <div><dt>Binding digest</dt><dd>{textAt(lease, ["bindingSha256"], "Unavailable")}</dd></div>
+                <div><dt>Tool contract</dt><dd>{textAt(lease, ["toolContractSha256"], "Unavailable")}</dd></div>
+                {status === "consumed" ? <div><dt>Consumption receipt</dt><dd>{textAt(lease, ["consumptionReceiptSha256"], "Unavailable")}</dd></div> : null}
+              </dl>
+            </article>
+          );
+        }) : <p>{leaseAvailable ? "No change action has required a PolicyLease yet." : "The schedule remains visible, but its PolicyLease history could not be read."}</p>}
+      </div>
+    </section>
   );
 }
 
@@ -1627,6 +1752,51 @@ function statusTone(status: string) {
   if (["error", "failed", "unavailable", "blocked", "rejected"].includes(status)) return "negative";
   if (["paused", "degraded", "action_required", "waiting_approval", "pending_review", "queued", "running"].includes(status)) return "attention";
   return "neutral";
+}
+
+function plainStatus(status: string) {
+  return ({
+    claimed: "Preparing",
+    enqueued: "Queued",
+    completed: "Completed",
+    skipped: "Skipped",
+    failed: "Failed",
+  } as Record<string, string>)[status] || status.replaceAll("_", " ");
+}
+
+function plainFailure(code: string) {
+  return ({
+    agent_identity_changed: "The pinned Agent release changed.",
+    agent_policy_changed: "The reviewed Agent policy changed.",
+    procedure_changed: "The saved procedure no longer matches the reviewed snapshot.",
+    procedure_not_read_only: "The procedure no longer meets the read-only boundary.",
+    mutation_policy_changed: "The reviewed change policy changed.",
+    policy_lease_unavailable: "A safe one-use PolicyLease could not be issued.",
+    occurrence_budget_changed: "The per-run budget changed.",
+    workflow_enqueue_failed: "The workflow could not enter the queue.",
+    workflow_failed: "The workflow reported a failure.",
+    workflow_canceled: "The workflow was canceled.",
+  } as Record<string, string>)[code] || code.replaceAll("_", " ");
+}
+
+function occurrenceOutcomeCopy(status: string) {
+  if (status === "completed") return "The scheduled workflow completed under its reviewed bindings.";
+  if (status === "enqueued") return "The reviewed occurrence entered the workflow queue.";
+  if (status === "claimed") return "The scheduler claimed this occurrence and is checking its pins.";
+  if (status === "skipped") return "The scheduler recorded this occurrence without starting duplicate work.";
+  return "The occurrence state was recorded without notification content.";
+}
+
+function policyLeaseLabel(status: string) {
+  if (status === "consumed") return "Consumed once";
+  if (status === "expired") return "Expired unused";
+  return "Issued and ready";
+}
+
+function policyLeaseCopy(status: string) {
+  if (status === "consumed") return "The exact reviewed action claimed this lease atomically; it cannot be reused.";
+  if (status === "expired") return "The short-lived lease expired without authorizing an action.";
+  return "A short-lived, single-use lease is waiting for its exact reviewed action.";
 }
 
 function safeMutationError(error: unknown, fallback: string) {

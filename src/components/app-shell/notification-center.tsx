@@ -15,6 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { clsx } from "clsx";
+import { NotificationDispositionHistory } from "@/components/app-shell/notification-disposition-history";
 import { useWorkspaceSession } from "@/components/app-shell/session-context";
 
 type NotificationStatus = "unread" | "read" | "snoozed" | "dismissed" | "acted";
@@ -365,6 +366,7 @@ export function NotificationCenter() {
               </details>
 
               {history.length ? <section className="notification-history" aria-labelledby="notification-history"><div className="notification-section-title"><h3 id="notification-history">Recent history</h3></div>{history.map((item) => <div key={item.id}><span className={item.status === "acted" ? "is-complete" : ""}>{item.status === "acted" ? <Check size={12} aria-hidden="true" /> : <X size={12} aria-hidden="true" />}</span><p><strong>{item.title}</strong><small>{item.status === "acted" ? "Completed" : "Dismissed"} · {formatRelative(item.updatedAt)}</small></p></div>)}</section> : null}
+              <NotificationDispositionHistory active={open} />
             </div>
           </aside>
         </div>
