@@ -2507,6 +2507,17 @@ async function withReservedDatabaseTransaction<T>(
       lease.state = "settled";
       return result;
     } catch (error) {
+      if (isDatabaseConnectionClassError(error)) {
+        const unknownOutcome = databaseCommitOutcomeUnknownError(
+          error instanceof Error ? error : new Error(String(error)),
+        );
+        retireDatabaseClient(
+          pg,
+          databaseConnectionClosedError("Database"),
+          { ownerLease: lease, ownerError: unknownOutcome },
+        );
+        throw unknownOutcome;
+      }
       await rollbackDatabaseReservation(pg, reserved, lease);
       throw error;
     }
@@ -3103,10 +3114,32 @@ function databasePoolRetiredError(reason: string) {
 function databaseCommitOutcomeUnknownError(cause: Error) {
   return Object.assign(
     new Error(
-      "The database connection closed while COMMIT was in flight. Its outcome is unknown; automatic retry is forbidden.",
+      "The database connection failed while COMMIT was in flight. Its outcome is unknown; automatic retry is forbidden.",
       { cause },
     ),
     { code: "DATABASE_COMMIT_OUTCOME_UNKNOWN", retryable: false },
+  );
+}
+
+function isDatabaseConnectionClassError(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const code = "code" in error
+    ? String(error.code).trim().toUpperCase()
+    : "";
+  return (
+    /^08[A-Z0-9]{3}$/.test(code) ||
+    code.startsWith("CONNECTION_") ||
+    [
+      "ECONNABORTED",
+      "ECONNREFUSED",
+      "ECONNRESET",
+      "EHOSTUNREACH",
+      "ENETDOWN",
+      "ENETRESET",
+      "ENETUNREACH",
+      "EPIPE",
+      "ETIMEDOUT",
+    ].includes(code)
   );
 }
 
