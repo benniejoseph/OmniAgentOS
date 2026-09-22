@@ -174,6 +174,95 @@ describe("persistent prompt queue store fences", () => {
     expect(mocks.sql).toHaveBeenCalledTimes(2);
   });
 
+  it("retries one pre-commit closed generation with the same queue identity", async () => {
+    const request = createRequest("closed-generation-retry");
+    const created = row({
+      client_correlation_id: request.clientCorrelationId,
+      target_sha256: canonicalJsonSha256(request.target),
+    });
+    const closed = Object.assign(new Error("pool closed"), {
+      code: "DATABASE_CONNECTION_CLOSED",
+    });
+    mocks.transaction
+      .mockRejectedValueOnce(closed)
+      .mockImplementationOnce(
+        async (operation: (sql: typeof mocks.sql) => unknown) =>
+          operation(mocks.sql),
+      );
+    mocks.sql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ count: 0 }])
+      .mockResolvedValueOnce([{ position: 0 }])
+      .mockResolvedValueOnce([created]);
+
+    await expect(createPromptQueueItem({ authority, request })).resolves.toEqual({
+      item: expect.objectContaining({
+        clientCorrelationId: request.clientCorrelationId,
+        state: "queued",
+      }),
+      created: true,
+    });
+    expect(mocks.transaction).toHaveBeenCalledTimes(2);
+    expect(mocks.appendEvent).toHaveBeenCalledOnce();
+  });
+
+  it("never retries a second pre-commit generation close", async () => {
+    const closed = Object.assign(new Error("pool closed"), {
+      code: "DATABASE_CONNECTION_CLOSED",
+    });
+    mocks.transaction.mockRejectedValue(closed);
+
+    await expect(createPromptQueueItem({
+      authority,
+      request: createRequest("closed-generation-limit"),
+    })).rejects.toBe(closed);
+    expect(mocks.transaction).toHaveBeenCalledTimes(2);
+    expect(mocks.sql).not.toHaveBeenCalled();
+    expect(mocks.appendEvent).not.toHaveBeenCalled();
+  });
+
+  it("reconciles but never replays an indeterminate create commit", async () => {
+    const request = createRequest("unknown-commit-receipt");
+    const existing = row({
+      client_correlation_id: request.clientCorrelationId,
+      target_sha256: canonicalJsonSha256(request.target),
+    });
+    const unknownCommit = Object.assign(new Error("commit outcome unknown"), {
+      code: "DATABASE_COMMIT_OUTCOME_UNKNOWN",
+      retryable: false,
+    });
+    mocks.transaction.mockRejectedValueOnce(unknownCommit);
+    mocks.sql.mockResolvedValueOnce([existing]);
+
+    await expect(createPromptQueueItem({ authority, request })).resolves.toEqual({
+      item: expect.objectContaining({
+        id: existing.id,
+        clientCorrelationId: request.clientCorrelationId,
+      }),
+      created: false,
+    });
+    expect(mocks.transaction).toHaveBeenCalledOnce();
+    expect(mocks.sql).toHaveBeenCalledOnce();
+    expect(mocks.appendEvent).not.toHaveBeenCalled();
+  });
+
+  it("preserves an indeterminate commit when no durable receipt exists", async () => {
+    const unknownCommit = Object.assign(new Error("commit outcome unknown"), {
+      code: "DATABASE_COMMIT_OUTCOME_UNKNOWN",
+      retryable: false,
+    });
+    mocks.transaction.mockRejectedValueOnce(unknownCommit);
+    mocks.sql.mockResolvedValueOnce([]);
+
+    await expect(createPromptQueueItem({
+      authority,
+      request: createRequest("unknown-commit-missing"),
+    })).rejects.toBe(unknownCommit);
+    expect(mocks.transaction).toHaveBeenCalledOnce();
+    expect(mocks.sql).toHaveBeenCalledOnce();
+  });
+
   it("edits a paused item but rejects a stale lifecycle revision before update", async () => {
     const paused = row({ state: "paused", lifecycle_revision: 2 });
     const edited = row({
