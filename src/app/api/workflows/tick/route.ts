@@ -64,6 +64,7 @@ import {
 } from "@/lib/subagents/worker";
 import { processDueMoltbookHeartbeats } from "@/lib/moltbook/store";
 import { processDueMoltbookAutonomyCycles } from "@/lib/moltbook/autonomy-runner";
+import { processProactiveAgentAdaptationProposalsForTenant } from "@/lib/agents/adaptation-proposals";
 
 export const runtime = "nodejs";
 // Workflow steps run gpt-5 planning/execution that can exceed 60s; 300s is the
@@ -654,6 +655,14 @@ function summarizeScheduledOutcome(
       (total, item) => total + item.moltbookAutonomyCyclesProcessed,
       0,
     ),
+    adaptationProposalsProcessed: scheduled.maintenance.reduce(
+      (total, item) => total + item.adaptationProposalsProcessed,
+      0,
+    ),
+    adaptationProposalsCreated: scheduled.maintenance.reduce(
+      (total, item) => total + item.adaptationProposalsCreated,
+      0,
+    ),
     scheduleOccurrencesEnqueued: scheduled.maintenance.reduce(
       (total, item) => total + item.workflowSchedules.occurrencesEnqueued,
       0,
@@ -828,6 +837,8 @@ async function runAllTenantScheduledWork({
     salesforceConnectionsSynced: number;
     moltbookHeartbeatsProcessed: number;
     moltbookAutonomyCyclesProcessed: number;
+    adaptationProposalsProcessed: number;
+    adaptationProposalsCreated: number;
     externalDelegationsTerminated: number;
     workflowSchedules: Awaited<
       ReturnType<typeof processDueWorkflowSchedulesForTenant>
@@ -961,6 +972,8 @@ async function runTenantMaintenance({
     salesforceConnectionsSynced: number;
     moltbookHeartbeatsProcessed: number;
     moltbookAutonomyCyclesProcessed: number;
+    adaptationProposalsProcessed: number;
+    adaptationProposalsCreated: number;
     externalDelegationsTerminated: number;
     workflowSchedules: Awaited<
       ReturnType<typeof processDueWorkflowSchedulesForTenant>
@@ -984,6 +997,8 @@ async function runTenantMaintenance({
     salesforceConnectionsSynced: 0,
     moltbookHeartbeatsProcessed: 0,
     moltbookAutonomyCyclesProcessed: 0,
+    adaptationProposalsProcessed: 0,
+    adaptationProposalsCreated: 0,
     externalDelegationsTerminated: 0,
     workflowSchedules: emptyWorkflowScheduleSummary(),
     loopV2Recovery: emptyLoopV2RecoverySummary(),
@@ -1063,6 +1078,29 @@ async function runTenantMaintenance({
       await processActiveProjectExecutions({ tenantId, limit: 10 })
     ).length;
   }
+  if (deadlineAt - Date.now() > 30_000) {
+    try {
+      const adaptationProposals =
+        await processProactiveAgentAdaptationProposalsForTenant({
+          tenantId,
+          limit: 1,
+          abortSignal: AbortSignal.timeout(
+            Math.max(1, deadlineAt - Date.now() - 5_000),
+          ),
+        });
+      result.adaptationProposalsProcessed = adaptationProposals.processed;
+      result.adaptationProposalsCreated = adaptationProposals.proposed;
+    } catch {
+      // Adaptation is an optional shadow lane. Identity/runtime drift and
+      // model failures are observable inside that lane and must never prevent
+      // the remaining deterministic tenant maintenance from running.
+      console.error(JSON.stringify({
+        level: "error",
+        msg: "agent_adaptation_proposal_cycle_failed",
+        tenantId,
+      }));
+    }
+  }
   if (deadlineAt - Date.now() > 5_000) {
     const abortSignal = AbortSignal.timeout(
       Math.max(1, deadlineAt - Date.now() - 5_000),
@@ -1119,6 +1157,8 @@ function failedTenantMaintenance(
     salesforceConnectionsSynced: 0,
     moltbookHeartbeatsProcessed: 0,
     moltbookAutonomyCyclesProcessed: 0,
+    adaptationProposalsProcessed: 0,
+    adaptationProposalsCreated: 0,
     externalDelegationsTerminated: 0,
     workflowSchedules: emptyWorkflowScheduleSummary(),
     maintenanceError,

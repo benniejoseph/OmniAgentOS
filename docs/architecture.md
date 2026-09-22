@@ -1799,10 +1799,32 @@ Only active adaptations evaluated for the exact execution definition are
 compiled as clearly labelled untrusted behavior guidance. They cannot add
 tools, context, budgets, grants, approvals, or destructive authority. Council
 members do not inherit another Agent's adaptation, project outcome notes are
-not prompt inputs, and performance evidence no longer changes supervisor
-routing. Migration v115 installs the append-only forced-RLS ledger, exact actor
+not serving/run prompt inputs, and performance evidence no longer changes
+supervisor routing. Migration v115 installs the append-only forced-RLS ledger, exact actor
 policy, one-active-effect index, lifecycle and truncate guards, and serving-role
 grants limited to select, insert, and the ten transition columns.
+
+The proactive proposal lane extends that lifecycle without extending its
+authority. Nightly tenant maintenance discovers only bounded negative signals,
+then re-enters the exact owner's actor scope and deterministically aggregates
+completed `needs_work` run feedback, reviewed and verified project artifacts,
+governed delegated-task outcomes, and governed scheduled-trigger outcomes. Each
+row must match the same tenant, canonical owner, logical Agent, and immutable
+definition version before any summary reaches a model. Retrieved summaries and
+existing guidance remain explicitly untrusted data.
+
+Sentinel uses the configured `verifier` assignment at the reasoning tier for a
+bounded proposal pass and a separate review pass. The candidate pins the exact
+target and Sentinel definition/principal generations, provider, model, tier,
+assignment revision/configuration digest, evidence-set digest, baseline digest,
+proposal digest, and shadow-comparison digest. Identity and runtime pins are
+resolved again before persistence; drift or model failure creates only a
+content-free outcome receipt. A passing review may insert one immutable
+`observed` candidate into the existing forced-RLS adaptation ledger. It cannot
+evaluate or activate that candidate, change active guidance, grant authority,
+or bypass the owner's existing review, evaluation, and activation actions. No
+new schema is required because the optional proposal review is hash-bound
+inside the immutable effect payload.
 
 P8.1 introduces the strict `p8.1-delegation-contract:1` boundary for every new
 workflow Agent node and internal Council specialist. A contract binds the exact

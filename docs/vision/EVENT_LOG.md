@@ -1701,6 +1701,20 @@ evaluation definition matches the immutable run identity. Evidence refresh,
 evaluation, activation, and rollback are separate owner actions. Failed or
 stale evaluation cannot be skipped, and rolled-back records never reactivate.
 
+Proactive review adds `agent.adaptation.proposed` plus
+`agent.adaptation.proposal.held`, `.model_failed`, `.identity_drifted`, and
+`.runtime_drifted`. The proposed receipt contains only adaptation and exact
+definition coordinates, Sentinel provider/model/tier pins, assignment and
+evidence/proposal/shadow/review digests, review score, and explicit false
+activation/active-guidance flags. Outcome receipts contain only the cycle,
+identity/evidence/shadow/detail digests, closed outcome, and the same explicit
+non-authority flags. They contain no evidence summary, correction, project
+lesson, delegated-task content, scheduled payload, generated guidance, model
+error text, credential, tenant/actor identity, or private reasoning. These
+events are observability evidence only; even `agent.adaptation.proposed` leaves
+the database record in `observed` state and grants no evaluation or activation
+authority.
+
 ## Bounded delegation contract bindings
 
 P8.1 adds no separate authoritative delegation ledger; that lifecycle begins in

@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  AGENT_ADAPTATION_PROPOSAL_REVIEW_VERSION,
   activateAgentAdaptationV1,
   buildObservedAgentAdaptationV1,
   evaluateAgentAdaptationV1,
   parseAgentAdaptationV1,
   rollbackAgentAdaptationV1,
 } from "@/lib/agents/adaptation-contracts";
+import { sourceContractSha256 } from "@/lib/sources/contracts";
 
 const evidence = {
   evidenceId: "run-feedback:run-one",
@@ -101,6 +103,80 @@ describe("P7.6 Agent adaptation contract", () => {
       effect: { ...adaptation.effect, guidance: "Tampered guidance." },
     })).toThrow(/integrity/i);
   });
+
+  it("binds proactive Sentinel provenance without granting activation authority", () => {
+    const reviewBody = {
+      verdict: "passed" as const,
+      score: 0.9,
+      findings: [
+        "evidence_bound" as const,
+        "definition_bound" as const,
+        "non_authority" as const,
+        "measurable" as const,
+      ],
+    };
+    const adaptation = buildObservedAgentAdaptationV1({
+      tenantId: "tenant-one",
+      ownerActorId: "owner@example.test",
+      agentId: "scout",
+      definitionVersion: 1,
+      evidence: [evidence],
+      guidance: "Cite material claims before returning the result.",
+      confidence: 0.9,
+      proposalReview: {
+        version: AGENT_ADAPTATION_PROPOSAL_REVIEW_VERSION,
+        targetIdentity: identityPin("scout", "a"),
+        sentinelRuntime: {
+          ...identityPin("sentinel", "b"),
+          agentId: "sentinel",
+          provider: "openai",
+          model: "gpt-5.5",
+          tier: "reasoning",
+          routeSource: "tenant_assignment",
+          assignmentId: "assignment-verifier",
+          assignmentRevision: 2,
+          assignmentConfigurationSha256: "c".repeat(64),
+        },
+        evidenceSetSha256: "d".repeat(64),
+        baselineEffectSha256: null,
+        proposalSha256: "e".repeat(64),
+        shadowComparisonSha256: "f".repeat(64),
+        review: {
+          ...reviewBody,
+          reviewSha256: sourceContractSha256(reviewBody),
+        },
+        generatedAt: "2026-09-22T10:00:00.000Z",
+        reviewedAt: "2026-09-22T10:00:01.000Z",
+        authorityImpact: "none",
+      },
+      observedAt: "2026-09-22T10:00:01.000Z",
+    });
+
+    expect(adaptation).toMatchObject({
+      state: "observed",
+      evaluation: null,
+      activationVersion: null,
+      effect: {
+        proposalReview: {
+          authorityImpact: "none",
+          sentinelRuntime: { provider: "openai", model: "gpt-5.5" },
+        },
+      },
+    });
+    expect(() => parseAgentAdaptationV1({
+      ...adaptation,
+      effect: {
+        ...adaptation.effect,
+        proposalReview: {
+          ...adaptation.effect.proposalReview,
+          sentinelRuntime: {
+            ...adaptation.effect.proposalReview!.sentinelRuntime,
+            model: "tampered-model",
+          },
+        },
+      },
+    })).toThrow(/integrity/i);
+  });
 });
 
 function observed(definitionVersion = 1) {
@@ -114,4 +190,15 @@ function observed(definitionVersion = 1) {
     confidence: 0.9,
     observedAt: "2026-09-07T05:00:00.000Z",
   });
+}
+
+function identityPin(agentId: string, digestPrefix: string) {
+  return {
+    agentId,
+    definitionVersion: 1,
+    definitionSha256: digestPrefix.repeat(64),
+    principalId: `principal:${agentId}`,
+    principalGeneration: 1,
+    principalSha256: digestPrefix.repeat(64),
+  };
 }

@@ -23,6 +23,7 @@ const routeMocks = vi.hoisted(() => ({
   syncDueSalesforceConnections: vi.fn(),
   processDueMoltbookHeartbeats: vi.fn(),
   processDueMoltbookAutonomyCycles: vi.fn(),
+  processProactiveAgentAdaptationProposalsForTenant: vi.fn(),
   recordSecurityAudit: vi.fn(),
   recordRuntimeEventSafely: vi.fn(),
   recordWorkerHeartbeat: vi.fn(),
@@ -159,6 +160,11 @@ vi.mock("@/lib/moltbook/store", async (importOriginal) => ({
 vi.mock("@/lib/moltbook/autonomy-runner", () => ({
   processDueMoltbookAutonomyCycles:
     routeMocks.processDueMoltbookAutonomyCycles,
+}));
+
+vi.mock("@/lib/agents/adaptation-proposals", () => ({
+  processProactiveAgentAdaptationProposalsForTenant:
+    routeMocks.processProactiveAgentAdaptationProposalsForTenant,
 }));
 
 vi.mock("@/lib/subagents/worker", async (importOriginal) => ({
@@ -305,6 +311,15 @@ beforeEach(() => {
     paused: 0,
     results: [],
   });
+  routeMocks.processProactiveAgentAdaptationProposalsForTenant
+    .mockReset()
+    .mockResolvedValue({
+      processed: 0,
+      proposed: 0,
+      held: 0,
+      failed: 0,
+      results: [],
+    });
   routeMocks.recordRuntimeEventSafely.mockReset().mockResolvedValue(undefined);
   routeMocks.recordSecurityAudit.mockReset().mockResolvedValue(undefined);
   routeMocks.recordWorkerHeartbeat.mockReset().mockImplementation(async (input) => ({
@@ -554,6 +569,92 @@ describe("dedicated worker heartbeat timing", () => {
     await expect(response.json()).resolves.toMatchObject({
       maintenance: [{ moltbookAutonomyCyclesProcessed: 1 }],
     });
+  });
+
+  it("runs one bounded proactive adaptation proposal after project maintenance", async () => {
+    routeMocks.listMaintenanceTenantIds.mockResolvedValue(["tenant-a"]);
+    routeMocks.processProactiveAgentAdaptationProposalsForTenant
+      .mockResolvedValue({
+        processed: 1,
+        proposed: 1,
+        held: 0,
+        failed: 0,
+        results: [{
+          actorId: "actor:owner",
+          agentId: "scout",
+          status: "proposed",
+        }],
+      });
+
+    const response = await POST(workerRequest({
+      startup: false,
+      lane: "maintenance",
+      timeBudgetMs: 240_000,
+    }));
+
+    expect(response.status).toBe(200);
+    expect(
+      routeMocks.processProactiveAgentAdaptationProposalsForTenant,
+    ).toHaveBeenCalledWith({
+      tenantId: "tenant-a",
+      limit: 1,
+      abortSignal: expect.any(AbortSignal),
+    });
+    await expect(response.json()).resolves.toMatchObject({
+      maintenance: [{
+        tenantId: "tenant-a",
+        adaptationProposalsProcessed: 1,
+        adaptationProposalsCreated: 1,
+      }],
+    });
+    expect(routeMocks.recordSecurityAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          adaptationProposalsProcessed: 1,
+          adaptationProposalsCreated: 1,
+        }),
+      }),
+    );
+  });
+
+  it("keeps tenant maintenance running when the shadow proposal lane fails", async () => {
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    routeMocks.listMaintenanceTenantIds.mockResolvedValue(["tenant-a"]);
+    routeMocks.processProactiveAgentAdaptationProposalsForTenant
+      .mockRejectedValue(new Error("untrusted model transport detail"));
+
+    try {
+      const response = await POST(workerRequest({
+        startup: false,
+        lane: "maintenance",
+        timeBudgetMs: 240_000,
+      }));
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        maintenance: [{
+          tenantId: "tenant-a",
+          adaptationProposalsProcessed: 0,
+          adaptationProposalsCreated: 0,
+          connectedSourcesSynced: 0,
+        }],
+      });
+      expect(routeMocks.syncDuePersonalProviders).toHaveBeenCalledWith({
+        tenantId: "tenant-a",
+        limit: 1,
+        abortSignal: expect.any(AbortSignal),
+      });
+      expect(errorLog).toHaveBeenCalledWith(JSON.stringify({
+        level: "error",
+        msg: "agent_adaptation_proposal_cycle_failed",
+        tenantId: "tenant-a",
+      }));
+      expect(errorLog.mock.calls.flat().join(" ")).not.toContain(
+        "untrusted model transport detail",
+      );
+    } finally {
+      errorLog.mockRestore();
+    }
   });
 
   it("serializes system-scope maintenance work before listing tenants", async () => {
