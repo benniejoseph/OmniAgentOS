@@ -128,7 +128,7 @@ export function buildAgentCouncilMap(input: {
     groups.set(task.parentExecutionId, group);
   }
 
-  const legacyExecutions = [...groups.entries()].slice(0, 50).map(([parentExecutionId, group]) => {
+  const legacyExecutions: CouncilExecution[] = [...groups.entries()].slice(0, 50).map(([parentExecutionId, group]) => {
     const first = group[0];
     const run = runs.get(runKey(first.ownerActorId, parentExecutionId));
     const currentWork = safeText(
