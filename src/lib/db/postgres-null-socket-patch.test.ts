@@ -12,8 +12,20 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { patchPostgresNullSocketRace } from "../../../scripts/patch-postgres-null-socket.mjs";
 
-const VULNERABLE_WRITE = "    const x = socket.write(chunk, fn)";
-const GUARDED_WRITE = "    const x = socket ? socket.write(chunk, fn) : false";
+const VULNERABLE_NEXT_WRITE = `  function nextWrite(fn) {
+    const x = socket.write(chunk, fn)
+    nextWriteTimer !== null && clearImmediate(nextWriteTimer)
+    chunk = nextWriteTimer = null
+    return x
+  }`;
+const NON_SETTLING_NEXT_WRITE = VULNERABLE_NEXT_WRITE.replace(
+  "socket.write(chunk, fn)",
+  "socket ? socket.write(chunk, fn) : false",
+);
+const CHANGED_NEXT_WRITE = VULNERABLE_NEXT_WRITE.replace(
+  "socket.write(chunk, fn)",
+  "writeToSocket(chunk, fn)",
+);
 
 const temporaryDirectories: string[] = [];
 
@@ -27,7 +39,7 @@ afterEach(async () => {
 
 describe("postgres.js null-socket dependency patch", () => {
   it("patches both Node module formats and is idempotent", async () => {
-    const rootDirectory = await createPostgresFixture(VULNERABLE_WRITE);
+    const rootDirectory = await createPostgresFixture(VULNERABLE_NEXT_WRITE);
 
     await expect(
       patchPostgresNullSocketRace({ rootDirectory }),
@@ -47,13 +59,33 @@ describe("postgres.js null-socket dependency patch", () => {
         path.join(rootDirectory, "node_modules", "postgres", relativePath),
         "utf8",
       );
-      expect(source).toContain(GUARDED_WRITE);
-      expect(source).not.toContain(VULNERABLE_WRITE);
+      expect(source).toContain(
+        "error(Errors.connection('CONNECTION_CLOSED', options, socket))",
+      );
+      expect(source).not.toContain(NON_SETTLING_NEXT_WRITE);
+      expect(source).not.toContain(VULNERABLE_NEXT_WRITE);
     }
   });
 
+  it("upgrades the crash-only guard so a closed reserved query settles", async () => {
+    const rootDirectory = await createPostgresFixture(NON_SETTLING_NEXT_WRITE);
+
+    await expect(
+      patchPostgresNullSocketRace({ rootDirectory }),
+    ).resolves.toEqual([
+      { relativePath: "src/connection.js", state: "patched" },
+      { relativePath: "cjs/src/connection.js", state: "patched" },
+    ]);
+    const source = await readFile(
+      path.join(rootDirectory, "node_modules", "postgres", "src/connection.js"),
+      "utf8",
+    );
+    expect(source).toContain("error(Errors.connection('CONNECTION_CLOSED'");
+    expect(source).not.toContain(NON_SETTLING_NEXT_WRITE);
+  });
+
   it("fails check mode before a vulnerable install can be released", async () => {
-    const rootDirectory = await createPostgresFixture(VULNERABLE_WRITE);
+    const rootDirectory = await createPostgresFixture(VULNERABLE_NEXT_WRITE);
 
     await expect(
       patchPostgresNullSocketRace({ rootDirectory, check: true }),
@@ -62,16 +94,14 @@ describe("postgres.js null-socket dependency patch", () => {
 
   it("fails closed when the reviewed package version or source pattern drifts", async () => {
     const wrongVersionRoot = await createPostgresFixture(
-      VULNERABLE_WRITE,
+      VULNERABLE_NEXT_WRITE,
       "3.5.0",
     );
     await expect(
       patchPostgresNullSocketRace({ rootDirectory: wrongVersionRoot }),
     ).rejects.toThrow("expected postgres@3.4.9");
 
-    const changedSourceRoot = await createPostgresFixture(
-      "    const x = writeToSocket(chunk, fn)",
-    );
+    const changedSourceRoot = await createPostgresFixture(CHANGED_NEXT_WRITE);
     await expect(
       patchPostgresNullSocketRace({ rootDirectory: changedSourceRoot }),
     ).rejects.toThrow("expected exactly one reviewed postgres.js nextWrite pattern");
@@ -79,7 +109,7 @@ describe("postgres.js null-socket dependency patch", () => {
 });
 
 async function createPostgresFixture(
-  writeLine: string,
+  nextWrite: string,
   version = "3.4.9",
 ) {
   const rootDirectory = await mkdtemp(
@@ -96,7 +126,7 @@ async function createPostgresFixture(
     JSON.stringify({ name: "postgres", version }),
     "utf8",
   );
-  const source = `function nextWrite(fn) {\n${writeLine}\n  return x\n}\n`;
+  const source = `${nextWrite}\n`;
   await Promise.all([
     writeFile(path.join(packageDirectory, "src", "connection.js"), source, "utf8"),
     writeFile(path.join(packageDirectory, "cjs", "src", "connection.js"), source, "utf8"),

@@ -90,6 +90,9 @@ const MAX_SCHEMA_VERIFICATION_TIMEOUT_MS = 60_000;
 const DEFAULT_DATABASE_ACQUIRE_TIMEOUT_MS = 20_000;
 const MIN_DATABASE_ACQUIRE_TIMEOUT_MS = 500;
 const MAX_DATABASE_ACQUIRE_TIMEOUT_MS = 30_000;
+const DEFAULT_DATABASE_RESERVATION_TIMEOUT_MS = 30_000;
+const MIN_DATABASE_RESERVATION_TIMEOUT_MS = 1_000;
+const MAX_DATABASE_RESERVATION_TIMEOUT_MS = 120_000;
 const DEFAULT_DATABASE_STATEMENT_TIMEOUT_MS = 15_000;
 const MIN_DATABASE_STATEMENT_TIMEOUT_MS = 1_000;
 const MAX_DATABASE_STATEMENT_TIMEOUT_MS = 60_000;
@@ -376,6 +379,19 @@ export function getDatabaseAcquireTimeoutMs() {
   return Math.min(
     Math.max(Math.round(configured), MIN_DATABASE_ACQUIRE_TIMEOUT_MS),
     MAX_DATABASE_ACQUIRE_TIMEOUT_MS,
+  );
+}
+
+export function getDatabaseReservationTimeoutMs() {
+  const configured = Number(
+    process.env.OMNIAGENT_DATABASE_RESERVATION_TIMEOUT_MS,
+  );
+  if (!Number.isFinite(configured) || configured <= 0) {
+    return DEFAULT_DATABASE_RESERVATION_TIMEOUT_MS;
+  }
+  return Math.min(
+    Math.max(Math.round(configured), MIN_DATABASE_RESERVATION_TIMEOUT_MS),
+    MAX_DATABASE_RESERVATION_TIMEOUT_MS,
   );
 }
 
@@ -2223,7 +2239,7 @@ function getRawMaintenancePg(): postgres.Sql {
 }
 
 function createPostgresClient(databaseUrl: string, label: string) {
-  return postgres(databaseUrl, {
+  const client = postgres(databaseUrl, {
     prepare: false, // required for Supabase transaction-mode pooler (Supavisor)
     ssl: databaseSslConfiguration(databaseUrl, label),
     max: getDatabasePoolMax(),
@@ -2234,6 +2250,9 @@ function createPostgresClient(databaseUrl: string, label: string) {
     // the driver's randomized default so long-lived sockets are still rotated.
     ...(process.env.VERCEL ? { max_lifetime: null } : {}),
     connect_timeout: 10,
+    onclose: () => {
+      retireClosedVercelDatabaseClient(client, label);
+    },
     // Under prepare:false (required by the pooler) the driver returns json/jsonb
     // columns as raw strings instead of parsed values. Parse them back to objects/
     // arrays here so every store reads structured data, not strings. Non-JSON
@@ -2258,6 +2277,8 @@ function createPostgresClient(databaseUrl: string, label: string) {
       },
     },
   });
+  getDatabasePoolLifecycle(client);
+  return client;
 }
 
 function databaseSslConfiguration(databaseUrl: string, label: string) {
@@ -2370,43 +2391,238 @@ function createTenantScopedSqlClient(pg: AnyPg, scopeAlreadyApplied = false): Sq
 
 async function withReservedDatabaseConnection<T>(
   pg: AnyPg,
-  operation: (reserved: AnyPg) => Promise<T>,
+  operation: (
+    reserved: AnyPg,
+    lease: DatabaseReservationLease,
+  ) => Promise<T>,
 ): Promise<T> {
   const { reserved, releaseAdmission } = await reserveDatabaseConnection(pg);
+  const lifecycle = getDatabasePoolLifecycle(pg);
+  const lease: DatabaseReservationLease = {
+    state: "active",
+    inFlightUserOperations: new Set(),
+  };
+  lifecycle.leases.add(lease);
+  const stopWatchdog = startDatabaseReservationWatchdog(pg, lease);
   try {
-    return await operation(reserved);
+    return await settleOnDatabasePoolRetirement(
+      pg,
+      Promise.resolve().then(() => operation(reserved, lease)),
+    );
   } finally {
-    releaseReservedDatabaseConnection(reserved);
+    stopWatchdog();
+    lifecycle.leases.delete(lease);
+    if (lifecycle.retired) {
+      lease.state = "retired";
+    } else if (lease.state !== "settled") {
+      lease.state = "settled";
+    }
+    releaseReservedDatabaseConnection(pg, reserved);
     releaseAdmission();
   }
+}
+
+function createDatabaseReservationUserClient(
+  pg: AnyPg,
+  reserved: AnyPg,
+  lease: DatabaseReservationLease,
+) {
+  const execute = <T>(operation: () => Promise<T> | T): Promise<T> => {
+    try {
+      assertDatabaseReservationUserOperation(pg, lease);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    const pending = settleOnDatabasePoolRetirement(
+      pg,
+      Promise.resolve().then(() => {
+        assertDatabaseReservationUserOperation(pg, lease);
+        return operation();
+      }),
+    );
+    lease.inFlightUserOperations.add(pending);
+    void pending.then(
+      () => lease.inFlightUserOperations.delete(pending),
+      () => lease.inFlightUserOperations.delete(pending),
+    );
+    return pending;
+  };
+  const client = ((strings: TemplateStringsArray, ...params: unknown[]) =>
+    execute(() => {
+      assertNotTransactionControlStatement(strings.join(" "));
+      return reserved(strings, ...params);
+    })) as AnyPg;
+  client.unsafe = (text: string, params?: unknown[]) => execute(() => {
+    assertNotTransactionControlStatement(text);
+    return reserved.unsafe(text, params ?? []);
+  });
+  client.query = (text: string, params?: unknown[]) => execute(() => {
+    assertNotTransactionControlStatement(text);
+    return reserved.unsafe(text, params ?? []);
+  });
+  return client;
 }
 
 async function withReservedDatabaseTransaction<T>(
   pg: AnyPg,
   operation: (reserved: AnyPg) => Promise<T>,
 ): Promise<T> {
-  return withReservedDatabaseConnection(pg, async (reserved) => {
-    await reserved.unsafe("BEGIN");
+  return withReservedDatabaseConnection(pg, async (reserved, lease) => {
+    await executeDatabaseReservationControl(
+      pg,
+      reserved,
+      lease,
+      "active",
+      "BEGIN",
+    );
+    const userClient = createDatabaseReservationUserClient(pg, reserved, lease);
+    let result: T;
     try {
       // The deletion barrier relies on a fresh statement snapshot after a
       // writer waits for the tenant graph lock. Pin managed transactions to
       // READ COMMITTED before applyDatabaseScope performs its first SELECT;
       // inherited REPEATABLE READ/SERIALIZABLE defaults could otherwise retain
       // a pre-forget snapshot and resurrect descendant lineage.
-      await reserved.unsafe("SET TRANSACTION ISOLATION LEVEL READ COMMITTED");
-      const result = await operation(reserved);
-      await reserved.unsafe("COMMIT");
+      await executeDatabaseReservationControl(
+        pg,
+        reserved,
+        lease,
+        "active",
+        "SET TRANSACTION ISOLATION LEVEL READ COMMITTED",
+      );
+      result = await operation(userClient);
+      assertNoInFlightDatabaseReservationOperations(pg, lease);
+    } catch (error) {
+      await rollbackDatabaseReservation(pg, reserved, lease);
+      throw error;
+    }
+    transitionDatabaseReservation(pg, lease, "active", "committing");
+    try {
+      await executeDatabaseReservationControl(
+        pg,
+        reserved,
+        lease,
+        "committing",
+        "COMMIT",
+      );
+      lease.state = "settled";
       return result;
     } catch (error) {
-      try {
-        await reserved.unsafe("ROLLBACK");
-      } catch {
-        // Preserve the operation/commit error. The reserved connection is
-        // released below and postgres.js will discard it if it is unusable.
-      }
+      await rollbackDatabaseReservation(pg, reserved, lease);
       throw error;
     }
   });
+}
+
+async function executeDatabaseReservationControl(
+  pg: AnyPg,
+  reserved: AnyPg,
+  lease: DatabaseReservationLease,
+  requiredState: DatabaseReservationLeaseState,
+  statement: string,
+) {
+  assertDatabaseReservationState(pg, lease, requiredState);
+  return settleOnDatabasePoolRetirement(
+    pg,
+    Promise.resolve().then(() => {
+      assertDatabaseReservationState(pg, lease, requiredState);
+      return reserved.unsafe(statement);
+    }),
+  );
+}
+
+async function rollbackDatabaseReservation(
+  pg: AnyPg,
+  reserved: AnyPg,
+  lease: DatabaseReservationLease,
+) {
+  const lifecycle = getDatabasePoolLifecycle(pg);
+  if (
+    lifecycle.retired ||
+    lease.state === "retired" ||
+    lease.state === "settled"
+  ) {
+    return;
+  }
+  if (lease.state !== "active" && lease.state !== "committing") {
+    return;
+  }
+  lease.state = "rolling_back";
+  try {
+    await executeDatabaseReservationControl(
+      pg,
+      reserved,
+      lease,
+      "rolling_back",
+      "ROLLBACK",
+    );
+  } catch {
+    // Preserve the original operation/commit error. A close retires the pool;
+    // another rollback failure leaves this exact generation unavailable.
+  } finally {
+    lease.state = getDatabasePoolLifecycle(pg).retired ? "retired" : "settled";
+  }
+}
+
+function transitionDatabaseReservation(
+  pg: AnyPg,
+  lease: DatabaseReservationLease,
+  from: DatabaseReservationLeaseState,
+  to: DatabaseReservationLeaseState,
+) {
+  assertDatabaseReservationState(pg, lease, from);
+  lease.state = to;
+}
+
+function assertDatabaseReservationUserOperation(
+  pg: AnyPg,
+  lease: DatabaseReservationLease,
+) {
+  assertDatabaseReservationState(pg, lease, "active");
+}
+
+function assertNoInFlightDatabaseReservationOperations(
+  pg: AnyPg,
+  lease: DatabaseReservationLease,
+) {
+  assertDatabaseReservationState(pg, lease, "active");
+  if (lease.inFlightUserOperations.size > 0) {
+    throw Object.assign(
+      new Error(
+        "A database transaction callback returned while a query was still running.",
+      ),
+      { code: "DATABASE_RESERVATION_INFLIGHT" },
+    );
+  }
+}
+
+function assertDatabaseReservationState(
+  pg: AnyPg,
+  lease: DatabaseReservationLease,
+  requiredState: DatabaseReservationLeaseState,
+) {
+  const lifecycle = getDatabasePoolLifecycle(pg);
+  if (lifecycle.retired || lease.state === "retired") {
+    throw lifecycle.retirementError || databaseConnectionClosedError("Database");
+  }
+  if (lease.state !== requiredState) {
+    throw Object.assign(
+      new Error("The database reservation is no longer active for this operation."),
+      { code: "DATABASE_RESERVATION_INACTIVE" },
+    );
+  }
+}
+
+function assertNotTransactionControlStatement(statement: string) {
+  const executable = statement
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/--[^\r\n]*/g, " ")
+    .trim();
+  if (/^(?:begin|start\s+transaction|commit|end|rollback|abort)\b/i.test(executable)) {
+    throw new Error(
+      "Transaction control is reserved for the database reservation manager.",
+    );
+  }
 }
 
 type DatabaseAdmissionGate = {
@@ -2428,7 +2644,28 @@ type DatabaseAdmissionPermit = {
   release: () => void;
 };
 
+type DatabaseReservationLeaseState =
+  | "active"
+  | "committing"
+  | "rolling_back"
+  | "retired"
+  | "settled";
+
+type DatabaseReservationLease = {
+  state: DatabaseReservationLeaseState;
+  inFlightUserOperations: Set<Promise<unknown>>;
+};
+
 const databaseAdmissionGates = new WeakMap<object, DatabaseAdmissionGate>();
+
+type DatabasePoolLifecycle = {
+  retired: boolean;
+  retirementError?: Error;
+  listeners: Set<(error: Error) => void>;
+  leases: Set<DatabaseReservationLease>;
+};
+
+const databasePoolLifecycles = new WeakMap<object, DatabasePoolLifecycle>();
 
 function databaseAcquireTimeoutError(timeoutMs: number) {
   return Object.assign(
@@ -2437,6 +2674,43 @@ function databaseAcquireTimeoutError(timeoutMs: number) {
     ),
     { code: "DATABASE_ACQUIRE_TIMEOUT" },
   );
+}
+
+function databaseReservationTimeoutError(
+  timeoutMs: number,
+  lease: DatabaseReservationLease,
+) {
+  if (lease.state === "committing") {
+    return Object.assign(
+      new Error(
+        `Database commit timed out after ${timeoutMs}ms. Its outcome is unknown; automatic retry is forbidden.`,
+      ),
+      { code: "DATABASE_COMMIT_OUTCOME_UNKNOWN", retryable: false },
+    );
+  }
+  return Object.assign(
+    new Error(
+      `Database reserved operation timed out after ${timeoutMs}ms. Its transaction outcome is unknown; automatic retry is forbidden.`,
+    ),
+    { code: "DATABASE_RESERVATION_TIMEOUT", retryable: false },
+  );
+}
+
+function startDatabaseReservationWatchdog(
+  pg: AnyPg,
+  lease: DatabaseReservationLease,
+) {
+  if (!process.env.VERCEL || getDatabasePoolMax() !== 1) {
+    return () => undefined;
+  }
+  const timeoutMs = getDatabaseReservationTimeoutMs();
+  const timer = setTimeout(() => {
+    retireVercelDatabaseClient(
+      pg,
+      databaseReservationTimeoutError(timeoutMs, lease),
+    );
+  }, timeoutMs);
+  return () => clearTimeout(timer);
 }
 
 function getDatabaseAdmissionGate(pg: AnyPg): DatabaseAdmissionGate {
@@ -2452,6 +2726,70 @@ function getDatabaseAdmissionGate(pg: AnyPg): DatabaseAdmissionGate {
   } satisfies DatabaseAdmissionGate;
   databaseAdmissionGates.set(key, gate);
   return gate;
+}
+
+function getDatabasePoolLifecycle(pg: AnyPg): DatabasePoolLifecycle {
+  const key = pg as object;
+  const existing = databasePoolLifecycles.get(key);
+  if (existing) return existing;
+  const lifecycle = {
+    retired: false,
+    listeners: new Set<(error: Error) => void>(),
+    leases: new Set<DatabaseReservationLease>(),
+  } satisfies DatabasePoolLifecycle;
+  databasePoolLifecycles.set(key, lifecycle);
+  return lifecycle;
+}
+
+function settleOnDatabasePoolRetirement<T>(
+  pg: AnyPg,
+  operation: Promise<T>,
+): Promise<T> {
+  if (!process.env.VERCEL || getDatabasePoolMax() !== 1) {
+    return operation;
+  }
+  const lifecycle = getDatabasePoolLifecycle(pg);
+  if (lifecycle.retired) {
+    // The caller may already have constructed a fenced promise. Observe its
+    // rejection even though the generation-level error takes precedence.
+    void operation.catch(() => undefined);
+    return Promise.reject(
+      lifecycle.retirementError || databaseConnectionClosedError("Database"),
+    );
+  }
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => lifecycle.listeners.delete(onRetired);
+    const onRetired = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+    lifecycle.listeners.add(onRetired);
+    void operation.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(value);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      },
+    );
+    // Defend against future refactors that can retire the generation while a
+    // listener is being installed. The current implementation is synchronous,
+    // but the second check keeps the contract explicit.
+    if (lifecycle.retired) {
+      onRetired(
+        lifecycle.retirementError || databaseConnectionClosedError("Database"),
+      );
+    }
+  });
 }
 
 function createDatabaseAdmissionPermit(
@@ -2547,7 +2885,10 @@ async function reserveDatabaseConnection(pg: AnyPg): Promise<{
     admission.release();
     throw databaseAcquireTimeoutError(timeoutMs);
   }
-  const pendingReservation = Promise.resolve().then(() => pg.reserve());
+  const pendingReservation = settleOnDatabasePoolRetirement(
+    pg,
+    Promise.resolve().then(() => pg.reserve()),
+  );
 
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -2572,7 +2913,7 @@ async function reserveDatabaseConnection(pg: AnyPg): Promise<{
             retireTimedOutVercelDatabaseClient(pg, timeoutError);
             reject(timeoutError);
           }
-          releaseReservedDatabaseConnection(reserved);
+          releaseReservedDatabaseConnection(pg, reserved);
           admission.release();
           return;
         }
@@ -2603,18 +2944,31 @@ function retireTimedOutVercelDatabaseClient(pg: AnyPg, error: Error) {
   // concurrent work and must never be terminated by one caller's timeout.
   if (!process.env.VERCEL || getDatabasePoolMax() !== 1) return;
 
-  const runtimeClientTimedOut = sqlClient === pg;
-  const maintenanceClientTimedOut = maintenanceSqlClient === pg;
-  if (!runtimeClientTimedOut && !maintenanceClientTimedOut) return;
+  retireVercelDatabaseClient(pg, error);
+}
 
+function retireClosedVercelDatabaseClient(pg: AnyPg, label: string) {
+  retireVercelDatabaseClient(pg, databaseConnectionClosedError(label));
+}
+
+function retireVercelDatabaseClient(pg: AnyPg, error: Error) {
+  if (!process.env.VERCEL || getDatabasePoolMax() !== 1) return;
+
+  const runtimeClientRetired = sqlClient === pg;
+  const maintenanceClientRetired = maintenanceSqlClient === pg;
+  if (!runtimeClientRetired && !maintenanceClientRetired) return;
+  const lifecycle = getDatabasePoolLifecycle(pg);
+  if (lifecycle.retired) return;
+
+  retireDatabasePoolLifecycle(pg, error);
   retireDatabaseAdmissionGate(pg, error);
 
-  if (runtimeClientTimedOut) {
+  if (runtimeClientRetired) {
     sqlClient = null;
     scopedSqlClient = null;
     schemaReady = null;
   }
-  if (maintenanceClientTimedOut) {
+  if (maintenanceClientRetired) {
     maintenanceSqlClient = null;
     maintenanceScopedSqlClient = null;
   }
@@ -2630,6 +2984,21 @@ function retireTimedOutVercelDatabaseClient(pg: AnyPg, error: Error) {
   }
 }
 
+function retireDatabasePoolLifecycle(pg: AnyPg, error: Error) {
+  const lifecycle = getDatabasePoolLifecycle(pg);
+  if (lifecycle.retired) return;
+  lifecycle.retired = true;
+  lifecycle.retirementError = error;
+  for (const lease of lifecycle.leases) {
+    lease.state = "retired";
+  }
+  const listeners = [...lifecycle.listeners];
+  lifecycle.listeners.clear();
+  for (const listener of listeners) {
+    listener(error);
+  }
+}
+
 function retireDatabaseAdmissionGate(pg: AnyPg, error: Error) {
   const gate = databaseAdmissionGates.get(pg as object);
   if (!gate || gate.retired) return;
@@ -2640,13 +3009,26 @@ function retireDatabaseAdmissionGate(pg: AnyPg, error: Error) {
   }
 }
 
-function releaseReservedDatabaseConnection(reserved: AnyPg) {
+function releaseReservedDatabaseConnection(pg: AnyPg, reserved: AnyPg) {
+  if (getDatabasePoolLifecycle(pg).retired) {
+    // postgres.js reserve handles retain their captured connection. Calling
+    // release after onclose can move that closed connection back into the open
+    // queue and strand the next query. The retired pool owns final cleanup.
+    return;
+  }
   try {
     reserved.release();
   } catch {
     // A closed/broken connection is already unavailable to the pool. Never let
     // release cleanup replace the query result or the acquisition-timeout error.
   }
+}
+
+function databaseConnectionClosedError(label: string) {
+  return Object.assign(
+    new Error(`${label} database connection closed; its pool was retired.`),
+    { code: "DATABASE_CONNECTION_CLOSED" },
+  );
 }
 
 export function isDatabaseMutation(statement: string) {
