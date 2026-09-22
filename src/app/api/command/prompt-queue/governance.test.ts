@@ -22,6 +22,9 @@ describe("prompt queue governed dispatch boundary", () => {
       "Boolean(queuedItemId) !== Boolean(queuedDispatchToken)",
     );
     expect(source).toContain("sessionId: queuedSessionId");
+    expect(source).toContain(
+      "ownerActorId: queueActorBinding.canonicalActorId",
+    );
     expect(source).toContain("runtimeModelPin: queuedDispatch ? {");
   });
 
@@ -39,6 +42,7 @@ describe("prompt queue governed dispatch boundary", () => {
       "headers.set(PROMPT_QUEUE_DISPATCH_TOKEN_HEADER, claimed.dispatchToken)",
     );
     expect(source).toContain("response = await runGovernedAgent(internalRequest)");
+    expect(source).toContain("ownerActorId: authority.ownerActorId");
     expect(source).not.toMatch(/executionScope:\s*authority\.executionScope[\s\S]*body: JSON\.stringify/);
   });
 });

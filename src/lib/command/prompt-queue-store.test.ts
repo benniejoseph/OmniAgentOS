@@ -52,9 +52,11 @@ import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
 const tenantId = "tenant-queue";
 const actorId = "actor-queue";
+const requestActorId = "queue-owner@example.test";
 const authority: PromptQueueAuthority = {
   tenantId,
-  actorId,
+  ownerActorId: actorId,
+  requestActorId,
   sessionId: "session-queue",
   executionScope: createExecutionScope({
     tenantId,
@@ -235,6 +237,15 @@ describe("persistent prompt queue store fences", () => {
     ]);
     const insertCall = mocks.sql.mock.calls.find(([parts]) =>
       (parts as TemplateStringsArray).join("?").includes("INSERT INTO"));
+    expect(mocks.resolveIdentity).toHaveBeenCalledWith({
+      tenantId,
+      actorId: requestActorId,
+      agentId: "atlas",
+    });
+    expect(insertCall?.[3]).toBe(actorId);
+    expect(insertCall?.[7]).toMatchObject({
+      binding: expect.stringContaining(`:${actorId}:`),
+    });
     expect(Object.isFrozen(insertCall?.[14])).toBe(true);
     expect(Object.isFrozen(insertCall?.[15])).toBe(true);
   });
@@ -710,7 +721,7 @@ describe("persistent prompt queue store fences", () => {
       itemId: String(dispatching.id),
       dispatchToken: "dispatch-secret",
       tenantId,
-      actorId,
+      ownerActorId: actorId,
       sessionId: authority.sessionId,
       request,
     })).resolves.toMatchObject({ lifecycleRevision: 2 });
@@ -718,7 +729,7 @@ describe("persistent prompt queue store fences", () => {
       itemId: String(dispatching.id),
       dispatchToken: "dispatch-secret",
       tenantId,
-      actorId,
+      ownerActorId: actorId,
       sessionId: authority.sessionId,
       request,
     })).rejects.toMatchObject({ code: "conflict" });

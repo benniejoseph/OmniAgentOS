@@ -48,7 +48,10 @@ export class PromptQueueStoreError extends Error {
 
 export type PromptQueueAuthority = Readonly<{
   tenantId: string;
-  actorId: string;
+  /** Canonical auth-user actor persisted as queue ownership. */
+  ownerActorId: string;
+  /** Request actor retained for legacy Settings/model-assignment lookup. */
+  requestActorId: string;
   sessionId: string;
   executionScope: ExecutionScope;
 }>;
@@ -66,7 +69,7 @@ export async function listPromptQueueItems(
     SELECT *
     FROM omni_prompt_queue_items
     WHERE tenant_id = ${authority.tenantId}
-      AND owner_actor_id = ${authority.actorId}
+      AND owner_actor_id = ${authority.ownerActorId}
       AND state <> 'deleted'
     ORDER BY
       CASE WHEN state IN ('queued', 'paused', 'dispatching') THEN 0 ELSE 1 END,
@@ -90,7 +93,12 @@ export async function createPromptQueueItem(input: {
   const id = randomUUID();
   const sealedPrompt = sealJsonPayload(
     { prompt: request.prompt },
-    promptBinding(input.authority.tenantId, input.authority.actorId, id, promptSha256),
+    promptBinding(
+      input.authority.tenantId,
+      input.authority.ownerActorId,
+      id,
+      promptSha256,
+    ),
   );
   let existing: PromptQueueItemV1 | undefined;
   let preflightClosedGenerationRetries = 0;
@@ -126,7 +134,7 @@ export async function createPromptQueueItem(input: {
   // exactly the same routing decision.
   const resolvedPins = await resolvePins({
     tenantId: input.authority.tenantId,
-    actorId: input.authority.actorId,
+    actorId: input.authority.requestActorId,
     prompt: request.prompt,
     mode: request.mode,
     agentId: request.agentId,
@@ -144,7 +152,7 @@ export async function createPromptQueueItem(input: {
       const existingRows = await sql`
         SELECT * FROM omni_prompt_queue_items
         WHERE tenant_id = ${input.authority.tenantId}
-          AND owner_actor_id = ${input.authority.actorId}
+          AND owner_actor_id = ${input.authority.ownerActorId}
           AND client_correlation_id = ${request.clientCorrelationId}
         LIMIT 1
         FOR UPDATE
@@ -164,7 +172,7 @@ export async function createPromptQueueItem(input: {
         SELECT COUNT(*)::INTEGER AS count
         FROM omni_prompt_queue_items
         WHERE tenant_id = ${input.authority.tenantId}
-          AND owner_actor_id = ${input.authority.actorId}
+          AND owner_actor_id = ${input.authority.ownerActorId}
           AND state IN ('queued', 'paused', 'dispatching')
       `;
       if (Number(countRows[0]?.count || 0) >= PROMPT_QUEUE_MAX_ITEMS) {
@@ -177,7 +185,7 @@ export async function createPromptQueueItem(input: {
         SELECT COALESCE(MAX(position_key), 0)::BIGINT AS position
         FROM omni_prompt_queue_items
         WHERE tenant_id = ${input.authority.tenantId}
-          AND owner_actor_id = ${input.authority.actorId}
+          AND owner_actor_id = ${input.authority.ownerActorId}
           AND state IN ('queued', 'paused', 'dispatching')
       `;
       const position = Number(positionRows[0]?.position || 0) + 1024;
@@ -190,7 +198,7 @@ export async function createPromptQueueItem(input: {
           state, position_key, lifecycle_revision,
           queue_grants_authority, created_at, updated_at
         ) VALUES (
-          1, ${id}, ${input.authority.tenantId}, ${input.authority.actorId},
+          1, ${id}, ${input.authority.tenantId}, ${input.authority.ownerActorId},
           ${input.authority.sessionId}, ${input.authority.sessionId},
           ${request.clientCorrelationId}, ${sealedPrompt}::jsonb,
           ${promptSha256}, ${request.prompt.length}, ${request.mode},
@@ -254,7 +262,7 @@ async function preflightPromptQueueCreate(input: {
     const existingRows = await sql`
       SELECT * FROM omni_prompt_queue_items
       WHERE tenant_id = ${input.authority.tenantId}
-        AND owner_actor_id = ${input.authority.actorId}
+        AND owner_actor_id = ${input.authority.ownerActorId}
         AND client_correlation_id = ${input.request.clientCorrelationId}
       LIMIT 1
       FOR UPDATE
@@ -271,7 +279,7 @@ async function preflightPromptQueueCreate(input: {
       SELECT COUNT(*)::INTEGER AS count
       FROM omni_prompt_queue_items
       WHERE tenant_id = ${input.authority.tenantId}
-        AND owner_actor_id = ${input.authority.actorId}
+        AND owner_actor_id = ${input.authority.ownerActorId}
         AND state IN ('queued', 'paused', 'dispatching')
     `;
     if (Number(countRows[0]?.count || 0) >= PROMPT_QUEUE_MAX_ITEMS) {
@@ -293,7 +301,7 @@ async function readPromptQueueCorrelation(input: {
   const rows = await getSql()`
     SELECT * FROM omni_prompt_queue_items
     WHERE tenant_id = ${input.authority.tenantId}
-      AND owner_actor_id = ${input.authority.actorId}
+      AND owner_actor_id = ${input.authority.ownerActorId}
       AND client_correlation_id = ${input.request.clientCorrelationId}
     LIMIT 1
   `;
@@ -370,7 +378,7 @@ export async function updatePromptQueueItem(input: {
     const current = await readPromptQueueItem(input.itemId, input.authority);
     replacementPins = await resolvePins({
       tenantId: input.authority.tenantId,
-      actorId: input.authority.actorId,
+      actorId: input.authority.requestActorId,
       prompt: input.prompt,
       mode: current.mode,
       agentId: current.agent.logicalAgentId,
@@ -380,7 +388,7 @@ export async function updatePromptQueueItem(input: {
       { prompt: input.prompt },
       promptBinding(
         input.authority.tenantId,
-        input.authority.actorId,
+        input.authority.ownerActorId,
         input.itemId,
         promptSha256,
       ),
@@ -391,7 +399,7 @@ export async function updatePromptQueueItem(input: {
     const rows = await sql`
       SELECT * FROM omni_prompt_queue_items
       WHERE tenant_id = ${input.authority.tenantId}
-        AND owner_actor_id = ${input.authority.actorId}
+        AND owner_actor_id = ${input.authority.ownerActorId}
         AND id = ${input.itemId}
       LIMIT 1 FOR UPDATE
     `;
@@ -418,7 +426,7 @@ export async function updatePromptQueueItem(input: {
         SELECT COUNT(*)::INTEGER AS count
         FROM omni_prompt_queue_items
         WHERE tenant_id = ${input.authority.tenantId}
-          AND owner_actor_id = ${input.authority.actorId}
+          AND owner_actor_id = ${input.authority.ownerActorId}
           AND state IN ('queued', 'paused', 'dispatching')
       `;
       if (Number(countRows[0]?.count || 0) >= PROMPT_QUEUE_MAX_ITEMS) {
@@ -443,7 +451,7 @@ export async function updatePromptQueueItem(input: {
           lifecycle_revision = lifecycle_revision + 1,
           updated_at = ${now}
       WHERE tenant_id = ${input.authority.tenantId}
-        AND owner_actor_id = ${input.authority.actorId}
+        AND owner_actor_id = ${input.authority.ownerActorId}
         AND id = ${input.itemId}
         AND lifecycle_revision = ${input.expectedRevision}
       RETURNING *
@@ -464,7 +472,7 @@ export async function deletePromptQueueItem(input: {
     const rows = await sql`
       SELECT * FROM omni_prompt_queue_items
       WHERE tenant_id = ${input.authority.tenantId}
-        AND owner_actor_id = ${input.authority.actorId}
+        AND owner_actor_id = ${input.authority.ownerActorId}
         AND id = ${input.itemId}
       LIMIT 1 FOR UPDATE
     `;
@@ -487,7 +495,7 @@ export async function deletePromptQueueItem(input: {
           lifecycle_revision = lifecycle_revision + 1,
           updated_at = ${now}, terminal_at = COALESCE(terminal_at, ${now})
       WHERE tenant_id = ${input.authority.tenantId}
-        AND owner_actor_id = ${input.authority.actorId}
+        AND owner_actor_id = ${input.authority.ownerActorId}
         AND id = ${input.itemId}
         AND lifecycle_revision = ${input.expectedRevision}
       RETURNING *
@@ -514,7 +522,7 @@ export async function reorderPromptQueueItems(input: {
     const rows = await sql`
       SELECT * FROM omni_prompt_queue_items
       WHERE tenant_id = ${input.authority.tenantId}
-        AND owner_actor_id = ${input.authority.actorId}
+        AND owner_actor_id = ${input.authority.ownerActorId}
         AND state IN ('queued', 'paused')
       ORDER BY position_key, created_at, id
       FOR UPDATE
@@ -545,7 +553,7 @@ export async function reorderPromptQueueItems(input: {
             lifecycle_revision = lifecycle_revision + 1,
             updated_at = ${now}
         WHERE tenant_id = ${input.authority.tenantId}
-          AND owner_actor_id = ${input.authority.actorId}
+          AND owner_actor_id = ${input.authority.ownerActorId}
           AND id = ${requested.id}
           AND lifecycle_revision = ${requested.expectedRevision}
         RETURNING *
@@ -589,7 +597,7 @@ export async function claimPromptQueueDispatch(input: {
     const rows = await sql`
       SELECT * FROM omni_prompt_queue_items
       WHERE tenant_id = ${input.authority.tenantId}
-        AND owner_actor_id = ${input.authority.actorId}
+        AND owner_actor_id = ${input.authority.ownerActorId}
         AND id = ${input.itemId}
       LIMIT 1 FOR UPDATE
     `;
@@ -616,7 +624,7 @@ export async function claimPromptQueueDispatch(input: {
           lifecycle_revision = lifecycle_revision + 1,
           updated_at = ${now.toISOString()}
       WHERE tenant_id = ${input.authority.tenantId}
-        AND owner_actor_id = ${input.authority.actorId}
+        AND owner_actor_id = ${input.authority.ownerActorId}
         AND id = ${input.itemId}
         AND lifecycle_revision = ${input.expectedRevision}
       RETURNING *
@@ -632,7 +640,7 @@ export async function validatePromptQueueDispatch(input: {
   itemId: string;
   dispatchToken: string;
   tenantId: string;
-  actorId: string;
+  ownerActorId: string;
   sessionId: string;
   request: {
     message: string;
@@ -648,7 +656,7 @@ export async function validatePromptQueueDispatch(input: {
   const candidateRows = await getSql()`
     SELECT * FROM omni_prompt_queue_items
     WHERE tenant_id = ${input.tenantId}
-      AND owner_actor_id = ${input.actorId}
+      AND owner_actor_id = ${input.ownerActorId}
       AND id = ${input.itemId}
       AND state = 'dispatching'
       AND dispatch_token_sha256 = ${sha256(input.dispatchToken)}
@@ -701,7 +709,7 @@ export async function validatePromptQueueDispatch(input: {
         lifecycle_revision = lifecycle_revision + 1,
         updated_at = NOW()
     WHERE tenant_id = ${input.tenantId}
-      AND owner_actor_id = ${input.actorId}
+      AND owner_actor_id = ${input.ownerActorId}
       AND id = ${input.itemId}
       AND state = 'dispatching'
       AND dispatch_token_sha256 = ${sha256(input.dispatchToken)}
@@ -732,7 +740,7 @@ export async function reconcileExpiredPromptQueueDispatches(
     const rows = await sql`
       SELECT * FROM omni_prompt_queue_items
       WHERE tenant_id = ${authority.tenantId}
-        AND owner_actor_id = ${authority.actorId}
+        AND owner_actor_id = ${authority.ownerActorId}
         AND state = 'dispatching'
         AND dispatch_lease_expires_at <= NOW()
       ORDER BY dispatch_lease_expires_at, id
@@ -759,7 +767,7 @@ export async function reconcileExpiredPromptQueueDispatches(
             lifecycle_revision = lifecycle_revision + 1,
             updated_at = ${now}
         WHERE tenant_id = ${authority.tenantId}
-          AND owner_actor_id = ${authority.actorId}
+          AND owner_actor_id = ${authority.ownerActorId}
           AND id = ${String(row.id)}
           AND state = 'dispatching'
           AND dispatch_lease_expires_at <= NOW()
@@ -784,7 +792,7 @@ export async function recordPromptQueueDispatchProgress(input: {
   itemId: string;
   dispatchToken: string;
   tenantId: string;
-  actorId: string;
+  ownerActorId: string;
   runId?: string;
   threadId?: string;
   progressLabel?: string;
@@ -796,7 +804,7 @@ export async function recordPromptQueueDispatchProgress(input: {
     const rows = await sql`
       SELECT * FROM omni_prompt_queue_items
       WHERE tenant_id = ${input.tenantId}
-        AND owner_actor_id = ${input.actorId}
+        AND owner_actor_id = ${input.ownerActorId}
         AND id = ${input.itemId}
         AND state = 'dispatching'
         AND dispatch_token_sha256 = ${sha256(input.dispatchToken)}
@@ -820,7 +828,7 @@ export async function recordPromptQueueDispatchProgress(input: {
           lifecycle_revision = lifecycle_revision + 1,
           updated_at = ${now}
       WHERE tenant_id = ${input.tenantId}
-        AND owner_actor_id = ${input.actorId}
+        AND owner_actor_id = ${input.ownerActorId}
         AND id = ${input.itemId}
       RETURNING *
     `;
@@ -838,12 +846,12 @@ export async function recordPromptQueueDispatchProgress(input: {
 
 async function readPromptQueueItem(
   itemId: string,
-  authority: Pick<PromptQueueAuthority, "tenantId" | "actorId">,
+  authority: Pick<PromptQueueAuthority, "tenantId" | "ownerActorId">,
 ) {
   const rows = await getSql()`
     SELECT * FROM omni_prompt_queue_items
     WHERE tenant_id = ${authority.tenantId}
-      AND owner_actor_id = ${authority.actorId}
+      AND owner_actor_id = ${authority.ownerActorId}
       AND id = ${itemId}
       AND state <> 'deleted'
     LIMIT 1
@@ -913,11 +921,11 @@ async function resolvePins(input: {
 
 async function assertCurrentPins(
   item: PromptQueueItemV1,
-  authority: Pick<PromptQueueAuthority, "tenantId" | "actorId">,
+  authority: Pick<PromptQueueAuthority, "tenantId" | "requestActorId">,
 ) {
   const current = await resolvePins({
     tenantId: authority.tenantId,
-    actorId: authority.actorId,
+    actorId: authority.requestActorId,
     prompt: item.prompt,
     mode: item.mode,
     agentId: item.agent.logicalAgentId,
@@ -1012,12 +1020,12 @@ function promptBinding(
 
 async function lockActorPromptQueue(
   sql: QueueSql,
-  authority: Pick<PromptQueueAuthority, "tenantId" | "actorId">,
+  authority: Pick<PromptQueueAuthority, "tenantId" | "ownerActorId">,
 ) {
   await sql`
     SELECT pg_advisory_xact_lock(
       hashtextextended(
-        ${`prompt-queue:v1:${authority.tenantId}:${authority.actorId}`},
+        ${`prompt-queue:v1:${authority.tenantId}:${authority.ownerActorId}`},
         0
       )
     )

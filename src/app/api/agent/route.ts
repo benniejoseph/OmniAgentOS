@@ -329,12 +329,20 @@ async function POSTHandler(request: Request) {
         message: "A current authenticated session is required for queued commands.",
       }, { status: 409 });
     }
+    const queueActorBinding =
+      canonicalRequestActorBindingFromSecurityContext(context);
+    if (!queueActorBinding) {
+      return Response.json({
+        error: "Invalid prompt queue dispatch",
+        message: "A canonical authenticated account is required for queued commands.",
+      }, { status: 409 });
+    }
     try {
       queuedDispatch = await validatePromptQueueDispatch({
         itemId: queuedItemId,
         dispatchToken: queuedDispatchToken,
         tenantId: context.tenantId,
-        actorId: context.actorId,
+        ownerActorId: queueActorBinding.canonicalActorId,
         sessionId: queuedSessionId,
         request: {
           message: parsed.data.message || requestMessage,

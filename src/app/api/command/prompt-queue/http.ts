@@ -2,6 +2,9 @@ import {
   PromptQueueStoreError,
   type PromptQueueAuthority,
 } from "@/lib/command/prompt-queue-store";
+import {
+  canonicalRequestActorBindingFromSecurityContext,
+} from "@/lib/security/canonical-actor";
 import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
 
@@ -17,11 +20,24 @@ export function promptQueueAuthority(
       "A current authenticated session is required for prompt queue changes.",
     );
   }
+  const actorBinding = canonicalRequestActorBindingFromSecurityContext(context);
+  if (!actorBinding) {
+    throw new PromptQueueStoreError(
+      "conflict",
+      "A canonical authenticated account is required for prompt queue changes.",
+      403,
+    );
+  }
+  const canonicalContext: SecurityContext = {
+    ...context,
+    actorId: actorBinding.canonicalActorId,
+  };
   return {
     tenantId: context.tenantId,
-    actorId: context.actorId,
+    ownerActorId: actorBinding.canonicalActorId,
+    requestActorId: context.actorId,
     sessionId,
-    executionScope: executionScopeFromSecurityContext(context, {
+    executionScope: executionScopeFromSecurityContext(canonicalContext, {
       correlationId: `prompt-queue:${itemId || "collection"}:${crypto.randomUUID()}`,
       causationId: itemId,
       purpose,

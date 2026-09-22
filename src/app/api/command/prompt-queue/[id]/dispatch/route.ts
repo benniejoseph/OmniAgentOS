@@ -106,7 +106,7 @@ async function POSTHandler(
       itemId: item.id,
       dispatchToken: claimed.dispatchToken,
       tenantId: context.tenantId,
-      actorId: context.actorId,
+      ownerActorId: authority.ownerActorId,
       terminal: "failed",
       progressLabel: "Governed execution could not start",
       failureCode: "agent_route_unavailable",
@@ -119,7 +119,7 @@ async function POSTHandler(
       itemId: item.id,
       dispatchToken: claimed.dispatchToken,
       tenantId: context.tenantId,
-      actorId: context.actorId,
+      ownerActorId: authority.ownerActorId,
       terminal: "failed",
       progressLabel: "Governed execution was not accepted",
       failureCode: `agent_route_${response.status}`,
@@ -132,7 +132,7 @@ async function POSTHandler(
     itemId: item.id,
     dispatchToken: claimed.dispatchToken,
     tenantId: context.tenantId,
-    actorId: context.actorId,
+    ownerActorId: authority.ownerActorId,
     executionScope: authority.executionScope,
   });
   const responseHeaders = new Headers(response.headers);
@@ -151,7 +151,7 @@ function observeDispatchStream(
     itemId: string;
     dispatchToken: string;
     tenantId: string;
-    actorId: string;
+    ownerActorId: string;
     executionScope: ReturnType<typeof promptQueueAuthority>["executionScope"];
   },
 ) {
