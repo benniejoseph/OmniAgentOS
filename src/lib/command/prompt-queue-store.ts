@@ -935,19 +935,19 @@ export async function recordPromptQueueDispatchProgress(input: {
       SET run_id = COALESCE(${input.runId || null}, run_id),
           result_thread_id = COALESCE(${input.threadId || null}, result_thread_id),
           progress_label = COALESCE(${input.progressLabel?.slice(0, 160) || null}, progress_label),
-          state = COALESCE(${terminal}, state),
+          state = COALESCE(${terminal}::text, state),
           failure_code = CASE
-            WHEN ${terminal} = 'failed'
+            WHEN ${terminal}::text = 'failed'
               THEN ${input.failureCode?.slice(0, 240) || "dispatch_failed"}
-            WHEN ${terminal} = 'completed' THEN NULL
+            WHEN ${terminal}::text = 'completed' THEN NULL
             ELSE failure_code
           END,
-          dispatch_token_sha256 = CASE WHEN ${terminal} IS NULL THEN dispatch_token_sha256 ELSE NULL END,
+          dispatch_token_sha256 = CASE WHEN ${terminal}::text IS NULL THEN dispatch_token_sha256 ELSE NULL END,
           dispatch_lease_expires_at = CASE
-            WHEN ${terminal} IS NULL THEN ${refreshedLeaseExpiresAt}::timestamptz
+            WHEN ${terminal}::text IS NULL THEN ${refreshedLeaseExpiresAt}::timestamptz
             ELSE NULL
           END,
-          terminal_at = CASE WHEN ${terminal} IS NULL THEN terminal_at ELSE ${now} END,
+          terminal_at = CASE WHEN ${terminal}::text IS NULL THEN terminal_at ELSE ${now} END,
           lifecycle_revision = lifecycle_revision + 1,
           updated_at = ${now}
       WHERE tenant_id = ${input.tenantId}

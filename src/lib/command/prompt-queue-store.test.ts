@@ -826,8 +826,15 @@ describe("persistent prompt queue store fences", () => {
 
     const updateCall = mocks.sql.mock.calls[1];
     const updateStatement = updateCall?.[0].join("?");
+    expect(updateStatement?.match(/\?::text/g)).toHaveLength(6);
     expect(updateStatement).toContain(
-      "WHEN ? IS NULL THEN ?::timestamptz\n            ELSE NULL",
+      "CASE WHEN ?::text IS NULL THEN dispatch_token_sha256 ELSE NULL END",
+    );
+    expect(updateStatement).toContain(
+      "WHEN ?::text IS NULL THEN ?::timestamptz\n            ELSE NULL",
+    );
+    expect(updateStatement).toContain(
+      "CASE WHEN ?::text IS NULL THEN terminal_at ELSE ? END",
     );
     expect(updateStatement).toContain("?::timestamptz");
     const leaseValue = updateCall?.slice(1).find((value) =>
