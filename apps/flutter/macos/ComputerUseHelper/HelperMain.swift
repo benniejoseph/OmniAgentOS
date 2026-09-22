@@ -3,6 +3,7 @@ import ApplicationServices
 import Carbon
 import CoreGraphics
 import CryptoKit
+import Darwin
 import Foundation
 import ScreenCaptureKit
 import Security
@@ -164,11 +165,100 @@ enum SafeBrowserNavigationPolicy {
           let host = components.host,
           !host.isEmpty,
           host.utf8.count <= 253,
+          isPublicBrowserHost(host),
           let url = components.url,
           url.scheme?.lowercased() == scheme,
           url.host != nil
     else { return nil }
     return url
+  }
+
+  private static func isPublicBrowserHost(_ rawHost: String) -> Bool {
+    var host = rawHost.lowercased().trimmingCharacters(
+      in: CharacterSet(charactersIn: ".")
+    )
+    if host.hasPrefix("[") && host.hasSuffix("]") {
+      host = String(host.dropFirst().dropLast())
+    }
+    guard !host.isEmpty,
+          host != "localhost",
+          !host.hasSuffix(".localhost")
+    else { return false }
+
+    // Chrome accepts legacy integer, octal, and hexadecimal IPv4 spellings.
+    // Foundation does not consistently canonicalize those forms, so reject
+    // numeric-looking hostnames rather than letting the browser reinterpret one.
+    let components = host.split(separator: ".", omittingEmptySubsequences: false)
+    if components.count <= 4 && components.allSatisfy(isLegacyIPv4Component) {
+      guard components.count == 4,
+            components.allSatisfy({ component in
+              (component == "0" || !component.hasPrefix("0")) &&
+                component.allSatisfy({ $0.isNumber })
+            }),
+            let bytes = addressBytes(host, family: AF_INET, count: 4)
+      else { return false }
+      return isGloballyRoutableIPv4(bytes)
+    }
+    if let bytes = addressBytes(host, family: AF_INET6, count: 16) {
+      return isGloballyRoutableIPv6(bytes)
+    }
+    return true
+  }
+
+  private static func isLegacyIPv4Component(_ component: Substring) -> Bool {
+    guard !component.isEmpty else { return false }
+    let lowercased = component.lowercased()
+    if lowercased.hasPrefix("0x") {
+      let hexadecimal = lowercased.dropFirst(2)
+      return !hexadecimal.isEmpty && hexadecimal.allSatisfy({ $0.isHexDigit })
+    }
+    return component.allSatisfy({ $0.isNumber })
+  }
+
+  private static func addressBytes(
+    _ host: String,
+    family: Int32,
+    count: Int
+  ) -> [UInt8]? {
+    var bytes = [UInt8](repeating: 0, count: count)
+    let parsed = bytes.withUnsafeMutableBytes { buffer in
+      inet_pton(family, host, buffer.baseAddress)
+    }
+    return parsed == 1 ? bytes : nil
+  }
+
+  private static func isGloballyRoutableIPv4(_ bytes: [UInt8]) -> Bool {
+    guard bytes.count == 4 else { return false }
+    let first = Int(bytes[0])
+    let second = Int(bytes[1])
+    let third = Int(bytes[2])
+    if first == 0 || first == 10 || first == 127 || first >= 224 ||
+        (first == 100 && second >= 64 && second <= 127) ||
+        (first == 169 && second == 254) ||
+        (first == 172 && second >= 16 && second <= 31) ||
+        (first == 192 && second == 0 && third == 0) ||
+        (first == 192 && second == 0 && third == 2) ||
+        (first == 192 && second == 88 && third == 99) ||
+        (first == 192 && second == 168) ||
+        (first == 198 && (second == 18 || second == 19)) ||
+        (first == 198 && second == 51 && third == 100) ||
+        (first == 203 && second == 0 && third == 113) {
+      return false
+    }
+    return true
+  }
+
+  private static func isGloballyRoutableIPv6(_ bytes: [UInt8]) -> Bool {
+    guard bytes.count == 16, bytes[0] & 0xe0 == 0x20 else { return false }
+    if bytes[0] == 0x20 && bytes[1] == 0x01 {
+      if bytes[2] & 0xfe == 0 { return false } // 2001:0000::/23
+      if bytes[2] == 0x0d && bytes[3] == 0xb8 { return false }
+    }
+    if bytes[0] == 0x20 && bytes[1] == 0x02 { return false } // deprecated 6to4
+    if bytes[0] == 0x3f && bytes[1] == 0xff && bytes[2] & 0xf0 == 0 {
+      return false // 3fff::/20 documentation
+    }
+    return true
   }
 
   static func effectVerdict(browserObservationConfirmed: Bool) -> String {

@@ -260,6 +260,23 @@ private enum FocusSafeSnapshotPolicyTests {
       "javascript:alert(1)",
       "data:text/plain,secret",
       "https://user:secret@example.test/chart",
+      "https://localhost/chart",
+      "https://asael.localhost/chart",
+      "http://127.0.0.1:3000/admin",
+      "http://2130706433/admin",
+      "http://0x7f000001/admin",
+      "http://0x7f.1/admin",
+      "http://0177.0.0.1/admin",
+      "http://127.1/admin",
+      "http://169.254.169.254/latest/meta-data",
+      "http://10.10.0.4/internal",
+      "http://172.20.0.4/internal",
+      "http://192.168.1.4/internal",
+      "http://100.64.0.1/internal",
+      "http://[::1]/internal",
+      "http://[fe80::1]/internal",
+      "http://[fc00::1]/internal",
+      "http://[2001:db8::1]/documentation",
       "https://example.test/unsafe path",
       "https:\\example.test\\chart",
       " https://example.test",
@@ -267,6 +284,16 @@ private enum FocusSafeSnapshotPolicyTests {
       expect(
         SafeBrowserNavigationPolicy.validatedURL(refused) == nil,
         "unsafe or non-web navigation is refused: \(refused)"
+      )
+    }
+    for accepted in [
+      "https://8.8.8.8/",
+      "https://[2606:4700:4700::1111]/",
+      "https://example.com/",
+    ] {
+      expect(
+        SafeBrowserNavigationPolicy.validatedURL(accepted) != nil,
+        "a public browser destination is accepted: \(accepted)"
       )
     }
   }

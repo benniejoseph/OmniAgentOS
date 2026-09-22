@@ -133,6 +133,23 @@ describe("local computer protocol", () => {
       { ...command.input, url: "file:///etc/passwd" },
       { ...command.input, url: "javascript:alert(1)" },
       { ...command.input, url: "https://user:secret@example.test/chart" },
+      { ...command.input, url: "https://localhost/chart" },
+      { ...command.input, url: "https://asael.localhost/chart" },
+      { ...command.input, url: "http://127.0.0.1:3000/admin" },
+      { ...command.input, url: "http://2130706433/admin" },
+      { ...command.input, url: "http://0x7f000001/admin" },
+      { ...command.input, url: "http://0x7f.1/admin" },
+      { ...command.input, url: "http://0177.0.0.1/admin" },
+      { ...command.input, url: "http://127.1/admin" },
+      { ...command.input, url: "http://169.254.169.254/latest/meta-data" },
+      { ...command.input, url: "http://10.10.0.4/internal" },
+      { ...command.input, url: "http://172.20.0.4/internal" },
+      { ...command.input, url: "http://192.168.1.4/internal" },
+      { ...command.input, url: "http://100.64.0.1/internal" },
+      { ...command.input, url: "http://[::1]/internal" },
+      { ...command.input, url: "http://[fe80::1]/internal" },
+      { ...command.input, url: "http://[fc00::1]/internal" },
+      { ...command.input, url: "http://[2001:db8::1]/documentation" },
       { ...command.input, url: "https://example.test/unsafe path" },
       { ...command.input, loadWaitSeconds: 16 },
       { ...command.input, extra: "not-allowed" },
@@ -140,6 +157,16 @@ describe("local computer protocol", () => {
       expect(
         localComputerCommandSchema.safeParse({ ...command, input }).success,
       ).toBe(false);
+    }
+    for (const url of [
+      "https://8.8.8.8/",
+      "https://[2606:4700:4700::1111]/",
+      "https://example.com/",
+    ]) {
+      expect(localComputerCommandSchema.safeParse({
+        ...command,
+        input: { ...command.input, url },
+      }).success).toBe(true);
     }
   });
 

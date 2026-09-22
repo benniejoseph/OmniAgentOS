@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { isIP } from "node:net";
 import { z } from "zod";
 
 export const LOCAL_COMPUTER_PROTOCOL_VERSION = 1 as const;
@@ -62,7 +63,8 @@ export const localComputerOpenUrlInputSchema = z.object({
         !["http:", "https:"].includes(parsed.protocol) ||
         !parsed.hostname ||
         parsed.username ||
-        parsed.password
+        parsed.password ||
+        !isPublicBrowserHost(parsed.hostname)
       ) {
         context.addIssue({
           code: "custom",
@@ -73,6 +75,98 @@ export const localComputerOpenUrlInputSchema = z.object({
   loadWaitSeconds: z.number().int().min(0).max(15).optional(),
   presentScreenshot: z.boolean().default(false),
 }).strict();
+
+/**
+ * Browser navigation may target public DNS names or globally routable IP
+ * literals. Localhost and non-public literals fail closed before the command
+ * can reach the native helper. DNS resolution is intentionally not performed
+ * here; the helper repeats the literal-host check at the effect boundary.
+ */
+export function isPublicBrowserHost(rawHostname: string): boolean {
+  const hostname = rawHostname
+    .toLowerCase()
+    .replace(/^\[|\]$/g, "")
+    .replace(/\.$/, "");
+  if (
+    !hostname ||
+    hostname === "localhost" ||
+    hostname.endsWith(".localhost")
+  ) {
+    return false;
+  }
+  const version = isIP(hostname);
+  if (version === 4) return isGloballyRoutableIpv4(hostname);
+  if (version === 6) return isGloballyRoutableIpv6(hostname);
+  return true;
+}
+
+function isGloballyRoutableIpv4(hostname: string): boolean {
+  const octets = hostname.split(".").map(Number);
+  if (octets.length !== 4 || octets.some((value) =>
+    !Number.isInteger(value) || value < 0 || value > 255)) {
+    return false;
+  }
+  const [first, second, third] = octets;
+  if (
+    first === 0 ||
+    first === 10 ||
+    first === 127 ||
+    first >= 224 ||
+    (first === 100 && second >= 64 && second <= 127) ||
+    (first === 169 && second === 254) ||
+    (first === 172 && second >= 16 && second <= 31) ||
+    (first === 192 && second === 0 && third === 0) ||
+    (first === 192 && second === 0 && third === 2) ||
+    (first === 192 && second === 88 && third === 99) ||
+    (first === 192 && second === 168) ||
+    (first === 198 && (second === 18 || second === 19)) ||
+    (first === 198 && second === 51 && third === 100) ||
+    (first === 203 && second === 0 && third === 113)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function isGloballyRoutableIpv6(hostname: string): boolean {
+  const bytes = ipv6Bytes(hostname);
+  if (!bytes) return false;
+  // Public IPv6 unicast is currently 2000::/3. Exclude documentation,
+  // deprecated transition, and special-purpose sub-ranges inside that block.
+  if ((bytes[0] & 0xe0) !== 0x20) return false;
+  if (bytes[0] === 0x20 && bytes[1] === 0x01) {
+    if ((bytes[2] & 0xfe) === 0) return false; // 2001:0000::/23
+    if (bytes[2] === 0x0d && bytes[3] === 0xb8) return false; // documentation
+  }
+  if (bytes[0] === 0x20 && bytes[1] === 0x02) return false; // deprecated 6to4
+  if (bytes[0] === 0x3f && bytes[1] === 0xff && (bytes[2] & 0xf0) === 0) {
+    return false; // 3fff::/20 documentation
+  }
+  return true;
+}
+
+function ipv6Bytes(hostname: string): number[] | undefined {
+  const halves = hostname.split("::");
+  if (halves.length > 2) return undefined;
+  const parseHalf = (value: string) => value
+    ? value.split(":").map((part) => Number.parseInt(part, 16))
+    : [];
+  const left = parseHalf(halves[0]);
+  const right = parseHalf(halves[1] || "");
+  if (
+    [...left, ...right].some((value) =>
+      !Number.isInteger(value) || value < 0 || value > 0xffff) ||
+    (halves.length === 1 && left.length !== 8) ||
+    left.length + right.length >= 8
+  ) {
+    return undefined;
+  }
+  const groups = halves.length === 2
+    ? [...left, ...Array(8 - left.length - right.length).fill(0), ...right]
+    : left;
+  if (groups.length !== 8) return undefined;
+  return groups.flatMap((group) => [group >> 8, group & 0xff]);
+}
 
 export const localComputerClickInputSchema = z.union([
   z.object({
