@@ -14,6 +14,7 @@ import { getAppServiceOperationContract } from "@/lib/app-services/registry";
 import { runWithDatabaseActorScope } from "@/lib/db/client";
 import type { DelegationExecutionRecordV1 } from "@/lib/delegation/execution-record";
 import {
+  cancelDelegationExecution,
   getDelegationExecution,
   listDelegationExecutions,
 } from "@/lib/delegation/execution-store";
@@ -64,6 +65,11 @@ const agentTaskListSchema = z.object({
 }).strict();
 const agentTaskShowSchema = z.object({
   executionId: z.string().trim().min(1).max(240),
+}).strict();
+export const agentTaskCancelServiceInputSchema = z.object({
+  executionId: z.string().trim().min(1).max(240),
+  expectedRevision: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+  reason: z.string().trim().min(1).max(500).default("Canceled by the operator."),
 }).strict();
 export const agentCouncilMapServiceInputSchema = z.object({
   limit: z.number().int().min(1).max(100).default(60),
@@ -155,12 +161,14 @@ export async function showAgentCouncilMapService(
 
 type AgentTaskServiceDependencies = Readonly<{
   delegateTask: typeof delegateAgentTask;
+  cancelExecution: typeof cancelDelegationExecution;
   getExecution: typeof getDelegationExecution;
   listExecutions: typeof listDelegationExecutions;
 }>;
 
 const defaultAgentTaskServiceDependencies: AgentTaskServiceDependencies = Object.freeze({
   delegateTask: delegateAgentTask,
+  cancelExecution: cancelDelegationExecution,
   getExecution: getDelegationExecution,
   listExecutions: listDelegationExecutions,
 });
@@ -231,6 +239,37 @@ export async function showAgentTaskService(
   );
 }
 
+export async function cancelAgentTaskService(
+  caller: AppServiceCaller,
+  input: z.input<typeof agentTaskCancelServiceInputSchema>,
+  dependencies: AgentTaskServiceDependencies = defaultAgentTaskServiceDependencies,
+) {
+  const value = agentTaskCancelServiceInputSchema.parse(input);
+  const authorized = authorizeAppServiceCall(
+    caller,
+    getAppServiceOperationContract("app.agents.tasks.cancel"),
+  );
+  const canceled = await dependencies.cancelExecution({
+    tenantId: caller.context.tenantId,
+    ownerActorId: caller.context.actorId,
+    executionId: value.executionId,
+    expectedRevision: value.expectedRevision,
+    requestSha256: canonicalJsonSha256(value),
+    idempotencyKeySha256: authorized.idempotencyKeySha256!,
+    executionScope: caller.executionScope!,
+  });
+  return completeAppServiceCall(
+    authorized,
+    {
+      task: delegationExecutionPublicProjection(canceled.execution),
+      canceledChildRun: canceled.canceledChildRun,
+      canceledDeliveryCount: canceled.canceledDeliveryCount,
+      idempotent: canceled.idempotent,
+    },
+    { resourceCount: 1 },
+  );
+}
+
 export function delegationExecutionPublicProjection(
   execution: DelegationExecutionRecordV1,
 ) {
@@ -243,6 +282,7 @@ export function delegationExecutionPublicProjection(
     childRunId: execution.childRunId,
     state: execution.state,
     lifecycleRevision: execution.lifecycleRevision,
+    canCancel: ["queued", "running", "waiting"].includes(execution.state),
     mode: execution.mode,
     objective: execution.contract.objective,
     delegateAgentId: execution.delegateAgentId,

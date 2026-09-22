@@ -78,6 +78,7 @@
 .executionButton:focus-visible,
 .memberButton:focus-visible,
 .primaryLink:focus-visible,
+.cancelButton:focus-visible,
 .destinationLinks a:focus-visible { outline: 2px solid var(--arsenal-primary, var(--primary)); outline-offset: -2px; }
 .executionButton > strong { display: -webkit-box; overflow: hidden; font-size: .8rem; line-height: 1.4; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .executionButton > span:last-child { color: var(--arsenal-muted, var(--muted)); font-size: .7rem; }
@@ -121,9 +122,16 @@
 .activityIdentity h3 { margin: .1rem 0 .25rem; font-size: 1.1rem; }
 .activityActions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .5rem; }
 .readOnlyBadge,
-.primaryLink { display: inline-flex; min-height: 2.4rem; align-items: center; gap: .4rem; border: 1px solid var(--arsenal-line, var(--line)); border-radius: .7rem; padding: 0 .7rem; font-size: .74rem; font-weight: 720; }
+.primaryLink,
+.cancelButton { display: inline-flex; min-height: 2.4rem; align-items: center; gap: .4rem; border: 1px solid var(--arsenal-line, var(--line)); border-radius: .7rem; padding: 0 .7rem; font-size: .74rem; font-weight: 720; }
 .readOnlyBadge { color: var(--arsenal-muted, var(--muted)); background: var(--arsenal-bg, var(--background)); }
 .primaryLink { border-color: color-mix(in oklab, var(--arsenal-primary, var(--primary)) 28%, var(--arsenal-line, var(--line))); color: var(--arsenal-primary, var(--primary)); background: color-mix(in oklab, var(--arsenal-primary, var(--primary)) 8%, transparent); text-decoration: none; }
+.cancelButton { border-color: color-mix(in oklab, var(--danger) 28%, var(--arsenal-line, var(--line))); color: var(--danger); background: color-mix(in oklab, var(--danger) 6%, transparent); }
+.cancelButton:hover:not(:disabled) { background: color-mix(in oklab, var(--danger) 11%, transparent); }
+.cancelButton:disabled { cursor: wait; opacity: .68; }
+.spin { animation: spin 1s linear infinite; }
+.cancelNotice { margin: 0; border-bottom: 1px solid color-mix(in oklab, var(--success) 22%, var(--arsenal-line, var(--line))); padding: .58rem 1.2rem; color: var(--success); background: color-mix(in oklab, var(--success) 5%, transparent); font-size: .72rem; }
+.cancelNotice.isError { border-color: color-mix(in oklab, var(--danger) 24%, var(--arsenal-line, var(--line))); color: var(--danger); background: color-mix(in oklab, var(--danger) 5%, transparent); }
 
 .workBrief { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 1rem; border-bottom: 1px solid var(--arsenal-line, var(--line)); padding: 1rem 1.2rem; background: color-mix(in oklab, var(--arsenal-primary, var(--primary)) 3%, transparent); }
 .workBrief p { margin: 0; color: var(--arsenal-primary, var(--primary)); font-size: .63rem; font-weight: 760; letter-spacing: .08em; text-transform: uppercase; }
@@ -251,5 +259,6 @@
 
 @media (prefers-reduced-motion: reduce) {
   .notice.loading > span { animation: none; }
+  .spin { animation: none; }
   .executionButton { transition: none; }
 }

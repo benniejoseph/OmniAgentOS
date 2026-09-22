@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type { DelegationExecutionContractV2 } from "@/lib/delegation/execution-contract";
 import {
   buildDelegationExecutionRecordV1,
@@ -29,6 +31,7 @@ import {
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
 type DelegationExecutionSql = ReturnType<typeof getSql>;
+const DELEGATION_CANCELLATION_MESSAGE = "Canceled by the operator.";
 
 export class DelegationExecutionConflictError extends Error {
   readonly code = "delegation_execution_conflict";
@@ -45,6 +48,15 @@ export class DelegationExecutionUnavailableError extends Error {
   constructor(message = "Delegation executions require the canonical database authority.") {
     super(message);
     this.name = "DelegationExecutionUnavailableError";
+  }
+}
+
+export class DelegationExecutionNotFoundError extends Error {
+  readonly code = "delegation_execution_not_found";
+
+  constructor(message = "Delegation execution was not found.") {
+    super(message);
+    this.name = "DelegationExecutionNotFoundError";
   }
 }
 
@@ -265,6 +277,186 @@ export async function transitionDelegationExecution(input: {
       );
       return executionFromRow(rows[0]);
     }) as Promise<DelegationExecutionRecordV1>,
+  );
+}
+
+/**
+ * Cancels one active V2 execution, its exact child run, and its matching queue
+ * delivery in one actor-scoped transaction. The expected lifecycle revision
+ * and request/idempotency digests make retries exact without persisting raw
+ * request content or keys.
+ */
+export async function cancelDelegationExecution(input: {
+  tenantId: string;
+  ownerActorId: string;
+  executionId: string;
+  expectedRevision: number;
+  requestSha256: string;
+  idempotencyKeySha256: string;
+  executionScope: ExecutionScope;
+  at?: string;
+}) {
+  requireDatabase();
+  await ensureDatabaseSchema();
+  assertSha256(input.requestSha256, "cancellation request");
+  assertSha256(input.idempotencyKeySha256, "cancellation idempotency key");
+  return runWithDatabaseActorScope(
+    input.tenantId,
+    [input.ownerActorId],
+    () => getSql().transaction(async (sql: DelegationExecutionSql) => {
+      const current = await readDelegationExecution(
+        sql,
+        input.tenantId,
+        input.executionId,
+        true,
+        true,
+      );
+      if (!current || current.ownerActorId !== input.ownerActorId) {
+        throw new DelegationExecutionNotFoundError();
+      }
+      assertCancellationScope(current, input.executionScope);
+      const reason = cancellationTransitionReason(input);
+      const detailSha256 = canonicalJsonSha256({ to: "canceled", reason });
+
+      const run = await lockDelegationChildRun(sql, current);
+      const job = await lockDelegationDelivery(sql, current);
+      if (current.state === "canceled") {
+        if (
+          input.expectedRevision !== current.lifecycleRevision - 1 ||
+          run.status !== "canceled" ||
+          (job && job.status !== "canceled") ||
+          !await hasExactCancellationEvent(sql, current, detailSha256)
+        ) {
+          throw new DelegationExecutionConflictError(
+            "Delegation cancellation retry does not match the committed transition.",
+          );
+        }
+        return Object.freeze({
+          execution: current,
+          canceledChildRun: false,
+          canceledDeliveryCount: 0,
+          idempotent: true,
+        });
+      }
+      if (!["queued", "running", "waiting"].includes(current.state)) {
+        throw new DelegationExecutionConflictError(
+          "Delegation execution is no longer cancellable.",
+        );
+      }
+      if (current.lifecycleRevision !== input.expectedRevision) {
+        throw new DelegationExecutionConflictError();
+      }
+      if (["completed", "failed"].includes(run.status)) {
+        throw new DelegationExecutionConflictError(
+          "Delegation child run already reached a terminal result.",
+        );
+      }
+      if (job && ["completed", "failed"].includes(job.status)) {
+        throw new DelegationExecutionConflictError(
+          "Delegation delivery already reached a terminal result.",
+        );
+      }
+
+      const at = input.at || new Date().toISOString();
+      const { record: next, event } = transitionDelegationExecutionRecordV1({
+        record: current,
+        transition: { to: "canceled", reason },
+        at,
+      });
+      const executionRows = await sql`
+        UPDATE omni_delegation_executions
+        SET state = ${next.state},
+            lifecycle_revision = ${next.lifecycleRevision},
+            result = ${next.result}::jsonb,
+            result_sha256 = ${next.resultSha256},
+            verification = ${next.verification}::jsonb,
+            verification_sha256 = ${next.verificationSha256},
+            failure_code = ${next.failureCode},
+            updated_at = ${next.updatedAt},
+            terminal_at = ${next.terminalAt}
+        WHERE tenant_id = ${next.tenantId}
+          AND owner_actor_id = ${next.ownerActorId}
+          AND execution_id = ${next.executionId}
+          AND contract_sha256 = ${next.contractSha256}
+          AND child_run_id = ${next.childRunId}
+          AND state = ${current.state}
+          AND lifecycle_revision = ${current.lifecycleRevision}
+        RETURNING *
+      `;
+      if (executionRows.length !== 1) throw new DelegationExecutionConflictError();
+
+      let canceledChildRun = false;
+      if (run.status !== "canceled") {
+        const runRows = await sql`
+          UPDATE omni_agent_runs
+          SET status = 'canceled', response = NULL, grounding = NULL,
+              error = ${DELEGATION_CANCELLATION_MESSAGE}, continuation = NULL,
+              completed_at = ${next.updatedAt}
+          WHERE tenant_id = ${next.tenantId}
+            AND owner_actor_id = ${next.ownerActorId}
+            AND id = ${next.childRunId}
+            AND agent_id = ${next.delegateAgentId}
+            AND status = ${run.status}
+            AND status NOT IN ('completed', 'failed', 'canceled')
+          RETURNING id
+        `;
+        if (runRows.length !== 1) {
+          throw new DelegationExecutionConflictError(
+            "Delegation child run changed during cancellation.",
+          );
+        }
+        canceledChildRun = true;
+        await appendDelegationChildRunCancellationEvent(
+          sql,
+          next,
+          input.executionScope,
+          input.requestSha256,
+        );
+      }
+
+      let canceledDeliveryCount = 0;
+      if (job && job.status !== "canceled") {
+        const jobRows = await sql`
+          UPDATE omni_operation_jobs
+          SET status = 'canceled', locked_at = NULL, lease_owner = NULL,
+              lease_expires_at = NULL,
+              last_error = 'Delegation canceled by the operator.',
+              completed_at = ${next.updatedAt}, updated_at = ${next.updatedAt}
+          WHERE tenant_id = ${next.tenantId}
+            AND id = ${job.id}
+            AND type = 'agent.execute'
+            AND status = ${job.status}
+            AND status IN ('queued', 'running')
+            AND payload ->> 'kind' = 'delegation_execution_v2'
+            AND payload ->> 'executionId' = ${next.executionId}
+            AND payload ->> 'contractSha256' = ${next.contractSha256}
+          RETURNING id
+        `;
+        if (jobRows.length !== 1) {
+          throw new DelegationExecutionConflictError(
+            "Delegation delivery changed during cancellation.",
+          );
+        }
+        canceledDeliveryCount = 1;
+      }
+      await appendDelegationExecutionEvent(
+        sql,
+        event,
+        input.executionScope,
+        current.contract,
+      );
+      return Object.freeze({
+        execution: executionFromRow(executionRows[0]),
+        canceledChildRun,
+        canceledDeliveryCount,
+        idempotent: false,
+      });
+    }) as Promise<Readonly<{
+      execution: DelegationExecutionRecordV1;
+      canceledChildRun: boolean;
+      canceledDeliveryCount: number;
+      idempotent: boolean;
+    }>>,
   );
 }
 
@@ -538,6 +730,191 @@ function assertTransitionScope(
   ) {
     throw new DelegationExecutionConflictError(
       "Only the exact delegated principal may advance child execution.",
+    );
+  }
+}
+
+function assertCancellationScope(
+  record: DelegationExecutionRecordV1,
+  scope: ExecutionScope,
+) {
+  if (
+    scope.tenantId !== record.tenantId ||
+    scope.initiatingActorId !== record.ownerActorId ||
+    scope.delegationId !== null
+  ) {
+    throw new DelegationExecutionConflictError(
+      "Delegation cancellation is outside its tenant, owner, or root authority.",
+    );
+  }
+  const ownerControl =
+    scope.executingPrincipalType === "user" &&
+    scope.executingPrincipalId === record.ownerActorId &&
+    record.contract.cancellation.allowedInitiators.includes("owner");
+  const parentControl =
+    scope.executingPrincipalType === "agent" &&
+    scope.executingPrincipalId === record.contract.lineage.parentPrincipalId &&
+    record.contract.cancellation.allowedInitiators.includes("parent") &&
+    scope.correlationId === record.rootExecutionId &&
+    scope.workspaceId === record.contract.lineage.workspaceId &&
+    scope.projectId === record.contract.lineage.projectId &&
+    scope.missionId === record.contract.lineage.workItemId;
+  if (!ownerControl && !parentControl) {
+    throw new DelegationExecutionConflictError(
+      "Only the exact owner or parent Agent authority may cancel a child.",
+    );
+  }
+}
+
+async function lockDelegationChildRun(
+  sql: DelegationExecutionSql,
+  record: DelegationExecutionRecordV1,
+) {
+  const rows = await sql`
+    SELECT id, tenant_id, owner_actor_id, agent_id, status
+    FROM omni_agent_runs
+    WHERE tenant_id = ${record.tenantId}
+      AND owner_actor_id = ${record.ownerActorId}
+      AND id = ${record.childRunId}
+      AND agent_id = ${record.delegateAgentId}
+    LIMIT 1 FOR UPDATE
+  `;
+  if (rows.length !== 1) {
+    throw new DelegationExecutionConflictError(
+      "Delegation child run identity could not be fenced.",
+    );
+  }
+  const status = String(rows[0].status);
+  if (![
+    "queued",
+    "running",
+    "waiting_clarification",
+    "waiting_approval",
+    "resuming",
+    "completed",
+    "failed",
+    "canceled",
+  ].includes(status)) {
+    throw new DelegationExecutionConflictError(
+      "Delegation child run state is unsupported.",
+    );
+  }
+  return Object.freeze({ id: String(rows[0].id), status });
+}
+
+async function lockDelegationDelivery(
+  sql: DelegationExecutionSql,
+  record: DelegationExecutionRecordV1,
+) {
+  const rows = await sql`
+    SELECT id, status
+    FROM omni_operation_jobs
+    WHERE tenant_id = ${record.tenantId}
+      AND type = 'agent.execute'
+      AND payload ->> 'kind' = 'delegation_execution_v2'
+      AND payload ->> 'executionId' = ${record.executionId}
+      AND payload ->> 'runId' = ${record.childRunId}
+      AND payload ->> 'contractSha256' = ${record.contractSha256}
+    ORDER BY created_at ASC
+    FOR UPDATE
+  `;
+  if (rows.length > 1) {
+    throw new DelegationExecutionConflictError(
+      "Delegation execution has more than one canonical delivery.",
+    );
+  }
+  if (!rows[0]) return undefined;
+  const status = String(rows[0].status);
+  if (!["queued", "running", "completed", "failed", "canceled"].includes(status)) {
+    throw new DelegationExecutionConflictError(
+      "Delegation delivery state is unsupported.",
+    );
+  }
+  return Object.freeze({ id: String(rows[0].id), status });
+}
+
+async function hasExactCancellationEvent(
+  sql: DelegationExecutionSql,
+  record: DelegationExecutionRecordV1,
+  detailSha256: string,
+) {
+  const rows = await sql`
+    SELECT id
+    FROM omni_events
+    WHERE tenant_id = ${record.tenantId}
+      AND actor_id = ${record.ownerActorId}
+      AND stream_id = ${`delegation-execution:${record.delegationId}`}
+      AND type = 'delegation.execution.canceled'
+      AND payload ->> 'executionId' = ${record.executionId}
+      AND payload ->> 'detailSha256' = ${detailSha256}
+      AND (payload ->> 'lifecycleRevision')::bigint = ${record.lifecycleRevision}
+    LIMIT 1
+  `;
+  return rows.length === 1;
+}
+
+async function appendDelegationChildRunCancellationEvent(
+  sql: DelegationExecutionSql,
+  record: DelegationExecutionRecordV1,
+  authorityScope: ExecutionScope,
+  requestSha256: string,
+) {
+  const receipt = Object.freeze({
+    schemaVersion: 1 as const,
+    version: "delegation-child-run-cancellation:1" as const,
+    executionId: record.executionId,
+    childRunId: record.childRunId,
+    delegationId: record.delegationId,
+    lifecycleRevision: record.lifecycleRevision,
+    requestSha256,
+    at: record.updatedAt,
+  });
+  const receiptSha256 = canonicalJsonSha256(receipt);
+  const eventScope = deriveExecutionScope(authorityScope, {
+    causationId: `delegation-child-run-cancel:${receiptSha256}`,
+    purpose: "delegation.child_run.canceled.v1",
+  });
+  await appendScopedDomainEvent({
+    id: `delegation-child-run-domain-event:${receiptSha256}`,
+    streamId: `run:${record.childRunId}`,
+    type: "run.canceled",
+    payload: {
+      schemaVersion: 1,
+      type: "canceled",
+      messageLength: DELEGATION_CANCELLATION_MESSAGE.length,
+      messageSha256: createHash("sha256")
+        .update(DELEGATION_CANCELLATION_MESSAGE)
+        .digest("hex"),
+      source: "delegation_execution_v2",
+      ...receipt,
+      receiptSha256,
+    },
+    executionScope: eventScope,
+  }, { sql });
+  await sql`
+    INSERT INTO omni_agent_events (
+      id, tenant_id, run_id, type, payload, created_at
+    ) VALUES (
+      ${`delegation-child-run-event:${receiptSha256}`}, ${record.tenantId},
+      ${record.childRunId}, 'canceled',
+      ${{ type: "canceled", message: DELEGATION_CANCELLATION_MESSAGE }}::jsonb,
+      ${record.updatedAt}
+    )
+    ON CONFLICT (id) DO NOTHING
+  `;
+}
+
+function cancellationTransitionReason(input: {
+  requestSha256: string;
+  idempotencyKeySha256: string;
+}) {
+  return `request:${input.requestSha256}:idempotency:${input.idempotencyKeySha256}`;
+}
+
+function assertSha256(value: string, label: string) {
+  if (!/^[a-f0-9]{64}$/.test(value)) {
+    throw new DelegationExecutionConflictError(
+      `Delegation ${label} digest is invalid.`,
     );
   }
 }

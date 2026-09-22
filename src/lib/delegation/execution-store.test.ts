@@ -26,6 +26,7 @@ import {
   type DelegationExecutionRecordV1,
 } from "@/lib/delegation/execution-record";
 import {
+  cancelDelegationExecution,
   createDelegationExecution,
   DelegationExecutionUnavailableError,
   transitionDelegationExecution,
@@ -156,6 +157,147 @@ describe("delegation execution store", () => {
     })).rejects.toThrow(/exact delegated principal/i);
   });
 
+  it("atomically cancels the active execution, child run, and exact delivery", async () => {
+    const contract = buildExecutionContract();
+    const current = buildDelegationExecutionRecordV1({
+      contract,
+      budgetLedgerRevision: 1,
+    });
+    const requestSha256 = "7".repeat(64);
+    const idempotencyKeySha256 = "8".repeat(64);
+    const canceled = transitionDelegationExecutionRecordV1({
+      record: current,
+      transition: {
+        to: "canceled",
+        reason: `request:${requestSha256}:idempotency:${idempotencyKeySha256}`,
+      },
+      at: "2026-09-22T12:00:45.000Z",
+    }).record;
+    const statements: string[] = [];
+    const sql = Object.assign(async (parts: TemplateStringsArray) => {
+      const statement = parts.join("?");
+      statements.push(statement);
+      if (/SELECT \* FROM omni_delegation_executions/.test(statement)) {
+        return [recordRow(current)];
+      }
+      if (/FROM omni_agent_runs/.test(statement)) {
+        return [{
+          id: current.childRunId,
+          tenant_id: current.tenantId,
+          owner_actor_id: current.ownerActorId,
+          agent_id: current.delegateAgentId,
+          status: "queued",
+        }];
+      }
+      if (/SELECT id, status[\s\S]*FROM omni_operation_jobs/.test(statement)) {
+        return [{ id: "job-one", status: "queued" }];
+      }
+      if (/UPDATE omni_delegation_executions/.test(statement)) {
+        return [recordRow(canceled)];
+      }
+      if (/UPDATE omni_agent_runs/.test(statement)) return [{ id: current.childRunId }];
+      if (/UPDATE omni_operation_jobs/.test(statement)) return [{ id: "job-one" }];
+      return [];
+    }, {
+      transaction: async (callback: (sql: unknown) => unknown) => callback(sql),
+    });
+    mocks.getSql.mockReturnValue(sql);
+
+    const result = await cancelDelegationExecution({
+      tenantId: current.tenantId,
+      ownerActorId: current.ownerActorId,
+      executionId: current.executionId,
+      expectedRevision: current.lifecycleRevision,
+      requestSha256,
+      idempotencyKeySha256,
+      executionScope: ownerScope(contract),
+      at: "2026-09-22T12:00:45.000Z",
+    });
+
+    expect(result).toMatchObject({
+      execution: { state: "canceled", lifecycleRevision: 1 },
+      canceledChildRun: true,
+      canceledDeliveryCount: 1,
+      idempotent: false,
+    });
+    expect(statements.some((statement) => /UPDATE omni_agent_runs/.test(statement))).toBe(true);
+    expect(statements.some((statement) => /UPDATE omni_operation_jobs/.test(statement))).toBe(true);
+    expect(mocks.appendScopedDomainEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "run.canceled",
+        payload: expect.objectContaining({
+          executionId: current.executionId,
+          requestSha256,
+        }),
+      }),
+      { sql },
+    );
+    expect(mocks.appendScopedDomainEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "delegation.execution.canceled",
+        payload: expect.objectContaining({
+          lifecycleRevision: 1,
+          contractSha256: current.contractSha256,
+        }),
+      }),
+      { sql },
+    );
+  });
+
+  it("accepts only the exact idempotent cancellation retry", async () => {
+    const contract = buildExecutionContract();
+    const queued = buildDelegationExecutionRecordV1({ contract, budgetLedgerRevision: 1 });
+    const requestSha256 = "7".repeat(64);
+    const idempotencyKeySha256 = "8".repeat(64);
+    const canceled = transitionDelegationExecutionRecordV1({
+      record: queued,
+      transition: {
+        to: "canceled",
+        reason: `request:${requestSha256}:idempotency:${idempotencyKeySha256}`,
+      },
+      at: "2026-09-22T12:00:45.000Z",
+    }).record;
+    let eventMatches = true;
+    const sql = Object.assign(async (parts: TemplateStringsArray) => {
+      const statement = parts.join("?");
+      if (/SELECT \* FROM omni_delegation_executions/.test(statement)) return [recordRow(canceled)];
+      if (/FROM omni_agent_runs/.test(statement)) return [{ id: canceled.childRunId, status: "canceled" }];
+      if (/SELECT id, status[\s\S]*FROM omni_operation_jobs/.test(statement)) return [{ id: "job-one", status: "canceled" }];
+      if (/FROM omni_events/.test(statement)) return eventMatches ? [{ id: "cancel-event" }] : [];
+      return [];
+    }, {
+      transaction: async (callback: (sql: unknown) => unknown) => callback(sql),
+    });
+    mocks.getSql.mockReturnValue(sql);
+
+    const retry = await cancelDelegationExecution({
+      tenantId: canceled.tenantId,
+      ownerActorId: canceled.ownerActorId,
+      executionId: canceled.executionId,
+      expectedRevision: 0,
+      requestSha256,
+      idempotencyKeySha256,
+      executionScope: ownerScope(contract),
+    });
+    expect(retry).toMatchObject({
+      execution: { state: "canceled", lifecycleRevision: 1 },
+      canceledChildRun: false,
+      canceledDeliveryCount: 0,
+      idempotent: true,
+    });
+
+    eventMatches = false;
+    await expect(cancelDelegationExecution({
+      tenantId: canceled.tenantId,
+      ownerActorId: canceled.ownerActorId,
+      executionId: canceled.executionId,
+      expectedRevision: 0,
+      requestSha256: "9".repeat(64),
+      idempotencyKeySha256,
+      executionScope: ownerScope(contract),
+    })).rejects.toThrow(/retry does not match/i);
+  });
+
   it("fails closed without canonical persistence", async () => {
     mocks.hasDatabaseUrl.mockReturnValue(false);
     const contract = buildExecutionContract();
@@ -196,6 +338,18 @@ function childScope(contract: ReturnType<typeof buildExecutionContract>) {
     contextGrantIds: contract.grants.contextGrantIds,
     capabilityGrantIds: contract.grants.capabilityGrantIds,
     purpose: "delegation.work.execute",
+  });
+}
+
+function ownerScope(contract: ReturnType<typeof buildExecutionContract>) {
+  return createExecutionScope({
+    tenantId: contract.lineage.tenantId,
+    initiatingActorId: contract.lineage.initiatingActorId,
+    executingPrincipalType: "user",
+    executingPrincipalId: contract.lineage.initiatingActorId,
+    correlationId: "cancel-request-one",
+    causationId: contract.delegateIdentity.runId,
+    purpose: "delegation.execution.cancel",
   });
 }
 

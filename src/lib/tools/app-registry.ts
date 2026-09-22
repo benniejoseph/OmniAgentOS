@@ -597,6 +597,11 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   readTool("app.agents.tasks.show", "Show delegated agent task", "Read one bounded delegated-task result and verifier projection owned by the current actor without exposing authority contracts, capability grants, or context capsules.", requiredObjectSchema({
     executionId: opaqueId("Exact delegation execution ID."),
   }, ["executionId"])),
+  mutationTool("app.agents.tasks.cancel", "Cancel delegated agent task", "Cancel one exact active V2 child execution, its child run, and its matching delivery using the expected lifecycle revision. Terminal and legacy tasks are never changed.", requiredObjectSchema({
+    executionId: opaqueId("Exact V2 delegation execution ID."),
+    expectedRevision: integer(0, Number.MAX_SAFE_INTEGER),
+    reason: text(1, 500),
+  }, ["executionId", "expectedRevision"]), { riskLevel: 2, approvalRequired: true, reversible: false }),
   mutationTool("app.agents.create", "Create custom agent", "Create one custom agent with bounded skills, tools, memory, model, and approval policy.", requiredObjectSchema(agentProperties(), ["name", "role", "description", "instructions"]), { reversible: true }),
   mutationTool("app.agents.update", "Update custom agent", "Update one exact custom agent.", requiredObjectSchema({
     id: opaqueId("Exact custom-agent ID."), change: objectSchema(agentProperties()),

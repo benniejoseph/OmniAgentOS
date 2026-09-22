@@ -1,13 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  cancelAgentTaskService,
   delegateAgentTaskService,
   listAgentTasksService,
   showAgentTaskService,
 } from "@/lib/app-services/agents";
 import { createAppServiceCaller } from "@/lib/app-services/contracts";
-import { buildDelegationExecutionRecordV1 } from "@/lib/delegation/execution-record";
+import {
+  buildDelegationExecutionRecordV1,
+  transitionDelegationExecutionRecordV1,
+} from "@/lib/delegation/execution-record";
 import type {
+  cancelDelegationExecution,
   getDelegationExecution,
   listDelegationExecutions,
 } from "@/lib/delegation/execution-store";
@@ -41,8 +46,19 @@ function taskRecord() {
 }
 
 function dependencies(record = taskRecord()) {
+  const canceled = transitionDelegationExecutionRecordV1({
+    record,
+    transition: { to: "canceled", reason: "request:test:idempotency:test" },
+    at: "2026-09-22T12:00:30.000Z",
+  }).record;
   return {
     delegateTask: vi.fn(async () => record) as typeof delegateAgentTask,
+    cancelExecution: vi.fn(async () => ({
+      execution: canceled,
+      canceledChildRun: true,
+      canceledDeliveryCount: 1,
+      idempotent: false,
+    })) as typeof cancelDelegationExecution,
     getExecution: vi.fn(async () => record) as typeof getDelegationExecution,
     listExecutions: vi.fn(async () => [record]) as typeof listDelegationExecutions,
   };
@@ -155,6 +171,63 @@ describe("governed Agent delegation application services", () => {
       operation: "app.agents.tasks.show",
       resourceCount: 1,
     });
+  });
+
+  it("cancels through exact actor authority without projecting private contracts", async () => {
+    const deps = dependencies();
+    const executionScope = createExecutionScope({
+      tenantId: context.tenantId,
+      initiatingActorId: context.actorId,
+      executingPrincipalType: "user",
+      executingPrincipalId: context.actorId,
+      correlationId: "cancel-request-one",
+      causationId: "run-child",
+      purpose: "delegation.execution.cancel",
+    });
+    const caller = createAppServiceCaller({
+      context,
+      executionScope,
+      idempotencyKey: "cancel:delegation:one",
+    });
+
+    const result = await cancelAgentTaskService(caller, {
+      executionId: "run-child",
+      expectedRevision: 0,
+      reason: "Stop this research task.",
+    }, deps);
+
+    expect(deps.cancelExecution).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId: context.tenantId,
+      ownerActorId: context.actorId,
+      executionId: "run-child",
+      expectedRevision: 0,
+      requestSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      idempotencyKeySha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      executionScope,
+    }));
+    expect(result.receipt).toMatchObject({
+      operation: "app.agents.tasks.cancel",
+      action: "run.agent",
+      resourceType: "delegation_execution",
+    });
+    expect(result.data).toMatchObject({
+      canceledChildRun: true,
+      canceledDeliveryCount: 1,
+      idempotent: false,
+      task: { executionId: "run-child", state: "canceled", canCancel: false },
+    });
+    expect(JSON.stringify(result.data)).not.toMatch(
+      /contextCapsule|delegatePrincipalId|runtimeAssignment|capabilityGrant/i,
+    );
+  });
+
+  it("requires governed cancellation authority before touching the store", async () => {
+    const deps = dependencies();
+    await expect(cancelAgentTaskService(createAppServiceCaller({ context }), {
+      executionId: "run-child",
+      expectedRevision: 0,
+    }, deps)).rejects.toThrow("exact execution scope");
+    expect(deps.cancelExecution).not.toHaveBeenCalled();
   });
 });
 

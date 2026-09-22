@@ -15,13 +15,14 @@ import {
   Loader2,
   MessageSquare,
   Network,
+  OctagonX,
   PackageCheck,
   PanelRight,
   ShieldCheck,
   Sparkles,
 } from "lucide-react";
 import { clsx } from "clsx";
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useRef, useState, type ReactNode } from "react";
 
 import { AgentMascot } from "@/components/agents/agent-mascot";
 import styles from "@/components/agents/council-execution-map.module.css";
@@ -38,11 +39,13 @@ export function CouncilExecutionMap({
   state,
   initialRunId,
   initialTaskId,
+  onTaskCanceled,
 }: {
   map?: AgentCouncilMap;
   state: CouncilLoadState;
   initialRunId?: string;
   initialTaskId?: string;
+  onTaskCanceled?: (task: CanceledTaskProjection) => void;
 }) {
   const [selection, setSelection] = useState<{ runId?: string; taskId?: string }>({
     runId: initialRunId,
@@ -140,7 +143,11 @@ export function CouncilExecutionMap({
         </aside>
 
         <main className={styles.activityPane} aria-live="polite">
-          <ExecutionOverview execution={selected.execution} member={selected.member} />
+          <ExecutionOverview
+            execution={selected.execution}
+            member={selected.member}
+            onTaskCanceled={onTaskCanceled}
+          />
         </main>
 
         <aside className={styles.inspector} aria-label="Selected worker authority and budget">
@@ -151,7 +158,70 @@ export function CouncilExecutionMap({
   );
 }
 
-function ExecutionOverview({ execution, member }: { execution: CouncilExecution; member: AgentCouncilMapMember }) {
+type CanceledTaskProjection = Readonly<{
+  executionId: string;
+  state: "canceled";
+  lifecycleRevision: number;
+  canCancel: false;
+  updatedAt: string;
+  terminalAt: string | null;
+}>;
+
+function ExecutionOverview({
+  execution,
+  member,
+  onTaskCanceled,
+}: {
+  execution: CouncilExecution;
+  member: AgentCouncilMapMember;
+  onTaskCanceled?: (task: CanceledTaskProjection) => void;
+}) {
+  const [cancelState, setCancelState] = useState<"idle" | "canceling" | "failed">("idle");
+  const [cancelMessage, setCancelMessage] = useState<string>();
+  const cancellationAttempt = useRef<{
+    taskId: string;
+    idempotencyKey: string;
+  } | undefined>(undefined);
+
+  const cancelTask = async () => {
+    if (member.canCancel !== true || cancelState === "canceling") return;
+    if (!window.confirm(`Stop ${member.identity.name}'s current task? Completed work remains inspectable.`)) return;
+    setCancelState("canceling");
+    setCancelMessage(undefined);
+    try {
+      if (cancellationAttempt.current?.taskId !== member.taskId) {
+        cancellationAttempt.current = {
+          taskId: member.taskId,
+          idempotencyKey: crypto.randomUUID(),
+        };
+      }
+      const response = await fetch(
+        `/api/agents/tasks/${encodeURIComponent(member.taskId)}/cancel`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "idempotency-key": cancellationAttempt.current.idempotencyKey,
+          },
+          body: JSON.stringify({ expectedRevision: member.lifecycleRevision }),
+        },
+      );
+      const payload = await response.json().catch(() => ({})) as {
+        error?: string;
+        task?: CanceledTaskProjection;
+      };
+      if (!response.ok || !payload.task) {
+        throw new Error(payload.error || "The delegated task could not be canceled.");
+      }
+      onTaskCanceled?.(payload.task);
+      setCancelState("idle");
+      setCancelMessage("Task canceled. Its recorded work remains available.");
+    } catch (error) {
+      setCancelState("failed");
+      setCancelMessage(error instanceof Error ? error.message : "The delegated task could not be canceled.");
+    }
+  };
+
   return (
     <>
       <header className={styles.activityHeader}>
@@ -167,11 +237,27 @@ function ExecutionOverview({ execution, member }: { execution: CouncilExecution;
         </div>
         <div className={styles.activityActions}>
           <span className={styles.readOnlyBadge}><ShieldCheck size={13} />Observed ledger</span>
+          {member.canCancel === true ? (
+            <button
+              type="button"
+              className={styles.cancelButton}
+              disabled={cancelState === "canceling"}
+              onClick={() => void cancelTask()}
+            >
+              {cancelState === "canceling" ? <Loader2 size={14} className={styles.spin} aria-hidden="true" /> : <OctagonX size={14} aria-hidden="true" />}
+              {cancelState === "canceling" ? "Canceling" : "Cancel task"}
+            </button>
+          ) : null}
           <Link href={execution.href} className={styles.primaryLink}>
             Open in Command <ArrowUpRight size={14} aria-hidden="true" />
           </Link>
         </div>
       </header>
+      {cancelMessage ? (
+        <p className={clsx(styles.cancelNotice, cancelState === "failed" && styles.isError)} role="status">
+          {cancelMessage}
+        </p>
+      ) : null}
 
       <section className={styles.workBrief} aria-labelledby="current-work-title">
         <div>

@@ -140,6 +140,7 @@ import {
   showRunService,
 } from "@/lib/app-services/runs";
 import {
+  cancelAgentTaskService,
   createAgentService,
   createSkillService,
   delegateAgentTaskService,
@@ -384,6 +385,7 @@ export async function executeFirstPartyAppTool(input: {
     "app.agents.delegate": () => delegateAgentTaskService(caller, input.toolInput as never),
     "app.agents.tasks.list": () => listAgentTasksService(caller, input.toolInput as never),
     "app.agents.tasks.show": () => showAgentTaskService(caller, input.toolInput as never),
+    "app.agents.tasks.cancel": () => cancelAgentTaskService(caller, input.toolInput as never),
     "app.agents.create": () => createAgentService(caller, input.toolInput as never),
     "app.agents.update": () => updateAgentService(caller, input.toolInput as never),
     "app.agents.delete.preview": () => previewAgentDeleteService(caller, input.toolInput as never),

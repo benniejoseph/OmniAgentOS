@@ -189,6 +189,16 @@ describe("P11.5 Agent Council map", () => {
           verifierDefinitionVersion:
             record.contract.verifier.identity.definitionVersion,
           verifierPrincipalId: record.contract.verifier.identity.principalId,
+          verifierRuntimeAssignmentId:
+            record.contract.verifier.runtimeAssignment.assignmentId,
+          verifierRuntimeAssignmentSha256:
+            record.contract.verifier.runtimeAssignment.assignmentSha256,
+          verifierProviderId:
+            record.contract.verifier.runtimeAssignment.providerId,
+          verifierModelId: record.contract.verifier.runtimeAssignment.modelId,
+          verifierModelTier:
+            record.contract.verifier.runtimeAssignment.modelTier,
+          verifierModelReceiptSha256: "2".repeat(64),
           score: 0.92,
           acceptanceChecksSha256: canonicalJsonSha256(
             record.result!.acceptanceChecks,
@@ -244,6 +254,7 @@ describe("P11.5 Agent Council map", () => {
     expect(map.executions[0].members[0]).toMatchObject({
       taskId: record.executionId,
       state: "result_accepted",
+      canCancel: false,
       currentWork: record.contract.objective,
       identity: { name: "Scout", source: "agent_definition" },
       authority: {
@@ -261,6 +272,38 @@ describe("P11.5 Agent Council map", () => {
         verdict: "accepted",
         score: 0.92,
       },
+    });
+  });
+
+  it("exposes cancellation only for active V2 child records", () => {
+    const record = transitionDelegationExecutionRecordV1({
+      record: buildDelegationExecutionRecordV1({
+        contract: buildExecutionContract(),
+        budgetLedgerRevision: 1,
+      }),
+      transition: { to: "running" },
+      at: "2026-09-22T12:00:30.000Z",
+    }).record;
+    const map = buildAgentCouncilMap({
+      source: {
+        state: "available",
+        tasks: [],
+        executionRecords: [record],
+        runs: [],
+        authorityEvents: [],
+        identities: [],
+        memberEvents: [],
+        channels: [],
+        memberUsage: [],
+        verifierUsage: [],
+      },
+    });
+
+    expect(map.executions[0].members[0]).toMatchObject({
+      taskId: record.executionId,
+      state: "working",
+      canCancel: true,
+      lifecycleRevision: 1,
     });
   });
 });

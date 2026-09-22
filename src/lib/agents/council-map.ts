@@ -170,6 +170,7 @@ export function buildAgentCouncilMap(input: {
         identity,
         state: task.state,
         lifecycleRevision: task.lifecycleRevision,
+        canCancel: false,
         currentWork,
         updatedAt: timestamp(task.updatedAt),
         authority: authorityProjection(task, authority),
@@ -294,6 +295,7 @@ function projectExecutionRecords(input: {
         identity,
         state: executionRecordCouncilState(record.state),
         lifecycleRevision: record.lifecycleRevision,
+        canCancel: ["queued", "running", "waiting"].includes(record.state),
         currentWork: safeText(contract.objective, 4_000, "Delegated work"),
         updatedAt: timestamp(record.updatedAt),
         authority: {

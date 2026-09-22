@@ -334,6 +334,9 @@ export function AgentArsenalWorkspace({
           state={councilState}
           initialRunId={initialRunId}
           initialTaskId={initialTaskId}
+          onTaskCanceled={(task) => setCouncilMap((current) =>
+            current ? applyCouncilTaskCancellation(current, task) : current
+          )}
         />
       ) : null}
       {activeView === "roster" ? (
@@ -691,6 +694,56 @@ export function AgentArsenalWorkspace({
       ) : null}
     </div>
   );
+}
+
+function applyCouncilTaskCancellation(
+  map: AgentCouncilMap,
+  task: {
+    executionId: string;
+    state: "canceled";
+    lifecycleRevision: number;
+    canCancel: false;
+    updatedAt: string;
+  },
+) {
+  const executions = map.executions.map((execution) => {
+    const members = execution.members.map((member) => member.taskId === task.executionId
+      ? {
+          ...member,
+          state: task.state,
+          lifecycleRevision: task.lifecycleRevision,
+          canCancel: false,
+          updatedAt: task.updatedAt,
+        }
+      : member);
+    return {
+      ...execution,
+      members,
+      updatedAt: members.reduce(
+        (latest, member) => member.updatedAt > latest ? member.updatedAt : latest,
+        execution.updatedAt,
+      ),
+    };
+  });
+  const members = executions.flatMap((execution) => execution.members);
+  const activeStates = new Set([
+    "proposed",
+    "accepted",
+    "working",
+    "waiting",
+    "challenged",
+    "completed_proposed",
+  ]);
+  return safeParseAgentCouncilMap({
+    ...map,
+    executions,
+    summary: {
+      ...map.summary,
+      activeMemberCount: members.filter((member) => activeStates.has(member.state)).length,
+      waitingMemberCount: members.filter((member) => member.state === "waiting").length,
+      acceptedMemberCount: members.filter((member) => member.state === "result_accepted").length,
+    },
+  }) || map;
 }
 
 function WorkspaceTabs({

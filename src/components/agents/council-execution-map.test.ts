@@ -21,6 +21,7 @@ describe("Agent Control Center live work", () => {
     expect(markup).toContain("Sentinel");
     expect(markup).toContain("91%");
     expect(markup).toContain("Open in Command");
+    expect(markup).toContain("Cancel task");
     expect(markup).toContain("Not recorded in this read-only Council projection");
   });
 
@@ -123,6 +124,7 @@ const map: AgentCouncilMap = {
     members: [{
       taskId: "task-one", delegationId: "delegation-one", identity,
       state: "working", lifecycleRevision: 2,
+      canCancel: true,
       currentWork: "Verify the release evidence.", updatedAt: "2026-09-07T06:00:30.000Z",
       authority: {
         source: "delegation_grants", receiptSha256: "a".repeat(64), contractSha256: "b".repeat(64),

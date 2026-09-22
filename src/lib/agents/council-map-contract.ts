@@ -100,6 +100,7 @@ const memberSchema = z.object({
     "expired",
   ]),
   lifecycleRevision: z.number().int().min(0).max(32),
+  canCancel: z.boolean().optional(),
   currentWork: z.string().trim().min(1).max(4_000),
   updatedAt: timestampSchema,
   authority: authoritySchema,
