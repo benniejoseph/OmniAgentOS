@@ -75,17 +75,6 @@ async function POSTHandler(
   request: Request,
   context: RouteContext<"/api/agents/[id]/release">,
 ) {
-  let auth;
-  try {
-    auth = await authorizeRequest({
-      request,
-      action: "manage.workflow",
-      resourceType: "custom_agent",
-      metadata: { operation: "manage_release" },
-    });
-  } catch (error) {
-    return forbiddenResponse(error);
-  }
   let body: unknown;
   try {
     body = await parseJsonBody(request, 2_000);
@@ -98,6 +87,20 @@ async function POSTHandler(
       error: "Invalid Agent release action.",
       details: parsed.error.flatten(),
     }, { status: 400, headers: privateNoStoreHeaders });
+  }
+  let auth;
+  try {
+    auth = await authorizeRequest({
+      request,
+      action: "manage.workflow",
+      resourceType: "custom_agent",
+      ...(parsed.data.action === "retire"
+        ? {}
+        : { nativeMutationCapability: "agents.release.manage" as const }),
+      metadata: { operation: "manage_release", releaseAction: parsed.data.action },
+    });
+  } catch (error) {
+    return forbiddenResponse(error);
   }
   const { id } = await context.params;
   const owner = releaseOwner(auth);

@@ -91,6 +91,12 @@ describe("P7.5 Agent release route", () => {
   it("evaluates and promotes only strict version-bound requests", async () => {
     const evaluated = await post({ action: "evaluate", definitionVersion: 2 });
     expect(evaluated.status).toBe(200);
+    expect(mocks.authorizeRequest).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        nativeMutationCapability: "agents.release.manage",
+        metadata: expect.objectContaining({ releaseAction: "evaluate" }),
+      }),
+    );
     expect(mocks.evaluateAgentRelease).toHaveBeenCalledWith(
       "agent-one",
       2,
@@ -116,6 +122,9 @@ describe("P7.5 Agent release route", () => {
       confirmation: "RETIRE AGENT",
     });
     expect(response.status).toBe(200);
+    expect(mocks.authorizeRequest).toHaveBeenLastCalledWith(
+      expect.not.objectContaining({ nativeMutationCapability: expect.anything() }),
+    );
     expect(mocks.previewAgentRetirementService).toHaveBeenCalledWith(
       expect.objectContaining({
         idempotencyKey: expect.any(String),

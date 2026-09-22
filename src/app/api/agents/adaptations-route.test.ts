@@ -80,6 +80,11 @@ describe("P7.6 Agent adaptation route", () => {
   it("observes evidence only through an explicit refresh", async () => {
     const response = await post({ action: "refresh" });
     expect(response.status).toBe(200);
+    expect(mocks.authorizeRequest).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        nativeMutationCapability: "agents.adaptations.manage",
+      }),
+    );
     expect(await response.json()).toMatchObject({ definitionVersion: 3 });
     expect(mocks.observe).toHaveBeenCalledWith(
       "scout",

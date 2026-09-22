@@ -69,6 +69,7 @@ async function POSTHandler(
       request,
       action: "manage.workflow",
       resourceType: "agent_adaptation",
+      nativeMutationCapability: "agents.adaptations.manage",
       metadata: { operation: "manage_adaptation" },
     });
   } catch (error) {
