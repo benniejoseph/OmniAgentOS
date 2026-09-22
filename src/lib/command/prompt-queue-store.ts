@@ -944,7 +944,7 @@ export async function recordPromptQueueDispatchProgress(input: {
           END,
           dispatch_token_sha256 = CASE WHEN ${terminal} IS NULL THEN dispatch_token_sha256 ELSE NULL END,
           dispatch_lease_expires_at = CASE
-            WHEN ${terminal} IS NULL THEN ${refreshedLeaseExpiresAt}
+            WHEN ${terminal} IS NULL THEN ${refreshedLeaseExpiresAt}::timestamptz
             ELSE NULL
           END,
           terminal_at = CASE WHEN ${terminal} IS NULL THEN terminal_at ELSE ${now} END,

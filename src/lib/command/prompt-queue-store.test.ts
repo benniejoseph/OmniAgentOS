@@ -827,8 +827,9 @@ describe("persistent prompt queue store fences", () => {
     const updateCall = mocks.sql.mock.calls[1];
     const updateStatement = updateCall?.[0].join("?");
     expect(updateStatement).toContain(
-      "WHEN ? IS NULL THEN ?\n            ELSE NULL",
+      "WHEN ? IS NULL THEN ?::timestamptz\n            ELSE NULL",
     );
+    expect(updateStatement).toContain("?::timestamptz");
     const leaseValue = updateCall?.slice(1).find((value) =>
       typeof value === "string" &&
       Date.parse(value) >= before + 5 * 60_000
