@@ -18,8 +18,8 @@ import {
 
 describe("native API contracts", () => {
   it("retains exactly the current and previous rollout versions", () => {
-    expect(NATIVE_API_CURRENT_VERSION).toBe(24);
-    expect(NATIVE_API_PREVIOUS_VERSION).toBe(23);
+    expect(NATIVE_API_CURRENT_VERSION).toBe(25);
+    expect(NATIVE_API_PREVIOUS_VERSION).toBe(20);
     expect(nativeOperationsForVersion(8)?.length).toBeLessThan(
       nativeOperationsForVersion(7)?.length || 0,
     );
@@ -71,9 +71,12 @@ describe("native API contracts", () => {
     expect(nativeOperationsForVersion(24)?.length).toBe(
       (nativeOperationsForVersion(23)?.length || 0) + 6,
     );
+    expect(nativeOperationsForVersion(25)?.length).toBe(
+      (nativeOperationsForVersion(24)?.length || 0) + 7,
+    );
     expect(nativeContractSchemas.NativeContractDiscovery.parse(
       nativeContractDiscovery(),
-    ).supportedVersions).toEqual([24, 23]);
+    ).supportedVersions).toEqual([25, 20]);
   });
 
   it("exposes only explicit local Computer Use in the current request schema", () => {
@@ -269,6 +272,76 @@ describe("native API contracts", () => {
       "promptQueue.reorder",
       "promptQueue.dispatch",
     ]);
+  });
+
+  it("keeps v24 immutable while v25 adds only actor-private management parity", async () => {
+    const [v24, v24Manifest] = await Promise.all([
+      readFile(
+        new URL("../../../public/native-contracts/v24/openapi.json", import.meta.url),
+        "utf8",
+      ),
+      readFile(
+        new URL("../../../public/native-contracts/v24/manifest.json", import.meta.url),
+        "utf8",
+      ),
+    ]);
+    expect(sha256(v24)).toBe(
+      "2015e184515f20a176348a59cfa13bc257168889b26c7b2eaa94dd1c79ef5f19",
+    );
+    expect(sha256(v24Manifest)).toBe(
+      "42349d425d652f263fb3e1282c129f179fa9e36f45c1a20d84057c5e54ae978c",
+    );
+    const v24Ids = new Set(
+      nativeOperationsForVersion(24)?.map((operation) => operation.id),
+    );
+    expect(
+      nativeOperationsForVersion(25)
+        ?.map((operation) => operation.id)
+        .filter((id) => !v24Ids.has(id)),
+    ).toEqual([
+      "agents.release.show",
+      "agents.release.manage",
+      "agents.adaptations.list",
+      "agents.adaptations.manage",
+      "agents.tasks.show",
+      "automation.schedule.show",
+      "notifications.dispositions.list",
+    ]);
+    expect(nativeOperationsForVersion(25)).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "agents.release.retire" }),
+        expect.objectContaining({ id: "agents.grants.revoke" }),
+      ]),
+    );
+  });
+
+  it("advertises deployed v20 as the compatibility bridge while v21-v24 stay archived", async () => {
+    const discovery = nativeContractDiscovery();
+    expect(discovery.supportedVersions).toEqual([25, 20]);
+    expect(discovery.versions).toEqual([
+      expect.objectContaining({ version: 25, state: "current" }),
+      expect.objectContaining({ version: 20, state: "previous" }),
+    ]);
+    expect(nativeOperationsForVersion(20)).toEqual(
+      nativeOperationsForVersion(19),
+    );
+    const [v20, v20Manifest] = await Promise.all([
+      readFile(
+        new URL("../../../public/native-contracts/v20/openapi.json", import.meta.url),
+        "utf8",
+      ),
+      readFile(
+        new URL("../../../public/native-contracts/v20/manifest.json", import.meta.url),
+        "utf8",
+      ),
+    ]);
+    expect(sha256(v20)).toBe(
+      "3c265c3ed4635176506e425019d20182bcb767fd424a376c5f3dd78e6e9d80d4",
+    );
+    expect(sha256(v20Manifest)).toBe(
+      "74bf7033f61bd45ae9b6074659c7b8f1b5ae97ac728e889a65534c3537db1a27",
+    );
+    expect(nativeOperationsForVersion(24)).toBeDefined();
   });
 
   it("does not advertise unenrolled native mutations in v8", () => {
@@ -661,7 +734,7 @@ describe("native API contracts", () => {
       user: { id: "user-one", email: "operator@example.test", status: "active", createdAt: timestamp, updatedAt: timestamp },
       tenant: { id: "tenant-one", name: "Example", slug: "example", createdAt: timestamp, updatedAt: timestamp },
       membership: { id: "membership-one", tenantId: "tenant-one", userId: "user-one", role: "operator", status: "active", createdAt: timestamp, updatedAt: timestamp },
-      device: { id: "device-one", name: "Asael on macOS", platform: "macos", appVersion: "1.0.0", buildNumber: 2, clientContractVersion: 24 },
+      device: { id: "device-one", name: "Asael on macOS", platform: "macos", appVersion: "1.0.0", buildNumber: 2, clientContractVersion: 25 },
     };
     expect(nativeBootstrapResponseSchema.parse({
       authenticated: true,
@@ -673,9 +746,9 @@ describe("native API contracts", () => {
         mobileBasePath: "/api/mobile",
         nativeContract: {
           id: "asael.native-api",
-          currentVersion: 24,
-          previousVersion: 23,
-          supportedVersions: [24, 23],
+          currentVersion: 25,
+          previousVersion: 20,
+          supportedVersions: [25, 20],
           discoveryPath: "/api/mobile/contracts",
         },
       },
@@ -684,15 +757,15 @@ describe("native API contracts", () => {
         platform: "macos",
         appVersion: "1.0.0",
         buildNumber: 2,
-        clientContractVersion: 24,
+        clientContractVersion: 25,
         minimumVersion: "1.0.0",
-        requiredContractVersion: 24,
-        supportedContractVersions: [24, 23],
+        requiredContractVersion: 25,
+        supportedContractVersions: [25, 20],
         status: "compatible",
         agentCatalogEnrollment: { state: "held", clientReady: true },
       },
       nativeClientPolicy: { schemaVersion: 1 },
-    }).api.nativeContract.currentVersion).toBe(24);
+    }).api.nativeContract.currentVersion).toBe(25);
   });
 });
 

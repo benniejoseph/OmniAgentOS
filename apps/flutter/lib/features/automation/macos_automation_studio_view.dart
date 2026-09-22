@@ -124,6 +124,7 @@ class _MacosAutomationStudioViewState
     ),
     AutomationStudioSection.automations => _AutomationsSection(
       snapshot: controller.snapshot,
+      controller: controller,
     ),
     AutomationStudioSection.skills => _SkillsSection(
       resource: controller.snapshot.skills,
@@ -394,9 +395,10 @@ class _OverviewSection extends StatelessWidget {
 }
 
 class _AutomationsSection extends StatelessWidget {
-  const _AutomationsSection({required this.snapshot});
+  const _AutomationsSection({required this.snapshot, required this.controller});
 
   final AutomationSnapshot snapshot;
+  final AutomationController controller;
 
   @override
   Widget build(BuildContext context) => _SplitInventory(
@@ -417,6 +419,12 @@ class _AutomationsSection extends StatelessWidget {
                 detail:
                     '${_plain(trigger.source)} · ${_plain(trigger.workflowMode)}',
                 status: trigger.status,
+                action: TextButton.icon(
+                  key: ValueKey('automation-schedule-history-${trigger.id}'),
+                  onPressed: () => _showSchedule(context, trigger),
+                  icon: const Icon(Icons.history_rounded, size: 16),
+                  label: const Text('History & leases'),
+                ),
               ),
           ],
         ),
@@ -444,7 +452,347 @@ class _AutomationsSection extends StatelessWidget {
       ),
     ),
   );
+
+  Future<void> _showSchedule(BuildContext context, AutomationTrigger trigger) =>
+      showDialog<void>(
+        context: context,
+        builder: (context) =>
+            _ScheduleHistoryDialog(controller: controller, trigger: trigger),
+      );
 }
+
+class _ScheduleHistoryDialog extends StatefulWidget {
+  const _ScheduleHistoryDialog({
+    required this.controller,
+    required this.trigger,
+  });
+
+  final AutomationController controller;
+  final AutomationTrigger trigger;
+
+  @override
+  State<_ScheduleHistoryDialog> createState() => _ScheduleHistoryDialogState();
+}
+
+class _ScheduleHistoryDialogState extends State<_ScheduleHistoryDialog> {
+  @override
+  void initState() {
+    super.initState();
+    Future<void>.microtask(
+      () => widget.controller.loadSchedule(widget.trigger.id),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: widget.controller,
+    builder: (context, _) {
+      final detail = widget.controller.scheduleDetails[widget.trigger.id];
+      final loading = widget.controller.loadingScheduleIds.contains(
+        widget.trigger.id,
+      );
+      final error = widget.controller.scheduleErrors[widget.trigger.id];
+      return AlertDialog(
+        title: Row(
+          children: [
+            const Icon(Icons.schedule_outlined, size: 20),
+            const SizedBox(width: 9),
+            Expanded(child: Text(widget.trigger.name)),
+            if (loading)
+              const SizedBox.square(
+                dimension: 15,
+                child: CircularProgressIndicator(strokeWidth: 1.8),
+              ),
+          ],
+        ),
+        content: SizedBox(
+          width: 820,
+          height: 620,
+          child: detail == null
+              ? _ScheduleUnavailable(
+                  error: error,
+                  onRetry: () => widget.controller.loadSchedule(
+                    widget.trigger.id,
+                    refresh: true,
+                  ),
+                )
+              : _ScheduleHistoryContent(detail: detail, staleError: error),
+        ),
+        actions: [
+          TextButton.icon(
+            onPressed: loading
+                ? null
+                : () => widget.controller.loadSchedule(
+                    widget.trigger.id,
+                    refresh: true,
+                  ),
+            icon: const Icon(Icons.refresh_rounded, size: 16),
+            label: const Text('Refresh'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Done'),
+          ),
+        ],
+      );
+    },
+  );
+}
+
+class _ScheduleHistoryContent extends StatelessWidget {
+  const _ScheduleHistoryContent({required this.detail, this.staleError});
+
+  final AutomationScheduleDetail detail;
+  final Object? staleError;
+
+  @override
+  Widget build(BuildContext context) => DefaultTabController(
+    length: 3,
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (staleError != null)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(9),
+            color: Theme.of(context).colorScheme.errorContainer,
+            child: Text('Showing the last verified history. $staleError'),
+          ),
+        Wrap(
+          spacing: 9,
+          runSpacing: 7,
+          children: [
+            _ScheduleFact(
+              label: 'Status',
+              value: _plain(detail.trigger.status),
+            ),
+            _ScheduleFact(
+              label: 'Occurrences',
+              value: '${detail.occurrences.length}',
+            ),
+            _ScheduleFact(
+              label: 'Policy leases',
+              value: detail.policyLeasesAvailable
+                  ? '${detail.policyLeases.length}'
+                  : 'Unavailable',
+            ),
+          ],
+        ),
+        const SizedBox(height: 7),
+        const Text(
+          'Exact content-free evidence. Missing IDs, digests, or lifecycle coordinates are never inferred.',
+        ),
+        const SizedBox(height: 10),
+        const TabBar(
+          isScrollable: true,
+          tabs: [
+            Tab(text: 'Occurrences'),
+            Tab(text: 'Receipts'),
+            Tab(text: 'PolicyLease'),
+          ],
+        ),
+        Expanded(
+          child: TabBarView(
+            children: [
+              _ScheduleOccurrences(items: detail.occurrences),
+              _ScheduleReceipts(items: detail.receipts),
+              _PolicyLeaseHistory(detail: detail),
+            ],
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+class _ScheduleOccurrences extends StatelessWidget {
+  const _ScheduleOccurrences({required this.items});
+  final List<AutomationScheduleOccurrence> items;
+  @override
+  Widget build(BuildContext context) => items.isEmpty
+      ? const _ScheduleEmpty(message: 'No schedule occurrences recorded.')
+      : ListView.separated(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          itemCount: items.length,
+          separatorBuilder: (_, _) => const Divider(height: 1),
+          itemBuilder: (context, index) {
+            final item = items[index];
+            return ListTile(
+              contentPadding: const EdgeInsets.symmetric(horizontal: 4),
+              leading: Icon(
+                item.status == 'completed'
+                    ? Icons.check_circle_outline
+                    : item.status == 'failed'
+                    ? Icons.error_outline
+                    : Icons.schedule_outlined,
+              ),
+              title: SelectableText(item.id),
+              subtitle: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '${_plain(item.kind)} · ${_scheduleTime(item.scheduledFor)}${item.failureCode == null ? '' : ' · ${_plain(item.failureCode!)}'}',
+                  ),
+                  if (item.workflowRunId != null)
+                    SelectableText('Workflow run ${item.workflowRunId}'),
+                  SelectableText(
+                    'Authority ${item.authoritySha256}',
+                    style: Theme.of(context).textTheme.labelSmall,
+                  ),
+                ],
+              ),
+              trailing: _StatusPill(label: item.status),
+            );
+          },
+        );
+}
+
+class _ScheduleReceipts extends StatelessWidget {
+  const _ScheduleReceipts({required this.items});
+  final List<AutomationScheduleReceipt> items;
+  @override
+  Widget build(BuildContext context) => items.isEmpty
+      ? const _ScheduleEmpty(message: 'No occurrence receipts recorded.')
+      : ListView.separated(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          itemCount: items.length,
+          separatorBuilder: (_, _) => const Divider(height: 1),
+          itemBuilder: (context, index) {
+            final item = items[index];
+            return ListTile(
+              contentPadding: const EdgeInsets.symmetric(horizontal: 4),
+              title: SelectableText(item.id),
+              subtitle: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '${item.occurrenceId} · ${_scheduleTime(item.recordedAt)}',
+                  ),
+                  SelectableText(
+                    'Receipt ${item.receiptSha256}\nState ${item.stateSha256}',
+                    style: Theme.of(context).textTheme.labelSmall,
+                  ),
+                ],
+              ),
+              trailing: _StatusPill(label: item.status),
+            );
+          },
+        );
+}
+
+class _PolicyLeaseHistory extends StatelessWidget {
+  const _PolicyLeaseHistory({required this.detail});
+  final AutomationScheduleDetail detail;
+  @override
+  Widget build(BuildContext context) {
+    if (!detail.policyLeasesAvailable) {
+      return const _ScheduleEmpty(
+        message: 'PolicyLease history is unavailable. No authority state was inferred.',
+      );
+    }
+    if (detail.policyLeases.isEmpty) {
+      return const _ScheduleEmpty(
+        message: 'No scheduled mutation PolicyLeases have been issued.',
+      );
+    }
+    return ListView.separated(
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      itemCount: detail.policyLeases.length,
+      separatorBuilder: (_, _) => const SizedBox(height: 8),
+      itemBuilder: (context, index) {
+        final item = detail.policyLeases[index];
+        return Container(
+          padding: const EdgeInsets.all(11),
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.surfaceContainerLow,
+            borderRadius: BorderRadius.circular(9),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: SelectableText(
+                      item.toolId,
+                      style: Theme.of(context).textTheme.labelLarge,
+                    ),
+                  ),
+                  _StatusPill(label: item.status),
+                ],
+              ),
+              const SizedBox(height: 5),
+              SelectableText(item.leaseId),
+              Text(
+                'Occurrence ${item.occurrenceId} · execution ${item.executionId} · binding ${item.bindingIndex} · issued ${_scheduleTime(item.issuedAt)}',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              const SizedBox(height: 5),
+              SelectableText(
+                'Lease ${item.leaseSha256}\nBinding ${item.bindingSha256}\nTool contract ${item.toolContractSha256}\nPolicy ${item.policySha256}\nInfluence ${item.influenceManifestSha256}\nConsumption receipt ${item.consumptionReceiptSha256 ?? 'Not consumed'}',
+                style: Theme.of(context).textTheme.labelSmall,
+              ),
+              const SizedBox(height: 5),
+              const Text(
+                'Content-free history · this receipt does not grant authority.',
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _ScheduleFact extends StatelessWidget {
+  const _ScheduleFact({required this.label, required this.value});
+  final String label, value;
+  @override
+  Widget build(BuildContext context) => Chip(label: Text('$label · $value'));
+}
+
+class _ScheduleEmpty extends StatelessWidget {
+  const _ScheduleEmpty({required this.message});
+  final String message;
+  @override
+  Widget build(BuildContext context) => Center(
+    child: Padding(
+      padding: const EdgeInsets.all(24),
+      child: Text(message, textAlign: TextAlign.center),
+    ),
+  );
+}
+
+class _ScheduleUnavailable extends StatelessWidget {
+  const _ScheduleUnavailable({this.error, required this.onRetry});
+  final Object? error;
+  final VoidCallback onRetry;
+  @override
+  Widget build(BuildContext context) => Center(
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const Icon(Icons.cloud_off_outlined, size: 34),
+        const SizedBox(height: 10),
+        Text(
+          error == null
+              ? 'Schedule history is unavailable.'
+              : 'Schedule history could not be loaded: $error',
+          textAlign: TextAlign.center,
+        ),
+        const SizedBox(height: 12),
+        TextButton.icon(
+          onPressed: onRetry,
+          icon: const Icon(Icons.refresh_rounded),
+          label: const Text('Retry'),
+        ),
+      ],
+    ),
+  );
+}
+
+String _scheduleTime(DateTime? value) =>
+    value == null ? 'unknown time' : value.toLocal().toString();
 
 class _SkillsSection extends StatelessWidget {
   const _SkillsSection({required this.resource});

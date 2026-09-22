@@ -370,6 +370,263 @@ class AutomationTrigger {
   final AutomationJson raw;
 }
 
+class AutomationScheduleDetail {
+  const AutomationScheduleDetail({
+    required this.trigger,
+    required this.previewTimes,
+    required this.occurrences,
+    required this.receipts,
+    required this.policyLeasesAvailable,
+    required this.policyLeases,
+  });
+
+  factory AutomationScheduleDetail.fromResponse(AutomationJson response) {
+    final trigger = _record(response['trigger']);
+    if (trigger.isEmpty) {
+      throw const FormatException('The schedule service returned no trigger.');
+    }
+    final preview = _record(response['preview']);
+    final policy = _record(response['policyLeases']);
+    if (policy['version'] != 'scheduled-policy-lease-outcomes:1') {
+      throw const FormatException(
+        'The schedule policy-lease projection version is unsupported.',
+      );
+    }
+    final available = policy['available'];
+    if (available is! bool) {
+      throw const FormatException(
+        'The schedule policy-lease projection has no availability state.',
+      );
+    }
+    if (policy['contentIncluded'] != false) {
+      throw const FormatException(
+        'Schedule policy history must remain content-free.',
+      );
+    }
+    final occurrences = _requiredRecords(
+      response,
+      'occurrences',
+    ).map(AutomationScheduleOccurrence.fromJson).toList(growable: false);
+    final receipts = _requiredRecords(
+      response,
+      'receipts',
+    ).map(AutomationScheduleReceipt.fromJson).toList(growable: false);
+    final policyLeases = _requiredRecords(
+      policy,
+      'outcomes',
+    ).map(AutomationPolicyLeaseOutcome.fromJson).toList(growable: false);
+    if (!available && policyLeases.isNotEmpty) {
+      throw const FormatException(
+        'Unavailable PolicyLease history cannot contain projected outcomes.',
+      );
+    }
+    return AutomationScheduleDetail(
+      trigger: AutomationTrigger.fromJson(trigger),
+      previewTimes: _schedulePreviewTimes(preview),
+      occurrences: occurrences,
+      receipts: receipts,
+      policyLeasesAvailable: available,
+      policyLeases: policyLeases,
+    );
+  }
+
+  final AutomationTrigger trigger;
+  final List<DateTime> previewTimes;
+  final List<AutomationScheduleOccurrence> occurrences;
+  final List<AutomationScheduleReceipt> receipts;
+  final bool policyLeasesAvailable;
+  final List<AutomationPolicyLeaseOutcome> policyLeases;
+}
+
+class AutomationScheduleOccurrence {
+  const AutomationScheduleOccurrence({
+    required this.id,
+    required this.kind,
+    required this.status,
+    required this.scheduledFor,
+    required this.workflowRunId,
+    required this.failureCode,
+    required this.attemptCount,
+    required this.authoritySha256,
+    required this.updatedAt,
+  });
+
+  factory AutomationScheduleOccurrence.fromJson(AutomationJson value) {
+    final scheduledFor = _requiredCanonicalDate(value, 'scheduledFor');
+    final updatedAt = _requiredCanonicalDate(value, 'updatedAt');
+    if (updatedAt.isBefore(scheduledFor)) {
+      throw const FormatException(
+        'A schedule occurrence cannot be updated before it is scheduled.',
+      );
+    }
+    return AutomationScheduleOccurrence(
+      id: _requiredPattern(
+        value,
+        'id',
+        _scheduleOccurrenceId,
+        'a workflow schedule occurrence ID',
+      ),
+      kind: _requiredChoice(value, 'kind', _scheduleOccurrenceKinds),
+      status: _requiredChoice(value, 'status', _scheduleOccurrenceStatuses),
+      scheduledFor: scheduledFor,
+      workflowRunId: _nullableText(value['workflowRunId']),
+      failureCode: _nullableText(value['failureCode']),
+      attemptCount: _requiredNonNegativeInteger(value, 'attemptCount'),
+      authoritySha256: _requiredSha256(value, 'authoritySha256'),
+      updatedAt: updatedAt,
+    );
+  }
+
+  final String id, kind, status, authoritySha256;
+  final String? workflowRunId, failureCode;
+  final int attemptCount;
+  final DateTime scheduledFor, updatedAt;
+}
+
+class AutomationScheduleReceipt {
+  const AutomationScheduleReceipt({
+    required this.id,
+    required this.occurrenceId,
+    required this.status,
+    required this.receiptSha256,
+    required this.stateSha256,
+    required this.recordedAt,
+  });
+
+  factory AutomationScheduleReceipt.fromJson(AutomationJson value) =>
+      AutomationScheduleReceipt(
+        id: _requiredPattern(
+          value,
+          'id',
+          _scheduleReceiptId,
+          'a workflow schedule receipt ID',
+        ),
+        occurrenceId: _requiredPattern(
+          value,
+          'occurrenceId',
+          _scheduleOccurrenceId,
+          'a workflow schedule occurrence ID',
+        ),
+        status: _requiredChoice(value, 'status', _scheduleOccurrenceStatuses),
+        receiptSha256: _requiredSha256(value, 'receiptSha256'),
+        stateSha256: _requiredSha256(value, 'stateSha256'),
+        recordedAt: _requiredCanonicalDate(value, 'recordedAt'),
+      );
+
+  final String id, occurrenceId, status, receiptSha256, stateSha256;
+  final DateTime recordedAt;
+}
+
+class AutomationPolicyLeaseOutcome {
+  const AutomationPolicyLeaseOutcome({
+    required this.leaseId,
+    required this.leaseSha256,
+    required this.occurrenceId,
+    required this.executionId,
+    required this.toolId,
+    required this.status,
+    required this.bindingIndex,
+    required this.bindingSha256,
+    required this.toolContractSha256,
+    required this.policySha256,
+    required this.influenceManifestSha256,
+    required this.issuedAt,
+    required this.expiresAt,
+    required this.consumedAt,
+    required this.consumptionReceiptId,
+    required this.consumptionReceiptSha256,
+  });
+
+  factory AutomationPolicyLeaseOutcome.fromJson(AutomationJson value) {
+    if (value['contentIncluded'] != false ||
+        value['leaseGrantsAuthority'] != false) {
+      throw const FormatException(
+        'PolicyLease history must be content-free and non-authorizing.',
+      );
+    }
+    final status = _requiredChoice(value, 'status', _policyLeaseStatuses);
+    final issuedAt = _requiredCanonicalDate(value, 'issuedAt');
+    final expiresAt = _requiredCanonicalDate(value, 'expiresAt');
+    final consumedAt = _nullableCanonicalDate(value['consumedAt']);
+    final consumptionReceiptId = _nullablePattern(
+      value['consumptionReceiptId'],
+      _policyLeaseReceiptId,
+      'a PolicyLease consumption receipt ID',
+    );
+    final consumptionReceiptSha256 = _nullableSha256(
+      value['consumptionReceiptSha256'],
+    );
+    if (!expiresAt.isAfter(issuedAt)) {
+      throw const FormatException(
+        'A PolicyLease expiry must be after its issue time.',
+      );
+    }
+    if (status == 'consumed') {
+      if (consumedAt == null ||
+          consumptionReceiptId == null ||
+          consumptionReceiptSha256 == null ||
+          consumedAt.isBefore(issuedAt) ||
+          !consumedAt.isBefore(expiresAt)) {
+        throw const FormatException(
+          'A consumed PolicyLease needs a bounded consumption time and exact receipt.',
+        );
+      }
+    } else if (consumedAt != null ||
+        consumptionReceiptId != null ||
+        consumptionReceiptSha256 != null) {
+      throw const FormatException(
+        'An issued or expired PolicyLease cannot contain consumption evidence.',
+      );
+    }
+    return AutomationPolicyLeaseOutcome(
+      leaseId: _requiredPattern(
+        value,
+        'leaseId',
+        _policyLeaseId,
+        'a PolicyLease ID',
+      ),
+      leaseSha256: _requiredSha256(value, 'leaseSha256'),
+      occurrenceId: _requiredPattern(
+        value,
+        'occurrenceId',
+        _scheduleOccurrenceId,
+        'a workflow schedule occurrence ID',
+      ),
+      executionId: _requiredText(value, 'executionId'),
+      toolId: _requiredText(value, 'toolId'),
+      status: status,
+      bindingIndex: _requiredNonNegativeInteger(value, 'bindingIndex'),
+      bindingSha256: _requiredSha256(value, 'bindingSha256'),
+      toolContractSha256: _requiredSha256(value, 'toolContractSha256'),
+      policySha256: _requiredSha256(value, 'policySha256'),
+      influenceManifestSha256: _requiredSha256(
+        value,
+        'influenceManifestSha256',
+      ),
+      issuedAt: issuedAt,
+      expiresAt: expiresAt,
+      consumedAt: consumedAt,
+      consumptionReceiptId: consumptionReceiptId,
+      consumptionReceiptSha256: consumptionReceiptSha256,
+    );
+  }
+
+  final String leaseId,
+      leaseSha256,
+      occurrenceId,
+      executionId,
+      toolId,
+      status,
+      bindingSha256,
+      toolContractSha256,
+      policySha256,
+      influenceManifestSha256;
+  final int bindingIndex;
+  final DateTime issuedAt, expiresAt;
+  final DateTime? consumedAt;
+  final String? consumptionReceiptId, consumptionReceiptSha256;
+}
+
 class AutomationPluginCatalog {
   const AutomationPluginCatalog({
     required this.plugins,
@@ -595,6 +852,21 @@ AutomationJson parseAutomationPluginManifest(String source) {
 }
 
 final _sha256 = RegExp(r'^[a-f0-9]{64}$');
+final _scheduleOccurrenceId = RegExp(
+  r'^workflow_schedule_occurrence_[a-f0-9]{40}$',
+);
+final _scheduleReceiptId = RegExp(r'^workflow_schedule_receipt_[a-f0-9]{40}$');
+final _policyLeaseId = RegExp(r'^policy_lease_[a-f0-9]{48}$');
+final _policyLeaseReceiptId = RegExp(r'^policy_lease_receipt_[a-f0-9]{48}$');
+const _scheduleOccurrenceKinds = {'scheduled', 'manual'};
+const _scheduleOccurrenceStatuses = {
+  'claimed',
+  'enqueued',
+  'completed',
+  'skipped',
+  'failed',
+};
+const _policyLeaseStatuses = {'issued', 'consumed', 'expired'};
 
 AutomationResource<Object> _erase<T>(AutomationResource<T> value) =>
     AutomationResource<Object>._(
@@ -610,6 +882,117 @@ List<AutomationJson> _records(Object? value) => (value as List? ?? const [])
     .whereType<Map>()
     .map((item) => Map<String, dynamic>.from(item))
     .toList(growable: false);
+
+List<AutomationJson> _requiredRecords(AutomationJson value, String key) {
+  final entries = value[key];
+  if (entries is! List || entries.any((entry) => entry is! Map)) {
+    throw FormatException('$key must be a list of records.');
+  }
+  return entries
+      .map((entry) => Map<String, dynamic>.from(entry as Map))
+      .toList(growable: false);
+}
+
+List<DateTime> _schedulePreviewTimes(AutomationJson preview) {
+  final values = preview['occurrences'] ?? preview['times'];
+  return (values as List? ?? const [])
+      .map((value) {
+        if (value is String) return DateTime.tryParse(value);
+        if (value is Map) {
+          final record = Map<String, dynamic>.from(value);
+          return DateTime.tryParse(_text(record, const ['scheduledFor', 'at']));
+        }
+        return null;
+      })
+      .whereType<DateTime>()
+      .toList(growable: false);
+}
+
+String _requiredText(AutomationJson value, String key) {
+  final result = value[key];
+  if (result is! String || result.trim().isEmpty) {
+    throw FormatException('$key must be a non-empty string.');
+  }
+  return result.trim();
+}
+
+String _requiredPattern(
+  AutomationJson value,
+  String key,
+  RegExp pattern,
+  String description,
+) {
+  final result = _requiredText(value, key);
+  if (!pattern.hasMatch(result)) {
+    throw FormatException('$key must be $description.');
+  }
+  return result;
+}
+
+String _requiredChoice(AutomationJson value, String key, Set<String> choices) {
+  final result = _requiredText(value, key);
+  if (!choices.contains(result)) {
+    throw FormatException('$key has an unsupported value.');
+  }
+  return result;
+}
+
+String _requiredSha256(AutomationJson value, String key) {
+  final result = _requiredText(value, key);
+  if (!_sha256.hasMatch(result)) {
+    throw FormatException('$key must be a SHA-256 digest.');
+  }
+  return result;
+}
+
+String? _nullableSha256(Object? value) {
+  if (value == null) return null;
+  if (value is! String || !_sha256.hasMatch(value)) {
+    throw const FormatException('A receipt digest is invalid.');
+  }
+  return value;
+}
+
+String? _nullablePattern(Object? value, RegExp pattern, String description) {
+  if (value == null) return null;
+  if (value is! String || !pattern.hasMatch(value)) {
+    throw FormatException('The optional value must be $description.');
+  }
+  return value;
+}
+
+DateTime _requiredCanonicalDate(AutomationJson value, String key) {
+  final source = _requiredText(value, key);
+  final parsed = DateTime.tryParse(source);
+  if (parsed == null ||
+      !parsed.isUtc ||
+      parsed.toUtc().toIso8601String() != source) {
+    throw FormatException('$key must be a canonical UTC timestamp.');
+  }
+  return parsed;
+}
+
+DateTime? _nullableCanonicalDate(Object? value) {
+  if (value == null) return null;
+  if (value is! String) {
+    throw const FormatException('A nullable timestamp must be canonical UTC.');
+  }
+  final parsed = DateTime.tryParse(value);
+  if (parsed == null ||
+      !parsed.isUtc ||
+      parsed.toUtc().toIso8601String() != value) {
+    throw const FormatException('A nullable timestamp must be canonical UTC.');
+  }
+  return parsed;
+}
+
+int _requiredNonNegativeInteger(AutomationJson value, String key) {
+  final result = value[key];
+  if (result is! num || result.toInt() != result || result < 0) {
+    throw FormatException('$key must be a non-negative integer.');
+  }
+  return result.toInt();
+}
 
 List<String> _strings(Object? value) => (value as List? ?? const [])
     .whereType<String>()

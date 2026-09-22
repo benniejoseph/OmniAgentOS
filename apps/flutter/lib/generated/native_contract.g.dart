@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 24;
-  static const previousVersion = 23;
-  static const supportedVersions = <int>[24, 23];
+  static const currentVersion = 25;
+  static const previousVersion = 20;
+  static const supportedVersions = <int>[25, 20];
   static const discoveryPath = '/api/mobile/contracts';
   static const operationIds = <String>{
     'auth.login',
@@ -142,6 +142,13 @@ abstract final class NativeContract {
     'promptQueue.delete',
     'promptQueue.reorder',
     'promptQueue.dispatch',
+    'agents.release.show',
+    'agents.release.manage',
+    'agents.adaptations.list',
+    'agents.adaptations.manage',
+    'agents.tasks.show',
+    'automation.schedule.show',
+    'notifications.dispositions.list',
   };
 
   static bool supports(int version) => supportedVersions.contains(version);
@@ -382,6 +389,24 @@ abstract final class NativePaths {
   static String promptQueueDelete(String id) => '/api/command/prompt-queue/${Uri.encodeComponent(id)}';
   static const promptQueueReorder = '/api/command/prompt-queue/reorder';
   static String promptQueueDispatch(String id) => '/api/command/prompt-queue/${Uri.encodeComponent(id)}/dispatch';
+  static String agentsReleaseShow(String id) => '/api/agents/${Uri.encodeComponent(id)}/release';
+  static String agentsReleaseManage(String id) => '/api/agents/${Uri.encodeComponent(id)}/release';
+  static String agentsAdaptationsList(String id) => '/api/agents/${Uri.encodeComponent(id)}/adaptations';
+  static String agentsAdaptationsManage(String id) => '/api/agents/${Uri.encodeComponent(id)}/adaptations';
+  static String agentsTasksShow(String id) => '/api/agents/tasks/${Uri.encodeComponent(id)}';
+  static String automationScheduleShow(String id) => '/api/triggers/${Uri.encodeComponent(id)}';
+  static String notificationsDispositionsList({int? limit, String? before}) {
+    final path = '/api/notifications/dispositions';
+    final query = <String, String>{
+      if (limit != null) 'limit': limit.toString(),
+      'before': ?before,
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
 }
 
 abstract final class NativeConversationEvents {

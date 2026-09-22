@@ -27,6 +27,8 @@ export const NATIVE_MUTATION_CAPABILITIES = [
   "agents.update",
   "agents.moltbook.manage",
   "agents.tasks.cancel",
+  "agents.release.manage",
+  "agents.adaptations.manage",
   "computer.use.device.update",
   "computer.use.command.claim",
   "computer.use.command.complete",
@@ -94,6 +96,10 @@ export function nativeMutationCapabilityPolicy(
 
 function minimumVersion(capability: NativeMutationCapability) {
   if (capability === "prompt.queue.manage") return 24;
+  if (
+    capability === "agents.release.manage" ||
+    capability === "agents.adaptations.manage"
+  ) return 25;
   if (capability.startsWith("computer.use.")) return 11;
   // Backtests were enrolled in v7. Keep that capability floor stable when the
   // current document advances; compatibility still independently limits calls

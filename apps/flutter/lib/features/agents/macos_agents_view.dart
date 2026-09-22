@@ -6,7 +6,9 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../app/macos/macos_page_scaffold.dart';
 import '../../app/theme/macos_app_theme.dart';
 import 'agent_council.dart';
+import 'agent_governance_view.dart';
 import 'agents.dart';
+import 'task_authority_view.dart';
 
 enum _AgentWorkspace { liveWork, agents, skills, performance }
 
@@ -204,6 +206,7 @@ class _MacosAgentsViewState extends State<MacosAgentsView>
                 key: const Key('macos-agents-live-inspector'),
                 execution: selectedExecution,
                 member: selectedMember,
+                controller: councilController,
               )
             : _AgentInspector(
                 key: const Key('macos-agents-inspector'),
@@ -1583,10 +1586,12 @@ class _AgentCouncilInspector extends StatelessWidget {
     super.key,
     required this.execution,
     required this.member,
+    required this.controller,
   });
 
   final AgentCouncilExecution? execution;
   final AgentCouncilMember? member;
+  final AgentCouncilController? controller;
 
   @override
   Widget build(BuildContext context) {
@@ -1722,6 +1727,18 @@ class _AgentCouncilInspector extends StatelessWidget {
               ],
             ],
           ),
+          if (controller != null) ...[
+            const SizedBox(height: 18),
+            _InspectorSection(
+              title: 'Exact signed grants',
+              child: AgentTaskAuthorityView(
+                key: ValueKey('macos-task-authority-${member.taskId}'),
+                controller: controller!,
+                taskId: member.taskId,
+                compact: true,
+              ),
+            ),
+          ],
           const SizedBox(height: 18),
           _InspectorSection(
             title: 'Budget limits',
@@ -2633,6 +2650,25 @@ class _AgentDetail extends StatelessWidget {
         if (performance != null) ...[
           const SizedBox(height: 18),
           _OutcomeSummary(performance: performance),
+        ],
+        if (!agent.builtIn) ...[
+          const SizedBox(height: 18),
+          _InspectorSection(
+            title: 'Release & learning',
+            child: AgentGovernanceView(
+              key: ValueKey('macos-agent-governance-${agent.id}'),
+              agentId: agent.id,
+              builtIn: agent.builtIn,
+              canRead: controller.canReadGovernance,
+              canManage: controller.canManageGovernance,
+              load: () => controller.loadGovernance(agent.id),
+              manageRelease: (action) =>
+                  controller.manageRelease(agent.id, action),
+              manageAdaptation: (action) =>
+                  controller.manageAdaptation(agent.id, action),
+              compact: true,
+            ),
+          ),
         ],
         const SizedBox(height: 18),
         _InspectorSection(

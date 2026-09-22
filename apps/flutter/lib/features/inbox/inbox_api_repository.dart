@@ -14,6 +14,14 @@ class ApiInboxRepository implements InboxRepository {
       NotificationCenter.fromJson(
         await api.getJson(NativePaths.notificationsList),
       );
+
+  @override
+  Future<NotificationDispositionHistory> loadNotificationDispositions() async =>
+      NotificationDispositionHistory.fromJson(
+        await api.getJsonFresh(
+          NativePaths.notificationsDispositionsList(limit: 100),
+        ),
+      );
   @override
   Future<void> decide(
     ApprovalItem item, {

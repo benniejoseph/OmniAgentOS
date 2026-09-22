@@ -10,6 +10,31 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+const _scheduleShaA =
+    '1111111111111111111111111111111111111111111111111111111111111111';
+const _scheduleShaB =
+    '2222222222222222222222222222222222222222222222222222222222222222';
+const _scheduleShaC =
+    '3333333333333333333333333333333333333333333333333333333333333333';
+const _scheduleShaD =
+    '4444444444444444444444444444444444444444444444444444444444444444';
+const _scheduleShaE =
+    '5555555555555555555555555555555555555555555555555555555555555555';
+const _scheduleShaF =
+    '6666666666666666666666666666666666666666666666666666666666666666';
+const _scheduleShaG =
+    '7777777777777777777777777777777777777777777777777777777777777777';
+const _scheduleShaH =
+    '8888888888888888888888888888888888888888888888888888888888888888';
+const _occurrenceId =
+    'workflow_schedule_occurrence_1111111111111111111111111111111111111111';
+const _receiptId =
+    'workflow_schedule_receipt_2222222222222222222222222222222222222222';
+const _leaseId =
+    'policy_lease_333333333333333333333333333333333333333333333333';
+const _consumptionReceiptId =
+    'policy_lease_receipt_444444444444444444444444444444444444444444444444';
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -174,6 +199,56 @@ void main() {
     expect(find.text('Google Workspace'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('schedule history exposes exact macOS execution evidence', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1240, 820);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final controller = AutomationController(
+      _Repository(_snapshot(), schedule: _scheduleDetail()),
+      canManage: true,
+      mutationsAvailable: true,
+    );
+    await controller.refresh();
+    await tester.pumpWidget(_app(controller: controller));
+    await tester.pumpAndSettle();
+
+    await tester.tap(
+      find.byKey(const ValueKey('automation-section-automations')),
+    );
+    await tester.pumpAndSettle();
+    final history = find.byKey(
+      const ValueKey('automation-schedule-history-trigger-one'),
+    );
+    await tester.ensureVisible(history);
+    await tester.tap(history);
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Exact content-free evidence'), findsOneWidget);
+    expect(find.text('Workflow run workflow-run-one'), findsOneWidget);
+    expect(find.text('Authority $_scheduleShaA'), findsOneWidget);
+
+    await tester.tap(find.text('Receipts'));
+    await tester.pumpAndSettle();
+    expect(
+      find.text('Receipt $_scheduleShaB\nState $_scheduleShaC'),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.text('PolicyLease'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('execution execution-one'), findsOneWidget);
+    expect(find.textContaining('Binding $_scheduleShaE'), findsOneWidget);
+    expect(
+      find.textContaining('Consumption receipt $_scheduleShaH'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('does not grant authority'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 }
 
 Widget _app({required AutomationController controller}) => ProviderScope(
@@ -315,12 +390,17 @@ AutomationSnapshot _snapshot() => AutomationSnapshot(
 );
 
 class _Repository implements AutomationRepository {
-  const _Repository(this.snapshot);
+  const _Repository(this.snapshot, {this.schedule});
 
   final AutomationSnapshot snapshot;
+  final AutomationScheduleDetail? schedule;
 
   @override
   Future<AutomationSnapshot> load() async => snapshot;
+
+  @override
+  Future<AutomationScheduleDetail> loadSchedule(String triggerId) async =>
+      schedule ?? (throw UnimplementedError());
 
   @override
   Future<AutomationResource<AutomationPluginCatalog>> loadPlugins() async =>
@@ -357,3 +437,58 @@ class _Repository implements AutomationRepository {
     required String idempotencyKey,
   }) => throw UnimplementedError();
 }
+
+AutomationScheduleDetail _scheduleDetail() => AutomationScheduleDetail(
+  trigger: AutomationTrigger.fromJson({
+    'id': 'trigger-one',
+    'name': 'Daily briefing',
+    'status': 'active',
+    'source': 'schedule',
+    'workflowMode': 'orchestrate',
+  }),
+  previewTimes: [DateTime.utc(2026, 9, 23, 8)],
+  occurrences: [
+    AutomationScheduleOccurrence(
+      id: _occurrenceId,
+      kind: 'scheduled',
+      status: 'completed',
+      scheduledFor: DateTime.utc(2026, 9, 22, 8),
+      workflowRunId: 'workflow-run-one',
+      failureCode: null,
+      attemptCount: 1,
+      authoritySha256: _scheduleShaA,
+      updatedAt: DateTime.utc(2026, 9, 22, 8, 1),
+    ),
+  ],
+  receipts: [
+    AutomationScheduleReceipt(
+      id: _receiptId,
+      occurrenceId: _occurrenceId,
+      status: 'completed',
+      receiptSha256: _scheduleShaB,
+      stateSha256: _scheduleShaC,
+      recordedAt: DateTime.utc(2026, 9, 22, 8, 1),
+    ),
+  ],
+  policyLeasesAvailable: true,
+  policyLeases: [
+    AutomationPolicyLeaseOutcome(
+      leaseId: _leaseId,
+      leaseSha256: _scheduleShaD,
+      occurrenceId: _occurrenceId,
+      executionId: 'execution-one',
+      toolId: 'google.gmail.send',
+      status: 'consumed',
+      bindingIndex: 0,
+      bindingSha256: _scheduleShaE,
+      toolContractSha256: _scheduleShaF,
+      policySha256: _scheduleShaG,
+      influenceManifestSha256: _scheduleShaA,
+      issuedAt: DateTime.utc(2026, 9, 22, 8),
+      expiresAt: DateTime.utc(2026, 9, 22, 8, 5),
+      consumedAt: DateTime.utc(2026, 9, 22, 8, 1),
+      consumptionReceiptId: _consumptionReceiptId,
+      consumptionReceiptSha256: _scheduleShaH,
+    ),
+  ],
+);

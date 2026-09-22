@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 
+import 'agent_governance.dart';
+import 'agent_governance_view.dart';
+
 typedef Json = Map<String, dynamic>;
 
 const maxAssignedAgentSkills = 8;
@@ -684,16 +687,23 @@ class AgentsController extends ChangeNotifier {
     this.skillMutationsAvailable = false,
     this.agentDeleteAvailable = false,
     this.moltbookAvailable = false,
+    this.governanceReadAvailable = false,
+    this.governanceMutationAvailable = false,
   });
   final AgentsRepository repository;
   final bool canManage;
   final bool mutationsAvailable;
   final bool skillMutationsAvailable, agentDeleteAvailable, moltbookAvailable;
+  final bool governanceReadAvailable, governanceMutationAvailable;
   bool get canMutate => canMutateAgents;
   bool get canMutateAgents => canManage && mutationsAvailable;
   bool get canMutateSkills => canManage && skillMutationsAvailable;
   bool get canDeleteAgents => canManage && agentDeleteAvailable;
   bool get canManageMoltbook => canManage && moltbookAvailable;
+  bool get canReadGovernance =>
+      governanceReadAvailable && repository is AgentGovernanceRepository;
+  bool get canManageGovernance =>
+      canManage && governanceMutationAvailable && canReadGovernance;
   AgentLedger? ledger;
   bool loading = false;
   Object? error;
@@ -777,6 +787,47 @@ class AgentsController extends ChangeNotifier {
     }
     return (source as MoltbookAgentsRepository).changeMoltbook(agentId, input);
   }
+
+  Future<AgentGovernanceSnapshot> loadGovernance(String agentId) {
+    final source = repository;
+    if (!canReadGovernance || source is! AgentGovernanceRepository) {
+      throw StateError('Agent release and adaptation evidence is unavailable.');
+    }
+    return (source as AgentGovernanceRepository).loadGovernance(agentId);
+  }
+
+  Future<AgentGovernanceSnapshot> manageRelease(
+    String agentId,
+    AgentGovernanceJson action,
+  ) {
+    final source = repository;
+    if (!canManageGovernance || source is! AgentGovernanceRepository) {
+      throw StateError('Agent release changes are unavailable here.');
+    }
+    return (source as AgentGovernanceRepository).manageRelease(
+      agentId,
+      action,
+      idempotencyKey: _governanceKey(agentId, '${action['action']}'),
+    );
+  }
+
+  Future<AgentGovernanceSnapshot> manageAdaptation(
+    String agentId,
+    AgentGovernanceJson action,
+  ) {
+    final source = repository;
+    if (!canManageGovernance || source is! AgentGovernanceRepository) {
+      throw StateError('Agent adaptation changes are unavailable here.');
+    }
+    return (source as AgentGovernanceRepository).manageAdaptation(
+      agentId,
+      action,
+      idempotencyKey: _governanceKey(agentId, 'adaptation-${action['action']}'),
+    );
+  }
+
+  String _governanceKey(String agentId, String action) =>
+      'native-agent-governance-$action-${DateTime.now().microsecondsSinceEpoch}-${agentId.hashCode.abs()}';
 }
 
 class AgentsView extends StatefulWidget {
@@ -1091,6 +1142,23 @@ class _AgentsViewState extends State<AgentsView>
             Wrap(
               spacing: 8,
               children: a.skillIds.map((s) => Chip(label: Text(s))).toList(),
+            ),
+            const SizedBox(height: 20),
+            Text(
+              'Release & learning',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 9),
+            AgentGovernanceView(
+              agentId: a.id,
+              builtIn: a.builtIn,
+              canRead: widget.controller.canReadGovernance,
+              canManage: widget.controller.canManageGovernance,
+              load: () => widget.controller.loadGovernance(a.id),
+              manageRelease: (action) =>
+                  widget.controller.manageRelease(a.id, action),
+              manageAdaptation: (action) =>
+                  widget.controller.manageAdaptation(a.id, action),
             ),
           ],
         ),

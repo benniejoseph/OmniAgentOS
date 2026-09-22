@@ -548,6 +548,215 @@ abstract interface class AgentCouncilControlRepository {
   });
 }
 
+abstract interface class AgentCouncilDetailRepository {
+  Future<AgentTaskDetail> loadTaskDetail(String executionId);
+}
+
+@immutable
+class AgentTaskDetail {
+  const AgentTaskDetail({
+    required this.executionId,
+    required this.authority,
+    required this.grantsImmutable,
+    required this.allowedActions,
+  });
+
+  final String executionId;
+  final AgentTaskAuthority authority;
+  final bool grantsImmutable;
+  final List<String> allowedActions;
+
+  factory AgentTaskDetail.fromJson(AgentCouncilJson value) {
+    final task = _object(value, 'task');
+    _rejectPrivateTaskFields(task);
+    final controls = _object(task, 'controls');
+    final actions = _strings(controls, 'allowedActions');
+    if (controls['grantsImmutable'] != true ||
+        actions.any((action) => action != 'cancel')) {
+      throw const FormatException(
+        'The delegated task exposed an unsupported authority control.',
+      );
+    }
+    return AgentTaskDetail(
+      executionId: _string(task, 'executionId'),
+      authority: AgentTaskAuthority.fromJson(_object(task, 'authority')),
+      grantsImmutable: true,
+      allowedActions: actions,
+    );
+  }
+}
+
+@immutable
+class AgentTaskAuthority {
+  const AgentTaskAuthority({
+    required this.contractSha256,
+    required this.grantRequestSha256,
+    required this.validation,
+    required this.nativeReadTools,
+    required this.skills,
+    required this.plugins,
+    required this.mcpServers,
+  });
+
+  final String contractSha256, grantRequestSha256;
+  final AgentTaskGrantValidation validation;
+  final List<AgentTaskNativeReadGrant> nativeReadTools;
+  final List<AgentTaskSkillGrant> skills;
+  final List<AgentTaskPluginGrant> plugins;
+  final List<AgentTaskMcpGrant> mcpServers;
+
+  factory AgentTaskAuthority.fromJson(AgentCouncilJson value) {
+    if (value['immutable'] != true) {
+      throw const FormatException('Delegated task grants must be immutable.');
+    }
+    return AgentTaskAuthority(
+      contractSha256: _sha256(value, 'contractSha256'),
+      grantRequestSha256: _sha256(value, 'grantRequestSha256'),
+      validation: AgentTaskGrantValidation.fromJson(
+        _object(value, 'validation'),
+      ),
+      nativeReadTools: _objects(
+        value,
+        'nativeReadTools',
+      ).map(AgentTaskNativeReadGrant.fromJson).toList(growable: false),
+      skills: _objects(
+        value,
+        'skills',
+      ).map(AgentTaskSkillGrant.fromJson).toList(growable: false),
+      plugins: _objects(
+        value,
+        'plugins',
+      ).map(AgentTaskPluginGrant.fromJson).toList(growable: false),
+      mcpServers: _objects(
+        value,
+        'mcpServers',
+      ).map(AgentTaskMcpGrant.fromJson).toList(growable: false),
+    );
+  }
+}
+
+@immutable
+class AgentTaskGrantValidation {
+  const AgentTaskGrantValidation({
+    required this.status,
+    required this.category,
+    required this.validatedAt,
+  });
+
+  final String status;
+  final String? category, validatedAt;
+
+  factory AgentTaskGrantValidation.fromJson(AgentCouncilJson value) {
+    final status = _string(value, 'status');
+    final category = _nullableString(value, 'category');
+    final validatedAt = _nullableTimestamp(value, 'validatedAt');
+    final valid = switch (status) {
+      'not_checked' => category == null && validatedAt == null,
+      'current' => category == 'all_grants' && validatedAt != null,
+      'changed' => category == 'capability_binding' && validatedAt != null,
+      _ => false,
+    };
+    if (!valid) {
+      throw const FormatException(
+        'Grant validation lifecycle coordinates are invalid.',
+      );
+    }
+    return AgentTaskGrantValidation(
+      status: status,
+      category: category,
+      validatedAt: validatedAt,
+    );
+  }
+}
+
+@immutable
+class AgentTaskNativeReadGrant {
+  const AgentTaskNativeReadGrant({required this.toolId});
+  final String toolId;
+  factory AgentTaskNativeReadGrant.fromJson(AgentCouncilJson value) =>
+      AgentTaskNativeReadGrant(toolId: _string(value, 'toolId'));
+}
+
+@immutable
+class AgentTaskSkillGrant {
+  const AgentTaskSkillGrant({
+    required this.capabilityGrantId,
+    required this.skillId,
+    required this.skillVersion,
+    required this.skillVersionId,
+    required this.skillSha256,
+  });
+  final String capabilityGrantId, skillId, skillVersionId, skillSha256;
+  final int skillVersion;
+  factory AgentTaskSkillGrant.fromJson(AgentCouncilJson value) =>
+      AgentTaskSkillGrant(
+        capabilityGrantId: _string(value, 'capabilityGrantId'),
+        skillId: _string(value, 'skillId'),
+        skillVersion: _integer(value, 'skillVersion'),
+        skillVersionId: _string(value, 'skillVersionId'),
+        skillSha256: _sha256(value, 'skillSha256'),
+      );
+}
+
+@immutable
+class AgentTaskPluginGrant {
+  const AgentTaskPluginGrant({
+    required this.capabilityGrantId,
+    required this.installationId,
+    required this.installationRevision,
+    required this.installationSha256,
+    required this.pluginId,
+    required this.pluginVersion,
+    required this.manifestSha256,
+    required this.componentIds,
+  });
+  final String capabilityGrantId,
+      installationId,
+      installationSha256,
+      pluginId,
+      pluginVersion,
+      manifestSha256;
+  final int installationRevision;
+  final List<String> componentIds;
+  factory AgentTaskPluginGrant.fromJson(AgentCouncilJson value) =>
+      AgentTaskPluginGrant(
+        capabilityGrantId: _string(value, 'capabilityGrantId'),
+        installationId: _string(value, 'installationId'),
+        installationRevision: _integer(value, 'installationRevision'),
+        installationSha256: _sha256(value, 'installationSha256'),
+        pluginId: _string(value, 'pluginId'),
+        pluginVersion: _string(value, 'pluginVersion'),
+        manifestSha256: _sha256(value, 'manifestSha256'),
+        componentIds: _strings(value, 'componentIds'),
+      );
+}
+
+@immutable
+class AgentTaskMcpGrant {
+  const AgentTaskMcpGrant({
+    required this.capabilityGrantId,
+    required this.serverId,
+    required this.serverVersionId,
+    required this.serverContractSha256,
+    required this.governedToolIds,
+    required this.connectorTargetIds,
+  });
+  final String capabilityGrantId,
+      serverId,
+      serverVersionId,
+      serverContractSha256;
+  final List<String> governedToolIds, connectorTargetIds;
+  factory AgentTaskMcpGrant.fromJson(AgentCouncilJson value) =>
+      AgentTaskMcpGrant(
+        capabilityGrantId: _string(value, 'capabilityGrantId'),
+        serverId: _string(value, 'serverId'),
+        serverVersionId: _string(value, 'serverVersionId'),
+        serverContractSha256: _sha256(value, 'serverContractSha256'),
+        governedToolIds: _strings(value, 'governedToolIds'),
+        connectorTargetIds: _strings(value, 'connectorTargetIds'),
+      );
+}
+
 @immutable
 class AgentCouncilCancellation {
   const AgentCouncilCancellation({
@@ -591,6 +800,9 @@ class AgentCouncilController extends ChangeNotifier {
   final Set<String> _cancelingTaskIds = <String>{};
   final Map<String, Object> _cancellationErrors = <String, Object>{};
   final Map<String, String> _cancellationKeys = <String, String>{};
+  final Map<String, AgentTaskDetail> _taskDetails = <String, AgentTaskDetail>{};
+  final Set<String> _loadingTaskDetails = <String>{};
+  final Map<String, Object> _taskDetailErrors = <String, Object>{};
   Future<void>? _refreshInFlight;
 
   bool canCancel(AgentCouncilMember member) =>
@@ -601,6 +813,42 @@ class AgentCouncilController extends ChangeNotifier {
   bool isCanceling(String taskId) => _cancelingTaskIds.contains(taskId);
 
   Object? cancellationError(String taskId) => _cancellationErrors[taskId];
+
+  AgentTaskDetail? taskDetail(String taskId) => _taskDetails[taskId];
+  bool isLoadingTaskDetail(String taskId) =>
+      _loadingTaskDetails.contains(taskId);
+  Object? taskDetailError(String taskId) => _taskDetailErrors[taskId];
+
+  Future<void> loadTaskDetail(String taskId, {bool refresh = false}) async {
+    final source = repository;
+    if (source is! AgentCouncilDetailRepository) {
+      _taskDetailErrors[taskId] = StateError(
+        'Exact task authority is unavailable on this installation.',
+      );
+      notifyListeners();
+      return;
+    }
+    if (!refresh && _taskDetails.containsKey(taskId)) return;
+    if (_loadingTaskDetails.contains(taskId)) return;
+    _loadingTaskDetails.add(taskId);
+    _taskDetailErrors.remove(taskId);
+    notifyListeners();
+    try {
+      final detail = await (source as AgentCouncilDetailRepository)
+          .loadTaskDetail(taskId);
+      if (detail.executionId != taskId) {
+        throw const FormatException(
+          'The service returned authority for a different task.',
+        );
+      }
+      _taskDetails[taskId] = detail;
+    } catch (caught) {
+      _taskDetailErrors[taskId] = caught;
+    } finally {
+      _loadingTaskDetails.remove(taskId);
+      notifyListeners();
+    }
+  }
 
   Future<void> refresh() {
     final existing = _refreshInFlight;
@@ -773,6 +1021,22 @@ String _timestamp(AgentCouncilJson source, String key) {
   final value = _string(source, key);
   if (DateTime.tryParse(value) == null) {
     throw FormatException('Agent Council field $key must be a timestamp.');
+  }
+  return value;
+}
+
+String? _nullableTimestamp(AgentCouncilJson source, String key) {
+  final value = _nullableString(source, key);
+  if (value != null && DateTime.tryParse(value) == null) {
+    throw FormatException('Agent Council field $key must be a timestamp.');
+  }
+  return value;
+}
+
+String _sha256(AgentCouncilJson source, String key) {
+  final value = _string(source, key);
+  if (!RegExp(r'^[a-f0-9]{64}$').hasMatch(value)) {
+    throw FormatException('Agent Council field $key must be a SHA-256 digest.');
   }
   return value;
 }

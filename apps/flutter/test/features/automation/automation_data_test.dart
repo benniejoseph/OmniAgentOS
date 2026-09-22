@@ -14,6 +14,14 @@ import 'package:flutter_test/flutter_test.dart';
 const _sha = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const _previewSha =
     'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+const _occurrenceId =
+    'workflow_schedule_occurrence_1111111111111111111111111111111111111111';
+const _receiptId =
+    'workflow_schedule_receipt_2222222222222222222222222222222222222222';
+const _leaseId =
+    'policy_lease_333333333333333333333333333333333333333333333333';
+const _consumptionReceiptId =
+    'policy_lease_receipt_444444444444444444444444444444444444444444444444';
 
 void main() {
   setUp(() => FlutterSecureStorage.setMockInitialValues({}));
@@ -162,6 +170,244 @@ void main() {
     expect(api.lastData, {'expectedRevision': 4});
   });
 
+  test('loads exact schedule and content-free PolicyLease history', () async {
+    final api = _ScheduleApiClient();
+    final repository = ApiAutomationRepository(api);
+
+    final detail = await repository.loadSchedule('trigger/one');
+
+    expect(api.path, NativePaths.automationScheduleShow('trigger/one'));
+    expect(detail.trigger.id, 'trigger/one');
+    expect(detail.occurrences.single.authoritySha256, _sha);
+    expect(detail.receipts.single.receiptSha256, _previewSha);
+    expect(detail.policyLeasesAvailable, isTrue);
+    expect(detail.policyLeases.single.toolId, 'calendar.events.create');
+    expect(detail.policyLeases.single.status, 'consumed');
+    expect(detail.policyLeases.single.consumptionReceiptSha256, _sha);
+  });
+
+  test(
+    'rejects schedule history that contains content or grants authority',
+    () {
+      final content = _scheduleResponse();
+      final policy = Map<String, dynamic>.from(content['policyLeases']! as Map);
+      final outcome = Map<String, dynamic>.from(
+        (policy['outcomes']! as List).single as Map,
+      )..['contentIncluded'] = true;
+      policy['outcomes'] = [outcome];
+      content['policyLeases'] = policy;
+      expect(
+        () => AutomationScheduleDetail.fromResponse(content),
+        throwsFormatException,
+      );
+
+      final authority = _scheduleResponse();
+      final authorityPolicy = Map<String, dynamic>.from(
+        authority['policyLeases']! as Map,
+      );
+      final authorityOutcome = Map<String, dynamic>.from(
+        (authorityPolicy['outcomes']! as List).single as Map,
+      )..['leaseGrantsAuthority'] = true;
+      authorityPolicy['outcomes'] = [authorityOutcome];
+      authority['policyLeases'] = authorityPolicy;
+      expect(
+        () => AutomationScheduleDetail.fromResponse(authority),
+        throwsFormatException,
+      );
+    },
+  );
+
+  test('requires an exact PolicyLease projection envelope', () {
+    final missingVersion = _scheduleResponse();
+    final missingVersionPolicy = Map<String, dynamic>.from(
+      missingVersion['policyLeases']! as Map,
+    )..remove('version');
+    missingVersion['policyLeases'] = missingVersionPolicy;
+    expect(
+      () => AutomationScheduleDetail.fromResponse(missingVersion),
+      throwsFormatException,
+    );
+
+    final missingAvailability = _scheduleResponse();
+    final missingAvailabilityPolicy = Map<String, dynamic>.from(
+      missingAvailability['policyLeases']! as Map,
+    )..remove('available');
+    missingAvailability['policyLeases'] = missingAvailabilityPolicy;
+    expect(
+      () => AutomationScheduleDetail.fromResponse(missingAvailability),
+      throwsFormatException,
+    );
+
+    final unavailableWithOutcomes = _scheduleResponse();
+    final unavailablePolicy = Map<String, dynamic>.from(
+      unavailableWithOutcomes['policyLeases']! as Map,
+    )..['available'] = false;
+    unavailableWithOutcomes['policyLeases'] = unavailablePolicy;
+    expect(
+      () => AutomationScheduleDetail.fromResponse(unavailableWithOutcomes),
+      throwsFormatException,
+    );
+
+    final unavailable = _scheduleResponse();
+    final unavailableEmptyPolicy =
+        Map<String, dynamic>.from(unavailable['policyLeases']! as Map)
+          ..['available'] = false
+          ..['outcomes'] = const [];
+    unavailable['policyLeases'] = unavailableEmptyPolicy;
+    expect(
+      AutomationScheduleDetail.fromResponse(unavailable).policyLeasesAvailable,
+      isFalse,
+    );
+  });
+
+  test('rejects malformed schedule occurrence evidence', () {
+    for (final mutation in <String, Object?>{
+      'id': 'occurrence-one',
+      'kind': 'timer',
+      'status': 'running',
+      'authoritySha256': 'not-a-digest',
+      'scheduledFor': '2026-09-22T03:00:00+00:00',
+      'updatedAt': 'not-a-timestamp',
+      'attemptCount': 1.5,
+    }.entries) {
+      expect(
+        () => AutomationScheduleDetail.fromResponse(
+          _scheduleResponseWithOccurrence(mutation.key, mutation.value),
+        ),
+        throwsFormatException,
+        reason: 'Occurrence ${mutation.key} must fail closed.',
+      );
+    }
+
+    final reversedTime = _scheduleResponseWithOccurrence(
+      'updatedAt',
+      '2026-09-22T02:59:59.000Z',
+    );
+    expect(
+      () => AutomationScheduleDetail.fromResponse(reversedTime),
+      throwsFormatException,
+    );
+    final invalidList = _scheduleResponse()..['occurrences'] = [null];
+    expect(
+      () => AutomationScheduleDetail.fromResponse(invalidList),
+      throwsFormatException,
+    );
+  });
+
+  test('rejects malformed schedule receipt evidence', () {
+    for (final mutation in <String, Object?>{
+      'id': 'receipt-one',
+      'occurrenceId': 'occurrence-one',
+      'status': 'running',
+      'receiptSha256': 'not-a-digest',
+      'stateSha256': 'not-a-digest',
+      'recordedAt': '2026-09-22',
+    }.entries) {
+      expect(
+        () => AutomationScheduleDetail.fromResponse(
+          _scheduleResponseWithReceipt(mutation.key, mutation.value),
+        ),
+        throwsFormatException,
+        reason: 'Receipt ${mutation.key} must fail closed.',
+      );
+    }
+    final invalidList = _scheduleResponse()..['receipts'] = ['not-a-record'];
+    expect(
+      () => AutomationScheduleDetail.fromResponse(invalidList),
+      throwsFormatException,
+    );
+  });
+
+  test('enforces closed PolicyLease statuses and consumption evidence', () {
+    for (final mutation in <String, Object?>{
+      'leaseId': 'policy-lease-one',
+      'occurrenceId': 'occurrence-one',
+      'status': 'active',
+      'bindingIndex': -1,
+      'issuedAt': '2026-09-22T03:00:00+00:00',
+      'expiresAt': '2026-09-22T02:59:59.000Z',
+      'consumptionReceiptId': 'consumption-one',
+      'consumptionReceiptSha256': 'not-a-digest',
+    }.entries) {
+      expect(
+        () => AutomationScheduleDetail.fromResponse(
+          _scheduleResponseWithPolicyLease(mutation.key, mutation.value),
+        ),
+        throwsFormatException,
+        reason: 'PolicyLease ${mutation.key} must fail closed.',
+      );
+    }
+
+    for (final missing in const [
+      'consumedAt',
+      'consumptionReceiptId',
+      'consumptionReceiptSha256',
+    ]) {
+      expect(
+        () => AutomationScheduleDetail.fromResponse(
+          _scheduleResponseWithPolicyLease(missing, null),
+        ),
+        throwsFormatException,
+        reason: 'A consumed PolicyLease requires $missing.',
+      );
+    }
+
+    final issuedWithReceipt = _scheduleResponseWithPolicyLease(
+      'status',
+      'issued',
+    );
+    expect(
+      () => AutomationScheduleDetail.fromResponse(issuedWithReceipt),
+      throwsFormatException,
+    );
+    final consumedAtExpiry = _scheduleResponseWithPolicyLease(
+      'consumedAt',
+      '2026-09-22T03:15:00.000Z',
+    );
+    expect(
+      () => AutomationScheduleDetail.fromResponse(consumedAtExpiry),
+      throwsFormatException,
+    );
+    final missingBindingIndex = _scheduleResponseWithPolicyLease(
+      'bindingIndex',
+      null,
+    );
+    expect(
+      () => AutomationScheduleDetail.fromResponse(missingBindingIndex),
+      throwsFormatException,
+    );
+    final malformedOutcomes = _scheduleResponse();
+    final malformedPolicy = Map<String, dynamic>.from(
+      malformedOutcomes['policyLeases']! as Map,
+    )..['outcomes'] = ['not-a-record'];
+    malformedOutcomes['policyLeases'] = malformedPolicy;
+    expect(
+      () => AutomationScheduleDetail.fromResponse(malformedOutcomes),
+      throwsFormatException,
+    );
+
+    for (final status in const ['issued', 'expired']) {
+      final response = _scheduleResponseWithPolicyLease('status', status);
+      final policy = Map<String, dynamic>.from(
+        response['policyLeases']! as Map,
+      );
+      final lease =
+          Map<String, dynamic>.from((policy['outcomes']! as List).single as Map)
+            ..['consumedAt'] = null
+            ..['consumptionReceiptId'] = null
+            ..['consumptionReceiptSha256'] = null;
+      policy['outcomes'] = [lease];
+      response['policyLeases'] = policy;
+      expect(
+        AutomationScheduleDetail.fromResponse(response)
+            .policyLeases
+            .single
+            .status,
+        status,
+      );
+    }
+  });
+
   test(
     'controller exposes partial refresh state and completes reviewed install',
     () async {
@@ -303,6 +549,22 @@ class _MutationApiClient extends ApiClient {
   }
 }
 
+class _ScheduleApiClient extends ApiClient {
+  _ScheduleApiClient()
+    : super(Dio(), Dio(), SecureSessionStore(const FlutterSecureStorage()));
+
+  String? path;
+
+  @override
+  Future<Map<String, dynamic>> getJsonFresh(
+    String path, {
+    Map<String, dynamic>? query,
+  }) async {
+    this.path = path;
+    return _scheduleResponse();
+  }
+}
+
 class _ControllerRepository implements AutomationRepository {
   final idempotencyKeys = <String>[];
   final previewedManifests = <AutomationJson>[];
@@ -326,6 +588,10 @@ class _ControllerRepository implements AutomationRepository {
       ),
     ),
   );
+
+  @override
+  Future<AutomationScheduleDetail> loadSchedule(String triggerId) =>
+      throw UnimplementedError();
 
   @override
   Future<AutomationResource<AutomationPluginCatalog>> loadPlugins() async {
@@ -409,6 +675,104 @@ Map<String, dynamic> _previewResponse() => {
   },
   'manifest': {'schemaVersion': 1},
 };
+
+Map<String, dynamic> _scheduleResponse() => {
+  'trigger': {
+    'id': 'trigger/one',
+    'name': 'Morning briefing',
+    'status': 'active',
+    'source': 'schedule',
+    'workflowMode': 'orchestrate',
+  },
+  'preview': {
+    'occurrences': ['2026-09-23T03:00:00.000Z'],
+  },
+  'occurrences': [
+    {
+      'id': _occurrenceId,
+      'kind': 'scheduled',
+      'status': 'completed',
+      'scheduledFor': '2026-09-22T03:00:00.000Z',
+      'workflowRunId': 'workflow-one',
+      'failureCode': null,
+      'attemptCount': 1,
+      'authoritySha256': _sha,
+      'updatedAt': '2026-09-22T03:05:00.000Z',
+    },
+  ],
+  'receipts': [
+    {
+      'id': _receiptId,
+      'occurrenceId': _occurrenceId,
+      'status': 'completed',
+      'receiptSha256': _previewSha,
+      'stateSha256': _sha,
+      'recordedAt': '2026-09-22T03:05:00.000Z',
+    },
+  ],
+  'policyLeases': {
+    'version': 'scheduled-policy-lease-outcomes:1',
+    'available': true,
+    'contentIncluded': false,
+    'outcomes': [
+      {
+        'leaseId': _leaseId,
+        'leaseSha256': _sha,
+        'occurrenceId': _occurrenceId,
+        'executionId': 'execution-one',
+        'toolId': 'calendar.events.create',
+        'status': 'consumed',
+        'bindingIndex': 0,
+        'bindingSha256': _previewSha,
+        'toolContractSha256': _sha,
+        'policySha256': _previewSha,
+        'influenceManifestSha256': _sha,
+        'issuedAt': '2026-09-22T03:00:00.000Z',
+        'expiresAt': '2026-09-22T03:15:00.000Z',
+        'consumedAt': '2026-09-22T03:01:00.000Z',
+        'consumptionReceiptId': _consumptionReceiptId,
+        'consumptionReceiptSha256': _sha,
+        'contentIncluded': false,
+        'leaseGrantsAuthority': false,
+      },
+    ],
+  },
+};
+
+Map<String, dynamic> _scheduleResponseWithOccurrence(
+  String key,
+  Object? value,
+) {
+  final response = _scheduleResponse();
+  final occurrence = Map<String, dynamic>.from(
+    (response['occurrences']! as List).single as Map,
+  )..[key] = value;
+  response['occurrences'] = [occurrence];
+  return response;
+}
+
+Map<String, dynamic> _scheduleResponseWithReceipt(String key, Object? value) {
+  final response = _scheduleResponse();
+  final receipt = Map<String, dynamic>.from(
+    (response['receipts']! as List).single as Map,
+  )..[key] = value;
+  response['receipts'] = [receipt];
+  return response;
+}
+
+Map<String, dynamic> _scheduleResponseWithPolicyLease(
+  String key,
+  Object? value,
+) {
+  final response = _scheduleResponse();
+  final policy = Map<String, dynamic>.from(response['policyLeases']! as Map);
+  final lease = Map<String, dynamic>.from(
+    (policy['outcomes']! as List).single as Map,
+  )..[key] = value;
+  policy['outcomes'] = [lease];
+  response['policyLeases'] = policy;
+  return response;
+}
 
 Map<String, dynamic> _mutationResponse() => {
   'installation': {

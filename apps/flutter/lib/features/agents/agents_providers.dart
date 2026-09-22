@@ -51,6 +51,14 @@ final agentsControllerProvider = ChangeNotifierProvider<AgentsController>((
       'moltbook.connection.show',
       'moltbook.connection.manage',
     ].every(NativeContract.supportsOperation),
+    governanceReadAvailable: const [
+      'agents.release.show',
+      'agents.adaptations.list',
+    ].every(NativeContract.supportsOperation),
+    governanceMutationAvailable: const [
+      'agents.release.manage',
+      'agents.adaptations.manage',
+    ].every(NativeContract.supportsOperation),
   );
   final unregister = ref
       .read(reconnectCoordinatorProvider)

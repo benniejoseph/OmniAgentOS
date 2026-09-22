@@ -84,6 +84,19 @@ class _MacosInboxViewState extends State<MacosInboxView> {
             description: 'Triage reminders and review governed actions before they continue.',
             icon: Icons.inbox_outlined,
             actions: [
+              IconButton(
+                key: const Key('macos-inbox-dispositions'),
+                tooltip: 'Delivery decision history',
+                onPressed: () => _showDispositionHistory(context),
+                icon: Badge.count(
+                  count:
+                      widget.controller.dispositionHistory?.items.length ?? 0,
+                  isLabelVisible:
+                      (widget.controller.dispositionHistory?.items.isNotEmpty ??
+                      false),
+                  child: const Icon(Icons.rule_folder_outlined),
+                ),
+              ),
               if (widget.controller.loading)
                 const Padding(
                   padding: EdgeInsets.symmetric(horizontal: 8),
@@ -257,7 +270,287 @@ class _MacosInboxViewState extends State<MacosInboxView> {
         : (current + delta).clamp(0, approvals.length - 1);
     setState(() => _selectedApprovalId = approvals[next].id);
   }
+
+  Future<void> _showDispositionHistory(BuildContext context) =>
+      showDialog<void>(
+        context: context,
+        builder: (_) =>
+            _DispositionHistoryDialog(controller: widget.controller),
+      );
 }
+
+class _DispositionHistoryDialog extends StatelessWidget {
+  const _DispositionHistoryDialog({required this.controller});
+
+  final InboxController controller;
+
+  @override
+  Widget build(BuildContext context) => Dialog(
+    clipBehavior: Clip.antiAlias,
+    child: ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 880, maxHeight: 720),
+      child: ListenableBuilder(
+        listenable: controller,
+        builder: (context, _) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(22, 20, 12, 14),
+                child: Row(
+                  children: [
+                    const Icon(Icons.rule_folder_outlined),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Delivery decision history',
+                            style: Theme.of(context).textTheme.titleLarge,
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            'Content-free policy outcomes. These records do not contain message content or grant authority.',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Refresh decisions',
+                      onPressed: controller.loading ? null : controller.refresh,
+                      icon: const Icon(Icons.refresh_rounded),
+                    ),
+                    IconButton(
+                      tooltip: 'Close',
+                      onPressed: () => Navigator.of(context).pop(),
+                      icon: const Icon(Icons.close_rounded),
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(height: 1),
+              Expanded(child: _DispositionHistoryBody(controller: controller)),
+            ],
+          );
+        },
+      ),
+    ),
+  );
+}
+
+class _DispositionHistoryBody extends StatelessWidget {
+  const _DispositionHistoryBody({required this.controller});
+
+  final InboxController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final history = controller.dispositionHistory;
+    if (controller.loading && history == null) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (history == null) {
+      return MacosEmptyState(
+        icon: Icons.cloud_off_outlined,
+        title: 'Decision history is unavailable',
+        message: controller.dispositionsError == null
+            ? 'Refresh to load durable notification policy outcomes.'
+            : 'The content-free decision projection could not be loaded.',
+        action: FilledButton.tonalIcon(
+          onPressed: controller.refresh,
+          icon: const Icon(Icons.refresh_rounded),
+          label: const Text('Retry'),
+        ),
+      );
+    }
+    if (history.items.isEmpty) {
+      return const MacosEmptyState(
+        icon: Icons.rule_folder_outlined,
+        title: 'No delivery decisions yet',
+        message: 'Send, defer, digest, and suppress outcomes appear after policy evaluation.',
+      );
+    }
+    return Scrollbar(
+      child: ListView.separated(
+        padding: const EdgeInsets.all(16),
+        itemCount: history.items.length,
+        separatorBuilder: (_, _) => const SizedBox(height: 9),
+        itemBuilder: (context, index) =>
+            _DispositionHistoryCard(item: history.items[index]),
+      ),
+    );
+  }
+}
+
+class _DispositionHistoryCard extends StatelessWidget {
+  const _DispositionHistoryCard({required this.item});
+
+  final NotificationDisposition item;
+
+  @override
+  Widget build(BuildContext context) {
+    final mac = MacosThemeColors.of(context);
+    final evaluated = item.evaluatedAt.toLocal();
+    final evaluatedLabel =
+        '${MaterialLocalizations.of(context).formatMediumDate(evaluated)} · '
+        '${MaterialLocalizations.of(context).formatTimeOfDay(TimeOfDay.fromDateTime(evaluated))}';
+    return Material(
+      color: mac.sidebar,
+      clipBehavior: Clip.antiAlias,
+      shape: RoundedRectangleBorder(
+        side: BorderSide(color: mac.divider),
+        borderRadius: BorderRadius.circular(9),
+      ),
+      child: ExpansionTile(
+        tilePadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 3),
+        childrenPadding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+        leading: Icon(_dispositionIcon(item.outcome)),
+        title: Row(
+          children: [
+            Text(
+              _inboxLabel(item.outcome),
+              style: Theme.of(context).textTheme.titleSmall,
+            ),
+            const SizedBox(width: 8),
+            _DispositionPill(label: _inboxLabel(item.state)),
+            if (item.mustSend) ...[
+              const SizedBox(width: 6),
+              const _DispositionPill(label: 'Must send'),
+            ],
+            if (item.critical) ...[
+              const SizedBox(width: 6),
+              const _DispositionPill(label: 'Critical'),
+            ],
+          ],
+        ),
+        subtitle: Text(
+          '${_inboxLabel(item.sourceKind)} · ${item.sourceId} · $evaluatedLabel',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        children: [
+          _DispositionField(label: 'Disposition ID', value: item.id),
+          _DispositionField(
+            label: 'Source',
+            value: '${item.sourceKind} / ${item.sourceId}',
+          ),
+          _DispositionField(label: 'Reason', value: item.reason),
+          _DispositionField(
+            label: 'Lifecycle revision',
+            value: '${item.lifecycleRevision}',
+          ),
+          _DispositionField(
+            label: 'Policy SHA-256',
+            value: item.policySha256,
+            monospace: true,
+          ),
+          _DispositionField(
+            label: 'Occurrence SHA-256',
+            value: item.occurrenceSha256,
+            monospace: true,
+          ),
+          _DispositionField(
+            label: 'Candidate SHA-256',
+            value: item.candidateSha256,
+            monospace: true,
+          ),
+          _DispositionField(
+            label: 'Decision receipt SHA-256',
+            value: item.decisionReceiptSha256,
+            monospace: true,
+          ),
+          if (item.digestDeliveryId != null)
+            _DispositionField(
+              label: 'Digest delivery ID',
+              value: item.digestDeliveryId!,
+            ),
+          if (item.deliveryKind != null)
+            _DispositionField(
+              label: 'Delivery binding',
+              value:
+                  '${item.deliveryKind} / ${item.deliveryBindingSha256 ?? 'digest unavailable'}',
+              monospace: item.deliveryBindingSha256 != null,
+            ),
+          const SizedBox(height: 7),
+          Row(
+            children: [
+              Icon(
+                Icons.verified_user_outlined,
+                size: 15,
+                color: Theme.of(context).colorScheme.primary,
+              ),
+              const SizedBox(width: 6),
+              const Expanded(
+                child: Text('Content excluded · decision grants no authority'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DispositionPill extends StatelessWidget {
+  const _DispositionPill({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+    decoration: BoxDecoration(
+      color: Theme.of(context).colorScheme.primaryContainer,
+      borderRadius: BorderRadius.circular(999),
+    ),
+    child: Text(label, style: Theme.of(context).textTheme.labelSmall),
+  );
+}
+
+class _DispositionField extends StatelessWidget {
+  const _DispositionField({
+    required this.label,
+    required this.value,
+    this.monospace = false,
+  });
+
+  final String label;
+  final String value;
+  final bool monospace;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(top: 7),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 154,
+          child: Text(label, style: Theme.of(context).textTheme.labelSmall),
+        ),
+        Expanded(
+          child: SelectableText(
+            value,
+            style: monospace
+                ? Theme.of(context).textTheme.bodySmall
+                      ?.copyWith(fontFamily: 'monospace')
+                : Theme.of(context).textTheme.bodySmall,
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+IconData _dispositionIcon(String outcome) => switch (outcome) {
+  'send' => Icons.send_outlined,
+  'defer' => Icons.schedule_send_outlined,
+  'digest' => Icons.view_agenda_outlined,
+  'suppress' => Icons.notifications_off_outlined,
+  _ => Icons.rule_folder_outlined,
+};
 
 class _InboxToolbar extends StatelessWidget {
   const _InboxToolbar({

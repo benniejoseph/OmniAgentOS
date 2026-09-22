@@ -51,9 +51,12 @@ void main() {
       findsOneWidget,
     );
 
-    await tester.tap(
-      find.byKey(const Key('android-agent-control-cancel-task-scout-one')),
+    final cancel = find.byKey(
+      const Key('android-agent-control-cancel-task-scout-one'),
     );
+    await tester.ensureVisible(cancel);
+    await tester.pumpAndSettle();
+    await tester.tap(cancel);
     await tester.pumpAndSettle();
     await tester.tap(
       find.byKey(const Key('android-agent-control-confirm-cancel')),

@@ -58,6 +58,7 @@ class ApprovalQueue {
 abstract interface class InboxRepository {
   Future<ApprovalQueue> loadApprovals();
   Future<NotificationCenter> loadNotifications();
+  Future<NotificationDispositionHistory> loadNotificationDispositions();
   Future<void> decide(
     ApprovalItem item, {
     required bool approve,
@@ -71,6 +72,180 @@ abstract interface class InboxRepository {
     int? snoozeMinutes,
   });
   Future<void> readAllNotifications();
+}
+
+class NotificationDispositionHistory {
+  const NotificationDispositionHistory({
+    required this.version,
+    required this.items,
+  });
+
+  final String version;
+  final List<NotificationDisposition> items;
+
+  factory NotificationDispositionHistory.fromJson(Json json) {
+    final version = json['version'];
+    if (version != 'notification-disposition-projection:1' ||
+        json['contentIncluded'] != false) {
+      throw const FormatException(
+        'Notification decision history is not a supported content-free projection.',
+      );
+    }
+    final dispositions = json['dispositions'];
+    if (dispositions is! List || dispositions.any((item) => item is! Map)) {
+      throw const FormatException(
+        'Notification decision history must be a list of records.',
+      );
+    }
+    return NotificationDispositionHistory(
+      version: version as String,
+      items: dispositions
+          .cast<Map>()
+          .map(
+            (item) => NotificationDisposition.fromJson(
+              Map<String, dynamic>.from(item),
+            ),
+          )
+          .toList(growable: false),
+    );
+  }
+}
+
+class NotificationDisposition {
+  const NotificationDisposition({
+    required this.id,
+    required this.sourceKind,
+    required this.sourceId,
+    required this.occurrenceSha256,
+    required this.candidateSha256,
+    required this.outcome,
+    required this.state,
+    required this.reason,
+    required this.mustSend,
+    required this.critical,
+    required this.policySha256,
+    required this.decisionReceiptSha256,
+    required this.evaluatedAt,
+    required this.dueAt,
+    required this.deliveryKind,
+    required this.deliveryBindingSha256,
+    required this.digestDeliveryId,
+    required this.lifecycleRevision,
+    required this.updatedAt,
+    required this.terminalAt,
+  });
+
+  final String id,
+      sourceKind,
+      sourceId,
+      occurrenceSha256,
+      candidateSha256,
+      outcome,
+      state,
+      reason,
+      policySha256,
+      decisionReceiptSha256,
+      updatedAt;
+  final bool mustSend, critical;
+  final int lifecycleRevision;
+  final DateTime evaluatedAt;
+  final DateTime? dueAt, terminalAt;
+  final String? deliveryKind, deliveryBindingSha256, digestDeliveryId;
+
+  factory NotificationDisposition.fromJson(Json value) {
+    if (value['contentIncluded'] != false ||
+        value['decisionGrantsAuthority'] != false) {
+      throw const FormatException(
+        'Notification decision history included content or authority.',
+      );
+    }
+    final id = _requiredDispositionText(value, 'dispositionId');
+    final sourceKind = _dispositionChoice(
+      value,
+      'sourceKind',
+      _notificationSourceKinds,
+    );
+    final outcome = _dispositionChoice(value, 'outcome', _notificationOutcomes);
+    final state = _dispositionChoice(value, 'state', _notificationStates);
+    final reason = _dispositionChoice(value, 'reason', _notificationReasons);
+    final mustSend = _dispositionBool(value, 'mustSend');
+    final critical = _dispositionBool(value, 'critical');
+    final evaluatedAt = _dispositionTime(value, 'evaluatedAt');
+    final dueAt = _nullableDispositionTime(value, 'dueAt');
+    final updatedAt = _requiredDispositionText(value, 'updatedAt');
+    final updated = _dispositionTime(value, 'updatedAt');
+    final terminalAt = _nullableDispositionTime(value, 'terminalAt');
+    final digestDeliveryId = _nullableDispositionText(
+      value,
+      'digestDeliveryId',
+    );
+    final deliveryKind = _nullableDispositionChoice(
+      value,
+      'deliveryKind',
+      _notificationDeliveryKinds,
+    );
+    final deliveryBindingSha256 = value['deliveryBindingSha256'] == null
+        ? null
+        : _dispositionSha(value, 'deliveryBindingSha256');
+    final lifecycleRevision = _dispositionRevision(value, 'lifecycleRevision');
+    final retryable =
+        outcome == 'defer' || (outcome == 'send' && state == 'pending');
+    final digestDelivered = outcome == 'digest' && state == 'terminal';
+    final directPending = outcome == 'send' && state == 'pending';
+    if (!_notificationDispositionId.hasMatch(id) ||
+        (state == 'terminal') != (terminalAt != null) ||
+        (retryable &&
+            (state != 'pending' ||
+                dueAt == null ||
+                !dueAt.isAfter(evaluatedAt) ||
+                dueAt.difference(evaluatedAt) > const Duration(hours: 24))) ||
+        (!retryable && dueAt != null) ||
+        (outcome == 'digest' &&
+            (digestDelivered != (digestDeliveryId != null) ||
+                digestDelivered != (deliveryKind == 'digest_ledger') ||
+                digestDelivered != (deliveryBindingSha256 != null))) ||
+        (outcome != 'digest' && digestDeliveryId != null) ||
+        (outcome == 'send' &&
+            ((directPending &&
+                    (deliveryKind != null || deliveryBindingSha256 != null)) ||
+                (!directPending &&
+                    (deliveryKind == null ||
+                        deliveryBindingSha256 == null)))) ||
+        (outcome == 'suppress' &&
+            (state != 'terminal' ||
+                deliveryKind != null ||
+                deliveryBindingSha256 != null)) ||
+        (!const {'send', 'digest'}.contains(outcome) &&
+            (deliveryKind != null || deliveryBindingSha256 != null)) ||
+        evaluatedAt.isAfter(updated) ||
+        (terminalAt != null && terminalAt.isAfter(updated))) {
+      throw const FormatException(
+        'Notification disposition lifecycle coordinates are invalid.',
+      );
+    }
+    return NotificationDisposition(
+      id: id,
+      sourceKind: sourceKind,
+      sourceId: _requiredDispositionText(value, 'sourceId'),
+      occurrenceSha256: _dispositionSha(value, 'occurrenceSha256'),
+      candidateSha256: _dispositionSha(value, 'candidateSha256'),
+      outcome: outcome,
+      state: state,
+      reason: reason,
+      mustSend: mustSend,
+      critical: critical,
+      policySha256: _dispositionSha(value, 'policySha256'),
+      decisionReceiptSha256: _dispositionSha(value, 'decisionReceiptSha256'),
+      evaluatedAt: evaluatedAt,
+      dueAt: dueAt,
+      deliveryKind: deliveryKind,
+      deliveryBindingSha256: deliveryBindingSha256,
+      digestDeliveryId: digestDeliveryId,
+      lifecycleRevision: lifecycleRevision,
+      updatedAt: updatedAt,
+      terminalAt: terminalAt,
+    );
+  }
 }
 
 enum NotificationAction { read, dismiss, snooze, complete }
@@ -146,15 +321,21 @@ class InboxController extends ChangeNotifier {
   Future<void>? _refreshing;
   ApprovalQueue? queue;
   NotificationCenter? notificationCenter;
+  NotificationDispositionHistory? dispositionHistory;
   Object? approvalsError;
   Object? notificationsError;
+  Object? dispositionsError;
   Object? actionError;
   bool loading = false;
   final Set<String> deciding = {};
   final Set<String> updatingNotifications = {};
 
-  bool get hasData => queue != null || notificationCenter != null;
-  bool get hasLoadError => approvalsError != null || notificationsError != null;
+  bool get hasData =>
+      queue != null || notificationCenter != null || dispositionHistory != null;
+  bool get hasLoadError =>
+      approvalsError != null ||
+      notificationsError != null ||
+      dispositionsError != null;
 
   Future<void> refresh() {
     final refreshing = _refreshing;
@@ -170,10 +351,15 @@ class InboxController extends ChangeNotifier {
     loading = true;
     approvalsError = null;
     notificationsError = null;
+    dispositionsError = null;
     actionError = null;
     notifyListeners();
     try {
-      await Future.wait([_loadApprovals(), _loadNotifications()]);
+      await Future.wait([
+        _loadApprovals(),
+        _loadNotifications(),
+        _loadDispositions(),
+      ]);
       completion.complete();
     } catch (error, stackTrace) {
       completion.completeError(error, stackTrace);
@@ -197,6 +383,14 @@ class InboxController extends ChangeNotifier {
       notificationCenter = await repository.loadNotifications();
     } catch (error) {
       notificationsError = error;
+    }
+  }
+
+  Future<void> _loadDispositions() async {
+    try {
+      dispositionHistory = await repository.loadNotificationDispositions();
+    } catch (error) {
+      dispositionsError = error;
     }
   }
 
@@ -336,6 +530,41 @@ class InboxView extends StatelessWidget {
                 },
               ),
             ],
+            if (controller.dispositionHistory != null) ...[
+              SliverToBoxAdapter(
+                child: _SectionHeader(
+                  title: 'Delivery decisions',
+                  count: controller.dispositionHistory!.items.length,
+                ),
+              ),
+              if (controller.dispositionHistory!.items.isEmpty)
+                const SliverToBoxAdapter(
+                  child: Padding(
+                    padding: EdgeInsets.fromLTRB(16, 0, 16, 12),
+                    child: Text(
+                      'No durable notification decisions are recorded yet.',
+                    ),
+                  ),
+                )
+              else
+                SliverToBoxAdapter(
+                  child: SizedBox(
+                    height: 144,
+                    child: ListView.separated(
+                      scrollDirection: Axis.horizontal,
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                      itemCount: controller.dispositionHistory!.items.length,
+                      separatorBuilder: (_, _) => const SizedBox(width: 9),
+                      itemBuilder: (context, index) => SizedBox(
+                        width: 280,
+                        child: NotificationDispositionCard(
+                          item: controller.dispositionHistory!.items[index],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
             SliverToBoxAdapter(
               child: _SectionHeader(
                 title: 'Approvals',
@@ -367,7 +596,10 @@ class InboxView extends StatelessWidget {
                 ),
               ),
             if ((q == null || q.items.isEmpty) &&
-                (notifications == null || notifications.notifications.isEmpty))
+                (notifications == null ||
+                    notifications.notifications.isEmpty) &&
+                (controller.dispositionHistory == null ||
+                    controller.dispositionHistory!.items.isEmpty))
               SliverFillRemaining(
                 child: Center(
                   child: Column(
@@ -714,6 +946,297 @@ class ApprovalCard extends StatelessWidget {
     );
   }
 }
+
+class NotificationDispositionCard extends StatelessWidget {
+  const NotificationDispositionCard({super.key, required this.item});
+  final NotificationDisposition item;
+
+  @override
+  Widget build(BuildContext context) => Card(
+    margin: EdgeInsets.zero,
+    clipBehavior: Clip.antiAlias,
+    child: InkWell(
+      key: ValueKey('notification-disposition-${item.id}'),
+      onTap: () => _showDispositionEvidence(context, item),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(_dispositionIcon(item.outcome), size: 18),
+                const SizedBox(width: 7),
+                Expanded(
+                  child: Text(
+                    _dispositionLabel(item.outcome),
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                ),
+                Text(item.state, style: Theme.of(context).textTheme.labelSmall),
+              ],
+            ),
+            const SizedBox(height: 7),
+            Text('${_dispositionLabel(item.sourceKind)} · ${item.reason}'),
+            const Spacer(),
+            Text(
+              'Exact evidence · tap to inspect',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.labelSmall,
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+Future<void> _showDispositionEvidence(
+  BuildContext context,
+  NotificationDisposition item,
+) => showModalBottomSheet<void>(
+  context: context,
+  isScrollControlled: true,
+  useSafeArea: true,
+  builder: (context) => FractionallySizedBox(
+    heightFactor: .88,
+    child: ListView(
+      key: const Key('notification-disposition-evidence-list'),
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 32),
+      children: [
+        Center(
+          child: Container(
+            width: 38,
+            height: 4,
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.outlineVariant,
+              borderRadius: BorderRadius.circular(99),
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        Row(
+          children: [
+            Icon(_dispositionIcon(item.outcome)),
+            const SizedBox(width: 9),
+            Expanded(
+              child: Text(
+                '${_dispositionLabel(item.outcome)} decision',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+            ),
+            IconButton(
+              tooltip: 'Close',
+              onPressed: () => Navigator.pop(context),
+              icon: const Icon(Icons.close_rounded),
+            ),
+          ],
+        ),
+        const Text(
+          'Exact content-free policy evidence. This record does not grant authority.',
+        ),
+        const SizedBox(height: 14),
+        _PortableDispositionField(label: 'Disposition ID', value: item.id),
+        _PortableDispositionField(
+          label: 'Source',
+          value: '${item.sourceKind} / ${item.sourceId}',
+        ),
+        _PortableDispositionField(label: 'Reason', value: item.reason),
+        _PortableDispositionField(
+          label: 'Lifecycle revision',
+          value: '${item.lifecycleRevision}',
+        ),
+        _PortableDispositionField(
+          label: 'Occurrence SHA-256',
+          value: item.occurrenceSha256,
+          monospace: true,
+        ),
+        _PortableDispositionField(
+          label: 'Candidate SHA-256',
+          value: item.candidateSha256,
+          monospace: true,
+        ),
+        _PortableDispositionField(
+          label: 'Policy SHA-256',
+          value: item.policySha256,
+          monospace: true,
+        ),
+        _PortableDispositionField(
+          label: 'Decision receipt SHA-256',
+          value: item.decisionReceiptSha256,
+          monospace: true,
+        ),
+        if (item.digestDeliveryId != null)
+          _PortableDispositionField(
+            label: 'Digest delivery ID',
+            value: item.digestDeliveryId!,
+          ),
+        if (item.deliveryKind != null)
+          _PortableDispositionField(
+            label: 'Delivery binding',
+            value:
+                '${item.deliveryKind} / ${item.deliveryBindingSha256 ?? 'Unavailable'}',
+            monospace: item.deliveryBindingSha256 != null,
+          ),
+      ],
+    ),
+  ),
+);
+
+class _PortableDispositionField extends StatelessWidget {
+  const _PortableDispositionField({
+    required this.label,
+    required this.value,
+    this.monospace = false,
+  });
+
+  final String label, value;
+  final bool monospace;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(bottom: 12),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: Theme.of(context).textTheme.labelSmall),
+        const SizedBox(height: 3),
+        SelectableText(
+          value,
+          style: monospace
+              ? Theme.of(context).textTheme.bodySmall
+                    ?.copyWith(fontFamily: 'monospace')
+              : null,
+        ),
+      ],
+    ),
+  );
+}
+
+String _requiredDispositionText(Json value, String key) {
+  final result = value[key];
+  if (result is! String || result.trim().isEmpty) {
+    throw FormatException('$key must be a non-empty string.');
+  }
+  return result;
+}
+
+String _dispositionSha(Json value, String key) {
+  final result = _requiredDispositionText(value, key);
+  if (!RegExp(r'^[a-f0-9]{64}$').hasMatch(result)) {
+    throw FormatException('$key must be a SHA-256 digest.');
+  }
+  return result;
+}
+
+final _notificationDispositionId = RegExp(
+  r'^notification_disposition_[a-f0-9]{48}$',
+);
+const _notificationSourceKinds = {
+  'tool_approval',
+  'meeting',
+  'customer_risk',
+  'agent_run',
+  'today_reminder',
+  'delegated_task',
+  'scheduled_routine',
+  'security_incident',
+};
+const _notificationOutcomes = {'send', 'defer', 'digest', 'suppress'};
+const _notificationStates = {'pending', 'terminal'};
+const _notificationReasons = {
+  'approval_required',
+  'security_alert',
+  'actionable_failure',
+  'meeting_imminent',
+  'critical_delivery',
+  'quiet_hours',
+  'cooldown_active',
+  'digest_nonurgent',
+  'digest_during_cooldown',
+  'routine_success',
+  'failure_not_actionable',
+  'meeting_not_imminent',
+  'not_worthy',
+};
+const _notificationDeliveryKinds = {
+  'mobile_push_outbox',
+  'incident_alert_outbox',
+  'notification_ledger',
+  'digest_ledger',
+};
+
+String _dispositionChoice(Json value, String key, Set<String> choices) {
+  final result = _requiredDispositionText(value, key);
+  if (!choices.contains(result)) {
+    throw FormatException('$key has an unsupported value.');
+  }
+  return result;
+}
+
+String? _nullableDispositionChoice(
+  Json value,
+  String key,
+  Set<String> choices,
+) {
+  final result = _nullableDispositionText(value, key);
+  if (result != null && !choices.contains(result)) {
+    throw FormatException('$key has an unsupported value.');
+  }
+  return result;
+}
+
+String? _nullableDispositionText(Json value, String key) {
+  final result = value[key];
+  if (result == null) return null;
+  if (result is! String || result.trim().isEmpty) {
+    throw FormatException('$key must be null or a non-empty string.');
+  }
+  return result;
+}
+
+bool _dispositionBool(Json value, String key) {
+  final result = value[key];
+  if (result is! bool) throw FormatException('$key must be a boolean.');
+  return result;
+}
+
+int _dispositionRevision(Json value, String key) {
+  final result = value[key];
+  if (result is! num || result.toInt() != result || result < 0) {
+    throw FormatException('$key must be a non-negative integer.');
+  }
+  return result.toInt();
+}
+
+DateTime _dispositionTime(Json value, String key) {
+  final source = _requiredDispositionText(value, key);
+  final parsed = DateTime.tryParse(source);
+  if (parsed == null ||
+      !parsed.isUtc ||
+      parsed.toUtc().toIso8601String() != source) {
+    throw FormatException('$key must be a canonical UTC timestamp.');
+  }
+  return parsed;
+}
+
+DateTime? _nullableDispositionTime(Json value, String key) =>
+    value[key] == null ? null : _dispositionTime(value, key);
+
+IconData _dispositionIcon(String outcome) => switch (outcome) {
+  'send' => Icons.send_outlined,
+  'defer' => Icons.schedule_outlined,
+  'digest' => Icons.summarize_outlined,
+  _ => Icons.notifications_off_outlined,
+};
+
+String _dispositionLabel(String value) => value
+    .replaceAll('_', ' ')
+    .split(' ')
+    .where((part) => part.isNotEmpty)
+    .map((part) => '${part[0].toUpperCase()}${part.substring(1)}')
+    .join(' ');
 
 class _InboxSkeleton extends StatelessWidget {
   const _InboxSkeleton();

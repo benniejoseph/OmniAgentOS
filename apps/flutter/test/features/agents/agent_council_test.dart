@@ -137,6 +137,94 @@ void main() {
       );
     },
   );
+
+  test(
+    'reads exact immutable delegated authority without broadening controls',
+    () async {
+      final api = _CouncilApiClient();
+      final repository = ApiAgentCouncilRepository(api);
+
+      final detail = await repository.loadTaskDetail('execution/one');
+
+      expect(detail.executionId, 'execution/one');
+      expect(detail.grantsImmutable, isTrue);
+      expect(detail.allowedActions, ['cancel']);
+      expect(detail.authority.validation.status, 'current');
+      expect(
+        detail.authority.nativeReadTools.single.toolId,
+        'knowledge.search',
+      );
+      expect(
+        detail.authority.skills.single.skillVersionId,
+        'skill:research:v3',
+      );
+      expect(
+        detail.authority.skills.single.capabilityGrantId,
+        'grant-skill-one',
+      );
+      expect(detail.authority.plugins.single.installationRevision, 4);
+      expect(
+        detail.authority.plugins.single.capabilityGrantId,
+        'grant-plugin-one',
+      );
+      expect(detail.authority.plugins.single.installationSha256, _digest('d'));
+      expect(detail.authority.plugins.single.componentIds, ['skill.research']);
+      expect(detail.authority.mcpServers.single.serverId, 'market-research');
+      expect(
+        detail.authority.mcpServers.single.capabilityGrantId,
+        'grant-mcp-one',
+      );
+      expect(detail.authority.mcpServers.single.governedToolIds, [
+        'market.news.search',
+      ]);
+      expect(detail.authority.mcpServers.single.connectorTargetIds, [
+        'twelve-data',
+      ]);
+      expect(api.freshReads.last, '/api/agents/tasks/execution%2Fone');
+
+      expect(
+        () => AgentTaskDetail.fromJson({
+          ..._taskDetailResponse(),
+          'task': {
+            ...(_taskDetailResponse()['task']! as Map),
+            'controls': {
+              'grantsImmutable': true,
+              'allowedActions': ['cancel', 'edit_grant'],
+            },
+          },
+        }),
+        throwsFormatException,
+      );
+      expect(
+        () => AgentTaskDetail.fromJson({
+          ..._taskDetailResponse(),
+          'task': {
+            ...(_taskDetailResponse()['task']! as Map),
+            'executionScope': {'private': true},
+          },
+        }),
+        throwsFormatException,
+      );
+      final invalidValidation = _taskDetailResponse();
+      final invalidTask = Map<String, dynamic>.from(
+        invalidValidation['task']! as Map,
+      );
+      final invalidAuthority = Map<String, dynamic>.from(
+        invalidTask['authority']! as Map,
+      );
+      invalidAuthority['validation'] = {
+        'status': 'current',
+        'category': null,
+        'validatedAt': '2026-09-22T10:00:00.000Z',
+      };
+      invalidTask['authority'] = invalidAuthority;
+      invalidValidation['task'] = invalidTask;
+      expect(
+        () => AgentTaskDetail.fromJson(invalidValidation),
+        throwsFormatException,
+      );
+    },
+  );
 }
 
 class _CouncilApiClient extends ApiClient {
@@ -159,6 +247,9 @@ class _CouncilApiClient extends ApiClient {
     Map<String, dynamic>? query,
   }) async {
     freshReads.add(path);
+    if (path.startsWith('/api/agents/tasks/')) {
+      return _taskDetailResponse(executionId: 'execution/one');
+    }
     return agentCouncilFixtureJson();
   }
 
@@ -230,3 +321,61 @@ Map<String, dynamic> _cancellationResponse({
   'canceledDeliveryCount': 1,
   'idempotent': false,
 };
+
+Map<String, dynamic> _taskDetailResponse({
+  String executionId = 'execution/one',
+}) => {
+  'task': {
+    'executionId': executionId,
+    'authority': {
+      'immutable': true,
+      'contractSha256': _digest('a'),
+      'grantRequestSha256': _digest('b'),
+      'validation': {
+        'status': 'current',
+        'category': 'all_grants',
+        'validatedAt': '2026-09-22T10:00:00.000Z',
+      },
+      'nativeReadTools': [
+        {'toolId': 'knowledge.search'},
+      ],
+      'skills': [
+        {
+          'capabilityGrantId': 'grant-skill-one',
+          'skillId': 'research',
+          'skillVersion': 3,
+          'skillVersionId': 'skill:research:v3',
+          'skillSha256': _digest('c'),
+        },
+      ],
+      'plugins': [
+        {
+          'capabilityGrantId': 'grant-plugin-one',
+          'installationId': 'installation-one',
+          'installationRevision': 4,
+          'installationSha256': _digest('d'),
+          'pluginId': 'project-kit',
+          'pluginVersion': '1.0.0',
+          'manifestSha256': _digest('e'),
+          'componentIds': ['skill.research'],
+        },
+      ],
+      'mcpServers': [
+        {
+          'capabilityGrantId': 'grant-mcp-one',
+          'serverId': 'market-research',
+          'serverVersionId': 'mcp:market-research:v2',
+          'serverContractSha256': _digest('f'),
+          'governedToolIds': ['market.news.search'],
+          'connectorTargetIds': ['twelve-data'],
+        },
+      ],
+    },
+    'controls': {
+      'grantsImmutable': true,
+      'allowedActions': ['cancel'],
+    },
+  },
+};
+
+String _digest(String character) => List.filled(64, character).join();

@@ -167,11 +167,11 @@ describe("native mutation capability enrollment", () => {
           "agents.tasks.cancel",
           asOf,
         ),
-      ).toMatchObject({ state: "active", minimumContractVersion: 22 });
+      ).toMatchObject({ state: "held", minimumContractVersion: 22 });
     }
   });
 
-  it("enrolls prompt queue mutations only on native v24", () => {
+  it("holds prompt queue mutations on the deployed v20 bridge", () => {
     for (const platform of ["android", "macos"] as const) {
       expect(
         nativeMutationEnrollment(
@@ -188,5 +188,32 @@ describe("native mutation capability enrollment", () => {
         ),
       ).toMatchObject({ state: "held", minimumContractVersion: 24 });
     }
+  });
+
+  it("enrolls governed release and adaptation changes only on native v25", () => {
+    for (const capability of [
+      "agents.release.manage",
+      "agents.adaptations.manage",
+    ] as const) {
+      expect(
+        nativeMutationEnrollment(
+          context(NATIVE_API_CURRENT_VERSION, undefined, "macos"),
+          capability,
+          asOf,
+        ),
+      ).toMatchObject({ state: "active", minimumContractVersion: 25 });
+      expect(
+        nativeMutationEnrollment(
+          context(NATIVE_API_PREVIOUS_VERSION, undefined, "macos"),
+          capability,
+          asOf,
+        ),
+      ).toMatchObject({ state: "held", minimumContractVersion: 25 });
+    }
+    expect(
+      nativeMutationCapabilityPolicy(
+        context(NATIVE_API_CURRENT_VERSION, undefined, "macos"),
+      ),
+    ).not.toHaveProperty("agents.release.retire");
   });
 });

@@ -22,11 +22,37 @@ class AutomationController extends ChangeNotifier {
   DateTime? refreshedAt;
   String? pluginMutationKey, notice, error;
   bool refreshing = false;
+  final Map<String, AutomationScheduleDetail> scheduleDetails =
+      <String, AutomationScheduleDetail>{};
+  final Set<String> loadingScheduleIds = <String>{};
+  final Map<String, Object> scheduleErrors = <String, Object>{};
   int _generation = 0;
   bool _disposed = false;
 
   bool get canMutatePlugins => canManage && mutationsAvailable;
   bool get pluginBusy => pluginMutationKey != null;
+
+  Future<void> loadSchedule(String triggerId, {bool refresh = false}) async {
+    if (!refresh && scheduleDetails.containsKey(triggerId)) return;
+    if (loadingScheduleIds.contains(triggerId)) return;
+    loadingScheduleIds.add(triggerId);
+    scheduleErrors.remove(triggerId);
+    _emit();
+    try {
+      final detail = await repository.loadSchedule(triggerId);
+      if (detail.trigger.id != triggerId) {
+        throw const FormatException(
+          'The service returned history for a different schedule.',
+        );
+      }
+      scheduleDetails[triggerId] = detail;
+    } catch (value) {
+      scheduleErrors[triggerId] = value;
+    } finally {
+      loadingScheduleIds.remove(triggerId);
+      _emit();
+    }
+  }
 
   Future<void> refresh() async {
     final generation = ++_generation;

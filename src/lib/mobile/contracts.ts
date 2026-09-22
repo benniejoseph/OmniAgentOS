@@ -21,8 +21,11 @@ import { mobilePushReceiptRequestSchema } from "@/lib/mobile/push-contract";
 import { pluginManifestSchema } from "@/lib/plugins/contracts";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 24 as const;
-export const NATIVE_API_PREVIOUS_VERSION = 23 as const;
+export const NATIVE_API_CURRENT_VERSION = 25 as const;
+// v20 is the deployed bridge for this rollout. Contracts v21-v24 remain
+// immutable archives, but were never promoted to production and therefore
+// cannot safely replace the installed client's compatibility window.
+export const NATIVE_API_PREVIOUS_VERSION = 20 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -1256,6 +1259,85 @@ const v24Operations: readonly NativeOperation[] = [
   },
 ];
 
+// Contract v25 adds the actor-private management projections used to inspect
+// released Agent definitions, correction-backed adaptations, immutable child
+// execution grants, scheduled PolicyLease outcomes, and notification delivery
+// decisions. The only new mutations are the existing governed release and
+// adaptation lifecycle transitions. Retirement and signed-grant editing are
+// deliberately absent from the native product surface.
+const v25Operations: readonly NativeOperation[] = [
+  ...v24Operations,
+  operation(
+    "agents.release.show",
+    "GET",
+    "/api/agents/{id}/release",
+    "Read one actor-owned Agent release channel with exact version IDs, digests, and evaluations.",
+    "bearer",
+    undefined,
+    "JsonObject",
+  ),
+  operation(
+    "agents.release.manage",
+    "POST",
+    "/api/agents/{id}/release",
+    "Evaluate, promote, or roll back one exact Agent definition through the governed release lifecycle.",
+    "bearer",
+    "JsonObject",
+    "JsonObject",
+  ),
+  operation(
+    "agents.adaptations.list",
+    "GET",
+    "/api/agents/{id}/adaptations",
+    "Read correction-backed, non-authority adaptations for one actor-owned Agent.",
+    "bearer",
+    undefined,
+    "JsonObject",
+  ),
+  operation(
+    "agents.adaptations.manage",
+    "POST",
+    "/api/agents/{id}/adaptations",
+    "Refresh, evaluate, activate, or roll back one exact non-authority Agent adaptation.",
+    "bearer",
+    "JsonObject",
+    "JsonObject",
+  ),
+  operation(
+    "agents.tasks.show",
+    "GET",
+    "/api/agents/tasks/{id}",
+    "Inspect one actor-owned child task and its immutable native-read, Skill, Plugin, and MCP grant pins.",
+    "bearer",
+    undefined,
+    "JsonObject",
+  ),
+  operation(
+    "automation.schedule.show",
+    "GET",
+    "/api/triggers/{id}",
+    "Read one actor-owned schedule with occurrence receipts and content-free PolicyLease outcomes.",
+    "bearer",
+    undefined,
+    "JsonObject",
+  ),
+  operation(
+    "notifications.dispositions.list",
+    "GET",
+    "/api/notifications/dispositions",
+    "Read content-free send, defer, digest, and suppress decisions for the authenticated actor.",
+    "bearer",
+    undefined,
+    "JsonObject",
+    {
+      queryParameters: [
+        queryParameter("limit", "integer", { minimum: 1, maximum: 200 }),
+        queryParameter("before", "string", { minLength: 20, maxLength: 40 }),
+      ],
+    },
+  ),
+];
+
 export const nativeContractSchemas = Object.freeze({
   JsonObject: jsonObject,
   NativeClientAttestation: nativeClientAttestationSchema,
@@ -1365,6 +1447,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 22) return v22Operations;
   if (version === 23) return v23Operations;
   if (version === 24) return v24Operations;
+  if (version === 25) return v25Operations;
   return undefined;
 }
 
@@ -1374,7 +1457,7 @@ export function nativeContractDiscovery() {
     contractId: NATIVE_API_CONTRACT_ID,
     currentVersion: NATIVE_API_CURRENT_VERSION,
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
-    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [24, 23],
+    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [25, 20],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,
       state: version === NATIVE_API_CURRENT_VERSION ? "current" as const : "previous" as const,

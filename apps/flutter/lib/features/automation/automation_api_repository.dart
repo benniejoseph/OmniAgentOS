@@ -6,6 +6,8 @@ import 'automation_models.dart';
 abstract interface class AutomationRepository {
   Future<AutomationSnapshot> load();
 
+  Future<AutomationScheduleDetail> loadSchedule(String triggerId);
+
   Future<AutomationResource<AutomationPluginCatalog>> loadPlugins();
 
   Future<AutomationPluginPreview> previewCatalogPlugin(
@@ -106,6 +108,17 @@ class ApiAutomationRepository implements AutomationRepository {
       workflows: await workflows,
       triggers: await triggers,
       plugins: await plugins,
+    );
+  }
+
+  @override
+  Future<AutomationScheduleDetail> loadSchedule(String triggerId) async {
+    final normalized = triggerId.trim();
+    if (normalized.isEmpty || normalized.length > 200) {
+      throw ArgumentError.value(triggerId, 'triggerId');
+    }
+    return AutomationScheduleDetail.fromResponse(
+      await api.getJsonFresh(NativePaths.automationScheduleShow(normalized)),
     );
   }
 

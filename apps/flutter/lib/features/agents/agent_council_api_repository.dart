@@ -3,7 +3,10 @@ import '../../generated/native_contract.g.dart';
 import 'agent_council.dart';
 
 class ApiAgentCouncilRepository
-    implements AgentCouncilRepository, AgentCouncilControlRepository {
+    implements
+        AgentCouncilRepository,
+        AgentCouncilControlRepository,
+        AgentCouncilDetailRepository {
   const ApiAgentCouncilRepository(this.api);
 
   final ApiClient api;
@@ -47,6 +50,16 @@ class ApiAgentCouncilRepository
         },
         headers: {'idempotency-key': idempotencyKey},
       ),
+    );
+  }
+
+  @override
+  Future<AgentTaskDetail> loadTaskDetail(String executionId) async {
+    if (executionId.trim().isEmpty || executionId.length > 240) {
+      throw ArgumentError.value(executionId, 'executionId');
+    }
+    return AgentTaskDetail.fromJson(
+      await api.getJsonFresh(NativePaths.agentsTasksShow(executionId)),
     );
   }
 }

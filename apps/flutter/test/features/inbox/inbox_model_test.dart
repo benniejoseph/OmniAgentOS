@@ -7,8 +7,11 @@ import 'package:asael/features/inbox/inbox.dart';
 class _InboxRepository implements InboxRepository {
   Completer<ApprovalQueue> approvals = Completer<ApprovalQueue>();
   Completer<NotificationCenter> notifications = Completer<NotificationCenter>();
+  Completer<NotificationDispositionHistory> dispositions =
+      Completer<NotificationDispositionHistory>();
   int approvalLoads = 0;
   int notificationLoads = 0;
+  int dispositionLoads = 0;
 
   @override
   Future<ApprovalQueue> loadApprovals() {
@@ -20,6 +23,12 @@ class _InboxRepository implements InboxRepository {
   Future<NotificationCenter> loadNotifications() {
     notificationLoads += 1;
     return notifications.future;
+  }
+
+  @override
+  Future<NotificationDispositionHistory> loadNotificationDispositions() {
+    dispositionLoads += 1;
+    return dispositions.future;
   }
 
   @override
@@ -122,22 +131,37 @@ void main() {
       expect(identical(first, second), isTrue);
       expect(repository.approvalLoads, 1);
       expect(repository.notificationLoads, 1);
+      expect(repository.dispositionLoads, 1);
       expect(controller.loading, isTrue);
       expect(controller.hasData, isTrue);
 
       repository.approvals.complete(_emptyApprovals);
       repository.notifications.complete(_emptyNotifications);
+      repository.dispositions.complete(
+        const NotificationDispositionHistory(
+          version: 'notification-disposition-projection:1',
+          items: [],
+        ),
+      );
       await Future.wait([first, second]);
 
       expect(controller.loading, isFalse);
 
       repository.approvals = Completer<ApprovalQueue>();
       repository.notifications = Completer<NotificationCenter>();
+      repository.dispositions = Completer<NotificationDispositionHistory>();
       final next = controller.refresh();
       expect(repository.approvalLoads, 2);
       expect(repository.notificationLoads, 2);
+      expect(repository.dispositionLoads, 2);
       repository.approvals.complete(_emptyApprovals);
       repository.notifications.complete(_emptyNotifications);
+      repository.dispositions.complete(
+        const NotificationDispositionHistory(
+          version: 'notification-disposition-projection:1',
+          items: [],
+        ),
+      );
       await next;
     },
   );
@@ -174,7 +198,110 @@ void main() {
 
     repository.approvals.complete(_emptyApprovals);
     repository.notifications.complete(_emptyNotifications);
+    repository.dispositions.complete(
+      const NotificationDispositionHistory(
+        version: 'notification-disposition-projection:1',
+        items: [],
+      ),
+    );
     await refresh;
     await tester.pump();
   });
+
+  testWidgets('portable Inbox opens exact content-free decision evidence', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final repository = _InboxRepository();
+    final controller = InboxController(repository)
+      ..queue = _emptyApprovals
+      ..notificationCenter = _emptyNotifications
+      ..dispositionHistory = _portableDispositionHistory;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: InboxView(controller: controller)),
+      ),
+    );
+    final card = find.byKey(
+      const ValueKey(
+        'notification-disposition-notification_disposition_111111111111111111111111111111111111111111111111',
+      ),
+    );
+    await tester.ensureVisible(card);
+    await tester.tap(card);
+    await tester.pumpAndSettle();
+
+    expect(
+      find.textContaining('Exact content-free policy evidence'),
+      findsOneWidget,
+    );
+    expect(
+      find.text(
+        'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.text(
+        'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+      ),
+      findsOneWidget,
+    );
+    await tester.scrollUntilVisible(
+      find.text(
+        'notification_digest_222222222222222222222222222222222222222222222222',
+      ),
+      240,
+      scrollable: find
+          .descendant(
+            of: find.byKey(const Key('notification-disposition-evidence-list')),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
+    expect(
+      find.text(
+        'notification_digest_222222222222222222222222222222222222222222222222',
+      ),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+  });
 }
+
+final _portableDispositionHistory = NotificationDispositionHistory(
+  version: 'notification-disposition-projection:1',
+  items: [
+    NotificationDisposition(
+      id: 'notification_disposition_111111111111111111111111111111111111111111111111',
+      sourceKind: 'today_reminder',
+      sourceId: 'notice-one',
+      occurrenceSha256:
+          'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+      candidateSha256:
+          'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+      outcome: 'digest',
+      state: 'terminal',
+      reason: 'quiet_hours',
+      mustSend: false,
+      critical: false,
+      policySha256:
+          'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      decisionReceiptSha256:
+          'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      evaluatedAt: DateTime.utc(2026, 9, 22, 10),
+      dueAt: null,
+      deliveryKind: 'digest_ledger',
+      deliveryBindingSha256:
+          'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      digestDeliveryId: 'notification_digest_222222222222222222222222222222222222222222222222',
+      lifecycleRevision: 1,
+      updatedAt: '2026-09-22T10:05:00.000Z',
+      terminalAt: DateTime.utc(2026, 9, 22, 10, 1),
+    ),
+  ],
+);

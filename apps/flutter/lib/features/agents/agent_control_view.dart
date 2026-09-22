@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'agent_council.dart';
+import 'task_authority_view.dart';
 
 /// Portable Agent Control surface used by Android and other non-macOS native
 /// clients. Canonical state and cancellation authority remain on the server.
@@ -344,27 +345,67 @@ class _MemberTile extends StatelessWidget {
             const SizedBox(height: 8),
             _InlineNotice(message: '$cancelError'),
           ],
-          if (controller.canCancel(member)) ...[
-            const SizedBox(height: 12),
-            Align(
-              alignment: Alignment.centerRight,
-              child: OutlinedButton.icon(
-                key: Key('android-agent-control-cancel-${member.taskId}'),
-                onPressed: canceling ? null : () => onCancel(member),
-                icon: canceling
-                    ? const SizedBox.square(
-                        dimension: 14,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.stop_circle_outlined, size: 18),
-                label: Text(canceling ? 'Canceling' : 'Cancel task'),
+          const SizedBox(height: 12),
+          Wrap(
+            alignment: WrapAlignment.end,
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              OutlinedButton.icon(
+                key: Key('android-agent-control-authority-${member.taskId}'),
+                onPressed: () => _showAuthority(context),
+                icon: const Icon(Icons.key_outlined, size: 18),
+                label: const Text('Inspect authority'),
               ),
-            ),
-          ],
+              if (controller.canCancel(member))
+                OutlinedButton.icon(
+                  key: Key('android-agent-control-cancel-${member.taskId}'),
+                  onPressed: canceling ? null : () => onCancel(member),
+                  icon: canceling
+                      ? const SizedBox.square(
+                          dimension: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.stop_circle_outlined, size: 18),
+                  label: Text(canceling ? 'Canceling' : 'Cancel task'),
+                ),
+            ],
+          ),
         ],
       ),
     );
   }
+
+  Future<void> _showAuthority(BuildContext context) =>
+      showModalBottomSheet<void>(
+        context: context,
+        showDragHandle: true,
+        isScrollControlled: true,
+        builder: (context) => SafeArea(
+          child: DraggableScrollableSheet(
+            expand: false,
+            initialChildSize: .78,
+            minChildSize: .42,
+            maxChildSize: .94,
+            builder: (context, scrollController) => ListView(
+              controller: scrollController,
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 28),
+              children: [
+                Text(
+                  '${member.identity.name} authority',
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+                const SizedBox(height: 14),
+                AgentTaskAuthorityView(
+                  controller: controller,
+                  taskId: member.taskId,
+                  compact: true,
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
 }
 
 class _FactRow extends StatelessWidget {

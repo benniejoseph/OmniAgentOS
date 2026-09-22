@@ -3,9 +3,9 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   test('retains current and previous contract compatibility', () {
-    expect(NativeContract.currentVersion, 24);
-    expect(NativeContract.previousVersion, 23);
-    expect(NativeContract.supportedVersions, [24, 23]);
+    expect(NativeContract.currentVersion, 25);
+    expect(NativeContract.previousVersion, 20);
+    expect(NativeContract.supportedVersions, [25, 20]);
     expect(
       NativePaths.workspacesTasksUpdate('project one', 'task/two'),
       '/api/projects/project%20one/tasks/task%2Ftwo',
@@ -34,6 +34,23 @@ void main() {
     expect(NativeContract.supportsOperation('agents.tasks.cancel'), isTrue);
     expect(NativeContract.supportsOperation('promptQueue.list'), isTrue);
     expect(NativeContract.supportsOperation('promptQueue.dispatch'), isTrue);
+    expect(NativeContract.supportsOperation('agents.release.show'), isTrue);
+    expect(NativeContract.supportsOperation('agents.release.manage'), isTrue);
+    expect(NativeContract.supportsOperation('agents.adaptations.list'), isTrue);
+    expect(
+      NativeContract.supportsOperation('agents.adaptations.manage'),
+      isTrue,
+    );
+    expect(NativeContract.supportsOperation('agents.tasks.show'), isTrue);
+    expect(
+      NativeContract.supportsOperation('automation.schedule.show'),
+      isTrue,
+    );
+    expect(
+      NativeContract.supportsOperation('notifications.dispositions.list'),
+      isTrue,
+    );
+    expect(NativeContract.supportsOperation('agents.release.retire'), isFalse);
     expect(NativePaths.promptQueueList, '/api/command/prompt-queue');
     expect(
       NativePaths.promptQueueDispatch('queue/one'),
@@ -59,7 +76,7 @@ void main() {
         'api': {
           'nativeContract': {
             'id': NativeContract.id,
-            'supportedVersions': [24, 23],
+            'supportedVersions': [25, 20],
           },
         },
       }),

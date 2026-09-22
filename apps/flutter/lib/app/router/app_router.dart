@@ -14,6 +14,7 @@ import '../../features/agents/agents.dart';
 import '../../features/agents/agent_control_view.dart';
 import '../../features/agents/macos_agents_view.dart';
 import '../../features/agents/agents_providers.dart';
+import '../../features/automation/automation_studio_view.dart';
 import '../../features/automation/macos_automation_studio_view.dart';
 import '../../features/capture/capture.dart';
 import '../../features/capture/capture_providers.dart';
@@ -337,7 +338,10 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                               initialSection:
                                   state.uri.queryParameters['section'],
                             )
-                          : const AdminWorkspaceView(moduleId: 'automation'),
+                          : AutomationStudioView(
+                              initialSection:
+                                  state.uri.queryParameters['section'],
+                            ),
                     '/workflows' =>
                       usesMacosPresentation()
                           ? const MacosAdminWorkspaceView(
