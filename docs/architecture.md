@@ -198,13 +198,11 @@ without executing or redirecting the work. This compatibility shape is not an
 execution target.
 
 `local_macos` requires an authenticated compatible macOS client, a current
-device lease, and both Accessibility and Screen Recording. The pending native
-rollout makes source contract v25 current while deliberately retaining the
-production-deployed v20 bridge as the only rollback-compatible previous
-contract; v21-v24 remain immutable historical archives and are not promoted
-into that compatibility pair. Production continues on v20 until the v25 server
-and signed client release gates complete, and v20 must remain supported for the
-entire rollout and rollback window. Its assigned `computer_use` model is
+device lease, and both Accessibility and Screen Recording. Production advertises
+native contract v25 as current while deliberately retaining v20 as the only
+rollback-compatible previous contract; v21-v24 remain immutable historical
+archives and were not promoted into that compatibility pair. V20 remains
+supported for the v25 rollback window. Its assigned `computer_use` model is
 tenant-configurable;
 the resolver requires one configured runtime that supports both governed tools
 and vision. No hard-coded provider/model fallback may split those requirements
@@ -556,8 +554,10 @@ actor-private trigger detail projects only content-free issued, consumed, or
 expired outcomes; it never returns the reviewed input, target, principal, or
 lease payload.
 
-Migrations v197-v199 and their schedule runtime are implemented release inputs,
-not a claim that schedules or PolicyLeases have been promoted to production.
+Migrations v197-v199 and their schedule runtime are installed in production.
+Schedule admission remains limited to the reviewed procedures described above,
+and every mutation occurrence still requires its own exact single-use
+`PolicyLeaseV1`.
 
 ### Durable notification dispositions
 
@@ -576,8 +576,8 @@ authority.
 The management projection is newest-first and content-free. It is evidence of
 why a candidate was sent, deferred, digested, suppressed, retried, or completed;
 it is not a second notification source and cannot authorize a push or user
-action. Migration v200 and this runtime are implemented but not claimed as
-production-installed here.
+action. Migration v200 and this runtime are installed in production; the
+projection remains content-free and observational.
 
 ### Persistent Command prompt queue
 
@@ -591,6 +591,15 @@ correlation ID. Its immutable declaration `queueGrantsAuthority: false` means
 that storing or reordering a prompt never carries a context, tool, budget,
 approval, or Computer Use grant.
 
+Queue ownership uses the canonical authentication actor rather than the
+email-form request identity. The HTTP boundary derives both coordinates from the
+authenticated security context: `ownerActorId` is the immutable database, RLS,
+sealing, event, and dispatch coordinate, while `requestActorId` remains only for
+compatibility resolution of existing Agent/model configuration and exact
+legacy-owned run-state reconciliation. `/api/agent`
+independently re-derives the canonical owner before consuming the one-time
+dispatch marker; internal headers cannot substitute either identity.
+
 Run-now first revalidates the Agent and model pins, then claims one exact
 revision with a short-lived token bound to the authenticated session. The
 internal Agent request must match the sealed prompt, mode, strategy, Agent, and
@@ -603,9 +612,32 @@ states. Flutter may stage bounded encrypted offline mutations and replays them
 with the original correlation/revision on reconnect; a changed server revision
 becomes an explicit conflict instead of last-write-wins.
 
-The queue schema, routes, web/native clients, and native v24 archive are
-implemented release inputs, but migration v201 and the corresponding web/native
-release are not described as production-deployed.
+The dispatch route is a transport boundary, not a second Agent executor. After
+claim it leaves the admission request's database scope and opens a separate
+canonical HTTPS request to `/api/agent`, carrying only the authenticated request
+material plus server-overwritten queue ID, raw one-time token, and immutable
+release revision. Production origin allowlisting, redirect containment,
+hop-by-hop/forwarding-header removal, identity encoding, and SSE validation keep
+that re-entry on the public Asael origin without permitting cross-release or
+cross-origin execution. A release mismatch returns `409` before queue validation
+or run creation, so rolling promotion fails closed instead of dispatching work
+on an older function.
+
+The Agent stream is the sole lifecycle owner. Before emitting `run`, it commits
+the queue's run/thread link; before emitting a terminal event, it commits the
+terminal state and clears the dispatch token/lease. A transient run-link failure
+withholds the run and subsequent intermediate events, and the terminal write
+repeats the same coordinates so it can recover atomically. Conflicting run
+identity, terminal-before-run, cancellation, EOF, waiting approval or
+clarification, and durable delegation have explicit outcomes. Expired leases are
+reconciled without replay: linked active runs receive a bounded extension,
+linked terminal runs settle from canonical run state, and an unlinked lease
+fails for explicit operator resume.
+
+The queue schema, routes, and web/native clients are deployed. The native v24
+document remains an immutable historical archive; production migration v201
+provides the durable queue boundary, while current native v25 exposes it through
+the same governed application service.
 
 ### Adaptive-runtime management observability
 
@@ -616,7 +648,7 @@ detail exposes observed/evaluated/active/rolled-back records; child-task detail
 exposes exact immutable Skill, Plugin, MCP, and native-read pins plus the durable
 grant-validation result; trigger detail includes occurrence receipts and
 PolicyLease outcomes; notification history exposes content-free dispositions.
-The native v25 source contract maps to those same APIs. No management read
+The production native v25 contract maps to those same APIs. No management read
 grants mutation authority, digest-bound execution grants are not editable or
 revocable in place, and the native surface deliberately omits Agent retirement.
 
@@ -2009,9 +2041,9 @@ guidance while exposing the immutable grant pins and validation state.
 Migration v196 installs the actor-private V2 execution and root-budget ledgers
 under forced RLS. Contract, context capsule, identity, runtime assignment,
 budget allocation, and grant coordinates are immutable; serving roles receive
-only the narrow lifecycle operations required by the execution store. This
-migration and the runtime above are implemented release inputs but are not
-claimed as production-installed in this document.
+only the narrow lifecycle operations required by the execution store. Migration
+v196 and the runtime above are installed in production; their release did not
+widen serving-role privileges or change the immutable execution boundary.
 
 P8.4 adds a brokered, actor-private Mission channel on top of that task ledger.
 The strict `p8.4-delegation-message:1` and

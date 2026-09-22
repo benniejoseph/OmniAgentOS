@@ -36,19 +36,18 @@ Set these through the platform secret/configuration store, never in source contr
 - `NEXT_PUBLIC_APP_URL`: canonical HTTPS origin. Set it to exactly `https://asael.bennierichard.com`. It is public and build-inlined, not a secret.
 - `OMNIAGENT_NATIVE_MIN_ANDROID_VERSION`, `OMNIAGENT_NATIVE_MIN_IOS_VERSION`, and `OMNIAGENT_NATIVE_MIN_MACOS_VERSION`: optional stable `major.minor.patch` minimums for native compatibility telemetry. An absent or empty value defaults to `1.0.0`; a malformed configured value invalidates the policy and holds adoption unavailable. These settings do not authorize Agent enrollment.
 
-Native contract artifacts are committed immutable release inputs. Source contract
-v25 is the pending release candidate and production-deployed v20 is deliberately
-retained as the one rollback-compatible previous version. V21-v24 are immutable
-historical archives: they were generated during development but were not promoted
-into the production compatibility pair. Do not retire v20 until the v25 server,
-signed native clients, canaries, and rollback window have all completed. A published
-version is never regenerated in place. Run
+Native contract artifacts are committed immutable release inputs. Production
+advertises v25 as current and deliberately retains v20 as the one
+rollback-compatible previous version. V21-v24 are immutable historical archives:
+they were generated during development but were not promoted into the production
+compatibility pair. Do not retire v20 until the v25 rollback window closes. A
+published version is never regenerated in place. Run
 `npm run check:native-contracts` before a native-contract release; the check
 fails if the generated OpenAPI, event schema, fixtures, integrity manifests,
 Dart SDK, or frozen v7-v24 document hashes drift. Removing an archived version
 requires a separately reviewed adoption decision and is not implied by a
-Vercel deployment. Neither the v25 contract nor its web/native management surface
-is described as production-deployed by this source-state documentation.
+Vercel deployment. The v25 contract and its web/native management surfaces were
+promoted together in the 2026-09-22 adaptive-runtime release recorded below.
 
 ### Licensed TradingView chart assets
 
@@ -184,12 +183,19 @@ and the retired profile route continues to return `410`.
 
 macOS development and private packaging require the full Xcode application, not
 only Command Line Tools. Run `flutter run -d macos` for the signed development
-build. For the owner's Mac, run
-`apps/flutter/tool/install_macos_private_signing_identity.sh` once. It creates the
-dedicated `Asael Private Code Signing` identity in the user-only keychain at
-`~/Library/Application Support/Asael/signing/asael-private-signing.keychain-db`;
-the adjacent password file is mode 600 and the directory is mode 700. Back up both
-files together and never commit or print the password.
+build. The current owner-Mac signing generation is stored under
+`~/Library/Application Support/Asael/signing-v2` and uses identity
+`Asael Private Code Signing 2026`. Because
+`apps/flutter/tool/install_macos_private_signing_identity.sh` still defaults to
+the historical v1 names, provision or verify this generation with explicit
+`ASAEL_MACOS_LOCAL_SIGNING_DIR` and `ASAEL_MACOS_LOCAL_SIGNING_IDENTITY`
+overrides, then run
+`apps/flutter/tool/install_macos_credential_broker_v2.sh`. The signing directory
+is mode 700 and its keychain/password files are mode 600. The password is also
+recoverable through Keychain Access under service
+`app.omniagent.omniagent.private-signing-keychain.v2`, account
+`Asael Private Code Signing 2026`; never print or commit it. Preserve the v1
+signing directory and identity together as rollback evidence.
 
 `apps/flutter/tool/build_macos_private_release.sh` auto-discovers that private
 keychain, signs nested code before the application, verifies the result strictly,
@@ -212,20 +218,20 @@ stripped environment and no bearer, Keychain, App Group, connector, HTTP, shell,
 filesystem, or Apple Events interface. Stable signing is required because changing
 the helper's code identity can invalidate macOS TCC grants.
 
-The owner-only package also embeds an independently signed, frozen
-`AsaelCredentialBroker.app` to keep ordinary Keychain ownership stable across app
-rebuilds. Provision it with `apps/flutter/tool/install_macos_credential_broker.sh`
-and verify it before every package; do not rebuild it as an incidental part of an
-app release. Broker v1.0.0 build 1 is universal and currently pins CDHash
-`056b6bc5ce0709b430fd48dfb38f8d7d01b380e0` plus signing-certificate SHA-256
-`ccf2035e163285b723bf1196cf57abc5a304d9580ab42d5f089ddd0dfbdd455e`.
-The broker accepts only the bounded Asael credential contract over direct child
-pipes and has no network, shell, general Keychain, Computer Use, or arbitrary-
-storage interface. The explicit one-time legacy migration must write, read back,
-and mark the broker copy before deleting only a verified source; ordinary startup
-remains non-interactive and fails closed on conflict or an unknown key.
+The current private package embeds independently signed, immutable credential
+broker v2 `2.0.0+2` from `signing-v2/credential-broker-v2`. Its manifest pins
+service `app.omniagent.omniagent.credential-broker.v2`, initialization marker
+`asael.credential_broker_initialization_v2`, signing-certificate SHA-256
+`357f74d16b4c3570d46c16a510ca6f0c51fc5e2ea31f12a693ffeddadb3bdee6`, and
+CDHash `a765ad119e8f5904b0909d961bb8da8120662aba`. V2 never reads,
+enumerates, migrates, changes, or deletes v1/file-keychain credentials and
+requires its own completed sign-in marker before reads. It accepts only the
+bounded Asael credential contract over direct child pipes and has no network,
+shell, general Keychain, Computer Use, or arbitrary-storage interface. Never
+overwrite or re-sign v2; introduce a new service and broker generation for a
+later rotation. The v1 identity and frozen broker remain rollback evidence only.
 
-For each installed build, open Asael Settings → Local Computer Use, choose
+For each installed build, open Asael Settings → This Mac, choose
 **Grant macOS access**, complete the Accessibility and Screen Recording prompts,
 then explicitly enable **This Mac**. Confirm the persistent menu-bar indicator and
 its immediate stop action before running a local canary. Record the exact app build,
@@ -281,12 +287,20 @@ Skill catalog is now served by Vercel deployment
 `ed615fe3b0a3a894628b28905a13865f05cd7d8a`. The owner-only identity still
 deliberately contains no production APNs entitlement.
 
-Those package records are retained as historical release evidence; they do not
-override the pending native-contract transition declared above. The next
-contract promotion is v25 current with the deployed v20 bridge retained as the
-only previous rollback contract. V21-v24 remain immutable archives, and neither
-the v25 native client nor its management UI is claimed production-installed by
-this document.
+Those package records remain historical release evidence. The current owner-Mac
+checkpoint is Asael `1.16.1` build `27` at `/Applications/Asael.app`, installed
+from `apps/flutter/build/distribution/macos/Asael-1.16.1-27-macOS.dmg` with
+SHA-256
+`4b5e0797e333809d47e5e984d7055fd9726a48bedca030e8955d9abce5acbb2e`.
+The mounted image has exactly one root entry, `Asael.app`; strict nested signing
+passes and the installed host CDHash is
+`b79f0defe3bb3c84f9fc49a85ed46f670c417852`. The preceding `1.16.0+26`
+application remains intact at
+`/Users/benniejoseph/Library/Application Support/Asael/rollback/2026-09-22-signing-rotation/Asael-1.16.0-26.app`.
+Accessibility and Screen Recording are intentionally ungranted for the rotated
+identity pending owner confirmation, so **This Mac** and a new local Computer
+Use canary are not yet claimed. This private owner-only package has no Apple Team
+Identifier, notarization, APNs entitlement, or provider-delivered APNs receipt.
 
 Distribution to another Mac sets `ASAEL_MACOS_SIGNING_IDENTITY` and
 `ASAEL_MACOS_NOTARY_PROFILE`, which enables Hardened Runtime and makes Developer ID
@@ -388,11 +402,10 @@ host/port/database match).
 
 Keep migrations backward-compatible for at least one application rollback. If a future migration removes or rewrites data, use a staged expand/backfill/contract release rather than relying on a code rollback.
 
-### Pending adaptive-runtime migration chain
+### Installed adaptive-runtime migration chain
 
-The adaptive-runtime migrations below are implemented release inputs and are
-registered in `schema-migrations.json`, but this document does not claim that
-they are installed in production. Each migration takes the schema advisory lock,
+The adaptive-runtime migrations below are registered in `schema-migrations.json`
+and installed in production. Each migration takes the schema advisory lock,
 checks the exact immediately preceding version/name/checksum, installs or extends
 forced actor RLS, verifies its privilege/trigger boundary, and writes its own
 marker in the same transaction.
@@ -410,45 +423,58 @@ Version 196 requires the exact predecessor marker v195
 `moltbook_autonomy_privilege_repair_v1` with checksum
 `c02b2ca195cbb00c206320eb2074fed7981c282c356f1d4320c6c1ac866adf94`;
 each following row requires the marker immediately above it. Apply only in the
-listed order after a verified backup. A partial application intentionally makes
-newer code fail schema verification rather than silently skipping a boundary.
+listed order after a verified backup. The 2026-09-22 release retained the custom
+dump at `/Volumes/Extreme Pro/Projects/OmniAgent/backups/omniagent-2026-09-22T07-06-12-772Z.dump`
+(140,002,352 bytes),
+SHA-256 `40dd780827cc9b8b80598ae736c3b1ddc1970b2f720e1bd7709565a1f78fec42`.
+A partial application intentionally makes newer code fail schema verification
+rather than silently skipping a boundary.
 
-The chain is expand-only for the existing v20 web/native bridge: older clients
-do not receive the new routes or authority, and existing queue, notification,
-workflow, and Agent records keep their prior meanings. Roll out the compatible
-web revision only after v196-v201 verify, then promote native source contract
-v25 and the signed clients. This slice does not change the Fly worker entrypoint,
-image contract, or protocol; keep the existing protocol-1 worker and OpenAI
-gateway running, verify their health, and confirm their canonical web tick after
-promotion rather than rebuilding an otherwise identical image. V21-v24 remain immutable archives rather
-than rollback candidates. Keep v20 advertised and accepted until the v25
-server/client canaries pass and the rollback window closes. Database migration,
-web promotion, native contract promotion, and signed-app installation are four
-separate gates; completing one does not prove the others.
+The chain remains expand-only for the v20 rollback bridge: older clients do not
+receive the new routes or authority, and existing queue, notification, workflow,
+and Agent records keep their prior meanings. The first v197 attempt failed its
+boundary assertion and rolled back atomically because production default table
+privileges had supplied broader grants than the migration allowed. V197-v201 now
+explicitly revoke serving-role table privileges before granting the narrow
+operations they require. The successful retry installed exact v196-v201 markers,
+verified forced RLS on all 12 affected tables, and found zero broad mutation
+grants on those tables.
 
-Use the following compatibility order for this release:
+The compatible web release is Vercel deployment
+`dpl_6mjgZgpMm8QxdEzejY2opB5vodpY`, built from exact source revision
+`8fb659220b2a57842e04402be057bdb3375b2369` and staged at
+`https://omniagent-707g2gfoy-benniejosephs-projects.vercel.app` before promotion
+to `https://asael.bennierichard.com`. Canonical health, v25/v20 discovery, and
+the licensed TradingView asset passed. The Fly worker entrypoint, image contract,
+and protocol stayed unchanged; the existing protocol-1 worker and OpenAI gateway
+remained healthy, so no worker rebuild was required. V20 stays advertised and
+accepted for rollback, while v21-v24 remain immutable archives rather than
+rollback candidates.
 
-1. Back up production and apply v196-v201 with the migration-owner connection;
-   verify exact markers, forced RLS, restrictive actor policies, immutable
-   receipt tables, and narrow column-only update grants.
-2. Deploy one web candidate and verify the unchanged protocol-1 Fly worker and
-   OpenAI gateway remain healthy and can reach the candidate/canonical tick
-   boundary. The web tick must revalidate exact child grants before claim,
-   process read-only and PolicyLease-bound schedule occurrences, materialize
-   notification dispositions/digests, and run at most the configured bounded
-   proactive-adaptation proposal cycle. A proactive proposal must remain
-   `observed` and inactive after its Sentinel review.
-3. Canary one child with exact Skill/Plugin/MCP/native-read pins and one dynamic
-   persona brief; prove persona guidance changes no grant. Canary one read-only
-   schedule and one exact reviewed reversible mutation, including drift back to
-   approval. Exercise direct, defer, digest, and suppress notification outcomes.
-4. Exercise the sealed prompt queue from web: create, edit, pause/resume,
-   reorder, run once, disconnect, and reconcile both accepted-run and no-run
-   lease expiry. Confirm that no queue operation creates authority before the
-   governed Agent admission.
-5. Only then promote `/api/mobile/contracts` to v25/v20, distribute the signed
-   v25 client, and repeat prompt-queue plus management-projection canaries on
-   macOS and Android. Leave v20 installed/accepted for rollback.
+The follow-up canonical queue-ownership repair began at Vercel deployment
+`dpl_G8QQ7oQScNKDowj11DXMnx47Mex9`, revision
+`9239df88a84f280a62e978a0eb366c87cde25317`, and required no schema, native
+contract, or Fly image change. Subsequent release candidates deliberately
+remained failed evidence: `dpl_95zuzoK6s4wwWw1iGyaxWcd8CBeU` exposed the
+nested in-process request boundary, `dpl_HePRzBsKtUdAyEhcD1R2pNR9FdPb`
+exposed Vercel Authentication on unique deployment URLs, and
+`dpl_Hpbnzx1dWBfhwv8mY7Ty3PHpCkxy` proved canonical revision-fenced transport
+before canary M exposed PostgreSQL `42P18` in the nullable lifecycle receipt.
+None is counted as a successful queue canary.
+
+The completed queue-lifecycle release is Vercel deployment
+`dpl_8GrWic9jwQsvNTBLK8Rg6jKVj3Sw` at exact revision
+`cf642c61ff17bdf434efb537356c7a232be1ae9c`, canonical at
+`https://asael.bennierichard.com`. Canonical health reports healthy with the
+exact revision and database/OpenAI/cron configured; the licensed TradingView
+artifact returns HTTP 200 with 65,505 bytes; anonymous prompt-queue access
+returns 401. The unchanged Fly worker machine `89590dc6671498` remains started
+with a passing service check at release 336. Authenticated macOS canary N closed
+queue item `9193ea36-31cd-4545-a9c5-76aeb7b7bf3f` as `completed` revision 4,
+linked run `65c0f813-2771-4123-b788-c31343e82b34` and thread
+`34cea67a-e3df-468e-bceb-b1a6221032aa`, cleared its dispatch token and lease,
+and returned exact `LIVE_QUEUE_GATE_N`. Both outer dispatch and `/api/agent`
+were HTTP 200 with no relevant 5xx or projection-persistence error.
 
 The adaptation proposer reuses the existing v115 ledger and therefore has no
 new migration in this chain. That does not make it independently deployable:
