@@ -2352,7 +2352,7 @@ function createTenantScopedSqlClient(
           await applyDatabaseScope(tx, scope);
           return fn(tx);
         });
-      const initialPool = resolvePool ? resolvePool() : pg;
+      const initialPool = await resolveSchemaReadyDatabasePool(pg, resolvePool);
       try {
         return await execute(initialPool);
       } catch (error) {
@@ -2363,7 +2363,10 @@ function createTenantScopedSqlClient(
         ) {
           throw error;
         }
-        const replacementPool = resolvePool();
+        const replacementPool = await resolveSchemaReadyDatabasePool(
+          pg,
+          resolvePool,
+        );
         if (
           replacementPool === initialPool ||
           getDatabasePoolLifecycle(replacementPool).retired
@@ -2411,16 +2414,45 @@ function createTenantScopedSqlClient(
     if (typeof queriesOrFn !== "function") {
       throw new Error("Database transactions require an async callback.");
     }
-    const transactionPool = resolvePool ? resolvePool() : pg;
-    return withReservedDatabaseTransaction(transactionPool, async (tx) => {
-      await applyDatabaseScope(tx, scope);
-      const txScoped = createTenantScopedSqlClient(tx, true);
-      const result = (queriesOrFn as (s: SqlClient) => unknown)(txScoped);
-      return Array.isArray(result) ? Promise.all(result) : result;
-    });
+    return (async () => {
+      const transactionPool = await resolveSchemaReadyDatabasePool(
+        pg,
+        resolvePool,
+      );
+      return withReservedDatabaseTransaction(transactionPool, async (tx) => {
+        await applyDatabaseScope(tx, scope);
+        const txScoped = createTenantScopedSqlClient(tx, true);
+        const result = (queriesOrFn as (s: SqlClient) => unknown)(txScoped);
+        return Array.isArray(result) ? Promise.all(result) : result;
+      });
+    })();
   };
 
   return scoped;
+}
+
+async function resolveSchemaReadyDatabasePool(
+  transactionPool: AnyPg,
+  resolvePool?: () => AnyPg,
+) {
+  if (!resolvePool) return transactionPool;
+
+  while (true) {
+    // Unit pool tests opt in by stubbing a runtime environment. Application
+    // runtimes, including development, must finish schema readiness before the
+    // admission gate can reserve their only connection.
+    if (process.env.NODE_ENV !== "test") {
+      if (process.env.NODE_ENV === "production" || !schemaReady) {
+        await ensureDatabaseSchema();
+      } else {
+        await schemaReady;
+      }
+    }
+    const pool = resolvePool();
+    if (getDatabasePoolLifecycle(pool).retired) continue;
+    if (process.env.NODE_ENV !== "test" && !schemaReady) continue;
+    return pool;
+  }
 }
 
 function snapshotDatabaseScope(

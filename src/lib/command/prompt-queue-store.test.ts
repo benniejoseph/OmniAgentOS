@@ -125,9 +125,8 @@ describe("persistent prompt queue store fences", () => {
     await expect(listPromptQueueItems(authority)).rejects.toThrow();
   });
 
-  it("serializes the actor capacity check and enforces the 40-item maximum", async () => {
+  it("rejects a preflight-full queue before resolving pins", async () => {
     mocks.sql
-      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{ count: 40 }]);
 
@@ -138,22 +137,126 @@ describe("persistent prompt queue store fences", () => {
 
     const statements = mocks.sql.mock.calls.map(([parts]) =>
       (parts as TemplateStringsArray).join("?"));
-    expect(statements[0]).toContain("pg_advisory_xact_lock");
-    expect(statements[1]).toContain("client_correlation_id");
-    expect(statements[2]).toContain("COUNT(*)");
+    expect(statements[0]).toContain("client_correlation_id");
+    expect(statements[1]).toContain("COUNT(*)");
+    expect(mocks.sql.mock.calls[1]?.slice(1)).toEqual([tenantId, actorId]);
     expect(mocks.resolveIdentity).not.toHaveBeenCalled();
+    expect(mocks.transaction).not.toHaveBeenCalled();
+  });
+
+  it("rechecks capacity authoritatively under the actor lock", async () => {
+    mocks.sql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ count: 39 }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ count: 40 }]);
+
+    await expect(createPromptQueueItem({
+      authority,
+      request: createRequest("capacity-race"),
+    })).rejects.toMatchObject({ code: "capacity" });
+
+    const statements = mocks.sql.mock.calls.map(([parts]) =>
+      (parts as TemplateStringsArray).join("?"));
+    expect(statements[2]).toContain("pg_advisory_xact_lock");
+    expect(statements[3]).toContain("client_correlation_id");
+    expect(statements[4]).toContain("COUNT(*)");
+    expect(mocks.resolveIdentity).toHaveBeenCalledOnce();
+    expect(mocks.transaction).toHaveBeenCalledOnce();
+    expect(mocks.appendEvent).not.toHaveBeenCalled();
+  });
+
+  it("resolves and freezes pins before the queue transaction owns the sole slot", async () => {
+    const request = createRequest("pins-before-transaction");
+    const created = row({
+      client_correlation_id: request.clientCorrelationId,
+      target_sha256: canonicalJsonSha256(request.target),
+    });
+    const order: string[] = [];
+    let transactionOwnsSlot = false;
+    mocks.resolveIdentity.mockImplementation(async () => {
+      expect(transactionOwnsSlot).toBe(false);
+      order.push("identity");
+      return identity();
+    });
+    mocks.resolveRuntime.mockImplementation(async () => {
+      expect(transactionOwnsSlot).toBe(false);
+      order.push("runtime");
+      return {
+        configured: true,
+        provider: "openai",
+        model: "gpt-test",
+        scope: "agent:atlas:standard",
+        source: "deployment_environment",
+        assignmentId: null,
+        assignmentRevision: null,
+        assignmentConfigurationSha256: null,
+      };
+    });
+    mocks.transaction.mockImplementation(async (
+      operation: (sql: typeof mocks.sql) => unknown,
+    ) => {
+      order.push("transaction");
+      transactionOwnsSlot = true;
+      try {
+        return await operation(mocks.sql);
+      } finally {
+        transactionOwnsSlot = false;
+      }
+    });
+    mocks.sql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ count: 0 }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ count: 0 }])
+      .mockResolvedValueOnce([{ position: 0 }])
+      .mockResolvedValueOnce([created]);
+
+    await expect(createPromptQueueItem({ authority, request })).resolves.toEqual({
+      item: expect.objectContaining({ id: created.id }),
+      created: true,
+    });
+
+    expect(order).toEqual(["identity", "runtime", "transaction"]);
+    const insertCall = mocks.sql.mock.calls.find(([parts]) =>
+      (parts as TemplateStringsArray).join("?").includes("INSERT INTO"));
+    expect(Object.isFrozen(insertCall?.[14])).toBe(true);
+    expect(Object.isFrozen(insertCall?.[15])).toBe(true);
+  });
+
+  it("does not treat a pin-resolution close as a replayable queue transaction", async () => {
+    const closed = Object.assign(new Error("pin lookup pool closed"), {
+      code: "DATABASE_CONNECTION_CLOSED",
+    });
+    mocks.sql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ count: 0 }]);
+    mocks.resolveIdentity.mockRejectedValueOnce(closed);
+
+    await expect(createPromptQueueItem({
+      authority,
+      request: createRequest("pin-resolution-close"),
+    })).rejects.toBe(closed);
+
+    expect(mocks.resolveIdentity).toHaveBeenCalledOnce();
+    expect(mocks.transaction).not.toHaveBeenCalled();
+    expect(mocks.sql).toHaveBeenCalledTimes(2);
   });
 
   it("returns a deterministic conflict for a deleted correlation without opening NULL", async () => {
-    mocks.sql
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([{ ...row({ state: "deleted" }), sealed_prompt: null }]);
+    mocks.sql.mockResolvedValueOnce([
+      { ...row({ state: "deleted" }), sealed_prompt: null },
+    ]);
 
     await expect(createPromptQueueItem({
       authority,
       request: createRequest("deleted-correlation"),
     })).rejects.toMatchObject({ code: "conflict" });
     expect(mocks.openPayload).not.toHaveBeenCalled();
+    expect(mocks.transaction).not.toHaveBeenCalled();
+    expect(mocks.resolveIdentity).not.toHaveBeenCalled();
   });
 
   it("reconciles a retry after the create transaction committed but its response was lost", async () => {
@@ -161,9 +264,7 @@ describe("persistent prompt queue store fences", () => {
     const existing = row({
       target_sha256: canonicalJsonSha256(request.target),
     });
-    mocks.sql
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([existing]);
+    mocks.sql.mockResolvedValueOnce([existing]);
 
     await expect(createPromptQueueItem({ authority, request })).resolves.toEqual({
       item: expect.objectContaining({ id: existing.id, state: "queued" }),
@@ -171,7 +272,36 @@ describe("persistent prompt queue store fences", () => {
     });
     expect(mocks.resolveIdentity).not.toHaveBeenCalled();
     expect(mocks.appendEvent).not.toHaveBeenCalled();
-    expect(mocks.sql).toHaveBeenCalledTimes(2);
+    expect(mocks.sql).toHaveBeenCalledOnce();
+    expect(mocks.transaction).not.toHaveBeenCalled();
+    expect(mocks.sql.mock.calls[0]?.slice(1)).toEqual([
+      tenantId,
+      actorId,
+      request.clientCorrelationId,
+    ]);
+  });
+
+  it("rechecks correlation under the actor lock after a pre-read miss", async () => {
+    const request = createRequest("correlation-race");
+    const existing = row({
+      client_correlation_id: request.clientCorrelationId,
+      target_sha256: canonicalJsonSha256(request.target),
+    });
+    mocks.sql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ count: 0 }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([existing]);
+
+    await expect(createPromptQueueItem({ authority, request })).resolves.toEqual({
+      item: expect.objectContaining({ id: existing.id }),
+      created: false,
+    });
+
+    expect(mocks.transaction).toHaveBeenCalledOnce();
+    expect(mocks.resolveIdentity).toHaveBeenCalledOnce();
+    expect(mocks.appendEvent).not.toHaveBeenCalled();
+    expect(mocks.sql).toHaveBeenCalledTimes(4);
   });
 
   it("retries one pre-commit closed generation with the same queue identity", async () => {
@@ -183,13 +313,14 @@ describe("persistent prompt queue store fences", () => {
     const closed = Object.assign(new Error("pool closed"), {
       code: "DATABASE_CONNECTION_CLOSED",
     });
-    mocks.transaction
-      .mockRejectedValueOnce(closed)
-      .mockImplementationOnce(
-        async (operation: (sql: typeof mocks.sql) => unknown) =>
-          operation(mocks.sql),
-      );
     mocks.sql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ count: 0 }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ count: 0 }])
+      .mockResolvedValueOnce([{ position: 0 }])
+      .mockRejectedValueOnce(closed)
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{ count: 0 }])
@@ -204,7 +335,16 @@ describe("persistent prompt queue store fences", () => {
       created: true,
     });
     expect(mocks.transaction).toHaveBeenCalledTimes(2);
+    expect(mocks.resolveIdentity).toHaveBeenCalledOnce();
+    expect(mocks.resolveRuntime).toHaveBeenCalledOnce();
     expect(mocks.appendEvent).toHaveBeenCalledOnce();
+    const insertCalls = mocks.sql.mock.calls.filter(([parts]) =>
+      (parts as TemplateStringsArray).join("?").includes("INSERT INTO"));
+    expect(insertCalls).toHaveLength(2);
+    expect(insertCalls[1]?.[1]).toBe(insertCalls[0]?.[1]);
+    expect(insertCalls[1]?.[7]).toBe(insertCalls[0]?.[7]);
+    expect(insertCalls[1]?.[14]).toBe(insertCalls[0]?.[14]);
+    expect(insertCalls[1]?.[15]).toBe(insertCalls[0]?.[15]);
   });
 
   it("never retries a second pre-commit generation close", async () => {
@@ -212,13 +352,18 @@ describe("persistent prompt queue store fences", () => {
       code: "DATABASE_CONNECTION_CLOSED",
     });
     mocks.transaction.mockRejectedValue(closed);
+    mocks.sql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ count: 0 }]);
 
     await expect(createPromptQueueItem({
       authority,
       request: createRequest("closed-generation-limit"),
     })).rejects.toBe(closed);
     expect(mocks.transaction).toHaveBeenCalledTimes(2);
-    expect(mocks.sql).not.toHaveBeenCalled();
+    expect(mocks.sql).toHaveBeenCalledTimes(2);
+    expect(mocks.resolveIdentity).toHaveBeenCalledOnce();
+    expect(mocks.resolveRuntime).toHaveBeenCalledOnce();
     expect(mocks.appendEvent).not.toHaveBeenCalled();
   });
 
@@ -233,7 +378,10 @@ describe("persistent prompt queue store fences", () => {
       retryable: false,
     });
     mocks.transaction.mockRejectedValueOnce(unknownCommit);
-    mocks.sql.mockResolvedValueOnce([existing]);
+    mocks.sql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ count: 0 }])
+      .mockResolvedValueOnce([existing]);
 
     await expect(createPromptQueueItem({ authority, request })).resolves.toEqual({
       item: expect.objectContaining({
@@ -243,7 +391,7 @@ describe("persistent prompt queue store fences", () => {
       created: false,
     });
     expect(mocks.transaction).toHaveBeenCalledOnce();
-    expect(mocks.sql).toHaveBeenCalledOnce();
+    expect(mocks.sql).toHaveBeenCalledTimes(3);
     expect(mocks.appendEvent).not.toHaveBeenCalled();
   });
 
@@ -253,14 +401,17 @@ describe("persistent prompt queue store fences", () => {
       retryable: false,
     });
     mocks.transaction.mockRejectedValueOnce(unknownCommit);
-    mocks.sql.mockResolvedValueOnce([]);
+    mocks.sql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ count: 0 }])
+      .mockResolvedValueOnce([]);
 
     await expect(createPromptQueueItem({
       authority,
       request: createRequest("unknown-commit-missing"),
     })).rejects.toBe(unknownCommit);
     expect(mocks.transaction).toHaveBeenCalledOnce();
-    expect(mocks.sql).toHaveBeenCalledOnce();
+    expect(mocks.sql).toHaveBeenCalledTimes(3);
   });
 
   it("edits a paused item but rejects a stale lifecycle revision before update", async () => {

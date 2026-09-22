@@ -92,6 +92,31 @@ export async function createPromptQueueItem(input: {
     { prompt: request.prompt },
     promptBinding(input.authority.tenantId, input.authority.actorId, id, promptSha256),
   );
+  const existing = await readPromptQueueCorrelation({
+    authority: input.authority,
+    request,
+    promptSha256,
+    targetSha256,
+  });
+  if (existing) return { item: existing, created: false };
+  await assertPromptQueueCapacityAvailable(input.authority);
+
+  // Pin resolution may perform tenant-scoped database reads. Resolve and freeze
+  // these values before reserving the queue transaction so a single-connection
+  // runtime cannot deadlock itself. A pre-commit generation retry must also use
+  // exactly the same routing decision.
+  const resolvedPins = await resolvePins({
+    tenantId: input.authority.tenantId,
+    actorId: input.authority.actorId,
+    prompt: request.prompt,
+    mode: request.mode,
+    agentId: request.agentId,
+    executionTarget: target.executionTarget,
+  });
+  const pins = Object.freeze({
+    agent: Object.freeze({ ...resolvedPins.agent }),
+    model: Object.freeze({ ...resolvedPins.model }),
+  });
   const createOnce = () => getSql().transaction(async (sql: QueueSql) => {
       // A row lock cannot protect an empty actor queue. Serialize the actor's
       // capacity check, position allocation, and insert so two devices cannot
@@ -129,14 +154,6 @@ export async function createPromptQueueItem(input: {
           "The prompt queue is full. Finish or remove an item before adding another.",
         );
       }
-      const pins = await resolvePins({
-        tenantId: input.authority.tenantId,
-        actorId: input.authority.actorId,
-        prompt: request.prompt,
-        mode: request.mode,
-        agentId: request.agentId,
-        executionTarget: target.executionTarget,
-      });
       const positionRows = await sql`
         SELECT COALESCE(MAX(position_key), 0)::BIGINT AS position
         FROM omni_prompt_queue_items
@@ -204,6 +221,47 @@ export async function createPromptQueueItem(input: {
   }
 }
 
+async function readPromptQueueCorrelation(input: {
+  authority: PromptQueueAuthority;
+  request: PromptQueueCreateRequest;
+  promptSha256: string;
+  targetSha256: string;
+}) {
+  const rows = await getSql()`
+    SELECT * FROM omni_prompt_queue_items
+    WHERE tenant_id = ${input.authority.tenantId}
+      AND owner_actor_id = ${input.authority.actorId}
+      AND client_correlation_id = ${input.request.clientCorrelationId}
+    LIMIT 1
+  `;
+  return rows[0]
+    ? validateExistingPromptQueueCorrelation(
+        rows[0],
+        input.request,
+        input.promptSha256,
+        input.targetSha256,
+      )
+    : undefined;
+}
+
+async function assertPromptQueueCapacityAvailable(
+  authority: Pick<PromptQueueAuthority, "tenantId" | "actorId">,
+) {
+  const countRows = await getSql()`
+    SELECT COUNT(*)::INTEGER AS count
+    FROM omni_prompt_queue_items
+    WHERE tenant_id = ${authority.tenantId}
+      AND owner_actor_id = ${authority.actorId}
+      AND state IN ('queued', 'paused', 'dispatching')
+  `;
+  if (Number(countRows[0]?.count || 0) >= PROMPT_QUEUE_MAX_ITEMS) {
+    throw new PromptQueueStoreError(
+      "capacity",
+      "The prompt queue is full. Finish or remove an item before adding another.",
+    );
+  }
+}
+
 function validateExistingPromptQueueCorrelation(
   row: Record<string, unknown>,
   request: PromptQueueCreateRequest,
@@ -239,21 +297,7 @@ async function reconcileUnknownPromptQueueCreate(input: {
   targetSha256: string;
 }) {
   try {
-    const rows = await getSql()`
-      SELECT * FROM omni_prompt_queue_items
-      WHERE tenant_id = ${input.authority.tenantId}
-        AND owner_actor_id = ${input.authority.actorId}
-        AND client_correlation_id = ${input.request.clientCorrelationId}
-      LIMIT 1
-    `;
-    return rows[0]
-      ? validateExistingPromptQueueCorrelation(
-          rows[0],
-          input.request,
-          input.promptSha256,
-          input.targetSha256,
-        )
-      : undefined;
+    return await readPromptQueueCorrelation(input);
   } catch (error) {
     if (error instanceof PromptQueueStoreError) throw error;
     return undefined;

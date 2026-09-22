@@ -496,11 +496,103 @@ describe("database pool acquisition", () => {
     }
   });
 
+  it("verifies schema before reserving both an initial and replacement generation", async () => {
+    const events: string[] = [];
+    const retiredPool = createMockPoolClient([]);
+    const replacementPool = createMockPoolClient([{ ok: true }]);
+    const schemaRows = databaseSchemaMigrations.map((migration) => ({
+      version: migration.version,
+      name: migration.name,
+      checksum: migration.checksum,
+    }));
+    const neverSettles = new Promise<Record<string, unknown>[]>(() => undefined);
+    retiredPool.pg.mockImplementation(() => {
+      events.push("verify:retired");
+      return Promise.resolve(schemaRows);
+    });
+    replacementPool.pg.mockImplementation(() => {
+      events.push("verify:replacement");
+      return Promise.resolve(schemaRows);
+    });
+    retiredPool.pg.reserve.mockImplementation(() => {
+      events.push("reserve:retired");
+      return Promise.resolve(retiredPool.reserved);
+    });
+    replacementPool.pg.reserve.mockImplementation(() => {
+      events.push("reserve:replacement");
+      return Promise.resolve(replacementPool.reserved);
+    });
+    retiredPool.reserved.mockImplementation(
+      (strings: TemplateStringsArray, ...params: unknown[]) => {
+        const text = strings.join("?");
+        retiredPool.statements.push({ text, params });
+        return text.includes("set_config") ? Promise.resolve([]) : neverSettles;
+      },
+    );
+    const closeHandlers: Array<(connectionId: number) => void> = [];
+    const postgresFactory = vi.fn(
+      (_databaseUrl: string, options: { onclose?: (connectionId: number) => void }) => {
+        if (options.onclose) closeHandlers.push(options.onclose);
+        return closeHandlers.length === 1 ? retiredPool.pg : replacementPool.pg;
+      },
+    );
+    vi.doMock("postgres", () => ({ default: postgresFactory }));
+    vi.stubEnv("DATABASE_URL", "postgresql://runtime.invalid/asael");
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("VERCEL", "1");
+    vi.resetModules();
+
+    try {
+      const isolatedClient = await import("@/lib/db/client");
+      const pendingQuery = isolatedClient.runWithDatabaseTenantScope(
+        "tenant-a",
+        () => isolatedClient.getSql()`SELECT 'schema-ordered-retry'`,
+      );
+      await vi.waitFor(() => {
+        expect(retiredPool.reserved).toHaveBeenCalledTimes(2);
+      });
+      expect(events).toEqual(["verify:retired", "reserve:retired"]);
+
+      closeHandlers[0]?.(1);
+      await expect(pendingQuery).resolves.toEqual([{ ok: true }]);
+      expect(events).toEqual([
+        "verify:retired",
+        "reserve:retired",
+        "verify:replacement",
+        "reserve:replacement",
+      ]);
+      expect(postgresFactory).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.doUnmock("postgres");
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
+
   it("retries one system statement on the replacement maintenance generation", async () => {
+    const events: string[] = [];
     const retiredMaintenance = createMockPoolClient([]);
+    const runtimeVerifier = createMockPoolClient([]);
     const replacementMaintenance = createMockPoolClient([
       { source: "replacement-maintenance" },
     ]);
+    const schemaRows = databaseSchemaMigrations.map((migration) => ({
+      version: migration.version,
+      name: migration.name,
+      checksum: migration.checksum,
+    }));
+    runtimeVerifier.pg.mockImplementation(() => {
+      events.push("verify:runtime");
+      return Promise.resolve(schemaRows);
+    });
+    retiredMaintenance.pg.reserve.mockImplementation(() => {
+      events.push("reserve:retired-maintenance");
+      return Promise.resolve(retiredMaintenance.reserved);
+    });
+    replacementMaintenance.pg.reserve.mockImplementation(() => {
+      events.push("reserve:replacement-maintenance");
+      return Promise.resolve(replacementMaintenance.reserved);
+    });
     const neverSettles = new Promise<Record<string, unknown>[]>(() => undefined);
     retiredMaintenance.reserved.mockImplementation(
       (strings: TemplateStringsArray, ...params: unknown[]) => {
@@ -510,12 +602,17 @@ describe("database pool acquisition", () => {
       },
     );
     const closeHandlers: Array<(connectionId: number) => void> = [];
+    let maintenanceGenerations = 0;
     const postgresFactory = vi.fn(
-      (_databaseUrl: string, options: { onclose?: (connectionId: number) => void }) => {
+      (databaseUrl: string, options: { onclose?: (connectionId: number) => void }) => {
         if (options.onclose) closeHandlers.push(options.onclose);
-        return closeHandlers.length === 1
-          ? retiredMaintenance.pg
-          : replacementMaintenance.pg;
+        if (databaseUrl.includes("maintenance.invalid")) {
+          maintenanceGenerations += 1;
+          return maintenanceGenerations === 1
+            ? retiredMaintenance.pg
+            : replacementMaintenance.pg;
+        }
+        return runtimeVerifier.pg;
       },
     );
     vi.doMock("postgres", () => ({ default: postgresFactory }));
@@ -541,6 +638,10 @@ describe("database pool acquisition", () => {
       await vi.waitFor(() => {
         expect(retiredMaintenance.reserved).toHaveBeenCalledTimes(2);
       });
+      expect(events).toEqual([
+        "verify:runtime",
+        "reserve:retired-maintenance",
+      ]);
 
       closeHandlers[0]?.(1);
       await expect(pendingQuery).resolves.toEqual([
@@ -548,6 +649,11 @@ describe("database pool acquisition", () => {
       ]);
       expect(retiredMaintenance.pg.end).toHaveBeenCalledWith({ timeout: 0 });
       expect(retiredMaintenance.reserved.release).not.toHaveBeenCalled();
+      expect(events).toEqual([
+        "verify:runtime",
+        "reserve:retired-maintenance",
+        "reserve:replacement-maintenance",
+      ]);
 
       await expect(
         isolatedClient.runWithDatabaseSystemScope(
@@ -556,9 +662,10 @@ describe("database pool acquisition", () => {
         ),
       ).resolves.toEqual([{ source: "replacement-maintenance" }]);
 
-      expect(postgresFactory).toHaveBeenCalledTimes(2);
+      expect(postgresFactory).toHaveBeenCalledTimes(3);
       expect(postgresFactory.mock.calls.map(([databaseUrl]) => databaseUrl)).toEqual([
         "postgresql://maintenance.invalid/asael",
+        "postgresql://runtime.invalid/asael",
         "postgresql://maintenance.invalid/asael",
       ]);
       expect(retiredMaintenance.pg.reserve).toHaveBeenCalledOnce();
@@ -1695,7 +1802,17 @@ function createMockPoolClient(
       release: vi.fn(),
     },
   );
-  const pg = Object.assign(vi.fn(), {
+  const pg = Object.assign(vi.fn((strings: TemplateStringsArray) => {
+    const text = strings.join("?");
+    if (text.includes("FROM omni_schema_version")) {
+      return Promise.resolve(databaseSchemaMigrations.map((migration) => ({
+        version: migration.version,
+        name: migration.name,
+        checksum: migration.checksum,
+      })));
+    }
+    return Promise.resolve(resultRows);
+  }), {
     reserve: vi.fn(() => Promise.resolve(reserved)),
     end: vi.fn(() => Promise.resolve()),
   });
