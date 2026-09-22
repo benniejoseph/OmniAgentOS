@@ -14,6 +14,7 @@ const routeMocks = vi.hoisted(() => ({
   getOwnedProject: vi.fn(),
   getMission: vi.fn(),
   getThread: vi.fn(),
+  inspectPromptQueueDispatchReceipt: vi.fn(),
   resolveAgentIdentityForExecution: vi.fn(),
   listConversationSummaries: vi.fn(),
   listThreadTurns: vi.fn(),
@@ -23,6 +24,7 @@ const routeMocks = vi.hoisted(() => ({
   requestSharedMemoryAccessFromSecurityContext: vi.fn(),
   personalContextMemoryAccessFromSecurityContext: vi.fn(),
   requireActivePersonalContextConsent: vi.fn(),
+  recordPromptQueueDispatchProgress: vi.fn(),
   resolveSemanticIntent: vi.fn(),
   runAgent: vi.fn(),
   runLoopV2ModelText: vi.fn(),
@@ -30,6 +32,7 @@ const routeMocks = vi.hoisted(() => ({
   startLocalComputerSession: vi.fn(),
   syncMissionExecutor: vi.fn(),
   transitionMission: vi.fn(),
+  validatePromptQueueDispatch: vi.fn(),
 }));
 
 vi.mock("next/server", async (importOriginal) => ({
@@ -46,6 +49,15 @@ vi.mock("@/lib/db/client", async (importOriginal) => ({
 vi.mock("@/lib/security/guard", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/security/guard")>()),
   authorizeRequest: routeMocks.authorizeRequest,
+}));
+
+vi.mock("@/lib/command/prompt-queue-store", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/command/prompt-queue-store")>()),
+  recordPromptQueueDispatchProgress:
+    routeMocks.recordPromptQueueDispatchProgress,
+  inspectPromptQueueDispatchReceipt:
+    routeMocks.inspectPromptQueueDispatchReceipt,
+  validatePromptQueueDispatch: routeMocks.validatePromptQueueDispatch,
 }));
 
 vi.mock("@/lib/http/rate-limit", async (importOriginal) => ({
@@ -254,6 +266,23 @@ beforeEach(() => {
     }));
   routeMocks.syncMissionExecutor.mockReset().mockResolvedValue(undefined);
   routeMocks.transitionMission.mockReset();
+  routeMocks.recordPromptQueueDispatchProgress.mockReset()
+    .mockResolvedValue({ status: "applied" });
+  routeMocks.inspectPromptQueueDispatchReceipt.mockReset()
+    .mockResolvedValue({ status: "stale" });
+  routeMocks.validatePromptQueueDispatch.mockReset().mockResolvedValue({
+    agent: {
+      logicalAgentId: "atlas",
+      definitionVersionId: "definition:built-in:atlas:v1",
+      principalVersionId: "agent:atlas:test:g1",
+    },
+    model: {
+      providerId: "openai",
+      modelId: "gpt-test",
+      tier: "reasoning",
+      routingPolicySha256: "a".repeat(64),
+    },
+  });
   routeMocks.runAgent.mockReset();
   routeMocks.runLoopV2ModelText.mockReset();
   routeMocks.runLoopV2ReadOnlyCanary.mockReset();
@@ -263,6 +292,20 @@ beforeEach(() => {
     expiresAt: "2026-09-17T12:00:00.000Z",
   });
 });
+
+function authorizeCanonicalQueueRequest() {
+  const queueContext = {
+    ...context,
+    actorId: context.auth.email,
+  };
+  routeMocks.authorizeRequest.mockResolvedValue(queueContext);
+  routeMocks.createThread.mockResolvedValue({
+    id: "thread-a",
+    tenantId: context.tenantId,
+    actorId: queueContext.actorId,
+  });
+  return queueContext;
+}
 
 describe("agent intent clarification", () => {
   it("cannot be bypassed by an explicit strategy and performs no agent execution", async () => {
@@ -320,6 +363,269 @@ describe("agent intent clarification", () => {
       },
     });
     expect(routeMocks.authorizeRequest).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("agent prompt queue lifecycle", () => {
+  it("persists run and terminal receipts in-band under the canonical queue owner", async () => {
+    authorizeCanonicalQueueRequest();
+    routeMocks.runAgent.mockImplementation(async function* () {
+      yield { type: "run", runId: "run-queued", threadId: "thread-a" };
+      yield { type: "done", response: "Queued result." };
+    });
+
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-asael-prompt-queue-item":
+          "11111111-1111-4111-8111-111111111111",
+        "x-asael-prompt-queue-token": "private-dispatch-token",
+      },
+      body: JSON.stringify({
+        message: "Inspect the queued context.",
+        requestId: "prompt-queue-request-a",
+        strategy: "direct",
+        agentId: "atlas",
+      }),
+    }));
+
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body.indexOf('"type":"run"')).toBeLessThan(
+      body.indexOf('"type":"done"'),
+    );
+    expect(routeMocks.validatePromptQueueDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        itemId: "11111111-1111-4111-8111-111111111111",
+        dispatchToken: "private-dispatch-token",
+        tenantId: context.tenantId,
+        ownerActorId: `actor:${context.auth.userId}`,
+        sessionId: context.auth.sessionId,
+      }),
+    );
+    expect(routeMocks.recordPromptQueueDispatchProgress).toHaveBeenCalledTimes(2);
+    expect(routeMocks.recordPromptQueueDispatchProgress).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        ownerActorId: `actor:${context.auth.userId}`,
+        runId: "run-queued",
+        threadId: "thread-a",
+        progressLabel: "Governed run accepted",
+      }),
+    );
+    expect(routeMocks.recordPromptQueueDispatchProgress).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        ownerActorId: `actor:${context.auth.userId}`,
+        runId: "run-queued",
+        threadId: "thread-a",
+        terminal: "completed",
+      }),
+    );
+    expect(JSON.stringify(routeMocks.runAgent.mock.calls[0]?.[0])).not.toContain(
+      "private-dispatch-token",
+    );
+  });
+
+  it("withholds a terminal event and emits a generic error when its queue receipt fails", async () => {
+    authorizeCanonicalQueueRequest();
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    routeMocks.recordPromptQueueDispatchProgress
+      .mockResolvedValueOnce({ status: "applied" })
+      .mockRejectedValueOnce(new Error("sensitive database receipt detail"));
+    routeMocks.runAgent.mockImplementation(async function* () {
+      yield { type: "run", runId: "run-terminal-failure", threadId: "thread-a" };
+      yield { type: "done", response: "Durable result that must be withheld." };
+    });
+
+    try {
+      const response = await POST(new Request("http://asael.test/api/agent", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-asael-prompt-queue-item":
+            "11111111-1111-4111-8111-111111111111",
+          "x-asael-prompt-queue-token": "private-dispatch-token",
+        },
+        body: JSON.stringify({
+          message: "Inspect the queued context.",
+          requestId: "prompt-queue-terminal-failure-a",
+          strategy: "direct",
+          agentId: "atlas",
+        }),
+      }));
+
+      const body = await response.text();
+      expect(body).toContain('"type":"run"');
+      expect(body).not.toContain('"type":"done"');
+      expect(body).not.toContain("Durable result that must be withheld.");
+      expect(body).not.toContain("sensitive database receipt detail");
+      expect(body).toContain(
+        "The queued result could not be linked to its queue item.",
+      );
+      expect(routeMocks.recordPromptQueueDispatchProgress).toHaveBeenCalledTimes(2);
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
+  it("aborts the Agent on stream cancellation and records run_canceled without writing to the closed transport", async () => {
+    authorizeCanonicalQueueRequest();
+    let agentSignal: AbortSignal | undefined;
+    routeMocks.runAgent.mockImplementation(async function* (
+      _input: unknown,
+      signal: AbortSignal,
+    ) {
+      agentSignal = signal;
+      yield { type: "run", runId: "run-canceled", threadId: "thread-a" };
+      await new Promise<void>((resolve) => {
+        if (signal.aborted) resolve();
+        else signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+    });
+
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-asael-prompt-queue-item":
+          "11111111-1111-4111-8111-111111111111",
+        "x-asael-prompt-queue-token": "private-dispatch-token",
+      },
+      body: JSON.stringify({
+        message: "Inspect the queued context.",
+        requestId: "prompt-queue-cancel-a",
+        strategy: "direct",
+        agentId: "atlas",
+      }),
+    }));
+    const reader = response.body?.getReader();
+    expect(reader).toBeDefined();
+    const decoder = new TextDecoder();
+    let body = "";
+    while (!body.includes('"type":"run"')) {
+      const chunk = await reader!.read();
+      expect(chunk.done).toBe(false);
+      body += decoder.decode(chunk.value, { stream: true });
+    }
+
+    await reader!.cancel("test transport disconnected");
+    await vi.waitFor(() => {
+      expect(routeMocks.recordPromptQueueDispatchProgress).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runId: "run-canceled",
+          terminal: "failed",
+          failureCode: "run_canceled",
+        }),
+      );
+    });
+    expect(agentSignal?.aborted).toBe(true);
+    expect(routeMocks.recordPromptQueueDispatchProgress).not.toHaveBeenCalledWith(
+      expect.objectContaining({ failureCode: "run_failed" }),
+    );
+  });
+
+  it("stops before clarification or workflow mutations when the stream is canceled during planning", async () => {
+    authorizeCanonicalQueueRequest();
+    let releasePerformance!: (value: []) => void;
+    const performanceGate = new Promise<[]>((resolve) => {
+      releasePerformance = resolve;
+    });
+    routeMocks.getAgentPerformance.mockReturnValueOnce(performanceGate);
+    const requestAbort = new AbortController();
+
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-asael-prompt-queue-item":
+          "11111111-1111-4111-8111-111111111111",
+        "x-asael-prompt-queue-token": "private-dispatch-token",
+      },
+      body: JSON.stringify({
+        message: "Create a durable workflow after planning.",
+        requestId: "prompt-queue-cancel-before-mutation-a",
+        strategy: "direct",
+        agentId: "atlas",
+      }),
+      signal: requestAbort.signal,
+    }));
+    const reader = response.body?.getReader();
+    expect(reader).toBeDefined();
+    const firstChunk = await reader!.read();
+    expect(new TextDecoder().decode(firstChunk.value)).toContain(
+      '\"label\":\"supervisor routing\"',
+    );
+
+    requestAbort.abort("test canceled during planning");
+    await reader!.cancel("test transport disconnected during planning");
+    releasePerformance([]);
+
+    await vi.waitFor(() => {
+      expect(routeMocks.recordPromptQueueDispatchProgress).toHaveBeenCalledWith(
+        expect.objectContaining({
+          terminal: "failed",
+          failureCode: "run_canceled",
+        }),
+      );
+    });
+    expect(routeMocks.createThread).not.toHaveBeenCalled();
+    expect(routeMocks.appendThreadTurn).not.toHaveBeenCalled();
+    expect(routeMocks.createMission).not.toHaveBeenCalled();
+    expect(routeMocks.ensureMissionTask).not.toHaveBeenCalled();
+    expect(routeMocks.runAgent).not.toHaveBeenCalled();
+  });
+
+  it("does not replace a durable queue success when mission synchronization fails", async () => {
+    authorizeCanonicalQueueRequest();
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    routeMocks.syncMissionExecutor.mockRejectedValueOnce(
+      new Error("mission projection unavailable"),
+    );
+    routeMocks.runAgent.mockImplementation(async function* () {
+      yield { type: "run", runId: "run-mission-done", threadId: "thread-a" };
+      yield { type: "done", response: "Durable Agent success." };
+    });
+
+    try {
+      const response = await POST(new Request("http://asael.test/api/agent", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-asael-prompt-queue-item":
+            "11111111-1111-4111-8111-111111111111",
+          "x-asael-prompt-queue-token": "private-dispatch-token",
+        },
+        body: JSON.stringify({
+          message: "Complete the selected mission task.",
+          requestId: "prompt-queue-mission-sync-a",
+          strategy: "direct",
+          agentId: "atlas",
+          missionId: "11111111-1111-4111-8111-111111111111",
+        }),
+      }));
+
+      const body = await response.text();
+      expect(body).toContain('"type":"done"');
+      expect(body).toContain("Durable Agent success.");
+      expect(routeMocks.recordPromptQueueDispatchProgress).toHaveBeenCalledTimes(2);
+      expect(routeMocks.recordPromptQueueDispatchProgress).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          runId: "run-mission-done",
+          terminal: "completed",
+        }),
+      );
+      expect(routeMocks.recordPromptQueueDispatchProgress).not.toHaveBeenCalledWith(
+        expect.objectContaining({ failureCode: "run_failed" }),
+      );
+      expect(logged).toHaveBeenCalledWith(
+        "Mission executor synchronization failed after durable Agent outcome.",
+        "mission projection unavailable",
+      );
+    } finally {
+      logged.mockRestore();
+    }
   });
 });
 

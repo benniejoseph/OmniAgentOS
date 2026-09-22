@@ -20,6 +20,11 @@ import {
   PromptQueueStoreError,
   validatePromptQueueDispatch,
 } from "@/lib/command/prompt-queue-store";
+import {
+  createPromptQueueDispatchLifecycle,
+  promptQueueTerminalPersistenceErrorEvent,
+  PromptQueueTerminalReceiptError,
+} from "@/lib/command/prompt-queue-lifecycle";
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import {
@@ -32,6 +37,7 @@ import {
   ensureMissionTask,
   getMission,
   transitionMission,
+  type MissionOwner,
 } from "@/lib/missions/store";
 import {
   attachMissionExecutor,
@@ -74,6 +80,7 @@ import {
   type RequestSharedMemoryAccessV1,
 } from "@/lib/memory/shared-context";
 import { runAgent } from "@/lib/orchestration/agent-runner";
+import type { AgentEvent } from "@/lib/orchestration/types";
 import {
   narrowRunBudgetLimits,
   runBudgetCountersV1Schema,
@@ -321,6 +328,9 @@ async function POSTHandler(request: Request) {
     }, { status: 400 });
   }
   let queuedDispatch: Awaited<ReturnType<typeof validatePromptQueueDispatch>> | undefined;
+  let queuedLifecycle: ReturnType<
+    typeof createPromptQueueDispatchLifecycle
+  > | undefined;
   if (queuedItemId && queuedDispatchToken) {
     const queuedSessionId = context.auth?.sessionId?.trim();
     if (!queuedSessionId) {
@@ -354,6 +364,24 @@ async function POSTHandler(request: Request) {
           projectId: parsed.data.projectId,
           computerUseTarget: parsed.data.computerUseTarget,
         },
+      });
+      const canonicalQueueContext = {
+        ...context,
+        actorId: queueActorBinding.canonicalActorId,
+      };
+      queuedLifecycle = createPromptQueueDispatchLifecycle({
+        itemId: queuedItemId,
+        dispatchToken: queuedDispatchToken,
+        tenantId: context.tenantId,
+        ownerActorId: queueActorBinding.canonicalActorId,
+        executionScope: executionScopeFromSecurityContext(
+          canonicalQueueContext,
+          {
+            correlationId: `prompt-queue:${queuedItemId}:${requestId}`,
+            causationId: queuedItemId,
+            purpose: "prompt_queue.dispatch",
+          },
+        ),
       });
     } catch (error) {
       if (!(error instanceof PromptQueueStoreError)) throw error;
@@ -800,14 +828,56 @@ async function POSTHandler(request: Request) {
   const encoder = new TextEncoder();
   let threadId = parsed.data.threadId;
   let threadProjectId = parsed.data.projectId;
+  const agentAbortController = new AbortController();
+  let transportCanceled = false;
+  if (request.signal.aborted) {
+    transportCanceled = true;
+    agentAbortController.abort(request.signal.reason);
+  } else {
+    request.signal.addEventListener(
+      "abort",
+      () => {
+        transportCanceled = true;
+        agentAbortController.abort(request.signal.reason);
+      },
+      { once: true },
+    );
+  }
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
+      let queueReceiptFailureEmitted = false;
+      const enqueueTransportEvent = (event: AgentEvent) => {
+        if (transportCanceled) return;
+        controller.enqueue(encoder.encode(encodeSse(event)));
+      };
+      const enqueueEvent = async (event: AgentEvent) => {
+        const events = queuedLifecycle
+          ? await queuedLifecycle.beforeEmit(event, threadId)
+          : [event];
+        for (const projectedEvent of events) {
+          enqueueTransportEvent(projectedEvent);
+        }
+        return events;
+      };
+      const enqueueQueueReceiptFailure = () => {
+        if (queueReceiptFailureEmitted) return;
+        queueReceiptFailureEmitted = true;
+        enqueueTransportEvent(promptQueueTerminalPersistenceErrorEvent());
+      };
+      const stopBeforeMutationIfCanceled = async () => {
+        if (!agentAbortController.signal.aborted) return false;
+        await enqueueEvent({
+          type: "canceled",
+          message: "The Agent run was canceled.",
+        });
+        return true;
+      };
       try {
-        controller.enqueue(encoder.encode(encodeSse({
+        enqueueTransportEvent({
           type: "status",
           label: "supervisor routing",
           detail: preliminaryDecision.reasons[0] || "Selecting the right execution path.",
-        })));
+        });
         const decision = measureSupervisorOutcomeEvidence(
           preliminaryDecision,
           await getAgentPerformance(context.tenantId).catch((error: unknown) => {
@@ -924,6 +994,7 @@ async function POSTHandler(request: Request) {
         const loopV2Enrollment =
           loopV2CanaryEnrollment || loopV2ContextTextEnrollment ||
           loopV2ModelTextEnrollment;
+        if (await stopBeforeMutationIfCanceled()) return;
         let missionOwner = {
           tenantId: context.tenantId,
           actorId: context.actorId,
@@ -944,6 +1015,7 @@ async function POSTHandler(request: Request) {
         let missionTask: MissionTask | undefined;
         let durableSpecialists: PreparedDurableSpecialist[] = [];
         if (parsed.data.message || decision.route === "durable_workflow" || decision.route === "clarify") {
+          if (await stopBeforeMutationIfCanceled()) return;
           const {
             appendThreadTurn,
             createThread,
@@ -962,6 +1034,7 @@ async function POSTHandler(request: Request) {
             throw new Error("Thread belongs to a different project scope.");
           }
           if (!thread) {
+            if (await stopBeforeMutationIfCanceled()) return;
             thread = await createThread({
               tenantId: context.tenantId,
               actorId: context.actorId,
@@ -972,8 +1045,10 @@ async function POSTHandler(request: Request) {
             threadId = thread.id;
           }
           threadProjectId = thread.projectId;
+          if (await stopBeforeMutationIfCanceled()) return;
           const userTurn = await appendThreadTurn({ tenantId: context.tenantId, threadId: thread.id, role: "user", content: safeMessage });
           if (parsed.data.voiceInput) {
+            if (await stopBeforeMutationIfCanceled()) return;
             const voiceInput = parsed.data.voiceInput;
             await appendScopedDomainEvent({
               streamId: `thread:${thread.id}`,
@@ -1004,6 +1079,7 @@ async function POSTHandler(request: Request) {
               },
             });
           }
+          if (await stopBeforeMutationIfCanceled()) return;
           const explicitMemory = await formExplicitUserAssertionMemory({
             context,
             requestId,
@@ -1012,13 +1088,14 @@ async function POSTHandler(request: Request) {
             message: safeMessage,
           });
           if (explicitMemory) {
-            controller.enqueue(encoder.encode(encodeSse({
+            enqueueTransportEvent({
               type: "memory",
               title: "Explicit memory saved",
               count: 1,
-            })));
+            });
           }
           if (decision.route === "clarify" && !loopV2Enrollment) {
+            if (await stopBeforeMutationIfCanceled()) return;
             const ambiguity = decision.ambiguity.state === "detected"
               ? decision.ambiguity
               : {
@@ -1052,16 +1129,17 @@ async function POSTHandler(request: Request) {
               role: "assistant",
               content: ambiguity.clarificationPrompt,
             });
-            controller.enqueue(encoder.encode(encodeSse({
+            await enqueueEvent({
               type: "clarification",
               threadId: thread.id,
               message: ambiguity.clarificationPrompt,
               reasonCode: ambiguity.reasonCode,
-            })));
+            });
             return;
           }
           const needsMission = Boolean(parsed.data.missionId) || decision.route === "durable_workflow";
           if (needsMission) {
+            if (await stopBeforeMutationIfCanceled()) return;
             if (missionOwner.executionScope.projectId !== (threadProjectId || null)) {
               missionOwner = {
                 ...missionOwner,
@@ -1107,6 +1185,7 @@ async function POSTHandler(request: Request) {
               ? missionInstruction(mission, safeMessage)
               : safeMessage;
             if (decision.route === "durable_workflow") {
+              if (await stopBeforeMutationIfCanceled()) return;
               const parentExecutionScope = executionScopeFromSecurityContext(
                 context,
                 {
@@ -1129,6 +1208,7 @@ async function POSTHandler(request: Request) {
                 parentBudgetLimits: budgetLimits,
               });
             }
+            if (await stopBeforeMutationIfCanceled()) return;
             missionTask = await ensureMissionTask(mission.id, {
               sourceKey: `agent-request:${requestId}`,
               title: missionTitle(safeMessage),
@@ -1141,6 +1221,7 @@ async function POSTHandler(request: Request) {
             }, missionOwner);
           }
           if (decision.route === "durable_workflow") {
+            if (await stopBeforeMutationIfCanceled()) return;
             if (!mission || !missionTask) throw new Error("Durable mission initialization failed.");
             const executionMessage = parsed.data.missionId
               ? missionInstruction(mission, safeMessage)
@@ -1198,6 +1279,7 @@ async function POSTHandler(request: Request) {
                   workflowExecutionScope,
                 })
               : undefined;
+            if (await stopBeforeMutationIfCanceled()) return;
             const detail = await createWorkflowRun({
               tenantId: context.tenantId,
               executionAuthority: {
@@ -1299,14 +1381,14 @@ async function POSTHandler(request: Request) {
               role: "assistant",
               content: acknowledgement,
             });
-            controller.enqueue(encoder.encode(encodeSse({
+            await enqueueEvent({
               type: "delegated",
               threadId: thread.id,
               workflowId: detail.run.id,
               missionId: mission.id,
               acknowledgement,
               reason: decision.reasons[0] || "Durable execution selected.",
-            })));
+            });
             return;
           }
           if (
@@ -1328,6 +1410,7 @@ async function POSTHandler(request: Request) {
           }
         }
         if (parsed.data.missionId && (!mission || !missionTask)) {
+          if (await stopBeforeMutationIfCanceled()) return;
           if (!mission) throw new Error("Mission not found.");
           assertMissionAcceptsWork(mission);
           missionTask = await ensureMissionTask(mission.id, {
@@ -1341,6 +1424,7 @@ async function POSTHandler(request: Request) {
         if (parsed.data.missionId && mission && !parsed.data.contextScope) {
           safeMessages = includeMissionContext(safeMessages, mission);
         }
+        if (await stopBeforeMutationIfCanceled()) return;
         const directExecutionScope = executionScopeFromSecurityContext(
           context,
           {
@@ -1382,7 +1466,7 @@ async function POSTHandler(request: Request) {
                 enrollment: loopV2CanaryEnrollment,
                 resumeRunId: parsed.data.resumeRunId,
               },
-              request.signal,
+              agentAbortController.signal,
             )
           : loopV2ModelTextEnrollment
             ? runLoopV2ModelText(
@@ -1396,7 +1480,7 @@ async function POSTHandler(request: Request) {
                   agentIdentity,
                   enrollment: loopV2ModelTextEnrollment,
                 },
-                request.signal,
+                agentAbortController.signal,
               )
           : loopV2ContextTextEnrollment
             ? runLoopV2ModelText(
@@ -1417,7 +1501,7 @@ async function POSTHandler(request: Request) {
                   promptPersonalMemoryAccess,
                   promptEntityGraphAccess,
                 },
-                request.signal,
+                agentAbortController.signal,
               )
           : runAgent(
               {
@@ -1462,22 +1546,19 @@ async function POSTHandler(request: Request) {
                     : AGENT_MAX_TOOL_STEPS,
                 voiceInput: parsed.data.voiceInput,
               },
-              request.signal,
+              agentAbortController.signal,
             );
         let directExecutorId = "";
         let directTerminal = false;
         let directMissionAttachment: Promise<{ error?: unknown }> | undefined;
         for await (const event of directEvents) {
           if (event.type === "run") {
-            directExecutorId = event.runId;
-            controller.enqueue(encoder.encode(encodeSse(
-              mission ? { ...event, missionId: mission.id } : event,
-            )));
-            if (mission && missionTask) {
+            if (!directExecutorId) directExecutorId = event.runId;
+            if (!directMissionAttachment && mission && missionTask) {
               directMissionAttachment = attachMissionExecutor({
                 taskId: missionTask.id,
                 executorType: "agent_run",
-                executorId: event.runId,
+                executorId: directExecutorId,
                 status: "running",
                 payload: { threadId, route: decision.route },
               }, missionOwner).then(
@@ -1485,97 +1566,166 @@ async function POSTHandler(request: Request) {
                 (error) => ({ error }),
               );
             }
+            await enqueueEvent(
+              mission ? { ...event, missionId: mission.id } : event,
+            );
             continue;
-          } else if (event.type === "waiting_approval" && directExecutorId && directMissionAttachment) {
-            await requireMissionAttachment(directMissionAttachment);
-            await syncMissionExecutor({
-              executorType: "agent_run",
-              executorId: directExecutorId,
-              status: "waiting",
-            }, missionOwner);
-          } else if (event.type === "done" && directExecutorId && directMissionAttachment) {
-            await requireMissionAttachment(directMissionAttachment);
-            directTerminal = true;
-            await syncMissionExecutor({
-              executorType: "agent_run",
-              executorId: directExecutorId,
-              status: "succeeded",
-              output: {
-                responseLength: event.response.length,
-                responseSha256: createHash("sha256").update(event.response).digest("hex"),
-                groundingStatus: event.grounding?.status,
-              },
-            }, missionOwner);
-          } else if (event.type === "error" && directExecutorId && directMissionAttachment) {
-            await requireMissionAttachment(directMissionAttachment);
-            directTerminal = true;
-            await syncMissionExecutor({
-              executorType: "agent_run",
-              executorId: directExecutorId,
-              status: "failed",
-              error: event.message,
-            }, missionOwner);
-          } else if (event.type === "status" && event.label === "Canceled" && directExecutorId && directMissionAttachment) {
-            await requireMissionAttachment(directMissionAttachment);
-            directTerminal = true;
-            await syncMissionExecutor({
-              executorType: "agent_run",
-              executorId: directExecutorId,
-              status: "canceled",
-            }, missionOwner);
           }
-          if (
-            event.type === "done" &&
-            directExecutorId &&
-            !loopV2Enrollment
-          ) {
-            await formAssistantInferenceCandidate({
-              context,
-              requestId,
-              runId: directExecutorId,
-              threadId,
-              response: event.response,
+
+          if (isDirectTerminalEvent(event)) {
+            directTerminal = true;
+            // The Agent/queue terminal outcome is the source of truth. Project
+            // it before ancillary mission or memory work so those projections
+            // can never replace a durable success/wait/cancel with run_failed.
+            const projectedEvents = await enqueueEvent(event);
+            if (!projectedEvents.includes(event)) continue;
+            if (
+              event.type === "done" &&
+              directExecutorId &&
+              !loopV2Enrollment
+            ) {
+              await formAssistantInferenceCandidate({
+                context,
+                requestId,
+                runId: directExecutorId,
+                threadId,
+                response: event.response,
+              }).catch((error: unknown) => {
+                console.error(
+                  "Assistant inference candidate persistence failed.",
+                  String(redactSensitive(
+                    error instanceof Error
+                      ? error.message
+                      : "Unknown memory formation error.",
+                  )),
+                );
+              });
+            }
+            if (directExecutorId && directMissionAttachment) {
+              await syncDirectMissionTerminal({
+                attachment: directMissionAttachment,
+                event,
+                executorId: directExecutorId,
+                owner: missionOwner,
+              }).catch((error: unknown) => {
+                console.error(
+                  "Mission executor synchronization failed after durable Agent outcome.",
+                  String(redactSensitive(
+                    error instanceof Error
+                      ? error.message
+                      : "Unknown mission synchronization error.",
+                  )).slice(0, 1_000),
+                );
+              });
+            }
+            continue;
+          }
+          await enqueueEvent(event);
+        }
+        if (agentAbortController.signal.aborted && !directTerminal) {
+          directTerminal = true;
+          const canceledEvent: AgentEvent = {
+            type: "canceled",
+            message: "The Agent run was canceled.",
+          };
+          await enqueueEvent(canceledEvent);
+          if (directExecutorId && directMissionAttachment) {
+            await syncDirectMissionTerminal({
+              attachment: directMissionAttachment,
+              event: canceledEvent,
+              executorId: directExecutorId,
+              owner: missionOwner,
             }).catch((error: unknown) => {
               console.error(
-                "Assistant inference candidate persistence failed.",
+                "Mission executor synchronization failed after durable Agent outcome.",
                 String(redactSensitive(
                   error instanceof Error
                     ? error.message
-                    : "Unknown memory formation error.",
-                )),
+                    : "Unknown mission synchronization error.",
+                )).slice(0, 1_000),
               );
             });
           }
-          controller.enqueue(encoder.encode(encodeSse(event)));
         }
         if (directExecutorId && directMissionAttachment && !directTerminal && mission) {
-          await requireMissionAttachment(directMissionAttachment);
-          // Waiting approvals remain resumable. Every other non-terminal exit is
-          // treated as a canceled execution receipt rather than left running.
-          const waiting = await getMission(mission.id, missionOwner);
-          if (waiting?.status !== "waiting") {
-            await syncMissionExecutor({
-              executorType: "agent_run",
-              executorId: directExecutorId,
-              status: "canceled",
-            }, missionOwner);
+          try {
+            await requireMissionAttachment(directMissionAttachment);
+            // Waiting approvals remain resumable. Every other non-terminal exit
+            // is projected as canceled without changing the durable Agent run.
+            const waiting = await getMission(mission.id, missionOwner);
+            if (waiting?.status !== "waiting") {
+              await syncMissionExecutor({
+                executorType: "agent_run",
+                executorId: directExecutorId,
+                status: "canceled",
+              }, missionOwner);
+            }
+          } catch (error) {
+            console.error(
+              "Mission executor reconciliation failed after Agent stream EOF.",
+              String(redactSensitive(
+                error instanceof Error
+                  ? error.message
+                  : "Unknown mission reconciliation error.",
+              )).slice(0, 1_000),
+            );
           }
         }
       } catch (error) {
-        controller.enqueue(
-          encoder.encode(
-            encodeSse({
-              type: "error",
-              message: String(
-                redactSensitive(
-                  error instanceof Error ? error.message : "Agent run failed.",
-                ),
-              ).slice(0, 1_000),
-            }),
-          ),
-        );
+        if (error instanceof PromptQueueTerminalReceiptError) {
+          enqueueQueueReceiptFailure();
+        } else {
+          const errorEvent: AgentEvent = agentAbortController.signal.aborted
+            ? {
+                type: "canceled",
+                message: "The Agent run was canceled.",
+              }
+            : {
+                type: "error",
+                message: String(
+                  redactSensitive(
+                    error instanceof Error ? error.message : "Agent run failed.",
+                  ),
+                ).slice(0, 1_000),
+              };
+          try {
+            await enqueueEvent(errorEvent);
+          } catch (queueError) {
+            if (queueError instanceof PromptQueueTerminalReceiptError) {
+              enqueueQueueReceiptFailure();
+            } else {
+              throw queueError;
+            }
+          }
+        }
       } finally {
-        controller.close();
+        if (queuedLifecycle && !queuedLifecycle.terminalWasChosen()) {
+          try {
+            const finalEvents = await queuedLifecycle.finalizeEof(threadId);
+            for (const event of finalEvents) {
+              enqueueTransportEvent(event);
+            }
+          } catch (error) {
+            if (error instanceof PromptQueueTerminalReceiptError) {
+              enqueueQueueReceiptFailure();
+            } else {
+              console.error(
+                "Prompt queue dispatch finalization failed.",
+                String(redactSensitive(
+                  error instanceof Error ? error.message : "Unknown queue finalization error.",
+                )).slice(0, 1_000),
+              );
+              enqueueQueueReceiptFailure();
+            }
+          }
+        }
+        if (!transportCanceled) controller.close();
+      }
+    },
+    cancel(reason) {
+      transportCanceled = true;
+      if (!agentAbortController.signal.aborted) {
+        agentAbortController.abort(reason);
       }
     },
   });
@@ -1684,6 +1834,67 @@ type SafeChatMessages = Array<{ role: "user" | "assistant"; content: string }>;
 async function requireMissionAttachment(attachment: Promise<{ error?: unknown }>) {
   const result = await attachment;
   if (result.error) throw result.error;
+}
+
+function isDirectTerminalEvent(event: AgentEvent) {
+  return event.type === "delegated" ||
+    event.type === "clarification" ||
+    event.type === "waiting_approval" ||
+    event.type === "done" ||
+    event.type === "error" ||
+    event.type === "canceled" ||
+    (event.type === "status" && event.label === "Canceled");
+}
+
+async function syncDirectMissionTerminal(input: {
+  attachment: Promise<{ error?: unknown }>;
+  event: AgentEvent;
+  executorId: string;
+  owner: MissionOwner;
+}) {
+  await requireMissionAttachment(input.attachment);
+  if (input.event.type === "waiting_approval") {
+    await syncMissionExecutor({
+      executorType: "agent_run",
+      executorId: input.executorId,
+      status: "waiting",
+    }, input.owner);
+    return;
+  }
+  if (input.event.type === "done") {
+    await syncMissionExecutor({
+      executorType: "agent_run",
+      executorId: input.executorId,
+      status: "succeeded",
+      output: {
+        responseLength: input.event.response.length,
+        responseSha256: createHash("sha256")
+          .update(input.event.response)
+          .digest("hex"),
+        groundingStatus: input.event.grounding?.status,
+      },
+    }, input.owner);
+    return;
+  }
+  if (input.event.type === "error") {
+    await syncMissionExecutor({
+      executorType: "agent_run",
+      executorId: input.executorId,
+      status: "failed",
+      error: input.event.message,
+    }, input.owner);
+    return;
+  }
+  if (
+    input.event.type === "canceled" ||
+    (input.event.type === "status" && input.event.label === "Canceled")
+  ) {
+    await syncMissionExecutor({
+      executorType: "agent_run",
+      executorId: input.executorId,
+      status: "canceled",
+    }, input.owner);
+  }
 }
 
 function isBuiltInAgentId(value?: string): value is "atlas" | "scout" | "forge" | "sentinel" | "mnemosyne" {

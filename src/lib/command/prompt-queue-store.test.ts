@@ -39,7 +39,9 @@ vi.mock("@/lib/orchestration/computer-use-routing", () => ({
 import {
   claimPromptQueueDispatch,
   createPromptQueueItem,
+  inspectPromptQueueDispatchReceipt,
   listPromptQueueItems,
+  recordPromptQueueDispatchProgress,
   reconcileExpiredPromptQueueDispatches,
   reorderPromptQueueItems,
   updatePromptQueueItem,
@@ -599,6 +601,10 @@ describe("persistent prompt queue store fences", () => {
       prompt: "Edited while paused",
       lifecycleRevision: 3,
     });
+    const editStatement = mocks.sql.mock.calls[3]?.[0].join("?");
+    expect(editStatement).toContain("dispatch_token_sha256 = CASE");
+    expect(editStatement).toContain("dispatch_lease_expires_at = CASE");
+    expect(editStatement).toContain("dispatched_at = CASE");
 
     mocks.sql.mockReset()
       .mockResolvedValueOnce([])
@@ -738,6 +744,155 @@ describe("persistent prompt queue store fences", () => {
       .toHaveLength(1);
   });
 
+  it("returns an explicit stale result when a dispatch progress fence no longer matches", async () => {
+    mocks.sql.mockResolvedValueOnce([]);
+
+    await expect(recordPromptQueueDispatchProgress({
+      itemId: "00000000-0000-4000-8000-000000000000",
+      dispatchToken: "dispatch-secret",
+      tenantId,
+      ownerActorId: actorId,
+      terminal: "failed",
+      failureCode: "run_failed",
+      executionScope: authority.executionScope,
+    })).resolves.toEqual({ status: "stale" });
+    expect(mocks.appendEvent).not.toHaveBeenCalled();
+  });
+
+  it("returns applied only after the progress row and its event are durably staged", async () => {
+    const dispatching = row({
+      state: "dispatching",
+      lifecycle_revision: 2,
+      progress_label: "Governed execution admitted",
+    });
+    const completed = row({
+      ...dispatching,
+      state: "completed",
+      lifecycle_revision: 3,
+      progress_label: "Governed run completed",
+      run_id: "run-progress",
+      result_thread_id: "thread-progress",
+      terminal_at: "2026-09-22T10:05:00.000Z",
+    });
+    mocks.sql
+      .mockResolvedValueOnce([dispatching])
+      .mockResolvedValueOnce([completed]);
+
+    await expect(recordPromptQueueDispatchProgress({
+      itemId: String(dispatching.id),
+      dispatchToken: "dispatch-secret",
+      tenantId,
+      ownerActorId: actorId,
+      runId: "run-progress",
+      threadId: "thread-progress",
+      terminal: "completed",
+      progressLabel: "Governed run completed",
+      executionScope: authority.executionScope,
+    })).resolves.toEqual({ status: "applied" });
+    expect(mocks.appendEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "command.prompt_queue.item.completed",
+      }),
+      expect.objectContaining({ sql: mocks.sql }),
+    );
+  });
+
+  it("refreshes the six-minute lease for every nonterminal progress receipt", async () => {
+    const dispatching = row({
+      state: "dispatching",
+      lifecycle_revision: 2,
+      progress_label: "Governed execution admitted",
+    });
+    const progressed = row({
+      ...dispatching,
+      lifecycle_revision: 3,
+      progress_label: "Governed run accepted",
+      run_id: "run-progress-active",
+    });
+    const before = Date.now();
+    mocks.sql
+      .mockResolvedValueOnce([dispatching])
+      .mockResolvedValueOnce([progressed]);
+
+    await expect(recordPromptQueueDispatchProgress({
+      itemId: String(dispatching.id),
+      dispatchToken: "dispatch-secret",
+      tenantId,
+      ownerActorId: actorId,
+      runId: "run-progress-active",
+      progressLabel: "Governed run accepted",
+      executionScope: authority.executionScope,
+    })).resolves.toEqual({ status: "applied" });
+
+    const updateCall = mocks.sql.mock.calls[1];
+    const updateStatement = updateCall?.[0].join("?");
+    expect(updateStatement).toContain(
+      "WHEN ? IS NULL THEN ?\n            ELSE NULL",
+    );
+    const leaseValue = updateCall?.slice(1).find((value) =>
+      typeof value === "string" &&
+      Date.parse(value) >= before + 5 * 60_000
+    );
+    expect(leaseValue).toEqual(expect.any(String));
+  });
+
+  it("inspects exact receipts and refuses retries across conflicting coordinates", async () => {
+    const dispatchToken = "dispatch-secret";
+    mocks.sql.mockResolvedValueOnce([{
+      state: "completed",
+      dispatch_token_sha256: null,
+      run_id: "run-inspected",
+      result_thread_id: "thread-inspected",
+      progress_label: "Governed run completed",
+      failure_code: null,
+    }]);
+    await expect(inspectPromptQueueDispatchReceipt({
+      itemId: "00000000-0000-4000-8000-000000000000",
+      dispatchToken,
+      tenantId,
+      ownerActorId: actorId,
+      runId: "run-inspected",
+      threadId: "thread-inspected",
+      progressLabel: "Governed run completed",
+      terminal: "completed",
+    })).resolves.toEqual({ status: "applied" });
+
+    mocks.sql.mockResolvedValueOnce([{
+      state: "dispatching",
+      dispatch_token_sha256: sha256(dispatchToken),
+      run_id: "run-other",
+      result_thread_id: "thread-other",
+      progress_label: "Governed run accepted",
+      failure_code: null,
+    }]);
+    await expect(inspectPromptQueueDispatchReceipt({
+      itemId: "00000000-0000-4000-8000-000000000000",
+      dispatchToken,
+      tenantId,
+      ownerActorId: actorId,
+      runId: "run-requested",
+      threadId: "thread-requested",
+      terminal: "completed",
+    })).resolves.toEqual({ status: "stale" });
+
+    mocks.sql.mockResolvedValueOnce([{
+      state: "dispatching",
+      dispatch_token_sha256: sha256(dispatchToken),
+      run_id: null,
+      result_thread_id: null,
+      progress_label: "Governed execution admitted",
+      failure_code: null,
+    }]);
+    await expect(inspectPromptQueueDispatchReceipt({
+      itemId: "00000000-0000-4000-8000-000000000000",
+      dispatchToken,
+      tenantId,
+      ownerActorId: actorId,
+      runId: "run-requested",
+      threadId: "thread-requested",
+    })).resolves.toEqual({ status: "retryable" });
+  });
+
   it("reconciles expired no-run and accepted-run leases without replay", async () => {
     const noRun = row({
       id: "00000000-0000-4000-8000-000000000011",
@@ -768,6 +923,10 @@ describe("persistent prompt queue store fences", () => {
     mocks.sql
       .mockResolvedValueOnce([noRun, accepted])
       .mockResolvedValueOnce([failed])
+      .mockResolvedValueOnce([{
+        status: "completed",
+        thread_id: "thread-accepted",
+      }])
       .mockResolvedValueOnce([completed]);
 
     await expect(reconcileExpiredPromptQueueDispatches(authority)).resolves.toBe(2);
@@ -776,6 +935,99 @@ describe("persistent prompt queue store fences", () => {
       "command.prompt_queue.item.failed",
       "command.prompt_queue.item.completed",
     ]);
+    const runStatusLookup = mocks.sql.mock.calls[2]?.[0].join("?");
+    expect(runStatusLookup).toContain("SELECT status, thread_id");
+    expect(runStatusLookup).not.toContain("updated_at");
+  });
+
+  it("settles an accepted run that is waiting for approval", async () => {
+    const accepted = row({
+      id: "00000000-0000-4000-8000-000000000013",
+      state: "dispatching",
+      lifecycle_revision: 5,
+      progress_label: "Governed run accepted",
+      run_id: "run-active",
+      dispatched_at: new Date().toISOString(),
+    });
+    const completed = row({
+      ...accepted,
+      state: "completed",
+      lifecycle_revision: 6,
+      progress_label: "Accepted and waiting for approval",
+      result_thread_id: "thread-active",
+    });
+    mocks.sql
+      .mockResolvedValueOnce([accepted])
+      .mockResolvedValueOnce([{
+        status: "waiting_approval",
+        thread_id: "thread-active",
+      }])
+      .mockResolvedValueOnce([completed]);
+
+    await expect(reconcileExpiredPromptQueueDispatches(authority)).resolves.toBe(1);
+    expect(mocks.appendEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "command.prompt_queue.item.completed",
+        payload: expect.objectContaining({ state: "completed" }),
+      }),
+      expect.objectContaining({ sql: mocks.sql }),
+    );
+    expect(mocks.appendEvent.mock.calls[0]?.[0]?.type).toBe(
+      "command.prompt_queue.item.completed",
+    );
+    expect(mocks.sql.mock.calls[2]?.[0].join("?")).toContain("SET state = ?");
+  });
+
+  it("extends a recent active run but fails it after the finite recovery bound", async () => {
+    const recent = row({
+      id: "00000000-0000-4000-8000-000000000014",
+      state: "dispatching",
+      lifecycle_revision: 5,
+      run_id: "run-recent",
+      dispatched_at: new Date().toISOString(),
+    });
+    const refreshed = row({
+      ...recent,
+      lifecycle_revision: 6,
+      progress_label: "Governed run is still active",
+    });
+    mocks.sql
+      .mockResolvedValueOnce([recent])
+      .mockResolvedValueOnce([{ status: "running", thread_id: "thread-recent" }])
+      .mockResolvedValueOnce([refreshed]);
+
+    await expect(reconcileExpiredPromptQueueDispatches(authority)).resolves.toBe(1);
+    expect(mocks.appendEvent.mock.calls[0]?.[0]?.type).toBe(
+      "command.prompt_queue.item.progressed",
+    );
+
+    mocks.sql.mockReset();
+    mocks.appendEvent.mockReset().mockResolvedValue(undefined);
+    const old = row({
+      id: "00000000-0000-4000-8000-000000000015",
+      state: "dispatching",
+      lifecycle_revision: 7,
+      run_id: "run-old",
+      dispatched_at: new Date(Date.now() - 16 * 60_000).toISOString(),
+    });
+    const failed = row({
+      ...old,
+      state: "failed",
+      lifecycle_revision: 8,
+      failure_code: "run_outcome_unconfirmed",
+    });
+    mocks.sql
+      .mockResolvedValueOnce([old])
+      .mockResolvedValueOnce([{ status: "running", thread_id: "thread-old" }])
+      .mockResolvedValueOnce([failed]);
+
+    await expect(reconcileExpiredPromptQueueDispatches(authority)).resolves.toBe(1);
+    expect(mocks.appendEvent.mock.calls[0]?.[0]?.type).toBe(
+      "command.prompt_queue.item.failed",
+    );
+    expect(mocks.sql.mock.calls[2]?.slice(1)).toContain(
+      "run_outcome_unconfirmed",
+    );
   });
 });
 

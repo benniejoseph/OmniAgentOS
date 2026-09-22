@@ -29,6 +29,9 @@ import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
 type QueueSql = ReturnType<typeof getSql>;
 
+const PROMPT_QUEUE_DISPATCH_LEASE_MS = 6 * 60_000;
+const PROMPT_QUEUE_ORPHAN_CONFIRMATION_MAX_AGE_MS = 15 * 60_000;
+
 export class PromptQueueStoreError extends Error {
   constructor(
     readonly code:
@@ -60,6 +63,17 @@ export type ClaimedPromptQueueDispatch = Readonly<{
   item: PromptQueueItemV1;
   dispatchToken: string;
 }>;
+
+export type PromptQueueDispatchProgressResult = Readonly<
+  | { status: "applied" }
+  | { status: "stale" }
+>;
+
+export type PromptQueueDispatchReceiptInspection = Readonly<
+  | { status: "applied" }
+  | { status: "retryable" }
+  | { status: "stale" }
+>;
 
 export async function listPromptQueueItems(
   authority: PromptQueueAuthority,
@@ -445,6 +459,12 @@ export async function updatePromptQueueItem(input: {
           agent_pin = COALESCE(${replacementPins?.agent || null}::jsonb, agent_pin),
           model_pin = COALESCE(${replacementPins?.model || null}::jsonb, model_pin),
           state = ${nextState},
+          run_id = CASE WHEN ${nextState} = 'queued' THEN NULL ELSE run_id END,
+          result_thread_id = CASE WHEN ${nextState} = 'queued' THEN NULL ELSE result_thread_id END,
+          progress_label = CASE WHEN ${nextState} = 'queued' THEN NULL ELSE progress_label END,
+          dispatch_token_sha256 = CASE WHEN ${nextState} = 'queued' THEN NULL ELSE dispatch_token_sha256 END,
+          dispatch_lease_expires_at = CASE WHEN ${nextState} = 'queued' THEN NULL ELSE dispatch_lease_expires_at END,
+          dispatched_at = CASE WHEN ${nextState} = 'queued' THEN NULL ELSE dispatched_at END,
           failure_code = NULL,
           terminal_at = CASE WHEN ${nextState} IN ('completed', 'deleted') THEN terminal_at ELSE NULL END,
           last_modified_session_id = ${input.authority.sessionId},
@@ -592,7 +612,9 @@ export async function claimPromptQueueDispatch(input: {
   const dispatchToken = randomBytes(32).toString("base64url");
   const tokenSha256 = sha256(dispatchToken);
   const now = new Date();
-  const leaseExpiresAt = new Date(now.getTime() + 2 * 60_000).toISOString();
+  const leaseExpiresAt = new Date(
+    now.getTime() + PROMPT_QUEUE_DISPATCH_LEASE_MS,
+  ).toISOString();
   return getSql().transaction(async (sql: QueueSql) => {
     const rows = await sql`
       SELECT * FROM omni_prompt_queue_items
@@ -616,6 +638,10 @@ export async function claimPromptQueueDispatch(input: {
     const changed = await sql`
       UPDATE omni_prompt_queue_items
       SET state = 'dispatching',
+          run_id = NULL,
+          result_thread_id = NULL,
+          failure_code = NULL,
+          terminal_at = NULL,
           dispatch_token_sha256 = ${tokenSha256},
           dispatch_lease_expires_at = ${leaseExpiresAt},
           dispatched_at = ${now.toISOString()},
@@ -703,9 +729,13 @@ export async function validatePromptQueueDispatch(input: {
   // The admission marker is consumed exactly once only after the request has
   // matched its sealed intent. The hashed token remains for progress receipts;
   // concurrent or replayed internal headers cannot start a second run.
+  const admissionLeaseExpiresAt = new Date(
+    Date.now() + PROMPT_QUEUE_DISPATCH_LEASE_MS,
+  ).toISOString();
   const admittedRows = await getSql()`
     UPDATE omni_prompt_queue_items
     SET progress_label = 'Governed execution admitted',
+        dispatch_lease_expires_at = ${admissionLeaseExpiresAt},
         lifecycle_revision = lifecycle_revision + 1,
         updated_at = NOW()
     WHERE tenant_id = ${input.tenantId}
@@ -729,9 +759,10 @@ export async function validatePromptQueueDispatch(input: {
 
 /**
  * Reconcile an interrupted dispatch without replaying its command. A run id is
- * durable proof that normal governed execution accepted the command, so an
- * expired accepted dispatch becomes completed; a lease with no run id fails
- * closed and may be explicitly resumed by the actor.
+ * durable proof that normal governed execution accepted the command, but is
+ * not proof that the run finished. Active, waiting, or temporarily unreadable
+ * runs retain a bounded dispatch lease; only a terminal run closes the queue
+ * item. A lease with no run id fails closed and may be explicitly resumed.
  */
 export async function reconcileExpiredPromptQueueDispatches(
   authority: PromptQueueAuthority,
@@ -750,16 +781,99 @@ export async function reconcileExpiredPromptQueueDispatches(
     let reconciled = 0;
     for (const row of rows) {
       const accepted = Boolean(row.run_id);
-      const terminalState = accepted ? "completed" : "failed";
+      const runRows = accepted
+        ? await sql`
+            SELECT status, thread_id
+            FROM omni_agent_runs
+            WHERE tenant_id = ${authority.tenantId}
+              AND owner_actor_id IN (
+                ${authority.ownerActorId},
+                ${authority.requestActorId}
+              )
+              AND id = ${String(row.run_id)}
+            LIMIT 1
+          `
+        : [];
+      const runStatus = typeof runRows[0]?.status === "string"
+        ? String(runRows[0].status)
+        : undefined;
       const now = new Date().toISOString();
+      const waitingAccepted =
+        runStatus === "waiting_approval" ||
+        runStatus === "waiting_clarification";
+      const terminalRun =
+        runStatus === "completed" ||
+        runStatus === "failed" ||
+        runStatus === "canceled";
+      const orphanConfirmationExpired = accepted && !waitingAccepted &&
+        !terminalRun &&
+        dispatchAgeMs(row, now) >=
+          PROMPT_QUEUE_ORPHAN_CONFIRMATION_MAX_AGE_MS;
+      if (
+        accepted &&
+        !terminalRun &&
+        !waitingAccepted &&
+        !orphanConfirmationExpired
+      ) {
+        const leaseExpiresAt = new Date(
+          Date.parse(now) + PROMPT_QUEUE_DISPATCH_LEASE_MS,
+        ).toISOString();
+        const changed = await sql`
+          UPDATE omni_prompt_queue_items
+          SET result_thread_id = COALESCE(
+                ${runRows[0]?.thread_id ? String(runRows[0].thread_id) : null},
+                result_thread_id
+              ),
+              progress_label = ${runStatus
+                ? "Governed run is still active"
+                : "Verifying governed run status"},
+              dispatch_lease_expires_at = ${leaseExpiresAt},
+              lifecycle_revision = lifecycle_revision + 1,
+              updated_at = ${now}
+          WHERE tenant_id = ${authority.tenantId}
+            AND owner_actor_id = ${authority.ownerActorId}
+            AND id = ${String(row.id)}
+            AND state = 'dispatching'
+            AND dispatch_lease_expires_at <= NOW()
+          RETURNING *
+        `;
+        if (!changed[0]) continue;
+        reconciled += 1;
+        await appendQueueEventFromRow(
+          sql,
+          changed[0],
+          "command.prompt_queue.item.progressed",
+          authority.executionScope,
+        );
+        continue;
+      }
+      const terminalState = runStatus === "completed" || waitingAccepted
+        ? "completed"
+        : "failed";
       const changed = await sql`
         UPDATE omni_prompt_queue_items
         SET state = ${terminalState},
-            progress_label = ${accepted
-              ? "Governed run accepted; reconnect to view activity"
+            result_thread_id = COALESCE(
+              ${runRows[0]?.thread_id ? String(runRows[0].thread_id) : null},
+              result_thread_id
+            ),
+            progress_label = ${runStatus === "completed"
+              ? "Governed run completed"
+              : runStatus === "waiting_approval"
+                ? "Accepted and waiting for approval"
+                : runStatus === "waiting_clarification"
+                  ? "Accepted and waiting for clarification"
+                  : orphanConfirmationExpired
+                    ? "Governed run outcome could not be confirmed"
+              : accepted
+                ? "Governed run failed"
               : "Dispatch expired before a governed run was accepted"},
-            failure_code = ${accepted
+            failure_code = ${terminalState === "completed"
               ? null
+              : orphanConfirmationExpired
+                ? "run_outcome_unconfirmed"
+              : accepted
+                ? runStatus === "canceled" ? "run_canceled" : "run_failed"
               : "dispatch_lease_expired_before_acceptance"},
             dispatch_token_sha256 = NULL,
             dispatch_lease_expires_at = NULL,
@@ -778,7 +892,7 @@ export async function reconcileExpiredPromptQueueDispatches(
       await appendQueueEventFromRow(
         sql,
         changed[0],
-        accepted
+        terminalState === "completed"
           ? "command.prompt_queue.item.completed"
           : "command.prompt_queue.item.failed",
         authority.executionScope,
@@ -799,8 +913,8 @@ export async function recordPromptQueueDispatchProgress(input: {
   terminal?: "completed" | "failed";
   failureCode?: string;
   executionScope: ExecutionScope;
-}): Promise<void> {
-  await getSql().transaction(async (sql: QueueSql) => {
+}): Promise<PromptQueueDispatchProgressResult> {
+  return getSql().transaction(async (sql: QueueSql) => {
     const rows = await sql`
       SELECT * FROM omni_prompt_queue_items
       WHERE tenant_id = ${input.tenantId}
@@ -810,8 +924,11 @@ export async function recordPromptQueueDispatchProgress(input: {
         AND dispatch_token_sha256 = ${sha256(input.dispatchToken)}
       LIMIT 1 FOR UPDATE
     `;
-    if (!rows[0]) return;
+    if (!rows[0]) return { status: "stale" as const };
     const now = new Date().toISOString();
+    const refreshedLeaseExpiresAt = new Date(
+      Date.parse(now) + PROMPT_QUEUE_DISPATCH_LEASE_MS,
+    ).toISOString();
     const terminal = input.terminal || null;
     const changed = await sql`
       UPDATE omni_prompt_queue_items
@@ -819,11 +936,17 @@ export async function recordPromptQueueDispatchProgress(input: {
           result_thread_id = COALESCE(${input.threadId || null}, result_thread_id),
           progress_label = COALESCE(${input.progressLabel?.slice(0, 160) || null}, progress_label),
           state = COALESCE(${terminal}, state),
-          failure_code = CASE WHEN ${terminal} = 'failed'
-            THEN ${input.failureCode?.slice(0, 240) || "dispatch_failed"}
-            ELSE failure_code END,
+          failure_code = CASE
+            WHEN ${terminal} = 'failed'
+              THEN ${input.failureCode?.slice(0, 240) || "dispatch_failed"}
+            WHEN ${terminal} = 'completed' THEN NULL
+            ELSE failure_code
+          END,
           dispatch_token_sha256 = CASE WHEN ${terminal} IS NULL THEN dispatch_token_sha256 ELSE NULL END,
-          dispatch_lease_expires_at = CASE WHEN ${terminal} IS NULL THEN dispatch_lease_expires_at ELSE NULL END,
+          dispatch_lease_expires_at = CASE
+            WHEN ${terminal} IS NULL THEN ${refreshedLeaseExpiresAt}
+            ELSE NULL
+          END,
           terminal_at = CASE WHEN ${terminal} IS NULL THEN terminal_at ELSE ${now} END,
           lifecycle_revision = lifecycle_revision + 1,
           updated_at = ${now}
@@ -832,7 +955,7 @@ export async function recordPromptQueueDispatchProgress(input: {
         AND id = ${input.itemId}
       RETURNING *
     `;
-    if (!changed[0]) return;
+    if (!changed[0]) return { status: "stale" as const };
     await appendQueueEventFromRow(
       sql,
       changed[0],
@@ -841,7 +964,50 @@ export async function recordPromptQueueDispatchProgress(input: {
         : "command.prompt_queue.item.progressed",
       input.executionScope,
     );
-  });
+    return { status: "applied" as const };
+  }) as Promise<PromptQueueDispatchProgressResult>;
+}
+
+/**
+ * Read the exact queue fence after an indeterminate receipt write. This helper
+ * never mutates or broadens authority: it acknowledges an already-matching
+ * receipt, or proves that one bounded retry is safe because the same raw-token
+ * capability still owns an unchanged dispatching row.
+ */
+export async function inspectPromptQueueDispatchReceipt(input: {
+  itemId: string;
+  dispatchToken: string;
+  tenantId: string;
+  ownerActorId: string;
+  runId?: string;
+  threadId?: string;
+  progressLabel?: string;
+  terminal?: "completed" | "failed";
+  failureCode?: string;
+}): Promise<PromptQueueDispatchReceiptInspection> {
+  const rows = await getSql()`
+    SELECT state, dispatch_token_sha256, run_id, result_thread_id,
+           progress_label, failure_code
+    FROM omni_prompt_queue_items
+    WHERE tenant_id = ${input.tenantId}
+      AND owner_actor_id = ${input.ownerActorId}
+      AND id = ${input.itemId}
+    LIMIT 1
+  `;
+  const row = rows[0];
+  if (!row) return { status: "stale" };
+
+  if (dispatchReceiptMatches(row, input)) {
+    return { status: "applied" };
+  }
+  if (
+    String(row.state) === "dispatching" &&
+    String(row.dispatch_token_sha256 || "") === sha256(input.dispatchToken) &&
+    dispatchReceiptCoordinatesAreCompatible(row, input)
+  ) {
+    return { status: "retryable" };
+  }
+  return { status: "stale" };
 }
 
 async function readPromptQueueItem(
@@ -1112,6 +1278,65 @@ function stale(): never {
 
 function sha256(value: string) {
   return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function dispatchAgeMs(row: Record<string, unknown>, now: string) {
+  const startedAt = Date.parse(String(row.dispatched_at || row.created_at || ""));
+  const current = Date.parse(now);
+  if (!Number.isFinite(startedAt) || !Number.isFinite(current)) {
+    return Number.POSITIVE_INFINITY;
+  }
+  return Math.max(0, current - startedAt);
+}
+
+function dispatchReceiptMatches(
+  row: Record<string, unknown>,
+  input: {
+    runId?: string;
+    threadId?: string;
+    progressLabel?: string;
+    terminal?: "completed" | "failed";
+    failureCode?: string;
+  },
+) {
+  const expectedState = input.terminal || "dispatching";
+  if (String(row.state || "") !== expectedState) return false;
+  if (nullableString(row.run_id) !== (input.runId || null)) return false;
+  if (nullableString(row.result_thread_id) !== (input.threadId || null)) {
+    return false;
+  }
+  if (
+    input.progressLabel !== undefined &&
+    nullableString(row.progress_label) !== input.progressLabel.slice(0, 160)
+  ) {
+    return false;
+  }
+  if (input.terminal === "completed") {
+    return nullableString(row.failure_code) === null;
+  }
+  if (input.terminal === "failed") {
+    return nullableString(row.failure_code) ===
+      (input.failureCode?.slice(0, 240) || "dispatch_failed");
+  }
+  return true;
+}
+
+function dispatchReceiptCoordinatesAreCompatible(
+  row: Record<string, unknown>,
+  input: { runId?: string; threadId?: string },
+) {
+  const storedRunId = nullableString(row.run_id);
+  const storedThreadId = nullableString(row.result_thread_id);
+  return (
+    (!storedRunId || storedRunId === (input.runId || null)) &&
+    (!storedThreadId || storedThreadId === (input.threadId || null))
+  );
+}
+
+function nullableString(value: unknown) {
+  return value === null || value === undefined || value === ""
+    ? null
+    : String(value);
 }
 
 function iso(value: unknown) {
