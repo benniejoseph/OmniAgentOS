@@ -298,6 +298,8 @@ REVOKE ALL ON FUNCTION public.omni_protect_workflow_schedule_occurrence_v1() FRO
 DO $grants$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_runtime') THEN
+    EXECUTE 'REVOKE ALL ON TABLE public.omni_workflow_schedule_occurrences FROM omni_runtime';
+    EXECUTE 'REVOKE ALL ON TABLE public.omni_workflow_schedule_occurrence_receipts FROM omni_runtime';
     GRANT SELECT, INSERT ON public.omni_workflow_schedule_occurrences TO omni_runtime;
     GRANT UPDATE (
       status, workflow_run_id, queue_job_id, failure_code, attempt_count,
@@ -308,6 +310,8 @@ BEGIN
       ON public.omni_workflow_triggers TO omni_runtime;
   END IF;
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_maintenance') THEN
+    EXECUTE 'REVOKE ALL ON TABLE public.omni_workflow_schedule_occurrences FROM omni_maintenance';
+    EXECUTE 'REVOKE ALL ON TABLE public.omni_workflow_schedule_occurrence_receipts FROM omni_maintenance';
     GRANT SELECT, INSERT ON public.omni_workflow_schedule_occurrences TO omni_maintenance;
     GRANT UPDATE (
       status, workflow_run_id, queue_job_id, failure_code, attempt_count,

@@ -225,6 +225,12 @@ describe("scheduled PolicyLease durable binding", () => {
     expect(migration).toContain(
       "GRANT UPDATE (state, consumed_at, consumption_receipt_sha256)",
     );
+    expect(migration).toContain(
+      "REVOKE ALL ON TABLE public.omni_policy_leases FROM omni_runtime",
+    );
+    expect(migration).toContain(
+      "REVOKE ALL ON TABLE public.omni_policy_lease_consumptions FROM omni_maintenance",
+    );
     expect(migration).toContain("information_schema.role_table_grants");
     expect(migration).toContain("information_schema.role_column_grants");
     expect(migration).toContain("column_name NOT IN (");

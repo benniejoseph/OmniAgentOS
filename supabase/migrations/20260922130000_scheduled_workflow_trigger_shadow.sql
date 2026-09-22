@@ -258,6 +258,7 @@ REVOKE ALL ON FUNCTION public.omni_reject_workflow_schedule_shadow_change_v1() F
 DO $grants$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_runtime') THEN
+    EXECUTE 'REVOKE ALL ON TABLE public.omni_workflow_schedule_shadow_events FROM omni_runtime';
     GRANT SELECT, INSERT ON public.omni_workflow_schedule_shadow_events TO omni_runtime;
     GRANT UPDATE (
       status, trigger_count, failure_count, last_triggered_at,
@@ -268,6 +269,7 @@ BEGIN
     ) ON public.omni_workflow_triggers TO omni_runtime;
   END IF;
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_maintenance') THEN
+    EXECUTE 'REVOKE ALL ON TABLE public.omni_workflow_schedule_shadow_events FROM omni_maintenance';
     GRANT SELECT, INSERT ON public.omni_workflow_schedule_shadow_events TO omni_maintenance;
     GRANT UPDATE (
       status, trigger_count, failure_count, last_triggered_at,

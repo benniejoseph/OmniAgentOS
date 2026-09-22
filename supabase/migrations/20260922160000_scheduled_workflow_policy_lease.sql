@@ -251,12 +251,16 @@ REVOKE ALL ON FUNCTION public.omni_protect_policy_lease_v1() FROM PUBLIC;
 DO $grants$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_runtime') THEN
+    EXECUTE 'REVOKE ALL ON TABLE public.omni_policy_leases FROM omni_runtime';
+    EXECUTE 'REVOKE ALL ON TABLE public.omni_policy_lease_consumptions FROM omni_runtime';
     GRANT SELECT, INSERT ON public.omni_policy_leases TO omni_runtime;
     GRANT UPDATE (state, consumed_at, consumption_receipt_sha256)
       ON public.omni_policy_leases TO omni_runtime;
     GRANT SELECT, INSERT ON public.omni_policy_lease_consumptions TO omni_runtime;
   END IF;
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_maintenance') THEN
+    EXECUTE 'REVOKE ALL ON TABLE public.omni_policy_leases FROM omni_maintenance';
+    EXECUTE 'REVOKE ALL ON TABLE public.omni_policy_lease_consumptions FROM omni_maintenance';
     GRANT SELECT, INSERT ON public.omni_policy_leases TO omni_maintenance;
     GRANT UPDATE (state, consumed_at, consumption_receipt_sha256)
       ON public.omni_policy_leases TO omni_maintenance;

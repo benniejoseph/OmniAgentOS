@@ -511,6 +511,12 @@ describe("scheduled workflow trigger foundation", () => {
     expect(migration).toContain("omni_workflow_triggers_schedule_actor");
     expect(migration).toContain("AS RESTRICTIVE FOR ALL TO PUBLIC");
     expect(migration).toContain("omni_workflow_schedule_shadow_events_immutable");
+    expect(migration).toContain(
+      "REVOKE ALL ON TABLE public.omni_workflow_schedule_shadow_events FROM omni_runtime",
+    );
+    expect(migration).toContain(
+      "REVOKE ALL ON TABLE public.omni_workflow_schedule_shadow_events FROM omni_maintenance",
+    );
     expect(migration).toContain("schedule_config_sha256");
     expect(migration).toContain("agent_identity_pin_sha256");
     expect(migration).toContain("reviewed_snapshot_sha256");
@@ -536,6 +542,12 @@ describe("scheduled workflow trigger foundation", () => {
     expect(migration).toContain("FORCE ROW LEVEL SECURITY");
     expect(migration).toContain("AS RESTRICTIVE FOR ALL TO PUBLIC");
     expect(migration).toContain("omni_workflow_schedule_occurrence_receipts_immutable");
+    expect(migration).toContain(
+      "REVOKE ALL ON TABLE public.omni_workflow_schedule_occurrences FROM omni_runtime",
+    );
+    expect(migration).toContain(
+      "REVOKE ALL ON TABLE public.omni_workflow_schedule_occurrence_receipts FROM omni_maintenance",
+    );
     expect(migration).toContain("configuration_sha256");
     expect(migration).toContain("reviewed_snapshot_sha256");
     expect(migration).toContain("occurrence_budget_sha256");

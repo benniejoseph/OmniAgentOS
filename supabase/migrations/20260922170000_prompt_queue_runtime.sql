@@ -251,6 +251,7 @@ REVOKE ALL ON FUNCTION public.omni_protect_prompt_queue_item_v1() FROM PUBLIC;
 DO $grants$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_runtime') THEN
+    EXECUTE 'REVOKE ALL ON TABLE public.omni_prompt_queue_items FROM omni_runtime';
     GRANT SELECT, INSERT ON public.omni_prompt_queue_items TO omni_runtime;
     GRANT UPDATE (
       last_modified_session_id, sealed_prompt, prompt_sha256,
@@ -261,6 +262,7 @@ BEGIN
     ) ON public.omni_prompt_queue_items TO omni_runtime;
   END IF;
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_maintenance') THEN
+    EXECUTE 'REVOKE ALL ON TABLE public.omni_prompt_queue_items FROM omni_maintenance';
     GRANT SELECT, INSERT ON public.omni_prompt_queue_items TO omni_maintenance;
     GRANT UPDATE (
       last_modified_session_id, sealed_prompt, prompt_sha256,

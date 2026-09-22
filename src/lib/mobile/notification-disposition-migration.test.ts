@@ -29,6 +29,12 @@ describe("notification disposition migration v200", () => {
     expect(migration).toContain("CHECK (NOT decision_grants_authority)");
     expect(migration).toContain("omni_mobile_push_deliveries_cause_kind_check_v3");
     expect(migration).toContain("'notification', 'canary'");
+    expect(migration).toContain(
+      "REVOKE ALL ON TABLE public.omni_notification_dispositions FROM omni_runtime",
+    );
+    expect(migration).toContain(
+      "REVOKE ALL ON TABLE public.omni_notification_digest_watermarks FROM omni_maintenance",
+    );
 
     const dispositionTable = migration.slice(
       migration.indexOf("CREATE TABLE public.omni_notification_dispositions"),

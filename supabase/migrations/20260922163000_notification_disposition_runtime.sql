@@ -437,6 +437,9 @@ REVOKE ALL ON FUNCTION public.omni_protect_notification_digest_watermark_v1() FR
 DO $grants$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_runtime') THEN
+    EXECUTE 'REVOKE ALL ON TABLE public.omni_notification_dispositions FROM omni_runtime';
+    EXECUTE 'REVOKE ALL ON TABLE public.omni_notification_digest_deliveries FROM omni_runtime';
+    EXECUTE 'REVOKE ALL ON TABLE public.omni_notification_digest_watermarks FROM omni_runtime';
     GRANT SELECT, INSERT ON public.omni_notification_dispositions TO omni_runtime;
     GRANT UPDATE (
       outcome, state, reason, must_send, critical, policy_sha256,
@@ -452,6 +455,9 @@ BEGIN
     ) ON public.omni_notification_digest_watermarks TO omni_runtime;
   END IF;
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_maintenance') THEN
+    EXECUTE 'REVOKE ALL ON TABLE public.omni_notification_dispositions FROM omni_maintenance';
+    EXECUTE 'REVOKE ALL ON TABLE public.omni_notification_digest_deliveries FROM omni_maintenance';
+    EXECUTE 'REVOKE ALL ON TABLE public.omni_notification_digest_watermarks FROM omni_maintenance';
     GRANT SELECT, INSERT ON public.omni_notification_dispositions TO omni_maintenance;
     GRANT UPDATE (
       outcome, state, reason, must_send, critical, policy_sha256,

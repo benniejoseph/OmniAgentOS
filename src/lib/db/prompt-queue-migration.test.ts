@@ -53,6 +53,12 @@ describe("prompt queue runtime migration v201", () => {
     expect(source).toContain("column_name NOT IN (");
     expect(source).toContain("count(DISTINCT grant_row.column_name)");
     expect(source).toContain(") <> 18");
+    expect(source).toContain(
+      "REVOKE ALL ON TABLE public.omni_prompt_queue_items FROM omni_runtime",
+    );
+    expect(source).toContain(
+      "REVOKE ALL ON TABLE public.omni_prompt_queue_items FROM omni_maintenance",
+    );
     expect(source).toContain("AND NEW.state IN ('queued', 'paused')");
     expect(source).toContain("NEW.state = 'deleted'");
     expect(source).toContain("AND NEW.sealed_prompt IS NULL");
