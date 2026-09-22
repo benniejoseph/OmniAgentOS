@@ -1,19 +1,27 @@
+"use client";
+
 import Link from "next/link";
 import {
   AlertTriangle,
   ArrowUpRight,
+  Bot,
   CheckCircle2,
+  ChevronRight,
+  CircleDot,
   Coins,
+  FileCheck2,
+  Inbox,
   KeyRound,
   Loader2,
   MessageSquare,
   Network,
   PackageCheck,
+  PanelRight,
   ShieldCheck,
-  Wrench,
+  Sparkles,
 } from "lucide-react";
 import { clsx } from "clsx";
-import type { ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 
 import { AgentMascot } from "@/components/agents/agent-mascot";
 import styles from "@/components/agents/council-execution-map.module.css";
@@ -23,268 +31,314 @@ import type {
 } from "@/lib/agents/council-map-contract";
 
 type CouncilLoadState = "loading" | "ready" | "unavailable";
+type CouncilExecution = AgentCouncilMap["executions"][number];
 
 export function CouncilExecutionMap({
   map,
   state,
+  initialRunId,
+  initialTaskId,
 }: {
   map?: AgentCouncilMap;
   state: CouncilLoadState;
+  initialRunId?: string;
+  initialTaskId?: string;
 }) {
+  const [selection, setSelection] = useState<{ runId?: string; taskId?: string }>({
+    runId: initialRunId,
+    taskId: initialTaskId,
+  });
+
+  const selected = useMemo(() => selectCouncilItem(map, selection), [map, selection]);
+
   if (state === "loading") return <CouncilNotice kind="loading" />;
   if (state === "unavailable" || map?.state === "unavailable") {
     return <CouncilNotice kind="unavailable" />;
   }
   if (!map || map.state === "empty") return <CouncilNotice kind="empty" />;
 
+  const choose = (execution: CouncilExecution, member?: AgentCouncilMapMember) => {
+    const next = {
+      runId: execution.parentExecutionId,
+      taskId: member?.taskId || execution.members[0]?.taskId,
+    };
+    setSelection(next);
+    const url = new URL(window.location.href);
+    url.searchParams.set("view", "live");
+    url.searchParams.set("run", next.runId);
+    if (next.taskId) url.searchParams.set("task", next.taskId);
+    window.history.replaceState(window.history.state, "", url);
+  };
+
   return (
-    <section className={styles.council} aria-label="Live Agent Council delegation map">
+    <section className={styles.controlCenter} aria-label="Live Agent work">
       <header className={styles.header}>
         <div className={styles.titleGroup}>
-          <span className={styles.titleIcon} aria-hidden="true"><Network size={18} /></span>
+          <span className={styles.titleIcon} aria-hidden="true"><Network size={20} /></span>
           <div>
             <p className={styles.eyebrow}>Canonical delegation ledger</p>
-            <h2>Live Council map</h2>
-            <p>Who is working, what each Agent can access, and who verifies the result.</p>
+            <h2>Live work</h2>
+            <p>Follow each execution, its delegated team, shared work, and verification boundary.</p>
           </div>
         </div>
-        <div className={styles.summary} aria-label="Council summary">
+        <div className={styles.summary} aria-label="Live work summary">
           <SummaryValue value={map.summary.activeMemberCount} label="active" live />
-          <SummaryValue value={map.summary.memberCount} label="members" />
-          <SummaryValue
-            value={formatKnownCost(map.summary.knownEstimatedCostMicrousd)}
-            label="known cost"
-          />
+          <SummaryValue value={map.summary.memberCount} label="workers" />
+          <SummaryValue value={map.summary.waitingMemberCount} label="waiting" />
+          <SummaryValue value={formatKnownCost(map.summary.knownEstimatedCostMicrousd)} label="known cost" />
         </div>
       </header>
 
-      <div className={styles.executions}>
-        {map.executions.map((execution) => (
-          <article className={styles.execution} key={execution.parentExecutionId}>
-            <header className={styles.executionHeader}>
-              <div className={styles.executionCopy}>
-                <span className={styles.runState} data-state={execution.status}>
-                  <span aria-hidden="true" />{runStatusLabel(execution.status)}
-                </span>
-                <h3>{execution.currentWork}</h3>
-                <p>
-                  {execution.members.length} delegated Agent{execution.members.length === 1 ? "" : "s"}
-                  <span aria-hidden="true"> · </span>
-                  updated {formatTime(execution.updatedAt)}
-                </p>
-              </div>
-              <div className={styles.executionActions}>
-                <CostBadge cost={execution.verifierCost} prefix="Verifier" />
-                <Link href={execution.href} className={styles.runLink}>
-                  Open run <ArrowUpRight size={13} aria-hidden="true" />
-                </Link>
-              </div>
-            </header>
+      <div className={styles.workspace}>
+        <aside className={styles.executionRail} aria-label="Executions and team members">
+          <div className={styles.paneHeading}>
+            <div><span>Execution queue</span><strong>{map.executions.length} recent</strong></div>
+            <small>Read only</small>
+          </div>
+          <div className={styles.executionList}>
+            {map.executions.map((execution) => {
+              const executionSelected = execution.parentExecutionId === selected.execution.parentExecutionId;
+              return (
+                <section className={styles.executionGroup} key={execution.parentExecutionId}>
+                  <button
+                    type="button"
+                    className={clsx(styles.executionButton, executionSelected && styles.isSelected)}
+                    onClick={() => choose(execution)}
+                    aria-pressed={executionSelected}
+                  >
+                    <span className={styles.runState} data-state={execution.status}>
+                      <i aria-hidden="true" />{runStatusLabel(execution.status)}
+                    </span>
+                    <strong>{execution.currentWork}</strong>
+                    <span>{execution.members.length} worker{execution.members.length === 1 ? "" : "s"} · updated {formatTime(execution.updatedAt)}</span>
+                  </button>
+                  {executionSelected ? (
+                    <div className={styles.teamTree} aria-label="Delegated team">
+                      <div className={styles.parentNode}>
+                        <AgentMascot agentId="atlas" agentName="Atlas" size="small" decorative />
+                        <span><strong>Atlas</strong><small>Coordinator</small></span>
+                      </div>
+                      {execution.members.map((member) => (
+                        <button
+                          type="button"
+                          key={member.taskId}
+                          className={clsx(styles.memberButton, member.taskId === selected.member.taskId && styles.isSelected)}
+                          onClick={() => choose(execution, member)}
+                          aria-pressed={member.taskId === selected.member.taskId}
+                        >
+                          <AgentMascot agentId={member.identity.agentId} agentName={member.identity.name} size="small" decorative />
+                          <span><strong>{member.identity.name}</strong><small>{taskStateLabel(member.state)}</small></span>
+                          <ChevronRight size={14} aria-hidden="true" />
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                </section>
+              );
+            })}
+          </div>
+        </aside>
 
-            <div className={styles.delegationLane}>
-              <div className={styles.parentNode} aria-label="Parent coordinator">
-                <AgentMascot agentId="atlas" agentName="Atlas" size="small" decorative />
-                <span><strong>Atlas</strong><small>Parent coordinator</small></span>
-              </div>
-              <span className={styles.laneLine} aria-hidden="true" />
-              <span className={styles.laneLabel}><KeyRound size={11} /> scoped grants</span>
-            </div>
+        <main className={styles.activityPane} aria-live="polite">
+          <ExecutionOverview execution={selected.execution} member={selected.member} />
+        </main>
 
-            <div className={styles.members}>
-              {execution.members.map((member) => (
-                <CouncilMemberCard member={member} key={member.taskId} />
-              ))}
-            </div>
-          </article>
-        ))}
+        <aside className={styles.inspector} aria-label="Selected worker authority and budget">
+          <WorkerInspector member={selected.member} />
+        </aside>
       </div>
     </section>
   );
 }
 
-function CouncilMemberCard({ member }: { member: AgentCouncilMapMember }) {
-  const active = ["proposed", "accepted", "working", "waiting", "challenged", "completed_proposed"]
-    .includes(member.state);
+function ExecutionOverview({ execution, member }: { execution: CouncilExecution; member: AgentCouncilMapMember }) {
   return (
-    <article className={styles.member} data-state={member.state}>
-      <header className={styles.memberHeader}>
-        <AgentMascot
-          agentId={member.identity.agentId}
-          agentName={member.identity.name}
-          size="medium"
-        />
-        <div className={styles.memberIdentity}>
-          <p>{member.identity.role} · definition v{member.identity.definitionVersion}</p>
-          <h4>{member.identity.name}</h4>
-          <span className={clsx(styles.memberState, active && styles.isActive)}>
-            {active ? <span className={styles.liveDot} aria-hidden="true" /> : <StateIcon state={member.state} />}
-            {taskStateLabel(member.state)}
-          </span>
+    <>
+      <header className={styles.activityHeader}>
+        <div className={styles.activityIdentity}>
+          <AgentMascot agentId={member.identity.agentId} agentName={member.identity.name} size="medium" />
+          <div>
+            <p>{member.identity.role} · definition v{member.identity.definitionVersion}</p>
+            <h3>{member.identity.name}</h3>
+            <span className={styles.memberState} data-state={member.state}>
+              <i aria-hidden="true" />{taskStateLabel(member.state)}
+            </span>
+          </div>
         </div>
-        <div className={styles.confidence}>
-          <strong>{member.confidence === null ? "—" : `${Math.round(member.confidence * 100)}%`}</strong>
-          <span>confidence</span>
+        <div className={styles.activityActions}>
+          <span className={styles.readOnlyBadge}><ShieldCheck size={13} />Observed ledger</span>
+          <Link href={execution.href} className={styles.primaryLink}>
+            Open in Command <ArrowUpRight size={14} aria-hidden="true" />
+          </Link>
         </div>
       </header>
 
-      <div className={styles.currentWork}>
-        <span>Current work</span>
-        <p>{member.currentWork}</p>
-      </div>
-
-      <div className={styles.factGrid}>
-        <Fact
-          icon={<KeyRound size={13} />}
-          label="Context"
-          value={authorityCount(member.authority.context.state, member.authority.context.grantCount)}
-        />
-        <Fact
-          icon={<Wrench size={13} />}
-          label="Tools"
-          value={toolCount(member)}
-        />
-        <Fact
-          icon={<Coins size={13} />}
-          label="Cost"
-          value={costLabel(member.cost)}
-        />
-      </div>
-
-      <section className={styles.authority} aria-label={`${member.identity.name} authority`}>
-        <div className={styles.sectionHeading}>
-          <span><ShieldCheck size={14} /> Allowed authority</span>
-          <AuthoritySource member={member} />
+      <section className={styles.workBrief} aria-labelledby="current-work-title">
+        <div>
+          <p>Current assignment</p>
+          <h4 id="current-work-title">{member.currentWork}</h4>
         </div>
-        <p className={styles.purpose}>{member.authority.purpose}</p>
-        <div className={styles.chips}>
-          {member.authority.source === "historical_unavailable" ? (
-            <span className={styles.unavailableChip}>Historical grants unavailable</span>
-          ) : (
-            <>
-              <span>{member.authority.context.grantCount} context grant{member.authority.context.grantCount === 1 ? "" : "s"}</span>
-              <span>{member.authority.capabilities.grantCount} capability grant{member.authority.capabilities.grantCount === 1 ? "" : "s"}</span>
-              {member.authority.tools.ids.map((toolId) => <span key={toolId}>{toolId}</span>)}
-              {!member.authority.tools.ids.length ? <span>No governed tools</span> : null}
-            </>
-          )}
-        </div>
-        <div className={styles.scopeLine}>
-          <span>Project: {member.authority.scope.projectId || "none"}</span>
-          <span>Mission: {member.authority.scope.missionId || "none"}</span>
-          <span>Budget: {budgetLabel(member)}</span>
+        <dl>
+          <div><dt>Started</dt><dd>{formatTime(execution.startedAt)}</dd></div>
+          <div><dt>Updated</dt><dd>{formatTime(member.updatedAt)}</dd></div>
+          <div><dt>Confidence</dt><dd>{member.confidence === null ? "Not reported" : `${Math.round(member.confidence * 100)}%`}</dd></div>
+        </dl>
+      </section>
+
+      <section className={styles.activitySection} aria-labelledby="activity-title">
+        <SectionTitle icon={<Sparkles size={16} />} title="Activity" meta="Latest canonical state" id="activity-title" />
+        <div className={styles.timeline}>
+          <TimelineItem icon={<CircleDot size={15} />} title={taskStateLabel(member.state)} time={formatTime(member.updatedAt)}>
+            {member.currentWork}
+          </TimelineItem>
+          <TimelineItem icon={<KeyRound size={15} />} title="Authority attached" time="Delegation receipt">
+            {member.authority.purpose}
+          </TimelineItem>
         </div>
       </section>
 
       <div className={styles.exchangeGrid}>
-        <ExchangePanel
-          icon={<MessageSquare size={14} />}
-          title="Messages"
-          state={messageStateLabel(member)}
-        >
-          {member.messages.items.slice(0, 3).map((message) => (
-            <div className={styles.exchangeItem} key={`${message.messageId}:${message.direction}`}>
-              <span>{message.direction} · {message.kind}</span>
+        <ExchangePanel icon={<MessageSquare size={16} />} title="Messages" state={messageStateLabel(member)}>
+          {member.messages.items.length ? member.messages.items.map((message) => (
+            <article className={styles.exchangeItem} key={`${message.messageId}:${message.direction}`}>
+              <div><strong>{message.direction === "sent" ? "Sent" : "Received"} · {message.kind}</strong><time>{formatTime(message.createdAt)}</time></div>
               <p>{message.body}</p>
               <small>Untrusted shared content</small>
-            </div>
-          ))}
+            </article>
+          )) : <EmptyExchange text="No team messages have been shared for this worker." />}
         </ExchangePanel>
-        <ExchangePanel
-          icon={<PackageCheck size={14} />}
-          title="Outputs"
-          state={outputStateLabel(member)}
-        >
-          {member.outputs.items.slice(0, 3).map((output) => (
-            <div className={styles.exchangeItem} key={output.artifactId}>
-              <span>{output.kind} · {output.title}</span>
+        <ExchangePanel icon={<PackageCheck size={16} />} title="Outputs" state={outputStateLabel(member)}>
+          {member.outputs.items.length ? member.outputs.items.map((output) => (
+            <article className={styles.exchangeItem} key={output.artifactId}>
+              <div><strong>{output.title}</strong><time>{formatTime(output.createdAt)}</time></div>
               <p>{output.content}</p>
-              <small>Untrusted shared content</small>
-            </div>
-          ))}
+              <small>{output.kind} · untrusted shared content</small>
+            </article>
+          )) : <EmptyExchange text="No shared artifacts have been recorded yet." />}
         </ExchangePanel>
       </div>
 
-      <footer className={styles.verifier}>
-        <AgentMascot
-          agentId={member.verifier.identity.agentId}
-          agentName={member.verifier.identity.name}
-          size="small"
-          decorative
-        />
-        <div>
-          <span>Verifier</span>
-          <strong>{member.verifier.identity.name}</strong>
-          <small>{verifierMethodLabel(member.verifier.method)}</small>
+      <section className={styles.verification} aria-label="Verification status">
+        <div className={styles.verifierIdentity}>
+          <AgentMascot agentId={member.verifier.identity.agentId} agentName={member.verifier.identity.name} size="small" decorative />
+          <div><span>Independent verifier</span><strong>{member.verifier.identity.name}</strong><small>{verifierMethodLabel(member.verifier.method)}</small></div>
         </div>
         <div className={styles.verdict} data-verdict={member.verifier.verdict}>
-          <span>{verdictLabel(member.verifier.verdict)}</span>
-          <small>
-            {member.verifier.score === null ? "Not scored" : `${Math.round(member.verifier.score * 100)}% score`}
-            {` · ${Math.round(member.verifier.acceptanceThreshold * 100)}% required`}
-          </small>
+          <strong>{verdictLabel(member.verifier.verdict)}</strong>
+          <span>{member.verifier.score === null ? "Not scored" : `${Math.round(member.verifier.score * 100)}% score`}{` · ${Math.round(member.verifier.acceptanceThreshold * 100)}% required`}</span>
+        </div>
+      </section>
+
+      <footer className={styles.destinationLinks} aria-label="Related workspaces">
+        <span>Actions are handled in their governed workspaces.</span>
+        <div>
+          <Link href={execution.href}><Bot size={14} />Command</Link>
+          <Link href="/app/approvals"><Inbox size={14} />Inbox</Link>
+          <Link href="/app/results"><FileCheck2 size={14} />Results</Link>
         </div>
       </footer>
-    </article>
+    </>
+  );
+}
+
+function WorkerInspector({ member }: { member: AgentCouncilMapMember }) {
+  const budget = member.authority.budgets;
+  return (
+    <>
+      <div className={styles.paneHeading}>
+        <div><span>Execution inspector</span><strong>Authority & limits</strong></div>
+        <PanelRight size={17} aria-hidden="true" />
+      </div>
+      <section className={styles.inspectorSection}>
+        <InspectorTitle icon={<ShieldCheck size={15} />} title="Authority" />
+        <p className={styles.purpose}>{member.authority.purpose}</p>
+        <div className={styles.receiptState} data-available={member.authority.source === "delegation_grants"}>
+          {member.authority.source === "delegation_grants" ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />}
+          {member.authority.source === "delegation_grants" ? "Verified delegation receipt" : "Historical grants unavailable"}
+        </div>
+        <InspectorRows rows={[
+          ["Context", authorityCount(member.authority.context.state, member.authority.context.grantCount)],
+          ["Capabilities", authorityCount(member.authority.capabilities.state, member.authority.capabilities.grantCount)],
+          ["Governed tools", toolCount(member)],
+        ]} />
+        {member.authority.tools.ids.length ? <div className={styles.chips}>{member.authority.tools.ids.map((toolId) => <span key={toolId}>{toolId}</span>)}</div> : null}
+      </section>
+
+      <section className={styles.inspectorSection}>
+        <InspectorTitle icon={<Bot size={15} />} title="Model route" />
+        <p className={styles.missingFact}>Not recorded in this read-only Council projection. Open the run to inspect its harness receipt.</p>
+      </section>
+
+      <section className={styles.inspectorSection}>
+        <InspectorTitle icon={<Coins size={15} />} title="Budget" />
+        <InspectorRows rows={[
+          ["Model turns", nullableBudget(budget.modelTurns)],
+          ["Tokens", nullableBudget(budget.tokens)],
+          ["Tool calls", nullableBudget(budget.toolCalls)],
+          ["Wall time", durationBudget(budget.wallTimeMs)],
+          ["Known spend", costLabel(member.cost)],
+        ]} />
+      </section>
+
+      <section className={styles.inspectorSection}>
+        <InspectorTitle icon={<KeyRound size={15} />} title="Scope" />
+        <InspectorRows rows={[
+          ["Workspace", member.authority.scope.workspaceId || "None"],
+          ["Project", member.authority.scope.projectId || "None"],
+          ["Mission", member.authority.scope.missionId || "None"],
+        ]} />
+      </section>
+    </>
   );
 }
 
 function CouncilNotice({ kind }: { kind: "loading" | "unavailable" | "empty" }) {
   const copy = kind === "loading"
-    ? ["Loading the Council", "Reading your scoped delegation ledger."]
+    ? ["Loading live work", "Reading your scoped delegation ledger."]
     : kind === "unavailable"
-      ? ["Council map unavailable", "The canonical delegation ledger could not be read. No authority was inferred."]
-      : ["Council is ready", "Multi-agent runs will appear here with their grants, exchanges, cost, confidence, and verifier."];
+      ? ["Live work unavailable", "The canonical delegation ledger could not be read. No authority was inferred."]
+      : ["No delegated work yet", "When a multi-Agent run starts, its team, authority, shared outputs, and verification will appear here."];
   return (
-    <section className={clsx(styles.notice, styles[kind])} aria-label="Agent Council status">
-      <span aria-hidden="true">
-        {kind === "loading" ? <Loader2 size={20} /> : kind === "unavailable" ? <AlertTriangle size={20} /> : <Network size={20} />}
-      </span>
+    <section className={clsx(styles.notice, styles[kind])} aria-label="Live Agent work status">
+      <span aria-hidden="true">{kind === "loading" ? <Loader2 size={22} /> : kind === "unavailable" ? <AlertTriangle size={22} /> : <Network size={22} />}</span>
       <div><h2>{copy[0]}</h2><p>{copy[1]}</p></div>
+      {kind === "empty" ? <Link href="/app/command">Start in Command <ArrowUpRight size={14} /></Link> : null}
     </section>
   );
+}
+
+function selectCouncilItem(map: AgentCouncilMap | undefined, selection: { runId?: string; taskId?: string }) {
+  const fallbackExecution = map?.executions[0];
+  if (!fallbackExecution) return undefined as never;
+  const execution = map.executions.find((item) => item.parentExecutionId === selection.runId) || fallbackExecution;
+  const member = execution.members.find((item) => item.taskId === selection.taskId) || execution.members[0];
+  return { execution, member };
 }
 
 function SummaryValue({ value, label, live }: { value: string | number; label: string; live?: boolean }) {
   return <span>{live ? <i aria-hidden="true" /> : null}<strong>{value}</strong><small>{label}</small></span>;
 }
 
-function Fact({ icon, label, value }: { icon: ReactNode; label: string; value: string }) {
-  return <div>{icon}<span><small>{label}</small><strong>{value}</strong></span></div>;
+function SectionTitle({ icon, title, meta, id }: { icon: ReactNode; title: string; meta: string; id?: string }) {
+  return <div className={styles.sectionTitle}><span>{icon}<strong id={id}>{title}</strong></span><small>{meta}</small></div>;
 }
 
-function ExchangePanel({
-  icon,
-  title,
-  state,
-  children,
-}: {
-  icon: ReactNode;
-  title: string;
-  state: string;
-  children: ReactNode;
-}) {
-  return (
-    <section className={styles.exchange}>
-      <div className={styles.sectionHeading}><span>{icon}{title}</span><small>{state}</small></div>
-      <div className={styles.exchangeItems}>{children}</div>
-    </section>
-  );
+function InspectorTitle({ icon, title }: { icon: ReactNode; title: string }) {
+  return <div className={styles.inspectorTitle}>{icon}<strong>{title}</strong></div>;
 }
 
-function CostBadge({ cost, prefix }: { cost: AgentCouncilMapMember["cost"]; prefix: string }) {
-  return <span className={styles.costBadge}><Coins size={12} />{prefix}: {costLabel(cost)}</span>;
+function TimelineItem({ icon, title, time, children }: { icon: ReactNode; title: string; time: string; children: ReactNode }) {
+  return <article><span aria-hidden="true">{icon}</span><div><header><strong>{title}</strong><time>{time}</time></header><p>{children}</p></div></article>;
 }
 
-function AuthoritySource({ member }: { member: AgentCouncilMapMember }) {
-  return member.authority.source === "delegation_grants"
-    ? <small><CheckCircle2 size={11} /> receipt verified</small>
-    : <small><AlertTriangle size={11} /> unavailable</small>;
+function ExchangePanel({ icon, title, state, children }: { icon: ReactNode; title: string; state: string; children: ReactNode }) {
+  return <section className={styles.exchange}><SectionTitle icon={icon} title={title} meta={state} /><div className={styles.exchangeItems}>{children}</div></section>;
 }
 
-function StateIcon({ state }: { state: AgentCouncilMapMember["state"] }) {
-  return state === "result_accepted"
-    ? <CheckCircle2 size={11} aria-hidden="true" />
-    : <AlertTriangle size={11} aria-hidden="true" />;
+function EmptyExchange({ text }: { text: string }) { return <p className={styles.emptyExchange}>{text}</p>; }
+
+function InspectorRows({ rows }: { rows: [string, string][] }) {
+  return <dl className={styles.inspectorRows}>{rows.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>;
 }
 
 function authorityCount(state: AgentCouncilMapMember["authority"]["context"]["state"], count: number) {
@@ -298,10 +352,11 @@ function toolCount(member: AgentCouncilMapMember) {
   return `${count} tool${count === 1 ? "" : "s"}`;
 }
 
-function budgetLabel(member: AgentCouncilMapMember) {
-  const budget = member.authority.budgets;
-  if (budget.modelTurns === null) return "unavailable";
-  return `${budget.modelTurns} turn${budget.modelTurns === 1 ? "" : "s"}, ${budget.tokens?.toLocaleString() || 0} tokens`;
+function nullableBudget(value: number | null) { return value === null ? "Unavailable" : value.toLocaleString(); }
+function durationBudget(value: number | null) {
+  if (value === null) return "Unavailable";
+  if (value < 1_000) return `${value} ms`;
+  return `${Math.round(value / 1_000)} sec`;
 }
 
 function costLabel(cost: AgentCouncilMapMember["cost"]) {
@@ -357,12 +412,8 @@ function taskStateLabel(state: AgentCouncilMapMember["state"]) {
   } satisfies Record<AgentCouncilMapMember["state"], string>)[state];
 }
 
-function runStatusLabel(status: AgentCouncilMap["executions"][number]["status"]) {
-  return status.replaceAll("_", " ");
-}
+function runStatusLabel(status: CouncilExecution["status"]) { return status.replaceAll("_", " "); }
 
 function formatTime(value: string) {
-  return new Intl.DateTimeFormat(undefined, {
-    month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
-  }).format(new Date(value));
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(value));
 }

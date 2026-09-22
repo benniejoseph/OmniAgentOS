@@ -3,7 +3,9 @@
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
+  Activity,
   ArrowRight,
+  BarChart3,
   Check,
   ClipboardCheck,
   Eye,
@@ -14,6 +16,7 @@ import {
   Plus,
   Sparkles,
   Trash2,
+  Users,
   Wrench,
   X,
 } from "lucide-react";
@@ -53,6 +56,7 @@ type ToolOption = {
 };
 type AgentView = ArsenalAgent & { custom?: RequestCustomAgentDefinition };
 type EditorState = { kind: "agent" | "skill"; id?: string };
+type WorkspaceView = "live" | "roster" | "skills" | "outcomes";
 type BuilderSaveResult =
   | {
       kind: "agent";
@@ -61,7 +65,18 @@ type BuilderSaveResult =
     }
   | { kind: "skill"; skill: AgentSkill; message: string };
 
-export function AgentArsenalWorkspace() {
+export function AgentArsenalWorkspace({
+  initialView,
+  initialRunId,
+  initialTaskId,
+}: {
+  initialView?: string;
+  initialRunId?: string;
+  initialTaskId?: string;
+}) {
+  const [activeView, setActiveView] = useState<WorkspaceView>(
+    isWorkspaceView(initialView) ? initialView : "live",
+  );
   const [selectedId, setSelectedId] = useState("atlas");
   const [customAgents, setCustomAgents] = useState<RequestCustomAgentDefinition[]>([]);
   const [skills, setSkills] = useState<AgentSkill[]>([]);
@@ -162,9 +177,12 @@ export function AgentArsenalWorkspace() {
     };
   }, []);
   useEffect(() => {
+    if (activeView !== "live") return;
     let controller: AbortController | undefined;
+    let timer: number | undefined;
     let disposed = false;
     const loadCouncil = async () => {
+      if (document.hidden) return;
       controller?.abort();
       const requestController = new AbortController();
       controller = requestController;
@@ -181,17 +199,41 @@ export function AgentArsenalWorkspace() {
         if (disposed || requestController.signal.aborted) return;
         setCouncilMap(undefined);
         setCouncilState("unavailable");
+      } finally {
+        if (
+          !disposed &&
+          !document.hidden &&
+          controller === requestController
+        ) {
+          timer = window.setTimeout(() => void loadCouncil(), 12_000);
+        }
       }
     };
-    const timer = window.setTimeout(() => void loadCouncil(), 0);
-    const interval = window.setInterval(() => void loadCouncil(), 12_000);
+    const onVisibilityChange = () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      if (document.hidden) controller?.abort();
+      else void loadCouncil();
+    };
+    timer = window.setTimeout(() => void loadCouncil(), 0);
+    document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       disposed = true;
-      window.clearTimeout(timer);
-      window.clearInterval(interval);
+      if (timer !== undefined) window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       controller?.abort();
     };
-  }, []);
+  }, [activeView]);
+
+  function changeView(view: WorkspaceView) {
+    setActiveView(view);
+    const url = new URL(window.location.href);
+    url.searchParams.set("view", view);
+    if (view !== "live") {
+      url.searchParams.delete("run");
+      url.searchParams.delete("task");
+    }
+    window.history.replaceState(window.history.state, "", url);
+  }
 
   async function removeSelectedAgent() {
     if (
@@ -285,8 +327,17 @@ export function AgentArsenalWorkspace() {
           {message}
         </p>
       ) : null}
-      <CouncilExecutionMap map={councilMap} state={councilState} />
-      <div className="arsenal-layout">
+      <WorkspaceTabs activeView={activeView} onChange={changeView} />
+      {activeView === "live" ? (
+        <CouncilExecutionMap
+          map={councilMap}
+          state={councilState}
+          initialRunId={initialRunId}
+          initialTaskId={initialTaskId}
+        />
+      ) : null}
+      {activeView === "roster" ? (
+        <div className="arsenal-layout">
         <nav className="arsenal-roster" aria-label="Agent roster">
           <div className={styles.rosterHeading}>
             <p className="arsenal-section-label">The companions</p>
@@ -542,8 +593,10 @@ export function AgentArsenalWorkspace() {
             ) : null}
           </div>
         </aside>
-      </div>
-      <section className="skill-studio" aria-labelledby="skill-studio-title">
+        </div>
+      ) : null}
+      {activeView === "skills" ? (
+        <section className="skill-studio" aria-labelledby="skill-studio-title">
         <div className="skill-studio-heading">
           <div>
             <p>Reusable behavior</p>
@@ -607,7 +660,15 @@ export function AgentArsenalWorkspace() {
             </article>
           ))}
         </div>
-      </section>
+        </section>
+      ) : null}
+      {activeView === "outcomes" ? (
+        <AgentOutcomes
+          agents={agents}
+          performance={performance}
+          state={state}
+        />
+      ) : null}
       {editor ? (
         <BuilderDialog
           editor={editor}
@@ -630,6 +691,136 @@ export function AgentArsenalWorkspace() {
       ) : null}
     </div>
   );
+}
+
+function WorkspaceTabs({
+  activeView,
+  onChange,
+}: {
+  activeView: WorkspaceView;
+  onChange: (view: WorkspaceView) => void;
+}) {
+  const items: Array<{
+    id: WorkspaceView;
+    label: string;
+    description: string;
+    icon: typeof Activity;
+  }> = [
+    { id: "live", label: "Live work", description: "Executions and delegated teams", icon: Activity },
+    { id: "roster", label: "Roster", description: "People, roles, and boundaries", icon: Users },
+    { id: "skills", label: "Skills", description: "Reusable instructions and tools", icon: Layers3 },
+    { id: "outcomes", label: "Outcomes", description: "Delivery and feedback evidence", icon: BarChart3 },
+  ];
+  return (
+    <nav className={styles.workspaceTabs} aria-label="Agent workspace views">
+      <div>
+        {items.map((item) => {
+          const Icon = item.icon;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              aria-pressed={activeView === item.id}
+              className={activeView === item.id ? styles.activeTab : undefined}
+              onClick={() => onChange(item.id)}
+            >
+              <Icon size={17} aria-hidden="true" />
+              <span><strong>{item.label}</strong><small>{item.description}</small></span>
+            </button>
+          );
+        })}
+      </div>
+    </nav>
+  );
+}
+
+function AgentOutcomes({
+  agents,
+  performance,
+  state,
+}: {
+  agents: AgentView[];
+  performance: AgentPerformance[];
+  state: "loading" | "ready" | "unavailable";
+}) {
+  if (state === "loading") {
+    return (
+      <section className={styles.outcomeNotice} aria-live="polite">
+        <Loader2 size={20} className="animate-spin" aria-hidden="true" />
+        <div><h2>Loading outcomes</h2><p>Reading verified delivery and feedback evidence.</p></div>
+      </section>
+    );
+  }
+  if (state === "unavailable") {
+    return (
+      <section className={styles.outcomeNotice} role="status">
+        <ClipboardCheck size={20} aria-hidden="true" />
+        <div><h2>Outcomes unavailable</h2><p>No delivery result was inferred while the performance projection is unavailable.</p></div>
+      </section>
+    );
+  }
+
+  const totals = performance.reduce(
+    (result, item) => ({
+      assignments: result.assignments + item.primaryAssignments,
+      completed: result.completed + item.completed,
+      verified: result.verified + item.verifiedAnswers,
+      useful: result.useful + item.usefulOutcomes,
+      needsWork: result.needsWork + item.needsWorkOutcomes,
+    }),
+    { assignments: 0, completed: 0, verified: 0, useful: 0, needsWork: 0 },
+  );
+  const reviewed = totals.useful + totals.needsWork;
+
+  return (
+    <section className={styles.outcomes} aria-labelledby="agent-outcomes-title">
+      <header className={styles.outcomesHeader}>
+        <div>
+          <p>Evidence, not impressions</p>
+          <h2 id="agent-outcomes-title">Agent outcomes</h2>
+          <span>Verified deliveries and your recorded feedback, without invented rankings.</span>
+        </div>
+        <Link href="/app/results" className="action-button">Open Results <ArrowRight size={15} aria-hidden="true" /></Link>
+      </header>
+      <div className={styles.outcomeSummary} aria-label="Outcome summary">
+        <OutcomeMetric label="Assignments" value={totals.assignments.toLocaleString()} />
+        <OutcomeMetric label="Completed" value={totals.completed.toLocaleString()} />
+        <OutcomeMetric label="Verified answers" value={totals.verified.toLocaleString()} />
+        <OutcomeMetric label="Useful feedback" value={reviewed ? `${Math.round((totals.useful / reviewed) * 100)}%` : "No reviews"} />
+      </div>
+      <div className={styles.outcomeList}>
+        {agents.map((agent) => {
+          const item = performance.find((entry) => entry.agentId === agent.id);
+          return (
+            <article key={agent.id}>
+              <AgentMascot agentId={agent.id} agentName={agent.name} size="small" decorative />
+              <div className={styles.outcomeIdentity}>
+                <span>{agent.role}</span>
+                <strong>{agent.name}</strong>
+                <small>{item?.lastActiveAt ? `Last active ${formatAgentTime(item.lastActiveAt)}` : "No recorded activity"}</small>
+              </div>
+              <OutcomeMetric label="Assignments" value={(item?.primaryAssignments || 0).toLocaleString()} />
+              <OutcomeMetric label="Completion" value={item?.completionRate === null || item?.completionRate === undefined ? "No terminal runs" : `${Math.round(item.completionRate * 100)}%`} />
+              <OutcomeMetric label="Verified" value={(item?.verifiedAnswers || 0).toLocaleString()} />
+              <OutcomeMetric label="User approval" value={item?.userApprovalRate === null || item?.userApprovalRate === undefined ? "No reviews" : `${Math.round(item.userApprovalRate * 100)}%`} />
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function OutcomeMetric({ label, value }: { label: string; value: string }) {
+  return <div className={styles.outcomeMetric}><span>{label}</span><strong>{value}</strong></div>;
+}
+
+function formatAgentTime(value: string) {
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(new Date(value));
+}
+
+function isWorkspaceView(value: string | null | undefined): value is WorkspaceView {
+  return value === "live" || value === "roster" || value === "skills" || value === "outcomes";
 }
 
 function BuilderDialog({
