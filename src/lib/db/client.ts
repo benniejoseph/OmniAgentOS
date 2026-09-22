@@ -25,6 +25,7 @@ import {
 } from "@/lib/db/local-computer-schema";
 import { ensureSemanticDecisionShadowPilotV1 } from "@/lib/db/semantic-decision-schema";
 import { ensureMobilePushReceiptCanaryV1 } from "@/lib/db/mobile-push-receipt-schema";
+import { ensureDelegationExecutionRuntimeV1 } from "@/lib/db/delegation-execution-schema";
 import { ensureDeclarativePluginsV1 } from "@/lib/db/plugin-schema";
 import { ensureBuiltinSkillCatalogV2 } from "@/lib/db/builtin-skill-catalog-schema";
 import { ensureBuiltinSkillCatalogV3 } from "@/lib/db/builtin-skill-catalog-v3-schema";
@@ -1693,6 +1694,10 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[194],
       up: ensureMoltbookAutonomyPrivilegeRepairV1,
+    },
+    {
+      ...databaseSchemaMigrations[195],
+      up: ensureDelegationExecutionRuntimeV1,
     },
   ];
 }

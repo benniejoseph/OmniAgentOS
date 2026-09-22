@@ -1,4 +1,15 @@
 import {
+  buildAgentRunIdentityPinV1,
+  buildBuiltInAgentIdentityV1,
+} from "@/lib/agents/identity-contracts";
+import {
+  buildDelegationContextCapsuleV1,
+} from "@/lib/delegation/context-capsule";
+import {
+  buildDelegationExecutionContractV2,
+  buildDelegationRuntimeAssignmentReceiptV1,
+} from "@/lib/delegation/execution-contract";
+import {
   buildDelegationContractV1,
   type DelegationContractV1,
 } from "@/lib/delegation/contracts";
@@ -101,6 +112,171 @@ export function buildContract(
   });
 }
 
+export function buildExecutionContract(
+  overrides: Partial<Parameters<typeof buildDelegationExecutionContractV2>[0]> = {},
+) {
+  const tenantId = "tenant-one";
+  const actorId = "actor-one";
+  const rootExecutionId = "run-root";
+  const childRunId = "run-child";
+  const verifierRunId = "run-verifier";
+  const delegationId = "delegation:execution:one";
+  const delegatorIdentityPin = buildAgentRunIdentityPinV1({
+    runId: rootExecutionId,
+    identity: buildBuiltInAgentIdentityV1({
+      agentId: "atlas",
+      tenantId,
+      controllerActorId: actorId,
+    }),
+  });
+  const delegateIdentityPin = buildAgentRunIdentityPinV1({
+    runId: childRunId,
+    identity: buildBuiltInAgentIdentityV1({
+      agentId: "scout",
+      tenantId,
+      controllerActorId: actorId,
+    }),
+  });
+  const verifierIdentityPin = buildAgentRunIdentityPinV1({
+    runId: verifierRunId,
+    identity: buildBuiltInAgentIdentityV1({
+      agentId: "sentinel",
+      tenantId,
+      controllerActorId: actorId,
+    }),
+  });
+  const lineage = {
+    tenantId,
+    initiatingActorId: actorId,
+    rootExecutionId,
+    rootPrincipalId: delegatorIdentityPin.principalId,
+    parentExecutionId: rootExecutionId,
+    parentPrincipalId: delegatorIdentityPin.principalId,
+    parentDelegationId: null,
+    depth: 1 as const,
+    maxDepth: 1 as const,
+    workspaceId: null,
+    projectId: null,
+    workItemId: null,
+    correlationSha256: "a".repeat(64),
+  };
+  const mode = overrides.mode || "isolated";
+  const contextCapsule = buildDelegationContextCapsuleV1({
+    mode,
+    scope: {
+      tenantId,
+      initiatingActorId: actorId,
+      rootExecutionId,
+      rootPrincipalId: delegatorIdentityPin.principalId,
+      parentExecutionId: rootExecutionId,
+      parentPrincipalId: delegatorIdentityPin.principalId,
+      delegationId,
+    },
+  });
+  const runtimeAssignment = buildDelegationRuntimeAssignmentReceiptV1({
+    executionId: childRunId,
+    providerId: "configured-provider",
+    modelId: "configured-research-model",
+    modelTier: "reasoning",
+    reasoningProfileId: "configured-reasoning-profile",
+    normalizedReasoningEffort: "high",
+    routingPolicyId: "model-route:council:v1",
+    routingPolicySha256: "b".repeat(64),
+    assignedAt: "2026-09-22T12:00:00.000Z",
+  });
+  const noGrants: DelegationContractV1["grants"] = {
+    contextGrantIds: [],
+    capabilityGrantIds: [],
+    governedToolIds: [],
+    connectorTargets: [],
+  };
+  const executionGrants = {
+    ...noGrants,
+    skills: [],
+    mcpServers: [],
+    plugins: [],
+  };
+  return buildDelegationExecutionContractV2({
+    delegationId,
+    mode,
+    lineage,
+    delegatorIdentityPin,
+    delegateIdentityPin,
+    runtimeAssignment,
+    contextCapsule,
+    purpose: "delegation.research.execute",
+    objective: "Research the bounded question and return evidence-backed findings.",
+    idempotencyKeySha256: "c".repeat(64),
+    acceptance: {
+      acceptanceId: "acceptance:execution:one",
+      criteria: [{
+        criterionId: "criterion:execution:one",
+        criterionSha256: "d".repeat(64),
+        verificationMethod: "parent_verifier",
+        required: true,
+      }],
+    },
+    output: {
+      outputContractId: "output-contract:execution:one",
+      schemaId: "delegated-research-result",
+      schemaVersion: 1,
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["status"],
+        properties: {
+          status: { type: "string", enum: ["completed", "blocked"] },
+        },
+      },
+      artifactKinds: ["result"],
+      maxArtifacts: 4,
+      maxBytes: 32_000,
+    },
+    verifier: {
+      verifierContractId: "verifier-contract:execution:one",
+      verifierPolicyId: "verifier-policy:execution:one",
+      verifierPolicySha256: "e".repeat(64),
+      identityPin: verifierIdentityPin,
+      method: "agent_then_deterministic",
+      requiredEvidenceKinds: ["artifact_digest", "acceptance_check"],
+      acceptanceThreshold: 0.8,
+      completionDisposition: "proposed_only",
+      parentAcceptanceRequired: true,
+    },
+    grants: executionGrants,
+    resourceClaims: [],
+    parentAuthority: {
+      grants: noGrants,
+      budgets: executionParentBudgets,
+      completeBy: "2026-09-22T12:30:00.000Z",
+    },
+    budgets: executionChildBudgets,
+    deadline: {
+      createdAt: "2026-09-22T12:00:00.000Z",
+      acceptBy: "2026-09-22T12:01:00.000Z",
+      completeBy: "2026-09-22T12:05:00.000Z",
+    },
+    cancellation: {
+      cancelable: true,
+      signalId: "delegation-signal:execution:one",
+      allowedInitiators: ["parent", "owner", "system"],
+      acknowledgementDeadlineMs: 5_000,
+    },
+    retry: {
+      maxAttempts: 1,
+      backoffMs: [],
+      retryableReasons: [],
+      neverRetryReasons: [
+        "authority_denied",
+        "contract_invalid",
+        "canceled",
+        "deadline_expired",
+      ],
+    },
+    ...overrides,
+  });
+}
+
 const grants: DelegationContractV1["grants"] = {
   contextGrantIds: ["grant:context:one"],
   capabilityGrantIds: ["grant:capability:one"],
@@ -127,6 +303,32 @@ const childBudgets: RunBudgetCountersV1 = {
   costMicrousd: 100_000,
   wallTimeMs: 60_000,
   toolCalls: 1,
+  browserActions: 0,
+  agents: 1,
+  fanOut: 0,
+  retries: 0,
+  replans: 0,
+};
+
+export const executionParentBudgets: RunBudgetCountersV1 = {
+  modelTurns: 8,
+  tokens: 64_000,
+  costMicrousd: 2_500_000,
+  wallTimeMs: 240_000,
+  toolCalls: 30,
+  browserActions: 12,
+  agents: 5,
+  fanOut: 4,
+  retries: 2,
+  replans: 1,
+};
+
+export const executionChildBudgets: RunBudgetCountersV1 = {
+  modelTurns: 2,
+  tokens: 12_000,
+  costMicrousd: 400_000,
+  wallTimeMs: 60_000,
+  toolCalls: 6,
   browserActions: 0,
   agents: 1,
   fanOut: 0,

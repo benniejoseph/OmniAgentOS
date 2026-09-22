@@ -790,10 +790,25 @@ describe("ordered database schema versions", () => {
       name: "agent_private_trigger_privilege_repair_v1",
       checksum: "a8beaa32d24c97ad6763801982c474414ab93a046f98d91fc3df30bb9e172fab",
     });
-    expect(databaseSchemaMigrations.at(-1)).toEqual({
+    expect(databaseSchemaMigrations.find((migration) => migration.version === 193)).toEqual({
       version: 193,
       name: "execution_principal_row_validator_grant_v1",
       checksum: "9b787d1cfa1d6ae007cf8594f43c00045bab640b1f596e91d330923acc3bf2f7",
+    });
+    expect(databaseSchemaMigrations.find((migration) => migration.version === 194)).toEqual({
+      version: 194,
+      name: "moltbook_autonomy_v1",
+      checksum: "66a868eed1a0fef0eb61d8f69d0d2351605edf39711c007d5c58f1febb5cafef",
+    });
+    expect(databaseSchemaMigrations.find((migration) => migration.version === 195)).toEqual({
+      version: 195,
+      name: "moltbook_autonomy_privilege_repair_v1",
+      checksum: "c02b2ca195cbb00c206320eb2074fed7981c282c356f1d4320c6c1ac866adf94",
+    });
+    expect(databaseSchemaMigrations.at(-1)).toEqual({
+      version: 196,
+      name: "delegation_execution_runtime_v1",
+      checksum: "0113edbdab2a99f32d4e318c8407a5b66fb8fd7bcbbf839d4d199ded0d2ad6ac",
     });
     expect(databaseSchemaMigrations.find((migration) => migration.version === 139)).toEqual({
       version: 139,
