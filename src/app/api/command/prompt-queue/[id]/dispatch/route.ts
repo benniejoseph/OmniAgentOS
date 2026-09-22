@@ -1,5 +1,6 @@
 import {
   PROMPT_QUEUE_DISPATCH_ID_HEADER,
+  PROMPT_QUEUE_DISPATCH_REVISION_HEADER,
   PROMPT_QUEUE_DISPATCH_TOKEN_HEADER,
   promptQueueDispatchRequestSchema,
 } from "@/lib/command/prompt-queue-contracts";
@@ -180,6 +181,16 @@ async function preparePromptQueueDispatchHandler(
       headers: { "cache-control": "private, no-store" },
     });
   }
+  const deploymentRevision = activeDeploymentRevision();
+  if (isProductionRuntime() && !deploymentRevision) {
+    return Response.json({
+      error: "Prompt queue deployment revision unavailable",
+      message: "The queued command cannot start until this release is identifiable.",
+    }, {
+      status: 503,
+      headers: { "cache-control": "private, no-store" },
+    });
+  }
   let claimed;
   try {
     claimed = await claimPromptQueueDispatch({
@@ -199,6 +210,11 @@ async function preparePromptQueueDispatchHandler(
   headers.set("accept-encoding", "identity");
   headers.set(PROMPT_QUEUE_DISPATCH_ID_HEADER, item.id);
   headers.set(PROMPT_QUEUE_DISPATCH_TOKEN_HEADER, claimed.dispatchToken);
+  if (deploymentRevision) {
+    headers.set(PROMPT_QUEUE_DISPATCH_REVISION_HEADER, deploymentRevision);
+  } else {
+    headers.delete(PROMPT_QUEUE_DISPATCH_REVISION_HEADER);
+  }
   for (const name of [
     "connection",
     "content-encoding",
@@ -256,16 +272,14 @@ async function preparePromptQueueDispatchHandler(
 function governedAgentUrl(request: Request) {
   const requestUrl = new URL(request.url);
   if (
-    process.env.NODE_ENV === "production" &&
+    isProductionRuntime() &&
     !productionDispatchOrigins().has(requestUrl.origin)
   ) {
     throw new Error("Prompt queue dispatch received an untrusted request origin.");
   }
   return new URL(
     "/api/agent",
-    process.env.NODE_ENV === "production"
-      ? vercelOrigin(process.env.VERCEL_URL) || requestUrl.origin
-      : requestUrl.origin,
+    isProductionRuntime() ? getAppBaseUrl() : requestUrl.origin,
   );
 }
 
@@ -286,4 +300,14 @@ function vercelOrigin(value: string | undefined) {
   return host && /^[a-z0-9.-]+(?::\d+)?$/i.test(host)
     ? `https://${host}`
     : undefined;
+}
+
+function activeDeploymentRevision() {
+  return process.env.VERCEL_GIT_COMMIT_SHA?.trim() ||
+    process.env.OMNIAGENT_RELEASE_SHA?.trim() || undefined;
+}
+
+function isProductionRuntime() {
+  return process.env.NODE_ENV === "production" ||
+    process.env.VERCEL_ENV === "production";
 }

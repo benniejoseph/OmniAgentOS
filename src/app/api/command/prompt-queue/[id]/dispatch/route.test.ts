@@ -255,13 +255,14 @@ describe("prompt queue dispatch forwarding", () => {
     );
   });
 
-  it("pins canonical production forwarding to the current deployment", async () => {
+  it("fences canonical production forwarding with the current revision", async () => {
     vi.stubEnv("NODE_ENV", "production");
     vi.stubEnv("VERCEL", "1");
     vi.stubEnv("VERCEL_ENV", "production");
     vi.stubEnv("VERCEL_URL", "current-deployment.vercel.app");
+    vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "revision-current");
     vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://asael.bennierichard.com");
-    mocks.expectedAgentUrl = "https://current-deployment.vercel.app/api/agent";
+    mocks.expectedAgentUrl = "https://asael.bennierichard.com/api/agent";
 
     const response = await POST(
       dispatchRequest("https://asael.bennierichard.com"),
@@ -270,6 +271,27 @@ describe("prompt queue dispatch forwarding", () => {
 
     expect(response.status).toBe(200);
     expect(mocks.fetchAgent).toHaveBeenCalledOnce();
+    const forwarded = mocks.fetchAgent.mock.calls[0]?.[0] as Request;
+    expect(
+      forwarded.headers.get("x-asael-prompt-queue-revision"),
+    ).toBe("revision-current");
+  });
+
+  it("does not claim a production queue item without a release revision", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("VERCEL", "1");
+    vi.stubEnv("VERCEL_ENV", "production");
+    vi.stubEnv("VERCEL_URL", "current-deployment.vercel.app");
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://asael.bennierichard.com");
+
+    const response = await POST(
+      dispatchRequest("https://asael.bennierichard.com"),
+      { params: Promise.resolve({ id: itemId }) },
+    );
+
+    expect(response.status).toBe(503);
+    expect(mocks.claimPromptQueueDispatch).not.toHaveBeenCalled();
+    expect(mocks.fetchAgent).not.toHaveBeenCalled();
   });
 
   it("rejects an untrusted production origin before claiming the queue item", async () => {

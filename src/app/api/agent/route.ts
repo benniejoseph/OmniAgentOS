@@ -14,6 +14,7 @@ import {
 import { hasDatabaseUrl, withDatabaseRequestScope } from "@/lib/db/client";
 import {
   PROMPT_QUEUE_DISPATCH_ID_HEADER,
+  PROMPT_QUEUE_DISPATCH_REVISION_HEADER,
   PROMPT_QUEUE_DISPATCH_TOKEN_HEADER,
 } from "@/lib/command/prompt-queue-contracts";
 import {
@@ -326,6 +327,29 @@ async function POSTHandler(request: Request) {
       error: "Invalid prompt queue dispatch",
       message: "The queued command binding is incomplete.",
     }, { status: 400 });
+  }
+  const queuedDispatchRevision = request.headers
+    .get(PROMPT_QUEUE_DISPATCH_REVISION_HEADER)?.trim();
+  const activeDeploymentRevision =
+    process.env.VERCEL_GIT_COMMIT_SHA?.trim() ||
+    process.env.OMNIAGENT_RELEASE_SHA?.trim();
+  if (
+    queuedItemId &&
+    queuedDispatchToken &&
+    (
+      queuedDispatchRevision
+        ? queuedDispatchRevision !== activeDeploymentRevision
+        : process.env.NODE_ENV === "production" ||
+          process.env.VERCEL_ENV === "production"
+    )
+  ) {
+    return Response.json({
+      error: "Prompt queue deployment changed",
+      message: "Reconnect before starting this queued command on the active release.",
+    }, {
+      status: 409,
+      headers: { "cache-control": "private, no-store" },
+    });
   }
   let queuedDispatch: Awaited<ReturnType<typeof validatePromptQueueDispatch>> | undefined;
   let queuedLifecycle: ReturnType<

@@ -5,6 +5,8 @@ export const PROMPT_QUEUE_MAX_ITEMS = 40;
 export const PROMPT_QUEUE_MAX_PROMPT_CHARS = 20_000;
 export const PROMPT_QUEUE_DISPATCH_ID_HEADER = "x-asael-prompt-queue-item";
 export const PROMPT_QUEUE_DISPATCH_TOKEN_HEADER = "x-asael-prompt-queue-token";
+export const PROMPT_QUEUE_DISPATCH_REVISION_HEADER =
+  "x-asael-prompt-queue-revision";
 
 const idSchema = z.string().trim().min(1).max(240)
   .regex(/^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$/);

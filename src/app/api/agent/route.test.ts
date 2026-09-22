@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const routeMocks = vi.hoisted(() => ({
   after: vi.fn(),
@@ -293,6 +293,10 @@ beforeEach(() => {
   });
 });
 
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 function authorizeCanonicalQueueRequest() {
   const queueContext = {
     ...context,
@@ -367,6 +371,36 @@ describe("agent intent clarification", () => {
 });
 
 describe("agent prompt queue lifecycle", () => {
+  it("rejects a queue dispatch from a different deployment revision", async () => {
+    authorizeCanonicalQueueRequest();
+    vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "revision-current");
+
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-asael-prompt-queue-item":
+          "11111111-1111-4111-8111-111111111111",
+        "x-asael-prompt-queue-token": "private-dispatch-token",
+        "x-asael-prompt-queue-revision": "revision-previous",
+      },
+      body: JSON.stringify({
+        message: "Inspect the queued context.",
+        requestId: "prompt-queue-revision-fence-a",
+        strategy: "direct",
+        agentId: "atlas",
+      }),
+    }));
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: "Prompt queue deployment changed",
+      message: "Reconnect before starting this queued command on the active release.",
+    });
+    expect(routeMocks.validatePromptQueueDispatch).not.toHaveBeenCalled();
+    expect(routeMocks.runAgent).not.toHaveBeenCalled();
+  });
+
   it("persists run and terminal receipts in-band under the canonical queue owner", async () => {
     authorizeCanonicalQueueRequest();
     routeMocks.runAgent.mockImplementation(async function* () {

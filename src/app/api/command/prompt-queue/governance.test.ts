@@ -46,6 +46,9 @@ describe("prompt queue governed dispatch boundary", () => {
     );
     expect(source).not.toContain('@/app/api/agent/route');
     expect(source).toContain('headers.set("accept-encoding", "identity")');
+    expect(source).toContain(
+      "headers.set(PROMPT_QUEUE_DISPATCH_REVISION_HEADER, deploymentRevision)",
+    );
     expect(source).toContain("!productionDispatchOrigins().has(requestUrl.origin)");
     expect(source).toContain("ownerActorId: authority.ownerActorId");
     expect(source).not.toMatch(/executionScope:\s*authority\.executionScope[\s\S]*body: JSON\.stringify/);
