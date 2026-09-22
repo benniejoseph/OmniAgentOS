@@ -2,8 +2,11 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 
 import { arsenalAgents } from "@/lib/agents/arsenal";
-import { buildAgentRunIdentityPinV1 } from "@/lib/agents/identity-contracts";
-import { resolveAgentIdentityForExecution } from "@/lib/agents/identity-store";
+import {
+  buildAgentRunIdentityPinV1,
+  buildBuiltInAgentIdentityForVersionV1,
+  type AgentRunIdentityPinV1,
+} from "@/lib/agents/identity-contracts";
 import {
   AGENT_REASONING_EFFORT,
   OPERATION_QUEUE_LEASE_SECONDS,
@@ -20,10 +23,13 @@ import type {
   DelegationExecutionTransition,
 } from "@/lib/delegation/execution-record";
 import {
+  revalidateDelegationGrantsV1,
+  type DelegationGrantRuntimeV1,
+} from "@/lib/delegation/grant-resolver";
+import {
   exactDelegationRuntime,
   executionScopeFromDelegationContract,
 } from "@/lib/delegation/runtime";
-import { DYNAMIC_DELEGATION_READ_TOOL_IDS } from "@/lib/delegation/runtime-policy";
 import {
   parseDelegationExecutionJobPayload,
 } from "@/lib/delegation/runtime-job";
@@ -126,6 +132,32 @@ export async function processDelegationExecutionJob(
       run,
     );
   }
+  let grantRuntime: DelegationGrantRuntimeV1;
+  try {
+    const parentEvents = await listStreamEvents(
+      `run:${execution.parentExecutionId}`,
+      {
+        tenantId: job.tenantId,
+        actorId: execution.ownerActorId,
+        limit: 200,
+        order: "asc",
+      },
+    );
+    grantRuntime = await revalidateDelegationGrantsV1({
+      contract: execution.contract,
+      parentIdentityPin: parentIdentityPin!,
+      delegateIdentityPin: childIdentityPin!,
+      parentEvents,
+    });
+  } catch {
+    return failBeforeExecution(
+      job,
+      execution,
+      childScope,
+      "grant_assignment_changed",
+      run,
+    );
+  }
 
   if (execution.state === "queued") {
     execution = await transitionDelegationExecution({
@@ -208,6 +240,7 @@ export async function processDelegationExecutionJob(
       actorId: execution.ownerActorId,
       role: "operator",
       agentId: execution.delegateAgentId,
+      agentIdentity: exactBuiltInIdentityForPin(childIdentityPin!),
       specialistIds: [],
       runtimeModelPin: {
         provider: runtimeProvider(execution.contract.runtimeAssignment.providerId),
@@ -226,8 +259,11 @@ export async function processDelegationExecutionJob(
         autonomy: "assist",
         approvalPolicy: "read_only",
         memoryScope: "all",
-        toolIds: [...DYNAMIC_DELEGATION_READ_TOOL_IDS],
-        skills: [],
+        toolIds: [...grantRuntime.governedToolIds],
+        skills: grantRuntime.skills.map((skill) => ({
+          ...skill,
+          toolIds: [...skill.toolIds],
+        })),
       },
       budgetLimits: execution.budgetLimits,
     }, controller.signal)) {
@@ -358,10 +394,13 @@ async function finalizeChildRun(
 
   const parentScope = parentVerificationScope(proposed);
   try {
-    const verifierIdentity = await resolveAgentIdentityForExecution({
-      tenantId: job.tenantId,
-      actorId: execution.ownerActorId,
+    const verifierIdentity = buildBuiltInAgentIdentityForVersionV1({
       agentId: "sentinel",
+      tenantId: proposed.contract.lineage.tenantId,
+      controllerActorId: proposed.contract.lineage.initiatingActorId,
+      definitionVersion: exactBuiltInDefinitionVersion(
+        proposed.contract.verifier.identity.definitionVersion,
+      ),
     });
     const verifierPin = buildAgentRunIdentityPinV1({
       runId: proposed.contract.verifier.identity.runId,
@@ -775,6 +814,34 @@ function parentVerificationScope(execution: DelegationExecutionRecordV1) {
     capabilityGrantIds: [],
     purpose: "delegation.verification.v2",
   });
+}
+
+function exactBuiltInIdentityForPin(pin: AgentRunIdentityPinV1) {
+  if (![
+    "atlas",
+    "scout",
+    "meridian",
+    "forge",
+    "sentinel",
+    "mnemosyne",
+  ].includes(pin.logicalAgentId)) {
+    throw new Error("The contracted child identity is not built in.");
+  }
+  return buildBuiltInAgentIdentityForVersionV1({
+    agentId: pin.logicalAgentId as Parameters<
+      typeof buildBuiltInAgentIdentityForVersionV1
+    >[0]["agentId"],
+    tenantId: pin.tenantId,
+    controllerActorId: pin.actorId,
+    definitionVersion: exactBuiltInDefinitionVersion(pin.definitionVersion),
+  });
+}
+
+function exactBuiltInDefinitionVersion(value: number): 1 | 2 {
+  if (value !== 1 && value !== 2) {
+    throw new Error("The built-in Agent definition version is unsupported.");
+  }
+  return value;
 }
 
 function runtimeProvider(value: string) {

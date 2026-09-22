@@ -18,12 +18,14 @@ import {
   dynamicDelegationRootReservation,
 } from "@/lib/delegation/runtime-policy";
 import { buildParentDelegationBudgetAuthorityV1 } from "@/lib/delegation/parent-budget-authority";
+import { listStreamEvents } from "@/lib/events/store";
 import type { enqueueOperationJob } from "@/lib/operations/job-queue";
 import type {
   appendAgentRunIdentityPin,
   bindAgentRunExecutionScope,
   createQueuedAgentRun,
   getAgentRun,
+  getAgentRunExecutionScope,
   getAgentRunIdentityPin,
 } from "@/lib/runs/store";
 import type { AgentRunRecord } from "@/lib/runs/types";
@@ -85,9 +87,10 @@ describe("dynamic delegation runtime", () => {
       parentDelegationId: null,
     });
     expect(execution.contract.grants).toEqual({
+      grantRequestSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
       contextGrantIds: [],
       capabilityGrantIds: [],
-      governedToolIds: [...DYNAMIC_DELEGATION_READ_TOOL_IDS],
+      governedToolIds: [],
       connectorTargets: [],
       skills: [],
       mcpServers: [],
@@ -156,16 +159,15 @@ describe("dynamic delegation runtime", () => {
   it("fails before child creation when the live reservation differs from the harness", async () => {
     const harness = runtimeHarness();
     harness.dependencies.listParentEvents.mockResolvedValueOnce([{
+      ...harness.parentHarnessEvent,
       id: "event:parent:harness:changed",
-      streamId: `run:${harness.parentRun.id}`,
-      type: "run.harness",
       payload: {
+        ...harness.parentHarnessEvent.payload,
         budgetLimits: {
           ...DEFAULT_AGENT_RUN_BUDGET_LIMITS,
           agents: DEFAULT_AGENT_RUN_BUDGET_LIMITS.agents - 1,
         },
       },
-      createdAt: harness.parentRun.startedAt,
     }]);
 
     await expect(delegateAgentTask(
@@ -261,7 +263,7 @@ function runtimeHarness(options: {
     return {
       id: input.id!,
       tenantId: input.tenantId,
-      ownerActorId: input.actorId,
+      ownerActorId: input.actorId!,
       mode: input.mode,
       status: "queued",
       prompt: input.prompt,
@@ -298,16 +300,34 @@ function runtimeHarness(options: {
   }) as unknown as typeof appendAgentRunIdentityPin;
   const scheduleDrain = vi.fn();
 
+  const parentHarnessEvent: Awaited<
+    ReturnType<typeof listStreamEvents>
+  >[number] = {
+    id: "event:parent:harness",
+    seq: 1,
+    streamId: `run:${parentRunId}`,
+    type: "run.harness",
+    tenantId,
+    actorId,
+    payload: {
+      type: "harness",
+      budgetLimits: DEFAULT_AGENT_RUN_BUDGET_LIMITS,
+      toolCount: DYNAMIC_DELEGATION_READ_TOOL_IDS.length,
+      toolIds: [...DYNAMIC_DELEGATION_READ_TOOL_IDS].sort(),
+      skillIds: parentPin.skillPins.map((skill) => skill.skillId),
+      toolboxSha256: "1".repeat(64),
+      instructionsSha256: "2".repeat(64),
+    },
+    at: startedAt,
+  };
+  const listParentEvents = vi.fn<typeof listStreamEvents>(
+    async () => [parentHarnessEvent],
+  );
   const dependencies = {
     findExecution: vi.fn(async () => existing),
-    listParentEvents: vi.fn(async () => [{
-      id: "event:parent:harness",
-      streamId: `run:${parentRunId}`,
-      type: "run.harness",
-      payload: { budgetLimits: DEFAULT_AGENT_RUN_BUDGET_LIMITS },
-      createdAt: startedAt,
-    }]),
+    listParentEvents,
     getRun: vi.fn(async () => parentRun) as typeof getAgentRun,
+    getRunScope: vi.fn(async () => parentExecutionScope) as typeof getAgentRunExecutionScope,
     getRunIdentityPin: vi.fn(async () => parentPin) as typeof getAgentRunIdentityPin,
     resolveIdentity: vi.fn(async (input: { agentId: string }) =>
       buildBuiltInAgentIdentityV1({
@@ -326,6 +346,7 @@ function runtimeHarness(options: {
 
   return {
     parentRun,
+    parentHarnessEvent,
     dependencies,
     createRun,
     createExecution,

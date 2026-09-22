@@ -93,6 +93,12 @@ describe("governed Agent delegation application services", () => {
         acceptanceCriteria: ["Every conclusion cites governed evidence."],
         mode: "fork",
         preferredAgentId: "scout",
+        grants: {
+          governedReadToolIds: [],
+          skillIds: [],
+          plugins: [],
+          mcpServers: [],
+        },
       },
     });
     expect(result.receipt).toMatchObject({

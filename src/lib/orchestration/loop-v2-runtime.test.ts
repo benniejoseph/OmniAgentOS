@@ -87,7 +87,7 @@ describe("Loop v2 read-only canary runtime", () => {
       "run-canary",
       expect.objectContaining({
         logicalAgentId: "atlas",
-        definitionVersionId: "definition:built-in:atlas:v1",
+        definitionVersionId: "definition:built-in:atlas:v2",
       }),
       expect.objectContaining({ tenantId: "tenant-a" }),
     );

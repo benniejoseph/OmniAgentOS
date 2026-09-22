@@ -134,7 +134,7 @@ describe("Loop v2 model-text runtime", () => {
       "run-model-v2",
       expect.objectContaining({
         logicalAgentId: "atlas",
-        definitionVersionId: "definition:built-in:atlas:v1",
+        definitionVersionId: "definition:built-in:atlas:v2",
       }),
       expect.objectContaining({ tenantId: "tenant-a" }),
     );

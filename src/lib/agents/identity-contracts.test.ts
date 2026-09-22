@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   buildAgentRunIdentityPinV1,
   buildBuiltInAgentIdentityV1,
+  buildBuiltInAgentIdentityForVersionV1,
   buildCustomAgentIdentityV1,
+  getBuiltInAgentSkillsV2,
   parseAgentDefinitionV1,
   parseAgentRunIdentityPinV1,
 } from "@/lib/agents/identity-contracts";
@@ -55,6 +57,8 @@ describe("P7.1 agent identity contracts", () => {
     expect(identity.definition).toMatchObject({
       name: "Scout",
       role: "Research",
+      definitionVersion: 2,
+      previousDefinitionVersionId: "definition:built-in:scout:v1",
       promptContractVersionId: "agent-instructions:1",
     });
     expect(identity.principal).toMatchObject({
@@ -65,12 +69,90 @@ describe("P7.1 agent identity contracts", () => {
     expect(pin).toMatchObject({
       version: "p7.1-agent-identity-pin:1",
       logicalAgentId: "scout",
-      definitionVersion: 1,
+      definitionVersion: 2,
       principalGeneration: 1,
-      skillPins: [],
+      skillPins: [
+        expect.objectContaining({ skillId: "core.research", skillVersion: 1 }),
+        expect.objectContaining({
+          skillId: "learning.knowledge-synthesis",
+          skillVersion: 1,
+        }),
+      ],
     });
     expect(pin.policyPins).toHaveLength(4);
     expect(pin.pinSha256).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("publishes fixed v2 Skill sets while preserving v1 pins and principal authority", () => {
+    const expected = {
+      atlas: [
+        "core.research",
+        "core.builder",
+        "core.critic",
+        "core.memory",
+        "productivity.daily-focus",
+        "productivity.project-planning",
+        "productivity.meeting-steward",
+        "productivity.decision-memo",
+        "design.product-ux",
+        "design.systems-accessibility",
+        "design.visual-critique",
+        "engineering.implementation",
+        "engineering.debugging",
+        "engineering.review-security",
+        "engineering.quality-performance",
+        "automation.workflow-design",
+        "communication.clear-writing",
+        "learning.knowledge-synthesis",
+        "creation.document-studio",
+      ],
+      scout: ["core.research", "learning.knowledge-synthesis"],
+      meridian: ["core.research", "learning.knowledge-synthesis"],
+      forge: [
+        "core.builder",
+        "engineering.implementation",
+        "engineering.debugging",
+        "engineering.quality-performance",
+        "design.product-ux",
+        "design.systems-accessibility",
+        "design.visual-critique",
+        "creation.document-studio",
+      ],
+      sentinel: [
+        "core.critic",
+        "engineering.review-security",
+        "engineering.quality-performance",
+      ],
+      mnemosyne: ["core.memory", "learning.knowledge-synthesis"],
+    } as const;
+
+    for (const [agentId, skillIds] of Object.entries(expected)) {
+      expect(getBuiltInAgentSkillsV2(
+        agentId as keyof typeof expected,
+      ).map((skill) => skill.id)).toEqual(skillIds);
+      const legacy = buildBuiltInAgentIdentityForVersionV1({
+        agentId: agentId as keyof typeof expected,
+        tenantId: "tenant-one",
+        controllerActorId: "actor-one",
+        definitionVersion: 1,
+      });
+      const current = buildBuiltInAgentIdentityV1({
+        agentId: agentId as keyof typeof expected,
+        tenantId: "tenant-one",
+        controllerActorId: "actor-one",
+      });
+      const legacyPin = buildAgentRunIdentityPinV1({
+        runId: `run-legacy-${agentId}`,
+        identity: legacy,
+      });
+
+      expect(parseAgentRunIdentityPinV1(legacyPin)).toMatchObject({
+        definitionVersion: 1,
+        skillPins: [],
+      });
+      expect(current.definition.definitionVersion).toBe(2);
+      expect(current.principal).toEqual(legacy.principal);
+    }
   });
 
   it("publishes Meridian as a read-only market-research identity", () => {

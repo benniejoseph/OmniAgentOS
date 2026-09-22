@@ -589,6 +589,36 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
     },
     mode: { type: "string", enum: ["isolated", "fork", "team"], default: "isolated" },
     preferredAgentId: { type: "string", enum: ["scout", "meridian", "forge", "sentinel", "mnemosyne"] },
+    grants: objectSchema({
+      governedReadToolIds: {
+        type: "array", maxItems: 16, uniqueItems: true,
+        items: opaqueId("Exact active governed read-tool ID from the parent run."),
+      },
+      skillIds: {
+        type: "array", maxItems: 8, uniqueItems: true,
+        items: opaqueId("Exact active Skill ID pinned by the parent run."),
+      },
+      plugins: {
+        type: "array", maxItems: 8,
+        items: requiredObjectSchema({
+          installationId: opaqueId("Exact enabled Plugin installation ID."),
+          componentIds: {
+            type: "array", minItems: 1, maxItems: 16, uniqueItems: true,
+            items: opaqueId("Exact Plugin component ID, using skill:<key>."),
+          },
+        }, ["installationId", "componentIds"]),
+      },
+      mcpServers: {
+        type: "array", maxItems: 8,
+        items: requiredObjectSchema({
+          serverId: opaqueId("Exact active MCP connector ID."),
+          governedToolIds: {
+            type: "array", minItems: 1, maxItems: 8, uniqueItems: true,
+            items: opaqueId("Exact reviewed active read-only MCP tool ID."),
+          },
+        }, ["serverId", "governedToolIds"]),
+      },
+    }),
   }, ["objective", "taskKind", "acceptanceCriteria"]), { reversible: false }),
   readTool("app.agents.tasks.list", "List delegated agent tasks", "List bounded status projections for the current actor's durable delegated tasks without exposing authority contracts, capability grants, or context capsules.", objectSchema({
     parentExecutionId: opaqueId("Optional exact parent execution ID."),

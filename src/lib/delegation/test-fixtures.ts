@@ -203,6 +203,12 @@ export function buildExecutionContract(
     connectorTargets: [],
   };
   const executionGrants = {
+    grantRequestSha256: canonicalJsonSha256({
+      governedReadToolIds: [],
+      skillIds: [],
+      plugins: [],
+      mcpServers: [],
+    }),
     ...noGrants,
     skills: [],
     mcpServers: [],

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 
 import {
@@ -256,6 +257,8 @@ const mcpGrantSchema = z.object({
 const pluginGrantSchema = z.object({
   capabilityGrantId: idSchema,
   installationId: idSchema,
+  installationRevision: positiveVersionSchema,
+  installationSha256: sha256Schema,
   pluginId: idSchema,
   pluginVersion: z.string().trim().min(1).max(80),
   manifestSha256: sha256Schema,
@@ -263,6 +266,7 @@ const pluginGrantSchema = z.object({
 }).strict();
 
 const grantsSchema = z.object({
+  grantRequestSha256: sha256Schema,
   contextGrantIds: idListSchema,
   capabilityGrantIds: idListSchema,
   governedToolIds: idListSchema,
@@ -478,7 +482,7 @@ export function buildDelegationExecutionContractV2(input: {
   const contextCapsule = parseDelegationContextCapsuleV1(input.contextCapsule);
 
   assertAttenuatedGrants(input.parentAuthority.grants, input.grants);
-  assertExplicitCapabilityBindings(input.grants, delegatePin);
+  assertExplicitCapabilityBindings(input.grants, delegatorPin, delegatePin);
   assertResourceClaimAuthority(input.resourceClaims || [], input.grants);
   const budgets = narrowRunBudgetLimits(input.parentAuthority.budgets, input.budgets);
   for (const dimension of RUN_BUDGET_DIMENSIONS) {
@@ -725,24 +729,42 @@ function assertAttenuatedGrants(
 
 function assertExplicitCapabilityBindings(
   grants: DelegationExecutionContractV2["grants"],
+  delegatorPin: AgentRunIdentityPinV1,
   delegatePin: AgentRunIdentityPinV1,
 ) {
   const capabilities = new Set(grants.capabilityGrantIds);
   const tools = new Set(grants.governedToolIds);
   const connectors = new Set(grants.connectorTargets);
   const declaredSkills = new Map(
+    delegatorPin.skillPins.map((skill) => [skill.skillId, skill]),
+  );
+  const delegateSkills = new Map(
     delegatePin.skillPins.map((skill) => [skill.skillId, skill]),
   );
+  const pluginBackedSkillIds = new Set(grants.plugins.flatMap((plugin) =>
+    plugin.componentIds.map((componentId) =>
+      pluginSkillIdForBinding(plugin.installationId, componentId)
+    )
+  ));
   for (const skill of grants.skills) {
     const declared = declaredSkills.get(skill.skillId);
+    const delegateDeclared = delegateSkills.get(skill.skillId);
+    const compatibleParent = Boolean(declared) &&
+      declared!.skillVersion === skill.skillVersion &&
+      declared!.skillVersionId === skill.skillVersionId &&
+      declared!.skillSha256 === skill.skillSha256;
+    const compatibleDelegate = Boolean(delegateDeclared) &&
+      delegateDeclared!.skillVersion === skill.skillVersion &&
+      delegateDeclared!.skillVersionId === skill.skillVersionId &&
+      delegateDeclared!.skillSha256 === skill.skillSha256;
+    const pluginBacked = pluginBackedSkillIds.has(skill.skillId);
     if (
       !capabilities.has(skill.capabilityGrantId) ||
-      !declared ||
-      declared.skillVersion !== skill.skillVersion ||
-      declared.skillVersionId !== skill.skillVersionId ||
-      declared.skillSha256 !== skill.skillSha256
+      (!pluginBacked && (!compatibleParent || !compatibleDelegate))
     ) {
-      throw new Error("Delegated Skill grant is not pinned to delegate authority.");
+      throw new Error(
+        "Delegated Skill grant is not pinned to compatible parent and delegate authority.",
+      );
     }
   }
   for (const server of grants.mcpServers) {
@@ -755,10 +777,34 @@ function assertExplicitCapabilityBindings(
     }
   }
   for (const plugin of grants.plugins) {
-    if (!capabilities.has(plugin.capabilityGrantId)) {
+    const projectedSkillIds = plugin.componentIds.map((componentId) =>
+      pluginSkillIdForBinding(plugin.installationId, componentId)
+    );
+    if (
+      !capabilities.has(plugin.capabilityGrantId) ||
+      projectedSkillIds.some((skillId) =>
+        !grants.skills.some((skill) => skill.skillId === skillId)
+      )
+    ) {
       throw new Error("Delegated Plugin grant exceeds the explicit capability boundary.");
     }
   }
+}
+
+function pluginSkillIdForBinding(
+  installationId: string,
+  componentId: string,
+) {
+  if (!componentId.startsWith("skill:") || componentId.length <= 6) {
+    throw new Error(
+      "Delegated Plugin grants may activate only exact Skill components.",
+    );
+  }
+  const key = componentId.slice(6);
+  return `plugin.skill.${createHash("sha256")
+    .update(`${installationId}:${key}`, "utf8")
+    .digest("hex")
+    .slice(0, 40)}`;
 }
 
 function assertResourceClaimAuthority(

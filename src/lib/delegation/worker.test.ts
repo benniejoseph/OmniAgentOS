@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   getAgentRunExecutionScope: vi.fn(),
   getAgentRunIdentityPin: vi.fn(),
   resolveRuntimeModel: vi.fn(),
+  revalidateGrants: vi.fn(),
 }));
 
 vi.mock("@/lib/delegation/execution-store", () => ({
@@ -60,6 +61,10 @@ vi.mock("@/lib/runs/store", () => ({
 vi.mock("@/lib/settings/runtime-models", () => ({
   resolveRuntimeModelAssignment: mocks.resolveRuntimeModel,
 }));
+vi.mock("@/lib/delegation/grant-resolver", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/delegation/grant-resolver")>(),
+  revalidateDelegationGrantsV1: mocks.revalidateGrants,
+}));
 
 import {
   buildAgentRunIdentityPinV1,
@@ -78,7 +83,6 @@ import {
   exactDelegationRuntime,
   executionScopeFromDelegationContract,
 } from "@/lib/delegation/runtime";
-import { DYNAMIC_DELEGATION_READ_TOOL_IDS } from "@/lib/delegation/runtime-policy";
 import { DELEGATION_EXECUTION_JOB_KIND } from "@/lib/delegation/runtime-job";
 import {
   buildExecutionContract,
@@ -103,6 +107,10 @@ describe("delegation execution worker", () => {
     vi.clearAllMocks();
     mocks.selectAgentModel.mockReturnValue(modelRoute);
     mocks.resolveRuntimeModel.mockResolvedValue(runtimeResolution());
+    mocks.revalidateGrants.mockResolvedValue({
+      skills: [],
+      governedToolIds: [],
+    });
     mocks.listStreamEvents.mockResolvedValue([{
       id: "event:model:one",
       streamId: "run:run-child",
@@ -147,7 +155,8 @@ describe("delegation execution worker", () => {
         }),
         agentProfile: expect.objectContaining({
           approvalPolicy: "read_only",
-          toolIds: [...DYNAMIC_DELEGATION_READ_TOOL_IDS],
+          toolIds: [],
+          skills: [],
         }),
         budgetLimits: harness.execution.contract.budgets,
       }),
@@ -259,6 +268,23 @@ describe("delegation execution worker", () => {
     });
     expect(harness.transitions).toEqual(["failed"]);
     expect(mocks.claimQueuedAgentRun).not.toHaveBeenCalled();
+  });
+
+  it("fails closed before claim when a delegated grant is revoked or drifts", async () => {
+    const harness = workerHarness();
+    mocks.revalidateGrants.mockRejectedValueOnce(
+      new Error("The delegated MCP contract changed."),
+    );
+
+    const result = await processDelegationExecutionJob(harness.job);
+
+    expect(result).toMatchObject({
+      status: "failed",
+      message: "grant_assignment_changed",
+    });
+    expect(harness.transitions).toEqual(["failed"]);
+    expect(mocks.claimQueuedAgentRun).not.toHaveBeenCalled();
+    expect(mocks.runAgent).not.toHaveBeenCalled();
   });
 
   it("rejects an evidence criterion without an observable evidence receipt", async () => {

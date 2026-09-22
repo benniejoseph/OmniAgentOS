@@ -3,9 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildAgentRunIdentityPinV1,
   buildBuiltInAgentIdentityV1,
-  buildCustomAgentIdentityV1,
 } from "@/lib/agents/identity-contracts";
-import { DEFAULT_CUSTOM_AGENT_PERSONA } from "@/lib/agents/persona";
 import { buildDelegationContextCapsuleV1 } from "@/lib/delegation/context-capsule";
 import {
   buildDelegationExecutionContractV2,
@@ -15,7 +13,6 @@ import {
 } from "@/lib/delegation/execution-contract";
 import type { DelegationContractV1 } from "@/lib/delegation/contracts";
 import type { RunBudgetCountersV1 } from "@/lib/runs/budgets";
-import type { AgentSkill, CustomAgentDefinition } from "@/lib/skills/types";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
 type BuildExecutionContractInput = Parameters<
@@ -53,16 +50,14 @@ describe("delegation execution contract v2", () => {
       expect(contract.delegatorIdentity.definitionSha256).toMatch(/^[a-f0-9]{64}$/);
       expect(contract.delegateIdentity.principalSha256).toMatch(/^[a-f0-9]{64}$/);
       expect(contract.grants.skills[0]).toMatchObject({
-        skillId: "skill-one",
-        skillVersion: 3,
+        skillId: "core.research",
+        skillVersion: 1,
       });
       expect(contract.grants.mcpServers[0]).toMatchObject({
         serverId: "mcp:github",
         governedToolIds: ["runs.list"],
       });
-      expect(contract.grants.plugins[0]).toMatchObject({
-        pluginId: "plugin:delivery",
-      });
+      expect(contract.grants.plugins).toEqual([]);
       expect(contract.resourceClaims.map((claim) => claim.mode)).toEqual([
         "exclusive",
         "shared_read",
@@ -182,11 +177,10 @@ const delegatorPin = buildAgentRunIdentityPinV1({
 });
 const delegatePin = buildAgentRunIdentityPinV1({
   runId: delegateRunId,
-  identity: buildCustomAgentIdentityV1({
-    agent: customAgent(),
-    skills: [skill()],
-    definitionVersion: 1,
-    principalGeneration: 1,
+  identity: buildBuiltInAgentIdentityV1({
+    agentId: "scout",
+    tenantId,
+    controllerActorId: actorId,
   }),
 });
 const verifierPin = buildAgentRunIdentityPinV1({
@@ -197,6 +191,9 @@ const verifierPin = buildAgentRunIdentityPinV1({
     controllerActorId: actorId,
   }),
 });
+const delegatorSkillPin = delegatorPin.skillPins.find(
+  (pin) => pin.skillId === "core.research",
+)!;
 
 const lineage: BuildExecutionContractInput["lineage"] = {
   tenantId,
@@ -215,16 +212,17 @@ const lineage: BuildExecutionContractInput["lineage"] = {
 };
 
 const grants: BuildExecutionContractInput["grants"] = {
+  grantRequestSha256: "9".repeat(64),
   contextGrantIds: ["grant:context:one"],
   capabilityGrantIds: ["grant:capability:one"],
   governedToolIds: ["runs.list"],
   connectorTargets: ["connector:github"],
   skills: [{
     capabilityGrantId: "grant:capability:one",
-    skillId: delegatePin.skillPins[0].skillId,
-    skillVersion: delegatePin.skillPins[0].skillVersion,
-    skillVersionId: delegatePin.skillPins[0].skillVersionId,
-    skillSha256: delegatePin.skillPins[0].skillSha256,
+    skillId: delegatorSkillPin.skillId,
+    skillVersion: delegatorSkillPin.skillVersion,
+    skillVersionId: delegatorSkillPin.skillVersionId,
+    skillSha256: delegatorSkillPin.skillSha256,
   }],
   mcpServers: [{
     capabilityGrantId: "grant:capability:one",
@@ -234,14 +232,7 @@ const grants: BuildExecutionContractInput["grants"] = {
     governedToolIds: ["runs.list"],
     connectorTargetIds: ["connector:github"],
   }],
-  plugins: [{
-    capabilityGrantId: "grant:capability:one",
-    installationId: "plugin-installation:one",
-    pluginId: "plugin:delivery",
-    pluginVersion: "1.2.0",
-    manifestSha256: "c".repeat(64),
-    componentIds: ["component:research"],
-  }],
+  plugins: [],
 };
 
 const parentGrants: DelegationContractV1["grants"] = {
@@ -447,48 +438,4 @@ function build(
     retry,
     ...overrides,
   });
-}
-
-function customAgent(): CustomAgentDefinition {
-  return {
-    id: "worker-one",
-    tenantId,
-    actorId,
-    slug: "worker-one",
-    name: "Worker One",
-    role: "Bounded execution worker",
-    description: "Completes one bounded assignment and returns exact evidence.",
-    instructions: "Follow the delegation contract and do not widen authority.",
-    persona: DEFAULT_CUSTOM_AGENT_PERSONA,
-    status: "ready",
-    accent: "blue",
-    modelPolicy: "auto",
-    autonomy: "governed",
-    approvalPolicy: "risk_based",
-    memoryScope: "project",
-    skillIds: ["skill-one"],
-    toolIds: ["runs.list"],
-    createdAt: "2026-09-22T00:00:00.000Z",
-    updatedAt: "2026-09-22T00:00:00.000Z",
-  };
-}
-
-function skill(): AgentSkill {
-  return {
-    id: "skill-one",
-    tenantId,
-    actorId,
-    slug: "bounded-research",
-    name: "Bounded research",
-    description: "Collect exact evidence for a bounded assignment.",
-    instructions: "Use only granted sources and cite exact evidence.",
-    category: "research",
-    status: "active",
-    version: 3,
-    toolIds: ["runs.list"],
-    tags: [],
-    knowledgeTags: [],
-    createdAt: "2026-09-22T00:00:00.000Z",
-    updatedAt: "2026-09-22T00:00:00.000Z",
-  };
 }

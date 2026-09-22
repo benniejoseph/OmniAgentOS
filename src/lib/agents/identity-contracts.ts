@@ -9,14 +9,59 @@ import {
 } from "@/lib/orchestration/prompts";
 import { sourceContractSha256 } from "@/lib/sources/contracts";
 import { agentPersonaV1Schema, type AgentPersonaV1 } from "@/lib/agents/persona";
+import { getBuiltInSkill } from "@/lib/skills/catalog";
 import type { AgentSkill, CustomAgentDefinition } from "@/lib/skills/types";
 
 export const AGENT_IDENTITY_SCHEMA_VERSION = 1 as const;
 export const AGENT_IDENTITY_PIN_VERSION = "p7.1-agent-identity-pin:1" as const;
-export const BUILT_IN_AGENT_DEFINITION_VERSION = 1 as const;
+export const BUILT_IN_AGENT_DEFINITION_VERSION = 2 as const;
 export const BUILT_IN_AGENT_PRINCIPAL_GENERATION = 1 as const;
 export const BUILT_IN_AGENT_IDENTITY_EFFECTIVE_AT =
+  "2026-09-22T00:00:00.000Z" as const;
+export const BUILT_IN_AGENT_V1_EFFECTIVE_AT =
   "2026-09-07T00:00:00.000Z" as const;
+
+const BUILT_IN_AGENT_SKILL_IDS = Object.freeze({
+  atlas: [
+    "core.research",
+    "core.builder",
+    "core.critic",
+    "core.memory",
+    "productivity.daily-focus",
+    "productivity.project-planning",
+    "productivity.meeting-steward",
+    "productivity.decision-memo",
+    "design.product-ux",
+    "design.systems-accessibility",
+    "design.visual-critique",
+    "engineering.implementation",
+    "engineering.debugging",
+    "engineering.review-security",
+    "engineering.quality-performance",
+    "automation.workflow-design",
+    "communication.clear-writing",
+    "learning.knowledge-synthesis",
+    "creation.document-studio",
+  ],
+  scout: ["core.research", "learning.knowledge-synthesis"],
+  meridian: ["core.research", "learning.knowledge-synthesis"],
+  forge: [
+    "core.builder",
+    "engineering.implementation",
+    "engineering.debugging",
+    "engineering.quality-performance",
+    "design.product-ux",
+    "design.systems-accessibility",
+    "design.visual-critique",
+    "creation.document-studio",
+  ],
+  sentinel: [
+    "core.critic",
+    "engineering.review-security",
+    "engineering.quality-performance",
+  ],
+  mnemosyne: ["core.memory", "learning.knowledge-synthesis"],
+} satisfies Record<BuiltInAgentId, readonly string[]>);
 
 const idSchema = z.string().trim().min(1).max(240).regex(
   /^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$/,
@@ -262,12 +307,30 @@ export function buildBuiltInAgentIdentityV1(input: {
   tenantId: string;
   controllerActorId: string;
 }) {
+  return buildBuiltInAgentIdentityForVersionV1({
+    ...input,
+    definitionVersion: BUILT_IN_AGENT_DEFINITION_VERSION,
+  });
+}
+
+/** Reconstructs an immutable built-in identity for an already-pinned run. */
+export function buildBuiltInAgentIdentityForVersionV1(input: {
+  agentId: BuiltInAgentId;
+  tenantId: string;
+  controllerActorId: string;
+  definitionVersion: 1 | 2;
+}) {
   const display = requireBuiltInAgent(input.agentId);
   const prompt = getBuiltInAgentPromptIdentity(input.agentId);
+  const skills = input.definitionVersion === 2
+    ? getBuiltInAgentSkillsV2(input.agentId)
+    : [];
   const definition = buildAgentDefinitionV1({
     definitionId: `definition:built-in:${input.agentId}`,
-    definitionVersion: BUILT_IN_AGENT_DEFINITION_VERSION,
-    previousDefinitionVersionId: null,
+    definitionVersion: input.definitionVersion,
+    previousDefinitionVersionId: input.definitionVersion === 1
+      ? null
+      : `definition:built-in:${input.agentId}:v1`,
     origin: "built_in",
     tenantId: input.tenantId,
     ownerActorId: input.controllerActorId,
@@ -281,8 +344,10 @@ export function buildBuiltInAgentIdentityV1(input: {
     status: display.status,
     accent: display.accent,
     modelPolicy: "auto",
-    skills: [],
-    publishedAt: BUILT_IN_AGENT_IDENTITY_EFFECTIVE_AT,
+    skills,
+    publishedAt: input.definitionVersion === 1
+      ? BUILT_IN_AGENT_V1_EFFECTIVE_AT
+      : BUILT_IN_AGENT_IDENTITY_EFFECTIVE_AT,
   });
   const principal = buildAgentPrincipalDefinitionV1({
     principalId: scopedPrincipalId(
@@ -307,9 +372,22 @@ export function buildBuiltInAgentIdentityV1(input: {
     budgetPolicyVersionId: "agent-run-budget:2",
     expiresAt: null,
     revokedAt: null,
-    createdAt: BUILT_IN_AGENT_IDENTITY_EFFECTIVE_AT,
+    createdAt: BUILT_IN_AGENT_V1_EFFECTIVE_AT,
   });
   return deepFreeze({ definition, principal });
+}
+
+/** Fixed v2 built-in Skill set. It is immutable across tenants and requests. */
+export function getBuiltInAgentSkillsV2(
+  agentId: BuiltInAgentId,
+): readonly AgentSkill[] {
+  return Object.freeze(BUILT_IN_AGENT_SKILL_IDS[agentId].map((skillId) => {
+    const skill = getBuiltInSkill(skillId);
+    if (!skill) {
+      throw new Error(`Built-in Agent Skill ${skillId} is unavailable.`);
+    }
+    return skill;
+  }));
 }
 
 export function buildAgentRunIdentityPinV1(input: {
@@ -572,6 +650,15 @@ function buildSkillPin(skill: AgentSkill) {
     }),
   };
   return skillPinSchema.parse(body);
+}
+
+/**
+ * Builds the exact immutable Skill reference used by Agent identity pins.
+ * Delegation grant resolution reuses this function so a child can never
+ * reinterpret the version or instruction digest carried by its parent run.
+ */
+export function buildAgentSkillPinV1(skill: AgentSkill) {
+  return deepFreeze(buildSkillPin(skill));
 }
 
 function parseSkillPin(value: z.infer<typeof skillPinSchema>) {

@@ -3,6 +3,7 @@ import {
   buildAgentRunIdentityPinV1,
   buildBuiltInAgentIdentityV1,
   buildCustomAgentIdentityV1,
+  getBuiltInAgentSkillsV2,
   isBuiltInAgentIdentityId,
 } from "@/lib/agents/identity-contracts";
 import {
@@ -1045,7 +1046,13 @@ export async function* runAgent(
         })
       : Promise.resolve(fallbackContextPack(query));
     const runtimeAgentSkills = assignedSkillsWithinRuntimeLimit(
-      request.agentProfile?.skills || [],
+      request.agentProfile?.skills || (
+        isBuiltInAgentIdentityId(resolvedAgentIdentity.definition.logicalAgentId)
+          ? getBuiltInAgentSkillsV2(
+              resolvedAgentIdentity.definition.logicalAgentId,
+            )
+          : []
+      ),
     );
     const profileConfiguredToolIds = request.agentProfile ? [...new Set([
       ...request.agentProfile.toolIds,
@@ -1295,7 +1302,19 @@ export async function* runAgent(
       adaptationGuidance,
       profile: request.agentProfile
         ? { ...request.agentProfile, skills: runtimeAgentSkills }
-        : undefined,
+        : runtimeAgentSkills.length
+          ? {
+              name: resolvedAgentIdentity.definition.name,
+              role: resolvedAgentIdentity.definition.role,
+              description: resolvedAgentIdentity.definition.description,
+              instructions: resolvedAgentIdentity.definition.instructions,
+              persona: resolvedAgentIdentity.definition.persona,
+              autonomy: resolvedAgentIdentity.principal.autonomy,
+              approvalPolicy: resolvedAgentIdentity.principal.approvalPolicy,
+              memoryScope: resolvedAgentIdentity.principal.memoryScope,
+              skills: runtimeAgentSkills,
+            }
+          : undefined,
       computerUse: computerUseTarget,
     });
     const toolIds = toolbox.tools

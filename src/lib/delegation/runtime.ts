@@ -28,8 +28,12 @@ import {
 } from "@/lib/delegation/execution-store";
 import type { DelegationExecutionRecordV1 } from "@/lib/delegation/execution-record";
 import {
+  delegationGrantRequestSha256,
+  delegationGrantRequestV1Schema,
+  resolveDelegationGrantsV1,
+} from "@/lib/delegation/grant-resolver";
+import {
   DYNAMIC_DELEGATION_CHILD_BUDGET,
-  DYNAMIC_DELEGATION_READ_TOOL_IDS,
 } from "@/lib/delegation/runtime-policy";
 import {
   parentDelegationBudgetAuthorityV1Schema,
@@ -53,13 +57,14 @@ import {
   bindAgentRunExecutionScope,
   createQueuedAgentRun,
   getAgentRun,
+  getAgentRunExecutionScope,
   getAgentRunIdentityPin,
 } from "@/lib/runs/store";
 import type { AgentRunRecord } from "@/lib/runs/types";
 import { runBudgetCountersV1Schema } from "@/lib/runs/budgets";
 import { redactSensitive } from "@/lib/security/context";
 import {
-  deriveExecutionScope,
+  executionScopesEqual,
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
 import {
@@ -91,9 +96,19 @@ export const delegateAgentTaskInputSchema = z.object({
     }),
   mode: z.enum(["isolated", "fork", "team"]).default("isolated"),
   preferredAgentId: dynamicAgentIdSchema.optional(),
+  grants: delegationGrantRequestV1Schema.default({
+    governedReadToolIds: [],
+    skillIds: [],
+    plugins: [],
+    mcpServers: [],
+  }),
 }).strict();
 
-export type DelegateAgentTaskInput = z.infer<
+export type DelegateAgentTaskInput = z.input<
+  typeof delegateAgentTaskInputSchema
+>;
+
+type ParsedDelegateAgentTaskInput = z.output<
   typeof delegateAgentTaskInputSchema
 >;
 
@@ -113,6 +128,7 @@ type DelegationRuntimeDependencies = Readonly<{
   findExecution: typeof findDelegationExecution;
   listParentEvents: typeof listStreamEvents;
   getRun: typeof getAgentRun;
+  getRunScope: typeof getAgentRunExecutionScope;
   getRunIdentityPin: typeof getAgentRunIdentityPin;
   resolveIdentity: typeof resolveAgentIdentityForExecution;
   resolveRuntimeModel: typeof resolveRuntimeModelAssignment;
@@ -122,12 +138,14 @@ type DelegationRuntimeDependencies = Readonly<{
   createExecution: typeof createDelegationExecution;
   enqueueJob: typeof enqueueOperationJob;
   scheduleDrain: typeof scheduleDurableSpecialistDrain;
+  resolveGrants: typeof resolveDelegationGrantsV1;
 }>;
 
 const defaultDependencies: DelegationRuntimeDependencies = Object.freeze({
   findExecution: findDelegationExecution,
   listParentEvents: listStreamEvents,
   getRun: getAgentRun,
+  getRunScope: getAgentRunExecutionScope,
   getRunIdentityPin: getAgentRunIdentityPin,
   resolveIdentity: resolveAgentIdentityForExecution,
   resolveRuntimeModel: resolveRuntimeModelAssignment,
@@ -137,6 +155,7 @@ const defaultDependencies: DelegationRuntimeDependencies = Object.freeze({
   createExecution: createDelegationExecution,
   enqueueJob: enqueueOperationJob,
   scheduleDrain: scheduleDurableSpecialistDrain,
+  resolveGrants: resolveDelegationGrantsV1,
 });
 
 /**
@@ -159,11 +178,15 @@ export async function delegateAgentTask(
     actorId,
   });
   const parentRunId = parentScope.correlationId;
+  const parentPrincipalId = requiredId(
+    parentScope.executingPrincipalId,
+    "parent principal",
+  );
   const parentBudgetAuthority = resolveParentDelegationBudgetAuthority({
     tenantId,
     actorId,
     parentExecutionId: parentRunId,
-    parentPrincipalId: parentScope.executingPrincipalId,
+    parentPrincipalId,
     idempotencyKey: request.idempotencyKey,
     explicit: request.parentBudgetAuthority,
   });
@@ -175,8 +198,15 @@ export async function delegateAgentTask(
   const delegationId = deterministicDelegationId(tenantId, parentRunId, childRunId);
   const purpose = delegationPurpose(input);
 
-  const [parentRun, parentIdentityPin, existing, parentEvents] = await Promise.all([
+  const [
+    parentRun,
+    persistedParentScope,
+    parentIdentityPin,
+    existing,
+    parentEvents,
+  ] = await Promise.all([
     deps.getRun(parentRunId, { tenantId }),
+    deps.getRunScope(parentRunId, { tenantId }),
     deps.getRunIdentityPin(parentRunId, { tenantId }),
     deps.findExecution({ tenantId, ownerActorId: actorId, executionId: childRunId }),
     deps.listParentEvents(`run:${parentRunId}`, {
@@ -187,6 +217,14 @@ export async function delegateAgentTask(
     }),
   ]);
   assertCanonicalParent(parentRun, parentIdentityPin, parentScope, actorId);
+  if (
+    !persistedParentScope ||
+    !executionScopesEqual(parentScope, persistedParentScope)
+  ) {
+    throw new Error(
+      "Dynamic delegation requires the exact persisted parent execution scope.",
+    );
+  }
   assertParentHarnessBudget(parentEvents, parentBudgetAuthority);
 
   if (existing) {
@@ -270,6 +308,29 @@ export async function delegateAgentTask(
     throw new Error("The verifier model route is not configured.");
   }
 
+  const [delegateIdentity, verifierIdentity] = await Promise.all([
+    deps.resolveIdentity({ tenantId, actorId, agentId: delegateAgentId }),
+    deps.resolveIdentity({ tenantId, actorId, agentId: "sentinel" }),
+  ]);
+  const delegateIdentityPin = buildAgentRunIdentityPinV1({
+    runId: childRunId,
+    identity: delegateIdentity,
+  });
+  const verifierIdentityPin = buildAgentRunIdentityPinV1({
+    runId: deterministicVerifierExecutionId(childRunId),
+    identity: verifierIdentity,
+  });
+  const grantResolution = await deps.resolveGrants({
+    tenantId,
+    actorId,
+    parentExecutionId: parentRunId,
+    parentIdentityPin: parentIdentityPin!,
+    delegateIdentityPin,
+    parentExecutionScope: persistedParentScope,
+    parentEvents,
+    request: input.grants,
+  });
+
   const forkMessages = input.mode === "fork"
     ? boundedForkMessages(parentRun!.messages)
     : [];
@@ -293,34 +354,9 @@ export async function delegateAgentTask(
   if (childRun.model !== exactRuntime.model) {
     throw new Error("The durable child run is pinned to another model route.");
   }
-
-  const [delegateIdentity, verifierIdentity] = await Promise.all([
-    deps.resolveIdentity({ tenantId, actorId, agentId: delegateAgentId }),
-    deps.resolveIdentity({ tenantId, actorId, agentId: "sentinel" }),
-  ]);
-  const delegateIdentityPin = buildAgentRunIdentityPinV1({
-    runId: childRun.id,
-    identity: delegateIdentity,
-  });
-  const verifierIdentityPin = buildAgentRunIdentityPinV1({
-    runId: deterministicVerifierExecutionId(childRun.id),
-    identity: verifierIdentity,
-  });
-  const childScope = deriveExecutionScope(parentScope, {
-    executingPrincipalType: "agent",
-    executingPrincipalId: delegateIdentityPin.principalId,
-    delegationId,
-    causationId: delegationId,
-    contextGrantIds: [],
-    capabilityGrantIds: [],
-    purpose: "delegation.execution.v2",
-  });
-  await deps.bindRunScope(childRun.id, childScope, { tenantId });
-  await deps.appendRunIdentityPin(childRun.id, delegateIdentityPin, {
-    tenantId,
-    executionScope: childScope,
-  });
-
+  if (childRun.id !== childRunId) {
+    throw new Error("The durable child run changed its contracted identity.");
+  }
   const createdAt = childRun.startedAt;
   const deadline = delegationDeadline({
     createdAt,
@@ -379,15 +415,7 @@ export async function delegateAgentTask(
     verificationMethod: acceptanceVerificationMethod(statement),
     required: true as const,
   }));
-  const grants = {
-    contextGrantIds: [],
-    capabilityGrantIds: [],
-    governedToolIds: [...DYNAMIC_DELEGATION_READ_TOOL_IDS],
-    connectorTargets: [],
-    skills: [],
-    mcpServers: [],
-    plugins: [],
-  } satisfies DelegationExecutionContractV2["grants"];
+  const grants = grantResolution.grants;
   const contract = buildDelegationExecutionContractV2({
     delegationId,
     mode: input.mode,
@@ -448,7 +476,7 @@ export async function delegateAgentTask(
     },
     grants,
     parentAuthority: {
-      grants,
+      grants: grantResolution.parentAuthorityGrants,
       budgets: parentBudgetAuthority.parentBudgetRemainingBefore,
       completeBy: deadline.completeBy,
     },
@@ -471,6 +499,12 @@ export async function delegateAgentTask(
         "deadline_expired",
       ],
     },
+  });
+  const childScope = executionScopeFromDelegationContract(contract);
+  await deps.bindRunScope(childRun.id, childScope, { tenantId });
+  await deps.appendRunIdentityPin(childRun.id, delegateIdentityPin, {
+    tenantId,
+    executionScope: childScope,
   });
   const execution = await deps.createExecution({
     contract,
@@ -618,7 +652,7 @@ function assertParentScope(input: {
 
 function assertIdempotentDelegation(
   existing: DelegationExecutionRecordV1,
-  input: DelegateAgentTaskInput,
+  input: ParsedDelegateAgentTaskInput,
   purpose: string,
   keySha256: string,
 ) {
@@ -635,6 +669,8 @@ function assertIdempotentDelegation(
     existing.contract.objective !== input.objective ||
     existing.contract.purpose !== purpose ||
     existing.mode !== input.mode ||
+    existing.contract.grants.grantRequestSha256 !==
+      delegationGrantRequestSha256(input.grants) ||
     canonicalJsonSha256(actualCriteria) !== canonicalJsonSha256(expectedCriteria)
   ) {
     const error = new Error(
@@ -692,7 +728,9 @@ function delegationDeadline(input: {
   };
 }
 
-function sanitizeDelegationInput(value: DelegateAgentTaskInput) {
+function sanitizeDelegationInput(
+  value: DelegateAgentTaskInput,
+): ParsedDelegateAgentTaskInput {
   const parsed = delegateAgentTaskInputSchema.parse(value);
   return delegateAgentTaskInputSchema.parse({
     ...parsed,
@@ -705,13 +743,13 @@ function safeText(value: string) {
   return String(redactSensitive(value)).trim();
 }
 
-function delegationPurpose(input: DelegateAgentTaskInput) {
+function delegationPurpose(input: ParsedDelegateAgentTaskInput) {
   return `dynamic_${input.taskKind}_via_${input.preferredAgentId || "discovery"}`;
 }
 
-function assertPreferredAgentCompatible(input: DelegateAgentTaskInput) {
+function assertPreferredAgentCompatible(input: ParsedDelegateAgentTaskInput) {
   if (!input.preferredAgentId) return;
-  const compatible: Record<DelegateAgentTaskInput["taskKind"], readonly DynamicAgentId[]> = {
+  const compatible: Record<ParsedDelegateAgentTaskInput["taskKind"], readonly DynamicAgentId[]> = {
     research: ["scout", "meridian"],
     build: ["forge"],
     verify: ["sentinel"],
@@ -724,7 +762,9 @@ function assertPreferredAgentCompatible(input: DelegateAgentTaskInput) {
   }
 }
 
-function taskKindAgentMode(taskKind: DelegateAgentTaskInput["taskKind"]): AgentMode {
+function taskKindAgentMode(
+  taskKind: ParsedDelegateAgentTaskInput["taskKind"],
+): AgentMode {
   if (taskKind === "build") return "execute";
   if (taskKind === "memory") return "learn";
   return "research";
@@ -747,7 +787,7 @@ function buildDelegatedPrompt(input: {
   agentId: DynamicAgentId;
   objective: string;
   acceptanceCriteria: string[];
-  mode: DelegateAgentTaskInput["mode"];
+  mode: ParsedDelegateAgentTaskInput["mode"];
   parentMessages: ChatMessage[];
 }) {
   const agent = arsenalAgents.find((candidate) => candidate.id === input.agentId)!;
@@ -886,8 +926,8 @@ function sha256(value: string) {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
-function requiredId(value: string, label: string) {
-  const normalized = value.trim();
+function requiredId(value: string | null | undefined, label: string) {
+  const normalized = value?.trim() ?? "";
   if (!normalized || normalized.length > 240) {
     throw new Error(`Delegation requires an exact ${label} identifier.`);
   }
