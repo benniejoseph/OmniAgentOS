@@ -48,6 +48,7 @@ import {
 } from "@/lib/command/prompt-queue-store";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { runtimeModelRoutingPolicySha256 } from "@/lib/settings/runtime-model-routing-pin";
+import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
 const tenantId = "tenant-queue";
 const actorId = "actor-queue";
@@ -153,6 +154,24 @@ describe("persistent prompt queue store fences", () => {
       request: createRequest("deleted-correlation"),
     })).rejects.toMatchObject({ code: "conflict" });
     expect(mocks.openPayload).not.toHaveBeenCalled();
+  });
+
+  it("reconciles a retry after the create transaction committed but its response was lost", async () => {
+    const request = createRequest("correlation-one");
+    const existing = row({
+      target_sha256: canonicalJsonSha256(request.target),
+    });
+    mocks.sql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([existing]);
+
+    await expect(createPromptQueueItem({ authority, request })).resolves.toEqual({
+      item: expect.objectContaining({ id: existing.id, state: "queued" }),
+      created: false,
+    });
+    expect(mocks.resolveIdentity).not.toHaveBeenCalled();
+    expect(mocks.appendEvent).not.toHaveBeenCalled();
+    expect(mocks.sql).toHaveBeenCalledTimes(2);
   });
 
   it("edits a paused item but rejects a stale lifecycle revision before update", async () => {

@@ -8,6 +8,8 @@
   },
   "packageManager": "npm@11.6.2",
   "scripts": {
+    "postinstall": "node scripts/patch-postgres-null-socket.mjs",
+    "prebuild": "node scripts/patch-postgres-null-socket.mjs",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
