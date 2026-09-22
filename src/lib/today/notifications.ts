@@ -42,12 +42,13 @@ import { enqueueMobilePush } from "@/lib/mobile/push-store";
 import {
   decideServerNotification,
   MOBILE_PUSH_COOLDOWN_MINUTES,
+  notificationDispositionCoordinates,
   todayReminderNotificationCandidate,
 } from "@/lib/mobile/notification-delivery-policy";
 import {
-  appendNotificationDecisionEvent,
   notificationDecisionExecutionScope,
 } from "@/lib/mobile/notification-decision-events";
+import { applyNotificationDispositionDecision } from "@/lib/mobile/notification-disposition-store";
 
 export async function getNotificationCenter(options: {
   tenantId?: string;
@@ -408,6 +409,14 @@ async function upsertNotification(input: {
         next.snoozedUntil === existing.snoozedUntil &&
         next.dueAt === existing.dueAt
       ) {
+        if (sql) {
+          await decideTodayNotificationDelivery({
+            notification: existing,
+            quietHoursActive: input.quietHoursActive,
+            evaluatedAt: input.now,
+            sql,
+          });
+        }
         return { notification: existing, changed: false };
       }
       const saved = await saveNotification(next, sql);
@@ -507,21 +516,41 @@ async function decideTodayNotificationDelivery(input: {
     producerId: "notification-scheduler",
     decision,
   });
-  if (decision.outcome === "send") {
-    await enqueueMobilePush({
+  const target = {
+    kind: "work_item" as const,
+    id: input.notification.sourceId,
+  };
+  await applyNotificationDispositionDecision({
+    coordinates: notificationDispositionCoordinates({
       tenantId: input.notification.tenantId,
-      actorId: input.notification.actorId,
-      notificationId: input.notification.id,
-      target: { kind: "work_item", id: input.notification.sourceId },
+      ownerActorId: input.notification.actorId,
+      sourceKind: "today_reminder",
+      sourceId: input.notification.sourceId,
       occurrenceKey: input.notification.occurrenceKey,
-      executionScope,
-      sql: input.sql,
-    });
-  }
-  await appendNotificationDecisionEvent({
+      decision,
+    }),
     decision,
     executionScope,
     sql: input.sql,
+    now: input.evaluatedAt,
+    directDelivery: decision.outcome === "send"
+      ? async (sql) => {
+          const deliveries = await enqueueMobilePush({
+            tenantId: input.notification.tenantId,
+            actorId: input.notification.actorId,
+            notificationId: input.notification.id,
+            target,
+            occurrenceKey: input.notification.occurrenceKey,
+            executionScope,
+            sql,
+          });
+          return {
+            deliveryKind: "mobile_push_outbox" as const,
+            deliveryIds: deliveries.map((delivery) => delivery.id),
+            targetSha256: notificationSha256(target),
+          };
+        }
+      : undefined,
   });
 }
 

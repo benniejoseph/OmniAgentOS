@@ -35,6 +35,10 @@ void main() {
       '/results/agent%3Arun%2Fone',
     );
     expect(
+      MobilePushEnvelope.fromData(_data('notification', 'digest/one')).deepLink,
+      '/inbox?notificationId=digest%2Fone',
+    );
+    expect(
       MobilePushEnvelope.fromData(_data('canary', 'probe/one')).deepLink,
       '/settings?pushCanary=probe%2Fone',
     );
@@ -340,9 +344,10 @@ void main() {
       router.routeInformationProvider.value.uri.path,
       '/meetings/meeting-one',
     );
-    expect(
-      await MobilePushReceiptQueue.forCurrentPlatform(store).load(),
-      isEmpty,
+    await _waitFor(
+      () async => (await MobilePushReceiptQueue.forCurrentPlatform(
+        store,
+      ).load()).isEmpty,
     );
   });
 
@@ -394,9 +399,10 @@ void main() {
       router.routeInformationProvider.value.uri.path,
       '/meetings/meeting-one',
     );
-    expect(
-      await MobilePushReceiptQueue.forCurrentPlatform(store).load(),
-      isEmpty,
+    await _waitFor(
+      () async => (await MobilePushReceiptQueue.forCurrentPlatform(
+        store,
+      ).load()).isEmpty,
     );
   });
 

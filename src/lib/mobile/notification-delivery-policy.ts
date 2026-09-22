@@ -4,6 +4,10 @@ import {
   type NotificationCandidateV1,
   type NotificationDecisionV1,
 } from "@/lib/mobile/notification-decision";
+import type {
+  NotificationDispositionCoordinates,
+  NotificationDispositionSourceKind,
+} from "@/lib/mobile/notification-disposition";
 
 export const MOBILE_PUSH_COOLDOWN_MINUTES = 15;
 
@@ -17,6 +21,14 @@ type CandidateCoordinates = Readonly<{
   tenantId: string;
   actorId: string;
   sourceKind: DomainNotificationProducerKind | "today_reminder";
+  sourceId: string;
+  occurrenceKey: string;
+}>;
+
+type ProactiveCandidateCoordinates = Readonly<{
+  tenantId: string;
+  actorId: string;
+  sourceKind: NotificationDispositionSourceKind;
   sourceId: string;
   occurrenceKey: string;
 }>;
@@ -95,6 +107,84 @@ export function todayReminderNotificationCandidate(
   };
 }
 
+export function delegatedTaskNotificationCandidate(input:
+  ProactiveCandidateCoordinates & Readonly<{
+    state: "waiting" | "failed" | "rejected";
+  }>,
+): NotificationCandidateV1 {
+  if (input.sourceKind !== "delegated_task") {
+    throw new Error("Delegated-task notification source kind is invalid.");
+  }
+  const base = candidateBase(input);
+  if (input.state === "waiting") return { ...base, kind: "approval" };
+  return {
+    ...base,
+    kind: "failure",
+    actionable: true,
+    severity: "warning",
+  };
+}
+
+export function scheduledRoutineNotificationCandidate(input:
+  ProactiveCandidateCoordinates & Readonly<{
+    state: "approval_required" | "failed" | "circuit_open";
+  }>,
+): NotificationCandidateV1 {
+  if (input.sourceKind !== "scheduled_routine") {
+    throw new Error("Scheduled-routine notification source kind is invalid.");
+  }
+  const base = candidateBase(input);
+  if (input.state === "approval_required") {
+    return { ...base, kind: "approval" };
+  }
+  return {
+    ...base,
+    kind: "failure",
+    actionable: true,
+    severity: input.state === "circuit_open" ? "critical" : "warning",
+  };
+}
+
+export function securityIncidentNotificationCandidate(input:
+  ProactiveCandidateCoordinates & Readonly<{
+    severity: "warning" | "critical";
+  }>,
+): NotificationCandidateV1 {
+  if (input.sourceKind !== "security_incident") {
+    throw new Error("Security-incident notification source kind is invalid.");
+  }
+  return {
+    ...candidateBase(input),
+    kind: "security",
+    severity: input.severity,
+  };
+}
+
+export function notificationDispositionCoordinates(input: {
+  tenantId: string;
+  ownerActorId: string;
+  sourceKind: NotificationDispositionSourceKind;
+  sourceId: string;
+  occurrenceKey: string;
+  decision: NotificationDecisionV1;
+}): NotificationDispositionCoordinates {
+  return {
+    tenantId: input.tenantId,
+    ownerActorId: input.ownerActorId,
+    sourceKind: input.sourceKind,
+    sourceId: input.sourceId,
+    occurrenceKey: input.occurrenceKey,
+    occurrenceSha256: canonicalJsonSha256({
+      tenantId: input.tenantId,
+      ownerActorId: input.ownerActorId,
+      sourceKind: input.sourceKind,
+      sourceId: input.sourceId,
+      occurrenceKey: input.occurrenceKey,
+    }),
+    candidateSha256: input.decision.candidateSha256,
+  };
+}
+
 export function decideServerNotification(input: {
   candidate: NotificationCandidateV1;
   policy: NotificationDecisionPolicyInput;
@@ -109,7 +199,7 @@ export function decideServerNotification(input: {
   });
 }
 
-function candidateBase(input: CandidateCoordinates) {
+function candidateBase(input: CandidateCoordinates | ProactiveCandidateCoordinates) {
   const occurrenceSha256 = canonicalJsonSha256({
     tenantId: input.tenantId,
     actorId: input.actorId,

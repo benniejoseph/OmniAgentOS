@@ -18,8 +18,8 @@ import {
 
 describe("native API contracts", () => {
   it("retains exactly the current and previous rollout versions", () => {
-    expect(NATIVE_API_CURRENT_VERSION).toBe(22);
-    expect(NATIVE_API_PREVIOUS_VERSION).toBe(21);
+    expect(NATIVE_API_CURRENT_VERSION).toBe(23);
+    expect(NATIVE_API_PREVIOUS_VERSION).toBe(22);
     expect(nativeOperationsForVersion(8)?.length).toBeLessThan(
       nativeOperationsForVersion(7)?.length || 0,
     );
@@ -65,9 +65,12 @@ describe("native API contracts", () => {
     expect(nativeOperationsForVersion(22)?.length).toBe(
       (nativeOperationsForVersion(21)?.length || 0) + 1,
     );
+    expect(nativeOperationsForVersion(23)?.length).toBe(
+      nativeOperationsForVersion(22)?.length,
+    );
     expect(nativeContractSchemas.NativeContractDiscovery.parse(
       nativeContractDiscovery(),
-    ).supportedVersions).toEqual([22, 21]);
+    ).supportedVersions).toEqual([23, 22]);
   });
 
   it("exposes only explicit local Computer Use in the current request schema", () => {
@@ -195,6 +198,40 @@ describe("native API contracts", () => {
       responseSchema: "NativeAgentTaskCancelResponse",
       headerParameters: [expect.objectContaining({ name: "Idempotency-Key", required: true })],
     });
+  });
+
+  it("keeps v22 immutable while v23 adds only the generic notification push cause", async () => {
+    const [v22, v22Manifest, v23] = await Promise.all([
+      readFile(
+        new URL("../../../public/native-contracts/v22/openapi.json", import.meta.url),
+        "utf8",
+      ),
+      readFile(
+        new URL("../../../public/native-contracts/v22/manifest.json", import.meta.url),
+        "utf8",
+      ),
+      readFile(
+        new URL("../../../public/native-contracts/v23/openapi.json", import.meta.url),
+        "utf8",
+      ),
+    ]);
+    expect(sha256(v22)).toBe(
+      "90fb2947e304d12831e2fa5828341b3b0d7e436bc97c2b207840b78156896b98",
+    );
+    expect(sha256(v22Manifest)).toBe(
+      "00a6f09a21764f4c1b1aba5b5a9a0ead4991dae2e936c8ff197f7f0b482486df",
+    );
+    const v22Cause = JSON.parse(v22).components.schemas.NativePushAcknowledgementResponse
+      .properties.causeKind.enum;
+    const v23Cause = JSON.parse(v23).components.schemas.NativePushAcknowledgementResponse
+      .properties.causeKind.enum;
+    expect(v22Cause).not.toContain("notification");
+    expect(v23Cause).toEqual([
+      ...v22Cause.slice(0, -1),
+      "notification",
+      "canary",
+    ]);
+    expect(nativeOperationsForVersion(23)).toEqual(nativeOperationsForVersion(22));
   });
 
   it("does not advertise unenrolled native mutations in v8", () => {
@@ -587,7 +624,7 @@ describe("native API contracts", () => {
       user: { id: "user-one", email: "operator@example.test", status: "active", createdAt: timestamp, updatedAt: timestamp },
       tenant: { id: "tenant-one", name: "Example", slug: "example", createdAt: timestamp, updatedAt: timestamp },
       membership: { id: "membership-one", tenantId: "tenant-one", userId: "user-one", role: "operator", status: "active", createdAt: timestamp, updatedAt: timestamp },
-      device: { id: "device-one", name: "Asael on macOS", platform: "macos", appVersion: "1.0.0", buildNumber: 2, clientContractVersion: 22 },
+      device: { id: "device-one", name: "Asael on macOS", platform: "macos", appVersion: "1.0.0", buildNumber: 2, clientContractVersion: 23 },
     };
     expect(nativeBootstrapResponseSchema.parse({
       authenticated: true,
@@ -599,9 +636,9 @@ describe("native API contracts", () => {
         mobileBasePath: "/api/mobile",
         nativeContract: {
           id: "asael.native-api",
-          currentVersion: 22,
-          previousVersion: 21,
-          supportedVersions: [22, 21],
+          currentVersion: 23,
+          previousVersion: 22,
+          supportedVersions: [23, 22],
           discoveryPath: "/api/mobile/contracts",
         },
       },
@@ -610,15 +647,15 @@ describe("native API contracts", () => {
         platform: "macos",
         appVersion: "1.0.0",
         buildNumber: 2,
-        clientContractVersion: 22,
+        clientContractVersion: 23,
         minimumVersion: "1.0.0",
-        requiredContractVersion: 22,
-        supportedContractVersions: [22, 21],
+        requiredContractVersion: 23,
+        supportedContractVersions: [23, 22],
         status: "compatible",
         agentCatalogEnrollment: { state: "held", clientReady: true },
       },
       nativeClientPolicy: { schemaVersion: 1 },
-    }).api.nativeContract.currentVersion).toBe(22);
+    }).api.nativeContract.currentVersion).toBe(23);
   });
 });
 

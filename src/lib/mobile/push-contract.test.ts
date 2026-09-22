@@ -15,6 +15,7 @@ describe("mobile push causal contract", () => {
     [{ kind: "meeting", id: "meeting/one" }, "/meetings/meeting%2Fone"],
     [{ kind: "customer", id: "account/one" }, "/customers/account%2Fone"],
     [{ kind: "run", id: "run/one" }, "/results/agent%3Arun%2Fone"],
+    [{ kind: "notification", id: "digest/one" }, "/inbox?notificationId=digest%2Fone"],
     [{ kind: "canary", id: "canary/one" }, "/settings?pushCanary=canary%2Fone"],
   ] as const)("builds an exact allowlisted deep link", (target, expected) => {
     expect(mobilePushDeepLink(target)).toBe(expected);

@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import {
   decideServerNotification,
+  delegatedTaskNotificationCandidate,
   domainNotificationCandidate,
+  notificationDispositionCoordinates,
+  scheduledRoutineNotificationCandidate,
+  securityIncidentNotificationCandidate,
   todayReminderNotificationCandidate,
 } from "@/lib/mobile/notification-delivery-policy";
 
@@ -111,6 +115,55 @@ describe("server notification delivery policy", () => {
       sourceKind: "approval",
       sourceState: "completed",
     })).toThrow("approval notification state is unsupported");
+  });
+
+  it("derives delegation, schedule, and security authority from closed server state", () => {
+    expect(delegatedTaskNotificationCandidate({
+      ...base,
+      sourceKind: "delegated_task",
+      state: "waiting",
+    })).toMatchObject({ kind: "approval" });
+    expect(delegatedTaskNotificationCandidate({
+      ...base,
+      sourceKind: "delegated_task",
+      state: "rejected",
+    })).toMatchObject({
+      kind: "failure",
+      severity: "warning",
+      actionable: true,
+    });
+    expect(scheduledRoutineNotificationCandidate({
+      ...base,
+      sourceKind: "scheduled_routine",
+      state: "circuit_open",
+    })).toMatchObject({
+      kind: "failure",
+      severity: "critical",
+      actionable: true,
+    });
+    expect(securityIncidentNotificationCandidate({
+      ...base,
+      sourceKind: "security_incident",
+      severity: "critical",
+    })).toMatchObject({ kind: "security", severity: "critical" });
+  });
+
+  it("binds exact candidate and occurrence digests without source prose", () => {
+    const decision = decide("failed");
+    const coordinates = notificationDispositionCoordinates({
+      tenantId: base.tenantId,
+      ownerActorId: base.actorId,
+      sourceKind: "agent_run",
+      sourceId: base.sourceId,
+      occurrenceKey: base.occurrenceKey,
+      decision,
+    });
+    expect(coordinates).toMatchObject({
+      tenantId: base.tenantId,
+      ownerActorId: base.actorId,
+      candidateSha256: decision.candidateSha256,
+    });
+    expect(coordinates.occurrenceSha256).toMatch(/^[a-f0-9]{64}$/);
   });
 });
 

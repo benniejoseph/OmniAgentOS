@@ -68,6 +68,7 @@ class MobilePushEnvelope {
       'meeting',
       'customer',
       'run',
+      'notification',
       'canary',
     }.contains(causeKind)) {
       throw const FormatException('Unknown push target.');
@@ -122,6 +123,7 @@ class MobilePushEnvelope {
       'meeting' => '/meetings/$encodedId',
       'customer' => '/customers/$encodedId',
       'run' => '/results/${Uri.encodeComponent('agent:$id')}',
+      'notification' => '/inbox?notificationId=$encodedId',
       'canary' => '/settings?pushCanary=$encodedId',
       _ => throw const FormatException('Unknown push target.'),
     };

@@ -29,6 +29,7 @@ import { ensureDelegationExecutionRuntimeV1 } from "@/lib/db/delegation-executio
 import { ensureScheduledWorkflowTriggerShadowV1 } from "@/lib/db/workflow-trigger-schedule-schema";
 import { ensureScheduledWorkflowReadOnlyCanaryV1 } from "@/lib/db/workflow-schedule-canary-schema";
 import { ensureScheduledWorkflowPolicyLeaseV1 } from "@/lib/db/workflow-policy-lease-schema";
+import { ensureNotificationDispositionRuntimeV1 } from "@/lib/db/notification-disposition-schema";
 import { ensureDeclarativePluginsV1 } from "@/lib/db/plugin-schema";
 import { ensureBuiltinSkillCatalogV2 } from "@/lib/db/builtin-skill-catalog-schema";
 import { ensureBuiltinSkillCatalogV3 } from "@/lib/db/builtin-skill-catalog-v3-schema";
@@ -1718,6 +1719,10 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[198],
       up: ensureScheduledWorkflowPolicyLeaseV1,
+    },
+    {
+      ...databaseSchemaMigrations[199],
+      up: ensureNotificationDispositionRuntimeV1,
     },
   ];
 }

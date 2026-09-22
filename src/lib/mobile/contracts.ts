@@ -12,8 +12,8 @@ import { mobilePushReceiptRequestSchema } from "@/lib/mobile/push-contract";
 import { pluginManifestSchema } from "@/lib/plugins/contracts";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 22 as const;
-export const NATIVE_API_PREVIOUS_VERSION = 21 as const;
+export const NATIVE_API_CURRENT_VERSION = 23 as const;
+export const NATIVE_API_PREVIOUS_VERSION = 22 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -357,6 +357,7 @@ export const nativePushAcknowledgementResponseSchema = z.object({
     "meeting",
     "customer",
     "run",
+    "notification",
     "canary",
   ]),
   causeId: mobilePushOpaqueId,
@@ -369,6 +370,7 @@ const nativePushCauseKindSchema = z.enum([
   "meeting",
   "customer",
   "run",
+  "notification",
   "canary",
 ]);
 
@@ -1175,6 +1177,11 @@ const v22Operations: readonly NativeOperation[] = [
   ),
 ];
 
+// Contract v23 keeps v22 byte-frozen while extending only the enrolled push
+// cause vocabulary with the generic, server-derived Inbox notification target.
+// It adds no route or action authority.
+const v23Operations: readonly NativeOperation[] = [...v22Operations];
+
 export const nativeContractSchemas = Object.freeze({
   JsonObject: jsonObject,
   NativeClientAttestation: nativeClientAttestationSchema,
@@ -1262,6 +1269,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 20) return v20Operations;
   if (version === 21) return v21Operations;
   if (version === 22) return v22Operations;
+  if (version === 23) return v23Operations;
   return undefined;
 }
 
@@ -1271,7 +1279,7 @@ export function nativeContractDiscovery() {
     contractId: NATIVE_API_CONTRACT_ID,
     currentVersion: NATIVE_API_CURRENT_VERSION,
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
-    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [22, 21],
+    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [23, 22],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,
       state: version === NATIVE_API_CURRENT_VERSION ? "current" as const : "previous" as const,

@@ -3,6 +3,11 @@ import { z } from "zod";
 
 const opaqueId = z.string().trim().min(1).max(240);
 
+// `notification` was added to the frozen native cause enum in contract v23.
+// Keep the minimum next to the target contract so server-side fan-out can
+// preserve rolling compatibility with still-active v22 sessions.
+export const GENERIC_NOTIFICATION_TARGET_MIN_NATIVE_CONTRACT_VERSION = 23;
+
 export const mobilePushTargetSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("approval"), id: opaqueId }).strict(),
   z.object({
@@ -13,6 +18,7 @@ export const mobilePushTargetSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("meeting"), id: opaqueId }).strict(),
   z.object({ kind: z.literal("customer"), id: opaqueId }).strict(),
   z.object({ kind: z.literal("run"), id: opaqueId }).strict(),
+  z.object({ kind: z.literal("notification"), id: opaqueId }).strict(),
   z.object({ kind: z.literal("canary"), id: opaqueId }).strict(),
 ]);
 
@@ -48,6 +54,7 @@ export const mobilePushEnvelopeSchema = z.object({
     "meeting",
     "customer",
     "run",
+    "notification",
     "canary",
   ]),
   causeId: opaqueId,
@@ -80,6 +87,8 @@ export function mobilePushDeepLink(input: MobilePushTarget) {
       return `/customers/${id}`;
     case "run":
       return `/results/${encodeURIComponent(`agent:${target.id}`)}`;
+    case "notification":
+      return `/inbox?notificationId=${id}`;
     case "canary":
       return `/settings?pushCanary=${id}`;
   }
@@ -131,7 +140,9 @@ export function mobilePushPreview(
           ? "A customer update needs your attention."
           : target.kind === "run"
             ? "A run update is ready."
-            : "Push notification verification is ready.";
+            : target.kind === "notification"
+              ? "A notification summary needs your attention."
+              : "Push notification verification is ready.";
   return { title: "Asael", body: subject } as const;
 }
 

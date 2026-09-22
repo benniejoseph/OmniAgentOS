@@ -810,10 +810,15 @@ describe("ordered database schema versions", () => {
       name: "delegation_execution_runtime_v1",
       checksum: "0113edbdab2a99f32d4e318c8407a5b66fb8fd7bcbbf839d4d199ded0d2ad6ac",
     });
-    expect(databaseSchemaMigrations.at(-1)).toEqual({
+    expect(databaseSchemaMigrations.find((migration) => migration.version === 199)).toEqual({
       version: 199,
       name: "scheduled_workflow_policy_lease_v1",
       checksum: "56d69404165e70123c590cf1637985db06de55889e4de64e28523b92885ca093",
+    });
+    expect(databaseSchemaMigrations.at(-1)).toEqual({
+      version: 200,
+      name: "notification_disposition_runtime_v1",
+      checksum: "99af5ab52a824c435e19e46f918755bfa549a1fecda22f9061940f9030c97c2b",
     });
     expect(databaseSchemaMigrations.find((migration) => migration.version === 139)).toEqual({
       version: 139,

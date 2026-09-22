@@ -85,6 +85,7 @@ vi.mock("@/lib/settings/credential-vault", () => ({
 
 import {
   dispatchMobilePushDeliveries,
+  enqueueMobilePush,
   getMobilePushAcknowledgementCandidate,
   recordMobilePushDeliveryReceipt,
 } from "@/lib/mobile/push-store";
@@ -324,6 +325,60 @@ describe("mobile push delivery leases", () => {
   });
 });
 
+describe("mobile push native contract compatibility", () => {
+  it("fans a v23-only generic target only to compatible sessions while preserving legacy targets", async () => {
+    dbMocks.responses.push(
+      [registrationRow({
+        id: "registration-v23",
+        clientContractVersion: 23,
+      })],
+      [notificationDeliveryRow("registration-v23")],
+      [registrationRow({
+        id: "registration-v22",
+        clientContractVersion: 22,
+      })],
+      [],
+    );
+
+    await expect(enqueueMobilePush({
+      tenantId: "tenant-one",
+      actorId: "actor-one",
+      target: { kind: "notification", id: "digest-one" },
+      occurrenceKey: "digest-one",
+    })).resolves.toHaveLength(1);
+    await expect(enqueueMobilePush({
+      tenantId: "tenant-one",
+      actorId: "actor-one",
+      target: { kind: "approval", id: "approval-one" },
+      occurrenceKey: "approval-one",
+    })).resolves.toHaveLength(0);
+
+    const registrationSelections = dbMocks.statements.filter((statement) =>
+      statement.text.includes("FROM omni_mobile_push_registrations registration")
+    );
+    expect(registrationSelections).toHaveLength(2);
+    expect(registrationSelections[0].text).toContain(
+      "session.client_contract_version >=",
+    );
+    expect(registrationSelections[0].params).toEqual([
+      "tenant-one",
+      "actor-one",
+      false,
+      23,
+      null,
+      null,
+    ]);
+    expect(registrationSelections[1].params).toEqual([
+      "tenant-one",
+      "actor-one",
+      true,
+      23,
+      null,
+      null,
+    ]);
+  });
+});
+
 function context(overrides: { deviceId?: string; sessionId?: string } = {}) {
   return {
     tenantId: "tenant-one",
@@ -408,10 +463,13 @@ function deliveryRow(
   };
 }
 
-function registrationRow() {
+function registrationRow(overrides: {
+  id?: string;
+  clientContractVersion?: number;
+} = {}) {
   const timestamp = "2026-09-08T12:00:00.000Z";
   return {
-    id: "registration-one",
+    id: overrides.id || "registration-one",
     tenant_id: "tenant-one",
     owner_actor_id: "actor-one",
     user_id: "user-one",
@@ -429,6 +487,42 @@ function registrationRow() {
     last_registered_at: timestamp,
     last_delivered_at: null,
     revoked_at: null,
+    created_at: timestamp,
+    updated_at: timestamp,
+    client_contract_version: overrides.clientContractVersion || 22,
+  };
+}
+
+function notificationDeliveryRow(registrationId: string) {
+  const timestamp = "2026-09-22T12:00:00.000Z";
+  return {
+    id: `mobile_push_delivery_${"a".repeat(48)}`,
+    tenant_id: "tenant-one",
+    owner_actor_id: "actor-one",
+    registration_id: registrationId,
+    notification_id: null,
+    cause_kind: "notification",
+    cause_id: "digest-one",
+    parent_id: null,
+    deep_link: "/inbox?notificationId=digest-one",
+    dedupe_key: "a".repeat(64),
+    payload: {
+      schemaVersion: "1",
+      deliveryId: `mobile_push_delivery_${"a".repeat(48)}`,
+      causeKind: "notification",
+      causeId: "digest-one",
+      deepLink: "/inbox?notificationId=digest-one",
+    },
+    status: "queued",
+    attempt: 0,
+    max_attempts: 5,
+    run_at: timestamp,
+    lease_owner: null,
+    lease_expires_at: null,
+    last_error: null,
+    delivered_at: null,
+    provider_accepted_at: null,
+    acknowledged_at: null,
     created_at: timestamp,
     updated_at: timestamp,
   };
