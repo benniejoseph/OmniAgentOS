@@ -339,6 +339,78 @@ describe("persistent prompt queue store fences", () => {
       (parts as TemplateStringsArray).join("?").includes("COUNT(*)"))).toBe(false);
   });
 
+  it("retries one exact pre-commit close during the read-only preflight", async () => {
+    const request = createRequest("preflight-close-retry");
+    const created = row({
+      client_correlation_id: request.clientCorrelationId,
+      target_sha256: canonicalJsonSha256(request.target),
+    });
+    const closed = Object.assign(new Error("preflight pool closed"), {
+      code: "DATABASE_CONNECTION_CLOSED",
+    });
+    mocks.transaction
+      .mockRejectedValueOnce(closed)
+      .mockImplementation(
+        async (operation: (sql: typeof mocks.sql) => unknown) =>
+          operation(mocks.sql),
+      );
+    mocks.sql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ count: 0 }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ count: 0 }])
+      .mockResolvedValueOnce([{ position: 0 }])
+      .mockResolvedValueOnce([created]);
+
+    await expect(createPromptQueueItem({ authority, request })).resolves.toEqual({
+      item: expect.objectContaining({
+        clientCorrelationId: request.clientCorrelationId,
+      }),
+      created: true,
+    });
+    expect(mocks.transaction).toHaveBeenCalledTimes(3);
+    expect(mocks.resolveIdentity).toHaveBeenCalledOnce();
+    expect(mocks.resolveRuntime).toHaveBeenCalledOnce();
+    expect(mocks.appendEvent).toHaveBeenCalledOnce();
+  });
+
+  it("never retries a second exact close during the read-only preflight", async () => {
+    const closed = Object.assign(new Error("preflight pool closed"), {
+      code: "DATABASE_CONNECTION_CLOSED",
+    });
+    mocks.transaction
+      .mockRejectedValueOnce(closed)
+      .mockRejectedValueOnce(closed);
+
+    await expect(createPromptQueueItem({
+      authority,
+      request: createRequest("preflight-close-limit"),
+    })).rejects.toBe(closed);
+    expect(mocks.transaction).toHaveBeenCalledTimes(2);
+    expect(mocks.resolveIdentity).not.toHaveBeenCalled();
+    expect(mocks.resolveRuntime).not.toHaveBeenCalled();
+    expect(mocks.appendEvent).not.toHaveBeenCalled();
+  });
+
+  it("never replays an indeterminate read-only preflight commit", async () => {
+    const unknownCommit = Object.assign(new Error("preflight commit unknown"), {
+      code: "DATABASE_COMMIT_OUTCOME_UNKNOWN",
+      retryable: false,
+    });
+    mocks.transaction.mockRejectedValueOnce(unknownCommit);
+
+    await expect(createPromptQueueItem({
+      authority,
+      request: createRequest("preflight-unknown-commit"),
+    })).rejects.toBe(unknownCommit);
+    expect(mocks.transaction).toHaveBeenCalledOnce();
+    expect(mocks.resolveIdentity).not.toHaveBeenCalled();
+    expect(mocks.resolveRuntime).not.toHaveBeenCalled();
+    expect(mocks.appendEvent).not.toHaveBeenCalled();
+  });
+
   it("rechecks correlation under the actor lock after a pre-read miss", async () => {
     const request = createRequest("correlation-race");
     const existing = row({

@@ -92,12 +92,32 @@ export async function createPromptQueueItem(input: {
     { prompt: request.prompt },
     promptBinding(input.authority.tenantId, input.authority.actorId, id, promptSha256),
   );
-  const existing = await preflightPromptQueueCreate({
-    authority: input.authority,
-    request,
-    promptSha256,
-    targetSha256,
-  });
+  let existing: PromptQueueItemV1 | undefined;
+  let preflightClosedGenerationRetries = 0;
+  while (true) {
+    try {
+      existing = await preflightPromptQueueCreate({
+        authority: input.authority,
+        request,
+        promptSha256,
+        targetSha256,
+      });
+      break;
+    } catch (error) {
+      if (
+        databaseFailureCode(error) === "DATABASE_CONNECTION_CLOSED" &&
+        preflightClosedGenerationRetries === 0
+      ) {
+        // This transaction is database-only and read-only. The reservation
+        // manager emits this exact code only before COMMIT, so no database
+        // effect survived and one attempt on the replacement is safe. Unknown
+        // COMMIT outcomes and every other failure remain non-replayable.
+        preflightClosedGenerationRetries += 1;
+        continue;
+      }
+      throw error;
+    }
+  }
   if (existing) return { item: existing, created: false };
 
   // Pin resolution may perform tenant-scoped database reads. Resolve and freeze
