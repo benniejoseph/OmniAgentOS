@@ -36,14 +36,19 @@ Set these through the platform secret/configuration store, never in source contr
 - `NEXT_PUBLIC_APP_URL`: canonical HTTPS origin. Set it to exactly `https://asael.bennierichard.com`. It is public and build-inlined, not a secret.
 - `OMNIAGENT_NATIVE_MIN_ANDROID_VERSION`, `OMNIAGENT_NATIVE_MIN_IOS_VERSION`, and `OMNIAGENT_NATIVE_MIN_MACOS_VERSION`: optional stable `major.minor.patch` minimums for native compatibility telemetry. An absent or empty value defaults to `1.0.0`; a malformed configured value invalidates the policy and holds adoption unavailable. These settings do not authorize Agent enrollment.
 
-Native contract artifacts are committed immutable release inputs. Source contract v20
-is the release candidate and frozen v19 is the one supported previous version; older
-versions remain historical archives and a published version is never regenerated in place. Run
+Native contract artifacts are committed immutable release inputs. Source contract
+v25 is the pending release candidate and production-deployed v20 is deliberately
+retained as the one rollback-compatible previous version. V21-v24 are immutable
+historical archives: they were generated during development but were not promoted
+into the production compatibility pair. Do not retire v20 until the v25 server,
+signed native clients, canaries, and rollback window have all completed. A published
+version is never regenerated in place. Run
 `npm run check:native-contracts` before a native-contract release; the check
 fails if the generated OpenAPI, event schema, fixtures, integrity manifests,
-Dart SDK, or frozen v7-v19 document hashes drift. Removing an archived version
+Dart SDK, or frozen v7-v24 document hashes drift. Removing an archived version
 requires a separately reviewed adoption decision and is not implied by a
-Vercel deployment.
+Vercel deployment. Neither the v25 contract nor its web/native management surface
+is described as production-deployed by this source-state documentation.
 
 ### Licensed TradingView chart assets
 
@@ -133,8 +138,8 @@ helper credential and grants no action-creation API to the native client. Migrat
 179 is installed in production. Migration
 `20260917150000_p13_3_local_computer_run_binding.sql` (internal version 180) is
 also installed and binds each local session to one exact run while indexing bounded
-observation expiry. Contract v14 is canonical-current and retains published v13
-byte-for-byte as the supported previous version. V13 added the approval-gated
+observation expiry. At that P13.3 cutover, contract v14 was canonical-current and
+retained published v13 byte-for-byte as the supported previous version. V13 added the approval-gated
 `local.macos.open_url` command, exact run/execution screenshot presentation, and
 snapshot-bound `screenshot_pixel` metadata; v14 removes the retired remote-frame read
 while retaining those local capabilities. The four courier capabilities remain macOS-only
@@ -239,7 +244,7 @@ without evidence-blind sibling council rewriting, and exposes bounded non-secure
 Accessibility text while retaining secure-field redaction and Secure Event Input
 refusal.
 
-The current signed install checkpoint is Asael `1.7.1` build `17` at
+The later signed install checkpoint at that stage was Asael `1.7.1` build `17` at
 `/Applications/Asael.app`, packaged as
 `apps/flutter/build/distribution/macos/Asael-1.7.1-17-macOS.dmg` with SHA-256
 `0c694a5293a30f039ef1b282391678cc8c006a77c6351004828f89ccf7258ca4`.
@@ -252,7 +257,7 @@ presentation-only responsive/accessibility patch over the same native v14
 courier and server runtime. The prior 1.7.0+16 application bundle is retained in
 Trash for rollback.
 
-The current packaged checkpoint is Asael `1.9.0` build `19` at
+The subsequent packaged checkpoint was Asael `1.9.0` build `19` at
 `apps/flutter/build/distribution/macos/Asael-1.9.0-19-macOS.dmg`, with SHA-256
 `cf8f9bcc79d2ababe057d8237ea6deaca155e3e1b6bb5338849a80d51e93b555`.
 Strict nested signing passes, native discovery is production-live at current
@@ -262,7 +267,7 @@ recorded installed checkpoint. It uses the owner-only local identity, so it
 deliberately contains no production APNs entitlement and is not evidence of an
 APNs delivery canary.
 
-The current installed checkpoint is Asael `1.10.0` build `20` at
+The subsequent recorded installed checkpoint was Asael `1.10.0` build `20` at
 `/Applications/Asael.app`, packaged as
 `apps/flutter/build/distribution/macos/Asael-1.10.0-20-macOS.dmg` with SHA-256
 `4cce04a64e0392d0fb3a116fc73786c4433fde729fd3656a7a6dcec200a9829b`.
@@ -275,6 +280,13 @@ Skill catalog is now served by Vercel deployment
 `dpl_31wUhFtP8pxP5GEc8q46Kq3p2Ms9`, exact revision
 `ed615fe3b0a3a894628b28905a13865f05cd7d8a`. The owner-only identity still
 deliberately contains no production APNs entitlement.
+
+Those package records are retained as historical release evidence; they do not
+override the pending native-contract transition declared above. The next
+contract promotion is v25 current with the deployed v20 bridge retained as the
+only previous rollback contract. V21-v24 remain immutable archives, and neither
+the v25 native client nor its management UI is claimed production-installed by
+this document.
 
 Distribution to another Mac sets `ASAEL_MACOS_SIGNING_IDENTITY` and
 `ASAEL_MACOS_NOTARY_PROFILE`, which enables Hardened Runtime and makes Developer ID
@@ -375,6 +387,75 @@ identity (or, before the identity migration exists, an exact configured
 host/port/database match).
 
 Keep migrations backward-compatible for at least one application rollback. If a future migration removes or rewrites data, use a staged expand/backfill/contract release rather than relying on a code rollback.
+
+### Pending adaptive-runtime migration chain
+
+The adaptive-runtime migrations below are implemented release inputs and are
+registered in `schema-migrations.json`, but this document does not claim that
+they are installed in production. Each migration takes the schema advisory lock,
+checks the exact immediately preceding version/name/checksum, installs or extends
+forced actor RLS, verifies its privilege/trigger boundary, and writes its own
+marker in the same transaction.
+
+| Version | Migration name | SHA-256 checksum | Additive boundary |
+| --- | --- | --- | --- |
+| 196 | `delegation_execution_runtime_v1` | `0113edbdab2a99f32d4e318c8407a5b66fb8fd7bcbbf839d4d199ded0d2ad6ac` | V2 delegation execution and root-budget ledgers |
+| 197 | `scheduled_workflow_trigger_shadow_v1` | `64953184d937e9b07591a8dc0aaf97fc696f00a1317ed872d8b58764eca35a16` | actor-owned schedule configuration and no-execution shadow receipts |
+| 198 | `scheduled_workflow_read_only_canary_v1` | `75358f70c27be2ce0bd8f2048dd399a649d8cbd27cca9ff1a30ab5343324089f` | immutable reviewed read-only occurrences, receipts, replacements, and circuit state |
+| 199 | `scheduled_workflow_policy_lease_v1` | `56d69404165e70123c590cf1637985db06de55889e4de64e28523b92885ca093` | single-use exact-effect PolicyLease and consumption ledgers |
+| 200 | `notification_disposition_runtime_v1` | `99af5ab52a824c435e19e46f918755bfa549a1fecda22f9061940f9030c97c2b` | content-free disposition, digest, and watermark ledgers plus generic notification push cause |
+| 201 | `prompt_queue_runtime_v1` | `e9cd14ec6c526fbd0fbed097cbc8a535e92b60cfd6bae0785a0a0a6c3b584567` | sealed actor-private prompt queue and revision-fenced dispatch lifecycle |
+
+Version 196 requires the exact predecessor marker v195
+`moltbook_autonomy_privilege_repair_v1` with checksum
+`c02b2ca195cbb00c206320eb2074fed7981c282c356f1d4320c6c1ac866adf94`;
+each following row requires the marker immediately above it. Apply only in the
+listed order after a verified backup. A partial application intentionally makes
+newer code fail schema verification rather than silently skipping a boundary.
+
+The chain is expand-only for the existing v20 web/native bridge: older clients
+do not receive the new routes or authority, and existing queue, notification,
+workflow, and Agent records keep their prior meanings. Roll out the compatible
+web revision only after v196-v201 verify, then promote native source contract
+v25 and the signed clients. This slice does not change the Fly worker entrypoint,
+image contract, or protocol; keep the existing protocol-1 worker and OpenAI
+gateway running, verify their health, and confirm their canonical web tick after
+promotion rather than rebuilding an otherwise identical image. V21-v24 remain immutable archives rather
+than rollback candidates. Keep v20 advertised and accepted until the v25
+server/client canaries pass and the rollback window closes. Database migration,
+web promotion, native contract promotion, and signed-app installation are four
+separate gates; completing one does not prove the others.
+
+Use the following compatibility order for this release:
+
+1. Back up production and apply v196-v201 with the migration-owner connection;
+   verify exact markers, forced RLS, restrictive actor policies, immutable
+   receipt tables, and narrow column-only update grants.
+2. Deploy one web candidate and verify the unchanged protocol-1 Fly worker and
+   OpenAI gateway remain healthy and can reach the candidate/canonical tick
+   boundary. The web tick must revalidate exact child grants before claim,
+   process read-only and PolicyLease-bound schedule occurrences, materialize
+   notification dispositions/digests, and run at most the configured bounded
+   proactive-adaptation proposal cycle. A proactive proposal must remain
+   `observed` and inactive after its Sentinel review.
+3. Canary one child with exact Skill/Plugin/MCP/native-read pins and one dynamic
+   persona brief; prove persona guidance changes no grant. Canary one read-only
+   schedule and one exact reviewed reversible mutation, including drift back to
+   approval. Exercise direct, defer, digest, and suppress notification outcomes.
+4. Exercise the sealed prompt queue from web: create, edit, pause/resume,
+   reorder, run once, disconnect, and reconcile both accepted-run and no-run
+   lease expiry. Confirm that no queue operation creates authority before the
+   governed Agent admission.
+5. Only then promote `/api/mobile/contracts` to v25/v20, distribute the signed
+   v25 client, and repeat prompt-queue plus management-projection canaries on
+   macOS and Android. Leave v20 installed/accepted for rollback.
+
+The adaptation proposer reuses the existing v115 ledger and therefore has no
+new migration in this chain. That does not make it independently deployable:
+its worker code, verifier assignment, exact target/Sentinel pins, content-free
+outcomes, and management UI must travel with the compatible release. Do not
+interpret a passed Sentinel proposal review as lifecycle evaluation or
+activation.
 
 P8.6 A2A deployments also require `NEXT_PUBLIC_APP_URL` to be the canonical
 credential-free HTTPS origin used in Agent Cards and delegated callback URLs,

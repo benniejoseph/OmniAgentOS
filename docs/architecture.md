@@ -197,9 +197,15 @@ target records the bounded typed run event `execution_target_retired` and fails
 without executing or redirecting the work. This compatibility shape is not an
 execution target.
 
-`local_macos` requires an authenticated compatible macOS client (current native
-v14 or frozen previous v13), a current device lease, and both Accessibility
-and Screen Recording. Its assigned `computer_use` model is tenant-configurable;
+`local_macos` requires an authenticated compatible macOS client, a current
+device lease, and both Accessibility and Screen Recording. The pending native
+rollout makes source contract v25 current while deliberately retaining the
+production-deployed v20 bridge as the only rollback-compatible previous
+contract; v21-v24 remain immutable historical archives and are not promoted
+into that compatibility pair. Production continues on v20 until the v25 server
+and signed client release gates complete, and v20 must remain supported for the
+entire rollout and rollback window. Its assigned `computer_use` model is
+tenant-configurable;
 the resolver requires one configured runtime that supports both governed tools
 and vision. No hard-coded provider/model fallback may split those requirements
 across runtimes. Every local action still enters the governed tool executor.
@@ -523,6 +529,96 @@ state and derive a terminal outcome without claiming success from missing
 evidence. Public trajectory metadata hashes correlation, event, and causation
 identifiers and never includes prompts, model deliberation, tool output,
 secrets, or private reasoning.
+
+### Reviewed recurring schedules
+
+The implemented schedule path extends the existing workflow engine rather than
+creating a second executor. Migration v197 adds exact-owner schedule
+configuration and a metadata-only shadow cursor. Shadow evaluation records what
+would have been due but creates no run and grants no execution authority.
+Migration v198 adds immutable reviewed schedules, occurrence and receipt
+ledgers, replacement fencing, missed-run policy, bounded occurrence budgets,
+and a failure circuit. The read-only lane pins the saved procedure snapshot,
+Agent identity, Agent policy, schedule configuration, and budget; any drift
+fails that occurrence closed. Editing a reviewed schedule creates a paused
+replacement and atomically retires the earlier version instead of changing its
+authority in place.
+
+Migration v199 extends that same path only for a reviewed static procedure whose
+possible mutations are reversible risk-one or risk-two actions with exact tool,
+input, target, tool-contract, principal, influence-manifest, and schedule-policy
+bindings. The standing mutation policy is review evidence, not an execution
+token. Each occurrence must issue and atomically consume a short-lived,
+single-use `PolicyLeaseV1` for the exact effect. Changed input, target, tool
+contract, principal, procedure, policy, identity, budget, expired lease, or a
+second use cannot inherit authority and returns to ordinary approval. The
+actor-private trigger detail projects only content-free issued, consumed, or
+expired outcomes; it never returns the reviewed input, target, principal, or
+lease payload.
+
+Migrations v197-v199 and their schedule runtime are implemented release inputs,
+not a claim that schedules or PolicyLeases have been promoted to production.
+
+### Durable notification dispositions
+
+The notification decision pipeline converts server-owned approval, Meeting,
+customer-risk, Agent-run, Today-reminder, delegated-task, scheduled-routine,
+and security-incident state into a closed candidate vocabulary. A deterministic
+policy chooses `send`, `defer`, `digest`, or `suppress` while honoring critical
+delivery, quiet hours, cooldown, and digest policy. Migration v200 stores the
+actor-private decision and bounded lifecycle separately from notification text,
+provider payloads, and domain data. Direct delivery retries stay pending until
+bound to their real outbox or ledger receipt; deferred items are re-evaluated;
+digest batching creates an immutable candidate-manifest and delivery binding.
+Every record and event declares that it includes no content and grants no
+authority.
+
+The management projection is newest-first and content-free. It is evidence of
+why a candidate was sent, deferred, digested, suppressed, retried, or completed;
+it is not a second notification source and cannot authorize a push or user
+action. Migration v200 and this runtime are implemented but not claimed as
+production-installed here.
+
+### Persistent Command prompt queue
+
+Migration v201 adds one server-authoritative, actor-private Command queue shared
+by web, macOS, and Android. Prompt text is sealed at rest and each item pins the
+exact Agent definition/principal generation, configured provider/model routing
+policy, Conversation/Mission/Project target, and `asael` or `local_macos`
+execution target. The queue supports at most 40 active items, revision-fenced
+create/edit/pause/resume/remove/reorder operations, and an idempotent client
+correlation ID. Its immutable declaration `queueGrantsAuthority: false` means
+that storing or reordering a prompt never carries a context, tool, budget,
+approval, or Computer Use grant.
+
+Run-now first revalidates the Agent and model pins, then claims one exact
+revision with a short-lived token bound to the authenticated session. The
+internal Agent request must match the sealed prompt, mode, strategy, Agent, and
+target byte-for-byte by digest, and an admission compare-and-swap consumes that
+intent once before the ordinary governed Agent route may start. Reconnect never
+blindly replays uncertain work: an expired dispatch with a durable run ID is
+reported completed/accepted for follow-up, while one without a run ID fails and
+requires an explicit actor resume. Web and Flutter render the same server
+states. Flutter may stage bounded encrypted offline mutations and replays them
+with the original correlation/revision on reconnect; a changed server revision
+becomes an explicit conflict instead of last-write-wins.
+
+The queue schema, routes, web/native clients, and native v24 archive are
+implemented release inputs, but migration v201 and the corresponding web/native
+release are not described as production-deployed.
+
+### Adaptive-runtime management observability
+
+The management surfaces reuse actor-private application services rather than
+reading internal tables from a client. Agent release detail exposes immutable
+version IDs, digests, evaluations, and explicit lifecycle actions; adaptation
+detail exposes observed/evaluated/active/rolled-back records; child-task detail
+exposes exact immutable Skill, Plugin, MCP, and native-read pins plus the durable
+grant-validation result; trigger detail includes occurrence receipts and
+PolicyLease outcomes; notification history exposes content-free dispositions.
+The native v25 source contract maps to those same APIs. No management read
+grants mutation authority, digest-bound execution grants are not editable or
+revocable in place, and the native surface deliberately omits Agent retirement.
 
 ## Storage
 
@@ -1824,7 +1920,9 @@ content-free outcome receipt. A passing review may insert one immutable
 evaluate or activate that candidate, change active guidance, grant authority,
 or bypass the owner's existing review, evaluation, and activation actions. No
 new schema is required because the optional proposal review is hash-bound
-inside the immutable effect payload.
+inside the immutable effect payload. This proactive source implementation is a
+pending rollout capability, not evidence that its nightly lane or management UI
+is already production-deployed.
 
 P8.1 introduces the strict `p8.1-delegation-contract:1` boundary for every new
 workflow Agent node and internal Council specialist. A contract binds the exact
@@ -1884,6 +1982,36 @@ Council UI expose content-free task identity, revision, and disposition.
 Migration v116 installs the append-only forced-RLS projection, restrictive
 actor policy, transition/truncate guards, active-task index, and serving-role
 updates limited to lifecycle columns.
+
+The implemented V2 execution runtime makes child authority explicit instead of
+inferring it from a specialist name or parent prompt. A delegation request may
+select bounded native read tools, exact Skill versions, enabled Plugin
+installation/component revisions, and reviewed MCP server/tool contracts. The
+resolver intersects that request with the parent's persisted harness, exact
+parent and delegate identity pins, active actor-owned resources, connector
+targets, and read-only tool policy. It persists only immutable IDs, revisions,
+contract digests, and derived capability-grant IDs in
+`delegation-execution-contract:2`; it never turns the parent's broader toolbox
+into child authority. Immediately before a worker claim, every Skill, Plugin,
+MCP, and native-read binding is resolved again. Drift records the content-free
+`delegation.grants.validated` state as `changed` and fails closed before model or
+tool execution; a missing validation receipt remains `not_checked`, never
+implicitly current.
+
+An optional dynamic persona brief adds only a bounded label and guidance for
+the child task. The brief declares `authorityEffect: "none"`, is digest-bound to
+the exact generated child prompt, and is wrapped as untrusted presentation and
+approach guidance. It cannot change the immutable Agent identity or model
+assignment, add a tool or grant, widen context or budgets, bypass approval, or
+permit redelegation. Management projections intentionally omit its private
+guidance while exposing the immutable grant pins and validation state.
+
+Migration v196 installs the actor-private V2 execution and root-budget ledgers
+under forced RLS. Contract, context capsule, identity, runtime assignment,
+budget allocation, and grant coordinates are immutable; serving roles receive
+only the narrow lifecycle operations required by the execution store. This
+migration and the runtime above are implemented release inputs but are not
+claimed as production-installed in this document.
 
 P8.4 adds a brokered, actor-private Mission channel on top of that task ledger.
 The strict `p8.4-delegation-message:1` and

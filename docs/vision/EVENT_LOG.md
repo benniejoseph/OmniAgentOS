@@ -1989,3 +1989,103 @@ file content, raw build log, route response body, browser frame, credential,
 prompt, or private reasoning, and they do not authorize deployment or production
 promotion. Release authority still requires the exact reviewed checkpoint,
 provider deployment binding, governed approval, and ordinary effect receipt.
+
+## Exact delegation execution and runtime-grant events
+
+The V2 child runtime emits `delegation.execution.queued`, `.running`,
+`.waiting`, `.completed_proposed`, `.verified`, `.rejected`, `.failed`,
+`.canceled`, and `.expired` as the revision-fenced execution changes state.
+Each payload contains only execution/delegation/root/parent/child/Agent
+identifiers, from/to state, lifecycle revision, detail digest, contract digest,
+context-capsule digest, runtime-assignment digest, and time. The actor-private
+execution ledger retains the immutable contract separately. Event payloads do
+not contain the objective, acceptance text, result summary, artifact content,
+persona guidance, Skill instructions, Plugin manifest, MCP contract, tool
+input/output, credential, tenant/actor identity, or private reasoning.
+
+`delegation.grants.validated` records the exact worker-claim check as `current`
+or `changed`, bound to execution, delegation, and contract digest. It includes
+no grant content and declares `contentIncluded: false` and
+`grantsAuthority: false`. A missing event projects `not_checked`; it is never
+treated as a current validation. Actual child authority comes only from the
+immutable digest-bound contract, attenuated execution scope, active actor-owned
+Skill/Plugin/MCP/native-read bindings, and governed executor. The validation
+event cannot repair or widen a changed grant.
+
+An optional dynamic persona brief creates no separate event. Its
+`authorityEffect: none`, brief digest, and exact child-prompt digest are covered
+by the immutable contract hash. The event stream therefore proves which
+contract ran without copying private guidance or allowing that guidance to
+become identity, model, grant, tool, budget, approval, or redelegation
+authority.
+
+## Reviewed schedule and PolicyLease events
+
+`workflow.schedule.shadow.evaluated` records the exact due/missed/exhausted
+comparison, occurrence counters, next time, configuration/identity/policy/
+procedure/review/budget digests, and explicit false execution/run declarations.
+It never creates a workflow or grants schedule authority. Reviewed schedule
+controls emit `workflow.schedule.paused`, `.resumed`, `.replaced`, and
+`.replacement_activated` with only state/configuration digests. Occurrence
+claims and outcomes emit `workflow.schedule.occurrence.{status}` with the exact
+occurrence, schedule time, optional workflow/job IDs, bounded failure code, and
+authority/state/receipt digests. Procedure content and model or tool payloads do
+not enter those events.
+
+Reviewed static mutations additionally emit `security.policy_lease.issued` and
+`.consumed`. Their payloads bind the lease, trigger, occurrence, workflow run,
+mutation policy, exact action binding, execution, issue/expiry time, and optional
+consumption-receipt digest while declaring `leaseGrantsAuthority: false`. The
+database transaction remains the authority for the immutable reviewed schedule
+and single-use consumption. `expired` is a time-derived management projection of
+an unconsumed active lease, not a fabricated consumption event. Changed or
+expired bindings return to ordinary approval and never emit a successful effect
+from the lease alone.
+
+## Durable notification-disposition events
+
+`notification.disposition_recorded` stores a closed deterministic decision and
+its disposition coordinate: source kind, occurrence/candidate/decision digests,
+`send|defer|digest|suppress` outcome, reason, pending/terminal state, bounded due
+time, delivery kind/binding, and lifecycle revision. It declares
+`contentIncluded: false` and `decisionGrantsAuthority: false`; titles, messages,
+errors, provider content, occurrence keys, credentials, and source payloads stay
+in their canonical private stores.
+
+`notification.digest_delivered` records only the digest-delivery ID and
+sequence, candidate count and manifest digest, delivery binding, and bounded
+window. It carries the same content-free, non-authority declarations. These
+events explain a delivery-policy outcome and its real outbox/ledger binding;
+they do not create a notification, send authority, or permission to perform the
+notification's suggested action.
+
+## Persistent prompt-queue events
+
+The actor-private queue emits `command.prompt_queue.item.created`, `.updated`,
+`.reordered`, `.dispatching`, `.progressed`, `.completed`, `.failed`, and
+`.deleted`. Every payload is metadata-only: queue item and lifecycle revision,
+closed state, prompt and target digests, exact Agent definition/principal version
+IDs, model-routing-policy digest, execution target, optional governed run ID,
+and `queueGrantsAuthority: false`. The sealed prompt, persona, conversation
+content, target content, model output, dispatch token, credential, and private
+reasoning never enter an event.
+
+Dispatch admission still occurs through the ordinary governed Agent boundary.
+A queue event does not approve tools, select broader context, grant Computer
+Use, reserve a budget, or prove an external effect. After an uncertain
+disconnect, a durable run ID permits a completed/accepted reconciliation event
+without replay; an expired lease without a run ID emits failure and requires an
+explicit actor resume. Offline web/native convergence reuses the same queue
+identity and revision, so a conflicting replay is rejected instead of being
+represented as a successful update event.
+
+## Adaptive-runtime management projections
+
+Agent release/adaptation reads, child-task grant inspection, schedule/
+PolicyLease history, and notification-disposition history add no replacement
+lifecycle events. They project the exact events and forced-RLS records described
+above through actor-private application services and return the standard
+content-free service receipt. A management read, missing validation receipt, or
+displayed digest never becomes authority. Lifecycle buttons must re-enter their
+existing governed mutation route; digest-bound execution grants remain
+immutable, and native management deliberately omits Agent retirement.
