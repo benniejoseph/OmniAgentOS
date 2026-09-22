@@ -92,14 +92,13 @@ export async function createPromptQueueItem(input: {
     { prompt: request.prompt },
     promptBinding(input.authority.tenantId, input.authority.actorId, id, promptSha256),
   );
-  const existing = await readPromptQueueCorrelation({
+  const existing = await preflightPromptQueueCreate({
     authority: input.authority,
     request,
     promptSha256,
     targetSha256,
   });
   if (existing) return { item: existing, created: false };
-  await assertPromptQueueCapacityAvailable(input.authority);
 
   // Pin resolution may perform tenant-scoped database reads. Resolve and freeze
   // these values before reserving the queue transaction so a single-connection
@@ -221,6 +220,50 @@ export async function createPromptQueueItem(input: {
   }
 }
 
+async function preflightPromptQueueCreate(input: {
+  authority: PromptQueueAuthority;
+  request: PromptQueueCreateRequest;
+  promptSha256: string;
+  targetSha256: string;
+}) {
+  return getSql().transaction(async (sql: QueueSql) => {
+    // Serialize this cheap database-only check with creators for the same
+    // actor. Correlation wins over capacity, including when a concurrent exact
+    // duplicate is the item that fills the final queue slot.
+    await lockActorPromptQueue(sql, input.authority);
+    const existingRows = await sql`
+      SELECT * FROM omni_prompt_queue_items
+      WHERE tenant_id = ${input.authority.tenantId}
+        AND owner_actor_id = ${input.authority.actorId}
+        AND client_correlation_id = ${input.request.clientCorrelationId}
+      LIMIT 1
+      FOR UPDATE
+    `;
+    if (existingRows[0]) {
+      return validateExistingPromptQueueCorrelation(
+        existingRows[0],
+        input.request,
+        input.promptSha256,
+        input.targetSha256,
+      );
+    }
+    const countRows = await sql`
+      SELECT COUNT(*)::INTEGER AS count
+      FROM omni_prompt_queue_items
+      WHERE tenant_id = ${input.authority.tenantId}
+        AND owner_actor_id = ${input.authority.actorId}
+        AND state IN ('queued', 'paused', 'dispatching')
+    `;
+    if (Number(countRows[0]?.count || 0) >= PROMPT_QUEUE_MAX_ITEMS) {
+      throw new PromptQueueStoreError(
+        "capacity",
+        "The prompt queue is full. Finish or remove an item before adding another.",
+      );
+    }
+    return undefined;
+  }) as Promise<PromptQueueItemV1 | undefined>;
+}
+
 async function readPromptQueueCorrelation(input: {
   authority: PromptQueueAuthority;
   request: PromptQueueCreateRequest;
@@ -242,24 +285,6 @@ async function readPromptQueueCorrelation(input: {
         input.targetSha256,
       )
     : undefined;
-}
-
-async function assertPromptQueueCapacityAvailable(
-  authority: Pick<PromptQueueAuthority, "tenantId" | "actorId">,
-) {
-  const countRows = await getSql()`
-    SELECT COUNT(*)::INTEGER AS count
-    FROM omni_prompt_queue_items
-    WHERE tenant_id = ${authority.tenantId}
-      AND owner_actor_id = ${authority.actorId}
-      AND state IN ('queued', 'paused', 'dispatching')
-  `;
-  if (Number(countRows[0]?.count || 0) >= PROMPT_QUEUE_MAX_ITEMS) {
-    throw new PromptQueueStoreError(
-      "capacity",
-      "The prompt queue is full. Finish or remove an item before adding another.",
-    );
-  }
 }
 
 function validateExistingPromptQueueCorrelation(

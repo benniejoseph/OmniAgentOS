@@ -2441,17 +2441,41 @@ async function resolveSchemaReadyDatabasePool(
     // Unit pool tests opt in by stubbing a runtime environment. Application
     // runtimes, including development, must finish schema readiness before the
     // admission gate can reserve their only connection.
-    if (process.env.NODE_ENV !== "test") {
-      if (process.env.NODE_ENV === "production" || !schemaReady) {
-        await ensureDatabaseSchema();
-      } else {
-        await schemaReady;
+    if (process.env.NODE_ENV === "test") {
+      const selectedPool = resolvePool();
+      if (
+        getDatabasePoolLifecycle(selectedPool).retired ||
+        resolvePool() !== selectedPool
+      ) {
+        continue;
       }
+      return selectedPool;
     }
-    const pool = resolvePool();
-    if (getDatabasePoolLifecycle(pool).retired) continue;
-    if (process.env.NODE_ENV !== "test" && !schemaReady) continue;
-    return pool;
+
+    let readiness: Promise<void> | null;
+    let pendingReadiness: Promise<void>;
+    if (process.env.NODE_ENV === "production" || !schemaReady) {
+      pendingReadiness = ensureDatabaseSchema();
+      readiness = schemaReady;
+    } else {
+      readiness = schemaReady;
+      pendingReadiness = readiness;
+    }
+    const selectedPool = resolvePool();
+    await pendingReadiness;
+
+    // A waiter can resume from an already-resolved readiness promise after the
+    // runtime generation retired and a new verification began. Accept neither
+    // a readiness promise nor a pool generation that changed while waiting.
+    if (
+      !readiness ||
+      schemaReady !== readiness ||
+      getDatabasePoolLifecycle(selectedPool).retired
+    ) {
+      continue;
+    }
+    if (resolvePool() !== selectedPool || schemaReady !== readiness) continue;
+    return selectedPool;
   }
 }
 

@@ -569,6 +569,102 @@ describe("database pool acquisition", () => {
     }
   });
 
+  it("does not let stale readiness waiters reserve a replacement generation", async () => {
+    const retiredPool = createMockPoolClient([{ source: "retired" }]);
+    const replacementPool = createMockPoolClient([{ source: "replacement" }]);
+    const schemaRows = databaseSchemaMigrations.map((migration) => ({
+      version: migration.version,
+      name: migration.name,
+      checksum: migration.checksum,
+    }));
+    const neverSettles = new Promise<Record<string, unknown>[]>(() => undefined);
+    retiredPool.reserved.mockImplementation(
+      (strings: TemplateStringsArray, ...params: unknown[]) => {
+        const text = strings.join("?");
+        retiredPool.statements.push({ text, params });
+        if (text.includes("owner-holds-generation")) return neverSettles;
+        return Promise.resolve(
+          text.includes("set_config") ? [] : [{ source: "retired" }],
+        );
+      },
+    );
+    let resolveReplacementSchema!: (
+      rows: Record<string, unknown>[],
+    ) => void;
+    const replacementSchema = new Promise<Record<string, unknown>[]>((resolve) => {
+      resolveReplacementSchema = resolve;
+    });
+    replacementPool.pg.mockImplementation(() => replacementSchema);
+    const closeHandlers: Array<(connectionId: number) => void> = [];
+    let generation = 0;
+    const postgresFactory = vi.fn(
+      (_databaseUrl: string, options: { onclose?: (connectionId: number) => void }) => {
+        if (options.onclose) closeHandlers.push(options.onclose);
+        generation += 1;
+        return generation === 1 ? retiredPool.pg : replacementPool.pg;
+      },
+    );
+    vi.doMock("postgres", () => ({ default: postgresFactory }));
+    vi.stubEnv("DATABASE_URL", "postgresql://runtime.invalid/asael");
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("VERCEL", "1");
+    vi.resetModules();
+
+    try {
+      const isolatedClient = await import("@/lib/db/client");
+      const staleWrapper = isolatedClient.getSql();
+      await expect(
+        isolatedClient.runWithDatabaseTenantScope(
+          "tenant-a",
+          () => staleWrapper`SELECT 'bootstrap-readiness'`,
+        ),
+      ).resolves.toEqual([{ source: "retired" }]);
+
+      const owner = isolatedClient.runWithDatabaseTenantScope(
+        "tenant-a",
+        () => staleWrapper`SELECT 'owner-holds-generation'`,
+      );
+      await vi.waitFor(() => {
+        expect(retiredPool.statements.some(({ text }) =>
+          text.includes("owner-holds-generation"))).toBe(true);
+      });
+
+      // This waiter captures the already-resolved old readiness generation,
+      // then yields before pool admission. Retire the owner generation and let
+      // another waiter create the pending replacement readiness promise.
+      const staleWaiter = isolatedClient.runWithDatabaseTenantScope(
+        "tenant-a",
+        () => staleWrapper`SELECT 'stale-readiness-waiter'`,
+      );
+      closeHandlers[0]?.(1);
+      const replacementWaiter = isolatedClient.runWithDatabaseTenantScope(
+        "tenant-a",
+        () => staleWrapper`SELECT 'replacement-readiness-owner'`,
+      );
+
+      await vi.waitFor(() => expect(replacementPool.pg).toHaveBeenCalledOnce());
+      for (let index = 0; index < 5; index += 1) await Promise.resolve();
+      expect(replacementPool.pg.reserve).not.toHaveBeenCalled();
+
+      resolveReplacementSchema(schemaRows);
+      await expect(Promise.all([
+        owner,
+        staleWaiter,
+        replacementWaiter,
+      ])).resolves.toEqual([
+        [{ source: "replacement" }],
+        [{ source: "replacement" }],
+        [{ source: "replacement" }],
+      ]);
+      expect(replacementPool.pg.reserve).toHaveBeenCalledTimes(3);
+      expect(retiredPool.pg.end).toHaveBeenCalledWith({ timeout: 0 });
+    } finally {
+      vi.doUnmock("postgres");
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
+
   it("retries one system statement on the replacement maintenance generation", async () => {
     const events: string[] = [];
     const retiredMaintenance = createMockPoolClient([]);
