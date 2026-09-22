@@ -15,9 +15,9 @@ import { publicWorkflowRun, publicWorkflowRunDetail, publicWorkflowStats } from 
 import { cancelWorkflowRunTick, enqueueWorkflowRunTick, processWorkflowQueue, scheduleWorkflowQueueDrain } from "@/lib/workflows/queue";
 import { signalWorkflowRun } from "@/lib/workflows/runner";
 import { createWorkflowRun, getWorkflowRunDetail, getWorkflowStats, listWorkflowRuns } from "@/lib/workflows/store";
+import { DEFAULT_READ_ONLY_SCHEDULE_BUDGET } from "@/lib/workflows/schedule-defaults";
 import {
   createReviewedWorkflowSchedule,
-  DEFAULT_READ_ONLY_SCHEDULE_BUDGET,
   listSchedulableWorkflowProcedures,
   listWorkflowScheduleOccurrenceReceipts,
   listWorkflowScheduleOccurrences,

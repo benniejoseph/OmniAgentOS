@@ -11,10 +11,10 @@ import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { listCustomAgentsForRequest } from "@/lib/skills/store";
+import { DEFAULT_READ_ONLY_SCHEDULE_BUDGET } from "@/lib/workflows/schedule-defaults";
 import {
   createReviewedWorkflowSchedule,
   createWorkflowTrigger,
-  DEFAULT_READ_ONLY_SCHEDULE_BUDGET,
   getWorkflowTriggerStats,
   listSchedulableWorkflowProcedures,
   listWorkflowScheduleOccurrenceReceipts,

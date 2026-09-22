@@ -46,6 +46,7 @@ import {
   listSavedProcedures,
   type WorkflowProcedureSnapshot,
 } from "@/lib/workflows/saved-procedures";
+import { DEFAULT_READ_ONLY_SCHEDULE_BUDGET } from "@/lib/workflows/schedule-defaults";
 import { enqueueWorkflowRunTick } from "@/lib/workflows/queue";
 import { appendWorkflowEvent, createWorkflowRun } from "@/lib/workflows/store";
 import type {
@@ -196,18 +197,7 @@ const scheduleOccurrenceBudgetSchema = runBudgetCountersV1Schema.superRefine(
   },
 );
 
-export const DEFAULT_READ_ONLY_SCHEDULE_BUDGET = Object.freeze({
-  modelTurns: 4,
-  tokens: 32_000,
-  costMicrousd: 750_000,
-  wallTimeMs: 180_000,
-  toolCalls: 16,
-  browserActions: 0,
-  agents: 0,
-  fanOut: 0,
-  retries: 1,
-  replans: 0,
-});
+export { DEFAULT_READ_ONLY_SCHEDULE_BUDGET } from "@/lib/workflows/schedule-defaults";
 
 const scheduleCreateInputSchema = z.object({
   name: z.string().trim().min(1).max(120),
