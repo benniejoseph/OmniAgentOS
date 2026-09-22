@@ -879,7 +879,6 @@ async function appendDelegationChildRunCancellationEvent(
     streamId: `run:${record.childRunId}`,
     type: "run.canceled",
     payload: {
-      schemaVersion: 1,
       type: "canceled",
       messageLength: DELEGATION_CANCELLATION_MESSAGE.length,
       messageSha256: createHash("sha256")
