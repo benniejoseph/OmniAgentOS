@@ -39,6 +39,15 @@ import type {
   TodayPreferences,
 } from "@/lib/today/types";
 import { enqueueMobilePush } from "@/lib/mobile/push-store";
+import {
+  decideServerNotification,
+  MOBILE_PUSH_COOLDOWN_MINUTES,
+  todayReminderNotificationCandidate,
+} from "@/lib/mobile/notification-delivery-policy";
+import {
+  appendNotificationDecisionEvent,
+  notificationDecisionExecutionScope,
+} from "@/lib/mobile/notification-decision-events";
 
 export async function getNotificationCenter(options: {
   tenantId?: string;
@@ -101,7 +110,7 @@ export async function processDueNotifications(options: {
   const scanPageSize = 100;
 
   for (const preference of preferences) {
-    if (!preference.notificationsEnabled || isQuietHoursActive(preference, now)) continue;
+    if (!preference.notificationsEnabled) continue;
     const ownerActorId = options.actorId ?? preference.actorId;
     let offset = 0;
     while (generated.length < limit) {
@@ -124,6 +133,7 @@ export async function processDueNotifications(options: {
           urgency: dueAt <= now.getTime() ? "overdue" : "due_soon",
           dueAt: item.dueAt,
           now,
+          quietHoursActive: isQuietHoursActive(preference, now),
           mutation: dueNotificationMutation({
             tenantId: preference.tenantId,
             actorId: ownerActorId,
@@ -366,6 +376,7 @@ async function upsertNotification(input: {
   urgency: PersonalNotification["urgency"];
   dueAt: string;
   now: Date;
+  quietHoursActive: boolean;
   mutation: NotificationDueMutationContext;
 }) {
   const now = input.now.toISOString();
@@ -407,12 +418,10 @@ async function upsertNotification(input: {
         sql,
       );
       if (sql) {
-        await enqueueMobilePush({
-          tenantId: saved.tenantId,
-          actorId: saved.actorId,
-          notificationId: saved.id,
-          target: { kind: "work_item", id: saved.sourceId },
-          occurrenceKey: saved.occurrenceKey,
+        await decideTodayNotificationDelivery({
+          notification: saved,
+          quietHoursActive: input.quietHoursActive,
+          evaluatedAt: input.now,
           sql,
         });
       }
@@ -446,12 +455,10 @@ async function upsertNotification(input: {
       sql,
     );
     if (sql) {
-      await enqueueMobilePush({
-        tenantId: saved.tenantId,
-        actorId: saved.actorId,
-        notificationId: saved.id,
-        target: { kind: "work_item", id: saved.sourceId },
-        occurrenceKey: saved.occurrenceKey,
+      await decideTodayNotificationDelivery({
+        notification: saved,
+        quietHoursActive: input.quietHoursActive,
+        evaluatedAt: input.now,
         sql,
       });
     }
@@ -464,6 +471,79 @@ async function upsertNotification(input: {
     ) as Promise<{ notification: PersonalNotification; changed: boolean }>;
   }
   return apply();
+}
+
+async function decideTodayNotificationDelivery(input: {
+  notification: PersonalNotification;
+  quietHoursActive: boolean;
+  evaluatedAt: Date;
+  sql: NotificationSqlClient;
+}) {
+  const cooldownActive = await todayPushCooldownActive(
+    input.notification,
+    input.evaluatedAt,
+    input.sql,
+  );
+  const decision = decideServerNotification({
+    candidate: todayReminderNotificationCandidate({
+      tenantId: input.notification.tenantId,
+      actorId: input.notification.actorId,
+      sourceKind: "today_reminder",
+      sourceId: input.notification.sourceId,
+      occurrenceKey: input.notification.occurrenceKey,
+      urgency: input.notification.urgency,
+    }),
+    policy: {
+      evaluatedAt: input.evaluatedAt.toISOString(),
+      quietHoursActive: input.quietHoursActive,
+      cooldownActive,
+      digestEnabled: true,
+    },
+  });
+  const executionScope = notificationDecisionExecutionScope({
+    tenantId: input.notification.tenantId,
+    actorId: input.notification.actorId,
+    sourceId: input.notification.sourceId,
+    producerId: "notification-scheduler",
+    decision,
+  });
+  if (decision.outcome === "send") {
+    await enqueueMobilePush({
+      tenantId: input.notification.tenantId,
+      actorId: input.notification.actorId,
+      notificationId: input.notification.id,
+      target: { kind: "work_item", id: input.notification.sourceId },
+      occurrenceKey: input.notification.occurrenceKey,
+      executionScope,
+      sql: input.sql,
+    });
+  }
+  await appendNotificationDecisionEvent({
+    decision,
+    executionScope,
+    sql: input.sql,
+  });
+}
+
+async function todayPushCooldownActive(
+  notification: PersonalNotification,
+  now: Date,
+  sql: NotificationSqlClient,
+) {
+  const cooldownFloor = new Date(
+    now.getTime() - MOBILE_PUSH_COOLDOWN_MINUTES * 60_000,
+  ).toISOString();
+  const rows = await sql`
+    SELECT EXISTS (
+      SELECT 1
+      FROM omni_mobile_push_deliveries delivery
+      WHERE delivery.tenant_id = ${notification.tenantId}
+        AND delivery.owner_actor_id = ${notification.actorId}
+        AND delivery.status IN ('queued', 'running', 'delivered', 'acknowledged')
+        AND delivery.created_at >= ${cooldownFloor}
+    ) AS cooldown_active
+  `;
+  return rows[0]?.cooldown_active === true;
 }
 
 type NotificationDueMutationContext = Readonly<{

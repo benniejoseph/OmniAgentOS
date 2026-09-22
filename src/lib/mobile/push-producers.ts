@@ -9,15 +9,24 @@ import {
   MobilePushStorageRequiredError,
 } from "@/lib/mobile/push-store";
 import {
-  mobilePushDedupeKey,
+  decideServerNotification,
+  domainNotificationCandidate,
+  MOBILE_PUSH_COOLDOWN_MINUTES,
+  type DomainNotificationProducerKind,
+  type NotificationDecisionPolicyInput,
+} from "@/lib/mobile/notification-delivery-policy";
+import {
+  appendNotificationDecisionEvent,
+  notificationDecisionExecutionScope,
+} from "@/lib/mobile/notification-decision-events";
+import {
   mobilePushTargetSchema,
   type MobilePushTarget,
 } from "@/lib/mobile/push-contract";
-import { createExecutionScope } from "@/lib/security/execution-scope";
 import { getTodayPreferences } from "@/lib/today/briefs";
 import { isQuietHoursActive } from "@/lib/today/notifications";
 
-type ProducerKind = "approval" | "meeting" | "customer" | "run";
+type ProducerKind = DomainNotificationProducerKind;
 
 type ProducerCandidate = Readonly<{
   kind: ProducerKind;
@@ -25,6 +34,9 @@ type ProducerCandidate = Readonly<{
   sourceId: string;
   occurrenceKey: string;
   occursAt: string;
+  sourceState: "approval_required" | "scheduled" | "at_risk" |
+    "completed" | "failed" | "canceled";
+  cooldownActive: boolean;
 }>;
 
 export async function processDomainMobilePushProducers(options: {
@@ -46,6 +58,12 @@ export async function processDomainMobilePushProducers(options: {
         customer: 0,
         run: 0,
       };
+      const decisionsByOutcome = {
+        send: 0,
+        defer: 0,
+        digest: 0,
+        suppress: 0,
+      };
       const pageSize = Math.min(Math.max(limit, 20), 100);
       let offset = 0;
       let scanned = 0;
@@ -66,17 +84,9 @@ export async function processDomainMobilePushProducers(options: {
             await getTodayPreferences({
               tenantId: options.tenantId,
               actorId: candidate.actorId,
-            });
+          });
           preferences.set(candidate.actorId, preference);
-          if (
-            !preference.notificationsEnabled ||
-            isQuietHoursActive(preference, now) ||
-            (
-              candidate.kind === "meeting" &&
-              Date.parse(candidate.occursAt) >
-                now.getTime() + preference.reminderLeadMinutes * 60_000
-            )
-          ) {
+          if (!preference.notificationsEnabled) {
             skippedByPreference += 1;
             continue;
           }
@@ -85,29 +95,47 @@ export async function processDomainMobilePushProducers(options: {
             id: candidate.sourceId,
           });
           if (!target.success) continue;
-          const correlationId = `mobile_push_producer_${mobilePushDedupeKey({
+          const decision = decideServerNotification({
+            candidate: domainNotificationCandidate({
+              tenantId: options.tenantId,
+              actorId: candidate.actorId,
+              sourceKind: candidate.kind,
+              sourceId: candidate.sourceId,
+              occurrenceKey: candidate.occurrenceKey,
+              occursAt: candidate.occursAt,
+              sourceState: candidate.sourceState,
+            }),
+            policy: domainProducerPolicy(candidate, preference, now),
+          });
+          decisionsByOutcome[decision.outcome] += 1;
+          const executionScope = notificationDecisionExecutionScope({
             tenantId: options.tenantId,
             actorId: candidate.actorId,
-            kind: candidate.kind,
             sourceId: candidate.sourceId,
-            occurrenceKey: candidate.occurrenceKey,
-          })}`;
-          const executionScope = createExecutionScope({
-            tenantId: options.tenantId,
-            initiatingActorId: candidate.actorId,
-            executingPrincipalType: "system",
-            executingPrincipalId: "mobile-push-producer",
-            correlationId,
-            causationId: candidate.sourceId,
-            purpose: `mobile.push_producer.${candidate.kind}`,
+            producerId: "mobile-push-producer",
+            decision,
           });
-          const queued = await enqueueMobilePush({
-            tenantId: options.tenantId,
-            actorId: candidate.actorId,
-            target: target.data as MobilePushTarget,
-            occurrenceKey: candidate.occurrenceKey,
-            executionScope,
-          });
+          const queued = await getSql().transaction(async (sql) => {
+            const deliveries = decision.outcome === "send"
+              ? await enqueueMobilePush({
+                  tenantId: options.tenantId,
+                  actorId: candidate.actorId,
+                  target: target.data as MobilePushTarget,
+                  occurrenceKey: candidate.occurrenceKey,
+                  executionScope,
+                  sql,
+                })
+              : [];
+            await appendNotificationDecisionEvent({
+              decision,
+              executionScope,
+              sql,
+            });
+            return deliveries;
+          }) as Awaited<ReturnType<typeof enqueueMobilePush>>;
+          if (decision.outcome !== "send") {
+            skippedByPreference += 1;
+          }
           queuedByKind[candidate.kind] += queued.length;
           if (totalQueued(queuedByKind) >= limit) break;
         }
@@ -116,6 +144,7 @@ export async function processDomainMobilePushProducers(options: {
         scanned,
         queued: totalQueued(queuedByKind),
         queuedByKind,
+        decisionsByOutcome,
         skippedByPreference,
       };
     },
@@ -133,58 +162,93 @@ async function readCandidatePage(
   const recentApproval = new Date(now.getTime() - 30 * 24 * 60 * 60_000).toISOString();
   const recentCustomer = new Date(now.getTime() - 30 * 24 * 60 * 60_000).toISOString();
   const recentRun = new Date(now.getTime() - 24 * 60 * 60_000).toISOString();
+  const cooldownFloor = new Date(
+    now.getTime() - MOBILE_PUSH_COOLDOWN_MINUTES * 60_000,
+  ).toISOString();
   const rows = await getSql()`
     (
       SELECT 'approval'::TEXT AS producer_kind,
-        actor_id AS owner_actor_id,
-        id AS source_id,
-        created_at::TEXT AS occurrence_key,
-        created_at AS occurs_at
-      FROM omni_tool_executions
-      WHERE tenant_id = ${tenantId}
-        AND actor_id IS NOT NULL
-        AND status = 'approval_required'
-        AND approval_required
-        AND created_at >= ${recentApproval}
-      ORDER BY created_at DESC, id COLLATE "C"
+        execution.actor_id AS owner_actor_id,
+        execution.id AS source_id,
+        execution.created_at::TEXT AS occurrence_key,
+        execution.created_at AS occurs_at,
+        'approval_required'::TEXT AS candidate_state,
+        EXISTS (
+          SELECT 1 FROM omni_mobile_push_deliveries delivery
+          WHERE delivery.tenant_id = ${tenantId}
+            AND delivery.owner_actor_id = execution.actor_id
+            AND delivery.status IN ('queued', 'running', 'delivered', 'acknowledged')
+            AND delivery.created_at >= ${cooldownFloor}
+        ) AS cooldown_active
+      FROM omni_tool_executions execution
+      WHERE execution.tenant_id = ${tenantId}
+        AND execution.actor_id IS NOT NULL
+        AND execution.status = 'approval_required'
+        AND execution.approval_required
+        AND execution.created_at >= ${recentApproval}
+      ORDER BY execution.created_at DESC, execution.id COLLATE "C"
       LIMIT ${perKindWindow}
     ) UNION ALL (
       SELECT 'meeting'::TEXT AS producer_kind,
-        owner_actor_id,
-        meeting_id AS source_id,
-        current_revision_id || ':' || scheduled_start_at::TEXT AS occurrence_key,
-        scheduled_start_at AS occurs_at
-      FROM omni_meetings
-      WHERE tenant_id = ${tenantId}
-        AND status = 'scheduled'
-        AND scheduled_start_at >= ${now.toISOString()}
-        AND scheduled_start_at <= ${meetingHorizon}
-      ORDER BY scheduled_start_at, meeting_id COLLATE "C"
+        meeting.owner_actor_id,
+        meeting.meeting_id AS source_id,
+        meeting.current_revision_id || ':' || meeting.scheduled_start_at::TEXT AS occurrence_key,
+        meeting.scheduled_start_at AS occurs_at,
+        'scheduled'::TEXT AS candidate_state,
+        EXISTS (
+          SELECT 1 FROM omni_mobile_push_deliveries delivery
+          WHERE delivery.tenant_id = ${tenantId}
+            AND delivery.owner_actor_id = meeting.owner_actor_id
+            AND delivery.status IN ('queued', 'running', 'delivered', 'acknowledged')
+            AND delivery.created_at >= ${cooldownFloor}
+        ) AS cooldown_active
+      FROM omni_meetings meeting
+      WHERE meeting.tenant_id = ${tenantId}
+        AND meeting.status = 'scheduled'
+        AND meeting.scheduled_start_at >= ${now.toISOString()}
+        AND meeting.scheduled_start_at <= ${meetingHorizon}
+      ORDER BY meeting.scheduled_start_at, meeting.meeting_id COLLATE "C"
       LIMIT ${perKindWindow}
     ) UNION ALL (
       SELECT 'customer'::TEXT AS producer_kind,
-        owner_actor_id,
-        account_id AS source_id,
-        current_revision_id AS occurrence_key,
-        evaluated_at AS occurs_at
-      FROM omni_customer_health_scores
-      WHERE tenant_id = ${tenantId}
-        AND health_status = 'at_risk'
-        AND evaluated_at >= ${recentCustomer}
-      ORDER BY evaluated_at DESC, account_id COLLATE "C"
+        health.owner_actor_id,
+        health.account_id AS source_id,
+        health.current_revision_id AS occurrence_key,
+        health.evaluated_at AS occurs_at,
+        'at_risk'::TEXT AS candidate_state,
+        EXISTS (
+          SELECT 1 FROM omni_mobile_push_deliveries delivery
+          WHERE delivery.tenant_id = ${tenantId}
+            AND delivery.owner_actor_id = health.owner_actor_id
+            AND delivery.status IN ('queued', 'running', 'delivered', 'acknowledged')
+            AND delivery.created_at >= ${cooldownFloor}
+        ) AS cooldown_active
+      FROM omni_customer_health_scores health
+      WHERE health.tenant_id = ${tenantId}
+        AND health.health_status = 'at_risk'
+        AND health.evaluated_at >= ${recentCustomer}
+      ORDER BY health.evaluated_at DESC, health.account_id COLLATE "C"
       LIMIT ${perKindWindow}
     ) UNION ALL (
       SELECT 'run'::TEXT AS producer_kind,
-        owner_actor_id,
-        id AS source_id,
-        status || ':' || completed_at::TEXT AS occurrence_key,
-        completed_at AS occurs_at
-      FROM omni_agent_runs
-      WHERE tenant_id = ${tenantId}
-        AND owner_actor_id IS NOT NULL
-        AND status IN ('completed', 'failed', 'canceled')
-        AND completed_at >= ${recentRun}
-      ORDER BY completed_at DESC, id COLLATE "C"
+        run.owner_actor_id,
+        run.id AS source_id,
+        run.status || ':' || run.completed_at::TEXT AS occurrence_key,
+        run.completed_at AS occurs_at,
+        run.status::TEXT AS candidate_state,
+        EXISTS (
+          SELECT 1 FROM omni_mobile_push_deliveries delivery
+          WHERE delivery.tenant_id = ${tenantId}
+            AND delivery.owner_actor_id = run.owner_actor_id
+            AND delivery.status IN ('queued', 'running', 'delivered', 'acknowledged')
+            AND delivery.created_at >= ${cooldownFloor}
+        ) AS cooldown_active
+      FROM omni_agent_runs run
+      WHERE run.tenant_id = ${tenantId}
+        AND run.owner_actor_id IS NOT NULL
+        AND run.status IN ('completed', 'failed', 'canceled')
+        AND run.completed_at >= ${recentRun}
+      ORDER BY run.completed_at DESC, run.id COLLATE "C"
       LIMIT ${perKindWindow}
     )
     ORDER BY occurs_at DESC, producer_kind COLLATE "C", source_id COLLATE "C"
@@ -197,10 +261,35 @@ async function readCandidatePage(
     const actorId = bounded(row.owner_actor_id, 500);
     const sourceId = bounded(row.source_id, 240);
     const occurrenceKey = bounded(row.occurrence_key, 1_000);
-    return kind && occursAt && actorId && sourceId && occurrenceKey
-      ? [{ kind, occursAt, actorId, sourceId, occurrenceKey }]
+    const sourceState = producerState(kind, row.candidate_state);
+    return kind && occursAt && actorId && sourceId && occurrenceKey && sourceState
+      ? [{
+          kind,
+          occursAt,
+          actorId,
+          sourceId,
+          occurrenceKey,
+          sourceState,
+          cooldownActive: row.cooldown_active === true,
+        }]
       : [];
   });
+}
+
+function domainProducerPolicy(
+  candidate: ProducerCandidate,
+  preference: Awaited<ReturnType<typeof getTodayPreferences>>,
+  now: Date,
+): NotificationDecisionPolicyInput {
+  return {
+    evaluatedAt: now.toISOString(),
+    quietHoursActive: isQuietHoursActive(preference, now),
+    cooldownActive: candidate.cooldownActive,
+    digestEnabled: true,
+    meetingImminenceMinutes: candidate.kind === "meeting"
+      ? preference.reminderLeadMinutes
+      : undefined,
+  };
 }
 
 function totalQueued(queuedByKind: Record<ProducerKind, number>) {
@@ -212,6 +301,23 @@ function producerKind(value: unknown): ProducerKind | undefined {
       value === "customer" || value === "run"
     ? value
     : undefined;
+}
+
+function producerState(
+  kind: ProducerKind | undefined,
+  value: unknown,
+): ProducerCandidate["sourceState"] | undefined {
+  const state = String(value || "");
+  if (kind === "approval" && state === "approval_required") return state;
+  if (kind === "meeting" && state === "scheduled") return state;
+  if (kind === "customer" && state === "at_risk") return state;
+  if (
+    kind === "run" &&
+    (state === "completed" || state === "failed" || state === "canceled")
+  ) {
+    return state;
+  }
+  return undefined;
 }
 
 function timestamp(value: unknown) {
