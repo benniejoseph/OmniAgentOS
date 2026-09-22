@@ -4,117 +4,86 @@ import XCTest
 @testable import omniagent
 
 class RunnerTests: XCTestCase {
-  private final class ReceiptStore: CredentialBrokerCutoverReceiptStoring {
-    init(receipt: Any? = nil, persistenceSucceeds: Bool = true) {
-      storedReceipt = receipt
-      self.persistenceSucceeds = persistenceSucceeds
-    }
-
-    var storedReceipt: Any?
-    var persistenceSucceeds: Bool
-    var persistenceAttempts = 0
-
-    func receipt() -> Any? {
-      storedReceipt
-    }
-
-    func persist(_ receipt: [String: String]) -> Bool {
-      persistenceAttempts += 1
-      guard persistenceSucceeds else { return false }
-      storedReceipt = receipt
-      return true
-    }
-  }
-
-  func testProbeWithoutReceiptPreservesMigrationRequirement() {
-    let response = migrationRequiredProbe()
-
-    let normalized = CredentialBrokerCutoverPolicy.normalizeSucceeded(
+  func testV2FreshSignInProbeIsAcceptedWithoutMigration() {
+    let normalized = CredentialBrokerV2ResponsePolicy.normalizeSucceeded(
       action: "probe",
-      response: response,
-      store: ReceiptStore()
+      response: v2Probe(freshSignInRequired: true)
     )
 
-    XCTAssertEqual(normalized?["migrationRequired"] as? Bool, true)
-    XCTAssertEqual(normalized?["state"] as? String, "migration_required")
-    XCTAssertNil(normalized?["legacyCleanupPending"])
-  }
-
-  func testProbeWithWrongReceiptPreservesMigrationRequirement() {
-    let store = ReceiptStore(receipt: ["schema": "wrong", "version": "1"])
-
-    let normalized = CredentialBrokerCutoverPolicy.normalizeSucceeded(
-      action: "probe",
-      response: migrationRequiredProbe(),
-      store: store
-    )
-
-    XCTAssertEqual(normalized?["migrationRequired"] as? Bool, true)
-    XCTAssertEqual(normalized?["state"] as? String, "migration_required")
-    XCTAssertNil(normalized?["legacyCleanupPending"])
-  }
-
-  func testProbeWithExactReceiptUsesCommittedTargetAndReportsCleanup() {
-    let store = ReceiptStore(receipt: CredentialBrokerCutoverPolicy.receipt)
-
-    let normalized = CredentialBrokerCutoverPolicy.normalizeSucceeded(
-      action: "probe",
-      response: migrationRequiredProbe(),
-      store: store
-    )
-
+    XCTAssertEqual(normalized?["state"] as? String, "fresh_sign_in_required")
+    XCTAssertEqual(normalized?["freshSignInRequired"] as? Bool, true)
     XCTAssertEqual(normalized?["migrationRequired"] as? Bool, false)
+  }
+
+  func testV2ReadyProbeIsAccepted() {
+    let normalized = CredentialBrokerV2ResponsePolicy.normalizeSucceeded(
+      action: "probe",
+      response: v2Probe(freshSignInRequired: false)
+    )
+
     XCTAssertEqual(normalized?["state"] as? String, "ready")
-    XCTAssertEqual(normalized?["legacyCleanupPending"] as? Bool, true)
+    XCTAssertEqual(normalized?["freshSignInRequired"] as? Bool, false)
   }
 
-  func testMigrationPersistenceFailureDoesNotReturnSuccess() {
-    let store = ReceiptStore(persistenceSucceeds: false)
+  func testV2ProbeFailsClosedOnWrongVersionOrInconsistentState() {
+    var wrongVersion = v2Probe(freshSignInRequired: true)
+    wrongVersion["brokerVersion"] = "1.0.0+1"
+    var inconsistent = v2Probe(freshSignInRequired: true)
+    inconsistent["state"] = "ready"
+    var numericBoolean = v2Probe(freshSignInRequired: true)
+    numericBoolean["freshSignInRequired"] = 1
 
-    let normalized = CredentialBrokerCutoverPolicy.normalizeSucceeded(
-      action: "migrate",
-      response: ["state": "ready", "migratedItemCount": 7],
-      store: store
+    XCTAssertNil(
+      CredentialBrokerV2ResponsePolicy.normalizeSucceeded(
+        action: "probe",
+        response: wrongVersion
+      )
     )
-
-    XCTAssertNil(normalized)
-    XCTAssertEqual(store.persistenceAttempts, 1)
-    XCTAssertNil(store.storedReceipt)
+    XCTAssertNil(
+      CredentialBrokerV2ResponsePolicy.normalizeSucceeded(
+        action: "probe",
+        response: inconsistent
+      )
+    )
+    XCTAssertNil(
+      CredentialBrokerV2ResponsePolicy.normalizeSucceeded(
+        action: "probe",
+        response: numericBoolean
+      )
+    )
   }
 
-  func testMigrationPersistsExactVersionedReceiptBeforeReturningSuccess() {
-    let store = ReceiptStore()
-    let response: [String: Any] = ["state": "ready", "migratedItemCount": 7]
-
-    let normalized = CredentialBrokerCutoverPolicy.normalizeSucceeded(
-      action: "migrate",
-      response: response,
-      store: store
+  func testV2ResponsePolicyRejectsMigrationAndUnexpectedPayloads() {
+    XCTAssertNil(
+      CredentialBrokerV2ResponsePolicy.normalizeSucceeded(
+        action: "migrate",
+        response: [:]
+      )
     )
-
-    XCTAssertNotNil(normalized)
-    XCTAssertEqual(store.persistenceAttempts, 1)
-    XCTAssertTrue(CredentialBrokerCutoverPolicy.hasExactReceipt(store.storedReceipt))
-  }
-
-  func testUserDefaultsReceiptStorePersistsAndReadsBackExactReceipt() throws {
-    let suiteName = "app.omniagent.omniagent.RunnerTests.cutover.\(UUID().uuidString)"
-    let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-    defaults.removePersistentDomain(forName: suiteName)
-    defer {
-      defaults.removePersistentDomain(forName: suiteName)
-      _ = defaults.synchronize()
-    }
-
-    let store = UserDefaultsCredentialBrokerCutoverReceiptStore(defaults: defaults)
-
-    XCTAssertTrue(store.persist(CredentialBrokerCutoverPolicy.receipt))
-
-    let reloadedDefaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-    let persisted = reloadedDefaults.object(
-      forKey: CredentialBrokerCutoverPolicy.receiptKey
+    XCTAssertNil(
+      CredentialBrokerV2ResponsePolicy.normalizeSucceeded(
+        action: "write",
+        response: ["unexpected": true]
+      )
     )
-    XCTAssertTrue(CredentialBrokerCutoverPolicy.hasExactReceipt(persisted))
+    XCTAssertNil(
+      CredentialBrokerV2ResponsePolicy.normalizeSucceeded(
+        action: "read",
+        response: ["value": 7]
+      )
+    )
+    XCTAssertNotNil(
+      CredentialBrokerV2ResponsePolicy.normalizeSucceeded(
+        action: "read",
+        response: ["value": NSNull()]
+      )
+    )
+    XCTAssertNotNil(
+      CredentialBrokerV2ResponsePolicy.normalizeSucceeded(
+        action: "write",
+        response: [:]
+      )
+    )
   }
 
   func testNotificationBridgeStorePersistsDeduplicatesAndRemovesEvents() throws {
@@ -250,12 +219,13 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(store.count, 0)
   }
 
-  private func migrationRequiredProbe() -> [String: Any] {
+  private func v2Probe(freshSignInRequired: Bool) -> [String: Any] {
     [
-      "state": "migration_required",
-      "migrationRequired": true,
-      "legacyItemCount": 7,
-      "targetItemCount": 7,
+      "brokerVersion": "2.0.0+2",
+      "state": freshSignInRequired ? "fresh_sign_in_required" : "ready",
+      "freshSignInRequired": freshSignInRequired,
+      "migrationRequired": false,
+      "targetItemCount": freshSignInRequired ? 0 : 7,
     ]
   }
 

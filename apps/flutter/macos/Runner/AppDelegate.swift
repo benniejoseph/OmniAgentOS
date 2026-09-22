@@ -116,85 +116,62 @@ class AppDelegate: FlutterAppDelegate, UNUserNotificationCenterDelegate {
   }
 }
 
-/// A bounded bridge to the frozen, separately signed Keychain owner.
+/// A bounded bridge to the frozen, separately signed v2 Keychain owner.
 ///
 /// Synchronous Security.framework calls occur only in the child. If securityd
 /// wedges, the host fails every pending call and terminates (then SIGKILLs)
 /// the broker. No environment credential or error detail crosses the pipes.
 ///
-/// Broker v1 is immutable and its verified Keychain marker is not exposed by
-/// the frozen protocol. The host therefore keeps a non-secret, monotonic
-/// shadow receipt only after `migrate` succeeds. Once committed, the broker
-/// target stays canonical even when logout rotates/removes target credentials
-/// or the legacy file-Keychain shim leaves an old row behind. Counts alone are
-/// never accepted as proof of migration.
-protocol CredentialBrokerCutoverReceiptStoring: AnyObject {
-  func receipt() -> Any?
-  func persist(_ receipt: [String: String]) -> Bool
-}
-
-final class UserDefaultsCredentialBrokerCutoverReceiptStore:
-  CredentialBrokerCutoverReceiptStoring
-{
-  init(defaults: UserDefaults = .standard) {
-    self.defaults = defaults
-  }
-
-  private let defaults: UserDefaults
-
-  func receipt() -> Any? {
-    defaults.object(forKey: CredentialBrokerCutoverPolicy.receiptKey)
-  }
-
-  func persist(_ receipt: [String: String]) -> Bool {
-    defaults.set(receipt, forKey: CredentialBrokerCutoverPolicy.receiptKey)
-    guard defaults.synchronize(),
-          CredentialBrokerCutoverPolicy.hasExactReceipt(defaults.object(
-            forKey: CredentialBrokerCutoverPolicy.receiptKey
-          ))
-    else {
-      defaults.removeObject(forKey: CredentialBrokerCutoverPolicy.receiptKey)
-      _ = defaults.synchronize()
-      return false
-    }
-    return true
-  }
-}
-
-enum CredentialBrokerCutoverPolicy {
-  static let receiptKey = "asael.credential-broker.cutover-receipt.v1"
-  static let receipt: [String: String] = [
-    "schema": "asael.credential-broker.cutover-receipt",
-    "version": "1",
-    "broker": "1.0.0+1",
-    "source": "app.omniagent.omniagent.file-keychain.v2",
-    "target": "app.omniagent.omniagent.credential-broker.v1",
-  ]
-
-  static func hasExactReceipt(_ value: Any?) -> Bool {
-    guard let value = value as? [String: String], value.count == receipt.count else {
-      return false
-    }
-    return value == receipt
-  }
-
+/// v2 owns a clean Keychain namespace and deliberately has no v1 migration
+/// operation. A missing v2 marker means that the user must sign in again; the
+/// broker keeps any incomplete v2 writes unreadable until that sign-in commits
+/// its marker. The host validates this state instead of inferring readiness
+/// from item counts or retaining a cross-identity cutover receipt.
+enum CredentialBrokerV2ResponsePolicy {
   static func normalizeSucceeded(
     action: String,
-    response: [String: Any],
-    store: CredentialBrokerCutoverReceiptStoring
+    response: [String: Any]
   ) -> [String: Any]? {
-    if action == "migrate" {
-      return store.persist(receipt) ? response : nil
-    }
-    guard action == "probe", hasExactReceipt(store.receipt()) else {
+    switch action {
+    case "probe":
+      guard response.count == 5,
+            response["brokerVersion"] as? String == "2.0.0+2",
+            let state = response["state"] as? String,
+            let freshSignInRequired = exactBoolean(response["freshSignInRequired"]),
+            exactBoolean(response["migrationRequired"]) == false,
+            let targetItemCount = exactInteger(response["targetItemCount"]),
+            (0...12).contains(targetItemCount),
+            (state == "ready" && !freshSignInRequired)
+              || (state == "fresh_sign_in_required" && freshSignInRequired)
+      else { return nil }
       return response
+    case "read":
+      guard response.count == 1 else { return nil }
+      if response["value"] is NSNull { return response }
+      guard let value = response["value"] as? String,
+            value.lengthOfBytes(using: .utf8) <= 64 * 1_024
+      else { return nil }
+      return response
+    case "write", "delete":
+      return response.isEmpty ? response : nil
+    default:
+      return nil
     }
+  }
 
-    var normalized = response
-    normalized["migrationRequired"] = false
-    normalized["state"] = "ready"
-    normalized["legacyCleanupPending"] = response["migrationRequired"] as? Bool == true
-    return normalized
+  private static func exactBoolean(_ value: Any?) -> Bool? {
+    guard let number = value as? NSNumber,
+          CFGetTypeID(number) == CFBooleanGetTypeID()
+    else { return nil }
+    return number.boolValue
+  }
+
+  private static func exactInteger(_ value: Any?) -> Int? {
+    guard let number = value as? NSNumber,
+          CFGetTypeID(number) != CFBooleanGetTypeID(),
+          number.doubleValue == Double(number.intValue)
+    else { return nil }
+    return number.intValue
   }
 }
 
@@ -234,8 +211,6 @@ private final class CredentialBrokerController: NSObject {
   private var queued: [QueuedRequest] = []
   private var activeAction: String?
   private var expectedTermination = false
-  private let cutoverReceiptStore = UserDefaultsCredentialBrokerCutoverReceiptStore()
-
   func attach(channel: FlutterMethodChannel) {
     dispatchPrecondition(condition: .onQueue(.main))
     channels[ObjectIdentifier(channel)] = channel
@@ -270,10 +245,17 @@ private final class CredentialBrokerController: NSObject {
       "action": call.method,
     ]
     switch call.method {
-    case "probe", "migrate":
+    case "probe":
       guard call.arguments == nil else {
         result(Self.flutterFailure("invalid_secure_store_arguments")); return
       }
+    case "migrate":
+      guard call.arguments == nil else {
+        result(Self.flutterFailure("invalid_secure_store_arguments")); return
+      }
+      // A rotated identity cannot safely open or migrate the old broker's
+      // Keychain rows. Keep v1 intact and require a fresh authenticated session.
+      result(Self.flutterFailure("secure_store_fresh_sign_in_required")); return
     case "read", "delete":
       guard let values, values.count == 1,
             let key = values["key"] as? String, Self.allowedKeys.contains(key)
@@ -290,17 +272,14 @@ private final class CredentialBrokerController: NSObject {
     default:
       result(FlutterMethodNotImplemented); return
     }
-    enqueue(envelope, timeout: call.method == "migrate" ? 180 : 8, result: result)
+    enqueue(envelope, timeout: 8, result: result)
   }
 
   private func enqueue(
     _ envelope: [String: Any], timeout seconds: TimeInterval,
     result: @escaping FlutterResult
   ) {
-    let migrationQueued = activeAction == "migrate"
-      || queued.contains { $0.envelope["action"] as? String == "migrate" }
-    guard !migrationQueued,
-          queued.count + pending.count < 32,
+    guard queued.count + pending.count < 32,
           JSONSerialization.isValidJSONObject(envelope),
           let data = try? JSONSerialization.data(withJSONObject: envelope),
           data.count <= Self.maximumRequestBytes
@@ -418,10 +397,9 @@ private final class CredentialBrokerController: NSObject {
       if outcome == "succeeded" {
         var value = response
         value.removeValue(forKey: "id"); value.removeValue(forKey: "outcome")
-        if let normalized = CredentialBrokerCutoverPolicy.normalizeSucceeded(
+        if let normalized = CredentialBrokerV2ResponsePolicy.normalizeSucceeded(
           action: request.action,
-          response: value,
-          store: cutoverReceiptStore
+          response: value
         ) {
           request.result(normalized)
         } else {
@@ -493,9 +471,9 @@ private final class CredentialBrokerController: NSObject {
   private static func allowedErrorCode(_ code: String) -> String {
     let allowed: Set<String> = [
       "invalid_request", "secure_store_unavailable", "secure_store_interaction_required",
-      "secure_store_unreadable", "secure_store_legacy_unknown_keys",
-      "secure_store_target_unknown_keys", "secure_store_migration_conflict",
-      "secure_store_migration_verification_failed",
+      "secure_store_unreadable", "secure_store_target_unknown_keys",
+      "secure_store_initialization_verification_failed",
+      "secure_store_fresh_sign_in_required",
     ]
     return allowed.contains(code) ? code : "secure_store_unavailable"
   }

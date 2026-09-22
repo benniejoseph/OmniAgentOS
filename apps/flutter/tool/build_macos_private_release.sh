@@ -7,12 +7,12 @@ task_xcode_path="$(xcode-select -p 2>/dev/null || true)"
 task_developer_signing_identity="${ASAEL_MACOS_SIGNING_IDENTITY:-}"
 task_notary_profile="${ASAEL_MACOS_NOTARY_PROFILE:-}"
 task_dist_dir="${ASAEL_MACOS_DIST_DIR:-$task_flutter_dir/build/distribution/macos}"
-task_local_signing_dir="${ASAEL_MACOS_LOCAL_SIGNING_DIR:-${HOME}/Library/Application Support/Asael/signing}"
+task_local_signing_dir="${ASAEL_MACOS_LOCAL_SIGNING_DIR:-${HOME}/Library/Application Support/Asael/signing-v2}"
 task_local_signing_keychain="${ASAEL_MACOS_LOCAL_SIGNING_KEYCHAIN:-$task_local_signing_dir/asael-private-signing.keychain-db}"
 task_local_signing_password_file="${ASAEL_MACOS_LOCAL_SIGNING_PASSWORD_FILE:-$task_local_signing_dir/asael-private-signing.password}"
-task_local_signing_identity="${ASAEL_MACOS_LOCAL_SIGNING_IDENTITY:-Asael Private Code Signing}"
+task_local_signing_identity="${ASAEL_MACOS_LOCAL_SIGNING_IDENTITY:-Asael Private Code Signing 2026}"
 task_local_signing_install_lock="$task_local_signing_dir/.install.lock"
-task_credential_broker_dir="${ASAEL_MACOS_CREDENTIAL_BROKER_DIR:-$task_local_signing_dir/credential-broker-v1}"
+task_credential_broker_dir="${ASAEL_MACOS_CREDENTIAL_BROKER_DIR:-$task_local_signing_dir/credential-broker-v2}"
 task_credential_broker_source_app="$task_credential_broker_dir/AsaelCredentialBroker.app"
 task_credential_broker_manifest="$task_credential_broker_dir/manifest.json"
 task_signing_identity="$task_developer_signing_identity"
@@ -135,10 +135,20 @@ fi
 
 if [[ "$task_signing_mode" == "adhoc" ]]; then
   echo "A stable signing certificate is required for the frozen credential broker." >&2
-  echo "Install Asael's private signing identity, then provision broker v1 once." >&2
+  echo "Install Asael's rotated private signing identity, then provision broker v2 once." >&2
   exit 1
 fi
-"$task_script_dir/install_macos_credential_broker.sh" --verify-only
+"$task_script_dir/install_macos_credential_broker_v2.sh" --verify-only
+jq -e \
+  '.schema == 2 and .version == "2.0.0" and .build == "2"
+    and .protocol == "credential-broker-v2"
+    and .keychainService == "app.omniagent.omniagent.credential-broker.v2"
+    and .initializationMarker == "asael.credential_broker_initialization_v2"
+    and .requiresFreshSignIn == true' \
+  "$task_credential_broker_manifest" >/dev/null || {
+    echo "The immutable credential broker manifest is not the required v2 fresh-sign-in contract." >&2
+    exit 1
+  }
 task_expected_broker_cdhash="$(jq -r '.cdhash' "$task_credential_broker_manifest")"
 task_expected_broker_bundle_digest="$(jq -r '.bundleDigest' "$task_credential_broker_manifest")"
 task_expected_broker_requirement="$(jq -r '.designatedRequirement' "$task_credential_broker_manifest")"
@@ -156,7 +166,7 @@ credential_broker_bundle_digest() {
 
 signing_certificate_digest() {
   local task_certificate_output
-  if [[ -f "$task_local_signing_keychain" ]]; then
+  if [[ "$task_signing_mode" == "local" ]]; then
     task_certificate_output="$(
       security find-certificate -c "$task_signing_identity" -a -Z "$task_local_signing_keychain"
     )"
