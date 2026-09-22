@@ -30,6 +30,7 @@ import { ensureScheduledWorkflowTriggerShadowV1 } from "@/lib/db/workflow-trigge
 import { ensureScheduledWorkflowReadOnlyCanaryV1 } from "@/lib/db/workflow-schedule-canary-schema";
 import { ensureScheduledWorkflowPolicyLeaseV1 } from "@/lib/db/workflow-policy-lease-schema";
 import { ensureNotificationDispositionRuntimeV1 } from "@/lib/db/notification-disposition-schema";
+import { ensurePromptQueueRuntimeV1 } from "@/lib/db/prompt-queue-schema";
 import { ensureDeclarativePluginsV1 } from "@/lib/db/plugin-schema";
 import { ensureBuiltinSkillCatalogV2 } from "@/lib/db/builtin-skill-catalog-schema";
 import { ensureBuiltinSkillCatalogV3 } from "@/lib/db/builtin-skill-catalog-v3-schema";
@@ -205,6 +206,7 @@ export const tenantRootPolicyTables = [
   "omni_a2a_safety_reservations",
   "omni_a2a_tool_call_claims",
   "omni_agent_loop_v2_checkpoints",
+  "omni_prompt_queue_items",
   "omni_workflow_triggers",
   "omni_workflow_schedule_shadow_events",
   "omni_workflow_schedule_occurrences",
@@ -1723,6 +1725,10 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[199],
       up: ensureNotificationDispositionRuntimeV1,
+    },
+    {
+      ...databaseSchemaMigrations[200],
+      up: ensurePromptQueueRuntimeV1,
     },
   ];
 }

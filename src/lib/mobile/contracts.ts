@@ -1,5 +1,14 @@
 import { z } from "zod";
 import {
+  promptQueueCreateRequestSchema,
+  promptQueueDeleteRequestSchema,
+  promptQueueDispatchRequestSchema,
+  promptQueueItemV1Schema,
+  promptQueueListV1Schema,
+  promptQueueReorderRequestSchema,
+  promptQueueUpdateRequestSchema,
+} from "@/lib/command/prompt-queue-contracts";
+import {
   LOCAL_COMPUTER_PROTOCOL_VERSION,
   localComputerActionSchema,
   localComputerClaimRequestSchema,
@@ -12,8 +21,8 @@ import { mobilePushReceiptRequestSchema } from "@/lib/mobile/push-contract";
 import { pluginManifestSchema } from "@/lib/plugins/contracts";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 23 as const;
-export const NATIVE_API_PREVIOUS_VERSION = 22 as const;
+export const NATIVE_API_CURRENT_VERSION = 24 as const;
+export const NATIVE_API_PREVIOUS_VERSION = 23 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -1182,6 +1191,71 @@ const v22Operations: readonly NativeOperation[] = [
 // It adds no route or action authority.
 const v23Operations: readonly NativeOperation[] = [...v22Operations];
 
+// Contract v24 adds the actor-private persistent prompt queue shared by web,
+// macOS, and Android. Queue mutations are revision-fenced, and dispatch still
+// enters the ordinary governed conversation operation with no carried
+// authority, approval, budget, or tool-policy grant.
+const v24Operations: readonly NativeOperation[] = [
+  ...v23Operations,
+  operation(
+    "promptQueue.list",
+    "GET",
+    "/api/command/prompt-queue",
+    "Read the actor-private server-authoritative prompt queue.",
+    "bearer",
+    undefined,
+    "NativePromptQueueList",
+  ),
+  operation(
+    "promptQueue.create",
+    "POST",
+    "/api/command/prompt-queue",
+    "Add one exact Agent, model, target, and prompt intent to the queue.",
+    "bearer",
+    "NativePromptQueueCreateRequest",
+    "NativePromptQueueCreateResponse",
+  ),
+  operation(
+    "promptQueue.update",
+    "PATCH",
+    "/api/command/prompt-queue/{id}",
+    "Edit, pause, or resume one exact prompt queue revision.",
+    "bearer",
+    "NativePromptQueueUpdateRequest",
+    "NativePromptQueueItemResponse",
+  ),
+  operation(
+    "promptQueue.delete",
+    "DELETE",
+    "/api/command/prompt-queue/{id}",
+    "Remove one exact prompt queue revision without granting execution authority.",
+    "bearer",
+    "NativePromptQueueDeleteRequest",
+    "NativePromptQueueDeleteResponse",
+  ),
+  operation(
+    "promptQueue.reorder",
+    "POST",
+    "/api/command/prompt-queue/reorder",
+    "Atomically reorder the complete queued and paused prompt set.",
+    "bearer",
+    "NativePromptQueueReorderRequest",
+    "NativePromptQueueReorderResponse",
+  ),
+  {
+    ...operation(
+      "promptQueue.dispatch",
+      "POST",
+      "/api/command/prompt-queue/{id}/dispatch",
+      "Run one exact queue revision through the governed Agent service.",
+      "bearer",
+      "NativePromptQueueDispatchRequest",
+      "NativeConversationEvent",
+    ),
+    mediaType: "text/event-stream" as const,
+  },
+];
+
 export const nativeContractSchemas = Object.freeze({
   JsonObject: jsonObject,
   NativeClientAttestation: nativeClientAttestationSchema,
@@ -1215,6 +1289,26 @@ export const nativeContractSchemas = Object.freeze({
   NativePluginUninstallRequest: nativePluginUninstallRequestSchema,
   NativeAgentTaskCancelRequest: nativeAgentTaskCancelRequestSchema,
   NativeAgentTaskCancelResponse: nativeAgentTaskCancelResponseSchema,
+  NativePromptQueueList: promptQueueListV1Schema,
+  NativePromptQueueCreateRequest: promptQueueCreateRequestSchema,
+  NativePromptQueueCreateResponse: z.object({
+    item: promptQueueItemV1Schema,
+    created: z.boolean(),
+  }).strict(),
+  NativePromptQueueUpdateRequest: promptQueueUpdateRequestSchema,
+  NativePromptQueueItemResponse: z.object({
+    item: promptQueueItemV1Schema,
+  }).strict(),
+  NativePromptQueueDeleteRequest: promptQueueDeleteRequestSchema,
+  NativePromptQueueDeleteResponse: z.object({
+    deleted: z.literal(true),
+    id: z.string().uuid(),
+  }).strict(),
+  NativePromptQueueReorderRequest: promptQueueReorderRequestSchema,
+  NativePromptQueueReorderResponse: z.object({
+    items: z.array(promptQueueItemV1Schema).max(40),
+  }).strict(),
+  NativePromptQueueDispatchRequest: promptQueueDispatchRequestSchema,
   NativeConversationRequest: nativeConversationRequestSchema,
   NativeConversationEvent: nativeConversationEventSchema,
   NativeLocalComputerDeviceUpdateRequest: localComputerDeviceUpdateSchema,
@@ -1270,6 +1364,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 21) return v21Operations;
   if (version === 22) return v22Operations;
   if (version === 23) return v23Operations;
+  if (version === 24) return v24Operations;
   return undefined;
 }
 
@@ -1279,7 +1374,7 @@ export function nativeContractDiscovery() {
     contractId: NATIVE_API_CONTRACT_ID,
     currentVersion: NATIVE_API_CURRENT_VERSION,
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
-    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [23, 22],
+    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [24, 23],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,
       state: version === NATIVE_API_CURRENT_VERSION ? "current" as const : "previous" as const,

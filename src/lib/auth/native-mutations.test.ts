@@ -152,7 +152,7 @@ describe("native mutation capability enrollment", () => {
     expect(policy).not.toHaveProperty("agents.delete");
   });
 
-  it("enrolls exact child cancellation only on native v22", () => {
+  it("retains exact child cancellation on both supported clients", () => {
     for (const platform of ["android", "macos"] as const) {
       expect(
         nativeMutationEnrollment(
@@ -167,7 +167,26 @@ describe("native mutation capability enrollment", () => {
           "agents.tasks.cancel",
           asOf,
         ),
-      ).toMatchObject({ state: "held", minimumContractVersion: 22 });
+      ).toMatchObject({ state: "active", minimumContractVersion: 22 });
+    }
+  });
+
+  it("enrolls prompt queue mutations only on native v24", () => {
+    for (const platform of ["android", "macos"] as const) {
+      expect(
+        nativeMutationEnrollment(
+          context(NATIVE_API_CURRENT_VERSION, undefined, platform),
+          "prompt.queue.manage",
+          asOf,
+        ),
+      ).toMatchObject({ state: "active", minimumContractVersion: 24 });
+      expect(
+        nativeMutationEnrollment(
+          context(NATIVE_API_PREVIOUS_VERSION, undefined, platform),
+          "prompt.queue.manage",
+          asOf,
+        ),
+      ).toMatchObject({ state: "held", minimumContractVersion: 24 });
     }
   });
 });

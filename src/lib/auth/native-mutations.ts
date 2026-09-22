@@ -7,6 +7,7 @@ import type { SecurityContext } from "@/lib/security/types";
 
 export const NATIVE_MUTATION_CAPABILITIES = [
   "conversation.send",
+  "prompt.queue.manage",
   "notifications.update",
   "capture.submit",
   "capture.transcribe",
@@ -92,6 +93,7 @@ export function nativeMutationCapabilityPolicy(
 }
 
 function minimumVersion(capability: NativeMutationCapability) {
+  if (capability === "prompt.queue.manage") return 24;
   if (capability.startsWith("computer.use.")) return 11;
   // Backtests were enrolled in v7. Keep that capability floor stable when the
   // current document advances; compatibility still independently limits calls

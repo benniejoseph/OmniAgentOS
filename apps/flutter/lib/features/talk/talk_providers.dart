@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/legacy.dart';
 
 import '../../core/network/api_client.dart';
 import '../../core/sync/reconnect_coordinator.dart';
+import '../../generated/native_contract.g.dart';
 import '../auth/application/session_controller.dart';
 import '../computer_use/local_computer.dart';
 import 'talk.dart';
@@ -18,6 +21,9 @@ final talkControllerProvider = ChangeNotifierProvider<TalkController>((ref) {
     ref.watch(talkRepositoryProvider),
     localComputerPreviews: owner == null ? null : localComputer,
   );
+  if (owner != null && NativeContract.supportsOperation('promptQueue.list')) {
+    unawaited(controller.initializePromptQueue());
+  }
   final unregisterHistory = ref
       .read(reconnectCoordinatorProvider)
       .register(
@@ -31,7 +37,15 @@ final talkControllerProvider = ChangeNotifierProvider<TalkController>((ref) {
         () async => controller.reconcileAcceptedRun(),
         priority: 9,
       );
+  final unregisterPromptQueue = ref
+      .read(reconnectCoordinatorProvider)
+      .register(
+        'talk-prompt-queue',
+        controller.reconcilePromptQueue,
+        priority: 8,
+      );
   ref.onDispose(() {
+    unregisterPromptQueue();
     unregisterRun();
     unregisterHistory();
   });

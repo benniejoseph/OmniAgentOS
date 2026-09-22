@@ -181,6 +181,25 @@ class ApiClient {
     );
   }
 
+  /// Reads one actor-bound encrypted local projection without attempting a
+  /// network request. Feature outboxes use this for bounded reconnect replay.
+  Future<Map<String, dynamic>?> readOfflineProjection(
+    String path, {
+    Map<String, dynamic>? query,
+  }) async {
+    final projectionStore = _projectionStore;
+    final ownerValue = await _store.readOfflineProjectionOwner();
+    if (projectionStore == null || ownerValue == null) return null;
+    final projection = await projectionStore.read(
+      ProjectionOwnerBinding(
+        tenantId: ownerValue.tenantId,
+        actorId: ownerValue.actorId,
+      ),
+      offlineProjectionKey(path, query: query),
+    );
+    return projection?.payload;
+  }
+
   Future<Map<String, dynamic>> getJson(
     String path, {
     Map<String, dynamic>? query,

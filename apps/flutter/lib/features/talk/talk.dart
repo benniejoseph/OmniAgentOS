@@ -400,11 +400,21 @@ class TalkAssignedAgent {
 class TalkQueuedPrompt {
   const TalkQueuedPrompt({
     required this.id,
+    required this.clientCorrelationId,
     required this.input,
     required this.mode,
     required this.strategy,
     required this.executionTarget,
     this.assignedAgent,
+    this.threadId,
+    this.lifecycleRevision = 0,
+    this.state = 'queued',
+    this.providerId,
+    this.modelId,
+    this.agentDefinitionVersion,
+    this.progressLabel,
+    this.failureCode,
+    this.syncState = TalkPromptQueueSyncState.synced,
   });
 
   final String id;
@@ -413,15 +423,75 @@ class TalkQueuedPrompt {
   final String strategy;
   final TalkExecutionTarget executionTarget;
   final TalkAssignedAgent? assignedAgent;
+  final String? threadId;
+  final String clientCorrelationId;
+  final int lifecycleRevision;
+  final String state;
+  final String? providerId;
+  final String? modelId;
+  final int? agentDefinitionVersion;
+  final String? progressLabel;
+  final String? failureCode;
+  final TalkPromptQueueSyncState syncState;
 
-  TalkQueuedPrompt copyWith({String? input}) => TalkQueuedPrompt(
-    id: id,
+  bool get serverBacked =>
+      RegExp(r'^[a-f0-9-]{36}$', caseSensitive: false).hasMatch(id);
+  bool get editable => const {'queued', 'paused', 'failed'}.contains(state);
+
+  TalkQueuedPrompt copyWith({
+    String? id,
+    String? input,
+    int? lifecycleRevision,
+    String? state,
+    String? progressLabel,
+    String? failureCode,
+    TalkPromptQueueSyncState? syncState,
+  }) => TalkQueuedPrompt(
+    id: id ?? this.id,
     input: input ?? this.input,
     mode: mode,
     strategy: strategy,
     executionTarget: executionTarget,
     assignedAgent: assignedAgent,
+    threadId: threadId,
+    clientCorrelationId: clientCorrelationId,
+    lifecycleRevision: lifecycleRevision ?? this.lifecycleRevision,
+    state: state ?? this.state,
+    providerId: providerId,
+    modelId: modelId,
+    agentDefinitionVersion: agentDefinitionVersion,
+    progressLabel: progressLabel ?? this.progressLabel,
+    failureCode: failureCode ?? this.failureCode,
+    syncState: syncState ?? this.syncState,
   );
+}
+
+enum TalkPromptQueueSyncState { synced, pending, conflict }
+
+bool _allActivePromptsPaused(Iterable<TalkQueuedPrompt> prompts) {
+  final active = prompts
+      .where((item) => item.state == 'queued' || item.state == 'paused')
+      .toList(growable: false);
+  return active.isNotEmpty && active.every((item) => item.state == 'paused');
+}
+
+abstract interface class TalkPromptQueueRepository {
+  Future<List<TalkQueuedPrompt>> listPromptQueue();
+  Future<TalkQueuedPrompt> createPromptQueueItem(TalkQueuedPrompt prompt);
+  Future<TalkQueuedPrompt> updatePromptQueueItem(
+    TalkQueuedPrompt prompt, {
+    String? input,
+    String? state,
+  });
+  Future<void> deletePromptQueueItem(TalkQueuedPrompt prompt);
+  Future<List<TalkQueuedPrompt>> reorderPromptQueue(
+    List<TalkQueuedPrompt> prompts,
+  );
+  Stream<SseEvent> dispatchPromptQueueItem(
+    TalkQueuedPrompt prompt, {
+    required bool force,
+  });
+  Future<List<TalkQueuedPrompt>> reconcilePromptQueue();
 }
 
 class TalkRunInspection {
@@ -859,6 +929,8 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   bool canceling = false;
   bool transcribing = false;
   bool queuePaused = false;
+  bool promptQueueSyncing = false;
+  Object? promptQueueError;
   bool artifactLoading = false;
   Object? artifactError;
   TalkMediaArtifactSummary? selectedArtifact;
@@ -868,6 +940,11 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   bool _disposed = false;
   bool _drainingQueue = false;
   int _promptSequence = 0;
+
+  TalkPromptQueueRepository? get _promptQueueRepository =>
+      repository is TalkPromptQueueRepository
+      ? repository as TalkPromptQueueRepository
+      : null;
 
   List<String> get workflowIds => List.unmodifiable(_workflowIds);
   Set<String> get monitoringWorkflowIds =>
@@ -921,8 +998,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     );
     activities.clear();
     _clearArtifacts();
-    promptQueue.clear();
-    queuePaused = false;
+    queuePaused = _allActivePromptsPaused(promptQueue);
     _workflowIds.clear();
     _workflowMonitorTokens.clear();
     _retryInput = null;
@@ -940,8 +1016,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     messages.clear();
     activities.clear();
     _clearArtifacts();
-    promptQueue.clear();
-    queuePaused = false;
+    queuePaused = _allActivePromptsPaused(promptQueue);
     _workflowIds.clear();
     _workflowMonitorTokens.clear();
     _retryInput = null;
@@ -992,20 +1067,30 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     if (_disposed ||
         text.isEmpty ||
         text.length > 20000 ||
-        promptQueue.length >= 20) {
+        promptQueue.length >= 40) {
       return;
     }
-    promptQueue.add(
-      TalkQueuedPrompt(
-        id: 'prompt-${DateTime.now().microsecondsSinceEpoch}-${_promptSequence++}',
-        input: text,
-        mode: mode,
-        strategy: strategy,
-        executionTarget: executionTarget,
-        assignedAgent: assignedAgent ?? this.assignedAgent,
-      ),
+    final correlationId =
+        'flutter-${DateTime.now().microsecondsSinceEpoch}-${_promptSequence++}';
+    final prompt = TalkQueuedPrompt(
+      id: 'local-$correlationId',
+      clientCorrelationId: correlationId,
+      input: text,
+      mode: mode,
+      strategy: strategy,
+      executionTarget: executionTarget,
+      assignedAgent: assignedAgent ?? this.assignedAgent,
+      threadId: threadId,
+      syncState: _promptQueueRepository == null
+          ? TalkPromptQueueSyncState.synced
+          : TalkPromptQueueSyncState.pending,
     );
+    promptQueue.add(prompt);
     notifyListeners();
+    final queueRepository = _promptQueueRepository;
+    if (queueRepository != null) {
+      unawaited(_createPromptQueueItem(queueRepository, prompt));
+    }
   }
 
   void updateQueuedPrompt(String id, String input) {
@@ -1013,46 +1098,156 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     if (text.isEmpty || text.length > 20000) return;
     final index = promptQueue.indexWhere((item) => item.id == id);
     if (index < 0) return;
-    promptQueue[index] = promptQueue[index].copyWith(input: text);
+    final current = promptQueue[index];
+    if (!current.editable) return;
+    promptQueue[index] = current.copyWith(
+      input: text,
+      lifecycleRevision: current.lifecycleRevision + 1,
+      state: current.state == 'failed' ? 'queued' : current.state,
+      syncState: _promptQueueRepository == null
+          ? TalkPromptQueueSyncState.synced
+          : TalkPromptQueueSyncState.pending,
+    );
     notifyListeners();
+    final queueRepository = _promptQueueRepository;
+    if (queueRepository != null) {
+      unawaited(_updatePromptQueueItem(queueRepository, current, input: text));
+    }
   }
 
   void removeQueuedPrompt(String id) {
-    promptQueue.removeWhere((item) => item.id == id);
+    final index = promptQueue.indexWhere((item) => item.id == id);
+    if (index < 0) return;
+    if (!const {
+      'queued',
+      'paused',
+      'failed',
+      'completed',
+    }.contains(promptQueue[index].state)) {
+      return;
+    }
+    final removed = promptQueue.removeAt(index);
     notifyListeners();
+    final queueRepository = _promptQueueRepository;
+    if (queueRepository != null) {
+      unawaited(_deletePromptQueueItem(queueRepository, removed));
+    }
   }
 
   void moveQueuedPrompt(String id, int offset) {
     final index = promptQueue.indexWhere((item) => item.id == id);
     final next = index + offset;
     if (index < 0 || next < 0 || next >= promptQueue.length) return;
+    if (!const {'queued', 'paused'}.contains(promptQueue[index].state) ||
+        !const {'queued', 'paused'}.contains(promptQueue[next].state)) {
+      return;
+    }
     final item = promptQueue.removeAt(index);
     promptQueue.insert(next, item);
     notifyListeners();
+    final queueRepository = _promptQueueRepository;
+    if (queueRepository != null) {
+      unawaited(_reorderPromptQueue(queueRepository));
+    }
   }
 
   void pauseQueue() {
     if (queuePaused) return;
     queuePaused = true;
     notifyListeners();
+    final queueRepository = _promptQueueRepository;
+    if (queueRepository != null) {
+      for (final prompt in List<TalkQueuedPrompt>.from(promptQueue)) {
+        if (prompt.state == 'queued') {
+          unawaited(
+            _updatePromptQueueItem(queueRepository, prompt, state: 'paused'),
+          );
+        }
+      }
+    }
+  }
+
+  void setQueuedPromptPaused(String id, {required bool paused}) {
+    final index = promptQueue.indexWhere((item) => item.id == id);
+    if (index < 0) return;
+    final current = promptQueue[index];
+    final nextState = paused ? 'paused' : 'queued';
+    if ((paused && current.state != 'queued') ||
+        (!paused && current.state != 'paused' && current.state != 'failed')) {
+      return;
+    }
+    promptQueue[index] = current.copyWith(
+      state: nextState,
+      lifecycleRevision: current.lifecycleRevision + 1,
+      syncState: _promptQueueRepository == null
+          ? TalkPromptQueueSyncState.synced
+          : TalkPromptQueueSyncState.pending,
+    );
+    queuePaused = _allActivePromptsPaused(promptQueue);
+    notifyListeners();
+    final queueRepository = _promptQueueRepository;
+    if (queueRepository != null) {
+      unawaited(
+        _updatePromptQueueItem(queueRepository, current, state: nextState),
+      );
+    } else if (!paused) {
+      unawaited(_drainPromptQueue());
+    }
   }
 
   void resumeQueue() {
     if (!queuePaused && (sending || promptQueue.isEmpty)) return;
     queuePaused = false;
     notifyListeners();
+    final queueRepository = _promptQueueRepository;
+    if (queueRepository != null) {
+      for (final prompt in List<TalkQueuedPrompt>.from(promptQueue)) {
+        if (prompt.state == 'paused' || prompt.state == 'failed') {
+          unawaited(
+            _updatePromptQueueItem(queueRepository, prompt, state: 'queued'),
+          );
+        }
+      }
+    }
     unawaited(_drainPromptQueue());
   }
 
   Future<void> runQueuedPrompt(String id) async {
     final index = promptQueue.indexWhere((item) => item.id == id);
     if (index < 0) return;
+    if (!const {'queued', 'paused'}.contains(promptQueue[index].state)) return;
     if (sending) {
       if (index > 0) {
         final item = promptQueue.removeAt(index);
         promptQueue.insert(0, item);
         notifyListeners();
       }
+      return;
+    }
+    final queueRepository = _promptQueueRepository;
+    if (queueRepository != null) {
+      var item = promptQueue[index];
+      if (!item.serverBacked) {
+        await reconcilePromptQueue();
+        final correlationId = item.clientCorrelationId;
+        final reconciledIndex = promptQueue.indexWhere(
+          (candidate) =>
+              candidate.clientCorrelationId == correlationId &&
+              candidate.serverBacked,
+        );
+        if (reconciledIndex < 0) return;
+        item = promptQueue[reconciledIndex];
+      }
+      queuePaused = false;
+      await _send(
+        item.input,
+        mode: item.mode,
+        strategy: item.strategy,
+        executionTarget: item.executionTarget,
+        assignedAgent: item.assignedAgent,
+        queuedPrompt: item,
+      );
+      await reconcilePromptQueue();
       return;
     }
     final item = promptQueue.removeAt(index);
@@ -1065,6 +1260,138 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       executionTarget: item.executionTarget,
       assignedAgent: item.assignedAgent,
     );
+  }
+
+  Future<void> initializePromptQueue() async {
+    final queueRepository = _promptQueueRepository;
+    if (_disposed || queueRepository == null || promptQueueSyncing) return;
+    promptQueueSyncing = true;
+    promptQueueError = null;
+    notifyListeners();
+    try {
+      _replacePromptQueue(await queueRepository.listPromptQueue());
+    } catch (error) {
+      promptQueueError = error;
+    } finally {
+      promptQueueSyncing = false;
+      if (!_disposed) notifyListeners();
+    }
+  }
+
+  Future<void> reconcilePromptQueue() async {
+    final queueRepository = _promptQueueRepository;
+    if (_disposed || queueRepository == null || promptQueueSyncing) return;
+    promptQueueSyncing = true;
+    promptQueueError = null;
+    notifyListeners();
+    try {
+      _replacePromptQueue(await queueRepository.reconcilePromptQueue());
+    } catch (error) {
+      promptQueueError = error;
+    } finally {
+      promptQueueSyncing = false;
+      if (!_disposed) notifyListeners();
+    }
+  }
+
+  Future<void> _createPromptQueueItem(
+    TalkPromptQueueRepository queueRepository,
+    TalkQueuedPrompt prompt,
+  ) async {
+    try {
+      final created = await queueRepository.createPromptQueueItem(prompt);
+      final index = promptQueue.indexWhere(
+        (candidate) =>
+            candidate.id == prompt.id ||
+            candidate.clientCorrelationId == prompt.clientCorrelationId,
+      );
+      if (index >= 0) promptQueue[index] = created;
+      promptQueueError = null;
+    } catch (error) {
+      promptQueueError = error;
+      final index = promptQueue.indexWhere((item) => item.id == prompt.id);
+      if (index >= 0) {
+        promptQueue[index] = promptQueue[index].copyWith(
+          syncState: TalkPromptQueueSyncState.conflict,
+        );
+      }
+    }
+    if (!_disposed) notifyListeners();
+  }
+
+  Future<void> _updatePromptQueueItem(
+    TalkPromptQueueRepository queueRepository,
+    TalkQueuedPrompt prompt, {
+    String? input,
+    String? state,
+  }) async {
+    try {
+      final updated = await queueRepository.updatePromptQueueItem(
+        prompt,
+        input: input,
+        state: state,
+      );
+      final index = promptQueue.indexWhere(
+        (candidate) =>
+            candidate.id == prompt.id ||
+            candidate.clientCorrelationId == prompt.clientCorrelationId,
+      );
+      if (index >= 0) promptQueue[index] = updated;
+      promptQueueError = null;
+    } catch (error) {
+      promptQueueError = error;
+      final index = promptQueue.indexWhere((item) => item.id == prompt.id);
+      if (index >= 0) {
+        promptQueue[index] = promptQueue[index].copyWith(
+          syncState: TalkPromptQueueSyncState.conflict,
+        );
+      }
+    }
+    if (!_disposed) notifyListeners();
+  }
+
+  Future<void> _deletePromptQueueItem(
+    TalkPromptQueueRepository queueRepository,
+    TalkQueuedPrompt prompt,
+  ) async {
+    try {
+      await queueRepository.deletePromptQueueItem(prompt);
+      promptQueueError = null;
+    } catch (error) {
+      promptQueueError = error;
+      await reconcilePromptQueue();
+    }
+    if (!_disposed) notifyListeners();
+  }
+
+  Future<void> _reorderPromptQueue(
+    TalkPromptQueueRepository queueRepository,
+  ) async {
+    try {
+      final terminal = promptQueue
+          .where((item) => item.state != 'queued' && item.state != 'paused')
+          .toList(growable: false);
+      _replacePromptQueue([
+        ...await queueRepository.reorderPromptQueue(
+          promptQueue
+              .where((item) => item.state == 'queued' || item.state == 'paused')
+              .toList(growable: false),
+        ),
+        ...terminal,
+      ]);
+      promptQueueError = null;
+    } catch (error) {
+      promptQueueError = error;
+      await reconcilePromptQueue();
+    }
+    if (!_disposed) notifyListeners();
+  }
+
+  void _replacePromptQueue(List<TalkQueuedPrompt> next) {
+    promptQueue
+      ..clear()
+      ..addAll(next.take(40));
+    queuePaused = _allActivePromptsPaused(promptQueue);
   }
 
   Future<void> selectArtifact(TalkMediaArtifactSummary artifact) async {
@@ -1245,6 +1572,8 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
     TalkAssignedAgent? assignedAgent,
+    TalkQueuedPrompt? queuedPrompt,
+    bool queuedForce = true,
     bool replaceFailedResponse = false,
   }) async {
     final text = input.trim();
@@ -1269,14 +1598,21 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     notifyListeners();
     String? terminalInspectionRunId;
     try {
-      await for (final event in repository.send(
-        message: text,
-        threadId: threadId,
-        mode: mode,
-        strategy: strategy,
-        executionTarget: executionTarget,
-        agentId: assignedAgent?.id,
-      )) {
+      final queueRepository = _promptQueueRepository;
+      final events = queuedPrompt != null && queueRepository != null
+          ? queueRepository.dispatchPromptQueueItem(
+              queuedPrompt,
+              force: queuedForce,
+            )
+          : repository.send(
+              message: text,
+              threadId: threadId,
+              mode: mode,
+              strategy: strategy,
+              executionTarget: executionTarget,
+              agentId: assignedAgent?.id,
+            );
+      await for (final event in events) {
         if (_disposed) return;
         adoptConversationThreadId(event.data['threadId']);
         switch (event.event) {
@@ -1611,6 +1947,31 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     if (_drainingQueue || sending || queuePaused || promptQueue.isEmpty) return;
     _drainingQueue = true;
     try {
+      final queueRepository = _promptQueueRepository;
+      if (queueRepository != null) {
+        while (!_disposed && !sending && !queuePaused) {
+          final next = promptQueue
+              .where((item) => item.state == 'queued' && item.serverBacked)
+              .firstOrNull;
+          if (next == null) break;
+          await _send(
+            next.input,
+            mode: next.mode,
+            strategy: next.strategy,
+            executionTarget: next.executionTarget,
+            assignedAgent: next.assignedAgent,
+            queuedPrompt: next,
+            queuedForce: false,
+          );
+          await reconcilePromptQueue();
+          if (promptQueue.any(
+            (item) => item.id == next.id && item.state == 'queued',
+          )) {
+            break;
+          }
+        }
+        return;
+      }
       while (!_disposed && !sending && !queuePaused && promptQueue.isNotEmpty) {
         final next = promptQueue.removeAt(0);
         notifyListeners();
@@ -3939,35 +4300,64 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
       children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(14, 12, 14, 8),
-          child: Row(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Expanded(
-                child: Text(
-                  controller.queuePaused
-                      ? 'Paused for review'
-                      : controller.sending
-                      ? 'Runs after the current prompt'
-                      : 'Runs in this order',
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      controller.queuePaused
+                          ? 'Paused for review'
+                          : controller.sending
+                          ? 'Runs after the current prompt'
+                          : 'Synced queue · runs in this order',
+                      style: TextStyle(
+                        color: scheme.onSurfaceVariant,
+                        fontSize: 11.5,
+                      ),
+                    ),
+                  ),
+                  if (controller.promptQueueSyncing)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 8),
+                      child: SizedBox.square(
+                        dimension: 14,
+                        child: CircularProgressIndicator(strokeWidth: 1.8),
+                      ),
+                    )
+                  else
+                    IconButton(
+                      tooltip: 'Refresh synced queue',
+                      visualDensity: VisualDensity.compact,
+                      onPressed: controller.initializePromptQueue,
+                      icon: const Icon(Icons.sync_rounded, size: 17),
+                    ),
+                  TextButton.icon(
+                    onPressed: controller.promptQueue.isEmpty
+                        ? null
+                        : controller.queuePaused
+                        ? controller.resumeQueue
+                        : controller.pauseQueue,
+                    icon: Icon(
+                      controller.queuePaused
+                          ? Icons.play_arrow_rounded
+                          : Icons.pause_rounded,
+                      size: 17,
+                    ),
+                    label: Text(controller.queuePaused ? 'Resume' : 'Pause'),
+                  ),
+                ],
+              ),
+              if (controller.promptQueueError != null)
+                Text(
+                  'Some queue changes need review after reconnecting.',
                   style: TextStyle(
-                    color: scheme.onSurfaceVariant,
-                    fontSize: 11.5,
+                    color: scheme.error,
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
-              ),
-              TextButton.icon(
-                onPressed: controller.promptQueue.isEmpty
-                    ? null
-                    : controller.queuePaused
-                    ? controller.resumeQueue
-                    : controller.pauseQueue,
-                icon: Icon(
-                  controller.queuePaused
-                      ? Icons.play_arrow_rounded
-                      : Icons.pause_rounded,
-                  size: 17,
-                ),
-                label: Text(controller.queuePaused ? 'Resume' : 'Pause'),
-              ),
             ],
           ),
         ),
@@ -4036,6 +4426,69 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
                                 ],
                               ),
                               const SizedBox(height: 5),
+                              Wrap(
+                                spacing: 6,
+                                runSpacing: 5,
+                                children: [
+                                  _QueueStatusChip(
+                                    label: TalkController._sentenceCase(
+                                      prompt.state,
+                                    ),
+                                    color: prompt.state == 'failed'
+                                        ? scheme.error
+                                        : prompt.state == 'completed'
+                                        ? scheme.primary
+                                        : prompt.state == 'dispatching'
+                                        ? scheme.tertiary
+                                        : scheme.onSurfaceVariant,
+                                  ),
+                                  if (prompt.syncState !=
+                                      TalkPromptQueueSyncState.synced)
+                                    _QueueStatusChip(
+                                      label:
+                                          prompt.syncState ==
+                                              TalkPromptQueueSyncState.conflict
+                                          ? 'Review conflict'
+                                          : 'Sync pending',
+                                      color:
+                                          prompt.syncState ==
+                                              TalkPromptQueueSyncState.conflict
+                                          ? scheme.error
+                                          : scheme.tertiary,
+                                    ),
+                                  if (prompt.providerId != null &&
+                                      prompt.modelId != null)
+                                    _QueueStatusChip(
+                                      label:
+                                          '${prompt.providerId} · ${prompt.modelId}',
+                                      color: scheme.onSurfaceVariant,
+                                    ),
+                                  if (prompt.agentDefinitionVersion != null)
+                                    _QueueStatusChip(
+                                      label:
+                                          'Agent v${prompt.agentDefinitionVersion}',
+                                      color: scheme.onSurfaceVariant,
+                                    ),
+                                ],
+                              ),
+                              if (prompt.progressLabel != null ||
+                                  prompt.failureCode != null) ...[
+                                const SizedBox(height: 6),
+                                Text(
+                                  prompt.progressLabel ??
+                                      'Stopped · ${prompt.failureCode}',
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    color: prompt.failureCode == null
+                                        ? scheme.onSurfaceVariant
+                                        : scheme.error,
+                                    fontSize: 10.5,
+                                    height: 1.3,
+                                  ),
+                                ),
+                              ],
+                              const SizedBox(height: 4),
                               Row(
                                 children: [
                                   Icon(
@@ -4048,7 +4501,7 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
                                     child: Text(
                                       prompt.assignedAgent == null
                                           ? prompt.executionTarget.label
-                                          : '${prompt.assignedAgent!.name} · Direct · ${prompt.executionTarget.label}',
+                                          : '${prompt.assignedAgent!.name} · ${TalkController._sentenceCase(prompt.strategy)} · ${prompt.executionTarget.label}',
                                       style: TextStyle(
                                         color: scheme.onSurfaceVariant,
                                         fontSize: 10.5,
@@ -4059,10 +4512,40 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
                                   IconButton(
                                     tooltip: 'Edit prompt',
                                     visualDensity: VisualDensity.compact,
-                                    onPressed: () => _editPrompt(prompt),
+                                    onPressed: prompt.editable
+                                        ? () => _editPrompt(prompt)
+                                        : null,
                                     icon: const Icon(
                                       Icons.edit_outlined,
                                       size: 17,
+                                    ),
+                                  ),
+                                  IconButton(
+                                    tooltip:
+                                        prompt.state == 'paused' ||
+                                            prompt.state == 'failed'
+                                        ? 'Resume prompt'
+                                        : 'Pause prompt',
+                                    visualDensity: VisualDensity.compact,
+                                    onPressed:
+                                        const {
+                                          'queued',
+                                          'paused',
+                                          'failed',
+                                        }.contains(prompt.state)
+                                        ? () =>
+                                              controller.setQueuedPromptPaused(
+                                                prompt.id,
+                                                paused:
+                                                    prompt.state == 'queued',
+                                              )
+                                        : null,
+                                    icon: Icon(
+                                      prompt.state == 'paused' ||
+                                              prompt.state == 'failed'
+                                          ? Icons.play_circle_outline_rounded
+                                          : Icons.pause_circle_outline_rounded,
+                                      size: 18,
                                     ),
                                   ),
                                   IconButton(
@@ -4070,8 +4553,15 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
                                         ? 'Make this next'
                                         : 'Run now',
                                     visualDensity: VisualDensity.compact,
-                                    onPressed: () =>
-                                        controller.runQueuedPrompt(prompt.id),
+                                    onPressed:
+                                        const {
+                                          'queued',
+                                          'paused',
+                                        }.contains(prompt.state)
+                                        ? () => controller.runQueuedPrompt(
+                                            prompt.id,
+                                          )
+                                        : null,
                                     icon: const Icon(
                                       Icons.play_arrow_rounded,
                                       size: 19,
@@ -4080,8 +4570,11 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
                                   IconButton(
                                     tooltip: 'Remove prompt',
                                     visualDensity: VisualDensity.compact,
-                                    onPressed: () => controller
-                                        .removeQueuedPrompt(prompt.id),
+                                    onPressed: prompt.state == 'dispatching'
+                                        ? null
+                                        : () => controller.removeQueuedPrompt(
+                                            prompt.id,
+                                          ),
                                     icon: const Icon(
                                       Icons.close_rounded,
                                       size: 17,
@@ -4144,6 +4637,34 @@ class _RailEmpty extends StatelessWidget {
             style: TextStyle(color: color, fontSize: 12),
           ),
         ],
+      ),
+    ),
+  );
+}
+
+class _QueueStatusChip extends StatelessWidget {
+  const _QueueStatusChip({required this.label, required this.color});
+
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    constraints: const BoxConstraints(maxWidth: 230),
+    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+    decoration: BoxDecoration(
+      color: color.withValues(alpha: 0.09),
+      borderRadius: BorderRadius.circular(999),
+      border: Border.all(color: color.withValues(alpha: 0.22)),
+    ),
+    child: Text(
+      label,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: TextStyle(
+        color: color,
+        fontSize: 9.5,
+        fontWeight: FontWeight.w700,
       ),
     ),
   );

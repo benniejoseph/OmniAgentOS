@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
@@ -9,7 +10,11 @@ import 'talk.dart';
 import 'talk_history_api_repository.dart';
 
 class ApiTalkRepository
-    implements TalkRepository, TalkHistoryRepository, TalkArtifactRepository {
+    implements
+        TalkRepository,
+        TalkHistoryRepository,
+        TalkArtifactRepository,
+        TalkPromptQueueRepository {
   ApiTalkRepository(
     this.api, {
     TalkHistoryRepository? history,
@@ -25,6 +30,366 @@ class ApiTalkRepository
   final TalkHistoryRepository _history;
   final Duration _recoveryPollInterval;
   final int _recoveryPollLimit;
+  static const _promptQueuePath = '/api/command/prompt-queue';
+  static const _promptQueueOutboxPath = 'asael://prompt-queue-outbox-v1';
+  Future<void> _promptQueueOutboxSerial = Future<void>.value();
+
+  @override
+  Future<List<TalkQueuedPrompt>> listPromptQueue() async {
+    final payload = await api.getJson(_promptQueuePath);
+    final items = _promptQueueItems(payload);
+    return _applyPromptQueueOutbox(items, await _readPromptQueueOutbox());
+  }
+
+  @override
+  Future<TalkQueuedPrompt> createPromptQueueItem(
+    TalkQueuedPrompt prompt,
+  ) async {
+    final operation = <String, dynamic>{
+      'kind': 'create',
+      'clientCorrelationId': prompt.clientCorrelationId,
+      'request': _promptQueueCreateRequest(prompt),
+    };
+    try {
+      final response = await api.postJson(
+        _promptQueuePath,
+        data: Map<String, dynamic>.from(operation['request'] as Map),
+      );
+      return _promptQueueItem(response['item']);
+    } on ApiException catch (error) {
+      if (!_isOfflineQueueFailure(error)) rethrow;
+      await _appendPromptQueueOperation(operation);
+      return prompt.copyWith(syncState: TalkPromptQueueSyncState.pending);
+    }
+  }
+
+  @override
+  Future<TalkQueuedPrompt> updatePromptQueueItem(
+    TalkQueuedPrompt prompt, {
+    String? input,
+    String? state,
+  }) async {
+    final operation = <String, dynamic>{
+      'kind': 'update',
+      'id': prompt.id,
+      'clientCorrelationId': prompt.clientCorrelationId,
+      'expectedRevision': prompt.lifecycleRevision,
+      'input': ?input,
+      'state': ?state,
+    };
+    if (!prompt.serverBacked) {
+      await _appendPromptQueueOperation(operation);
+      return prompt.copyWith(
+        input: input,
+        state: state,
+        lifecycleRevision: prompt.lifecycleRevision + 1,
+        syncState: TalkPromptQueueSyncState.pending,
+      );
+    }
+    try {
+      final response = await api.patchJson(
+        '$_promptQueuePath/${Uri.encodeComponent(prompt.id)}',
+        data: {
+          'expectedRevision': prompt.lifecycleRevision,
+          'prompt': ?input,
+          'state': ?state,
+        },
+      );
+      return _promptQueueItem(response['item']);
+    } on ApiException catch (error) {
+      if (!_isOfflineQueueFailure(error)) rethrow;
+      await _appendPromptQueueOperation(operation);
+      return prompt.copyWith(
+        input: input,
+        state: state,
+        lifecycleRevision: prompt.lifecycleRevision + 1,
+        syncState: TalkPromptQueueSyncState.pending,
+      );
+    }
+  }
+
+  @override
+  Future<void> deletePromptQueueItem(TalkQueuedPrompt prompt) async {
+    final operation = <String, dynamic>{
+      'kind': 'delete',
+      'id': prompt.id,
+      'clientCorrelationId': prompt.clientCorrelationId,
+      'expectedRevision': prompt.lifecycleRevision,
+    };
+    if (!prompt.serverBacked) {
+      await _appendPromptQueueOperation(operation);
+      return;
+    }
+    try {
+      await api.deleteJson(
+        '$_promptQueuePath/${Uri.encodeComponent(prompt.id)}',
+        data: {'expectedRevision': prompt.lifecycleRevision},
+      );
+    } on ApiException catch (error) {
+      if (!_isOfflineQueueFailure(error)) rethrow;
+      await _appendPromptQueueOperation(operation);
+    }
+  }
+
+  @override
+  Future<List<TalkQueuedPrompt>> reorderPromptQueue(
+    List<TalkQueuedPrompt> prompts,
+  ) async {
+    final operation = <String, dynamic>{
+      'kind': 'reorder',
+      'items': [
+        for (final prompt in prompts)
+          {
+            'id': prompt.id,
+            'clientCorrelationId': prompt.clientCorrelationId,
+            'expectedRevision': prompt.lifecycleRevision,
+          },
+      ],
+    };
+    if (prompts.any((prompt) => !prompt.serverBacked)) {
+      await _appendPromptQueueOperation(operation);
+      return [
+        for (final prompt in prompts)
+          prompt.copyWith(
+            lifecycleRevision: prompt.lifecycleRevision + 1,
+            syncState: TalkPromptQueueSyncState.pending,
+          ),
+      ];
+    }
+    try {
+      final response = await api.postJson(
+        '$_promptQueuePath/reorder',
+        data: {
+          'items': [
+            for (final prompt in prompts)
+              {'id': prompt.id, 'expectedRevision': prompt.lifecycleRevision},
+          ],
+        },
+      );
+      return _promptQueueItems(response);
+    } on ApiException catch (error) {
+      if (!_isOfflineQueueFailure(error)) rethrow;
+      await _appendPromptQueueOperation(operation);
+      return [
+        for (final prompt in prompts)
+          prompt.copyWith(
+            lifecycleRevision: prompt.lifecycleRevision + 1,
+            syncState: TalkPromptQueueSyncState.pending,
+          ),
+      ];
+    }
+  }
+
+  @override
+  Stream<SseEvent> dispatchPromptQueueItem(
+    TalkQueuedPrompt prompt, {
+    required bool force,
+  }) async* {
+    if (!prompt.serverBacked) {
+      throw const ApiException(
+        'Reconnect before running this locally queued prompt.',
+        diagnosticCode: 'prompt_queue_offline_pending',
+      );
+    }
+    final body = await api.postStream(
+      '$_promptQueuePath/${Uri.encodeComponent(prompt.id)}/dispatch',
+      data: {'expectedRevision': prompt.lifecycleRevision, 'force': force},
+      headers: const {'Accept': 'text/event-stream'},
+      receiveTimeout: agentStreamReceiveTimeout,
+    );
+    await for (final event in parseSse(body.stream)) {
+      yield event;
+    }
+  }
+
+  @override
+  Future<List<TalkQueuedPrompt>> reconcilePromptQueue() async {
+    return _serializePromptQueueOutbox(() async {
+      var operations = await _readPromptQueueOutboxUnsafe();
+      if (operations.isEmpty) {
+        return _promptQueueItems(await api.getJsonFresh(_promptQueuePath));
+      }
+      final conflictCorrelations = <String>{};
+      while (operations.isNotEmpty) {
+        final operation = operations.first;
+        try {
+          await _replayPromptQueueOperation(operation);
+          operations = operations.sublist(1);
+          // Persist after every acknowledged operation. A process death can
+          // replay only the current idempotent operation, never the full tail.
+          await _writePromptQueueOutboxUnsafe(operations);
+        } on ApiConflictException {
+          conflictCorrelations.addAll(_operationCorrelations(operation));
+          break;
+        }
+      }
+      final live = _promptQueueItems(await api.getJsonFresh(_promptQueuePath));
+      return [
+        for (final item in _applyPromptQueueOutbox(live, operations))
+          conflictCorrelations.contains(item.clientCorrelationId)
+              ? item.copyWith(syncState: TalkPromptQueueSyncState.conflict)
+              : item,
+      ];
+    });
+  }
+
+  Future<List<Json>> _readPromptQueueOutbox() =>
+      _serializePromptQueueOutbox(_readPromptQueueOutboxUnsafe);
+
+  Future<List<Json>> _readPromptQueueOutboxUnsafe() async {
+    final projection = await api.readOfflineProjection(_promptQueueOutboxPath);
+    if (projection == null) return const [];
+    if (projection['schemaVersion'] != 1 || projection['operations'] is! List) {
+      throw const FormatException(
+        'The private prompt queue outbox is invalid.',
+      );
+    }
+    final raw = projection['operations'] as List;
+    if (raw.length > 80 || raw.any((operation) => operation is! Map)) {
+      throw const FormatException(
+        'The private prompt queue outbox is invalid.',
+      );
+    }
+    return [
+      for (final operation in raw) Map<String, dynamic>.from(operation as Map),
+    ];
+  }
+
+  Future<void> _writePromptQueueOutboxUnsafe(List<Json> operations) async {
+    if (operations.length > 80) {
+      throw StateError('The private prompt queue outbox is full.');
+    }
+    await api.seedOfflineProjection(_promptQueueOutboxPath, {
+      'schemaVersion': 1,
+      'operations': operations,
+      'updatedAt': DateTime.now().toUtc().toIso8601String(),
+    });
+  }
+
+  Future<void> _appendPromptQueueOperation(Json operation) =>
+      _serializePromptQueueOutbox(() async {
+        final operations = await _readPromptQueueOutboxUnsafe();
+        if (operations.length >= 80) {
+          throw StateError(
+            'The offline prompt queue has too many pending changes. Reconnect before changing it again.',
+          );
+        }
+        await _writePromptQueueOutboxUnsafe([...operations, operation]);
+      });
+
+  Future<T> _serializePromptQueueOutbox<T>(Future<T> Function() action) {
+    final result = _promptQueueOutboxSerial.then((_) => action());
+    _promptQueueOutboxSerial = result.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    return result;
+  }
+
+  Future<void> _replayPromptQueueOperation(Json operation) async {
+    final kind = operation['kind'];
+    if (kind == 'create') {
+      final request = operation['request'];
+      if (request is! Map) {
+        throw const FormatException('An offline queue create is invalid.');
+      }
+      await api.postJson(
+        _promptQueuePath,
+        data: Map<String, dynamic>.from(request),
+      );
+      return;
+    }
+
+    final live = _promptQueueItems(await api.getJsonFresh(_promptQueuePath));
+    if (kind == 'update') {
+      final current = _resolvePromptQueueOperationItem(live, operation);
+      if (current == null) {
+        throw const ApiConflictException(
+          'This queued prompt no longer exists on the server.',
+        );
+      }
+      final desiredInput = operation['input']?.toString();
+      final desiredState = operation['state']?.toString();
+      final expectedRevision = _queueRevision(operation['expectedRevision']);
+      if (current.lifecycleRevision == expectedRevision + 1 &&
+          (desiredInput == null || current.input == desiredInput) &&
+          (desiredState == null || current.state == desiredState)) {
+        return;
+      }
+      await api.patchJson(
+        '$_promptQueuePath/${Uri.encodeComponent(current.id)}',
+        data: {
+          'expectedRevision': expectedRevision,
+          'prompt': ?desiredInput,
+          'state': ?desiredState,
+        },
+      );
+      return;
+    }
+    if (kind == 'delete') {
+      final current = _resolvePromptQueueOperationItem(live, operation);
+      if (current == null) return;
+      try {
+        await api.deleteJson(
+          '$_promptQueuePath/${Uri.encodeComponent(current.id)}',
+          data: {
+            'expectedRevision': _queueRevision(operation['expectedRevision']),
+          },
+        );
+      } on ApiException catch (error) {
+        if (error.statusCode != 404) rethrow;
+      }
+      return;
+    }
+    if (kind == 'reorder') {
+      final rawItems = operation['items'];
+      if (rawItems is! List || rawItems.isEmpty || rawItems.length > 40) {
+        throw const FormatException('An offline queue reorder is invalid.');
+      }
+      final resolved = <({TalkQueuedPrompt item, int expectedRevision})>[];
+      for (final raw in rawItems) {
+        if (raw is! Map) {
+          throw const FormatException('An offline queue reorder is invalid.');
+        }
+        final queueItem = _resolvePromptQueueOperationItem(
+          live,
+          Map<String, dynamic>.from(raw),
+        );
+        if (queueItem == null) {
+          throw const ApiConflictException(
+            'The prompt queue changed before offline order could sync.',
+          );
+        }
+        resolved.add((
+          item: queueItem,
+          expectedRevision: _queueRevision(raw['expectedRevision']),
+        ));
+      }
+      final liveActive = live
+          .where((item) => item.state == 'queued' || item.state == 'paused')
+          .map((item) => item.id)
+          .toList(growable: false);
+      final desired = resolved.map((value) => value.item.id).toList();
+      final alreadyApplied =
+          _sameQueueOrder(liveActive, desired) &&
+          resolved.every(
+            (value) =>
+                value.item.lifecycleRevision == value.expectedRevision + 1,
+          );
+      if (alreadyApplied) return;
+      await api.postJson(
+        '$_promptQueuePath/reorder',
+        data: {
+          'items': [
+            for (final value in resolved)
+              {'id': value.item.id, 'expectedRevision': value.expectedRevision},
+          ],
+        },
+      );
+      return;
+    }
+    throw const FormatException('An offline queue operation is invalid.');
+  }
 
   @override
   Future<void> cancelRun(String runId) async {
@@ -332,6 +697,273 @@ const _terminalConversationEvents = {
   'waiting_approval',
   'budget_exhausted',
 };
+
+List<TalkQueuedPrompt> _promptQueueItems(Map<String, dynamic> payload) {
+  final rawItems = payload['items'];
+  if (rawItems is! List || rawItems.length > 40) {
+    throw const FormatException('The prompt queue projection is invalid.');
+  }
+  return [for (final raw in rawItems) _promptQueueItem(raw)];
+}
+
+TalkQueuedPrompt _promptQueueItem(Object? value) {
+  if (value is! Map) {
+    throw const FormatException('A prompt queue item is invalid.');
+  }
+  final item = Map<String, dynamic>.from(value);
+  final schemaVersion = item['schemaVersion'];
+  final id = _queueText(item['id'], maximum: 80);
+  final correlation = _queueText(item['clientCorrelationId'], maximum: 240);
+  final prompt = _queueText(item['prompt'], maximum: 20000);
+  final mode = _queueText(item['mode'], maximum: 20);
+  final strategy = _queueText(item['strategy'], maximum: 20);
+  final state = _queueText(item['state'], maximum: 20);
+  final revision = _queueRevision(item['lifecycleRevision']);
+  final target = item['target'];
+  final agent = item['agent'];
+  final model = item['model'];
+  if (schemaVersion != 1 ||
+      !RegExp(
+        r'^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$',
+        caseSensitive: false,
+      ).hasMatch(id) ||
+      correlation.isEmpty ||
+      prompt.isEmpty ||
+      !const {'orchestrate', 'research', 'execute', 'learn'}.contains(mode) ||
+      !const {'direct', 'auto'}.contains(strategy) ||
+      !const {
+        'queued',
+        'paused',
+        'dispatching',
+        'completed',
+        'failed',
+      }.contains(state) ||
+      target is! Map ||
+      agent is! Map ||
+      model is! Map ||
+      item['queueGrantsAuthority'] != false) {
+    throw const FormatException('A prompt queue item is invalid.');
+  }
+  final targetMap = Map<String, dynamic>.from(target);
+  final agentMap = Map<String, dynamic>.from(agent);
+  final modelMap = Map<String, dynamic>.from(model);
+  final executionTarget = targetMap['executionTarget'] == 'local_macos'
+      ? TalkExecutionTarget.thisMac
+      : targetMap['executionTarget'] == 'asael'
+      ? TalkExecutionTarget.agent
+      : throw const FormatException('The queue execution target is invalid.');
+  final logicalAgentId = _queueText(agentMap['logicalAgentId'], maximum: 120);
+  final providerId = _queueText(modelMap['providerId'], maximum: 40);
+  final modelId = _queueText(modelMap['modelId'], maximum: 240);
+  final definitionVersion = _queueRevision(agentMap['definitionVersion']);
+  if (logicalAgentId.isEmpty ||
+      providerId.isEmpty ||
+      modelId.isEmpty ||
+      definitionVersion < 1) {
+    throw const FormatException('The queue identity pin is invalid.');
+  }
+  return TalkQueuedPrompt(
+    id: id,
+    clientCorrelationId: correlation,
+    input: prompt,
+    mode: mode,
+    strategy: strategy,
+    executionTarget: executionTarget,
+    assignedAgent: TalkAssignedAgent(
+      id: logicalAgentId,
+      name: logicalAgentId == 'atlas' ? 'Asael' : logicalAgentId,
+    ),
+    threadId: _queueNullableText(targetMap['threadId'], maximum: 240),
+    lifecycleRevision: revision,
+    state: state,
+    providerId: providerId,
+    modelId: modelId,
+    agentDefinitionVersion: definitionVersion,
+    progressLabel: _queueNullableText(item['progressLabel'], maximum: 160),
+    failureCode: _queueNullableText(item['failureCode'], maximum: 240),
+  );
+}
+
+Json _promptQueueCreateRequest(TalkQueuedPrompt prompt) => {
+  'clientCorrelationId': prompt.clientCorrelationId,
+  'prompt': prompt.input,
+  'mode': prompt.mode,
+  'strategy': prompt.strategy,
+  'agentId': prompt.assignedAgent?.id ?? 'atlas',
+  'target': {
+    'threadId': prompt.threadId,
+    'missionId': null,
+    'projectId': null,
+    'executionTarget': prompt.executionTarget == TalkExecutionTarget.thisMac
+        ? 'local_macos'
+        : 'asael',
+  },
+};
+
+List<TalkQueuedPrompt> _applyPromptQueueOutbox(
+  List<TalkQueuedPrompt> serverItems,
+  List<Json> operations,
+) {
+  final items = List<TalkQueuedPrompt>.from(serverItems);
+  for (final operation in operations.take(80)) {
+    final kind = operation['kind'];
+    if (kind == 'create') {
+      final request = operation['request'];
+      if (request is! Map) continue;
+      final values = Map<String, dynamic>.from(request);
+      final correlation = _queueText(
+        operation['clientCorrelationId'],
+        maximum: 240,
+      );
+      if (correlation.isEmpty ||
+          items.any((item) => item.clientCorrelationId == correlation)) {
+        continue;
+      }
+      final target = values['target'] is Map
+          ? Map<String, dynamic>.from(values['target'] as Map)
+          : const <String, dynamic>{};
+      final agentId = _queueText(values['agentId'], maximum: 120);
+      items.add(
+        TalkQueuedPrompt(
+          id: 'local-$correlation',
+          clientCorrelationId: correlation,
+          input: _queueText(values['prompt'], maximum: 20000),
+          mode: _queueText(values['mode'], maximum: 20),
+          strategy: _queueText(values['strategy'], maximum: 20),
+          executionTarget: target['executionTarget'] == 'local_macos'
+              ? TalkExecutionTarget.thisMac
+              : TalkExecutionTarget.agent,
+          assignedAgent: TalkAssignedAgent(
+            id: agentId.isEmpty ? 'atlas' : agentId,
+            name: agentId.isEmpty || agentId == 'atlas' ? 'Asael' : agentId,
+          ),
+          threadId: _queueNullableText(target['threadId'], maximum: 240),
+          syncState: TalkPromptQueueSyncState.pending,
+        ),
+      );
+      continue;
+    }
+    if (kind == 'update') {
+      final index = _resolvePromptQueueOperationIndex(items, operation);
+      if (index < 0) continue;
+      final current = items[index];
+      items[index] = current.copyWith(
+        input: operation['input']?.toString(),
+        state: operation['state']?.toString(),
+        lifecycleRevision: current.lifecycleRevision + 1,
+        syncState: TalkPromptQueueSyncState.pending,
+      );
+      continue;
+    }
+    if (kind == 'delete') {
+      final index = _resolvePromptQueueOperationIndex(items, operation);
+      if (index >= 0) items.removeAt(index);
+      continue;
+    }
+    if (kind == 'reorder' && operation['items'] is List) {
+      final requested = operation['items'] as List;
+      final active = <TalkQueuedPrompt>[];
+      for (final raw in requested.take(40)) {
+        if (raw is! Map) continue;
+        final index = _resolvePromptQueueOperationIndex(
+          items,
+          Map<String, dynamic>.from(raw),
+        );
+        if (index >= 0 && !active.contains(items[index])) {
+          active.add(
+            items[index].copyWith(
+              lifecycleRevision: items[index].lifecycleRevision + 1,
+              syncState: TalkPromptQueueSyncState.pending,
+            ),
+          );
+        }
+      }
+      if (active.length ==
+          items
+              .where((item) => item.state == 'queued' || item.state == 'paused')
+              .length) {
+        final terminal = items
+            .where((item) => item.state != 'queued' && item.state != 'paused')
+            .toList(growable: false);
+        items
+          ..clear()
+          ..addAll(active)
+          ..addAll(terminal);
+      }
+    }
+  }
+  return items.take(40).toList(growable: false);
+}
+
+TalkQueuedPrompt? _resolvePromptQueueOperationItem(
+  List<TalkQueuedPrompt> items,
+  Map operation,
+) {
+  final index = _resolvePromptQueueOperationIndex(items, operation);
+  return index < 0 ? null : items[index];
+}
+
+int _resolvePromptQueueOperationIndex(
+  List<TalkQueuedPrompt> items,
+  Map operation,
+) {
+  final correlation = _queueText(
+    operation['clientCorrelationId'],
+    maximum: 240,
+  );
+  final id = _queueText(operation['id'], maximum: 240);
+  return items.indexWhere(
+    (item) =>
+        (correlation.isNotEmpty && item.clientCorrelationId == correlation) ||
+        (id.isNotEmpty && item.id == id),
+  );
+}
+
+Set<String> _operationCorrelations(Json operation) {
+  final result = <String>{};
+  final direct = _queueText(operation['clientCorrelationId'], maximum: 240);
+  if (direct.isNotEmpty) result.add(direct);
+  final rawItems = operation['items'];
+  if (rawItems is List) {
+    for (final raw in rawItems.take(40)) {
+      if (raw is! Map) continue;
+      final correlation = _queueText(raw['clientCorrelationId'], maximum: 240);
+      if (correlation.isNotEmpty) result.add(correlation);
+    }
+  }
+  return result;
+}
+
+bool _sameQueueOrder(List<String> left, List<String> right) {
+  if (left.length != right.length) return false;
+  for (var index = 0; index < left.length; index += 1) {
+    if (left[index] != right[index]) return false;
+  }
+  return true;
+}
+
+bool _isOfflineQueueFailure(ApiException error) =>
+    error.statusCode == null ||
+    const {408, 500, 502, 503, 504}.contains(error.statusCode);
+
+int _queueRevision(Object? value) {
+  if (value is! num || value < 0 || value > 9007199254740991) {
+    throw const FormatException('A prompt queue revision is invalid.');
+  }
+  return value.toInt();
+}
+
+String _queueText(Object? value, {required int maximum}) {
+  if (value is! String || value.isEmpty || value.length > maximum) return '';
+  if (value.contains(RegExp(r'[\u0000-\u001F\u007F]'))) return '';
+  return value;
+}
+
+String? _queueNullableText(Object? value, {required int maximum}) {
+  if (value == null) return null;
+  final text = _queueText(value, maximum: maximum);
+  return text.isEmpty ? null : text;
+}
 
 class _TalkRecoveryAnchor {
   const _TalkRecoveryAnchor({

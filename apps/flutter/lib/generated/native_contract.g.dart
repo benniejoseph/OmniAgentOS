@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 23;
-  static const previousVersion = 22;
-  static const supportedVersions = <int>[23, 22];
+  static const currentVersion = 24;
+  static const previousVersion = 23;
+  static const supportedVersions = <int>[24, 23];
   static const discoveryPath = '/api/mobile/contracts';
   static const operationIds = <String>{
     'auth.login',
@@ -136,6 +136,12 @@ abstract final class NativeContract {
     'moltbook.connection.manage',
     'agents.council',
     'agents.tasks.cancel',
+    'promptQueue.list',
+    'promptQueue.create',
+    'promptQueue.update',
+    'promptQueue.delete',
+    'promptQueue.reorder',
+    'promptQueue.dispatch',
   };
 
   static bool supports(int version) => supportedVersions.contains(version);
@@ -370,6 +376,12 @@ abstract final class NativePaths {
     return '$path?$encoded';
   }
   static String agentsTasksCancel(String id) => '/api/agents/tasks/${Uri.encodeComponent(id)}/cancel';
+  static const promptQueueList = '/api/command/prompt-queue';
+  static const promptQueueCreate = '/api/command/prompt-queue';
+  static String promptQueueUpdate(String id) => '/api/command/prompt-queue/${Uri.encodeComponent(id)}';
+  static String promptQueueDelete(String id) => '/api/command/prompt-queue/${Uri.encodeComponent(id)}';
+  static const promptQueueReorder = '/api/command/prompt-queue/reorder';
+  static String promptQueueDispatch(String id) => '/api/command/prompt-queue/${Uri.encodeComponent(id)}/dispatch';
 }
 
 abstract final class NativeConversationEvents {

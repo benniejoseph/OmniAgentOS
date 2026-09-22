@@ -1,0 +1,941 @@
+import "server-only";
+
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+
+import {
+  resolveAgentIdentityForExecution,
+} from "@/lib/agents/identity-store";
+import type { ResolvedAgentIdentityV1 } from "@/lib/agents/identity-contracts";
+import {
+  PROMPT_QUEUE_MAX_ITEMS,
+  promptQueueAgentPinV1Schema,
+  promptQueueCreateRequestSchema,
+  promptQueueItemV1Schema,
+  promptQueueModelPinV1Schema,
+  promptQueueTargetV1Schema,
+  type PromptQueueAgentPinV1,
+  type PromptQueueCreateRequest,
+  type PromptQueueItemV1,
+} from "@/lib/command/prompt-queue-contracts";
+import { getSql } from "@/lib/db/client";
+import { appendScopedDomainEvent } from "@/lib/events/store";
+import { modelAssignmentScopeForAgent } from "@/lib/orchestration/computer-use-routing";
+import { selectAgentModel } from "@/lib/openai/model-router";
+import { openJsonPayload, sealJsonPayload } from "@/lib/security/sealed-payload";
+import type { ExecutionScope } from "@/lib/security/execution-scope";
+import { resolveRuntimeModelAssignment } from "@/lib/settings/runtime-models";
+import { runtimeModelRoutingPolicySha256 } from "@/lib/settings/runtime-model-routing-pin";
+import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
+
+type QueueSql = ReturnType<typeof getSql>;
+
+export class PromptQueueStoreError extends Error {
+  constructor(
+    readonly code:
+      | "not_found"
+      | "conflict"
+      | "capacity"
+      | "identity_drift"
+      | "model_drift"
+      | "invalid_state",
+    message: string,
+    readonly status = code === "not_found" ? 404 : code === "capacity" ? 429 : 409,
+  ) {
+    super(message);
+    this.name = "PromptQueueStoreError";
+  }
+}
+
+export type PromptQueueAuthority = Readonly<{
+  tenantId: string;
+  actorId: string;
+  sessionId: string;
+  executionScope: ExecutionScope;
+}>;
+
+export type ClaimedPromptQueueDispatch = Readonly<{
+  item: PromptQueueItemV1;
+  dispatchToken: string;
+}>;
+
+export async function listPromptQueueItems(
+  authority: PromptQueueAuthority,
+): Promise<PromptQueueItemV1[]> {
+  await reconcileExpiredPromptQueueDispatches(authority);
+  const rows = await getSql()`
+    SELECT *
+    FROM omni_prompt_queue_items
+    WHERE tenant_id = ${authority.tenantId}
+      AND owner_actor_id = ${authority.actorId}
+      AND state <> 'deleted'
+    ORDER BY
+      CASE WHEN state IN ('queued', 'paused', 'dispatching') THEN 0 ELSE 1 END,
+      position_key,
+      created_at,
+      id
+    LIMIT ${PROMPT_QUEUE_MAX_ITEMS}
+  `;
+  return rows.map(publicItemFromRow);
+}
+
+export async function createPromptQueueItem(input: {
+  request: PromptQueueCreateRequest;
+  authority: PromptQueueAuthority;
+}): Promise<{ item: PromptQueueItemV1; created: boolean }> {
+  const request = promptQueueCreateRequestSchema.parse(input.request);
+  const promptSha256 = sha256(request.prompt);
+  const target = promptQueueTargetV1Schema.parse(request.target);
+  const targetSha256 = canonicalJsonSha256(target);
+  const now = new Date().toISOString();
+  const id = randomUUID();
+  const sealedPrompt = sealJsonPayload(
+    { prompt: request.prompt },
+    promptBinding(input.authority.tenantId, input.authority.actorId, id, promptSha256),
+  );
+  return getSql().transaction(async (sql: QueueSql) => {
+    // A row lock cannot protect an empty actor queue. Serialize the actor's
+    // capacity check, position allocation, and insert so two devices cannot
+    // both observe slot 40 as available.
+    await lockActorPromptQueue(sql, input.authority);
+    const existingRows = await sql`
+      SELECT * FROM omni_prompt_queue_items
+      WHERE tenant_id = ${input.authority.tenantId}
+        AND owner_actor_id = ${input.authority.actorId}
+        AND client_correlation_id = ${request.clientCorrelationId}
+      LIMIT 1
+      FOR UPDATE
+    `;
+    if (existingRows[0]) {
+      if (existingRows[0].state === "deleted") {
+        throw new PromptQueueStoreError(
+          "conflict",
+          "This offline queue identity belongs to a removed prompt. Create a new queue item instead.",
+        );
+      }
+      const existing = publicItemFromRow(existingRows[0]);
+      if (
+        existing.promptSha256 !== promptSha256 ||
+        existing.targetSha256 !== targetSha256 ||
+        existing.mode !== request.mode ||
+        existing.strategy !== request.strategy ||
+        existing.agent.logicalAgentId !== request.agentId
+      ) {
+        throw new PromptQueueStoreError(
+          "conflict",
+          "This offline queue identity is already bound to different work.",
+        );
+      }
+      return { item: existing, created: false };
+    }
+    const countRows = await sql`
+      SELECT COUNT(*)::INTEGER AS count
+      FROM omni_prompt_queue_items
+      WHERE tenant_id = ${input.authority.tenantId}
+        AND owner_actor_id = ${input.authority.actorId}
+        AND state IN ('queued', 'paused', 'dispatching')
+    `;
+    if (Number(countRows[0]?.count || 0) >= PROMPT_QUEUE_MAX_ITEMS) {
+      throw new PromptQueueStoreError(
+        "capacity",
+        "The prompt queue is full. Finish or remove an item before adding another.",
+      );
+    }
+    const pins = await resolvePins({
+      tenantId: input.authority.tenantId,
+      actorId: input.authority.actorId,
+      prompt: request.prompt,
+      mode: request.mode,
+      agentId: request.agentId,
+      executionTarget: target.executionTarget,
+    });
+    const positionRows = await sql`
+      SELECT COALESCE(MAX(position_key), 0)::BIGINT AS position
+      FROM omni_prompt_queue_items
+      WHERE tenant_id = ${input.authority.tenantId}
+        AND owner_actor_id = ${input.authority.actorId}
+        AND state IN ('queued', 'paused', 'dispatching')
+    `;
+    const position = Number(positionRows[0]?.position || 0) + 1024;
+    const rows = await sql`
+      INSERT INTO omni_prompt_queue_items (
+        schema_version, id, tenant_id, owner_actor_id,
+        origin_session_id, last_modified_session_id, client_correlation_id,
+        sealed_prompt, prompt_sha256, prompt_characters,
+        mode, strategy, target, target_sha256, agent_pin, model_pin,
+        state, position_key, lifecycle_revision,
+        queue_grants_authority, created_at, updated_at
+      ) VALUES (
+        1, ${id}, ${input.authority.tenantId}, ${input.authority.actorId},
+        ${input.authority.sessionId}, ${input.authority.sessionId},
+        ${request.clientCorrelationId}, ${sealedPrompt}::jsonb,
+        ${promptSha256}, ${request.prompt.length}, ${request.mode},
+        ${request.strategy}, ${target}::jsonb, ${targetSha256},
+        ${pins.agent}::jsonb, ${pins.model}::jsonb,
+        'queued', ${position}, 0, FALSE, ${now}, ${now}
+      )
+      RETURNING *
+    `;
+    const item = publicItemFromRow(rows[0]);
+    await appendQueueEvent(sql, item, "command.prompt_queue.item.created", input.authority.executionScope);
+    return { item, created: true };
+  }) as Promise<{ item: PromptQueueItemV1; created: boolean }>;
+}
+
+export async function updatePromptQueueItem(input: {
+  itemId: string;
+  expectedRevision: number;
+  prompt?: string;
+  state?: "queued" | "paused";
+  authority: PromptQueueAuthority;
+}): Promise<PromptQueueItemV1> {
+  let replacementPins: Awaited<ReturnType<typeof resolvePins>> | undefined;
+  let promptSha256: string | undefined;
+  let sealedPrompt: ReturnType<typeof sealJsonPayload> | undefined;
+  if (input.prompt !== undefined) {
+    promptSha256 = sha256(input.prompt);
+    const current = await readPromptQueueItem(input.itemId, input.authority);
+    replacementPins = await resolvePins({
+      tenantId: input.authority.tenantId,
+      actorId: input.authority.actorId,
+      prompt: input.prompt,
+      mode: current.mode,
+      agentId: current.agent.logicalAgentId,
+      executionTarget: current.target.executionTarget,
+    });
+    sealedPrompt = sealJsonPayload(
+      { prompt: input.prompt },
+      promptBinding(
+        input.authority.tenantId,
+        input.authority.actorId,
+        input.itemId,
+        promptSha256,
+      ),
+    );
+  }
+  return getSql().transaction(async (sql: QueueSql) => {
+    await lockActorPromptQueue(sql, input.authority);
+    const rows = await sql`
+      SELECT * FROM omni_prompt_queue_items
+      WHERE tenant_id = ${input.authority.tenantId}
+        AND owner_actor_id = ${input.authority.actorId}
+        AND id = ${input.itemId}
+      LIMIT 1 FOR UPDATE
+    `;
+    if (!rows[0] || rows[0].state === "deleted") notFound();
+    const current = publicItemFromRow(rows[0]);
+    assertRevision(current, input.expectedRevision);
+    if (!new Set(["queued", "paused", "failed"]).has(current.state)) {
+      throw new PromptQueueStoreError(
+        "invalid_state",
+        "A dispatching or completed prompt cannot be edited.",
+      );
+    }
+    if (input.state === "paused" && current.state !== "queued") {
+      throw new PromptQueueStoreError("invalid_state", "Only a queued prompt can be paused.");
+    }
+    if (input.state === "queued" && current.state !== "paused" && current.state !== "failed") {
+      throw new PromptQueueStoreError("invalid_state", "Only a paused or failed prompt can be resumed.");
+    }
+    const nextState = input.prompt !== undefined && current.state === "failed"
+      ? "queued"
+      : input.state || current.state;
+    if (current.state === "failed" && nextState === "queued") {
+      const countRows = await sql`
+        SELECT COUNT(*)::INTEGER AS count
+        FROM omni_prompt_queue_items
+        WHERE tenant_id = ${input.authority.tenantId}
+          AND owner_actor_id = ${input.authority.actorId}
+          AND state IN ('queued', 'paused', 'dispatching')
+      `;
+      if (Number(countRows[0]?.count || 0) >= PROMPT_QUEUE_MAX_ITEMS) {
+        throw new PromptQueueStoreError(
+          "capacity",
+          "The prompt queue is full. Finish or remove an item before resuming this prompt.",
+        );
+      }
+    }
+    const now = new Date().toISOString();
+    const changed = await sql`
+      UPDATE omni_prompt_queue_items
+      SET sealed_prompt = COALESCE(${sealedPrompt || null}::jsonb, sealed_prompt),
+          prompt_sha256 = COALESCE(${promptSha256 || null}, prompt_sha256),
+          prompt_characters = COALESCE(${input.prompt?.length || null}, prompt_characters),
+          agent_pin = COALESCE(${replacementPins?.agent || null}::jsonb, agent_pin),
+          model_pin = COALESCE(${replacementPins?.model || null}::jsonb, model_pin),
+          state = ${nextState},
+          failure_code = NULL,
+          terminal_at = CASE WHEN ${nextState} IN ('completed', 'deleted') THEN terminal_at ELSE NULL END,
+          last_modified_session_id = ${input.authority.sessionId},
+          lifecycle_revision = lifecycle_revision + 1,
+          updated_at = ${now}
+      WHERE tenant_id = ${input.authority.tenantId}
+        AND owner_actor_id = ${input.authority.actorId}
+        AND id = ${input.itemId}
+        AND lifecycle_revision = ${input.expectedRevision}
+      RETURNING *
+    `;
+    if (!changed[0]) stale();
+    const item = publicItemFromRow(changed[0]);
+    await appendQueueEvent(sql, item, "command.prompt_queue.item.updated", input.authority.executionScope);
+    return item;
+  }) as Promise<PromptQueueItemV1>;
+}
+
+export async function deletePromptQueueItem(input: {
+  itemId: string;
+  expectedRevision: number;
+  authority: PromptQueueAuthority;
+}): Promise<void> {
+  await getSql().transaction(async (sql: QueueSql) => {
+    const rows = await sql`
+      SELECT * FROM omni_prompt_queue_items
+      WHERE tenant_id = ${input.authority.tenantId}
+        AND owner_actor_id = ${input.authority.actorId}
+        AND id = ${input.itemId}
+      LIMIT 1 FOR UPDATE
+    `;
+    if (!rows[0] || rows[0].state === "deleted") notFound();
+    const current = publicItemFromRow(rows[0]);
+    assertRevision(current, input.expectedRevision);
+    if (!new Set(["queued", "paused", "failed", "completed"]).has(current.state)) {
+      throw new PromptQueueStoreError(
+        "invalid_state",
+        "A prompt already being dispatched cannot be removed.",
+      );
+    }
+    const now = new Date().toISOString();
+    const changed = await sql`
+      UPDATE omni_prompt_queue_items
+      SET state = 'deleted', sealed_prompt = NULL,
+          dispatch_token_sha256 = NULL, dispatch_lease_expires_at = NULL,
+          failure_code = NULL,
+          last_modified_session_id = ${input.authority.sessionId},
+          lifecycle_revision = lifecycle_revision + 1,
+          updated_at = ${now}, terminal_at = COALESCE(terminal_at, ${now})
+      WHERE tenant_id = ${input.authority.tenantId}
+        AND owner_actor_id = ${input.authority.actorId}
+        AND id = ${input.itemId}
+        AND lifecycle_revision = ${input.expectedRevision}
+      RETURNING *
+    `;
+    if (!changed[0]) stale();
+    await appendQueueEventFromRow(
+      sql,
+      changed[0],
+      "command.prompt_queue.item.deleted",
+      input.authority.executionScope,
+    );
+  });
+}
+
+export async function reorderPromptQueueItems(input: {
+  items: readonly { id: string; expectedRevision: number }[];
+  authority: PromptQueueAuthority;
+}): Promise<PromptQueueItemV1[]> {
+  return getSql().transaction(async (sql: QueueSql) => {
+    // Share the actor-scoped allocator lock with creation so a new offline
+    // item cannot appear between the exact-set check and the atomic reorder.
+    await lockActorPromptQueue(sql, input.authority);
+    const requestedIds = input.items.map((item) => item.id);
+    const rows = await sql`
+      SELECT * FROM omni_prompt_queue_items
+      WHERE tenant_id = ${input.authority.tenantId}
+        AND owner_actor_id = ${input.authority.actorId}
+        AND state IN ('queued', 'paused')
+      ORDER BY position_key, created_at, id
+      FOR UPDATE
+    `;
+    const active = rows.map(publicItemFromRow);
+    if (
+      active.length !== requestedIds.length ||
+      active.some((item) => !requestedIds.includes(item.id))
+    ) {
+      throw new PromptQueueStoreError(
+        "conflict",
+        "The queue changed before this reorder. Refresh and try again.",
+      );
+    }
+    const byId = new Map(active.map((item) => [item.id, item]));
+    for (const requested of input.items) {
+      const current = byId.get(requested.id);
+      if (!current || current.lifecycleRevision !== requested.expectedRevision) stale();
+    }
+    const now = new Date().toISOString();
+    const result: PromptQueueItemV1[] = [];
+    for (let index = 0; index < input.items.length; index += 1) {
+      const requested = input.items[index];
+      const changed = await sql`
+        UPDATE omni_prompt_queue_items
+        SET position_key = ${(index + 1) * 1024},
+            last_modified_session_id = ${input.authority.sessionId},
+            lifecycle_revision = lifecycle_revision + 1,
+            updated_at = ${now}
+        WHERE tenant_id = ${input.authority.tenantId}
+          AND owner_actor_id = ${input.authority.actorId}
+          AND id = ${requested.id}
+          AND lifecycle_revision = ${requested.expectedRevision}
+        RETURNING *
+      `;
+      if (!changed[0]) stale();
+      const item = publicItemFromRow(changed[0]);
+      result.push(item);
+      await appendQueueEvent(
+        sql,
+        item,
+        "command.prompt_queue.item.reordered",
+        input.authority.executionScope,
+      );
+    }
+    return result;
+  }) as Promise<PromptQueueItemV1[]>;
+}
+
+export async function claimPromptQueueDispatch(input: {
+  itemId: string;
+  expectedRevision: number;
+  force: boolean;
+  authority: PromptQueueAuthority;
+}): Promise<ClaimedPromptQueueDispatch> {
+  const current = await readPromptQueueItem(input.itemId, input.authority);
+  assertRevision(current, input.expectedRevision);
+  if (current.state !== "queued" && !(input.force && current.state === "paused")) {
+    throw new PromptQueueStoreError(
+      "invalid_state",
+      input.force
+        ? "Only a queued or paused prompt can run now."
+        : "Automatic dispatch requires a queued prompt.",
+    );
+  }
+  await assertCurrentPins(current, input.authority);
+  const dispatchToken = randomBytes(32).toString("base64url");
+  const tokenSha256 = sha256(dispatchToken);
+  const now = new Date();
+  const leaseExpiresAt = new Date(now.getTime() + 2 * 60_000).toISOString();
+  return getSql().transaction(async (sql: QueueSql) => {
+    const rows = await sql`
+      SELECT * FROM omni_prompt_queue_items
+      WHERE tenant_id = ${input.authority.tenantId}
+        AND owner_actor_id = ${input.authority.actorId}
+        AND id = ${input.itemId}
+      LIMIT 1 FOR UPDATE
+    `;
+    if (!rows[0] || rows[0].state === "deleted") notFound();
+    const locked = publicItemFromRow(rows[0]);
+    assertRevision(locked, input.expectedRevision);
+    if (locked.state !== "queued" && !(input.force && locked.state === "paused")) {
+      throw new PromptQueueStoreError("invalid_state", "This prompt is no longer ready to dispatch.");
+    }
+    if (
+      locked.agent.definitionSha256 !== current.agent.definitionSha256 ||
+      locked.agent.principalSha256 !== current.agent.principalSha256 ||
+      locked.model.routingPolicySha256 !== current.model.routingPolicySha256 ||
+      locked.promptSha256 !== current.promptSha256
+    ) stale();
+    const changed = await sql`
+      UPDATE omni_prompt_queue_items
+      SET state = 'dispatching',
+          dispatch_token_sha256 = ${tokenSha256},
+          dispatch_lease_expires_at = ${leaseExpiresAt},
+          dispatched_at = ${now.toISOString()},
+          progress_label = 'Entering governed execution',
+          last_modified_session_id = ${input.authority.sessionId},
+          lifecycle_revision = lifecycle_revision + 1,
+          updated_at = ${now.toISOString()}
+      WHERE tenant_id = ${input.authority.tenantId}
+        AND owner_actor_id = ${input.authority.actorId}
+        AND id = ${input.itemId}
+        AND lifecycle_revision = ${input.expectedRevision}
+      RETURNING *
+    `;
+    if (!changed[0]) stale();
+    const item = publicItemFromRow(changed[0]);
+    await appendQueueEvent(sql, item, "command.prompt_queue.item.dispatching", input.authority.executionScope);
+    return { item, dispatchToken };
+  }) as Promise<ClaimedPromptQueueDispatch>;
+}
+
+export async function validatePromptQueueDispatch(input: {
+  itemId: string;
+  dispatchToken: string;
+  tenantId: string;
+  actorId: string;
+  sessionId: string;
+  request: {
+    message: string;
+    mode?: string;
+    strategy?: string;
+    agentId?: string;
+    threadId?: string;
+    missionId?: string;
+    projectId?: string;
+    computerUseTarget?: string;
+  };
+}): Promise<PromptQueueItemV1> {
+  const candidateRows = await getSql()`
+    SELECT * FROM omni_prompt_queue_items
+    WHERE tenant_id = ${input.tenantId}
+      AND owner_actor_id = ${input.actorId}
+      AND id = ${input.itemId}
+      AND state = 'dispatching'
+      AND dispatch_token_sha256 = ${sha256(input.dispatchToken)}
+      AND dispatch_lease_expires_at > NOW()
+      AND last_modified_session_id = ${input.sessionId}
+      AND progress_label = 'Entering governed execution'
+    LIMIT 1
+  `;
+  if (!candidateRows[0]) {
+    throw new PromptQueueStoreError(
+      "conflict",
+      "This queue dispatch is no longer current.",
+    );
+  }
+  const candidate = publicItemFromRow(candidateRows[0]);
+  const exactRequest = {
+    message: input.request.message,
+    mode: input.request.mode || "orchestrate",
+    strategy: input.request.strategy || "direct",
+    agentId: input.request.agentId || "atlas",
+    threadId: input.request.threadId || null,
+    missionId: input.request.missionId || null,
+    projectId: input.request.projectId || null,
+    computerUseTarget: input.request.computerUseTarget || null,
+  };
+  const expectedRequest = {
+    message: candidate.prompt,
+    mode: candidate.mode,
+    strategy: candidate.strategy,
+    agentId: candidate.agent.logicalAgentId,
+    threadId: candidate.target.threadId,
+    missionId: candidate.target.missionId,
+    projectId: candidate.target.projectId,
+    computerUseTarget: candidate.target.executionTarget === "local_macos"
+      ? "local_macos"
+      : null,
+  };
+  if (canonicalJsonSha256(exactRequest) !== canonicalJsonSha256(expectedRequest)) {
+    throw new PromptQueueStoreError(
+      "conflict",
+      "The governed command no longer matches its queued intent.",
+    );
+  }
+  // The admission marker is consumed exactly once only after the request has
+  // matched its sealed intent. The hashed token remains for progress receipts;
+  // concurrent or replayed internal headers cannot start a second run.
+  const admittedRows = await getSql()`
+    UPDATE omni_prompt_queue_items
+    SET progress_label = 'Governed execution admitted',
+        lifecycle_revision = lifecycle_revision + 1,
+        updated_at = NOW()
+    WHERE tenant_id = ${input.tenantId}
+      AND owner_actor_id = ${input.actorId}
+      AND id = ${input.itemId}
+      AND state = 'dispatching'
+      AND dispatch_token_sha256 = ${sha256(input.dispatchToken)}
+      AND dispatch_lease_expires_at > NOW()
+      AND last_modified_session_id = ${input.sessionId}
+      AND progress_label = 'Entering governed execution'
+    RETURNING *
+  `;
+  if (!admittedRows[0]) {
+    throw new PromptQueueStoreError(
+      "conflict",
+      "This queue dispatch was already admitted or is no longer current.",
+    );
+  }
+  return publicItemFromRow(admittedRows[0]);
+}
+
+/**
+ * Reconcile an interrupted dispatch without replaying its command. A run id is
+ * durable proof that normal governed execution accepted the command, so an
+ * expired accepted dispatch becomes completed; a lease with no run id fails
+ * closed and may be explicitly resumed by the actor.
+ */
+export async function reconcileExpiredPromptQueueDispatches(
+  authority: PromptQueueAuthority,
+): Promise<number> {
+  return getSql().transaction(async (sql: QueueSql) => {
+    const rows = await sql`
+      SELECT * FROM omni_prompt_queue_items
+      WHERE tenant_id = ${authority.tenantId}
+        AND owner_actor_id = ${authority.actorId}
+        AND state = 'dispatching'
+        AND dispatch_lease_expires_at <= NOW()
+      ORDER BY dispatch_lease_expires_at, id
+      LIMIT ${PROMPT_QUEUE_MAX_ITEMS}
+      FOR UPDATE
+    `;
+    let reconciled = 0;
+    for (const row of rows) {
+      const accepted = Boolean(row.run_id);
+      const terminalState = accepted ? "completed" : "failed";
+      const now = new Date().toISOString();
+      const changed = await sql`
+        UPDATE omni_prompt_queue_items
+        SET state = ${terminalState},
+            progress_label = ${accepted
+              ? "Governed run accepted; reconnect to view activity"
+              : "Dispatch expired before a governed run was accepted"},
+            failure_code = ${accepted
+              ? null
+              : "dispatch_lease_expired_before_acceptance"},
+            dispatch_token_sha256 = NULL,
+            dispatch_lease_expires_at = NULL,
+            terminal_at = ${now},
+            lifecycle_revision = lifecycle_revision + 1,
+            updated_at = ${now}
+        WHERE tenant_id = ${authority.tenantId}
+          AND owner_actor_id = ${authority.actorId}
+          AND id = ${String(row.id)}
+          AND state = 'dispatching'
+          AND dispatch_lease_expires_at <= NOW()
+        RETURNING *
+      `;
+      if (!changed[0]) continue;
+      reconciled += 1;
+      await appendQueueEventFromRow(
+        sql,
+        changed[0],
+        accepted
+          ? "command.prompt_queue.item.completed"
+          : "command.prompt_queue.item.failed",
+        authority.executionScope,
+      );
+    }
+    return reconciled;
+  }) as Promise<number>;
+}
+
+export async function recordPromptQueueDispatchProgress(input: {
+  itemId: string;
+  dispatchToken: string;
+  tenantId: string;
+  actorId: string;
+  runId?: string;
+  threadId?: string;
+  progressLabel?: string;
+  terminal?: "completed" | "failed";
+  failureCode?: string;
+  executionScope: ExecutionScope;
+}): Promise<void> {
+  await getSql().transaction(async (sql: QueueSql) => {
+    const rows = await sql`
+      SELECT * FROM omni_prompt_queue_items
+      WHERE tenant_id = ${input.tenantId}
+        AND owner_actor_id = ${input.actorId}
+        AND id = ${input.itemId}
+        AND state = 'dispatching'
+        AND dispatch_token_sha256 = ${sha256(input.dispatchToken)}
+      LIMIT 1 FOR UPDATE
+    `;
+    if (!rows[0]) return;
+    const now = new Date().toISOString();
+    const terminal = input.terminal || null;
+    const changed = await sql`
+      UPDATE omni_prompt_queue_items
+      SET run_id = COALESCE(${input.runId || null}, run_id),
+          result_thread_id = COALESCE(${input.threadId || null}, result_thread_id),
+          progress_label = COALESCE(${input.progressLabel?.slice(0, 160) || null}, progress_label),
+          state = COALESCE(${terminal}, state),
+          failure_code = CASE WHEN ${terminal} = 'failed'
+            THEN ${input.failureCode?.slice(0, 240) || "dispatch_failed"}
+            ELSE failure_code END,
+          dispatch_token_sha256 = CASE WHEN ${terminal} IS NULL THEN dispatch_token_sha256 ELSE NULL END,
+          dispatch_lease_expires_at = CASE WHEN ${terminal} IS NULL THEN dispatch_lease_expires_at ELSE NULL END,
+          terminal_at = CASE WHEN ${terminal} IS NULL THEN terminal_at ELSE ${now} END,
+          lifecycle_revision = lifecycle_revision + 1,
+          updated_at = ${now}
+      WHERE tenant_id = ${input.tenantId}
+        AND owner_actor_id = ${input.actorId}
+        AND id = ${input.itemId}
+      RETURNING *
+    `;
+    if (!changed[0]) return;
+    await appendQueueEventFromRow(
+      sql,
+      changed[0],
+      terminal
+        ? `command.prompt_queue.item.${terminal}`
+        : "command.prompt_queue.item.progressed",
+      input.executionScope,
+    );
+  });
+}
+
+async function readPromptQueueItem(
+  itemId: string,
+  authority: Pick<PromptQueueAuthority, "tenantId" | "actorId">,
+) {
+  const rows = await getSql()`
+    SELECT * FROM omni_prompt_queue_items
+    WHERE tenant_id = ${authority.tenantId}
+      AND owner_actor_id = ${authority.actorId}
+      AND id = ${itemId}
+      AND state <> 'deleted'
+    LIMIT 1
+  `;
+  if (!rows[0]) notFound();
+  return publicItemFromRow(rows[0]);
+}
+
+async function resolvePins(input: {
+  tenantId: string;
+  actorId: string;
+  prompt: string;
+  mode: "orchestrate" | "research" | "execute" | "learn";
+  agentId: string;
+  executionTarget: "asael" | "local_macos";
+}) {
+  const identity = await resolveAgentIdentityForExecution({
+    tenantId: input.tenantId,
+    actorId: input.actorId,
+    agentId: input.agentId,
+  });
+  const computerUse = input.executionTarget === "local_macos";
+  const deployment = selectAgentModel({
+    message: input.prompt,
+    mode: input.mode,
+    modelPolicy: identity.definition.modelPolicy,
+  });
+  const runtime = await resolveRuntimeModelAssignment({
+    tenantId: input.tenantId,
+    actorId: input.actorId,
+    scope: modelAssignmentScopeForAgent(input.agentId, computerUse),
+    tier: deployment.tier,
+    requiredFeature: "tools",
+    requiredFeatures: computerUse ? ["vision"] : undefined,
+    deploymentFallback: {
+      provider: deployment.provider,
+      model: deployment.model,
+      fallbackModel: deployment.fallbackModel,
+      reason: deployment.reason,
+    },
+  });
+  if (!runtime.configured || !runtime.provider || !runtime.model) {
+    throw new PromptQueueStoreError(
+      "model_drift",
+      "The configured model route is unavailable, so this prompt was not queued.",
+    );
+  }
+  const agent = agentPin(identity);
+  const modelBase = {
+    providerId: runtime.provider,
+    modelId: runtime.model,
+    tier: deployment.tier,
+    assignmentId: runtime.assignmentId || null,
+    assignmentRevision: runtime.assignmentRevision || null,
+    assignmentConfigurationSha256: runtime.assignmentConfigurationSha256 || null,
+  };
+  const model = promptQueueModelPinV1Schema.parse({
+    ...modelBase,
+    routingPolicySha256: runtimeModelRoutingPolicySha256({
+      scope: runtime.scope,
+      source: runtime.source,
+      ...modelBase,
+    }),
+  });
+  return { agent, model };
+}
+
+async function assertCurrentPins(
+  item: PromptQueueItemV1,
+  authority: Pick<PromptQueueAuthority, "tenantId" | "actorId">,
+) {
+  const current = await resolvePins({
+    tenantId: authority.tenantId,
+    actorId: authority.actorId,
+    prompt: item.prompt,
+    mode: item.mode,
+    agentId: item.agent.logicalAgentId,
+    executionTarget: item.target.executionTarget,
+  });
+  if (
+    current.agent.definitionVersionId !== item.agent.definitionVersionId ||
+    current.agent.definitionSha256 !== item.agent.definitionSha256 ||
+    current.agent.principalVersionId !== item.agent.principalVersionId ||
+    current.agent.principalSha256 !== item.agent.principalSha256
+  ) {
+    throw new PromptQueueStoreError(
+      "identity_drift",
+      "The assigned Agent changed after this prompt was queued. Edit the prompt to review and pin the current Agent.",
+    );
+  }
+  if (current.model.routingPolicySha256 !== item.model.routingPolicySha256) {
+    throw new PromptQueueStoreError(
+      "model_drift",
+      "The configured model route changed after this prompt was queued. Edit the prompt to review and pin the current route.",
+    );
+  }
+}
+
+function publicItemFromRow(row: Record<string, unknown>): PromptQueueItemV1 {
+  const id = String(row.id || "");
+  const promptSha256 = String(row.prompt_sha256 || "");
+  const opened = openJsonPayload(
+    row.sealed_prompt,
+    promptBinding(
+      String(row.tenant_id || ""),
+      String(row.owner_actor_id || ""),
+      id,
+      promptSha256,
+    ),
+  );
+  const prompt = typeof opened === "object" && opened &&
+      typeof (opened as { prompt?: unknown }).prompt === "string"
+    ? (opened as { prompt: string }).prompt
+    : "";
+  return promptQueueItemV1Schema.parse({
+    schemaVersion: Number(row.schema_version),
+    id,
+    clientCorrelationId: row.client_correlation_id,
+    originSessionId: row.origin_session_id,
+    lastModifiedSessionId: row.last_modified_session_id,
+    prompt,
+    promptSha256,
+    mode: row.mode,
+    strategy: row.strategy,
+    target: row.target,
+    targetSha256: row.target_sha256,
+    agent: row.agent_pin,
+    model: row.model_pin,
+    state: row.state,
+    position: Number(row.position_key),
+    lifecycleRevision: Number(row.lifecycle_revision),
+    runId: row.run_id || null,
+    resultThreadId: row.result_thread_id || null,
+    progressLabel: row.progress_label || null,
+    failureCode: row.failure_code || null,
+    createdAt: iso(row.created_at),
+    updatedAt: iso(row.updated_at),
+    dispatchedAt: nullableIso(row.dispatched_at),
+    terminalAt: nullableIso(row.terminal_at),
+    queueGrantsAuthority: Boolean(row.queue_grants_authority),
+  });
+}
+
+function agentPin(identity: ResolvedAgentIdentityV1): PromptQueueAgentPinV1 {
+  return promptQueueAgentPinV1Schema.parse({
+    logicalAgentId: identity.definition.logicalAgentId,
+    definitionId: identity.definition.definitionId,
+    definitionVersion: identity.definition.definitionVersion,
+    definitionVersionId: identity.definition.definitionVersionId,
+    definitionSha256: identity.definition.definitionSha256,
+    principalId: identity.principal.principalId,
+    principalGeneration: identity.principal.principalGeneration,
+    principalVersionId: identity.principal.principalVersionId,
+    principalSha256: identity.principal.principalSha256,
+  });
+}
+
+function promptBinding(
+  tenantId: string,
+  actorId: string,
+  itemId: string,
+  promptSha256: string,
+) {
+  return `prompt-queue:v1:${tenantId}:${actorId}:${itemId}:${promptSha256}`;
+}
+
+async function lockActorPromptQueue(
+  sql: QueueSql,
+  authority: Pick<PromptQueueAuthority, "tenantId" | "actorId">,
+) {
+  await sql`
+    SELECT pg_advisory_xact_lock(
+      hashtextextended(
+        ${`prompt-queue:v1:${authority.tenantId}:${authority.actorId}`},
+        0
+      )
+    )
+  `;
+}
+
+async function appendQueueEvent(
+  sql: QueueSql,
+  item: PromptQueueItemV1,
+  type: string,
+  executionScope: ExecutionScope,
+) {
+  return appendScopedDomainEvent({
+    id: `${type}:${item.id}:${item.lifecycleRevision}`,
+    streamId: `prompt-queue:${item.id}`,
+    type,
+    executionScope,
+    payload: eventPayload(item),
+  }, { sql });
+}
+
+async function appendQueueEventFromRow(
+  sql: QueueSql,
+  row: Record<string, unknown>,
+  type: string,
+  executionScope: ExecutionScope,
+) {
+  const target = promptQueueTargetV1Schema.parse(row.target);
+  const agent = promptQueueAgentPinV1Schema.parse(row.agent_pin);
+  const model = promptQueueModelPinV1Schema.parse(row.model_pin);
+  return appendScopedDomainEvent({
+    id: `${type}:${String(row.id)}:${Number(row.lifecycle_revision)}`,
+    streamId: `prompt-queue:${String(row.id)}`,
+    type,
+    executionScope,
+    payload: {
+      schemaVersion: 1,
+      queueItemId: String(row.id),
+      lifecycleRevision: Number(row.lifecycle_revision),
+      state: String(row.state),
+      promptSha256: String(row.prompt_sha256),
+      targetSha256: String(row.target_sha256),
+      agentDefinitionVersionId: agent.definitionVersionId,
+      agentPrincipalVersionId: agent.principalVersionId,
+      modelRoutingPolicySha256: model.routingPolicySha256,
+      executionTarget: target.executionTarget,
+      runId: row.run_id ? String(row.run_id) : null,
+      queueGrantsAuthority: false,
+    },
+  }, { sql });
+}
+
+function eventPayload(item: PromptQueueItemV1) {
+  return {
+    schemaVersion: 1,
+    queueItemId: item.id,
+    lifecycleRevision: item.lifecycleRevision,
+    state: item.state,
+    promptSha256: item.promptSha256,
+    targetSha256: item.targetSha256,
+    agentDefinitionVersionId: item.agent.definitionVersionId,
+    agentPrincipalVersionId: item.agent.principalVersionId,
+    modelRoutingPolicySha256: item.model.routingPolicySha256,
+    executionTarget: item.target.executionTarget,
+    runId: item.runId,
+    queueGrantsAuthority: false,
+  };
+}
+
+function assertRevision(item: PromptQueueItemV1, expectedRevision: number) {
+  if (item.lifecycleRevision !== expectedRevision) stale();
+}
+
+function notFound(): never {
+  throw new PromptQueueStoreError("not_found", "Prompt queue item not found.");
+}
+
+function stale(): never {
+  throw new PromptQueueStoreError(
+    "conflict",
+    "The prompt queue changed on another device. Refresh and review the latest order.",
+  );
+}
+
+function sha256(value: string) {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function iso(value: unknown) {
+  return new Date(String(value)).toISOString();
+}
+
+function nullableIso(value: unknown) {
+  return value ? iso(value) : null;
+}

@@ -78,6 +78,7 @@ import {
 import { resolveAgentToolPolicy } from "@/lib/orchestration/agent-tool-policy";
 import { assignedSkillsWithinRuntimeLimit } from "@/lib/skills/limits";
 import { modelAssignmentScopeForAgent } from "@/lib/orchestration/computer-use-routing";
+import { runtimeModelRoutingPolicySha256 } from "@/lib/settings/runtime-model-routing-pin";
 import {
   formatCouncilContributions,
   reviewCouncilResponse,
@@ -405,12 +406,28 @@ export async function* runAgent(
       }
     : { ...deploymentModelRoute, reason: runtimeModel.reason };
   const providerConfigured = runtimeModel.configured;
+  const currentRuntimeRoutingPolicySha256 =
+    runtimeModel.provider && runtimeModel.model
+      ? runtimeModelRoutingPolicySha256({
+          scope: runtimeModel.scope,
+          source: runtimeModel.source,
+          providerId: runtimeModel.provider,
+          modelId: runtimeModel.model,
+          tier: deploymentModelRoute.tier,
+          assignmentId: runtimeModel.assignmentId,
+          assignmentRevision: runtimeModel.assignmentRevision,
+          assignmentConfigurationSha256:
+            runtimeModel.assignmentConfigurationSha256,
+        })
+      : undefined;
   if (
     request.runtimeModelPin &&
     (
       modelRoute.provider !== request.runtimeModelPin.provider ||
       modelRoute.model !== request.runtimeModelPin.model ||
-      modelRoute.tier !== request.runtimeModelPin.tier
+      modelRoute.tier !== request.runtimeModelPin.tier ||
+      currentRuntimeRoutingPolicySha256 !==
+        request.runtimeModelPin.routingPolicySha256
     )
   ) {
     throw new Error(

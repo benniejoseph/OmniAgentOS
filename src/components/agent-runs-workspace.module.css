@@ -365,6 +365,23 @@
   backdrop-filter: none;
 }
 
+.queueDock {
+  position: relative;
+  width: min(100% - 1.5rem, 48rem);
+  margin: 0 auto .15rem;
+  padding-top: .25rem;
+}
+
+.queueCard {
+  overflow: hidden;
+  border: 1px solid var(--daybook-line);
+  border-radius: 1.35rem 1.35rem 2rem 1.35rem;
+  background:
+    linear-gradient(115deg, color-mix(in oklab, var(--daybook-mint) 48%, var(--daybook-paper)), var(--daybook-paper) 52%, color-mix(in oklab, var(--daybook-sky) 35%, var(--daybook-paper)));
+  box-shadow: 0 .6rem 1.8rem var(--daybook-shadow);
+  backdrop-filter: blur(16px);
+}
+
 .composerWidth { position: relative; }
 
 .composer {
@@ -442,6 +459,7 @@
   .progressFlow { margin-left: 0; border-radius: 1rem 1rem 1.8rem 1rem; }
   .progressFlow::before { display: none; }
   .composerDock { padding-inline: .45rem; }
+  .queueDock { width: calc(100% - .9rem); }
   .composer { border-radius: 1.15rem 1.15rem 2rem 1.15rem; }
   .composerAura { display: none; }
   .composer textarea { padding-right: 1rem; }

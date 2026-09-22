@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
+  ArrowDown,
   ArrowUp,
   Brain,
   Check,
@@ -23,6 +24,8 @@ import {
   Map as MapIcon,
   MessageSquareText,
   MessagesSquare,
+  Pause,
+  Pencil,
   PanelLeftClose,
   PanelLeftOpen,
   Play,
@@ -113,6 +116,39 @@ type ActiveContextScopeId = Extract<
 type PersonalContextConsentView = {
   state: "inactive" | "active";
   notice: { text: string; sha256: string };
+};
+type PromptQueueItem = {
+  id: string;
+  clientCorrelationId: string;
+  prompt: string;
+  promptSha256: string;
+  mode: AgentMode;
+  strategy: "direct" | "auto";
+  target: {
+    threadId: string | null;
+    missionId: string | null;
+    projectId: string | null;
+    executionTarget: "asael" | "local_macos";
+  };
+  agent: {
+    logicalAgentId: string;
+    definitionVersion: number;
+    definitionVersionId: string;
+  };
+  model: {
+    providerId: "openai" | "google" | "anthropic" | "aws_bedrock";
+    modelId: string;
+    tier: "fast" | "reasoning";
+  };
+  state: "queued" | "paused" | "dispatching" | "completed" | "failed";
+  position: number;
+  lifecycleRevision: number;
+  runId: string | null;
+  resultThreadId: string | null;
+  progressLabel: string | null;
+  failureCode: string | null;
+  updatedAt: string;
+  queueGrantsAuthority: false;
 };
 
 const CONTEXT_SCOPE_OPTIONS: readonly Readonly<{
@@ -460,6 +496,9 @@ export function AgentRunsWorkspace({
   const [threadId, setThreadId] = useState(initialThreadId || "");
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [turns, setTurns] = useState<ThreadTurn[]>([]);
+  const [promptQueue, setPromptQueue] = useState<PromptQueueItem[]>([]);
+  const [promptQueueBusyId, setPromptQueueBusyId] = useState("");
+  const [promptQueueError, setPromptQueueError] = useState<string>();
   const [conversationView, setConversationView] = useState<"chat" | "map">("chat");
   const [conversationCanvas, setConversationCanvas] = useState<unknown>();
   const [conversationCanvasState, setConversationCanvasState] = useState<"idle" | "loading" | "ready" | "error">("idle");
@@ -497,6 +536,47 @@ export function AgentRunsWorkspace({
   const transcriptPinnedRef = useRef(true);
   const conversationsButtonRef = useRef<HTMLButtonElement | null>(null);
   const conversationsSheetRef = useRef<HTMLElement | null>(null);
+  const promptQueueDrainRef = useRef(false);
+
+  const refreshPromptQueue = useCallback(async (signal?: AbortSignal) => {
+    const payload = await readJson("/api/command/prompt-queue", {
+      cache: "no-store",
+      signal,
+    });
+    const items = promptQueueItemsFromPayload(payload);
+    setPromptQueue(items);
+    setPromptQueueError(undefined);
+    return items;
+  }, []);
+
+  useEffect(() => {
+    if (sessionStatus !== "ready") return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      void refreshPromptQueue(controller.signal).catch((queueError: unknown) => {
+        if (!controller.signal.aborted) {
+          setPromptQueueError(refreshMessage(queueError));
+        }
+      });
+    }, 0);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [refreshPromptQueue, sessionStatus]);
+
+  useEffect(() => {
+    if (
+      sessionStatus !== "ready" ||
+      !promptQueue.some((item) => item.state === "dispatching")
+    ) return;
+    return startVisibleRefresh({
+      onRefresh: async () => {
+        await refreshPromptQueue();
+      },
+      pollIntervalMs: 2_500,
+    });
+  }, [promptQueue, refreshPromptQueue, sessionStatus]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -1808,32 +1888,195 @@ export function AgentRunsWorkspace({
     }
   }
 
+  async function enqueuePrompt() {
+    const prompt = goal.trim();
+    if (!prompt) {
+      setPromptQueueError("Write a message before adding it to the queue.");
+      return;
+    }
+    if (runPermission) {
+      setPromptQueueError(runPermission);
+      return;
+    }
+    const correlationId = crypto.randomUUID();
+    setPromptQueueBusyId(correlationId);
+    setPromptQueueError(undefined);
+    try {
+      const payload = asRecord(await readJson("/api/command/prompt-queue", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          clientCorrelationId: correlationId,
+          prompt,
+          mode,
+          strategy: "direct",
+          agentId: preferredAgentId || "atlas",
+          target: {
+            threadId: threadId || null,
+            missionId: initialMissionId || null,
+            projectId: selectedProjectId || null,
+            executionTarget: "asael",
+          },
+        }),
+      }));
+      const item = promptQueueItemFromValue(payload.item);
+      if (!item) throw new Error("The server returned an invalid queue item.");
+      setPromptQueue((current) => mergePromptQueueItems(current, [item]));
+      setGoal("");
+      setRunAnnouncement("Prompt added to the persistent queue.");
+    } catch (queueError) {
+      setPromptQueueError(refreshMessage(queueError));
+      await refreshPromptQueue().catch(() => undefined);
+    } finally {
+      setPromptQueueBusyId("");
+    }
+  }
+
+  async function updateQueuedPrompt(
+    item: PromptQueueItem,
+    change: { prompt?: string; state?: "queued" | "paused" },
+  ) {
+    setPromptQueueBusyId(item.id);
+    setPromptQueueError(undefined);
+    setPromptQueue((current) => current.map((candidate) =>
+      candidate.id === item.id
+        ? {
+            ...candidate,
+            ...change,
+            lifecycleRevision: candidate.lifecycleRevision + 1,
+            progressLabel: change.state === "paused"
+              ? "Paused by you"
+              : change.state === "queued"
+                ? "Ready to run"
+                : candidate.progressLabel,
+          }
+        : candidate
+    ));
+    try {
+      const payload = asRecord(await readJson(
+        `/api/command/prompt-queue/${encodeURIComponent(item.id)}`,
+        {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            expectedRevision: item.lifecycleRevision,
+            ...change,
+          }),
+        },
+      ));
+      const updated = promptQueueItemFromValue(payload.item);
+      if (!updated) throw new Error("The server returned an invalid queue item.");
+      setPromptQueue((current) => mergePromptQueueItems(current, [updated]));
+    } catch (queueError) {
+      setPromptQueueError(refreshMessage(queueError));
+      await refreshPromptQueue().catch(() => undefined);
+    } finally {
+      setPromptQueueBusyId("");
+    }
+  }
+
+  async function removeQueuedPrompt(item: PromptQueueItem) {
+    setPromptQueueBusyId(item.id);
+    setPromptQueueError(undefined);
+    setPromptQueue((current) => current.filter((candidate) => candidate.id !== item.id));
+    try {
+      await readJson(`/api/command/prompt-queue/${encodeURIComponent(item.id)}`, {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ expectedRevision: item.lifecycleRevision }),
+      });
+    } catch (queueError) {
+      setPromptQueueError(refreshMessage(queueError));
+      await refreshPromptQueue().catch(() => undefined);
+    } finally {
+      setPromptQueueBusyId("");
+    }
+  }
+
+  async function moveQueuedPrompt(item: PromptQueueItem, direction: -1 | 1) {
+    const active = promptQueue.filter((candidate) =>
+      candidate.state === "queued" || candidate.state === "paused"
+    );
+    const index = active.findIndex((candidate) => candidate.id === item.id);
+    const nextIndex = index + direction;
+    if (index < 0 || nextIndex < 0 || nextIndex >= active.length) return;
+    const reordered = [...active];
+    [reordered[index], reordered[nextIndex]] = [reordered[nextIndex], reordered[index]];
+    const terminal = promptQueue.filter((candidate) =>
+      candidate.state !== "queued" && candidate.state !== "paused"
+    );
+    setPromptQueueBusyId(item.id);
+    setPromptQueueError(undefined);
+    setPromptQueue([...reordered, ...terminal]);
+    try {
+      const payload = asRecord(await readJson("/api/command/prompt-queue/reorder", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          items: reordered.map((candidate) => ({
+            id: candidate.id,
+            expectedRevision: candidate.lifecycleRevision,
+          })),
+        }),
+      }));
+      const updated = arrayPath(payload, "items")
+        .map(promptQueueItemFromValue)
+        .filter((candidate): candidate is PromptQueueItem => Boolean(candidate));
+      setPromptQueue((current) => mergePromptQueueItems(current, updated));
+    } catch (queueError) {
+      setPromptQueueError(refreshMessage(queueError));
+      await refreshPromptQueue().catch(() => undefined);
+    } finally {
+      setPromptQueueBusyId("");
+    }
+  }
+
+  async function drainPromptQueue() {
+    if (promptQueueDrainRef.current) return;
+    promptQueueDrainRef.current = true;
+    try {
+      const items = await refreshPromptQueue();
+      const next = items.find((item) => item.state === "queued");
+      if (next) {
+        await runAgent({ queueItem: next, queueForce: false });
+      }
+    } catch (queueError) {
+      setPromptQueueError(refreshMessage(queueError));
+    } finally {
+      promptQueueDrainRef.current = false;
+    }
+  }
+
   async function runAgent(options?: {
     submittedGoal?: string;
     submittedThreadId?: string;
     prepareContextAutomatically?: boolean;
     voiceReview?: VoiceCommandReview;
+    queueItem?: PromptQueueItem;
+    queueForce?: boolean;
   }): Promise<VoiceCommandReply | undefined> {
     if (runPermission) {
       setError(runPermission);
       return;
     }
-    const submittedGoal = (options?.submittedGoal ?? goal).trim();
+    const queueItem = options?.queueItem;
+    const submittedGoal = (queueItem?.prompt ?? options?.submittedGoal ?? goal).trim();
     if (!submittedGoal) {
       setError("Write a message before asking Asael.");
       return;
     }
-    if (contextScope === "project" && !selectedProjectId) {
+    if (!queueItem && contextScope === "project" && !selectedProjectId) {
       setError("Choose a project before using project context.");
       openTaskDetails("context");
       return;
     }
-    if (contextScope === "mission" && !initialMissionId) {
+    if (!queueItem && contextScope === "mission" && !initialMissionId) {
       setError("Open Command from a Mission before using Mission context.");
       openTaskDetails("context");
       return;
     }
     if (
+      !queueItem &&
       contextScope === "explicit_selection" &&
       contextLoading &&
       !options?.prepareContextAutomatically
@@ -1842,11 +2085,11 @@ export function AgentRunsWorkspace({
       setRunAnnouncement("Wait for task context to finish loading, then run the task.");
       return;
     }
-    const contextSelection = contextScope === "explicit_selection" &&
+    const contextSelection = !queueItem && contextScope === "explicit_selection" &&
         contextSelectionReviewedRef.current
       ? contextSelectionForTask(submittedGoal)
       : undefined;
-    if (contextScope === "explicit_selection" && !contextSelection) {
+    if (!queueItem && contextScope === "explicit_selection" && !contextSelection) {
       if (!contextPreparedForGoal) {
         const prepared = await buildContext({
           query: submittedGoal,
@@ -1859,7 +2102,7 @@ export function AgentRunsWorkspace({
       setRunAnnouncement("Review and lock the context selection before running this task.");
       return;
     }
-    const resumeRunId = clarificationRunId || undefined;
+    const resumeRunId = queueItem ? undefined : clarificationRunId || undefined;
     const controller = new AbortController();
     abortControllerRef.current = controller;
     setLoading("agent");
@@ -1893,7 +2136,7 @@ export function AgentRunsWorkspace({
     setActiveTab("execute");
     setRunAnnouncement("Agent run started.");
     const requestId = agentRequestIdRef.current || crypto.randomUUID();
-    const submittedAgentId = preferredAgentId;
+    const submittedAgentId = queueItem?.agent.logicalAgentId || preferredAgentId;
     let completedResponse = "";
     let streamedResponse = "";
     let completedRunId = resumeRunId || "";
@@ -1905,24 +2148,32 @@ export function AgentRunsWorkspace({
       { id: `pending-user-${Date.now()}`, role: "user", content: submittedGoal, createdAt: new Date().toISOString() },
     ]);
 
+    let terminalEvent: "done" | "delegated" | "clarification" | "waiting_approval" | "error" | undefined;
     try {
-      const response = await fetch("/api/agent", {
+      const response = await fetch(queueItem
+        ? `/api/command/prompt-queue/${encodeURIComponent(queueItem.id)}/dispatch`
+        : "/api/agent", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          mode,
-          threadId: options?.submittedThreadId || threadId || undefined,
-          resumeRunId,
-          missionId: initialMissionId || undefined,
-          projectId: selectedProjectId || undefined,
-          message: submittedGoal,
-          requestId,
-          strategy: resumeRunId ? "auto" : "direct",
-          agentId: submittedAgentId,
-          contextScope: resumeRunId ? undefined : contextScope,
-          contextSelection: resumeRunId ? undefined : contextSelection,
-          voiceInput: resumeRunId ? undefined : options?.voiceReview,
-        }),
+        body: JSON.stringify(queueItem
+          ? {
+              expectedRevision: queueItem.lifecycleRevision,
+              force: options?.queueForce ?? true,
+            }
+          : {
+              mode,
+              threadId: options?.submittedThreadId || threadId || undefined,
+              resumeRunId,
+              missionId: initialMissionId || undefined,
+              projectId: selectedProjectId || undefined,
+              message: submittedGoal,
+              requestId,
+              strategy: resumeRunId ? "auto" : "direct",
+              agentId: submittedAgentId,
+              contextScope: resumeRunId ? undefined : contextScope,
+              contextSelection: resumeRunId ? undefined : contextSelection,
+              voiceInput: resumeRunId ? undefined : options?.voiceReview,
+            }),
         signal: controller.signal,
       });
 
@@ -1931,7 +2182,6 @@ export function AgentRunsWorkspace({
         throw new Error(stringValue(asRecord(body).message || asRecord(body).error, `/api/agent returned ${response.status}`));
       }
 
-      let terminalEvent: "done" | "delegated" | "clarification" | "waiting_approval" | "error" | undefined;
       await readSse(response.body, (event) => {
         if (event.type === "run" && event.runId) {
           currentRunIdRef.current = event.runId;
@@ -2054,6 +2304,12 @@ export function AgentRunsWorkspace({
       flushPendingDeltas();
       abortControllerRef.current = null;
       setLoading(undefined);
+      if (queueItem) {
+        await refreshPromptQueue().catch(() => undefined);
+      }
+      if (terminalEvent === "done" || terminalEvent === "delegated") {
+        window.setTimeout(() => void drainPromptQueue(), 0);
+      }
     }
     return completedResponse.trim() || pendingVoiceApproval
       ? {
@@ -2947,6 +3203,19 @@ export function AgentRunsWorkspace({
               </div>
             </div>
 
+            <PromptQueuePanel
+              items={promptQueue}
+              busyId={promptQueueBusyId}
+              error={promptQueueError}
+              dispatchLocked={Boolean(loading) || workflowInProgress}
+              onEdit={(item, prompt) => void updateQueuedPrompt(item, { prompt })}
+              onPause={(item) => void updateQueuedPrompt(item, { state: "paused" })}
+              onResume={(item) => void updateQueuedPrompt(item, { state: "queued" })}
+              onMove={(item, direction) => void moveQueuedPrompt(item, direction)}
+              onRun={(item) => void runAgent({ queueItem: item, queueForce: true })}
+              onDelete={(item) => void removeQueuedPrompt(item)}
+              onRefresh={() => void refreshPromptQueue()}
+            />
             <GoalStage
               goal={goal}
               mode={mode}
@@ -2987,6 +3256,7 @@ export function AgentRunsWorkspace({
               }}
               onPlan={() => void buildPlan()}
               onAgent={() => void runAgent({ prepareContextAutomatically: true })}
+              onQueue={() => void enqueuePrompt()}
               onVoiceConversationBound={setThreadId}
               onVoiceTranscript={async (transcript, voiceConversationId, review) => {
                 const voiceGoal = transcript;
@@ -4769,6 +5039,169 @@ function TaskProgressTimeline({
   );
 }
 
+function PromptQueuePanel({
+  items,
+  busyId,
+  error,
+  dispatchLocked,
+  onEdit,
+  onPause,
+  onResume,
+  onMove,
+  onRun,
+  onDelete,
+  onRefresh,
+}: {
+  items: PromptQueueItem[];
+  busyId: string;
+  error?: string;
+  dispatchLocked: boolean;
+  onEdit: (item: PromptQueueItem, prompt: string) => void;
+  onPause: (item: PromptQueueItem) => void;
+  onResume: (item: PromptQueueItem) => void;
+  onMove: (item: PromptQueueItem, direction: -1 | 1) => void;
+  onRun: (item: PromptQueueItem) => void;
+  onDelete: (item: PromptQueueItem) => void;
+  onRefresh: () => void;
+}) {
+  const [expanded, setExpanded] = useState(true);
+  const [editingId, setEditingId] = useState("");
+  const [editValue, setEditValue] = useState("");
+  if (!items.length && !error) return null;
+  const movable = items.filter((item) =>
+    item.state === "queued" || item.state === "paused"
+  );
+  return (
+    <section className={workspaceStyles.queueDock} aria-labelledby="prompt-queue-title">
+      <div className={workspaceStyles.queueCard}>
+        <header className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+          <button
+            type="button"
+            onClick={() => setExpanded((current) => !current)}
+            className="flex min-w-0 items-center gap-3 text-left"
+            aria-expanded={expanded}
+          >
+            <span className="grid size-9 shrink-0 place-items-center rounded-full bg-primary/10 text-primary">
+              <Clock3 size={16} aria-hidden="true" />
+            </span>
+            <span className="min-w-0">
+              <span id="prompt-queue-title" className="block text-sm font-semibold">Prompt queue</span>
+              <span className="block truncate text-xs text-muted">
+                {items.filter((item) => item.state === "queued").length} ready · server-synced across your devices
+              </span>
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={onRefresh}
+            className="grid size-9 place-items-center rounded-full text-muted transition hover:bg-surface-raised hover:text-foreground"
+            aria-label="Refresh prompt queue"
+          >
+            <RefreshCw size={14} aria-hidden="true" />
+          </button>
+        </header>
+        {error ? (
+          <p className="mx-4 mb-3 rounded-xl border border-danger/25 bg-danger/5 px-3 py-2 text-xs leading-5 text-danger" role="status">
+            {error}
+          </p>
+        ) : null}
+        {expanded && items.length ? (
+          <ol className="max-h-72 space-y-2 overflow-y-auto border-t border-line/70 px-3 py-3 sm:px-4">
+            {items.map((item) => {
+              const activeIndex = movable.findIndex((candidate) => candidate.id === item.id);
+              const editable = item.state === "queued" || item.state === "paused" || item.state === "failed";
+              const busy = busyId === item.id;
+              const editing = editingId === item.id;
+              return (
+                <li key={item.id} className="rounded-xl border border-line/75 bg-background/70 px-3 py-2.5">
+                  <div className="flex min-w-0 items-start gap-3">
+                    <span className={clsx(
+                      "mt-1 size-2 shrink-0 rounded-full",
+                      item.state === "completed" ? "bg-success" :
+                        item.state === "failed" ? "bg-danger" :
+                          item.state === "dispatching" ? "animate-pulse bg-primary" :
+                            item.state === "paused" ? "bg-warning" : "bg-primary",
+                    )} aria-hidden="true" />
+                    <div className="min-w-0 flex-1">
+                      {editing ? (
+                        <div className="space-y-2">
+                          <textarea
+                            value={editValue}
+                            onChange={(event) => setEditValue(event.currentTarget.value)}
+                            rows={3}
+                            className="w-full resize-y rounded-lg border border-line bg-surface px-3 py-2 text-sm leading-5 outline-none focus:border-primary"
+                            aria-label="Edit queued prompt"
+                          />
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              disabled={!editValue.trim() || busy}
+                              onClick={() => {
+                                onEdit(item, editValue.trim());
+                                setEditingId("");
+                              }}
+                              className="min-h-8 rounded-full bg-primary px-3 text-xs font-semibold text-primary-ink disabled:opacity-40"
+                            >
+                              Save
+                            </button>
+                            <button type="button" onClick={() => setEditingId("")} className="min-h-8 rounded-full px-3 text-xs font-semibold text-muted hover:bg-surface-raised">Cancel</button>
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="line-clamp-2 text-sm font-medium leading-5">{item.prompt}</p>
+                      )}
+                      <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted">
+                        <span className="font-semibold capitalize text-foreground">{item.state}</span>
+                        <span>{item.agent.logicalAgentId} v{item.agent.definitionVersion}</span>
+                        <span>{item.model.providerId} · {item.model.modelId}</span>
+                        {item.progressLabel ? <span>{item.progressLabel}</span> : null}
+                      </div>
+                    </div>
+                    {busy ? <Loader2 size={14} className="mt-1 shrink-0 animate-spin text-primary" aria-label="Saving queue change" /> : null}
+                  </div>
+                  {!editing ? (
+                    <div className="mt-2 flex flex-wrap items-center gap-1 border-t border-line/60 pt-2">
+                      {editable ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingId(item.id);
+                            setEditValue(item.prompt);
+                          }}
+                          disabled={busy}
+                          className="grid size-8 place-items-center rounded-full text-muted hover:bg-surface-raised hover:text-foreground disabled:opacity-40"
+                          aria-label="Edit queued prompt"
+                        ><Pencil size={13} aria-hidden="true" /></button>
+                      ) : null}
+                      {item.state === "queued" ? (
+                        <button type="button" onClick={() => onPause(item)} disabled={busy} className="grid size-8 place-items-center rounded-full text-muted hover:bg-surface-raised hover:text-foreground disabled:opacity-40" aria-label="Pause queued prompt"><Pause size={13} aria-hidden="true" /></button>
+                      ) : item.state === "paused" || item.state === "failed" ? (
+                        <button type="button" onClick={() => onResume(item)} disabled={busy} className="grid size-8 place-items-center rounded-full text-muted hover:bg-surface-raised hover:text-foreground disabled:opacity-40" aria-label="Resume queued prompt"><Play size={13} aria-hidden="true" /></button>
+                      ) : null}
+                      {activeIndex >= 0 ? (
+                        <>
+                          <button type="button" onClick={() => onMove(item, -1)} disabled={busy || activeIndex === 0} className="grid size-8 place-items-center rounded-full text-muted hover:bg-surface-raised hover:text-foreground disabled:opacity-30" aria-label="Move prompt earlier"><ArrowUp size={13} aria-hidden="true" /></button>
+                          <button type="button" onClick={() => onMove(item, 1)} disabled={busy || activeIndex === movable.length - 1} className="grid size-8 place-items-center rounded-full text-muted hover:bg-surface-raised hover:text-foreground disabled:opacity-30" aria-label="Move prompt later"><ArrowDown size={13} aria-hidden="true" /></button>
+                        </>
+                      ) : null}
+                      {(item.state === "queued" || item.state === "paused") ? (
+                        <button type="button" onClick={() => onRun(item)} disabled={busy || dispatchLocked} className="ml-auto inline-flex min-h-8 items-center gap-1.5 rounded-full bg-foreground px-3 text-xs font-semibold text-background disabled:opacity-35"><Play size={12} aria-hidden="true" />Run now</button>
+                      ) : null}
+                      {item.state !== "dispatching" ? (
+                        <button type="button" onClick={() => onDelete(item)} disabled={busy} className={clsx("grid size-8 place-items-center rounded-full text-muted hover:bg-danger/10 hover:text-danger disabled:opacity-40", item.state !== "queued" && item.state !== "paused" ? "ml-auto" : "")} aria-label="Remove queued prompt"><Trash2 size={13} aria-hidden="true" /></button>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ol>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
 function GoalStage({
   goal,
   mode,
@@ -4806,6 +5239,7 @@ function GoalStage({
   onReviewContext,
   onPlan,
   onAgent,
+  onQueue,
   onVoiceConversationBound,
   onVoiceTranscript,
   onStop,
@@ -4847,6 +5281,7 @@ function GoalStage({
   onReviewContext: () => void;
   onPlan: () => void;
   onAgent: () => void;
+  onQueue: () => void;
   onVoiceConversationBound: (conversationId: string) => void;
   onVoiceTranscript: (
     transcript: string,
@@ -4857,7 +5292,8 @@ function GoalStage({
   onWorkflow: () => void;
 }) {
   const goalMissing = !goal.trim();
-  const draftLocked = Boolean(loading) || workflowInProgress;
+  const activeRun = loading === "agent" || workflowInProgress;
+  const draftLocked = Boolean(loading && loading !== "agent");
   const contextLabel = contextScope !== "explicit_selection"
     ? contextScopeOption(contextScope).label
     : contextLoading
@@ -4899,13 +5335,20 @@ function GoalStage({
                   !event.nativeEvent.isComposing
                 ) {
                   event.preventDefault();
-                  if (!draftLocked && !goalMissing && !runDisabledReason) onAgent();
+                  if (!draftLocked && !goalMissing && !runDisabledReason) {
+                    if (activeRun) onQueue();
+                    else onAgent();
+                  }
                 }
               }}
               rows={2}
               required
               disabled={draftLocked}
-              placeholder={hasConversation ? "Ask a follow-up…" : "Message Asael…"}
+              placeholder={activeRun
+                ? "Add the next prompt…"
+                : hasConversation
+                  ? "Ask a follow-up…"
+                  : "Message Asael…"}
               className="max-h-40 min-h-14 w-full resize-none bg-transparent px-4 pb-2 pt-3 text-sm leading-6 outline-none placeholder:text-muted/75 disabled:cursor-not-allowed disabled:opacity-60"
             />
           </label>
@@ -5031,11 +5474,22 @@ function GoalStage({
                 onConversationBound={onVoiceConversationBound}
                 onTranscript={onVoiceTranscript}
               />
+              <button
+                type="button"
+                onClick={onQueue}
+                disabled={draftLocked || goalMissing || Boolean(runDisabledReason)}
+                title={goalMissing ? "Write a message first." : "Add to the persistent prompt queue"}
+                className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-full bg-primary/10 px-3 text-[11px] font-semibold text-primary transition hover:bg-primary/15 disabled:cursor-not-allowed disabled:opacity-35"
+                aria-label="Add prompt to queue"
+              >
+                <Clock3 size={14} aria-hidden="true" />
+                <span className="hidden sm:inline">Queue</span>
+              </button>
               {loading === "agent" ? (
                 <button type="button" onClick={onStop} className="grid size-9 shrink-0 place-items-center rounded-full bg-danger text-white" aria-label="Stop response">
                   <Square size={13} aria-hidden="true" />
                 </button>
-              ) : (
+              ) : activeRun ? null : (
                 <button
                   type="button"
                   onClick={onAgent}
@@ -5050,7 +5504,7 @@ function GoalStage({
             </div>
           </div>
         </div>
-        {workflowInProgress ? <p className="mt-1.5 px-2 text-center text-[10px] leading-4 text-muted">This conversation is locked while active work finishes or waits for approval.</p> : null}
+        {workflowInProgress ? <p className="mt-1.5 px-2 text-center text-[10px] leading-4 text-muted">This conversation is locked while active work finishes. New messages can be added to the persistent queue.</p> : null}
       </div>
     </section>
   );
@@ -5968,6 +6422,84 @@ function sameOrderedStringValues(left: readonly string[], right: readonly string
 
 function asRecord(value: unknown): JsonRecord {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : {};
+}
+
+function promptQueueItemsFromPayload(value: unknown): PromptQueueItem[] {
+  return arrayPath(value, "items")
+    .map(promptQueueItemFromValue)
+    .filter((item): item is PromptQueueItem => Boolean(item));
+}
+
+function promptQueueItemFromValue(value: unknown): PromptQueueItem | undefined {
+  const item = asRecord(value);
+  const target = asRecord(item.target);
+  const agent = asRecord(item.agent);
+  const model = asRecord(item.model);
+  const state = stringValue(item.state);
+  const mode = stringValue(item.mode);
+  const strategy = stringValue(item.strategy);
+  const executionTarget = stringValue(target.executionTarget);
+  const providerId = stringValue(model.providerId);
+  const tier = stringValue(model.tier);
+  if (
+    !stringValue(item.id) ||
+    !stringValue(item.prompt) ||
+    !["queued", "paused", "dispatching", "completed", "failed"].includes(state) ||
+    !["orchestrate", "research", "execute", "learn"].includes(mode) ||
+    !["direct", "auto"].includes(strategy) ||
+    !["asael", "local_macos"].includes(executionTarget) ||
+    !["openai", "google", "anthropic", "aws_bedrock"].includes(providerId) ||
+    !["fast", "reasoning"].includes(tier) ||
+    item.queueGrantsAuthority !== false
+  ) return undefined;
+  return {
+    id: stringValue(item.id),
+    clientCorrelationId: stringValue(item.clientCorrelationId),
+    prompt: stringValue(item.prompt),
+    promptSha256: stringValue(item.promptSha256),
+    mode: mode as AgentMode,
+    strategy: strategy as PromptQueueItem["strategy"],
+    target: {
+      threadId: stringValue(target.threadId) || null,
+      missionId: stringValue(target.missionId) || null,
+      projectId: stringValue(target.projectId) || null,
+      executionTarget: executionTarget as PromptQueueItem["target"]["executionTarget"],
+    },
+    agent: {
+      logicalAgentId: stringValue(agent.logicalAgentId),
+      definitionVersion: numberValue(agent.definitionVersion, 0),
+      definitionVersionId: stringValue(agent.definitionVersionId),
+    },
+    model: {
+      providerId: providerId as PromptQueueItem["model"]["providerId"],
+      modelId: stringValue(model.modelId),
+      tier: tier as PromptQueueItem["model"]["tier"],
+    },
+    state: state as PromptQueueItem["state"],
+    position: numberValue(item.position, 0),
+    lifecycleRevision: numberValue(item.lifecycleRevision, 0),
+    runId: stringValue(item.runId) || null,
+    resultThreadId: stringValue(item.resultThreadId) || null,
+    progressLabel: stringValue(item.progressLabel) || null,
+    failureCode: stringValue(item.failureCode) || null,
+    updatedAt: stringValue(item.updatedAt),
+    queueGrantsAuthority: false,
+  };
+}
+
+function mergePromptQueueItems(
+  current: PromptQueueItem[],
+  replacements: PromptQueueItem[],
+) {
+  const byId = new Map(current.map((item) => [item.id, item]));
+  for (const item of replacements) byId.set(item.id, item);
+  return [...byId.values()].sort((left, right) => {
+    const leftTerminal = left.state === "completed" || left.state === "failed";
+    const rightTerminal = right.state === "completed" || right.state === "failed";
+    if (leftTerminal !== rightTerminal) return leftTerminal ? 1 : -1;
+    if (left.position !== right.position) return left.position - right.position;
+    return left.id.localeCompare(right.id);
+  });
 }
 
 function readPath(source: unknown, path: string): unknown {

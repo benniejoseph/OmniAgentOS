@@ -12,6 +12,14 @@ import {
   WORKFLOW_RUN_BUDGET_LIMITS,
 } from "@/lib/config";
 import { hasDatabaseUrl, withDatabaseRequestScope } from "@/lib/db/client";
+import {
+  PROMPT_QUEUE_DISPATCH_ID_HEADER,
+  PROMPT_QUEUE_DISPATCH_TOKEN_HEADER,
+} from "@/lib/command/prompt-queue-contracts";
+import {
+  PromptQueueStoreError,
+  validatePromptQueueDispatch,
+} from "@/lib/command/prompt-queue-store";
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import {
@@ -301,6 +309,51 @@ async function POSTHandler(request: Request) {
     });
   } catch (error) {
     return forbiddenResponse(error);
+  }
+  const queuedItemId = request.headers
+    .get(PROMPT_QUEUE_DISPATCH_ID_HEADER)?.trim();
+  const queuedDispatchToken = request.headers
+    .get(PROMPT_QUEUE_DISPATCH_TOKEN_HEADER)?.trim();
+  if (Boolean(queuedItemId) !== Boolean(queuedDispatchToken)) {
+    return Response.json({
+      error: "Invalid prompt queue dispatch",
+      message: "The queued command binding is incomplete.",
+    }, { status: 400 });
+  }
+  let queuedDispatch: Awaited<ReturnType<typeof validatePromptQueueDispatch>> | undefined;
+  if (queuedItemId && queuedDispatchToken) {
+    const queuedSessionId = context.auth?.sessionId?.trim();
+    if (!queuedSessionId) {
+      return Response.json({
+        error: "Invalid prompt queue dispatch",
+        message: "A current authenticated session is required for queued commands.",
+      }, { status: 409 });
+    }
+    try {
+      queuedDispatch = await validatePromptQueueDispatch({
+        itemId: queuedItemId,
+        dispatchToken: queuedDispatchToken,
+        tenantId: context.tenantId,
+        actorId: context.actorId,
+        sessionId: queuedSessionId,
+        request: {
+          message: parsed.data.message || requestMessage,
+          mode: parsed.data.mode,
+          strategy: parsed.data.strategy,
+          agentId: parsed.data.agentId,
+          threadId: parsed.data.threadId,
+          missionId: parsed.data.missionId,
+          projectId: parsed.data.projectId,
+          computerUseTarget: parsed.data.computerUseTarget,
+        },
+      });
+    } catch (error) {
+      if (!(error instanceof PromptQueueStoreError)) throw error;
+      return Response.json({ error: error.code, message: error.message }, {
+        status: error.status,
+        headers: { "cache-control": "private, no-store" },
+      });
+    }
   }
   let contextSelection: ContextSelectionLockBinding | undefined;
   if (parsed.data.contextSelection) {
@@ -764,6 +817,17 @@ async function POSTHandler(request: Request) {
             actorId: context.actorId,
             agentId: executingAgentId,
           });
+        if (queuedDispatch && (
+          queuedDispatch.agent.logicalAgentId !== agentIdentity.definition.logicalAgentId ||
+          queuedDispatch.agent.definitionVersionId !== agentIdentity.definition.definitionVersionId ||
+          queuedDispatch.agent.definitionSha256 !== agentIdentity.definition.definitionSha256 ||
+          queuedDispatch.agent.principalVersionId !== agentIdentity.principal.principalVersionId ||
+          queuedDispatch.agent.principalSha256 !== agentIdentity.principal.principalSha256
+        )) {
+          throw new Error(
+            "The queued Agent identity changed before governed execution began.",
+          );
+        }
         const agentPrincipalExecution = {
           executingPrincipalType: "agent" as const,
           executingPrincipalId: agentIdentity.principal.principalId,
@@ -774,7 +838,7 @@ async function POSTHandler(request: Request) {
         let loopV2ModelTextEnrollment;
         let loopV2ContextTextEnrollment;
         try {
-          loopV2CanaryEnrollment = parsed.data.budgets || parsed.data.contextScope ||
+          loopV2CanaryEnrollment = queuedDispatch || parsed.data.budgets || parsed.data.contextScope ||
               parsed.data.voiceInput || computerUseTarget
             ? undefined
             :
@@ -795,6 +859,7 @@ async function POSTHandler(request: Request) {
             });
           if (
             !loopV2CanaryEnrollment &&
+            !queuedDispatch &&
             !parsed.data.budgets &&
             !parsed.data.voiceInput &&
             !computerUseTarget
@@ -1368,6 +1433,13 @@ async function POSTHandler(request: Request) {
                 promptEntityGraphAccess,
                 executionScope: directExecutionScope,
                 agentIdentity,
+                runtimeModelPin: queuedDispatch ? {
+                  provider: queuedDispatch.model.providerId,
+                  model: queuedDispatch.model.modelId,
+                  tier: queuedDispatch.model.tier,
+                  routingPolicySha256:
+                    queuedDispatch.model.routingPolicySha256,
+                } : undefined,
                 tenantId: context.tenantId,
                 actorId: context.actorId,
                 role: context.role,
