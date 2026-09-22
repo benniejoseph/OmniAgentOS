@@ -50,6 +50,13 @@ void main() {
     await expectLater(repository.load(limit: 101), throwsA(isA<RangeError>()));
   });
 
+  test('rejects a Council route response without the map projection', () async {
+    final api = _CouncilApiClient()..omitMap = true;
+    final repository = ApiAgentCouncilRepository(api);
+
+    await expectLater(repository.load(), throwsFormatException);
+  });
+
   test(
     'retains the last verified projection after a refresh failure',
     () async {
@@ -232,6 +239,7 @@ class _CouncilApiClient extends ApiClient {
     : super(Dio(), Dio(), SecureSessionStore(const FlutterSecureStorage()));
 
   final freshReads = <String>[];
+  bool omitMap = false;
   final posts =
       <
         ({
@@ -250,7 +258,15 @@ class _CouncilApiClient extends ApiClient {
     if (path.startsWith('/api/agents/tasks/')) {
       return _taskDetailResponse(executionId: 'execution/one');
     }
-    return agentCouncilFixtureJson();
+    if (omitMap) {
+      return const {
+        'serviceReceipt': {'operation': 'app.agents.council.show'},
+      };
+    }
+    return {
+      'map': agentCouncilFixtureJson(),
+      'serviceReceipt': const {'operation': 'app.agents.council.show'},
+    };
   }
 
   @override

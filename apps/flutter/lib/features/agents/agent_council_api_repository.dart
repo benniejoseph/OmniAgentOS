@@ -16,9 +16,16 @@ class ApiAgentCouncilRepository
     if (limit < 1 || limit > 100) {
       throw RangeError.range(limit, 1, 100, 'limit');
     }
-    return AgentCouncilProjection.fromJson(
-      await api.getJsonFresh(NativePaths.agentsCouncil(limit: limit)),
+    final response = await api.getJsonFresh(
+      NativePaths.agentsCouncil(limit: limit),
     );
+    final map = response['map'];
+    if (map is! Map) {
+      throw const FormatException(
+        'The Agent Council response is missing its map projection.',
+      );
+    }
+    return AgentCouncilProjection.fromJson(Map<String, dynamic>.from(map));
   }
 
   @override
