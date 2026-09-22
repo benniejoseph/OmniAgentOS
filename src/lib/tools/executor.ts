@@ -2,6 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
   approvalGrantClaimAuthorizes,
+  approvalGrantTargetSha256,
+  approvalGrantToolContractSha256,
   buildToolApprovalGrantRequest,
   type ApprovalGrantClaimEvidence,
 } from "@/lib/approval-grants/authorization";
@@ -107,6 +109,10 @@ import {
 import { recordRuntimeEventSafely } from "@/lib/observability/store";
 import { redactSensitive } from "@/lib/security/context";
 import {
+  PolicyLeaseStoreError,
+  type ScheduledPolicyLeaseClaim,
+} from "@/lib/security/policy-lease-store";
+import {
   assertExecutionScopeTenant,
   executionScopesEqual,
   type ExecutionScope,
@@ -120,6 +126,7 @@ import {
   getToolExecution,
   getToolExecutionApprovalFingerprint,
   getToolExecutionEffectIntentV2,
+  getToolExecutionWorkflowEffectBindingSha256,
   persistClaimedToolEffectIntentV2,
   publicToolExecution,
   reclaimStaleMemoryForgetToolExecutionClaim,
@@ -445,6 +452,7 @@ export async function executeGovernedTool({
   agentRunId,
   effectBinding,
   approvalGrantClaim,
+  policyLeaseClaim,
   moltbookAutonomy,
   checkpointBeforeEffect,
 }: {
@@ -472,6 +480,8 @@ export async function executeGovernedTool({
   effectBinding?: GovernedToolEffectBinding;
   /** Consumed P9.4 authority for a non-user principal executing a plan. */
   approvalGrantClaim?: ApprovalGrantClaimEvidence;
+  /** Single-use evidence issued under a separately reviewed schedule policy. */
+  policyLeaseClaim?: ScheduledPolicyLeaseClaim;
   /** Ephemeral standing authority for exactly one leased Moltbook cycle. */
   moltbookAutonomy?: Pick<
     ClaimedMoltbookAutonomyCycle,
@@ -586,6 +596,18 @@ export async function executeGovernedTool({
         approvalFingerprint: registeredApprovalFingerprint,
       }
     : registeredTool;
+  const storedWorkflowEffectBindingSha256 = existingRecord
+    ? getToolExecutionWorkflowEffectBindingSha256(existingRecord)
+    : undefined;
+  if (
+    storedWorkflowEffectBindingSha256 &&
+    (!effectBinding ||
+      canonicalJsonSha256(effectBinding) !== storedWorkflowEffectBindingSha256)
+  ) {
+    throw new ToolExecutionScopeBindingError(
+      "The approval belongs to a different workflow plan binding.",
+    );
+  }
   if (
     !dryRun &&
     tool.id === "memory.forget" &&
@@ -1200,6 +1222,25 @@ export async function executeGovernedTool({
       }),
     );
   }
+  const boundPolicyLeaseApproval = Boolean(
+    approved &&
+    !persistedSingleApproval &&
+    !directUserApproval &&
+    policyLeaseClaim &&
+    effectBinding &&
+    idempotencyKey &&
+    scopedRequest.executionScope &&
+    scheduledPolicyLeaseAuthorizes({
+      claim: policyLeaseClaim,
+      tool,
+      toolInput: preparedInput,
+      executionScope: scopedRequest.executionScope,
+      executionId: idempotentToolExecutionId(
+        normalizeTenantId(context?.tenantId),
+        idempotencyKey,
+      ),
+    }),
+  );
   const moltbookStandingMandateApproval =
     await authorizeMoltbookStandingMandate({
       authority: moltbookAutonomy,
@@ -1215,12 +1256,19 @@ export async function executeGovernedTool({
   const effectiveApproved =
     (approved &&
       durableApprovalClaim &&
-      (persistedSingleApproval || directUserApproval || boundPlanGrantApproval) &&
+      (
+        persistedSingleApproval ||
+        directUserApproval ||
+        boundPlanGrantApproval ||
+        boundPolicyLeaseApproval
+      ) &&
       (tool.riskLevel < 3 || hasRisk3Quorum(existingRecord))) ||
     moltbookStandingMandateApproval;
   const effectiveApprovalReason = moltbookStandingMandateApproval
     ? "Owner-enabled Moltbook autonomy charter authorized this bounded public action."
-    : approvalReason;
+    : boundPolicyLeaseApproval
+      ? `Single-use schedule PolicyLease ${policyLeaseClaim?.lease.leaseId} fenced this exact reviewed effect.`
+      : approvalReason;
 
   // Trust profiles remain advisory evidence. Automatic execution now requires
   // a consumed grant with an exact plan, principal, contract, target, budget,
@@ -1369,6 +1417,12 @@ export async function executeGovernedTool({
                   pendingProviderEffect.approvalBindingSha256,
               }
             : {}),
+          ...(effectBinding
+            ? {
+                workflowEffectBindingSha256:
+                  canonicalJsonSha256(effectBinding),
+              }
+            : {}),
         },
       ),
     };
@@ -1468,8 +1522,31 @@ export async function executeGovernedTool({
       claim = await claimIdempotentToolExecution(intent, {
         executionScope: scopedRequest.executionScope,
         idempotencyKey,
+        ...(boundPolicyLeaseApproval && policyLeaseClaim
+          ? { policyLeaseClaim }
+          : {}),
       });
     } catch (error) {
+      if (boundPolicyLeaseApproval && error instanceof PolicyLeaseStoreError) {
+        return executeGovernedTool({
+          toolId,
+          input,
+          dryRun,
+          approved: false,
+          context,
+          requestActorBinding,
+          existingRecord,
+          abortSignal,
+          idempotencyKey,
+          forceApproval,
+          mcpSessionScope,
+          executionScope,
+          agentRunId,
+          effectBinding,
+          moltbookAutonomy,
+          checkpointBeforeEffect,
+        });
+      }
       if (intendedEffectContext) {
         throw new EffectReceiptFinalizationError({ cause: error });
       }
@@ -1719,6 +1796,9 @@ export async function executeGovernedTool({
           material: providerEffectMaterial,
           executionScope: scopedRequest.executionScope,
           effectBinding,
+          policyLeaseClaim: boundPolicyLeaseApproval
+            ? policyLeaseClaim
+            : undefined,
         });
         const persistedIntent = await persistClaimedToolEffectIntentV2({
           recordId: executionRecord.id,
@@ -4243,6 +4323,58 @@ export function governedToolOperationClass(
   return tool.riskLevel === 0 ? "read_only" : "mutation";
 }
 
+/**
+ * A PolicyLease is only a one-shot concurrency/effect fence. The exact
+ * reviewed schedule binding, current Tool contract, input, target, principal,
+ * and actor scope must all still match before normal policy sees it as an
+ * approval signal.
+ */
+export function scheduledPolicyLeaseAuthorizes(input: {
+  claim: ScheduledPolicyLeaseClaim;
+  tool: ToolDefinition;
+  toolInput: Record<string, unknown>;
+  executionScope: ExecutionScope;
+  executionId: string;
+  now?: Date;
+}) {
+  try {
+    const { lease, authority } = input.claim;
+    const now = input.now || new Date();
+    return Boolean(
+      input.executionScope.initiatingActorId &&
+      input.executionScope.tenantId === authority.tenantId &&
+      input.executionScope.initiatingActorId === authority.ownerActorId &&
+      input.executionScope.executingPrincipalType === lease.principal.kind &&
+      input.executionScope.executingPrincipalId === lease.principal.id &&
+      input.claim.influenceManifest.tenantId === authority.tenantId &&
+      input.claim.influenceManifest.runId === authority.workflowRunId &&
+      input.claim.influenceManifest.executionId === lease.executionId &&
+      input.claim.influenceManifest.principalId === lease.principal.id &&
+      input.claim.influenceManifest.manifestSha256 ===
+        lease.influenceManifestSha256 &&
+      lease.executionId === input.executionId &&
+      lease.toolId === input.tool.id &&
+      lease.inputSha256 === toolInputSha256(input.toolInput) &&
+      lease.targetSha256 === approvalGrantTargetSha256(
+        input.tool,
+        input.toolInput,
+      ) &&
+      lease.policySha256 === authority.mutationPolicySha256 &&
+      authority.toolContractSha256 ===
+        approvalGrantToolContractSha256(input.tool) &&
+      governedToolOperationClass(input.tool, input.toolInput) === "mutation" &&
+      (input.tool.riskLevel === 1 || input.tool.riskLevel === 2) &&
+      input.tool.reversible === true &&
+      Date.parse(lease.issuedAt) <= now.getTime() &&
+      now.getTime() < Date.parse(lease.expiresAt) &&
+      lease.maximumUses === 1 &&
+      lease.leaseGrantsAuthority === false
+    );
+  } catch {
+    return false;
+  }
+}
+
 function prepareProviderEffectMaterial(
   tool: ToolDefinition,
   input: Record<string, unknown>,
@@ -4429,8 +4561,16 @@ function buildProviderEffectIntent(input: {
   material: ProviderEffectMaterial;
   executionScope: ExecutionScope;
   effectBinding?: GovernedToolEffectBinding;
+  policyLeaseClaim?: ScheduledPolicyLeaseClaim;
 }) {
-  const { record, tool, material, executionScope, effectBinding } = input;
+  const {
+    record,
+    tool,
+    material,
+    executionScope,
+    effectBinding,
+    policyLeaseClaim,
+  } = input;
   const isDirectUser = Boolean(
     executionScope.initiatingActorId &&
     executionScope.executingPrincipalType === "user" &&
@@ -4448,7 +4588,21 @@ function buildProviderEffectIntent(input: {
     executionScope.executingPrincipalType === "system" &&
     executionScope.executingPrincipalId === `workflow:${effectBinding?.workflowRunId}`
   );
-  if (!isDirectUser && !isDirectMoltbookAgent && !isBoundWorkflow) {
+  const isPolicyLeasedWorkflow = Boolean(
+    effectBinding &&
+    policyLeaseClaim &&
+    executionScope.initiatingActorId &&
+    executionScope.executingPrincipalType ===
+      policyLeaseClaim.lease.principal.kind &&
+    executionScope.executingPrincipalId ===
+      policyLeaseClaim.lease.principal.id
+  );
+  if (
+    !isDirectUser &&
+    !isDirectMoltbookAgent &&
+    !isBoundWorkflow &&
+    !isPolicyLeasedWorkflow
+  ) {
     throw new Error(
       "Provider mutations require a directly authorized user, an approved Moltbook agent, or an exact workflow-plan binding.",
     );
@@ -4461,16 +4615,26 @@ function buildProviderEffectIntent(input: {
   return buildEffectIntentV2({
     effectMode: "live",
     reversible: tool.reversible ?? false,
-    executionKind: isBoundWorkflow ? "workflow" : "direct",
+    executionKind: isBoundWorkflow || isPolicyLeasedWorkflow
+      ? "workflow"
+      : "direct",
     executionId: record.id,
     tenantId: executionScope.tenantId,
     actorId,
     executingPrincipalType: executionScope.executingPrincipalType,
     executingPrincipalId,
-    workflowRunId: isBoundWorkflow ? effectBinding?.workflowRunId || null : null,
-    planId: isBoundWorkflow ? effectBinding?.planId || null : null,
-    planSha256: isBoundWorkflow ? effectBinding?.planSha256 || null : null,
-    planNodeId: isBoundWorkflow ? effectBinding?.planNodeId || null : null,
+    workflowRunId: isBoundWorkflow || isPolicyLeasedWorkflow
+      ? effectBinding?.workflowRunId || null
+      : null,
+    planId: isBoundWorkflow || isPolicyLeasedWorkflow
+      ? effectBinding?.planId || null
+      : null,
+    planSha256: isBoundWorkflow || isPolicyLeasedWorkflow
+      ? effectBinding?.planSha256 || null
+      : null,
+    planNodeId: isBoundWorkflow || isPolicyLeasedWorkflow
+      ? effectBinding?.planNodeId || null
+      : null,
     toolId: tool.id,
     toolContractSha256: canonicalJsonSha256({
       approvalFingerprint: toolApprovalFingerprint(tool),

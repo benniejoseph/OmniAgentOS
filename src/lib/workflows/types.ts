@@ -348,6 +348,38 @@ export type WorkflowScheduleProcedurePinV1 = Readonly<{
   reviewedAt: string;
 }>;
 
+export type WorkflowScheduleAuthorityMode =
+  | "read_only"
+  | "reviewed_mutation";
+
+export type WorkflowScheduleMutationBindingV1 = Readonly<{
+  schemaVersion: 1;
+  bindingIndex: number;
+  toolId: string;
+  inputSha256: string;
+  targetSha256: string;
+  toolContractSha256: string;
+  riskLevel: 1 | 2;
+  reversible: true;
+  bindingSha256: string;
+}>;
+
+/**
+ * Standing schedule authority is review evidence, not an execution token.
+ * Every occurrence still requires a short-lived, single-use PolicyLeaseV1.
+ */
+export type WorkflowScheduleMutationPolicyV1 = Readonly<{
+  schemaVersion: 1;
+  policyKind: "reviewed_static_mutation";
+  procedureSnapshotSha256: string;
+  agentIdentityPinSha256: string;
+  agentPolicyPinSha256: string;
+  occurrenceBudgetSha256: string;
+  maximumOccurrences: number;
+  bindings: readonly WorkflowScheduleMutationBindingV1[];
+  policySha256: string;
+}>;
+
 export type WorkflowScheduleConfigV1 = Readonly<{
   schemaVersion: 1;
   timezone: string;
@@ -361,6 +393,8 @@ export type WorkflowScheduleConfigV1 = Readonly<{
   policyPinSha256: string;
   occurrenceBudget: RunBudgetCountersV1;
   failureLimit: number;
+  authorityMode?: WorkflowScheduleAuthorityMode;
+  mutationPolicy?: WorkflowScheduleMutationPolicyV1;
   configSha256: string;
 }>;
 
@@ -420,6 +454,8 @@ export type WorkflowScheduleOccurrenceFailureCode =
   | "agent_policy_changed"
   | "procedure_changed"
   | "procedure_not_read_only"
+  | "mutation_policy_changed"
+  | "policy_lease_unavailable"
   | "occurrence_budget_changed"
   | "workflow_enqueue_failed"
   | "workflow_failed"

@@ -28,6 +28,7 @@ import { ensureMobilePushReceiptCanaryV1 } from "@/lib/db/mobile-push-receipt-sc
 import { ensureDelegationExecutionRuntimeV1 } from "@/lib/db/delegation-execution-schema";
 import { ensureScheduledWorkflowTriggerShadowV1 } from "@/lib/db/workflow-trigger-schedule-schema";
 import { ensureScheduledWorkflowReadOnlyCanaryV1 } from "@/lib/db/workflow-schedule-canary-schema";
+import { ensureScheduledWorkflowPolicyLeaseV1 } from "@/lib/db/workflow-policy-lease-schema";
 import { ensureDeclarativePluginsV1 } from "@/lib/db/plugin-schema";
 import { ensureBuiltinSkillCatalogV2 } from "@/lib/db/builtin-skill-catalog-schema";
 import { ensureBuiltinSkillCatalogV3 } from "@/lib/db/builtin-skill-catalog-v3-schema";
@@ -207,6 +208,8 @@ export const tenantRootPolicyTables = [
   "omni_workflow_schedule_shadow_events",
   "omni_workflow_schedule_occurrences",
   "omni_workflow_schedule_occurrence_receipts",
+  "omni_policy_leases",
+  "omni_policy_lease_consumptions",
   "omni_operation_jobs",
   "omni_system_health_checks",
   "omni_incidents",
@@ -1711,6 +1714,10 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[197],
       up: ensureScheduledWorkflowReadOnlyCanaryV1,
+    },
+    {
+      ...databaseSchemaMigrations[198],
+      up: ensureScheduledWorkflowPolicyLeaseV1,
     },
   ];
 }

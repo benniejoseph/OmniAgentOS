@@ -5,6 +5,10 @@ import {
   parseAgentRunIdentityPinV1,
   type ResolvedAgentIdentityV1,
 } from "@/lib/agents/identity-contracts";
+import {
+  approvalGrantTargetSha256,
+  approvalGrantToolContractSha256,
+} from "@/lib/approval-grants/authorization";
 import { resolveAgentIdentityForExecution } from "@/lib/agents/identity-store";
 import {
   ensureDatabaseSchema,
@@ -26,12 +30,17 @@ import {
   deriveExecutionScope,
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
+import { parseMutationPolicy } from "@/lib/security/policy-lease-store";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { governedToolOperationClass } from "@/lib/tools/executor";
+import { toolInputSha256 } from "@/lib/tools/execution-scope";
 import { getGovernedTool } from "@/lib/tools/registry";
-import { runBudgetCountersV1Schema } from "@/lib/runs/budgets";
+import {
+  isBrowserActionTool,
+  runBudgetCountersV1Schema,
+} from "@/lib/runs/budgets";
 import {
   buildWorkflowProcedureSnapshot,
   listSavedProcedures,
@@ -47,6 +56,8 @@ import type {
   WorkflowTriggerRecord,
   WorkflowScheduleConfigV1,
   WorkflowScheduleMissedPolicy,
+  WorkflowScheduleMutationBindingV1,
+  WorkflowScheduleMutationPolicyV1,
   WorkflowScheduleOccurrenceFailureCode,
   WorkflowScheduleOccurrenceKind,
   WorkflowScheduleOccurrenceReceiptV1,
@@ -101,6 +112,8 @@ type CreateScheduleWorkflowTriggerInput = CreateWorkflowTriggerBaseInput & {
     agentIdentityPin: unknown;
     occurrenceBudget: unknown;
     failureLimit?: number;
+    authorityMode?: "read_only" | "reviewed_mutation";
+    mutationPolicy?: WorkflowScheduleMutationPolicyV1;
   };
 };
 
@@ -212,6 +225,9 @@ const scheduleCreateInputSchema = z.object({
   ),
   failureLimit: z.number().int().min(1).max(20).default(3),
   replacesTriggerId: z.string().trim().min(1).max(240).optional(),
+  authorityMode: z.enum(["read_only", "reviewed_mutation"]).optional(),
+  reviewedMutationBindingsSha256: sha256Schema.optional(),
+  mutationAcknowledged: z.boolean().optional(),
 }).strict();
 
 export type ReviewedWorkflowScheduleCreateInput = z.input<
@@ -230,6 +246,8 @@ export class WorkflowScheduleControlError extends Error {
       | "not_found"
       | "not_schedule"
       | "not_read_only"
+      | "review_required"
+      | "unsafe_mutation"
       | "immutable_binding_changed"
       | "invalid_state",
   ) {
@@ -476,20 +494,37 @@ export async function listSchedulableWorkflowProcedures(input: {
   );
   return procedures.map((procedure) => {
     try {
-      assertReadOnlyProcedure(procedure.toolBindings);
+      const review = reviewScheduledProcedureBindings(procedure.toolBindings);
       return Object.freeze({
         id: procedure.id,
         aliases: Object.freeze([...procedure.aliases]),
         toolIds: Object.freeze(procedure.toolBindings.map((binding) => binding.toolId)),
         schedulable: true as const,
+        authorityMode: review.authorityMode,
+        reviewDigest: review.reviewDigest,
+        mutationBindings: review.mutationBindings.map((binding) => ({
+          bindingIndex: binding.bindingIndex,
+          toolId: binding.toolId,
+          riskLevel: binding.riskLevel,
+          reversible: binding.reversible,
+          targetSha256: binding.targetSha256,
+        })),
+        ...(review.authorityMode === "reviewed_mutation"
+          ? {
+              warning:
+                "This procedure can change external state. Every exact action uses a single-use PolicyLease and any changed binding returns to approval.",
+            }
+          : {}),
       });
-    } catch {
+    } catch (error) {
       return Object.freeze({
         id: procedure.id,
         aliases: Object.freeze([...procedure.aliases]),
         toolIds: Object.freeze(procedure.toolBindings.map((binding) => binding.toolId)),
         schedulable: false as const,
-        reason: "Only exact, active read-only tool bindings can run unattended.",
+        reason: error instanceof Error
+          ? error.message
+          : "The procedure is not eligible for a reviewed schedule.",
       });
     }
   });
@@ -521,6 +556,9 @@ export async function createReviewedWorkflowSchedule(
     occurrenceBudget: input.occurrenceBudget,
     failureLimit: input.failureLimit,
     replacesTriggerId: input.replacesTriggerId,
+    authorityMode: input.authorityMode,
+    reviewedMutationBindingsSha256: input.reviewedMutationBindingsSha256,
+    mutationAcknowledged: input.mutationAcknowledged,
   });
   const reviewRequestSha256 = canonicalJsonSha256({
     schemaVersion: 1,
@@ -539,6 +577,10 @@ export async function createReviewedWorkflowSchedule(
     occurrenceBudget: value.occurrenceBudget,
     failureLimit: value.failureLimit,
     replacesTriggerId: value.replacesTriggerId || null,
+    authorityMode: value.authorityMode || null,
+    reviewedMutationBindingsSha256:
+      value.reviewedMutationBindingsSha256 || null,
+    mutationAcknowledged: value.mutationAcknowledged === true,
   });
   const deterministicId = deterministicTriggerId(tenantId, input.idempotencyKey);
   const existing = await getWorkflowTrigger(deterministicId, { tenantId, actorId });
@@ -598,7 +640,6 @@ export async function createReviewedWorkflowSchedule(
       "not_found",
     );
   }
-  assertReadOnlyProcedure(procedure.toolBindings);
   const snapshot = buildWorkflowProcedureSnapshot(
     procedure,
     procedure.aliases[0],
@@ -615,11 +656,43 @@ export async function createReviewedWorkflowSchedule(
   const occurrenceBudget = scheduleOccurrenceBudgetSchema.parse(
     value.occurrenceBudget,
   );
+  const bindingReview = reviewScheduledProcedureBindings(snapshot.toolBindings);
+  if (
+    value.authorityMode &&
+    value.authorityMode !== bindingReview.authorityMode
+  ) {
+    throw new WorkflowScheduleControlError(
+      "The requested schedule authority does not match the saved procedure.",
+      "immutable_binding_changed",
+    );
+  }
+  if (
+    bindingReview.authorityMode === "reviewed_mutation" &&
+    (
+      value.mutationAcknowledged !== true ||
+      value.reviewedMutationBindingsSha256 !== bindingReview.reviewDigest
+    )
+  ) {
+    throw new WorkflowScheduleControlError(
+      "Review and explicitly acknowledge every exact mutation target before scheduling it.",
+      "review_required",
+    );
+  }
+  const mutationPolicy = bindingReview.authorityMode === "reviewed_mutation"
+    ? buildWorkflowScheduleMutationPolicy({
+        snapshot,
+        identityPin,
+        occurrenceBudget,
+        maximumOccurrences: value.maxOccurrences,
+        mutationBindings: bindingReview.mutationBindings,
+      })
+    : undefined;
   const reviewedSnapshotSha256 = workflowScheduleReviewSha256({
     procedureSnapshotSha256: snapshot.snapshotSha256,
     agentIdentityPinSha256: identityPin.pinSha256,
     policyPinSha256: canonicalJsonSha256(identityPin.policyPins),
     occurrenceBudgetSha256: canonicalJsonSha256(occurrenceBudget),
+    mutationPolicySha256: mutationPolicy?.policySha256,
     reviewedAt,
   });
   if (value.replacesTriggerId) {
@@ -653,10 +726,16 @@ export async function createReviewedWorkflowSchedule(
     workflowMode: snapshot.schemaVersion === 2 ? snapshot.mode : "orchestrate",
     requireApproval: false,
     metadata: {
-      source: "scheduled_read_only_canary",
+      source: mutationPolicy
+        ? "scheduled_reviewed_mutation"
+        : "scheduled_read_only_canary",
       procedureId: snapshot.id,
       logicalAgentId: identity.definition.logicalAgentId,
       reviewRequestSha256,
+      authorityMode: bindingReview.authorityMode,
+      ...(mutationPolicy
+        ? { mutationPolicySha256: mutationPolicy.policySha256 }
+        : {}),
     },
     replacesTriggerId: value.replacesTriggerId,
     executionScope: input.executionScope,
@@ -678,6 +757,8 @@ export async function createReviewedWorkflowSchedule(
       agentIdentityPin: identityPin,
       occurrenceBudget,
       failureLimit: value.failureLimit,
+      authorityMode: bindingReview.authorityMode,
+      mutationPolicy,
     },
   });
   if (!value.replacesTriggerId) return created;
@@ -891,7 +972,10 @@ export async function previewWorkflowSchedule(input: {
     timezone: trigger.schedule.config.timezone,
     occurrences: Object.freeze(occurrences),
     configurationSha256: trigger.schedule.config.configSha256,
-    readOnlyCanary: true,
+    authorityMode: trigger.schedule.config.authorityMode || "read_only",
+    readOnlyCanary: !trigger.schedule.config.mutationPolicy,
+    mutationPolicySha256:
+      trigger.schedule.config.mutationPolicy?.policySha256,
   });
 }
 
@@ -1467,6 +1551,7 @@ async function executeClaimedWorkflowScheduleOccurrence(
   let queued = false;
   try {
     const authority = await revalidateWorkflowScheduleCanary(occurrence);
+    const mutationPolicy = authority.trigger.schedule!.config.mutationPolicy;
     const executionScope = createExecutionScope({
       tenantId: occurrence.tenantId,
       initiatingActorId: occurrence.ownerActorId,
@@ -1476,7 +1561,9 @@ async function executeClaimedWorkflowScheduleOccurrence(
       causationId: occurrence.id,
       contextGrantIds: [],
       capabilityGrantIds: [],
-      purpose: "workflow.schedule.read_only_canary",
+      purpose: mutationPolicy
+        ? "workflow.schedule.reviewed_mutation"
+        : "workflow.schedule.read_only_canary",
     });
     const workflow = await createWorkflowRun({
       tenantId: occurrence.tenantId,
@@ -1485,13 +1572,19 @@ async function executeClaimedWorkflowScheduleOccurrence(
         requesterRole: "system",
       },
       idempotencyKey: `schedule:${occurrence.authoritySha256}`,
-      goal: scheduledProcedureGoal(authority.snapshot, occurrence.scheduledFor),
+      goal: scheduledProcedureGoal(
+        authority.snapshot,
+        occurrence.scheduledFor,
+        Boolean(mutationPolicy),
+      ),
       mode: authority.trigger.workflowMode,
       requireApproval: false,
       maxAttempts: 1,
       budgetLimits: authority.trigger.schedule!.config.occurrenceBudget,
       metadata: {
-        source: "scheduled_read_only_canary",
+        source: mutationPolicy
+          ? "scheduled_reviewed_mutation"
+          : "scheduled_read_only_canary",
         actorId: occurrence.ownerActorId,
         primaryAgentId: authority.identity.definition.logicalAgentId,
         agentIdentity: authority.identity,
@@ -1501,7 +1594,15 @@ async function executeClaimedWorkflowScheduleOccurrence(
         scheduleOccurrenceId: occurrence.id,
         scheduledFor: occurrence.scheduledFor,
         scheduleConfigurationSha256: occurrence.configurationSha256,
-        readOnlyCanary: true,
+        readOnlyCanary: !mutationPolicy,
+        scheduleAuthorityMode: mutationPolicy
+          ? "reviewed_mutation"
+          : "read_only",
+        scheduleOccurrenceAuthoritySha256: occurrence.authoritySha256,
+        scheduleReviewedSnapshotSha256: occurrence.reviewedSnapshotSha256,
+        ...(mutationPolicy
+          ? { scheduleMutationPolicy: mutationPolicy }
+          : {}),
       },
     });
     const queueJob = await enqueueWorkflowRunTick(
@@ -1523,7 +1624,8 @@ async function executeClaimedWorkflowScheduleOccurrence(
       occurrenceId: occurrence.id,
       scheduledFor: occurrence.scheduledFor,
       configurationSha256: occurrence.configurationSha256,
-      readOnlyCanary: true,
+      readOnlyCanary: !mutationPolicy,
+      authorityMode: mutationPolicy ? "reviewed_mutation" : "read_only",
       queueJobId: queueJob.id,
     }).catch(() => undefined);
     return enqueued;
@@ -2901,6 +3003,7 @@ async function revalidateWorkflowScheduleCanary(
     policyPinSha256: config.policyPinSha256,
     occurrenceBudgetSha256: canonicalJsonSha256(config.occurrenceBudget),
     reviewedAt: config.procedurePin.reviewedAt,
+    mutationPolicySha256: config.mutationPolicy?.policySha256,
   });
   if (
     reviewedSnapshotSha256 !== config.procedurePin.reviewedSnapshotSha256 ||
@@ -2911,13 +3014,40 @@ async function revalidateWorkflowScheduleCanary(
       "procedure_changed",
     );
   }
+  let bindingReview;
   try {
-    assertReadOnlyProcedure(snapshot.toolBindings);
+    bindingReview = reviewScheduledProcedureBindings(snapshot.toolBindings);
   } catch {
     throw new WorkflowScheduleCanaryValidationError(
-      "The saved procedure is no longer strictly read-only.",
-      "procedure_not_read_only",
+      "The saved procedure is no longer eligible for unattended execution.",
+      config.mutationPolicy
+        ? "mutation_policy_changed"
+        : "procedure_not_read_only",
     );
+  }
+  const authorityMode = config.authorityMode || "read_only";
+  if (bindingReview.authorityMode !== authorityMode) {
+    throw new WorkflowScheduleCanaryValidationError(
+      "The saved procedure effect class changed after review.",
+      config.mutationPolicy
+        ? "mutation_policy_changed"
+        : "procedure_not_read_only",
+    );
+  }
+  if (config.mutationPolicy) {
+    const expectedPolicy = buildWorkflowScheduleMutationPolicy({
+      snapshot,
+      identityPin: currentPin,
+      occurrenceBudget: config.occurrenceBudget,
+      maximumOccurrences: config.maxOccurrences,
+      mutationBindings: bindingReview.mutationBindings,
+    });
+    if (expectedPolicy.policySha256 !== config.mutationPolicy.policySha256) {
+      throw new WorkflowScheduleCanaryValidationError(
+        "The reviewed static mutation policy changed after review.",
+        "mutation_policy_changed",
+      );
+    }
   }
   if (
     identity.principal.authorityMode === "explicit_grants" &&
@@ -2926,7 +3056,7 @@ async function revalidateWorkflowScheduleCanary(
     )
   ) {
     throw new WorkflowScheduleCanaryValidationError(
-      "The Agent no longer holds every reviewed read-only tool.",
+      "The Agent no longer holds every reviewed scheduled Tool.",
       "agent_policy_changed",
     );
   }
@@ -2934,7 +3064,7 @@ async function revalidateWorkflowScheduleCanary(
     trigger,
     identity,
     snapshot,
-    profile: readOnlyScheduleAgentProfile(identity, snapshot),
+    profile: scheduleAgentProfile(identity, snapshot, authorityMode),
   });
 }
 
@@ -2975,22 +3105,159 @@ function assertReadOnlyProcedure(
   }
 }
 
-function readOnlyScheduleAgentProfile(
+function reviewScheduledProcedureBindings(
+  bindings: readonly {
+    toolId: string;
+    input: Readonly<Record<string, unknown>>;
+  }[],
+) {
+  if (!bindings.length) {
+    throw new WorkflowScheduleControlError(
+      "Scheduled procedures require at least one exact Tool binding.",
+      "not_read_only",
+    );
+  }
+  const mutationBindings: WorkflowScheduleMutationBindingV1[] = [];
+  bindings.forEach((binding, bindingIndex) => {
+    if (containsDynamicScheduleBinding(binding.input)) {
+      throw new WorkflowScheduleControlError(
+        `Tool ${binding.toolId} contains a dynamic input binding and cannot run unattended.`,
+        "unsafe_mutation",
+      );
+    }
+    const tool = getGovernedTool(binding.toolId);
+    if (!tool || tool.status !== "active") {
+      throw new WorkflowScheduleControlError(
+        `Tool ${binding.toolId} is unavailable or does not expose a stable contract.`,
+        "unsafe_mutation",
+      );
+    }
+    const operationClass = governedToolOperationClass(tool, {
+      ...binding.input,
+    });
+    if (
+      operationClass === "read_only" &&
+      tool.riskLevel === 0 &&
+      !tool.approvalRequired
+    ) {
+      return;
+    }
+    if (
+      operationClass !== "mutation" ||
+      (tool.riskLevel !== 1 && tool.riskLevel !== 2) ||
+      tool.reversible !== true ||
+      isBrowserActionTool(tool) ||
+      isComputerUseTool(tool) ||
+      isDestructiveScheduledMutationTool(tool.id)
+    ) {
+      throw new WorkflowScheduleControlError(
+        `Tool ${binding.toolId} is not eligible for scheduled changes. Only reversible risk-1/2 exact-target actions are allowed.`,
+        "unsafe_mutation",
+      );
+    }
+    const body = {
+      schemaVersion: 1 as const,
+      bindingIndex,
+      toolId: tool.id,
+      inputSha256: toolInputSha256({ ...binding.input }),
+      targetSha256: approvalGrantTargetSha256(tool, { ...binding.input }),
+      toolContractSha256: approvalGrantToolContractSha256(tool),
+      riskLevel: tool.riskLevel,
+      reversible: true as const,
+    };
+    mutationBindings.push(Object.freeze({
+      ...body,
+      bindingSha256: canonicalJsonSha256(body),
+    }));
+  });
+  const authorityMode = mutationBindings.length
+    ? "reviewed_mutation" as const
+    : "read_only" as const;
+  if (authorityMode === "read_only") {
+    assertReadOnlyProcedure(bindings);
+  }
+  return Object.freeze({
+    authorityMode,
+    mutationBindings: Object.freeze(mutationBindings),
+    reviewDigest: canonicalJsonSha256({
+      schemaVersion: 1,
+      authorityMode,
+      bindings: mutationBindings,
+    }),
+  });
+}
+
+function buildWorkflowScheduleMutationPolicy(input: {
+  snapshot: WorkflowProcedureSnapshot;
+  identityPin: ReturnType<typeof buildAgentRunIdentityPinV1>;
+  occurrenceBudget: z.infer<typeof scheduleOccurrenceBudgetSchema>;
+  maximumOccurrences: number;
+  mutationBindings: readonly WorkflowScheduleMutationBindingV1[];
+}): WorkflowScheduleMutationPolicyV1 {
+  const body = {
+    schemaVersion: 1 as const,
+    policyKind: "reviewed_static_mutation" as const,
+    procedureSnapshotSha256: input.snapshot.snapshotSha256,
+    agentIdentityPinSha256: input.identityPin.pinSha256,
+    agentPolicyPinSha256: canonicalJsonSha256(input.identityPin.policyPins),
+    occurrenceBudgetSha256: canonicalJsonSha256(input.occurrenceBudget),
+    maximumOccurrences: input.maximumOccurrences,
+    bindings: Object.freeze([...input.mutationBindings]),
+  };
+  return Object.freeze({
+    ...body,
+    policySha256: canonicalJsonSha256(body),
+  });
+}
+
+function containsDynamicScheduleBinding(value: unknown): boolean {
+  if (typeof value === "string") {
+    return /\{\{|\$\{|\$ref:|dependency\./i.test(value);
+  }
+  if (Array.isArray(value)) {
+    return value.some(containsDynamicScheduleBinding);
+  }
+  if (value && typeof value === "object") {
+    return Object.entries(value as Record<string, unknown>).some(
+      ([key, item]) =>
+        ["$ref", "fromDependency", "inputBindings", "artifactRef"]
+          .includes(key) || containsDynamicScheduleBinding(item),
+    );
+  }
+  return false;
+}
+
+function isComputerUseTool(tool: { id: string; name: string; description: string }) {
+  return /(^|[.:_-])(computer|browser|macos|playwright)([.:_-]|$)/i.test(
+    `${tool.id} ${tool.name} ${tool.description}`,
+  );
+}
+
+function isDestructiveScheduledMutationTool(toolId: string) {
+  return /(^|[.:_-])(delete|remove|revoke|forget|trash|erase|destroy|disconnect)([.:_-]|$)/i
+    .test(toolId);
+}
+
+function scheduleAgentProfile(
   identity: ResolvedAgentIdentityV1,
   snapshot: WorkflowProcedureSnapshot,
+  authorityMode: "read_only" | "reviewed_mutation",
 ) {
+  const readOnly = authorityMode === "read_only";
   return Object.freeze({
     name: identity.definition.name,
     role: identity.definition.role,
     description: identity.definition.description,
     instructions: [
       identity.definition.instructions,
-      "This occurrence is an unattended read-only canary. Use only the exact reviewed saved-procedure bindings. Never request, simulate, or execute a mutation.",
+      readOnly
+        ? "This occurrence is an unattended read-only canary. Use only the exact reviewed saved-procedure bindings. Never request, simulate, or execute a mutation."
+        : "This occurrence may use only the exact owner-reviewed static procedure bindings. A reversible change requires its single-use PolicyLease; any changed input, target, Tool contract, or policy must return to ordinary approval.",
     ].filter(Boolean).join("\n\n"),
     persona: identity.definition.persona,
     modelPolicy: identity.definition.modelPolicy,
-    autonomy: "assist" as const,
-    approvalPolicy: "read_only" as const,
+    autonomy: readOnly ? "assist" as const : "execute" as const,
+    approvalPolicy: readOnly ? "read_only" as const : "risk_based" as const,
     memoryScope: identity.principal.memoryScope,
     toolIds: [...new Set(snapshot.toolBindings.map((binding) => binding.toolId))],
     skills: [],
@@ -3000,11 +3267,13 @@ function readOnlyScheduleAgentProfile(
 function scheduledProcedureGoal(
   snapshot: WorkflowProcedureSnapshot,
   scheduledFor: string,
+  reviewedMutation = false,
 ) {
   return [
     `Run the reviewed saved procedure "${snapshot.id}" for the scheduled occurrence at ${scheduledFor}.`,
-    `Use only its exact reviewed read-only bindings and satisfy the procedure's acceptance criteria.`,
-    "Do not perform, propose, or request a mutation.",
+    reviewedMutation
+      ? "Use only its exact owner-reviewed static bindings and satisfy the procedure's acceptance criteria. A mutation without its exact single-use PolicyLease must stop at ordinary approval."
+      : "Use only its exact reviewed read-only bindings and satisfy the procedure's acceptance criteria. Do not perform, propose, or request a mutation.",
   ].join(" ").slice(0, 4_000);
 }
 
@@ -3021,10 +3290,18 @@ function workflowScheduleReviewSha256(input: {
   policyPinSha256: string;
   occurrenceBudgetSha256: string;
   reviewedAt: string;
+  mutationPolicySha256?: string;
 }) {
   return canonicalJsonSha256({
     version: "workflow-schedule-review-v1",
-    ...input,
+    procedureSnapshotSha256: input.procedureSnapshotSha256,
+    agentIdentityPinSha256: input.agentIdentityPinSha256,
+    policyPinSha256: input.policyPinSha256,
+    occurrenceBudgetSha256: input.occurrenceBudgetSha256,
+    reviewedAt: input.reviewedAt,
+    ...(input.mutationPolicySha256
+      ? { mutationPolicySha256: input.mutationPolicySha256 }
+      : {}),
   });
 }
 
@@ -3467,7 +3744,27 @@ function buildWorkflowSchedule(
     policyPinSha256: canonicalJsonSha256(agentIdentityPin.policyPins),
     occurrenceBudget,
     failureLimit,
+    ...(value.authorityMode
+      ? { authorityMode: value.authorityMode }
+      : {}),
+    ...(value.mutationPolicy
+      ? { mutationPolicy: parseMutationPolicy(value.mutationPolicy) }
+      : {}),
   };
+  if (
+    (body.authorityMode === "reviewed_mutation") !==
+      Boolean(body.mutationPolicy) ||
+    Boolean(body.mutationPolicy && (
+      body.mutationPolicy.agentIdentityPinSha256 !== agentIdentityPin.pinSha256 ||
+      body.mutationPolicy.agentPolicyPinSha256 !==
+        canonicalJsonSha256(agentIdentityPin.policyPins) ||
+      body.mutationPolicy.occurrenceBudgetSha256 !==
+        canonicalJsonSha256(occurrenceBudget) ||
+      body.mutationPolicy.maximumOccurrences !== maxOccurrences
+    ))
+  ) {
+    throw new Error("Scheduled workflow mutation authority is inconsistent.");
+  }
   const config = parseWorkflowScheduleConfig({
     ...body,
     configSha256: canonicalJsonSha256(body),
@@ -3542,12 +3839,33 @@ function parseWorkflowScheduleConfig(value: unknown): WorkflowScheduleConfigV1 {
       1,
       20,
     ),
+    ...(candidate.authorityMode
+      ? {
+          authorityMode: candidate.authorityMode === "reviewed_mutation"
+            ? "reviewed_mutation" as const
+            : candidate.authorityMode === "read_only"
+              ? "read_only" as const
+              : invalidScheduleAuthorityMode(),
+        }
+      : {}),
+    ...(candidate.mutationPolicy
+      ? { mutationPolicy: parseMutationPolicy(candidate.mutationPolicy) }
+      : {}),
   };
   const configSha256 = String(candidate.configSha256 || "");
   if (
     candidate.schemaVersion !== 1 ||
     !/^[a-f0-9]{64}$/.test(configSha256) ||
     body.policyPinSha256 !== canonicalJsonSha256(agentIdentityPin.policyPins) ||
+    (body.authorityMode === "reviewed_mutation") !==
+      Boolean(body.mutationPolicy) ||
+    Boolean(body.mutationPolicy && (
+      body.mutationPolicy.agentIdentityPinSha256 !== agentIdentityPin.pinSha256 ||
+      body.mutationPolicy.agentPolicyPinSha256 !== body.policyPinSha256 ||
+      body.mutationPolicy.occurrenceBudgetSha256 !==
+        canonicalJsonSha256(occurrenceBudget) ||
+      body.mutationPolicy.maximumOccurrences !== body.maxOccurrences
+    )) ||
     canonicalJsonSha256(body) !== configSha256
   ) {
     throw new Error("Scheduled workflow configuration digest is invalid.");
@@ -3775,6 +4093,10 @@ function boundedInteger(
 function normalizeMissedPolicy(value: unknown): WorkflowScheduleMissedPolicy {
   if (value === "skip" || value === "run_once") return value;
   throw new Error("Scheduled workflow missed policy is invalid.");
+}
+
+function invalidScheduleAuthorityMode(): never {
+  throw new Error("Scheduled workflow authority mode is invalid.");
 }
 
 function requiredActorId(value: string) {

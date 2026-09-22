@@ -383,6 +383,118 @@ describe("scheduled workflow trigger foundation", () => {
     })).resolves.toEqual(replacement);
   });
 
+  it("requires an exact owner review before scheduling reversible changes", async () => {
+    const { saveMemory } = await import("@/lib/memory/store");
+    const procedures = await import("@/lib/workflows/saved-procedures");
+    const triggers = await import("@/lib/workflows/triggers");
+    await saveMemory({
+      tenantId,
+      type: "procedure",
+      title: "Create reviewed calendar focus block",
+      content: JSON.stringify({
+        schemaVersion: 1,
+        id: "procedure:create-reviewed-focus-block",
+        aliases: ["Create reviewed focus block"],
+        toolBindings: [{
+          toolId: "calendar.create",
+          input: {
+            calendarId: "primary",
+            summary: "Quarterly review focus block",
+            start: "2026-10-01T10:00:00.000Z",
+            end: "2026-10-01T11:00:00.000Z",
+          },
+        }],
+      }),
+      tags: [procedures.SAVED_PROCEDURE_V1_TAG],
+      scope: "workspace",
+      source: "manual",
+      assertedBy: "user",
+    });
+    const reviewed = (await triggers.listSchedulableWorkflowProcedures({
+      tenantId,
+      actorId,
+    })).find((candidate) =>
+      candidate.id === "procedure:create-reviewed-focus-block"
+    );
+    expect(reviewed).toMatchObject({
+      schedulable: true,
+      authorityMode: "reviewed_mutation",
+      mutationBindings: [{
+        bindingIndex: 0,
+        toolId: "calendar.create",
+        riskLevel: 2,
+        reversible: true,
+        targetSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      }],
+    });
+    expect(reviewed && "warning" in reviewed ? reviewed.warning : "")
+      .toContain("single-use PolicyLease");
+    const createInput = {
+      tenantId,
+      actorId,
+      name: "Reviewed focus-block schedule",
+      procedureId: "procedure:create-reviewed-focus-block",
+      agentId: "atlas",
+      timezone: "UTC",
+      rrule: "FREQ=WEEKLY;BYDAY=TH;BYHOUR=10;BYMINUTE=0",
+      startsAt: "2026-10-01T10:00:00.000Z",
+      maxOccurrences: 8,
+      missedPolicy: "skip" as const,
+      failureLimit: 2,
+      authorityMode: "reviewed_mutation" as const,
+      executionScope: ownerScope("reviewed-mutation-schedule"),
+      idempotencyKey: "reviewed-mutation-schedule",
+    };
+    await expect(triggers.createReviewedWorkflowSchedule(createInput))
+      .rejects.toMatchObject({ code: "review_required" });
+
+    const created = await triggers.createReviewedWorkflowSchedule({
+      ...createInput,
+      reviewedMutationBindingsSha256:
+        reviewed && "reviewDigest" in reviewed
+          ? reviewed.reviewDigest
+          : undefined,
+      mutationAcknowledged: true,
+    });
+    expect(created).toMatchObject({
+      triggerKind: "schedule",
+      status: "active",
+      metadata: {
+        source: "scheduled_reviewed_mutation",
+        authorityMode: "reviewed_mutation",
+      },
+      schedule: {
+        config: {
+          authorityMode: "reviewed_mutation",
+          mutationPolicy: {
+            policyKind: "reviewed_static_mutation",
+            maximumOccurrences: 8,
+            bindings: [{
+              bindingIndex: 0,
+              toolId: "calendar.create",
+              inputSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+              targetSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+              toolContractSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+              bindingSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+            }],
+            policySha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+          },
+        },
+      },
+    });
+    await expect(triggers.previewWorkflowSchedule({
+      tenantId,
+      actorId,
+      triggerId: created.id,
+      count: 1,
+    })).resolves.toMatchObject({
+      authorityMode: "reviewed_mutation",
+      readOnlyCanary: false,
+      mutationPolicySha256:
+        created.schedule?.config.mutationPolicy?.policySha256,
+    });
+  });
+
   it("installs an actor-scoped immutable shadow ledger and SKIP LOCKED claimant", async () => {
     const migration = await readFile(
       path.join(
@@ -433,5 +545,25 @@ describe("scheduled workflow trigger foundation", () => {
     expect(implementation).toContain("governedToolOperationClass");
     expect(implementation).toContain(") !== \"read_only\"");
     expect(implementation).toContain("workflow.schedule.occurrence");
+  });
+
+  it("installs single-use actor-private PolicyLease storage for reviewed changes", async () => {
+    const migration = await readFile(
+      path.join(
+        process.cwd(),
+        "supabase/migrations/20260922160000_scheduled_workflow_policy_lease.sql",
+      ),
+      "utf8",
+    );
+    expect(migration).toContain("CREATE TABLE public.omni_policy_leases");
+    expect(migration).toContain("CREATE TABLE public.omni_policy_lease_consumptions");
+    expect(migration).toContain("FORCE ROW LEVEL SECURITY");
+    expect(migration).toContain("AS RESTRICTIVE FOR ALL TO PUBLIC");
+    expect(migration).toContain("state IN ('active', 'consumed')");
+    expect(migration).toContain("expires_at <= issued_at + INTERVAL '15 minutes'");
+    expect(migration).toContain(
+      "GRANT UPDATE (state, consumed_at, consumption_receipt_sha256)",
+    );
+    expect(migration).toContain("information_schema.role_column_grants");
   });
 });

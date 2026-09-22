@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
+  approvalGrantTargetSha256,
+  approvalGrantToolContractSha256,
   buildToolApprovalGrantRequest,
   type ApprovalGrantClaimEvidence,
 } from "@/lib/approval-grants/authorization";
@@ -37,10 +39,17 @@ import {
   getDatabaseTenantContext,
   getSql,
   hasDatabaseUrl,
+  runWithDatabaseActorScope,
 } from "@/lib/db/client";
 import { generateModelStructured } from "@/lib/models/gateway";
 import { trustedRuntimeClockInstruction } from "@/lib/orchestration/prompts";
 import { redactSensitive } from "@/lib/security/context";
+import { buildDataInfluenceManifestV1 } from "@/lib/security/data-influence";
+import {
+  issueScheduledPolicyLease,
+  parseMutationPolicy,
+  type ScheduledPolicyLeaseClaim,
+} from "@/lib/security/policy-lease-store";
 import {
   appendScopedDomainEvent,
 } from "@/lib/events/store";
@@ -96,6 +105,7 @@ import type {
   WorkflowPlanNodeExecutionStats,
   WorkflowPlanNodeExecutionStatus,
   WorkflowRunDetail,
+  WorkflowScheduleMutationBindingV1,
 } from "@/lib/workflows/types";
 
 type WorkflowNodeExecutionLedger = {
@@ -870,6 +880,7 @@ async function executePlanNode({
   }
 
   const workflowApproved = Boolean(detail.run.approvedAt);
+  const scheduledMutationContext = workflowScheduledMutationContext(detail);
   const plannedTools = (await Promise.all(
     contract.grantedToolIds.slice(0, contract.maxToolCalls).map(async (toolId) => ({
       toolId,
@@ -885,6 +896,7 @@ async function executePlanNode({
       tool,
       node,
       workflowApproved,
+      reviewedMutationScheduled: Boolean(scheduledMutationContext),
     }),
   }));
   for (const { tool, dryRun } of plannedTools) {
@@ -915,7 +927,7 @@ async function executePlanNode({
           planId,
           nodeId: node.id,
           toolId,
-        })
+        }, Boolean(scheduledMutationContext))
       : undefined;
     const approvalGrantClaim =
       workflowApproved && !dryRun && tool && toolExecutionScope
@@ -930,6 +942,26 @@ async function executePlanNode({
             executionKey: idempotencyKey,
           })
         : undefined;
+    const policyLeaseClaim =
+      scheduledMutationContext &&
+      !dryRun &&
+      tool &&
+      toolExecutionScope
+        ? await authorizeWorkflowToolWithScheduledPolicyLease({
+            detail,
+            plan,
+            planId,
+            node,
+            tool,
+            toolInput,
+            executionScope: toolExecutionScope,
+            executionId: idempotentWorkflowToolExecutionId(
+              detail.run.tenantId,
+              idempotencyKey,
+            ),
+            context: scheduledMutationContext,
+          })
+        : undefined;
     const effectBinding = workflowToolEffectBinding({
       workflowRunId: detail.run.id,
       plan,
@@ -938,15 +970,19 @@ async function executePlanNode({
       toolId,
       tool,
       toolInput,
-      workflowApproved: Boolean(approvalGrantClaim),
+      // Preserve the exact plan binding when lease issuance/consumption falls
+      // back to ordinary approval. This does not make the effect approved.
+      workflowApproved: Boolean(
+        approvalGrantClaim || policyLeaseClaim || scheduledMutationContext,
+      ),
       dryRun,
       initiatingActorId: executionScope?.initiatingActorId,
     });
-    const execution = await executeGovernedTool({
+    const execute = () => executeGovernedTool({
       toolId,
       input: toolInput,
       dryRun,
-      approved: Boolean(approvalGrantClaim),
+      approved: Boolean(approvalGrantClaim || policyLeaseClaim),
       context: {
         tenantId: normalizeTenantId(detail.run.tenantId),
         actorId: workflowActorId,
@@ -955,7 +991,9 @@ async function executePlanNode({
       },
       approvalReason: approvalGrantClaim
         ? `Bounded approval grant ${approvalGrantClaim.grant.grantId} authorized this exact plan action.`
-        : undefined,
+        : policyLeaseClaim
+          ? "Owner-reviewed schedule policy issued one exact, single-use effect lease."
+          : undefined,
       abortSignal: executionSignal,
       idempotencyKey,
       mcpSessionScope: {
@@ -966,7 +1004,15 @@ async function executePlanNode({
       executionScope: toolExecutionScope,
       effectBinding,
       approvalGrantClaim,
+      policyLeaseClaim,
     });
+    const execution = toolExecutionScope?.initiatingActorId
+      ? await runWithDatabaseActorScope(
+          toolExecutionScope.tenantId,
+          [toolExecutionScope.initiatingActorId],
+          execute,
+        )
+      : await execute();
     return {
       id: execution.record.id,
       toolId: execution.record.toolId,
@@ -1540,6 +1586,246 @@ export async function authorizeWorkflowToolWithGrant(input: {
     : undefined;
 }
 
+type WorkflowScheduledMutationContext = Readonly<{
+  triggerId: string;
+  occurrenceId: string;
+  scheduleConfigurationSha256: string;
+  occurrenceAuthoritySha256: string;
+  reviewedSnapshotSha256: string;
+  policy: ReturnType<typeof parseMutationPolicy>;
+  principal: Readonly<{
+    id: string;
+    generation: number;
+  }>;
+}>;
+
+function workflowScheduledMutationContext(
+  detail: WorkflowRunDetail,
+): WorkflowScheduledMutationContext | undefined {
+  const metadata = detail.run.input.metadata;
+  if (
+    metadata?.source !== "scheduled_reviewed_mutation" ||
+    metadata.scheduleAuthorityMode !== "reviewed_mutation"
+  ) return undefined;
+  try {
+    const identity = objectRecord(metadata.agentIdentity);
+    const principal = objectRecord(identity.principal);
+    const context = Object.freeze({
+      triggerId: exactMetadataId(metadata.scheduleTriggerId),
+      occurrenceId: exactMetadataId(metadata.scheduleOccurrenceId),
+      scheduleConfigurationSha256: exactMetadataSha256(
+        metadata.scheduleConfigurationSha256,
+      ),
+      occurrenceAuthoritySha256: exactMetadataSha256(
+        metadata.scheduleOccurrenceAuthoritySha256,
+      ),
+      reviewedSnapshotSha256: exactMetadataSha256(
+        metadata.scheduleReviewedSnapshotSha256,
+      ),
+      policy: parseMutationPolicy(metadata.scheduleMutationPolicy),
+      principal: Object.freeze({
+        id: exactMetadataId(principal.principalId),
+        generation: positiveMetadataInteger(principal.principalGeneration),
+      }),
+    });
+    return context;
+  } catch {
+    return undefined;
+  }
+}
+
+async function authorizeWorkflowToolWithScheduledPolicyLease(input: {
+  detail: WorkflowRunDetail;
+  plan: WorkflowDynamicPlan;
+  planId: string;
+  node: WorkflowPlanNode;
+  tool: ToolDefinition;
+  toolInput: Record<string, unknown>;
+  executionScope: ExecutionScope;
+  executionId: string;
+  context: WorkflowScheduledMutationContext;
+}): Promise<ScheduledPolicyLeaseClaim | undefined> {
+  try {
+    const liveInputSha256 = toolInputSha256(input.toolInput);
+    const reviewedInputs = (input.node.toolInputs || []).filter((candidate) => {
+      if (candidate.toolId !== input.tool.id) return false;
+      try {
+        const value: unknown = JSON.parse(candidate.inputJson);
+        return Boolean(
+          value &&
+          typeof value === "object" &&
+          !Array.isArray(value) &&
+          toolInputSha256(value as Record<string, unknown>) === liveInputSha256,
+        );
+      } catch {
+        return false;
+      }
+    });
+    const reviewedInput = reviewedInputs.length === 1
+      ? reviewedInputs[0]
+      : undefined;
+    if (
+      !reviewedInput ||
+      input.node.inputBindings?.some(
+        (binding) => binding.targetToolId === input.tool.id,
+      ) ||
+      governedToolOperationClass(input.tool, input.toolInput) !== "mutation" ||
+      (input.tool.riskLevel !== 1 && input.tool.riskLevel !== 2) ||
+      input.tool.reversible !== true ||
+      isBrowserActionTool(input.tool)
+    ) return undefined;
+    const parsedReviewedInput: unknown = JSON.parse(reviewedInput.inputJson);
+    if (
+      !parsedReviewedInput ||
+      typeof parsedReviewedInput !== "object" ||
+      Array.isArray(parsedReviewedInput) ||
+      toolInputSha256(parsedReviewedInput as Record<string, unknown>) !==
+        liveInputSha256
+    ) return undefined;
+    const binding = selectScheduledMutationBinding({
+      policy: input.context.policy,
+      tool: input.tool,
+      toolInput: input.toolInput,
+    });
+    if (
+      !binding ||
+      binding.inputSha256 !== toolInputSha256(input.toolInput) ||
+      binding.targetSha256 !==
+        approvalGrantTargetSha256(input.tool, input.toolInput) ||
+      binding.toolContractSha256 !==
+        approvalGrantToolContractSha256(input.tool) ||
+      binding.riskLevel !== input.tool.riskLevel ||
+      binding.reversible !== true ||
+      input.executionScope.executingPrincipalType !== "agent" ||
+      input.executionScope.executingPrincipalId !== input.context.principal.id
+    ) return undefined;
+    const modelInfluenceSha256 = canonicalJsonSha256({
+      schemaVersion: 1,
+      workflowRunId: input.detail.run.id,
+      planId: input.planId,
+      planSha256: canonicalJsonSha256({ id: input.planId, plan: input.plan }),
+      nodeId: input.node.id,
+      nodeSha256: canonicalJsonSha256(input.node),
+      toolId: input.tool.id,
+      inputSha256: binding.inputSha256,
+    });
+    const influenceManifest = buildDataInfluenceManifestV1({
+      tenantId: input.executionScope.tenantId,
+      runId: input.detail.run.id,
+      executionId: input.executionId,
+      principalId: input.context.principal.id,
+      createdAt: new Date(input.detail.run.createdAt).toISOString(),
+      authorityReferences: [{
+        kind: "standing_grant",
+        referenceId: input.context.triggerId,
+        evidenceSha256: input.context.policy.policySha256,
+      }],
+      untrustedInfluences: [{
+        kind: "model",
+        referenceId:
+          `workflow-plan-node:${modelInfluenceSha256.slice(0, 48)}`,
+        contentSha256: modelInfluenceSha256,
+      }],
+    });
+    return issueScheduledPolicyLease({
+      authority: {
+        tenantId: input.executionScope.tenantId,
+        ownerActorId: input.executionScope.initiatingActorId || "",
+        triggerId: input.context.triggerId,
+        occurrenceId: input.context.occurrenceId,
+        workflowRunId: input.detail.run.id,
+        scheduleConfigurationSha256:
+          input.context.scheduleConfigurationSha256,
+        occurrenceAuthoritySha256:
+          input.context.occurrenceAuthoritySha256,
+        reviewedSnapshotSha256: input.context.reviewedSnapshotSha256,
+        mutationPolicySha256: input.context.policy.policySha256,
+        bindingIndex: binding.bindingIndex,
+        toolContractSha256: binding.toolContractSha256,
+        bindingSha256: binding.bindingSha256,
+      },
+      executionId: input.executionId,
+      toolId: input.tool.id,
+      inputSha256: binding.inputSha256,
+      targetSha256: binding.targetSha256,
+      principal: {
+        kind: "agent",
+        id: input.context.principal.id,
+        generation: input.context.principal.generation,
+      },
+      influenceManifest,
+      executionScope: input.executionScope,
+    });
+  } catch {
+    // Any drift returns the exact effect to the ordinary approval path.
+    return undefined;
+  }
+}
+
+/**
+ * Selects one and only one reviewed static effect binding. Matching solely on
+ * tool ID is unsafe because a procedure may invoke the same tool with multiple
+ * exact inputs or targets.
+ */
+export function selectScheduledMutationBinding(input: {
+  policy: ReturnType<typeof parseMutationPolicy>;
+  tool: ToolDefinition;
+  toolInput: Record<string, unknown>;
+}): WorkflowScheduleMutationBindingV1 | undefined {
+  const inputSha256 = toolInputSha256(input.toolInput);
+  const targetSha256 = approvalGrantTargetSha256(input.tool, input.toolInput);
+  const toolContractSha256 = approvalGrantToolContractSha256(input.tool);
+  const matches = input.policy.bindings.filter((candidate) =>
+    candidate.toolId === input.tool.id &&
+    candidate.inputSha256 === inputSha256 &&
+    candidate.targetSha256 === targetSha256 &&
+    candidate.toolContractSha256 === toolContractSha256 &&
+    candidate.riskLevel === input.tool.riskLevel &&
+    candidate.reversible === input.tool.reversible
+  );
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+function idempotentWorkflowToolExecutionId(
+  tenantId: string | undefined,
+  idempotencyKey: string,
+) {
+  return `idem_${createHash("sha256")
+    .update(`${normalizeTenantId(tenantId)}\u0000${idempotencyKey}`)
+    .digest("hex")}`;
+}
+
+function objectRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Expected an immutable metadata object.");
+  }
+  return value as Record<string, unknown>;
+}
+
+function exactMetadataId(value: unknown) {
+  const id = typeof value === "string" ? value.trim() : "";
+  if (!id || id.length > 240 || !/^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$/.test(id)) {
+    throw new Error("Scheduled mutation metadata ID is invalid.");
+  }
+  return id;
+}
+
+function exactMetadataSha256(value: unknown) {
+  const digest = typeof value === "string" ? value.trim() : "";
+  if (!/^[a-f0-9]{64}$/.test(digest)) {
+    throw new Error("Scheduled mutation metadata digest is invalid.");
+  }
+  return digest;
+}
+
+function positiveMetadataInteger(value: unknown) {
+  const integer = Number(value);
+  if (!Number.isSafeInteger(integer) || integer < 1) {
+    throw new Error("Scheduled mutation principal generation is invalid.");
+  }
+  return integer;
+}
+
 function workflowApprovalEvidence(detail: WorkflowRunDetail) {
   if (!detail.run.approvedAt) return undefined;
   const event = [...detail.events]
@@ -1564,6 +1850,7 @@ function workflowToolExecutionScope(
     nodeId: string;
     toolId: string;
   },
+  preserveAgentPrincipal = false,
 ) {
   const causationDigest = createHash("sha256")
     .update([
@@ -1574,8 +1861,12 @@ function workflowToolExecutionScope(
     ].join("\0"))
     .digest("hex");
   return deriveExecutionScope(workflowScope, {
-    executingPrincipalType: "system",
-    executingPrincipalId: `workflow:${input.workflowRunId}`,
+    ...(preserveAgentPrincipal
+      ? {}
+      : {
+          executingPrincipalType: "system" as const,
+          executingPrincipalId: `workflow:${input.workflowRunId}`,
+        }),
     causationId: `workflow.tool:${causationDigest}`,
     purpose: "workflow.tool.execute",
   });
@@ -1688,11 +1979,13 @@ export function shouldDryRunWorkflowTool({
   tool,
   node,
   workflowApproved = false,
+  reviewedMutationScheduled = false,
 }: {
   toolId: string;
   tool?: ToolDefinition;
   node: WorkflowPlanNode;
   workflowApproved?: boolean;
+  reviewedMutationScheduled?: boolean;
 }) {
   if (!tool) {
     return true;
@@ -1707,6 +2000,17 @@ export function shouldDryRunWorkflowTool({
     // independent two-admin quorum required for risk-3 tool execution, so keep
     // those calls as previews instead of creating detached approval records.
     return tool.riskLevel >= 3;
+  }
+
+  // A reviewed mutation schedule attempts one exact PolicyLease. If lease
+  // issuance or consumption fails, the live request intentionally reaches the
+  // governed executor without approval and becomes an ordinary approval item.
+  if (
+    reviewedMutationScheduled &&
+    (tool.operationClass === "mutation" || tool.riskLevel > 0) &&
+    tool.riskLevel < 3
+  ) {
+    return false;
   }
 
   if (node.policy !== "auto" || node.approvalRequired || node.riskLevel >= 2 || tool.approvalRequired || tool.riskLevel >= 1) {

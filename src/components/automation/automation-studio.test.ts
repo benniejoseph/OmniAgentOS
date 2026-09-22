@@ -155,6 +155,10 @@ describe("Automation Studio contracts", () => {
     expect(source).toContain("Reviewed routines");
     expect(source).toContain("Schedule a saved procedure");
     expect(source).toContain("read-only canary");
+    expect(source).toContain("PolicyLease changes");
+    expect(source).toContain("Approve exact changes & schedule");
+    expect(source).toContain("reviewedMutationBindingsSha256");
+    expect(source).toContain("dynamic inputs, destructive actions, Computer Use");
     expect(source).toContain('controlSchedule(id, "run_once")');
     expect(source).toContain("Create replacement");
     expect(source).toContain("configSha256");

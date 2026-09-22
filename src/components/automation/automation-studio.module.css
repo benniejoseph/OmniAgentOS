@@ -248,6 +248,10 @@
 .scheduleFields select:focus { border-color: var(--studio-primary); outline: 2px solid oklch(from var(--studio-primary) l c h / .14); outline-offset: 1px; }
 .scheduleBoundary { display: flex; align-items: flex-start; gap: .5rem; margin-top: 1rem; color: var(--studio-muted); font-size: .78rem; line-height: 1.5; }
 .scheduleBoundary svg { flex: 0 0 auto; margin-top: .08rem; color: var(--studio-primary); }
+.scheduleBoundary > span { display: grid; gap: .55rem; min-width: 0; }
+.scheduleBoundary code { display: block; width: fit-content; max-width: 100%; padding: .28rem .5rem; border: 1px solid color-mix(in srgb, var(--studio-primary) 24%, transparent); border-radius: .45rem; overflow: hidden; color: var(--studio-text); font-size: .72rem; text-overflow: ellipsis; white-space: nowrap; }
+.scheduleBoundary label { display: flex; align-items: flex-start; gap: .5rem; color: var(--studio-text); font-weight: 650; cursor: pointer; }
+.scheduleBoundary label input { width: 1rem; height: 1rem; margin-top: .12rem; accent-color: var(--studio-primary); }
 .scheduleBuilderActions { display: flex; justify-content: flex-end; gap: .5rem; margin-top: 1rem; }
 .scheduleBuilderActions button,
 .scheduleActions button { display: inline-flex; min-height: 2.45rem; align-items: center; justify-content: center; gap: .35rem; border: 1px solid var(--studio-line); border-radius: 999px; padding: 0 .72rem; color: var(--studio-ink); background: var(--studio-paper); font-size: .78rem; font-weight: 730; }

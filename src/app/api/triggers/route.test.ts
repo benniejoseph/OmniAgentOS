@@ -146,6 +146,26 @@ describe("workflow trigger schedule routes", () => {
     );
   });
 
+  it("forwards the exact reviewed mutation acknowledgement", async () => {
+    const reviewDigest = "a".repeat(64);
+    const response = await POST(jsonRequest({
+      ...scheduleBody(),
+      authorityMode: "reviewed_mutation",
+      reviewedMutationBindingsSha256: reviewDigest,
+      mutationAcknowledged: true,
+    }, "routine-reviewed-mutation-001"));
+
+    expect(response.status).toBe(201);
+    expect(mocks.createReviewedWorkflowSchedule).toHaveBeenCalledWith(
+      expect.objectContaining({
+        authorityMode: "reviewed_mutation",
+        reviewedMutationBindingsSha256: reviewDigest,
+        mutationAcknowledged: true,
+        idempotencyKey: "routine-reviewed-mutation-001",
+      }),
+    );
+  });
+
   it("preserves legacy webhook creation without a caller idempotency key", async () => {
     const response = await POST(jsonRequest({
       name: "Inbound webhook",

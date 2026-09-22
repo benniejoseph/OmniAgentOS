@@ -8,6 +8,10 @@ import {
 } from "@/lib/db/client";
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import { redactSensitive } from "@/lib/security/context";
+import {
+  consumeScheduledPolicyLeaseForEffectClaim,
+  type ScheduledPolicyLeaseClaim,
+} from "@/lib/security/policy-lease-store";
 import { recordApprovalDecisionCheckpointShadow } from "@/lib/runs/approval-checkpoint-shadow";
 import {
   assertExecutionScopeTenant,
@@ -69,6 +73,8 @@ const GOOGLE_WORKSPACE_CREATE_TOOL_IDS = new Set([
 export type ToolExecutionMutationOptions = {
   executionScope?: ExecutionScope;
   idempotencyKey?: string;
+  /** Consumed in the same transaction as a newly inserted effect claim. */
+  policyLeaseClaim?: ScheduledPolicyLeaseClaim;
 };
 
 type ToolExecutionMutationOperation =
@@ -91,6 +97,8 @@ export type IdempotentToolExecutionClaimResult = {
 const EFFECT_INTENT_V2_OUTPUT_KEY = "__effectIntentV2";
 const APPROVAL_MATERIAL_BINDING_OUTPUT_KEY =
   "__approvalMaterialBindingSha256";
+const WORKFLOW_EFFECT_BINDING_OUTPUT_KEY =
+  "__workflowEffectBindingSha256";
 const OPERATION_CLASS_OUTPUT_KEY = "__operationClass";
 
 export function createToolExecutionRecord(
@@ -161,6 +169,14 @@ export async function claimIdempotentToolExecution(
     throw new Error("An execution claim cannot begin with an effect receipt.");
   }
   const tenantId = normalizeTenantId(record.tenantId);
+  if (options.policyLeaseClaim && !options.executionScope) {
+    throw new Error("Policy-lease tool claims require an execution scope.");
+  }
+  if (options.policyLeaseClaim && !hasDatabaseUrl()) {
+    throw new Error(
+      "Policy-lease tool claims require atomic durable database storage.",
+    );
+  }
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     return getSql().transaction(async (sql: SqlClient) => {
@@ -189,6 +205,28 @@ export async function claimIdempotentToolExecution(
       `;
       if (inserted[0]) {
         const claimedRecord = recordFromRow(inserted[0]);
+        if (options.policyLeaseClaim && options.executionScope) {
+          const lease = options.policyLeaseClaim.lease;
+          const principalType = options.executionScope.executingPrincipalType;
+          const principalId = options.executionScope.executingPrincipalId;
+          if (
+            principalType !== "agent" ||
+            !principalId
+          ) {
+            throw new Error(
+              "Policy-lease effect claims require an Agent principal.",
+            );
+          }
+          await consumeScheduledPolicyLeaseForEffectClaim({
+            claim: options.policyLeaseClaim,
+            executionId: claimedRecord.id,
+            toolId: claimedRecord.toolId,
+            inputSha256: toolInputSha256(openToolExecutionInput(claimedRecord)),
+            targetSha256: lease.targetSha256,
+            influenceManifest: options.policyLeaseClaim.influenceManifest,
+            executionScope: options.executionScope,
+          }, sql);
+        }
         await appendToolExecutionMutationEvent({
           record: claimedRecord,
           operation: "claimed",
@@ -589,6 +627,7 @@ export function sealToolExecutionInput(
   approvalFingerprint: string,
   options: {
     approvalMaterialBindingSha256?: string;
+    workflowEffectBindingSha256?: string;
     operationClass?: "read_only" | "mutation";
   } = {},
 ) {
@@ -596,6 +635,12 @@ export function sealToolExecutionInput(
   if (approvalMaterialBinding !== undefined && !isSha256(approvalMaterialBinding)) {
     throw new Error(
       "Approval material bindings require a canonical lowercase SHA-256 digest.",
+    );
+  }
+  const workflowEffectBinding = options.workflowEffectBindingSha256;
+  if (workflowEffectBinding !== undefined && !isSha256(workflowEffectBinding)) {
+    throw new Error(
+      "Workflow effect bindings require a canonical lowercase SHA-256 digest.",
     );
   }
   return {
@@ -606,6 +651,9 @@ export function sealToolExecutionInput(
       : {}),
     ...(approvalMaterialBinding
       ? { [APPROVAL_MATERIAL_BINDING_OUTPUT_KEY]: approvalMaterialBinding }
+      : {}),
+    ...(workflowEffectBinding
+      ? { [WORKFLOW_EFFECT_BINDING_OUTPUT_KEY]: workflowEffectBinding }
       : {}),
   };
 }
@@ -626,6 +674,13 @@ export function getToolExecutionApprovalFingerprint(
 ) {
   const value = parseObject(record.output).__approvalFingerprint;
   return typeof value === "string" ? value : undefined;
+}
+
+export function getToolExecutionWorkflowEffectBindingSha256(
+  record: ToolExecutionRecord,
+) {
+  const value = parseObject(record.output)[WORKFLOW_EFFECT_BINDING_OUTPUT_KEY];
+  return isSha256(value) ? value : undefined;
 }
 
 export function getToolExecutionEffectIntentV2(
@@ -1494,6 +1549,7 @@ export function publicToolExecution(record: ToolExecutionRecord) {
     delete publicOutput.__sealedInput;
     delete publicOutput[OPERATION_CLASS_OUTPUT_KEY];
     delete publicOutput[APPROVAL_MATERIAL_BINDING_OUTPUT_KEY];
+    delete publicOutput[WORKFLOW_EFFECT_BINDING_OUTPUT_KEY];
     delete publicOutput[EFFECT_INTENT_V2_OUTPUT_KEY];
     delete publicOutput.__idempotencyKeyHash;
     delete publicOutput.__effectIdempotencyKeySha256;

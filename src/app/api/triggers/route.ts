@@ -66,6 +66,9 @@ const scheduleTriggerSchema = z.object({
   }).strict().optional(),
   failureLimit: z.number().int().min(1).max(20).default(3),
   replacesTriggerId: z.string().trim().min(1).max(240).optional(),
+  authorityMode: z.enum(["read_only", "reviewed_mutation"]).optional(),
+  reviewedMutationBindingsSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  mutationAcknowledged: z.boolean().optional(),
 }).strict();
 
 const triggerSchema = z.union([scheduleTriggerSchema, webhookTriggerSchema]);
@@ -190,6 +193,9 @@ async function POSTHandler(request: Request) {
               timezone: parsed.data.timezone,
               missedPolicy: parsed.data.missedPolicy,
               replacesTriggerId: parsed.data.replacesTriggerId,
+              authorityMode: parsed.data.authorityMode,
+              mutationAcknowledged:
+                parsed.data.mutationAcknowledged === true,
             }
           : {
               status: parsed.data.status,

@@ -3,12 +3,21 @@ import {
   createWorkflowExecutionBudget,
   isIndependentReadOnlyTool,
   reserveWorkflowToolBudget,
+  selectScheduledMutationBinding,
   shouldDryRunWorkflowTool,
   workflowToolEffectBinding,
 } from "@/lib/workflows/executor";
+import {
+  approvalGrantTargetSha256,
+  approvalGrantToolContractSha256,
+} from "@/lib/approval-grants/authorization";
+import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
+import { toolInputSha256 } from "@/lib/tools/execution-scope";
 import type {
   WorkflowDynamicPlan,
   WorkflowPlanNode,
+  WorkflowScheduleMutationBindingV1,
+  WorkflowScheduleMutationPolicyV1,
 } from "@/lib/workflows/types";
 import type { ToolDefinition } from "@/lib/tools/types";
 
@@ -155,6 +164,68 @@ describe("workflow effect binding", () => {
       .toBeUndefined();
     expect(workflowToolEffectBinding({ ...base, initiatingActorId: null }))
       .toBeUndefined();
+  });
+});
+
+describe("reviewed schedule mutation binding", () => {
+  const buildBinding = (
+    bindingIndex: number,
+    toolInput: Record<string, unknown>,
+  ): WorkflowScheduleMutationBindingV1 => {
+    const body = {
+      schemaVersion: 1 as const,
+      bindingIndex,
+      toolId: connectorTool.id,
+      inputSha256: toolInputSha256(toolInput),
+      targetSha256: approvalGrantTargetSha256(connectorTool, toolInput),
+      toolContractSha256: approvalGrantToolContractSha256(connectorTool),
+      riskLevel: 2 as const,
+      reversible: true as const,
+    };
+    return Object.freeze({
+      ...body,
+      bindingSha256: canonicalJsonSha256(body),
+    });
+  };
+  const buildPolicy = (
+    bindings: readonly WorkflowScheduleMutationBindingV1[],
+  ): WorkflowScheduleMutationPolicyV1 => {
+    const body = {
+      schemaVersion: 1 as const,
+      policyKind: "reviewed_static_mutation" as const,
+      procedureSnapshotSha256: "1".repeat(64),
+      agentIdentityPinSha256: "2".repeat(64),
+      agentPolicyPinSha256: "3".repeat(64),
+      occurrenceBudgetSha256: "4".repeat(64),
+      maximumOccurrences: 5,
+      bindings,
+    };
+    return Object.freeze({ ...body, policySha256: canonicalJsonSha256(body) });
+  };
+
+  it("selects the exact input when one tool appears in multiple bindings", () => {
+    const firstInput = { recordId: "record-one", title: "First" };
+    const secondInput = { recordId: "record-two", title: "Second" };
+    const first = buildBinding(0, firstInput);
+    const second = buildBinding(1, secondInput);
+
+    expect(selectScheduledMutationBinding({
+      policy: buildPolicy([first, second]),
+      tool: connectorTool,
+      toolInput: secondInput,
+    })).toEqual(second);
+  });
+
+  it("rejects ambiguous duplicate exact bindings", () => {
+    const toolInput = { recordId: "record-one", title: "Same effect" };
+    const first = buildBinding(0, toolInput);
+    const duplicate = buildBinding(1, toolInput);
+
+    expect(selectScheduledMutationBinding({
+      policy: buildPolicy([first, duplicate]),
+      tool: connectorTool,
+      toolInput,
+    })).toBeUndefined();
   });
 });
 

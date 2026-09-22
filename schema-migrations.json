@@ -988,5 +988,10 @@
     "version": 198,
     "name": "scheduled_workflow_read_only_canary_v1",
     "checksum": "75358f70c27be2ce0bd8f2048dd399a649d8cbd27cca9ff1a30ab5343324089f"
+  },
+  {
+    "version": 199,
+    "name": "scheduled_workflow_policy_lease_v1",
+    "checksum": "56d69404165e70123c590cf1637985db06de55889e4de64e28523b92885ca093"
   }
 ]

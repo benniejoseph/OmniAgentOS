@@ -444,7 +444,7 @@ function AutomationsPanel({
           <div>
             <span><CalendarClock size={16} aria-hidden="true" />Reviewed routines</span>
             <h2>Run known procedures on time</h2>
-            <p>Schedules replay one immutable saved procedure with its exact Agent, policy, and budget. This canary stage permits read-only Tools only; any changed binding fails closed.</p>
+            <p>Schedules replay one immutable saved procedure with its exact Agent, policy, and budget. Read-only routines stay automatic; reviewed reversible changes receive one short-lived PolicyLease per exact action.</p>
           </div>
           <button type="button" onClick={() => {
             setReplacementId(undefined);
@@ -504,12 +504,18 @@ function AutomationsPanel({
               : [];
             const status = textAt(trigger, ["status"], "unknown");
             const circuit = textAt(state, ["circuitState"], "closed");
+            const authorityMode = textAt(
+              config,
+              ["authorityMode"],
+              "read_only",
+            );
+            const mutationPolicy = recordAt(config, "mutationPolicy");
             return (
               <article className={styles.scheduleCard} key={id}>
                 <header>
                   <span className={styles.rowIcon}><CalendarClock size={17} aria-hidden="true" /></span>
                   <div>
-                    <small>{textAt(identityPin, ["logicalAgentId"], "Agent")} · read-only canary</small>
+                    <small>{textAt(identityPin, ["logicalAgentId"], "Agent")} · {authorityMode === "reviewed_mutation" ? "reviewed changes" : "read-only canary"}</small>
                     <h3>{textAt(trigger, ["name"], "Untitled schedule")}</h3>
                   </div>
                   <span className={styles.badge} data-tone={statusTone(status)}>{status}</span>
@@ -520,6 +526,7 @@ function AutomationsPanel({
                   <div><dt>Recurrence</dt><dd>{friendlyRrule(textAt(config, ["rrule"], ""))}</dd></div>
                   <div><dt>Circuit</dt><dd data-state={circuit}>{circuit}{numberAt(state, "consecutiveFailureCount") ? ` · ${numberAt(state, "consecutiveFailureCount")} failures` : ""}</dd></div>
                   <div><dt>Review</dt><dd title={textAt(config, ["configSha256"], "")}>{shortDigest(textAt(config, ["configSha256"], ""))}</dd></div>
+                  {authorityMode === "reviewed_mutation" ? <div><dt>Change policy</dt><dd title={textAt(mutationPolicy, ["policySha256"], "")}>{shortDigest(textAt(mutationPolicy, ["policySha256"], ""))}</dd></div> : null}
                 </dl>
                 {latest ? (
                   <div className={styles.scheduleReceipt}>
@@ -626,8 +633,19 @@ function ScheduleBuilder({
   const [frequency, setFrequency] = useState("daily");
   const [maxOccurrences, setMaxOccurrences] = useState(365);
   const [missedPolicy, setMissedPolicy] = useState("skip");
+  const [mutationAcknowledged, setMutationAcknowledged] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const selectedProcedureId = procedureId || textAt(procedures[0], ["id"], "");
+  const selectedProcedure = procedures.find((procedure) =>
+    textAt(procedure, ["id"], "") === selectedProcedureId
+  );
+  const authorityMode = textAt(
+    selectedProcedure,
+    ["authorityMode"],
+    "read_only",
+  );
+  const mutationBindings = recordsAt(selectedProcedure, "mutationBindings");
+  const mutationReviewDigest = textAt(selectedProcedure, ["reviewDigest"], "");
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -636,6 +654,11 @@ function ScheduleBuilder({
     try {
       if (!selectedProcedureId) {
         throw new Error("Choose a schedulable saved procedure first.");
+      }
+      if (authorityMode === "reviewed_mutation" && !mutationAcknowledged) {
+        throw new Error(
+          "Review the exact change targets and acknowledge the warning first.",
+        );
       }
       const localStart = new Date(startsAt);
       if (!Number.isFinite(localStart.getTime())) {
@@ -661,11 +684,20 @@ function ScheduleBuilder({
         maxOccurrences,
         missedPolicy,
         failureLimit: 3,
+        authorityMode,
+        ...(authorityMode === "reviewed_mutation"
+          ? {
+              reviewedMutationBindingsSha256: mutationReviewDigest,
+              mutationAcknowledged: true,
+            }
+          : {}),
         ...(replacementId ? { replacesTriggerId: replacementId } : {}),
       }, replacementId ? "workflow-schedule-replace" : "workflow-schedule-create");
       await onCreated(replacementId
         ? "The replacement schedule is active and the previous version is paused."
-        : "The reviewed read-only schedule is active.");
+        : authorityMode === "reviewed_mutation"
+          ? "The reviewed change schedule is active. Each exact action will use one PolicyLease."
+          : "The reviewed read-only schedule is active.");
     } catch (caught) {
       onError(safeMutationError(caught, "The schedule could not be created."));
     } finally {
@@ -681,7 +713,7 @@ function ScheduleBuilder({
           <h3>{replacementId ? "Replace this schedule" : "Schedule a saved procedure"}</h3>
           <p>Asael will bind the exact procedure snapshot, Agent release, policy, and per-occurrence budget. Later edits create a new version instead of changing history.</p>
         </div>
-        <span><ShieldCheck size={15} aria-hidden="true" />Read-only</span>
+        <span><ShieldCheck size={15} aria-hidden="true" />{authorityMode === "reviewed_mutation" ? "PolicyLease changes" : "Read-only"}</span>
       </header>
       <div className={styles.scheduleFields}>
         <label>
@@ -690,7 +722,10 @@ function ScheduleBuilder({
         </label>
         <label>
           <span>Saved procedure</span>
-          <select value={selectedProcedureId} onChange={(event) => setProcedureId(event.target.value)} required disabled={!procedures.length}>
+          <select value={selectedProcedureId} onChange={(event) => {
+            setProcedureId(event.target.value);
+            setMutationAcknowledged(false);
+          }} required disabled={!procedures.length}>
             {!procedures.length ? <option value="">No read-only procedures available</option> : null}
             {procedures.map((procedure, index) => (
               <option key={recordKey(procedure, index)} value={textAt(procedure, ["id"], "")}>
@@ -737,10 +772,28 @@ function ScheduleBuilder({
           </select>
         </label>
       </div>
-      <p className={styles.scheduleBoundary}><ShieldCheck size={15} aria-hidden="true" />Only reviewed risk-0 read operations are admitted. Identity drift, changed procedure inputs, policy changes, or three consecutive failures pause the routine automatically.</p>
+      {authorityMode === "reviewed_mutation" ? (
+        <div className={styles.scheduleBoundary} role="note">
+          <ShieldCheck size={15} aria-hidden="true" />
+          <span>
+            This routine can change external state. Only the exact reversible risk-1/2 actions below are eligible; dynamic inputs, destructive actions, Computer Use, and changed targets return to ordinary approval.
+            {mutationBindings.map((binding, index) => (
+              <code key={recordKey(binding, index)} title={textAt(binding, ["targetSha256"], "")}>
+                {textAt(binding, ["toolId"], "Tool")} · risk {numberAt(binding, "riskLevel")} · target {shortDigest(textAt(binding, ["targetSha256"], ""))}
+              </code>
+            ))}
+            <label>
+              <input type="checkbox" checked={mutationAcknowledged} onChange={(event) => setMutationAcknowledged(event.target.checked)} />
+              I reviewed these exact change targets and maximum of {maxOccurrences} occurrences.
+            </label>
+          </span>
+        </div>
+      ) : (
+        <p className={styles.scheduleBoundary}><ShieldCheck size={15} aria-hidden="true" />Only reviewed risk-0 read operations are admitted. Identity drift, changed procedure inputs, policy changes, or three consecutive failures pause the routine automatically.</p>
+      )}
       <div className={styles.scheduleBuilderActions}>
         <button type="button" onClick={onCancel} disabled={submitting}>Cancel</button>
-        <button type="submit" disabled={submitting || !procedures.length}>{submitting ? "Reviewing…" : replacementId ? "Create replacement" : "Review & schedule"}</button>
+        <button type="submit" disabled={submitting || !procedures.length || (authorityMode === "reviewed_mutation" && !mutationAcknowledged)}>{submitting ? "Reviewing…" : replacementId ? "Create replacement" : authorityMode === "reviewed_mutation" ? "Approve exact changes & schedule" : "Review & schedule"}</button>
       </div>
     </form>
   );
