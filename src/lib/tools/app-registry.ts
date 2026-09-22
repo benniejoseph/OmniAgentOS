@@ -589,6 +589,10 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
     },
     mode: { type: "string", enum: ["isolated", "fork", "team"], default: "isolated" },
     preferredAgentId: { type: "string", enum: ["scout", "meridian", "forge", "sentinel", "mnemosyne"] },
+    personaBrief: requiredObjectSchema({
+      label: text(3, 80),
+      guidance: text(3, 1_200),
+    }, ["label", "guidance"]),
     grants: objectSchema({
       governedReadToolIds: {
         type: "array", maxItems: 16, uniqueItems: true,

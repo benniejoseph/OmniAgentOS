@@ -144,6 +144,44 @@ describe("governed Agent delegation application services", () => {
     expect(deps.delegateTask).not.toHaveBeenCalled();
   });
 
+  it("projects only the safe persona label and digest", async () => {
+    const guidance = "Write like a skeptical investigator and call out uncertainty.";
+    const record = buildDelegationExecutionRecordV1({
+      contract: buildExecutionContract({
+        personaBrief: {
+          label: "Skeptical investigator",
+          guidance,
+          promptSha256: "7".repeat(64),
+        },
+      }),
+      budgetLedgerRevision: 1,
+    });
+    const deps = dependencies(record);
+    const caller = createAppServiceCaller({
+      context,
+      executionScope: parentExecutionScope,
+      idempotencyKey: "delegate:persona:one",
+    });
+
+    const result = await delegateAgentTaskService(caller, {
+      objective: "Research the current state and cite governed evidence.",
+      taskKind: "research",
+      acceptanceCriteria: ["Every conclusion cites governed evidence."],
+      personaBrief: {
+        label: "Skeptical investigator",
+        guidance,
+      },
+    }, deps);
+
+    expect(result.data.task.personaBrief).toEqual({
+      label: "Skeptical investigator",
+      briefSha256: record.contract.personaBrief?.briefSha256,
+    });
+    expect(JSON.stringify(result.data.task)).not.toContain(guidance);
+    expect(allObjectKeys(result.data.task)).not.toContain("guidance");
+    expect(allObjectKeys(result.data.task)).not.toContain("promptSha256");
+  });
+
   it("lists and shows exact actor-owned tasks through execution-store boundaries", async () => {
     const deps = dependencies();
     const caller = createAppServiceCaller({ context });

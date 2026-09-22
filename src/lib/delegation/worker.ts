@@ -115,6 +115,15 @@ export async function processDelegationExecutionJob(
   ) {
     return failBeforeExecution(job, execution, childScope, "identity_binding_mismatch", run);
   }
+  if (!personaPromptBindingMatches(execution, run)) {
+    return failBeforeExecution(
+      job,
+      execution,
+      childScope,
+      "persona_prompt_binding_mismatch",
+      run,
+    );
+  }
 
   try {
     await assertRuntimeAssignmentCurrent(execution);
@@ -736,6 +745,18 @@ function assertJobEnvelope(
   ) {
     throw new Error("Delegation job does not match its immutable execution.");
   }
+}
+
+function personaPromptBindingMatches(
+  execution: DelegationExecutionRecordV1,
+  run: AgentRunRecord,
+) {
+  const brief = execution.contract.personaBrief;
+  if (!brief) return true;
+  return sha256(run.prompt) === brief.promptSha256 &&
+    run.messages.length === 1 &&
+    run.messages[0]?.role === "user" &&
+    run.messages[0]?.content === run.prompt;
 }
 
 async function failBeforeExecution(

@@ -11,7 +11,14 @@ import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
 describe("delegation execution lifecycle", () => {
   it("binds a queued record and content-free event to the immutable contract", () => {
-    const contract = buildExecutionContract();
+    const personaGuidance = "Use a private investigative editing style.";
+    const contract = buildExecutionContract({
+      personaBrief: {
+        label: "Investigative editor",
+        guidance: personaGuidance,
+        promptSha256: "7".repeat(64),
+      },
+    });
     const record = buildDelegationExecutionRecordV1({
       contract,
       budgetLedgerRevision: 1,
@@ -36,6 +43,8 @@ describe("delegation execution lifecycle", () => {
       lifecycleRevision: 0,
     });
     expect(event.eventId).toBe(`delegation-execution-event:${event.eventSha256}`);
+    expect(JSON.stringify(event)).not.toContain(personaGuidance);
+    expect(JSON.stringify(event)).not.toContain("Investigative editor");
     expect(Object.isFrozen(record)).toBe(true);
   });
 

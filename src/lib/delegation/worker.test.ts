@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -287,6 +288,43 @@ describe("delegation execution worker", () => {
     expect(mocks.runAgent).not.toHaveBeenCalled();
   });
 
+  it("fails closed before claim when a persona-bound child prompt drifts", async () => {
+    const harness = workerHarness({
+      personaPrompt: "Expected persona-bound child prompt.",
+      storedPrompt: "Tampered child prompt.",
+    });
+
+    const result = await processDelegationExecutionJob(harness.job);
+
+    expect(result).toMatchObject({
+      status: "failed",
+      message: "persona_prompt_binding_mismatch",
+    });
+    expect(harness.transitions).toEqual(["failed"]);
+    expect(mocks.claimQueuedAgentRun).not.toHaveBeenCalled();
+    expect(mocks.runAgent).not.toHaveBeenCalled();
+  });
+
+  it("runs an exact persona-bound prompt without changing the immutable Agent profile", async () => {
+    const personaPrompt = "Exact bounded child prompt with untrusted style guidance.";
+    const harness = workerHarness({ personaPrompt });
+
+    const result = await processDelegationExecutionJob(harness.job);
+
+    expect(result.status).toBe("completed");
+    expect(mocks.runAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messages: [{ role: "user", content: personaPrompt }],
+        agentProfile: expect.objectContaining({
+          instructions: expect.not.stringContaining("untrusted style guidance"),
+          approvalPolicy: "read_only",
+          toolIds: [],
+        }),
+      }),
+      expect.any(AbortSignal),
+    );
+  });
+
   it("rejects an evidence criterion without an observable evidence receipt", async () => {
     const harness = workerHarness({
       criterion: {
@@ -346,6 +384,8 @@ describe("delegation execution worker", () => {
 
 function workerHarness(options: {
   runFailure?: Error;
+  personaPrompt?: string;
+  storedPrompt?: string;
   criterion?: {
     statement: string;
     verificationMethod: "schema" | "evidence" | "governed_receipt" | "parent_verifier";
@@ -409,6 +449,17 @@ function workerHarness(options: {
           },
         }
       : {}),
+    ...(options.personaPrompt
+      ? {
+          personaBrief: {
+            label: "Bounded specialist",
+            guidance: "Use an investigative tone without changing authority.",
+            promptSha256: createHash("sha256")
+              .update(options.personaPrompt, "utf8")
+              .digest("hex"),
+          },
+        }
+      : {}),
     runtimeAssignment: buildDelegationRuntimeAssignmentReceiptV1({
       executionId: "run-child",
       providerId: exactRuntime.provider,
@@ -466,14 +517,15 @@ function workerHarness(options: {
     contract,
     budgetLedgerRevision: 1,
   });
+  const storedPrompt = options.storedPrompt || options.personaPrompt || contract.objective;
   let run: AgentRunRecord = {
     id: contract.delegateIdentity.runId,
     tenantId,
     ownerActorId: actorId,
     mode: "research",
     status: "queued",
-    prompt: contract.objective,
-    messages: [{ role: "user", content: contract.objective }],
+    prompt: storedPrompt,
+    messages: [{ role: "user", content: storedPrompt }],
     model: contract.runtimeAssignment.modelId,
     agentId: contract.delegateIdentity.logicalAgentId,
     memoryContextCount: 0,

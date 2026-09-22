@@ -285,6 +285,14 @@ export function delegationExecutionPublicProjection(
     canCancel: ["queued", "running", "waiting"].includes(execution.state),
     mode: execution.mode,
     objective: execution.contract.objective,
+    ...(execution.contract.personaBrief
+      ? {
+          personaBrief: Object.freeze({
+            label: execution.contract.personaBrief.label,
+            briefSha256: execution.contract.personaBrief.briefSha256,
+          }),
+        }
+      : {}),
     delegateAgentId: execution.delegateAgentId,
     runtime: Object.freeze({
       providerId: assignment.providerId,

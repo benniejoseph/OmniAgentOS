@@ -26,6 +26,9 @@ export const DELEGATION_EXECUTION_CONTRACT_VERSION =
 export const DELEGATION_RUNTIME_ASSIGNMENT_VERSION =
   "delegation-runtime-assignment:1" as const;
 export const DELEGATION_EXECUTION_MAX_DEPTH = 1 as const;
+export const DELEGATION_PERSONA_BRIEF_SCHEMA_VERSION = 1 as const;
+export const DELEGATION_PERSONA_BRIEF_MAX_LABEL_LENGTH = 80 as const;
+export const DELEGATION_PERSONA_BRIEF_MAX_GUIDANCE_LENGTH = 1_200 as const;
 
 const idSchema = z.string().trim().min(1).max(240).regex(
   /^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$/,
@@ -35,6 +38,28 @@ const timestampSchema = z.string().datetime({ offset: true });
 const positiveVersionSchema = z.number().int().min(1).max(Number.MAX_SAFE_INTEGER);
 const idListSchema = z.array(idSchema).max(64).superRefine(uniqueList);
 const boundedTextSchema = z.string().trim().min(3).max(4_000);
+
+const personaBriefBodySchema = z.object({
+  schemaVersion: z.literal(DELEGATION_PERSONA_BRIEF_SCHEMA_VERSION),
+  label: z.string().trim().min(3).max(DELEGATION_PERSONA_BRIEF_MAX_LABEL_LENGTH),
+  guidance: z.string().trim().min(3)
+    .max(DELEGATION_PERSONA_BRIEF_MAX_GUIDANCE_LENGTH),
+  authorityEffect: z.literal("none"),
+}).strict();
+
+export const delegationPersonaBriefV1Schema = personaBriefBodySchema.extend({
+  briefSha256: sha256Schema,
+  promptSha256: sha256Schema,
+}).strict().superRefine((brief, context) => {
+  const { briefSha256, promptSha256: _promptSha256, ...body } = brief;
+  if (canonicalJsonSha256(body) !== briefSha256) {
+    context.addIssue({
+      code: "custom",
+      path: ["briefSha256"],
+      message: "Delegation persona brief integrity is invalid.",
+    });
+  }
+});
 
 type JsonPrimitive = string | number | boolean | null;
 type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
@@ -345,6 +370,7 @@ const executionContractBodySchema = z.object({
   contextCapsule: delegationContextCapsuleV1Schema,
   purpose: z.string().trim().min(3).max(500),
   objective: boundedTextSchema,
+  personaBrief: delegationPersonaBriefV1Schema.optional(),
   idempotencyKeySha256: sha256Schema,
   acceptance: acceptanceReferenceSchema,
   output: outputReferenceSchema,
@@ -412,6 +438,9 @@ export type DelegationRuntimeAssignmentReceiptV1 = Readonly<
 export type DelegationExecutionContractV2 = Readonly<
   z.infer<typeof delegationExecutionContractV2Schema>
 >;
+export type DelegationPersonaBriefV1 = Readonly<
+  z.infer<typeof delegationPersonaBriefV1Schema>
+>;
 export type DelegationExecutionParentAuthorityV1 = Readonly<{
   grants: DelegationContractV1["grants"];
   budgets: RunBudgetCountersV1;
@@ -453,6 +482,11 @@ export function buildDelegationExecutionContractV2(input: {
   contextCapsule: DelegationContextCapsuleV1;
   purpose: string;
   objective: string;
+  personaBrief?: Readonly<{
+    label: string;
+    guidance: string;
+    promptSha256: string;
+  }>;
   idempotencyKeySha256: string;
   acceptance: Omit<DelegationExecutionContractV2["acceptance"], "acceptanceSha256">;
   output: Omit<
@@ -520,6 +554,9 @@ export function buildDelegationExecutionContractV2(input: {
     ...verifierBody,
     verifierContractSha256: canonicalJsonSha256(verifierBody),
   });
+  const personaBrief = input.personaBrief
+    ? buildDelegationPersonaBriefV1(input.personaBrief)
+    : undefined;
   const body = executionContractBodySchema.parse({
     schemaVersion: DELEGATION_EXECUTION_CONTRACT_SCHEMA_VERSION,
     version: DELEGATION_EXECUTION_CONTRACT_VERSION,
@@ -532,6 +569,7 @@ export function buildDelegationExecutionContractV2(input: {
     contextCapsule,
     purpose: input.purpose,
     objective: input.objective,
+    ...(personaBrief ? { personaBrief } : {}),
     idempotencyKeySha256: input.idempotencyKeySha256,
     acceptance,
     output,
@@ -556,6 +594,24 @@ export function buildDelegationExecutionContractV2(input: {
     contractId: `delegation-execution-contract:${contractSha256}`,
     contractSha256,
   });
+}
+
+export function buildDelegationPersonaBriefV1(input: {
+  label: string;
+  guidance: string;
+  promptSha256: string;
+}): DelegationPersonaBriefV1 {
+  const body = personaBriefBodySchema.parse({
+    schemaVersion: DELEGATION_PERSONA_BRIEF_SCHEMA_VERSION,
+    label: input.label,
+    guidance: input.guidance,
+    authorityEffect: "none",
+  });
+  return deepFreeze(delegationPersonaBriefV1Schema.parse({
+    ...body,
+    briefSha256: canonicalJsonSha256(body),
+    promptSha256: input.promptSha256,
+  }));
 }
 
 export function parseDelegationExecutionContractV2(

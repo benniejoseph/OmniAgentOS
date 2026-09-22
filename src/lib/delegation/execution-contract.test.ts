@@ -6,6 +6,7 @@ import {
 } from "@/lib/agents/identity-contracts";
 import { buildDelegationContextCapsuleV1 } from "@/lib/delegation/context-capsule";
 import {
+  DELEGATION_PERSONA_BRIEF_MAX_GUIDANCE_LENGTH,
   buildDelegationExecutionContractV2,
   buildDelegationRuntimeAssignmentReceiptV1,
   parseDelegationExecutionContractV2,
@@ -157,6 +158,43 @@ describe("delegation execution contract v2", () => {
         completeBy: "2026-09-22T12:31:00.000Z",
       },
     })).toThrow(/parent deadline/i);
+  });
+
+  it("binds an optional non-authoritative persona brief without changing the v2 contract version", () => {
+    const contract = build({
+      personaBrief: {
+        label: "Forensic reviewer",
+        guidance: "Be skeptical, concise, and explicit about evidence gaps.",
+        promptSha256: "7".repeat(64),
+      },
+    });
+
+    expect(contract).toMatchObject({
+      schemaVersion: 2,
+      version: "delegation-execution-contract:2",
+      personaBrief: {
+        schemaVersion: 1,
+        label: "Forensic reviewer",
+        authorityEffect: "none",
+        briefSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        promptSha256: "7".repeat(64),
+      },
+    });
+    expect(parseDelegationExecutionContractV2(contract)).toEqual(contract);
+  });
+
+  it("keeps old v2 contracts valid and rejects an oversized persona brief", () => {
+    const oldContract = build();
+    expect(oldContract.personaBrief).toBeUndefined();
+    expect(parseDelegationExecutionContractV2(oldContract)).toEqual(oldContract);
+
+    expect(() => build({
+      personaBrief: {
+        label: "Bounded reviewer",
+        guidance: "x".repeat(DELEGATION_PERSONA_BRIEF_MAX_GUIDANCE_LENGTH + 1),
+        promptSha256: "7".repeat(64),
+      },
+    })).toThrow();
   });
 });
 
