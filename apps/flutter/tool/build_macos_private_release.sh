@@ -215,13 +215,15 @@ fi
 
 mkdir -p "$task_dist_dir"
 task_stage_dir="$(mktemp -d "${TMPDIR:-/tmp}/asael-macos.XXXXXX")"
-task_staged_app="$task_stage_dir/Asael.app"
+task_dmg_source_dir="$task_stage_dir/dmg-root"
+task_staged_app="$task_dmg_source_dir/Asael.app"
 task_dmg="$task_dist_dir/Asael-${task_version}-${task_build}-macOS.dmg"
 task_helper_source_dir="$task_flutter_dir/macos/ComputerUseHelper"
 task_helper_app="$task_staged_app/Contents/Helpers/AsaelComputerUseHelper.app"
 task_helper_executable="$task_helper_app/Contents/MacOS/AsaelComputerUseHelper"
 task_credential_broker_app="$task_staged_app/Contents/Helpers/AsaelCredentialBroker.app"
 
+mkdir -p "$task_dmg_source_dir"
 ditto "$task_source_app" "$task_staged_app"
 mkdir -p "$task_staged_app/Contents/Helpers"
 ditto "$task_credential_broker_source_app" "$task_credential_broker_app"
@@ -387,12 +389,12 @@ if command -v diskutil >/dev/null 2>&1 && diskutil help image create from >/dev/
   diskutil image create from \
     --volumeName "Asael" \
     --format UDZO \
-    "$task_stage_dir" \
+    "$task_dmg_source_dir" \
     "$task_dmg"
 else
   hdiutil create \
     -volname "Asael" \
-    -srcfolder "$task_stage_dir" \
+    -srcfolder "$task_dmg_source_dir" \
     -format UDZO \
     -ov \
     "$task_dmg"
