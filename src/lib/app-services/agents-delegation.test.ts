@@ -96,14 +96,17 @@ describe("governed Agent delegation application services", () => {
         modelId: "configured-research-model",
       },
     });
-    expect(allObjectKeys(result.data.task)).not.toEqual(expect.arrayContaining([
+    const projectedKeys = allObjectKeys(result.data.task);
+    for (const privateKey of [
       "contract",
       "contextCapsule",
       "grants",
       "delegatePrincipalId",
       "identityPinSha256",
       "runtimeAssignment",
-    ]));
+    ]) {
+      expect(projectedKeys, privateKey).not.toContain(privateKey);
+    }
   });
 
   it("requires governed mutation authority before calling the runtime", async () => {
