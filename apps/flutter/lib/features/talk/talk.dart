@@ -2972,7 +2972,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     );
   }
 
-  Future<void> _openArtifactsSheet() async {
+  Future<void> _openRailSheet(_TalkRailSection initialSection) async {
     await showModalBottomSheet<void>(
       context: context,
       useSafeArea: true,
@@ -2984,12 +2984,18 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
           listenable: widget.controller,
           builder: (_, _) => _TalkActivityPane(
             controller: widget.controller,
-            initialSection: _TalkRailSection.artifacts,
+            initialSection: initialSection,
           ),
         ),
       ),
     );
   }
+
+  Future<void> _openArtifactsSheet() =>
+      _openRailSheet(_TalkRailSection.artifacts);
+
+  Future<void> _openPromptQueueSheet() =>
+      _openRailSheet(_TalkRailSection.queue);
 
   Widget _buildQuickEntry(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -3195,18 +3201,35 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
             ),
           ListenableBuilder(
             listenable: widget.controller,
-            builder: (_, _) =>
-                MediaQuery.sizeOf(context).width < 1180 &&
-                    widget.controller.artifacts.isNotEmpty
-                ? IconButton(
-                    tooltip: 'Run artifacts',
-                    onPressed: _openArtifactsSheet,
-                    icon: Badge.count(
-                      count: widget.controller.artifacts.length,
-                      child: const Icon(Icons.auto_awesome_mosaic_outlined),
+            builder: (_, _) {
+              if (MediaQuery.sizeOf(context).width >= 1180) {
+                return const SizedBox.shrink();
+              }
+              return Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (widget.controller.artifacts.isNotEmpty)
+                    IconButton(
+                      tooltip: 'Run artifacts',
+                      onPressed: _openArtifactsSheet,
+                      icon: Badge.count(
+                        count: widget.controller.artifacts.length,
+                        child: const Icon(Icons.auto_awesome_mosaic_outlined),
+                      ),
                     ),
-                  )
-                : const SizedBox.shrink(),
+                  IconButton(
+                    tooltip: 'Prompt queue',
+                    onPressed: _openPromptQueueSheet,
+                    icon: widget.controller.promptQueue.isEmpty
+                        ? const Icon(Icons.playlist_play_rounded)
+                        : Badge.count(
+                            count: widget.controller.promptQueue.length,
+                            child: const Icon(Icons.playlist_play_rounded),
+                          ),
+                  ),
+                ],
+              );
+            },
           ),
           Padding(
             padding: const EdgeInsets.only(right: 12),
@@ -4330,7 +4353,7 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
                     IconButton(
                       tooltip: 'Refresh synced queue',
                       visualDensity: VisualDensity.compact,
-                      onPressed: controller.initializePromptQueue,
+                      onPressed: controller.reconcilePromptQueue,
                       icon: const Icon(Icons.sync_rounded, size: 17),
                     ),
                   TextButton.icon(
