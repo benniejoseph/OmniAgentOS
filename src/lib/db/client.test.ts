@@ -342,11 +342,12 @@ describe("database pool acquisition", () => {
       expect(retiredPool.pg.reserve).toHaveBeenCalledOnce();
       expect(retiredPool.pg.end).toHaveBeenCalledOnce();
       expect(retiredPool.pg.end).toHaveBeenCalledWith({ timeout: 0 });
+      expect(postgresFactory).toHaveBeenCalledOnce();
       await expect(
         isolatedClient.runWithDatabaseTenantScope("tenant-a", () =>
           retiredClient`SELECT 3`,
         ),
-      ).rejects.toMatchObject(timeoutMatch);
+      ).resolves.toEqual([{ ok: true }]);
       await expect(
         isolatedClient.runWithDatabaseTenantScope("tenant-a", () =>
           isolatedClient.getSql()`SELECT 4`,
@@ -354,9 +355,9 @@ describe("database pool acquisition", () => {
       ).resolves.toEqual([{ ok: true }]);
 
       expect(postgresFactory).toHaveBeenCalledTimes(2);
-      expect(replacementPool.pg.reserve).toHaveBeenCalledOnce();
+      expect(replacementPool.pg.reserve).toHaveBeenCalledTimes(2);
       expect(retiredPool.pg.reserve).toHaveBeenCalledOnce();
-      expect(replacementPool.reserved.release).toHaveBeenCalledOnce();
+      expect(replacementPool.reserved.release).toHaveBeenCalledTimes(2);
     } finally {
       vi.doUnmock("postgres");
       vi.unstubAllEnvs();
@@ -397,6 +398,7 @@ describe("database pool acquisition", () => {
       await rejection;
 
       expect(retiredPool.pg.end).toHaveBeenCalledWith({ timeout: 0 });
+      expect(postgresFactory).toHaveBeenCalledOnce();
       await expect(
         isolatedClient.runWithDatabaseTenantScope("tenant-a", () =>
           isolatedClient.getSql()`SELECT 2`,
@@ -411,7 +413,7 @@ describe("database pool acquisition", () => {
     }
   });
 
-  it("settles an in-flight reserved transaction when its Vercel connection closes", async () => {
+  it("retries one runtime statement on a replacement without crossing tenant scope", async () => {
     const poisonedPool = createMockPoolClient([]);
     const replacementPool = createMockPoolClient([{ ok: true }]);
     const neverSettles = new Promise<Record<string, unknown>[]>(() => undefined);
@@ -438,8 +440,9 @@ describe("database pool acquisition", () => {
     try {
       const isolatedClient = await import("@/lib/db/client");
       const poisonedClient = isolatedClient.getSql();
-      const pendingQuery = isolatedClient.runWithDatabaseTenantScope(
+      const pendingQuery = isolatedClient.runWithDatabaseActorScope(
         "tenant-a",
+        ["actor-a"],
         () => poisonedClient`SELECT 1`,
       );
       await vi.waitFor(() => {
@@ -447,31 +450,186 @@ describe("database pool acquisition", () => {
       });
 
       closeHandlers[0]?.(1);
-      await expect(pendingQuery).rejects.toMatchObject({
-        code: "DATABASE_CONNECTION_CLOSED",
-        message: "DATABASE_URL database connection closed; its pool was retired.",
-      });
+      await expect(pendingQuery).resolves.toEqual([{ ok: true }]);
       expect(poisonedPool.pg.end).toHaveBeenCalledOnce();
       expect(poisonedPool.pg.end).toHaveBeenCalledWith({ timeout: 0 });
       expect(poisonedPool.reserved.release).not.toHaveBeenCalled();
 
       await expect(
-        isolatedClient.runWithDatabaseTenantScope("tenant-a", () =>
-          isolatedClient.getSql()`SELECT 2`,
+        isolatedClient.runWithDatabaseActorScope(
+          "tenant-b",
+          ["actor-b"],
+          () => poisonedClient`SELECT 2`,
         ),
       ).resolves.toEqual([{ ok: true }]);
       expect(postgresFactory).toHaveBeenCalledTimes(2);
-      expect(replacementPool.reserved.release).toHaveBeenCalledOnce();
+      expect(poisonedPool.pg.reserve).toHaveBeenCalledOnce();
+      expect(replacementPool.reserved.release).toHaveBeenCalledTimes(2);
+      expect(
+        replacementPool.statements
+          .filter(({ text }) => text.includes("set_config"))
+          .map(({ params }) => params.slice(0, 2)),
+      ).toEqual([
+        [
+          "tenant-a",
+          '{"version":1,"tenantId":"tenant-a","actorIds":["actor-a"]}',
+        ],
+        [
+          "tenant-b",
+          '{"version":1,"tenantId":"tenant-b","actorIds":["actor-b"]}',
+        ],
+      ]);
 
       // A late close callback from the detached generation cannot retire the
       // replacement singleton.
       closeHandlers[0]?.(1);
       expect(replacementPool.pg.end).not.toHaveBeenCalled();
       await expect(
-        isolatedClient.runWithDatabaseTenantScope("tenant-a", () =>
+        isolatedClient.runWithDatabaseTenantScope("tenant-c", () =>
           isolatedClient.getSql()`SELECT 3`,
         ),
       ).resolves.toEqual([{ ok: true }]);
+    } finally {
+      vi.doUnmock("postgres");
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
+
+  it("retries one system statement on the replacement maintenance generation", async () => {
+    const retiredMaintenance = createMockPoolClient([]);
+    const replacementMaintenance = createMockPoolClient([
+      { source: "replacement-maintenance" },
+    ]);
+    const neverSettles = new Promise<Record<string, unknown>[]>(() => undefined);
+    retiredMaintenance.reserved.mockImplementation(
+      (strings: TemplateStringsArray, ...params: unknown[]) => {
+        const text = strings.join("?");
+        retiredMaintenance.statements.push({ text, params });
+        return text.includes("set_config") ? Promise.resolve([]) : neverSettles;
+      },
+    );
+    const closeHandlers: Array<(connectionId: number) => void> = [];
+    const postgresFactory = vi.fn(
+      (_databaseUrl: string, options: { onclose?: (connectionId: number) => void }) => {
+        if (options.onclose) closeHandlers.push(options.onclose);
+        return closeHandlers.length === 1
+          ? retiredMaintenance.pg
+          : replacementMaintenance.pg;
+      },
+    );
+    vi.doMock("postgres", () => ({ default: postgresFactory }));
+    vi.stubEnv("DATABASE_URL", "postgresql://runtime.invalid/asael");
+    vi.stubEnv(
+      "OMNIAGENT_MAINTENANCE_DATABASE_URL",
+      "postgresql://maintenance.invalid/asael",
+    );
+    vi.stubEnv("NODE_ENV", "production");
+    vi.resetModules();
+    const consoleInfo = vi.spyOn(console, "info").mockImplementation(() => undefined);
+
+    try {
+      const isolatedClient = await import("@/lib/db/client");
+      const maintenanceClient = await isolatedClient.runWithDatabaseSystemScope(
+        "capture maintenance wrapper",
+        () => isolatedClient.getSql(),
+      );
+      const pendingQuery = isolatedClient.runWithDatabaseSystemScope(
+        "retry maintenance query",
+        () => maintenanceClient`SELECT 'maintenance-retry'`,
+      );
+      await vi.waitFor(() => {
+        expect(retiredMaintenance.reserved).toHaveBeenCalledTimes(2);
+      });
+
+      closeHandlers[0]?.(1);
+      await expect(pendingQuery).resolves.toEqual([
+        { source: "replacement-maintenance" },
+      ]);
+      expect(retiredMaintenance.pg.end).toHaveBeenCalledWith({ timeout: 0 });
+      expect(retiredMaintenance.reserved.release).not.toHaveBeenCalled();
+
+      await expect(
+        isolatedClient.runWithDatabaseSystemScope(
+          "stale maintenance wrapper",
+          () => maintenanceClient`SELECT 'maintenance-again'`,
+        ),
+      ).resolves.toEqual([{ source: "replacement-maintenance" }]);
+
+      expect(postgresFactory).toHaveBeenCalledTimes(2);
+      expect(postgresFactory.mock.calls.map(([databaseUrl]) => databaseUrl)).toEqual([
+        "postgresql://maintenance.invalid/asael",
+        "postgresql://maintenance.invalid/asael",
+      ]);
+      expect(retiredMaintenance.pg.reserve).toHaveBeenCalledOnce();
+      expect(replacementMaintenance.pg.reserve).toHaveBeenCalledTimes(2);
+      expect(
+        replacementMaintenance.statements
+          .filter(({ text }) => text.includes("set_config"))
+          .map(({ params }) => params.slice(0, 4)),
+      ).toEqual([
+        ["", "", "true", "retry maintenance query"],
+        ["", "", "true", "stale maintenance wrapper"],
+      ]);
+    } finally {
+      consoleInfo.mockRestore();
+      vi.doUnmock("postgres");
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
+
+  it("attempts a closed single statement only once on a replacement generation", async () => {
+    const firstPool = createMockPoolClient([]);
+    const secondPool = createMockPoolClient([]);
+    const neverSettles = new Promise<Record<string, unknown>[]>(() => undefined);
+    for (const pool of [firstPool, secondPool]) {
+      pool.reserved.mockImplementation(
+        (strings: TemplateStringsArray, ...params: unknown[]) => {
+          const text = strings.join("?");
+          pool.statements.push({ text, params });
+          return text.includes("set_config") ? Promise.resolve([]) : neverSettles;
+        },
+      );
+    }
+    const closeHandlers: Array<(connectionId: number) => void> = [];
+    const postgresFactory = vi.fn(
+      (_databaseUrl: string, options: { onclose?: (connectionId: number) => void }) => {
+        if (options.onclose) closeHandlers.push(options.onclose);
+        return closeHandlers.length === 1 ? firstPool.pg : secondPool.pg;
+      },
+    );
+    vi.doMock("postgres", () => ({ default: postgresFactory }));
+    vi.stubEnv("DATABASE_URL", "postgresql://runtime.invalid/asael");
+    vi.stubEnv("VERCEL", "1");
+    vi.resetModules();
+
+    try {
+      const isolatedClient = await import("@/lib/db/client");
+      const pendingQuery = isolatedClient.runWithDatabaseTenantScope(
+        "tenant-a",
+        () => isolatedClient.getSql()`SELECT 'retry-once'`,
+      );
+      const rejection = expect(pendingQuery).rejects.toMatchObject({
+        code: "DATABASE_CONNECTION_CLOSED",
+        message: "DATABASE_URL database connection closed; its pool was retired.",
+      });
+      await vi.waitFor(() => {
+        expect(firstPool.reserved).toHaveBeenCalledTimes(2);
+      });
+
+      closeHandlers[0]?.(1);
+      await vi.waitFor(() => {
+        expect(secondPool.reserved).toHaveBeenCalledTimes(2);
+      });
+      closeHandlers[1]?.(2);
+      await rejection;
+
+      expect(postgresFactory).toHaveBeenCalledTimes(2);
+      expect(firstPool.pg.reserve).toHaveBeenCalledOnce();
+      expect(secondPool.pg.reserve).toHaveBeenCalledOnce();
+      expect(firstPool.pg.end).toHaveBeenCalledWith({ timeout: 0 });
+      expect(secondPool.pg.end).toHaveBeenCalledWith({ timeout: 0 });
     } finally {
       vi.doUnmock("postgres");
       vi.unstubAllEnvs();
@@ -531,9 +689,9 @@ describe("database pool acquisition", () => {
       });
       closeHandlers[0]?.(1);
 
-      await expect(pendingRuntime).rejects.toMatchObject({
-        code: "DATABASE_CONNECTION_CLOSED",
-      });
+      await expect(pendingRuntime).resolves.toEqual([
+        { source: "replacement" },
+      ]);
       expect(retiredRuntime.pg.end).toHaveBeenCalledWith({ timeout: 0 });
       expect(retiredRuntime.reserved.release).not.toHaveBeenCalled();
       expect(maintenance.pg.end).not.toHaveBeenCalled();
@@ -551,7 +709,7 @@ describe("database pool acquisition", () => {
       ).resolves.toEqual([{ source: "replacement" }]);
       expect(postgresFactory).toHaveBeenCalledTimes(3);
       expect(maintenance.reserved.release).toHaveBeenCalledTimes(2);
-      expect(replacementRuntime.reserved.release).toHaveBeenCalledOnce();
+      expect(replacementRuntime.reserved.release).toHaveBeenCalledTimes(2);
     } finally {
       consoleInfo.mockRestore();
       vi.doUnmock("postgres");
@@ -616,6 +774,7 @@ describe("database pool acquisition", () => {
       await expect(originalTransaction).rejects.toMatchObject({
         code: "DATABASE_CONNECTION_CLOSED",
       });
+      expect(postgresFactory).toHaveBeenCalledOnce();
       await expect(
         isolatedClient.runWithDatabaseTenantScope("tenant-a", () =>
           isolatedClient.getSql()`SELECT 'replacement'`,
@@ -710,6 +869,7 @@ describe("database pool acquisition", () => {
       expect(poisonedPool.pg.end).toHaveBeenCalledOnce();
       expect(poisonedPool.pg.end).toHaveBeenCalledWith({ timeout: 0 });
       expect(poisonedPool.reserved.release).not.toHaveBeenCalled();
+      expect(postgresFactory).toHaveBeenCalledOnce();
       await expect(
         isolatedClient.runWithDatabaseTenantScope("tenant-a", () =>
           isolatedClient.getSql()`SELECT 3`,
@@ -764,6 +924,7 @@ describe("database pool acquisition", () => {
 
       expect(retiredPool.pg.end).toHaveBeenCalledWith({ timeout: 0 });
       expect(retiredPool.reserved.release).not.toHaveBeenCalled();
+      expect(postgresFactory).toHaveBeenCalledOnce();
       await expect(
         isolatedClient.runWithDatabaseTenantScope("tenant-a", () =>
           isolatedClient.getSql()`SELECT 2`,
@@ -967,6 +1128,48 @@ describe("database pool acquisition", () => {
     }
   });
 
+  it("does not retry an arbitrary connection-class statement error", async () => {
+    const queryError = Object.assign(new Error("socket reset during query"), {
+      code: "ECONNRESET",
+    });
+    const pool = createMockPoolClient([]);
+    pool.reserved.mockImplementation(
+      (strings: TemplateStringsArray, ...params: unknown[]) => {
+        const text = strings.join("?");
+        pool.statements.push({ text, params });
+        return text.includes("set_config")
+          ? Promise.resolve([])
+          : Promise.reject(queryError);
+      },
+    );
+    const postgresFactory = vi.fn(() => pool.pg);
+    vi.doMock("postgres", () => ({ default: postgresFactory }));
+    vi.stubEnv("DATABASE_URL", "postgresql://runtime.invalid/asael");
+    vi.resetModules();
+
+    try {
+      const isolatedClient = await import("@/lib/db/client");
+      await expect(
+        isolatedClient.runWithDatabaseTenantScope("tenant-a", () =>
+          isolatedClient.getSql()`SELECT 1`,
+        ),
+      ).rejects.toBe(queryError);
+
+      expect(postgresFactory).toHaveBeenCalledOnce();
+      expect(pool.pg.reserve).toHaveBeenCalledOnce();
+      expect(transactionCommands(pool.statements)).toEqual([
+        "BEGIN",
+        "ROLLBACK",
+      ]);
+      expect(pool.pg.end).not.toHaveBeenCalled();
+      expect(pool.reserved.release).toHaveBeenCalledOnce();
+    } finally {
+      vi.doUnmock("postgres");
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
+
   it("reports an unknown commit outcome and retires that exact generation", async () => {
     vi.useFakeTimers();
     const committingPool = createMockPoolClient([{ ok: true }]);
@@ -1013,6 +1216,7 @@ describe("database pool acquisition", () => {
       ]);
       expect(committingPool.pg.end).toHaveBeenCalledWith({ timeout: 0 });
       expect(committingPool.reserved.release).not.toHaveBeenCalled();
+      expect(postgresFactory).toHaveBeenCalledOnce();
 
       await expect(
         isolatedClient.runWithDatabaseTenantScope("tenant-a", () =>
@@ -1030,6 +1234,7 @@ describe("database pool acquisition", () => {
 
   it("keeps close-during-COMMIT unknown only on the committing lease", async () => {
     const pool = createMockPoolClient([{ ok: true }]);
+    const replacementPool = createMockPoolClient([{ ok: true }]);
     const pendingCommit = new Promise<Record<string, unknown>[]>(() => undefined);
     pool.reserved.unsafe.mockImplementation(
       (text: string, params: unknown[] = []) => {
@@ -1043,7 +1248,7 @@ describe("database pool acquisition", () => {
     const postgresFactory = vi.fn(
       (_databaseUrl: string, options: { onclose?: (connectionId: number) => void }) => {
         if (options.onclose) closeHandlers.push(options.onclose);
-        return pool.pg;
+        return closeHandlers.length === 1 ? pool.pg : replacementPool.pg;
       },
     );
     vi.doMock("postgres", () => ({ default: postgresFactory }));
@@ -1071,18 +1276,18 @@ describe("database pool acquisition", () => {
         code: "DATABASE_COMMIT_OUTCOME_UNKNOWN",
         retryable: false,
       });
-      const waitingRejection = expect(waiting).rejects.toMatchObject({
-        code: "DATABASE_CONNECTION_CLOSED",
-      });
+      const waitingResult = expect(waiting).resolves.toEqual([{ ok: true }]);
 
       closeHandlers[0]?.(1);
-      await Promise.all([committingRejection, waitingRejection]);
+      await Promise.all([committingRejection, waitingResult]);
       expect(transactionCommands(pool.statements)).toEqual([
         "BEGIN",
         "COMMIT",
       ]);
       expect(pool.pg.end).toHaveBeenCalledWith({ timeout: 0 });
       expect(pool.reserved.release).not.toHaveBeenCalled();
+      expect(replacementPool.reserved.release).toHaveBeenCalledOnce();
+      expect(postgresFactory).toHaveBeenCalledTimes(2);
     } finally {
       vi.doUnmock("postgres");
       vi.unstubAllEnvs();
@@ -1143,12 +1348,10 @@ describe("database pool acquisition", () => {
         code: "DATABASE_COMMIT_OUTCOME_UNKNOWN",
         retryable: false,
       });
-      const waitingRejection = expect(waiting).rejects.toMatchObject({
-        code: "DATABASE_CONNECTION_CLOSED",
-      });
+      const waitingResult = expect(waiting).resolves.toEqual([{ ok: true }]);
 
       rejectCommit(Object.assign(new Error("socket reset"), { code: "ECONNRESET" }));
-      await Promise.all([committingRejection, waitingRejection]);
+      await Promise.all([committingRejection, waitingResult]);
       expect(callbackRuns).toBe(1);
       expect(transactionCommands(retiredPool.statements)).toEqual([
         "BEGIN",

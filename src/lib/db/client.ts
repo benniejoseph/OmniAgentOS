@@ -530,6 +530,8 @@ export function getSql(): SqlClient {
       if (!maintenanceScopedSqlClient) {
         maintenanceScopedSqlClient = createTenantScopedSqlClient(
           getRawMaintenancePg(),
+          false,
+          getRawMaintenancePg,
         );
       }
       return maintenanceScopedSqlClient;
@@ -541,7 +543,7 @@ export function getSql(): SqlClient {
     }
   }
   if (!scopedSqlClient) {
-    scopedSqlClient = createTenantScopedSqlClient(getRawPg());
+    scopedSqlClient = createTenantScopedSqlClient(getRawPg(), false, getRawPg);
   }
   return scopedSqlClient;
 }
@@ -2321,7 +2323,11 @@ function wrapPg(pg: AnyPg, transactionScoped = false): SqlClient {
 
 // Tenant-scoped client: each operation applies the current tenant or explicit
 // system scope with SET LOCAL so pooled connections cannot leak scope.
-function createTenantScopedSqlClient(pg: AnyPg, scopeAlreadyApplied = false): SqlClient {
+function createTenantScopedSqlClient(
+  pg: AnyPg,
+  scopeAlreadyApplied = false,
+  resolvePool?: () => AnyPg,
+): SqlClient {
   async function withTenant<T>(
     fn: (sql: AnyPg) => Promise<T>,
     mutation = false,
@@ -2331,11 +2337,36 @@ function createTenantScopedSqlClient(pg: AnyPg, scopeAlreadyApplied = false): Sq
       if (scopeAlreadyApplied) {
         return await fn(pg);
       }
-      const scope = databaseScope.getStore();
-      return await withReservedDatabaseTransaction(pg, async (tx) => {
-        await applyDatabaseScope(tx, scope);
-        return fn(tx);
-      });
+      const scope = snapshotDatabaseScope(databaseScope.getStore());
+      const execute = (pool: AnyPg) =>
+        withReservedDatabaseTransaction(pool, async (tx) => {
+          await applyDatabaseScope(tx, scope);
+          return fn(tx);
+        });
+      const initialPool = resolvePool ? resolvePool() : pg;
+      try {
+        return await execute(initialPool);
+      } catch (error) {
+        if (
+          !resolvePool ||
+          !isExactDatabaseConnectionClosedError(error) ||
+          !getDatabasePoolLifecycle(initialPool).retired
+        ) {
+          throw error;
+        }
+        const replacementPool = resolvePool();
+        if (
+          replacementPool === initialPool ||
+          getDatabasePoolLifecycle(replacementPool).retired
+        ) {
+          throw error;
+        }
+        // The implicit transaction contains exactly one caller statement. A
+        // close before COMMIT is known to have abandoned that transaction, so
+        // it is safe to make one attempt on the replacement generation. The
+        // explicit callback transaction below deliberately has no such retry.
+        return execute(replacementPool);
+      }
     } finally {
       recordDatabaseTiming(performance.now() - startedAt, mutation);
     }
@@ -2367,11 +2398,12 @@ function createTenantScopedSqlClient(pg: AnyPg, scopeAlreadyApplied = false): Sq
   // Only callback transactions are safe here. Promise arrays begin executing
   // before pg.begin can apply tenant scope and therefore cannot be atomic.
   scoped.transaction = (queriesOrFn: unknown) => {
-    const scope = databaseScope.getStore();
+    const scope = snapshotDatabaseScope(databaseScope.getStore());
     if (typeof queriesOrFn !== "function") {
       throw new Error("Database transactions require an async callback.");
     }
-    return withReservedDatabaseTransaction(pg, async (tx) => {
+    const transactionPool = resolvePool ? resolvePool() : pg;
+    return withReservedDatabaseTransaction(transactionPool, async (tx) => {
       await applyDatabaseScope(tx, scope);
       const txScoped = createTenantScopedSqlClient(tx, true);
       const result = (queriesOrFn as (s: SqlClient) => unknown)(txScoped);
@@ -2380,6 +2412,31 @@ function createTenantScopedSqlClient(pg: AnyPg, scopeAlreadyApplied = false): Sq
   };
 
   return scoped;
+}
+
+function snapshotDatabaseScope(
+  scope: DatabaseScope | undefined,
+): DatabaseScope | undefined {
+  if (scope?.kind === "tenant") {
+    return {
+      kind: "tenant",
+      tenantId: scope.tenantId,
+      actorIds: [...scope.actorIds],
+    };
+  }
+  if (scope?.kind === "system") {
+    return { kind: "system", reason: scope.reason };
+  }
+  return undefined;
+}
+
+function isExactDatabaseConnectionClosedError(error: unknown) {
+  return Boolean(
+    error &&
+      typeof error === "object" &&
+      "code" in error &&
+      error.code === "DATABASE_CONNECTION_CLOSED",
+  );
 }
 
 async function withReservedDatabaseConnection<T>(
