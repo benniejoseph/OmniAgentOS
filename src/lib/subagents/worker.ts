@@ -10,6 +10,8 @@ import {
 } from "@/lib/db/client";
 import { syncMissionExecutor } from "@/lib/missions/runtime";
 import { recordMissionArtifact } from "@/lib/missions/store";
+import { processDelegationExecutionJob } from "@/lib/delegation/worker";
+import { delegationExecutionJobPayloadSchema } from "@/lib/delegation/runtime-job";
 import { runAgent } from "@/lib/orchestration/agent-runner";
 import {
   completeOperationJob,
@@ -143,6 +145,9 @@ async function processSpecialistJob(
   job: OperationJobRecord,
   deadline?: number,
 ): Promise<SpecialistJobResult> {
+  if (isDelegationExecutionPayload(job.payload)) {
+    return processDelegationExecutionJob(job, deadline);
+  }
   const parsed = specialistJobSchema.safeParse(job.payload);
   if (!parsed.success) {
     return failInfrastructureJob(job, "Durable specialist job payload is invalid.");
@@ -330,8 +335,15 @@ async function processSpecialistJobSafely(
   job: OperationJobRecord,
   deadline?: number,
 ): Promise<SpecialistJobResult> {
+  const delegationPayload = isDelegationExecutionPayload(job.payload)
+    ? delegationExecutionJobPayloadSchema.safeParse(job.payload)
+    : undefined;
   const parsed = specialistJobSchema.safeParse(job.payload);
-  const actorId = parsed.success ? parsed.data.actorId : undefined;
+  const actorId = delegationPayload?.success
+    ? delegationPayload.data.actorId
+    : parsed.success
+      ? parsed.data.actorId
+      : undefined;
   if (actorId) {
     return runWithDatabaseActorScope(job.tenantId, [actorId], () =>
       processSpecialistJobSafelyInActorScope(job, deadline)
@@ -350,6 +362,14 @@ async function processSpecialistJobSafelyInActorScope(
     const message = error instanceof Error
       ? error.message
       : "Durable specialist queue delivery failed.";
+    if (isDelegationExecutionPayload(job.payload)) {
+      const payload = delegationExecutionJobPayloadSchema.safeParse(job.payload);
+      return failInfrastructureJob(
+        job,
+        message,
+        payload.success ? payload.data.runId : undefined,
+      );
+    }
     const parsed = specialistJobSchema.safeParse(job.payload);
     if (parsed.success) {
       const parsedPayload = parsed.data as DurableSpecialistJobPayload;
@@ -412,6 +432,10 @@ async function processSpecialistJobSafelyInActorScope(
       parsed.success ? parsed.data.runId : undefined,
     );
   }
+}
+
+function isDelegationExecutionPayload(payload: Record<string, unknown>) {
+  return payload.kind === "delegation_execution_v2";
 }
 
 async function interruptClaimedRun(

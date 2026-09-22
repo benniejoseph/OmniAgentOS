@@ -295,6 +295,29 @@ export async function getDelegationExecution(input: {
   );
 }
 
+export async function findDelegationExecution(input: {
+  tenantId: string;
+  ownerActorId: string;
+  executionId: string;
+}) {
+  if (!delegationExecutionPersistenceAvailable()) return undefined;
+  await ensureDatabaseSchema();
+  return runWithDatabaseActorScope(
+    input.tenantId,
+    [input.ownerActorId],
+    async () => {
+      const record = await readDelegationExecution(
+        getSql(),
+        input.tenantId,
+        input.executionId,
+        false,
+        true,
+      );
+      return record?.ownerActorId === input.ownerActorId ? record : undefined;
+    },
+  );
+}
+
 export async function listDelegationExecutions(input: {
   tenantId: string;
   ownerActorId: string;

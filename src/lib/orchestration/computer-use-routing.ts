@@ -8,5 +8,8 @@ export function modelAssignmentScopeForAgent(
   if (computerUse) return "computer_use";
   if (agentId === "forge") return "code_builder";
   if (agentId === "sentinel") return "verifier";
+  if (agentId === "meridian") return "market_research";
+  if (agentId === "mnemosyne") return "memory";
+  if (agentId === "scout") return "council";
   return "main_agent";
 }

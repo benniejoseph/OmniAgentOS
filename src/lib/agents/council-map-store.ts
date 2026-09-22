@@ -21,6 +21,10 @@ import {
   delegationTaskPersistenceAvailable,
   listDelegationTasksForOwner,
 } from "@/lib/delegation/store";
+import {
+  listDelegationExecutions,
+} from "@/lib/delegation/execution-store";
+import type { DelegationExecutionRecordV1 } from "@/lib/delegation/execution-record";
 import { ensureDatabaseSchema, getSql } from "@/lib/db/client";
 import { listRecentEvents, type DomainEvent } from "@/lib/events/store";
 import type { RunStatus } from "@/lib/runs/types";
@@ -37,20 +41,38 @@ export async function loadAgentCouncilMapSource(input: {
     return unavailableSource();
   }
   await ensureDatabaseSchema();
-  const taskLists = await Promise.all(ownerActorIds.map((ownerActorId) =>
-    listDelegationTasksForOwner({
-      tenantId: input.tenantId,
-      ownerActorId,
-      limit: input.limit,
-    })
-  ));
+  const [taskLists, executionLists] = await Promise.all([
+    Promise.all(ownerActorIds.map((ownerActorId) =>
+      listDelegationTasksForOwner({
+        tenantId: input.tenantId,
+        ownerActorId,
+        limit: input.limit,
+      })
+    )),
+    Promise.all(ownerActorIds.map((ownerActorId) =>
+      listDelegationExecutions({
+        tenantId: input.tenantId,
+        ownerActorId,
+        limit: input.limit,
+      })
+    )),
+  ]);
   const tasks = taskLists.flat()
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
     .slice(0, input.limit);
-  if (!tasks.length) return availableEmptySource();
+  const executionRecords = executionLists.flat()
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    .slice(0, input.limit);
+  if (!tasks.length && !executionRecords.length) return availableEmptySource();
 
-  const parentExecutionIds = uniqueIds(tasks.map((task) => task.parentExecutionId));
-  const delegationIds = uniqueIds(tasks.map((task) => task.delegationId));
+  const parentExecutionIds = uniqueIds([
+    ...tasks.map((task) => task.parentExecutionId),
+    ...executionRecords.map((record) => record.parentExecutionId),
+  ]);
+  const delegationIds = uniqueIds([
+    ...tasks.map((task) => task.delegationId),
+    ...executionRecords.map((record) => record.delegationId),
+  ]);
   const [runs, authorityEventLists, memberEvents, memberUsage, verifierUsage] = await Promise.all([
     loadRuns(input.tenantId, ownerActorIds, parentExecutionIds),
     Promise.all(ownerActorIds.map((actorId) => listRecentEvents({
@@ -61,16 +83,22 @@ export async function loadAgentCouncilMapSource(input: {
     }))),
     loadMemberEvents(input.tenantId, ownerActorIds, parentExecutionIds),
     loadMemberUsage(input.tenantId, ownerActorIds, delegationIds),
-    loadVerifierUsage(input.tenantId, ownerActorIds, parentExecutionIds),
+    loadVerifierUsage(
+      input.tenantId,
+      ownerActorIds,
+      parentExecutionIds,
+      executionRecords,
+    ),
   ]);
   const authorityEvents = authorityEventLists.flat();
   const [identities, channels] = await Promise.all([
-    loadIdentities(input.tenantId, tasks),
+    loadIdentities(input.tenantId, tasks, executionRecords),
     loadChannels(input.tenantId, tasks, authorityEvents),
   ]);
   return Object.freeze({
     state: "available" as const,
     tasks: Object.freeze(tasks),
+    executionRecords: Object.freeze(executionRecords),
     runs: Object.freeze(runs),
     authorityEvents: Object.freeze(authorityEvents),
     identities: Object.freeze(identities),
@@ -160,6 +188,7 @@ function parseMemberEvent(row: Row): AgentCouncilMemberEventSource[] {
 async function loadIdentities(
   tenantId: string,
   tasks: readonly DelegationTaskV1[],
+  executions: readonly DelegationExecutionRecordV1[],
 ) {
   const requests = new Map<string, {
     ownerActorId: string;
@@ -177,6 +206,20 @@ async function loadIdentities(
         ownerActorId: task.ownerActorId,
         agentId: task.verifierAgentId,
         definitionVersion: task.verifierDefinitionVersion,
+      },
+    ]) requests.set(identityKey(item), item);
+  }
+  for (const execution of executions) {
+    for (const item of [
+      {
+        ownerActorId: execution.ownerActorId,
+        agentId: execution.contract.delegateIdentity.logicalAgentId,
+        definitionVersion: execution.contract.delegateIdentity.definitionVersion,
+      },
+      {
+        ownerActorId: execution.ownerActorId,
+        agentId: execution.contract.verifier.identity.logicalAgentId,
+        definitionVersion: execution.contract.verifier.identity.definitionVersion,
       },
     ]) requests.set(identityKey(item), item);
   }
@@ -288,11 +331,19 @@ async function loadVerifierUsage(
   tenantId: string,
   ownerActorIds: readonly string[],
   runIds: readonly string[],
+  executions: readonly DelegationExecutionRecordV1[],
 ) {
-  if (!runIds.length) return [];
-  const streamIds = runIds.map((runId) => `run:${runId}`);
+  const sourceToParent = new Map<string, string>([
+    ...runIds.map((runId) => [`run:${runId}`, runId] as const),
+    ...executions.map((execution) => [
+      `delegation-execution:${execution.delegationId}`,
+      execution.parentExecutionId,
+    ] as const),
+  ]);
+  const streamIds = [...sourceToParent.keys()];
+  if (!streamIds.length) return [];
   const rows = await getSql().query(
-    `SELECT SUBSTRING(source_stream_id FROM 5) AS usage_key,
+    `SELECT source_stream_id AS usage_key,
             COUNT(*)::integer AS receipt_count,
             COUNT(*) FILTER (WHERE estimated_cost_microusd IS NULL)::integer AS unknown_cost_receipt_count,
             COALESCE(SUM(COALESCE(
@@ -309,7 +360,23 @@ async function loadVerifierUsage(
      GROUP BY source_stream_id`,
     [tenantId, ownerActorIds, streamIds],
   );
-  return rows.map(usageSource);
+  const totals = new Map<string, AgentCouncilUsageSource>();
+  for (const row of rows) {
+    const parentExecutionId = sourceToParent.get(String(row.usage_key));
+    if (!parentExecutionId) continue;
+    const value = usageSource({ ...row, usage_key: parentExecutionId });
+    const current = totals.get(parentExecutionId);
+    totals.set(parentExecutionId, current ? {
+      key: parentExecutionId,
+      receiptCount: current.receiptCount + value.receiptCount,
+      unknownCostReceiptCount:
+        current.unknownCostReceiptCount + value.unknownCostReceiptCount,
+      totalTokens: current.totalTokens + value.totalTokens,
+      knownEstimatedCostMicrousd:
+        current.knownEstimatedCostMicrousd + value.knownEstimatedCostMicrousd,
+    } : value);
+  }
+  return [...totals.values()];
 }
 
 function usageSource(row: Row): AgentCouncilUsageSource {
@@ -325,7 +392,7 @@ function usageSource(row: Row): AgentCouncilUsageSource {
 function availableEmptySource(): AgentCouncilMapSource {
   return Object.freeze({
     state: "available",
-    tasks: [], runs: [], authorityEvents: [], identities: [], memberEvents: [],
+    tasks: [], executionRecords: [], runs: [], authorityEvents: [], identities: [], memberEvents: [],
     channels: [], memberUsage: [], verifierUsage: [],
   });
 }

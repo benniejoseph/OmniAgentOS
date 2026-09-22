@@ -227,6 +227,17 @@ export type AgentRunRequest = {
   /** Internal durable dispatch: the worker has already CAS-claimed this run. */
   preclaimedRunId?: string;
   /**
+   * Internal durable dispatch pin. The worker revalidates the immutable
+   * assignment receipt before execution; the runner must then use that exact
+   * provider/model/tier instead of re-routing from prompt wording.
+   */
+  runtimeModelPin?: {
+    provider: "openai" | "google" | "anthropic" | "aws_bedrock";
+    model: string;
+    tier: "fast" | "reasoning";
+    routingPolicySha256: string;
+  };
+  /**
    * Content-free metadata for a visibly reviewed realtime voice command.
    * Its presence only narrows authority by forcing risk-bearing approvals.
    */

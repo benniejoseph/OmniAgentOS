@@ -9,8 +9,14 @@ import {
   buildDelegationTaskV1,
   transitionDelegationTaskV1,
 } from "@/lib/delegation/lifecycle";
+import {
+  buildDelegationExecutionRecordV1,
+  transitionDelegationExecutionRecordV1,
+} from "@/lib/delegation/execution-record";
+import { buildExecutionContract } from "@/lib/delegation/test-fixtures";
 import { DEFAULT_AGENT_RUN_BUDGET_LIMITS } from "@/lib/runs/budgets";
 import { createExecutionScope, deriveExecutionScope } from "@/lib/security/execution-scope";
+import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
 describe("P11.5 Agent Council map", () => {
   it("projects identity, exact grants, output, cost, confidence, and verifier", () => {
@@ -132,6 +138,129 @@ describe("P11.5 Agent Council map", () => {
       source: "historical_unavailable",
       context: { state: "unavailable" },
       tools: { state: "unavailable" },
+    });
+  });
+
+  it("projects execution-contract v2 children into the same live-work map", () => {
+    let record = buildDelegationExecutionRecordV1({
+      contract: buildExecutionContract(),
+      budgetLedgerRevision: 1,
+    });
+    record = transitionDelegationExecutionRecordV1({
+      record,
+      transition: { to: "running" },
+      at: "2026-09-22T12:00:30.000Z",
+    }).record;
+    record = transitionDelegationExecutionRecordV1({
+      record,
+      transition: {
+        to: "completed_proposed",
+        result: {
+          status: "completed",
+          summary: "The bounded evidence review is ready.",
+          artifacts: [{
+            artifactId: "artifact:v2:one",
+            artifactSha256: "f".repeat(64),
+            kind: "result",
+            mediaType: "text/plain",
+            byteCount: 39,
+            evidenceIds: ["evidence:v2:one"],
+          }],
+          acceptanceChecks: [{
+            criterionId: "criterion:execution:one",
+            passed: true,
+            evidenceIds: ["evidence:v2:one"],
+            note: "Evidence is attached.",
+          }],
+          evidenceIds: ["evidence:v2:one"],
+          toolExecutionIds: [],
+          modelReceiptSha256s: ["1".repeat(64)],
+          usageReceiptSha256s: [],
+        },
+      },
+      at: "2026-09-22T12:02:00.000Z",
+    }).record;
+    record = transitionDelegationExecutionRecordV1({
+      record,
+      transition: {
+        to: "verified",
+        verification: {
+          verifierAgentId: record.contract.verifier.identity.logicalAgentId,
+          verifierDefinitionVersion:
+            record.contract.verifier.identity.definitionVersion,
+          verifierPrincipalId: record.contract.verifier.identity.principalId,
+          score: 0.92,
+          acceptanceChecksSha256: canonicalJsonSha256(
+            record.result!.acceptanceChecks,
+          ),
+          evidenceIds: ["evidence:v2:one"],
+          note: "Sentinel accepted the result.",
+        },
+      },
+      at: "2026-09-22T12:03:00.000Z",
+    }).record;
+    const scout = buildBuiltInAgentIdentityV1({
+      agentId: "scout",
+      tenantId: record.tenantId,
+      controllerActorId: record.ownerActorId,
+    });
+    const sentinel = buildBuiltInAgentIdentityV1({
+      agentId: "sentinel",
+      tenantId: record.tenantId,
+      controllerActorId: record.ownerActorId,
+    });
+
+    const map = buildAgentCouncilMap({
+      generatedAt: "2026-09-22T12:04:00.000Z",
+      source: {
+        state: "available",
+        tasks: [],
+        executionRecords: [record],
+        runs: [{
+          id: record.parentExecutionId,
+          ownerActorId: record.ownerActorId,
+          status: "completed",
+          prompt: "Coordinate the evidence review.",
+          startedAt: record.createdAt,
+          completedAt: record.terminalAt || undefined,
+        }],
+        authorityEvents: [],
+        identities: [
+          { ownerActorId: record.ownerActorId, definition: scout.definition },
+          { ownerActorId: record.ownerActorId, definition: sentinel.definition },
+        ],
+        memberEvents: [],
+        channels: [],
+        memberUsage: [],
+        verifierUsage: [],
+      },
+    });
+
+    expect(map.summary).toMatchObject({
+      executionCount: 1,
+      memberCount: 1,
+      acceptedMemberCount: 1,
+    });
+    expect(map.executions[0].members[0]).toMatchObject({
+      taskId: record.executionId,
+      state: "result_accepted",
+      currentWork: record.contract.objective,
+      identity: { name: "Scout", source: "agent_definition" },
+      authority: {
+        source: "delegation_grants",
+        receiptSha256: record.contractSha256,
+        tools: { state: "none", ids: [] },
+      },
+      outputs: {
+        state: "shared",
+        proposalReceiptSha256: record.resultSha256,
+      },
+      confidence: 0.92,
+      verifier: {
+        identity: { name: "Sentinel" },
+        verdict: "accepted",
+        score: 0.92,
+      },
     });
   });
 });

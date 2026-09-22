@@ -86,6 +86,10 @@ import {
   type CouncilCheckpointHooks,
   type CouncilContribution,
 } from "@/lib/orchestration/council";
+import {
+  DYNAMIC_DELEGATION_CHILD_BUDGET,
+  dynamicDelegationRootReservation,
+} from "@/lib/delegation/runtime-policy";
 import type { AgentEvent, AgentRunRequest } from "@/lib/orchestration/types";
 import {
   AUTHORIZED_CONTEXT_RETRIEVAL_SOURCES,
@@ -343,7 +347,15 @@ export async function* runAgent(
   // browser wording never chooses a control surface on the user's behalf.
   const computerUseRequested = localComputerUseRequested;
   const computerUseTarget = request.computerUseTarget;
-  const deploymentModelRoute = computerUseRequested
+  const deploymentModelRoute = request.runtimeModelPin
+    ? {
+        provider: request.runtimeModelPin.provider,
+        model: request.runtimeModelPin.model,
+        fallbackModel: undefined,
+        tier: request.runtimeModelPin.tier,
+        reason: "The durable execution contract pinned this exact runtime assignment.",
+      }
+    : computerUseRequested
     ? {
         provider: "openai" as const,
         model: COMPUTER_USE_MODEL,
@@ -387,6 +399,18 @@ export async function* runAgent(
       }
     : { ...deploymentModelRoute, reason: runtimeModel.reason };
   const providerConfigured = runtimeModel.configured;
+  if (
+    request.runtimeModelPin &&
+    (
+      modelRoute.provider !== request.runtimeModelPin.provider ||
+      modelRoute.model !== request.runtimeModelPin.model ||
+      modelRoute.tier !== request.runtimeModelPin.tier
+    )
+  ) {
+    throw new Error(
+      "The configured model route changed after this durable execution was contracted.",
+    );
+  }
   const run = request.preclaimedRunId
     ? await requirePreclaimedAgentRun(request.preclaimedRunId, {
         tenantId: request.tenantId,
@@ -3120,9 +3144,26 @@ function reserveAgentTools(
   state: RunBudgetStateV1,
   tools: readonly ToolDefinition[],
 ) {
+  const dynamicDelegationCount = tools.filter(
+    (tool) => tool.id === "app.agents.delegate",
+  ).length;
+  const childReservation = dynamicDelegationRootReservation(
+    DYNAMIC_DELEGATION_CHILD_BUDGET,
+  );
   return reserveRunBudget(state, {
-    toolCalls: tools.length,
-    browserActions: tools.filter((tool) => isBrowserActionTool(tool)).length,
+    modelTurns: dynamicDelegationCount * childReservation.modelTurns,
+    tokens: dynamicDelegationCount * childReservation.tokens,
+    costMicrousd: dynamicDelegationCount * childReservation.costMicrousd,
+    wallTimeMs: dynamicDelegationCount * childReservation.wallTimeMs,
+    toolCalls:
+      tools.length + dynamicDelegationCount * childReservation.toolCalls,
+    browserActions:
+      tools.filter((tool) => isBrowserActionTool(tool)).length +
+      dynamicDelegationCount * childReservation.browserActions,
+    agents: dynamicDelegationCount * childReservation.agents,
+    fanOut: dynamicDelegationCount * childReservation.fanOut,
+    retries: dynamicDelegationCount * childReservation.retries,
+    replans: dynamicDelegationCount * childReservation.replans,
   });
 }
 

@@ -10,6 +10,7 @@ import {
   type DelegationAuthorityReceiptV1,
 } from "@/lib/delegation/authority-receipt";
 import type { DelegationTaskV1 } from "@/lib/delegation/lifecycle";
+import type { DelegationExecutionRecordV1 } from "@/lib/delegation/execution-record";
 import type { DomainEvent } from "@/lib/events/store";
 import type { RunStatus } from "@/lib/runs/types";
 import { redactSensitive } from "@/lib/security/context";
@@ -57,6 +58,7 @@ export type AgentCouncilChannelSource = Readonly<{
 export type AgentCouncilMapSource = Readonly<{
   state: "available" | "unavailable";
   tasks: readonly DelegationTaskV1[];
+  executionRecords?: readonly DelegationExecutionRecordV1[];
   runs: readonly AgentCouncilRunSource[];
   authorityEvents: readonly DomainEvent[];
   identities: readonly AgentCouncilIdentitySource[];
@@ -67,6 +69,7 @@ export type AgentCouncilMapSource = Readonly<{
 }>;
 
 type CouncilMember = AgentCouncilMap["executions"][number]["members"][number];
+type CouncilExecution = AgentCouncilMap["executions"][number];
 type CouncilCost = CouncilMember["cost"];
 type CouncilIdentity = CouncilMember["identity"];
 
@@ -95,9 +98,12 @@ export function buildAgentCouncilMap(input: {
     });
   }
 
-  const tasks = [...input.source.tasks]
+  const executionRecords = [...(input.source.executionRecords || [])]
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
     .slice(0, 100);
+  const tasks = [...input.source.tasks]
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    .slice(0, Math.max(0, 100 - executionRecords.length));
   const runs = new Map(input.source.runs.map((run) => [runKey(run.ownerActorId, run.id), run]));
   const events = authorityEventMap(input.source.authorityEvents);
   const identities = new Map(input.source.identities.map((identity) => [
@@ -122,7 +128,7 @@ export function buildAgentCouncilMap(input: {
     groups.set(task.parentExecutionId, group);
   }
 
-  const executions = [...groups.entries()].slice(0, 50).map(([parentExecutionId, group]) => {
+  const legacyExecutions = [...groups.entries()].slice(0, 50).map(([parentExecutionId, group]) => {
     const first = group[0];
     const run = runs.get(runKey(first.ownerActorId, parentExecutionId));
     const currentWork = safeText(
@@ -196,6 +202,16 @@ export function buildAgentCouncilMap(input: {
       verifierCost: costProjection(verifierUsage.get(parentExecutionId)),
     };
   });
+  const executions = mergeCouncilExecutions(
+    legacyExecutions,
+    projectExecutionRecords({
+      records: executionRecords,
+      runs,
+      identities,
+      memberUsage,
+      verifierUsage,
+    }),
+  ).slice(0, 50);
   const members = executions.flatMap((execution) => execution.members);
   return parseAgentCouncilMap({
     version: AGENT_COUNCIL_MAP_VERSION,
@@ -216,6 +232,201 @@ export function buildAgentCouncilMap(input: {
     },
     executions,
   });
+}
+
+function projectExecutionRecords(input: {
+  records: readonly DelegationExecutionRecordV1[];
+  runs: ReadonlyMap<string, AgentCouncilRunSource>;
+  identities: ReadonlyMap<string, AgentCouncilIdentitySource>;
+  memberUsage: ReadonlyMap<string, AgentCouncilUsageSource>;
+  verifierUsage: ReadonlyMap<string, AgentCouncilUsageSource>;
+}): CouncilExecution[] {
+  const groups = new Map<string, DelegationExecutionRecordV1[]>();
+  for (const record of input.records) {
+    const group = groups.get(record.parentExecutionId) || [];
+    if (group.length < 20) group.push(record);
+    groups.set(record.parentExecutionId, group);
+  }
+  return [...groups.entries()].map(([parentExecutionId, group]) => {
+    const first = group[0];
+    const run = input.runs.get(runKey(first.ownerActorId, parentExecutionId));
+    const currentWork = safeText(
+      run?.prompt,
+      4_000,
+      first.contract.objective,
+    );
+    const members = group.map((record): CouncilMember => {
+      const contract = record.contract;
+      const identity = displayIdentity(
+        input.identities.get(identityKey(
+          record.ownerActorId,
+          contract.delegateIdentity.logicalAgentId,
+          contract.delegateIdentity.definitionVersion,
+        )),
+        contract.delegateIdentity.logicalAgentId,
+        contract.delegateIdentity.definitionVersion,
+      );
+      const verifierIdentity = displayIdentity(
+        input.identities.get(identityKey(
+          record.ownerActorId,
+          contract.verifier.identity.logicalAgentId,
+          contract.verifier.identity.definitionVersion,
+        )),
+        contract.verifier.identity.logicalAgentId,
+        contract.verifier.identity.definitionVersion,
+      );
+      const result = record.result;
+      const artifact = result?.artifacts[0];
+      const outputItems = result && artifact
+        ? [{
+            artifactId: artifact.artifactId,
+            title: `${identity.name} result`,
+            kind: artifact.kind,
+            mediaType: artifact.mediaType,
+            content: safeText(result.summary, 4_000, "Result recorded"),
+            createdAt: timestamp(result.proposedAt),
+            trust: "untrusted_shared_content" as const,
+          }]
+        : [];
+      return {
+        taskId: record.executionId,
+        delegationId: record.delegationId,
+        identity,
+        state: executionRecordCouncilState(record.state),
+        lifecycleRevision: record.lifecycleRevision,
+        currentWork: safeText(contract.objective, 4_000, "Delegated work"),
+        updatedAt: timestamp(record.updatedAt),
+        authority: {
+          source: "delegation_grants",
+          receiptSha256: contract.contractSha256,
+          contractSha256: contract.contractSha256,
+          purpose: contract.purpose,
+          scope: {
+            workspaceId: contract.lineage.workspaceId,
+            projectId: contract.lineage.projectId,
+            missionId: contract.lineage.workItemId,
+          },
+          context: {
+            state: contract.grants.contextGrantIds.length ? "granted" : "none",
+            grantCount: contract.grants.contextGrantIds.length,
+          },
+          capabilities: {
+            state: contract.grants.capabilityGrantIds.length ? "granted" : "none",
+            grantCount: contract.grants.capabilityGrantIds.length,
+          },
+          tools: {
+            state: contract.grants.governedToolIds.length ? "granted" : "none",
+            ids: contract.grants.governedToolIds,
+          },
+          budgets: {
+            modelTurns: contract.budgets.modelTurns,
+            tokens: contract.budgets.tokens,
+            costMicrousd: contract.budgets.costMicrousd,
+            wallTimeMs: contract.budgets.wallTimeMs,
+            toolCalls: contract.budgets.toolCalls,
+            browserActions: contract.budgets.browserActions,
+          },
+        },
+        messages: { state: "not_applicable", items: [] },
+        outputs: {
+          state: outputItems.length
+            ? "shared"
+            : result
+              ? "receipt_only"
+              : "none",
+          items: outputItems,
+          proposalReceiptSha256: record.resultSha256,
+        },
+        cost: costProjection(input.memberUsage.get(record.delegationId)),
+        confidence: record.verification?.score ?? null,
+        verifier: {
+          identity: verifierIdentity,
+          acceptanceThreshold: contract.verifier.acceptanceThreshold,
+          method: contract.verifier.method,
+          verdict: executionRecordVerifierVerdict(record.state),
+          score: record.verification?.score ?? null,
+        },
+      };
+    });
+    return {
+      parentExecutionId,
+      href: `/app/command?run=${encodeURIComponent(parentExecutionId)}`,
+      status: run?.status || "unavailable",
+      currentWork,
+      startedAt: timestamp(run?.startedAt || first.createdAt),
+      updatedAt: timestamp(
+        [run?.completedAt, ...group.map((record) => record.updatedAt)]
+          .filter((value): value is string => Boolean(value))
+          .sort()
+          .at(-1) || first.updatedAt,
+      ),
+      members,
+      verifierCost: costProjection(input.verifierUsage.get(parentExecutionId)),
+    };
+  });
+}
+
+function mergeCouncilExecutions(
+  legacy: readonly CouncilExecution[],
+  current: readonly CouncilExecution[],
+): CouncilExecution[] {
+  const merged = new Map<string, CouncilExecution>();
+  for (const execution of [...current, ...legacy]) {
+    const existing = merged.get(execution.parentExecutionId);
+    if (!existing) {
+      merged.set(execution.parentExecutionId, execution);
+      continue;
+    }
+    const members = [...existing.members, ...execution.members]
+      .filter((member, index, all) =>
+        all.findIndex((candidate) => candidate.taskId === member.taskId) === index
+      )
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      .slice(0, 20);
+    merged.set(execution.parentExecutionId, {
+      ...existing,
+      status: existing.status === "unavailable" ? execution.status : existing.status,
+      currentWork: existing.currentWork || execution.currentWork,
+      startedAt: existing.startedAt < execution.startedAt
+        ? existing.startedAt
+        : execution.startedAt,
+      updatedAt: existing.updatedAt > execution.updatedAt
+        ? existing.updatedAt
+        : execution.updatedAt,
+      members,
+      verifierCost: existing.verifierCost.state === "not_recorded"
+        ? execution.verifierCost
+        : existing.verifierCost,
+    });
+  }
+  return [...merged.values()].sort((left, right) =>
+    right.updatedAt.localeCompare(left.updatedAt)
+  );
+}
+
+function executionRecordCouncilState(
+  state: DelegationExecutionRecordV1["state"],
+): CouncilMember["state"] {
+  return ({
+    queued: "accepted",
+    running: "working",
+    waiting: "waiting",
+    completed_proposed: "completed_proposed",
+    verified: "result_accepted",
+    rejected: "rejected",
+    failed: "rejected",
+    canceled: "canceled",
+    expired: "expired",
+  } as const)[state];
+}
+
+function executionRecordVerifierVerdict(
+  state: DelegationExecutionRecordV1["state"],
+): CouncilMember["verifier"]["verdict"] {
+  if (state === "verified") return "accepted";
+  if (state === "rejected") return "rejected";
+  if (["failed", "canceled", "expired"].includes(state)) return "unavailable";
+  return "pending";
 }
 
 function authorityEventMap(events: readonly DomainEvent[]) {
