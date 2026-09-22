@@ -246,6 +246,143 @@ describe("scheduled workflow trigger foundation", () => {
     );
   });
 
+  it("reviews, previews, controls, and immutably replaces a read-only saved procedure", async () => {
+    const { saveMemory } = await import("@/lib/memory/store");
+    const procedures = await import("@/lib/workflows/saved-procedures");
+    const triggers = await import("@/lib/workflows/triggers");
+    await saveMemory({
+      tenantId,
+      type: "procedure",
+      title: "Read workflow queue",
+      content: JSON.stringify({
+        schemaVersion: 1,
+        id: "procedure:read-workflow-queue",
+        aliases: ["Read workflow queue"],
+        toolBindings: [{
+          toolId: "app.workflows.list",
+          input: { limit: 5, includeStats: true, includeQueue: true },
+        }],
+      }),
+      tags: [procedures.SAVED_PROCEDURE_V1_TAG],
+      scope: "workspace",
+      source: "manual",
+      assertedBy: "user",
+    });
+
+    await expect(triggers.listSchedulableWorkflowProcedures({
+      tenantId,
+      actorId,
+    })).resolves.toContainEqual(expect.objectContaining({
+      id: "procedure:read-workflow-queue",
+      schedulable: true,
+      toolIds: ["app.workflows.list"],
+    }));
+
+    const createInput = {
+      tenantId,
+      actorId,
+      name: "Morning queue review",
+      procedureId: "procedure:read-workflow-queue",
+      agentId: "atlas",
+      timezone: "Asia/Kolkata",
+      rrule: "FREQ=DAILY;BYHOUR=9;BYMINUTE=30",
+      startsAt: "2026-10-01T09:30:00+05:30",
+      maxOccurrences: 20,
+      missedPolicy: "skip" as const,
+      failureLimit: 3,
+      executionScope: ownerScope("reviewed-schedule-create"),
+      idempotencyKey: "reviewed-schedule-create",
+    };
+    const created = await triggers.createReviewedWorkflowSchedule(createInput);
+    expect(created).toMatchObject({
+      triggerKind: "schedule",
+      ownerActorId: actorId,
+      status: "active",
+      schedule: {
+        config: {
+          timezone: expect.stringMatching(/^Asia\/(Kolkata|Calcutta)$/),
+          procedurePin: { procedureId: "procedure:read-workflow-queue" },
+          agentIdentityPin: { logicalAgentId: "atlas", actorId },
+        },
+      },
+    });
+    expect(created.schedule!.config.procedurePin.reviewedSnapshotSha256)
+      .not.toBe(created.schedule!.config.procedurePin.snapshotSha256);
+    await expect(triggers.createReviewedWorkflowSchedule({
+      ...createInput,
+      executionScope: ownerScope("reviewed-schedule-create-replay"),
+    })).resolves.toEqual(created);
+    await expect(triggers.previewWorkflowSchedule({
+      tenantId,
+      actorId,
+      triggerId: created.id,
+      count: 2,
+    })).resolves.toMatchObject({
+      triggerId: created.id,
+      readOnlyCanary: true,
+      occurrences: [
+        "2026-10-01T04:00:00.000Z",
+        "2026-10-02T04:00:00.000Z",
+      ],
+    });
+
+    const paused = await triggers.setWorkflowSchedulePaused({
+      tenantId,
+      actorId,
+      triggerId: created.id,
+      paused: true,
+      reason: "Owner pause test.",
+      executionScope: ownerScope("reviewed-schedule-pause"),
+    });
+    expect(paused).toMatchObject({
+      status: "paused",
+      schedule: { state: { pausedReason: "Owner pause test." } },
+    });
+    const resumed = await triggers.setWorkflowSchedulePaused({
+      tenantId,
+      actorId,
+      triggerId: created.id,
+      paused: false,
+      executionScope: ownerScope("reviewed-schedule-resume"),
+    });
+    expect(resumed.status).toBe("active");
+
+    const replacementInput = {
+      tenantId,
+      actorId,
+      name: "Morning queue review v2",
+      procedureId: "procedure:read-workflow-queue",
+      agentId: "atlas",
+      timezone: "Asia/Kolkata",
+      rrule: "FREQ=WEEKLY;BYDAY=MO;BYHOUR=10;BYMINUTE=0",
+      startsAt: "2026-10-05T10:00:00+05:30",
+      maxOccurrences: 12,
+      missedPolicy: "run_once" as const,
+      failureLimit: 3,
+      replacesTriggerId: created.id,
+      executionScope: ownerScope("reviewed-schedule-replace"),
+      idempotencyKey: "reviewed-schedule-replace",
+    };
+    const replacement = await triggers.createReviewedWorkflowSchedule(
+      replacementInput,
+    );
+    expect(replacement).toMatchObject({
+      status: "active",
+      replacesTriggerId: created.id,
+    });
+    await expect(triggers.getWorkflowTrigger(created.id, {
+      tenantId,
+      actorId,
+    })).resolves.toMatchObject({
+      status: "paused",
+      replacedByTriggerId: replacement.id,
+    });
+    await expect(triggers.createReviewedWorkflowSchedule({
+      ...replacementInput,
+      executionScope: ownerScope("reviewed-schedule-replace-replay"),
+    })).resolves.toEqual(replacement);
+  });
+
   it("installs an actor-scoped immutable shadow ledger and SKIP LOCKED claimant", async () => {
     const migration = await readFile(
       path.join(
@@ -267,5 +404,34 @@ describe("scheduled workflow trigger foundation", () => {
     expect(migration).toContain("reviewed_snapshot_sha256");
     expect(implementation).toContain("FOR UPDATE SKIP LOCKED");
     expect(implementation).not.toContain("source: \"schedule\"");
+  });
+
+  it("installs the actor-private read-only canary ledger and existing-engine enqueue path", async () => {
+    const migration = await readFile(
+      path.join(
+        process.cwd(),
+        "supabase/migrations/20260922143000_scheduled_workflow_read_only_canary.sql",
+      ),
+      "utf8",
+    );
+    const implementation = await readFile(
+      path.join(process.cwd(), "src/lib/workflows/triggers.ts"),
+      "utf8",
+    );
+    expect(migration).toContain("CREATE TABLE public.omni_workflow_schedule_occurrences");
+    expect(migration).toContain("CREATE TABLE public.omni_workflow_schedule_occurrence_receipts");
+    expect(migration).toContain("ENABLE ROW LEVEL SECURITY");
+    expect(migration).toContain("FORCE ROW LEVEL SECURITY");
+    expect(migration).toContain("AS RESTRICTIVE FOR ALL TO PUBLIC");
+    expect(migration).toContain("omni_workflow_schedule_occurrence_receipts_immutable");
+    expect(migration).toContain("configuration_sha256");
+    expect(migration).toContain("reviewed_snapshot_sha256");
+    expect(migration).toContain("occurrence_budget_sha256");
+    expect(implementation).toContain("FOR UPDATE SKIP LOCKED");
+    expect(implementation).toContain("createWorkflowRun({");
+    expect(implementation).toContain("enqueueWorkflowRunTick(");
+    expect(implementation).toContain("governedToolOperationClass");
+    expect(implementation).toContain(") !== \"read_only\"");
+    expect(implementation).toContain("workflow.schedule.occurrence");
   });
 });

@@ -678,6 +678,30 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   mutationTool("app.workflows.tick", "Tick workflow", "Process at most one queued step for one exact workflow; consequential tools retain their own approval gates.", requiredObjectSchema({
     workflowId: opaqueId("Exact workflow-run ID."),
   }, ["workflowId"]), { reversible: false }),
+  readTool("app.workflows.schedules.list", "List reviewed routines", "List the current actor's reviewed schedules, immutable occurrence receipts, circuit state, and Saved Procedures eligible for scheduling.", objectSchema({
+    limit: integer(1, 100, 50),
+  })),
+  readTool("app.workflows.schedules.preview", "Preview routine occurrences", "Preview the next bounded wall-clock occurrences for one actor-owned routine without changing its cursor or creating a workflow run.", requiredObjectSchema({
+    triggerId: opaqueId("Exact actor-owned schedule trigger ID."), count: integer(1, 12, 3),
+  }, ["triggerId"])),
+  mutationTool("app.workflows.schedules.create", "Create reviewed routine", "Create an actor-owned routine pinned to one exact Saved Procedure, agent identity, policy digest, timezone-aware bounded recurrence, and per-occurrence budget. The routine may execute read-only tools only.", requiredObjectSchema({
+    name: text(1, 120), source: text(1, 120),
+    procedureId: opaqueId("Exact immutable Saved Procedure ID."),
+    agentId: opaqueId("Exact built-in or custom agent ID."),
+    timezone: text(1, 120), rrule: text(1, 512),
+    startsAt: { type: "string", format: "date-time" },
+    endsAt: { type: "string", format: "date-time" },
+    maxOccurrences: integer(1, 10_000, 365),
+    missedPolicy: { type: "string", enum: ["skip", "run_once"], default: "skip" },
+    failureLimit: integer(1, 20, 3),
+    replacesTriggerId: opaqueId("Optional exact schedule ID replaced immutably by this routine."),
+  }, ["name", "procedureId", "agentId", "timezone", "rrule", "startsAt"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
+  mutationTool("app.workflows.schedules.control", "Control reviewed routine", "Pause or resume one exact actor-owned routine, or enqueue one idempotent read-only canary occurrence after revalidating its immutable review authority.", requiredObjectSchema({
+    triggerId: opaqueId("Exact actor-owned schedule trigger ID."),
+    action: { type: "string", enum: ["pause", "resume", "run_once"] },
+    scheduledFor: { type: "string", format: "date-time" },
+    reason: text(1, 500),
+  }, ["triggerId", "action"]), { riskLevel: 2, approvalRequired: true, reversible: false }),
   readTool("app.connectors.list", "List connectors", "List tenant-scoped MCP and OpenAPI connectors with reviewed contract summaries.", objectSchema({
     kind: connectorKind(), limit: integer(1, 100, 20),
   })),

@@ -811,9 +811,9 @@ describe("ordered database schema versions", () => {
       checksum: "0113edbdab2a99f32d4e318c8407a5b66fb8fd7bcbbf839d4d199ded0d2ad6ac",
     });
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 197,
-      name: "scheduled_workflow_trigger_shadow_v1",
-      checksum: "64953184d937e9b07591a8dc0aaf97fc696f00a1317ed872d8b58764eca35a16",
+      version: 198,
+      name: "scheduled_workflow_read_only_canary_v1",
+      checksum: "75358f70c27be2ce0bd8f2048dd399a649d8cbd27cca9ff1a30ab5343324089f",
     });
     expect(databaseSchemaMigrations.find((migration) => migration.version === 139)).toEqual({
       version: 139,

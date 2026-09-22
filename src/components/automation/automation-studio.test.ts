@@ -152,6 +152,13 @@ describe("Automation Studio contracts", () => {
     expect(source).toContain("/api/tools");
     expect(source).toContain("/api/workflows?limit=24");
     expect(source).toContain("/api/triggers?limit=48");
+    expect(source).toContain("Reviewed routines");
+    expect(source).toContain("Schedule a saved procedure");
+    expect(source).toContain("read-only canary");
+    expect(source).toContain('controlSchedule(id, "run_once")');
+    expect(source).toContain("Create replacement");
+    expect(source).toContain("configSha256");
+    expect(source).toContain("receiptSha256");
     expect(source).toContain("/api/plugins/preview");
     expect(source).toContain("/api/plugins/install");
     expect(source).toContain('"Idempotency-Key"');

@@ -8,10 +8,15 @@ import {
   BookOpen,
   Box,
   Cable,
+  CalendarClock,
   CheckCircle2,
+  CirclePlay,
   Clock3,
   ExternalLink,
+  Pause,
+  Play,
   Plug,
+  ReceiptText,
   RefreshCw,
   ShieldCheck,
   Sparkles,
@@ -252,7 +257,7 @@ export function AutomationStudio() {
           <OverviewPanel snapshot={snapshot} ledger={ledger} onNavigate={navigateToTab} />
         ) : null}
         {activeTab === "automations" ? (
-          <AutomationsPanel ledger={ledger} />
+          <AutomationsPanel ledger={ledger} onRefresh={refresh} />
         ) : null}
         {activeTab === "skills" ? <SkillsPanel ledger={ledger} /> : null}
         {activeTab === "connections" ? (
@@ -354,9 +359,78 @@ function OverviewPanel({
   );
 }
 
-function AutomationsPanel({ ledger }: { ledger: ResourceLedger }) {
+function AutomationsPanel({
+  ledger,
+  onRefresh,
+}: {
+  ledger: ResourceLedger;
+  onRefresh: () => Promise<void>;
+}) {
   const triggers = recordsAt(ledger.triggers.data, "triggers");
+  const schedules = triggers.filter((trigger) =>
+    textAt(trigger, ["triggerKind"], "webhook") === "schedule"
+  );
+  const webhooks = triggers.filter((trigger) =>
+    textAt(trigger, ["triggerKind"], "webhook") === "webhook"
+  );
   const workflows = recordsAt(ledger.workflows.data, "runs");
+  const procedures = recordsAt(ledger.triggers.data, "procedures").filter(
+    (procedure) => procedure.schedulable === true,
+  );
+  const agents = recordsAt(ledger.triggers.data, "agents");
+  const occurrences = recordsAt(ledger.triggers.data, "occurrences");
+  const receipts = recordsAt(ledger.triggers.data, "receipts");
+  const [formOpen, setFormOpen] = useState(false);
+  const [replacementId, setReplacementId] = useState<string>();
+  const [mutationId, setMutationId] = useState<string>();
+  const [message, setMessage] = useState<string>();
+  const [error, setError] = useState<string>();
+  const [previews, setPreviews] = useState<Record<string, JsonRecord>>({});
+
+  async function controlSchedule(
+    triggerId: string,
+    action: "pause" | "resume" | "run_once",
+  ) {
+    setMutationId(`${triggerId}:${action}`);
+    setMessage(undefined);
+    setError(undefined);
+    try {
+      await mutateAutomation(`/api/triggers/${encodeURIComponent(triggerId)}`, {
+        action,
+        ...(action === "run_once"
+          ? { scheduledFor: new Date().toISOString() }
+          : {}),
+      }, `workflow-schedule-${action}`);
+      setMessage(action === "run_once"
+        ? "The read-only occurrence was queued."
+        : action === "pause"
+          ? "Schedule paused."
+          : "Schedule resumed.");
+      await onRefresh();
+    } catch (caught) {
+      setError(safeMutationError(caught, "The schedule could not be changed."));
+    } finally {
+      setMutationId(undefined);
+    }
+  }
+
+  async function loadPreview(triggerId: string) {
+    setMutationId(`${triggerId}:preview`);
+    setError(undefined);
+    try {
+      const result = await readAutomationResource(
+        `/api/triggers/${encodeURIComponent(triggerId)}`,
+        new AbortController().signal,
+      );
+      const preview = recordAt(result, "preview");
+      if (preview) setPreviews((current) => ({ ...current, [triggerId]: preview }));
+    } catch (caught) {
+      setError(safeMutationError(caught, "The next occurrences could not be previewed."));
+    } finally {
+      setMutationId(undefined);
+    }
+  }
+
   return (
     <div>
       <PanelHeading
@@ -365,22 +439,135 @@ function AutomationsPanel({ ledger }: { ledger: ResourceLedger }) {
         description="A trigger decides when work starts; its workflow defines the reviewed steps, retries, and approvals."
         action={<Link href="/app/workflows">Manage workflows <ExternalLink size={14} aria-hidden="true" /></Link>}
       />
+      <section className={styles.scheduleWorkspace}>
+        <div className={styles.scheduleIntro}>
+          <div>
+            <span><CalendarClock size={16} aria-hidden="true" />Reviewed routines</span>
+            <h2>Run known procedures on time</h2>
+            <p>Schedules replay one immutable saved procedure with its exact Agent, policy, and budget. This canary stage permits read-only Tools only; any changed binding fails closed.</p>
+          </div>
+          <button type="button" onClick={() => {
+            setReplacementId(undefined);
+            setFormOpen((open) => !open);
+          }}>
+            {formOpen && !replacementId ? "Close builder" : "New schedule"}
+          </button>
+        </div>
+
+        {formOpen ? (
+          <ScheduleBuilder
+            procedures={procedures}
+            agents={agents}
+            replacementId={replacementId}
+            onCancel={() => {
+              setFormOpen(false);
+              setReplacementId(undefined);
+            }}
+            onCreated={async (text) => {
+              setMessage(text);
+              setFormOpen(false);
+              setReplacementId(undefined);
+              await onRefresh();
+            }}
+            onError={setError}
+          />
+        ) : null}
+
+        {message ? <p className={styles.scheduleNotice} role="status"><CheckCircle2 size={15} aria-hidden="true" />{message}</p> : null}
+        {error ? <p className={styles.scheduleError} role="alert">{error}</p> : null}
+
+        {ledger.triggers.status === "loading" && !ledger.triggers.data ? <LoadingRows /> : null}
+        {ledger.triggers.status === "error" ? <InlineError>{ledger.triggers.error}</InlineError> : null}
+        {ledger.triggers.status !== "error" && schedules.length === 0 ? (
+          <EmptyState>{procedures.length
+            ? "No reviewed routine is scheduled yet. Build one above when you want a read-only procedure to repeat."
+            : "Create a saved procedure with exact read-only Tool inputs first; it will then become available here."}</EmptyState>
+        ) : null}
+
+        <div className={styles.scheduleGrid}>
+          {schedules.map((trigger, index) => {
+            const id = recordKey(trigger, index);
+            const schedule = recordAt(trigger, "schedule");
+            const config = recordAt(schedule, "config");
+            const state = recordAt(schedule, "state");
+            const procedurePin = recordAt(config, "procedurePin");
+            const identityPin = recordAt(config, "agentIdentityPin");
+            const latest = occurrences.find((occurrence) =>
+              textAt(occurrence, ["triggerId"], "") === id
+            );
+            const latestReceipt = receipts.find((receipt) =>
+              textAt(receipt, ["triggerId"], "") === id
+            );
+            const preview = previews[id];
+            const upcoming = preview && Array.isArray(preview.occurrences)
+              ? preview.occurrences.filter((value): value is string => typeof value === "string")
+              : [];
+            const status = textAt(trigger, ["status"], "unknown");
+            const circuit = textAt(state, ["circuitState"], "closed");
+            return (
+              <article className={styles.scheduleCard} key={id}>
+                <header>
+                  <span className={styles.rowIcon}><CalendarClock size={17} aria-hidden="true" /></span>
+                  <div>
+                    <small>{textAt(identityPin, ["logicalAgentId"], "Agent")} · read-only canary</small>
+                    <h3>{textAt(trigger, ["name"], "Untitled schedule")}</h3>
+                  </div>
+                  <span className={styles.badge} data-tone={statusTone(status)}>{status}</span>
+                </header>
+                <dl>
+                  <div><dt>Procedure</dt><dd>{textAt(procedurePin, ["procedureId"], "Unavailable")}</dd></div>
+                  <div><dt>Next run</dt><dd>{scheduleDate(textAt(state, ["nextDueAt"], ""), textAt(config, ["timezone"], "UTC"))}</dd></div>
+                  <div><dt>Recurrence</dt><dd>{friendlyRrule(textAt(config, ["rrule"], ""))}</dd></div>
+                  <div><dt>Circuit</dt><dd data-state={circuit}>{circuit}{numberAt(state, "consecutiveFailureCount") ? ` · ${numberAt(state, "consecutiveFailureCount")} failures` : ""}</dd></div>
+                  <div><dt>Review</dt><dd title={textAt(config, ["configSha256"], "")}>{shortDigest(textAt(config, ["configSha256"], ""))}</dd></div>
+                </dl>
+                {latest ? (
+                  <div className={styles.scheduleReceipt}>
+                    <ReceiptText size={15} aria-hidden="true" />
+                    <span>
+                      <strong>{textAt(latest, ["status"], "unknown")}</strong>
+                      {scheduleDate(textAt(latest, ["scheduledFor"], ""), textAt(config, ["timezone"], "UTC"))}
+                      {latestReceipt ? <code title={textAt(latestReceipt, ["receiptSha256"], "")}>receipt {shortDigest(textAt(latestReceipt, ["receiptSha256"], ""))}</code> : null}
+                    </span>
+                  </div>
+                ) : null}
+                {upcoming.length ? (
+                  <ol className={styles.schedulePreview}>
+                    {upcoming.map((value) => <li key={value}>{scheduleDate(value, textAt(config, ["timezone"], "UTC"))}</li>)}
+                  </ol>
+                ) : null}
+                <div className={styles.scheduleActions}>
+                  <button type="button" disabled={Boolean(mutationId)} onClick={() => void loadPreview(id)}><Clock3 size={14} aria-hidden="true" />Preview</button>
+                  <button type="button" disabled={Boolean(mutationId) || status !== "active" || circuit !== "closed"} onClick={() => void controlSchedule(id, "run_once")}><CirclePlay size={14} aria-hidden="true" />Run once</button>
+                  <button type="button" disabled={Boolean(mutationId)} onClick={() => void controlSchedule(id, status === "active" ? "pause" : "resume")}>
+                    {status === "active" ? <Pause size={14} aria-hidden="true" /> : <Play size={14} aria-hidden="true" />}
+                    {status === "active" ? "Pause" : "Resume"}
+                  </button>
+                  <button type="button" disabled={Boolean(mutationId)} onClick={() => {
+                    setReplacementId(id);
+                    setFormOpen(true);
+                    window.requestAnimationFrame(() => document.getElementById("schedule-builder")?.scrollIntoView({ behavior: "smooth", block: "start" }));
+                  }}>Replace</button>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      </section>
+
       <div className={styles.splitInventory}>
         <InventorySection
-          title="Triggers"
-          note="Schedules and external events that begin repeatable work."
+          title="Webhook triggers"
+          note="Authenticated external events that begin a governed workflow."
           resource={ledger.triggers}
-          empty="No automation triggers are configured. Create one from the workflow workspace when the procedure is ready to repeat."
+          empty="No webhook triggers are configured."
         >
-          {triggers.slice(0, 20).map((trigger, index) => (
+          {webhooks.slice(0, 20).map((trigger, index) => (
             <InventoryRow
               key={recordKey(trigger, index)}
               title={textAt(trigger, ["name"], "Untitled trigger")}
               description={triggerDescription(trigger)}
-              meta={[
-                textAt(trigger, ["source"], "manual source"),
-                textAt(trigger, ["workflowMode"], "orchestrate"),
-              ]}
+              meta={[textAt(trigger, ["source"], "external event"), textAt(trigger, ["workflowMode"], "orchestrate")]}
               status={textAt(trigger, ["status"], "unknown")}
               icon={<Activity size={16} aria-hidden="true" />}
             />
@@ -409,6 +596,153 @@ function AutomationsPanel({ ledger }: { ledger: ResourceLedger }) {
         </InventorySection>
       </div>
     </div>
+  );
+}
+
+function ScheduleBuilder({
+  procedures,
+  agents,
+  replacementId,
+  onCancel,
+  onCreated,
+  onError,
+}: {
+  procedures: JsonRecord[];
+  agents: JsonRecord[];
+  replacementId?: string;
+  onCancel: () => void;
+  onCreated: (message: string) => Promise<void>;
+  onError: (message: string | undefined) => void;
+}) {
+  const [name, setName] = useState("");
+  const [procedureId, setProcedureId] = useState(
+    textAt(procedures[0], ["id"], ""),
+  );
+  const [agentId, setAgentId] = useState(textAt(agents[0], ["id"], "atlas"));
+  const [timezone, setTimezone] = useState(() =>
+    Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"
+  );
+  const [startsAt, setStartsAt] = useState(defaultScheduleStart());
+  const [frequency, setFrequency] = useState("daily");
+  const [maxOccurrences, setMaxOccurrences] = useState(365);
+  const [missedPolicy, setMissedPolicy] = useState("skip");
+  const [submitting, setSubmitting] = useState(false);
+  const selectedProcedureId = procedureId || textAt(procedures[0], ["id"], "");
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    onError(undefined);
+    setSubmitting(true);
+    try {
+      if (!selectedProcedureId) {
+        throw new Error("Choose a schedulable saved procedure first.");
+      }
+      const localStart = new Date(startsAt);
+      if (!Number.isFinite(localStart.getTime())) {
+        throw new Error("Choose a valid start date and time.");
+      }
+      const hour = Number(startsAt.slice(11, 13));
+      const minute = Number(startsAt.slice(14, 16));
+      const byDay = frequency === "weekdays"
+        ? ";BYDAY=MO,TU,WE,TH,FR"
+        : frequency === "weekly"
+          ? `;BYDAY=${weekdayCodeForDate(localStart)}`
+          : "";
+      const interval = frequency === "weekly" ? 1 : 1;
+      const freq = frequency === "weekly" ? "WEEKLY" : "DAILY";
+      await mutateAutomation("/api/triggers", {
+        triggerKind: "schedule",
+        name,
+        procedureId: selectedProcedureId,
+        agentId,
+        timezone,
+        rrule: `FREQ=${freq};INTERVAL=${interval}${byDay};BYHOUR=${hour};BYMINUTE=${minute}`,
+        startsAt: localStart.toISOString(),
+        maxOccurrences,
+        missedPolicy,
+        failureLimit: 3,
+        ...(replacementId ? { replacesTriggerId: replacementId } : {}),
+      }, replacementId ? "workflow-schedule-replace" : "workflow-schedule-create");
+      await onCreated(replacementId
+        ? "The replacement schedule is active and the previous version is paused."
+        : "The reviewed read-only schedule is active.");
+    } catch (caught) {
+      onError(safeMutationError(caught, "The schedule could not be created."));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <form id="schedule-builder" className={styles.scheduleBuilder} onSubmit={submit}>
+      <header>
+        <div>
+          <small>{replacementId ? "Immutable replacement" : "New reviewed routine"}</small>
+          <h3>{replacementId ? "Replace this schedule" : "Schedule a saved procedure"}</h3>
+          <p>Asael will bind the exact procedure snapshot, Agent release, policy, and per-occurrence budget. Later edits create a new version instead of changing history.</p>
+        </div>
+        <span><ShieldCheck size={15} aria-hidden="true" />Read-only</span>
+      </header>
+      <div className={styles.scheduleFields}>
+        <label>
+          <span>Routine name</span>
+          <input value={name} onChange={(event) => setName(event.target.value)} required maxLength={120} placeholder="Morning research review" />
+        </label>
+        <label>
+          <span>Saved procedure</span>
+          <select value={selectedProcedureId} onChange={(event) => setProcedureId(event.target.value)} required disabled={!procedures.length}>
+            {!procedures.length ? <option value="">No read-only procedures available</option> : null}
+            {procedures.map((procedure, index) => (
+              <option key={recordKey(procedure, index)} value={textAt(procedure, ["id"], "")}>
+                {textAt(procedure, ["id"], "Untitled procedure")}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>Agent</span>
+          <select value={agentId} onChange={(event) => setAgentId(event.target.value)} required>
+            {agents.map((agent, index) => (
+              <option key={recordKey(agent, index)} value={textAt(agent, ["id"], "atlas")}>
+                {textAt(agent, ["name"], "Agent")} · {textAt(agent, ["role"], "specialist")}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>Starts</span>
+          <input type="datetime-local" value={startsAt} onChange={(event) => setStartsAt(event.target.value)} required />
+        </label>
+        <label>
+          <span>Repeats</span>
+          <select value={frequency} onChange={(event) => setFrequency(event.target.value)}>
+            <option value="daily">Every day</option>
+            <option value="weekdays">Weekdays</option>
+            <option value="weekly">Every week</option>
+          </select>
+        </label>
+        <label>
+          <span>Timezone</span>
+          <input value={timezone} onChange={(event) => setTimezone(event.target.value)} required maxLength={120} />
+        </label>
+        <label>
+          <span>Maximum runs</span>
+          <input type="number" min={1} max={10_000} value={maxOccurrences} onChange={(event) => setMaxOccurrences(Number(event.target.value))} required />
+        </label>
+        <label>
+          <span>If Asael was offline</span>
+          <select value={missedPolicy} onChange={(event) => setMissedPolicy(event.target.value)}>
+            <option value="skip">Skip missed runs</option>
+            <option value="run_once">Run the latest once</option>
+          </select>
+        </label>
+      </div>
+      <p className={styles.scheduleBoundary}><ShieldCheck size={15} aria-hidden="true" />Only reviewed risk-0 read operations are admitted. Identity drift, changed procedure inputs, policy changes, or three consecutive failures pause the routine automatically.</p>
+      <div className={styles.scheduleBuilderActions}>
+        <button type="button" onClick={onCancel} disabled={submitting}>Cancel</button>
+        <button type="submit" disabled={submitting || !procedures.length}>{submitting ? "Reviewing…" : replacementId ? "Create replacement" : "Review & schedule"}</button>
+      </div>
+    </form>
   );
 }
 
@@ -1098,6 +1432,41 @@ async function readAutomationResource(endpoint: string, signal: AbortSignal): Pr
   return body;
 }
 
+async function mutateAutomation(
+  endpoint: string,
+  body: JsonRecord,
+  purpose: string,
+): Promise<JsonRecord> {
+  const response = await fetch(endpoint, {
+    method: "POST",
+    credentials: "same-origin",
+    cache: "no-store",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json",
+      "Idempotency-Key": `${purpose}:${window.crypto.randomUUID()}`,
+    },
+    body: JSON.stringify(body),
+  });
+  let result: unknown;
+  try {
+    result = await response.json();
+  } catch {
+    result = undefined;
+  }
+  if (!response.ok) {
+    throw new Error(textAt(
+      result,
+      ["error", "message"],
+      `Request failed with status ${response.status}.`,
+    ));
+  }
+  if (!isJsonRecord(result)) {
+    throw new Error("The schedule service returned an unreadable response.");
+  }
+  return result;
+}
+
 async function mutatePlugin(
   endpoint: string,
   method: "POST" | "PATCH" | "DELETE",
@@ -1229,6 +1598,45 @@ function formatDateTime(value: string) {
   } catch {
     return "at an unknown time";
   }
+}
+
+function defaultScheduleStart() {
+  const value = new Date(Date.now() + 60 * 60_000);
+  value.setSeconds(0, 0);
+  const local = new Date(value.getTime() - value.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+
+function weekdayCodeForDate(value: Date) {
+  return (["SU", "MO", "TU", "WE", "TH", "FR", "SA"] as const)[
+    value.getDay()
+  ];
+}
+
+function scheduleDate(value: string, timezone: string) {
+  if (!value) return "No further occurrence";
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+      timeZone: timezone,
+    }).format(new Date(value));
+  } catch {
+    return formatDateTime(value);
+  }
+}
+
+function friendlyRrule(value: string) {
+  const fields = Object.fromEntries(value.split(";").map((part) => part.split("=")));
+  const time = `${String(fields.BYHOUR || "0").padStart(2, "0")}:${String(fields.BYMINUTE || "0").padStart(2, "0")}`;
+  if (fields.FREQ === "WEEKLY") return `Weekly · ${fields.BYDAY || "start day"} · ${time}`;
+  if (fields.BYDAY === "MO,TU,WE,TH,FR") return `Weekdays · ${time}`;
+  if (fields.FREQ === "MONTHLY") return `Monthly · ${time}`;
+  return `Daily · ${time}`;
+}
+
+function shortDigest(value: string) {
+  return value ? `${value.slice(0, 12)}…` : "Unavailable";
 }
 
 export function capabilityStateLabel(state: CapabilityState) {

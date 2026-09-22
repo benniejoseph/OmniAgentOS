@@ -406,6 +406,73 @@ export type WorkflowScheduleShadowReceiptV1 = Readonly<{
   receiptSha256: string;
 }>;
 
+export type WorkflowScheduleOccurrenceKind = "scheduled" | "manual";
+
+export type WorkflowScheduleOccurrenceStatus =
+  | "claimed"
+  | "enqueued"
+  | "completed"
+  | "skipped"
+  | "failed";
+
+export type WorkflowScheduleOccurrenceFailureCode =
+  | "agent_identity_changed"
+  | "agent_policy_changed"
+  | "procedure_changed"
+  | "procedure_not_read_only"
+  | "occurrence_budget_changed"
+  | "workflow_enqueue_failed"
+  | "workflow_failed"
+  | "workflow_canceled";
+
+export type WorkflowScheduleOccurrenceRecord = Readonly<{
+  schemaVersion: 1;
+  id: string;
+  tenantId: string;
+  ownerActorId: string;
+  triggerId: string;
+  kind: WorkflowScheduleOccurrenceKind;
+  status: WorkflowScheduleOccurrenceStatus;
+  scheduledFor: string;
+  evaluatedThrough: string;
+  outcome: WorkflowScheduleShadowOutcome;
+  occurrencesConsumed: number;
+  occurrenceCount: number;
+  nextDueAt?: string;
+  configurationSha256: string;
+  agentIdentityPinSha256: string;
+  policyPinSha256: string;
+  procedureSnapshotSha256: string;
+  reviewedSnapshotSha256: string;
+  occurrenceBudgetSha256: string;
+  authoritySha256: string;
+  workflowRunId?: string;
+  queueJobId?: string;
+  failureCode?: WorkflowScheduleOccurrenceFailureCode;
+  attemptCount: number;
+  lastAttemptAt?: string;
+  completedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}>;
+
+export type WorkflowScheduleOccurrenceReceiptV1 = Readonly<{
+  schemaVersion: 1;
+  id: string;
+  tenantId: string;
+  ownerActorId: string;
+  triggerId: string;
+  occurrenceId: string;
+  status: WorkflowScheduleOccurrenceStatus;
+  workflowRunId?: string;
+  queueJobId?: string;
+  failureCode?: WorkflowScheduleOccurrenceFailureCode;
+  authoritySha256: string;
+  stateSha256: string;
+  recordedAt: string;
+  receiptSha256: string;
+}>;
+
 export type WorkflowTriggerRecord = {
   id: string;
   tenantId: string;
@@ -423,6 +490,8 @@ export type WorkflowTriggerRecord = {
   triggerCount: number;
   failureCount: number;
   lastTriggeredAt?: string;
+  replacesTriggerId?: string;
+  replacedByTriggerId?: string;
   schedule?: Readonly<{
     config: WorkflowScheduleConfigV1;
     state: WorkflowScheduleStateV1;

@@ -1,6 +1,11 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
-import { parseAgentRunIdentityPinV1 } from "@/lib/agents/identity-contracts";
+import {
+  buildAgentRunIdentityPinV1,
+  parseAgentRunIdentityPinV1,
+  type ResolvedAgentIdentityV1,
+} from "@/lib/agents/identity-contracts";
+import { resolveAgentIdentityForExecution } from "@/lib/agents/identity-store";
 import {
   ensureDatabaseSchema,
   getDatabaseTenantContext,
@@ -24,7 +29,14 @@ import {
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
+import { governedToolOperationClass } from "@/lib/tools/executor";
+import { getGovernedTool } from "@/lib/tools/registry";
 import { runBudgetCountersV1Schema } from "@/lib/runs/budgets";
+import {
+  buildWorkflowProcedureSnapshot,
+  listSavedProcedures,
+  type WorkflowProcedureSnapshot,
+} from "@/lib/workflows/saved-procedures";
 import { enqueueWorkflowRunTick } from "@/lib/workflows/queue";
 import { appendWorkflowEvent, createWorkflowRun } from "@/lib/workflows/store";
 import type {
@@ -35,6 +47,11 @@ import type {
   WorkflowTriggerRecord,
   WorkflowScheduleConfigV1,
   WorkflowScheduleMissedPolicy,
+  WorkflowScheduleOccurrenceFailureCode,
+  WorkflowScheduleOccurrenceKind,
+  WorkflowScheduleOccurrenceReceiptV1,
+  WorkflowScheduleOccurrenceRecord,
+  WorkflowScheduleOccurrenceStatus,
   WorkflowScheduleShadowOutcome,
   WorkflowScheduleShadowReceiptV1,
   WorkflowTriggerStats,
@@ -58,6 +75,7 @@ type CreateWorkflowTriggerBaseInput = {
   metadata?: Record<string, unknown>;
   executionScope?: ExecutionScope;
   idempotencyKey?: string;
+  replacesTriggerId?: string;
 };
 
 type CreateWebhookWorkflowTriggerInput = CreateWorkflowTriggerBaseInput & {
@@ -165,6 +183,61 @@ const scheduleOccurrenceBudgetSchema = runBudgetCountersV1Schema.superRefine(
   },
 );
 
+export const DEFAULT_READ_ONLY_SCHEDULE_BUDGET = Object.freeze({
+  modelTurns: 4,
+  tokens: 32_000,
+  costMicrousd: 750_000,
+  wallTimeMs: 180_000,
+  toolCalls: 16,
+  browserActions: 0,
+  agents: 0,
+  fanOut: 0,
+  retries: 1,
+  replans: 0,
+});
+
+const scheduleCreateInputSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  source: z.string().trim().min(1).max(120).optional(),
+  procedureId: z.string().trim().min(1).max(240),
+  agentId: z.string().trim().min(1).max(240),
+  timezone: z.string().trim().min(1).max(120),
+  rrule: z.string().trim().min(1).max(512),
+  startsAt: z.string().datetime({ offset: true }),
+  endsAt: z.string().datetime({ offset: true }).optional(),
+  maxOccurrences: z.number().int().min(1).max(scheduleEvaluationLimit).default(365),
+  missedPolicy: z.enum(["skip", "run_once"]).default("skip"),
+  occurrenceBudget: scheduleOccurrenceBudgetSchema.default(
+    DEFAULT_READ_ONLY_SCHEDULE_BUDGET,
+  ),
+  failureLimit: z.number().int().min(1).max(20).default(3),
+  replacesTriggerId: z.string().trim().min(1).max(240).optional(),
+}).strict();
+
+export type ReviewedWorkflowScheduleCreateInput = z.input<
+  typeof scheduleCreateInputSchema
+> & {
+  tenantId: string;
+  actorId: string;
+  executionScope: ExecutionScope;
+  idempotencyKey: string;
+};
+
+export class WorkflowScheduleControlError extends Error {
+  constructor(
+    message: string,
+    readonly code:
+      | "not_found"
+      | "not_schedule"
+      | "not_read_only"
+      | "immutable_binding_changed"
+      | "invalid_state",
+  ) {
+    super(message);
+    this.name = "WorkflowScheduleControlError";
+  }
+}
+
 type ParsedScheduleRrule = z.infer<typeof scheduleRruleSchema>;
 
 export async function createWorkflowTrigger(input: CreateWorkflowTriggerInput) {
@@ -224,6 +297,9 @@ export async function createWorkflowTrigger(input: CreateWorkflowTriggerInput) {
     metadata: redactSensitive(input.metadata || {}) as Record<string, unknown>,
     triggerCount: 0,
     failureCount: 0,
+    replacesTriggerId: triggerKind === "schedule"
+      ? normalizeOptional(input.replacesTriggerId)
+      : undefined,
     schedule,
     createdAt: now,
     updatedAt: now,
@@ -306,27 +382,56 @@ export async function getWorkflowTrigger(
 
 export async function listWorkflowTriggerEvents(
   limit = 50,
-  options: { tenantId?: string } = {},
+  options: { tenantId?: string; actorId?: string } = {},
 ) {
   const tenantId = normalizeTenantId(options.tenantId || getDatabaseTenantContext());
+  const actorId = options.actorId ? requiredActorId(options.actorId) : undefined;
   const boundedLimit = Math.min(Math.max(limit, 1), 200);
   if (hasDatabaseUrl()) {
-    return runWithDatabaseTenantScope(tenantId, async () => {
+    const operation = async () => {
       await ensureDatabaseSchema();
-      const rows = await getSql()`
-        SELECT *
-        FROM omni_workflow_trigger_events
-        WHERE tenant_id = ${tenantId}
-        ORDER BY received_at DESC
-        LIMIT ${boundedLimit}
-      `;
+      const rows = actorId
+        ? await getSql()`
+            SELECT event.*
+            FROM omni_workflow_trigger_events AS event
+            INNER JOIN omni_workflow_triggers AS trigger
+              ON trigger.tenant_id = event.tenant_id
+             AND trigger.id = event.trigger_id
+            WHERE event.tenant_id = ${tenantId}
+              AND (
+                trigger.owner_actor_id IS NULL
+                OR trigger.owner_actor_id = ${actorId}
+              )
+            ORDER BY event.received_at DESC
+            LIMIT ${boundedLimit}
+          `
+        : await getSql()`
+            SELECT *
+            FROM omni_workflow_trigger_events
+            WHERE tenant_id = ${tenantId}
+            ORDER BY received_at DESC
+            LIMIT ${boundedLimit}
+          `;
       return rows.map(workflowTriggerEventFromRow);
-    });
+    };
+    return actorId
+      ? runWithDatabaseActorScope(tenantId, [actorId], operation)
+      : runWithDatabaseTenantScope(tenantId, operation);
   }
 
   const ledger = await readTriggerLedger();
   return ledger.events
     .filter((event) => normalizeTenantId(event.tenantId) === tenantId)
+    .filter((event) => {
+      if (!actorId) return true;
+      const trigger = ledger.triggers.find((candidate) =>
+        candidate.id === event.triggerId && triggerTenantId(candidate) === tenantId
+      );
+      return Boolean(trigger && workflowTriggerVisibleToActor(
+        normalizeLegacyWorkflowTrigger({ ...trigger, tenantId }),
+        actorId,
+      ));
+    })
     .map((event) => ({ ...event, tenantId }))
     .slice(0, boundedLimit);
 }
@@ -337,7 +442,7 @@ export async function getWorkflowTriggerStats(
   const tenantId = normalizeTenantId(options.tenantId || getDatabaseTenantContext());
   const [triggers, events] = await Promise.all([
     listWorkflowTriggers(500, { tenantId, actorId: options.actorId }),
-    listWorkflowTriggerEvents(500, { tenantId }),
+    listWorkflowTriggerEvents(500, { tenantId, actorId: options.actorId }),
   ]);
   const byStatus = triggers.reduce<Record<string, number>>((acc, trigger) => {
     acc[trigger.status] = (acc[trigger.status] || 0) + 1;
@@ -356,6 +461,438 @@ export async function getWorkflowTriggerStats(
     latestTriggers: triggers.slice(0, 5),
     latestEvents: events.slice(0, 5),
   };
+}
+
+export async function listSchedulableWorkflowProcedures(input: {
+  tenantId: string;
+  actorId: string;
+}) {
+  const tenantId = normalizeTenantId(input.tenantId);
+  const actorId = requiredActorId(input.actorId);
+  const procedures = await runWithDatabaseActorScope(
+    tenantId,
+    [actorId],
+    () => listSavedProcedures({ tenantId, actorId }),
+  );
+  return procedures.map((procedure) => {
+    try {
+      assertReadOnlyProcedure(procedure.toolBindings);
+      return Object.freeze({
+        id: procedure.id,
+        aliases: Object.freeze([...procedure.aliases]),
+        toolIds: Object.freeze(procedure.toolBindings.map((binding) => binding.toolId)),
+        schedulable: true as const,
+      });
+    } catch {
+      return Object.freeze({
+        id: procedure.id,
+        aliases: Object.freeze([...procedure.aliases]),
+        toolIds: Object.freeze(procedure.toolBindings.map((binding) => binding.toolId)),
+        schedulable: false as const,
+        reason: "Only exact, active read-only tool bindings can run unattended.",
+      });
+    }
+  });
+}
+
+export async function createReviewedWorkflowSchedule(
+  input: ReviewedWorkflowScheduleCreateInput,
+) {
+  const tenantId = normalizeTenantId(input.tenantId);
+  const actorId = requiredActorId(input.actorId);
+  assertExecutionScopeTenant(input.executionScope, tenantId);
+  if (input.executionScope.initiatingActorId !== actorId) {
+    throw new WorkflowScheduleControlError(
+      "Scheduled workflow review requires the owning actor.",
+      "invalid_state",
+    );
+  }
+  const value = scheduleCreateInputSchema.parse({
+    name: input.name,
+    source: input.source,
+    procedureId: input.procedureId,
+    agentId: input.agentId,
+    timezone: input.timezone,
+    rrule: input.rrule,
+    startsAt: input.startsAt,
+    endsAt: input.endsAt,
+    maxOccurrences: input.maxOccurrences,
+    missedPolicy: input.missedPolicy,
+    occurrenceBudget: input.occurrenceBudget,
+    failureLimit: input.failureLimit,
+    replacesTriggerId: input.replacesTriggerId,
+  });
+  const reviewRequestSha256 = canonicalJsonSha256({
+    schemaVersion: 1,
+    tenantId,
+    actorId,
+    name: value.name,
+    source: value.source || "saved-procedure",
+    procedureId: value.procedureId,
+    agentId: value.agentId,
+    timezone: value.timezone,
+    rrule: value.rrule,
+    startsAt: value.startsAt,
+    endsAt: value.endsAt || null,
+    maxOccurrences: value.maxOccurrences,
+    missedPolicy: value.missedPolicy,
+    occurrenceBudget: value.occurrenceBudget,
+    failureLimit: value.failureLimit,
+    replacesTriggerId: value.replacesTriggerId || null,
+  });
+  const deterministicId = deterministicTriggerId(tenantId, input.idempotencyKey);
+  const existing = await getWorkflowTrigger(deterministicId, { tenantId, actorId });
+  if (existing) {
+    if (
+      existing.triggerKind !== "schedule" ||
+      existing.metadata.reviewRequestSha256 !== reviewRequestSha256
+    ) {
+      throw new WorkflowScheduleControlError(
+        "The schedule Idempotency-Key is already bound to another reviewed request.",
+        "immutable_binding_changed",
+      );
+    }
+    if (value.replacesTriggerId && existing.status === "paused") {
+      const previous = await getWorkflowTrigger(value.replacesTriggerId, {
+        tenantId,
+        actorId,
+      });
+      if (!previous || previous.triggerKind !== "schedule") {
+        throw new WorkflowScheduleControlError(
+          "The original schedule is unavailable.",
+          "not_found",
+        );
+      }
+      if (!previous.replacedByTriggerId) {
+        return activateWorkflowScheduleReplacement({
+          tenantId,
+          actorId,
+          previousTriggerId: value.replacesTriggerId,
+          replacementTriggerId: existing.id,
+          executionScope: input.executionScope,
+        });
+      }
+      if (previous.replacedByTriggerId !== existing.id) {
+        throw new WorkflowScheduleControlError(
+          "The original schedule is already bound to another replacement.",
+          "invalid_state",
+        );
+      }
+    }
+    return existing;
+  }
+  const [procedures, identity] = await Promise.all([
+    runWithDatabaseActorScope(tenantId, [actorId], () =>
+      listSavedProcedures({ tenantId, actorId })),
+    runWithDatabaseActorScope(tenantId, [actorId], () =>
+      resolveAgentIdentityForExecution({
+        tenantId,
+        actorId,
+        agentId: value.agentId,
+      })),
+  ]);
+  const procedure = procedures.find((candidate) => candidate.id === value.procedureId);
+  if (!procedure) {
+    throw new WorkflowScheduleControlError(
+      "The selected saved procedure is unavailable.",
+      "not_found",
+    );
+  }
+  assertReadOnlyProcedure(procedure.toolBindings);
+  const snapshot = buildWorkflowProcedureSnapshot(
+    procedure,
+    procedure.aliases[0],
+  );
+  const identityPin = buildAgentRunIdentityPinV1({
+    runId: `workflow-schedule-review-${canonicalJsonSha256({
+      tenantId,
+      actorId,
+      idempotencyKey: input.idempotencyKey,
+    }).slice(0, 40)}`,
+    identity,
+  });
+  const reviewedAt = minuteTimestamp(new Date().toISOString());
+  const occurrenceBudget = scheduleOccurrenceBudgetSchema.parse(
+    value.occurrenceBudget,
+  );
+  const reviewedSnapshotSha256 = workflowScheduleReviewSha256({
+    procedureSnapshotSha256: snapshot.snapshotSha256,
+    agentIdentityPinSha256: identityPin.pinSha256,
+    policyPinSha256: canonicalJsonSha256(identityPin.policyPins),
+    occurrenceBudgetSha256: canonicalJsonSha256(occurrenceBudget),
+    reviewedAt,
+  });
+  if (value.replacesTriggerId) {
+    const current = await getWorkflowTrigger(value.replacesTriggerId, {
+      tenantId,
+      actorId,
+    });
+    if (!current || current.triggerKind !== "schedule") {
+      throw new WorkflowScheduleControlError(
+        "The schedule selected for replacement is unavailable.",
+        "not_found",
+      );
+    }
+    if (
+      current.replacedByTriggerId &&
+      current.replacedByTriggerId !== deterministicId
+    ) {
+      throw new WorkflowScheduleControlError(
+        "The schedule has already been replaced by another reviewed version.",
+        "invalid_state",
+      );
+    }
+  }
+  const created = await createWorkflowTrigger({
+    tenantId,
+    triggerKind: "schedule",
+    name: value.name,
+    source: value.source || "saved-procedure",
+    status: value.replacesTriggerId ? "paused" : "active",
+    goalTemplate: `Run reviewed saved procedure ${snapshot.id}.`,
+    workflowMode: snapshot.schemaVersion === 2 ? snapshot.mode : "orchestrate",
+    requireApproval: false,
+    metadata: {
+      source: "scheduled_read_only_canary",
+      procedureId: snapshot.id,
+      logicalAgentId: identity.definition.logicalAgentId,
+      reviewRequestSha256,
+    },
+    replacesTriggerId: value.replacesTriggerId,
+    executionScope: input.executionScope,
+    idempotencyKey: input.idempotencyKey,
+    schedule: {
+      timezone: value.timezone,
+      rrule: value.rrule,
+      startsAt: value.startsAt,
+      endsAt: value.endsAt,
+      maxOccurrences: value.maxOccurrences,
+      missedPolicy: value.missedPolicy,
+      procedurePin: {
+        schemaVersion: 1,
+        procedureId: snapshot.id,
+        snapshotSha256: snapshot.snapshotSha256,
+        reviewedSnapshotSha256,
+        reviewedAt,
+      },
+      agentIdentityPin: identityPin,
+      occurrenceBudget,
+      failureLimit: value.failureLimit,
+    },
+  });
+  if (!value.replacesTriggerId) return created;
+  return activateWorkflowScheduleReplacement({
+    tenantId,
+    actorId,
+    previousTriggerId: value.replacesTriggerId,
+    replacementTriggerId: created.id,
+    executionScope: input.executionScope,
+  });
+}
+
+export async function setWorkflowSchedulePaused(input: {
+  tenantId: string;
+  actorId: string;
+  triggerId: string;
+  paused: boolean;
+  reason?: string;
+  executionScope: ExecutionScope;
+}) {
+  const tenantId = normalizeTenantId(input.tenantId);
+  const actorId = requiredActorId(input.actorId);
+  assertExecutionScopeTenant(input.executionScope, tenantId);
+  if (input.executionScope.initiatingActorId !== actorId) {
+    throw new WorkflowScheduleControlError(
+      "Schedule controls require the owning actor.",
+      "invalid_state",
+    );
+  }
+  const current = await getWorkflowTrigger(input.triggerId, { tenantId, actorId });
+  if (!current) throw new WorkflowScheduleControlError("Schedule not found.", "not_found");
+  if (!current.schedule) {
+    throw new WorkflowScheduleControlError("Webhook triggers do not accept schedule controls.", "not_schedule");
+  }
+  if (!input.paused && !current.schedule.state.nextDueAt) {
+    throw new WorkflowScheduleControlError(
+      "An exhausted schedule cannot be resumed; create a replacement.",
+      "invalid_state",
+    );
+  }
+  const now = new Date().toISOString();
+  const reason = input.paused
+    ? (input.reason || "Paused by the owner.").trim().slice(0, 500)
+    : undefined;
+  let updated: WorkflowTriggerRecord | null = null;
+  if (hasDatabaseUrl()) {
+    updated = await runWithDatabaseActorScope(tenantId, [actorId], async () => {
+      await ensureDatabaseSchema();
+      return getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+        const rows = await sql`
+          UPDATE omni_workflow_triggers
+          SET status = ${input.paused ? "paused" : "active"},
+              paused_reason = ${reason || null},
+              circuit_state = ${input.paused
+                ? current.schedule!.state.circuitState
+                : "closed"},
+              consecutive_failure_count = ${input.paused
+                ? current.schedule!.state.consecutiveFailureCount
+                : 0},
+              updated_at = ${now}
+          WHERE tenant_id = ${tenantId}
+            AND owner_actor_id = ${actorId}
+            AND id = ${current.id}
+            AND trigger_kind = 'schedule'
+          RETURNING *
+        `;
+        if (!rows[0]) return null;
+        const next = workflowTriggerFromRow(rows[0]);
+        await appendWorkflowScheduleControlEvent({
+          trigger: next,
+          action: input.paused ? "paused" : "resumed",
+          executionScope: input.executionScope,
+          sql,
+        });
+        return next;
+      }) as Promise<WorkflowTriggerRecord | null>;
+    });
+  } else {
+    await mutateTriggerLedger((ledger) => {
+      ledger.triggers = ledger.triggers.map((trigger) => {
+        if (trigger.id !== current.id || triggerTenantId(trigger) !== tenantId) return trigger;
+        updated = {
+          ...trigger,
+          status: input.paused ? "paused" : "active",
+          updatedAt: now,
+          schedule: trigger.schedule ? {
+            ...trigger.schedule,
+            state: {
+              ...trigger.schedule.state,
+              pausedReason: reason,
+              circuitState: input.paused
+                ? trigger.schedule.state.circuitState
+                : "closed",
+              consecutiveFailureCount: input.paused
+                ? trigger.schedule.state.consecutiveFailureCount
+                : 0,
+            },
+          } : undefined,
+        };
+        return updated!;
+      });
+      return ledger;
+    });
+    if (updated) {
+      await appendWorkflowScheduleControlEvent({
+        trigger: updated,
+        action: input.paused ? "paused" : "resumed",
+        executionScope: input.executionScope,
+      });
+    }
+  }
+  if (!updated) throw new WorkflowScheduleControlError("Schedule not found.", "not_found");
+  return updated;
+}
+
+export async function listWorkflowScheduleOccurrences(input: {
+  tenantId: string;
+  actorId: string;
+  triggerId?: string;
+  limit?: number;
+}) {
+  if (!hasDatabaseUrl()) return [] as WorkflowScheduleOccurrenceRecord[];
+  const tenantId = normalizeTenantId(input.tenantId);
+  const actorId = requiredActorId(input.actorId);
+  const limit = Math.min(Math.max(input.limit || 50, 1), 200);
+  return runWithDatabaseActorScope(tenantId, [actorId], async () => {
+    await ensureDatabaseSchema();
+    const rows = input.triggerId
+      ? await getSql()`
+          SELECT * FROM omni_workflow_schedule_occurrences
+          WHERE tenant_id = ${tenantId}
+            AND owner_actor_id = ${actorId}
+            AND trigger_id = ${input.triggerId}
+          ORDER BY scheduled_for DESC, id COLLATE "C"
+          LIMIT ${limit}
+        `
+      : await getSql()`
+          SELECT * FROM omni_workflow_schedule_occurrences
+          WHERE tenant_id = ${tenantId}
+            AND owner_actor_id = ${actorId}
+          ORDER BY scheduled_for DESC, id COLLATE "C"
+          LIMIT ${limit}
+        `;
+    return rows.map(workflowScheduleOccurrenceFromRow);
+  });
+}
+
+export async function listWorkflowScheduleOccurrenceReceipts(input: {
+  tenantId: string;
+  actorId: string;
+  triggerId?: string;
+  limit?: number;
+}) {
+  if (!hasDatabaseUrl()) return [] as WorkflowScheduleOccurrenceReceiptV1[];
+  const tenantId = normalizeTenantId(input.tenantId);
+  const actorId = requiredActorId(input.actorId);
+  const limit = Math.min(Math.max(input.limit || 100, 1), 200);
+  return runWithDatabaseActorScope(tenantId, [actorId], async () => {
+    await ensureDatabaseSchema();
+    const rows = input.triggerId
+      ? await getSql()`
+          SELECT * FROM omni_workflow_schedule_occurrence_receipts
+          WHERE tenant_id = ${tenantId}
+            AND owner_actor_id = ${actorId}
+            AND trigger_id = ${input.triggerId}
+          ORDER BY recorded_at DESC, id COLLATE "C"
+          LIMIT ${limit}
+        `
+      : await getSql()`
+          SELECT * FROM omni_workflow_schedule_occurrence_receipts
+          WHERE tenant_id = ${tenantId}
+            AND owner_actor_id = ${actorId}
+          ORDER BY recorded_at DESC, id COLLATE "C"
+          LIMIT ${limit}
+        `;
+    return rows.map(workflowScheduleOccurrenceReceiptFromRow);
+  });
+}
+
+export async function previewWorkflowSchedule(input: {
+  tenantId: string;
+  actorId: string;
+  triggerId: string;
+  count?: number;
+}) {
+  const trigger = await getWorkflowTrigger(input.triggerId, {
+    tenantId: input.tenantId,
+    actorId: input.actorId,
+  });
+  if (!trigger) throw new WorkflowScheduleControlError("Schedule not found.", "not_found");
+  if (!trigger.schedule) {
+    throw new WorkflowScheduleControlError("Webhook triggers have no schedule preview.", "not_schedule");
+  }
+  const occurrences: string[] = [];
+  let cursor = trigger.schedule.state.nextDueAt;
+  let completed = trigger.schedule.state.occurrenceCount;
+  const count = Math.min(Math.max(input.count || 3, 1), 12);
+  while (cursor && occurrences.length < count) {
+    occurrences.push(cursor);
+    completed += 1;
+    cursor = nextWorkflowScheduleOccurrence({
+      config: trigger.schedule.config,
+      after: cursor,
+      completedOccurrences: completed,
+    });
+  }
+  return Object.freeze({
+    triggerId: trigger.id,
+    status: trigger.status,
+    circuitState: trigger.schedule.state.circuitState,
+    timezone: trigger.schedule.config.timezone,
+    occurrences: Object.freeze(occurrences),
+    configurationSha256: trigger.schedule.config.configSha256,
+    readOnlyCanary: true,
+  });
 }
 
 export function nextWorkflowScheduleOccurrence(input: {
@@ -616,6 +1153,437 @@ export async function claimDueWorkflowScheduleShadows(input: {
       return receipts;
     }) as WorkflowScheduleShadowReceiptV1[];
   });
+}
+
+export async function processDueWorkflowSchedulesForTenant(input: {
+  tenantId: string;
+  systemActorId: string;
+  correlationId: string;
+  now?: string;
+  limit?: number;
+}) {
+  if (!hasDatabaseUrl()) {
+    return {
+      ownerActors: 0,
+      shadowEvaluated: 0,
+      occurrencesClaimed: 0,
+      occurrencesEnqueued: 0,
+      occurrencesSkipped: 0,
+      occurrencesFailed: 0,
+      occurrencesReconciled: 0,
+    };
+  }
+  const tenantId = normalizeTenantId(input.tenantId);
+  const now = new Date(requireTimestamp(
+    input.now || new Date().toISOString(),
+    "schedule processing time",
+  )).toISOString();
+  const limit = Math.min(Math.max(input.limit || 20, 1), 100);
+  const ownerRows = await runWithDatabaseSystemScope(
+    `Discover due scheduled workflow owners for tenant ${tenantId}.`,
+    async () => {
+      await ensureDatabaseSchema();
+      return getSql()`
+        SELECT DISTINCT owner_actor_id
+        FROM omni_workflow_triggers trigger
+        WHERE trigger.tenant_id = ${tenantId}
+          AND trigger.trigger_kind = 'schedule'
+          AND trigger.owner_actor_id IS NOT NULL
+          AND (
+            (
+              trigger.status = 'active'
+              AND trigger.circuit_state = 'closed'
+              AND (
+                (trigger.next_due_at IS NOT NULL AND trigger.next_due_at <= ${now})
+                OR (trigger.shadow_next_due_at IS NOT NULL AND trigger.shadow_next_due_at <= ${now})
+              )
+            ) OR EXISTS (
+              SELECT 1
+              FROM omni_workflow_schedule_occurrences occurrence
+              WHERE occurrence.tenant_id = trigger.tenant_id
+                AND occurrence.owner_actor_id = trigger.owner_actor_id
+                AND occurrence.trigger_id = trigger.id
+                AND occurrence.status IN ('claimed', 'enqueued')
+            )
+          )
+        ORDER BY owner_actor_id COLLATE "C"
+        LIMIT ${limit}
+      `;
+    },
+  );
+  const totals = {
+    ownerActors: ownerRows.length,
+    shadowEvaluated: 0,
+    occurrencesClaimed: 0,
+    occurrencesEnqueued: 0,
+    occurrencesSkipped: 0,
+    occurrencesFailed: 0,
+    occurrencesReconciled: 0,
+  };
+  for (const row of ownerRows) {
+    const actorId = requiredActorId(String(row.owner_actor_id));
+    const result = await processActorWorkflowSchedules({
+      tenantId,
+      actorId,
+      systemActorId: input.systemActorId,
+      correlationId: input.correlationId,
+      now,
+      limit,
+    });
+    totals.shadowEvaluated += result.shadowEvaluated;
+    totals.occurrencesClaimed += result.occurrencesClaimed;
+    totals.occurrencesEnqueued += result.occurrencesEnqueued;
+    totals.occurrencesSkipped += result.occurrencesSkipped;
+    totals.occurrencesFailed += result.occurrencesFailed;
+    totals.occurrencesReconciled += result.occurrencesReconciled;
+  }
+  return totals;
+}
+
+export async function processActorWorkflowSchedules(input: {
+  tenantId: string;
+  actorId: string;
+  systemActorId: string;
+  correlationId: string;
+  now?: string;
+  limit?: number;
+}) {
+  if (!hasDatabaseUrl()) {
+    throw new Error("Scheduled workflow processing requires durable database storage.");
+  }
+  const tenantId = normalizeTenantId(input.tenantId);
+  const actorId = requiredActorId(input.actorId);
+  const now = new Date(requireTimestamp(
+    input.now || new Date().toISOString(),
+    "schedule processing time",
+  )).toISOString();
+  const limit = Math.min(Math.max(input.limit || 20, 1), 100);
+  const schedulerScope = createExecutionScope({
+    tenantId,
+    initiatingActorId: actorId,
+    executingPrincipalType: "system",
+    executingPrincipalId: input.systemActorId,
+    correlationId: `${input.correlationId}:workflow-schedules:${canonicalJsonSha256({ actorId }).slice(0, 16)}`,
+    purpose: "workflow.schedule.tick",
+  });
+  const shadow = await claimDueWorkflowScheduleShadows({
+    tenantId,
+    actorId,
+    executionScope: schedulerScope,
+    now,
+    limit,
+  });
+  const reconciled = await reconcileWorkflowScheduleOccurrences({
+    tenantId,
+    actorId,
+    executionScope: schedulerScope,
+    now,
+    limit,
+  });
+  const claimed = await claimDueWorkflowScheduleOccurrences({
+    tenantId,
+    actorId,
+    executionScope: schedulerScope,
+    now,
+    limit,
+  });
+  const pending = await listClaimedWorkflowScheduleOccurrences({
+    tenantId,
+    actorId,
+    limit,
+  });
+  const processed: WorkflowScheduleOccurrenceRecord[] = [];
+  for (const occurrence of pending) {
+    processed.push(await executeClaimedWorkflowScheduleOccurrence(
+      occurrence,
+      schedulerScope,
+    ));
+  }
+  return {
+    shadowEvaluated: shadow.length,
+    occurrencesClaimed: claimed.filter((item) => item.status === "claimed").length,
+    occurrencesSkipped: claimed.filter((item) => item.status === "skipped").length,
+    occurrencesEnqueued: processed.filter((item) => item.status === "enqueued").length,
+    occurrencesFailed: processed.filter((item) => item.status === "failed").length,
+    occurrencesReconciled: reconciled.length,
+  };
+}
+
+export async function runWorkflowScheduleOnce(input: {
+  tenantId: string;
+  actorId: string;
+  triggerId: string;
+  scheduledFor: string;
+  executionScope: ExecutionScope;
+}) {
+  if (!hasDatabaseUrl()) {
+    throw new Error("Scheduled workflow run-once requires durable database storage.");
+  }
+  const tenantId = normalizeTenantId(input.tenantId);
+  const actorId = requiredActorId(input.actorId);
+  assertExecutionScopeTenant(input.executionScope, tenantId);
+  if (input.executionScope.initiatingActorId !== actorId) {
+    throw new WorkflowScheduleControlError(
+      "Run once requires the owning actor.",
+      "invalid_state",
+    );
+  }
+  const scheduledFor = minuteTimestamp(input.scheduledFor);
+  const trigger = await getWorkflowTrigger(input.triggerId, { tenantId, actorId });
+  if (!trigger) throw new WorkflowScheduleControlError("Schedule not found.", "not_found");
+  if (!trigger.schedule) throw new WorkflowScheduleControlError("Webhook triggers cannot run once.", "not_schedule");
+  if (trigger.status !== "active" || trigger.schedule.state.circuitState !== "closed") {
+    throw new WorkflowScheduleControlError(
+      "Resume this schedule and close its circuit before running it.",
+      "invalid_state",
+    );
+  }
+  const occurrence = await insertManualWorkflowScheduleOccurrence({
+    trigger,
+    scheduledFor,
+    executionScope: input.executionScope,
+  });
+  return occurrence.status === "claimed"
+    ? executeClaimedWorkflowScheduleOccurrence(occurrence, input.executionScope)
+    : occurrence;
+}
+
+async function claimDueWorkflowScheduleOccurrences(input: {
+  tenantId: string;
+  actorId: string;
+  executionScope: ExecutionScope;
+  now: string;
+  limit: number;
+}) {
+  return runWithDatabaseActorScope(input.tenantId, [input.actorId], async () => {
+    await ensureDatabaseSchema();
+    return getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      const rows = await sql`
+        SELECT *
+        FROM omni_workflow_triggers
+        WHERE tenant_id = ${input.tenantId}
+          AND owner_actor_id = ${input.actorId}
+          AND trigger_kind = 'schedule'
+          AND status = 'active'
+          AND circuit_state = 'closed'
+          AND next_due_at IS NOT NULL
+          AND next_due_at <= ${input.now}
+        ORDER BY next_due_at ASC, id COLLATE "C"
+        LIMIT ${input.limit}
+        FOR UPDATE SKIP LOCKED
+      `;
+      const claimed: WorkflowScheduleOccurrenceRecord[] = [];
+      for (const row of rows) {
+        const trigger = workflowTriggerFromRow(row);
+        const currentNextDueAt = trigger.schedule?.state.nextDueAt;
+        if (!trigger.schedule || !currentNextDueAt) continue;
+        const evaluation = evaluateWorkflowScheduleShadow({
+          config: trigger.schedule.config,
+          currentNextDueAt,
+          occurrenceCount: trigger.schedule.state.occurrenceCount,
+          now: input.now,
+        });
+        const occurrence = buildWorkflowScheduleOccurrence({
+          trigger,
+          kind: "scheduled",
+          status: evaluation.wouldCreateRun ? "claimed" : "skipped",
+          ...evaluation,
+          now: input.now,
+        });
+        const inserted = await insertWorkflowScheduleOccurrence(
+          occurrence,
+          input.executionScope,
+          sql,
+        );
+        await sql`
+          UPDATE omni_workflow_triggers
+          SET next_due_at = ${evaluation.nextDueAt || null},
+              occurrence_count = ${evaluation.occurrenceCount},
+              updated_at = ${input.now}
+          WHERE tenant_id = ${input.tenantId}
+            AND owner_actor_id = ${input.actorId}
+            AND id = ${trigger.id}
+            AND next_due_at = ${currentNextDueAt}
+        `;
+        if (inserted) claimed.push(inserted);
+      }
+      return claimed;
+    }) as Promise<WorkflowScheduleOccurrenceRecord[]>;
+  });
+}
+
+async function insertManualWorkflowScheduleOccurrence(input: {
+  trigger: WorkflowTriggerRecord;
+  scheduledFor: string;
+  executionScope: ExecutionScope;
+}) {
+  const schedule = input.trigger.schedule!;
+  const occurrence = buildWorkflowScheduleOccurrence({
+    trigger: input.trigger,
+    kind: "manual",
+    status: "claimed",
+    scheduledFor: input.scheduledFor,
+    evaluatedThrough: input.scheduledFor,
+    outcome: "due",
+    occurrencesConsumed: 0,
+    occurrenceCount: schedule.state.occurrenceCount,
+    nextDueAt: schedule.state.nextDueAt,
+    now: new Date().toISOString(),
+  });
+  return runWithDatabaseActorScope(
+    input.trigger.tenantId,
+    [input.trigger.ownerActorId!],
+    async () => getSql().transaction(async (sql: ReturnType<typeof getSql>) =>
+      (await insertWorkflowScheduleOccurrence(
+        occurrence,
+        input.executionScope,
+        sql,
+      )) || occurrence),
+  ) as Promise<WorkflowScheduleOccurrenceRecord>;
+}
+
+async function listClaimedWorkflowScheduleOccurrences(input: {
+  tenantId: string;
+  actorId: string;
+  limit: number;
+}) {
+  return runWithDatabaseActorScope(input.tenantId, [input.actorId], async () => {
+    const rows = await getSql()`
+      SELECT * FROM omni_workflow_schedule_occurrences
+      WHERE tenant_id = ${input.tenantId}
+        AND owner_actor_id = ${input.actorId}
+        AND status = 'claimed'
+      ORDER BY scheduled_for ASC, id COLLATE "C"
+      LIMIT ${input.limit}
+    `;
+    return rows.map(workflowScheduleOccurrenceFromRow);
+  });
+}
+
+async function executeClaimedWorkflowScheduleOccurrence(
+  occurrence: WorkflowScheduleOccurrenceRecord,
+  schedulerScope: ExecutionScope,
+) {
+  let queued = false;
+  try {
+    const authority = await revalidateWorkflowScheduleCanary(occurrence);
+    const executionScope = createExecutionScope({
+      tenantId: occurrence.tenantId,
+      initiatingActorId: occurrence.ownerActorId,
+      executingPrincipalType: "agent",
+      executingPrincipalId: authority.identity.principal.principalId,
+      correlationId: `workflow-schedule:${occurrence.id}`,
+      causationId: occurrence.id,
+      contextGrantIds: [],
+      capabilityGrantIds: [],
+      purpose: "workflow.schedule.read_only_canary",
+    });
+    const workflow = await createWorkflowRun({
+      tenantId: occurrence.tenantId,
+      executionAuthority: {
+        executionScope,
+        requesterRole: "system",
+      },
+      idempotencyKey: `schedule:${occurrence.authoritySha256}`,
+      goal: scheduledProcedureGoal(authority.snapshot, occurrence.scheduledFor),
+      mode: authority.trigger.workflowMode,
+      requireApproval: false,
+      maxAttempts: 1,
+      budgetLimits: authority.trigger.schedule!.config.occurrenceBudget,
+      metadata: {
+        source: "scheduled_read_only_canary",
+        actorId: occurrence.ownerActorId,
+        primaryAgentId: authority.identity.definition.logicalAgentId,
+        agentIdentity: authority.identity,
+        agentProfile: authority.profile,
+        savedProcedure: authority.snapshot,
+        scheduleTriggerId: occurrence.triggerId,
+        scheduleOccurrenceId: occurrence.id,
+        scheduledFor: occurrence.scheduledFor,
+        scheduleConfigurationSha256: occurrence.configurationSha256,
+        readOnlyCanary: true,
+      },
+    });
+    const queueJob = await enqueueWorkflowRunTick(
+      workflow.run.id,
+      `schedule:${occurrence.triggerId}`,
+      undefined,
+      occurrence.tenantId,
+    );
+    queued = true;
+    const enqueued = await transitionWorkflowScheduleOccurrence({
+      occurrence,
+      status: "enqueued",
+      workflowRunId: workflow.run.id,
+      queueJobId: queueJob.id,
+      executionScope: schedulerScope,
+    });
+    await appendWorkflowEvent(workflow.run.id, "workflow.schedule.enqueued", {
+      triggerId: occurrence.triggerId,
+      occurrenceId: occurrence.id,
+      scheduledFor: occurrence.scheduledFor,
+      configurationSha256: occurrence.configurationSha256,
+      readOnlyCanary: true,
+      queueJobId: queueJob.id,
+    }).catch(() => undefined);
+    return enqueued;
+  } catch (error) {
+    // Once the existing queue accepts the idempotent run, leave a failed
+    // projection claim retriable instead of falsely recording that no run exists.
+    if (queued) return occurrence;
+    return transitionWorkflowScheduleOccurrence({
+      occurrence,
+      status: "failed",
+      failureCode: scheduleFailureCode(error),
+      executionScope: schedulerScope,
+    });
+  }
+}
+
+async function reconcileWorkflowScheduleOccurrences(input: {
+  tenantId: string;
+  actorId: string;
+  executionScope: ExecutionScope;
+  now: string;
+  limit: number;
+}) {
+  const candidates = await runWithDatabaseActorScope(
+    input.tenantId,
+    [input.actorId],
+    async () => {
+      const rows = await getSql()`
+        SELECT occurrence.*, run.status AS workflow_status
+        FROM omni_workflow_schedule_occurrences occurrence
+        JOIN omni_workflow_runs run
+          ON run.tenant_id = occurrence.tenant_id
+          AND run.id = occurrence.workflow_run_id
+        WHERE occurrence.tenant_id = ${input.tenantId}
+          AND occurrence.owner_actor_id = ${input.actorId}
+          AND occurrence.status = 'enqueued'
+          AND run.status IN ('completed', 'failed', 'canceled')
+        ORDER BY occurrence.updated_at ASC, occurrence.id COLLATE "C"
+        LIMIT ${input.limit}
+      `;
+      return rows.map((row) => ({
+        occurrence: workflowScheduleOccurrenceFromRow(row),
+        workflowStatus: String(row.workflow_status),
+      }));
+    },
+  );
+  const reconciled: WorkflowScheduleOccurrenceRecord[] = [];
+  for (const candidate of candidates) {
+    reconciled.push(await transitionWorkflowScheduleOccurrence({
+      occurrence: candidate.occurrence,
+      status: candidate.workflowStatus === "completed" ? "completed" : "failed",
+      failureCode: candidate.workflowStatus === "failed"
+        ? "workflow_failed"
+        : candidate.workflowStatus === "canceled"
+          ? "workflow_canceled"
+          : undefined,
+      executionScope: input.executionScope,
+    }));
+  }
+  return reconciled;
 }
 
 export async function dispatchWorkflowTrigger(input: DispatchWorkflowTriggerInput) {
@@ -880,6 +1848,7 @@ async function saveWorkflowTrigger(
           occurrence_count, consecutive_failure_count, failure_limit,
           circuit_state, paused_reason, last_failure_at, circuit_opened_at,
           shadow_occurrence_count, shadow_evaluated_at,
+          replaces_trigger_id, replaced_by_trigger_id,
           created_at, updated_at
         )
         VALUES (
@@ -909,6 +1878,8 @@ async function saveWorkflowTrigger(
           ${record.schedule?.state.circuitOpenedAt || null},
           ${record.schedule?.state.shadowOccurrenceCount || 0},
           ${record.schedule?.state.shadowEvaluatedAt || null},
+          ${record.replacesTriggerId || null},
+          ${record.replacedByTriggerId || null},
           ${record.createdAt}, ${record.updatedAt}
         )
         ON CONFLICT (id) DO NOTHING
@@ -1434,6 +2405,689 @@ async function appendWorkflowScheduleShadowEvent(
   }, { sql });
 }
 
+async function appendWorkflowScheduleControlEvent(input: {
+  trigger: WorkflowTriggerRecord;
+  action: "paused" | "resumed" | "replaced" | "replacement_activated";
+  executionScope: ExecutionScope;
+  sql?: ReturnType<typeof getSql>;
+}) {
+  const stateSha256 = canonicalJsonSha256({
+    triggerId: input.trigger.id,
+    status: input.trigger.status,
+    circuitState: input.trigger.schedule?.state.circuitState || null,
+    consecutiveFailureCount:
+      input.trigger.schedule?.state.consecutiveFailureCount || 0,
+    replacesTriggerId: input.trigger.replacesTriggerId || null,
+    replacedByTriggerId: input.trigger.replacedByTriggerId || null,
+    updatedAt: input.trigger.updatedAt,
+  });
+  await appendScopedDomainEvent({
+    id: `workflow-schedule-control:${canonicalJsonSha256({
+      triggerId: input.trigger.id,
+      action: input.action,
+      stateSha256,
+    })}`,
+    streamId: `workflow-trigger:${input.trigger.id}`,
+    type: `workflow.schedule.${input.action}`,
+    executionScope: deriveExecutionScope(input.executionScope, {
+      causationId: `workflow-schedule:${input.trigger.id}:${input.action}`,
+      purpose: "workflow.schedule.control",
+    }),
+    payload: {
+      schemaVersion: 1,
+      triggerId: input.trigger.id,
+      action: input.action,
+      status: input.trigger.status,
+      circuitState: input.trigger.schedule?.state.circuitState || null,
+      configurationSha256:
+        input.trigger.schedule?.config.configSha256 || null,
+      stateSha256,
+    },
+  }, input.sql ? { sql: input.sql } : {});
+}
+
+async function insertWorkflowScheduleOccurrence(
+  occurrence: WorkflowScheduleOccurrenceRecord,
+  executionScope: ExecutionScope,
+  sql: ReturnType<typeof getSql>,
+) {
+  const rows = await sql`
+    INSERT INTO omni_workflow_schedule_occurrences (
+      schema_version, id, tenant_id, owner_actor_id, trigger_id,
+      occurrence_kind, status, scheduled_for, evaluated_through, outcome,
+      occurrences_consumed, occurrence_count, next_due_at,
+      configuration_sha256, agent_identity_pin_sha256, policy_pin_sha256,
+      procedure_snapshot_sha256, reviewed_snapshot_sha256,
+      occurrence_budget_sha256, authority_sha256, workflow_run_id,
+      queue_job_id, failure_code, attempt_count, last_attempt_at,
+      completed_at, created_at, updated_at
+    ) VALUES (
+      ${occurrence.schemaVersion}, ${occurrence.id}, ${occurrence.tenantId},
+      ${occurrence.ownerActorId}, ${occurrence.triggerId}, ${occurrence.kind},
+      ${occurrence.status}, ${occurrence.scheduledFor},
+      ${occurrence.evaluatedThrough}, ${occurrence.outcome},
+      ${occurrence.occurrencesConsumed}, ${occurrence.occurrenceCount},
+      ${occurrence.nextDueAt || null}, ${occurrence.configurationSha256},
+      ${occurrence.agentIdentityPinSha256}, ${occurrence.policyPinSha256},
+      ${occurrence.procedureSnapshotSha256},
+      ${occurrence.reviewedSnapshotSha256},
+      ${occurrence.occurrenceBudgetSha256}, ${occurrence.authoritySha256},
+      ${occurrence.workflowRunId || null}, ${occurrence.queueJobId || null},
+      ${occurrence.failureCode || null}, ${occurrence.attemptCount},
+      ${occurrence.lastAttemptAt || null}, ${occurrence.completedAt || null},
+      ${occurrence.createdAt}, ${occurrence.updatedAt}
+    )
+    ON CONFLICT (
+      tenant_id, owner_actor_id, trigger_id, scheduled_for,
+      configuration_sha256
+    ) DO NOTHING
+    RETURNING *
+  `;
+  if (!rows[0]) {
+    const existing = await sql`
+      SELECT * FROM omni_workflow_schedule_occurrences
+      WHERE tenant_id = ${occurrence.tenantId}
+        AND owner_actor_id = ${occurrence.ownerActorId}
+        AND trigger_id = ${occurrence.triggerId}
+        AND scheduled_for = ${occurrence.scheduledFor}
+        AND configuration_sha256 = ${occurrence.configurationSha256}
+      LIMIT 1
+    `;
+    return existing[0]
+      ? workflowScheduleOccurrenceFromRow(existing[0])
+      : undefined;
+  }
+  const inserted = workflowScheduleOccurrenceFromRow(rows[0]);
+  await appendWorkflowScheduleOccurrenceReceipt(inserted, executionScope, sql);
+  return inserted;
+}
+
+async function transitionWorkflowScheduleOccurrence(input: {
+  occurrence: WorkflowScheduleOccurrenceRecord;
+  status: "enqueued" | "completed" | "failed";
+  workflowRunId?: string;
+  queueJobId?: string;
+  failureCode?: WorkflowScheduleOccurrenceFailureCode;
+  executionScope: ExecutionScope;
+}) {
+  const now = new Date().toISOString();
+  return runWithDatabaseActorScope(
+    input.occurrence.tenantId,
+    [input.occurrence.ownerActorId],
+    async () => getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      const currentRows = await sql`
+        SELECT * FROM omni_workflow_schedule_occurrences
+        WHERE tenant_id = ${input.occurrence.tenantId}
+          AND owner_actor_id = ${input.occurrence.ownerActorId}
+          AND id = ${input.occurrence.id}
+        LIMIT 1
+        FOR UPDATE
+      `;
+      if (!currentRows[0]) {
+        throw new WorkflowScheduleControlError(
+          "Scheduled occurrence disappeared during processing.",
+          "not_found",
+        );
+      }
+      const current = workflowScheduleOccurrenceFromRow(currentRows[0]);
+      if (current.status === input.status) return current;
+      if (
+        (input.status === "enqueued" && current.status !== "claimed") ||
+        ((input.status === "completed" || input.status === "failed") &&
+          current.status !== "enqueued" && current.status !== "claimed")
+      ) {
+        return current;
+      }
+      const rows = await sql`
+        UPDATE omni_workflow_schedule_occurrences
+        SET status = ${input.status},
+            workflow_run_id = ${input.workflowRunId || current.workflowRunId || null},
+            queue_job_id = ${input.queueJobId || current.queueJobId || null},
+            failure_code = ${input.failureCode || null},
+            attempt_count = attempt_count + 1,
+            last_attempt_at = ${now},
+            completed_at = ${input.status === "completed" || input.status === "failed"
+              ? now
+              : null},
+            updated_at = ${now}
+        WHERE tenant_id = ${current.tenantId}
+          AND owner_actor_id = ${current.ownerActorId}
+          AND id = ${current.id}
+        RETURNING *
+      `;
+      const updated = workflowScheduleOccurrenceFromRow(rows[0]);
+      await appendWorkflowScheduleOccurrenceReceipt(
+        updated,
+        input.executionScope,
+        sql,
+      );
+      if (input.status === "enqueued") {
+        await sql`
+          UPDATE omni_workflow_triggers
+          SET trigger_count = trigger_count + 1,
+              last_triggered_at = ${now},
+              updated_at = ${now}
+          WHERE tenant_id = ${current.tenantId}
+            AND owner_actor_id = ${current.ownerActorId}
+            AND id = ${current.triggerId}
+        `;
+      } else if (input.status === "completed") {
+        await sql`
+          UPDATE omni_workflow_triggers
+          SET consecutive_failure_count = 0,
+              circuit_state = 'closed',
+              last_failure_at = NULL,
+              circuit_opened_at = NULL,
+              updated_at = ${now}
+          WHERE tenant_id = ${current.tenantId}
+            AND owner_actor_id = ${current.ownerActorId}
+            AND id = ${current.triggerId}
+        `;
+      } else {
+        await sql`
+          UPDATE omni_workflow_triggers
+          SET failure_count = failure_count + 1,
+              consecutive_failure_count = consecutive_failure_count + 1,
+              last_failure_at = ${now},
+              circuit_state = CASE
+                WHEN consecutive_failure_count + 1 >= failure_limit
+                  THEN 'open'
+                ELSE circuit_state
+              END,
+              status = CASE
+                WHEN consecutive_failure_count + 1 >= failure_limit
+                  THEN 'paused'
+                ELSE status
+              END,
+              paused_reason = CASE
+                WHEN consecutive_failure_count + 1 >= failure_limit
+                  THEN 'Scheduled read-only canary circuit opened after repeated failures.'
+                ELSE paused_reason
+              END,
+              circuit_opened_at = CASE
+                WHEN consecutive_failure_count + 1 >= failure_limit
+                  THEN ${now}
+                ELSE circuit_opened_at
+              END,
+              updated_at = ${now}
+          WHERE tenant_id = ${current.tenantId}
+            AND owner_actor_id = ${current.ownerActorId}
+            AND id = ${current.triggerId}
+        `;
+      }
+      return updated;
+    }),
+  ) as Promise<WorkflowScheduleOccurrenceRecord>;
+}
+
+async function appendWorkflowScheduleOccurrenceReceipt(
+  occurrence: WorkflowScheduleOccurrenceRecord,
+  executionScope: ExecutionScope,
+  sql: ReturnType<typeof getSql>,
+) {
+  const recordedAt = occurrence.updatedAt;
+  const stateSha256 = canonicalJsonSha256({
+    occurrenceId: occurrence.id,
+    status: occurrence.status,
+    workflowRunId: occurrence.workflowRunId || null,
+    queueJobId: occurrence.queueJobId || null,
+    failureCode: occurrence.failureCode || null,
+    attemptCount: occurrence.attemptCount,
+    updatedAt: occurrence.updatedAt,
+  });
+  const body = {
+    schemaVersion: 1 as const,
+    id: `workflow_schedule_receipt_${canonicalJsonSha256({
+      occurrenceId: occurrence.id,
+      stateSha256,
+    }).slice(0, 40)}`,
+    tenantId: occurrence.tenantId,
+    ownerActorId: occurrence.ownerActorId,
+    triggerId: occurrence.triggerId,
+    occurrenceId: occurrence.id,
+    status: occurrence.status,
+    workflowRunId: occurrence.workflowRunId,
+    queueJobId: occurrence.queueJobId,
+    failureCode: occurrence.failureCode,
+    authoritySha256: occurrence.authoritySha256,
+    stateSha256,
+    recordedAt,
+  };
+  const receipt: WorkflowScheduleOccurrenceReceiptV1 = Object.freeze({
+    ...body,
+    receiptSha256: canonicalJsonSha256(body),
+  });
+  await sql`
+    INSERT INTO omni_workflow_schedule_occurrence_receipts (
+      schema_version, id, tenant_id, owner_actor_id, trigger_id,
+      occurrence_id, status, workflow_run_id, queue_job_id, failure_code,
+      authority_sha256, state_sha256, recorded_at, receipt_sha256
+    ) VALUES (
+      ${receipt.schemaVersion}, ${receipt.id}, ${receipt.tenantId},
+      ${receipt.ownerActorId}, ${receipt.triggerId}, ${receipt.occurrenceId},
+      ${receipt.status}, ${receipt.workflowRunId || null},
+      ${receipt.queueJobId || null}, ${receipt.failureCode || null},
+      ${receipt.authoritySha256}, ${receipt.stateSha256},
+      ${receipt.recordedAt}, ${receipt.receiptSha256}
+    )
+    ON CONFLICT (tenant_id, owner_actor_id, id) DO NOTHING
+  `;
+  await appendScopedDomainEvent({
+    id: `workflow-schedule-occurrence:${receipt.receiptSha256}`,
+    streamId: `workflow-trigger:${receipt.triggerId}`,
+    type: `workflow.schedule.occurrence.${receipt.status}`,
+    executionScope: deriveExecutionScope(executionScope, {
+      causationId: receipt.occurrenceId,
+      purpose: "workflow.schedule.occurrence.persist",
+    }),
+    payload: {
+      schemaVersion: 1,
+      triggerId: receipt.triggerId,
+      occurrenceId: receipt.occurrenceId,
+      status: receipt.status,
+      scheduledFor: occurrence.scheduledFor,
+      workflowRunId: receipt.workflowRunId || null,
+      queueJobId: receipt.queueJobId || null,
+      failureCode: receipt.failureCode || null,
+      configurationSha256: occurrence.configurationSha256,
+      authoritySha256: receipt.authoritySha256,
+      stateSha256: receipt.stateSha256,
+      receiptSha256: receipt.receiptSha256,
+    },
+  }, { sql });
+}
+
+async function activateWorkflowScheduleReplacement(input: {
+  tenantId: string;
+  actorId: string;
+  previousTriggerId: string;
+  replacementTriggerId: string;
+  executionScope: ExecutionScope;
+}) {
+  const now = new Date().toISOString();
+  if (hasDatabaseUrl()) {
+    return runWithDatabaseActorScope(input.tenantId, [input.actorId], async () =>
+      getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+        const previousRows = await sql`
+          UPDATE omni_workflow_triggers
+          SET status = 'paused',
+              paused_reason = 'Replaced by a newly reviewed immutable schedule.',
+              replaced_by_trigger_id = ${input.replacementTriggerId},
+              updated_at = ${now}
+          WHERE tenant_id = ${input.tenantId}
+            AND owner_actor_id = ${input.actorId}
+            AND id = ${input.previousTriggerId}
+            AND trigger_kind = 'schedule'
+            AND (
+              replaced_by_trigger_id IS NULL
+              OR replaced_by_trigger_id = ${input.replacementTriggerId}
+            )
+          RETURNING *
+        `;
+        if (!previousRows[0]) {
+          throw new WorkflowScheduleControlError(
+            "The original schedule was already replaced or is unavailable.",
+            "invalid_state",
+          );
+        }
+        const replacementRows = await sql`
+          UPDATE omni_workflow_triggers
+          SET status = 'active',
+              paused_reason = NULL,
+              updated_at = ${now}
+          WHERE tenant_id = ${input.tenantId}
+            AND owner_actor_id = ${input.actorId}
+            AND id = ${input.replacementTriggerId}
+            AND trigger_kind = 'schedule'
+            AND replaces_trigger_id = ${input.previousTriggerId}
+          RETURNING *
+        `;
+        if (!replacementRows[0]) {
+          throw new WorkflowScheduleControlError(
+            "The replacement schedule binding is invalid.",
+            "immutable_binding_changed",
+          );
+        }
+        const previous = workflowTriggerFromRow(previousRows[0]);
+        const replacement = workflowTriggerFromRow(replacementRows[0]);
+        await appendWorkflowScheduleControlEvent({
+          trigger: previous,
+          action: "replaced",
+          executionScope: input.executionScope,
+          sql,
+        });
+        await appendWorkflowScheduleControlEvent({
+          trigger: replacement,
+          action: "replacement_activated",
+          executionScope: input.executionScope,
+          sql,
+        });
+        return replacement;
+      }) as Promise<WorkflowTriggerRecord>);
+  }
+  let replacement: WorkflowTriggerRecord | undefined;
+  let previous: WorkflowTriggerRecord | undefined;
+  await mutateTriggerLedger((ledger) => {
+    ledger.triggers = ledger.triggers.map((trigger) => {
+      if (trigger.id === input.previousTriggerId) {
+        previous = {
+          ...trigger,
+          status: "paused",
+          replacedByTriggerId: input.replacementTriggerId,
+          updatedAt: now,
+          schedule: trigger.schedule ? {
+            ...trigger.schedule,
+            state: {
+              ...trigger.schedule.state,
+              pausedReason: "Replaced by a newly reviewed immutable schedule.",
+            },
+          } : undefined,
+        };
+        return previous;
+      }
+      if (trigger.id === input.replacementTriggerId) {
+        replacement = {
+          ...trigger,
+          status: "active",
+          updatedAt: now,
+          schedule: trigger.schedule ? {
+            ...trigger.schedule,
+            state: { ...trigger.schedule.state, pausedReason: undefined },
+          } : undefined,
+        };
+        return replacement;
+      }
+      return trigger;
+    });
+    return ledger;
+  });
+  if (!previous || !replacement) {
+    throw new WorkflowScheduleControlError(
+      "The schedule replacement could not be completed.",
+      "invalid_state",
+    );
+  }
+  await appendWorkflowScheduleControlEvent({
+    trigger: previous,
+    action: "replaced",
+    executionScope: input.executionScope,
+  });
+  await appendWorkflowScheduleControlEvent({
+    trigger: replacement,
+    action: "replacement_activated",
+    executionScope: input.executionScope,
+  });
+  return replacement;
+}
+
+class WorkflowScheduleCanaryValidationError extends Error {
+  constructor(
+    message: string,
+    readonly failureCode: WorkflowScheduleOccurrenceFailureCode,
+  ) {
+    super(message);
+    this.name = "WorkflowScheduleCanaryValidationError";
+  }
+}
+
+async function revalidateWorkflowScheduleCanary(
+  occurrence: WorkflowScheduleOccurrenceRecord,
+) {
+  const trigger = await getWorkflowTrigger(occurrence.triggerId, {
+    tenantId: occurrence.tenantId,
+    actorId: occurrence.ownerActorId,
+  });
+  if (!trigger?.schedule || trigger.ownerActorId !== occurrence.ownerActorId) {
+    throw new WorkflowScheduleCanaryValidationError(
+      "The scheduled trigger binding is unavailable.",
+      "agent_policy_changed",
+    );
+  }
+  const config = trigger.schedule.config;
+  if (
+    config.configSha256 !== occurrence.configurationSha256 ||
+    canonicalJsonSha256(config.occurrenceBudget) !==
+      occurrence.occurrenceBudgetSha256
+  ) {
+    throw new WorkflowScheduleCanaryValidationError(
+      "The scheduled occurrence budget or configuration changed.",
+      "occurrence_budget_changed",
+    );
+  }
+  const identity = await resolveAgentIdentityForExecution({
+    tenantId: occurrence.tenantId,
+    actorId: occurrence.ownerActorId,
+    agentId: config.agentIdentityPin.logicalAgentId,
+  });
+  const currentPin = buildAgentRunIdentityPinV1({
+    runId: config.agentIdentityPin.runId,
+    identity,
+  });
+  if (currentPin.pinSha256 !== config.agentIdentityPin.pinSha256) {
+    throw new WorkflowScheduleCanaryValidationError(
+      "The exact Agent release or principal changed after review.",
+      "agent_identity_changed",
+    );
+  }
+  if (
+    canonicalJsonSha256(currentPin.policyPins) !== config.policyPinSha256 ||
+    occurrence.policyPinSha256 !== config.policyPinSha256
+  ) {
+    throw new WorkflowScheduleCanaryValidationError(
+      "The Agent policy changed after review.",
+      "agent_policy_changed",
+    );
+  }
+  const procedures = await listSavedProcedures({
+    tenantId: occurrence.tenantId,
+    actorId: occurrence.ownerActorId,
+  });
+  const procedure = procedures.find((candidate) =>
+    candidate.id === config.procedurePin.procedureId
+  );
+  const snapshot = procedure && findReviewedProcedureSnapshot(
+    procedure,
+    config.procedurePin.snapshotSha256,
+  );
+  if (!procedure || !snapshot) {
+    throw new WorkflowScheduleCanaryValidationError(
+      "The exact saved procedure snapshot changed after review.",
+      "procedure_changed",
+    );
+  }
+  const reviewedSnapshotSha256 = workflowScheduleReviewSha256({
+    procedureSnapshotSha256: snapshot.snapshotSha256,
+    agentIdentityPinSha256: currentPin.pinSha256,
+    policyPinSha256: config.policyPinSha256,
+    occurrenceBudgetSha256: canonicalJsonSha256(config.occurrenceBudget),
+    reviewedAt: config.procedurePin.reviewedAt,
+  });
+  if (
+    reviewedSnapshotSha256 !== config.procedurePin.reviewedSnapshotSha256 ||
+    occurrence.reviewedSnapshotSha256 !== reviewedSnapshotSha256
+  ) {
+    throw new WorkflowScheduleCanaryValidationError(
+      "The schedule review digest no longer matches its authority.",
+      "procedure_changed",
+    );
+  }
+  try {
+    assertReadOnlyProcedure(snapshot.toolBindings);
+  } catch {
+    throw new WorkflowScheduleCanaryValidationError(
+      "The saved procedure is no longer strictly read-only.",
+      "procedure_not_read_only",
+    );
+  }
+  if (
+    identity.principal.authorityMode === "explicit_grants" &&
+    snapshot.toolBindings.some((binding) =>
+      !identity.principal.toolGrantIds.includes(binding.toolId)
+    )
+  ) {
+    throw new WorkflowScheduleCanaryValidationError(
+      "The Agent no longer holds every reviewed read-only tool.",
+      "agent_policy_changed",
+    );
+  }
+  return Object.freeze({
+    trigger,
+    identity,
+    snapshot,
+    profile: readOnlyScheduleAgentProfile(identity, snapshot),
+  });
+}
+
+function findReviewedProcedureSnapshot(
+  procedure: Awaited<ReturnType<typeof listSavedProcedures>>[number],
+  snapshotSha256: string,
+) {
+  for (const alias of procedure.aliases) {
+    const snapshot = buildWorkflowProcedureSnapshot(procedure, alias);
+    if (snapshot.snapshotSha256 === snapshotSha256) return snapshot;
+  }
+  return undefined;
+}
+
+function assertReadOnlyProcedure(
+  bindings: readonly { toolId: string; input: Readonly<Record<string, unknown>> }[],
+) {
+  if (!bindings.length) {
+    throw new WorkflowScheduleControlError(
+      "Scheduled procedures require at least one exact read-only tool binding.",
+      "not_read_only",
+    );
+  }
+  for (const binding of bindings) {
+    const tool = getGovernedTool(binding.toolId);
+    if (
+      !tool ||
+      tool.status !== "active" ||
+      tool.riskLevel !== 0 ||
+      tool.approvalRequired ||
+      governedToolOperationClass(tool, { ...binding.input }) !== "read_only"
+    ) {
+      throw new WorkflowScheduleControlError(
+        `Tool ${binding.toolId} is not eligible for an unattended read-only schedule.`,
+        "not_read_only",
+      );
+    }
+  }
+}
+
+function readOnlyScheduleAgentProfile(
+  identity: ResolvedAgentIdentityV1,
+  snapshot: WorkflowProcedureSnapshot,
+) {
+  return Object.freeze({
+    name: identity.definition.name,
+    role: identity.definition.role,
+    description: identity.definition.description,
+    instructions: [
+      identity.definition.instructions,
+      "This occurrence is an unattended read-only canary. Use only the exact reviewed saved-procedure bindings. Never request, simulate, or execute a mutation.",
+    ].filter(Boolean).join("\n\n"),
+    persona: identity.definition.persona,
+    modelPolicy: identity.definition.modelPolicy,
+    autonomy: "assist" as const,
+    approvalPolicy: "read_only" as const,
+    memoryScope: identity.principal.memoryScope,
+    toolIds: [...new Set(snapshot.toolBindings.map((binding) => binding.toolId))],
+    skills: [],
+  });
+}
+
+function scheduledProcedureGoal(
+  snapshot: WorkflowProcedureSnapshot,
+  scheduledFor: string,
+) {
+  return [
+    `Run the reviewed saved procedure "${snapshot.id}" for the scheduled occurrence at ${scheduledFor}.`,
+    `Use only its exact reviewed read-only bindings and satisfy the procedure's acceptance criteria.`,
+    "Do not perform, propose, or request a mutation.",
+  ].join(" ").slice(0, 4_000);
+}
+
+function scheduleFailureCode(error: unknown): WorkflowScheduleOccurrenceFailureCode {
+  if (error instanceof WorkflowScheduleCanaryValidationError) {
+    return error.failureCode;
+  }
+  return "workflow_enqueue_failed";
+}
+
+function workflowScheduleReviewSha256(input: {
+  procedureSnapshotSha256: string;
+  agentIdentityPinSha256: string;
+  policyPinSha256: string;
+  occurrenceBudgetSha256: string;
+  reviewedAt: string;
+}) {
+  return canonicalJsonSha256({
+    version: "workflow-schedule-review-v1",
+    ...input,
+  });
+}
+
+function buildWorkflowScheduleOccurrence(input: {
+  trigger: WorkflowTriggerRecord;
+  kind: WorkflowScheduleOccurrenceKind;
+  status: "claimed" | "skipped";
+  scheduledFor: string;
+  evaluatedThrough: string;
+  outcome: WorkflowScheduleShadowOutcome;
+  occurrencesConsumed: number;
+  occurrenceCount: number;
+  nextDueAt?: string;
+  now: string;
+}): WorkflowScheduleOccurrenceRecord {
+  const config = input.trigger.schedule!.config;
+  const authorityMaterial = {
+    tenantId: input.trigger.tenantId,
+    ownerActorId: input.trigger.ownerActorId!,
+    triggerId: input.trigger.id,
+    kind: input.kind,
+    scheduledFor: input.scheduledFor,
+    configurationSha256: config.configSha256,
+    agentIdentityPinSha256: config.agentIdentityPin.pinSha256,
+    policyPinSha256: config.policyPinSha256,
+    procedureSnapshotSha256: config.procedurePin.snapshotSha256,
+    reviewedSnapshotSha256: config.procedurePin.reviewedSnapshotSha256,
+    occurrenceBudgetSha256: canonicalJsonSha256(config.occurrenceBudget),
+  };
+  const authoritySha256 = canonicalJsonSha256(authorityMaterial);
+  return Object.freeze({
+    schemaVersion: 1,
+    id: `workflow_schedule_occurrence_${authoritySha256.slice(0, 40)}`,
+    tenantId: input.trigger.tenantId,
+    ownerActorId: input.trigger.ownerActorId!,
+    triggerId: input.trigger.id,
+    kind: input.kind,
+    status: input.status,
+    scheduledFor: input.scheduledFor,
+    evaluatedThrough: input.evaluatedThrough,
+    outcome: input.outcome,
+    occurrencesConsumed: input.occurrencesConsumed,
+    occurrenceCount: input.occurrenceCount,
+    nextDueAt: input.nextDueAt,
+    configurationSha256: config.configSha256,
+    agentIdentityPinSha256: config.agentIdentityPin.pinSha256,
+    policyPinSha256: config.policyPinSha256,
+    procedureSnapshotSha256: config.procedurePin.snapshotSha256,
+    reviewedSnapshotSha256: config.procedurePin.reviewedSnapshotSha256,
+    occurrenceBudgetSha256: canonicalJsonSha256(config.occurrenceBudget),
+    authoritySha256,
+    attemptCount: 0,
+    completedAt: input.status === "skipped" ? input.now : undefined,
+    createdAt: input.now,
+    updatedAt: input.now,
+  });
+}
+
+function minuteTimestamp(value: string) {
+  const timestamp = requireTimestamp(value, "schedule occurrence time");
+  return new Date(Math.floor(timestamp / 60_000) * 60_000).toISOString();
+}
+
 function workflowTriggerConfigurationSha256(trigger: WorkflowTriggerRecord) {
   return canonicalJsonSha256({
     tenantId: trigger.tenantId,
@@ -1450,6 +3104,7 @@ function workflowTriggerConfigurationSha256(trigger: WorkflowTriggerRecord) {
     requireApproval: trigger.requireApproval,
     metadata: trigger.metadata,
     scheduleConfigSha256: trigger.schedule?.config.configSha256 || null,
+    replacesTriggerId: trigger.replacesTriggerId || null,
   });
 }
 
@@ -2172,6 +3827,12 @@ function workflowTriggerFromRow(row: Record<string, unknown>): WorkflowTriggerRe
     triggerCount: Number(row.trigger_count || 0),
     failureCount: Number(row.failure_count || 0),
     lastTriggeredAt: row.last_triggered_at ? normalizeDate(row.last_triggered_at) : undefined,
+    replacesTriggerId: row.replaces_trigger_id
+      ? String(row.replaces_trigger_id)
+      : undefined,
+    replacedByTriggerId: row.replaced_by_trigger_id
+      ? String(row.replaced_by_trigger_id)
+      : undefined,
     schedule: scheduleConfig
       ? {
           config: scheduleConfig,
@@ -2221,6 +3882,69 @@ function workflowTriggerEventFromRow(row: Record<string, unknown>): WorkflowTrig
     error: row.error ? String(row.error) : undefined,
     receivedAt: normalizeDate(row.received_at),
   };
+}
+
+function workflowScheduleOccurrenceFromRow(
+  row: Record<string, unknown>,
+): WorkflowScheduleOccurrenceRecord {
+  const status = normalizeScheduleOccurrenceStatus(row.status);
+  return Object.freeze({
+    schemaVersion: 1,
+    id: String(row.id),
+    tenantId: normalizeTenantId(String(row.tenant_id || "")),
+    ownerActorId: requiredActorId(String(row.owner_actor_id || "")),
+    triggerId: String(row.trigger_id),
+    kind: String(row.occurrence_kind) === "manual" ? "manual" : "scheduled",
+    status,
+    scheduledFor: normalizeDate(row.scheduled_for),
+    evaluatedThrough: normalizeDate(row.evaluated_through),
+    outcome: normalizeScheduleShadowOutcome(row.outcome),
+    occurrencesConsumed: Number(row.occurrences_consumed || 0),
+    occurrenceCount: Number(row.occurrence_count || 0),
+    nextDueAt: row.next_due_at ? normalizeDate(row.next_due_at) : undefined,
+    configurationSha256: String(row.configuration_sha256),
+    agentIdentityPinSha256: String(row.agent_identity_pin_sha256),
+    policyPinSha256: String(row.policy_pin_sha256),
+    procedureSnapshotSha256: String(row.procedure_snapshot_sha256),
+    reviewedSnapshotSha256: String(row.reviewed_snapshot_sha256),
+    occurrenceBudgetSha256: String(row.occurrence_budget_sha256),
+    authoritySha256: String(row.authority_sha256),
+    workflowRunId: row.workflow_run_id ? String(row.workflow_run_id) : undefined,
+    queueJobId: row.queue_job_id ? String(row.queue_job_id) : undefined,
+    failureCode: row.failure_code
+      ? normalizeScheduleFailureCode(row.failure_code)
+      : undefined,
+    attemptCount: Number(row.attempt_count || 0),
+    lastAttemptAt: row.last_attempt_at
+      ? normalizeDate(row.last_attempt_at)
+      : undefined,
+    completedAt: row.completed_at ? normalizeDate(row.completed_at) : undefined,
+    createdAt: normalizeDate(row.created_at),
+    updatedAt: normalizeDate(row.updated_at),
+  });
+}
+
+function workflowScheduleOccurrenceReceiptFromRow(
+  row: Record<string, unknown>,
+): WorkflowScheduleOccurrenceReceiptV1 {
+  return Object.freeze({
+    schemaVersion: 1,
+    id: String(row.id),
+    tenantId: normalizeTenantId(String(row.tenant_id || "")),
+    ownerActorId: requiredActorId(String(row.owner_actor_id || "")),
+    triggerId: String(row.trigger_id),
+    occurrenceId: String(row.occurrence_id),
+    status: normalizeScheduleOccurrenceStatus(row.status),
+    workflowRunId: row.workflow_run_id ? String(row.workflow_run_id) : undefined,
+    queueJobId: row.queue_job_id ? String(row.queue_job_id) : undefined,
+    failureCode: row.failure_code
+      ? normalizeScheduleFailureCode(row.failure_code)
+      : undefined,
+    authoritySha256: String(row.authority_sha256),
+    stateSha256: String(row.state_sha256),
+    recordedAt: normalizeDate(row.recorded_at),
+    receiptSha256: String(row.receipt_sha256),
+  });
 }
 
 function triggerTenantId(trigger: { tenantId?: string }) {
@@ -2288,6 +4012,47 @@ function normalizeCircuitState(
 ): NonNullable<WorkflowTriggerRecord["schedule"]>["state"]["circuitState"] {
   const state = String(value || "closed");
   return state === "open" || state === "half_open" ? state : "closed";
+}
+
+function normalizeScheduleOccurrenceStatus(
+  value: unknown,
+): WorkflowScheduleOccurrenceStatus {
+  const status = String(value || "failed");
+  if (
+    status === "claimed" || status === "enqueued" ||
+    status === "completed" || status === "skipped" || status === "failed"
+  ) return status;
+  return "failed";
+}
+
+function normalizeScheduleShadowOutcome(
+  value: unknown,
+): WorkflowScheduleShadowOutcome {
+  const outcome = String(value || "exhausted");
+  if (
+    outcome === "due" || outcome === "missed_run_once" ||
+    outcome === "missed_skipped" || outcome === "exhausted"
+  ) return outcome;
+  return "exhausted";
+}
+
+function normalizeScheduleFailureCode(
+  value: unknown,
+): WorkflowScheduleOccurrenceFailureCode {
+  const code = String(value || "workflow_enqueue_failed");
+  const allowed = new Set<WorkflowScheduleOccurrenceFailureCode>([
+    "agent_identity_changed",
+    "agent_policy_changed",
+    "procedure_changed",
+    "procedure_not_read_only",
+    "occurrence_budget_changed",
+    "workflow_enqueue_failed",
+    "workflow_failed",
+    "workflow_canceled",
+  ]);
+  return allowed.has(code as WorkflowScheduleOccurrenceFailureCode)
+    ? code as WorkflowScheduleOccurrenceFailureCode
+    : "workflow_enqueue_failed";
 }
 
 function normalizeLegacyWorkflowTrigger(

@@ -15,6 +15,17 @@ import { publicWorkflowRun, publicWorkflowRunDetail, publicWorkflowStats } from 
 import { cancelWorkflowRunTick, enqueueWorkflowRunTick, processWorkflowQueue, scheduleWorkflowQueueDrain } from "@/lib/workflows/queue";
 import { signalWorkflowRun } from "@/lib/workflows/runner";
 import { createWorkflowRun, getWorkflowRunDetail, getWorkflowStats, listWorkflowRuns } from "@/lib/workflows/store";
+import {
+  createReviewedWorkflowSchedule,
+  DEFAULT_READ_ONLY_SCHEDULE_BUDGET,
+  listSchedulableWorkflowProcedures,
+  listWorkflowScheduleOccurrenceReceipts,
+  listWorkflowScheduleOccurrences,
+  listWorkflowTriggers,
+  previewWorkflowSchedule,
+  runWorkflowScheduleOnce,
+  setWorkflowSchedulePaused,
+} from "@/lib/workflows/triggers";
 
 const modeSchema = z.enum(["orchestrate", "research", "execute", "learn"]);
 const listSchema = z.object({
@@ -36,6 +47,46 @@ const startSchema = z.object({
 }).strict();
 const signalSchema = idSchema.extend({ signal: z.enum(["pause", "resume", "cancel", "approve", "retry"]) }).strict();
 const tickSchema = idSchema;
+const scheduleListSchema = z.object({
+  limit: z.number().int().min(1).max(100).default(50),
+}).strict();
+const scheduleCreateSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  source: z.string().trim().min(1).max(120).optional(),
+  procedureId: z.string().trim().min(1).max(240),
+  agentId: z.string().trim().min(1).max(240),
+  timezone: z.string().trim().min(1).max(120),
+  rrule: z.string().trim().min(1).max(512),
+  startsAt: z.string().datetime({ offset: true }),
+  endsAt: z.string().datetime({ offset: true }).optional(),
+  maxOccurrences: z.number().int().min(1).max(10_000).default(365),
+  missedPolicy: z.enum(["skip", "run_once"]).default("skip"),
+  occurrenceBudget: runBudgetCountersV1Schema.default(
+    DEFAULT_READ_ONLY_SCHEDULE_BUDGET,
+  ),
+  failureLimit: z.number().int().min(1).max(20).default(3),
+  replacesTriggerId: z.string().trim().min(1).max(240).optional(),
+}).strict();
+const scheduleControlSchema = z.discriminatedUnion("action", [
+  z.object({
+    triggerId: z.string().trim().min(1).max(240),
+    action: z.literal("pause"),
+    reason: z.string().trim().min(1).max(500).optional(),
+  }).strict(),
+  z.object({
+    triggerId: z.string().trim().min(1).max(240),
+    action: z.literal("resume"),
+  }).strict(),
+  z.object({
+    triggerId: z.string().trim().min(1).max(240),
+    action: z.literal("run_once"),
+    scheduledFor: z.string().datetime({ offset: true }).optional(),
+  }).strict(),
+]);
+const schedulePreviewSchema = z.object({
+  triggerId: z.string().trim().min(1).max(240),
+  count: z.number().int().min(1).max(12).default(3),
+}).strict();
 
 export async function listWorkflowsService(caller: AppServiceCaller, input: z.input<typeof listSchema>) {
   const value = listSchema.parse(input);
@@ -137,4 +188,99 @@ export async function tickWorkflowService(caller: AppServiceCaller, input: z.inp
   const queue = await processWorkflowQueue({ workflowRunId: value.workflowId, limit: 1, bootstrapQueuedRuns: false, tenantId: caller.context.tenantId });
   const detail = await getWorkflowRunDetail(value.workflowId, { tenantId: caller.context.tenantId });
   return completeAppServiceCall(authorized, { workflow: detail ? publicWorkflowRunDetail(detail) : null, queue }, { resourceCount: detail ? 1 : 0 });
+}
+
+export async function listWorkflowSchedulesService(
+  caller: AppServiceCaller,
+  input: z.input<typeof scheduleListSchema>,
+) {
+  const value = scheduleListSchema.parse(input);
+  const authorized = authorizeAppServiceCall(
+    caller,
+    getAppServiceOperationContract("app.workflows.schedules.list"),
+  );
+  const owner = {
+    tenantId: caller.context.tenantId,
+    actorId: caller.context.actorId,
+  };
+  const [triggers, procedures, occurrences, receipts] = await Promise.all([
+    listWorkflowTriggers(value.limit, owner),
+    listSchedulableWorkflowProcedures(owner),
+    listWorkflowScheduleOccurrences({ ...owner, limit: value.limit }),
+    listWorkflowScheduleOccurrenceReceipts({ ...owner, limit: value.limit }),
+  ]);
+  const schedules = triggers.filter((trigger) => trigger.triggerKind === "schedule");
+  return completeAppServiceCall(authorized, {
+    schedules,
+    procedures,
+    occurrences,
+    receipts,
+  }, { resourceCount: schedules.length });
+}
+
+export async function createWorkflowScheduleService(
+  caller: AppServiceCaller,
+  input: z.input<typeof scheduleCreateSchema>,
+) {
+  const value = scheduleCreateSchema.parse(input);
+  const authorized = authorizeAppServiceCall(
+    caller,
+    getAppServiceOperationContract("app.workflows.schedules.create"),
+  );
+  const trigger = await createReviewedWorkflowSchedule({
+    ...value,
+    tenantId: caller.context.tenantId,
+    actorId: caller.context.actorId,
+    executionScope: caller.executionScope!,
+    idempotencyKey: caller.idempotencyKey!,
+  });
+  return completeAppServiceCall(authorized, { trigger }, { resourceCount: 1 });
+}
+
+export async function controlWorkflowScheduleService(
+  caller: AppServiceCaller,
+  input: z.input<typeof scheduleControlSchema>,
+) {
+  const value = scheduleControlSchema.parse(input);
+  const authorized = authorizeAppServiceCall(
+    caller,
+    getAppServiceOperationContract("app.workflows.schedules.control"),
+  );
+  if (value.action === "run_once") {
+    const occurrence = await runWorkflowScheduleOnce({
+      tenantId: caller.context.tenantId,
+      actorId: caller.context.actorId,
+      triggerId: value.triggerId,
+      scheduledFor: value.scheduledFor || new Date().toISOString(),
+      executionScope: caller.executionScope!,
+    });
+    return completeAppServiceCall(authorized, { occurrence }, { resourceCount: 1 });
+  }
+  const trigger = await setWorkflowSchedulePaused({
+    tenantId: caller.context.tenantId,
+    actorId: caller.context.actorId,
+    triggerId: value.triggerId,
+    paused: value.action === "pause",
+    reason: value.action === "pause" ? value.reason : undefined,
+    executionScope: caller.executionScope!,
+  });
+  return completeAppServiceCall(authorized, { trigger }, { resourceCount: 1 });
+}
+
+export async function previewWorkflowScheduleService(
+  caller: AppServiceCaller,
+  input: z.input<typeof schedulePreviewSchema>,
+) {
+  const value = schedulePreviewSchema.parse(input);
+  const authorized = authorizeAppServiceCall(
+    caller,
+    getAppServiceOperationContract("app.workflows.schedules.preview"),
+  );
+  const preview = await previewWorkflowSchedule({
+    tenantId: caller.context.tenantId,
+    actorId: caller.context.actorId,
+    triggerId: value.triggerId,
+    count: value.count,
+  });
+  return completeAppServiceCall(authorized, { preview }, { resourceCount: 1 });
 }

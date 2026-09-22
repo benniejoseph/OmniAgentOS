@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  hasDatabaseUrl,
   runWithDatabaseTenantScope,
   withDatabaseRequestScope,
 } from "@/lib/db/client";
@@ -46,6 +47,10 @@ import {
   processAllTenantWorkflowQueues,
   processWorkflowQueue,
 } from "@/lib/workflows/queue";
+import {
+  processActorWorkflowSchedules,
+  processDueWorkflowSchedulesForTenant,
+} from "@/lib/workflows/triggers";
 import { processDueDailyBriefs } from "@/lib/today/briefs";
 import { processDueNotifications } from "@/lib/today/notifications";
 import { dispatchMobilePushDeliveries } from "@/lib/mobile/push-store";
@@ -413,6 +418,15 @@ async function POSTHandler(request: Request) {
           0,
       });
     }
+    const workflowSchedules = hasDatabaseUrl()
+      ? await processActorWorkflowSchedules({
+          tenantId: context.tenantId,
+          actorId: context.actorId,
+          systemActorId: context.actorId,
+          correlationId: telemetry.correlationId,
+          limit: parsed.data.limit || 5,
+        })
+      : undefined;
     const [queue, agentResumes, durableSpecialists, backgroundJobs, recoveredToolClaims] =
       await Promise.all([
       processWorkflowQueue({
@@ -517,6 +531,8 @@ async function POSTHandler(request: Request) {
       metadata: {
         workflowLeased: queue.leased,
         workflowCompleted: queue.completed,
+        scheduleOccurrencesEnqueued:
+          workflowSchedules?.occurrencesEnqueued || 0,
         sloEnabled: Boolean(parsed.data.slo),
         sloHealthy: slo?.healthy,
         sloBreaches: slo?.breaches.length || 0,
@@ -531,6 +547,7 @@ async function POSTHandler(request: Request) {
     });
     return Response.json({
       queue,
+      workflowSchedules,
       agentResumes,
       durableSpecialists,
       backgroundJobs,
@@ -635,6 +652,14 @@ function summarizeScheduledOutcome(
     ),
     moltbookAutonomyCyclesProcessed: scheduled.maintenance.reduce(
       (total, item) => total + item.moltbookAutonomyCyclesProcessed,
+      0,
+    ),
+    scheduleOccurrencesEnqueued: scheduled.maintenance.reduce(
+      (total, item) => total + item.workflowSchedules.occurrencesEnqueued,
+      0,
+    ),
+    scheduleOccurrencesFailed: scheduled.maintenance.reduce(
+      (total, item) => total + item.workflowSchedules.occurrencesFailed,
       0,
     ),
   };
@@ -804,6 +829,9 @@ async function runAllTenantScheduledWork({
     moltbookHeartbeatsProcessed: number;
     moltbookAutonomyCyclesProcessed: number;
     externalDelegationsTerminated: number;
+    workflowSchedules: Awaited<
+      ReturnType<typeof processDueWorkflowSchedulesForTenant>
+    >;
     maintenanceError?: string;
     memoryMaintenance?: MemoryMaintenanceReport;
     loopV2Recovery: Awaited<ReturnType<typeof recoverInterruptedLoopV2Runs>>;
@@ -934,6 +962,9 @@ async function runTenantMaintenance({
     moltbookHeartbeatsProcessed: number;
     moltbookAutonomyCyclesProcessed: number;
     externalDelegationsTerminated: number;
+    workflowSchedules: Awaited<
+      ReturnType<typeof processDueWorkflowSchedulesForTenant>
+    >;
     maintenanceError?: string;
     memoryMaintenance?: MemoryMaintenanceReport;
     loopV2Recovery: Awaited<ReturnType<typeof recoverInterruptedLoopV2Runs>>;
@@ -954,6 +985,7 @@ async function runTenantMaintenance({
     moltbookHeartbeatsProcessed: 0,
     moltbookAutonomyCyclesProcessed: 0,
     externalDelegationsTerminated: 0,
+    workflowSchedules: emptyWorkflowScheduleSummary(),
     loopV2Recovery: emptyLoopV2RecoverySummary(),
   };
   if (Date.now() < deadlineAt) {
@@ -969,6 +1001,14 @@ async function runTenantMaintenance({
     result.toolClaimsRecovered = (
       await recoverStaleToolExecutionClaims({ tenantId })
     ).length;
+  }
+  if (Date.now() < deadlineAt) {
+    result.workflowSchedules = await processDueWorkflowSchedulesForTenant({
+      tenantId,
+      systemActorId: actorId,
+      correlationId,
+      limit: 10,
+    });
   }
   if (Date.now() < deadlineAt) {
     const a2a = await reconcileAbandonedExternalA2ATasks({ tenantId, limit: 5 });
@@ -1080,6 +1120,7 @@ function failedTenantMaintenance(
     moltbookHeartbeatsProcessed: 0,
     moltbookAutonomyCyclesProcessed: 0,
     externalDelegationsTerminated: 0,
+    workflowSchedules: emptyWorkflowScheduleSummary(),
     maintenanceError,
     loopV2Recovery: emptyLoopV2RecoverySummary(),
   };
@@ -1102,6 +1143,20 @@ function emptyLoopV2RecoverySummary(): Awaited<
     failedClosed: 0,
     deferred: 0,
     results: [],
+  };
+}
+
+function emptyWorkflowScheduleSummary(): Awaited<
+  ReturnType<typeof processDueWorkflowSchedulesForTenant>
+> {
+  return {
+    ownerActors: 0,
+    shadowEvaluated: 0,
+    occurrencesClaimed: 0,
+    occurrencesEnqueued: 0,
+    occurrencesSkipped: 0,
+    occurrencesFailed: 0,
+    occurrencesReconciled: 0,
   };
 }
 
