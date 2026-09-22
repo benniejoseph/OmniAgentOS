@@ -5,10 +5,15 @@ import {
   type AppServiceCaller,
 } from "@/lib/app-services/contracts";
 import { getAppServiceOperationContract } from "@/lib/app-services/registry";
+import { listNotificationDispositions } from "@/lib/mobile/notification-disposition-store";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { getNotificationCenter, markAllNotificationsRead, updatePersonalNotification } from "@/lib/today/notifications";
 
 const notificationListSchema = z.object({}).strict();
+export const notificationDispositionListServiceInputSchema = z.object({
+  limit: z.number().int().min(1).max(200).default(50),
+  before: z.string().datetime({ offset: true }).optional(),
+}).strict();
 const notificationUpdateSchema = z.object({
   notificationId: z.string().trim().min(1).max(200),
   action: z.enum(["read", "dismiss", "snooze", "complete"]),
@@ -25,6 +30,31 @@ export async function listNotificationsService(caller: AppServiceCaller, input: 
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.notifications.list"));
   const center = await getNotificationCenter({ ...readOwner(caller), processDue: false });
   return completeAppServiceCall(authorized, center, { resourceCount: center.notifications.length });
+}
+
+export async function listNotificationDispositionsService(
+  caller: AppServiceCaller,
+  input: z.input<typeof notificationDispositionListServiceInputSchema>,
+  dependencies: { list: typeof listNotificationDispositions } = {
+    list: listNotificationDispositions,
+  },
+) {
+  const value = notificationDispositionListServiceInputSchema.parse(input);
+  const authorized = authorizeAppServiceCall(
+    caller,
+    getAppServiceOperationContract("app.notifications.dispositions.list"),
+  );
+  const dispositions = await dependencies.list({
+    tenantId: caller.context.tenantId,
+    ownerActorId: caller.context.actorId,
+    limit: value.limit,
+    before: value.before,
+  });
+  return completeAppServiceCall(authorized, {
+    version: "notification-disposition-projection:1" as const,
+    dispositions,
+    contentIncluded: false as const,
+  }, { resourceCount: dispositions.length });
 }
 
 export async function updateNotificationService(caller: AppServiceCaller, input: z.input<typeof notificationUpdateSchema>) {

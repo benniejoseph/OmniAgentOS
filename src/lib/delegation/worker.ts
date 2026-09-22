@@ -27,6 +27,9 @@ import {
   type DelegationGrantRuntimeV1,
 } from "@/lib/delegation/grant-resolver";
 import {
+  appendDelegationGrantValidation,
+} from "@/lib/delegation/grant-validation-events";
+import {
   exactDelegationRuntime,
   executionScopeFromDelegationContract,
 } from "@/lib/delegation/runtime";
@@ -159,11 +162,41 @@ export async function processDelegationExecutionJob(
       parentEvents,
     });
   } catch {
+    try {
+      await appendDelegationGrantValidation({
+        execution,
+        executionScope: childScope,
+        status: "changed",
+      });
+    } catch {
+      return failBeforeExecution(
+        job,
+        execution,
+        childScope,
+        "grant_validation_unavailable",
+        run,
+      );
+    }
     return failBeforeExecution(
       job,
       execution,
       childScope,
       "grant_assignment_changed",
+      run,
+    );
+  }
+  try {
+    await appendDelegationGrantValidation({
+      execution,
+      executionScope: childScope,
+      status: "current",
+    });
+  } catch {
+    return failBeforeExecution(
+      job,
+      execution,
+      childScope,
+      "grant_validation_unavailable",
       run,
     );
   }

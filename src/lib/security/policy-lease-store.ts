@@ -55,6 +55,29 @@ export type ScheduledPolicyLeaseClaim = Readonly<{
   influenceManifest: DataInfluenceManifestV1;
 }>;
 
+export type ScheduledPolicyLeaseOutcomeV1 = Readonly<{
+  leaseId: string;
+  leaseSha256: string;
+  triggerId: string;
+  occurrenceId: string;
+  workflowRunId: string;
+  executionId: string;
+  bindingIndex: number;
+  bindingSha256: string;
+  toolContractSha256: string;
+  toolId: string;
+  policySha256: string;
+  influenceManifestSha256: string;
+  status: "issued" | "consumed" | "expired";
+  issuedAt: string;
+  expiresAt: string;
+  consumedAt: string | null;
+  consumptionReceiptId: string | null;
+  consumptionReceiptSha256: string | null;
+  contentIncluded: false;
+  leaseGrantsAuthority: false;
+}>;
+
 export class PolicyLeaseStoreError extends Error {
   constructor(
     public readonly code:
@@ -68,6 +91,58 @@ export class PolicyLeaseStoreError extends Error {
     super(message);
     this.name = "PolicyLeaseStoreError";
   }
+}
+
+/**
+ * Actor-private management projection. Raw lease/consumption payloads,
+ * principals, reviewed input, and target data never cross this boundary.
+ */
+export async function listScheduledPolicyLeaseOutcomes(input: {
+  tenantId: string;
+  ownerActorId: string;
+  triggerId: string;
+  limit?: number;
+  now?: string;
+}): Promise<readonly ScheduledPolicyLeaseOutcomeV1[]> {
+  if (!hasDatabaseUrl()) {
+    throw new PolicyLeaseStoreError(
+      "unavailable",
+      "Scheduled policy-lease history requires durable database storage.",
+    );
+  }
+  const tenantId = requiredId(input.tenantId, "tenant");
+  const ownerActorId = requiredId(input.ownerActorId, "owner actor");
+  const triggerId = requiredId(input.triggerId, "trigger");
+  const limit = Math.min(Math.max(Math.trunc(input.limit || 100), 1), 200);
+  const now = canonicalTimestamp(input.now || new Date().toISOString());
+  return runWithDatabaseActorScope(tenantId, [ownerActorId], async () => {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT
+        lease.lease_id, lease.lease_sha256, lease.trigger_id,
+        lease.occurrence_id, lease.workflow_run_id, lease.execution_id,
+        lease.binding_index, lease.binding_sha256,
+        lease.tool_contract_sha256, lease.tool_id,
+        lease.mutation_policy_sha256, lease.influence_manifest_sha256,
+        lease.state, lease.issued_at, lease.expires_at, lease.consumed_at,
+        lease.consumption_receipt_sha256,
+        consumption.receipt_id AS consumption_receipt_id,
+        consumption.receipt_sha256 AS durable_consumption_receipt_sha256
+      FROM omni_policy_leases lease
+      LEFT JOIN omni_policy_lease_consumptions consumption
+        ON consumption.tenant_id = lease.tenant_id
+       AND consumption.owner_actor_id = lease.owner_actor_id
+       AND consumption.lease_id = lease.lease_id
+      WHERE lease.tenant_id = ${tenantId}
+        AND lease.owner_actor_id = ${ownerActorId}
+        AND lease.trigger_id = ${triggerId}
+      ORDER BY lease.issued_at DESC, lease.lease_id COLLATE "C" DESC
+      LIMIT ${limit}
+    `;
+    return Object.freeze(rows.map((row) =>
+      policyLeaseOutcomeFromRow(row, now)
+    ));
+  });
 }
 
 export async function issueScheduledPolicyLease(input: {
@@ -659,6 +734,99 @@ async function appendLeaseEvent(
     }),
     payload,
   }, { sql });
+}
+
+function policyLeaseOutcomeFromRow(
+  row: Record<string, unknown>,
+  now: string,
+): ScheduledPolicyLeaseOutcomeV1 {
+  const state = String(row.state || "");
+  if (state !== "active" && state !== "consumed") {
+    throw new PolicyLeaseStoreError(
+      "binding_mismatch",
+      "Scheduled policy-lease state is invalid.",
+    );
+  }
+  const issuedAt = rowTimestamp(row.issued_at, "issue");
+  const expiresAt = rowTimestamp(row.expires_at, "expiry");
+  const consumedAt = row.consumed_at === null || row.consumed_at === undefined
+    ? null
+    : rowTimestamp(row.consumed_at, "consumption");
+  const leaseReceipt = optionalSha256(row.consumption_receipt_sha256);
+  const durableReceipt = optionalSha256(
+    row.durable_consumption_receipt_sha256,
+  );
+  const receiptId = row.consumption_receipt_id === null ||
+      row.consumption_receipt_id === undefined
+    ? null
+    : requiredId(String(row.consumption_receipt_id), "consumption receipt");
+  if (
+    state === "consumed" &&
+      (!consumedAt || !receiptId || !leaseReceipt || leaseReceipt !== durableReceipt) ||
+    state === "active" &&
+      (consumedAt !== null || receiptId !== null || leaseReceipt !== undefined ||
+        durableReceipt !== undefined)
+  ) {
+    throw new PolicyLeaseStoreError(
+      "binding_mismatch",
+      "Scheduled policy-lease consumption metadata is inconsistent.",
+    );
+  }
+  const status = state === "consumed"
+    ? "consumed" as const
+    : Date.parse(expiresAt) <= Date.parse(now)
+      ? "expired" as const
+      : "issued" as const;
+  return Object.freeze({
+    leaseId: requiredId(String(row.lease_id || ""), "lease"),
+    leaseSha256: sha256(String(row.lease_sha256 || ""), "lease"),
+    triggerId: requiredId(String(row.trigger_id || ""), "trigger"),
+    occurrenceId: requiredId(String(row.occurrence_id || ""), "occurrence"),
+    workflowRunId: requiredId(String(row.workflow_run_id || ""), "workflow run"),
+    executionId: requiredId(String(row.execution_id || ""), "execution"),
+    bindingIndex: boundedIndex(row.binding_index),
+    bindingSha256: sha256(String(row.binding_sha256 || ""), "binding"),
+    toolContractSha256: sha256(
+      String(row.tool_contract_sha256 || ""),
+      "tool contract",
+    ),
+    toolId: requiredId(String(row.tool_id || ""), "tool"),
+    policySha256: sha256(
+      String(row.mutation_policy_sha256 || ""),
+      "mutation policy",
+    ),
+    influenceManifestSha256: sha256(
+      String(row.influence_manifest_sha256 || ""),
+      "influence manifest",
+    ),
+    status,
+    issuedAt,
+    expiresAt,
+    consumedAt,
+    consumptionReceiptId: receiptId,
+    consumptionReceiptSha256: leaseReceipt || null,
+    contentIncluded: false,
+    leaseGrantsAuthority: false,
+  });
+}
+
+function rowTimestamp(value: unknown, label: string) {
+  const timestamp = value instanceof Date
+    ? value.toISOString()
+    : String(value || "");
+  if (!Number.isFinite(Date.parse(timestamp))) {
+    throw new PolicyLeaseStoreError(
+      "binding_mismatch",
+      `Scheduled policy-lease ${label} time is invalid.`,
+    );
+  }
+  return new Date(timestamp).toISOString();
+}
+
+function optionalSha256(value: unknown) {
+  return value === null || value === undefined
+    ? undefined
+    : sha256(String(value), "receipt");
 }
 
 function objectValue(value: unknown): Record<string, unknown> {

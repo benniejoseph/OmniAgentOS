@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   getAgentRunIdentityPin: vi.fn(),
   resolveRuntimeModel: vi.fn(),
   revalidateGrants: vi.fn(),
+  appendGrantValidation: vi.fn(),
 }));
 
 vi.mock("@/lib/delegation/execution-store", () => ({
@@ -66,6 +67,9 @@ vi.mock("@/lib/delegation/grant-resolver", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/lib/delegation/grant-resolver")>(),
   revalidateDelegationGrantsV1: mocks.revalidateGrants,
 }));
+vi.mock("@/lib/delegation/grant-validation-events", () => ({
+  appendDelegationGrantValidation: mocks.appendGrantValidation,
+}));
 
 import {
   buildAgentRunIdentityPinV1,
@@ -112,6 +116,7 @@ describe("delegation execution worker", () => {
       skills: [],
       governedToolIds: [],
     });
+    mocks.appendGrantValidation.mockResolvedValue(undefined);
     mocks.listStreamEvents.mockResolvedValue([{
       id: "event:model:one",
       streamId: "run:run-child",
@@ -166,6 +171,13 @@ describe("delegation execution worker", () => {
     expect(mocks.reviewCouncilResponse).toHaveBeenCalledTimes(1);
     expect(mocks.completeOperationJob).toHaveBeenCalledTimes(1);
     expect(mocks.failOperationJob).not.toHaveBeenCalled();
+    expect(mocks.appendGrantValidation).toHaveBeenCalledWith({
+      execution: expect.objectContaining({ executionId: "run-child" }),
+      executionScope: expect.objectContaining({
+        delegationId: "delegation:execution:one",
+      }),
+      status: "current",
+    });
   });
 
   it("persists a verifier rejection instead of promoting a weak proposal", async () => {
@@ -282,6 +294,28 @@ describe("delegation execution worker", () => {
     expect(result).toMatchObject({
       status: "failed",
       message: "grant_assignment_changed",
+    });
+    expect(harness.transitions).toEqual(["failed"]);
+    expect(mocks.claimQueuedAgentRun).not.toHaveBeenCalled();
+    expect(mocks.runAgent).not.toHaveBeenCalled();
+    expect(mocks.appendGrantValidation).toHaveBeenCalledWith({
+      execution: expect.objectContaining({ executionId: "run-child" }),
+      executionScope: expect.any(Object),
+      status: "changed",
+    });
+  });
+
+  it("fails closed when the content-free grant-validation receipt cannot persist", async () => {
+    const harness = workerHarness();
+    mocks.appendGrantValidation.mockRejectedValueOnce(
+      new Error("event ledger unavailable"),
+    );
+
+    const result = await processDelegationExecutionJob(harness.job);
+
+    expect(result).toMatchObject({
+      status: "failed",
+      message: "grant_validation_unavailable",
     });
     expect(harness.transitions).toEqual(["failed"]);
     expect(mocks.claimQueuedAgentRun).not.toHaveBeenCalled();

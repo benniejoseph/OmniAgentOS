@@ -8,6 +8,8 @@ const mocks = vi.hoisted(() => ({
   promoteAgentRelease: vi.fn(),
   rollbackAgentRelease: vi.fn(),
   retireAgentRelease: vi.fn(),
+  previewAgentRetirementService: vi.fn(),
+  retireAgentReleaseService: vi.fn(),
 }));
 
 vi.mock("@/lib/db/client", () => ({
@@ -29,6 +31,11 @@ vi.mock("@/lib/agents/release-store", async (importOriginal) => ({
   promoteAgentRelease: mocks.promoteAgentRelease,
   rollbackAgentRelease: mocks.rollbackAgentRelease,
   retireAgentRelease: mocks.retireAgentRelease,
+}));
+vi.mock("@/lib/app-services/agent-governance", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/app-services/agent-governance")>(),
+  previewAgentRetirementService: mocks.previewAgentRetirementService,
+  retireAgentReleaseService: mocks.retireAgentReleaseService,
 }));
 
 import { GET, POST } from "@/app/api/agents/[id]/release/route";
@@ -54,6 +61,14 @@ beforeEach(() => {
     mocks.rollbackAgentRelease,
     mocks.retireAgentRelease,
   ]) handler.mockResolvedValue(release);
+  mocks.previewAgentRetirementService.mockResolvedValue({
+    data: { target: { agentId: "agent-one" }, targetSha256: "f".repeat(64) },
+    receipt: { operation: "app.agents.release.retire.preview" },
+  });
+  mocks.retireAgentReleaseService.mockResolvedValue({
+    data: { release },
+    receipt: { operation: "app.agents.release.retire" },
+  });
 });
 
 describe("P7.5 Agent release route", () => {
@@ -93,7 +108,7 @@ describe("P7.5 Agent release route", () => {
       .toBe(400);
   });
 
-  it("requires the explicit retirement confirmation", async () => {
+  it("requires confirmation and retires only through the exact-target app service", async () => {
     expect((await post({ action: "retire", confirmation: "retire" })).status)
       .toBe(400);
     const response = await post({
@@ -101,7 +116,28 @@ describe("P7.5 Agent release route", () => {
       confirmation: "RETIRE AGENT",
     });
     expect(response.status).toBe(200);
-    expect(mocks.retireAgentRelease).toHaveBeenCalledOnce();
+    expect(mocks.previewAgentRetirementService).toHaveBeenCalledWith(
+      expect.objectContaining({
+        idempotencyKey: expect.any(String),
+        executionScope: expect.objectContaining({
+          tenantId: "tenant-one",
+          initiatingActorId: "owner@example.test",
+          purpose: "agent.release.retire",
+        }),
+      }),
+      { agentId: "agent-one" },
+    );
+    expect(mocks.retireAgentReleaseService).toHaveBeenCalledWith(
+      expect.anything(),
+      {
+        agentId: "agent-one",
+        expectedTargetSha256: "f".repeat(64),
+      },
+    );
+    expect(mocks.retireAgentRelease).not.toHaveBeenCalled();
+    expect(await response.json()).toMatchObject({
+      serviceReceipt: { operation: "app.agents.release.retire" },
+    });
   });
 });
 

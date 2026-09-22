@@ -2,6 +2,8 @@ import { z } from "zod";
 
 import {
   evaluateAgentReleaseService,
+  previewAgentRetirementService,
+  retireAgentReleaseService,
   showAgentReleaseService,
   transitionAgentReleaseService,
 } from "@/lib/app-services/agent-governance";
@@ -9,7 +11,6 @@ import { createAppServiceCaller, createRequestMutationAppServiceCaller } from "@
 import {
   AgentReleaseConflictError,
   AgentReleaseUnavailableError,
-  retireAgentRelease,
 } from "@/lib/agents/release-store";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
@@ -102,21 +103,39 @@ async function POSTHandler(
   const owner = releaseOwner(auth);
   if (!owner) return canonicalActorUnavailableResponse();
   try {
-    const release = parsed.data.action === "retire"
-      ? await retireAgentRelease(id, owner)
+    const caller = createRequestMutationAppServiceCaller(request, auth, {
+      purpose: `agent.release.${parsed.data.action}`,
+      causationId: id,
+    });
+    const result = parsed.data.action === "retire"
+      ? await retireThroughExactTarget(caller, id)
       : parsed.data.action === "evaluate"
-        ? (await evaluateAgentReleaseService(
-            createRequestMutationAppServiceCaller(request, auth, { purpose: "agent.release.evaluate", causationId: id }),
+        ? await evaluateAgentReleaseService(
+            caller,
             { agentId: id, definitionVersion: parsed.data.definitionVersion },
-          )).data.release
-        : (await transitionAgentReleaseService(
-            createRequestMutationAppServiceCaller(request, auth, { purpose: `agent.release.${parsed.data.action}`, causationId: id }),
+          )
+        : await transitionAgentReleaseService(
+            caller,
             { agentId: id, action: parsed.data.action, evaluationId: parsed.data.evaluationId },
-          )).data.release;
-    return Response.json({ release }, { headers: privateNoStoreHeaders });
+          );
+    return Response.json(
+      { release: result.data.release, serviceReceipt: result.receipt },
+      { headers: privateNoStoreHeaders },
+    );
   } catch (error) {
     return releaseErrorResponse(error);
   }
+}
+
+async function retireThroughExactTarget(
+  caller: ReturnType<typeof createRequestMutationAppServiceCaller>,
+  agentId: string,
+) {
+  const preview = await previewAgentRetirementService(caller, { agentId });
+  return retireAgentReleaseService(caller, {
+    agentId,
+    expectedTargetSha256: preview.data.targetSha256,
+  });
 }
 
 function releaseOwner(auth: Awaited<ReturnType<typeof authorizeRequest>>) {

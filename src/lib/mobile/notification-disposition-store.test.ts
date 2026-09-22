@@ -26,6 +26,11 @@ const sql = vi.fn(async (
           .slice(0, 100)
       : mocks.dispositionRows.slice(0, 1);
   }
+  if (query.includes("FROM omni_notification_dispositions")) {
+    return mocks.dispositionRows.filter((row) =>
+      row.tenant_id === parameters[0] && row.owner_actor_id === parameters[1]
+    );
+  }
   if (query.includes("INSERT INTO omni_notification_dispositions")) {
     const row = dispositionInsertRow(parameters);
     mocks.dispositionRows.splice(0, mocks.dispositionRows.length, row);
@@ -78,7 +83,14 @@ sql.transaction = vi.fn(async (
 ) => operation(sql));
 
 vi.mock("@/lib/db/client", () => ({
+  ensureDatabaseSchema: vi.fn(async () => undefined),
   getSql: () => sql,
+  hasDatabaseUrl: () => true,
+  runWithDatabaseActorScope: async (
+    _tenantId: string,
+    _actorIds: string[],
+    operation: () => unknown,
+  ) => operation(),
 }));
 
 vi.mock("@/lib/mobile/push-store", () => ({
@@ -99,6 +111,7 @@ import { buildNotificationDispositionRecordV1 } from "@/lib/mobile/notification-
 import {
   applyNotificationDispositionDecision,
   flushDueNotificationDigest,
+  listNotificationDispositions,
 } from "@/lib/mobile/notification-disposition-store";
 import { notificationDecisionExecutionScope } from "@/lib/mobile/notification-decision-events";
 
@@ -114,6 +127,46 @@ beforeEach(() => {
 });
 
 describe("notification disposition store", () => {
+  it("lists only the exact actor scope as content-free projections", async () => {
+    const decision = decisionFor("approval", "2026-09-22T09:00:00.000Z");
+    const coordinates = notificationDispositionCoordinates({
+      tenantId: "tenant-one",
+      ownerActorId: "actor-one",
+      sourceKind: "tool_approval",
+      sourceId: "approval-one",
+      occurrenceKey: "revision-one",
+      decision,
+    });
+    mocks.dispositionRows.push(dispositionRecordRow(
+      buildNotificationDispositionRecordV1({
+        coordinates,
+        decision,
+        now: decision.evaluatedAt,
+        deliveryKind: "notification_ledger",
+        deliveryBindingSha256: "f".repeat(64),
+      }),
+    ));
+
+    const result = await listNotificationDispositions({
+      tenantId: "tenant-one",
+      ownerActorId: "actor-one",
+      limit: 25,
+    });
+
+    expect(mocks.queries.at(-1)).toContain("owner_actor_id = ?");
+    expect(result).toEqual([expect.objectContaining({
+      dispositionId: expect.stringMatching(/^notification_disposition_/),
+      sourceKind: "tool_approval",
+      sourceId: "approval-one",
+      outcome: "send",
+      contentIncluded: false,
+      decisionGrantsAuthority: false,
+    })]);
+    expect(JSON.stringify(result)).not.toMatch(
+      /occurrenceKey|ownerActorId|tenantId|title|body|message/i,
+    );
+  });
+
   it("binds direct delivery once and treats the terminal retry as idempotent", async () => {
     const decision = decisionFor("approval", "2026-09-22T09:00:00.000Z");
     const coordinates = notificationDispositionCoordinates({

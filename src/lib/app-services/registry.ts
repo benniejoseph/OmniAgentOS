@@ -106,6 +106,7 @@ export const APP_SERVICE_OPERATION_CONTRACTS = Object.freeze([
   mutation("app.today.brief.generate", "run.agent", "daily_brief", "tool-execution-events.v1"),
   mutation("app.today.preferences.update", "run.agent", "daily_brief_preferences", "tool-execution-events.v1"),
   read("app.notifications.list", "read", "personal_notifications"),
+  read("app.notifications.dispositions.list", "read", "notification_disposition"),
   mutation("app.notifications.update", "run.agent", "personal_notification", "notifications.atomic-events.v1"),
   mutation("app.notifications.read_all", "run.agent", "personal_notifications", "notifications.atomic-events.v1"),
   read("app.runs.show", "read", "agent_run"),

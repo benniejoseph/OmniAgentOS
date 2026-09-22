@@ -1,4 +1,9 @@
-import { getSql } from "@/lib/db/client";
+import {
+  ensureDatabaseSchema,
+  getSql,
+  hasDatabaseUrl,
+  runWithDatabaseActorScope,
+} from "@/lib/db/client";
 import {
   appendNotificationDigestEvent,
   appendNotificationDispositionEvent,
@@ -12,6 +17,7 @@ import {
   notificationDispositionCoordinatesSchema,
   notificationDispositionEligible,
   notificationDispositionId,
+  notificationDispositionPublicProjection,
   notificationDispositionRecordV1Schema,
   type NotificationDigestDeliveryV1,
   type NotificationDispositionCoordinates,
@@ -45,6 +51,51 @@ export type NotificationDispositionApplyResult = Readonly<{
   applied: boolean;
   deliveryIds: readonly string[];
 }>;
+
+export class NotificationDispositionUnavailableError extends Error {
+  constructor(message = "Notification dispositions require durable storage.") {
+    super(message);
+    this.name = "NotificationDispositionUnavailableError";
+  }
+}
+
+/** Reads one actor's metadata-only decision history; source content is never selected. */
+export async function listNotificationDispositions(input: {
+  tenantId: string;
+  ownerActorId: string;
+  limit?: number;
+  before?: string;
+}) {
+  if (!hasDatabaseUrl()) throw new NotificationDispositionUnavailableError();
+  const tenantId = requiredText(input.tenantId, 240, "tenant");
+  const ownerActorId = requiredText(input.ownerActorId, 320, "actor");
+  const limit = Math.min(Math.max(Math.trunc(input.limit || 50), 1), 200);
+  const before = input.before ? timestamp(input.before) : undefined;
+  return runWithDatabaseActorScope(tenantId, [ownerActorId], async () => {
+    await ensureDatabaseSchema();
+    const rows = before
+      ? await getSql()`
+          SELECT * FROM omni_notification_dispositions
+          WHERE tenant_id = ${tenantId}
+            AND owner_actor_id = ${ownerActorId}
+            AND updated_at < ${before}
+          ORDER BY updated_at DESC, id COLLATE "C" DESC
+          LIMIT ${limit}
+        `
+      : await getSql()`
+          SELECT * FROM omni_notification_dispositions
+          WHERE tenant_id = ${tenantId}
+            AND owner_actor_id = ${ownerActorId}
+          ORDER BY updated_at DESC, id COLLATE "C" DESC
+          LIMIT ${limit}
+        `;
+    return Object.freeze(rows.map((row) =>
+      notificationDispositionPublicProjection(
+        notificationDispositionFromRow(row),
+      )
+    ));
+  });
+}
 
 /**
  * Records exactly one durable disposition for a candidate occurrence. The

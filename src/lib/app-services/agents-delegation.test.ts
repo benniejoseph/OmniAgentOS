@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   cancelAgentTaskService,
+  delegationExecutionDetailProjection,
   delegateAgentTaskService,
   listAgentTasksService,
   showAgentTaskService,
@@ -10,12 +11,16 @@ import { createAppServiceCaller } from "@/lib/app-services/contracts";
 import {
   buildDelegationExecutionRecordV1,
   transitionDelegationExecutionRecordV1,
+  type DelegationExecutionRecordV1,
 } from "@/lib/delegation/execution-record";
 import type {
   cancelDelegationExecution,
   getDelegationExecution,
   listDelegationExecutions,
 } from "@/lib/delegation/execution-store";
+import type {
+  getLatestDelegationGrantValidation,
+} from "@/lib/delegation/grant-validation-events";
 import type { delegateAgentTask } from "@/lib/delegation/runtime";
 import { buildExecutionContract } from "@/lib/delegation/test-fixtures";
 import { createExecutionScope } from "@/lib/security/execution-scope";
@@ -60,6 +65,11 @@ function dependencies(record = taskRecord()) {
       idempotent: false,
     })) as typeof cancelDelegationExecution,
     getExecution: vi.fn(async () => record) as typeof getDelegationExecution,
+    getGrantValidation: vi.fn(async () => ({
+      status: "current" as const,
+      category: "all_grants" as const,
+      validatedAt: "2026-09-22T12:00:15.000Z",
+    })) as typeof getLatestDelegationGrantValidation,
     listExecutions: vi.fn(async () => [record]) as typeof listDelegationExecutions,
   };
 }
@@ -205,16 +215,117 @@ describe("governed Agent delegation application services", () => {
       ownerActorId: context.actorId,
       executionId: "run-child",
     });
+    expect(deps.getGrantValidation).toHaveBeenCalledWith({
+      tenantId: context.tenantId,
+      ownerActorId: context.actorId,
+      executionId: "run-child",
+      delegationId: "delegation:execution:one",
+      contractSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
     expect(listed.data.tasks).toHaveLength(1);
     expect(listed.receipt).toMatchObject({
       operation: "app.agents.tasks.list",
       resourceCount: 1,
     });
     expect(shown.data.task.executionId).toBe("run-child");
+    expect(shown.data.task).toMatchObject({
+      authority: {
+        immutable: true,
+        validation: {
+          status: "current",
+          category: "all_grants",
+          validatedAt: "2026-09-22T12:00:15.000Z",
+        },
+      },
+      controls: {
+        grantsImmutable: true,
+        allowedActions: ["cancel"],
+        cancelHref: "/api/agents/tasks/run-child/cancel",
+      },
+    });
     expect(shown.receipt).toMatchObject({
       operation: "app.agents.tasks.show",
       resourceCount: 1,
     });
+    expect(JSON.stringify(shown.data.task)).not.toMatch(
+      /contextCapsule|delegatePrincipalId|runtimeAssignment|guidance|credential/i,
+    );
+  });
+
+  it("projects exact immutable Skill, Plugin, MCP, and native-read pins without private payloads", () => {
+    const record = taskRecord();
+    const withGrants = {
+      ...record,
+      contract: {
+        ...record.contract,
+        grants: {
+          grantRequestSha256: "1".repeat(64),
+          contextGrantIds: [],
+          capabilityGrantIds: ["capability:skill", "capability:plugin", "capability:mcp"],
+          governedToolIds: ["knowledge.search", "mcp:server-one:lookup"],
+          connectorTargets: ["connector-one"],
+          skills: [{
+            capabilityGrantId: "capability:skill",
+            skillId: "skill-one",
+            skillVersion: 3,
+            skillVersionId: "skill-version-one",
+            skillSha256: "2".repeat(64),
+            privatePrompt: "never project this",
+          }],
+          plugins: [{
+            capabilityGrantId: "capability:plugin",
+            installationId: "installation-one",
+            installationRevision: 4,
+            installationSha256: "3".repeat(64),
+            pluginId: "plugin-one",
+            pluginVersion: "1.2.3",
+            manifestSha256: "4".repeat(64),
+            componentIds: ["skill:research"],
+            manifest: { instructions: "never project this" },
+          }],
+          mcpServers: [{
+            capabilityGrantId: "capability:mcp",
+            serverId: "connector-one",
+            serverVersionId: "mcp-server-version-one",
+            serverContractSha256: "5".repeat(64),
+            governedToolIds: ["mcp:server-one:lookup"],
+            connectorTargetIds: ["connector-one"],
+            credential: "never project this",
+          }],
+        },
+      },
+    } as unknown as DelegationExecutionRecordV1;
+
+    const projected = delegationExecutionDetailProjection(withGrants, {
+      status: "changed",
+      category: "capability_binding",
+      validatedAt: "2026-09-22T12:04:00.000Z",
+    });
+
+    expect(projected.authority).toMatchObject({
+      immutable: true,
+      nativeReadTools: [{ toolId: "knowledge.search", managementHref: "/app/tools" }],
+      skills: [{
+        capabilityGrantId: "capability:skill",
+        skillId: "skill-one",
+        skillVersion: 3,
+        skillSha256: "2".repeat(64),
+      }],
+      plugins: [{
+        installationId: "installation-one",
+        installationRevision: 4,
+        manifestSha256: "4".repeat(64),
+      }],
+      mcpServers: [{
+        serverId: "connector-one",
+        serverContractSha256: "5".repeat(64),
+        governedToolIds: ["mcp:server-one:lookup"],
+      }],
+      validation: { status: "changed", category: "capability_binding" },
+    });
+    expect(JSON.stringify(projected)).not.toMatch(
+      /never project this|privatePrompt|credential|"manifest":/i,
+    );
   });
 
   it("cancels through exact actor authority without projecting private contracts", async () => {

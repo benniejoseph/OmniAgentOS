@@ -5,6 +5,10 @@ import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import {
+  listScheduledPolicyLeaseOutcomes,
+  PolicyLeaseStoreError,
+} from "@/lib/security/policy-lease-store";
+import {
   getWorkflowTrigger,
   listWorkflowScheduleOccurrenceReceipts,
   listWorkflowScheduleOccurrences,
@@ -31,6 +35,7 @@ const actionSchema = z.discriminatedUnion("action", [
 ]);
 
 type RouteContext = { params: Promise<{ id: string }> };
+const privateNoStoreHeaders = { "cache-control": "private, no-store" };
 
 async function GETHandler(request: Request, routeContext: RouteContext) {
   const { id } = await routeContext.params;
@@ -46,7 +51,7 @@ async function GETHandler(request: Request, routeContext: RouteContext) {
     return forbiddenResponse(error);
   }
   try {
-    const [trigger, preview, occurrences, receipts] = await Promise.all([
+    const [trigger, preview, occurrences, receipts, policyLeases] = await Promise.all([
       getWorkflowTrigger(id, {
         tenantId: context.tenantId,
         actorId: context.actorId,
@@ -69,10 +74,52 @@ async function GETHandler(request: Request, routeContext: RouteContext) {
         triggerId: id,
         limit: 60,
       }),
+      readPolicyLeaseOutcomes({
+        tenantId: context.tenantId,
+        actorId: context.actorId,
+        triggerId: id,
+      }),
     ]);
-    return Response.json({ trigger, preview, occurrences, receipts });
+    return Response.json(
+      { trigger, preview, occurrences, receipts, policyLeases },
+      { headers: privateNoStoreHeaders },
+    );
   } catch (error) {
     return scheduleErrorResponse(error);
+  }
+}
+
+async function readPolicyLeaseOutcomes(input: {
+  tenantId: string;
+  actorId: string;
+  triggerId: string;
+}) {
+  try {
+    const outcomes = await listScheduledPolicyLeaseOutcomes({
+      tenantId: input.tenantId,
+      ownerActorId: input.actorId,
+      triggerId: input.triggerId,
+      limit: 100,
+    });
+    return Object.freeze({
+      version: "scheduled-policy-lease-outcomes:1" as const,
+      available: true as const,
+      outcomes,
+      contentIncluded: false as const,
+    });
+  } catch (error) {
+    if (
+      error instanceof PolicyLeaseStoreError &&
+      error.code === "unavailable"
+    ) {
+      return Object.freeze({
+        version: "scheduled-policy-lease-outcomes:1" as const,
+        available: false as const,
+        outcomes: Object.freeze([]),
+        contentIncluded: false as const,
+      });
+    }
+    throw error;
   }
 }
 

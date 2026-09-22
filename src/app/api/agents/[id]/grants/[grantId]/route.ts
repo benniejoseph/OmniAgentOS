@@ -1,8 +1,12 @@
+import {
+  previewAgentGrantRevokeService,
+  revokeAgentGrantService,
+} from "@/lib/app-services/agent-governance";
+import { createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import {
   AgentMemoryGrantConflictError,
   AgentMemoryGrantUnavailableError,
-  revokeAgentMemoryGrant,
 } from "@/lib/memory/agent-grant-store";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -35,12 +39,26 @@ async function DELETEHandler(
     }, { status: 409, headers: privateNoStoreHeaders });
   }
   try {
-    await revokeAgentMemoryGrant(id, grantId, {
-      tenantId: auth.tenantId,
-      actorId: auth.actorId,
-      canonicalActorId: actorBinding.canonicalActorId,
+    const caller = createRequestMutationAppServiceCaller(request, auth, {
+      purpose: "agent.memory_grant.revoke",
+      causationId: grantId,
     });
-    return Response.json({ revoked: true }, {
+    const preview = await previewAgentGrantRevokeService(caller, {
+      agentId: id,
+      grantId,
+    });
+    if (!preview.data.target) {
+      return Response.json({ error: "Agent memory grant not found." }, {
+        status: 404,
+        headers: privateNoStoreHeaders,
+      });
+    }
+    const result = await revokeAgentGrantService(caller, {
+      agentId: id,
+      grantId,
+      expectedTargetSha256: preview.data.targetSha256,
+    });
+    return Response.json({ ...result.data, serviceReceipt: result.receipt }, {
       headers: privateNoStoreHeaders,
     });
   } catch (error) {

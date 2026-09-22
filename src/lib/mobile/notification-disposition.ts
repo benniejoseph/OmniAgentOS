@@ -167,6 +167,61 @@ export type NotificationDispositionRecordV1 = Readonly<
   z.infer<typeof notificationDispositionRecordV1Schema>
 >;
 
+export type NotificationDispositionPublicProjectionV1 = Readonly<{
+  dispositionId: string;
+  sourceKind: NotificationDispositionSourceKind;
+  sourceId: string;
+  occurrenceSha256: string;
+  candidateSha256: string;
+  outcome: "send" | "defer" | "digest" | "suppress";
+  state: "pending" | "terminal";
+  reason: NotificationDispositionRecordV1["reason"];
+  mustSend: boolean;
+  critical: boolean;
+  policySha256: string;
+  decisionReceiptSha256: string;
+  evaluatedAt: string;
+  dueAt: string | null;
+  digestDeliveryId: string | null;
+  deliveryKind: NotificationDispositionDeliveryKind | null;
+  deliveryBindingSha256: string | null;
+  lifecycleRevision: number;
+  updatedAt: string;
+  terminalAt: string | null;
+  contentIncluded: false;
+  decisionGrantsAuthority: false;
+}>;
+
+export function notificationDispositionPublicProjection(
+  value: NotificationDispositionRecordV1,
+): NotificationDispositionPublicProjectionV1 {
+  const record = notificationDispositionRecordV1Schema.parse(value);
+  return Object.freeze({
+    dispositionId: record.id,
+    sourceKind: record.sourceKind,
+    sourceId: record.sourceId,
+    occurrenceSha256: record.occurrenceSha256,
+    candidateSha256: record.candidateSha256,
+    outcome: record.outcome,
+    state: record.state,
+    reason: record.reason,
+    mustSend: record.mustSend,
+    critical: record.critical,
+    policySha256: record.policySha256,
+    decisionReceiptSha256: record.decisionReceiptSha256,
+    evaluatedAt: record.evaluatedAt,
+    dueAt: record.dueAt,
+    digestDeliveryId: record.digestDeliveryId,
+    deliveryKind: record.deliveryKind,
+    deliveryBindingSha256: record.deliveryBindingSha256,
+    lifecycleRevision: record.lifecycleRevision,
+    updatedAt: record.updatedAt,
+    terminalAt: record.terminalAt,
+    contentIncluded: false,
+    decisionGrantsAuthority: false,
+  });
+}
+
 export const notificationDigestDeliveryV1Schema = z.object({
   schemaVersion: z.literal(1),
   id: z.string().regex(/^notification_digest_[a-f0-9]{48}$/),

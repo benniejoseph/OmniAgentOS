@@ -19,6 +19,10 @@ import {
   listDelegationExecutions,
 } from "@/lib/delegation/execution-store";
 import {
+  getLatestDelegationGrantValidation,
+  type DelegationGrantValidationProjectionV1,
+} from "@/lib/delegation/grant-validation-events";
+import {
   delegateAgentTask,
   delegateAgentTaskInputSchema,
 } from "@/lib/delegation/runtime";
@@ -163,6 +167,7 @@ type AgentTaskServiceDependencies = Readonly<{
   delegateTask: typeof delegateAgentTask;
   cancelExecution: typeof cancelDelegationExecution;
   getExecution: typeof getDelegationExecution;
+  getGrantValidation: typeof getLatestDelegationGrantValidation;
   listExecutions: typeof listDelegationExecutions;
 }>;
 
@@ -170,6 +175,7 @@ const defaultAgentTaskServiceDependencies: AgentTaskServiceDependencies = Object
   delegateTask: delegateAgentTask,
   cancelExecution: cancelDelegationExecution,
   getExecution: getDelegationExecution,
+  getGrantValidation: getLatestDelegationGrantValidation,
   listExecutions: listDelegationExecutions,
 });
 
@@ -232,9 +238,30 @@ export async function showAgentTaskService(
     ownerActorId: caller.context.actorId,
     executionId: value.executionId,
   });
+  const grantValidation = await dependencies.getGrantValidation({
+    tenantId: caller.context.tenantId,
+    ownerActorId: caller.context.actorId,
+    executionId: execution.executionId,
+    delegationId: execution.delegationId,
+    contractSha256: execution.contractSha256,
+  });
+  const effectiveGrantValidation =
+    grantValidation.status === "not_checked" &&
+      execution.failureCode === "grant_assignment_changed"
+      ? Object.freeze({
+          status: "changed" as const,
+          category: "capability_binding" as const,
+          validatedAt: execution.updatedAt,
+        })
+      : grantValidation;
   return completeAppServiceCall(
     authorized,
-    { task: delegationExecutionPublicProjection(execution) },
+    {
+      task: delegationExecutionDetailProjection(
+        execution,
+        effectiveGrantValidation,
+      ),
+    },
     { resourceCount: 1 },
   );
 }
@@ -328,6 +355,69 @@ export function delegationExecutionPublicProjection(
     completeBy: execution.completeBy,
     updatedAt: execution.updatedAt,
     terminalAt: execution.terminalAt,
+  });
+}
+
+export function delegationExecutionDetailProjection(
+  execution: DelegationExecutionRecordV1,
+  grantValidation: DelegationGrantValidationProjectionV1,
+) {
+  const task = delegationExecutionPublicProjection(execution);
+  const grants = execution.contract.grants;
+  const mcpToolIds = new Set(
+    grants.mcpServers.flatMap((server) => server.governedToolIds),
+  );
+  return Object.freeze({
+    ...task,
+    authority: Object.freeze({
+      immutable: true,
+      contractSha256: execution.contractSha256,
+      grantRequestSha256: grants.grantRequestSha256,
+      validation: grantValidation,
+      nativeReadTools: Object.freeze(
+        grants.governedToolIds
+          .filter((toolId) => !mcpToolIds.has(toolId))
+          .map((toolId) => Object.freeze({
+            toolId,
+            managementHref: "/app/tools",
+          })),
+      ),
+      skills: Object.freeze(grants.skills.map((grant) => Object.freeze({
+        capabilityGrantId: grant.capabilityGrantId,
+        skillId: grant.skillId,
+        skillVersion: grant.skillVersion,
+        skillVersionId: grant.skillVersionId,
+        skillSha256: grant.skillSha256,
+        managementHref: "/app/automation?view=skills",
+      }))),
+      plugins: Object.freeze(grants.plugins.map((grant) => Object.freeze({
+        capabilityGrantId: grant.capabilityGrantId,
+        installationId: grant.installationId,
+        installationRevision: grant.installationRevision,
+        installationSha256: grant.installationSha256,
+        pluginId: grant.pluginId,
+        pluginVersion: grant.pluginVersion,
+        manifestSha256: grant.manifestSha256,
+        componentIds: Object.freeze([...grant.componentIds]),
+        managementHref: "/app/automation?view=plugins",
+      }))),
+      mcpServers: Object.freeze(grants.mcpServers.map((grant) => Object.freeze({
+        capabilityGrantId: grant.capabilityGrantId,
+        serverId: grant.serverId,
+        serverVersionId: grant.serverVersionId,
+        serverContractSha256: grant.serverContractSha256,
+        governedToolIds: Object.freeze([...grant.governedToolIds]),
+        connectorTargetIds: Object.freeze([...grant.connectorTargetIds]),
+        managementHref: "/app/automation?view=connections",
+      }))),
+    }),
+    controls: Object.freeze({
+      grantsImmutable: true,
+      allowedActions: Object.freeze(task.canCancel ? ["cancel"] : []),
+      cancelHref: task.canCancel
+        ? `/api/agents/tasks/${encodeURIComponent(task.executionId)}/cancel`
+        : null,
+    }),
   });
 }
 
