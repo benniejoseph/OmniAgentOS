@@ -17,6 +17,7 @@ import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
 import { MAX_ASSIGNED_SKILLS } from "@/lib/skills/limits";
 import { builtInSkills } from "@/lib/skills/catalog";
 import { getGovernedTool } from "@/lib/tools/registry";
+import { DEFAULT_AGENT_RUN_BUDGET_LIMITS } from "@/lib/runs/budgets";
 
 const mocks = vi.hoisted(() => ({
   appendContextCompilerV2CanaryEvent: vi.fn(),
@@ -65,7 +66,8 @@ vi.mock("@/lib/agents/adaptation-store", () => ({
   getActiveAgentAdaptationGuidance: mocks.getActiveAgentAdaptationGuidance,
 }));
 
-vi.mock("@/lib/capabilities/toolbox", () => ({
+vi.mock("@/lib/capabilities/toolbox", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/capabilities/toolbox")>()),
   capabilityFunctionName: (id: string) => id,
   loadProgressiveAgentTools: mocks.loadProgressiveAgentTools,
 }));
@@ -372,6 +374,104 @@ describe("agent memory scope", () => {
     expect(knowledgeTool?.description).toMatch(
       /^Canonical governed tool ID: knowledge\.search\./,
     );
+  });
+
+  it("reserves explicit dynamic children instead of a redundant automatic council", async () => {
+    const delegate = getGovernedTool("app.agents.delegate");
+    if (!delegate) throw new Error("Expected governed delegation fixture.");
+    mocks.loadProgressiveAgentTools.mockResolvedValue({
+      definitions: [delegate],
+    });
+    mocks.executeGovernedTool
+      .mockResolvedValueOnce({
+        record: localExecutionRecord(
+          delegate.id,
+          "execution-delegation-scout",
+        ),
+        result: { accepted: true },
+      })
+      .mockResolvedValueOnce({
+        record: localExecutionRecord(
+          delegate.id,
+          "execution-delegation-mnemosyne",
+        ),
+        result: { accepted: true },
+      });
+    let modelTurn = 0;
+    mocks.streamResponseTurn.mockImplementation(async (modelRequest) => {
+      modelTurn += 1;
+      if (modelTurn === 1) {
+        return openAITurn({
+          calls: [
+            { callId: "call-delegate-scout", name: delegate.id },
+            { callId: "call-delegate-mnemosyne", name: delegate.id },
+          ],
+        });
+      }
+      await modelRequest.onDelta("Receipts returned.");
+      return openAITurn({ text: "Receipts returned." });
+    });
+    const scopedRequest = request("session");
+    scopedRequest.agentId = "atlas";
+    scopedRequest.specialistIds = ["scout", "mnemosyne", "sentinel"];
+    scopedRequest.messages = [{
+      role: "user",
+      content:
+        "Delegate two isolated read-only checks in sequence to Scout and Mnemosyne.",
+    }];
+    scopedRequest.budgetLimits = {
+      ...DEFAULT_AGENT_RUN_BUDGET_LIMITS,
+      agents: 7,
+      fanOut: 6,
+    };
+    scopedRequest.agentProfile!.toolIds = [delegate.id];
+    scopedRequest.agentProfile!.approvalPolicy = "risk_based";
+    scopedRequest.agentProfile!.autonomy = "governed";
+
+    const events = await collectRequest(scopedRequest);
+
+    expect(mocks.runCouncilRound).not.toHaveBeenCalled();
+    expect(mocks.createAgentRun).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: "atlas" }),
+    );
+    expect(mocks.executeGovernedTool).toHaveBeenCalledTimes(2);
+    expect(mocks.executeGovernedTool.mock.calls.map(([input]) => input.toolId))
+      .toEqual([delegate.id, delegate.id]);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "status",
+      label: "governed delegation plan active",
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "done",
+      response: "Receipts returned.",
+    }));
+  });
+
+  it("keeps the automatic council when no explicit delegation was requested", async () => {
+    const delegate = getGovernedTool("app.agents.delegate");
+    if (!delegate) throw new Error("Expected governed delegation fixture.");
+    mocks.loadProgressiveAgentTools.mockResolvedValue({
+      definitions: [delegate],
+    });
+    mocks.runCouncilRound.mockResolvedValue([]);
+    const scopedRequest = request("session");
+    scopedRequest.agentId = "atlas";
+    scopedRequest.specialistIds = ["scout", "mnemosyne", "sentinel"];
+    scopedRequest.messages = [{
+      role: "user",
+      content: "Compare the available evidence and provide a concise answer.",
+    }];
+    scopedRequest.agentProfile!.toolIds = [delegate.id];
+    scopedRequest.agentProfile!.approvalPolicy = "risk_based";
+    scopedRequest.agentProfile!.autonomy = "governed";
+
+    const events = await collectRequest(scopedRequest);
+
+    expect(mocks.runCouncilRound).toHaveBeenCalledOnce();
+    expect(events).not.toContainEqual(expect.objectContaining({
+      type: "status",
+      label: "governed delegation plan active",
+    }));
   });
 
   it("uses semantic capability terms as discovery hints without an allowlist", async () => {
@@ -1292,15 +1392,19 @@ function localObservation() {
 function openAITurn(input: {
   callId?: string;
   name?: string;
+  calls?: readonly { callId: string; name: string }[];
   text?: string;
 }) {
-  const functionCalls = input.callId && input.name
+  const functionCalls = input.calls?.map((call) => ({
+    ...call,
+    argumentsJson: "{}",
+  })) || (input.callId && input.name
     ? [{
         callId: input.callId,
         name: input.name,
         argumentsJson: "{}",
       }]
-    : [];
+    : []);
   return {
     responseId: `response-${input.callId || "done"}`,
     functionCalls,

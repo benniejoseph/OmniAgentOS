@@ -1527,6 +1527,15 @@ export async function* runAgent(
     const councilAgentIds = [...new Set([primaryAgentId, ...(request.specialistIds || []).map(asCouncilAgentId)])];
     const councilRequested = hasModelProviderFeature("json_schema", "reasoning") &&
       councilAgentIds.length > 1;
+    // An explicit governed delegation plan already contracts each child and
+    // its Sentinel verifier. Running the automatic sibling council as well
+    // would duplicate the work and consume agent authority before the model
+    // can create the requested children.
+    const explicitDynamicDelegationAvailable = Boolean(
+      delegationCapabilityQueryPrefix,
+    ) && toolbox.tools.some(
+      (entry) => entry.definition.id === "app.agents.delegate",
+    );
     // Local Mac observations are deliberately disclosed to the assigned agent
     // for one provider turn and are never added to durable council context.
     // A sibling critic therefore cannot independently inspect the evidence and
@@ -1534,11 +1543,20 @@ export async function* runAgent(
     // the native commands have succeeded.
     const councilActive = councilRequested &&
       !isolatedMemoryContext &&
-      !localComputerUseRequested;
+      !localComputerUseRequested &&
+      !explicitDynamicDelegationAvailable;
     reserveBudget({
       agents: councilActive ? councilAgentIds.length : 1,
       fanOut: councilActive ? Math.max(0, councilAgentIds.length - 1) : 0,
     });
+    if (councilRequested && explicitDynamicDelegationAvailable) {
+      yield await emit({
+        type: "status",
+        label: "governed delegation plan active",
+        detail:
+          "The automatic sibling council was not started; each requested child retains its own bounded Sentinel verification lifecycle.",
+      });
+    }
     if (councilRequested && isolatedMemoryContext) {
       yield await emit({
         type: "status",
