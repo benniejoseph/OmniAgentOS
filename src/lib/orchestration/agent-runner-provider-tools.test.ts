@@ -2,7 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 import {
   runNonOpenAIProviderToolLoop,
 } from "@/lib/orchestration/agent-runner";
-import { DYNAMIC_DELEGATION_CHILD_BUDGET } from "@/lib/delegation/runtime-policy";
+import {
+  DYNAMIC_DELEGATION_CHILD_BUDGET,
+  dynamicDelegationMaxToolSteps,
+} from "@/lib/delegation/runtime-policy";
 import type { AgentEvent } from "@/lib/orchestration/types";
 import type {
   ModelToolCall,
@@ -79,6 +82,152 @@ describe("non-OpenAI governed provider tool loop", () => {
     });
     expect(executeTool).toHaveBeenCalledTimes(2);
     expect(beforeModelTurn).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps required reads available after one bounded unknown-tool repair round", async () => {
+    let turnIndex = 0;
+    const generateTurn = vi.fn(async (request: ModelToolTurnRequest) => {
+      turnIndex += 1;
+      if (turnIndex === 1) {
+        expect(request.tools).toHaveLength(2);
+        return turn({
+          toolCalls: [{
+            callId: "call-unknown",
+            name: "invented_search",
+            argumentsJson: "{}",
+          }],
+        });
+      }
+      if (turnIndex === 2) {
+        expect(request.toolResults).toHaveLength(1);
+        expect(request.toolResults![0].output).toContain("Unknown tool invented_search");
+        return turn({
+          toolCalls: [{
+            callId: "call-knowledge",
+            name: "knowledge_search",
+            argumentsJson: "{}",
+          }],
+        });
+      }
+      if (turnIndex === 3) {
+        return turn({
+          toolCalls: [{
+            callId: "call-memory",
+            name: "memory_search",
+            argumentsJson: "{}",
+          }],
+        });
+      }
+      expect(request.tools).toEqual([]);
+      return turn({ text: "Both governed reads completed after repair." });
+    });
+    const executeTool = vi.fn(async (request: { toolId: string }) => ({
+      record: executionRecord(request.toolId, "executed"),
+      result: { source: request.toolId },
+    }));
+    const beforeModelTurn = vi.fn(async (input: { attempt: number }) => {
+      if (input.attempt > DYNAMIC_DELEGATION_CHILD_BUDGET.modelTurns) {
+        throw new Error("Delegated child model-turn budget exceeded.");
+      }
+      return { maxAttempts: 1 };
+    });
+
+    const collected = await collect(runNonOpenAIProviderToolLoop({
+      provider: "google",
+      tier: "fast",
+      instructions: "Use both required reads, then synthesize.",
+      prompt: "Inspect knowledge and memory.",
+      tools: [modelTool("knowledge_search"), modelTool("memory_search")],
+      toolbox: {
+        byFunctionName: new Map([
+          ["knowledge_search", {
+            definition: toolDefinition("knowledge.search"),
+            functionName: "knowledge_search",
+          }],
+          ["memory_search", {
+            definition: toolDefinition("memory.search"),
+            functionName: "memory_search",
+          }],
+        ]),
+      },
+      securityContext: {
+        tenantId: "tenant-child",
+        actorId: "owner",
+        role: "operator",
+        source: "default",
+      },
+      runId: "run-child-tool-repair",
+      maxToolSteps: dynamicDelegationMaxToolSteps(
+        DYNAMIC_DELEGATION_CHILD_BUDGET,
+      ),
+      beforeModelTurn: beforeModelTurn as never,
+      generateTurn,
+      executeTool: executeTool as never,
+    }));
+
+    expect(collected.result).toMatchObject({
+      text: "Both governed reads completed after repair.",
+      turns: 4,
+      toolSteps: 3,
+    });
+    expect(executeTool.mock.calls.map(([request]) => request.toolId)).toEqual([
+      "knowledge.search",
+      "memory.search",
+    ]);
+    expect(beforeModelTurn).toHaveBeenCalledTimes(4);
+    expect(
+      collected.events.filter((event) => event.type === "tool"),
+    ).toHaveLength(4);
+  });
+
+  it("still fails closed when a provider requests a fourth tool round", async () => {
+    let turnIndex = 0;
+    const generateTurn = vi.fn(async (request: ModelToolTurnRequest) => {
+      turnIndex += 1;
+      if (turnIndex === 4) expect(request.tools).toEqual([]);
+      return turn({
+        toolCalls: [{
+          callId: `call-${turnIndex}`,
+          name: "knowledge_search",
+          argumentsJson: "{}",
+        }],
+      });
+    });
+    const executeTool = vi.fn(async () => ({
+      record: executionRecord("knowledge.search", "executed"),
+      result: { ok: true },
+    }));
+
+    const loop = runNonOpenAIProviderToolLoop({
+      provider: "google",
+      tier: "fast",
+      instructions: "Stay within the delegated tool budget.",
+      prompt: "Search knowledge.",
+      tools: [modelTool("knowledge_search")],
+      toolbox: {
+        byFunctionName: new Map([["knowledge_search", {
+          definition: toolDefinition("knowledge.search"),
+          functionName: "knowledge_search",
+        }]]),
+      },
+      securityContext: {
+        tenantId: "tenant-child",
+        actorId: "owner",
+        role: "operator",
+        source: "default",
+      },
+      runId: "run-child-tool-repair-exhausted",
+      maxToolSteps: dynamicDelegationMaxToolSteps(
+        DYNAMIC_DELEGATION_CHILD_BUDGET,
+      ),
+      generateTurn,
+      executeTool: executeTool as never,
+    });
+
+    await expect(collect(loop)).rejects.toThrow(
+      "google returned tool calls after the governed tool-step budget was exhausted.",
+    );
+    expect(executeTool).toHaveBeenCalledTimes(3);
   });
 
   it("executes safe calls through governance and aggregates every model turn", async () => {

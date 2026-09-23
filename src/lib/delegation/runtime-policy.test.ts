@@ -94,8 +94,10 @@ describe("dynamic delegation runtime policy", () => {
     })).toThrow(/does not match/i);
   });
 
-  it("reserves the last child model turn for final synthesis", () => {
-    expect(dynamicDelegationMaxToolSteps()).toBe(2);
+  it("allows one bounded tool-call repair round and reserves final synthesis", () => {
+    expect(DYNAMIC_DELEGATION_CHILD_BUDGET.modelTurns).toBe(4);
+    expect(DYNAMIC_DELEGATION_LIFECYCLE_BUDGET.modelTurns).toBe(5);
+    expect(dynamicDelegationMaxToolSteps()).toBe(3);
     expect(dynamicDelegationMaxToolSteps({
       ...DYNAMIC_DELEGATION_CHILD_BUDGET,
       modelTurns: 2,
@@ -104,7 +106,7 @@ describe("dynamic delegation runtime policy", () => {
 
   it("does not grant mutation, browser, or re-delegation authority", () => {
     expect(DYNAMIC_DELEGATION_CHILD_BUDGET).toMatchObject({
-      modelTurns: 3,
+      modelTurns: 4,
       browserActions: 0,
       fanOut: 0,
       retries: 0,

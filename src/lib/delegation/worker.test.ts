@@ -197,7 +197,9 @@ describe("delegation execution worker", () => {
           skills: [],
         }),
         budgetLimits: DYNAMIC_DELEGATION_CHILD_BUDGET,
-        maxToolSteps: 2,
+        // Two required read rounds plus one provider tool-call repair round;
+        // the fixed child budget keeps one separate turn for final synthesis.
+        maxToolSteps: 3,
       }),
       expect.any(AbortSignal),
     );
