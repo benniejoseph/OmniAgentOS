@@ -59,6 +59,20 @@ export function dynamicDelegationRootReservation(
 }
 
 /**
+ * Preserve one contracted model turn for the child's final answer. Tool calls
+ * may still run in parallel within each bounded tool round.
+ */
+export function dynamicDelegationMaxToolSteps(
+  child: RunBudgetCountersV1 = DYNAMIC_DELEGATION_CHILD_BUDGET,
+) {
+  const parsed = runBudgetCountersV1Schema.parse(child);
+  return Math.max(
+    1,
+    Math.min(parsed.toolCalls, Math.max(1, parsed.modelTurns - 1)),
+  );
+}
+
+/**
  * The parent pays both for scheduling the governed app tool and for the full
  * non-refundable child slice. Keeping this calculation shared prevents the
  * in-process harness and durable root ledger from describing different work.

@@ -37,6 +37,7 @@ import {
 import {
   parseDelegationExecutionJobPayload,
 } from "@/lib/delegation/runtime-job";
+import { dynamicDelegationMaxToolSteps } from "@/lib/delegation/runtime-policy";
 import { listStreamEvents } from "@/lib/events/store";
 import { selectAgentModel } from "@/lib/openai/model-router";
 import { runAgent } from "@/lib/orchestration/agent-runner";
@@ -350,6 +351,7 @@ export async function processDelegationExecutionJob(
         })),
       },
       budgetLimits: execution.budgetLimits,
+      maxToolSteps: dynamicDelegationMaxToolSteps(execution.budgetLimits),
     }, controller.signal)) {
       void event;
     }

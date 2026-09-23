@@ -4,6 +4,7 @@ import {
   DYNAMIC_DELEGATION_CHILD_BUDGET,
   DYNAMIC_DELEGATION_READ_TOOL_IDS,
   assertDynamicDelegationApprovalPolicy,
+  dynamicDelegationMaxToolSteps,
   dynamicDelegationParentToolReservation,
   dynamicDelegationRootReservation,
 } from "@/lib/delegation/runtime-policy";
@@ -22,6 +23,14 @@ describe("dynamic delegation runtime policy", () => {
       ...dynamicDelegationRootReservation(),
       toolCalls: DYNAMIC_DELEGATION_CHILD_BUDGET.toolCalls + 1,
     });
+  });
+
+  it("reserves the last child model turn for final synthesis", () => {
+    expect(dynamicDelegationMaxToolSteps()).toBe(2);
+    expect(dynamicDelegationMaxToolSteps({
+      ...DYNAMIC_DELEGATION_CHILD_BUDGET,
+      modelTurns: 2,
+    })).toBe(1);
   });
 
   it("does not grant mutation, browser, or re-delegation authority", () => {

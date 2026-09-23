@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   runNonOpenAIProviderToolLoop,
 } from "@/lib/orchestration/agent-runner";
+import { DYNAMIC_DELEGATION_CHILD_BUDGET } from "@/lib/delegation/runtime-policy";
 import type { AgentEvent } from "@/lib/orchestration/types";
 import type {
   ModelToolCall,
@@ -11,6 +12,75 @@ import type {
 import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
 
 describe("non-OpenAI governed provider tool loop", () => {
+  it("keeps a third bounded turn for synthesis after two sequential read rounds", async () => {
+    let turnIndex = 0;
+    const generateTurn = vi.fn(async () => {
+      turnIndex += 1;
+      if (turnIndex === 1) {
+        return turn({
+          toolCalls: [{
+            callId: "call-read-a",
+            name: "read_a",
+            argumentsJson: "{}",
+          }],
+        });
+      }
+      if (turnIndex === 2) {
+        return turn({
+          toolCalls: [{
+            callId: "call-read-b",
+            name: "read_b",
+            argumentsJson: "{}",
+          }],
+        });
+      }
+      return turn({ text: "Bounded synthesis complete." });
+    });
+    const executeTool = vi.fn(async (request: { toolId: string }) => ({
+      record: executionRecord(request.toolId, "executed"),
+      result: { source: request.toolId },
+    }));
+    const beforeModelTurn = vi.fn(async (input: { attempt: number }) => {
+      if (input.attempt > DYNAMIC_DELEGATION_CHILD_BUDGET.modelTurns) {
+        throw new Error("Delegated child model-turn budget exceeded.");
+      }
+      return { maxAttempts: 1 };
+    });
+
+    const collected = await collect(runNonOpenAIProviderToolLoop({
+      provider: "google",
+      tier: "reasoning",
+      instructions: "Use both granted reads, then synthesize.",
+      prompt: "Inspect both sources.",
+      tools: [modelTool("read_a"), modelTool("read_b")],
+      toolbox: {
+        byFunctionName: new Map([
+          ["read_a", { definition: toolDefinition("read.a"), functionName: "read_a" }],
+          ["read_b", { definition: toolDefinition("read.b"), functionName: "read_b" }],
+        ]),
+      },
+      securityContext: {
+        tenantId: "tenant-child",
+        actorId: "owner",
+        role: "operator",
+        source: "default",
+      },
+      runId: "run-child-three-turns",
+      maxToolSteps: 2,
+      beforeModelTurn: beforeModelTurn as never,
+      generateTurn,
+      executeTool: executeTool as never,
+    }));
+
+    expect(collected.result).toMatchObject({
+      text: "Bounded synthesis complete.",
+      turns: 3,
+      toolSteps: 2,
+    });
+    expect(executeTool).toHaveBeenCalledTimes(2);
+    expect(beforeModelTurn).toHaveBeenCalledTimes(3);
+  });
+
   it("executes safe calls through governance and aggregates every model turn", async () => {
     const firstCalls: ModelToolCall[] = [
       { callId: "call-1", name: "memory_search", argumentsJson: "{\"query\":\"Ada\"}" },

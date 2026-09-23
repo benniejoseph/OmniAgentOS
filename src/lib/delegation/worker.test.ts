@@ -179,6 +179,7 @@ describe("delegation execution worker", () => {
           skills: [],
         }),
         budgetLimits: harness.execution.contract.budgets,
+        maxToolSteps: 1,
       }),
       expect.any(AbortSignal),
     );

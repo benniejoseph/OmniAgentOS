@@ -95,6 +95,9 @@ import {
   dynamicDelegationRootReservation,
 } from "@/lib/delegation/runtime-policy";
 import {
+  reconcileResponseWithDelegationReceipts,
+} from "@/lib/delegation/receipt-summary";
+import {
   buildParentDelegationBudgetAuthorityV1,
   parentDelegationAppServiceIdempotencyKey,
   withParentDelegationBudgetAuthority,
@@ -1760,6 +1763,8 @@ export async function* runAgent(
     });
 
     let response = "";
+    const delegationExecutionsForReceiptReconciliation:
+      GovernedToolExecutionResult[] = [];
 
     if (!providerConfigured && computerUseRequested) {
       const unavailable =
@@ -1884,6 +1889,9 @@ export async function* runAgent(
         citationSources = mergeCitationSources(
           citationSources,
           result.citationSources,
+        );
+        delegationExecutionsForReceiptReconciliation.push(
+          ...result.delegationExecutions,
         );
         const fallbackUsed = result.attempts.some((attempt) => attempt.status === "failed");
         const crossProviderFallbackUsed = result.provider !== modelRoute.provider;
@@ -2210,6 +2218,10 @@ export async function* runAgent(
           for (let index = 0; index < prepared.length; index += 1) {
             const item = prepared[index];
             const execution = executions[index];
+            captureDelegationExecution(
+              delegationExecutionsForReceiptReconciliation,
+              execution,
+            );
             await checkpointAfterGovernedTool({
               record: execution.record,
               tool: item.entry.definition,
@@ -2326,6 +2338,10 @@ export async function* runAgent(
               checkpointBeforeEffect: checkpointBeforeGovernedTool,
             }),
           });
+          captureDelegationExecution(
+            delegationExecutionsForReceiptReconciliation,
+            execution,
+          );
           await checkpointAfterGovernedTool({
             record: execution.record,
             tool: definition,
@@ -2537,6 +2553,21 @@ export async function* runAgent(
       }
     }
 
+    const delegationReceiptReconciliation =
+      reconcileResponseWithDelegationReceipts(
+        response,
+        delegationExecutionsForReceiptReconciliation,
+      );
+    if (delegationReceiptReconciliation.replaced) {
+      yield await emit({
+        type: "status",
+        label: "Delegation receipts reconciled",
+        detail:
+          `The final response was replaced with ${delegationReceiptReconciliation.receiptCount} server-owned delegation receipt(s).`,
+      });
+    }
+    response = delegationReceiptReconciliation.response;
+
     runBudgetState = refreshRunBudgetWallTime(runBudgetState);
     const grounding = await buildClaimGroundingReport({
       runId: run.id,
@@ -2645,6 +2676,7 @@ type NonOpenAIProviderLoopResult = {
   turns: number;
   toolSteps: number;
   citationSources: CitationSource[];
+  delegationExecutions: readonly GovernedToolExecutionResult[];
   waitingApproval?: {
     executionId: string;
     toolId: string;
@@ -2758,6 +2790,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
     totalTokens: 0,
   };
   let citationSources: CitationSource[] = [];
+  const delegationExecutions: GovernedToolExecutionResult[] = [];
   let activeProvider: "openai" | "google" | "anthropic" | "aws_bedrock" = input.provider;
 
   const finish = (
@@ -2777,6 +2810,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
     turns,
     toolSteps,
     citationSources,
+    delegationExecutions: Object.freeze([...delegationExecutions]),
     ...(waitingApproval ? { waitingApproval } : {}),
   });
 
@@ -2983,6 +3017,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
       for (let index = 0; index < prepared.length; index += 1) {
         const item = prepared[index];
         const execution = executions[index];
+        captureDelegationExecution(delegationExecutions, execution);
         const toolExecutionScope = input.executionScope
           ? agentToolExecutionScope(input.executionScope, item.call.callId)
           : undefined;
@@ -3096,6 +3131,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
             checkpointBeforeEffect: input.checkpointBeforeTool,
           }),
         });
+        captureDelegationExecution(delegationExecutions, execution);
         if (toolExecutionScope && input.checkpointAfterTool) {
           await input.checkpointAfterTool({
             record: execution.record,
@@ -3214,6 +3250,15 @@ function agentToolExecutionScope(
       ? runScope.purpose
       : "agent.tool.execute",
   });
+}
+
+function captureDelegationExecution(
+  target: GovernedToolExecutionResult[],
+  execution: GovernedToolExecutionResult,
+) {
+  if (execution.record.toolId === "app.agents.delegate") {
+    target.push(execution);
+  }
 }
 
 type DynamicDelegationReservation = NonNullable<
