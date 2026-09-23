@@ -13,6 +13,24 @@ export type ClientThreadSummary<Mode extends string = string> = {
   mode: Mode;
 };
 
+export type ClientAgentMode = "orchestrate" | "research" | "execute" | "learn";
+
+/**
+ * Canonicalize persisted or API-sourced modes before they enter controlled
+ * Command state. Historical rows may contain an empty or retired mode.
+ */
+export function canonicalClientAgentMode(value: unknown): ClientAgentMode {
+  switch (value) {
+    case "orchestrate":
+    case "research":
+    case "execute":
+    case "learn":
+      return value;
+    default:
+      return "orchestrate";
+  }
+}
+
 /**
  * Treat API and replay payloads as untrusted at the client boundary. A single
  * malformed historical row must not be able to crash the whole Command tree.

@@ -70,8 +70,10 @@ import {
   type VoiceCommandReview,
 } from "@/lib/voice/command-review";
 import {
+  canonicalClientAgentMode,
   projectClientThreadSummaries,
   projectClientThreadTurns,
+  type ClientAgentMode,
 } from "@/lib/command/client-projection";
 import { startProgressiveThreadLoad } from "@/lib/command/progressive-thread-load";
 import {
@@ -99,7 +101,7 @@ type JsonRecord = Record<string, unknown>;
 type ThreadSummary = { id: string; title: string; updatedAt: string; mode: AgentMode };
 type CommandProject = { id: string; title: string; status: string };
 type ThreadTurn = { id: string; role: "user" | "assistant"; content: string; createdAt: string; runId?: string };
-type AgentMode = "orchestrate" | "research" | "execute" | "learn";
+type AgentMode = ClientAgentMode;
 type AgentId = string;
 type AgentPresentation = {
   id: AgentId;
@@ -2516,7 +2518,7 @@ export function AgentRunsWorkspace({
           setThreadId(stringValue(thread.id));
           const loadedProjectId = stringValue(thread.projectId);
           if (loadedProjectId) setSelectedProjectId(loadedProjectId);
-          setMode((stringValue(thread.mode, "orchestrate") as AgentMode));
+          setMode(canonicalClientAgentMode(thread.mode));
           setTurns(loadedTurns);
           setAgentResponse("");
           setRunMediaProjection({
@@ -2665,6 +2667,7 @@ export function AgentRunsWorkspace({
     contextControllerRef.current?.abort();
     contextVersionRef.current += 1;
     setThreadId("");
+    setMode("orchestrate");
     setTurns([]);
     setGoal("");
     setContextPack(undefined);
