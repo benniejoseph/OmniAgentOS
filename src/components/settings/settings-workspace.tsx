@@ -35,6 +35,7 @@ import { TrashRecoveryControls } from "@/components/settings/trash-recovery-cont
 import { AgentGrantSettingsPanel } from "@/components/agents/agent-grant-editor";
 import { permissionMessage, useWorkspaceSession } from "@/components/app-shell/session-context";
 import styles from "@/components/settings/settings-workspace.module.css";
+import { commandReasoningOptionsForModel } from "@/lib/models/reasoning-effort";
 import {
   MODEL_ASSIGNMENT_SCOPES,
   MODEL_PROVIDERS,
@@ -823,7 +824,13 @@ function ModelCatalog({ models }: { models: RequestModelCatalogEntry[] }) {
   const shown = expanded ? models : models.slice(0, 8);
   return <div className={clsx("mt-8", styles.modelCatalog)}>
     <div className="flex items-end justify-between gap-4"><div><h3 className="text-base font-semibold">Discovered models</h3><p className="mt-1 text-xs text-muted">Lifecycle stays unknown unless the provider publishes a reliable state.</p></div>{models.length > 8 ? <button type="button" className="text-xs font-semibold text-primary" onClick={() => setExpanded(!expanded)}>{expanded ? "Show less" : `View all ${models.length}`}</button> : null}</div>
-    {shown.length ? <div className="mt-4 overflow-x-auto rounded-lg border border-line"><table className="w-full min-w-[42rem] text-left text-xs"><thead className="bg-surface text-[10px] uppercase tracking-[0.1em] text-muted"><tr><th className="px-4 py-3 font-bold">Model</th><th className="px-4 py-3 font-bold">Provider</th><th className="px-4 py-3 font-bold">Capabilities</th><th className="px-4 py-3 font-bold">Lifecycle</th><th className="px-4 py-3 font-bold">Checked</th></tr></thead><tbody className="divide-y divide-line">{shown.map((model) => <tr key={model.id}><td className="px-4 py-3"><strong className="block font-semibold">{model.displayName}</strong><span className="font-mono text-[10px] text-muted">{model.displayModelId}</span>{model.selectable !== true ? <span className="mt-1 block text-[10px] font-semibold text-muted">Retained catalog · read only</span> : null}</td><td className="px-4 py-3 text-muted">{providerDetails[model.provider].name}</td><td className="px-4 py-3 text-muted">{model.capabilities.join(" · ")}</td><td className="px-4 py-3"><LifecyclePill lifecycle={model.lifecycle} /></td><td className="px-4 py-3 text-muted">{model.lifecycleCheckedAt ? formatDate(model.lifecycleCheckedAt) : "Not reported"}</td></tr>)}</tbody></table></div> : <EmptyLine title="No model catalog yet" body="Connect and validate a provider to discover selectable models." />}
+    {shown.length ? <div className="mt-4 overflow-x-auto rounded-lg border border-line"><table className="w-full min-w-[42rem] text-left text-xs"><thead className="bg-surface text-[10px] uppercase tracking-[0.1em] text-muted"><tr><th className="px-4 py-3 font-bold">Model</th><th className="px-4 py-3 font-bold">Provider</th><th className="px-4 py-3 font-bold">Capabilities</th><th className="px-4 py-3 font-bold">Lifecycle</th><th className="px-4 py-3 font-bold">Checked</th></tr></thead><tbody className="divide-y divide-line">{shown.map((model) => {
+      const reasoning = commandReasoningOptionsForModel(
+        model.provider,
+        model.modelId,
+      );
+      return <tr key={model.id}><td className="px-4 py-3"><strong className="block font-semibold">{model.displayName}</strong><span className="font-mono text-[10px] text-muted">{model.displayModelId}</span>{model.selectable !== true ? <span className="mt-1 block text-[10px] font-semibold text-muted">Retained catalog · read only</span> : null}</td><td className="px-4 py-3 text-muted">{providerDetails[model.provider].name}</td><td className="px-4 py-3 text-muted"><span className="block">{model.capabilities.join(" · ")}</span>{reasoning.length ? <span className="mt-1 block text-[10px] font-semibold text-primary">Thinking · {reasoning.map((option) => option.label).join(" · ")}</span> : <span className="mt-1 block text-[10px]">Thinking · provider default</span>}</td><td className="px-4 py-3"><LifecyclePill lifecycle={model.lifecycle} /></td><td className="px-4 py-3 text-muted">{model.lifecycleCheckedAt ? formatDate(model.lifecycleCheckedAt) : "Not reported"}</td></tr>;
+    })}</tbody></table></div> : <EmptyLine title="No model catalog yet" body="Connect and validate a provider to discover selectable models." />}
   </div>;
 }
 

@@ -13,6 +13,10 @@ import type { AgentPersonaV1 } from "@/lib/agents/persona";
 import type { ContextScopeId } from "@/lib/rag/context-scope";
 import type { AiUsageCallInput } from "@/lib/usage/types";
 import type { RunBudgetCountersV1 } from "@/lib/runs/budgets";
+import type {
+  CommandModelSelectionRequest,
+  ModelReasoningEffort,
+} from "@/lib/models/command-selection";
 
 export type ChatRole = "user" | "assistant";
 
@@ -147,7 +151,7 @@ export type AgentEvent =
   | AgentHarnessEvent
   | { type: "delta"; text: string }
   | { type: "memory"; title: string; count?: number }
-  | { type: "model"; model: string; provider?: "openai" | "google" | "anthropic" | "aws_bedrock" | "local"; tier: "fast" | "reasoning"; inputTokens: number; outputTokens: number; cachedInputTokens: number; totalTokens: number; latencyMs: number; fallbackUsed: boolean; estimatedCostUsd?: number; costKnown?: boolean; iteration?: number; iterationCount?: number; attemptCount?: number; failedAttemptCount?: number; callReceipts?: AiUsageCallInput[]; assignmentId?: string; credentialSource?: "tenant_vault" | "deployment_environment"; providerRequestId?: string; usageReceiptRecorded?: boolean; usageReceiptId?: string }
+  | { type: "model"; model: string; provider?: "openai" | "google" | "anthropic" | "aws_bedrock" | "local"; tier: "fast" | "reasoning"; inputTokens: number; outputTokens: number; cachedInputTokens: number; totalTokens: number; latencyMs: number; fallbackUsed: boolean; estimatedCostUsd?: number; costKnown?: boolean; iteration?: number; iterationCount?: number; attemptCount?: number; failedAttemptCount?: number; callReceipts?: AiUsageCallInput[]; assignmentId?: string; credentialSource?: "tenant_vault" | "deployment_environment"; reasoningEffort?: ModelReasoningEffort; commandSelectionSha256?: string; providerRequestId?: string; usageReceiptRecorded?: boolean; usageReceiptId?: string }
   | AgentCouncilEvent
   | { type: "council_verdict"; status: "passed" | "revised" | "failed"; score: number; assessment: string; requiredChanges: string[] }
   | AgentToolEvent
@@ -243,6 +247,8 @@ export type AgentRunRequest = {
     tier: "fast" | "reasoning";
     routingPolicySha256: string;
   };
+  /** Client choice after the route has parsed its public shape; runtime revalidates Settings authority. */
+  commandModelSelection?: CommandModelSelectionRequest;
   /**
    * Content-free metadata for a visibly reviewed realtime voice command.
    * Its presence only narrows authority by forcing risk-bearing approvals.

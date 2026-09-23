@@ -19,6 +19,7 @@ import type {
   ProviderId,
 } from "@/lib/models/types";
 import type { ModelConversationItem } from "@/lib/models/conversation";
+import type { CommandModelSelectionRequest } from "@/lib/models/command-selection";
 
 export type RunStatus =
   | "queued"
@@ -70,6 +71,8 @@ export type AgentRunContinuation = {
     operationJobId: string;
     leaseGeneration: number;
   };
+  /** Exact Settings-constrained per-command model choice retained across approvals. */
+  commandModelSelection?: CommandModelSelectionRequest;
   /** Full conversation array for ZDR-safe resume (replaces previousResponseId). */
   conversationItems: Array<Record<string, unknown>>;
   /** Provider-neutral replay form for every newly persisted continuation. */

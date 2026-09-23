@@ -27,6 +27,7 @@ import {
   PromptQueueTerminalReceiptError,
 } from "@/lib/command/prompt-queue-lifecycle";
 import { commandContextReferencesSchema } from "@/lib/command/composer-context-contract";
+import { commandModelSelectionRequestSchema } from "@/lib/models/command-selection";
 import {
   CommandContextResolutionError,
   resolveCommandContextReferences,
@@ -194,6 +195,7 @@ const requestSchema = z.object({
   contextScope: z.enum(CONTEXT_SCOPE_IDS).optional(),
   contextSelection: contextSelectionRequestSchema.optional(),
   contextReferences: commandContextReferencesSchema.optional(),
+  modelSelection: commandModelSelectionRequestSchema.optional(),
   budgets: runBudgetCountersV1Schema.partial().optional(),
   voiceInput: voiceInputSchema.optional(),
 }).strict()
@@ -207,6 +209,10 @@ const requestSchema = z.object({
   .refine((value) => !value.resumeRunId || !value.budgets, {
     message: "A resumed run keeps the budget authorized when it started.",
     path: ["budgets"],
+  })
+  .refine((value) => !value.resumeRunId || !value.modelSelection, {
+    message: "A resumed run keeps the model choice pinned when it started.",
+    path: ["modelSelection"],
   })
   .refine((value) => !value.voiceInput || value.threadId === value.voiceInput.conversationId, {
     message: "The voice review must be bound to its conversation.",
@@ -1133,8 +1139,10 @@ async function POSTHandler(request: Request) {
           );
         }
         const loopV2Enrollment =
-          loopV2CanaryEnrollment || loopV2ContextTextEnrollment ||
-          loopV2ModelTextEnrollment;
+          parsed.data.modelSelection
+            ? undefined
+            : loopV2CanaryEnrollment || loopV2ContextTextEnrollment ||
+              loopV2ModelTextEnrollment;
         if (parsed.data.resumeRunId && !loopV2CanaryEnrollment) {
           throw new Error(
             "The paused run could not be resumed by its pinned Loop v2 runtime.",
@@ -1599,7 +1607,7 @@ async function POSTHandler(request: Request) {
                 : "agent.run",
           },
         );
-        const directEvents = loopV2CanaryEnrollment
+        const directEvents = loopV2CanaryEnrollment && !parsed.data.modelSelection
           ? runLoopV2ReadOnlyCanary(
               {
                 runId: directRootRunId,
@@ -1617,7 +1625,7 @@ async function POSTHandler(request: Request) {
               },
               agentAbortController.signal,
             )
-          : loopV2ModelTextEnrollment
+          : loopV2ModelTextEnrollment && !parsed.data.modelSelection
             ? runLoopV2ModelText(
                 {
                   runId: directRootRunId,
@@ -1633,7 +1641,7 @@ async function POSTHandler(request: Request) {
                 },
                 agentAbortController.signal,
               )
-          : loopV2ContextTextEnrollment
+          : loopV2ContextTextEnrollment && !parsed.data.modelSelection
             ? runLoopV2ModelText(
                 {
                   runId: directRootRunId,
@@ -1680,6 +1688,7 @@ async function POSTHandler(request: Request) {
                 promptEntityGraphAccess,
                 executionScope: directExecutionScope,
                 agentIdentity,
+                commandModelSelection: parsed.data.modelSelection,
                 runtimeModelPin: queuedDispatch ? {
                   provider: queuedDispatch.model.providerId,
                   model: queuedDispatch.model.modelId,

@@ -45,10 +45,10 @@ export type OpenAIReadiness = {
   error?: string;
 };
 
-// Only reasoning models (gpt-5 family, o-series) accept the `reasoning.effort`
+// Only reasoning models (GPT-5/6 families and o-series) accept `reasoning.effort`
 // parameter; gpt-4o and other chat models reject it with a 400.
 function supportsReasoningEffort(model: string) {
-  return /^(gpt-5|o\d)/i.test(model);
+  return /^(gpt-[56]|o\d)/i.test(model);
 }
 
 export function getOpenAIClient(options: { apiKey?: string } = {}) {
@@ -313,7 +313,7 @@ export async function streamResponseTurn({
   tools?: ResponseFunctionTool[];
   onDelta: (text: string) => void | Promise<void>;
   abortSignal?: AbortSignal;
-  reasoningEffort?: "minimal" | "low" | "medium" | "high";
+  reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   maxOutputTokens?: number;
   model: string;
   fallbackModel?: string;
@@ -829,7 +829,7 @@ export async function createStructuredResponse({
   schema: ResponseFormatTextJSONSchemaConfig["schema"];
   name: string;
   abortSignal?: AbortSignal;
-  reasoningEffort?: "minimal" | "low" | "medium" | "high";
+  reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   model: string;
   apiKey?: string;
   usageScope?: AiUsageScope;
@@ -863,7 +863,7 @@ export async function createStructuredResponseWithMetrics({
   schema: ResponseFormatTextJSONSchemaConfig["schema"];
   name: string;
   abortSignal?: AbortSignal;
-  reasoningEffort?: "minimal" | "low" | "medium" | "high";
+  reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   model: string;
   /** Server-only request credential. Never persist or include in receipts. */
   apiKey?: string;

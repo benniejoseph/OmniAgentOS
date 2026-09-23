@@ -60,6 +60,7 @@ import {
   CommandComposerField,
   type CommandSlashAction,
 } from "@/components/command/command-composer-field";
+import { CommandModelPicker } from "@/components/command/command-model-picker";
 import workspaceStyles from "@/components/agent-runs-workspace.module.css";
 import { arsenalAgents } from "@/lib/agents/arsenal";
 import type { ContextScopeId } from "@/lib/rag/context-scope";
@@ -84,6 +85,9 @@ import type {
   CommandContextCatalogItem,
   CommandContextReference,
 } from "@/lib/command/composer-context-contract";
+import type { CommandModelSelectionRequest } from "@/lib/models/command-selection";
+import { modelAssignmentScopeForAgent } from "@/lib/orchestration/computer-use-routing";
+import type { ModelAssignmentScope } from "@/lib/settings/types";
 import {
   commandArtifactContentUrl,
   projectCommandFileArtifactState,
@@ -383,7 +387,7 @@ type StreamEvent =
       adaptationActivationVersions?: number[];
     }
   | { type: "memory"; title?: string; count?: number }
-  | { type: "model"; model: string; provider?: "openai" | "google" | "anthropic" | "aws_bedrock" | "local"; tier: "fast" | "reasoning"; inputTokens: number; outputTokens: number; cachedInputTokens: number; totalTokens: number; latencyMs: number; fallbackUsed: boolean; estimatedCostUsd?: number; costKnown?: boolean; iteration?: number; iterationCount?: number }
+  | { type: "model"; model: string; provider?: "openai" | "google" | "anthropic" | "aws_bedrock" | "local"; tier: "fast" | "reasoning"; inputTokens: number; outputTokens: number; cachedInputTokens: number; totalTokens: number; latencyMs: number; fallbackUsed: boolean; estimatedCostUsd?: number; costKnown?: boolean; iteration?: number; iterationCount?: number; reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max"; commandSelectionSha256?: string }
   | { type: "council_member"; agentId: AgentId; agentName: string; role: string; status: "thinking" | "completed" | "failed"; summary?: string; confidence?: number; durationMs?: number; taskId?: string; delegationId?: string; lifecycleState?: "proposed" | "accepted" | "working" | "waiting" | "challenged" | "completed_proposed" | "result_accepted" | "rejected" | "canceled" | "expired"; lifecycleRevision?: number }
   | { type: "council_verdict"; status: "passed" | "revised" | "failed"; score: number; assessment: string; requiredChanges: string[] }
   | { type: "delta"; text?: string }
@@ -455,6 +459,8 @@ export function AgentRunsWorkspace({
         }]
       : [],
   );
+  const [commandModelSelection, setCommandModelSelection] =
+    useState<CommandModelSelectionRequest>();
   const preferredAgentId = preferredAgent?.id;
   const activeAssistantName = preferredAgent?.name || "Asael";
   const [approvalRequired, setApprovalRequired] = useState(true);
@@ -1549,6 +1555,7 @@ export function AgentRunsWorkspace({
       return [...withoutSingleton, item];
     });
     if (item.kind === "agent") {
+      setCommandModelSelection(undefined);
       setPreferredAgent(builtInAgentPresentation(item.id) || {
         id: item.id,
         name: item.label,
@@ -1577,6 +1584,7 @@ export function AgentRunsWorkspace({
       candidate.kind !== item.kind || candidate.id !== item.id
     ));
     if (item.kind === "agent" && preferredAgentId === item.id) {
+      setCommandModelSelection(undefined);
       setPreferredAgent(undefined);
     }
     if (item.kind === "project" && selectedProjectId === item.id) {
@@ -1588,6 +1596,7 @@ export function AgentRunsWorkspace({
   }
 
   function clearPreferredAgentSelection() {
+    setCommandModelSelection(undefined);
     setPreferredAgent(undefined);
     setCommandReferences((current) => current.filter((item) => item.kind !== "agent"));
     setWorkflowPlan(undefined);
@@ -2002,6 +2011,12 @@ export function AgentRunsWorkspace({
       setPromptQueueError(runPermission);
       return;
     }
+    if (commandModelSelection) {
+      setPromptQueueError(
+        "This exact model and thinking choice applies to a direct message. Let the current work finish, then send it directly.",
+      );
+      return;
+    }
     const queueUnsupportedReferences = commandReferences.filter((item) =>
       item.kind !== "agent" && item.kind !== "project"
     );
@@ -2298,6 +2313,7 @@ export function AgentRunsWorkspace({
               contextScope: resumeRunId ? undefined : contextScope,
               contextSelection: resumeRunId ? undefined : contextSelection,
               contextReferences: resumeRunId ? undefined : submittedCommandReferences,
+              modelSelection: resumeRunId ? undefined : commandModelSelection,
               voiceInput: resumeRunId ? undefined : options?.voiceReview,
             }),
         signal: controller.signal,
@@ -3352,6 +3368,8 @@ export function AgentRunsWorkspace({
               approvalRequired={approvalRequired}
               preferredAgent={preferredAgent}
               commandReferences={commandReferences}
+              commandModelScope={modelAssignmentScopeForAgent(preferredAgentId)}
+              commandModelSelection={commandModelSelection}
               loading={loading}
               contextLoading={contextLoading}
               contextScope={contextScope}
@@ -3381,6 +3399,7 @@ export function AgentRunsWorkspace({
               onSelectCommandReference={selectCommandReference}
               onRemoveCommandReference={removeCommandReference}
               onCommandSlashAction={handleCommandSlashAction}
+              onCommandModelSelection={setCommandModelSelection}
               onContext={() => void buildContext()}
               onContextScopeChange={changeContextScope}
               onProjectChange={changeProject}
@@ -5342,6 +5361,8 @@ function GoalStage({
   approvalRequired,
   preferredAgent,
   commandReferences,
+  commandModelScope,
+  commandModelSelection,
   loading,
   contextLoading,
   contextScope,
@@ -5371,6 +5392,7 @@ function GoalStage({
   onSelectCommandReference,
   onRemoveCommandReference,
   onCommandSlashAction,
+  onCommandModelSelection,
   onContext,
   onContextScopeChange,
   onProjectChange,
@@ -5388,6 +5410,8 @@ function GoalStage({
   approvalRequired: boolean;
   preferredAgent?: AgentPresentation;
   commandReferences: readonly CommandContextCatalogItem[];
+  commandModelScope: ModelAssignmentScope;
+  commandModelSelection?: CommandModelSelectionRequest;
   loading?: string;
   contextLoading: boolean;
   contextScope: ActiveContextScopeId;
@@ -5417,6 +5441,9 @@ function GoalStage({
   onSelectCommandReference: (item: CommandContextCatalogItem) => void;
   onRemoveCommandReference: (item: CommandContextCatalogItem) => void;
   onCommandSlashAction: (action: CommandSlashAction) => void;
+  onCommandModelSelection: (
+    selection: CommandModelSelectionRequest | undefined,
+  ) => void;
   onContext: () => void;
   onContextScopeChange: (scope: ActiveContextScopeId) => void;
   onProjectChange: (projectId: string) => void;
@@ -5501,6 +5528,12 @@ function GoalStage({
                 <option value="execute">Act</option>
                 <option value="learn">Knowledge</option>
               </select>
+              <CommandModelPicker
+                scope={commandModelScope}
+                value={commandModelSelection}
+                disabled={draftLocked}
+                onChange={onCommandModelSelection}
+              />
               {contextScope === "project" ? (
                 <>
                   <label className="sr-only" htmlFor="command-project-scope">Project context</label>
@@ -6134,7 +6167,11 @@ function streamEventLabel(event: StreamEvent) {
       : iteration
         ? ` on loop pass ${iteration}`
         : "";
-    return `${event.provider === "google" ? "Google · " : event.provider === "anthropic" ? "Anthropic · " : "OpenAI · "}${stringValue(event.model, "Assigned model")} used ${numberValue(event.totalTokens, 0).toLocaleString()} tokens${loop} in ${(numberValue(event.latencyMs, 0) / 1_000).toFixed(1)}s (${cost})${event.fallbackUsed ? "; fallback used" : ""}.`;
+    const thinking = event.reasoningEffort
+      ? ` · ${reasoningEffortLabel(event.reasoningEffort)} thinking`
+      : "";
+    const selected = event.commandSelectionSha256 ? " · chosen for this message" : "";
+    return `${event.provider === "google" ? "Google · " : event.provider === "anthropic" ? "Anthropic · " : "OpenAI · "}${stringValue(event.model, "Assigned model")}${thinking}${selected} used ${numberValue(event.totalTokens, 0).toLocaleString()} tokens${loop} in ${(numberValue(event.latencyMs, 0) / 1_000).toFixed(1)}s (${cost})${event.fallbackUsed ? "; fallback used" : ""}.`;
   }
   if (event.type === "council_member") {
     if (event.status === "thinking") return `${event.agentName} is working independently as ${event.role}.`;
@@ -6239,6 +6276,14 @@ function activityTitle(event: StreamEvent) {
   if (event.type === "canceled") return "Task canceled";
   if (event.type === "error") return "Task failed";
   return "Task started";
+}
+
+function reasoningEffortLabel(
+  effort: Extract<StreamEvent, { type: "model" }>["reasoningEffort"],
+) {
+  if (effort === "xhigh") return "extra high";
+  if (effort === "max") return "ultra";
+  return effort || "default";
 }
 
 function activityDotTone(event: StreamEvent) {

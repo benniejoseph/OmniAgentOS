@@ -74,6 +74,7 @@ import { getDataPath } from "@/lib/storage/paths";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { recordAiUsage } from "@/lib/usage/ledger";
 import { modelConversationSchema } from "@/lib/models/conversation";
+import { commandModelSelectionRequestSchema } from "@/lib/models/command-selection";
 import {
   agentRunIdentityPinV1Schema,
   parseAgentRunIdentityPinV1,
@@ -2533,6 +2534,12 @@ export function parseAgentRunContinuation(
     ? undefined
     : modelConversationSchema.safeParse(candidate.canonicalConversation);
   if (canonicalConversation && !canonicalConversation.success) return undefined;
+  const commandModelSelection = candidate.commandModelSelection === undefined
+    ? undefined
+    : commandModelSelectionRequestSchema.safeParse(
+        candidate.commandModelSelection,
+      );
+  if (commandModelSelection && !commandModelSelection.success) return undefined;
 
   return {
     computerUseTarget: candidate.computerUseTarget as
@@ -2542,6 +2549,9 @@ export function parseAgentRunContinuation(
     runContractEnvelope,
     checkpointShadowEnrollment,
     checkpointResumeClaim,
+    commandModelSelection: commandModelSelection?.success
+      ? commandModelSelection.data
+      : undefined,
     budgetState,
     conversationItems: Array.isArray(candidate.conversationItems)
       ? (candidate.conversationItems as Array<Record<string, unknown>>)

@@ -15,11 +15,17 @@ import {
 } from "@/lib/models/registry";
 import type {
   ModelFeature,
+  ModelReasoningEffort,
   ModelTarget,
   ModelTextRequest,
   ModelTier,
   ProviderId,
 } from "@/lib/models/types";
+import {
+  CommandModelSelectionError,
+  resolveCommandModelSelection,
+  type CommandModelSelectionRequest,
+} from "@/lib/models/command-selection";
 import {
   getProviderCredentials,
   listModelAssignments,
@@ -51,6 +57,9 @@ export type RuntimeModelResolution = Readonly<{
   assignmentId?: string;
   assignmentRevision?: number;
   assignmentConfigurationSha256?: string;
+  commandSelectionSha256?: string;
+  commandReasoningLevel?: string;
+  reasoningEffort?: ModelReasoningEffort;
   provider?: RuntimeProviderId;
   model?: string;
   fallbackProvider?: RuntimeProviderId;
@@ -91,6 +100,8 @@ export async function resolveRuntimeModelAssignment(input: {
    */
   requiredFeatures?: readonly ModelFeature[];
   deploymentFallback?: DeploymentModelFallback;
+  /** Explicit per-command choice, revalidated against this scope's Settings route. */
+  commandSelection?: CommandModelSelectionRequest;
 }): Promise<RuntimeModelResolution> {
   const tenantId = input.tenantId.trim();
   const actorId = input.actorId.trim();
@@ -115,58 +126,105 @@ export async function resolveRuntimeModelAssignment(input: {
       }),
     ]);
   } catch {
+    if (input.commandSelection) {
+      throw new CommandModelSelectionError(
+        "The selected model could not be revalidated against Settings. Choose again after Settings is available.",
+      );
+    }
     return withWarnings(environment, [
       "Workspace model routing could not be read, so deployment-environment routing remains in effect.",
     ]);
   }
 
   const assignment = assignments.find((item) => item.scope === input.scope);
-  if (!assignment) return environment;
+  if (!assignment) {
+    if (input.commandSelection) {
+      throw new CommandModelSelectionError(
+        "The selected model no longer has an active Settings route for this agent.",
+      );
+    }
+    return environment;
+  }
   if (
     assignment.runtimeReadiness !== "active" ||
     assignment.contractVersion !== "p11.8-model-assignment:1" ||
     !assignment.configurationSha256 ||
     !assignment.validatedAt
   ) {
+    if (input.commandSelection) {
+      throw new CommandModelSelectionError(
+        "The selected model route is no longer active. Review it in Settings and choose again.",
+      );
+    }
     return withWarnings(environment, [
       "The saved route is a legacy or unvalidated configuration, so deployment-environment routing remains in effect.",
     ]);
   }
   if (assignment.provider === "typesafe") {
+    if (input.commandSelection) {
+      throw new CommandModelSelectionError(
+        "TypeSafe is not a generative Command model route.",
+      );
+    }
     return withWarnings(environment, [
       "TypeSafe semantic decisions run only through the dedicated shadow resolver and cannot replace a generative model route.",
     ]);
   }
-  const provider = runtimeProvider(assignment.provider);
+  const commandSelection = input.commandSelection
+    ? resolveCommandModelSelection({
+        selection: input.commandSelection,
+        assignment,
+        catalog,
+      })
+    : undefined;
+  const selectedSettingsProvider = commandSelection?.provider || assignment.provider;
+  const selectedModelId = commandSelection?.modelId || assignment.modelId;
+  const provider = runtimeProvider(selectedSettingsProvider);
 
   const warnings: string[] = [];
-  addLifecycleWarning(warnings, catalog, assignment.provider, assignment.modelId, "Primary");
+  addLifecycleWarning(
+    warnings,
+    catalog,
+    selectedSettingsProvider,
+    selectedModelId,
+    commandSelection?.route === "fallback" ? "Fallback" : "Primary",
+  );
   const primaryConnection = connections.find((connection) =>
-    connection.provider === assignment.provider &&
+    connection.provider === selectedSettingsProvider &&
     connection.source === "tenant_vault" &&
     connection.enabled &&
     connection.status === "connected"
   );
   if (!primaryConnection) {
+    if (commandSelection) {
+      throw new CommandModelSelectionError(
+        "The selected model provider is no longer connected. Choose a different model or repair it in Settings.",
+      );
+    }
     return withWarnings(environment, [
       ...warnings,
       "The assigned provider does not have an enabled, validated workspace connection, so deployment-environment routing remains in effect.",
     ]);
   }
 
-  const primaryCredentials = await readProviderCredential(assignment.provider, {
+  const primaryCredentials = await readProviderCredential(selectedSettingsProvider, {
     tenantId,
     actorId,
     connectionId: primaryConnection.id,
   });
   if (!primaryCredentials) {
+    if (commandSelection) {
+      throw new CommandModelSelectionError(
+        "The selected model credential could not be opened. Repair the provider connection in Settings.",
+      );
+    }
     return withWarnings(environment, [
       ...warnings,
       "The assigned workspace credential could not be opened, so deployment-environment routing remains in effect.",
     ]);
   }
 
-  const targets: ModelTarget[] = [modelTarget(provider, assignment.modelId, input.tier)];
+  const targets: ModelTarget[] = [modelTarget(provider, selectedModelId, input.tier)];
   const credentials: Partial<Record<RuntimeProviderId, ModelRuntimeCredential>> = {
     [provider]: primaryCredentials,
   };
@@ -174,7 +232,7 @@ export async function resolveRuntimeModelAssignment(input: {
   let fallbackModel: string | undefined;
   let crossProviderFallback = false;
 
-  if (assignment.fallbackProvider && assignment.fallbackModelId) {
+  if (!commandSelection && assignment.fallbackProvider && assignment.fallbackModelId) {
     if (assignment.fallbackProvider === "typesafe") {
       warnings.push(
         "A TypeSafe semantic-decision provider cannot be used as a generative fallback.",
@@ -240,7 +298,9 @@ export async function resolveRuntimeModelAssignment(input: {
   const context: ModelRuntimeContext = { targets, credentials };
   const allowedProviders = [...new Set(targets.map((target) => target.provider))];
   const reason = [
-    `Workspace ${input.scope.replaceAll("_", " ")} routing selected ${assignment.provider}/${assignment.modelId}.`,
+    commandSelection
+      ? `You selected ${selectedSettingsProvider}/${selectedModelId} from the validated ${input.scope.replaceAll("_", " ")} Settings route.`
+      : `Workspace ${input.scope.replaceAll("_", " ")} routing selected ${assignment.provider}/${assignment.modelId}.`,
     ...warnings,
   ].join(" ");
   const usageReceipt: RuntimeModelResolution["usageReceipt"] = {
@@ -258,8 +318,11 @@ export async function resolveRuntimeModelAssignment(input: {
     assignmentId: assignment.id,
     assignmentRevision: assignment.revision,
     assignmentConfigurationSha256: assignment.configurationSha256,
+    commandSelectionSha256: commandSelection?.selectionSha256,
+    commandReasoningLevel: commandSelection?.reasoningLevel,
+    reasoningEffort: commandSelection?.reasoningEffort,
     provider,
-    model: assignment.modelId,
+    model: selectedModelId,
     fallbackProvider,
     fallbackModel,
     allowCrossProviderFallback: crossProviderFallback,
@@ -278,6 +341,9 @@ export async function resolveRuntimeModelAssignment(input: {
         preferredProvider: activeProvider,
         allowedProviders: continuationProvider ? [activeProvider] : allowedProviders,
         allowCrossProviderFallback: continuationProvider ? false : crossProviderFallback,
+        ...(commandSelection?.reasoningEffort
+          ? { reasoningEffort: commandSelection.reasoningEffort }
+          : {}),
         ...(request.usageScope
           ? { usageScope: { ...request.usageScope, ...usageReceipt } }
           : {}),

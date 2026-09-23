@@ -380,7 +380,7 @@ export async function* runAgent(
   // browser wording never chooses a control surface on the user's behalf.
   const computerUseRequested = localComputerUseRequested;
   const computerUseTarget = request.computerUseTarget;
-  const deploymentModelRoute = request.runtimeModelPin
+  const automaticDeploymentModelRoute = request.runtimeModelPin
     ? {
         provider: request.runtimeModelPin.provider,
         model: request.runtimeModelPin.model,
@@ -402,6 +402,9 @@ export async function* runAgent(
         specialistCount: request.specialistIds?.length,
         modelPolicy: request.agentProfile?.modelPolicy,
       });
+  const deploymentModelRoute = request.commandModelSelection?.reasoningLevel
+    ? { ...automaticDeploymentModelRoute, tier: "reasoning" as const }
+    : automaticDeploymentModelRoute;
   const deploymentProviderConfigured = computerUseRequested
     ? hasOpenAIKey()
     : hasOpenAIKey() || hasGeminiKey() || hasAnthropicKey();
@@ -419,6 +422,7 @@ export async function* runAgent(
       reason: deploymentModelRoute.reason,
       configured: deploymentProviderConfigured,
     },
+    commandSelection: request.commandModelSelection,
   });
   const modelRoute = runtimeModel.source === "tenant_assignment" && runtimeModel.provider && runtimeModel.model
     ? {
@@ -1897,6 +1901,9 @@ export async function* runAgent(
                 ? {
                     ...event,
                     assignmentId: runtimeModel.assignmentId,
+                    reasoningEffort: runtimeModel.reasoningEffort,
+                    commandSelectionSha256:
+                      runtimeModel.commandSelectionSha256,
                     credentialSource: runtimeModel.source === "tenant_assignment"
                       ? "tenant_vault"
                       : "deployment_environment",
@@ -1948,6 +1955,8 @@ export async function* runAgent(
             model: result.model,
             requestedProvider: modelRoute.provider,
             tier: modelRoute.tier,
+            reasoningEffort: runtimeModel.reasoningEffort,
+            commandSelectionSha256: runtimeModel.commandSelectionSha256,
             fallbackUsed,
             crossProviderFallbackUsed,
             attempts: result.attempts,
@@ -1962,6 +1971,7 @@ export async function* runAgent(
           const continuation: AgentRunContinuation = {
             computerUseTarget,
             executionScope,
+            commandModelSelection: request.commandModelSelection,
             runContractEnvelope: shadowRunContract?.envelope,
             checkpointShadowEnrollment,
             budgetState: runBudgetState,
@@ -2053,7 +2063,8 @@ export async function* runAgent(
             input: turnInput,
             tools: toolSteps < maxToolSteps ? toolbox.openAITools : undefined,
             abortSignal: runAbortSignal,
-            reasoningEffort: AGENT_REASONING_EFFORT,
+            reasoningEffort:
+              runtimeModel.reasoningEffort || AGENT_REASONING_EFFORT,
             maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
             model: modelRoute.model,
             fallbackModel: modelBudget.maxAttempts > 1
@@ -2144,6 +2155,8 @@ export async function* runAgent(
             retryable: attempt.retryable,
           })),
           assignmentId: runtimeModel.assignmentId,
+          reasoningEffort: runtimeModel.reasoningEffort,
+          commandSelectionSha256: runtimeModel.commandSelectionSha256,
           credentialSource: runtimeModel.source === "tenant_assignment"
             ? "tenant_vault"
             : "deployment_environment",
@@ -2165,6 +2178,8 @@ export async function* runAgent(
             model: turn.model,
             requestedModel: modelRoute.model,
             tier: modelRoute.tier,
+            reasoningEffort: runtimeModel.reasoningEffort,
+            commandSelectionSha256: runtimeModel.commandSelectionSha256,
             fallbackUsed: turn.fallbackUsed,
             usage: turn.usage,
             estimatedCostUsd: turn.estimatedCostUsd,
@@ -2400,6 +2415,7 @@ export async function* runAgent(
             const continuation: AgentRunContinuation = {
               computerUseTarget,
               executionScope,
+              commandModelSelection: request.commandModelSelection,
               runContractEnvelope: shadowRunContract?.envelope,
               checkpointShadowEnrollment,
               budgetState: runBudgetState,
@@ -3783,7 +3799,9 @@ async function resumeAgentRunAfterToolApprovalInScope({
     message: run.prompt,
     mode: run.mode,
   });
-  const resumeTier = resumeDeploymentRoute.tier;
+  const resumeTier = continuation.commandModelSelection?.reasoningLevel
+    ? "reasoning" as const
+    : resumeDeploymentRoute.tier;
   const resumeModel = run.model || resumeDeploymentRoute.model;
   const resumeComputerUseRequested =
     continuation.computerUseTarget === "local_macos";
@@ -3803,6 +3821,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
       configured: hasOpenAIKey(),
       reason: "The approved OpenAI continuation uses its original provider boundary.",
     },
+    commandSelection: continuation.commandModelSelection,
   });
   const workspaceOpenAIAvailable =
     resumeRuntimeModel.source === "tenant_assignment" &&
@@ -4012,6 +4031,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
           continuation: {
             computerUseTarget: continuation.computerUseTarget,
             executionScope,
+            commandModelSelection: continuation.commandModelSelection,
             runContractEnvelope: continuation.runContractEnvelope,
             checkpointShadowEnrollment:
               continuation.checkpointShadowEnrollment,
@@ -4107,7 +4127,8 @@ async function resumeAgentRunAfterToolApprovalInScope({
             input: turnInput,
             tools: toolSteps < maxToolSteps ? toolbox.openAITools : undefined,
             abortSignal: resumeAbortSignal,
-            reasoningEffort: AGENT_REASONING_EFFORT,
+            reasoningEffort:
+              resumeRuntimeModel.reasoningEffort || AGENT_REASONING_EFFORT,
             maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
             model: resumeModel,
             apiKey: workspaceOpenAIAvailable ? apiKey : undefined,
@@ -4208,6 +4229,9 @@ async function resumeAgentRunAfterToolApprovalInScope({
           retryable: attempt.retryable,
         })),
         assignmentId: resumeRuntimeModel.assignmentId,
+        reasoningEffort: resumeRuntimeModel.reasoningEffort,
+        commandSelectionSha256:
+          resumeRuntimeModel.commandSelectionSha256,
         credentialSource: resumeRuntimeModel.source === "tenant_assignment"
           ? "tenant_vault"
           : "deployment_environment",
@@ -4336,6 +4360,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
             continuation: {
               computerUseTarget: continuation.computerUseTarget,
               executionScope,
+              commandModelSelection: continuation.commandModelSelection,
               runContractEnvelope: continuation.runContractEnvelope,
               checkpointShadowEnrollment:
                 continuation.checkpointShadowEnrollment,
@@ -4728,6 +4753,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
       reason:
         `The approved continuation remains bound to ${providerState.provider}/${resumeModel}.`,
     },
+    commandSelection: continuation.commandModelSelection,
   });
   const runtimeCarriesProvider =
     resumeRuntimeModel.provider === providerState.provider ||
@@ -4892,6 +4918,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
       memoryScope: continuation.memoryScope,
       citationSources,
       providerToolState: waiting.providerState,
+      commandModelSelection: continuation.commandModelSelection,
       createdAt: new Date().toISOString(),
     };
     await flushDeltas();
@@ -5143,6 +5170,9 @@ async function resumeProviderBoundAgentRunAfterApproval({
             ? {
                 ...event,
                 assignmentId: resumeRuntimeModel.assignmentId,
+                reasoningEffort: resumeRuntimeModel.reasoningEffort,
+                commandSelectionSha256:
+                  resumeRuntimeModel.commandSelectionSha256,
                 credentialSource: resumeCredentialSource,
               }
             : event);

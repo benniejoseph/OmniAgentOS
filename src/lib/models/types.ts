@@ -5,6 +5,13 @@ import type { ModelComputerObservation } from "@/lib/models/computer-observation
 
 export type ProviderId = "openai" | "google" | "anthropic" | "aws_bedrock" | "local";
 export type ModelTier = "fast" | "reasoning";
+export type ModelReasoningEffort =
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max";
 export type ModelFeature = "text" | "streaming" | "tools" | "json_schema" | "vision" | "audio";
 export type ModelFailureKind = "abort" | "authentication" | "invalid_request" | "rate_limit" | "safety" | "timeout" | "unavailable" | "unknown";
 
@@ -115,6 +122,8 @@ export type ModelTextRequest = {
   /** Maximum provider/model attempts for this logical call, including the first. */
   maxAttempts?: number;
   maxOutputTokens?: number;
+  /** Exact provider-native effort, only after model capability validation. */
+  reasoningEffort?: ModelReasoningEffort;
   abortSignal?: AbortSignal;
   /** Content-free tenant/actor attribution for the unified AI usage ledger. */
   usageScope?: AiUsageScope;
@@ -124,7 +133,6 @@ export type ModelStructuredRequest = ModelTextRequest & {
   instructions: string;
   name: string;
   schema: Record<string, unknown>;
-  reasoningEffort?: "minimal" | "low" | "medium" | "high";
 };
 
 export class ModelProviderError extends Error {
