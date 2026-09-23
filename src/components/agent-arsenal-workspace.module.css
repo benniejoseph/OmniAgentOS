@@ -488,6 +488,42 @@
   background: color-mix(in oklab, var(--agent-color) 6%, var(--arsenal-surface));
 }
 .shell :global(.agent-performance-grid > div) { border-left: 1px solid color-mix(in oklab, var(--agent-color) 22%, var(--arsenal-line)); padding-left: .45rem; }
+.learningCard {
+  display: grid;
+  gap: .8rem;
+  margin-top: 1rem;
+  overflow: hidden;
+  border: 1px solid color-mix(in oklab, var(--agent-color) 25%, var(--arsenal-line));
+  border-radius: 1rem;
+  padding: .9rem;
+  background:
+    radial-gradient(circle at 92% 0%, color-mix(in oklab, var(--agent-color) 15%, transparent), transparent 45%),
+    var(--arsenal-surface);
+}
+.learningCardHeading { display: flex; align-items: center; gap: .65rem; }
+.learningCardHeading > span {
+  display: grid;
+  width: 2rem;
+  height: 2rem;
+  flex: none;
+  place-items: center;
+  border-radius: .72rem;
+  color: var(--agent-color);
+  background: color-mix(in oklab, var(--agent-color) 12%, transparent);
+}
+.learningCardHeading p {
+  color: var(--agent-color);
+  font-size: .62rem;
+  font-weight: 800;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+.learningCardHeading strong { display: block; margin-top: .12rem; color: var(--arsenal-ink); font-size: .76rem; }
+.learningCard ol { display: grid; gap: .48rem; }
+.learningCard li { display: grid; grid-template-columns: 1rem minmax(0, 1fr); gap: .45rem; color: var(--arsenal-muted); font-size: .68rem; line-height: 1.45; }
+.learningCard li svg { margin-top: .16rem; color: var(--agent-color); }
+.learningCardLink { display: inline-flex; width: fit-content; align-items: center; gap: .3rem; color: var(--agent-color); font-size: .68rem; font-weight: 760; }
+.learningCardLink:hover { text-decoration: underline; text-underline-offset: .18rem; }
 .shell :global(.inspector-list) { border-top-color: var(--arsenal-line); }
 .shell :global(.autonomy-note) { border: 1px solid var(--arsenal-line); border-radius: 1rem; background: transparent; }
 .shell :global(.autonomy-note strong) { color: var(--agent-color); }

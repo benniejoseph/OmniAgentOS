@@ -475,6 +475,7 @@ export function AgentArsenalWorkspace({
             performance={selectedPerformance}
             state={state}
           />
+          <DailyLearningCard />
           {selectedIsExactMoltbook ? (
             <MoltbookAgentPanel
               key={selected.id}
@@ -1568,6 +1569,29 @@ function AgentPerformancePanel({
     </section>
   );
 }
+
+function DailyLearningCard() {
+  return (
+    <section className={styles.learningCard} aria-label="How Agents improve">
+      <div className={styles.learningCardHeading}>
+        <span><Sparkles size={14} aria-hidden="true" /></span>
+        <div>
+          <p>Daily learning</p>
+          <strong>Gets better from reviewed outcomes</strong>
+        </div>
+      </div>
+      <ol>
+        <li><Eye size={13} aria-hidden="true" /><span>Observes completed work after each local day.</span></li>
+        <li><ClipboardCheck size={13} aria-hidden="true" /><span>Learns only from feedback and corrections you explicitly record.</span></li>
+        <li><Check size={13} aria-hidden="true" /><span>Proposes a change for review; it never silently expands its own access.</span></li>
+      </ol>
+      <Link href="/app/agents?view=outcomes" className={styles.learningCardLink}>
+        Review learning evidence <ArrowRight size={13} aria-hidden="true" />
+      </Link>
+    </section>
+  );
+}
+
 function PerformanceMetric({ label, value }: { label: string; value: string }) {
   return (
     <div>
