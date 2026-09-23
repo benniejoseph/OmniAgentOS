@@ -6,13 +6,17 @@ import type {
 import {
   DIARIZATION_MODEL,
   GOOGLE_TRANSCRIPTION_MODEL,
+  TRANSCRIPTION_PROVIDER,
   TRANSCRIPTION_MODEL,
   hasGoogleMediaKey,
   hasOpenAIKey,
 } from "@/lib/config";
 import { transcribeGoogleAudio } from "@/lib/google/ai";
 import { getOpenAIClient } from "@/lib/openai/client";
-import { resolveSpecializedRuntime } from "@/lib/settings/specialized-runtime";
+import {
+  resolveSpecializedRuntime,
+  type SpecializedRuntimeResolution,
+} from "@/lib/settings/specialized-runtime";
 import { recordAiUsageSafely } from "@/lib/usage/ledger";
 import type { AiUsageScope } from "@/lib/usage/types";
 
@@ -49,21 +53,40 @@ export type CaptureDiarizedTranscriptionSegment = Readonly<{
   languageTag: string;
 }>;
 
+export type CaptureTranscriptionFailure = Readonly<{
+  code:
+    | "transcription_not_configured"
+    | "transcription_credential_rejected"
+    | "transcription_model_unavailable"
+    | "transcription_rate_limited"
+    | "transcription_no_speech"
+    | "transcription_cancelled"
+    | "transcription_provider_unavailable";
+  status: number;
+  message: string;
+  suggestion: string;
+}>;
+
+class CaptureTranscriptionRuntimeError extends Error {
+  constructor(readonly failure: CaptureTranscriptionFailure) {
+    super(failure.message);
+    this.name = "CaptureTranscriptionRuntimeError";
+  }
+}
+
 export async function captureTranscriptionConfigured(input?: {
   tenantId?: string;
   actorId?: string;
 }) {
-  const useGoogleDeployment = hasGoogleMediaKey();
+  const deployment = captureDeploymentRoute("audio/wav");
   const runtimeModel = await resolveSpecializedRuntime({
     tenantId: input?.tenantId,
     actorId: input?.actorId,
     scope: "audio",
     requiredCapability: "transcription",
-    deploymentProvider: useGoogleDeployment ? "google" : "openai",
-    deploymentModel: useGoogleDeployment
-      ? GOOGLE_TRANSCRIPTION_MODEL
-      : TRANSCRIPTION_MODEL,
-    deploymentConfigured: useGoogleDeployment || hasOpenAIKey(),
+    deploymentProvider: deployment.provider,
+    deploymentModel: deployment.model,
+    deploymentConfigured: deployment.credentialConfigured,
   });
   return runtimeModel.configured;
 }
@@ -233,23 +256,21 @@ export async function transcribeCaptureMedia(
   const mimeType = media.type.split(";", 1)[0].toLowerCase();
   if (!CAPTURE_MEDIA_TYPES.has(mimeType)) throw new Error("Unsupported audio or video format.");
 
+  const deployment = captureDeploymentRoute(mimeType);
   const runtimeModel = await resolveSpecializedRuntime({
     tenantId: usageScope?.tenantId,
     actorId: usageScope?.actorId,
     scope: "audio",
     requiredCapability: "transcription",
-    deploymentProvider:
-      CAPTURE_AUDIO_TYPES.has(mimeType) && hasGoogleMediaKey()
-        ? "google"
-        : "openai",
-    deploymentModel:
-      CAPTURE_AUDIO_TYPES.has(mimeType) && hasGoogleMediaKey()
-        ? GOOGLE_TRANSCRIPTION_MODEL
-        : TRANSCRIPTION_MODEL,
-    deploymentConfigured:
-      (CAPTURE_AUDIO_TYPES.has(mimeType) && hasGoogleMediaKey()) ||
-      hasOpenAIKey(),
+    deploymentProvider: deployment.provider,
+    deploymentModel: deployment.model,
+    deploymentConfigured: deployment.credentialConfigured,
   });
+  if (!runtimeModel.configured) {
+    throw new CaptureTranscriptionRuntimeError(
+      transcriptionConfigurationFailure(runtimeModel),
+    );
+  }
   const meteredUsageScope = usageScope
     ? { ...usageScope, ...runtimeModel.usageReceipt }
     : undefined;
@@ -280,7 +301,8 @@ export async function transcribeCaptureMedia(
     } catch (error) {
       if (
         runtimeModel.source === "tenant_assignment" ||
-        !hasOpenAIKey()
+        !hasOpenAIKey() ||
+        !TRANSCRIPTION_MODEL
       ) throw error;
       fallbackUsed = true;
       activeProvider = "openai";
@@ -371,9 +393,6 @@ export async function transcribeCaptureMedia(
       throw error;
     }
   }
-  if (!text && !runtimeModel.configured) {
-    throw new Error("Audio transcription is not configured.");
-  }
   text = text.trim().slice(0, 100_000);
   if (!text) throw new Error("No speech could be recognized in this recording.");
   return {
@@ -385,6 +404,149 @@ export async function transcribeCaptureMedia(
       ...segment,
       text: segment.text.trim().slice(0, 24_000),
     })).filter((segment) => segment.text),
+  };
+}
+
+export function describeCaptureTranscriptionFailure(
+  error: unknown,
+): CaptureTranscriptionFailure {
+  if (error instanceof CaptureTranscriptionRuntimeError) return error.failure;
+  const candidate = error as {
+    name?: unknown;
+    status?: unknown;
+    code?: unknown;
+    message?: unknown;
+  } | undefined;
+  const name = String(candidate?.name || "");
+  const status = Number(candidate?.status);
+  const code = String(candidate?.code || "").toLowerCase();
+  const message = String(candidate?.message || "").toLowerCase();
+
+  if (name === "AbortError") {
+    return {
+      code: "transcription_cancelled",
+      status: 408,
+      message: "Voice transcription was interrupted before it finished.",
+      suggestion: "Keep the app open and try recording again.",
+    };
+  }
+  if (
+    status === 401 ||
+    status === 403 ||
+    code === "invalid_api_key" ||
+    message.includes("api key not valid") ||
+    message.includes("permission_denied")
+  ) {
+    return {
+      code: "transcription_credential_rejected",
+      status: 503,
+      message: "The transcription provider rejected the credential selected in Settings.",
+      suggestion: "Reconnect that provider in Settings, refresh its models, and re-save the transcription route.",
+    };
+  }
+  if (
+    status === 429 ||
+    code.includes("rate_limit") ||
+    message.includes("resource_exhausted") ||
+    message.includes("quota")
+  ) {
+    return {
+      code: "transcription_rate_limited",
+      status: 429,
+      message: "The selected transcription provider has reached its current usage limit.",
+      suggestion: "Wait for the limit to reset or choose another transcription route in Settings.",
+    };
+  }
+  if (
+    status === 400 ||
+    status === 404 ||
+    status === 422 ||
+    code === "model_not_found" ||
+    message.includes("model not found") ||
+    message.includes("selected google speech model is invalid")
+  ) {
+    return {
+      code: "transcription_model_unavailable",
+      status: 503,
+      message: "The transcription model selected in Settings is not available for this provider.",
+      suggestion: "Refresh the provider model list and save a model with audio transcription support.",
+    };
+  }
+  if (
+    message === "no speech could be recognized in this recording." ||
+    message === "google speech could not recognize this recording."
+  ) {
+    return {
+      code: "transcription_no_speech",
+      status: 422,
+      message: "No clear speech was detected in this recording.",
+      suggestion: "Move closer to the microphone, reduce background noise, and try again.",
+    };
+  }
+  return {
+    code: "transcription_provider_unavailable",
+    status: 502,
+    message: "The selected transcription provider could not complete this recording.",
+    suggestion: "Try again. If it continues, reconnect the provider or select another transcription model in Settings.",
+  };
+}
+
+function transcriptionConfigurationFailure(
+  runtimeModel: SpecializedRuntimeResolution,
+): CaptureTranscriptionFailure {
+  return {
+    code: "transcription_not_configured",
+    status: 503,
+    message: runtimeModel.warning ||
+      "Voice transcription does not have an active model route.",
+    suggestion: runtimeModel.source === "tenant_assignment"
+      ? "Open Settings → Models, validate the selected provider, and re-save Audio transcription."
+      : "Open Settings → Models and assign Audio transcription, or explicitly configure both the deployment credential and transcription model.",
+  };
+}
+
+function captureDeploymentRoute(mimeType: string): {
+  provider: "openai" | "google";
+  model: string;
+  credentialConfigured: boolean;
+} {
+  const supportsGoogle = CAPTURE_AUDIO_TYPES.has(mimeType);
+  const openAiReady = hasOpenAIKey() && Boolean(TRANSCRIPTION_MODEL);
+  const googleReady = supportsGoogle && hasGoogleMediaKey() &&
+    Boolean(GOOGLE_TRANSCRIPTION_MODEL);
+  if (TRANSCRIPTION_PROVIDER === "google" && supportsGoogle) {
+    return {
+      provider: "google",
+      model: GOOGLE_TRANSCRIPTION_MODEL,
+      credentialConfigured: hasGoogleMediaKey(),
+    };
+  }
+  if (TRANSCRIPTION_PROVIDER === "openai") {
+    return {
+      provider: "openai",
+      model: TRANSCRIPTION_MODEL,
+      credentialConfigured: hasOpenAIKey(),
+    };
+  }
+  if (googleReady && !openAiReady) {
+    return {
+      provider: "google",
+      model: GOOGLE_TRANSCRIPTION_MODEL,
+      credentialConfigured: true,
+    };
+  }
+  if (openAiReady && !googleReady) {
+    return {
+      provider: "openai",
+      model: TRANSCRIPTION_MODEL,
+      credentialConfigured: true,
+    };
+  }
+  return {
+    provider: "openai",
+    model: "",
+    credentialConfigured: hasOpenAIKey() ||
+      (supportsGoogle && hasGoogleMediaKey()),
   };
 }
 

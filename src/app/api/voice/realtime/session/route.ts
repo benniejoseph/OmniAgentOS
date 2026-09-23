@@ -11,7 +11,10 @@ import {
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
-import { resolveSpecializedRuntime } from "@/lib/settings/specialized-runtime";
+import {
+  resolveSpecializedRuntime,
+  type SpecializedRuntimeResolution,
+} from "@/lib/settings/specialized-runtime";
 import { createThread, getOwnedThread } from "@/lib/threads/store";
 import {
   issueRealtimeTranscriptionSecret,
@@ -93,7 +96,6 @@ async function POSTHandler(request: Request) {
       resourceType: "voice_session",
       metadata: {
         operation: parsed.reconnectAttempt ? "reconnect" : "start",
-        provider: "openai",
       },
     });
   } catch (error) {
@@ -102,6 +104,23 @@ async function POSTHandler(request: Request) {
 
   const limited = await enforceRateLimit(context.tenantId, context.actorId);
   if (limited) return limited;
+
+  const runtimeModel = await resolveSpecializedRuntime({
+    tenantId: context.tenantId,
+    actorId: context.actorId,
+    scope: "realtime_transcription",
+    requiredCapability: "transcription",
+    deploymentProvider: "openai",
+    deploymentModel: REALTIME_TRANSCRIPTION_MODEL,
+    deploymentConfigured: hasOpenAIKey(),
+  });
+  if (!runtimeModel.configured || runtimeModel.provider !== "openai") {
+    const failure = realtimeConfigurationFailure(runtimeModel);
+    return Response.json(
+      failure,
+      { status: 503, headers: privateNoStoreHeaders },
+    );
+  }
 
   const requestActorBinding =
     canonicalRequestActorBindingFromSecurityContext(context);
@@ -137,22 +156,6 @@ async function POSTHandler(request: Request) {
       : "voice.realtime.start",
   });
 
-  const runtimeModel = await resolveSpecializedRuntime({
-    tenantId: context.tenantId,
-    actorId: context.actorId,
-    scope: "realtime_transcription",
-    requiredCapability: "transcription",
-    deploymentProvider: "openai",
-    deploymentModel: REALTIME_TRANSCRIPTION_MODEL,
-    deploymentConfigured: hasOpenAIKey(),
-  });
-  if (!runtimeModel.configured || runtimeModel.provider !== "openai") {
-    return Response.json(
-      { error: "Realtime voice does not have an active model route." },
-      { status: 503, headers: privateNoStoreHeaders },
-    );
-  }
-
   try {
     const credential = await runtimeModel.withApiKey((apiKey) =>
       issueRealtimeTranscriptionSecret({
@@ -174,7 +177,7 @@ async function POSTHandler(request: Request) {
       payload: {
         schemaVersion: 1,
         conversationId: conversation.id,
-        provider: "openai",
+        provider: runtimeModel.provider,
         model: credential.model,
         language: parsed.language || "auto",
         turnDetection: "server_vad",
@@ -197,7 +200,7 @@ async function POSTHandler(request: Request) {
       clientSecret: credential.clientSecret,
       clientSecretExpiresAt: credential.clientSecretExpiresAt,
       transportUrl: REALTIME_TRANSPORT_URL,
-      provider: "openai",
+      provider: runtimeModel.provider,
       model: credential.model,
       language: parsed.language || "auto",
       turnDetection: "server_vad",
@@ -206,15 +209,98 @@ async function POSTHandler(request: Request) {
       reconnectAttempt: parsed.reconnectAttempt,
     }, { headers: privateNoStoreHeaders });
   } catch (error) {
+    const failure = describeRealtimeSessionFailure(error);
     console.error(
       "Realtime voice session creation failed.",
-      error instanceof Error ? error.name : "UnknownError",
+      failure.code,
     );
     return Response.json(
-      { error: "Realtime voice is temporarily unavailable." },
-      { status: 502, headers: privateNoStoreHeaders },
+      failure,
+      { status: failure.status, headers: privateNoStoreHeaders },
     );
   }
+}
+
+function realtimeConfigurationFailure(
+  runtimeModel: SpecializedRuntimeResolution,
+) {
+  const suggestion = runtimeModel.source === "tenant_assignment"
+    ? "Open Settings → Models, validate the selected provider, and re-save Realtime transcription."
+    : "Open Settings → Models and assign Realtime transcription, or explicitly configure both OPENAI_API_KEY and OPENAI_REALTIME_TRANSCRIPTION_MODEL.";
+  const message = runtimeModel.warning ||
+    "Realtime voice does not have an active transcription model route.";
+  return {
+    error: `${message} ${suggestion}`,
+    code: "realtime_transcription_not_configured",
+    suggestion,
+  } as const;
+}
+
+function describeRealtimeSessionFailure(error: unknown) {
+  const candidate = error as {
+    name?: unknown;
+    status?: unknown;
+    code?: unknown;
+    message?: unknown;
+  } | undefined;
+  const name = String(candidate?.name || "");
+  const status = Number(candidate?.status);
+  const code = String(candidate?.code || "").toLowerCase();
+  const message = String(candidate?.message || "").toLowerCase();
+  if (name === "AbortError") {
+    const suggestion = "Check the network connection and try voice mode again.";
+    return {
+      error: `Realtime voice took too long to connect. ${suggestion}`,
+      code: "realtime_transcription_timeout",
+      suggestion,
+      status: 504,
+    } as const;
+  }
+  if (
+    status === 401 ||
+    status === 403 ||
+    code === "invalid_api_key" ||
+    message.includes("api key not valid")
+  ) {
+    const suggestion = "Reconnect OpenAI in Settings, refresh its models, and re-save Realtime transcription.";
+    return {
+      error: `The realtime transcription provider rejected the credential selected in Settings. ${suggestion}`,
+      code: "realtime_transcription_credential_rejected",
+      suggestion,
+      status: 503,
+    } as const;
+  }
+  if (status === 429 || code.includes("rate_limit") || message.includes("quota")) {
+    const suggestion = "Wait for the provider limit to reset, then start voice mode again.";
+    return {
+      error: `The realtime transcription provider has reached its current usage limit. ${suggestion}`,
+      code: "realtime_transcription_rate_limited",
+      suggestion,
+      status: 429,
+    } as const;
+  }
+  if (
+    status === 400 ||
+    status === 404 ||
+    status === 422 ||
+    code === "model_not_found" ||
+    message.includes("model not found")
+  ) {
+    const suggestion = "Refresh OpenAI models and save a supported Realtime transcription model.";
+    return {
+      error: `The realtime transcription model selected in Settings is unavailable. ${suggestion}`,
+      code: "realtime_transcription_model_unavailable",
+      suggestion,
+      status: 503,
+    } as const;
+  }
+  const suggestion = "Try again. If it continues, reconnect OpenAI or select another realtime transcription model in Settings.";
+  return {
+    error: `Realtime voice could not establish a private transcription session. ${suggestion}`,
+    code: "realtime_transcription_provider_unavailable",
+    suggestion,
+    status: 502,
+  } as const;
 }
 
 async function PATCHHandler(request: Request) {

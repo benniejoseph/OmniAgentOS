@@ -1,6 +1,6 @@
 import {
   CAPTURE_AUDIO_TYPES,
-  captureTranscriptionConfigured,
+  describeCaptureTranscriptionFailure,
   transcribeCaptureAudio,
 } from "@/lib/capture/transcription";
 import { captureExecutionScopeFromSecurityContext } from "@/lib/capture/execution-scope";
@@ -30,10 +30,6 @@ async function POSTHandler(request: Request) {
     request,
     "capture.voice.transcribe",
   );
-  if (!await captureTranscriptionConfigured({
-    tenantId: context.tenantId,
-    actorId: context.actorId,
-  })) return Response.json({ error: "Voice transcription is not configured." }, { status: 503 });
   if (!(request.headers.get("content-type") || "").toLowerCase().startsWith("multipart/form-data")) {
     return Response.json({ error: "Audio transcription requires multipart form data." }, { status: 415 });
   }
@@ -64,6 +60,28 @@ async function POSTHandler(request: Request) {
     await recordRuntimeEventSafely({ category: "api", action: "media.transcription", tenantId: context.tenantId, actorId: context.actorId, correlationId: executionScope.correlationId, resourceType: "capture", durationMs: Date.now() - startedAt, message: fallbackUsed ? "Voice transcription completed through fallback." : "Voice transcription completed.", metadata: { model, fallbackUsed, bytes: audio.size } });
     return Response.json({ text, model, fallbackUsed }, { headers: { "cache-control": "private, no-store" } });
   } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : "Transcription failed." }, { status: 502 });
+    const failure = describeCaptureTranscriptionFailure(error);
+    await recordRuntimeEventSafely({
+      category: "api",
+      action: "media.transcription.failed",
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      correlationId: executionScope.correlationId,
+      resourceType: "capture",
+      durationMs: Date.now() - startedAt,
+      message: "Voice transcription did not complete.",
+      metadata: { code: failure.code, bytes: audio.size },
+    });
+    return Response.json(
+      {
+        error: `${failure.message} ${failure.suggestion}`,
+        code: failure.code,
+        suggestion: failure.suggestion,
+      },
+      {
+        status: failure.status,
+        headers: { "cache-control": "private, no-store" },
+      },
+    );
   }
 }

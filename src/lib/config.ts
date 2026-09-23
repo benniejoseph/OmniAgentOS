@@ -9,16 +9,19 @@ export const WEB_SEARCH_TIMEOUT_MS = normalizePositiveInteger(
 );
 export const EMBEDDING_MODEL =
   process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-large";
+export const TRANSCRIPTION_PROVIDER = normalizeTranscriptionProvider(
+  process.env.OMNIAGENT_TRANSCRIPTION_PROVIDER,
+);
 export const TRANSCRIPTION_MODEL =
-  process.env.OPENAI_TRANSCRIPTION_MODEL || "gpt-4o-mini-transcribe";
+  process.env.OPENAI_TRANSCRIPTION_MODEL?.trim() || "";
 export const DIARIZATION_MODEL =
-  process.env.OPENAI_DIARIZATION_MODEL || "gpt-4o-transcribe-diarize";
+  process.env.OPENAI_DIARIZATION_MODEL?.trim() || "";
 export const SPEECH_MODEL =
   process.env.OPENAI_SPEECH_MODEL || "gpt-4o-mini-tts";
 export const REALTIME_TRANSCRIPTION_MODEL =
-  process.env.OPENAI_REALTIME_TRANSCRIPTION_MODEL || "gpt-4o-mini-transcribe";
+  process.env.OPENAI_REALTIME_TRANSCRIPTION_MODEL?.trim() || "";
 export const GOOGLE_TRANSCRIPTION_MODEL =
-  process.env.GOOGLE_TRANSCRIPTION_MODEL || "google-cloud-speech:latest_long";
+  process.env.GOOGLE_TRANSCRIPTION_MODEL?.trim() || "";
 export const OCR_MODEL = process.env.OPENAI_OCR_MODEL || "gpt-4o-mini";
 export const GEMINI_FAST_MODEL = process.env.GEMINI_FAST_MODEL || "gemini-3.5-flash-lite";
 export const GEMINI_IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-image";
@@ -206,6 +209,13 @@ export function hasAnthropicKey() {
 
 export function hasGoogleMediaKey() {
   return Boolean(process.env.GOOGLE_MEDIA_API_KEY?.trim());
+}
+
+function normalizeTranscriptionProvider(value: string | undefined) {
+  const normalized = value?.trim().toLowerCase();
+  return normalized === "openai" || normalized === "google"
+    ? normalized
+    : undefined;
 }
 
 export function getAppBaseUrl() {

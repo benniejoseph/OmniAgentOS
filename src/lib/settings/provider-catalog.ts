@@ -174,12 +174,14 @@ async function discoverGemini(apiKey: string): Promise<CatalogModel[]> {
   });
   return [
     ...geminiModels,
-    catalogModel(
-      GOOGLE_TRANSCRIPTION_MODEL,
-      "Google Cloud Speech (latest long-form)",
-      ["audio", "transcription"],
-      "Google Cloud Speech-to-Text long-form recognition service.",
-    ),
+    ...(GOOGLE_TRANSCRIPTION_MODEL
+      ? [catalogModel(
+          GOOGLE_TRANSCRIPTION_MODEL,
+          "Google Cloud Speech",
+          ["audio", "transcription"],
+          "Google Cloud Speech-to-Text recognition service configured for this deployment.",
+        )]
+      : []),
   ];
 }
 
