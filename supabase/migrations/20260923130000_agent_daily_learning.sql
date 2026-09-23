@@ -269,10 +269,18 @@ REVOKE ALL ON FUNCTION public.omni_reject_agent_learning_change_v1() FROM PUBLIC
 DO $grants$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_runtime') THEN
+    REVOKE UPDATE, DELETE, TRUNCATE
+      ON public.omni_agent_learning_observations FROM omni_runtime;
+    REVOKE UPDATE, DELETE, TRUNCATE
+      ON public.omni_agent_learning_cycles FROM omni_runtime;
     GRANT SELECT, INSERT ON public.omni_agent_learning_observations TO omni_runtime;
     GRANT SELECT, INSERT ON public.omni_agent_learning_cycles TO omni_runtime;
   END IF;
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_maintenance') THEN
+    REVOKE UPDATE, DELETE, TRUNCATE
+      ON public.omni_agent_learning_observations FROM omni_maintenance;
+    REVOKE UPDATE, DELETE, TRUNCATE
+      ON public.omni_agent_learning_cycles FROM omni_maintenance;
     GRANT SELECT, INSERT ON public.omni_agent_learning_observations TO omni_maintenance;
     GRANT SELECT, INSERT ON public.omni_agent_learning_cycles TO omni_maintenance;
   END IF;
