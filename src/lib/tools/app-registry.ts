@@ -601,6 +601,11 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
       label: text(3, 80),
       guidance: text(3, 1_200),
     }, ["label", "guidance"]),
+    requiredGovernedToolIds: {
+      type: "array", maxItems: 8, uniqueItems: true,
+      description: "Optional exact subset of the resolved governed read-tool grants that the child must invoke. These are execution requirements, not additional authority; repeat each ID in grants.governedReadToolIds or the matching MCP grant.",
+      items: opaqueId("Exact canonical governed tool ID whose governed execution receipt is required for acceptance."),
+    },
     grants: objectSchema({
       governedReadToolIds: {
         type: "array", maxItems: 16, uniqueItems: true,

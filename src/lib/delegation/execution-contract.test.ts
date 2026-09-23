@@ -196,6 +196,55 @@ describe("delegation execution contract v2", () => {
       },
     })).toThrow();
   });
+
+  it("binds exact required governed tools without widening the resolved grants", () => {
+    const statement =
+      "Invoke every exact harness-required governed tool and bind its governed execution receipt.";
+    const requiredGovernedToolIds = ["runs.list"];
+    const acceptance = {
+      acceptanceId: "acceptance:required-tools",
+      criteria: [{
+        criterionId: "criterion:required-governed-tools:one",
+        statement,
+        criterionSha256: canonicalJsonSha256({
+          statement,
+          requiredGovernedToolIds,
+        }),
+        verificationMethod: "governed_receipt" as const,
+        required: true as const,
+        requiredGovernedToolIds,
+      }],
+    };
+    const contract = build({ acceptance });
+
+    expect(contract.acceptance.criteria[0]).toMatchObject({
+      verificationMethod: "governed_receipt",
+      requiredGovernedToolIds,
+    });
+    expect(parseDelegationExecutionContractV2(contract)).toEqual(contract);
+    expect(() => build({
+      acceptance: {
+        ...acceptance,
+        criteria: [{
+          ...acceptance.criteria[0],
+          requiredGovernedToolIds: ["knowledge.search"],
+          criterionSha256: canonicalJsonSha256({
+            statement,
+            requiredGovernedToolIds: ["knowledge.search"],
+          }),
+        }],
+      },
+    })).toThrow(/required governed tools exceed the resolved grant boundary/i);
+    expect(() => build({
+      acceptance: {
+        ...acceptance,
+        criteria: [{
+          ...acceptance.criteria[0],
+          verificationMethod: "evidence",
+        }],
+      },
+    })).toThrow(/governed-receipt verification/i);
+  });
 });
 
 const tenantId = "tenant-one";

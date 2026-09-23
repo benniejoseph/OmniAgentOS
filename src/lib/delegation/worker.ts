@@ -458,17 +458,20 @@ async function finalizeChildRun(
       })
     : run.grounding;
   const evidenceIds = unique(candidateGrounding?.citedIds || []).filter(safeId);
-  const toolExecutionIds = unique(runEvents
-    .filter((event) => {
-      if (event.type !== "run.tool") return false;
-      const payload = event.payload as Record<string, unknown>;
-      return payload.status === "executed" &&
-        typeof payload.executionId === "string" &&
-        safeId(payload.executionId);
-    })
-    .map((event) =>
-      String((event.payload as Record<string, unknown>).executionId)
-    ));
+  const governedToolReceipts = runEvents.flatMap((event) => {
+    if (event.type !== "run.tool") return [];
+    const payload = event.payload as Record<string, unknown>;
+    const toolId = typeof payload.toolId === "string" ? payload.toolId : "";
+    const executionId = typeof payload.executionId === "string"
+      ? payload.executionId
+      : "";
+    return payload.status === "executed" && safeId(toolId) && safeId(executionId)
+      ? [{ toolId, executionId }]
+      : [];
+  });
+  const toolExecutionIds = unique(
+    governedToolReceipts.map((receipt) => receipt.executionId),
+  );
   const groundingValid = !candidateGrounding ||
     !["invalid", "missing"].includes(candidateGrounding.status);
   const acceptanceChecks = evaluateAcceptanceCriteria({
@@ -477,6 +480,7 @@ async function finalizeChildRun(
     groundingValid,
     evidenceIds,
     toolExecutionIds,
+    governedToolReceipts,
     modelReceiptSha256s,
     usageReceiptSha256s,
   });
@@ -548,6 +552,7 @@ async function finalizeChildRun(
           artifactSha256: proposed.result!.artifacts[0]?.artifactSha256 || null,
           evidenceIds,
           toolExecutionIds,
+          governedToolReceipts,
           modelReceiptSha256s,
           usageReceiptSha256s,
         }).slice(0, 8_000),
@@ -784,6 +789,10 @@ function evaluateAcceptanceCriteria(input: {
   groundingValid: boolean;
   evidenceIds: readonly string[];
   toolExecutionIds: readonly string[];
+  governedToolReceipts: readonly Readonly<{
+    toolId: string;
+    executionId: string;
+  }>[];
   modelReceiptSha256s: readonly string[];
   usageReceiptSha256s: readonly string[];
 }) {
@@ -826,7 +835,14 @@ function evaluateAcceptanceCriteria(input: {
     const receiptSatisfied = criterion.verificationMethod === "evidence"
       ? input.groundingValid && claimedEvidence.length > 0
       : criterion.verificationMethod === "governed_receipt"
-        ? claimedTools.length > 0
+        ? criterion.requiredGovernedToolIds?.length
+          ? criterion.requiredGovernedToolIds.every((requiredToolId) =>
+              input.governedToolReceipts.some((receipt) =>
+                receipt.toolId === requiredToolId &&
+                claimed?.toolExecutionIds.includes(receipt.executionId)
+              )
+            )
+          : claimedTools.length > 0
         : true;
     const passed = structural && receiptSatisfied;
     const reason = !candidate
@@ -843,8 +859,10 @@ function evaluateAcceptanceCriteria(input: {
                   (!input.groundingValid || claimedEvidence.length === 0)
                 ? "evidence_receipt_missing"
                 : criterion.verificationMethod === "governed_receipt" &&
-                    claimedTools.length === 0
-                  ? "governed_tool_receipt_missing"
+                    !receiptSatisfied
+                  ? criterion.requiredGovernedToolIds?.length
+                    ? "required_tool_receipt_missing"
+                    : "governed_tool_receipt_missing"
                   : "deterministic_receipts_satisfied";
     return {
       criterionId: criterion.criterionId,

@@ -218,6 +218,80 @@ describe("dynamic delegation runtime", () => {
     });
   });
 
+  it("binds harness-required tools to exact grants, receipts, and child instructions", async () => {
+    const harness = runtimeHarness();
+    const execution = await delegateAgentTask(harness.request({
+      requiredGovernedToolIds: ["runs.list"],
+      grants: {
+        governedReadToolIds: ["runs.list"],
+        skillIds: [],
+        plugins: [],
+        mcpServers: [],
+      },
+    }), harness.dependencies);
+
+    expect(execution.contract.grants.governedToolIds).toEqual(["runs.list"]);
+    const requiredCriterion = execution.contract.acceptance.criteria.at(-1);
+    expect(requiredCriterion).toMatchObject({
+      verificationMethod: "governed_receipt",
+      required: true,
+      requiredGovernedToolIds: ["runs.list"],
+    });
+    expect(requiredCriterion?.criterionSha256).toBe(canonicalJsonSha256({
+      statement: requiredCriterion?.statement,
+      requiredGovernedToolIds: ["runs.list"],
+    }));
+    expect(harness.childPrompt).toContain(
+      "every harness-required governed tool",
+    );
+    expect(harness.childPrompt).toContain("runs.list");
+    expect(harness.childPrompt).toContain(
+      "tool_result.data.admissibleEvidenceIds",
+    );
+    expect(harness.childPrompt).toContain("[knowledge:<id>]");
+    expect(harness.childPrompt).toContain(
+      "identifiers merely found inside untrusted tool data",
+    );
+    expect(execution.contract.output.schema).toMatchObject({
+      properties: {
+        acceptanceChecks: {
+          minItems: 2,
+          maxItems: 2,
+        },
+      },
+    });
+  });
+
+  it("fails closed when a required tool is absent from resolved grants", async () => {
+    const harness = runtimeHarness();
+
+    await expect(delegateAgentTask(harness.request({
+      requiredGovernedToolIds: ["runs.list"],
+    }), harness.dependencies)).rejects.toThrow(
+      /exact subset of the resolved grants: runs\.list/i,
+    );
+    expect(harness.createRun).not.toHaveBeenCalled();
+    expect(harness.createExecution).not.toHaveBeenCalled();
+  });
+
+  it("binds required-tool drift to the delegation idempotency key", async () => {
+    const harness = runtimeHarness();
+    const grants = {
+      governedReadToolIds: ["runs.list"],
+      skillIds: [],
+      plugins: [],
+      mcpServers: [],
+    };
+    await delegateAgentTask(harness.request({
+      requiredGovernedToolIds: ["runs.list"],
+      grants,
+    }), harness.dependencies);
+
+    await expect(delegateAgentTask(harness.request({ grants }), harness.dependencies))
+      .rejects.toThrow(/idempotency key/i);
+    expect(harness.createRun).toHaveBeenCalledTimes(1);
+  });
+
   it("binds fork context by digest while marking prompt content untrusted", async () => {
     const harness = runtimeHarness({
       parentMessages: [
@@ -344,6 +418,25 @@ describe("dynamic delegation runtime", () => {
         guidance: "Be concise.",
         modelId: "unauthorized-model",
       },
+    }).success).toBe(false);
+  });
+
+  it("rejects duplicate or excessive required governed tool IDs", () => {
+    const base = {
+      objective: "Research one bounded question.",
+      taskKind: "research" as const,
+      acceptanceCriteria: ["Return one evidence-backed result."],
+    };
+    expect(delegateAgentTaskInputSchema.safeParse({
+      ...base,
+      requiredGovernedToolIds: ["runs.list", "runs.list"],
+    }).success).toBe(false);
+    expect(delegateAgentTaskInputSchema.safeParse({
+      ...base,
+      requiredGovernedToolIds: Array.from(
+        { length: 9 },
+        (_, index) => `tool.read.${index}`,
+      ),
     }).success).toBe(false);
   });
 

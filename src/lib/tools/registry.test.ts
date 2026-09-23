@@ -92,12 +92,21 @@ describe("governed native tool schemas", () => {
       string,
       Record<string, unknown>
     >;
+    const requiredGovernedTools = properties.requiredGovernedToolIds;
     const governedReadTool = grantProperties.governedReadToolIds.items as
       Record<string, unknown>;
     const skill = grantProperties.skillIds.items as Record<string, unknown>;
 
     expect(governedReadTool.description).toMatch(/canonical governed tool ID/i);
     expect(governedReadTool.description).toMatch(/never use.*callable/i);
+    expect(requiredGovernedTools).toMatchObject({
+      type: "array",
+      maxItems: 8,
+      uniqueItems: true,
+    });
+    expect(requiredGovernedTools.description).toMatch(
+      /execution requirements, not additional authority/i,
+    );
     expect(skill.description).toMatch(/canonical active Skill ID/i);
     expect(skill.description).toMatch(/never use.*display name/i);
   });

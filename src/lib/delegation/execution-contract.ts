@@ -37,6 +37,10 @@ const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const timestampSchema = z.string().datetime({ offset: true });
 const positiveVersionSchema = z.number().int().min(1).max(Number.MAX_SAFE_INTEGER);
 const idListSchema = z.array(idSchema).max(64).superRefine(uniqueList);
+const requiredGovernedToolIdsSchema = z.array(idSchema)
+  .min(1)
+  .max(8)
+  .superRefine(uniqueList);
 const boundedTextSchema = z.string().trim().min(3).max(4_000);
 
 const personaBriefBodySchema = z.object({
@@ -147,14 +151,29 @@ const acceptanceCriterionReferenceSchema = z.object({
     "parent_verifier",
   ]),
   required: z.literal(true),
+  requiredGovernedToolIds: requiredGovernedToolIdsSchema.optional(),
 }).strict().superRefine((criterion, context) => {
-  if (criterion.criterionSha256 !== canonicalJsonSha256({
+  const criterionBody = {
     statement: criterion.statement,
-  })) {
+    ...(criterion.requiredGovernedToolIds
+      ? { requiredGovernedToolIds: criterion.requiredGovernedToolIds }
+      : {}),
+  };
+  if (criterion.criterionSha256 !== canonicalJsonSha256(criterionBody)) {
     context.addIssue({
       code: "custom",
       path: ["criterionSha256"],
       message: "Delegation acceptance criterion digest is invalid.",
+    });
+  }
+  if (
+    criterion.requiredGovernedToolIds &&
+    criterion.verificationMethod !== "governed_receipt"
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["requiredGovernedToolIds"],
+      message: "Required governed tools must use governed-receipt verification.",
     });
   }
 });
@@ -722,6 +741,15 @@ function validateContractBindings(
   const capabilityGrants = new Set(contract.grants.capabilityGrantIds);
   const governedTools = new Set(contract.grants.governedToolIds);
   const connectorTargets = new Set(contract.grants.connectorTargets);
+  if (contract.acceptance.criteria.some((criterion) =>
+    criterion.requiredGovernedToolIds?.some((toolId) => !governedTools.has(toolId))
+  )) {
+    context.addIssue({
+      code: "custom",
+      path: ["acceptance", "criteria"],
+      message: "Required governed tools exceed the resolved grant boundary.",
+    });
+  }
   if (
     contract.grants.skills.some((grant) => !capabilityGrants.has(grant.capabilityGrantId)) ||
     contract.grants.plugins.some((grant) => !capabilityGrants.has(grant.capabilityGrantId)) ||

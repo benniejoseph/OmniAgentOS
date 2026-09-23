@@ -332,6 +332,59 @@ describe("delegation execution worker", () => {
     expect(harness.execution.result?.evidenceIds).toEqual([evidenceId]);
   });
 
+  it("rejects a required governed-tool criterion when one exact receipt is missing", async () => {
+    const harness = workerHarness({
+      criterion: {
+        statement: "Use both required read tools.",
+        verificationMethod: "governed_receipt",
+        requiredGovernedToolIds: ["knowledge.search", "runs.list"],
+      },
+      optionalGrantedToolIds: ["memory.search"],
+      governedToolReceipts: [{
+        toolId: "knowledge.search",
+        executionId: "execution-knowledge",
+      }],
+      childToolExecutionIds: ["execution-knowledge"],
+    });
+
+    const result = await processDelegationExecutionJob(harness.job);
+
+    expect(result.status).toBe("completed");
+    expect(harness.execution.state).toBe("rejected");
+    expect(harness.execution.result?.acceptanceChecks).toEqual([
+      expect.objectContaining({
+        passed: false,
+        note: "governed_receipt:required_tool_receipt_missing",
+      }),
+    ]);
+  });
+
+  it("verifies every exact required tool receipt while leaving extra grants optional", async () => {
+    const receipts = [
+      { toolId: "knowledge.search", executionId: "execution-knowledge" },
+      { toolId: "runs.list", executionId: "execution-runs" },
+    ];
+    const harness = workerHarness({
+      criterion: {
+        statement: "Use both required read tools.",
+        verificationMethod: "governed_receipt",
+        requiredGovernedToolIds: receipts.map((receipt) => receipt.toolId),
+      },
+      optionalGrantedToolIds: ["memory.search"],
+      governedToolReceipts: receipts,
+      childToolExecutionIds: receipts.map((receipt) => receipt.executionId),
+    });
+
+    const result = await processDelegationExecutionJob(harness.job);
+
+    expect(result.status).toBe("completed");
+    expect(harness.execution.state).toBe("verified");
+    expect(harness.execution.result?.toolExecutionIds).toEqual([
+      "execution-knowledge",
+      "execution-runs",
+    ]);
+  });
+
   it("fails closed before claim when the lifecycle budget cannot be partitioned", async () => {
     const harness = workerHarness({ invalidLifecycleBudget: true });
 
@@ -671,7 +724,11 @@ function workerHarness(options: {
   criterion?: {
     statement: string;
     verificationMethod: "schema" | "evidence" | "governed_receipt" | "parent_verifier";
+    requiredGovernedToolIds?: string[];
   };
+  optionalGrantedToolIds?: string[];
+  governedToolReceipts?: Array<{ toolId: string; executionId: string }>;
+  childToolExecutionIds?: string[];
 } = {}) {
   const tenantId = "tenant-one";
   const actorId = "actor-one";
@@ -717,6 +774,25 @@ function workerHarness(options: {
     deploymentRoute: modelRoute,
     scope: "verifier",
   });
+  const governedToolIds = [...new Set([
+    ...(options.criterion?.requiredGovernedToolIds || []),
+    ...(options.optionalGrantedToolIds || []),
+  ])];
+  const executionGrants = {
+    grantRequestSha256: canonicalJsonSha256({
+      governedReadToolIds: governedToolIds,
+      skillIds: [],
+      plugins: [],
+      mcpServers: [],
+    }),
+    contextGrantIds: [],
+    capabilityGrantIds: [],
+    governedToolIds,
+    connectorTargets: [],
+    skills: [],
+    mcpServers: [],
+    plugins: [],
+  };
   const contract = buildExecutionContract({
     budgets: options.invalidLifecycleBudget
       ? {
@@ -751,13 +827,26 @@ function workerHarness(options: {
               statement: options.criterion.statement,
               criterionSha256: canonicalJsonSha256({
                 statement: options.criterion.statement,
+                ...(options.criterion.requiredGovernedToolIds
+                  ? {
+                      requiredGovernedToolIds:
+                        options.criterion.requiredGovernedToolIds,
+                    }
+                  : {}),
               }),
               verificationMethod: options.criterion.verificationMethod,
               required: true as const,
+              ...(options.criterion.requiredGovernedToolIds
+                ? {
+                    requiredGovernedToolIds:
+                      options.criterion.requiredGovernedToolIds,
+                  }
+                : {}),
             }],
           },
         }
       : {}),
+    grants: executionGrants,
     ...(options.personaPrompt
       ? {
           personaBrief: {
@@ -810,7 +899,7 @@ function workerHarness(options: {
       grants: {
         contextGrantIds: [],
         capabilityGrantIds: [],
-        governedToolIds: [],
+        governedToolIds,
         connectorTargets: [],
       },
       budgets: executionParentBudgets,
@@ -923,6 +1012,31 @@ function workerHarness(options: {
     return true;
   });
   mocks.resolveIdentity.mockResolvedValue(sentinelIdentity);
+  mocks.revalidateGrants.mockResolvedValue({
+    skills: [],
+    governedToolIds,
+  });
+  if (options.governedToolReceipts) {
+    mocks.listStreamEvents.mockResolvedValue([
+      {
+        id: "event:model:one",
+        streamId: "run:run-child",
+        type: "run.model",
+        payload: {
+          model: "configured-council-model",
+          usageReceiptId: "usage:one",
+        },
+        createdAt,
+      },
+      ...options.governedToolReceipts.map((receipt, index) => ({
+        id: `event:tool:${index}`,
+        streamId: "run:run-child",
+        type: "run.tool",
+        payload: { ...receipt, status: "executed" },
+        createdAt,
+      })),
+    ]);
+  }
   mocks.heartbeatOperationJob.mockResolvedValue(job);
   mocks.completeOperationJob.mockResolvedValue({
     ...job,
@@ -942,14 +1056,14 @@ function workerHarness(options: {
       response: JSON.stringify({
         summary: options.childSummary || "Evidence-backed bounded result.",
         evidenceIds: options.childEvidenceIds || [],
-        toolExecutionIds: [],
+        toolExecutionIds: options.childToolExecutionIds || [],
         acceptanceChecks: execution.contract.acceptance.criteria.map(
           (criterion) => ({
             criterionId: criterion.criterionId,
             passed: true,
             note: "The bounded result satisfies the requested criterion.",
             evidenceIds: options.childEvidenceIds || [],
-            toolExecutionIds: [],
+            toolExecutionIds: options.childToolExecutionIds || [],
           }),
         ),
       }),
