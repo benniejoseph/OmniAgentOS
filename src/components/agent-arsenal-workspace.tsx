@@ -288,16 +288,16 @@ export function AgentArsenalWorkspace({
         <div className={styles.headerCopy}>
           <p className="arsenal-kicker">Living intelligence</p>
           <h1>
-            Your <span>Arsenal</span>
+            Your <span>Agents</span>
           </h1>
           <p>
-            Meet the specialists behind every mission. Each one has a distinct
-            instinct, clear boundaries, and a role in the constellation.
+            Meet the specialists who help with your work. Each one has a clear
+            purpose, a recognizable personality, and boundaries you control.
           </p>
           <div className="arsenal-header-meta" aria-label="Agent workspace summary">
             <span><strong>{agents.length}</strong> agents</span>
             <span><strong>{skills.length}</strong> skills</span>
-            <span><strong>{tools.length}</strong> governed tools</span>
+            <span><strong>{tools.length}</strong> available actions</span>
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -421,7 +421,7 @@ export function AgentArsenalWorkspace({
           <div className="arsenal-map-legend">
             <Network size={14} aria-hidden="true" />
             <span>
-              Intent travels through Atlas. Every tool remains governed.
+              Intent travels through Atlas. Every action stays within your permissions.
             </span>
           </div>
         </section>
@@ -504,9 +504,9 @@ export function AgentArsenalWorkspace({
             icon="check"
           />
           <InspectorList
-            title="Connected tools"
+            title="What this Agent can do"
             items={
-              selected.tools.length ? selected.tools : ["No tools assigned"]
+              selected.tools.length ? selected.tools : ["No actions assigned"]
             }
             icon="eye"
           />
@@ -588,7 +588,7 @@ export function AgentArsenalWorkspace({
               <div className="autonomy-note">
                 <strong>Isolated Moltbook identity</strong>
                 <p>
-                  Its exact tools and lifecycle are locked while its private
+                  Its exact actions and lifecycle are locked while its private
                   connection and append-only activity history are retained.
                   Pause or resume the connection from the Moltbook console.
                 </p>
@@ -605,7 +605,7 @@ export function AgentArsenalWorkspace({
             <p>Reusable behavior</p>
             <h2 id="skill-studio-title">Skills</h2>
             <span>
-              Instructions, tools, and knowledge conventions that can be
+              Reusable instructions, actions, and knowledge conventions that can be
               composed across agents.
             </span>
           </div>
@@ -634,7 +634,7 @@ export function AgentArsenalWorkspace({
                 </div>
                 <p>{skill.description}</p>
                 <small>
-                  {skill.category} · {skill.toolIds.length} tools ·{" "}
+                  {skill.category} · {skill.toolIds.length} actions ·{" "}
                   {skill.tags.join(" · ") || "untagged"}
                 </small>
               </div>
@@ -761,7 +761,7 @@ function WorkspaceTabs({
   }> = [
     { id: "live", label: "Live work", description: "Executions and delegated teams", icon: Activity },
     { id: "roster", label: "Roster", description: "People, roles, and boundaries", icon: Users },
-    { id: "skills", label: "Skills", description: "Reusable instructions and tools", icon: Layers3 },
+    { id: "skills", label: "Skills", description: "Reusable ways of working", icon: Layers3 },
     { id: "outcomes", label: "Outcomes", description: "Delivery and feedback evidence", icon: BarChart3 },
   ];
   return (
@@ -1154,7 +1154,7 @@ function BuilderDialog({
           {editor.kind === "agent" ? (
             <>
               <p className={clsx("full", styles.personaNotice)}>
-                Behavioral identity shapes how this Agent works and appears. It never grants tools, context, budgets, or approval authority.
+                Behavioral identity shapes how this Agent works and appears. It never grants actions, context, budgets, or approval authority.
               </p>
               <label className="full">
                 Charter
@@ -1283,7 +1283,7 @@ function BuilderDialog({
                 <p className="builder-field-note" aria-live="polite">
                   Choose up to {MAX_ASSIGNED_SKILLS} focused playbooks. This
                   keeps every assigned Skill visible to the Agent as well as
-                  available through its governed tools.
+                  available through its approved actions.
                 </p>
                 <div className="builder-choice-grid">
                   {skills
@@ -1319,14 +1319,18 @@ function BuilderDialog({
             </label>
           )}
           <fieldset className="full">
-            <legend>Tools</legend>
+            <legend>Actions this {editor.kind === "agent" ? "Agent" : "Skill"} may use</legend>
+            <p className="builder-field-note">
+              Choose only the actions this {editor.kind === "agent" ? "Agent" : "Skill"} needs.
+              Asael still applies your connection permissions and asks for approval when an action has consequences.
+            </p>
             <div className="builder-choice-grid">
               {tools.map((tool) => (
                 <Choice
                   key={tool.id}
                   checked={selectedTools.includes(tool.id)}
                   label={tool.name}
-                  meta={`risk ${tool.riskLevel} · ${tool.category}`}
+                  meta={`${actionSafetyLabel(tool.riskLevel)} · ${friendlyActionCategory(tool.category)}`}
                   onChange={() =>
                     setSelectedTools(toggle(selectedTools, tool.id))
                   }
@@ -1596,6 +1600,20 @@ function InspectorList({
     </section>
   );
 }
+
+function actionSafetyLabel(riskLevel: number) {
+  if (riskLevel >= 3) return "Two-step approval";
+  if (riskLevel >= 2) return "Asks before acting";
+  if (riskLevel === 1) return "Low-impact action";
+  return "Read only";
+}
+
+function friendlyActionCategory(category: string) {
+  const normalized = category.trim().replaceAll(/[._-]+/g, " ");
+  if (!normalized) return "Asael";
+  return normalized.replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
 async function readJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { ...init, cache: "no-store" });
   const payload = (await response.json().catch(() => ({}))) as T & {
