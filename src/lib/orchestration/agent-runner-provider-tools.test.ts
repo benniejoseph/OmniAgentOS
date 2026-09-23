@@ -111,13 +111,29 @@ describe("non-OpenAI governed provider tool loop", () => {
       });
       expect(JSON.parse(request.toolResults![1].output)).toMatchObject({
         provenance: "tool_result",
-        data: { executionId: "execution-knowledge.search" },
+        data: {
+          executionId: "execution-knowledge.search",
+          admissibleEvidenceIds: ["knowledge:chunk-ada"],
+        },
       });
       return turn({ text: "Ada Lovelace found.", inputTokens: 12, outputTokens: 4, cost: 0.002 });
     });
     const executeTool = vi.fn(async (request: { toolId: string }) => ({
       record: executionRecord(request.toolId, "executed"),
-      result: { matches: [request.toolId] },
+      result: request.toolId === "knowledge.search"
+        ? {
+            results: [{
+              score: 0.98,
+              chunk: {
+                id: "chunk-ada",
+                sourceRevisionId: "revision-ada",
+                evidenceUnitId: "evidence-ada",
+                title: "Ada Lovelace",
+                content: "Ada Lovelace found.",
+              },
+            }],
+          }
+        : { matches: [request.toolId] },
     }));
     const beforeModelTurn = vi.fn(async (_input: {
       attempt: number;
@@ -178,6 +194,13 @@ describe("non-OpenAI governed provider tool loop", () => {
       costKnown: true,
     });
     expect(collected.result.attempts).toHaveLength(2);
+    expect(collected.result.citationSources).toEqual([
+      expect.objectContaining({
+        citationId: "knowledge:chunk-ada",
+        evidenceId: "chunk-ada",
+        kind: "knowledge",
+      }),
+    ]);
     expect(generateTurn.mock.calls.every(([request]) => request.maxAttempts === 1))
       .toBe(true);
     expect(beforeModelTurn.mock.calls.map(([call]) => call)).toEqual([

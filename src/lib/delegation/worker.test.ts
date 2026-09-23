@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   resolveRuntimeModel: vi.fn(),
   revalidateGrants: vi.fn(),
   appendGrantValidation: vi.fn(),
+  buildClaimGroundingReport: vi.fn(),
   databaseActorScopes: [] as string[][],
 }));
 
@@ -82,6 +83,10 @@ vi.mock("@/lib/delegation/grant-resolver", async (importOriginal) => ({
 vi.mock("@/lib/delegation/grant-validation-events", () => ({
   appendDelegationGrantValidation: mocks.appendGrantValidation,
 }));
+vi.mock("@/lib/rag/citations", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/rag/citations")>(),
+  buildClaimGroundingReport: mocks.buildClaimGroundingReport,
+}));
 
 import {
   buildAgentRunIdentityPinV1,
@@ -136,6 +141,12 @@ describe("delegation execution worker", () => {
       governedToolIds: [],
     });
     mocks.appendGrantValidation.mockResolvedValue(undefined);
+    mocks.buildClaimGroundingReport.mockResolvedValue({
+      status: "verified",
+      citedIds: [],
+      invalidIds: [],
+      sources: [],
+    });
     mocks.listStreamEvents.mockResolvedValue([{
       id: "event:model:one",
       streamId: "run:run-child",
@@ -277,6 +288,48 @@ describe("delegation execution worker", () => {
         note: expect.stringMatching(/usage receipt was missing/i),
       },
     });
+  });
+
+  it("rechecks the parsed child summary against canonical knowledge sources", async () => {
+    const evidenceId = "knowledge:chunk-launch";
+    const harness = workerHarness({
+      criterion: {
+        statement: "Ground the launch date in canonical evidence.",
+        verificationMethod: "evidence",
+      },
+      childSummary: `The launch date is 12 October 2026. [${evidenceId}]`,
+      childEvidenceIds: [evidenceId],
+      childGrounding: {
+        status: "missing",
+        citedIds: [evidenceId],
+        invalidIds: [],
+        sources: [{
+          citationId: evidenceId,
+          evidenceId: "chunk-launch",
+          kind: "knowledge",
+          title: "Launch plan",
+        }],
+      },
+    });
+    mocks.buildClaimGroundingReport.mockResolvedValue({
+      status: "verified",
+      citedIds: [evidenceId],
+      invalidIds: [],
+      sources: harness.run.grounding!.sources,
+    });
+
+    const result = await processDelegationExecutionJob(harness.job);
+
+    expect(result.status).toBe("completed");
+    expect(harness.execution.state).toBe("verified");
+    expect(mocks.buildClaimGroundingReport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: "run-child",
+        response: `The launch date is 12 October 2026. [${evidenceId}]`,
+        sources: harness.run.grounding!.sources,
+      }),
+    );
+    expect(harness.execution.result?.evidenceIds).toEqual([evidenceId]);
   });
 
   it("fails closed before claim when the lifecycle budget cannot be partitioned", async () => {
@@ -612,6 +665,9 @@ function workerHarness(options: {
   tamperedJobParentOwner?: string;
   omitJobParentOwner?: boolean;
   invalidLifecycleBudget?: boolean;
+  childSummary?: string;
+  childEvidenceIds?: string[];
+  childGrounding?: AgentRunRecord["grounding"];
   criterion?: {
     statement: string;
     verificationMethod: "schema" | "evidence" | "governed_receipt" | "parent_verifier";
@@ -782,6 +838,7 @@ function workerHarness(options: {
     model: contract.runtimeAssignment.modelId,
     agentId: contract.delegateIdentity.logicalAgentId,
     memoryContextCount: 0,
+    grounding: options.childGrounding,
     startedAt: createdAt,
   };
   const childScope = executionScopeFromDelegationContract(contract);
@@ -883,15 +940,15 @@ function workerHarness(options: {
       ...run,
       status: "completed",
       response: JSON.stringify({
-        summary: "Evidence-backed bounded result.",
-        evidenceIds: [],
+        summary: options.childSummary || "Evidence-backed bounded result.",
+        evidenceIds: options.childEvidenceIds || [],
         toolExecutionIds: [],
         acceptanceChecks: execution.contract.acceptance.criteria.map(
           (criterion) => ({
             criterionId: criterion.criterionId,
             passed: true,
             note: "The bounded result satisfies the requested criterion.",
-            evidenceIds: [],
+            evidenceIds: options.childEvidenceIds || [],
             toolExecutionIds: [],
           }),
         ),

@@ -48,6 +48,7 @@ import { selectAgentModel } from "@/lib/openai/model-router";
 import { runAgent } from "@/lib/orchestration/agent-runner";
 import { modelAssignmentScopeForAgent } from "@/lib/orchestration/computer-use-routing";
 import { reviewCouncilResponse } from "@/lib/orchestration/council";
+import { buildClaimGroundingReport } from "@/lib/rag/citations";
 import {
   completeOperationJob,
   failOperationJob,
@@ -447,7 +448,16 @@ async function finalizeChildRun(
     .map((event) => canonicalJsonSha256({
       usageReceiptId: (event.payload as Record<string, unknown>).usageReceiptId,
     })));
-  const evidenceIds = unique(run.grounding?.citedIds || []).filter(safeId);
+  const candidate = parseDelegationCandidate(response);
+  const candidateGrounding = candidate && run.grounding
+    ? await buildClaimGroundingReport({
+        runId: run.id,
+        response: candidate.summary,
+        sources: run.grounding.sources,
+        executionScope: childScope,
+      })
+    : run.grounding;
+  const evidenceIds = unique(candidateGrounding?.citedIds || []).filter(safeId);
   const toolExecutionIds = unique(runEvents
     .filter((event) => {
       if (event.type !== "run.tool") return false;
@@ -459,9 +469,8 @@ async function finalizeChildRun(
     .map((event) =>
       String((event.payload as Record<string, unknown>).executionId)
     ));
-  const groundingValid = !run.grounding ||
-    !["invalid", "missing"].includes(run.grounding.status);
-  const candidate = parseDelegationCandidate(response);
+  const groundingValid = !candidateGrounding ||
+    !["invalid", "missing"].includes(candidateGrounding.status);
   const acceptanceChecks = evaluateAcceptanceCriteria({
     execution,
     candidate,

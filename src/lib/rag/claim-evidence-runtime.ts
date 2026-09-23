@@ -390,6 +390,7 @@ function authorizeCanonicalEvidence(
   const evidence = candidate.evidenceUnit;
   const actorId = scope.initiatingActorId;
   if (
+    !candidate.sourceState.isCurrent ||
     !actorId ||
     evidence.tenantId !== scope.tenantId ||
     evidence.ownerActorId !== actorId ||

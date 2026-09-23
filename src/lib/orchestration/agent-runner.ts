@@ -5515,6 +5515,12 @@ function serializeToolResult(payload: unknown) {
 function executionPayload(
   execution: Awaited<ReturnType<typeof executeGovernedTool>>,
 ) {
+  const admissibleEvidenceIds = citationSourcesFromToolResult(
+    execution.record.toolId,
+    execution.result,
+  )
+    .filter((source) => source.kind === "knowledge")
+    .map((source) => source.citationId);
   return {
     executionId: execution.record.id,
     status: execution.record.status,
@@ -5524,14 +5530,51 @@ function executionPayload(
       ? "Executed for real."
       : execution.record.reason,
     result: execution.result,
+    ...(admissibleEvidenceIds.length
+      ? { admissibleEvidenceIds }
+      : {}),
   };
 }
 
 function citationSourcesFromToolResult(toolId: string, result: unknown) {
-  if (toolId !== "web.search" || !result || typeof result !== "object" || Array.isArray(result)) {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
     return [];
   }
   const record = result as Record<string, unknown>;
+  if (toolId === "knowledge.search") {
+    return Array.isArray(record.results)
+      ? record.results.flatMap((item): CitationSource[] => {
+          if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+          const candidate = item as Record<string, unknown>;
+          if (!candidate.chunk || typeof candidate.chunk !== "object" || Array.isArray(candidate.chunk)) {
+            return [];
+          }
+          const chunk = candidate.chunk as Record<string, unknown>;
+          const evidenceId = typeof chunk.id === "string" ? chunk.id.trim() : "";
+          const sourceRevisionId = typeof chunk.sourceRevisionId === "string"
+            ? chunk.sourceRevisionId.trim()
+            : "";
+          const evidenceUnitId = typeof chunk.evidenceUnitId === "string"
+            ? chunk.evidenceUnitId.trim()
+            : "";
+          if (!/^[A-Za-z0-9][A-Za-z0-9:._/-]{0,239}$/.test(evidenceId)) return [];
+          if (!sourceRevisionId || !evidenceUnitId) return [];
+          const score = typeof candidate.score === "number" && Number.isFinite(candidate.score)
+            ? Math.min(1, Math.max(0, candidate.score))
+            : undefined;
+          return [{
+            citationId: `knowledge:${evidenceId}`,
+            evidenceId,
+            kind: "knowledge",
+            title: (typeof chunk.title === "string" && chunk.title.trim()
+              ? chunk.title.trim()
+              : "Knowledge result").slice(0, 1_000),
+            confidence: score,
+          }];
+        })
+      : [];
+  }
+  if (toolId !== "web.search") return [];
   const items = Array.isArray(record.sources)
     ? record.sources.flatMap((item) => {
         if (!item || typeof item !== "object" || Array.isArray(item)) return [];

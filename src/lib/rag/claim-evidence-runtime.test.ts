@@ -212,6 +212,75 @@ describe("runtime claim evidence", () => {
     expect(result.claimEvidenceMap.claims[0].supportState).toBe("unsupported");
   });
 
+  it("does not verify a claim from a superseded canonical source revision", async () => {
+    const executionScope = createExecutionScope({
+      tenantId: "tenant-runtime",
+      initiatingActorId: "actor-runtime",
+      executingPrincipalType: "user",
+      executingPrincipalId: "actor-runtime",
+      correlationId: "ingest-superseded",
+      purpose: "knowledge.ingest",
+    });
+    const lineage = {
+      executionScope,
+      connectionId: "first-party-knowledge",
+      adapterId: "asael.knowledge",
+      externalItemId: "superseded-plan",
+      sourceKind: "document" as const,
+    };
+    const oldContent = "The launch date is 12 October 2026.";
+    const oldChunks = chunkText(oldContent);
+    const oldDocument = await createKnowledgeDocument({
+      tenantId: "tenant-runtime",
+      title: "Old launch plan",
+      content: oldContent,
+      chunks: oldChunks,
+      canonicalSourceWrite: buildCanonicalTextSourceWrite({
+        lineage: { ...lineage, capturedAt: "2026-09-06T00:00:00.000Z" },
+        content: oldContent,
+        normalizedContent: normalizeTextForChunking(oldContent),
+        chunks: oldChunks,
+      }),
+    });
+    const currentContent = "The launch date is 19 October 2026.";
+    const currentChunks = chunkText(currentContent);
+    await createKnowledgeDocument({
+      tenantId: "tenant-runtime",
+      title: "Current launch plan",
+      content: currentContent,
+      chunks: currentChunks,
+      canonicalSourceWrite: buildCanonicalTextSourceWrite({
+        lineage: { ...lineage, capturedAt: "2026-09-07T00:00:00.000Z" },
+        content: currentContent,
+        normalizedContent: normalizeTextForChunking(currentContent),
+        chunks: currentChunks,
+      }),
+    });
+
+    const result = await buildRuntimeClaimEvidenceV1({
+      runId: "run-superseded",
+      answerText: oldContent,
+      executionScope: createExecutionScope({
+        tenantId: "tenant-runtime",
+        initiatingActorId: "actor-runtime",
+        executingPrincipalType: "agent",
+        executingPrincipalId: "atlas",
+        correlationId: "run-superseded",
+        purpose: "agent.run.legacy",
+      }),
+      citationSources: [{
+        citationId: `knowledge:${oldDocument.chunks[0].id}`,
+        evidenceId: oldDocument.chunks[0].id,
+        kind: "knowledge",
+        title: "Old launch plan",
+      }],
+      evaluatedAt: "2026-09-07T01:00:00.000Z",
+    });
+
+    expect(result.claimEvidenceMap.evidenceUnits).toEqual([]);
+    expect(result.claimEvidenceMap.claims[0].supportState).toBe("unsupported");
+  });
+
   it("binds exact UTF-16 prose spans while excluding headings and code fences", () => {
     const answer = "# Result\n\nAlpha is current. Beta is pending!\n```ts\nconst x = 1;\n```";
     const spans = decomposeMaterialClaimSpans(answer);
