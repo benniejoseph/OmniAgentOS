@@ -31,6 +31,20 @@ export const DYNAMIC_DELEGATION_READ_TOOL_IDS = Object.freeze([
   "runs.list",
 ] as const);
 
+export function assertDynamicDelegationApprovalPolicy(input: {
+  toolId: string;
+  forceApproval: boolean;
+}) {
+  if (
+    input.toolId === "app.agents.delegate" &&
+    input.forceApproval
+  ) {
+    throw new Error(
+      "Dynamic delegation cannot be parked for later approval because its live parent budget reservation is request-bound. Use a policy that permits risk-one internal delegation, or start a new run after changing that policy.",
+    );
+  }
+}
+
 export function dynamicDelegationRootReservation(
   child: RunBudgetCountersV1 = DYNAMIC_DELEGATION_CHILD_BUDGET,
 ) {

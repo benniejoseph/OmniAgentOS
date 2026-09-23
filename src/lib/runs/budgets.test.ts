@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_AGENT_RUN_BUDGET_LIMITS,
+  LEGACY_AGENT_RUN_BUDGET_LIMITS,
   RunBudgetExceededError,
   budgetPerRemainingModelTurn,
   createRunBudgetState,
@@ -8,6 +9,7 @@ import {
   narrowRunBudgetLimits,
   parsePersistedRunBudgetStateV1,
   remainingRunBudget,
+  restoreLegacyAgentRunBudgetState,
   reserveRunBudget,
   zeroRunBudgetCounters,
 } from "@/lib/runs/budgets";
@@ -39,6 +41,24 @@ describe("complete run budgets", () => {
     })).toThrow("cannot exceed its parent limit");
   });
 
+  it("does not widen a parked legacy continuation when server authority grows", () => {
+    expect(LEGACY_AGENT_RUN_BUDGET_LIMITS).toMatchObject({
+      modelTurns: 7,
+      toolCalls: 30,
+    });
+    expect(LEGACY_AGENT_RUN_BUDGET_LIMITS.modelTurns).toBeLessThan(
+      DEFAULT_AGENT_RUN_BUDGET_LIMITS.modelTurns,
+    );
+    expect(restoreLegacyAgentRunBudgetState({
+      startedAt: "2026-09-06T00:00:00.000Z",
+      toolSteps: 6,
+      toolCallsPerStep: 5,
+    })).toMatchObject({
+      limits: { modelTurns: 7, toolCalls: 30 },
+      used: { modelTurns: 7, toolCalls: 30 },
+    });
+  });
+
   it("inherits a configured server turn ceiling for compatibility callers", async () => {
     vi.resetModules();
     vi.stubEnv("OMNIAGENT_AGENT_MAX_MODEL_TURNS", "9");
@@ -52,6 +72,21 @@ describe("complete run budgets", () => {
       compatibility.DEFAULT_AGENT_RUN_BUDGET_LIMITS,
       { modelTurns: 10 },
     )).toThrow("cannot exceed its parent limit");
+  });
+
+  it("lets a lower current server ceiling narrow the legacy fallback", async () => {
+    vi.resetModules();
+    vi.stubEnv("OMNIAGENT_AGENT_MAX_MODEL_TURNS", "5");
+
+    const compatibility = await import("@/lib/runs/budgets");
+    const restored = compatibility.restoreLegacyAgentRunBudgetState({
+      startedAt: "2026-09-06T00:00:00.000Z",
+      toolSteps: 6,
+      toolCallsPerStep: 5,
+    });
+
+    expect(restored.limits.modelTurns).toBe(5);
+    expect(restored.used.modelTurns).toBe(5);
   });
 
   afterEach(() => {

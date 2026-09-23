@@ -78,6 +78,62 @@ export const DEFAULT_AGENT_RUN_BUDGET_LIMITS: RunBudgetCountersV1 = Object.freez
   ...AGENT_RUN_BUDGET_LIMITS,
 });
 
+/**
+ * Fail-closed ceiling for parked legacy continuations that did not persist an
+ * exact budget state. New runs use the configured server authority above, but
+ * an old continuation must never gain authority merely because that ceiling
+ * increased after it was paused.
+ */
+export const LEGACY_AGENT_RUN_BUDGET_LIMITS: RunBudgetCountersV1 = Object.freeze({
+  modelTurns: Math.min(7, AGENT_RUN_BUDGET_LIMITS.modelTurns),
+  tokens: Math.min(64_000, AGENT_RUN_BUDGET_LIMITS.tokens),
+  costMicrousd: Math.min(2_500_000, AGENT_RUN_BUDGET_LIMITS.costMicrousd),
+  wallTimeMs: Math.min(240_000, AGENT_RUN_BUDGET_LIMITS.wallTimeMs),
+  toolCalls: Math.min(30, AGENT_RUN_BUDGET_LIMITS.toolCalls),
+  browserActions: Math.min(12, AGENT_RUN_BUDGET_LIMITS.browserActions),
+  agents: Math.min(5, AGENT_RUN_BUDGET_LIMITS.agents),
+  fanOut: Math.min(4, AGENT_RUN_BUDGET_LIMITS.fanOut),
+  retries: Math.min(2, AGENT_RUN_BUDGET_LIMITS.retries),
+  replans: Math.min(1, AGENT_RUN_BUDGET_LIMITS.replans),
+});
+
+export function restoreLegacyAgentRunBudgetState(input: {
+  startedAt: string;
+  toolSteps: number;
+  toolCallsPerStep: number;
+}) {
+  const limits = LEGACY_AGENT_RUN_BUDGET_LIMITS;
+  const modelTurns = Math.min(
+    limits.modelTurns,
+    Math.max(1, input.toolSteps + 1),
+  );
+  return createRunBudgetState(limits, {
+    startedAt: input.startedAt,
+    used: {
+      modelTurns,
+      tokens: Math.min(
+        limits.tokens,
+        modelTurns * Math.floor(limits.tokens / limits.modelTurns),
+      ),
+      costMicrousd: Math.min(
+        limits.costMicrousd,
+        modelTurns * Math.floor(
+          limits.costMicrousd / limits.modelTurns,
+        ),
+      ),
+      toolCalls: Math.min(
+        limits.toolCalls,
+        input.toolSteps * input.toolCallsPerStep,
+      ),
+      browserActions: limits.browserActions,
+      agents: limits.agents,
+      fanOut: limits.fanOut,
+      retries: limits.retries,
+      replans: limits.replans,
+    },
+  });
+}
+
 export class RunBudgetExceededError extends Error {
   readonly code = "run_budget_exhausted";
   readonly requiresAuthorization = true;

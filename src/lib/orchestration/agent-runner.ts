@@ -90,6 +90,7 @@ import {
 } from "@/lib/orchestration/council";
 import {
   DYNAMIC_DELEGATION_CHILD_BUDGET,
+  assertDynamicDelegationApprovalPolicy,
   dynamicDelegationParentToolReservation,
   dynamicDelegationRootReservation,
 } from "@/lib/delegation/runtime-policy";
@@ -157,6 +158,7 @@ import {
   isBrowserActionTool,
   remainingRunBudget,
   refreshRunBudgetWallTime,
+  restoreLegacyAgentRunBudgetState,
   reserveRunBudget,
   type RunBudgetCountersV1,
   type RunBudgetStateV1,
@@ -2280,11 +2282,16 @@ export async function* runAgent(
             call.callId,
           );
           const toolIdempotencyKey = `${run.id}:${call.callId}`;
+          const forceApproval = forceApprovalForTool(
+            agentToolPolicy,
+            definition.riskLevel,
+          );
           const execution = await executeWithDynamicDelegationBudget({
             tool: definition,
             reservation: delegationReservation,
             parentExecutionScope: executionScope,
             idempotencyKey: toolIdempotencyKey,
+            forceApproval,
             operation: () => executeGovernedTool({
               toolId: definition.id,
               input,
@@ -2295,10 +2302,7 @@ export async function* runAgent(
               moltbookAutonomy: request.moltbookAutonomy,
               abortSignal: runAbortSignal,
               idempotencyKey: toolIdempotencyKey,
-              forceApproval: forceApprovalForTool(
-                agentToolPolicy,
-                definition.riskLevel,
-              ),
+              forceApproval,
               mcpSessionScope: agentMcpSessionScope(run.id, securityContext),
               executionScope: toolExecutionScope,
               agentRunId: run.id,
@@ -3044,11 +3048,17 @@ export async function* runNonOpenAIProviderToolLoop(input: {
         const delegationReservation = input.reserveTools?.([definition]);
         const toolIdempotencyKey =
           `${input.runId}:${activeProvider}:${call.callId}`;
+        const forceApproval = forceApprovalForRisk(
+          input.forceApproval,
+          input.forceApprovalAboveRisk,
+          definition.riskLevel,
+        );
         const execution = await executeWithDynamicDelegationBudget({
           tool: definition,
           reservation: delegationReservation,
           parentExecutionScope: input.executionScope,
           idempotencyKey: toolIdempotencyKey,
+          forceApproval,
           operation: () => executeTool({
             toolId: definition.id,
             input: parsedArguments,
@@ -3059,11 +3069,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
             moltbookAutonomy: input.moltbookAutonomy,
             abortSignal: input.abortSignal,
             idempotencyKey: toolIdempotencyKey,
-            forceApproval: forceApprovalForRisk(
-              input.forceApproval,
-              input.forceApprovalAboveRisk,
-              definition.riskLevel,
-            ),
+            forceApproval,
             mcpSessionScope: agentMcpSessionScope(
               input.runId,
               input.securityContext,
@@ -3202,9 +3208,14 @@ function executeWithDynamicDelegationBudget<T>(input: {
   reservation?: DynamicDelegationReservation;
   parentExecutionScope?: ExecutionScope;
   idempotencyKey: string;
+  forceApproval: boolean;
   operation: () => Promise<T>;
 }) {
   if (input.tool.id !== "app.agents.delegate") return input.operation();
+  assertDynamicDelegationApprovalPolicy({
+    toolId: input.tool.id,
+    forceApproval: input.forceApproval,
+  });
   if (!input.reservation || !input.parentExecutionScope) {
     throw new Error(
       "Dynamic delegation requires an exact parent-loop budget reservation.",
@@ -3318,38 +3329,10 @@ function restoreAgentRunBudgetState(
       ).toISOString(),
     });
   }
-  const modelTurns = Math.min(
-    DEFAULT_AGENT_RUN_BUDGET_LIMITS.modelTurns,
-    Math.max(1, continuation.toolSteps + 1),
-  );
-  return createRunBudgetState(DEFAULT_AGENT_RUN_BUDGET_LIMITS, {
+  return restoreLegacyAgentRunBudgetState({
     startedAt: run.startedAt,
-    used: {
-      modelTurns,
-      tokens: Math.min(
-        DEFAULT_AGENT_RUN_BUDGET_LIMITS.tokens,
-        modelTurns * Math.floor(
-          DEFAULT_AGENT_RUN_BUDGET_LIMITS.tokens
-            / DEFAULT_AGENT_RUN_BUDGET_LIMITS.modelTurns,
-        ),
-      ),
-      costMicrousd: Math.min(
-        DEFAULT_AGENT_RUN_BUDGET_LIMITS.costMicrousd,
-        modelTurns * Math.floor(
-          DEFAULT_AGENT_RUN_BUDGET_LIMITS.costMicrousd
-            / DEFAULT_AGENT_RUN_BUDGET_LIMITS.modelTurns,
-        ),
-      ),
-      toolCalls: Math.min(
-        DEFAULT_AGENT_RUN_BUDGET_LIMITS.toolCalls,
-        continuation.toolSteps * MAX_TOOL_CALLS_PER_TURN,
-      ),
-      browserActions: DEFAULT_AGENT_RUN_BUDGET_LIMITS.browserActions,
-      agents: DEFAULT_AGENT_RUN_BUDGET_LIMITS.agents,
-      fanOut: DEFAULT_AGENT_RUN_BUDGET_LIMITS.fanOut,
-      retries: DEFAULT_AGENT_RUN_BUDGET_LIMITS.retries,
-      replans: DEFAULT_AGENT_RUN_BUDGET_LIMITS.replans,
-    },
+    toolSteps: continuation.toolSteps,
+    toolCallsPerStep: MAX_TOOL_CALLS_PER_TURN,
   });
 }
 
@@ -3887,11 +3870,16 @@ async function resumeAgentRunAfterToolApprovalInScope({
         ? agentToolExecutionScope(executionScope, call.callId)
         : undefined;
       const toolIdempotencyKey = `${run.id}:${call.callId}`;
+      const forceApproval = forceApprovalForTool(
+        continuation.toolPolicy,
+        definition.riskLevel,
+      );
       const execution = await executeWithDynamicDelegationBudget({
         tool: definition,
         reservation: delegationReservation,
         parentExecutionScope: executionScope,
         idempotencyKey: toolIdempotencyKey,
+        forceApproval,
         operation: () => executeGovernedTool({
           toolId: definition.id,
           input,
@@ -3901,10 +3889,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
           requestActorBinding: resumeAuthority.actorBinding,
           abortSignal: resumeAbortSignal,
           idempotencyKey: toolIdempotencyKey,
-          forceApproval: forceApprovalForTool(
-            continuation.toolPolicy,
-            definition.riskLevel,
-          ),
+          forceApproval,
           mcpSessionScope: agentMcpSessionScope(run.id, continuation.context),
           executionScope: toolExecutionScope,
           agentRunId: run.id,
@@ -4204,11 +4189,16 @@ async function resumeAgentRunAfterToolApprovalInScope({
           ? agentToolExecutionScope(executionScope, call.callId)
           : undefined;
         const toolIdempotencyKey = `${run.id}:${call.callId}`;
+        const forceApproval = forceApprovalForTool(
+          continuation.toolPolicy,
+          definition.riskLevel,
+        );
         const execution = await executeWithDynamicDelegationBudget({
           tool: definition,
           reservation: delegationReservation,
           parentExecutionScope: executionScope,
           idempotencyKey: toolIdempotencyKey,
+          forceApproval,
           operation: () => executeGovernedTool({
             toolId: definition.id,
             input,
@@ -4218,10 +4208,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
             requestActorBinding: resumeAuthority.actorBinding,
             abortSignal: resumeAbortSignal,
             idempotencyKey: toolIdempotencyKey,
-            forceApproval: forceApprovalForTool(
-              continuation.toolPolicy,
-              definition.riskLevel,
-            ),
+            forceApproval,
             mcpSessionScope: agentMcpSessionScope(
               run.id,
               continuation.context,
@@ -4893,11 +4880,16 @@ async function resumeProviderBoundAgentRunAfterApproval({
         : undefined;
       const toolIdempotencyKey =
         `${run.id}:${providerState.provider}:${call.callId}`;
+      const forceApproval = forceApprovalForTool(
+        continuation.toolPolicy,
+        definition.riskLevel,
+      );
       const execution = await executeWithDynamicDelegationBudget({
         tool: definition,
         reservation: delegationReservation,
         parentExecutionScope: executionScope,
         idempotencyKey: toolIdempotencyKey,
+        forceApproval,
         operation: () => executeGovernedTool({
           toolId: definition.id,
           input: parsedArguments,
@@ -4907,10 +4899,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
           requestActorBinding: resumeActorBinding,
           abortSignal: resumeAbortSignal,
           idempotencyKey: toolIdempotencyKey,
-          forceApproval: forceApprovalForTool(
-            continuation.toolPolicy,
-            definition.riskLevel,
-          ),
+          forceApproval,
           mcpSessionScope: agentMcpSessionScope(run.id, continuation.context),
           executionScope: toolExecutionScope,
           agentRunId: run.id,
