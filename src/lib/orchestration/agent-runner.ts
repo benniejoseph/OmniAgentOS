@@ -2248,13 +2248,10 @@ export async function* runAgent(
               summary: execution.record.reason,
               executionId: execution.record.id,
             });
-            outputs.push(functionCallOutput(item.call, {
-              status: execution.record.status,
-              dryRun: execution.record.dryRun,
-              approvalRequired: execution.record.approvalRequired,
-              note: execution.record.status === "executed" ? "Executed concurrently with other safe read-only tools." : execution.record.reason,
-              result: execution.result,
-            }));
+            outputs.push(functionCallOutput(
+              item.call,
+              executionPayload(execution),
+            ));
             const observationTransition = transitionEphemeralLocalObservation(
               latestLocalObservation,
               item.entry.definition.id,
@@ -2418,18 +2415,7 @@ export async function* runAgent(
             return;
           }
 
-          outputs.push(
-            functionCallOutput(call, {
-              status: execution.record.status,
-              dryRun: execution.record.dryRun,
-              approvalRequired: execution.record.approvalRequired,
-              note:
-                execution.record.status === "executed"
-                    ? "Executed for real."
-                    : execution.record.reason,
-              result: execution.result,
-            }),
-          );
+          outputs.push(functionCallOutput(call, executionPayload(execution)));
           const observationTransition = transitionEphemeralLocalObservation(
             latestLocalObservation,
             definition.id,

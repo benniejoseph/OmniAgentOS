@@ -811,6 +811,52 @@ describe("agent memory scope", () => {
     expect(durableWrites).not.toContain("ephemeral_computer_function_output");
   });
 
+  it("returns the governed execution ID to an OpenAI tool caller", async () => {
+    const scopedRequest = request("session");
+    scopedRequest.agentProfile!.toolIds = ["knowledge.search"];
+    mocks.loadProgressiveAgentTools.mockResolvedValue({
+      definitions: [localToolDefinition("knowledge.search")],
+    });
+    mocks.executeGovernedTool.mockResolvedValue({
+      record: localExecutionRecord(
+        "knowledge.search",
+        "execution-knowledge-search",
+      ),
+      result: { results: [] },
+    });
+    let modelTurn = 0;
+    mocks.streamResponseTurn.mockImplementation(async (modelRequest) => {
+      modelTurn += 1;
+      if (modelTurn === 1) {
+        return openAITurn({
+          callId: "call-knowledge-search",
+          name: "knowledge.search",
+        });
+      }
+      const toolOutput = modelRequest.input.find(
+        (item: { type?: string }) => item.type === "function_call_output",
+      );
+      expect(toolOutput).toBeDefined();
+      expect(JSON.parse((toolOutput as { output: string }).output)).toMatchObject({
+        provenance: "tool_result",
+        data: {
+          executionId: "execution-knowledge-search",
+          status: "executed",
+        },
+      });
+      await modelRequest.onDelta("Done.");
+      return openAITurn({ text: "Done." });
+    });
+
+    const events = await collectRequest(scopedRequest);
+
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "done",
+      response: "Done.",
+    }));
+    expect(mocks.streamResponseTurn).toHaveBeenCalledTimes(2);
+  });
+
   it("revalidates standing consent and isolates automatic personal context", async () => {
     const authority = buildPersonalContextConsentAuthorityV1({
       tenantId: privateOwnerContext.tenantId,
