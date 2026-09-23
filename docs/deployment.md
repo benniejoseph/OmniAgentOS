@@ -211,6 +211,15 @@ is bounded and later launches use the restored session normally. On macOS 27 the
 packager uses `diskutil image create`, with `hdiutil` retained as the compatible
 fallback.
 
+Before creating the DMG, the packager compares the designated requirement of
+`/Applications/Asael.app` with the signed replacement host. An unchanged
+requirement proceeds without operator output. A mismatch fails closed unless the
+operator explicitly reruns with
+`ASAEL_MACOS_ACKNOWLEDGE_SIGNING_ROTATION=1`. That acknowledgement does not alter
+TCC state; it prints the required post-install sequence to fully quit Asael, reset
+only `Accessibility` and `ScreenCapture` for bundle ID
+`app.omniagent.omniagent`, relaunch, and choose **Grant macOS access**.
+
 The same packager compiles `AsaelComputerUseHelper.app` for every architecture in
 the host, embeds it under `Contents/Helpers`, signs it separately with the host's
 stable identity, then signs the host. The helper is a direct child process with a

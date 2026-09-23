@@ -3,6 +3,7 @@ set -euo pipefail
 
 task_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 task_flutter_dir="$(cd "$task_script_dir/.." && pwd)"
+source "$task_script_dir/lib/macos_signing_rotation_guard.sh"
 task_xcode_path="$(xcode-select -p 2>/dev/null || true)"
 task_developer_signing_identity="${ASAEL_MACOS_SIGNING_IDENTITY:-}"
 task_notary_profile="${ASAEL_MACOS_NOTARY_PROFILE:-}"
@@ -18,6 +19,8 @@ task_credential_broker_manifest="$task_credential_broker_dir/manifest.json"
 task_signing_identity="$task_developer_signing_identity"
 task_signing_mode="developer"
 task_main_entitlements="$task_flutter_dir/macos/Runner/Release.entitlements"
+task_installed_app="/Applications/Asael.app"
+task_signing_rotation_acknowledgement="${ASAEL_MACOS_ACKNOWLEDGE_SIGNING_ROTATION:-}"
 task_codesign_keychain_args=()
 task_local_signing_lock_token=""
 task_stage_dir=""
@@ -325,6 +328,21 @@ if [[ -n "$task_signing_identity" ]]; then
     "$task_staged_app"
 fi
 
+task_host_requirement="$(asael_read_macos_designated_requirement "$task_staged_app")" || {
+  echo "The replacement app has no readable designated requirement." >&2
+  exit 1
+}
+if [[ -d "$task_installed_app" ]]; then
+  task_installed_requirement="$(asael_read_macos_designated_requirement "$task_installed_app")" || {
+    echo "The installed Asael app has no readable designated requirement." >&2
+    exit 1
+  }
+  asael_guard_macos_signing_rotation \
+    "$task_installed_requirement" \
+    "$task_host_requirement" \
+    "$task_signing_rotation_acknowledgement"
+fi
+
 task_host_entitlements="$task_stage_dir/host-entitlements.plist"
 codesign -d --xml --entitlements "$task_host_entitlements" "$task_staged_app" 2>/dev/null
 task_observed_apns_environment="$(
@@ -376,7 +394,6 @@ if [[ "$task_observed_broker_cdhash" != "$task_expected_broker_cdhash" || \
   echo "The credential broker CDHash or bundle digest changed during packaging." >&2
   exit 1
 fi
-task_host_requirement="$(codesign -d -r- "$task_staged_app" 2>&1 | sed -n 's/^designated => //p')"
 if [[ "$task_host_requirement" != "$task_expected_broker_requirement" ]]; then
   echo "The app and frozen credential broker do not share the recorded designated requirement." >&2
   exit 1
