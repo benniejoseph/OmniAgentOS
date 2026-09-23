@@ -35,8 +35,8 @@ export const DYNAMIC_DELEGATION_CHILD_BUDGET = Object.freeze(
 export const DYNAMIC_DELEGATION_VERIFIER_BUDGET = Object.freeze(
   runBudgetCountersV1Schema.parse({
     modelTurns: 1,
-    tokens: 12_000,
-    costMicrousd: 400_000,
+    tokens: 6_000,
+    costMicrousd: 200_000,
     wallTimeMs: 30_000,
     toolCalls: 0,
     browserActions: 0,
@@ -47,7 +47,7 @@ export const DYNAMIC_DELEGATION_VERIFIER_BUDGET = Object.freeze(
   }),
 );
 
-export const DYNAMIC_DELEGATION_VERIFIER_MAX_OUTPUT_TOKENS = 1_200;
+export const DYNAMIC_DELEGATION_VERIFIER_MAX_OUTPUT_TOKENS = 600;
 
 export const DYNAMIC_DELEGATION_LIFECYCLE_BUDGET = Object.freeze(
   composeLifecycleBudget(

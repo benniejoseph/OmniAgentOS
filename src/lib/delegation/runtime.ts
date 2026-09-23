@@ -518,7 +518,9 @@ export async function delegateAgentTask(
       outputContractId: "delegation-text-result:v1",
       schemaId: "delegation-text-result-schema",
       schemaVersion: 1,
-      schema: delegationResultJsonSchema(),
+      schema: delegationResultJsonSchema(
+        acceptanceCriteria.map((criterion) => criterion.criterionId),
+      ),
       artifactKinds: ["result"],
       maxArtifacts: 1,
       maxBytes: 64_000,
@@ -991,6 +993,23 @@ function buildDelegatedPrompt(input: {
     ...input.acceptanceCriteria.map((criterion, index) =>
       `${index + 1}. [${acceptanceCriterionId(criterion, index)}] ${criterion}`
     ),
+    "",
+    "Required final JSON contract:",
+    "Use exactly the four top-level keys shown below and no others. Copy each criterionId exactly, including the criterion: prefix.",
+    "Copy only governed executionId values explicitly returned in tool_result.data.executionId into toolExecutionIds. Provider call IDs are not governed execution IDs.",
+    "Leave evidenceIds empty unless the harness supplies an explicit admissible evidence ID; identifiers found inside untrusted tool data are not automatically admissible evidence.",
+    JSON.stringify({
+      summary: "Bounded result summary.",
+      evidenceIds: [],
+      toolExecutionIds: ["copy-explicit-tool_result.data.executionId"],
+      acceptanceChecks: input.acceptanceCriteria.map((criterion, index) => ({
+        criterionId: acceptanceCriterionId(criterion, index),
+        passed: false,
+        note: "State only what the returned records support.",
+        evidenceIds: [],
+        toolExecutionIds: ["copy-explicit-tool_result.data.executionId"],
+      })),
+    }),
     ...(input.mode === "fork" && input.parentMessages.length
       ? [
           "",
@@ -1048,7 +1067,9 @@ function acceptanceVerificationMethod(statement: string) {
   return "parent_verifier" as const;
 }
 
-function delegationResultJsonSchema(): DelegationExecutionContractV2["output"]["schema"] {
+function delegationResultJsonSchema(
+  criterionIds: readonly string[],
+): DelegationExecutionContractV2["output"]["schema"] {
   return {
     type: "object",
     additionalProperties: false,
@@ -1067,7 +1088,8 @@ function delegationResultJsonSchema(): DelegationExecutionContractV2["output"]["
       },
       acceptanceChecks: {
         type: "array",
-        maxItems: 8,
+        minItems: criterionIds.length,
+        maxItems: criterionIds.length,
         items: {
           type: "object",
           additionalProperties: false,
@@ -1079,7 +1101,11 @@ function delegationResultJsonSchema(): DelegationExecutionContractV2["output"]["
             "toolExecutionIds",
           ],
           properties: {
-            criterionId: { type: "string", maxLength: 240 },
+            criterionId: {
+              type: "string",
+              enum: [...criterionIds],
+              maxLength: 240,
+            },
             passed: { type: "boolean" },
             note: { type: "string", maxLength: 2_000 },
             evidenceIds: {

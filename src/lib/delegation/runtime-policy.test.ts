@@ -56,6 +56,9 @@ describe("dynamic delegation runtime policy", () => {
     expect(twice.used.wallTimeMs).toBe(180_000);
     expect(remainingRunBudget(twice, Date.parse(startedAt)).wallTimeMs)
       .toBe(60_000);
+    expect(twice.used.tokens).toBe(36_000);
+    expect(remainingRunBudget(twice, Date.parse(startedAt)).tokens)
+      .toBe(28_000);
   });
 
   it("partitions and reserves the fixed Sentinel slice without granting it to the child", () => {

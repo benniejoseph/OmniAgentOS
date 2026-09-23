@@ -105,6 +105,14 @@ describe("non-OpenAI governed provider tool loop", () => {
       expect(request.allowedProviders).toEqual(["google"]);
       expect(request.allowCrossProviderFallback).toBe(false);
       expect(request.toolResults).toHaveLength(2);
+      expect(JSON.parse(request.toolResults![0].output)).toMatchObject({
+        provenance: "tool_result",
+        data: { executionId: "execution-memory.search" },
+      });
+      expect(JSON.parse(request.toolResults![1].output)).toMatchObject({
+        provenance: "tool_result",
+        data: { executionId: "execution-knowledge.search" },
+      });
       return turn({ text: "Ada Lovelace found.", inputTokens: 12, outputTokens: 4, cost: 0.002 });
     });
     const executeTool = vi.fn(async (request: { toolId: string }) => ({

@@ -190,6 +190,25 @@ describe("dynamic delegation runtime", () => {
       manifestSha256: null,
       turns: [],
     });
+    const contractedCriterionIds = execution.contract.acceptance.criteria.map(
+      (criterion) => criterion.criterionId,
+    );
+    expect(execution.contract.output.schema).toMatchObject({
+      properties: {
+        acceptanceChecks: {
+          minItems: contractedCriterionIds.length,
+          maxItems: contractedCriterionIds.length,
+          items: {
+            properties: {
+              criterionId: { enum: contractedCriterionIds },
+            },
+          },
+        },
+      },
+    });
+    expect(harness.childPrompt).toContain("Required final JSON contract:");
+    expect(harness.childPrompt).toContain(contractedCriterionIds[0]);
+    expect(harness.childPrompt).toContain("tool_result.data.executionId");
     expect(harness.childPrompt).not.toContain("parent-private-context-marker");
     expect(harness.boundScope).toMatchObject({
       contextGrantIds: [],

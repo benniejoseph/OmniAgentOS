@@ -5530,6 +5530,7 @@ function executionPayload(
   execution: Awaited<ReturnType<typeof executeGovernedTool>>,
 ) {
   return {
+    executionId: execution.record.id,
     status: execution.record.status,
     dryRun: execution.record.dryRun,
     approvalRequired: execution.record.approvalRequired,
