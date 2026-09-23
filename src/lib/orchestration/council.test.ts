@@ -328,6 +328,7 @@ describe("agent council", () => {
       response: "Draft",
       contributions,
       contextBlock: "Evidence",
+      maxOutputTokens: 900,
       checkpointHooks,
     });
     expect(verdict).toMatchObject({ passed: false, score: 0.45, requiredChanges: ["Cite the source."] });
@@ -343,6 +344,8 @@ describe("agent council", () => {
     expect(mocks.generateModelStructured.mock.calls[1]?.[0]?.input).toContain("[memory:1] Exact evidence");
     expect(mocks.generateModelStructured.mock.calls[0]?.[0]?.instructions)
       .toContain("Prevent unsupported, unsafe, incomplete");
+    expect(mocks.generateModelStructured.mock.calls[0]?.[0]?.maxOutputTokens)
+      .toBe(900);
     expect(mocks.generateModelStructured.mock.calls[1]?.[0]?.instructions)
       .toContain("Turn the user's objective into coordinated, verified work");
     expect(events).toEqual([
@@ -353,6 +356,17 @@ describe("agent council", () => {
       "revision:atlas:before",
       "revision:atlas:completed",
     ]);
+  });
+
+  it("rejects an unbounded Sentinel output allowance before model execution", async () => {
+    await expect(reviewCouncilResponse({
+      goal: "Answer",
+      response: "Draft",
+      contributions: [],
+      contextBlock: "Evidence",
+      maxOutputTokens: 16_001,
+    })).rejects.toThrow(/max output tokens/i);
+    expect(mocks.generateModelStructured).not.toHaveBeenCalled();
   });
 });
 

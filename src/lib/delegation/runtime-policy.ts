@@ -1,5 +1,7 @@
 import {
   RUN_BUDGET_DIMENSIONS,
+  createRunBudgetState,
+  reserveRunBudget,
   runBudgetCountersV1Schema,
   type RunBudgetCountersV1,
 } from "@/lib/runs/budgets";
@@ -26,6 +28,34 @@ export const DYNAMIC_DELEGATION_CHILD_BUDGET = Object.freeze(
   }),
 );
 
+/**
+ * Sentinel is a separate, pinned Agent boundary. Its authority is reserved
+ * alongside the child but is never passed into the child run.
+ */
+export const DYNAMIC_DELEGATION_VERIFIER_BUDGET = Object.freeze(
+  runBudgetCountersV1Schema.parse({
+    modelTurns: 1,
+    tokens: 12_000,
+    costMicrousd: 400_000,
+    wallTimeMs: 30_000,
+    toolCalls: 0,
+    browserActions: 0,
+    agents: 1,
+    fanOut: 0,
+    retries: 0,
+    replans: 0,
+  }),
+);
+
+export const DYNAMIC_DELEGATION_VERIFIER_MAX_OUTPUT_TOKENS = 1_200;
+
+export const DYNAMIC_DELEGATION_LIFECYCLE_BUDGET = Object.freeze(
+  composeLifecycleBudget(
+    DYNAMIC_DELEGATION_CHILD_BUDGET,
+    DYNAMIC_DELEGATION_VERIFIER_BUDGET,
+  ),
+);
+
 export const DYNAMIC_DELEGATION_READ_TOOL_IDS = Object.freeze([
   "memory.search",
   "knowledge.search",
@@ -50,12 +80,69 @@ export function assertDynamicDelegationApprovalPolicy(input: {
 export function dynamicDelegationRootReservation(
   child: RunBudgetCountersV1 = DYNAMIC_DELEGATION_CHILD_BUDGET,
 ) {
-  const parsed = runBudgetCountersV1Schema.parse(child);
+  const parsed = dynamicDelegationLifecycleBudget(child);
   return runBudgetCountersV1Schema.parse({
     ...parsed,
-    agents: 1,
+    agents: Math.max(1, parsed.agents),
     fanOut: 1,
   });
+}
+
+export function dynamicDelegationLifecycleBudget(
+  child: RunBudgetCountersV1 = DYNAMIC_DELEGATION_CHILD_BUDGET,
+) {
+  return composeLifecycleBudget(
+    runBudgetCountersV1Schema.parse(child),
+    DYNAMIC_DELEGATION_VERIFIER_BUDGET,
+  );
+}
+
+export function partitionDynamicDelegationLifecycleBudget(
+  lifecycle: RunBudgetCountersV1,
+) {
+  const parsed = runBudgetCountersV1Schema.parse(lifecycle);
+  if (RUN_BUDGET_DIMENSIONS.some((dimension) =>
+    parsed[dimension] !== DYNAMIC_DELEGATION_LIFECYCLE_BUDGET[dimension]
+  )) {
+    throw new Error(
+      "Dynamic delegation lifecycle budget does not match its child and Sentinel slices.",
+    );
+  }
+  return Object.freeze({
+    child: DYNAMIC_DELEGATION_CHILD_BUDGET,
+    verifier: DYNAMIC_DELEGATION_VERIFIER_BUDGET,
+  });
+}
+
+/**
+ * The durable root ledger already holds the aggregate lifecycle authority.
+ * Immediately before verification, materialize its exact partition and
+ * reserve the Sentinel slice so verifier work cannot become free authority.
+ */
+export function reserveDynamicDelegationVerifierSlice(input: {
+  lifecycle: RunBudgetCountersV1;
+  startedAt: string;
+}) {
+  const partition = partitionDynamicDelegationLifecycleBudget(input.lifecycle);
+  const lifecycle = runBudgetCountersV1Schema.parse(input.lifecycle);
+  const reserved = reserveRunBudget(
+    createRunBudgetState(lifecycle, {
+      startedAt: input.startedAt,
+      used: {
+        ...partition.child,
+        wallTimeMs:
+          lifecycle.wallTimeMs - partition.verifier.wallTimeMs,
+      },
+    }),
+    partition.verifier,
+    Date.parse(input.startedAt),
+  );
+  if (RUN_BUDGET_DIMENSIONS.some((dimension) =>
+    reserved.used[dimension] !== lifecycle[dimension]
+  )) {
+    throw new Error("Sentinel lifecycle budget reservation is incomplete.");
+  }
+  return Object.freeze({ partition, reserved });
 }
 
 /**
@@ -85,6 +172,20 @@ export function dynamicDelegationParentToolReservation(
     RUN_BUDGET_DIMENSIONS.map((dimension) => [
       dimension,
       rootReservation[dimension] + (dimension === "toolCalls" ? 1 : 0),
+    ]),
+  ));
+}
+
+function composeLifecycleBudget(
+  left: RunBudgetCountersV1,
+  right: RunBudgetCountersV1,
+) {
+  return runBudgetCountersV1Schema.parse(Object.fromEntries(
+    RUN_BUDGET_DIMENSIONS.map((dimension) => [
+      dimension,
+      dimension === "wallTimeMs"
+        ? Math.max(left[dimension], right[dimension])
+        : left[dimension] + right[dimension],
     ]),
   ));
 }

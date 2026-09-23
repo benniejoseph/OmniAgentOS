@@ -21,7 +21,10 @@ import {
 } from "@/lib/delegation/runtime";
 import {
   DYNAMIC_DELEGATION_CHILD_BUDGET,
+  DYNAMIC_DELEGATION_LIFECYCLE_BUDGET,
   DYNAMIC_DELEGATION_READ_TOOL_IDS,
+  DYNAMIC_DELEGATION_VERIFIER_BUDGET,
+  DYNAMIC_DELEGATION_VERIFIER_MAX_OUTPUT_TOKENS,
   dynamicDelegationParentToolReservation,
   dynamicDelegationRootReservation,
 } from "@/lib/delegation/runtime-policy";
@@ -162,9 +165,21 @@ describe("dynamic delegation runtime", () => {
       mcpServers: [],
       plugins: [],
     });
+    expect(execution.contract.budgets).toEqual(
+      DYNAMIC_DELEGATION_LIFECYCLE_BUDGET,
+    );
+    expect(execution.contract.verifier).toMatchObject({
+      verifierPolicyId: "sentinel-agent-and-deterministic:v2",
+      verifierPolicySha256: canonicalJsonSha256({
+        method: "agent_then_deterministic",
+        acceptanceThreshold: 0.8,
+        budget: DYNAMIC_DELEGATION_VERIFIER_BUDGET,
+        maxOutputTokens: DYNAMIC_DELEGATION_VERIFIER_MAX_OUTPUT_TOKENS,
+      }),
+    });
     expect(execution.contract.budgets).toMatchObject({
       browserActions: 0,
-      agents: 1,
+      agents: 2,
       fanOut: 0,
       retries: 0,
       replans: 0,
@@ -252,7 +267,7 @@ describe("dynamic delegation runtime", () => {
         connectorTargets: [],
       },
       budgets: {
-        agents: 1,
+        agents: 2,
         fanOut: 0,
         browserActions: 0,
       },

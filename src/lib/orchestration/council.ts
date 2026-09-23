@@ -519,12 +519,14 @@ export async function reviewCouncilResponse(input: {
   response: string;
   contributions: CouncilContribution[];
   contextBlock: string;
+  maxOutputTokens?: number;
   abortSignal?: AbortSignal;
   usageAttribution?: CouncilUsageAttribution;
   checkpointHooks?: CouncilCheckpointHooks;
 }): Promise<CouncilVerdict> {
   const attempt = 1;
   const sourceId = "verifier:sentinel";
+  const maxOutputTokens = boundedVerifierOutputTokens(input.maxOutputTokens);
   await invokeCheckpointHook(input.checkpointHooks?.beforeVerifier, {
     attempt,
     requestSha256: contentSha256({
@@ -560,8 +562,9 @@ export async function reviewCouncilResponse(input: {
     schema: verdictSchema,
     reasoningEffort: AGENT_REASONING_EFFORT,
     abortSignal: input.abortSignal,
-      tier: "reasoning",
-      maxAttempts: 1,
+    tier: "reasoning",
+    maxAttempts: 1,
+    maxOutputTokens,
     ...(input.usageAttribution
       ? {
           usageScope: {
@@ -612,6 +615,16 @@ export async function reviewCouncilResponse(input: {
     });
     throw error;
   }
+}
+
+function boundedVerifierOutputTokens(value: number | undefined) {
+  const parsed = value ?? 1_200;
+  if (!Number.isInteger(parsed) || parsed < 64 || parsed > 16_000) {
+    throw new Error(
+      "Sentinel max output tokens must be an integer between 64 and 16000.",
+    );
+  }
+  return parsed;
 }
 
 export async function reviseCouncilResponse(input: {

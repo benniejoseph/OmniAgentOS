@@ -37,7 +37,12 @@ import {
 import {
   parseDelegationExecutionJobPayload,
 } from "@/lib/delegation/runtime-job";
-import { dynamicDelegationMaxToolSteps } from "@/lib/delegation/runtime-policy";
+import {
+  DYNAMIC_DELEGATION_VERIFIER_MAX_OUTPUT_TOKENS,
+  dynamicDelegationMaxToolSteps,
+  partitionDynamicDelegationLifecycleBudget,
+  reserveDynamicDelegationVerifierSlice,
+} from "@/lib/delegation/runtime-policy";
 import { listStreamEvents } from "@/lib/events/store";
 import { selectAgentModel } from "@/lib/openai/model-router";
 import { runAgent } from "@/lib/orchestration/agent-runner";
@@ -166,6 +171,22 @@ export async function processDelegationExecutionJob(
       run,
     );
   }
+  let lifecycleBudget: ReturnType<
+    typeof partitionDynamicDelegationLifecycleBudget
+  >;
+  try {
+    lifecycleBudget = partitionDynamicDelegationLifecycleBudget(
+      execution.budgetLimits,
+    );
+  } catch {
+    return failBeforeExecution(
+      job,
+      execution,
+      childScope,
+      "lifecycle_budget_mismatch",
+      run,
+    );
+  }
 
   try {
     await assertRuntimeAssignmentCurrent(execution);
@@ -276,8 +297,9 @@ export async function processDelegationExecutionJob(
   const controller = new AbortController();
   const executionDeadline = Math.min(
     deadline ?? Number.POSITIVE_INFINITY,
-    Date.parse(execution.completeBy) - 25_000,
-    Date.now() + execution.budgetLimits.wallTimeMs,
+    Date.parse(execution.completeBy) -
+      lifecycleBudget.verifier.wallTimeMs,
+    Date.now() + lifecycleBudget.child.wallTimeMs,
   );
   const deadlineTimer = setTimeout(
     () => controller.abort(new Error("Delegation execution exceeded its deadline.")),
@@ -351,8 +373,8 @@ export async function processDelegationExecutionJob(
           toolIds: [...skill.toolIds],
         })),
       },
-      budgetLimits: execution.budgetLimits,
-      maxToolSteps: dynamicDelegationMaxToolSteps(execution.budgetLimits),
+      budgetLimits: lifecycleBudget.child,
+      maxToolSteps: dynamicDelegationMaxToolSteps(lifecycleBudget.child),
     }, controller.signal)) {
       void event;
     }
@@ -481,6 +503,10 @@ async function finalizeChildRun(
 
   const parentScope = parentVerificationScope(proposed);
   try {
+    const verifierBudget = reserveDynamicDelegationVerifierSlice({
+      lifecycle: proposed.budgetLimits,
+      startedAt: proposed.createdAt,
+    }).partition.verifier;
     const verifierIdentity = buildBuiltInAgentIdentityForVersionV1({
       agentId: "sentinel",
       tenantId: proposed.contract.lineage.tenantId,
@@ -500,6 +526,7 @@ async function finalizeChildRun(
       throw new Error("Verifier identity changed after contracting.");
     }
     let verifierModelReceiptSha256: string | undefined;
+    let verifierUsageReceiptRecorded = false;
     const verdict = await reviewCouncilResponse({
       goal: proposed.contract.objective,
       response: candidate?.summary || response.slice(0, 16_000),
@@ -517,8 +544,12 @@ async function finalizeChildRun(
         }).slice(0, 8_000),
       abortSignal: AbortSignal.timeout(Math.max(
         1,
-        Date.parse(proposed.completeBy) - Date.now() - 1_000,
+        Math.min(
+          verifierBudget.wallTimeMs,
+          Date.parse(proposed.completeBy) - Date.now() - 1_000,
+        ),
       )),
+      maxOutputTokens: DYNAMIC_DELEGATION_VERIFIER_MAX_OUTPUT_TOKENS,
       usageAttribution: {
         tenantId: job.tenantId,
         actorId: execution.ownerActorId,
@@ -545,12 +576,19 @@ async function finalizeChildRun(
               "Sentinel executed on a runtime other than its immutable assignment.",
             );
           }
+          verifierUsageReceiptRecorded =
+            input.generated.usageReceiptRecorded === true &&
+            typeof input.generated.usageReceiptId === "string" &&
+            Boolean(input.generated.usageReceiptId.trim());
           verifierModelReceiptSha256 = canonicalJsonSha256({
             runtimeAssignmentSha256: assigned.assignmentSha256,
             providerId: input.generated.provider,
             modelId: input.generated.model,
             modelTier: assigned.modelTier,
-            usageReceiptId: input.generated.usageReceiptId || null,
+            usageReceiptRecorded: verifierUsageReceiptRecorded,
+            usageReceiptId: verifierUsageReceiptRecorded
+              ? input.generated.usageReceiptId
+              : null,
             attemptCount: input.generated.attempts.length,
           });
         },
@@ -560,6 +598,7 @@ async function finalizeChildRun(
       throw new Error("Sentinel did not return an exact model execution receipt.");
     }
     const accepted = deterministicPass &&
+      verifierUsageReceiptRecorded &&
       verdict.passed &&
       verdict.score >= proposed.contract.verifier.acceptanceThreshold;
     proposed = await transitionDelegationExecution({
@@ -583,7 +622,9 @@ async function finalizeChildRun(
           verifierModelTier:
             proposed.contract.verifier.runtimeAssignment.modelTier,
           verifierModelReceiptSha256,
-          score: deterministicPass ? verdict.score : 0,
+          score: deterministicPass && verifierUsageReceiptRecorded
+            ? verdict.score
+            : 0,
           acceptanceChecksSha256: canonicalJsonSha256(
             proposed.result!.acceptanceChecks,
           ),
@@ -592,6 +633,9 @@ async function finalizeChildRun(
             deterministicPass
               ? "Deterministic schema, artifact, model-receipt, and grounding checks passed."
               : "Deterministic acceptance checks failed.",
+            verifierUsageReceiptRecorded
+              ? "Sentinel usage receipt was recorded."
+              : "Sentinel usage receipt was missing; verification failed closed.",
             verdict.assessment,
             verdict.requiredChanges.length
               ? `Required changes: ${verdict.requiredChanges.join("; ")}`

@@ -36,7 +36,9 @@ import {
   resolveDelegationGrantsV1,
 } from "@/lib/delegation/grant-resolver";
 import {
-  DYNAMIC_DELEGATION_CHILD_BUDGET,
+  DYNAMIC_DELEGATION_LIFECYCLE_BUDGET,
+  DYNAMIC_DELEGATION_VERIFIER_BUDGET,
+  DYNAMIC_DELEGATION_VERIFIER_MAX_OUTPUT_TOKENS,
 } from "@/lib/delegation/runtime-policy";
 import {
   parentDelegationBudgetAuthorityV1Schema,
@@ -523,10 +525,12 @@ export async function delegateAgentTask(
     },
     verifier: {
       verifierContractId: "delegation-verifier:v1",
-      verifierPolicyId: "sentinel-agent-and-deterministic:v1",
+      verifierPolicyId: "sentinel-agent-and-deterministic:v2",
       verifierPolicySha256: canonicalJsonSha256({
         method: "agent_then_deterministic",
         acceptanceThreshold: 0.8,
+        budget: DYNAMIC_DELEGATION_VERIFIER_BUDGET,
+        maxOutputTokens: DYNAMIC_DELEGATION_VERIFIER_MAX_OUTPUT_TOKENS,
       }),
       identityPin: verifierIdentityPin,
       runtimeAssignment: verifierRuntimeAssignment,
@@ -542,7 +546,7 @@ export async function delegateAgentTask(
       budgets: parentBudgetAuthority.parentBudgetRemainingBefore,
       completeBy: deadline.completeBy,
     },
-    budgets: DYNAMIC_DELEGATION_CHILD_BUDGET,
+    budgets: DYNAMIC_DELEGATION_LIFECYCLE_BUDGET,
     deadline,
     cancellation: {
       cancelable: true,
@@ -875,7 +879,7 @@ function delegationDeadline(input: {
   const parentComplete = Date.parse(input.parentStartedAt) +
     input.parentWallTimeLimitMs;
   const complete = Math.min(
-    created + DYNAMIC_DELEGATION_CHILD_BUDGET.wallTimeMs,
+    created + DYNAMIC_DELEGATION_LIFECYCLE_BUDGET.wallTimeMs,
     parentComplete,
   );
   if (!Number.isFinite(created) || complete - created < 2_000) {

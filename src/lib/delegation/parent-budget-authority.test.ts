@@ -7,7 +7,7 @@ import {
   withParentDelegationBudgetAuthority,
 } from "@/lib/delegation/parent-budget-authority";
 import {
-  DYNAMIC_DELEGATION_CHILD_BUDGET,
+  DYNAMIC_DELEGATION_LIFECYCLE_BUDGET,
   dynamicDelegationParentToolReservation,
   dynamicDelegationRootReservation,
 } from "@/lib/delegation/runtime-policy";
@@ -53,10 +53,12 @@ describe("parent delegation budget authority", () => {
 
       expect(resolved.authoritySha256).toBe(fixture.authority.authoritySha256);
       expect(resolved.parentBudgetUsedAfter.modelTurns).toBe(
-        fixture.before.used.modelTurns + DYNAMIC_DELEGATION_CHILD_BUDGET.modelTurns,
+        fixture.before.used.modelTurns +
+          DYNAMIC_DELEGATION_LIFECYCLE_BUDGET.modelTurns,
       );
       expect(resolved.parentBudgetUsedAfter.toolCalls).toBe(
-        fixture.before.used.toolCalls + DYNAMIC_DELEGATION_CHILD_BUDGET.toolCalls + 1,
+        fixture.before.used.toolCalls +
+          DYNAMIC_DELEGATION_LIFECYCLE_BUDGET.toolCalls + 1,
       );
     });
 

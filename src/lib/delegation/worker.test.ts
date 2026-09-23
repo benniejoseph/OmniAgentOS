@@ -100,6 +100,11 @@ import {
   exactDelegationRuntime,
   executionScopeFromDelegationContract,
 } from "@/lib/delegation/runtime";
+import {
+  DYNAMIC_DELEGATION_CHILD_BUDGET,
+  DYNAMIC_DELEGATION_LIFECYCLE_BUDGET,
+  DYNAMIC_DELEGATION_VERIFIER_MAX_OUTPUT_TOKENS,
+} from "@/lib/delegation/runtime-policy";
 import { DELEGATION_EXECUTION_JOB_KIND } from "@/lib/delegation/runtime-job";
 import {
   buildExecutionContract,
@@ -180,12 +185,16 @@ describe("delegation execution worker", () => {
           toolIds: [],
           skills: [],
         }),
-        budgetLimits: harness.execution.contract.budgets,
-        maxToolSteps: 1,
+        budgetLimits: DYNAMIC_DELEGATION_CHILD_BUDGET,
+        maxToolSteps: 2,
       }),
       expect.any(AbortSignal),
     );
-    expect(mocks.reviewCouncilResponse).toHaveBeenCalledTimes(1);
+    expect(mocks.reviewCouncilResponse).toHaveBeenCalledWith(
+      expect.objectContaining({
+        maxOutputTokens: DYNAMIC_DELEGATION_VERIFIER_MAX_OUTPUT_TOKENS,
+      }),
+    );
     expect(mocks.completeOperationJob).toHaveBeenCalledTimes(1);
     expect(mocks.failOperationJob).not.toHaveBeenCalled();
     expect(mocks.appendGrantValidation).toHaveBeenCalledWith({
@@ -230,6 +239,59 @@ describe("delegation execution worker", () => {
       },
     });
     expect(result.message).toMatch(/Evidence is insufficient/i);
+  });
+
+  it("fails closed when Sentinel returns without a durable usage receipt", async () => {
+    mocks.reviewCouncilResponse.mockImplementation(async (input) => {
+      await input.checkpointHooks?.afterModel?.({
+        sourceId: "verifier:sentinel",
+        attempt: 1,
+        status: "completed",
+        generated: verifierGeneration({
+          usageReceiptRecorded: false,
+          usageReceiptId: undefined,
+        }),
+      });
+      return {
+        passed: true,
+        score: 0.95,
+        assessment: "Unreceipted verdict.",
+        requiredChanges: [],
+      };
+    });
+    const harness = workerHarness();
+
+    const result = await processDelegationExecutionJob(harness.job);
+
+    expect(result.status).toBe("completed");
+    expect(harness.transitions).toEqual([
+      "running",
+      "completed_proposed",
+      "rejected",
+    ]);
+    expect(harness.execution).toMatchObject({
+      state: "rejected",
+      verification: {
+        verdict: "rejected",
+        score: 0,
+        note: expect.stringMatching(/usage receipt was missing/i),
+      },
+    });
+  });
+
+  it("fails closed before claim when the lifecycle budget cannot be partitioned", async () => {
+    const harness = workerHarness({ invalidLifecycleBudget: true });
+
+    const result = await processDelegationExecutionJob(harness.job);
+
+    expect(result).toMatchObject({
+      status: "failed",
+      message: "lifecycle_budget_mismatch",
+    });
+    expect(harness.transitions).toEqual(["failed"]);
+    expect(mocks.claimQueuedAgentRun).not.toHaveBeenCalled();
+    expect(mocks.runAgent).not.toHaveBeenCalled();
+    expect(mocks.reviewCouncilResponse).not.toHaveBeenCalled();
   });
 
   it("fails closed before claiming the child when its runtime pin drifts", async () => {
@@ -549,6 +611,7 @@ function workerHarness(options: {
   legacyParentOwner?: boolean;
   tamperedJobParentOwner?: string;
   omitJobParentOwner?: boolean;
+  invalidLifecycleBudget?: boolean;
   criterion?: {
     statement: string;
     verificationMethod: "schema" | "evidence" | "governed_receipt" | "parent_verifier";
@@ -599,6 +662,12 @@ function workerHarness(options: {
     scope: "verifier",
   });
   const contract = buildExecutionContract({
+    budgets: options.invalidLifecycleBudget
+      ? {
+          ...DYNAMIC_DELEGATION_LIFECYCLE_BUDGET,
+          modelTurns: DYNAMIC_DELEGATION_LIFECYCLE_BUDGET.modelTurns - 1,
+        }
+      : DYNAMIC_DELEGATION_LIFECYCLE_BUDGET,
     lineage: {
       tenantId,
       initiatingActorId: actorId,
@@ -844,7 +913,13 @@ function workerHarness(options: {
   };
 }
 
-function verifierGeneration() {
+function verifierGeneration(
+  overrides: Partial<ReturnType<typeof verifierGenerationBase>> = {},
+) {
+  return { ...verifierGenerationBase(), ...overrides };
+}
+
+function verifierGenerationBase() {
   return {
     text: JSON.stringify({
       passed: true,
