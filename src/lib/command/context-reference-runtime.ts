@@ -269,6 +269,13 @@ export async function resolveCommandContextReferences(input: {
             connected: integration.connected,
             permissionMode: integration.permissions.mode,
             granted: [...integration.permissions.granted].sort(),
+            ...(integration.account
+              ? {
+                  connectionId: integration.account.connectionId,
+                  accountPurpose: integration.account.purpose,
+                  accountEmail: integration.account.email,
+                }
+              : {}),
             updatedAt: integration.updatedAt,
           },
           context: {
@@ -280,6 +287,14 @@ export async function resolveCommandContextReferences(input: {
             granted: integration.permissions.granted.map((value) =>
               safeText(value, 160)
             ),
+            ...(integration.account
+              ? {
+                  connectionId: integration.account.connectionId,
+                  accountLabel: safeText(integration.account.label, 80),
+                  accountPurpose: integration.account.purpose,
+                  accountEmail: integration.account.email,
+                }
+              : {}),
             use: "Connection inventory context only. Actual operations still require an independently governed tool contract.",
           },
         });

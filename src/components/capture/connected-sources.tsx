@@ -47,6 +47,9 @@ export type OAuthGrantItem = {
   lastSyncedAt?: string;
   syncedItems?: number;
   manageable?: boolean;
+  accountEmail?: string;
+  connectionLabel?: string;
+  connectionPurpose?: "personal" | "work";
 };
 
 type Props = {
@@ -105,7 +108,17 @@ export function ConnectedSources({
   onJob,
 }: Props) {
   const provider = providers.find((item) => item.id === "google");
-  const grant = grants.find((item) => item.provider === "google" && item.status !== "revoked");
+  const googleGrants = useMemo(
+    () => grants.filter(
+      (item) => item.provider === "google" && item.status !== "revoked" && item.id,
+    ),
+    [grants],
+  );
+  const [selectedConnectionId, setSelectedConnectionId] = useState(
+    () => googleGrants.find((item) => item.manageable)?.id || googleGrants[0]?.id || "",
+  );
+  const grant = googleGrants.find((item) => item.id === selectedConnectionId) ||
+    googleGrants[0];
   const connected = Boolean(grant);
   const actionDisabledReason = requestReadContract !== "readable_v1"
     ? "Connection ownership could not be verified. Refresh before changing this source."
@@ -119,6 +132,13 @@ export function ConnectedSources({
   const photoSessionRef = useRef<ClientGooglePhotosPickerSession | undefined>(undefined);
   const mountedRef = useRef(false);
   const [photoImportContinuation, setPhotoImportContinuation] = useState(false);
+
+  useEffect(() => {
+    if (grant?.id === selectedConnectionId) return;
+    setSelectedConnectionId(
+      googleGrants.find((item) => item.manageable)?.id || googleGrants[0]?.id || "",
+    );
+  }, [googleGrants, grant?.id, selectedConnectionId]);
 
   const sourceAccess = useMemo(
     () => googleSourceAccess(grant?.scopes || []),
@@ -302,7 +322,10 @@ export function ConnectedSources({
     setAction("sync");
     setMessage(undefined);
     try {
-      const response = await fetch("/api/oauth/google/sync", { method: "POST" });
+      const response = await fetch(
+        `/api/oauth/google/sync?connectionId=${encodeURIComponent(requiredConnectionId(grant))}`,
+        { method: "POST" },
+      );
       const payload = (await response.json().catch(() => ({}))) as {
         imported?: number;
         removed?: number;
@@ -328,7 +351,10 @@ export function ConnectedSources({
     setMessage(undefined);
     try {
       await closeActivePhotoSession();
-      const response = await fetch("/api/oauth/google", { method: "DELETE" });
+      const response = await fetch(
+        `/api/oauth/google?connectionId=${encodeURIComponent(requiredConnectionId(grant))}`,
+        { method: "DELETE" },
+      );
       const payload = (await response.json().catch(() => ({}))) as {
         error?: string;
         providerRevocation?: "revoked" | "not_needed" | "failed";
@@ -357,8 +383,14 @@ export function ConnectedSources({
     try {
       if (id === "photos") await closeActivePhotoSession();
       const response = id === "photos"
-        ? await fetch("/api/oauth/google/photos", { method: "DELETE" })
-        : await fetch(`/api/knowledge?source=${encodeURIComponent(prefix)}`, { method: "DELETE" });
+        ? await fetch(
+            `/api/oauth/google/photos?connectionId=${encodeURIComponent(requiredConnectionId(grant))}`,
+            { method: "DELETE" },
+          )
+        : await fetch(
+            `/api/knowledge?source=${encodeURIComponent(googleSourcePrefix(grant, prefix))}`,
+            { method: "DELETE" },
+          );
       const payload = (await response.json().catch(() => ({}))) as {
         deleted?: { documents?: number; memories?: number };
         error?: string;
@@ -386,7 +418,10 @@ export function ConnectedSources({
       const response = await fetch("/api/oauth/google/photos/sessions", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ maxItemCount: 12 }),
+        body: JSON.stringify({
+          maxItemCount: 12,
+          connectionId: requiredConnectionId(grant),
+        }),
       });
       const payload = (await response.json().catch(() => ({}))) as {
         session?: GooglePhotosPickerSession;
@@ -517,9 +552,9 @@ export function ConnectedSources({
 
   const busy = Boolean(action) || loading;
   const connectUrl = addReturnTo(provider?.authorizeUrl || "/api/oauth/google/authorize");
-  const repairUrl = addReturnTo(
+  const repairUrl = googleAccountAuthorizeUrl(
     provider?.authorizeUrl || "/api/oauth/google/authorize",
-    "repair",
+    grant,
   );
 
   return (
@@ -532,6 +567,27 @@ export function ConnectedSources({
           {grant ? <p className={clsx("mt-2 text-xs font-semibold", grant.syncStatus === "error" ? "text-danger" : "text-muted")}>{grant.syncStatus === "error" ? grant.syncError || "The last Google sync needs attention." : grant.lastSyncedAt ? `Last synced ${formatSourceTime(grant.lastSyncedAt)} · ${grant.syncedItems || 0} items imported` : "Connected · waiting for the first sync"}</p> : null}
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          {googleGrants.length > 1 ? (
+            <label className="grid gap-1 text-xs font-semibold text-muted">
+              Google account
+              <select
+                value={grant?.id || ""}
+                onChange={(event) => {
+                  void closeActivePhotoSession().catch(() => undefined);
+                  setSelectedConnectionId(event.target.value);
+                  setConfirming(undefined);
+                }}
+                className="min-h-10 rounded-md border border-line bg-background px-3 text-sm text-foreground"
+              >
+                {googleGrants.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.connectionLabel || (item.connectionPurpose === "work" ? "Work" : "Personal")}
+                    {item.accountEmail ? ` · ${item.accountEmail}` : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
           {connected && !actionDisabledReason ? (
             <>
               <button type="button" onClick={() => void syncGoogle()} disabled={busy} className="primary-button">
@@ -639,6 +695,32 @@ function addReturnTo(url: string, intent?: "repair") {
   const params = new URLSearchParams({ returnTo: "/app/capture" });
   if (intent) params.set("intent", intent);
   return `${url}${separator}${params.toString()}`;
+}
+
+function googleAccountAuthorizeUrl(
+  url: string,
+  grant: OAuthGrantItem | undefined,
+) {
+  const params = new URLSearchParams({
+    returnTo: "/app/capture",
+    intent: "repair",
+    account: grant?.connectionPurpose || "personal",
+  });
+  if (grant?.id) params.set("connectionId", grant.id);
+  return `${url}${url.includes("?") ? "&" : "?"}${params.toString()}`;
+}
+
+function requiredConnectionId(grant: OAuthGrantItem | undefined) {
+  const connectionId = grant?.id?.trim();
+  if (!connectionId) throw new Error("Choose the Google account to use.");
+  return connectionId;
+}
+
+function googleSourcePrefix(grant: OAuthGrantItem | undefined, prefix: string) {
+  if (grant?.connectionPurpose !== "work") return prefix;
+  const connectionId = requiredConnectionId(grant);
+  const source = prefix.replace(/^google:/, "");
+  return `google:work:${connectionId}:${source}`;
 }
 
 function sourceLabel(id: string) {

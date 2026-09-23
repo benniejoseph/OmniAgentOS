@@ -84,6 +84,7 @@ export const meetingCommitmentProposeServiceInputSchema =
   }).strict();
 
 const commitmentCommunicationSchema = z.object({
+  connectionId: z.string().uuid().optional(),
   policyId: z.string().regex(/^contact_policy:[0-9a-f-]{36}$/),
   recipientParticipantId: z.string().trim().min(1).max(240),
   subject: z.string().trim().min(1).max(998).refine((value) => !/[\r\n]/.test(value)),
@@ -525,6 +526,7 @@ async function createCommitmentDraft(
   const result = await createCommunicationDraftService(
     childCaller(caller, idempotencyKey, meeting.projectId!, "meeting.commitment.draft"),
     {
+      connectionId: communication.connectionId,
       policyId: policy.id,
       purpose: "follow_up",
       disclosure: "relationship_context",
@@ -713,6 +715,8 @@ async function assertResolutionReplay(
     });
     if (
       !draft ||
+      (value.communication.connectionId &&
+        draft.googleConnectionId !== value.communication.connectionId) ||
       draft.policyId !== value.communication.policyId ||
       draft.subject !== value.communication.subject ||
       draft.body !== value.communication.body

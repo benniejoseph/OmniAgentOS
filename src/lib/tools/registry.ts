@@ -17,6 +17,7 @@ export const governedTools: ToolDefinition[] = [
     reversible: true,
     inputSchema: {
       ...objectSchema({
+        connectionId: googleConnectionId(),
         calendarId: { type: "string", minLength: 1, maxLength: 500, default: "primary" },
         summary: { type: "string", minLength: 1, maxLength: 1_000 },
         description: { type: "string", maxLength: 8_000 },
@@ -26,7 +27,7 @@ export const governedTools: ToolDefinition[] = [
         timeZone: { type: "string", minLength: 1, maxLength: 100 },
         attendees: { type: "array", maxItems: 50, items: { type: "string", format: "email" } },
       }),
-      required: ["summary", "start", "end"],
+      required: ["connectionId", "summary", "start", "end"],
     },
   },
   {
@@ -42,6 +43,7 @@ export const governedTools: ToolDefinition[] = [
     reversible: false,
     inputSchema: {
       ...objectSchema({
+        connectionId: googleConnectionId(),
         calendarId: { type: "string", minLength: 1, maxLength: 500, default: "primary" },
         eventId: googleCalendarEventId(),
         summary: { type: "string", minLength: 1, maxLength: 1_000 },
@@ -52,7 +54,7 @@ export const governedTools: ToolDefinition[] = [
         timeZone: { type: "string", minLength: 1, maxLength: 100 },
         attendees: { type: "array", maxItems: 50, items: { type: "string", format: "email" } },
       }),
-      required: ["eventId"],
+      required: ["connectionId", "eventId"],
     },
   },
   {
@@ -68,10 +70,11 @@ export const governedTools: ToolDefinition[] = [
     reversible: false,
     inputSchema: {
       ...objectSchema({
+        connectionId: googleConnectionId(),
         calendarId: { type: "string", minLength: 1, maxLength: 500, default: "primary" },
         eventId: googleCalendarEventId(),
       }),
-      required: ["eventId"],
+      required: ["connectionId", "eventId"],
     },
   },
   {
@@ -87,6 +90,7 @@ export const governedTools: ToolDefinition[] = [
     reversible: true,
     inputSchema: {
       ...objectSchema({
+        connectionId: googleConnectionId(false),
         query: {
           type: "string",
           description: "Bounded Gmail search query.",
@@ -111,7 +115,10 @@ export const governedTools: ToolDefinition[] = [
     operationClass: "read_only",
     reversible: true,
     inputSchema: {
-      ...objectSchema({ messageId: googleResourceId("Exact Gmail message ID.") }),
+      ...objectSchema({
+        connectionId: googleConnectionId(false),
+        messageId: googleResourceId("Exact Gmail message ID."),
+      }),
       required: ["messageId"],
     },
   },
@@ -127,8 +134,11 @@ export const governedTools: ToolDefinition[] = [
     operationClass: "mutation",
     reversible: true,
     inputSchema: {
-      ...objectSchema({ messageId: googleResourceId("Exact Gmail message ID.") }),
-      required: ["messageId"],
+      ...objectSchema({
+        connectionId: googleConnectionId(),
+        messageId: googleResourceId("Exact Gmail message ID."),
+      }),
+      required: ["connectionId", "messageId"],
     },
   },
   {
@@ -143,6 +153,7 @@ export const governedTools: ToolDefinition[] = [
     operationClass: "read_only",
     reversible: true,
     inputSchema: objectSchema({
+      connectionId: googleConnectionId(false),
       query: {
         type: "string",
         description: "Optional plain-text name or content search. Omit to list recently modified files.",
@@ -166,6 +177,7 @@ export const governedTools: ToolDefinition[] = [
     reversible: true,
     inputSchema: {
       ...objectSchema({
+        connectionId: googleConnectionId(false),
         fileId: googleResourceId("Exact Google Drive file ID."),
         maxBytes: { type: "integer", minimum: 1, maximum: 250_000, default: 64_000 },
       }),
@@ -243,7 +255,10 @@ export const governedTools: ToolDefinition[] = [
     operationClass: "read_only",
     reversible: true,
     inputSchema: {
-      ...objectSchema({ documentId: googleResourceId("Exact Google document ID.") }),
+      ...objectSchema({
+        connectionId: googleConnectionId(false),
+        documentId: googleResourceId("Exact Google document ID."),
+      }),
       required: ["documentId"],
     },
   },
@@ -283,6 +298,7 @@ export const governedTools: ToolDefinition[] = [
     reversible: true,
     inputSchema: {
       ...objectSchema({
+        connectionId: googleConnectionId(false),
         spreadsheetId: googleResourceId("Exact Google spreadsheet ID."),
         range: googleSheetRange(),
       }),
@@ -302,12 +318,13 @@ export const governedTools: ToolDefinition[] = [
     reversible: false,
     inputSchema: {
       ...objectSchema({
+        connectionId: googleConnectionId(),
         spreadsheetId: googleResourceId("Exact Google spreadsheet ID."),
         range: googleSheetRange(),
         values: googleSheetValuesSchema(),
         expectedCurrentSha256: sha256Schema("Digest returned by google.sheets.read."),
       }),
-      required: ["spreadsheetId", "range", "values", "expectedCurrentSha256"],
+      required: ["connectionId", "spreadsheetId", "range", "values", "expectedCurrentSha256"],
     },
   },
   googleMutationTool({
@@ -350,7 +367,10 @@ export const governedTools: ToolDefinition[] = [
     operationClass: "read_only",
     reversible: true,
     inputSchema: {
-      ...objectSchema({ presentationId: googleResourceId("Exact Google presentation ID.") }),
+      ...objectSchema({
+        connectionId: googleConnectionId(false),
+        presentationId: googleResourceId("Exact Google presentation ID."),
+      }),
       required: ["presentationId"],
     },
   },
@@ -367,12 +387,13 @@ export const governedTools: ToolDefinition[] = [
     reversible: false,
     inputSchema: {
       ...objectSchema({
+        connectionId: googleConnectionId(),
         presentationId: googleResourceId("Exact Google presentation ID."),
         objectId: googleResourceId("Exact Google Slides page-element ID."),
         text: { type: "string", maxLength: 200_000 },
         expectedCurrentSha256: sha256Schema("Digest of the exact object text returned by google.slides.read."),
       }),
-      required: ["presentationId", "objectId", "text", "expectedCurrentSha256"],
+      required: ["connectionId", "presentationId", "objectId", "text", "expectedCurrentSha256"],
     },
   },
   {
@@ -1358,6 +1379,18 @@ function googleResourceId(description: string) {
   };
 }
 
+function googleConnectionId(required = true) {
+  return {
+    type: "string",
+    description: required
+      ? "Exact Google connection ID. Use the selected @ connection or the ID returned by the integration overview."
+      : "Optional exact Google connection ID. It is required when more than one Google account is connected.",
+    format: "uuid",
+    minLength: 36,
+    maxLength: 36,
+  };
+}
+
 function googleCalendarEventId() {
   return {
     type: "string",
@@ -1430,8 +1463,8 @@ function googleMutationTool(input: {
     operationClass: "mutation",
     reversible: input.reversible ?? true,
     inputSchema: {
-      ...objectSchema(input.properties),
-      required: input.required,
+      ...objectSchema({ connectionId: googleConnectionId(), ...input.properties }),
+      required: ["connectionId", ...input.required],
       ...(input.constraints || {}),
     },
   };

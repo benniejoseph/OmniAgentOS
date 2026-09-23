@@ -1008,5 +1008,15 @@
     "version": 202,
     "name": "delegation_execution_rls_composition_repair_v1",
     "checksum": "3d6b28bd2fdb00cc57360506baea3ef120a4ae13e0050be57ba6d266310a3d63"
+  },
+  {
+    "version": 203,
+    "name": "agent_daily_learning_v1",
+    "checksum": "88fa0dd240ba1920d2bb66395bb2b268dc98bd682282fbe3633d1df4b1d01f96"
+  },
+  {
+    "version": 204,
+    "name": "google_multi_account_connections_v1",
+    "checksum": "8c7ae456bdbcc92f00adb2f24728cf03dc2b082cae7880e0f87ce71d15314cd8"
   }
 ]

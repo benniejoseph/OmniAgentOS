@@ -65,6 +65,7 @@ import {
 import { processDueMoltbookHeartbeats } from "@/lib/moltbook/store";
 import { processDueMoltbookAutonomyCycles } from "@/lib/moltbook/autonomy-runner";
 import { processProactiveAgentAdaptationProposalsForTenant } from "@/lib/agents/adaptation-proposals";
+import { processDailyAgentLearningCyclesForTenant } from "@/lib/agents/learning-service";
 
 export const runtime = "nodejs";
 // Workflow steps run gpt-5 planning/execution that can exceed 60s; 300s is the
@@ -451,6 +452,12 @@ async function POSTHandler(request: Request) {
         limit: parsed.data.limit || 5,
       }),
     ]);
+    const dailyAgentLearning = await processDailyAgentLearningSafely({
+      tenantId: context.tenantId,
+      executingPrincipalId: context.actorId,
+      executingPrincipalType: "user",
+      abortSignal: request.signal,
+    });
     const dailyBriefs = await processDueDailyBriefs({
       tenantId: context.tenantId,
       limit: 3,
@@ -544,6 +551,9 @@ async function POSTHandler(request: Request) {
         mobilePushProcessed: mobilePush.processed,
         domainNotificationsQueued: domainNotifications.queued,
         mobilePushProviderAccepted: mobilePush.providerAccepted,
+        agentLearningCyclesCompleted: dailyAgentLearning.completed,
+        agentLearningNoOpCycles: dailyAgentLearning.noOpCompletions,
+        agentLearningFailures: dailyAgentLearning.failed,
       },
     });
     return Response.json({
@@ -553,6 +563,7 @@ async function POSTHandler(request: Request) {
       durableSpecialists,
       backgroundJobs,
       recoveredToolClaims,
+      dailyAgentLearning,
       dailyBriefs,
       personalNotifications,
       domainNotifications,
@@ -653,6 +664,18 @@ function summarizeScheduledOutcome(
     ),
     moltbookAutonomyCyclesProcessed: scheduled.maintenance.reduce(
       (total, item) => total + item.moltbookAutonomyCyclesProcessed,
+      0,
+    ),
+    agentLearningCyclesCompleted: scheduled.maintenance.reduce(
+      (total, item) => total + item.dailyAgentLearning.completed,
+      0,
+    ),
+    agentLearningNoOpCycles: scheduled.maintenance.reduce(
+      (total, item) => total + item.dailyAgentLearning.noOpCompletions,
+      0,
+    ),
+    agentLearningFailures: scheduled.maintenance.reduce(
+      (total, item) => total + item.dailyAgentLearning.failed,
       0,
     ),
     adaptationProposalsProcessed: scheduled.maintenance.reduce(
@@ -837,6 +860,9 @@ async function runAllTenantScheduledWork({
     salesforceConnectionsSynced: number;
     moltbookHeartbeatsProcessed: number;
     moltbookAutonomyCyclesProcessed: number;
+    dailyAgentLearning: Awaited<
+      ReturnType<typeof processDailyAgentLearningCyclesForTenant>
+    >;
     adaptationProposalsProcessed: number;
     adaptationProposalsCreated: number;
     externalDelegationsTerminated: number;
@@ -972,6 +998,9 @@ async function runTenantMaintenance({
     salesforceConnectionsSynced: number;
     moltbookHeartbeatsProcessed: number;
     moltbookAutonomyCyclesProcessed: number;
+    dailyAgentLearning: Awaited<
+      ReturnType<typeof processDailyAgentLearningCyclesForTenant>
+    >;
     adaptationProposalsProcessed: number;
     adaptationProposalsCreated: number;
     externalDelegationsTerminated: number;
@@ -997,6 +1026,7 @@ async function runTenantMaintenance({
     salesforceConnectionsSynced: 0,
     moltbookHeartbeatsProcessed: 0,
     moltbookAutonomyCyclesProcessed: 0,
+    dailyAgentLearning: emptyDailyAgentLearningSummary(),
     adaptationProposalsProcessed: 0,
     adaptationProposalsCreated: 0,
     externalDelegationsTerminated: 0,
@@ -1028,6 +1058,16 @@ async function runTenantMaintenance({
   if (Date.now() < deadlineAt) {
     const a2a = await reconcileAbandonedExternalA2ATasks({ tenantId, limit: 5 });
     result.externalDelegationsTerminated = a2a.expired + a2a.canceled;
+  }
+  if (Date.now() < deadlineAt) {
+    result.dailyAgentLearning = await processDailyAgentLearningSafely({
+      tenantId,
+      executingPrincipalId: actorId,
+      executingPrincipalType: "system",
+      abortSignal: AbortSignal.timeout(
+        Math.max(1, deadlineAt - Date.now()),
+      ),
+    });
   }
   // Give a due autonomy cycle its full bounded model window before connector
   // synchronization can consume the maintenance deadline. Recovery stays
@@ -1157,6 +1197,7 @@ function failedTenantMaintenance(
     salesforceConnectionsSynced: 0,
     moltbookHeartbeatsProcessed: 0,
     moltbookAutonomyCyclesProcessed: 0,
+    dailyAgentLearning: emptyDailyAgentLearningSummary(),
     adaptationProposalsProcessed: 0,
     adaptationProposalsCreated: 0,
     externalDelegationsTerminated: 0,
@@ -1171,6 +1212,49 @@ function safeTenantMaintenanceError(error: unknown) {
     ? error.message
     : "Tenant maintenance failed.";
   return String(redactSensitive(message)).slice(0, 500);
+}
+
+async function processDailyAgentLearningSafely(input: {
+  tenantId: string;
+  executingPrincipalId: string;
+  executingPrincipalType: "user" | "system";
+  abortSignal?: AbortSignal;
+}): Promise<Awaited<ReturnType<typeof processDailyAgentLearningCyclesForTenant>>> {
+  try {
+    return await processDailyAgentLearningCyclesForTenant(input);
+  } catch {
+    console.error(JSON.stringify({
+      level: "error",
+      msg: "agent_daily_learning_tenant_cycle_failed",
+      tenantId: input.tenantId,
+    }));
+    return {
+      ...emptyDailyAgentLearningSummary(),
+      available: true,
+      failed: 1,
+    };
+  }
+}
+
+function emptyDailyAgentLearningSummary(): Awaited<
+  ReturnType<typeof processDailyAgentLearningCyclesForTenant>
+> {
+  return {
+    available: hasDatabaseUrl(),
+    targets: 0,
+    completed: 0,
+    duplicates: 0,
+    noOpCompletions: 0,
+    actionableCycles: 0,
+    observationsRecorded: 0,
+    actionableEvidenceCount: 0,
+    failed: 0,
+    modelInvocations: 0,
+    behaviorChanges: 0,
+    authorityChanges: 0,
+    adaptationActivations: 0,
+    results: [],
+  };
 }
 
 function emptyLoopV2RecoverySummary(): Awaited<

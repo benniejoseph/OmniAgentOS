@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { getActiveGoogleWorkspaceAccess } from "@/lib/connectors/google-workspace-access";
 import type { GoogleWorkspaceCapability } from "@/lib/connectors/google-workspace-capabilities";
+import type { OAuthGrant } from "@/lib/connectors/oauth-store";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
 const MAX_PROVIDER_JSON_BYTES = 1_000_000;
@@ -37,6 +38,7 @@ const mimeTypeSchema = z.string().trim().min(3).max(127)
     message: "Use the Docs, Sheets, or Slides tool for native Google Workspace files.",
   });
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
+const googleConnectionIdSchema = z.string().uuid();
 const boundedTextSchema = z.string().max(MAX_TEXT_CHARS);
 const createTextSchema = z.string().min(1).max(MAX_CREATE_TEXT_CHARS)
   .refine((value) => value.trim().length > 0, {
@@ -69,6 +71,7 @@ const documentBlockSchema = z.discriminatedUnion("type", [
   }).strict(),
 ]);
 const documentCreateSchema = z.object({
+  connectionId: googleConnectionIdSchema,
   title: resourceNameSchema,
   bodyText: createTextSchema.optional(),
   blocks: z.array(documentBlockSchema).min(1).max(100).optional(),
@@ -105,6 +108,7 @@ const slideLineTextSchema = slideTextSchema.refine((value) => !value.includes("\
   message: "Slide title and bullet text must stay on one line.",
 });
 const slideCreateSchema = z.object({
+  connectionId: googleConnectionIdSchema,
   title: resourceNameSchema,
   slides: z.array(z.object({
     title: slideLineTextSchema.max(240),
@@ -169,75 +173,103 @@ const sheetValuesSchema = z.array(
 
 export const googleWorkspaceActionSchemas = Object.freeze({
   "google.gmail.search": z.object({
+    connectionId: googleConnectionIdSchema.optional(),
     query: z.string().trim().min(1).max(500)
       .refine((value) => !/[\u0000-\u001f\u007f]/.test(value), "Gmail query contains unsupported characters."),
     maxResults: z.number().int().min(1).max(10).default(5),
   }).strict(),
-  "google.gmail.read": z.object({ messageId: providerIdSchema }).strict(),
-  "google.gmail.trash": z.object({ messageId: providerIdSchema }).strict(),
+  "google.gmail.read": z.object({
+    connectionId: googleConnectionIdSchema.optional(),
+    messageId: providerIdSchema,
+  }).strict(),
+  "google.gmail.trash": z.object({
+    connectionId: googleConnectionIdSchema,
+    messageId: providerIdSchema,
+  }).strict(),
   "google.drive.search": z.object({
+    connectionId: googleConnectionIdSchema.optional(),
     query: z.string().trim().min(1).max(200)
       .refine((value) => !/[\u0000-\u001f\u007f]/.test(value), "Drive search contains unsupported characters.")
       .optional(),
     maxResults: z.number().int().min(1).max(20).default(10),
   }).strict(),
   "google.drive.download": z.object({
+    connectionId: googleConnectionIdSchema.optional(),
     fileId: providerIdSchema,
     maxBytes: z.number().int().min(1).max(MAX_DOWNLOAD_PREVIEW_BYTES).default(64_000),
   }).strict(),
   "google.drive.create": z.object({
+    connectionId: googleConnectionIdSchema,
     name: resourceNameSchema,
     mimeType: mimeTypeSchema,
     contentBase64: base64ContentSchema,
     parentId: providerIdSchema.optional(),
   }).strict(),
   "google.drive.update": z.object({
+    connectionId: googleConnectionIdSchema,
     fileId: providerIdSchema,
     mimeType: mimeTypeSchema,
     contentBase64: base64ContentSchema,
     expectedCurrentSha256: sha256Schema,
   }).strict(),
   "google.drive.move": z.object({
+    connectionId: googleConnectionIdSchema,
     fileId: providerIdSchema,
     parentId: providerIdSchema,
   }).strict(),
   "google.drive.rename": z.object({
+    connectionId: googleConnectionIdSchema,
     fileId: providerIdSchema,
     name: resourceNameSchema,
   }).strict(),
-  "google.drive.trash": z.object({ fileId: providerIdSchema }).strict(),
+  "google.drive.trash": z.object({
+    connectionId: googleConnectionIdSchema,
+    fileId: providerIdSchema,
+  }).strict(),
   "google.docs.create": documentCreateSchema,
-  "google.docs.read": z.object({ documentId: providerIdSchema }).strict(),
+  "google.docs.read": z.object({
+    connectionId: googleConnectionIdSchema.optional(),
+    documentId: providerIdSchema,
+  }).strict(),
   "google.docs.update": z.object({
+    connectionId: googleConnectionIdSchema,
     documentId: providerIdSchema,
     text: boundedTextSchema,
     expectedCurrentSha256: sha256Schema,
     expectedStructureSha256: sha256Schema,
   }).strict(),
   "google.sheets.create": z.object({
+    connectionId: googleConnectionIdSchema,
     title: resourceNameSchema,
     sheetName: sheetNameSchema,
     values: sheetValuesSchema,
   }).strict(),
   "google.sheets.read": z.object({
+    connectionId: googleConnectionIdSchema.optional(),
     spreadsheetId: providerIdSchema,
     range: a1RangeSchema,
   }).strict(),
   "google.sheets.update": z.object({
+    connectionId: googleConnectionIdSchema,
     spreadsheetId: providerIdSchema,
     range: a1RangeSchema,
     values: sheetValuesSchema,
     expectedCurrentSha256: sha256Schema,
   }).strict(),
   "google.slides.create": slideCreateSchema,
-  "google.slides.read": z.object({ presentationId: providerIdSchema }).strict(),
+  "google.slides.read": z.object({
+    connectionId: googleConnectionIdSchema.optional(),
+    presentationId: providerIdSchema,
+  }).strict(),
   "google.slides.update": z.object({
+    connectionId: googleConnectionIdSchema,
     presentationId: providerIdSchema,
     objectId: providerIdSchema,
     text: boundedTextSchema,
     expectedCurrentSha256: sha256Schema,
   }).strict(),
   "calendar.update": z.object({
+    connectionId: googleConnectionIdSchema,
     calendarId: calendarIdSchema.default("primary"),
     eventId: calendarEventIdSchema,
     summary: z.string().trim().min(1).max(1_000).optional(),
@@ -263,6 +295,7 @@ export const googleWorkspaceActionSchemas = Object.freeze({
     }
   }),
   "calendar.delete": z.object({
+    connectionId: googleConnectionIdSchema,
     calendarId: calendarIdSchema.default("primary"),
     eventId: calendarEventIdSchema,
   }).strict(),
@@ -310,6 +343,10 @@ export const googleWorkspaceEffectResultSchema = z.object({
   providerAcknowledgementId: z.string().min(1).max(160),
   providerAcknowledgementSha256: sha256Schema,
   observedTargetStateSha256: sha256Schema,
+  connectionId: googleConnectionIdSchema,
+  accountEmail: z.string().email().max(320).optional(),
+  connectionLabel: z.string().trim().min(1).max(80),
+  connectionPurpose: z.enum(["personal", "work"]),
   verificationState: z.literal("verified"),
   verificationReasonCode: z.literal("state_matched"),
   editorUrl: z.string().url().max(500)
@@ -326,8 +363,16 @@ type ActionOptions = Readonly<{
   abortSignal?: AbortSignal;
 }>;
 
+type GoogleConnectionProjection = Readonly<{
+  connectionId: string;
+  accountEmail?: string;
+  connectionLabel: string;
+  connectionPurpose: "personal" | "work";
+}>;
+
 type EffectActionOptions = ActionOptions & Readonly<{
   effectInput: Record<string, unknown>;
+  connection: GoogleConnectionProjection;
 }>;
 
 type EffectTarget = Readonly<{
@@ -413,12 +458,19 @@ export async function executeGoogleWorkspaceAction(
   const access = await getActiveGoogleWorkspaceAccess({
     tenantId: requiredOwner(options.tenantId, "tenant"),
     actorId: requiredOwner(options.actorId, "actor"),
+    connectionId: optionalConnectionId(input.connectionId),
     capability: capabilityForTool(toolId),
   });
+  const connection = googleConnectionProjection(access.grant);
   const provider = { accessToken: access.accessToken, abortSignal: options.abortSignal };
-  const effectOptions: EffectActionOptions = { ...options, effectInput: input };
+  const effectOptions: EffectActionOptions = {
+    ...options,
+    effectInput: input,
+    connection,
+  };
 
-  switch (toolId) {
+  const result = await (async () => {
+    switch (toolId) {
     case "google.gmail.search":
       return searchGmailMessages(input, provider);
     case "google.gmail.read":
@@ -460,8 +512,12 @@ export async function executeGoogleWorkspaceAction(
     case "calendar.update":
       return updateCalendarEvent(input, effectOptions, provider);
     case "calendar.delete":
-      return deleteCalendarEvent(input, effectOptions, provider);
-  }
+        return deleteCalendarEvent(input, effectOptions, provider);
+    }
+  })();
+  return isGoogleWorkspaceMutationToolId(toolId)
+    ? result
+    : withGoogleConnection(result, connection);
 }
 
 export async function reconcileGoogleWorkspaceMutation(
@@ -473,10 +529,15 @@ export async function reconcileGoogleWorkspaceMutation(
   const access = await getActiveGoogleWorkspaceAccess({
     tenantId: requiredOwner(options.tenantId, "tenant"),
     actorId: requiredOwner(options.actorId, "actor"),
+    connectionId: optionalConnectionId(input.connectionId),
     capability: capabilityForTool(toolId),
   });
   const provider = { accessToken: access.accessToken, abortSignal: options.abortSignal };
-  const effectOptions: EffectActionOptions = { ...options, effectInput: input };
+  const effectOptions: EffectActionOptions = {
+    ...options,
+    effectInput: input,
+    connection: googleConnectionProjection(access.grant),
+  };
   const acknowledgement = "provider_idempotency_reconciliation" as const;
   switch (toolId) {
     case "google.gmail.trash": {
@@ -616,12 +677,17 @@ export async function resumeGoogleWorkspaceCreation(
   const access = await getActiveGoogleWorkspaceAccess({
     tenantId: requiredOwner(options.tenantId, "tenant"),
     actorId: requiredOwner(options.actorId, "actor"),
+    connectionId: optionalConnectionId(input.connectionId),
     capability: capabilityForTool(toolId),
   });
   const provider = { accessToken: access.accessToken, abortSignal: options.abortSignal };
   const file = await findDriveFileByExecution(options.executionId, provider);
   if (!file) return undefined;
-  const effectOptions: EffectActionOptions = { ...options, effectInput: input };
+  const effectOptions: EffectActionOptions = {
+    ...options,
+    effectInput: input,
+    connection: googleConnectionProjection(access.grant),
+  };
   const resourceId = requiredProviderId(file.id);
   let resumeResult: CreationResumeResult;
   let resourceType: "google_document" | "google_spreadsheet" | "google_presentation";
@@ -671,6 +737,7 @@ function effectIdentity(
   const resourceId = resourceIdFor(toolId, input, executionId);
   return {
     provider: "google_workspace",
+    connectionId: String(input.connectionId),
     toolId,
     resourceType: resourceTypeFor(toolId),
     resourceIdSha256: toolId.startsWith("calendar.")
@@ -3013,6 +3080,7 @@ function verifiedEffect(
   const resourceIdSha256 = sha256(resourceId);
   const providerAcknowledgementSha256 = canonicalJsonSha256({
     provider: "google_workspace",
+    connectionId: options.connection.connectionId,
     toolId,
     resourceType,
     resourceIdSha256,
@@ -3028,6 +3096,7 @@ function verifiedEffect(
     providerAcknowledgementId: `google_workspace_ack_${providerAcknowledgementSha256.slice(0, 43)}`,
     providerAcknowledgementSha256,
     observedTargetStateSha256: observedStateSha256,
+    ...options.connection,
     verificationState: "verified",
     verificationReasonCode: "state_matched",
     ...(editorUrl ? { editorUrl } : {}),
@@ -3038,6 +3107,32 @@ type ProviderContext = Readonly<{
   accessToken: string;
   abortSignal?: AbortSignal;
 }>;
+
+function googleConnectionProjection(grant: OAuthGrant): GoogleConnectionProjection {
+  return Object.freeze({
+    connectionId: grant.id,
+    ...(grant.accountEmail ? { accountEmail: grant.accountEmail } : {}),
+    connectionLabel: grant.connectionLabel,
+    connectionPurpose: grant.connectionPurpose,
+  });
+}
+
+function optionalConnectionId(value: unknown) {
+  return typeof value === "string" && value ? value : undefined;
+}
+
+function withGoogleConnection(
+  result: unknown,
+  connection: GoogleConnectionProjection,
+) {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    throw new Error("Google Workspace returned an invalid governed result.");
+  }
+  return Object.freeze({
+    ...(result as Record<string, unknown>),
+    connection,
+  });
+}
 
 type ProviderRequest = ProviderContext & Readonly<{
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";

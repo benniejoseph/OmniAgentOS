@@ -10,6 +10,12 @@ export {
 export { GOOGLE_CALENDAR_EVENTS_SCOPE as GOOGLE_CALENDAR_WRITE_SCOPE } from "@/lib/connectors/google-workspace-capabilities";
 
 export type OAuthProvider = "google" | "salesforce";
+export type GoogleConnectionPurpose = "personal" | "work";
+export type GoogleConnectorAccountPolicy = Readonly<{
+  purpose: GoogleConnectionPurpose;
+  email: string;
+  label: string;
+}>;
 export type OAuthProviderFailureCode =
   | "token_exchange_failed"
   | "refresh_rejected"
@@ -68,6 +74,29 @@ export function oauthConfigured(provider: OAuthProvider) {
   );
 }
 
+export function googleConnectorAccountPolicy(
+  purpose: GoogleConnectionPurpose,
+): GoogleConnectorAccountPolicy {
+  const email = purpose === "personal"
+    ? googleOwnerEmail()
+    : (
+        process.env.OMNIAGENT_GOOGLE_WORK_EMAIL ||
+        "benniejoseph.richard@gmail.com"
+      ).trim().toLowerCase();
+  if (!isNormalizedEmail(email)) {
+    throw new Error(
+      purpose === "personal"
+        ? "The private Google account policy is not configured."
+        : "The work Google account policy is not configured.",
+    );
+  }
+  return {
+    purpose,
+    email,
+    label: purpose === "personal" ? "Personal" : "Work",
+  };
+}
+
 export function createOAuthAuthorization(
   provider: OAuthProvider,
   identity: {
@@ -76,6 +105,8 @@ export function createOAuthAuthorization(
     workspaceId?: string;
     returnTo?: string;
     authorizationIntent?: "connect" | "repair";
+    googleConnectionPurpose?: GoogleConnectionPurpose;
+    connectionId?: string;
   },
 ) {
   const config = oauthProviders[provider];
@@ -89,6 +120,9 @@ export function createOAuthAuthorization(
   }
   const verifier = randomBytes(48).toString("base64url");
   const challenge = createHash("sha256").update(verifier).digest("base64url");
+  const googleAccount = provider === "google"
+    ? googleConnectorAccountPolicy(identity.googleConnectionPurpose || "personal")
+    : undefined;
   const state = sealJsonPayload(
     {
       tenantId: identity.tenantId,
@@ -97,6 +131,8 @@ export function createOAuthAuthorization(
       provider,
       verifier,
       returnTo: normalizeOAuthReturnTo(identity.returnTo),
+      googleConnectionPurpose: googleAccount?.purpose || null,
+      connectionId: identity.connectionId || null,
       expiresAt: Date.now() + 10 * 60_000,
     },
     `oauth:${provider}`,
@@ -110,8 +146,11 @@ export function createOAuthAuthorization(
   if (provider === "google") {
     url.searchParams.set("access_type", "offline");
     url.searchParams.set("include_granted_scopes", "true");
+    url.searchParams.set("login_hint", googleAccount!.email);
     if (identity.authorizationIntent === "repair") {
       url.searchParams.set("prompt", "consent");
+    } else {
+      url.searchParams.set("prompt", "select_account");
     }
   }
   return url.toString();
@@ -128,6 +167,8 @@ export function openOAuthState(provider: OAuthProvider, encoded: string) {
       provider: string;
       verifier: string;
       returnTo?: string;
+      googleConnectionPurpose?: string | null;
+      connectionId?: string | null;
       expiresAt: number;
     };
     if (
@@ -139,6 +180,17 @@ export function openOAuthState(provider: OAuthProvider, encoded: string) {
           /^workspace:[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$/.test(state.workspaceId))) ||
       typeof state.verifier !== "string" ||
       !state.verifier ||
+      !(
+        state.googleConnectionPurpose === null ||
+        state.googleConnectionPurpose === undefined ||
+        state.googleConnectionPurpose === "personal" ||
+        state.googleConnectionPurpose === "work"
+      ) ||
+      !(
+        state.connectionId === null ||
+        state.connectionId === undefined ||
+        isOpaqueOAuthConnectionId(state.connectionId)
+      ) ||
       !Number.isFinite(state.expiresAt) ||
       state.expiresAt < Date.now()
     ) {
@@ -155,7 +207,12 @@ export function normalizeOAuthReturnTo(value?: string | null) {
   return oauthReturnPaths.has(candidate) ? candidate : "/app/connectors";
 }
 
-export async function exchangeOAuthCode(provider: OAuthProvider, code: string, verifier: string) {
+export async function exchangeOAuthCode(
+  provider: OAuthProvider,
+  code: string,
+  verifier: string,
+  options?: { googleConnectionPurpose?: GoogleConnectionPurpose },
+) {
   const config = oauthProviders[provider];
   const body = new URLSearchParams({ client_id: process.env[config.clientIdEnv] || "", client_secret: process.env[config.clientSecretEnv] || "", code, code_verifier: verifier, redirect_uri: `${getAppBaseUrl()}/api/oauth/${provider}/callback`, grant_type: "authorization_code" });
   let response: Response;
@@ -175,7 +232,10 @@ export async function exchangeOAuthCode(provider: OAuthProvider, code: string, v
     throw new Error("Salesforce returned an invalid instance authority.");
   }
   if (provider === "google") {
-    const identity = await validateGoogleOwner(result).catch(async (error) => {
+    const identity = await validateGoogleConnectorIdentity(
+      result,
+      options?.googleConnectionPurpose || "personal",
+    ).catch(async (error) => {
       await revokeOAuthAccess(
         "google",
         String(result.refresh_token || result.access_token || ""),
@@ -190,6 +250,7 @@ export async function exchangeOAuthCode(provider: OAuthProvider, code: string, v
         ? result.scope
         : config.scopes.join(" "),
       google_account_sub: identity.subject,
+      google_account_email: identity.email,
     };
   }
   return result;
@@ -269,13 +330,16 @@ export function isSalesforceInstanceUrl(value: unknown): value is string {
   }
 }
 
-async function validateGoogleOwner(tokens: Record<string, unknown>) {
+async function validateGoogleConnectorIdentity(
+  tokens: Record<string, unknown>,
+  purpose: GoogleConnectionPurpose,
+) {
   const idToken = typeof tokens.id_token === "string" ? tokens.id_token : "";
   const clientId = process.env.GOOGLE_OAUTH_CLIENT_ID?.trim() || "";
-  const expectedEmail = googleOwnerEmail();
+  const expectedEmail = googleConnectorAccountPolicy(purpose).email;
   if (!idToken || !clientId || !expectedEmail) {
     throw new OAuthProviderError(
-      "Google could not verify the private workspace owner.",
+      "Google could not verify the allowed private Workspace account.",
       "owner_verification_failed",
       true,
     );
@@ -313,6 +377,17 @@ async function validateGoogleOwner(tokens: Record<string, unknown>) {
     );
   }
   return { email, subject };
+}
+
+function isOpaqueOAuthConnectionId(value: unknown): value is string {
+  return typeof value === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value);
+}
+
+function isNormalizedEmail(value: string) {
+  return value.length >= 3 && value.length <= 320 &&
+    value === value.trim().toLowerCase() &&
+    /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
 function googleOwnerEmail() {

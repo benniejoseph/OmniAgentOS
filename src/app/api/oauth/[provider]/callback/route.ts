@@ -1,5 +1,6 @@
 import {
   exchangeOAuthCode,
+  googleConnectorAccountPolicy,
   isOAuthProvider,
   normalizeOAuthReturnTo,
   openOAuthState,
@@ -29,7 +30,15 @@ async function GETHandler(request: Request, context: { params: Promise<{ provide
   try {
     const state = openOAuthState(provider, stateValue);
     if (state.tenantId !== security.tenantId) throw new Error("OAuth tenant changed during authorization.");
-    const tokens = await exchangeOAuthCode(provider, code, state.verifier);
+    const googleConnectionPurpose = state.googleConnectionPurpose === "work"
+      ? "work" as const
+      : "personal" as const;
+    const tokens = await exchangeOAuthCode(
+      provider,
+      code,
+      state.verifier,
+      provider === "google" ? { googleConnectionPurpose } : undefined,
+    );
     if (provider === "salesforce") {
       const access = await resolveSalesforceRequestAccess(security, {
         workspaceId: state.workspaceId || undefined,
@@ -59,7 +68,17 @@ async function GETHandler(request: Request, context: { params: Promise<{ provide
       });
     } else {
       if (state.actorId !== security.actorId) throw new Error("OAuth identity changed during authorization.");
-      await saveOAuthGrant({ tenantId: security.tenantId, actorId: security.actorId, provider, tokens });
+      const accountPolicy = googleConnectorAccountPolicy(googleConnectionPurpose);
+      await saveOAuthGrant({
+        tenantId: security.tenantId,
+        actorId: security.actorId,
+        provider,
+        tokens,
+        connectionId: state.connectionId || undefined,
+        connectionPurpose: accountPolicy.purpose,
+        connectionLabel: accountPolicy.label,
+        accountEmail: accountPolicy.email,
+      });
     }
     return Response.redirect(oauthResultUrl(state.returnTo, "connected", provider), 302);
   } catch { return Response.redirect(oauthResultUrl(returnTo, "failed", provider), 302); }

@@ -1,5 +1,9 @@
 import { isOAuthProvider, revokeOAuthAccess } from "@/lib/connectors/oauth-providers";
-import { getOAuthGrantSecrets, revokeOAuthGrant } from "@/lib/connectors/oauth-store";
+import {
+  getOAuthGrantSecrets,
+  OAuthGrantReadConflictError,
+  revokeOAuthGrant,
+} from "@/lib/connectors/oauth-store";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { resolveSalesforceRequestAccess } from "@/lib/customer-success/salesforce-access";
@@ -30,20 +34,39 @@ async function DELETEHandler(request: Request, context: { params: Promise<{ prov
 
   let providerToken = "";
   let providerRevocation: "revoked" | "not_needed" | "failed" = "not_needed";
+  const connectionId = provider === "google"
+    ? new URL(request.url).searchParams.get("connectionId") || undefined
+    : undefined;
+  let secrets: Awaited<ReturnType<typeof getOAuthGrantSecrets>> = undefined;
   try {
-    const secrets = await getOAuthGrantSecrets(security.tenantId, grantActorId, provider);
+    secrets = await getOAuthGrantSecrets(
+      security.tenantId,
+      grantActorId,
+      provider,
+      connectionId ? { connectionId } : undefined,
+    );
     if (secrets) {
       providerToken = String(secrets.tokens.refresh_token || secrets.tokens.access_token || "");
     }
-  } catch {
+  } catch (error) {
+    if (error instanceof OAuthGrantReadConflictError) {
+      return Response.json(
+        { error: "Choose the exact Google account to disconnect." },
+        { status: 409, headers: { "cache-control": "private, no-store" } },
+      );
+    }
     providerRevocation = "failed";
   }
 
   try {
     // Seal the local grant before relying on a remote provider request. A slow or
     // unavailable provider must never leave the local connection active.
-    const secrets = await getOAuthGrantSecrets(security.tenantId, grantActorId, provider);
-    await revokeOAuthGrant(security.tenantId, grantActorId, provider);
+    await revokeOAuthGrant(
+      security.tenantId,
+      grantActorId,
+      provider,
+      connectionId ? { connectionId } : undefined,
+    );
     if (provider === "salesforce" && salesforceAccess && secrets) {
       await revokeSalesforceConnection({
         authority: salesforceAccess.mutationAuthority!,

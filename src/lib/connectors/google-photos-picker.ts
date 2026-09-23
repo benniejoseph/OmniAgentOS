@@ -9,7 +9,10 @@ import {
 import { deleteCaptureAssetWithKnowledge } from "@/lib/capture/deletion";
 import type { CaptureAsset } from "@/lib/capture/types";
 import { OAuthProviderError } from "@/lib/connectors/oauth-providers";
-import { OAuthCredentialError } from "@/lib/connectors/oauth-store";
+import {
+  OAuthCredentialError,
+  OAuthGrantReadConflictError,
+} from "@/lib/connectors/oauth-store";
 import { getActiveGoogleWorkspaceAccess } from "@/lib/connectors/google-workspace-access";
 import {
   BackgroundJobIdempotencyConflictError,
@@ -42,12 +45,23 @@ const GOOGLE_PHOTOS_DELETE_BATCH_LIMIT = 100;
 const GOOGLE_PHOTOS_LEGACY_JOB_SCAN_LIMIT = 5_001;
 const GOOGLE_PHOTOS_LEGACY_JOB_SAFE_LIMIT = 5_000;
 
-type PickerIdentity = { tenantId: string; actorId: string };
-type TransferBudget = { remainingBytes: number; exhausted: boolean };
-type PickerHandlePayload = {
-  version: 1;
+type PickerIdentity = {
   tenantId: string;
   actorId: string;
+  connectionId?: string;
+};
+type BoundPickerIdentity = PickerIdentity & {
+  connectionId: string;
+  connectionPurpose: "personal" | "work";
+  connectionLabel: string;
+  accountEmail?: string;
+};
+type TransferBudget = { remainingBytes: number; exhausted: boolean };
+type PickerHandlePayload = {
+  version: 1 | 2;
+  tenantId: string;
+  actorId: string;
+  connectionId?: string;
   sessionId: string;
   issuedAt: number;
   expiresAt: number;
@@ -86,6 +100,10 @@ export type GooglePhotosPickerSession = {
   mediaItemsSet: boolean;
   pollAfterMs: number;
   timeoutAfterMs: number;
+  connectionId: string;
+  accountEmail?: string;
+  connectionLabel: string;
+  connectionPurpose: "personal" | "work";
 };
 
 export class GooglePhotosPickerError extends Error {
@@ -118,10 +136,11 @@ export async function createGooglePhotosPickerSession(
   maxItemCount: number,
   signal?: AbortSignal,
 ): Promise<GooglePhotosPickerSession> {
-  const accessToken = await googlePhotosAccessToken(identity);
+  const access = await googlePhotosAccess(identity);
+  const boundIdentity = boundPickerIdentity(identity, access.grant);
   const response = await providerJson(
     `${PICKER_API}/sessions?requestId=${encodeURIComponent(randomUUID())}`,
-    accessToken,
+    access.accessToken,
     {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -131,8 +150,8 @@ export async function createGooglePhotosPickerSession(
   );
   const session = parsePickingSession(response);
   const expiresAt = boundedSessionExpiry(session.expireTime);
-  const handle = sealSessionHandle(identity, session.id, expiresAt);
-  return publicSession(session, handle, expiresAt);
+  const handle = sealSessionHandle(boundIdentity, session.id, expiresAt);
+  return publicSession(session, handle, expiresAt, boundIdentity);
 }
 
 export async function getGooglePhotosPickerSession(
@@ -141,10 +160,14 @@ export async function getGooglePhotosPickerSession(
   signal?: AbortSignal,
 ): Promise<GooglePhotosPickerSession> {
   const sealed = openSessionHandle(identity, handle);
-  const accessToken = await googlePhotosAccessToken(identity);
+  const access = await googlePhotosAccess({
+    ...identity,
+    connectionId: sealed.connectionId,
+  });
+  const boundIdentity = boundPickerIdentity(identity, access.grant);
   const response = await providerJson(
     `${PICKER_API}/sessions/${encodeURIComponent(sealed.sessionId)}`,
-    accessToken,
+    access.accessToken,
     { method: "GET" },
     signal,
   );
@@ -156,7 +179,12 @@ export async function getGooglePhotosPickerSession(
       "invalid_provider_response",
     );
   }
-  return publicSession(session, handle, Math.min(sealed.expiresAt, boundedSessionExpiry(session.expireTime)));
+  return publicSession(
+    session,
+    handle,
+    Math.min(sealed.expiresAt, boundedSessionExpiry(session.expireTime)),
+    boundIdentity,
+  );
 }
 
 export async function deleteGooglePhotosPickerSession(
@@ -165,8 +193,11 @@ export async function deleteGooglePhotosPickerSession(
   signal?: AbortSignal,
 ) {
   const sealed = openSessionHandle(identity, handle, { allowRecentlyExpired: true });
-  const accessToken = await googlePhotosAccessToken(identity);
-  await deleteProviderSession(sealed.sessionId, accessToken, signal);
+  const access = await googlePhotosAccess({
+    ...identity,
+    connectionId: sealed.connectionId,
+  });
+  await deleteProviderSession(sealed.sessionId, access.accessToken, signal);
   return { deleted: true };
 }
 
@@ -176,9 +207,14 @@ export async function importGooglePhotosPickerSelection(
   executionScope: ExecutionScope,
   signal?: AbortSignal,
 ) {
-  const trustedRequestScope = requirePickerExecutionScope(identity, executionScope);
   const sealed = openSessionHandle(identity, handle);
-  const accessToken = await googlePhotosAccessToken(identity);
+  const access = await googlePhotosAccess({
+    ...identity,
+    connectionId: sealed.connectionId,
+  });
+  const boundIdentity = boundPickerIdentity(identity, access.grant);
+  const trustedRequestScope = requirePickerExecutionScope(boundIdentity, executionScope);
+  const accessToken = access.accessToken;
   const session = parsePickingSession(await providerJson(
     `${PICKER_API}/sessions/${encodeURIComponent(sealed.sessionId)}`,
     accessToken,
@@ -209,8 +245,8 @@ export async function importGooglePhotosPickerSelection(
     const itemKey = providerItemKey(item.id);
     if (item.type === "PHOTO") {
       try {
-        const itemScope = pickerItemExecutionScope(identity, trustedRequestScope, itemKey);
-        let asset = await existingImportedCaptureAsset(identity, itemKey);
+        const itemScope = pickerItemExecutionScope(boundIdentity, trustedRequestScope, itemKey);
+        let asset = await existingImportedCaptureAsset(boundIdentity, itemKey);
         if (!asset) {
           if (transferBudget.exhausted || transferBudget.remainingBytes <= 0) {
             throw aggregateImportLimitError();
@@ -222,21 +258,21 @@ export async function importGooglePhotosPickerSelection(
             signal,
           );
           asset = await saveCaptureAsset({
-            tenantId: identity.tenantId,
-            actorId: identity.actorId,
+            tenantId: boundIdentity.tenantId,
+            actorId: boundIdentity.actorId,
             executionScope: itemScope,
             filename: originalFilename(item, downloaded.mimeType),
             mediaType: downloaded.mimeType,
             bytes: downloaded.bytes,
             tags: ["connected-source", "google", "photos", "photo"],
-            metadata: captureAssetMetadata(item, itemKey),
+            metadata: captureAssetMetadata(item, itemKey, boundIdentity),
           });
         }
         const job = await enqueueCaptureAssetProcessJob({
-          tenantId: identity.tenantId,
-          actorId: identity.actorId,
+          tenantId: boundIdentity.tenantId,
+          actorId: boundIdentity.actorId,
           executionScope: itemScope,
-          idempotencyKey: captureAssetIdempotencyKey(identity, itemKey),
+          idempotencyKey: captureAssetIdempotencyKey(boundIdentity, itemKey),
           request: {
             assetId: asset.id,
             title: safeFilename(item.mediaFile.filename),
@@ -249,7 +285,7 @@ export async function importGooglePhotosPickerSelection(
         if (asset.ingestJobId !== job.id) {
           asset = await updateCaptureAssetStatus(
             asset.id,
-            { ...identity, executionScope: itemScope },
+            { ...boundIdentity, executionScope: itemScope },
             {
               status: "queued",
               extractionStatus: "pending",
@@ -260,7 +296,12 @@ export async function importGooglePhotosPickerSelection(
         }
         const projectedJob = projectOperationJobStatus(job);
         jobs.push(projectedJob);
-        assets.push(projectImportedCaptureAsset(asset, itemKey, projectedJob.id));
+        assets.push(projectImportedCaptureAsset(
+          asset,
+          itemKey,
+          projectedJob.id,
+          boundIdentity,
+        ));
       } catch (error) {
         if (signal?.aborted) throw signal.reason || error;
         retryableFailure = true;
@@ -302,8 +343,10 @@ export async function deleteImportedGooglePhotos(
   identity: PickerIdentity,
   executionScope: ExecutionScope,
 ) {
-  const trustedScope = requirePickerExecutionScope(identity, executionScope);
-  const legacyVideoCleanup = await planLegacyVideoCleanup(identity);
+  const access = await googlePhotosAccess(identity);
+  const boundIdentity = boundPickerIdentity(identity, access.grant);
+  const trustedScope = requirePickerExecutionScope(boundIdentity, executionScope);
+  const legacyVideoCleanup = await planLegacyVideoCleanup(boundIdentity);
   let assetsDeleted = 0;
   let documents = 0;
   let memories = 0;
@@ -311,18 +354,22 @@ export async function deleteImportedGooglePhotos(
   let batches = 0;
 
   while (batches < GOOGLE_PHOTOS_DELETE_BATCH_LIMIT) {
-    const assets = await listExactCaptureAssetsByMetadata(identity, {
+    const assets = await listExactCaptureAssetsByMetadata(boundIdentity, {
       field: "importSource",
       value: GOOGLE_PHOTOS_CAPTURE_SOURCE,
+      secondary: {
+        field: "googleConnectionId",
+        value: boundIdentity.connectionId,
+      },
       limit: GOOGLE_PHOTOS_DELETE_BATCH_SIZE,
     });
     if (!assets.length) break;
     for (const asset of assets) {
-      jobsCanceled += await cancelCaptureAssetJob(asset, identity);
+      jobsCanceled += await cancelCaptureAssetJob(asset, boundIdentity);
       const forgotten = deletionCounts(await deleteCaptureAssetWithKnowledge(
         asset,
         {
-          ...identity,
+          ...boundIdentity,
           executionScope: trustedScope,
         },
       ));
@@ -333,9 +380,13 @@ export async function deleteImportedGooglePhotos(
     batches += 1;
   }
 
-  const remaining = await listExactCaptureAssetsByMetadata(identity, {
+  const remaining = await listExactCaptureAssetsByMetadata(boundIdentity, {
     field: "importSource",
     value: GOOGLE_PHOTOS_CAPTURE_SOURCE,
+    secondary: {
+      field: "googleConnectionId",
+      value: boundIdentity.connectionId,
+    },
     limit: 1,
   });
   if (remaining.length) {
@@ -351,7 +402,7 @@ export async function deleteImportedGooglePhotos(
     const canceled = await cancelOperationJobByDedupeKey(
       job.dedupeKey,
       "Google Photos import deleted by its owner.",
-      { tenantId: identity.tenantId },
+      { tenantId: boundIdentity.tenantId },
     );
     jobsCanceled += canceled.length;
   }
@@ -360,8 +411,8 @@ export async function deleteImportedGooglePhotos(
     const metadataKnowledge = deletionCounts(await deleteKnowledgeDocumentsBySourcePrefix(
       source,
       {
-        tenantId: identity.tenantId,
-        actorId: identity.actorId,
+        tenantId: boundIdentity.tenantId,
+        actorId: boundIdentity.actorId,
         invalidationScope: trustedScope,
       },
     ));
@@ -370,6 +421,7 @@ export async function deleteImportedGooglePhotos(
   }
 
   return {
+    connectionId: boundIdentity.connectionId,
     assets: assetsDeleted,
     documents,
     memories,
@@ -377,7 +429,7 @@ export async function deleteImportedGooglePhotos(
   };
 }
 
-async function planLegacyVideoCleanup(identity: PickerIdentity) {
+async function planLegacyVideoCleanup(identity: BoundPickerIdentity) {
   const candidates = await listOperationJobs(
     GOOGLE_PHOTOS_LEGACY_JOB_SCAN_LIMIT,
     { tenantId: identity.tenantId, type: "knowledge.ingest" },
@@ -400,7 +452,7 @@ async function planLegacyVideoCleanup(identity: PickerIdentity) {
 
 function legacyVideoJobBinding(
   job: OperationJobRecord,
-  identity: PickerIdentity,
+  identity: BoundPickerIdentity,
 ) {
   if (
     job.tenantId !== identity.tenantId ||
@@ -415,10 +467,15 @@ function legacyVideoJobBinding(
   const metadata = record(request.metadata);
   const source = safeText(request.source, 500);
   const providerItemKey = safeText(metadata.providerItemKey, 80);
+  const googleConnectionId = safeText(metadata.googleConnectionId, 80);
   if (
     safeText(metadata.provider, 80) !== "google" ||
     safeText(metadata.category, 80) !== "photos" ||
     safeText(metadata.mediaType, 80) !== "video" ||
+    !(
+      googleConnectionId === identity.connectionId ||
+      (identity.connectionPurpose === "personal" && !googleConnectionId)
+    ) ||
     !/^[a-f0-9]{40}$/.test(providerItemKey) ||
     !googlePhotosSourcePrefixes(identity).some((prefix) =>
       source === `${prefix}${providerItemKey}`
@@ -477,15 +534,23 @@ export function googlePhotosPickerErrorResponse(error: unknown) {
   );
 }
 
-async function googlePhotosAccessToken(identity: PickerIdentity) {
+async function googlePhotosAccess(identity: PickerIdentity) {
   try {
     const access = await getActiveGoogleWorkspaceAccess({
       tenantId: identity.tenantId,
       actorId: identity.actorId,
+      connectionId: identity.connectionId,
       capability: "photos.pick",
     });
-    return access.accessToken;
+    return access;
   } catch (error) {
+    if (error instanceof OAuthGrantReadConflictError) {
+      throw new GooglePhotosPickerError(
+        "Choose the exact Google account to use for Photos.",
+        409,
+        "google_account_required",
+      );
+    }
     if (
       error instanceof OAuthCredentialError &&
       error.code === "grant_not_found"
@@ -525,6 +590,32 @@ async function googlePhotosAccessToken(identity: PickerIdentity) {
       "photos_request_failed",
     );
   }
+}
+
+function boundPickerIdentity(
+  identity: PickerIdentity,
+  grant: Readonly<{
+    id: string;
+    accountEmail?: string;
+    connectionLabel: string;
+    connectionPurpose: "personal" | "work";
+  }>,
+): BoundPickerIdentity {
+  if (identity.connectionId && identity.connectionId !== grant.id) {
+    throw new GooglePhotosPickerError(
+      "This Photos selection belongs to another Google account.",
+      409,
+      "google_account_mismatch",
+    );
+  }
+  return {
+    tenantId: identity.tenantId,
+    actorId: identity.actorId,
+    connectionId: grant.id,
+    connectionPurpose: grant.connectionPurpose,
+    connectionLabel: grant.connectionLabel,
+    ...(grant.accountEmail ? { accountEmail: grant.accountEmail } : {}),
+  };
 }
 
 async function listPickedMediaItems(sessionId: string, accessToken: string, signal?: AbortSignal) {
@@ -718,13 +809,20 @@ async function boundedResponseBytes(
   return bytes;
 }
 
-function captureAssetMetadata(item: PickedMediaItem, itemKey: string) {
+function captureAssetMetadata(
+  item: PickedMediaItem,
+  itemKey: string,
+  identity: BoundPickerIdentity,
+) {
   const metadata = item.mediaFile.mediaFileMetadata || {};
   return {
     importSource: GOOGLE_PHOTOS_CAPTURE_SOURCE,
     provider: "google",
     category: "photos",
     providerItemKey: itemKey,
+    googleConnectionId: identity.connectionId,
+    googleConnectionPurpose: identity.connectionPurpose,
+    googleAccountEmail: identity.accountEmail || "",
     providerCreatedAt: safeTimestamp(item.createTime, ""),
     mediaType: "photo",
     width: Number(metadata.width || 0),
@@ -738,6 +836,7 @@ function projectImportedCaptureAsset(
   asset: CaptureAsset,
   itemKey: string,
   jobId: string,
+  identity: BoundPickerIdentity,
 ) {
   return {
     id: asset.id,
@@ -752,6 +851,10 @@ function projectImportedCaptureAsset(
       category: "photos",
       mediaType: "photo",
       providerItemKey: itemKey,
+      connectionId: identity.connectionId,
+      accountEmail: identity.accountEmail,
+      connectionLabel: identity.connectionLabel,
+      connectionPurpose: identity.connectionPurpose,
       createdAt: safeTimestamp(asset.metadata.providerCreatedAt, ""),
       width: boundedDimension(asset.metadata.width) || 0,
       height: boundedDimension(asset.metadata.height) || 0,
@@ -764,7 +867,7 @@ function providerItemKey(providerItemId: string) {
 }
 
 async function existingImportedCaptureAsset(
-  identity: PickerIdentity,
+  identity: BoundPickerIdentity,
   itemKey: string,
 ) {
   const candidates = await listExactCaptureAssetsByMetadata(identity, {
@@ -776,7 +879,14 @@ async function existingImportedCaptureAsset(
   const imported = candidates.filter((asset) =>
     asset.tenantId === identity.tenantId &&
     asset.actorId === identity.actorId &&
-    safeText(asset.metadata.importSource, 80) === GOOGLE_PHOTOS_CAPTURE_SOURCE
+    safeText(asset.metadata.importSource, 80) === GOOGLE_PHOTOS_CAPTURE_SOURCE &&
+    (
+      safeText(asset.metadata.googleConnectionId, 80) === identity.connectionId ||
+      (
+        identity.connectionPurpose === "personal" &&
+        !safeText(asset.metadata.googleConnectionId, 80)
+      )
+    )
   );
   if (imported.length > 1) {
     throw new GooglePhotosPickerError(
@@ -788,18 +898,21 @@ async function existingImportedCaptureAsset(
   return imported[0];
 }
 
-function captureAssetIdempotencyKey(identity: PickerIdentity, itemKey: string) {
-  // Keep the deployed key shape so a retry binds to the original Capture job.
-  return `oauth:google:photos:asset:${legacyActorBindingKey(identity)}:${itemKey}`;
+function captureAssetIdempotencyKey(identity: BoundPickerIdentity, itemKey: string) {
+  if (identity.connectionPurpose === "personal") {
+    // Preserve deployed Personal-account retry identity for existing imports.
+    return `oauth:google:photos:asset:${legacyActorBindingKey(identity)}:${itemKey}`;
+  }
+  return `oauth:google:photos:asset:${identity.connectionId}:${itemKey}`;
 }
 
 function pickerItemExecutionScope(
-  identity: PickerIdentity,
+  identity: BoundPickerIdentity,
   requestScope: ExecutionScope,
   itemKey: string,
 ) {
   const correlationId = `google-photos:${createHash("sha256")
-    .update(`${identity.tenantId}\0${identity.actorId}\0${itemKey}`)
+    .update(`${identity.tenantId}\0${identity.actorId}\0${identity.connectionId}\0${itemKey}`)
     .digest("hex")
     .slice(0, 48)}`;
   return createExecutionScope({
@@ -1021,11 +1134,16 @@ function providerError(status: number, body: Record<string, unknown>) {
   return new GooglePhotosPickerError("Google Photos could not complete this request.", 502, "provider_error");
 }
 
-function sealSessionHandle(identity: PickerIdentity, sessionId: string, expiresAt: number) {
+function sealSessionHandle(
+  identity: BoundPickerIdentity,
+  sessionId: string,
+  expiresAt: number,
+) {
   const payload: PickerHandlePayload = {
-    version: 1,
+    version: 2,
     tenantId: identity.tenantId,
     actorId: identity.actorId,
+    connectionId: identity.connectionId,
     sessionId,
     issuedAt: Date.now(),
     expiresAt,
@@ -1051,9 +1169,13 @@ function openSessionHandle(
   }
   const expiredGrace = options.allowRecentlyExpired ? 10 * 60_000 : 0;
   if (
-    payload.version !== 1 ||
+    (payload.version !== 1 && payload.version !== 2) ||
     payload.tenantId !== identity.tenantId ||
     payload.actorId !== identity.actorId ||
+    (
+      payload.version === 2 &&
+      !isGoogleConnectionId(payload.connectionId)
+    ) ||
     !safeText(payload.sessionId, 1_000) ||
     !Number.isFinite(payload.issuedAt) ||
     !Number.isFinite(payload.expiresAt) ||
@@ -1070,6 +1192,7 @@ function publicSession(
   session: ProviderPickingSession,
   handle: string,
   expiresAt: number,
+  identity: BoundPickerIdentity,
 ): GooglePhotosPickerSession {
   return {
     handle,
@@ -1078,7 +1201,16 @@ function publicSession(
     mediaItemsSet: session.mediaItemsSet,
     pollAfterMs: parseProviderDuration(session.pollingConfig?.pollInterval, 3_000, 1_000, 30_000),
     timeoutAfterMs: parseProviderDuration(session.pollingConfig?.timeoutIn, 15 * 60_000, 5_000, 30 * 60_000),
+    connectionId: identity.connectionId,
+    ...(identity.accountEmail ? { accountEmail: identity.accountEmail } : {}),
+    connectionLabel: identity.connectionLabel,
+    connectionPurpose: identity.connectionPurpose,
   };
+}
+
+function isGoogleConnectionId(value: unknown): value is string {
+  return typeof value === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 function boundedSessionExpiry(value?: string) {
@@ -1106,7 +1238,10 @@ function actorBindingKey(identity: PickerIdentity) {
     .digest("hex");
 }
 
-function googlePhotosSourcePrefix(identity: PickerIdentity) {
+function googlePhotosSourcePrefix(identity: BoundPickerIdentity) {
+  if (identity.connectionPurpose === "work") {
+    return `google:photos:work:${identity.connectionId}:`;
+  }
   return `google:photos:${actorBindingKey(identity)}:`;
 }
 
@@ -1121,7 +1256,7 @@ function legacyActorBindingKey(identity: PickerIdentity) {
     .slice(0, 16);
 }
 
-function googlePhotosSourcePrefixes(identity: PickerIdentity) {
+function googlePhotosSourcePrefixes(identity: BoundPickerIdentity) {
   return [
     googlePhotosSourcePrefix(identity),
     legacyGooglePhotosSourcePrefix(identity),

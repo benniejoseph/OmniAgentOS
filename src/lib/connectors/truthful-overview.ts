@@ -99,6 +99,12 @@ const installedIntegrationSchema = z.object({
   configured: z.boolean().nullable(),
   connected: z.boolean(),
   manageable: z.boolean(),
+  account: z.object({
+    connectionId: z.string().uuid(),
+    email: z.string().email().max(320).nullable(),
+    label: z.string().trim().min(1).max(80),
+    purpose: z.enum(["personal", "work"]),
+  }).strict().optional(),
   permissions: z.object({
     mode: z.enum([
       "no_access",
@@ -262,8 +268,10 @@ export function projectTruthfulIntegrationsOverview(
   const matchedCatalogIds = new Set<string>();
 
   if (input.oauth.state === "ready") {
-    const googleGrant = input.oauth.value.find((grant) => grant.provider === "google");
-    if (googleGrant) {
+    const googleGrants = input.oauth.value.filter(
+      (grant) => grant.provider === "google",
+    );
+    for (const googleGrant of googleGrants) {
       for (const service of googleServices) {
         installed.push(projectGoogleService(
           service,
@@ -442,8 +450,8 @@ function projectGoogleService(
                 ? "No action required; monitor the next scheduled sync."
                 : "No action required; imports happen only after an explicit picker selection.";
   return {
-    id: `google:${service.id}`,
-    name: service.name,
+    id: `google:${grant.id}:${service.id}`,
+    name: `${service.name} · ${grant.connectionLabel}`,
     kind: "google_service",
     adapter: "native",
     category: service.category,
@@ -452,6 +460,12 @@ function projectGoogleService(
     configured,
     connected: grant.status === "active",
     manageable,
+    account: {
+      connectionId: grant.id,
+      email: grant.accountEmail || null,
+      label: grant.connectionLabel,
+      purpose: grant.connectionPurpose,
+    },
     permissions: {
       mode: !hasRead ? "no_access" : hasWrite ? "write_approval_required" : "read_only",
       granted: [

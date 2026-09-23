@@ -154,6 +154,7 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
       anyOf: [
         { type: "null" },
         requiredObjectSchema({
+          connectionId: { type: "string", format: "uuid", minLength: 36, maxLength: 36, description: "Exact Google account connection. Required when more than one Google account is connected." },
           policyId: { type: "string", pattern: "^contact_policy:[0-9a-f-]{36}$", maxLength: 51 },
           recipientParticipantId: opaqueId("Confirmed participant recipient whose email exactly matches the policy."),
           subject: text(1, 998),
@@ -849,6 +850,7 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   }, ["personRef", "displayName", "channel", "address", "relationship", "allowedPurposes", "allowedDisclosure", "consent", "maxDeliveriesPerDay", "quietHours", "status"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
   readTool("app.communications.drafts.list", "List Gmail and email drafts", "List actor-private governed Gmail and email drafts, including their exact lifecycle state.", objectSchema({})),
   mutationTool("app.communications.drafts.create", "Create Gmail or email draft", "Create an immutable actor-private Gmail or email draft under one exact contact policy; this does not contact or send to the recipient.", requiredObjectSchema({
+    connectionId: { type: "string", format: "uuid", minLength: 36, maxLength: 36, description: "Exact Google account connection. Required when more than one Google account is connected." },
     policyId: { type: "string", pattern: "^contact_policy:[0-9a-f-]{36}$", maxLength: 51 },
     purpose: { type: "string", enum: ["informational", "coordination", "follow_up", "support", "commercial"] },
     disclosure: { type: "string", enum: ["public_only", "relationship_context", "confidential"] },

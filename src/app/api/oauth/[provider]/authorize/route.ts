@@ -1,8 +1,10 @@
 import {
   createOAuthAuthorization,
+  type GoogleConnectionPurpose,
   isOAuthProvider,
   normalizeOAuthReturnTo,
 } from "@/lib/connectors/oauth-providers";
+import { getOAuthGrantSecrets } from "@/lib/connectors/oauth-store";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { resolveSalesforceRequestAccess } from "@/lib/customer-success/salesforce-access";
@@ -19,6 +21,9 @@ async function GETHandler(request: Request, context: { params: Promise<{ provide
   const authorizationIntent = requestUrl.searchParams.get("intent") === "repair"
     ? "repair" as const
     : undefined;
+  const googleConnectionPurpose: GoogleConnectionPurpose =
+    requestUrl.searchParams.get("account") === "work" ? "work" : "personal";
+  const requestedConnectionId = requestUrl.searchParams.get("connectionId") || undefined;
   try {
     if (provider === "salesforce") {
       const access = await resolveSalesforceRequestAccess(security, {
@@ -33,10 +38,29 @@ async function GETHandler(request: Request, context: { params: Promise<{ provide
         returnTo,
       }), 302);
     }
+    if (requestedConnectionId) {
+      const existing = await getOAuthGrantSecrets(
+        security.tenantId,
+        security.actorId,
+        provider,
+        {
+          connectionId: requestedConnectionId,
+          connectionPurpose: googleConnectionPurpose,
+        },
+      );
+      if (!existing) {
+        return Response.json(
+          { error: "The selected Google account connection was not found." },
+          { status: 404, headers: { "cache-control": "private, no-store" } },
+        );
+      }
+    }
     return Response.redirect(createOAuthAuthorization(provider, {
       tenantId: security.tenantId,
       actorId: security.actorId,
       returnTo,
+      googleConnectionPurpose,
+      ...(requestedConnectionId ? { connectionId: requestedConnectionId } : {}),
       ...(authorizationIntent ? { authorizationIntent } : {}),
     }), 302);
   }

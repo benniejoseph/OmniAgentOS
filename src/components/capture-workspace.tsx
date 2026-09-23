@@ -36,6 +36,7 @@ import {
   runCaptureBatch,
 } from "@/lib/capture/batch-client";
 import { listOfflineCaptures, queueOfflineCapture, removeOfflineCapture, type OfflineCapture } from "@/lib/capture/offline";
+import { googleWorkspaceCapabilitiesForScopes } from "@/lib/connectors/google-workspace-capabilities";
 import styles from "./daybook-workspaces.module.css";
 
 type DocumentItem = {
@@ -668,10 +669,15 @@ export function CaptureWorkspace() {
     }
   }
 
-  const googleGrant = oauthGrants.find((grant) => grant.provider === "google" && grant.status !== "revoked");
-  const activeSourceCount = googleGrant
-    ? 3 + (googleGrant.scopes.some((scope) => scope.endsWith("/auth/photospicker.mediaitems.readonly")) ? 1 : 0)
-    : 0;
+  const activeSourceCount = oauthGrants
+    .filter((grant) => grant.provider === "google" && grant.status !== "revoked")
+    .reduce((count, grant) => {
+      const capabilities = googleWorkspaceCapabilitiesForScopes(grant.scopes);
+      return count + Number(capabilities.has("gmail.read") || capabilities.has("gmail.send")) +
+        Number(capabilities.has("calendar.events.read")) +
+        Number(capabilities.has("drive.read")) +
+        Number(capabilities.has("photos.pick"));
+    }, 0);
 
   return (
     <div className={clsx("mx-auto w-full max-w-[120rem] px-4 py-6 sm:px-6 lg:px-8 lg:py-8 2xl:px-10", styles.daybook, styles.capture)}>

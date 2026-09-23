@@ -72,6 +72,7 @@ export const messageDraftSchema = z.object({
   subject: z.string().trim().min(1).max(998),
   body: z.string().trim().min(1).max(50_000),
   senderIdentity: z.literal("connected_account"),
+  googleConnectionId: z.string().uuid().optional(),
   state: z.enum(["ready", "delivering", "delivered", "failed", "canceled"]),
   lifecycleRevision: z.number().int().min(1),
   createdAt: timestampSchema,
@@ -94,6 +95,9 @@ export const messageDraftSchema = z.object({
     subject: value.subject,
     body: value.body,
     senderIdentity: value.senderIdentity,
+    ...(value.googleConnectionId
+      ? { googleConnectionId: value.googleConnectionId }
+      : {}),
     createdAt: value.createdAt,
   });
   if (value.draftSha256 !== digest) {
@@ -107,6 +111,7 @@ export const deliveryReceiptSchema = z.object({
   draftId: z.string().regex(/^message_draft:[0-9a-f-]{36}$/),
   draftSha256: sha256Schema,
   provider: z.literal("gmail"),
+  googleConnectionId: z.string().uuid().optional(),
   providerMessageId: z.string().trim().min(1).max(500),
   externalThreadId: z.string().trim().min(1).max(500),
   providerAcknowledgementSha256: sha256Schema,

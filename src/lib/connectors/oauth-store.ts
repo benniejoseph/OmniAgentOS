@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { ensureDatabaseSchema, getSql, hasDatabaseUrl } from "@/lib/db/client";
 import {
   isOAuthProvider,
+  type GoogleConnectionPurpose,
   type OAuthProvider,
 } from "@/lib/connectors/oauth-providers";
 import {
@@ -31,6 +32,9 @@ export type OAuthGrant = {
   tenantId: string;
   actorId: string;
   provider: OAuthProvider;
+  accountEmail?: string;
+  connectionLabel: string;
+  connectionPurpose: GoogleConnectionPurpose;
   scopes: string[];
   status: "active" | "revoked";
   authorizationGeneration: number;
@@ -95,13 +99,52 @@ export class OAuthGrantReadConflictError extends Error {
   }
 }
 
-export async function saveOAuthGrant(input: { tenantId: string; actorId: string; provider: OAuthProvider; tokens: Record<string, unknown>; authorizationMode?: "reauthorize" | "refresh" }) {
+export type OAuthGrantSelector = Readonly<{
+  connectionId?: string;
+  connectionPurpose?: GoogleConnectionPurpose;
+}>;
+
+export async function saveOAuthGrant(input: {
+  tenantId: string;
+  actorId: string;
+  provider: OAuthProvider;
+  tokens: Record<string, unknown>;
+  authorizationMode?: "reauthorize" | "refresh";
+  connectionId?: string;
+  connectionPurpose?: GoogleConnectionPurpose;
+  connectionLabel?: string;
+  accountEmail?: string;
+}) {
   const now = new Date().toISOString();
   const authorizationMode = input.authorizationMode || "reauthorize";
+  const connectionPurpose = input.connectionPurpose || "personal";
+  const incomingEmail = normalizeAccountEmail(
+    input.accountEmail || tokenString(input.tokens.google_account_email),
+  );
+  if (input.provider === "google" && !incomingEmail && authorizationMode !== "refresh") {
+    throw new OAuthCredentialError(
+      "The Google account email could not be bound to this connection.",
+      "account_identity_changed",
+    );
+  }
+  const connectionLabel = normalizeConnectionLabel(
+    input.connectionLabel || (connectionPurpose === "work" ? "Work" : "Personal"),
+  );
   const existingSecrets = await getOAuthGrantSecrets(
     input.tenantId,
     input.actorId,
     input.provider,
+    input.connectionId
+      ? { connectionId: input.connectionId }
+      : { connectionPurpose },
+  );
+  const retainedGrant = existingSecrets?.grant || await findRetainedOAuthGrant(
+    input.tenantId,
+    input.actorId,
+    input.provider,
+    input.connectionId
+      ? { connectionId: input.connectionId }
+      : { connectionPurpose },
   );
   const incomingTokens = Object.fromEntries(
     Object.entries(input.tokens).filter(([name, value]) =>
@@ -113,11 +156,14 @@ export async function saveOAuthGrant(input: { tenantId: string; actorId: string;
   const tokens = { ...(existingSecrets?.tokens || {}), ...incomingTokens };
   const existingSubject = tokenString(existingSecrets?.tokens.google_account_sub);
   const incomingSubject = tokenString(input.tokens.google_account_sub);
+  const existingEmail = normalizeAccountEmail(existingSecrets?.grant.accountEmail || "");
   if (
     input.provider === "google" &&
-    existingSubject &&
-    incomingSubject &&
-    existingSubject !== incomingSubject
+    (
+      (existingSubject && incomingSubject && existingSubject !== incomingSubject) ||
+      (existingEmail && incomingEmail && existingEmail !== incomingEmail) ||
+      (existingSecrets && existingSecrets.grant.connectionPurpose !== connectionPurpose)
+    )
   ) {
     throw new OAuthCredentialError(
       "The Google account identity changed during authorization.",
@@ -136,20 +182,30 @@ export async function saveOAuthGrant(input: { tenantId: string; actorId: string;
       authorizationMode === "reauthorize" &&
       !sameStringSet(existingSecrets.grant.scopes, scopes),
   );
-  const id = randomUUID();
-  const sealedTokens = sealOAuthTokens(tokens, oauthGrantBinding(input));
+  const id = retainedGrant?.id || input.connectionId || randomUUID();
+  const accountEmail = incomingEmail || existingEmail || undefined;
+  const grantIdentity = {
+    ...input,
+    id,
+    connectionPurpose,
+  };
+  const sealedTokens = sealOAuthTokens(tokens, oauthGrantBinding(grantIdentity));
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
       INSERT INTO omni_oauth_grants (
-        id, tenant_id, actor_id, provider, scopes, sealed_tokens, expires_at,
+        id, tenant_id, actor_id, provider, account_email, connection_label,
+        connection_purpose, scopes, sealed_tokens, expires_at,
         status, authorization_generation, created_at, updated_at
       ) VALUES (
         ${id}, ${input.tenantId}, ${input.actorId}, ${input.provider},
+        ${accountEmail || null}, ${connectionLabel}, ${connectionPurpose},
         ${scopes}, ${sealedTokens}::jsonb, ${expiresAt || null}, 'active', 1,
         ${now}, ${now}
       )
-      ON CONFLICT (tenant_id, actor_id, provider) DO UPDATE SET
+      ON CONFLICT (tenant_id, actor_id, provider, connection_purpose) DO UPDATE SET
+        account_email = COALESCE(EXCLUDED.account_email, omni_oauth_grants.account_email),
+        connection_label = EXCLUDED.connection_label,
         scopes = EXCLUDED.scopes,
         sealed_tokens = EXCLUDED.sealed_tokens,
         expires_at = EXCLUDED.expires_at,
@@ -206,9 +262,16 @@ export async function saveOAuthGrant(input: { tenantId: string; actorId: string;
   }
   let saved!: InternalGrant;
   await updateJsonFile<{ grants: InternalGrant[] }>(filePath(), { grants: [] }, (ledger) => {
-    const existing = ledger.grants.find((grant) => grant.tenantId === input.tenantId && grant.actorId === input.actorId && grant.provider === input.provider);
+    const existing = ledger.grants.find((grant) =>
+      grant.tenantId === input.tenantId &&
+      grant.actorId === input.actorId &&
+      grant.provider === input.provider &&
+      (input.connectionId
+        ? grant.id === input.connectionId
+        : (grant.connectionPurpose || "personal") === connectionPurpose)
+    );
     const preserveSyncState = Boolean(existing && !resetAuthorization);
-    saved = { id: existing?.id || id, tenantId: input.tenantId, actorId: input.actorId, provider: input.provider, scopes, sealedTokens, sealedSyncCursor: preserveSyncState ? existing?.sealedSyncCursor : undefined, syncCursor: preserveSyncState ? existing?.syncCursor : undefined, syncStatus: preserveSyncState ? existing?.syncStatus || "idle" : "idle", syncError: preserveSyncState ? existing?.syncError : undefined, lastSyncedAt: preserveSyncState ? existing?.lastSyncedAt : undefined, syncedItems: preserveSyncState ? existing?.syncedItems || 0 : 0, sourceCoverage: preserveSyncState ? existing?.sourceCoverage || {} : {}, status: "active", authorizationGeneration: existing ? Math.max(1, Number(existing.authorizationGeneration || 1)) + (resetAuthorization ? 1 : 0) : 1, expiresAt, createdAt: existing?.createdAt || now, updatedAt: now, ...(preserveSyncState ? { syncLeaseOwnerId: existing?.syncLeaseOwnerId, syncLeaseExpiresAt: existing?.syncLeaseExpiresAt, syncLeaseGeneration: existing?.syncLeaseGeneration } : { syncLeaseGeneration: existing?.syncLeaseGeneration || 0 }) };
+    saved = { id: existing?.id || id, tenantId: input.tenantId, actorId: input.actorId, provider: input.provider, accountEmail, connectionLabel, connectionPurpose, scopes, sealedTokens, sealedSyncCursor: preserveSyncState ? existing?.sealedSyncCursor : undefined, syncCursor: preserveSyncState ? existing?.syncCursor : undefined, syncStatus: preserveSyncState ? existing?.syncStatus || "idle" : "idle", syncError: preserveSyncState ? existing?.syncError : undefined, lastSyncedAt: preserveSyncState ? existing?.lastSyncedAt : undefined, syncedItems: preserveSyncState ? existing?.syncedItems || 0 : 0, sourceCoverage: preserveSyncState ? existing?.sourceCoverage || {} : {}, status: "active", authorizationGeneration: existing ? Math.max(1, Number(existing.authorizationGeneration || 1)) + (resetAuthorization ? 1 : 0) : 1, expiresAt, createdAt: existing?.createdAt || now, updatedAt: now, ...(preserveSyncState ? { syncLeaseOwnerId: existing?.syncLeaseOwnerId, syncLeaseExpiresAt: existing?.syncLeaseExpiresAt, syncLeaseGeneration: existing?.syncLeaseGeneration } : { syncLeaseGeneration: existing?.syncLeaseGeneration || 0 }) };
     return { grants: [saved, ...ledger.grants.filter((grant) => grant.id !== existing?.id)].slice(0, 100) };
   });
   return stripTokens(saved);
@@ -269,7 +332,8 @@ export async function listOAuthGrantsForRequest(input: {
   );
   await ensureDatabaseSchema();
   const rows = await getSql()`
-    SELECT id, tenant_id, actor_id, provider, scopes, status,
+    SELECT id, tenant_id, actor_id, provider, account_email,
+      connection_label, connection_purpose, scopes, status,
       authorization_generation, expires_at, sync_status, sync_error,
       last_synced_at, synced_items, source_sync_health, created_at, updated_at
     FROM omni_oauth_grants
@@ -308,29 +372,42 @@ export async function listOAuthGrantsForTenant(tenantId: string) {
   return ledger.grants.filter((grant) => grant.tenantId === tenantId && grant.provider === "google" && grant.status === "active").sort((left, right) => (left.lastSyncedAt || "").localeCompare(right.lastSyncedAt || "")).map(stripTokens);
 }
 
-export async function revokeOAuthGrant(tenantId: string, actorId: string, provider: OAuthProvider) {
+export async function revokeOAuthGrant(
+  tenantId: string,
+  actorId: string,
+  provider: OAuthProvider,
+  selector?: OAuthGrantSelector,
+) {
   const now = new Date().toISOString();
-  const sealedTokens = sealOAuthTokens({}, oauthGrantBinding({ tenantId, actorId, provider }));
+  const existing = await getOAuthGrantSecrets(tenantId, actorId, provider, selector);
+  if (!existing) return;
+  const sealedTokens = sealOAuthTokens({}, oauthGrantBinding(existing.grant));
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    await getSql()`UPDATE omni_oauth_grants SET status = 'revoked', sealed_tokens = ${sealedTokens}::jsonb, sync_cursor = NULL, sync_lease_owner_id = NULL, sync_lease_expires_at = NULL, updated_at = ${now} WHERE tenant_id = ${tenantId} AND actor_id = ${actorId} AND provider = ${provider}`;
+    await getSql()`UPDATE omni_oauth_grants SET status = 'revoked', sealed_tokens = ${sealedTokens}::jsonb, sync_cursor = NULL, sync_lease_owner_id = NULL, sync_lease_expires_at = NULL, updated_at = ${now} WHERE tenant_id = ${tenantId} AND actor_id = ${actorId} AND provider = ${provider} AND id = ${existing.grant.id}`;
     return;
   }
-  await updateJsonFile<{ grants: InternalGrant[] }>(filePath(), { grants: [] }, (ledger) => ({ grants: ledger.grants.map((grant) => grant.tenantId === tenantId && grant.actorId === actorId && grant.provider === provider ? { ...grant, status: "revoked", sealedTokens, sealedSyncCursor: undefined, syncCursor: undefined, syncLeaseOwnerId: undefined, syncLeaseExpiresAt: undefined, updatedAt: now } : grant) }));
+  await updateJsonFile<{ grants: InternalGrant[] }>(filePath(), { grants: [] }, (ledger) => ({ grants: ledger.grants.map((grant) => grant.id === existing.grant.id && grant.tenantId === tenantId && grant.actorId === actorId && grant.provider === provider ? { ...grant, status: "revoked", sealedTokens, sealedSyncCursor: undefined, syncCursor: undefined, syncLeaseOwnerId: undefined, syncLeaseExpiresAt: undefined, updatedAt: now } : grant) }));
 }
 
-export async function getOAuthGrantSecrets(tenantId: string, actorId: string, provider: OAuthProvider) {
-  let internal: InternalGrant | undefined;
+export async function getOAuthGrantSecrets(
+  tenantId: string,
+  actorId: string,
+  provider: OAuthProvider,
+  selector?: OAuthGrantSelector,
+) {
+  let candidates: InternalGrant[];
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`SELECT * FROM omni_oauth_grants WHERE tenant_id = ${tenantId} AND actor_id = ${actorId} AND provider = ${provider} AND status = 'active' LIMIT 1`;
-    if (rows[0]) internal = internalGrantFromRow(rows[0]);
+    const rows = await getSql()`SELECT * FROM omni_oauth_grants WHERE tenant_id = ${tenantId} AND actor_id = ${actorId} AND provider = ${provider} AND status = 'active' ORDER BY updated_at DESC, id`;
+    candidates = rows.map(internalGrantFromRow);
   } else {
     const ledger = await readJsonFile<{ grants: InternalGrant[] }>(filePath(), { grants: [] });
-    internal = ledger.grants.find((grant) => grant.tenantId === tenantId && grant.actorId === actorId && grant.provider === provider && grant.status === "active");
+    candidates = ledger.grants.filter((grant) => grant.tenantId === tenantId && grant.actorId === actorId && grant.provider === provider && grant.status === "active");
   }
+  const internal = resolveInternalGrant(candidates, selector);
   if (!internal) return undefined;
-  const opened = openOAuthTokens(internal.sealedTokens, oauthGrantBinding(internal));
+  const opened = openOAuthGrantTokens(internal);
   if (opened.needsRewrap) {
     await rewrapOAuthTokens(internal, opened.tokens);
   }
@@ -342,10 +419,38 @@ export async function getOAuthGrantSecrets(tenantId: string, actorId: string, pr
   };
 }
 
+async function findRetainedOAuthGrant(
+  tenantId: string,
+  actorId: string,
+  provider: OAuthProvider,
+  selector: OAuthGrantSelector,
+) {
+  let candidates: OAuthGrant[];
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`SELECT * FROM omni_oauth_grants WHERE tenant_id = ${tenantId} AND actor_id = ${actorId} AND provider = ${provider} ORDER BY updated_at DESC, id`;
+    candidates = rows.map(publicGrant);
+  } else {
+    const ledger = await readJsonFile<{ grants: InternalGrant[] }>(filePath(), { grants: [] });
+    candidates = ledger.grants
+      .filter((grant) => grant.tenantId === tenantId && grant.actorId === actorId && grant.provider === provider)
+      .map(stripTokens);
+  }
+  const selected = candidates.filter((grant) =>
+    (!selector.connectionId || grant.id === selector.connectionId) &&
+    (!selector.connectionPurpose || grant.connectionPurpose === selector.connectionPurpose)
+  );
+  if (selected.length > 1) {
+    throw new OAuthGrantReadConflictError("OAuth connection identity is ambiguous.");
+  }
+  return selected[0];
+}
+
 export async function claimOAuthSyncLease(input: {
   tenantId: string;
   actorId: string;
   provider: OAuthProvider;
+  connectionId: string;
 }): Promise<
   | { status: "claimed"; lease: OAuthSyncLease }
   | { status: "busy" }
@@ -364,6 +469,7 @@ export async function claimOAuthSyncLease(input: {
       WHERE tenant_id = ${input.tenantId}
         AND actor_id = ${input.actorId}
         AND provider = ${input.provider}
+        AND id = ${input.connectionId}
         AND status = 'active'
         AND (
           sync_lease_owner_id IS NULL
@@ -393,6 +499,7 @@ export async function claimOAuthSyncLease(input: {
           grant.tenantId !== input.tenantId ||
           grant.actorId !== input.actorId ||
           grant.provider !== input.provider ||
+          grant.id !== input.connectionId ||
           grant.status !== "active" ||
           (
             grant.syncLeaseOwnerId &&
@@ -425,6 +532,7 @@ export async function updateOAuthSyncState(input: {
   tenantId: string;
   actorId: string;
   provider: OAuthProvider;
+  connectionId: string;
   status: "syncing" | "healthy" | "error";
   cursor?: string;
   error?: string;
@@ -443,12 +551,12 @@ export async function updateOAuthSyncState(input: {
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const sealedCursor = input.cursor
-      ? JSON.stringify(sealJsonPayload(input.cursor, syncCursorBinding(input)))
+      ? JSON.stringify(sealJsonPayload(input.cursor, syncCursorBinding({ ...input, id: input.connectionId })))
       : undefined;
     const persist = async (sql: ReturnType<typeof getSql>) => {
       let rows = input.lease
-        ? await sql`UPDATE omni_oauth_grants SET sync_status = ${input.status}, sync_error = ${input.error || null}, sync_cursor = COALESCE(${sealedCursor || null}, sync_cursor), synced_items = synced_items + ${input.syncedItems || 0}, last_synced_at = CASE WHEN ${input.status} = 'healthy' THEN ${now}::timestamptz ELSE last_synced_at END, sync_lease_owner_id = CASE WHEN ${Boolean(input.releaseLease)} THEN NULL ELSE sync_lease_owner_id END, sync_lease_expires_at = CASE WHEN ${Boolean(input.releaseLease)} THEN NULL ELSE sync_lease_expires_at END, updated_at = ${now} WHERE tenant_id = ${input.tenantId} AND actor_id = ${input.actorId} AND provider = ${input.provider} AND status = 'active' AND sync_lease_owner_id = ${input.lease.ownerId} AND sync_lease_generation = ${input.lease.generation} AND sync_lease_expires_at > clock_timestamp() RETURNING *`
-        : await sql`UPDATE omni_oauth_grants SET sync_status = ${input.status}, sync_error = ${input.error || null}, sync_cursor = COALESCE(${sealedCursor || null}, sync_cursor), synced_items = synced_items + ${input.syncedItems || 0}, last_synced_at = CASE WHEN ${input.status} = 'healthy' THEN ${now}::timestamptz ELSE last_synced_at END, updated_at = ${now} WHERE tenant_id = ${input.tenantId} AND actor_id = ${input.actorId} AND provider = ${input.provider} AND status = 'active' RETURNING *`;
+        ? await sql`UPDATE omni_oauth_grants SET sync_status = ${input.status}, sync_error = ${input.error || null}, sync_cursor = COALESCE(${sealedCursor || null}, sync_cursor), synced_items = synced_items + ${input.syncedItems || 0}, last_synced_at = CASE WHEN ${input.status} = 'healthy' THEN ${now}::timestamptz ELSE last_synced_at END, sync_lease_owner_id = CASE WHEN ${Boolean(input.releaseLease)} THEN NULL ELSE sync_lease_owner_id END, sync_lease_expires_at = CASE WHEN ${Boolean(input.releaseLease)} THEN NULL ELSE sync_lease_expires_at END, updated_at = ${now} WHERE tenant_id = ${input.tenantId} AND actor_id = ${input.actorId} AND provider = ${input.provider} AND id = ${input.connectionId} AND status = 'active' AND sync_lease_owner_id = ${input.lease.ownerId} AND sync_lease_generation = ${input.lease.generation} AND sync_lease_expires_at > clock_timestamp() RETURNING *`
+        : await sql`UPDATE omni_oauth_grants SET sync_status = ${input.status}, sync_error = ${input.error || null}, sync_cursor = COALESCE(${sealedCursor || null}, sync_cursor), synced_items = synced_items + ${input.syncedItems || 0}, last_synced_at = CASE WHEN ${input.status} = 'healthy' THEN ${now}::timestamptz ELSE last_synced_at END, updated_at = ${now} WHERE tenant_id = ${input.tenantId} AND actor_id = ${input.actorId} AND provider = ${input.provider} AND id = ${input.connectionId} AND status = 'active' RETURNING *`;
       if (!rows[0]) return undefined;
       for (const settlement of sourceSettlements) {
         rows = await sql`
@@ -464,6 +572,7 @@ export async function updateOAuthSyncState(input: {
             AND id = ${String(rows[0].id)}
             AND actor_id = ${input.actorId}
             AND provider = ${input.provider}
+            AND id = ${input.connectionId}
             AND status = 'active'
           RETURNING *
         `;
@@ -477,7 +586,7 @@ export async function updateOAuthSyncState(input: {
   }
   let updated: OAuthGrant | undefined;
   await updateJsonFile<{ grants: InternalGrant[] }>(filePath(), { grants: [] }, (ledger) => ({ grants: ledger.grants.map((grant) => {
-    if (grant.tenantId !== input.tenantId || grant.actorId !== input.actorId || grant.provider !== input.provider || grant.status !== "active") return grant;
+    if (grant.tenantId !== input.tenantId || grant.actorId !== input.actorId || grant.provider !== input.provider || grant.id !== input.connectionId || grant.status !== "active") return grant;
     if (
       input.lease &&
       (
@@ -488,16 +597,16 @@ export async function updateOAuthSyncState(input: {
     ) {
       return grant;
     }
-    const next: InternalGrant = { ...grant, syncStatus: input.status, syncError: input.error, sealedSyncCursor: input.cursor ? sealJsonPayload(input.cursor, syncCursorBinding(input)) : grant.sealedSyncCursor, syncCursor: input.cursor ? undefined : grant.syncCursor, syncedItems: (grant.syncedItems || 0) + (input.syncedItems || 0), sourceCoverage: mergeSourceCoverage(grant.sourceCoverage, sourceSettlements), lastSyncedAt: input.status === "healthy" ? now : grant.lastSyncedAt, updatedAt: now, ...(input.releaseLease ? { syncLeaseOwnerId: undefined, syncLeaseExpiresAt: undefined } : {}) };
+    const next: InternalGrant = { ...grant, syncStatus: input.status, syncError: input.error, sealedSyncCursor: input.cursor ? sealJsonPayload(input.cursor, syncCursorBinding(grant)) : grant.sealedSyncCursor, syncCursor: input.cursor ? undefined : grant.syncCursor, syncedItems: (grant.syncedItems || 0) + (input.syncedItems || 0), sourceCoverage: mergeSourceCoverage(grant.sourceCoverage, sourceSettlements), lastSyncedAt: input.status === "healthy" ? now : grant.lastSyncedAt, updatedAt: now, ...(input.releaseLease ? { syncLeaseOwnerId: undefined, syncLeaseExpiresAt: undefined } : {}) };
     updated = stripTokens(next); return next;
   }) }));
   return updated;
 }
 
 function stripTokens(grant: InternalGrant): OAuthGrant {
-  return { id: grant.id, tenantId: grant.tenantId, actorId: grant.actorId, provider: grant.provider, scopes: grant.scopes, status: grant.status, authorizationGeneration: Math.max(1, Number(grant.authorizationGeneration || 1)), expiresAt: grant.expiresAt, syncStatus: grant.syncStatus || "idle", syncError: grant.syncError, lastSyncedAt: grant.lastSyncedAt, syncedItems: grant.syncedItems || 0, sourceCoverage: parseSourceCoverage(grant.sourceCoverage), createdAt: grant.createdAt, updatedAt: grant.updatedAt };
+  return { id: grant.id, tenantId: grant.tenantId, actorId: grant.actorId, provider: grant.provider, accountEmail: normalizeAccountEmail(grant.accountEmail || "") || undefined, connectionLabel: normalizeConnectionLabel(grant.connectionLabel || "Personal"), connectionPurpose: grant.connectionPurpose || "personal", scopes: grant.scopes, status: grant.status, authorizationGeneration: Math.max(1, Number(grant.authorizationGeneration || 1)), expiresAt: grant.expiresAt, syncStatus: grant.syncStatus || "idle", syncError: grant.syncError, lastSyncedAt: grant.lastSyncedAt, syncedItems: grant.syncedItems || 0, sourceCoverage: parseSourceCoverage(grant.sourceCoverage), createdAt: grant.createdAt, updatedAt: grant.updatedAt };
 }
-function publicGrant(row: Record<string, unknown>): OAuthGrant { return { id: String(row.id), tenantId: String(row.tenant_id), actorId: String(row.actor_id), provider: String(row.provider) as OAuthProvider, scopes: Array.isArray(row.scopes) ? row.scopes.map(String) : [], status: String(row.status) as "active" | "revoked", authorizationGeneration: Math.max(1, Number(row.authorization_generation || 1)), expiresAt: row.expires_at ? new Date(String(row.expires_at)).toISOString() : undefined, syncStatus: String(row.sync_status || "idle") as OAuthGrant["syncStatus"], syncError: row.sync_error ? String(row.sync_error) : undefined, lastSyncedAt: row.last_synced_at ? new Date(String(row.last_synced_at)).toISOString() : undefined, syncedItems: Number(row.synced_items || 0), sourceCoverage: parseSourceCoverage(row.source_sync_health), createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString() }; }
+function publicGrant(row: Record<string, unknown>): OAuthGrant { return { id: String(row.id), tenantId: String(row.tenant_id), actorId: String(row.actor_id), provider: String(row.provider) as OAuthProvider, accountEmail: normalizeAccountEmail(String(row.account_email || "")) || undefined, connectionLabel: normalizeConnectionLabel(String(row.connection_label || "Personal")), connectionPurpose: row.connection_purpose === "work" ? "work" : "personal", scopes: Array.isArray(row.scopes) ? row.scopes.map(String) : [], status: String(row.status) as "active" | "revoked", authorizationGeneration: Math.max(1, Number(row.authorization_generation || 1)), expiresAt: row.expires_at ? new Date(String(row.expires_at)).toISOString() : undefined, syncStatus: String(row.sync_status || "idle") as OAuthGrant["syncStatus"], syncError: row.sync_error ? String(row.sync_error) : undefined, lastSyncedAt: row.last_synced_at ? new Date(String(row.last_synced_at)).toISOString() : undefined, syncedItems: Number(row.synced_items || 0), sourceCoverage: parseSourceCoverage(row.source_sync_health), createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString() }; }
 function internalGrantFromRow(row: Record<string, unknown>): InternalGrant {
   const grant = publicGrant(row);
   const storedCursor = row.sync_cursor ? String(row.sync_cursor) : undefined;
@@ -520,10 +629,12 @@ function internalGrantFromRow(row: Record<string, unknown>): InternalGrant {
 
 function openedSyncCursor(grant: InternalGrant) {
   if (grant.sealedSyncCursor) {
-    const opened = openJsonPayload(
-      grant.sealedSyncCursor,
-      syncCursorBinding(grant),
-    );
+    let opened: unknown;
+    try {
+      opened = openJsonPayload(grant.sealedSyncCursor, syncCursorBinding(grant));
+    } catch {
+      opened = openJsonPayload(grant.sealedSyncCursor, legacySyncCursorBinding(grant));
+    }
     if (typeof opened !== "string") {
       throw new Error("Connected source cursor is invalid.");
     }
@@ -549,15 +660,36 @@ function storedDatabaseSyncCursor(
 }
 
 function syncCursorBinding(
+  owner: Pick<OAuthGrant, "id" | "tenantId" | "actorId" | "provider">,
+) {
+  return `oauth-sync-cursor:${owner.tenantId}:${owner.actorId}:${owner.provider}:${owner.id}`;
+}
+
+function oauthGrantBinding(
+  owner: Pick<OAuthGrant, "id" | "tenantId" | "actorId" | "provider">,
+) {
+  return `oauth-grant:${owner.tenantId}:${owner.actorId}:${owner.provider}:${owner.id}`;
+}
+
+function legacySyncCursorBinding(
   owner: Pick<OAuthGrant, "tenantId" | "actorId" | "provider">,
 ) {
   return `oauth-sync-cursor:${owner.tenantId}:${owner.actorId}:${owner.provider}`;
 }
 
-function oauthGrantBinding(
+function legacyOAuthGrantBinding(
   owner: Pick<OAuthGrant, "tenantId" | "actorId" | "provider">,
 ) {
   return `oauth-grant:${owner.tenantId}:${owner.actorId}:${owner.provider}`;
+}
+
+function openOAuthGrantTokens(grant: InternalGrant) {
+  try {
+    return openOAuthTokens(grant.sealedTokens, oauthGrantBinding(grant));
+  } catch {
+    const opened = openOAuthTokens(grant.sealedTokens, legacyOAuthGrantBinding(grant));
+    return { ...opened, needsRewrap: true };
+  }
 }
 
 function oauthCredentialState(
@@ -626,6 +758,51 @@ function tokenString(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function normalizeAccountEmail(value: string) {
+  const normalized = value.trim().toLowerCase();
+  return isNormalizedAccountEmail(normalized) ? normalized : "";
+}
+
+function isNormalizedAccountEmail(value: unknown): value is string {
+  return typeof value === "string" &&
+    value.length >= 3 &&
+    value.length <= 320 &&
+    value === value.trim().toLowerCase() &&
+    /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+function normalizeConnectionLabel(value: string) {
+  const label = value
+    .replace(/[\u0000-\u001f\u007f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return Array.from(label || "Personal").slice(0, 80).join("");
+}
+
+function isSafeConnectionLabel(value: unknown): value is string {
+  return typeof value === "string" &&
+    value === normalizeConnectionLabel(value) &&
+    value.length >= 1 &&
+    value.length <= 80;
+}
+
+function resolveInternalGrant(
+  candidates: readonly InternalGrant[],
+  selector?: OAuthGrantSelector,
+) {
+  const selected = candidates.filter((grant) =>
+    (!selector?.connectionId || grant.id === selector.connectionId) &&
+    (!selector?.connectionPurpose ||
+      (grant.connectionPurpose || "personal") === selector.connectionPurpose)
+  );
+  if (selected.length > 1) {
+    throw new OAuthGrantReadConflictError(
+      "Choose an exact connected account before continuing.",
+    );
+  }
+  return selected[0];
+}
+
 function sameStringSet(left: readonly string[], right: readonly string[]) {
   if (left.length !== right.length) return false;
   const rightSet = new Set(right);
@@ -645,6 +822,9 @@ function requestOAuthGrant(
     tenantId: grant.tenantId,
     actorId: requestActorId,
     provider: grant.provider,
+    accountEmail: grant.accountEmail,
+    connectionLabel: grant.connectionLabel,
+    connectionPurpose: grant.connectionPurpose,
     scopes: [...grant.scopes],
     status: grant.status,
     authorizationGeneration: grant.authorizationGeneration,
@@ -672,6 +852,9 @@ function assertRequestOAuthGrantRow(
   const tenantId = typeof row.tenant_id === "string" ? row.tenant_id : "";
   const actorId = typeof row.actor_id === "string" ? row.actor_id : "";
   const provider = typeof row.provider === "string" ? row.provider : "";
+  const accountEmail = row.account_email;
+  const connectionLabel = row.connection_label;
+  const connectionPurpose = row.connection_purpose;
   const scopes = row.scopes;
   const status = typeof row.status === "string" ? row.status : "";
   const syncStatus = typeof row.sync_status === "string"
@@ -691,6 +874,9 @@ function assertRequestOAuthGrantRow(
     tenantId !== expectedTenantId ||
     (actorId !== canonicalActorId && actorId !== exactActorId) ||
     !isOAuthProvider(provider) ||
+    !(accountEmail === null || accountEmail === undefined || isNormalizedAccountEmail(accountEmail)) ||
+    !isSafeConnectionLabel(connectionLabel) ||
+    !(connectionPurpose === "personal" || connectionPurpose === "work") ||
     status !== "active" ||
     !isSafeOAuthScopes(scopes) ||
     !oauthSyncStatuses.includes(syncStatus as (typeof oauthSyncStatuses)[number]) ||
@@ -723,7 +909,8 @@ function assertRequestOAuthGrantRecords(
   exactActorId: string,
 ) {
   const ids = new Set<string>();
-  const providers = new Set<OAuthProvider>();
+  const providerPurposes = new Set<string>();
+  const providerEmails = new Set<string>();
   for (const record of records) {
     if (
       record.tenantId !== tenantId ||
@@ -738,13 +925,21 @@ function assertRequestOAuthGrantRecords(
         "Duplicate OAuth connection identifiers were found.",
       );
     }
-    if (providers.has(record.provider)) {
+    const providerPurpose = `${record.provider}:${record.connectionPurpose}`;
+    if (providerPurposes.has(providerPurpose)) {
       throw new OAuthGrantReadConflictError(
-        "OAuth connection provider ownership is ambiguous.",
+        "OAuth connection purpose ownership is ambiguous.",
       );
     }
+    const providerEmail = record.accountEmail
+      ? `${record.provider}:${record.accountEmail}`
+      : undefined;
+    if (providerEmail && providerEmails.has(providerEmail)) {
+      throw new OAuthGrantReadConflictError("OAuth account identity is ambiguous.");
+    }
     ids.add(record.id);
-    providers.add(record.provider);
+    providerPurposes.add(providerPurpose);
+    if (providerEmail) providerEmails.add(providerEmail);
   }
 }
 
@@ -754,6 +949,9 @@ function oauthGrantLedgerRow(grant: OAuthGrant) {
     tenant_id: grant.tenantId,
     actor_id: grant.actorId,
     provider: grant.provider,
+    account_email: grant.accountEmail ?? null,
+    connection_label: grant.connectionLabel || "Personal",
+    connection_purpose: grant.connectionPurpose || "personal",
     scopes: grant.scopes,
     status: grant.status,
     authorization_generation: grant.authorizationGeneration === undefined

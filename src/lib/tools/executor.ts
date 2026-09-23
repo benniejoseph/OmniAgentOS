@@ -4411,6 +4411,7 @@ function prepareProviderEffectMaterial(
     const inputSha256 = toolInputSha256(parsed);
     const targetSha256 = canonicalJsonSha256({
       targetType: "google_calendar_event",
+      connectionId: parsed.connectionId,
       calendarId: parsed.calendarId,
       eventId,
     });
@@ -4674,6 +4675,10 @@ function finalizeProviderEffectIntent(
   }
   if (tool.id === "calendar.create") {
     const result = z.object({
+      connectionId: z.string().uuid(),
+      accountEmail: z.string().email().max(320).optional(),
+      connectionLabel: z.string().trim().min(1).max(80),
+      connectionPurpose: z.enum(["personal", "work"]),
       calendarId: z.string().min(1),
       eventId: z.string().min(1),
       providerAcknowledgement: z.enum([

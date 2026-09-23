@@ -519,11 +519,84 @@
   text-transform: uppercase;
 }
 .learningCardHeading strong { display: block; margin-top: .12rem; color: var(--arsenal-ink); font-size: .76rem; }
-.learningCard ol { display: grid; gap: .48rem; }
-.learningCard li { display: grid; grid-template-columns: 1rem minmax(0, 1fr); gap: .45rem; color: var(--arsenal-muted); font-size: .68rem; line-height: 1.45; }
-.learningCard li svg { margin-top: .16rem; color: var(--agent-color); }
+.learningFreshness {
+  display: inline-flex;
+  align-items: center;
+  gap: .25rem;
+  margin-left: auto;
+  border-radius: 999px;
+  padding: .25rem .45rem;
+  color: var(--agent-color);
+  background: color-mix(in oklab, var(--agent-color) 10%, transparent);
+  font-size: .58rem;
+  font-weight: 800;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+.learningMetrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-block: 1px solid var(--arsenal-line);
+  padding-block: .7rem;
+}
+.learningMetrics div { min-width: 0; padding-inline: .55rem; }
+.learningMetrics div:first-child { padding-left: 0; }
+.learningMetrics div + div { border-left: 1px solid var(--arsenal-line); }
+.learningMetrics dt { color: var(--arsenal-muted); font-size: .59rem; line-height: 1.25; }
+.learningMetrics dd {
+  margin-top: .18rem;
+  color: var(--arsenal-ink);
+  font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif;
+  font-size: 1.05rem;
+  font-weight: 650;
+  line-height: 1;
+}
+.learningCycleScope { color: var(--arsenal-muted); font-size: .58rem; line-height: 1.45; }
+.learningEmpty { color: var(--arsenal-muted); font-size: .68rem; line-height: 1.55; }
+.learningSkeleton { display: grid; grid-template-columns: repeat(3, 1fr); gap: .5rem; }
+.learningSkeleton span {
+  height: 2.7rem;
+  border-radius: .55rem;
+  background: linear-gradient(100deg, var(--arsenal-line), color-mix(in oklab, var(--agent-color) 11%, transparent), var(--arsenal-line));
+  background-size: 220% 100%;
+  animation: learning-shimmer 1.4s ease-in-out infinite;
+}
+.learningReviewState {
+  display: flex;
+  align-items: center;
+  gap: .42rem;
+  color: var(--arsenal-muted);
+  font-size: .65rem;
+  font-weight: 720;
+  line-height: 1.4;
+}
+.learningReviewState svg { flex: none; color: var(--agent-color); }
+.learningReviewPending {
+  border-radius: .6rem;
+  padding: .48rem .55rem;
+  color: var(--arsenal-ink);
+  background: color-mix(in oklab, var(--agent-color) 9%, transparent);
+  animation: learning-pulse 2.8s ease-in-out infinite;
+}
+.learningPrivacy {
+  display: flex;
+  align-items: center;
+  gap: .35rem;
+  color: color-mix(in oklab, var(--arsenal-muted) 82%, transparent);
+  font-size: .59rem;
+  line-height: 1.4;
+}
+.learningPrivacy svg { flex: none; }
 .learningCardLink { display: inline-flex; width: fit-content; align-items: center; gap: .3rem; color: var(--agent-color); font-size: .68rem; font-weight: 760; }
 .learningCardLink:hover { text-decoration: underline; text-underline-offset: .18rem; }
+@keyframes learning-shimmer { to { background-position: -220% 0; } }
+@keyframes learning-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--agent-color) 0%, transparent); }
+  50% { box-shadow: 0 0 0 .2rem color-mix(in oklab, var(--agent-color) 7%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .learningSkeleton span, .learningReviewPending { animation: none; }
+}
 .shell :global(.inspector-list) { border-top-color: var(--arsenal-line); }
 .shell :global(.autonomy-note) { border: 1px solid var(--arsenal-line); border-radius: 1rem; background: transparent; }
 .shell :global(.autonomy-note strong) { color: var(--agent-color); }

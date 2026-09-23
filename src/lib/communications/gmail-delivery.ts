@@ -7,6 +7,10 @@ import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 const GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me";
 
 export type GmailDeliveryEffectResult = Readonly<{
+  googleConnectionId: string;
+  accountEmail?: string;
+  connectionLabel: string;
+  connectionPurpose: "personal" | "work";
   providerMessageId: string;
   externalThreadId: string;
   providerAcknowledgement:
@@ -37,6 +41,7 @@ export function gmailDraftTargetState(input: MessageDraft) {
   }
   return {
     targetType: "gmail_message",
+    googleConnectionId: draft.googleConnectionId || "",
     draftSha256: draft.draftSha256,
     messageId: gmailRfcMessageId(draft.draftSha256),
     recipient: draft.recipient.toLowerCase(),
@@ -65,11 +70,21 @@ export function buildGmailRawMessage(input: MessageDraft) {
 export async function deliverGmailDraft(input: MessageDraft, options: {
   tenantId: string;
   actorId: string;
+  connectionId?: string;
   mode: "deliver" | "reconcile";
   abortSignal?: AbortSignal;
 }): Promise<GmailDeliveryEffectResult> {
   const draft = messageDraftSchema.parse(input);
-  const authorization = await googleAuthorization(options);
+  const authorization = await googleAuthorization({
+    ...options,
+    connectionId: draft.googleConnectionId || options.connectionId,
+  });
+  if (
+    draft.googleConnectionId &&
+    draft.googleConnectionId !== authorization.grant.id
+  ) {
+    throw new Error("The Gmail draft is pinned to another Google account.");
+  }
   let prior: Record<string, unknown> | undefined;
   try {
     prior = await findGmailMessage(
@@ -89,6 +104,7 @@ export async function deliverGmailDraft(input: MessageDraft, options: {
     return verifiedResult(
       draft,
       prior,
+      authorization.grant,
       "provider_idempotency_reconciliation",
     );
   }
@@ -132,7 +148,12 @@ export async function deliverGmailDraft(input: MessageDraft, options: {
         "Gmail accepted the message but its target state could not be verified.",
       );
     }
-    return verifiedResult(draft, observed, "provider_response");
+    return verifiedResult(
+      draft,
+      observed,
+      authorization.grant,
+      "provider_response",
+    );
   } catch (error) {
     if (error instanceof GmailDeliveryOutcomeUnknownError) throw error;
     throw new GmailDeliveryOutcomeUnknownError(
@@ -192,17 +213,28 @@ async function readGmailMessage(
 function verifiedResult(
   draft: MessageDraft,
   observed: Record<string, unknown>,
+  grant: Readonly<{
+    id: string;
+    accountEmail?: string;
+    connectionLabel: string;
+    connectionPurpose: "personal" | "work";
+  }>,
   acknowledgement: GmailDeliveryEffectResult["providerAcknowledgement"],
 ) {
   const observedTargetStateSha256 = assertObservedTarget(draft, observed);
   const providerMessageId = requiredProviderId(observed.id, "message");
   const externalThreadId = requiredProviderId(observed.threadId, "thread");
   return Object.freeze({
+    googleConnectionId: grant.id,
+    ...(grant.accountEmail ? { accountEmail: grant.accountEmail } : {}),
+    connectionLabel: grant.connectionLabel,
+    connectionPurpose: grant.connectionPurpose,
     providerMessageId,
     externalThreadId,
     providerAcknowledgement: acknowledgement,
     providerAcknowledgementSha256: canonicalJsonSha256({
       provider: "gmail",
+      googleConnectionId: grant.id,
       acknowledgement,
       providerMessageId,
       externalThreadId,
@@ -221,6 +253,7 @@ function assertObservedTarget(draft: MessageDraft, observed: Record<string, unkn
   const expected = gmailDraftTargetState(draft);
   const actual = {
     targetType: "gmail_message",
+    googleConnectionId: draft.googleConnectionId || "",
     draftSha256: parsed.headers.get("x-asael-draft-sha256") || "",
     messageId: parsed.headers.get("message-id") || "",
     recipient: normalizeMailbox(parsed.headers.get("to") || ""),
@@ -255,10 +288,15 @@ function parseRawMessage(raw: string) {
   return { headers, body };
 }
 
-async function googleAuthorization(input: { tenantId: string; actorId: string }) {
+async function googleAuthorization(input: {
+  tenantId: string;
+  actorId: string;
+  connectionId?: string;
+}) {
   return getActiveGoogleWorkspaceAccess({
     tenantId: input.tenantId,
     actorId: input.actorId,
+    connectionId: input.connectionId,
     capability: "gmail.send",
   });
 }

@@ -106,7 +106,7 @@ async function GETHandler(request: Request) {
       label: integration.name,
       description: integration.permissions.mode === "no_access"
         ? integration.nextAction
-        : `${friendlyPermission(integration.permissions.mode)} · ${integration.nextAction}`,
+        : `${friendlyPermission(integration.permissions.mode)}${integration.account?.email ? ` · ${integration.account.email}` : ""} · ${integration.nextAction}`,
       state: integration.state,
       selectable: integration.connected && integration.state !== "unavailable",
     })));

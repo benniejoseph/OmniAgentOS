@@ -8,6 +8,7 @@ import {
   listOAuthGrantsForTenant,
   updateOAuthSyncState,
   OAuthCredentialError,
+  type OAuthGrant,
   type OAuthSourceCoverageCheckpoint,
 } from "@/lib/connectors/oauth-store";
 import { getActiveGoogleWorkspaceAccess } from "@/lib/connectors/google-workspace-access";
@@ -103,6 +104,21 @@ type PersonalSourceSettlement = Readonly<{
   error?: string;
 }>;
 
+function googleConnectionSourceNamespace(grant: OAuthGrant) {
+  if (grant.connectionPurpose === "personal") {
+    return {
+      idempotencyPrefix: "oauth:google",
+      sourcePrefix: "google",
+      externalPrefix: "",
+    } as const;
+  }
+  return {
+    idempotencyPrefix: `oauth:google:work:${grant.id}`,
+    sourcePrefix: `google:work:${grant.id}`,
+    externalPrefix: `work:${grant.id}`,
+  } as const;
+}
+
 export async function syncDuePersonalProviders(options: {
   tenantId: string;
   limit?: number;
@@ -122,6 +138,7 @@ export async function syncDuePersonalProviders(options: {
         tenantId: grant.tenantId,
         actorId: grant.actorId,
         provider: grant.provider,
+        connectionId: grant.id,
         abortSignal: options.abortSignal,
       });
       results.push({
@@ -137,7 +154,7 @@ export async function syncDuePersonalProviders(options: {
   return results;
 }
 
-export function syncPersonalProvider(input: { tenantId: string; actorId: string; provider: OAuthProvider; sources?: PersonalSourceId[]; abortSignal?: AbortSignal }) {
+export function syncPersonalProvider(input: { tenantId: string; actorId: string; provider: OAuthProvider; connectionId?: string; sources?: PersonalSourceId[]; abortSignal?: AbortSignal }) {
   return runWithDatabaseActorScope(
     input.tenantId,
     [input.actorId],
@@ -145,16 +162,26 @@ export function syncPersonalProvider(input: { tenantId: string; actorId: string;
   );
 }
 
-async function syncPersonalProviderWithActorScope(input: { tenantId: string; actorId: string; provider: OAuthProvider; sources?: PersonalSourceId[]; abortSignal?: AbortSignal }) {
+async function syncPersonalProviderWithActorScope(input: { tenantId: string; actorId: string; provider: OAuthProvider; connectionId?: string; sources?: PersonalSourceId[]; abortSignal?: AbortSignal }) {
   if (input.provider !== "google") {
     throw new Error("Personal synchronization supports Google connections only.");
   }
-  const secrets = await getOAuthGrantSecrets(input.tenantId, input.actorId, input.provider);
+  const secrets = await getOAuthGrantSecrets(
+    input.tenantId,
+    input.actorId,
+    input.provider,
+    input.connectionId ? { connectionId: input.connectionId } : undefined,
+  );
   if (!secrets) throw new Error("Connected source not found.");
   const grantedSources = googleSyncSourcesForScopes(secrets.grant.scopes).filter((source) =>
     !input.sources?.length || input.sources.includes(source)
   );
-  const claim = await claimOAuthSyncLease(input);
+  const claim = await claimOAuthSyncLease({
+    tenantId: input.tenantId,
+    actorId: input.actorId,
+    provider: input.provider,
+    connectionId: secrets.grant.id,
+  });
   if (claim.status !== "claimed") {
     throw new Error("Connected source synchronization is already running.");
   }
@@ -190,6 +217,7 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
       const { accessToken } = await getActiveGoogleWorkspaceAccess({
         tenantId: input.tenantId,
         actorId: input.actorId,
+        connectionId: secrets.grant.id,
         capability: sourceCapability(grantedSources[0]),
       });
       if (grantedSources.includes("drive")) {
@@ -242,7 +270,8 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
       let sourceRemoved = 0;
       try {
         for (const item of observation.value.items) {
-          const idempotencyKey = `oauth:${input.provider}:${item.kind}:${item.id}`;
+          const sourceNamespace = googleConnectionSourceNamespace(secrets.grant);
+          const idempotencyKey = `${sourceNamespace.idempotencyPrefix}:${item.kind}:${item.id}`;
           if (item.deleted) {
             if (item.kind === "calendar") {
               const existingDocument = await getKnowledgeDocumentByIdempotencyKey(
@@ -304,7 +333,7 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
             tenantId: input.tenantId,
             title: item.title,
             content: item.content,
-            source: `${input.provider}:${item.kind}:${item.id}`,
+            source: `${sourceNamespace.sourcePrefix}:${item.kind}:${item.id}`,
             sourceType: "api",
             tags: ["connected-source", input.provider, item.kind],
             abortSignal: input.abortSignal,
@@ -315,7 +344,7 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
             usageScope: {
               tenantId: input.tenantId,
               actorId: input.actorId,
-              sourceStreamId: `connector-sync:${input.provider}:${input.actorId}:${item.kind}`,
+              sourceStreamId: `connector-sync:${input.provider}:${input.actorId}:${secrets.grant.id}:${item.kind}`,
               operation: "embedding",
               purpose: `connector.${input.provider}.${item.kind}.ingest`,
               credentialSource: "deployment_environment",
@@ -366,7 +395,15 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
             });
           }
           if (item.communication) {
-            await mapInboundCommunication(item.communication, {
+            await mapInboundCommunication({
+              ...item.communication,
+              providerMessageId: sourceNamespace.externalPrefix
+                ? `${sourceNamespace.externalPrefix}:${item.communication.providerMessageId}`
+                : item.communication.providerMessageId,
+              externalThreadId: sourceNamespace.externalPrefix
+                ? `${sourceNamespace.externalPrefix}:${item.communication.externalThreadId}`
+                : item.communication.externalThreadId,
+            }, {
               tenantId: input.tenantId,
               actorId: input.actorId,
               executionScope: sourceExecutionScope,
@@ -385,6 +422,7 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
           : "syncing" as const;
         const checkpoint = await updateOAuthSyncState({
           ...input,
+          connectionId: secrets.grant.id,
           status: "syncing",
           cursor: JSON.stringify(candidateCursor),
           syncedItems: sourceImported,
@@ -443,6 +481,7 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
       : undefined;
     const grant = await updateOAuthSyncState({
       ...input,
+      connectionId: secrets.grant.id,
       status: failed.length ? "error" : advancing.length ? "syncing" : "healthy",
       cursor: JSON.stringify(nextCursor),
       error,
@@ -478,6 +517,7 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
     const lastAttemptedAt = new Date().toISOString();
     await updateOAuthSyncState({
       ...input,
+      connectionId: secrets.grant.id,
       status: interrupted ? "syncing" : "error",
       error: interrupted
         ? undefined

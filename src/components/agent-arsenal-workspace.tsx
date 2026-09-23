@@ -38,6 +38,7 @@ import {
 } from "@/lib/agents/council-map-contract";
 import { DEFAULT_CUSTOM_AGENT_PERSONA } from "@/lib/agents/persona";
 import type { AgentPerformance } from "@/lib/agents/performance";
+import type { AgentDailyLearningStatusV1 } from "@/lib/agents/learning-contracts";
 import type {
   AgentSkill,
   CustomAgentDefinition,
@@ -82,6 +83,8 @@ export function AgentArsenalWorkspace({
   const [skills, setSkills] = useState<AgentSkill[]>([]);
   const [tools, setTools] = useState<ToolOption[]>([]);
   const [performance, setPerformance] = useState<AgentPerformance[]>([]);
+  const [learningStatus, setLearningStatus] = useState<AgentDailyLearningStatusV1>();
+  const [learningState, setLearningState] = useState<"loading" | "ready" | "unavailable">("loading");
   const [councilMap, setCouncilMap] = useState<AgentCouncilMap>();
   const [councilState, setCouncilState] = useState<"loading" | "ready" | "unavailable">("loading");
   const [state, setState] = useState<"loading" | "ready" | "unavailable">(
@@ -223,6 +226,51 @@ export function AgentArsenalWorkspace({
       controller?.abort();
     };
   }, [activeView]);
+  useEffect(() => {
+    if (activeView !== "roster") return;
+    let controller: AbortController | undefined;
+    let timer: number | undefined;
+    let disposed = false;
+    const loadLearning = async () => {
+      if (document.hidden) return;
+      controller?.abort();
+      const requestController = new AbortController();
+      controller = requestController;
+      try {
+        const payload = await readJson<{ learning?: AgentDailyLearningStatusV1 }>(
+          `/api/agents/${encodeURIComponent(selected.id)}/learning`,
+          { signal: requestController.signal },
+        );
+        if (disposed || requestController.signal.aborted) return;
+        if (!payload.learning) throw new Error("Daily learning status is missing.");
+        setLearningStatus(payload.learning);
+        setLearningState("ready");
+      } catch {
+        if (disposed || requestController.signal.aborted) return;
+        setLearningStatus(undefined);
+        setLearningState("unavailable");
+      } finally {
+        if (!disposed && !document.hidden && controller === requestController) {
+          timer = window.setTimeout(() => void loadLearning(), 30_000);
+        }
+      }
+    };
+    setLearningStatus(undefined);
+    setLearningState("loading");
+    const onVisibilityChange = () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      if (document.hidden) controller?.abort();
+      else void loadLearning();
+    };
+    timer = window.setTimeout(() => void loadLearning(), 0);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      disposed = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      controller?.abort();
+    };
+  }, [activeView, selected.id]);
 
   function changeView(view: WorkspaceView) {
     setActiveView(view);
@@ -475,7 +523,10 @@ export function AgentArsenalWorkspace({
             performance={selectedPerformance}
             state={state}
           />
-          <DailyLearningCard />
+          <DailyLearningCard
+            status={learningStatus}
+            state={learningState}
+          />
           {selectedIsExactMoltbook ? (
             <MoltbookAgentPanel
               key={selected.id}
@@ -1570,26 +1621,117 @@ function AgentPerformancePanel({
   );
 }
 
-function DailyLearningCard() {
+function DailyLearningCard({
+  status,
+  state,
+}: {
+  status?: AgentDailyLearningStatusV1;
+  state: "loading" | "ready" | "unavailable";
+}) {
+  const latest = status?.latestCompletedDay;
+  const available = status?.availability === "ready";
+  const pendingCount = status?.pendingReviewedAdaptationCount || 0;
   return (
-    <section className={styles.learningCard} aria-label="How Agents improve">
+    <section
+      className={styles.learningCard}
+      aria-label="Daily learning status"
+      aria-live="polite"
+    >
       <div className={styles.learningCardHeading}>
         <span><Sparkles size={14} aria-hidden="true" /></span>
         <div>
           <p>Daily learning</p>
-          <strong>Gets better from reviewed outcomes</strong>
+          <strong>
+            {state === "loading"
+              ? "Reading the latest learning receipt"
+              : state === "unavailable" || !available
+                ? "Learning status is unavailable"
+                : latest
+                  ? `${formatLearningDate(latest.localDate)} completed`
+                  : "Waiting for the first completed day"}
+          </strong>
         </div>
+        <span className={styles.learningFreshness}>
+          {state === "loading" ? (
+            <><Loader2 size={11} className="animate-spin" aria-hidden="true" /> Syncing</>
+          ) : available ? "Live" : "Offline"}
+        </span>
       </div>
-      <ol>
-        <li><Eye size={13} aria-hidden="true" /><span>Observes completed work after each local day.</span></li>
-        <li><ClipboardCheck size={13} aria-hidden="true" /><span>Learns only from feedback and corrections you explicitly record.</span></li>
-        <li><Check size={13} aria-hidden="true" /><span>Proposes a change for review; it never silently expands its own access.</span></li>
-      </ol>
+      {state === "loading" ? (
+        <div className={styles.learningSkeleton} aria-hidden="true">
+          <span /><span /><span />
+        </div>
+      ) : state === "unavailable" || !available ? (
+        <p className={styles.learningEmpty}>
+          Asael could not verify the canonical learning record. No learning
+          state is being inferred from cached or partial data.
+        </p>
+      ) : latest ? (
+        <>
+          <dl className={styles.learningMetrics}>
+            <div>
+              <dt>Work reviewed</dt>
+              <dd>{latest.observationsReviewed.toLocaleString()}</dd>
+            </div>
+            <div>
+              <dt>Corrections</dt>
+              <dd>{latest.explicitCorrectionCount.toLocaleString()}</dd>
+            </div>
+            <div>
+              <dt>Actionable</dt>
+              <dd>{latest.actionableEvidenceCount.toLocaleString()}</dd>
+            </div>
+          </dl>
+          <p className={styles.learningCycleScope}>
+            Local day · {latest.timezone} · receipt completed {formatLearningTime(latest.completedAt)}
+          </p>
+        </>
+      ) : (
+        <p className={styles.learningEmpty}>
+          No completed learning day yet. After a local day closes, Asael will
+          summarize only the work and feedback tied to this exact Agent release.
+        </p>
+      )}
+      {available ? (
+        <div className={clsx(styles.learningReviewState, pendingCount > 0 && styles.learningReviewPending)}>
+          <ClipboardCheck size={13} aria-hidden="true" />
+          <span>
+            {pendingCount > 0
+              ? `${pendingCount} reviewed adaptation${pendingCount === 1 ? "" : "s"} waiting for activation`
+              : "No reviewed adaptations are waiting"}
+          </span>
+        </div>
+      ) : null}
+      <p className={styles.learningPrivacy} title="Prompts, responses, correction text, and private reasoning are excluded.">
+        <Eye size={12} aria-hidden="true" /> Counts and review state only. No private reasoning.
+      </p>
       <Link href="/app/agents?view=outcomes" className={styles.learningCardLink}>
         Review learning evidence <ArrowRight size={13} aria-hidden="true" />
       </Link>
     </section>
   );
+}
+
+function formatLearningDate(localDate: string) {
+  const date = new Date(`${localDate}T12:00:00.000Z`);
+  if (!Number.isFinite(date.getTime())) return localDate;
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(date);
+}
+
+function formatLearningTime(timestamp: string) {
+  const date = new Date(timestamp);
+  if (!Number.isFinite(date.getTime())) return "—";
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date);
 }
 
 function PerformanceMetric({ label, value }: { label: string; value: string }) {

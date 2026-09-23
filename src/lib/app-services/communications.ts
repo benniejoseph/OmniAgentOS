@@ -20,6 +20,7 @@ import {
   upsertPersonContactPolicy,
 } from "@/lib/communications/store";
 import { getOwnedThread } from "@/lib/threads/store";
+import { getActiveGoogleWorkspaceAccess } from "@/lib/connectors/google-workspace-access";
 
 const emptySchema = z.object({}).strict();
 const policyUpsertSchema = z.object({
@@ -45,6 +46,7 @@ const policyUpsertSchema = z.object({
 }).strict();
 
 const draftCreateSchema = z.object({
+  connectionId: z.string().uuid().optional(),
   policyId: z.string().regex(/^contact_policy:[0-9a-f-]{36}$/),
   purpose: z.enum(["informational", "coordination", "follow_up", "support", "commercial"]),
   disclosure: z.enum(["public_only", "relationship_context", "confidential"]),
@@ -117,8 +119,20 @@ export async function createCommunicationDraftService(
     if (!thread) throw new Error("Communication conversation is not owned by this actor.");
   }
   const executionScope = caller.executionScope!;
+  const googleAccess = await getActiveGoogleWorkspaceAccess({
+    tenantId: caller.context.tenantId,
+    actorId: caller.context.actorId,
+    connectionId: value.connectionId,
+    capability: "gmail.send",
+  });
   const draft = await createMessageDraft({
-    ...value,
+    policyId: value.policyId,
+    purpose: value.purpose,
+    disclosure: value.disclosure,
+    subject: value.subject,
+    body: value.body,
+    canonicalThreadId: value.canonicalThreadId,
+    googleConnectionId: googleAccess.grant.id,
     executingAgentId: executionScope.executingPrincipalId ||
       `${executionScope.executingPrincipalType}:${caller.context.actorId}`,
     projectId: executionScope.projectId || undefined,
@@ -152,6 +166,7 @@ export async function deliverCommunicationDraftService(
     effect = await deliverGmailDraft(claimed.draft, {
       tenantId: caller.context.tenantId,
       actorId: caller.context.actorId,
+      connectionId: claimed.draft.googleConnectionId,
       mode: claimed.state,
     });
   } catch (error) {
@@ -169,6 +184,7 @@ export async function deliverCommunicationDraftService(
     externalThreadId: effect.externalThreadId,
     providerAcknowledgementSha256: effect.providerAcknowledgementSha256,
     observedTargetStateSha256: effect.observedTargetStateSha256,
+    googleConnectionId: effect.googleConnectionId,
   }, mutationOwner(caller));
   const draft = await getMessageDraft(value.draftId, owner(caller));
   return completeAppServiceCall(authorized, {

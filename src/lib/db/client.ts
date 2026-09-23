@@ -32,6 +32,8 @@ import { ensureScheduledWorkflowReadOnlyCanaryV1 } from "@/lib/db/workflow-sched
 import { ensureScheduledWorkflowPolicyLeaseV1 } from "@/lib/db/workflow-policy-lease-schema";
 import { ensureNotificationDispositionRuntimeV1 } from "@/lib/db/notification-disposition-schema";
 import { ensurePromptQueueRuntimeV1 } from "@/lib/db/prompt-queue-schema";
+import { ensureAgentDailyLearningV1 } from "@/lib/db/agent-learning-schema";
+import { ensureGoogleMultiAccountConnectionsV1 } from "@/lib/db/google-multi-account-schema";
 import { ensureDeclarativePluginsV1 } from "@/lib/db/plugin-schema";
 import { ensureBuiltinSkillCatalogV2 } from "@/lib/db/builtin-skill-catalog-schema";
 import { ensureBuiltinSkillCatalogV3 } from "@/lib/db/builtin-skill-catalog-v3-schema";
@@ -209,6 +211,8 @@ export const tenantRootPolicyTables = [
   "omni_agent_release_channels",
   "omni_agent_release_evaluations",
   "omni_agent_adaptations",
+  "omni_agent_learning_observations",
+  "omni_agent_learning_cycles",
   "omni_delegation_tasks",
   "omni_delegation_budget_ledgers",
   "omni_delegation_executions",
@@ -1758,6 +1762,14 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[201],
       up: ensureDelegationExecutionRlsCompositionRepairV1,
+    },
+    {
+      ...databaseSchemaMigrations[202],
+      up: ensureAgentDailyLearningV1,
+    },
+    {
+      ...databaseSchemaMigrations[203],
+      up: ensureGoogleMultiAccountConnectionsV1,
     },
   ];
 }
@@ -4412,16 +4424,24 @@ async function ensureOAuthGrants(sql: SqlClient) {
       tenant_id TEXT NOT NULL,
       actor_id TEXT NOT NULL,
       provider TEXT NOT NULL,
+      account_email TEXT,
+      connection_label TEXT NOT NULL DEFAULT 'Personal',
+      connection_purpose TEXT NOT NULL DEFAULT 'personal',
       scopes TEXT[] NOT NULL DEFAULT '{}',
       sealed_tokens JSONB NOT NULL,
       expires_at TIMESTAMPTZ,
       sync_cursor TEXT,
       status TEXT NOT NULL DEFAULT 'active',
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      UNIQUE (tenant_id, actor_id, provider)
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `;
+  await sql`ALTER TABLE omni_oauth_grants ADD COLUMN IF NOT EXISTS account_email TEXT`;
+  await sql`ALTER TABLE omni_oauth_grants ADD COLUMN IF NOT EXISTS connection_label TEXT NOT NULL DEFAULT 'Personal'`;
+  await sql`ALTER TABLE omni_oauth_grants ADD COLUMN IF NOT EXISTS connection_purpose TEXT NOT NULL DEFAULT 'personal'`;
+  await sql`ALTER TABLE omni_oauth_grants DROP CONSTRAINT IF EXISTS omni_oauth_grants_tenant_id_actor_id_provider_key`;
+  await sql`CREATE UNIQUE INDEX IF NOT EXISTS omni_oauth_grants_actor_provider_purpose_key ON omni_oauth_grants (tenant_id, actor_id, provider, connection_purpose)`;
+  await sql`CREATE UNIQUE INDEX IF NOT EXISTS omni_oauth_grants_actor_provider_email_key ON omni_oauth_grants (tenant_id, actor_id, provider, account_email) WHERE account_email IS NOT NULL`;
   await sql`CREATE INDEX IF NOT EXISTS omni_oauth_grants_tenant_actor_idx ON omni_oauth_grants (tenant_id, actor_id, updated_at DESC)`;
 }
 

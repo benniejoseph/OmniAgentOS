@@ -137,17 +137,19 @@ const unsupportedDomains = Object.freeze([
 
 export function projectSourceCoverage(input: SourceCoverageInput): SourceCoverageProjection {
   const generatedAt = canonicalTimestamp(input.generatedAt || new Date().toISOString());
+  const googleGrants = input.oauth.state === "ready"
+    ? input.oauth.value.filter((grant) => grant.provider === "google")
+    : [];
+  const googleDomains = googleGrants.length
+    ? googleGrants.flatMap((grant) => googleAccountDomains(
+        input,
+        generatedAt,
+        grant,
+        googleGrants.length,
+      ))
+    : defaultGoogleDomains(input, generatedAt);
   const domains: SourceCoverageDomain[] = [
-    googleDomain(input, generatedAt, {
-      id: "gmail", label: "Gmail", category: "communication", integrationId: "google:gmail", sourceId: "mail",
-    }),
-    googleDomain(input, generatedAt, {
-      id: "google_calendar", label: "Google Calendar", category: "schedule", integrationId: "google:google-calendar", sourceId: "calendar",
-    }),
-    googleDomain(input, generatedAt, {
-      id: "google_drive", label: "Google Drive", category: "files", integrationId: "google:google-drive", sourceId: "drive",
-    }),
-    pickerDomain(input, "google_photos", "Google Photos", "google:google-photos", "media"),
+    ...googleDomains,
     salesforceDomain(input),
     nativeCaptureDomain(input, generatedAt),
     nativeKnowledgeDomain(input, generatedAt),
@@ -195,15 +197,84 @@ export function projectSourceCoverage(input: SourceCoverageInput): SourceCoverag
   });
 }
 
+function googleAccountDomains(
+  input: SourceCoverageInput,
+  generatedAt: string,
+  grant: RequestOAuthGrant,
+  accountCount: number,
+): SourceCoverageDomain[] {
+  const suffix = googleAccountSuffix(grant);
+  return [
+    googleDomain(input, generatedAt, {
+      id: `gmail:${grant.id}`,
+      label: `Gmail · ${suffix}`,
+      category: "communication",
+      integrationId: `google:${grant.id}:gmail`,
+      sourceId: "mail",
+      inventoryId: "gmail",
+      connectionId: grant.id,
+      accountCount,
+    }),
+    googleDomain(input, generatedAt, {
+      id: `google_calendar:${grant.id}`,
+      label: `Google Calendar · ${suffix}`,
+      category: "schedule",
+      integrationId: `google:${grant.id}:google-calendar`,
+      sourceId: "calendar",
+      inventoryId: "google_calendar",
+      connectionId: grant.id,
+      accountCount,
+    }),
+    googleDomain(input, generatedAt, {
+      id: `google_drive:${grant.id}`,
+      label: `Google Drive · ${suffix}`,
+      category: "files",
+      integrationId: `google:${grant.id}:google-drive`,
+      sourceId: "drive",
+      inventoryId: "google_drive",
+      connectionId: grant.id,
+      accountCount,
+    }),
+    pickerDomain(
+      input,
+      `google_photos:${grant.id}`,
+      `Google Photos · ${suffix}`,
+      `google:${grant.id}:google-photos`,
+      "media",
+    ),
+  ];
+}
+
+function defaultGoogleDomains(
+  input: SourceCoverageInput,
+  generatedAt: string,
+): SourceCoverageDomain[] {
+  return [
+    googleDomain(input, generatedAt, {
+      id: "gmail", label: "Gmail", category: "communication", integrationId: "google:gmail", sourceId: "mail", accountCount: 0,
+    }),
+    googleDomain(input, generatedAt, {
+      id: "google_calendar", label: "Google Calendar", category: "schedule", integrationId: "google:google-calendar", sourceId: "calendar", accountCount: 0,
+    }),
+    googleDomain(input, generatedAt, {
+      id: "google_drive", label: "Google Drive", category: "files", integrationId: "google:google-drive", sourceId: "drive", accountCount: 0,
+    }),
+    pickerDomain(input, "google_photos", "Google Photos", "google:google-photos", "media"),
+  ];
+}
+
 function googleDomain(
   input: SourceCoverageInput,
   generatedAt: string,
   spec: Readonly<{
-    id: "gmail" | "google_calendar" | "google_drive";
+    id: string;
     label: string;
     category: "communication" | "schedule" | "files";
     integrationId: string;
     sourceId: "mail" | "calendar" | "drive";
+    inventoryId?: OwnedSourceCoverageInventory["domains"][number]["id"];
+    connectionId?: string;
+    accountCount: number;
   }>,
 ): SourceCoverageDomain {
   if (input.integrations.state === "unavailable") {
@@ -219,10 +290,15 @@ function googleDomain(
   if (input.oauth.state === "unavailable") {
     return unavailableDomain(spec.id, spec.label, spec.category, input.oauth.detail, integration.manageHref);
   }
-  const grant = input.oauth.value.find((item) => item.provider === "google");
+  const grant = input.oauth.value.find((item) =>
+    item.provider === "google" &&
+    (!spec.connectionId || item.id === spec.connectionId)
+  );
   const checkpoint = grant?.sourceCoverage[spec.sourceId];
-  const inventory = input.ownedSources.state === "ready"
-    ? input.ownedSources.value.domains.find((domain) => domain.id === spec.id)
+  const inventory = input.ownedSources.state === "ready" && spec.accountCount <= 1
+    ? input.ownedSources.value.domains.find((domain) =>
+        domain.id === (spec.inventoryId || spec.id)
+      )
     : undefined;
   if (!checkpoint) {
     return {
@@ -269,7 +345,9 @@ function googleDomain(
       state: coverageState,
       observedItems: inventory?.currentItems ?? null,
       detail: checkpoint.backfillState === "complete"
-        ? "The bounded backfill reached its delta checkpoint. Current item totals include only actor-owned canonical source heads."
+        ? spec.accountCount > 1
+          ? "The bounded backfill reached this account's delta checkpoint. Item totals remain hidden because the current knowledge aggregate is not split by Google account."
+          : "The bounded backfill reached its delta checkpoint. Current item totals include only actor-owned canonical source heads."
         : checkpoint.backfillState === "in_progress"
           ? "The bounded backfill has more pages. Missing pages remain an explicit blind spot."
           : "Backfill completion has not been proven.",
@@ -321,6 +399,13 @@ function pickerDomain(
     limitation: "Unselected photos remain unknown to Asael.",
     nextAction: { state: "available", label: "Select photos from Capture when they are needed.", href: "/app/capture" },
   };
+}
+
+function googleAccountSuffix(grant: RequestOAuthGrant) {
+  const label = grant.connectionLabel.trim().slice(0, 48) ||
+    (grant.connectionPurpose === "work" ? "Work" : "Personal");
+  const email = grant.accountEmail?.trim().toLowerCase();
+  return email ? `${label} (${email})`.slice(0, 88) : label;
 }
 
 function salesforceDomain(input: SourceCoverageInput): SourceCoverageDomain {

@@ -18,12 +18,14 @@ import {
 export async function getActiveGoogleWorkspaceAccess(input: {
   tenantId: string;
   actorId: string;
+  connectionId?: string;
   capability: GoogleWorkspaceCapability;
 }): Promise<Readonly<{ accessToken: string; grant: OAuthGrant }>> {
   const secrets = await getOAuthGrantSecrets(
     input.tenantId,
     input.actorId,
     "google",
+    input.connectionId ? { connectionId: input.connectionId } : undefined,
   );
   if (!secrets) {
     throw new OAuthCredentialError(
@@ -53,6 +55,10 @@ export async function getActiveGoogleWorkspaceAccess(input: {
     tenantId: input.tenantId,
     actorId: input.actorId,
     provider: "google",
+    connectionId: secrets.grant.id,
+    connectionPurpose: secrets.grant.connectionPurpose,
+    connectionLabel: secrets.grant.connectionLabel,
+    accountEmail: secrets.grant.accountEmail,
     tokens: refreshed,
     authorizationMode: "refresh",
   });

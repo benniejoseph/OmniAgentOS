@@ -1,4 +1,8 @@
-import { oauthConfigured, oauthProviders } from "@/lib/connectors/oauth-providers";
+import {
+  googleConnectorAccountPolicy,
+  oauthConfigured,
+  oauthProviders,
+} from "@/lib/connectors/oauth-providers";
 import {
   OAuthGrantReadConflictError,
   listOAuthGrants,
@@ -32,6 +36,11 @@ async function GETHandler(request: Request) {
         scopes: config.scopes,
         configured: oauthConfigured(id as keyof typeof oauthProviders),
         authorizeUrl: `/api/oauth/${id}/authorize`,
+        ...(id === "google"
+          ? {
+              accounts: googleAccountOptions(),
+            }
+          : {}),
       })),
       grants,
       requestReadContracts: {
@@ -58,4 +67,15 @@ async function GETHandler(request: Request) {
       },
     );
   }
+}
+
+function googleAccountOptions() {
+  return (["personal", "work"] as const).flatMap((purpose) => {
+    try {
+      const policy = googleConnectorAccountPolicy(purpose);
+      return [{ purpose: policy.purpose, label: policy.label, email: policy.email }];
+    } catch {
+      return [];
+    }
+  });
 }

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { arsenalAgents } from "@/lib/agents/arsenal";
+import { getAgentDailyLearningStatus } from "@/lib/agents/learning-service";
 import { buildAgentCouncilMap } from "@/lib/agents/council-map";
 import { loadAgentCouncilMapSource } from "@/lib/agents/council-map-store";
 import { listInternalAgentCardsV1 } from "@/lib/agents/discovery-card";
@@ -61,6 +62,9 @@ const emptySchema = z.object({}).strict();
 const agentListSchema = z.object({ ownerScope: z.enum(["exact", "readable"]).default("readable") }).strict();
 const idSchema = z.object({ id: z.string().trim().min(1).max(200) }).strict();
 const agentShowSchema = idSchema.extend({ includeBuiltIns: z.boolean().default(true) }).strict();
+const agentLearningStatusSchema = z.object({
+  agentId: z.string().trim().min(1).max(200),
+}).strict();
 const deleteSchema = idSchema.extend({ preview: trashActionPreviewV1Schema }).strict();
 const cardDiscoverySchema = z.object({
   query: z.string().trim().min(1).max(4_000).optional(),
@@ -135,6 +139,27 @@ export async function showAgentPerformanceService(caller: AppServiceCaller, inpu
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.agents.performance"));
   const agents = await getAgentPerformance(caller.context.tenantId);
   return completeAppServiceCall(authorized, { agents }, { resourceCount: agents.length });
+}
+
+export async function showAgentDailyLearningStatusService(
+  caller: AppServiceCaller,
+  input: z.input<typeof agentLearningStatusSchema>,
+) {
+  const value = agentLearningStatusSchema.parse(input);
+  const authorized = authorizeAppServiceCall(
+    caller,
+    getAppServiceOperationContract("app.agents.learning.show"),
+  );
+  const learning = await getAgentDailyLearningStatus({
+    tenantId: caller.context.tenantId,
+    actorId: caller.context.actorId,
+    agentId: value.agentId,
+  });
+  return completeAppServiceCall(
+    authorized,
+    { learning },
+    { resourceCount: learning.latestCompletedDay ? 1 : 0 },
+  );
 }
 
 export async function showAgentCouncilMapService(

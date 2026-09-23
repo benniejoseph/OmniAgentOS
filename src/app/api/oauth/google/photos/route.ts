@@ -32,6 +32,7 @@ async function DELETEHandler(request: Request) {
     const deleted = await deleteImportedGooglePhotos({
       tenantId: security.tenantId,
       actorId: security.actorId,
+      connectionId: new URL(request.url).searchParams.get("connectionId") || undefined,
     }, executionScope);
     return Response.json(
       { deleted, source: "google:photos" },

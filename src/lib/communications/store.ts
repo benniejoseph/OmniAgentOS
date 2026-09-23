@@ -63,6 +63,15 @@ export async function upsertPersonContactPolicy(input: {
   optOutReason?: string;
 }, owner: OwnerScope) {
   requireDatabase();
+  if (
+    input.draft.googleConnectionId &&
+    input.draft.googleConnectionId !== input.googleConnectionId
+  ) {
+    throw new CommunicationPolicyError(
+      "The delivery receipt does not match the Google account pinned to this draft.",
+      "delivery_conflict",
+    );
+  }
   const scope = exactOwner(owner);
   await ensureDatabaseSchema();
   const address = normalizeAddress(input.channel, input.address);
@@ -179,6 +188,7 @@ export async function createMessageDraft(input: {
   missionId?: string;
   runId?: string;
   idempotencyKey: string;
+  googleConnectionId: string;
 }, owner: OwnerScope) {
   requireDatabase();
   const scope = exactOwner(owner);
@@ -197,7 +207,14 @@ export async function createMessageDraft(input: {
         AND draft_id = ${draftId} LIMIT 1
     `;
     if (priorRows[0]) {
-      return messageDraftSchema.parse(priorRows[0].draft);
+      const prior = messageDraftSchema.parse(priorRows[0].draft);
+      if (prior.googleConnectionId !== input.googleConnectionId) {
+        throw new CommunicationPolicyError(
+          "The idempotency key is already bound to another Google account.",
+          "delivery_conflict",
+        );
+      }
+      return prior;
     }
     const policy = await getPolicyForUpdate(input.policyId, scope, transaction);
     assertPolicyAllowsDraft(policy, input.purpose, input.disclosure);
@@ -230,6 +247,7 @@ export async function createMessageDraft(input: {
       subject: requiredText(input.subject, 998),
       body: requiredText(input.body, 50_000),
       senderIdentity: "connected_account" as const,
+      googleConnectionId: input.googleConnectionId,
       state: "ready" as const,
       lifecycleRevision: 1,
       createdAt: now,
@@ -277,6 +295,7 @@ export async function createMessageDraft(input: {
         subjectSha256: sha256(draft.subject),
         bodySha256: sha256(draft.body),
         draftSha256: draft.draftSha256,
+        googleConnectionIdSha256: sha256(input.googleConnectionId),
         lifecycleRevision: draft.lifecycleRevision,
       },
       sql: transaction,
@@ -424,6 +443,7 @@ export async function completeMessageDelivery(input: {
   externalThreadId: string;
   providerAcknowledgementSha256: string;
   observedTargetStateSha256: string;
+  googleConnectionId: string;
 }, owner: OwnerScope) {
   requireDatabase();
   const scope = exactOwner(owner);
@@ -435,6 +455,7 @@ export async function completeMessageDelivery(input: {
     draftId: input.draft.id,
     draftSha256: input.draft.draftSha256,
     provider: "gmail" as const,
+    googleConnectionId: input.googleConnectionId,
     providerMessageId: requiredText(input.providerMessageId, 500),
     externalThreadId: requiredText(input.externalThreadId, 500),
     providerAcknowledgementSha256: requiredSha256(input.providerAcknowledgementSha256),
@@ -537,6 +558,7 @@ export async function completeMessageDelivery(input: {
         receiptId: receipt.id,
         receiptSha256: receipt.receiptSha256,
         provider: receipt.provider,
+        googleConnectionIdSha256: sha256(input.googleConnectionId),
         providerMessageIdSha256: sha256(receipt.providerMessageId),
         externalThreadIdSha256: sha256(receipt.externalThreadId),
         linkSha256: link.linkSha256,
@@ -757,6 +779,7 @@ function draftContentSha256(value: {
   subject: string;
   body: string;
   senderIdentity: string;
+  googleConnectionId: string;
   createdAt: string;
 }) {
   return canonicalJsonSha256({
@@ -769,6 +792,7 @@ function draftContentSha256(value: {
     subject: value.subject,
     body: value.body,
     senderIdentity: value.senderIdentity,
+    googleConnectionId: value.googleConnectionId,
     createdAt: value.createdAt,
   });
 }

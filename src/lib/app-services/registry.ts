@@ -116,6 +116,7 @@ export const APP_SERVICE_OPERATION_CONTRACTS = Object.freeze([
   read("app.agents.show", "read", "custom_agent"),
   read("app.agents.cards", "read", "agent_card"),
   read("app.agents.performance", "read", "agent_performance"),
+  read("app.agents.learning.show", "read", "agent_learning"),
   read("app.agents.council.show", "read", "agent_council"),
   mutation("app.agents.delegate", "run.agent", "delegation_execution", "delegation-execution-events.v1"),
   read("app.agents.tasks.list", "read", "delegation_execution"),

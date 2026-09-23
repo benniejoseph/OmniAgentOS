@@ -6,6 +6,7 @@ import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 const dateTimeSchema = z.string().datetime({ offset: true });
 
 export const googleCalendarCreateSchema = z.object({
+  connectionId: z.string().uuid(),
   calendarId: z.string().trim().min(1).max(500)
     .refine((value) => !/[\u0000-\u001f\u007f]/.test(value), {
       message: "Google Calendar ID contains unsupported characters.",
@@ -32,6 +33,10 @@ export const googleCalendarCreateSchema = z.object({
 export type GoogleCalendarCreateInput = z.infer<typeof googleCalendarCreateSchema>;
 
 export type GoogleCalendarEffectResult = Readonly<{
+  connectionId: string;
+  accountEmail?: string;
+  connectionLabel: string;
+  connectionPurpose: "personal" | "work";
   calendarId: string;
   eventId: string;
   providerAcknowledgement: "provider_response" | "provider_idempotency_reconciliation";
@@ -52,6 +57,7 @@ export function googleCalendarTargetState(
   const input = googleCalendarCreateSchema.parse(inputValue);
   return {
     targetType: "google_calendar_event",
+    connectionId: input.connectionId,
     calendarId: input.calendarId,
     eventId,
     summary: input.summary,
@@ -72,7 +78,10 @@ export async function createGoogleCalendarEvent(inputValue: unknown, options: {
 }): Promise<GoogleCalendarEffectResult> {
   const input = googleCalendarCreateSchema.parse(inputValue);
   const eventId = googleCalendarEventId(options.executionId);
-  const authorization = await googleAuthorization(options);
+  const authorization = await googleAuthorization({
+    ...options,
+    connectionId: input.connectionId,
+  });
   const url = googleCalendarEventUrl(input.calendarId);
   url.searchParams.set("sendUpdates", "none");
   let response: Response;
@@ -110,6 +119,7 @@ export async function createGoogleCalendarEvent(inputValue: unknown, options: {
     input,
     eventId,
     observed,
+    authorization.grant,
     response.status === 409
       ? "provider_idempotency_reconciliation"
       : "provider_response",
@@ -124,7 +134,10 @@ export async function reconcileGoogleCalendarEvent(inputValue: unknown, options:
 }): Promise<GoogleCalendarEffectResult | undefined> {
   const input = googleCalendarCreateSchema.parse(inputValue);
   const eventId = googleCalendarEventId(options.executionId);
-  const authorization = await googleAuthorization(options);
+  const authorization = await googleAuthorization({
+    ...options,
+    connectionId: input.connectionId,
+  });
   const observed = await readGoogleCalendarEvent({
     ...options,
     calendarId: input.calendarId,
@@ -132,14 +145,25 @@ export async function reconcileGoogleCalendarEvent(inputValue: unknown, options:
     accessToken: authorization.accessToken,
   });
   return observed
-    ? verifiedResult(input, eventId, observed, "provider_idempotency_reconciliation")
+    ? verifiedResult(
+        input,
+        eventId,
+        observed,
+        authorization.grant,
+        "provider_idempotency_reconciliation",
+      )
     : undefined;
 }
 
-async function googleAuthorization(input: { tenantId: string; actorId: string }) {
+async function googleAuthorization(input: {
+  tenantId: string;
+  actorId: string;
+  connectionId?: string;
+}) {
   return getActiveGoogleWorkspaceAccess({
     tenantId: input.tenantId,
     actorId: input.actorId,
+    connectionId: input.connectionId,
     capability: "calendar.events.write",
   });
 }
@@ -166,6 +190,12 @@ function verifiedResult(
   input: GoogleCalendarCreateInput,
   eventId: string,
   observed: Record<string, unknown>,
+  grant: Readonly<{
+    id: string;
+    accountEmail?: string;
+    connectionLabel: string;
+    connectionPurpose: "personal" | "work";
+  }>,
   acknowledgement: GoogleCalendarEffectResult["providerAcknowledgement"],
 ): GoogleCalendarEffectResult {
   const observedState = observedTargetState(input, observed);
@@ -176,12 +206,17 @@ function verifiedResult(
   }
   const acknowledgementBody = {
     provider: "google_calendar",
+    connectionId: grant.id,
     acknowledgement,
     calendarId: input.calendarId,
     eventId,
     observedTargetStateSha256,
   };
   return Object.freeze({
+    connectionId: grant.id,
+    ...(grant.accountEmail ? { accountEmail: grant.accountEmail } : {}),
+    connectionLabel: grant.connectionLabel,
+    connectionPurpose: grant.connectionPurpose,
     calendarId: input.calendarId,
     eventId,
     providerAcknowledgement: acknowledgement,
@@ -200,6 +235,7 @@ function observedTargetState(
   const end = record(value.end);
   return {
     targetType: "google_calendar_event",
+    connectionId: input.connectionId,
     calendarId: input.calendarId,
     eventId: String(value.id || ""),
     summary: String(value.summary || ""),
