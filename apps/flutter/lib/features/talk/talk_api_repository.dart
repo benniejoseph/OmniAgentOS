@@ -13,6 +13,7 @@ class ApiTalkRepository
     implements
         TalkRepository,
         TalkCommandContextRepository,
+        TalkCommandModelSelectionRepository,
         TalkHistoryRepository,
         TalkArtifactRepository,
         TalkPromptQueueRepository {
@@ -475,6 +476,15 @@ class ApiTalkRepository
   }
 
   @override
+  Future<TalkCommandModelCatalog> loadCommandModelCatalog() async {
+    final payload = await api.getJsonFresh(
+      '/api/settings/models',
+      query: const {'commandScope': 'main_agent'},
+    );
+    return TalkCommandModelCatalog.fromJson(payload);
+  }
+
+  @override
   Stream<SseEvent> send({
     required String message,
     String? threadId,
@@ -482,6 +492,7 @@ class ApiTalkRepository
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
     String? agentId,
+    TalkCommandModelSelection? modelSelection,
   }) => _sendAgent(
     message: message,
     threadId: threadId,
@@ -490,6 +501,7 @@ class ApiTalkRepository
     executionTarget: executionTarget,
     agentId: agentId,
     contextReferences: const [],
+    modelSelection: modelSelection,
   );
 
   @override
@@ -501,6 +513,7 @@ class ApiTalkRepository
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
     String? agentId,
+    TalkCommandModelSelection? modelSelection,
   }) => _sendAgent(
     message: message,
     threadId: threadId,
@@ -509,6 +522,7 @@ class ApiTalkRepository
     executionTarget: executionTarget,
     agentId: agentId,
     contextReferences: contextReferences,
+    modelSelection: modelSelection,
   );
 
   Stream<SseEvent> _sendAgent({
@@ -519,6 +533,7 @@ class ApiTalkRepository
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
     String? agentId,
+    TalkCommandModelSelection? modelSelection,
   }) async* {
     final selectedAgents = contextReferences
         .where((item) => item.kind == 'agent')
@@ -564,6 +579,8 @@ class ApiTalkRepository
               for (final reference in contextReferences)
                 reference.toRequestJson(),
             ],
+          if (modelSelection != null)
+            'modelSelection': modelSelection.toRequestJson(),
           'computerUseTarget': ?executionTarget.apiValue,
           'requestId': 'flutter-${DateTime.now().microsecondsSinceEpoch}',
         },

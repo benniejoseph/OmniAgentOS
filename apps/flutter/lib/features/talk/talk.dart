@@ -21,9 +21,11 @@ import '../computer_use/local_computer.dart';
 import 'talk_command_context.dart';
 import 'talk_history.dart';
 import 'talk_history_view.dart';
+import 'talk_model_selection.dart';
 
 export 'talk_history.dart';
 export 'talk_command_context.dart';
+export 'talk_model_selection.dart';
 
 typedef Json = Map<String, dynamic>;
 
@@ -886,6 +888,7 @@ abstract interface class TalkRepository {
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
     String? agentId,
+    TalkCommandModelSelection? modelSelection,
   });
   Future<String> transcribeVoice(Uint8List bytes);
   Future<void> cancelRun(String runId);
@@ -904,7 +907,12 @@ abstract interface class TalkCommandContextRepository {
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
     String? agentId,
+    TalkCommandModelSelection? modelSelection,
   });
+}
+
+abstract interface class TalkCommandModelSelectionRepository {
+  Future<TalkCommandModelCatalog> loadCommandModelCatalog();
 }
 
 abstract interface class TalkArtifactRepository {
@@ -968,12 +976,25 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       ? repository as TalkCommandContextRepository
       : null;
 
+  TalkCommandModelSelectionRepository? get _commandModelRepository =>
+      repository is TalkCommandModelSelectionRepository
+      ? repository as TalkCommandModelSelectionRepository
+      : null;
+
   Future<TalkCommandContextCatalog> loadCommandContextCatalog() async {
     final contextRepository = _commandContextRepository;
     if (contextRepository == null) {
       throw StateError('Command context is not available in this Asael build.');
     }
     return contextRepository.loadCommandContextCatalog();
+  }
+
+  Future<TalkCommandModelCatalog> loadCommandModelCatalog() async {
+    final modelRepository = _commandModelRepository;
+    if (modelRepository == null) {
+      throw StateError('Model choices are not available in this Asael build.');
+    }
+    return modelRepository.loadCommandModelCatalog();
   }
 
   List<String> get workflowIds => List.unmodifiable(_workflowIds);
@@ -1084,6 +1105,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     _retryExecutionTarget = null;
     _retryAssignedAgent = null;
     _retryContextReferences = const [];
+    _retryModelSelection = null;
     status = null;
     canceling = false;
   }
@@ -1103,6 +1125,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     _retryExecutionTarget = null;
     _retryAssignedAgent = null;
     _retryContextReferences = const [];
+    _retryModelSelection = null;
     status = null;
   }
 
@@ -1112,11 +1135,19 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
     List<TalkCommandContextReference> contextReferences = const [],
+    TalkCommandModelSelection? modelSelection,
   }) async {
     final text = input.trim();
     if (_disposed || text.isEmpty) return;
     final targetAgent = assignedAgent;
     if (sending) {
+      if (modelSelection != null) {
+        promptQueueError = StateError(
+          'A specific Model or Thinking level must be sent directly. Wait for the current work to finish, then send this request.',
+        );
+        notifyListeners();
+        return;
+      }
       if (contextReferences.any((item) =>
           item.kind != 'agent' && item.kind != 'project')) {
         promptQueueError = StateError(
@@ -1142,6 +1173,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       executionTarget: executionTarget,
       assignedAgent: targetAgent,
       contextReferences: contextReferences,
+      modelSelection: modelSelection,
     );
   }
 
@@ -1568,6 +1600,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   TalkExecutionTarget? _retryExecutionTarget;
   TalkAssignedAgent? _retryAssignedAgent;
   List<TalkCommandContextReference> _retryContextReferences = const [];
+  TalkCommandModelSelection? _retryModelSelection;
 
   bool get canRetry => !sending && _retryInput != null;
   bool get _acceptedRunIsTerminal =>
@@ -1580,6 +1613,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     _retryExecutionTarget = null;
     _retryAssignedAgent = null;
     _retryContextReferences = const [];
+    _retryModelSelection = null;
   }
 
   void _abandonAcceptedRun() {
@@ -1634,6 +1668,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       executionTarget: _retryExecutionTarget ?? TalkExecutionTarget.agent,
       assignedAgent: _retryAssignedAgent,
       contextReferences: _retryContextReferences,
+      modelSelection: _retryModelSelection,
       replaceFailedResponse: true,
     );
   }
@@ -1665,6 +1700,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
     TalkAssignedAgent? assignedAgent,
     List<TalkCommandContextReference> contextReferences = const [],
+    TalkCommandModelSelection? modelSelection,
     TalkQueuedPrompt? queuedPrompt,
     bool queuedForce = true,
     bool replaceFailedResponse = false,
@@ -1710,6 +1746,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
                 strategy: strategy,
                 executionTarget: executionTarget,
                 agentId: assignedAgent?.id,
+                modelSelection: modelSelection,
               )
           : repository.send(
               message: text,
@@ -1718,6 +1755,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
               strategy: strategy,
               executionTarget: executionTarget,
               agentId: assignedAgent?.id,
+              modelSelection: modelSelection,
             );
       await for (final event in events) {
         if (_disposed) return;
@@ -2027,6 +2065,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
         _retryExecutionTarget = executionTarget;
         _retryAssignedAgent = assignedAgent;
         _retryContextReferences = List.unmodifiable(contextReferences);
+        _retryModelSelection = modelSelection;
         _recordActivity(
           key: 'run',
           title: 'Main agent',
@@ -2944,6 +2983,12 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   String strategy = 'auto';
   String commandMode = 'orchestrate';
   final commandReferences = <TalkCommandContextReference>[];
+  TalkCommandModelCatalog? commandModelCatalog;
+  String? commandModelChoiceId;
+  String? commandReasoningLevel;
+  bool commandModelLoading = false;
+  Object? commandModelError;
+  int commandModelLoadGeneration = 0;
   TalkExecutionTarget executionTarget = TalkExecutionTarget.agent;
   bool recording = false;
   String? recordingError;
@@ -2955,6 +3000,9 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     super.initState();
     recorder = widget.voiceRecorder ?? RecordVoiceDraftRecorder();
     WidgetsBinding.instance.addObserver(this);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(loadCommandModelCatalog());
+    });
     if (widget.quickEntry) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) widget.onQuickEntryReady?.call();
@@ -2981,6 +3029,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
         oldWidget.controller != widget.controller) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
+        unawaited(loadCommandModelCatalog());
         widget.controller.reconcileAcceptedRun();
         if (widget.controller.conversationHistorySupported) {
           unawaited(widget.controller.loadRecentThreads());
@@ -3026,6 +3075,61 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     }
   }
 
+  TalkCommandModelChoice? get selectedCommandModel => commandModelCatalog
+      ?.choices
+      .where((choice) => choice.id == commandModelChoiceId)
+      .firstOrNull;
+
+  TalkCommandModelSelection? get commandModelSelection {
+    final choice = selectedCommandModel;
+    if (choice == null) return null;
+    return TalkCommandModelSelection(
+      choice: choice,
+      reasoningLevel: commandReasoningLevel,
+    );
+  }
+
+  Future<void> loadCommandModelCatalog() async {
+    final generation = ++commandModelLoadGeneration;
+    if (mounted) {
+      setState(() {
+        commandModelLoading = true;
+        commandModelError = null;
+      });
+    }
+    try {
+      final catalog = await widget.controller.loadCommandModelCatalog();
+      if (!mounted || generation != commandModelLoadGeneration) return;
+      setState(() {
+        commandModelCatalog = catalog;
+        final selected = catalog.choices
+            .where((choice) => choice.id == commandModelChoiceId)
+            .firstOrNull;
+        if (selected == null) {
+          commandModelChoiceId = null;
+          commandReasoningLevel = null;
+        } else if (commandReasoningLevel != null &&
+            !selected.reasoningOptions.any(
+              (option) => option.id == commandReasoningLevel,
+            )) {
+          commandReasoningLevel = null;
+        }
+      });
+    } catch (error) {
+      if (!mounted || generation != commandModelLoadGeneration) return;
+      setState(() {
+        commandModelCatalog = null;
+        commandModelChoiceId = null;
+        commandReasoningLevel = null;
+        commandModelError = error;
+      });
+    } finally {
+      if (mounted && generation == commandModelLoadGeneration) {
+        setState(() => commandModelLoading = false);
+      }
+    }
+  }
+
   Future<void> interruptVoiceDraft() async {
     voiceDraftGeneration += 1;
     if (mounted && recording) setState(() => recording = false);
@@ -3049,6 +3153,17 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       return;
     }
     final controller = widget.controllerResolver?.call() ?? widget.controller;
+    final exactModelSelection = commandModelSelection;
+    if (controller.sending && exactModelSelection != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'A specific Model or Thinking level cannot be queued. Wait for the current work to finish, then send this request.',
+          ),
+        ),
+      );
+      return;
+    }
     input.clear();
     if (recordingError != null || voiceDraftNotice != null) {
       setState(() {
@@ -3062,6 +3177,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       strategy: strategy,
       executionTarget: executionTarget,
       contextReferences: List.unmodifiable(commandReferences),
+      modelSelection: exactModelSelection,
     );
     setState(() {
       commandReferences.removeWhere(
@@ -3100,6 +3216,29 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       return;
     }
     setState(() => commandMode = mode);
+  }
+
+  void selectCommandModel(String? choiceId) {
+    final catalog = commandModelCatalog;
+    final choice = catalog?.choices
+        .where((candidate) => candidate.id == choiceId)
+        .firstOrNull;
+    setState(() {
+      commandModelChoiceId = choice?.id;
+      commandReasoningLevel = null;
+    });
+  }
+
+  void selectCommandReasoning(String? reasoningLevel) {
+    final choice = selectedCommandModel;
+    if (reasoningLevel != null &&
+        choice?.reasoningOptions.any(
+              (option) => option.id == reasoningLevel,
+            ) !=
+            true) {
+      return;
+    }
+    setState(() => commandReasoningLevel = reasoningLevel);
   }
 
   Future<void> toggleVoiceDraft() async {
@@ -3348,6 +3487,18 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                         ? null
                                         : widget.controller.clearAssignedAgent,
                                   ),
+                                _ModelThinkingControls(
+                                  catalog: commandModelCatalog,
+                                  selectedChoiceId: commandModelChoiceId,
+                                  reasoningLevel: commandReasoningLevel,
+                                  loading: commandModelLoading,
+                                  error: commandModelError,
+                                  onModelChanged: selectCommandModel,
+                                  onReasoningChanged: selectCommandReasoning,
+                                  onRefresh: () =>
+                                      unawaited(loadCommandModelCatalog()),
+                                  compact: true,
+                                ),
                                 _ExecutionTargetMenu(
                                   value: executionTarget,
                                   compact: true,
@@ -3798,6 +3949,17 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                             () => strategy = value.first,
                                           ),
                                   ),
+                                  _ModelThinkingControls(
+                                    catalog: commandModelCatalog,
+                                    selectedChoiceId: commandModelChoiceId,
+                                    reasoningLevel: commandReasoningLevel,
+                                    loading: commandModelLoading,
+                                    error: commandModelError,
+                                    onModelChanged: selectCommandModel,
+                                    onReasoningChanged: selectCommandReasoning,
+                                    onRefresh: () =>
+                                        unawaited(loadCommandModelCatalog()),
+                                  ),
                                   _ExecutionTargetMenu(
                                     value: executionTarget,
                                     localComputer: widget.localComputer,
@@ -4072,6 +4234,244 @@ class _TalkInlineArtifactPreview extends StatelessWidget {
       ),
     );
   }
+}
+
+class _ModelThinkingControls extends StatelessWidget {
+  const _ModelThinkingControls({
+    required this.catalog,
+    required this.selectedChoiceId,
+    required this.reasoningLevel,
+    required this.loading,
+    required this.error,
+    required this.onModelChanged,
+    required this.onReasoningChanged,
+    required this.onRefresh,
+    this.compact = false,
+  });
+
+  static const automaticValue = '__automatic__';
+  static const refreshValue = '__refresh__';
+
+  final TalkCommandModelCatalog? catalog;
+  final String? selectedChoiceId;
+  final String? reasoningLevel;
+  final bool loading;
+  final Object? error;
+  final ValueChanged<String?> onModelChanged;
+  final ValueChanged<String?> onReasoningChanged;
+  final VoidCallback onRefresh;
+  final bool compact;
+
+  TalkCommandModelChoice? get selectedChoice => catalog?.choices
+      .where((choice) => choice.id == selectedChoiceId)
+      .firstOrNull;
+
+  @override
+  Widget build(BuildContext context) {
+    final choice = selectedChoice;
+    final reasoning = choice?.reasoningOptions
+        .where((option) => option.id == reasoningLevel)
+        .firstOrNull;
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        _modelMenu(context, choice),
+        _reasoningMenu(context, choice, reasoning),
+      ],
+    );
+  }
+
+  Widget _modelMenu(BuildContext context, TalkCommandModelChoice? choice) {
+    final choices = catalog?.choices ?? const <TalkCommandModelChoice>[];
+    final message = error != null
+        ? 'Model choices could not be refreshed. Automatic still uses your saved Settings route.'
+        : catalog?.message ??
+              'Automatic uses the model route saved in Settings.';
+    return Semantics(
+      label: 'Model: ${choice?.displayName ?? 'Automatic'}. $message',
+      button: true,
+      child: Tooltip(
+        message: message,
+        child: PopupMenuButton<String>(
+          key: const ValueKey('talk-model-selector'),
+          initialValue: choice?.id ?? automaticValue,
+          tooltip: 'Choose a Settings-approved model',
+          onSelected: (value) {
+            if (value == refreshValue) {
+              onRefresh();
+            } else {
+              onModelChanged(value == automaticValue ? null : value);
+            }
+          },
+          itemBuilder: (context) => [
+            const PopupMenuItem(
+              value: automaticValue,
+              child: ListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.auto_awesome_rounded, size: 19),
+                title: Text('Automatic'),
+                subtitle: Text('Use the model route saved in Settings'),
+              ),
+            ),
+            for (final option in choices)
+              PopupMenuItem(
+                value: option.id,
+                child: ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(
+                    option.route == 'primary'
+                        ? Icons.star_outline_rounded
+                        : Icons.alt_route_rounded,
+                    size: 19,
+                  ),
+                  title: Text(option.displayName),
+                  subtitle: Text(
+                    '${option.providerLabel} · ${option.settingsRouteLabel}\n${option.displayModelId}',
+                  ),
+                  isThreeLine: true,
+                ),
+              ),
+            if (error != null)
+              const PopupMenuItem(
+                value: refreshValue,
+                child: ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.refresh_rounded, size: 19),
+                  title: Text('Refresh model choices'),
+                  subtitle: Text('Read the validated route from Settings again'),
+                ),
+              ),
+          ],
+          child: _selectorSurface(
+            context,
+            icon: loading
+                ? Icons.sync_rounded
+                : error != null
+                ? Icons.warning_amber_rounded
+                : Icons.memory_rounded,
+            label: 'Model',
+            value: choice?.displayName ?? 'Automatic',
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _reasoningMenu(
+    BuildContext context,
+    TalkCommandModelChoice? choice,
+    TalkCommandReasoningOption? reasoning,
+  ) {
+    final options = choice?.reasoningOptions ??
+        const <TalkCommandReasoningOption>[];
+    final enabled = choice != null && options.isNotEmpty;
+    final help = choice == null
+        ? 'Choose a specific model to set Thinking. Automatic lets the saved Settings route decide.'
+        : options.isEmpty
+        ? '${choice.displayName} does not advertise adjustable Thinking levels.'
+        : 'Automatic lets ${choice.displayName} use its configured Thinking level.';
+    final menu = PopupMenuButton<String>(
+      key: const ValueKey('talk-thinking-selector'),
+      initialValue: reasoning?.id ?? automaticValue,
+      enabled: enabled,
+      tooltip: 'Choose how deeply this model thinks',
+      onSelected: (value) =>
+          onReasoningChanged(value == automaticValue ? null : value),
+      itemBuilder: (context) => [
+        const PopupMenuItem(
+          value: automaticValue,
+          child: ListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.auto_mode_rounded, size: 19),
+            title: Text('Automatic'),
+            subtitle: Text('Use the configured Thinking level'),
+          ),
+        ),
+        for (final option in options)
+          PopupMenuItem(
+            value: option.id,
+            child: ListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.psychology_alt_outlined, size: 19),
+              title: Text(option.label),
+              subtitle: Text(_reasoningDescription(option.id)),
+            ),
+          ),
+      ],
+      child: _selectorSurface(
+        context,
+        icon: Icons.psychology_alt_outlined,
+        label: 'Thinking',
+        value: reasoning?.label ?? 'Automatic',
+        enabled: enabled,
+      ),
+    );
+    return Semantics(
+      label: 'Thinking: ${reasoning?.label ?? 'Automatic'}. $help',
+      button: enabled,
+      enabled: enabled,
+      child: Tooltip(message: help, child: menu),
+    );
+  }
+
+  Widget _selectorSurface(
+    BuildContext context, {
+    required IconData icon,
+    required String label,
+    required String value,
+    bool enabled = true,
+  }) {
+    final scheme = Theme.of(context).colorScheme;
+    final foreground = enabled
+        ? scheme.onSurface
+        : scheme.onSurfaceVariant.withValues(alpha: .62);
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerLow,
+        border: Border.all(color: scheme.outlineVariant),
+        borderRadius: BorderRadius.circular(11),
+      ),
+      child: Padding(
+        padding: EdgeInsets.symmetric(
+          horizontal: compact ? 9 : 11,
+          vertical: compact ? 6 : 7,
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 16, color: foreground),
+            const SizedBox(width: 7),
+            Text(
+              '$label · $value',
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: foreground,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(width: 4),
+            Icon(Icons.expand_more_rounded, size: 16, color: foreground),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _reasoningDescription(String id) => switch (id) {
+    'low' => 'Faster for straightforward work',
+    'medium' => 'A balanced amount of reasoning',
+    'high' => 'More careful reasoning for harder work',
+    'extra_high' => 'Deeper reasoning for complex work',
+    'ultra' => 'Use the maximum available reasoning',
+    _ => 'Supported by this model',
+  };
 }
 
 class _ExecutionTargetMenu extends StatelessWidget {
