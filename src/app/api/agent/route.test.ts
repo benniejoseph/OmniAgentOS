@@ -861,7 +861,7 @@ describe("agent semantic intent routing", () => {
       expect.objectContaining({
         computerUseTarget: undefined,
         maxToolSteps: 6,
-        budgetLimits: expect.objectContaining({ modelTurns: 13 }),
+        budgetLimits: expect.objectContaining({ modelTurns: 14 }),
       }),
       expect.any(AbortSignal),
     );

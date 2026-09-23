@@ -33,7 +33,7 @@ describe("complete run budgets", () => {
   it("keeps compatibility callers on canonical server authority", () => {
     expect(DEFAULT_AGENT_RUN_BUDGET_LIMITS).toEqual(AGENT_RUN_BUDGET_LIMITS);
     expect(DEFAULT_AGENT_RUN_BUDGET_LIMITS).toMatchObject({
-      modelTurns: 13,
+      modelTurns: 14,
       toolCalls: 30,
       agents: 7,
       fanOut: 6,
