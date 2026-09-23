@@ -3835,6 +3835,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
   const carriedOutputs: AgentRunContinuation["outputsBeforeApproval"] = [
     ...continuation.outputsBeforeApproval,
     functionCallOutputFromCallId(continuation.pendingToolCall.callId, {
+      executionId: toolExecution.record.id,
       status: toolExecution.record.status,
       dryRun: toolExecution.record.dryRun,
       approvalRequired: toolExecution.record.approvalRequired,
@@ -4019,6 +4020,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
       }
 
       carriedOutputs.push(functionCallOutput(call, {
+        executionId: execution.record.id,
         status: execution.record.status,
         dryRun: execution.record.dryRun,
         approvalRequired: execution.record.approvalRequired,
@@ -4342,6 +4344,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
         }
 
         outputs.push(functionCallOutput(call, {
+          executionId: execution.record.id,
           status: execution.record.status,
           dryRun: execution.record.dryRun,
           approvalRequired: execution.record.approvalRequired,
@@ -4778,6 +4781,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
     providerToolResult(
       providerState.pendingCall,
       {
+        executionId: toolExecution.record.id,
         status: toolExecution.record.status,
         dryRun: toolExecution.record.dryRun,
         approvalRequired: toolExecution.record.approvalRequired,
