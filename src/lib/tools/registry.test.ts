@@ -82,6 +82,26 @@ describe("governed native tool schemas", () => {
     }
   });
 
+  it("requires canonical delegation grant identifiers", () => {
+    const delegate = getGovernedTool("app.agents.delegate");
+    const properties = delegate?.inputSchema.properties as Record<
+      string,
+      Record<string, unknown>
+    >;
+    const grantProperties = properties.grants.properties as Record<
+      string,
+      Record<string, unknown>
+    >;
+    const governedReadTool = grantProperties.governedReadToolIds.items as
+      Record<string, unknown>;
+    const skill = grantProperties.skillIds.items as Record<string, unknown>;
+
+    expect(governedReadTool.description).toMatch(/canonical governed tool ID/i);
+    expect(governedReadTool.description).toMatch(/never use.*callable/i);
+    expect(skill.description).toMatch(/canonical active Skill ID/i);
+    expect(skill.description).toMatch(/never use.*display name/i);
+  });
+
   it("keeps destructive app data controls behind exact previews and approval", () => {
     expect(getGovernedTool("app.memory.forget.preview")).toMatchObject({
       riskLevel: 0,

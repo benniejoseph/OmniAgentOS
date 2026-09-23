@@ -128,6 +128,21 @@ describe("delegation grant resolver", () => {
     },
   );
 
+  it("does not treat a provider callable name as canonical grant authority", async () => {
+    const authority = builtInAuthority(
+      "scout",
+      ["knowledge.search"],
+      [],
+    );
+
+    await expect(resolveDelegationGrantsV1({
+      ...authority.input,
+      request: {
+        governedReadToolIds: ["knowledge_search_f2405c6159c995e8"],
+      },
+    })).rejects.toThrow(/exceeds the persisted parent harness/i);
+  });
+
   it("rejects parent attenuation gaps and changed or disabled Skill pins", async () => {
     const skillId = "core.research";
     const skill = requireBuiltInSkill(skillId);

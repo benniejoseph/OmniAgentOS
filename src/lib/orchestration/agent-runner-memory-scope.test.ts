@@ -15,6 +15,8 @@ import type { SecurityContext } from "@/lib/security/types";
 import { sourceContractSha256 } from "@/lib/sources/contracts";
 import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
 import { MAX_ASSIGNED_SKILLS } from "@/lib/skills/limits";
+import { builtInSkills } from "@/lib/skills/catalog";
+import { getGovernedTool } from "@/lib/tools/registry";
 
 const mocks = vi.hoisted(() => ({
   appendContextCompilerV2CanaryEvent: vi.fn(),
@@ -326,6 +328,50 @@ describe("agent memory scope", () => {
         "The user limited this run to the current conversation.",
       ],
     }));
+  });
+
+  it("shows canonical tool and Skill IDs to the model", async () => {
+    const delegate = getGovernedTool("app.agents.delegate");
+    const knowledge = getGovernedTool("knowledge.search");
+    const runs = getGovernedTool("runs.list");
+    const memorySkill = builtInSkills.find((skill) => skill.id === "core.memory");
+    if (!delegate || !knowledge || !runs || !memorySkill) {
+      throw new Error("Expected canonical delegation fixtures.");
+    }
+    mocks.loadProgressiveAgentTools.mockResolvedValue({
+      definitions: [delegate, knowledge, runs],
+    });
+    const scopedRequest = request("session");
+    scopedRequest.agentProfile!.toolIds = [
+      delegate.id,
+      knowledge.id,
+      runs.id,
+    ];
+    scopedRequest.agentProfile!.skills = [memorySkill];
+    scopedRequest.agentProfile!.approvalPolicy = "risk_based";
+    scopedRequest.agentProfile!.autonomy = "governed";
+
+    await collectRequest(scopedRequest);
+
+    const modelRequest = mocks.streamResponseTurn.mock.calls[0]?.[0];
+    const delegateTool = modelRequest.tools?.find(
+      (tool: { name: string }) => tool.name === "app.agents.delegate",
+    );
+    const knowledgeTool = modelRequest.tools?.find(
+      (tool: { name: string }) => tool.name === "knowledge.search",
+    );
+    expect(delegateTool?.description).toMatch(
+      /^Canonical governed tool ID: app\.agents\.delegate\./,
+    );
+    expect(delegateTool?.description).toContain(
+      "provider callable name is transport-only",
+    );
+    expect(modelRequest.instructions).toContain(
+      "Memory curation (Skill ID: core.memory)",
+    );
+    expect(knowledgeTool?.description).toMatch(
+      /^Canonical governed tool ID: knowledge\.search\./,
+    );
   });
 
   it("uses semantic capability terms as discovery hints without an allowlist", async () => {

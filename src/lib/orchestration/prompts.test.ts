@@ -155,6 +155,7 @@ describe("agent prompt provenance", () => {
     const skills = Array.from(
       { length: MAX_ASSIGNED_SKILLS + 1 },
       (_, index) => ({
+        id: `skill.${index + 1}`,
         name: `Skill ${index + 1}`,
         description: `Description ${index + 1}`,
         instructions: `Instruction ${index + 1}`,
@@ -177,7 +178,17 @@ describe("agent prompt provenance", () => {
     });
 
     expect(instructions).toContain(`Skill ${MAX_ASSIGNED_SKILLS}`);
+    expect(instructions).toContain("Skill ID: skill.1");
+    expect(instructions).toContain(
+      `Skill ID: skill.${MAX_ASSIGNED_SKILLS}`,
+    );
     expect(instructions).not.toContain(`Skill ${MAX_ASSIGNED_SKILLS + 1}`);
+    expect(instructions).not.toContain(
+      `Skill ID: skill.${MAX_ASSIGNED_SKILLS + 1}`,
+    );
+    expect(instructions).toContain(
+      "Use the exact Skill ID, never its display name",
+    );
     expect(instructions.indexOf("Skill 1")).toBeLessThan(
       instructions.indexOf(`Skill ${MAX_ASSIGNED_SKILLS}`),
     );

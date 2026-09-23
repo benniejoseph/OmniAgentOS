@@ -604,11 +604,11 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
     grants: objectSchema({
       governedReadToolIds: {
         type: "array", maxItems: 16, uniqueItems: true,
-        items: opaqueId("Exact active governed read-tool ID from the parent run."),
+        items: opaqueId("Exact canonical active governed read-tool ID from the parent run. Copy the canonical governed tool ID from the provider tool description; never use its provider callable or function name."),
       },
       skillIds: {
         type: "array", maxItems: 8, uniqueItems: true,
-        items: opaqueId("Exact active Skill ID pinned by the parent run."),
+        items: opaqueId("Exact canonical active Skill ID pinned by the parent run. Copy the Skill ID shown under Activated skills; never use the Skill display name."),
       },
       plugins: {
         type: "array", maxItems: 8,

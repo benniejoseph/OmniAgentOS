@@ -280,6 +280,20 @@ describe("dynamic delegation runtime", () => {
     }).success).toBe(false);
   });
 
+  it("rejects a Skill display label where a canonical Skill ID is required", () => {
+    expect(delegateAgentTaskInputSchema.safeParse({
+      objective: "Inspect saved memory.",
+      taskKind: "memory",
+      acceptanceCriteria: ["Return one grounded result."],
+      grants: {
+        governedReadToolIds: ["memory.search"],
+        skillIds: ["Memory curation"],
+        plugins: [],
+        mcpServers: [],
+      },
+    }).success).toBe(false);
+  });
+
   it("fails before child creation when the live reservation differs from the harness", async () => {
     const harness = runtimeHarness();
     harness.dependencies.listParentEvents.mockResolvedValueOnce([{

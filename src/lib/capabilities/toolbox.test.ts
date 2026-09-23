@@ -342,6 +342,9 @@ describe("progressive agent toolbox", () => {
   });
 
   it("creates deterministic collision-resistant model function names", () => {
+    expect(capabilityFunctionName("knowledge.search")).toBe(
+      "knowledge_search_f2405c6159c995e8",
+    );
     const first = capabilityFunctionName("mcp:mail/send:message");
     const same = capabilityFunctionName("mcp:mail/send:message");
     const formerlyColliding = capabilityFunctionName("mcp:mail_send:message");
