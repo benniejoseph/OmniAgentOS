@@ -107,7 +107,10 @@ describe("non-OpenAI governed provider tool loop", () => {
       expect(request.toolResults).toHaveLength(2);
       expect(JSON.parse(request.toolResults![0].output)).toMatchObject({
         provenance: "tool_result",
-        data: { executionId: "execution-memory.search" },
+        data: {
+          executionId: "execution-memory.search",
+          admissibleEvidenceIds: [],
+        },
       });
       expect(JSON.parse(request.toolResults![1].output)).toMatchObject({
         provenance: "tool_result",

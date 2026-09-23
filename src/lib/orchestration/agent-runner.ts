@@ -5548,9 +5548,7 @@ function executionPayload(
       ? "Executed for real."
       : execution.record.reason,
     result: execution.result,
-    ...(admissibleEvidenceIds.length
-      ? { admissibleEvidenceIds }
-      : {}),
+    admissibleEvidenceIds,
   };
 }
 

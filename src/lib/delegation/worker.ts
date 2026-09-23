@@ -472,12 +472,11 @@ async function finalizeChildRun(
   const toolExecutionIds = unique(
     governedToolReceipts.map((receipt) => receipt.executionId),
   );
-  const groundingValid = !candidateGrounding ||
-    !["invalid", "missing"].includes(candidateGrounding.status);
+  const groundingVerified = candidateGrounding?.status === "verified";
   const acceptanceChecks = evaluateAcceptanceCriteria({
     execution,
     candidate,
-    groundingValid,
+    groundingVerified,
     evidenceIds,
     toolExecutionIds,
     governedToolReceipts,
@@ -786,7 +785,7 @@ function parseDelegationCandidate(response: string): DelegationCandidate | undef
 function evaluateAcceptanceCriteria(input: {
   execution: DelegationExecutionRecordV1;
   candidate?: DelegationCandidate;
-  groundingValid: boolean;
+  groundingVerified: boolean;
   evidenceIds: readonly string[];
   toolExecutionIds: readonly string[];
   governedToolReceipts: readonly Readonly<{
@@ -833,7 +832,7 @@ function evaluateAcceptanceCriteria(input: {
       hasUsageReceipt,
     );
     const receiptSatisfied = criterion.verificationMethod === "evidence"
-      ? input.groundingValid && claimedEvidence.length > 0
+      ? input.groundingVerified && claimedEvidence.length > 0
       : criterion.verificationMethod === "governed_receipt"
         ? criterion.requiredGovernedToolIds?.length
           ? criterion.requiredGovernedToolIds.every((requiredToolId) =>
@@ -856,7 +855,7 @@ function evaluateAcceptanceCriteria(input: {
             : !hasModelReceipt || !hasUsageReceipt
               ? "model_usage_receipt_missing"
               : criterion.verificationMethod === "evidence" &&
-                  (!input.groundingValid || claimedEvidence.length === 0)
+                  (!input.groundingVerified || claimedEvidence.length === 0)
                 ? "evidence_receipt_missing"
                 : criterion.verificationMethod === "governed_receipt" &&
                     !receiptSatisfied

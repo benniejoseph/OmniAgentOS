@@ -332,6 +332,145 @@ describe("delegation execution worker", () => {
     expect(harness.execution.result?.evidenceIds).toEqual([evidenceId]);
   });
 
+  it("rejects a citation without an exact canonical source sentence", async () => {
+    const evidenceId = "knowledge:chunk-launch";
+    const harness = workerHarness({
+      criterion: {
+        statement: "Ground the launch date in canonical evidence.",
+        verificationMethod: "evidence",
+      },
+      childSummary: `[${evidenceId}]`,
+      childEvidenceIds: [evidenceId],
+      childGrounding: {
+        status: "not_required",
+        citedIds: [evidenceId],
+        invalidIds: [],
+        sources: [{
+          citationId: evidenceId,
+          evidenceId: "chunk-launch",
+          kind: "knowledge",
+          title: "Launch plan",
+        }],
+      },
+    });
+    mocks.buildClaimGroundingReport.mockResolvedValue({
+      status: "not_required",
+      citedIds: [evidenceId],
+      invalidIds: [],
+      sources: harness.run.grounding!.sources,
+    });
+
+    const result = await processDelegationExecutionJob(harness.job);
+
+    expect(result.status).toBe("completed");
+    expect(harness.execution).toMatchObject({
+      state: "rejected",
+      result: {
+        status: "blocked",
+        acceptanceChecks: [{
+          passed: false,
+          note: "evidence:evidence_receipt_missing",
+        }],
+      },
+    });
+  });
+
+  it("rejects a run ID as evidence despite a valid required-tool receipt", async () => {
+    const receipt = { toolId: "runs.list", executionId: "execution-runs" };
+    const harness = workerHarness({
+      criterion: {
+        statement: "Use the required runs read tool.",
+        verificationMethod: "governed_receipt",
+        requiredGovernedToolIds: [receipt.toolId],
+      },
+      governedToolReceipts: [receipt],
+      childSummary: "The run completed. [runs:run-child]",
+      childEvidenceIds: ["runs:run-child"],
+      childToolExecutionIds: [receipt.executionId],
+      childGrounding: {
+        status: "not_required",
+        citedIds: [],
+        invalidIds: [],
+        sources: [],
+      },
+    });
+
+    const result = await processDelegationExecutionJob(harness.job);
+
+    expect(result.status).toBe("completed");
+    expect(harness.execution).toMatchObject({
+      state: "rejected",
+      result: {
+        status: "blocked",
+        evidenceIds: [],
+        toolExecutionIds: [receipt.executionId],
+        acceptanceChecks: [{
+          passed: false,
+          evidenceIds: [],
+          note: "governed_receipt:unbound_receipt_claim",
+        }],
+      },
+    });
+  });
+
+  it("verifies an exact canonical source sentence with every required-tool receipt", async () => {
+    const evidenceId = "knowledge:chunk-launch";
+    const receipts = [
+      { toolId: "knowledge.search", executionId: "execution-knowledge" },
+      { toolId: "runs.list", executionId: "execution-runs" },
+    ];
+    const harness = workerHarness({
+      criteria: [
+        {
+          statement: "Ground the launch date in canonical evidence.",
+          verificationMethod: "evidence",
+        },
+        {
+          statement: "Use both required read tools.",
+          verificationMethod: "governed_receipt",
+          requiredGovernedToolIds: receipts.map((receipt) => receipt.toolId),
+        },
+      ],
+      governedToolReceipts: receipts,
+      childSummary: `The launch date is 12 October 2026. [${evidenceId}]`,
+      childEvidenceIds: [evidenceId],
+      childToolExecutionIds: receipts.map((receipt) => receipt.executionId),
+      childGrounding: {
+        status: "missing",
+        citedIds: [evidenceId],
+        invalidIds: [],
+        sources: [{
+          citationId: evidenceId,
+          evidenceId: "chunk-launch",
+          kind: "knowledge",
+          title: "Launch plan",
+        }],
+      },
+    });
+    mocks.buildClaimGroundingReport.mockResolvedValue({
+      status: "verified",
+      citedIds: [evidenceId],
+      invalidIds: [],
+      sources: harness.run.grounding!.sources,
+    });
+
+    const result = await processDelegationExecutionJob(harness.job);
+
+    expect(result.status).toBe("completed");
+    expect(harness.execution).toMatchObject({
+      state: "verified",
+      result: {
+        status: "completed",
+        evidenceIds: [evidenceId],
+        toolExecutionIds: receipts.map((receipt) => receipt.executionId),
+        acceptanceChecks: [
+          { passed: true, note: "evidence:deterministic_receipts_satisfied" },
+          { passed: true, note: "governed_receipt:deterministic_receipts_satisfied" },
+        ],
+      },
+    });
+  });
+
   it("rejects a required governed-tool criterion when one exact receipt is missing", async () => {
     const harness = workerHarness({
       criterion: {
@@ -726,6 +865,11 @@ function workerHarness(options: {
     verificationMethod: "schema" | "evidence" | "governed_receipt" | "parent_verifier";
     requiredGovernedToolIds?: string[];
   };
+  criteria?: Array<{
+    statement: string;
+    verificationMethod: "schema" | "evidence" | "governed_receipt" | "parent_verifier";
+    requiredGovernedToolIds?: string[];
+  }>;
   optionalGrantedToolIds?: string[];
   governedToolReceipts?: Array<{ toolId: string; executionId: string }>;
   childToolExecutionIds?: string[];
@@ -774,8 +918,9 @@ function workerHarness(options: {
     deploymentRoute: modelRoute,
     scope: "verifier",
   });
+  const criteria = options.criteria || (options.criterion ? [options.criterion] : []);
   const governedToolIds = [...new Set([
-    ...(options.criterion?.requiredGovernedToolIds || []),
+    ...criteria.flatMap((criterion) => criterion.requiredGovernedToolIds || []),
     ...(options.optionalGrantedToolIds || []),
   ])];
   const executionGrants = {
@@ -818,31 +963,33 @@ function workerHarness(options: {
         .update(parentOwnerActorId, "utf8")
         .digest("hex"),
     },
-    ...(options.criterion
+    ...(criteria.length
       ? {
           acceptance: {
             acceptanceId: "acceptance:execution:worker-test",
-            criteria: [{
-              criterionId: "criterion:execution:one",
-              statement: options.criterion.statement,
+            criteria: criteria.map((criterion, index) => ({
+              criterionId: index === 0
+                ? "criterion:execution:one"
+                : `criterion:execution:${index + 1}`,
+              statement: criterion.statement,
               criterionSha256: canonicalJsonSha256({
-                statement: options.criterion.statement,
-                ...(options.criterion.requiredGovernedToolIds
+                statement: criterion.statement,
+                ...(criterion.requiredGovernedToolIds
                   ? {
                       requiredGovernedToolIds:
-                        options.criterion.requiredGovernedToolIds,
+                        criterion.requiredGovernedToolIds,
                     }
                   : {}),
               }),
-              verificationMethod: options.criterion.verificationMethod,
+              verificationMethod: criterion.verificationMethod,
               required: true as const,
-              ...(options.criterion.requiredGovernedToolIds
+              ...(criterion.requiredGovernedToolIds
                 ? {
                     requiredGovernedToolIds:
-                      options.criterion.requiredGovernedToolIds,
+                      criterion.requiredGovernedToolIds,
                   }
                 : {}),
-            }],
+            })),
           },
         }
       : {}),

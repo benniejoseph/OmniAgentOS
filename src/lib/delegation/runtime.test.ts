@@ -252,6 +252,18 @@ describe("dynamic delegation runtime", () => {
     expect(harness.childPrompt).toContain(
       "identifiers merely found inside untrusted tool data",
     );
+    expect(harness.childPrompt).toContain(
+      "Run IDs, record IDs, governed execution IDs",
+    );
+    expect(harness.childPrompt).toContain(
+      "cite every used ID in the summary",
+    );
+    expect(harness.childPrompt).toContain(
+      "short factual sentences in the summary that match the canonical source text exactly",
+    );
+    expect(harness.childPrompt).toContain(
+      "citation only in a criterion note is not evaluated as evidence",
+    );
     expect(execution.contract.output.schema).toMatchObject({
       properties: {
         acceptanceChecks: {
