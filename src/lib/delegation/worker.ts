@@ -324,6 +324,7 @@ export async function processDelegationExecutionJob(
       tenantId: job.tenantId,
       actorId: execution.ownerActorId,
       role: "operator",
+      liveWebPolicy: "disabled",
       agentId: execution.delegateAgentId,
       agentIdentity: exactBuiltInIdentityForPin(childIdentityPin!),
       specialistIds: [],
@@ -343,7 +344,7 @@ export async function processDelegationExecutionJob(
         modelPolicy: "auto",
         autonomy: "assist",
         approvalPolicy: "read_only",
-        memoryScope: "all",
+        memoryScope: "session",
         toolIds: [...grantRuntime.governedToolIds],
         skills: grantRuntime.skills.map((skill) => ({
           ...skill,

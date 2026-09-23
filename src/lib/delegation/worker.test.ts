@@ -169,12 +169,14 @@ describe("delegation execution worker", () => {
     expect(mocks.runAgent).toHaveBeenCalledWith(
       expect.objectContaining({
         preclaimedRunId: harness.run.id,
+        liveWebPolicy: "disabled",
         runtimeModelPin: expect.objectContaining({
           provider: "openai",
           model: "configured-council-model",
         }),
         agentProfile: expect.objectContaining({
           approvalPolicy: "read_only",
+          memoryScope: "session",
           toolIds: [],
           skills: [],
         }),

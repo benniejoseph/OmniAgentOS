@@ -110,9 +110,7 @@ function delegationReceiptSummary(
 
 function delegationTask(result: unknown): DelegationReceiptProjection | null {
   if (!isRecord(result)) return null;
-  const data = result.data;
-  if (!isRecord(data)) return null;
-  const task = data.task;
+  const task = result.task;
   if (!isRecord(task)) return null;
 
   const executionId = delegationId(task.executionId);

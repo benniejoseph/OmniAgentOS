@@ -84,13 +84,15 @@ describe("delegation receipt reconciliation", () => {
   });
 
   it.each([
-    ["missing data", {}],
-    ["missing task", { data: {} }],
-    ["array task", { data: { task: [] } }],
-    ["blank execution ID", { data: { task: task("", "run_one", "scout", "queued") } }],
-    ["invalid child run ID", { data: { task: task("dar_one", "run one", "scout", "queued") } }],
-    ["missing agent ID", { data: { task: task("dar_one", "run_one", "", "queued") } }],
-    ["unknown state", { data: { task: task("dar_one", "run_one", "scout", "unknown") } }],
+    ["missing task", {}],
+    ["array task", { task: [] }],
+    ["nested pre-dispatch envelope", {
+      data: { task: task("dar_nested", "run_nested", "scout", "queued") },
+    }],
+    ["blank execution ID", { task: task("", "run_one", "scout", "queued") }],
+    ["invalid child run ID", { task: task("dar_one", "run one", "scout", "queued") }],
+    ["missing agent ID", { task: task("dar_one", "run_one", "", "queued") }],
+    ["unknown state", { task: task("dar_one", "run_one", "scout", "unknown") }],
   ])("rejects malformed result payload: %s", (_label, result) => {
     expect(projectSuccessfulDelegationReceipts([
       execution({ result }),
@@ -143,6 +145,6 @@ function execution(input: {
   };
   return {
     record,
-    result: input.result ?? { data: { task: input.task } },
+    result: input.result ?? { task: input.task },
   };
 }
