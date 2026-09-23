@@ -664,6 +664,83 @@ describe("agent prompt queue lifecycle", () => {
 });
 
 describe("agent semantic intent routing", () => {
+  it("keeps durable native supervisor routing inside the authenticated conversation mutation capability", async () => {
+    const mobileContext = {
+      ...context,
+      source: "mobile" as const,
+      native: {
+        deviceId: "mac-device-durable",
+        platform: "macos" as const,
+        appVersion: "1.16.1",
+        buildNumber: 27,
+        clientContractVersion: 25,
+        clientAttestedAt: "2026-09-23T09:11:29.985Z",
+      },
+    };
+    routeMocks.authorizeRequest.mockResolvedValue(mobileContext);
+    routeMocks.resolveSemanticIntent.mockResolvedValue({
+      decision: {
+        route: "durable_workflow",
+        score: 1,
+        reasons: ["The request needs durable orchestration."],
+        requiresApproval: false,
+        primaryAgentId: "atlas",
+        specialistIds: [],
+        ambiguity: { state: "none" },
+      },
+      capabilitySearchQuery: "coordinate durable specialist work",
+      receipt: {
+        schemaVersion: 1,
+        policyVersion: "semantic-intent-policy-v2",
+        source: "deterministic_fallback",
+        intent: "execute",
+        executionShape: "multi_step",
+        confidence: 1,
+        entityCount: 0,
+        unresolvedEntityCount: 0,
+        capabilityQuery: "coordinate durable specialist work",
+        matchedCapabilityIds: [],
+        route: "durable_workflow",
+        requiresApproval: false,
+        clarificationAdvisory: false,
+      },
+    });
+    const requestAbort = new AbortController();
+    requestAbort.abort("test transport closed");
+
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      signal: requestAbort.signal,
+      body: JSON.stringify({
+        message: "Coordinate the durable specialist work.",
+        requestId: "native-durable-supervisor-a",
+      }),
+    }));
+
+    expect(response.status).toBe(200);
+    expect(routeMocks.authorizeRequest).toHaveBeenCalledTimes(2);
+    expect(routeMocks.authorizeRequest).toHaveBeenNthCalledWith(1,
+      expect.objectContaining({
+        action: "run.agent",
+        resourceType: "agent_run",
+        nativeMutationCapability: "conversation.send",
+      }),
+    );
+    expect(routeMocks.authorizeRequest).toHaveBeenNthCalledWith(2,
+      expect.objectContaining({
+        action: "manage.workflow",
+        resourceType: "workflow",
+        nativeMutationCapability: "conversation.send",
+        metadata: expect.objectContaining({ source: "atomic_supervisor" }),
+      }),
+    );
+    expect(routeMocks.createMission).not.toHaveBeenCalled();
+    expect(routeMocks.ensureMissionTask).not.toHaveBeenCalled();
+    expect(routeMocks.runAgent).not.toHaveBeenCalled();
+    await response.body?.cancel();
+  });
+
   it("binds This Mac explicitly, forces the direct runner, and skips rollout canaries", async () => {
     const macContext = {
       ...context,

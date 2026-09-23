@@ -842,6 +842,7 @@ async function POSTHandler(request: Request) {
         request,
         action: "manage.workflow",
         resourceType: "workflow",
+        nativeMutationCapability: "conversation.send",
         metadata: { source: "atomic_supervisor", threadId: parsed.data.threadId },
       });
     } catch (error) {
