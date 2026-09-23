@@ -17,6 +17,7 @@ export const delegationExecutionJobPayloadSchema = z.object({
   schemaVersion: z.literal(1),
   kind: z.literal(DELEGATION_EXECUTION_JOB_KIND),
   actorId: idSchema,
+  parentOwnerActorId: idSchema.optional(),
   executionId: idSchema,
   runId: idSchema,
   agentId: idSchema,
@@ -64,4 +65,3 @@ export function parseDelegationExecutionJobPayload(
   if (!executionScope) throw new Error("Delegation job scope is required.");
   return Object.freeze({ ...parsed, executionScope });
 }
-

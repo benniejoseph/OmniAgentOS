@@ -14,6 +14,7 @@ import {
   hasGeminiKey,
   hasOpenAIKey,
 } from "@/lib/config";
+import { runWithDatabaseActorScope } from "@/lib/db/client";
 import {
   getDelegationExecution,
   transitionDelegationExecution,
@@ -82,8 +83,10 @@ export async function processDelegationExecutionJob(
     executionId: payload.executionId,
   });
   const childScope = executionScopeFromDelegationContract(execution.contract);
+  let parentOwnerActorId: string;
   try {
     assertJobEnvelope(job, payload, execution);
+    parentOwnerActorId = boundParentOwnerActorId(payload, execution);
   } catch {
     return failBeforeExecution(job, execution, childScope, "job_envelope_mismatch");
   }
@@ -99,23 +102,24 @@ export async function processDelegationExecutionJob(
   }
 
   let run = await getAgentRun(payload.runId, { tenantId: job.tenantId });
-  const [
-    boundScope,
-    childIdentityPin,
-    parentRun,
-    parentScope,
-    parentIdentityPin,
-  ] = await Promise.all([
+  const [boundScope, childIdentityPin] = await Promise.all([
     getAgentRunExecutionScope(payload.runId, { tenantId: job.tenantId }),
     getAgentRunIdentityPin(payload.runId, { tenantId: job.tenantId }),
-    getAgentRun(execution.parentExecutionId, { tenantId: job.tenantId }),
-    getAgentRunExecutionScope(execution.parentExecutionId, {
-      tenantId: job.tenantId,
-    }),
-    getAgentRunIdentityPin(execution.parentExecutionId, {
-      tenantId: job.tenantId,
-    }),
   ]);
+  const [parentRun, parentScope, parentIdentityPin] =
+    await runWithDatabaseActorScope(
+      job.tenantId,
+      exactParentReadActorIds(execution.ownerActorId, parentOwnerActorId),
+      () => Promise.all([
+        getAgentRun(execution.parentExecutionId, { tenantId: job.tenantId }),
+        getAgentRunExecutionScope(execution.parentExecutionId, {
+          tenantId: job.tenantId,
+        }),
+        getAgentRunIdentityPin(execution.parentExecutionId, {
+          tenantId: job.tenantId,
+        }),
+      ]),
+    );
   if (
     !run ||
     run.agentId !== execution.delegateAgentId ||
@@ -142,6 +146,7 @@ export async function processDelegationExecutionJob(
     parentIdentityPin.logicalAgentId !== parentRun.agentId ||
     parentIdentityPin.principalId !== parentScope.executingPrincipalId ||
     parentRun.id !== execution.parentExecutionId ||
+    parentRun.ownerActorId !== parentOwnerActorId ||
     parentRun.ownerActorId !== parentScope.initiatingActorId ||
     parentScope.tenantId !== execution.tenantId ||
     parentScope.correlationId !== execution.parentExecutionId ||
@@ -179,14 +184,18 @@ export async function processDelegationExecutionJob(
   }
   let grantRuntime: DelegationGrantRuntimeV1;
   try {
-    const parentEvents = await listStreamEvents(
-      `run:${execution.parentExecutionId}`,
-      {
-        tenantId: job.tenantId,
-        actorId: parentRun.ownerActorId,
-        limit: 200,
-        order: "asc",
-      },
+    const parentEvents = await runWithDatabaseActorScope(
+      job.tenantId,
+      exactParentReadActorIds(execution.ownerActorId, parentOwnerActorId),
+      () => listStreamEvents(
+        `run:${execution.parentExecutionId}`,
+        {
+          tenantId: job.tenantId,
+          actorId: parentOwnerActorId,
+          limit: 200,
+          order: "asc",
+        },
+      ),
     );
     grantRuntime = await revalidateDelegationGrantsV1({
       contract: execution.contract,
@@ -802,6 +811,7 @@ function assertJobEnvelope(
   if (
     job.type !== "agent.execute" ||
     execution.tenantId !== job.tenantId ||
+    payload.actorId !== execution.ownerActorId ||
     payload.executionId !== execution.executionId ||
     payload.runId !== execution.childRunId ||
     payload.agentId !== execution.delegateAgentId ||
@@ -811,6 +821,38 @@ function assertJobEnvelope(
   ) {
     throw new Error("Delegation job does not match its immutable execution.");
   }
+}
+
+function boundParentOwnerActorId(
+  payload: ReturnType<typeof parseDelegationExecutionJobPayload>,
+  execution: DelegationExecutionRecordV1,
+) {
+  const ownerDigest = execution.contract.lineage.parentOwnerActorIdSha256;
+  if (!ownerDigest) {
+    if (
+      payload.parentOwnerActorId &&
+      payload.parentOwnerActorId !== execution.ownerActorId
+    ) {
+      throw new Error("Legacy delegation jobs cannot broaden parent ownership.");
+    }
+    return execution.ownerActorId;
+  }
+  if (
+    !payload.parentOwnerActorId ||
+    sha256(payload.parentOwnerActorId) !== ownerDigest
+  ) {
+    throw new Error("Delegation parent ownership is not contract-bound.");
+  }
+  return payload.parentOwnerActorId;
+}
+
+function exactParentReadActorIds(
+  canonicalActorId: string,
+  parentOwnerActorId: string,
+) {
+  return canonicalActorId === parentOwnerActorId
+    ? [canonicalActorId]
+    : [canonicalActorId, parentOwnerActorId];
 }
 
 function personaPromptBindingMatches(
@@ -832,11 +874,20 @@ async function failBeforeExecution(
   code: string,
   run?: AgentRunRecord,
 ): Promise<DelegationExecutionJobResult> {
-  if (run && !["completed", "failed", "canceled"].includes(run.status)) {
-    await failAgentRun(run.id, `Delegation failed closed: ${code}.`, {
-      tenantId: job.tenantId,
-      executionScope: childScope,
-    }).catch(() => false);
+  const childRunTerminal = await failActiveChildRun(
+    job,
+    execution,
+    childScope,
+    code,
+    run,
+  );
+  if (!childRunTerminal) {
+    return {
+      job,
+      runId: execution.childRunId,
+      status: "stale",
+      message: "child_run_terminalization_unavailable",
+    };
   }
   let terminal = execution;
   if (!isTerminal(execution.state)) {
@@ -844,13 +895,30 @@ async function failBeforeExecution(
     const transition: DelegationExecutionTransition = expired
       ? { to: "expired" }
       : { to: "failed", code: safeFailureCode(code) };
-    terminal = await transitionDelegationExecution({
-      tenantId: job.tenantId,
-      executionId: execution.executionId,
-      expectedRevision: execution.lifecycleRevision,
-      transition,
-      executionScope: expired ? parentVerificationScope(execution) : childScope,
-    }).catch(() => execution);
+    try {
+      terminal = await transitionDelegationExecution({
+        tenantId: job.tenantId,
+        executionId: execution.executionId,
+        expectedRevision: execution.lifecycleRevision,
+        transition,
+        executionScope: expired ? parentVerificationScope(execution) : childScope,
+      });
+    } catch {
+      const current = await getDelegationExecution({
+        tenantId: job.tenantId,
+        ownerActorId: execution.ownerActorId,
+        executionId: execution.executionId,
+      }).catch(() => undefined);
+      if (!current || !isTerminal(current.state)) {
+        return {
+          job,
+          runId: execution.childRunId,
+          status: "stale",
+          message: "execution_terminalization_unavailable",
+        };
+      }
+      terminal = current;
+    }
   }
   const failed = await failOperationJob(
     job.id,
@@ -864,6 +932,35 @@ async function failBeforeExecution(
     status: failed?.status === "failed" ? "failed" : "stale",
     message: terminal.failureCode || code,
   };
+}
+
+async function failActiveChildRun(
+  job: OperationJobRecord,
+  execution: DelegationExecutionRecordV1,
+  childScope: ExecutionScope,
+  code: string,
+  knownRun?: AgentRunRecord,
+) {
+  const run = knownRun || await getAgentRun(execution.childRunId, {
+    tenantId: job.tenantId,
+  }).catch(() => undefined);
+  if (!run) return false;
+  if (["completed", "failed", "canceled"].includes(run.status)) return true;
+  const changed = await failAgentRun(
+    execution.childRunId,
+    `Delegation failed closed: ${code}.`,
+    {
+      tenantId: job.tenantId,
+      executionScope: childScope,
+    },
+  ).catch(() => false);
+  if (changed) return true;
+  const current = await getAgentRun(execution.childRunId, {
+    tenantId: job.tenantId,
+  }).catch(() => undefined);
+  return Boolean(
+    current && ["completed", "failed", "canceled"].includes(current.status),
+  );
 }
 
 async function completeTerminalJob(

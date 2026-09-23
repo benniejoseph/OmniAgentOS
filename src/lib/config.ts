@@ -287,11 +287,11 @@ export const AGENT_MAX_BROWSER_ACTIONS = normalizePositiveInteger(
 );
 export const AGENT_MAX_AGENTS = normalizePositiveInteger(
   process.env.OMNIAGENT_AGENT_MAX_AGENTS,
-  5,
+  7,
 );
 export const AGENT_MAX_FAN_OUT = normalizePositiveInteger(
   process.env.OMNIAGENT_AGENT_MAX_FAN_OUT,
-  4,
+  6,
 );
 export const AGENT_MAX_RETRIES = normalizePositiveInteger(
   process.env.OMNIAGENT_AGENT_MAX_RETRIES,

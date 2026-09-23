@@ -20,6 +20,18 @@ const mocks = vi.hoisted(() => ({
   resolveRuntimeModel: vi.fn(),
   revalidateGrants: vi.fn(),
   appendGrantValidation: vi.fn(),
+  databaseActorScopes: [] as string[][],
+}));
+
+vi.mock("@/lib/db/client", () => ({
+  runWithDatabaseActorScope: async (
+    _tenantId: string,
+    actorIds: readonly string[],
+    operation: () => unknown,
+  ) => {
+    mocks.databaseActorScopes.push([...actorIds]);
+    return operation();
+  },
 }));
 
 vi.mock("@/lib/delegation/execution-store", () => ({
@@ -111,6 +123,7 @@ const modelRoute = {
 describe("delegation execution worker", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.databaseActorScopes.length = 0;
     mocks.selectAgentModel.mockReturnValue(modelRoute);
     mocks.resolveRuntimeModel.mockResolvedValue(runtimeResolution());
     mocks.revalidateGrants.mockResolvedValue({
@@ -470,6 +483,56 @@ describe("delegation execution worker", () => {
     expect(mocks.claimQueuedAgentRun).not.toHaveBeenCalled();
     expect(mocks.runAgent).not.toHaveBeenCalled();
   });
+
+  it("reads an exact legacy-owned parent only through the contract-bound bridge", async () => {
+    const harness = workerHarness({ legacyParentOwner: true });
+
+    const result = await processDelegationExecutionJob(harness.job);
+
+    expect(result.status).toBe("completed");
+    expect(mocks.databaseActorScopes).toEqual([
+      ["actor-one", "owner@example.test"],
+      ["actor-one", "owner@example.test"],
+    ]);
+    expect(mocks.claimQueuedAgentRun).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a tampered parent owner before opening a broadened read scope", async () => {
+    const harness = workerHarness({
+      legacyParentOwner: true,
+      tamperedJobParentOwner: "attacker@example.test",
+    });
+
+    const result = await processDelegationExecutionJob(harness.job);
+
+    expect(result).toMatchObject({
+      status: "failed",
+      message: "job_envelope_mismatch",
+    });
+    expect(mocks.databaseActorScopes).toEqual([]);
+    expect(mocks.claimQueuedAgentRun).not.toHaveBeenCalled();
+    expect(mocks.runAgent).not.toHaveBeenCalled();
+    expect(harness.run.status).toBe("failed");
+    expect(harness.execution.state).toBe("failed");
+  });
+
+  it("rejects a missing owner binding on a newly bound contract", async () => {
+    const harness = workerHarness({
+      legacyParentOwner: true,
+      omitJobParentOwner: true,
+    });
+
+    const result = await processDelegationExecutionJob(harness.job);
+
+    expect(result).toMatchObject({
+      status: "failed",
+      message: "job_envelope_mismatch",
+    });
+    expect(mocks.databaseActorScopes).toEqual([]);
+    expect(mocks.claimQueuedAgentRun).not.toHaveBeenCalled();
+    expect(harness.run.status).toBe("failed");
+    expect(harness.execution.state).toBe("failed");
+  });
 });
 
 function workerHarness(options: {
@@ -480,6 +543,9 @@ function workerHarness(options: {
   parentScopePurpose?: string;
   childOwnerMismatch?: boolean;
   childPinMismatch?: boolean;
+  legacyParentOwner?: boolean;
+  tamperedJobParentOwner?: string;
+  omitJobParentOwner?: boolean;
   criterion?: {
     statement: string;
     verificationMethod: "schema" | "evidence" | "governed_receipt" | "parent_verifier";
@@ -487,6 +553,9 @@ function workerHarness(options: {
 } = {}) {
   const tenantId = "tenant-one";
   const actorId = "actor-one";
+  const parentOwnerActorId = options.legacyParentOwner
+    ? "owner@example.test"
+    : actorId;
   const now = Date.now();
   const createdAt = new Date(now - 1_000).toISOString();
   const parentCompleteBy = new Date(now + 10 * 60_000).toISOString();
@@ -527,6 +596,24 @@ function workerHarness(options: {
     scope: "verifier",
   });
   const contract = buildExecutionContract({
+    lineage: {
+      tenantId,
+      initiatingActorId: actorId,
+      rootExecutionId: "run-root",
+      rootPrincipalId: parentIdentityPin.principalId,
+      parentExecutionId: "run-root",
+      parentPrincipalId: parentIdentityPin.principalId,
+      parentDelegationId: null,
+      depth: 1,
+      maxDepth: 1,
+      workspaceId: null,
+      projectId: null,
+      workItemId: null,
+      correlationSha256: "a".repeat(64),
+      parentOwnerActorIdSha256: createHash("sha256")
+        .update(parentOwnerActorId, "utf8")
+        .digest("hex"),
+    },
     ...(options.criterion
       ? {
           acceptance: {
@@ -629,7 +716,9 @@ function workerHarness(options: {
   const parentRun: AgentRunRecord = {
     id: contract.lineage.parentExecutionId,
     tenantId,
-    ownerActorId: options.parentOwnerMismatch ? "actor-other" : actorId,
+    ownerActorId: options.parentOwnerMismatch
+      ? "actor-other"
+      : parentOwnerActorId,
     mode: "orchestrate",
     status: "completed",
     prompt: "Coordinate the bounded child.",
@@ -642,7 +731,7 @@ function workerHarness(options: {
   };
   const parentScope = createExecutionScope({
     tenantId,
-    initiatingActorId: actorId,
+    initiatingActorId: parentOwnerActorId,
     executingPrincipalType: "agent",
     executingPrincipalId: parentIdentityPin.principalId,
     delegationId: null,
@@ -652,7 +741,13 @@ function workerHarness(options: {
     purpose: options.parentScopePurpose || "agent.run",
   });
   const transitions: string[] = [];
-  const job = delegationJob(execution, childScope);
+  const job = delegationJob(
+    execution,
+    childScope,
+    options.omitJobParentOwner
+      ? undefined
+      : options.tamperedJobParentOwner || parentOwnerActorId,
+  );
 
   mocks.getExecution.mockImplementation(async () => execution);
   mocks.transitionExecution.mockImplementation(async (input: {
@@ -805,6 +900,7 @@ function runtimeResolution(overrides: Partial<RuntimeModelResolution> = {}): Run
 function delegationJob(
   execution: DelegationExecutionRecordV1,
   executionScope: ReturnType<typeof executionScopeFromDelegationContract>,
+  parentOwnerActorId: string | undefined,
 ): OperationJobRecord {
   const now = new Date().toISOString();
   return {
@@ -816,6 +912,7 @@ function delegationJob(
       schemaVersion: 1,
       kind: DELEGATION_EXECUTION_JOB_KIND,
       actorId: execution.ownerActorId,
+      ...(parentOwnerActorId ? { parentOwnerActorId } : {}),
       executionId: execution.executionId,
       runId: execution.childRunId,
       agentId: execution.delegateAgentId,

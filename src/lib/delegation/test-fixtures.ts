@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import {
   buildAgentRunIdentityPinV1,
   buildBuiltInAgentIdentityV1,
@@ -160,6 +162,9 @@ export function buildExecutionContract(
     projectId: null,
     workItemId: null,
     correlationSha256: "a".repeat(64),
+    parentOwnerActorIdSha256: createHash("sha256")
+      .update(actorId, "utf8")
+      .digest("hex"),
   };
   const mode = overrides.mode || "isolated";
   const contextCapsule = buildDelegationContextCapsuleV1({

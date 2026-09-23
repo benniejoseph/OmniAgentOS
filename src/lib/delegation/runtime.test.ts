@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -380,6 +382,18 @@ describe("dynamic delegation runtime", () => {
     expect(harness.dependencies.listParentEvents).toHaveBeenCalledWith(
       `run:${harness.parentRun.id}`,
       expect.objectContaining({ actorId: harness.parentRun.ownerActorId }),
+    );
+    expect(harness.enqueueJob).toHaveBeenCalledWith(expect.objectContaining({
+      payload: expect.objectContaining({
+        actorId: harness.canonicalActorId,
+        parentOwnerActorId: harness.parentRun.ownerActorId,
+      }),
+    }));
+    const contract = harness.createExecution.mock.calls[0][0].contract;
+    expect(contract.lineage.parentOwnerActorIdSha256).toBe(
+      createHash("sha256")
+        .update(harness.parentRun.ownerActorId, "utf8")
+        .digest("hex"),
     );
     const parentAuthority = harness.createExecution.mock.calls[0][0]
       .parentExecutionScope;

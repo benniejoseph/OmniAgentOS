@@ -35,6 +35,8 @@ describe("complete run budgets", () => {
     expect(DEFAULT_AGENT_RUN_BUDGET_LIMITS).toMatchObject({
       modelTurns: 13,
       toolCalls: 30,
+      agents: 7,
+      fanOut: 6,
     });
     expect(() => narrowRunBudgetLimits(DEFAULT_AGENT_RUN_BUDGET_LIMITS, {
       modelTurns: DEFAULT_AGENT_RUN_BUDGET_LIMITS.modelTurns + 1,
@@ -45,6 +47,8 @@ describe("complete run budgets", () => {
     expect(LEGACY_AGENT_RUN_BUDGET_LIMITS).toMatchObject({
       modelTurns: 7,
       toolCalls: 30,
+      agents: 5,
+      fanOut: 4,
     });
     expect(LEGACY_AGENT_RUN_BUDGET_LIMITS.modelTurns).toBeLessThan(
       DEFAULT_AGENT_RUN_BUDGET_LIMITS.modelTurns,

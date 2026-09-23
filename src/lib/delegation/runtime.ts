@@ -267,7 +267,12 @@ export async function delegateAgentTask(
 
   if (existing) {
     assertIdempotentDelegation(existing, input, purpose, keySha256);
-    await ensureDelegationJob(existing, parentScope, deps);
+    await ensureDelegationJob(
+      existing,
+      parentScope,
+      parentOwnerActorId,
+      deps,
+    );
     return existing;
   }
 
@@ -485,6 +490,7 @@ export async function delegateAgentTask(
         parentRunId,
         delegationId,
       }),
+      parentOwnerActorIdSha256: sha256(parentOwnerActorId),
     },
     delegatorIdentityPin: parentIdentityPin!,
     delegateIdentityPin,
@@ -566,7 +572,12 @@ export async function delegateAgentTask(
     parentExecutionScope: parentScope,
     rootBudgetLimits: parentBudgetAuthority.parentBudgetLimits,
   });
-  await ensureDelegationJob(execution, parentScope, deps);
+  await ensureDelegationJob(
+    execution,
+    parentScope,
+    parentOwnerActorId,
+    deps,
+  );
   return execution;
 }
 
@@ -628,14 +639,21 @@ export function executionScopeFromDelegationContract(
 async function ensureDelegationJob(
   execution: DelegationExecutionRecordV1,
   parentScope: ExecutionScope,
+  parentOwnerActorId: string,
   dependencies: DelegationRuntimeDependencies,
 ) {
   if (execution.state !== "queued") return;
   const executionScope = executionScopeFromDelegationContract(execution.contract);
+  const parentOwnerDigest =
+    execution.contract.lineage.parentOwnerActorIdSha256;
+  const parentOwnerBound = parentOwnerDigest
+    ? parentOwnerDigest === sha256(parentOwnerActorId)
+    : parentOwnerActorId === execution.ownerActorId;
   if (
     parentScope.tenantId !== execution.tenantId ||
     parentScope.correlationId !== execution.rootExecutionId ||
-    parentScope.initiatingActorId !== execution.ownerActorId
+    parentScope.initiatingActorId !== execution.ownerActorId ||
+    !parentOwnerBound
   ) {
     throw new Error("Delegation retry is outside the original parent authority.");
   }
@@ -643,6 +661,7 @@ async function ensureDelegationJob(
     schemaVersion: 1,
     kind: DELEGATION_EXECUTION_JOB_KIND,
     actorId: execution.ownerActorId,
+    parentOwnerActorId,
     executionId: execution.executionId,
     runId: execution.childRunId,
     agentId: execution.delegateAgentId,

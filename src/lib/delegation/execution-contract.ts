@@ -363,6 +363,11 @@ const executionContractBodySchema = z.object({
     projectId: idSchema.nullable(),
     workItemId: idSchema.nullable(),
     correlationSha256: sha256Schema,
+    /**
+     * Hash of the exact persisted parent-run owner. The raw owner can be a
+     * legacy email alias, so it is carried only by the durable job envelope.
+     */
+    parentOwnerActorIdSha256: sha256Schema.optional(),
   }).strict(),
   delegatorIdentity: agentIdentityBindingSchema,
   delegateIdentity: agentIdentityBindingSchema,

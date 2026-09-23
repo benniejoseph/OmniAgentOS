@@ -16,6 +16,7 @@ describe("delegation execution job payload", () => {
       schemaVersion: 1,
       kind: DELEGATION_EXECUTION_JOB_KIND,
       actorId: contract.lineage.initiatingActorId,
+      parentOwnerActorId: contract.lineage.initiatingActorId,
       executionId: contract.delegateIdentity.runId,
       runId: contract.delegateIdentity.runId,
       agentId: contract.delegateIdentity.logicalAgentId,
@@ -27,6 +28,7 @@ describe("delegation execution job payload", () => {
     })).toEqual(expect.objectContaining({
       kind: DELEGATION_EXECUTION_JOB_KIND,
       actorId: contract.lineage.initiatingActorId,
+      parentOwnerActorId: contract.lineage.initiatingActorId,
       executionScope,
     }));
   });
@@ -53,6 +55,7 @@ describe("delegation execution job payload", () => {
       schemaVersion: 1,
       kind: DELEGATION_EXECUTION_JOB_KIND,
       actorId: contract.lineage.initiatingActorId,
+      parentOwnerActorId: contract.lineage.initiatingActorId,
       executionId: contract.delegateIdentity.runId,
       runId: contract.delegateIdentity.runId,
       agentId: contract.delegateIdentity.logicalAgentId,
