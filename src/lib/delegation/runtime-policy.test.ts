@@ -26,6 +26,7 @@ describe("dynamic delegation runtime policy", () => {
 
   it("does not grant mutation, browser, or re-delegation authority", () => {
     expect(DYNAMIC_DELEGATION_CHILD_BUDGET).toMatchObject({
+      modelTurns: 3,
       browserActions: 0,
       fanOut: 0,
       retries: 0,

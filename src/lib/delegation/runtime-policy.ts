@@ -11,7 +11,9 @@ import {
  */
 export const DYNAMIC_DELEGATION_CHILD_BUDGET = Object.freeze(
   runBudgetCountersV1Schema.parse({
-    modelTurns: 2,
+    // Two granted read tools may be selected across separate model rounds;
+    // reserve one final turn so the child can return its bounded result.
+    modelTurns: 3,
     tokens: 12_000,
     costMicrousd: 400_000,
     wallTimeMs: 90_000,
