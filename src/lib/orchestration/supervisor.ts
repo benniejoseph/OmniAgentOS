@@ -9,7 +9,13 @@ import {
 import type { ThreadTurnRecord } from "@/lib/threads/types";
 
 export type SupervisorRoute = "direct" | "durable_workflow" | "clarify";
-export type SupervisorAgentId = "atlas" | "scout" | "forge" | "sentinel" | "mnemosyne";
+export type SupervisorAgentId =
+  | "atlas"
+  | "scout"
+  | "meridian"
+  | "forge"
+  | "sentinel"
+  | "mnemosyne";
 
 export type SupervisorAmbiguity =
   | { state: "none" }
@@ -301,6 +307,7 @@ function explicitlyNamedAgentIds(message: string) {
   const names = [
     "atlas",
     "scout",
+    "meridian",
     "forge",
     "sentinel",
     "mnemosyne",
@@ -336,6 +343,7 @@ function agentName(agentId: SupervisorAgentId) {
   return {
     atlas: "Atlas",
     scout: "Scout",
+    meridian: "Meridian",
     forge: "Forge",
     sentinel: "Sentinel",
     mnemosyne: "Mnemosyne",

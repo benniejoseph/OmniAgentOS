@@ -119,6 +119,8 @@ export type AgentHarnessEvent = {
   adaptationConfidence?: number;
   adaptationActivationVersions?: number[];
   adaptationGuidanceSha256?: string;
+  commandContextReceiptSha256?: string;
+  commandContextPinCount?: number;
 };
 
 export type AgentEvent =
@@ -284,5 +286,17 @@ export type AgentRunRequest = {
     memoryScope: "session" | "project" | "all";
     toolIds: string[];
     skills: Array<{ id: string; name: string; description: string; instructions: string; toolIds: string[] }>;
+  };
+  /**
+   * Exact server-resolved, content-limited context selected for this command.
+   * It is model input only and carries no tool, delegation, connector, budget,
+   * approval, or filesystem authority.
+   */
+  commandContext?: {
+    schemaVersion: 1;
+    content: string;
+    receiptSha256: string;
+    selectionSha256: string;
+    pinCount: number;
   };
 };

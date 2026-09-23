@@ -453,7 +453,14 @@ function asSupervisorAgentId(value: string): SupervisorAgentId {
 }
 
 function isSupervisorAgentId(value: string): value is SupervisorAgentId {
-  return ["atlas", "scout", "forge", "sentinel", "mnemosyne"].includes(value);
+  return [
+    "atlas",
+    "scout",
+    "meridian",
+    "forge",
+    "sentinel",
+    "mnemosyne",
+  ].includes(value);
 }
 
 function buildSemanticCapabilityQuery(

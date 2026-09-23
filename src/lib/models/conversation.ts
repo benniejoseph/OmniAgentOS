@@ -13,6 +13,7 @@ export const modelConversationItemSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("observation"),
     source: z.enum([
+      "command_context",
       "workspace_capabilities",
       "memory",
       "knowledge",

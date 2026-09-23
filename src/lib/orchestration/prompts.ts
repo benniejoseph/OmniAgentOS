@@ -170,18 +170,28 @@ export function getBuiltInAgentPromptIdentity(agentId: BuiltInAgentId) {
 
 export function buildAgentInput({
   messages,
+  commandContext,
   memoryContext,
   liveWebContext,
   councilContext,
   workspaceCapabilityContext,
 }: {
   messages: ChatMessage[];
+  commandContext?: string;
   memoryContext: string;
   liveWebContext?: string;
   councilContext?: string;
   workspaceCapabilityContext?: string;
 }): ModelConversationSeedItem[] {
   const observations: ModelConversationSeedItem[] = [
+    ...(commandContext
+      ? [{
+          type: "observation" as const,
+          source: "command_context" as const,
+          content: commandContext,
+          untrusted: true as const,
+        }]
+      : []),
     ...(workspaceCapabilityContext
       ? [{
           type: "observation" as const,

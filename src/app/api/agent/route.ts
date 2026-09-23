@@ -26,6 +26,11 @@ import {
   promptQueueTerminalPersistenceErrorEvent,
   PromptQueueTerminalReceiptError,
 } from "@/lib/command/prompt-queue-lifecycle";
+import { commandContextReferencesSchema } from "@/lib/command/composer-context-contract";
+import {
+  CommandContextResolutionError,
+  resolveCommandContextReferences,
+} from "@/lib/command/context-reference-runtime";
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import {
@@ -188,6 +193,7 @@ const requestSchema = z.object({
   computerUseTarget: z.enum(["local_macos", "isolated_browser"]).optional(),
   contextScope: z.enum(CONTEXT_SCOPE_IDS).optional(),
   contextSelection: contextSelectionRequestSchema.optional(),
+  contextReferences: commandContextReferencesSchema.optional(),
   budgets: runBudgetCountersV1Schema.partial().optional(),
   voiceInput: voiceInputSchema.optional(),
 }).strict()
@@ -333,6 +339,32 @@ async function POSTHandler(request: Request) {
   }
   const queuedDispatchRevision = request.headers
     .get(PROMPT_QUEUE_DISPATCH_REVISION_HEADER)?.trim();
+  if (
+    parsed.data.contextReferences?.length &&
+    (queuedItemId || parsed.data.resumeRunId)
+  ) {
+    return Response.json({
+      error: "Command context cannot be changed",
+      message: parsed.data.resumeRunId
+        ? "Resume the paused run with the context it already pinned. Start a new command to choose different context."
+        : "Queued commands must pin their context when they enter the queue. Send this contextual command directly.",
+    }, {
+      status: 409,
+      headers: { "cache-control": "private, no-store" },
+    });
+  }
+  if (
+    parsed.data.contextReferences?.length &&
+    parsed.data.strategy === "durable"
+  ) {
+    return Response.json({
+      error: "Command context requires direct execution",
+      message: "Send this contextual command directly so its exact selections remain pinned for the run.",
+    }, {
+      status: 409,
+      headers: { "cache-control": "private, no-store" },
+    });
+  }
   const activeDeploymentRevision =
     process.env.VERCEL_GIT_COMMIT_SHA?.trim() ||
     process.env.OMNIAGENT_RELEASE_SHA?.trim();
@@ -417,6 +449,24 @@ async function POSTHandler(request: Request) {
         headers: { "cache-control": "private, no-store" },
       });
     }
+  }
+  let commandContext;
+  try {
+    commandContext = await resolveCommandContextReferences({
+      context,
+      references: parsed.data.contextReferences || [],
+      agentId: parsed.data.agentId,
+      projectId: parsed.data.projectId,
+    });
+  } catch (error) {
+    if (!(error instanceof CommandContextResolutionError)) throw error;
+    return Response.json({
+      error: error.code,
+      message: error.message,
+    }, {
+      status: error.status,
+      headers: { "cache-control": "private, no-store" },
+    });
   }
   let contextSelection: ContextSelectionLockBinding | undefined;
   if (parsed.data.contextSelection) {
@@ -655,6 +705,59 @@ async function POSTHandler(request: Request) {
     toolIds: requestedCustomIdentity.principal.toolGrantIds,
     skills: customSkills.map(({ id, name, description, instructions, toolIds }) => ({ id, name, description, instructions, toolIds })),
   } : undefined;
+  if (commandContext) {
+    const pinExecutionScope = executionScopeFromSecurityContext(context, {
+      executingPrincipalType: "agent",
+      executingPrincipalId:
+        requestedCustomIdentity?.principal.principalId ||
+        requestedBuiltInAgent ||
+        "atlas",
+      projectId: parsed.data.projectId,
+      correlationId: requestId,
+      causationId: requestId,
+      purpose: "command.context.pin",
+    });
+    try {
+      await appendScopedDomainEvent({
+        id: commandContextPinEventId(
+          context.tenantId,
+          context.actorId,
+          requestId,
+        ),
+        streamId: `command:${requestId}`,
+        type: "command.context.pinned",
+        executionScope: pinExecutionScope,
+        payload: {
+          schemaVersion: commandContext.schemaVersion,
+          receiptKind: "command_context_pin",
+          referenceCount: commandContext.pins.length,
+          kindCounts: commandContext.kindCounts,
+          selectionSha256: commandContext.selectionSha256,
+          contextBlockSha256: commandContext.contextBlockSha256,
+          receiptSha256: commandContext.receiptSha256,
+          pins: commandContext.pins,
+          toolGrantCount: 0,
+          delegationCount: 0,
+        },
+      });
+    } catch (error) {
+      console.error(
+        "Command context pin receipt persistence failed.",
+        String(redactSensitive(
+          error instanceof Error
+            ? error.message
+            : "Unknown context receipt error.",
+        )),
+      );
+      return Response.json({
+        error: "Command context unavailable",
+        message: "The selected context could not be pinned to this run. Retry with a fresh command.",
+      }, {
+        status: 503,
+        headers: { "cache-control": "private, no-store" },
+      });
+    }
+  }
   let savedProcedures;
   try {
     const memoryProcedures = await listSavedProcedures({
@@ -726,7 +829,9 @@ async function POSTHandler(request: Request) {
     semanticResolution.decision,
     computerUseTarget === "local_macos"
       ? "direct"
-      : parsed.data.strategy,
+      : commandContext
+        ? "direct"
+        : parsed.data.strategy,
   );
   const semanticDecisionShadowScope = executionScopeFromSecurityContext(context, {
     executingPrincipalType: "agent",
@@ -906,6 +1011,13 @@ async function POSTHandler(request: Request) {
           label: "supervisor routing",
           detail: preliminaryDecision.reasons[0] || "Selecting the right execution path.",
         });
+        if (commandContext) {
+          enqueueTransportEvent({
+            type: "status",
+            label: "selected context pinned",
+            detail: `${commandContext.pins.length} exact selection${commandContext.pins.length === 1 ? "" : "s"} revalidated for this run; no extra authority was granted.`,
+          });
+        }
         const decision = measureSupervisorOutcomeEvidence(
           preliminaryDecision,
           await getAgentPerformance(context.tenantId).catch((error: unknown) => {
@@ -944,7 +1056,7 @@ async function POSTHandler(request: Request) {
         let loopV2ModelTextEnrollment;
         let loopV2ContextTextEnrollment;
         try {
-          loopV2CanaryEnrollment = queuedDispatch || parsed.data.budgets || parsed.data.contextScope ||
+          loopV2CanaryEnrollment = queuedDispatch || parsed.data.budgets || parsed.data.contextScope || commandContext ||
               parsed.data.voiceInput || computerUseTarget
             ? undefined
             :
@@ -966,6 +1078,7 @@ async function POSTHandler(request: Request) {
           if (
             !loopV2CanaryEnrollment &&
             !queuedDispatch &&
+            !commandContext &&
             !parsed.data.budgets &&
             !parsed.data.voiceInput &&
             !computerUseTarget
@@ -1587,6 +1700,13 @@ async function POSTHandler(request: Request) {
                     ? LOCAL_COMPUTER_MAX_TOOL_STEPS
                     : AGENT_MAX_TOOL_STEPS,
                 voiceInput: parsed.data.voiceInput,
+                commandContext: commandContext ? {
+                  schemaVersion: commandContext.schemaVersion,
+                  content: commandContext.contextBlock,
+                  receiptSha256: commandContext.receiptSha256,
+                  selectionSha256: commandContext.selectionSha256,
+                  pinCount: commandContext.pins.length,
+                } : undefined,
               },
               agentAbortController.signal,
             );
@@ -1794,6 +1914,16 @@ function semanticIntentEventId(
     .digest("hex")}`;
 }
 
+function commandContextPinEventId(
+  tenantId: string,
+  actorId: string,
+  requestId: string,
+) {
+  return `command-context:${createHash("sha256")
+    .update(`${tenantId}\u0000${actorId}\u0000${requestId}`)
+    .digest("hex")}`;
+}
+
 function sameContextSelection(
   stored: unknown,
   expected: ContextSelectionLockBinding | undefined,
@@ -1939,6 +2069,6 @@ async function syncDirectMissionTerminal(input: {
   }
 }
 
-function isBuiltInAgentId(value?: string): value is "atlas" | "scout" | "forge" | "sentinel" | "mnemosyne" {
-  return value === "atlas" || value === "scout" || value === "forge" || value === "sentinel" || value === "mnemosyne";
+function isBuiltInAgentId(value?: string): value is "atlas" | "scout" | "meridian" | "forge" | "sentinel" | "mnemosyne" {
+  return value === "atlas" || value === "scout" || value === "meridian" || value === "forge" || value === "sentinel" || value === "mnemosyne";
 }

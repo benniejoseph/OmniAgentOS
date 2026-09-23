@@ -1388,7 +1388,11 @@ export async function* runAgent(
     });
     if (shadowRunContract) {
       try {
-        const compiledContext = [retrieval.contextBlock, liveWebContext]
+        const compiledContext = [
+          request.commandContext?.content,
+          retrieval.contextBlock,
+          liveWebContext,
+        ]
           .filter(Boolean)
           .join("\n\n");
         const userIncluded = new Set(request.contextSelection?.evidenceIds || []);
@@ -1522,6 +1526,9 @@ export async function* runAgent(
       adaptationGuidanceSha256: createHash("sha256")
         .update(adaptationGuidance.join("\n"))
         .digest("hex"),
+      commandContextReceiptSha256:
+        request.commandContext?.receiptSha256,
+      commandContextPinCount: request.commandContext?.pinCount,
     });
     const primaryAgentId = asCouncilAgentId(request.agentId || "atlas");
     const councilAgentIds = [...new Set([primaryAgentId, ...(request.specialistIds || []).map(asCouncilAgentId)])];
@@ -1783,6 +1790,7 @@ export async function* runAgent(
     }
     const initialConversationItems = buildAgentInput({
       messages: safeMessages,
+      commandContext: request.commandContext?.content,
       memoryContext: request.agentProfile?.memoryScope === "session" ? "" : retrieval.contextBlock,
       liveWebContext,
       councilContext: formatCouncilContributions(councilContributions),
