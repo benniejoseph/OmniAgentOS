@@ -115,11 +115,10 @@ describe("progressive agent toolbox", () => {
       (_, index) => descriptor(`mcp:workspace:search-${index}`),
     );
     const userPrompt = [
-      "Delegate two isolated read-only checks in sequence and return immediately after both receipts.",
-      "Scout: inspect delegation runtime, budgets, personas, grants and Sentinel; grant and require Search Knowledge and List Runs, and use both.",
-      "Then Mnemosyne with the Memory curation skill: classify stored GPT/Codex, Claude, Muse and Grok patterns as present, pending or unknown; grant and require Search Memory and Search Knowledge, and use both.",
-      "Use fitting personas. No inherited context, web, computer use, plugins, MCP, mutations or further delegation.",
-      "Keep Sentinel review. Reply only with task IDs and initial states.",
+      "Please ask Scout to inspect our delegation setup using Search Knowledge and List Runs,",
+      "then ask Mnemosyne to check our stored AI-agent patterns using Search Memory and Search Knowledge.",
+      "Give each agent only those read-only tools, make sure each one actually uses both, and have Sentinel review each result.",
+      "Keep the tasks separate, don't browse the web or use my Mac, and don't make changes.",
     ].join(" ");
     const prefix = dynamicDelegationCapabilityQueryPrefix(userPrompt);
     const longPrompt = composeCapabilitySearchQuery(

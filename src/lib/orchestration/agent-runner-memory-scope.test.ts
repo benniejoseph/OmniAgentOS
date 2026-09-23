@@ -417,7 +417,7 @@ describe("agent memory scope", () => {
     scopedRequest.messages = [{
       role: "user",
       content:
-        "Delegate two isolated read-only checks in sequence to Scout and Mnemosyne.",
+        "Please ask Scout to run one isolated read-only check, then ask Mnemosyne to run another.",
     }];
     scopedRequest.budgetLimits = {
       ...DEFAULT_AGENT_RUN_BUDGET_LIMITS,

@@ -178,6 +178,48 @@ describe("dynamic delegation runtime policy", () => {
     )).toBe("");
   });
 
+  it("recognizes imperative requests for named built-in Agents", () => {
+    const request = [
+      "Please ask Scout to inspect the delegation runtime,",
+      "then ask Mnemosyne to classify the memory patterns.",
+    ].join(" ");
+
+    expect(hasExplicitDynamicDelegationIntent(request)).toBe(true);
+    expect(dynamicDelegationCapabilityQueryPrefix(request)).toBe(
+      "app.agents.delegate",
+    );
+    expect(hasExplicitDynamicDelegationIntent(
+      "Review the runtime first; then ask Mnemosyne to classify the results.",
+    )).toBe(true);
+    expect(hasExplicitDynamicDelegationIntent(
+      "Have Forge review the implementation.",
+    )).toBe(true);
+    expect(hasExplicitDynamicDelegationIntent(
+      "Could you please ask Scout to inspect the repository?",
+    )).toBe(true);
+  });
+
+  it("keeps negated and descriptive named-Agent language inert", () => {
+    expect(hasExplicitDynamicDelegationIntent(
+      "Do not ask Scout to inspect the runtime.",
+    )).toBe(false);
+    expect(hasExplicitDynamicDelegationIntent(
+      "Please do not ask Mnemosyne to classify the memory patterns.",
+    )).toBe(false);
+    expect(hasExplicitDynamicDelegationIntent(
+      "Explain how to ask Scout to inspect a repository.",
+    )).toBe(false);
+    expect(hasExplicitDynamicDelegationIntent(
+      "The previous run asked Scout to inspect the repository.",
+    )).toBe(false);
+    expect(hasExplicitDynamicDelegationIntent(
+      '"Ask Scout to inspect the repository" is documentation text.',
+    )).toBe(false);
+    expect(hasExplicitDynamicDelegationIntent(
+      "How could you ask Scout to inspect a repository?",
+    )).toBe(false);
+  });
+
   it("fails closed before a live delegation can be parked for approval", () => {
     expect(() => assertDynamicDelegationApprovalPolicy({
       toolId: "app.agents.delegate",

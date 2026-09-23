@@ -85,6 +85,7 @@ export function hasExplicitDynamicDelegationIntent(message: string) {
   if (canonicalIndexes.some((index) =>
     !isNegatedDelegationPhrase(text, index)
   )) return true;
+  if (hasImperativeNamedAgentDelegationIntent(text)) return true;
   return [
     /\b(?:delegate|delegates|delegated|delegating)\b/gi,
     /\b(?:create|spawn|launch|start|run|assign|use)\b[^.!?\n]{0,56}\b(?:sub[- ]?agents?|child agents?)\b/gi,
@@ -93,6 +94,31 @@ export function hasExplicitDynamicDelegationIntent(message: string) {
     /\b(?:atlas[- ]style\s+)?coordination\b[^.!?\n]{0,120}\b(?:atlas|scout|meridian|forge|sentinel|mnemosyne)\b/gi,
     /\bcoordinate\b[^.!?\n]{0,120}\b(?:atlas|scout|meridian|forge|sentinel|mnemosyne)\b/gi,
   ].some((pattern) => hasNonNegatedMatch(text, pattern));
+}
+
+/**
+ * Treat a direct, imperative request to a named built-in Agent as delegation.
+ * Clause anchoring keeps documentation, questions about delegation, and past
+ * descriptions such as "the run asked Scout" from creating child authority.
+ */
+function hasImperativeNamedAgentDelegationIntent(message: string) {
+  const clauses = message.split(
+    /(?:[.!?;\n]+|\b(?:and\s+)?then\b)/i,
+  );
+  return clauses.some((clause) => {
+    const text = clause.trim();
+    const requestPrefix = "(?:(?:please|kindly),?\\s+|(?:can|could|would|will)\\s+you\\s+(?:please\\s+)?)?";
+    return new RegExp(
+      `^${requestPrefix}(?:ask|tell)\\s+(?:atlas|scout|meridian|forge|sentinel|mnemosyne)\\s+to\\b`,
+      "i",
+    )
+      .test(text) ||
+      new RegExp(
+        `^${requestPrefix}have\\s+(?:atlas|scout|meridian|forge|sentinel|mnemosyne)\\s+(?:perform|run|inspect|review|analy[sz]e|research|check|search|classify|summari[sz]e|investigate|compare|draft|write|read|find|handle|execute|process|evaluate|verify|build|create|work\\s+on|look\\s+at|take\\s+on)\\b`,
+        "i",
+      )
+        .test(text);
+  });
 }
 
 /**

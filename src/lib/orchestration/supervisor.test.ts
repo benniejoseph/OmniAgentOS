@@ -122,7 +122,7 @@ describe("supervisor routing", () => {
 
   it("puts explicit child-Agent coordination under Atlas", () => {
     const decision = routeAgentRequest(
-      "Delegate two isolated checks: Scout should Search Knowledge and List Runs, then Mnemosyne should Search Memory. Keep Sentinel review.",
+      "Please ask Scout to Search Knowledge and List Runs, then ask Mnemosyne to Search Memory. Have Sentinel review each result.",
       "orchestrate",
     );
 
