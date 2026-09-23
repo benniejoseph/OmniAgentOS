@@ -24,7 +24,9 @@ export const DYNAMIC_DELEGATION_CHILD_BUDGET = Object.freeze(
     browserActions: 0,
     agents: 1,
     fanOut: 0,
-    retries: 0,
+    // Permit one provider-level retry for malformed structured output while
+    // keeping the delegated tool authority and model-turn ceiling unchanged.
+    retries: 1,
     replans: 0,
   }),
 );

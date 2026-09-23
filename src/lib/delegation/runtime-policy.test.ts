@@ -109,7 +109,7 @@ describe("dynamic delegation runtime policy", () => {
       modelTurns: 4,
       browserActions: 0,
       fanOut: 0,
-      retries: 0,
+      retries: 1,
       replans: 0,
     });
     expect(DYNAMIC_DELEGATION_READ_TOOL_IDS).toEqual([

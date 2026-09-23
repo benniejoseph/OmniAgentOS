@@ -297,7 +297,9 @@ export const AGENT_MAX_FAN_OUT = normalizePositiveInteger(
 );
 export const AGENT_MAX_RETRIES = normalizePositiveInteger(
   process.env.OMNIAGENT_AGENT_MAX_RETRIES,
-  2,
+  // Preserve one bounded retry for each of two delegated children and each
+  // parent dispatch/final-receipt turn in the two-child orchestration path.
+  5,
 );
 export const AGENT_MAX_REPLANS = normalizePositiveInteger(
   process.env.OMNIAGENT_AGENT_MAX_REPLANS,
