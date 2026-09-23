@@ -12,6 +12,7 @@ import 'talk_history_api_repository.dart';
 class ApiTalkRepository
     implements
         TalkRepository,
+        TalkCommandContextRepository,
         TalkHistoryRepository,
         TalkArtifactRepository,
         TalkPromptQueueRepository {
@@ -468,6 +469,12 @@ class ApiTalkRepository
   }) => _history.listThreadMemories(threadId, limit: limit);
 
   @override
+  Future<TalkCommandContextCatalog> loadCommandContextCatalog() async {
+    final payload = await api.getJson('/api/command/catalog');
+    return TalkCommandContextCatalog.fromJson(payload);
+  }
+
+  @override
   Stream<SseEvent> send({
     required String message,
     String? threadId,
@@ -475,8 +482,65 @@ class ApiTalkRepository
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
     String? agentId,
+  }) => _sendAgent(
+    message: message,
+    threadId: threadId,
+    mode: mode,
+    strategy: strategy,
+    executionTarget: executionTarget,
+    agentId: agentId,
+    contextReferences: const [],
+  );
+
+  @override
+  Stream<SseEvent> sendWithCommandContext({
+    required String message,
+    required List<TalkCommandContextReference> contextReferences,
+    String? threadId,
+    String mode = 'orchestrate',
+    String strategy = 'auto',
+    TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
+    String? agentId,
+  }) => _sendAgent(
+    message: message,
+    threadId: threadId,
+    mode: mode,
+    strategy: strategy,
+    executionTarget: executionTarget,
+    agentId: agentId,
+    contextReferences: contextReferences,
+  );
+
+  Stream<SseEvent> _sendAgent({
+    required String message,
+    required List<TalkCommandContextReference> contextReferences,
+    String? threadId,
+    String mode = 'orchestrate',
+    String strategy = 'auto',
+    TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
+    String? agentId,
   }) async* {
-    final exactAgentId = agentId?.trim();
+    final selectedAgents = contextReferences
+        .where((item) => item.kind == 'agent')
+        .toList(growable: false);
+    final selectedProjects = contextReferences
+        .where((item) => item.kind == 'project')
+        .toList(growable: false);
+    if (selectedAgents.length > 1 || selectedProjects.length > 1) {
+      throw const FormatException(
+        'A Command can select only one primary Agent and one Project.',
+      );
+    }
+    final requestedAgentId = agentId?.trim();
+    final selectedAgentId = selectedAgents.firstOrNull?.id;
+    if (requestedAgentId != null &&
+        selectedAgentId != null &&
+        requestedAgentId != selectedAgentId) {
+      throw const FormatException(
+        'The selected Agent did not match the Command assignment.',
+      );
+    }
+    final exactAgentId = requestedAgentId ?? selectedAgentId;
     if (exactAgentId != null &&
         !RegExp(r'^[a-zA-Z0-9_.:-]{1,120}$').hasMatch(exactAgentId)) {
       throw ArgumentError.value(agentId, 'agentId');
@@ -494,6 +558,12 @@ class ApiTalkRepository
           'mode': mode,
           'strategy': strategy,
           'agentId': ?exactAgentId,
+          'projectId': ?selectedProjects.firstOrNull?.id,
+          if (contextReferences.isNotEmpty)
+            'contextReferences': [
+              for (final reference in contextReferences)
+                reference.toRequestJson(),
+            ],
           'computerUseTarget': ?executionTarget.apiValue,
           'requestId': 'flutter-${DateTime.now().microsecondsSinceEpoch}',
         },

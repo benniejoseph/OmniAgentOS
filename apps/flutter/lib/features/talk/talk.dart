@@ -18,10 +18,12 @@ import '../../core/network/api_exception.dart';
 import '../../core/platform/desktop_host_bridge.dart';
 import '../../generated/native_contract.g.dart';
 import '../computer_use/local_computer.dart';
+import 'talk_command_context.dart';
 import 'talk_history.dart';
 import 'talk_history_view.dart';
 
 export 'talk_history.dart';
+export 'talk_command_context.dart';
 
 typedef Json = Map<String, dynamic>;
 
@@ -891,6 +893,20 @@ abstract interface class TalkRepository {
   Future<TalkRunInspection> inspectRun(String runId);
 }
 
+abstract interface class TalkCommandContextRepository {
+  Future<TalkCommandContextCatalog> loadCommandContextCatalog();
+
+  Stream<SseEvent> sendWithCommandContext({
+    required String message,
+    required List<TalkCommandContextReference> contextReferences,
+    String? threadId,
+    String mode = 'orchestrate',
+    String strategy = 'auto',
+    TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
+    String? agentId,
+  });
+}
+
 abstract interface class TalkArtifactRepository {
   Future<TalkArtifactContent> loadArtifact(TalkMediaArtifactSummary artifact);
 }
@@ -946,6 +962,19 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       repository is TalkPromptQueueRepository
       ? repository as TalkPromptQueueRepository
       : null;
+
+  TalkCommandContextRepository? get _commandContextRepository =>
+      repository is TalkCommandContextRepository
+      ? repository as TalkCommandContextRepository
+      : null;
+
+  Future<TalkCommandContextCatalog> loadCommandContextCatalog() async {
+    final contextRepository = _commandContextRepository;
+    if (contextRepository == null) {
+      throw StateError('Command context is not available in this Asael build.');
+    }
+    return contextRepository.loadCommandContextCatalog();
+  }
 
   List<String> get workflowIds => List.unmodifiable(_workflowIds);
   Set<String> get monitoringWorkflowIds =>
@@ -1054,6 +1083,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     _retryStrategy = null;
     _retryExecutionTarget = null;
     _retryAssignedAgent = null;
+    _retryContextReferences = const [];
     status = null;
     canceling = false;
   }
@@ -1072,6 +1102,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     _retryStrategy = null;
     _retryExecutionTarget = null;
     _retryAssignedAgent = null;
+    _retryContextReferences = const [];
     status = null;
   }
 
@@ -1080,11 +1111,20 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     String mode = 'orchestrate',
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
+    List<TalkCommandContextReference> contextReferences = const [],
   }) async {
     final text = input.trim();
     if (_disposed || text.isEmpty) return;
     final targetAgent = assignedAgent;
     if (sending) {
+      if (contextReferences.any((item) =>
+          item.kind != 'agent' && item.kind != 'project')) {
+        promptQueueError = StateError(
+          'Attached Skills, files, Extensions, and Connections must be sent directly after the current work finishes.',
+        );
+        notifyListeners();
+        return;
+      }
       enqueuePrompt(
         text,
         mode: mode,
@@ -1101,6 +1141,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       strategy: targetAgent == null ? strategy : 'direct',
       executionTarget: executionTarget,
       assignedAgent: targetAgent,
+      contextReferences: contextReferences,
     );
   }
 
@@ -1526,6 +1567,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   String? _retryStrategy;
   TalkExecutionTarget? _retryExecutionTarget;
   TalkAssignedAgent? _retryAssignedAgent;
+  List<TalkCommandContextReference> _retryContextReferences = const [];
 
   bool get canRetry => !sending && _retryInput != null;
   bool get _acceptedRunIsTerminal =>
@@ -1537,6 +1579,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     _retryStrategy = null;
     _retryExecutionTarget = null;
     _retryAssignedAgent = null;
+    _retryContextReferences = const [];
   }
 
   void _abandonAcceptedRun() {
@@ -1590,6 +1633,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       strategy: _retryStrategy ?? 'auto',
       executionTarget: _retryExecutionTarget ?? TalkExecutionTarget.agent,
       assignedAgent: _retryAssignedAgent,
+      contextReferences: _retryContextReferences,
       replaceFailedResponse: true,
     );
   }
@@ -1620,6 +1664,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
     TalkAssignedAgent? assignedAgent,
+    List<TalkCommandContextReference> contextReferences = const [],
     TalkQueuedPrompt? queuedPrompt,
     bool queuedForce = true,
     bool replaceFailedResponse = false,
@@ -1652,6 +1697,20 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
               queuedPrompt,
               force: queuedForce,
             )
+          : contextReferences.isNotEmpty
+          ? (_commandContextRepository ??
+                (throw StateError(
+                  'This Asael build cannot send selected Command context.',
+                )))
+              .sendWithCommandContext(
+                message: text,
+                contextReferences: contextReferences,
+                threadId: threadId,
+                mode: mode,
+                strategy: strategy,
+                executionTarget: executionTarget,
+                agentId: assignedAgent?.id,
+              )
           : repository.send(
               message: text,
               threadId: threadId,
@@ -1967,6 +2026,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
         _retryStrategy = strategy;
         _retryExecutionTarget = executionTarget;
         _retryAssignedAgent = assignedAgent;
+        _retryContextReferences = List.unmodifiable(contextReferences);
         _recordActivity(
           key: 'run',
           title: 'Main agent',
@@ -2882,6 +2942,8 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   final scroll = ScrollController();
   late final VoiceDraftRecorder recorder;
   String strategy = 'auto';
+  String commandMode = 'orchestrate';
+  final commandReferences = <TalkCommandContextReference>[];
   TalkExecutionTarget executionTarget = TalkExecutionTarget.agent;
   bool recording = false;
   String? recordingError;
@@ -2996,12 +3058,48 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     }
     final work = controller.send(
       value,
-      mode: 'orchestrate',
+      mode: commandMode,
       strategy: strategy,
       executionTarget: executionTarget,
+      contextReferences: List.unmodifiable(commandReferences),
     );
+    setState(() {
+      commandReferences.removeWhere(
+        (item) => item.kind != 'agent' && item.kind != 'project',
+      );
+    });
     if (widget.quickEntry) widget.onExitQuickEntry?.call();
     unawaited(work);
+  }
+
+  void selectCommandReference(TalkCommandContextReference reference) {
+    setState(() {
+      if (reference.kind == 'agent' || reference.kind == 'project') {
+        commandReferences.removeWhere((item) => item.kind == reference.kind);
+      }
+      commandReferences.removeWhere((item) => item.key == reference.key);
+      commandReferences.add(reference);
+    });
+    if (reference.kind == 'agent') {
+      widget.controller.assignAgent(id: reference.id, name: reference.label);
+    }
+  }
+
+  void removeCommandReference(TalkCommandContextReference reference) {
+    setState(() {
+      commandReferences.removeWhere((item) => item.key == reference.key);
+    });
+    if (reference.kind == 'agent' &&
+        widget.controller.assignedAgent?.id == reference.id) {
+      widget.controller.clearAssignedAgent();
+    }
+  }
+
+  void selectCommandApproach(String mode) {
+    if (!const {'orchestrate', 'research', 'execute', 'learn'}.contains(mode)) {
+      return;
+    }
+    setState(() => commandMode = mode);
   }
 
   Future<void> toggleVoiceDraft() async {
@@ -3261,28 +3359,30 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                             ),
                           ),
                           const SizedBox(height: 9),
-                          TextField(
+                          TalkCommandComposer(
                             key: const ValueKey('quick-entry-input'),
                             controller: input,
                             focusNode: inputFocus,
+                            selected: commandReferences,
+                            catalogLoader:
+                                widget.controller.loadCommandContextCatalog,
+                            onSelected: selectCommandReference,
+                            onRemoved: removeCommandReference,
+                            onApproach: selectCommandApproach,
                             autofocus: true,
                             minLines: 1,
                             maxLines: 4,
-                            textInputAction: TextInputAction.send,
                             onSubmitted: (_) => submit(),
-                            decoration: InputDecoration(
-                              hintText: 'What needs to move?',
-                              filled: true,
-                              suffixIcon: IconButton(
-                                tooltip: widget.controller.sending
-                                    ? 'Add to prompt queue'
-                                    : 'Send and open Conversation',
-                                onPressed: submit,
-                                icon: Icon(
-                                  widget.controller.sending
-                                      ? Icons.playlist_add_rounded
-                                      : Icons.arrow_upward_rounded,
-                                ),
+                            hintText: 'What needs to move?',
+                            suffixIcon: IconButton(
+                              tooltip: widget.controller.sending
+                                  ? 'Add to prompt queue'
+                                  : 'Send and open Conversation',
+                              onPressed: submit,
+                              icon: Icon(
+                                widget.controller.sending
+                                    ? Icons.playlist_add_rounded
+                                    : Icons.arrow_upward_rounded,
                               ),
                             ),
                           ),
@@ -3773,57 +3873,59 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                   ),
                                 ),
                               ),
-                            TextField(
+                            TalkCommandComposer(
                               controller: input,
                               focusNode: inputFocus,
+                              selected: commandReferences,
+                              catalogLoader:
+                                  widget.controller.loadCommandContextCatalog,
+                              onSelected: selectCommandReference,
+                              onRemoved: removeCommandReference,
+                              onApproach: selectCommandApproach,
                               autofocus:
                                   !kIsWeb &&
                                   defaultTargetPlatform == TargetPlatform.macOS,
                               minLines: 1,
                               maxLines: 5,
-                              textInputAction: TextInputAction.send,
                               onSubmitted:
                                   widget.controller.transcribing || recording
                                   ? null
                                   : (_) => submit(),
-                              decoration: InputDecoration(
-                                hintText:
-                                    'Describe an outcome or ask a question',
-                                filled: true,
-                                suffixIcon: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    IconButton(
-                                      tooltip: recording
-                                          ? 'Stop and transcribe voice draft'
-                                          : 'Record voice draft',
-                                      onPressed:
-                                          widget.controller.sending ||
-                                              widget.controller.transcribing
-                                          ? null
-                                          : toggleVoiceDraft,
-                                      color: recording
-                                          ? Theme.of(context).colorScheme.error
-                                          : null,
-                                      icon: Icon(
-                                        recording
-                                            ? Icons.stop_circle_outlined
-                                            : Icons.mic_none_rounded,
-                                      ),
+                              hintText:
+                                  'Describe an outcome or ask a question',
+                              suffixIcon: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  IconButton(
+                                    tooltip: recording
+                                        ? 'Stop and transcribe voice draft'
+                                        : 'Record voice draft',
+                                    onPressed:
+                                        widget.controller.sending ||
+                                            widget.controller.transcribing
+                                        ? null
+                                        : toggleVoiceDraft,
+                                    color: recording
+                                        ? Theme.of(context).colorScheme.error
+                                        : null,
+                                    icon: Icon(
+                                      recording
+                                          ? Icons.stop_circle_outlined
+                                          : Icons.mic_none_rounded,
                                     ),
-                                    IconButton(
-                                      tooltip: widget.controller.sending
-                                          ? 'Add to prompt queue'
-                                          : 'Send message',
-                                      onPressed: recording ? null : submit,
-                                      icon: Icon(
-                                        widget.controller.sending
-                                            ? Icons.playlist_add_rounded
-                                            : Icons.arrow_upward_rounded,
-                                      ),
+                                  ),
+                                  IconButton(
+                                    tooltip: widget.controller.sending
+                                        ? 'Add to prompt queue'
+                                        : 'Send message',
+                                    onPressed: recording ? null : submit,
+                                    icon: Icon(
+                                      widget.controller.sending
+                                          ? Icons.playlist_add_rounded
+                                          : Icons.arrow_upward_rounded,
                                     ),
-                                  ],
-                                ),
+                                  ),
+                                ],
                               ),
                             ),
                           ],
