@@ -135,9 +135,9 @@ class _MacosAgentsViewState extends State<MacosAgentsView>
       );
 
       return MacosPageScaffold(
-        title: 'Agents',
-        description: 'Follow delegated work, inspect authority and evidence, and manage the Agent roster.',
-        icon: Icons.smart_toy_outlined,
+        title: 'Arsenal',
+        description: 'See what your agent team is doing, review what it produced, and step in only when needed.',
+        icon: Icons.hub_outlined,
         actions: [
           IconButton(
             key: const Key('macos-agents-refresh'),
@@ -690,34 +690,34 @@ class _AgentsToolbar extends StatelessWidget {
               ButtonSegment(
                 value: _AgentWorkspace.liveWork,
                 icon: const Tooltip(
-                  message: 'Live work',
-                  child: Icon(Icons.account_tree_outlined, size: 15),
+                  message: 'What is happening now',
+                  child: Icon(Icons.bubble_chart_outlined, size: 15),
                 ),
-                label: compact ? null : const Text('Live work'),
+                label: compact ? null : const Text('Now'),
               ),
               ButtonSegment(
                 value: _AgentWorkspace.agents,
                 icon: const Tooltip(
-                  message: 'Roster',
+                  message: 'Your agent team',
                   child: Icon(Icons.smart_toy_outlined, size: 15),
                 ),
-                label: compact ? null : const Text('Roster'),
+                label: compact ? null : const Text('Your agents'),
               ),
               ButtonSegment(
                 value: _AgentWorkspace.skills,
                 icon: const Tooltip(
-                  message: 'Skills',
+                  message: 'What your agents can do',
                   child: Icon(Icons.bolt_outlined, size: 15),
                 ),
-                label: compact ? null : const Text('Skills'),
+                label: compact ? null : const Text('Capabilities'),
               ),
               ButtonSegment(
                 value: _AgentWorkspace.performance,
                 icon: const Tooltip(
-                  message: 'Outcomes',
+                  message: 'How your agents performed',
                   child: Icon(Icons.query_stats_outlined, size: 15),
                 ),
-                label: compact ? null : const Text('Outcomes'),
+                label: compact ? null : const Text('Results'),
               ),
             ],
             selected: {workspace},
@@ -731,10 +731,10 @@ class _AgentsToolbar extends StatelessWidget {
               onChanged: onSearchChanged,
               decoration: InputDecoration(
                 hintText: switch (workspace) {
-                  _AgentWorkspace.liveWork => 'Search work or specialists',
-                  _AgentWorkspace.agents => 'Search agents or models',
-                  _AgentWorkspace.skills => 'Search skills or tools',
-                  _AgentWorkspace.performance => 'Search outcomes',
+                  _AgentWorkspace.liveWork => 'Search work or agents',
+                  _AgentWorkspace.agents => 'Search your agents',
+                  _AgentWorkspace.skills => 'Search capabilities',
+                  _AgentWorkspace.performance => 'Search results',
                 },
                 prefixIcon: const Icon(Icons.search_rounded, size: 17),
                 suffixIcon: searchController.text.isEmpty
@@ -760,7 +760,10 @@ class _AgentsToolbar extends StatelessWidget {
                 ...filters.map(
                   (value) => DropdownMenuItem(
                     value: value,
-                    child: Text(_label(value), overflow: TextOverflow.ellipsis),
+                    child: Text(
+                      _workspaceFilterLabel(workspace, value),
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
                 ),
               ],
@@ -772,7 +775,7 @@ class _AgentsToolbar extends StatelessWidget {
           if (!compact) ...[
             const SizedBox(width: 12),
             Text(
-              '$visibleCount visible',
+              '$visibleCount shown',
               style: Theme.of(context).textTheme.bodySmall,
             ),
           ],
@@ -895,94 +898,369 @@ class _CouncilSummaryStrip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final summary = projection.summary;
+    final members = projection.executions
+        .expand((execution) => execution.members)
+        .toList(growable: false);
+    final working = members.where((member) => _isWorkInProgress(member.state));
+    final needsUser = members.where(
+      (member) => const {
+        'waiting_approval',
+        'waiting_clarification',
+        'challenged',
+      }.contains(member.state),
+    );
+    final produced = members.fold<int>(
+      0,
+      (count, member) => count + member.outputs.items.length,
+    );
+    final verified = members.where(
+      (member) => const {
+        'accepted',
+        'passed',
+        'verified',
+      }.contains(member.verifier.verdict),
+    );
+    final couldNotVerify = members.where(
+      (member) => member.verifier.verdict == 'rejected',
+    );
+    final displayMembers = working.isNotEmpty ? working.toList() : members;
+    final headline = needsUser.isNotEmpty
+        ? '${needsUser.length} ${needsUser.length == 1 ? 'item needs' : 'items need'} you'
+        : working.isNotEmpty
+        ? '${working.length} ${working.length == 1 ? 'agent is' : 'agents are'} working now'
+        : 'Your agent team is caught up';
+    final supporting = needsUser.isNotEmpty
+        ? 'Review the highlighted work when you are ready.'
+        : working.isNotEmpty
+        ? 'You can leave this page — progress keeps updating.'
+        : 'Start from Command whenever you have something new.';
     final mac = MacosThemeColors.of(context);
     return Container(
       key: const Key('macos-agents-live-summary'),
       width: double.infinity,
-      constraints: const BoxConstraints(minHeight: 54),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      padding: const EdgeInsets.fromLTRB(16, 13, 16, 14),
       decoration: BoxDecoration(
         color: mac.toolbar,
         border: Border(bottom: BorderSide(color: mac.divider)),
       ),
-      child: Row(
-        children: [
-          const Icon(Icons.account_tree_outlined, size: 17),
-          const SizedBox(width: 9),
-          Expanded(
-            child: Wrap(
-              spacing: 20,
-              runSpacing: 5,
-              crossAxisAlignment: WrapCrossAlignment.center,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final compact = constraints.maxWidth < 1080;
+          final intro = Row(
+            mainAxisSize: compact ? MainAxisSize.max : MainAxisSize.min,
+            children: [
+              _CouncilActivityCluster(
+                members: displayMembers.take(4).toList(growable: false),
+              ),
+              const SizedBox(width: 12),
+              Flexible(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      headline,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      supporting,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          );
+          final metrics = Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _CouncilOverviewMetric(
+                icon: Icons.motion_photos_on_outlined,
+                value: '${working.length}',
+                label: 'Working',
+                detail: working.isEmpty ? 'Nothing active' : 'In progress',
+                tone: Theme.of(context).colorScheme.primary,
+              ),
+              _CouncilOverviewMetric(
+                icon: Icons.inventory_2_outlined,
+                value: '$produced',
+                label: 'Produced',
+                detail: produced == 1 ? 'Shared result' : 'Shared results',
+                tone: Theme.of(context).colorScheme.tertiary,
+              ),
+              _CouncilOverviewMetric(
+                icon: Icons.verified_outlined,
+                value: '${verified.length}',
+                label: 'Verified',
+                detail: couldNotVerify.isEmpty
+                    ? 'Independent checks'
+                    : '${couldNotVerify.length} could not verify',
+                tone: couldNotVerify.isEmpty ? mac.positive : mac.warning,
+              ),
+              _CouncilOverviewMetric(
+                icon: Icons.front_hand_outlined,
+                value: '${needsUser.length}',
+                label: 'Needs you',
+                detail: needsUser.isEmpty
+                    ? 'No action needed'
+                    : 'Ready to review',
+                tone: needsUser.isEmpty
+                    ? Theme.of(context).colorScheme.onSurfaceVariant
+                    : mac.warning,
+              ),
+            ],
+          );
+          if (compact) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _CouncilSummaryValue(
-                  value: '${summary.executionCount}',
-                  label: 'runs',
-                ),
-                _CouncilSummaryValue(
-                  value: '${summary.activeMemberCount}',
-                  label: 'active',
-                  emphasized: summary.activeMemberCount > 0,
-                ),
-                _CouncilSummaryValue(
-                  value: '${summary.waitingMemberCount}',
-                  label: 'waiting',
-                  attention: summary.waitingMemberCount > 0,
-                ),
-                _CouncilSummaryValue(
-                  value: '${summary.acceptedMemberCount}',
-                  label: 'accepted',
-                ),
-                _CouncilSummaryValue(
-                  value: _formatKnownMicrousd(
-                    summary.knownEstimatedCostMicrousd,
-                  ),
-                  label: 'known spend',
+                intro,
+                const SizedBox(height: 12),
+                metrics,
+                const SizedBox(height: 7),
+                Text(
+                  'Updated ${_relativeTime(projection.generatedAt)}',
+                  style: Theme.of(context).textTheme.labelSmall,
                 ),
               ],
+            );
+          }
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              SizedBox(width: 285, child: intro),
+              const SizedBox(width: 16),
+              Expanded(child: metrics),
+              const SizedBox(width: 12),
+              Text(
+                'Updated ${_relativeTime(projection.generatedAt)}',
+                style: Theme.of(context).textTheme.labelSmall,
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _CouncilOverviewMetric extends StatelessWidget {
+  const _CouncilOverviewMetric({
+    required this.icon,
+    required this.value,
+    required this.label,
+    required this.detail,
+    required this.tone,
+  });
+
+  final IconData icon;
+  final String value, label, detail;
+  final Color tone;
+
+  @override
+  Widget build(BuildContext context) {
+    final mac = MacosThemeColors.of(context);
+    return Semantics(
+      label: '$value $label. $detail',
+      child: Container(
+        width: 132,
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        decoration: BoxDecoration(
+          color: tone.withValues(alpha: .07),
+          border: Border.all(color: mac.divider),
+          borderRadius: BorderRadius.circular(9),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 28,
+              height: 28,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: tone.withValues(alpha: .13),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(icon, size: 15, color: tone),
             ),
-          ),
-          Text(
-            'Updated ${_relativeTime(projection.generatedAt)}',
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text.rich(
+                    TextSpan(
+                      children: [
+                        TextSpan(
+                          text: value,
+                          style: TextStyle(
+                            color: tone,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        TextSpan(text: ' $label'),
+                      ],
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.labelMedium,
+                  ),
+                  Text(
+                    detail,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.labelSmall,
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CouncilActivityCluster extends StatelessWidget {
+  const _CouncilActivityCluster({required this.members});
+
+  final List<AgentCouncilMember> members;
+
+  @override
+  Widget build(BuildContext context) {
+    final visible = members.take(4).toList(growable: false);
+    if (visible.isEmpty) {
+      return Container(
+        width: 58,
+        height: 46,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: MacosThemeColors.of(context).hover,
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: const Icon(Icons.nightlight_round, size: 20),
+      );
+    }
+    return SizedBox(
+      width: 58 + ((visible.length - 1) * 15),
+      height: 48,
+      child: Stack(
+        children: [
+          for (var index = 0; index < visible.length; index++)
+            Positioned(
+              left: index * 15,
+              top: index.isEven ? 0 : 8,
+              child: _CouncilAnimatedGlyph(
+                identity: visible[index].identity,
+                state: visible[index].state,
+                size: 42,
+              ),
+            ),
         ],
       ),
     );
   }
 }
 
-class _CouncilSummaryValue extends StatelessWidget {
-  const _CouncilSummaryValue({
-    required this.value,
-    required this.label,
-    this.emphasized = false,
-    this.attention = false,
+class _CouncilAnimatedGlyph extends StatefulWidget {
+  const _CouncilAnimatedGlyph({
+    required this.identity,
+    required this.state,
+    required this.size,
   });
 
-  final String value, label;
-  final bool emphasized, attention;
+  final AgentCouncilIdentity identity;
+  final String state;
+  final double size;
+
+  @override
+  State<_CouncilAnimatedGlyph> createState() => _CouncilAnimatedGlyphState();
+}
+
+class _CouncilAnimatedGlyphState extends State<_CouncilAnimatedGlyph>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1800),
+  );
+
+  bool get _active => _isWorkInProgress(widget.state);
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _syncMotion();
+  }
+
+  @override
+  void didUpdateWidget(covariant _CouncilAnimatedGlyph oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.state != widget.state) _syncMotion();
+  }
+
+  void _syncMotion() {
+    final reduceMotion =
+        MediaQuery.disableAnimationsOf(context) ||
+        MediaQuery.accessibleNavigationOf(context);
+    if (_active && !reduceMotion) {
+      if (!_controller.isAnimating) _controller.repeat();
+    } else {
+      _controller.stop();
+      _controller.value = 0;
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final color = attention
-        ? scheme.secondary
-        : emphasized
-        ? scheme.primary
-        : scheme.onSurface;
-    return Text.rich(
-      TextSpan(
-        children: [
-          TextSpan(
-            text: value,
-            style: TextStyle(color: color, fontWeight: FontWeight.w700),
-          ),
-          TextSpan(text: ' $label'),
-        ],
+    final tone = _councilStateColor(context, widget.state);
+    return Semantics(
+      image: true,
+      label: '${widget.identity.name}, ${_councilStatusLabel(widget.state)}',
+      child: AnimatedBuilder(
+        animation: _controller,
+        builder: (context, child) {
+          final progress = _controller.value;
+          return SizedBox.square(
+            dimension: widget.size + 8,
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                if (_active)
+                  Transform.scale(
+                    scale: .92 + (progress * .24),
+                    child: Opacity(
+                      opacity: .28 * (1 - progress),
+                      child: Container(
+                        width: widget.size,
+                        height: widget.size,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          border: Border.all(color: tone, width: 1.4),
+                        ),
+                      ),
+                    ),
+                  ),
+                child!,
+              ],
+            ),
+          );
+        },
+        child: _CouncilAgentGlyph(
+          identity: widget.identity,
+          size: widget.size,
+          circular: true,
+        ),
       ),
-      style: Theme.of(context).textTheme.bodySmall,
     );
   }
 }
@@ -1035,8 +1313,9 @@ class _CouncilExecutionRail extends StatelessWidget {
     return Column(
       children: [
         _CouncilPaneHeader(
-          title: 'Execution queue',
-          detail: '${executions.length} recent · governed',
+          title: 'Recent work',
+          detail:
+              '${executions.length} ${executions.length == 1 ? 'request' : 'requests'}',
         ),
         Expanded(
           child: ListView.builder(
@@ -1091,7 +1370,9 @@ class _CouncilExecutionGroup extends StatelessWidget {
                 children: [
                   Row(
                     children: [
-                      _CouncilStatePill(state: execution.status),
+                      _CouncilStatePill(
+                        state: _executionDisplayState(execution),
+                      ),
                       const Spacer(),
                       Text(
                         _relativeTime(execution.updatedAt),
@@ -1108,7 +1389,7 @@ class _CouncilExecutionGroup extends StatelessWidget {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    '${execution.members.length} specialist${execution.members.length == 1 ? '' : 's'} · ${_shortId(execution.parentExecutionId)}',
+                    '${execution.members.length} ${execution.members.length == 1 ? 'agent' : 'agents'} helping',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ],
@@ -1185,6 +1466,13 @@ class _CouncilMemberRailRow extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(width: 8),
+                Text(
+                  _councilStatusLabel(member.state),
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: _councilStateColor(context, member.state),
+                  ),
+                ),
+                const SizedBox(width: 7),
                 _CouncilStateDot(state: member.state),
               ],
             ),
@@ -1226,37 +1514,47 @@ class _CouncilMemberCanvas extends StatelessWidget {
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _CouncilAgentGlyph(identity: member.identity, size: 40),
+              _CouncilAnimatedGlyph(
+                identity: member.identity,
+                state: member.state,
+                size: 40,
+              ),
               const SizedBox(width: 11),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Row(
-                      children: [
-                        Flexible(
-                          child: Text(
-                            member.identity.name,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: Theme.of(context).textTheme.titleLarge,
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        _CouncilStatePill(state: member.state),
-                      ],
+                    Text(
+                      member.identity.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleLarge,
                     ),
                     const SizedBox(height: 3),
                     Text(
                       member.identity.role,
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
-                    const SizedBox(height: 2),
-                    Text(
-                      member.runtime == null
-                          ? 'Runtime not recorded'
-                          : '${member.runtime!.providerId} · ${member.runtime!.modelId} · ${_label(member.runtime!.modelTier)}',
-                      style: Theme.of(context).textTheme.labelSmall,
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 7,
+                      runSpacing: 6,
+                      children: [
+                        _CouncilStatusBadge(
+                          icon: Icons.work_outline_rounded,
+                          prefix: 'Work',
+                          state: member.state,
+                          label: _workStatusLabel(member.state),
+                        ),
+                        _CouncilStatusBadge(
+                          icon: Icons.fact_check_outlined,
+                          prefix: 'Check',
+                          state: member.verifier.verdict,
+                          label: _verificationStatusLabel(
+                            member.verifier.verdict,
+                          ),
+                        ),
+                      ],
                     ),
                   ],
                 ),
@@ -1265,7 +1563,7 @@ class _CouncilMemberCanvas extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
                   Text(
-                    'Revision ${member.lifecycleRevision}',
+                    'Updated ${_relativeTime(member.updatedAt)}',
                     style: Theme.of(context).textTheme.labelSmall,
                   ),
                   if (onCancel != null) ...[
@@ -1279,7 +1577,7 @@ class _CouncilMemberCanvas extends StatelessWidget {
                               child: CircularProgressIndicator(strokeWidth: 2),
                             )
                           : const Icon(Icons.stop_circle_outlined, size: 16),
-                      label: Text(canceling ? 'Canceling' : 'Cancel task'),
+                      label: Text(canceling ? 'Stopping' : 'Stop work'),
                     ),
                   ],
                 ],
@@ -1307,8 +1605,12 @@ class _CouncilMemberCanvas extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                if (_needsUser(member.state)) ...[
+                  _CouncilAttentionNotice(member: member),
+                  const SizedBox(height: 18),
+                ],
                 Text(
-                  'Current work',
+                  'What ${member.identity.name} is doing',
                   style: Theme.of(context).textTheme.titleSmall,
                 ),
                 const SizedBox(height: 6),
@@ -1347,11 +1649,6 @@ class _CouncilMemberCanvas extends StatelessWidget {
                 ),
                 const SizedBox(height: 20),
                 _CouncilVerificationBoundary(member: member),
-                const SizedBox(height: 14),
-                Text(
-                  'Run ${_shortId(execution.parentExecutionId)} · Task ${_shortId(member.taskId)} · Updated ${_formatTimestamp(member.updatedAt)}',
-                  style: Theme.of(context).textTheme.labelSmall,
-                ),
               ],
             ),
           ),
@@ -1373,8 +1670,8 @@ class _CouncilExchangeSection extends StatelessWidget {
   factory _CouncilExchangeSection.messages(AgentCouncilMessages messages) =>
       _CouncilExchangeSection._(
         icon: Icons.forum_outlined,
-        title: 'Team messages',
-        state: _label(messages.state),
+        title: 'What they reported',
+        state: _availabilityLabel(messages.state),
         entries: messages.items
             .take(8)
             .map(
@@ -1386,16 +1683,16 @@ class _CouncilExchangeSection extends StatelessWidget {
             )
             .toList(growable: false),
         emptyMessage: messages.state == 'unavailable'
-            ? 'Message evidence is unavailable for this task.'
-            : 'No team messages have been recorded.',
+            ? 'Progress notes are unavailable for this work.'
+            : 'No progress notes yet.',
       );
 
   factory _CouncilExchangeSection.outputs(
     AgentCouncilOutputs outputs,
   ) => _CouncilExchangeSection._(
     icon: Icons.inventory_2_outlined,
-    title: 'Shared outputs',
-    state: _label(outputs.state),
+    title: 'What they produced',
+    state: _availabilityLabel(outputs.state),
     entries: outputs.items
         .take(8)
         .map(
@@ -1409,8 +1706,8 @@ class _CouncilExchangeSection extends StatelessWidget {
         )
         .toList(growable: false),
     emptyMessage: outputs.state == 'unavailable'
-        ? 'Output evidence is unavailable for this task.'
-        : 'No shared outputs have been recorded.',
+        ? 'Produced files and results are unavailable for this work.'
+        : 'Nothing has been shared yet.',
   );
 
   final IconData icon;
@@ -1468,7 +1765,7 @@ class _CouncilExchangeSection extends StatelessWidget {
             const SizedBox(width: 5),
             Expanded(
               child: Text(
-                'Shared content is untrusted until verified.',
+                'Asael checks shared work before treating it as reliable.',
                 style: Theme.of(context).textTheme.labelSmall,
               ),
             ),
@@ -1531,49 +1828,55 @@ class _CouncilVerificationBoundary extends StatelessWidget {
   Widget build(BuildContext context) {
     final mac = MacosThemeColors.of(context);
     final verifier = member.verifier;
+    final color = _councilStateColor(context, verifier.verdict);
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(13),
+      padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: mac.toolbar,
+        color: color.withValues(alpha: .06),
         border: Border.all(color: mac.divider),
         borderRadius: BorderRadius.circular(10),
       ),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Icon(Icons.verified_user_outlined, size: 19),
+          Container(
+            width: 34,
+            height: 34,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: .13),
+              shape: BoxShape.circle,
+            ),
+            child: Icon(
+              verifier.verdict == 'rejected'
+                  ? Icons.policy_outlined
+                  : Icons.verified_user_outlined,
+              size: 18,
+              color: color,
+            ),
+          ),
           const SizedBox(width: 10),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Independent verification',
-                  style: Theme.of(context).textTheme.labelMedium,
+                  'Independent check',
+                  style: Theme.of(context).textTheme.titleSmall,
                 ),
-                const SizedBox(height: 2),
+                const SizedBox(height: 4),
                 Text(
-                  '${verifier.identity.name} · ${_label(verifier.method)}',
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
+                  _verificationExplanation(verifier.verdict),
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
               ],
             ),
           ),
           const SizedBox(width: 12),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              _CouncilStatePill(state: verifier.verdict),
-              const SizedBox(height: 3),
-              Text(
-                verifier.score == null
-                    ? 'Not scored'
-                    : '${(verifier.score! * 100).round()}% score · ${(verifier.acceptanceThreshold * 100).round()}% required',
-                style: Theme.of(context).textTheme.labelSmall,
-              ),
-            ],
+          _CouncilStatePill(
+            state: verifier.verdict,
+            label: _verificationStatusLabel(verifier.verdict),
           ),
         ],
       ),
@@ -1614,9 +1917,14 @@ class _AgentCouncilInspector extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _CouncilAgentGlyph(identity: member.identity, size: 38),
-              const SizedBox(width: 10),
+              _CouncilAnimatedGlyph(
+                identity: member.identity,
+                state: member.state,
+                size: 38,
+              ),
+              const SizedBox(width: 8),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -1626,240 +1934,431 @@ class _AgentCouncilInspector extends StatelessWidget {
                       style: Theme.of(context).textTheme.titleMedium,
                     ),
                     Text(
-                      'Definition v${member.identity.definitionVersion}',
+                      member.identity.role,
                       style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    const SizedBox(height: 7),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: [
+                        _CouncilStatePill(
+                          state: member.state,
+                          label: _workStatusLabel(member.state),
+                        ),
+                        _CouncilStatePill(
+                          state: member.verifier.verdict,
+                          label: _verificationStatusLabel(
+                            member.verifier.verdict,
+                          ),
+                        ),
+                      ],
                     ),
                   ],
                 ),
               ),
-              const _SmallBadge(label: 'Observed ledger'),
             ],
           ),
           const SizedBox(height: 18),
+          if (_needsUser(member.state)) ...[
+            _CouncilAttentionNotice(member: member),
+            const SizedBox(height: 18),
+          ],
           _InspectorSection(
-            title: 'Verification',
-            children: [
-              _MetaLine(
-                label: 'Verdict',
-                value: _councilStatusLabel(member.verifier.verdict),
-              ),
-              _MetaLine(
-                label: 'Verifier',
-                value: member.verifier.identity.name,
-              ),
-              _MetaLine(
-                label: 'Confidence',
-                value: member.confidence == null
-                    ? 'Not recorded'
-                    : '${(member.confidence! * 100).round()}%',
-              ),
-              _MetaLine(
-                label: 'Verifier score',
-                value: member.verifier.score == null
-                    ? 'Not scored'
-                    : '${(member.verifier.score! * 100).round()}%',
-              ),
-              _MetaLine(
-                label: 'Acceptance threshold',
-                value:
-                    '${(member.verifier.acceptanceThreshold * 100).round()}%',
-              ),
-            ],
+            title: 'What this agent was asked to do',
+            child: Text(authority.purpose),
           ),
           const SizedBox(height: 18),
           _InspectorSection(
-            title: 'Authority',
-            children: [
-              Row(
+            title: 'Trust check',
+            child: Text(_verificationExplanation(member.verifier.verdict)),
+          ),
+          const SizedBox(height: 18),
+          _InspectorSection(
+            title: 'What is available',
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _CouncilSimpleFact(
+                  icon: Icons.inventory_2_outlined,
+                  value: '${member.outputs.items.length}',
+                  label: member.outputs.items.length == 1
+                      ? 'result'
+                      : 'results',
+                ),
+                _CouncilSimpleFact(
+                  icon: Icons.forum_outlined,
+                  value: '${member.messages.items.length}',
+                  label: member.messages.items.length == 1
+                      ? 'update'
+                      : 'updates',
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 20),
+          Theme(
+            data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+            child: Container(
+              decoration: BoxDecoration(
+                color: MacosThemeColors.of(context).toolbar,
+                border: Border.all(color: MacosThemeColors.of(context).divider),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: ExpansionTile(
+                key: ValueKey('macos-council-technical-${member.taskId}'),
+                initiallyExpanded: false,
+                tilePadding: const EdgeInsets.symmetric(horizontal: 12),
+                childrenPadding: const EdgeInsets.fromLTRB(12, 2, 12, 16),
+                leading: const Icon(Icons.tune_rounded, size: 18),
+                title: const Text('Technical details'),
+                subtitle: const Text(
+                  'Models, permissions, limits, identifiers, and cost',
+                ),
                 children: [
-                  Icon(
-                    verifiedAuthority
-                        ? Icons.verified_outlined
-                        : Icons.warning_amber_rounded,
-                    size: 16,
-                    color: verifiedAuthority
-                        ? Theme.of(context).colorScheme.primary
-                        : Theme.of(context).colorScheme.secondary,
+                  _InspectorSection(
+                    title: 'Verification',
+                    children: [
+                      _MetaLine(
+                        label: 'Verdict',
+                        value: _councilStatusLabel(member.verifier.verdict),
+                      ),
+                      _MetaLine(
+                        label: 'Verifier',
+                        value: member.verifier.identity.name,
+                      ),
+                      _MetaLine(
+                        label: 'Method',
+                        value: _label(member.verifier.method),
+                      ),
+                      _MetaLine(
+                        label: 'Confidence',
+                        value: member.confidence == null
+                            ? 'Not recorded'
+                            : '${(member.confidence! * 100).round()}%',
+                      ),
+                      _MetaLine(
+                        label: 'Verifier score',
+                        value: member.verifier.score == null
+                            ? 'Not scored'
+                            : '${(member.verifier.score! * 100).round()}%',
+                      ),
+                      _MetaLine(
+                        label: 'Acceptance threshold',
+                        value:
+                            '${(member.verifier.acceptanceThreshold * 100).round()}%',
+                      ),
+                    ],
                   ),
-                  const SizedBox(width: 7),
-                  Expanded(
-                    child: Text(
-                      verifiedAuthority
-                          ? 'Verified delegation receipt'
-                          : 'Historical authority unavailable',
-                      style: Theme.of(context).textTheme.labelMedium,
+                  const SizedBox(height: 18),
+                  _InspectorSection(
+                    title: 'Authority',
+                    children: [
+                      Row(
+                        children: [
+                          Icon(
+                            verifiedAuthority
+                                ? Icons.verified_outlined
+                                : Icons.warning_amber_rounded,
+                            size: 16,
+                            color: verifiedAuthority
+                                ? Theme.of(context).colorScheme.primary
+                                : Theme.of(context).colorScheme.secondary,
+                          ),
+                          const SizedBox(width: 7),
+                          Expanded(
+                            child: Text(
+                              verifiedAuthority
+                                  ? 'Verified delegation receipt'
+                                  : 'Historical authority unavailable',
+                              style: Theme.of(context).textTheme.labelMedium,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 9),
+                      Text(authority.purpose),
+                      const SizedBox(height: 10),
+                      _MetaLine(
+                        label: 'Context grants',
+                        value: _authorityCount(
+                          authority.contextState,
+                          authority.contextGrantCount,
+                        ),
+                      ),
+                      _MetaLine(
+                        label: 'Capability grants',
+                        value: _authorityCount(
+                          authority.capabilityState,
+                          authority.capabilityGrantCount,
+                        ),
+                      ),
+                      _MetaLine(
+                        label: 'Governed tools',
+                        value: authority.toolState == 'unavailable'
+                            ? 'Unavailable'
+                            : '${authority.toolIds.length}',
+                      ),
+                      if (authority.toolIds.isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 6,
+                          runSpacing: 6,
+                          children: authority.toolIds
+                              .map((tool) => _SmallBadge(label: tool))
+                              .toList(growable: false),
+                        ),
+                      ],
+                    ],
+                  ),
+                  if (controller != null) ...[
+                    const SizedBox(height: 18),
+                    _InspectorSection(
+                      title: 'Exact signed grants',
+                      child: AgentTaskAuthorityView(
+                        key: ValueKey('macos-task-authority-${member.taskId}'),
+                        controller: controller!,
+                        taskId: member.taskId,
+                        compact: true,
+                      ),
                     ),
+                  ],
+                  const SizedBox(height: 18),
+                  _InspectorSection(
+                    title: 'Budget limits',
+                    children: [
+                      _MetaLine(
+                        label: 'Model turns',
+                        value: _budgetValue(budgets.modelTurns),
+                      ),
+                      _MetaLine(
+                        label: 'Tokens',
+                        value: _budgetValue(budgets.tokens),
+                      ),
+                      _MetaLine(
+                        label: 'Tool calls',
+                        value: _budgetValue(budgets.toolCalls),
+                      ),
+                      _MetaLine(
+                        label: 'Computer use',
+                        value: _budgetValue(budgets.browserActions),
+                      ),
+                      _MetaLine(
+                        label: 'Wall time',
+                        value: budgets.wallTimeMs == null
+                            ? 'Not recorded'
+                            : _formatDuration(budgets.wallTimeMs!),
+                      ),
+                      _MetaLine(
+                        label: 'Cost limit',
+                        value: budgets.costMicrousd == null
+                            ? 'Not recorded'
+                            : _formatKnownMicrousd(budgets.costMicrousd!),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 18),
+                  _InspectorSection(
+                    title: 'Observed usage',
+                    children: [
+                      _MetaLine(
+                        label: 'Worker cost',
+                        value: _costLabel(member.cost),
+                      ),
+                      _MetaLine(
+                        label: 'Verifier cost',
+                        value: _costLabel(execution.verifierCost),
+                      ),
+                      _MetaLine(
+                        label: 'Worker tokens',
+                        value: member.cost.receiptCount == 0
+                            ? 'Not recorded'
+                            : '${member.cost.totalTokens}',
+                      ),
+                      _MetaLine(
+                        label: 'Usage receipts',
+                        value: '${member.cost.receiptCount}',
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 18),
+                  _InspectorSection(
+                    title: 'Scope and identity',
+                    children: [
+                      _MetaLine(
+                        label: 'Workspace',
+                        value: authority.workspaceId ?? 'Not scoped',
+                      ),
+                      _MetaLine(
+                        label: 'Project',
+                        value: authority.projectId ?? 'Not scoped',
+                      ),
+                      _MetaLine(
+                        label: 'Mission',
+                        value: authority.missionId ?? 'Not scoped',
+                      ),
+                      _MetaLine(
+                        label: 'Definition',
+                        value: 'v${member.identity.definitionVersion}',
+                      ),
+                      _MetaLine(
+                        label: 'Revision',
+                        value: '${member.lifecycleRevision}',
+                      ),
+                      const SizedBox(height: 7),
+                      SelectableText(
+                        'Run ${execution.parentExecutionId}\nTask ${member.taskId}\nDelegation ${member.delegationId}\nContract ${authority.contractSha256}\nReceipt ${authority.receiptSha256 ?? 'Not recorded'}',
+                        style: Theme.of(context).textTheme.labelSmall
+                            ?.copyWith(fontFamily: 'monospace', height: 1.5),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 18),
+                  _InspectorSection(
+                    title: 'Model route',
+                    children: [
+                      if (member.runtime == null)
+                        Text(
+                          'Not recorded for this historical task.',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        )
+                      else ...[
+                        _MetaLine(
+                          label: 'Provider',
+                          value: member.runtime!.providerId,
+                        ),
+                        _MetaLine(
+                          label: 'Model',
+                          value: member.runtime!.modelId,
+                        ),
+                        _MetaLine(
+                          label: 'Tier',
+                          value: _label(member.runtime!.modelTier),
+                        ),
+                      ],
+                      const SizedBox(height: 9),
+                      Text(
+                        'Verifier route',
+                        style: Theme.of(context).textTheme.labelMedium,
+                      ),
+                      const SizedBox(height: 5),
+                      if (member.verifier.runtime == null)
+                        Text(
+                          'Not recorded for this historical task.',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        )
+                      else ...[
+                        _MetaLine(
+                          label: 'Provider',
+                          value: member.verifier.runtime!.providerId,
+                        ),
+                        _MetaLine(
+                          label: 'Model',
+                          value: member.verifier.runtime!.modelId,
+                        ),
+                        _MetaLine(
+                          label: 'Tier',
+                          value: _label(member.verifier.runtime!.modelTier),
+                        ),
+                      ],
+                    ],
                   ),
                 ],
               ),
-              const SizedBox(height: 9),
-              Text(authority.purpose),
-              const SizedBox(height: 10),
-              _MetaLine(
-                label: 'Context grants',
-                value: _authorityCount(
-                  authority.contextState,
-                  authority.contextGrantCount,
-                ),
-              ),
-              _MetaLine(
-                label: 'Capability grants',
-                value: _authorityCount(
-                  authority.capabilityState,
-                  authority.capabilityGrantCount,
-                ),
-              ),
-              _MetaLine(
-                label: 'Governed tools',
-                value: authority.toolState == 'unavailable'
-                    ? 'Unavailable'
-                    : '${authority.toolIds.length}',
-              ),
-              if (authority.toolIds.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 6,
-                  runSpacing: 6,
-                  children: authority.toolIds
-                      .map((tool) => _SmallBadge(label: tool))
-                      .toList(growable: false),
-                ),
-              ],
-            ],
+            ),
           ),
-          if (controller != null) ...[
-            const SizedBox(height: 18),
-            _InspectorSection(
-              title: 'Exact signed grants',
-              child: AgentTaskAuthorityView(
-                key: ValueKey('macos-task-authority-${member.taskId}'),
-                controller: controller!,
-                taskId: member.taskId,
-                compact: true,
+        ],
+      ),
+    );
+  }
+}
+
+class _CouncilSimpleFact extends StatelessWidget {
+  const _CouncilSimpleFact({
+    required this.icon,
+    required this.value,
+    required this.label,
+  });
+
+  final IconData icon;
+  final String value, label;
+
+  @override
+  Widget build(BuildContext context) {
+    final mac = MacosThemeColors.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: mac.hover,
+        border: Border.all(color: mac.divider),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 15),
+          const SizedBox(width: 7),
+          Text('$value $label', style: Theme.of(context).textTheme.labelMedium),
+        ],
+      ),
+    );
+  }
+}
+
+class _CouncilAttentionNotice extends StatelessWidget {
+  const _CouncilAttentionNotice({required this.member});
+
+  final AgentCouncilMember member;
+
+  @override
+  Widget build(BuildContext context) {
+    final warning = MacosThemeColors.of(context).warning;
+    final (title, message, icon) = switch (member.state) {
+      'waiting_approval' => (
+        'Your approval is needed',
+        'This agent is paused at a protected action. Review the request before it continues.',
+        Icons.approval_outlined,
+      ),
+      'waiting_clarification' => (
+        'A quick answer will unblock this',
+        'The agent needs more context before it can continue safely.',
+        Icons.question_answer_outlined,
+      ),
+      _ => (
+        'This work needs a review',
+        'The agent found something that should be checked before it continues.',
+        Icons.front_hand_outlined,
+      ),
+    };
+    return Semantics(
+      liveRegion: true,
+      label: '$title. $message',
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: warning.withValues(alpha: .09),
+          border: Border.all(color: warning.withValues(alpha: .45)),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(icon, color: warning, size: 20),
+            const SizedBox(width: 9),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title, style: Theme.of(context).textTheme.labelLarge),
+                  const SizedBox(height: 3),
+                  Text(message, style: Theme.of(context).textTheme.bodySmall),
+                ],
               ),
             ),
           ],
-          const SizedBox(height: 18),
-          _InspectorSection(
-            title: 'Budget limits',
-            children: [
-              _MetaLine(
-                label: 'Model turns',
-                value: _budgetValue(budgets.modelTurns),
-              ),
-              _MetaLine(label: 'Tokens', value: _budgetValue(budgets.tokens)),
-              _MetaLine(
-                label: 'Tool calls',
-                value: _budgetValue(budgets.toolCalls),
-              ),
-              _MetaLine(
-                label: 'Browser actions',
-                value: _budgetValue(budgets.browserActions),
-              ),
-              _MetaLine(
-                label: 'Wall time',
-                value: budgets.wallTimeMs == null
-                    ? 'Not recorded'
-                    : _formatDuration(budgets.wallTimeMs!),
-              ),
-              _MetaLine(
-                label: 'Cost limit',
-                value: budgets.costMicrousd == null
-                    ? 'Not recorded'
-                    : _formatKnownMicrousd(budgets.costMicrousd!),
-              ),
-            ],
-          ),
-          const SizedBox(height: 18),
-          _InspectorSection(
-            title: 'Observed usage',
-            children: [
-              _MetaLine(label: 'Worker cost', value: _costLabel(member.cost)),
-              _MetaLine(
-                label: 'Verifier cost',
-                value: _costLabel(execution.verifierCost),
-              ),
-              _MetaLine(
-                label: 'Worker tokens',
-                value: member.cost.receiptCount == 0
-                    ? 'Not recorded'
-                    : '${member.cost.totalTokens}',
-              ),
-              _MetaLine(
-                label: 'Usage receipts',
-                value: '${member.cost.receiptCount}',
-              ),
-            ],
-          ),
-          const SizedBox(height: 18),
-          _InspectorSection(
-            title: 'Scope and identity',
-            children: [
-              _MetaLine(
-                label: 'Workspace',
-                value: authority.workspaceId ?? 'Not scoped',
-              ),
-              _MetaLine(
-                label: 'Project',
-                value: authority.projectId ?? 'Not scoped',
-              ),
-              _MetaLine(
-                label: 'Mission',
-                value: authority.missionId ?? 'Not scoped',
-              ),
-              const SizedBox(height: 7),
-              SelectableText(
-                'Run ${execution.parentExecutionId}\nTask ${member.taskId}\nDelegation ${member.delegationId}',
-                style: Theme.of(context).textTheme.labelSmall
-                    ?.copyWith(fontFamily: 'monospace', height: 1.5),
-              ),
-            ],
-          ),
-          const SizedBox(height: 18),
-          _InspectorSection(
-            title: 'Model route',
-            children: [
-              if (member.runtime == null)
-                Text(
-                  'Not recorded for this historical task.',
-                  style: Theme.of(context).textTheme.bodySmall,
-                )
-              else ...[
-                _MetaLine(label: 'Provider', value: member.runtime!.providerId),
-                _MetaLine(label: 'Model', value: member.runtime!.modelId),
-                _MetaLine(
-                  label: 'Tier',
-                  value: _label(member.runtime!.modelTier),
-                ),
-              ],
-              const SizedBox(height: 9),
-              Text(
-                'Verifier route',
-                style: Theme.of(context).textTheme.labelMedium,
-              ),
-              const SizedBox(height: 5),
-              if (member.verifier.runtime == null)
-                Text(
-                  'Not recorded for this historical task.',
-                  style: Theme.of(context).textTheme.bodySmall,
-                )
-              else ...[
-                _MetaLine(
-                  label: 'Provider',
-                  value: member.verifier.runtime!.providerId,
-                ),
-                _MetaLine(
-                  label: 'Model',
-                  value: member.verifier.runtime!.modelId,
-                ),
-                _MetaLine(
-                  label: 'Tier',
-                  value: _label(member.verifier.runtime!.modelTier),
-                ),
-              ],
-            ],
-          ),
-        ],
+        ),
       ),
     );
   }
@@ -1893,10 +2392,15 @@ class _CouncilPaneHeader extends StatelessWidget {
 }
 
 class _CouncilAgentGlyph extends StatelessWidget {
-  const _CouncilAgentGlyph({required this.identity, this.size = 32});
+  const _CouncilAgentGlyph({
+    required this.identity,
+    this.size = 32,
+    this.circular = false,
+  });
 
   final AgentCouncilIdentity identity;
   final double size;
+  final bool circular;
 
   @override
   Widget build(BuildContext context) {
@@ -1921,7 +2425,9 @@ class _CouncilAgentGlyph extends StatelessWidget {
       alignment: Alignment.center,
       decoration: BoxDecoration(
         color: color.withValues(alpha: .14),
-        borderRadius: BorderRadius.circular(size * .24),
+        borderRadius: circular ? null : BorderRadius.circular(size * .24),
+        shape: circular ? BoxShape.circle : BoxShape.rectangle,
+        border: Border.all(color: color.withValues(alpha: .24)),
       ),
       child: Text(
         initial,
@@ -1933,9 +2439,10 @@ class _CouncilAgentGlyph extends StatelessWidget {
 }
 
 class _CouncilStatePill extends StatelessWidget {
-  const _CouncilStatePill({required this.state});
+  const _CouncilStatePill({required this.state, this.label});
 
   final String state;
+  final String? label;
 
   @override
   Widget build(BuildContext context) {
@@ -1956,11 +2463,51 @@ class _CouncilStatePill extends StatelessWidget {
           ),
           const SizedBox(width: 5),
           Text(
-            _councilStatusLabel(state),
+            label ?? _councilStatusLabel(state),
             style: Theme.of(context).textTheme.labelSmall
                 ?.copyWith(color: color, fontWeight: FontWeight.w700),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _CouncilStatusBadge extends StatelessWidget {
+  const _CouncilStatusBadge({
+    required this.icon,
+    required this.prefix,
+    required this.state,
+    required this.label,
+  });
+
+  final IconData icon;
+  final String prefix, state, label;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = _councilStateColor(context, state);
+    return Semantics(
+      label: '$prefix status: $label',
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: .09),
+          border: Border.all(color: color.withValues(alpha: .25)),
+          borderRadius: BorderRadius.circular(7),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 14, color: color),
+            const SizedBox(width: 6),
+            Text(
+              '$prefix · $label',
+              style: Theme.of(context).textTheme.labelSmall
+                  ?.copyWith(color: color, fontWeight: FontWeight.w700),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -2014,9 +2561,9 @@ class _AgentRoster extends StatelessWidget {
       children: [
         const _RosterHeader(
           primary: 'Agent and role',
-          secondary: 'Model policy',
-          tertiary: 'Autonomy',
-          trailing: 'Status',
+          secondary: 'Capabilities',
+          tertiary: 'Working style',
+          trailing: 'Availability',
         ),
         Expanded(
           child: ListView.builder(
@@ -2105,7 +2652,7 @@ class _AgentRow extends StatelessWidget {
                 Expanded(
                   flex: 2,
                   child: Text(
-                    _label(agent.modelPolicy),
+                    '${agent.skillIds.length} ${agent.skillIds.length == 1 ? 'skill' : 'skills'}',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: Theme.of(context).textTheme.bodySmall,
@@ -2114,7 +2661,7 @@ class _AgentRow extends StatelessWidget {
                 Expanded(
                   flex: 2,
                   child: Text(
-                    _label(agent.autonomy),
+                    _autonomyPlainLabel(agent.autonomy),
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ),
@@ -4988,24 +5535,139 @@ AgentCouncilMember? _findCouncilMember(
 }
 
 String _councilStatusGroup(String status) => switch (status) {
-  'queued' || 'running' || 'resuming' => 'active',
-  'waiting' || 'waiting_clarification' || 'waiting_approval' => 'waiting',
+  'queued' || 'running' || 'resuming' || 'working' || 'proposed' => 'active',
+  'waiting_approval' || 'waiting_clarification' || 'challenged' => 'needs_you',
+  'waiting' => 'waiting',
+  'completed_proposed' => 'checking',
   'completed' || 'result_accepted' || 'accepted' => 'completed',
-  'failed' || 'rejected' || 'expired' => 'failed',
+  'rejected' => 'couldnt_verify',
+  'failed' || 'expired' => 'failed',
   'canceled' => 'canceled',
   _ => 'unavailable',
 };
 
 String _councilStatusLabel(String status) => switch (status) {
+  'queued' => 'Queued',
+  'proposed' => 'Getting ready',
+  'accepted' => 'Ready',
+  'working' || 'running' => 'Working',
+  'resuming' => 'Resuming',
+  'waiting' => 'Waiting',
   'waiting_clarification' => 'Needs clarification',
   'waiting_approval' => 'Needs approval',
-  'completed_proposed' => 'Proposed result',
-  'result_accepted' => 'Accepted result',
+  'challenged' => 'Needs review',
+  'completed_proposed' => 'Finished — checking',
+  'completed' => 'Finished',
+  'result_accepted' => 'Verified',
+  'pending' => 'Checking',
+  'passed' || 'verified' => 'Verified',
+  'rejected' => 'Couldn’t verify',
+  'failed' => 'Failed',
+  'expired' => 'Timed out',
+  'canceled' => 'Stopped',
   'not_recorded' => 'Not recorded',
   'receipt_only' => 'Receipt only',
   'historical_unavailable' => 'Historical evidence unavailable',
   _ => _label(status),
 };
+
+String _workspaceFilterLabel(_AgentWorkspace workspace, String value) {
+  if (workspace != _AgentWorkspace.liveWork) return _label(value);
+  return switch (value) {
+    'active' => 'Working',
+    'needs_you' => 'Needs you',
+    'checking' => 'Being checked',
+    'completed' => 'Finished',
+    'couldnt_verify' => 'Couldn’t verify',
+    'canceled' => 'Stopped',
+    'unavailable' => 'Status unavailable',
+    _ => _label(value),
+  };
+}
+
+String _workStatusLabel(String status) => switch (status) {
+  'completed_proposed' => 'Finished — checking',
+  'result_accepted' || 'completed' => 'Finished',
+  'waiting_approval' => 'Needs approval',
+  'waiting_clarification' => 'Needs clarification',
+  'failed' => 'Failed',
+  _ => _councilStatusLabel(status),
+};
+
+String _verificationStatusLabel(String verdict) => switch (verdict) {
+  'rejected' => 'Couldn’t verify',
+  'accepted' || 'passed' || 'verified' => 'Verified',
+  'pending' || 'proposed' => 'Checking',
+  'failed' => 'Check failed',
+  'not_recorded' => 'Not checked',
+  _ => _councilStatusLabel(verdict),
+};
+
+String _verificationExplanation(String verdict) => switch (verdict) {
+  'rejected' => 'The agent finished its work, but the independent checker did not find enough reliable evidence to confirm it.',
+  'accepted' || 'passed' || 'verified' => 'An independent checker confirmed that the result meets the required evidence standard.',
+  'pending' || 'proposed' => 'The work is finished and an independent checker is reviewing the evidence now.',
+  'failed' => 'The independent check could not complete. The work itself may still be available for review.',
+  'not_recorded' =>
+    'No independent check was recorded for this historical work.',
+  _ =>
+    'The independent check is ${_councilStatusLabel(verdict).toLowerCase()}.',
+};
+
+String _availabilityLabel(String state) => switch (state) {
+  'available' || 'shared' => 'Available',
+  'none' => 'None yet',
+  'unavailable' => 'Unavailable',
+  _ => _label(state),
+};
+
+String _autonomyPlainLabel(String autonomy) => switch (autonomy) {
+  'supervised' || 'approval_required' => 'Asks first',
+  'bounded' || 'guarded' => 'Works within limits',
+  'autonomous' || 'high' => 'Works independently',
+  _ => _label(autonomy),
+};
+
+bool _isWorkInProgress(String state) => const {
+  'queued',
+  'proposed',
+  'accepted',
+  'working',
+  'running',
+  'resuming',
+  'waiting',
+}.contains(state);
+
+bool _needsUser(String state) => const {
+  'waiting_approval',
+  'waiting_clarification',
+  'challenged',
+}.contains(state);
+
+String _executionDisplayState(AgentCouncilExecution execution) {
+  if (execution.members.any((member) => member.state == 'failed')) {
+    return 'failed';
+  }
+  for (final state in const [
+    'waiting_approval',
+    'waiting_clarification',
+    'challenged',
+  ]) {
+    if (execution.members.any((member) => member.state == state)) return state;
+  }
+  if (execution.members.any(
+    (member) => member.verifier.verdict == 'rejected',
+  )) {
+    return 'rejected';
+  }
+  if (execution.members.any((member) => member.state == 'completed_proposed')) {
+    return 'completed_proposed';
+  }
+  if (execution.members.any((member) => _isWorkInProgress(member.state))) {
+    return 'running';
+  }
+  return execution.status;
+}
 
 Color _councilStateColor(BuildContext context, String state) {
   final scheme = Theme.of(context).colorScheme;
@@ -5028,7 +5690,8 @@ Color _councilStateColor(BuildContext context, String state) {
   }.contains(state)) {
     return mac.warning;
   }
-  if (const {'failed', 'rejected', 'expired'}.contains(state)) {
+  if (state == 'rejected') return mac.warning;
+  if (const {'failed', 'expired'}.contains(state)) {
     return scheme.error;
   }
   return scheme.onSurfaceVariant;

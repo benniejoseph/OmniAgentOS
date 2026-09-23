@@ -306,6 +306,7 @@ class ApiClient {
     String? contentType,
     String fileField = 'file',
     Map<String, dynamic>? headers,
+    Duration? receiveTimeout,
   }) async {
     final values = <String, dynamic>{...fields};
     if (bytes != null) {
@@ -321,7 +322,7 @@ class ApiClient {
       () => _dio.post<Object?>(
         path,
         data: FormData.fromMap(values),
-        options: Options(headers: headers),
+        options: Options(headers: headers, receiveTimeout: receiveTimeout),
       ),
     );
   }

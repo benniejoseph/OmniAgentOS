@@ -44,14 +44,14 @@ const _assignmentDescriptions = <String, String>{
   'memory': 'Consolidation and recall decisions',
   'embeddings': 'Document and memory vector indexing',
   'vision': 'Image and visual document understanding',
-  'audio': 'Recording and meeting transcription',
+  'audio': 'Voice drafts, uploaded recordings, and meeting transcription',
   'audio_diarization': 'Speaker-aware transcription',
   'web_search': 'Live public-web research',
   'image_generation': 'Image creation and non-destructive editing',
   'video_generation': 'Video creation and conversational editing',
-  'computer_use': 'Governed browser and desktop interaction',
+  'computer_use': 'Governed interaction with this Mac',
   'speech_synthesis': 'Spoken agent responses',
-  'realtime_transcription': 'Live voice-command transcription',
+  'realtime_transcription': 'Live, in-the-moment voice transcription',
 };
 
 class ModelSettingsView extends ConsumerStatefulWidget {

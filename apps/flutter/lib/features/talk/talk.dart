@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -954,6 +955,53 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       sending ||
       (runId != null && !_acceptedRunIsTerminal) ||
       promptQueue.isNotEmpty;
+
+  String? get voiceErrorMessage {
+    final error = voiceError;
+    if (error == null) return null;
+    if (error is ApiException) {
+      final message = _boundedDisplayText(error.message, 320);
+      final diagnostic = '${error.diagnosticCode ?? ''} $message'.toLowerCase();
+      if (error.statusCode == 401 || error.statusCode == 403) {
+        return 'Voice transcription needs attention in Settings. Check the connected provider, then try again.';
+      }
+      if (error.statusCode == 413) {
+        return 'That recording is too long to transcribe. Try a shorter voice draft.';
+      }
+      if (error.statusCode == 429) {
+        return 'The voice service is busy or has reached its limit. Wait a moment, then try again.';
+      }
+      if (diagnostic.contains('connection') ||
+          diagnostic.contains('timeout') ||
+          diagnostic.contains('network')) {
+        return 'Asael could not reach the voice service. Check your connection, then try again.';
+      }
+      if ((diagnostic.contains('transcri') || diagnostic.contains('audio')) &&
+          (diagnostic.contains('config') ||
+              diagnostic.contains('model') ||
+              diagnostic.contains('provider'))) {
+        return 'Voice transcription is not configured yet. Choose a transcription model in Settings, then try again.';
+      }
+      if (message.isNotEmpty) return message;
+    }
+    if (error is StateError) {
+      final message = _boundedDisplayText(error.message, 320);
+      if (message.toLowerCase().contains('transcribable speech')) {
+        return 'No clear speech was detected. Move closer to the microphone and record again.';
+      }
+      if (message.isNotEmpty) return message;
+    }
+    if (error is FormatException) {
+      return 'The voice service returned a response Asael could not read. Record again, or check the transcription model in Settings.';
+    }
+    return 'Voice transcription did not finish. Your typed draft is safe, so you can record again.';
+  }
+
+  void clearVoiceError() {
+    if (voiceError == null) return;
+    voiceError = null;
+    notifyListeners();
+  }
 
   void assignAgent({required String id, required String name}) {
     final exactId = id.trim();
@@ -2721,16 +2769,82 @@ class RecordVoiceDraftRecorder implements VoiceDraftRecorder {
   @override
   Future<void> start(String outputPath) => _recorder.start(
     const RecordConfig(
-      encoder: AudioEncoder.aacLc,
-      bitRate: 64000,
-      sampleRate: 24000,
+      encoder: AudioEncoder.wav,
+      sampleRate: 16000,
       numChannels: 1,
     ),
     path: outputPath,
   );
 
   @override
-  Future<String?> stop() => _recorder.stop();
+  Future<String?> stop() async {
+    final path = await _recorder.stop().timeout(
+      const Duration(seconds: 2),
+      onTimeout: () => throw StateError(
+        'The microphone did not finish the recording in time.',
+      ),
+    );
+    if (path == null) return null;
+    try {
+      return await _waitForFinalizedWav(path);
+    } catch (_) {
+      try {
+        await File(path).delete();
+      } on FileSystemException {
+        // A failed temporary recording may already have been removed by macOS.
+      }
+      rethrow;
+    }
+  }
+
+  Future<String> _waitForFinalizedWav(String path) async {
+    final file = File(path);
+    final deadline = DateTime.now().add(const Duration(seconds: 2));
+    int? previousLength;
+    var stableSamples = 0;
+    while (DateTime.now().isBefore(deadline)) {
+      try {
+        final length = await file.length();
+        final validHeader = length >= 44 && await _hasWavHeader(file);
+        if (validHeader && length == previousLength) {
+          stableSamples += 1;
+          if (stableSamples >= 2) return path;
+        } else {
+          stableSamples = 0;
+        }
+        previousLength = length;
+      } on FileSystemException {
+        previousLength = null;
+        stableSamples = 0;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 45));
+    }
+    throw StateError(
+      'The voice recording did not finish writing a valid WAV file.',
+    );
+  }
+
+  Future<bool> _hasWavHeader(File file) async {
+    RandomAccessFile? handle;
+    try {
+      handle = await file.open(mode: FileMode.read);
+      final header = await handle.read(12);
+      return header.length == 12 &&
+          header[0] == 0x52 &&
+          header[1] == 0x49 &&
+          header[2] == 0x46 &&
+          header[3] == 0x46 &&
+          header[8] == 0x57 &&
+          header[9] == 0x41 &&
+          header[10] == 0x56 &&
+          header[11] == 0x45;
+    } on FileSystemException {
+      return false;
+    } finally {
+      final openedHandle = handle;
+      if (openedHandle != null) await openedHandle.close();
+    }
+  }
 
   @override
   Future<void> cancel() => _recorder.cancel();
@@ -2771,6 +2885,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   TalkExecutionTarget executionTarget = TalkExecutionTarget.agent;
   bool recording = false;
   String? recordingError;
+  String? voiceDraftNotice;
   int voiceDraftGeneration = 0;
 
   @override
@@ -2873,6 +2988,12 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     }
     final controller = widget.controllerResolver?.call() ?? widget.controller;
     input.clear();
+    if (recordingError != null || voiceDraftNotice != null) {
+      setState(() {
+        recordingError = null;
+        voiceDraftNotice = null;
+      });
+    }
     final work = controller.send(
       value,
       mode: 'orchestrate',
@@ -2885,7 +3006,11 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
 
   Future<void> toggleVoiceDraft() async {
     if (widget.controller.transcribing || widget.controller.sending) return;
-    setState(() => recordingError = null);
+    setState(() {
+      recordingError = null;
+      voiceDraftNotice = null;
+    });
+    widget.controller.clearVoiceError();
     if (recording) {
       final generation = voiceDraftGeneration;
       setState(() => recording = false);
@@ -2911,10 +3036,15 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
             ? transcript.trim()
             : '$existing\n${transcript.trim()}';
         input.selection = TextSelection.collapsed(offset: input.text.length);
-      } catch (_) {
+        setState(() {
+          voiceDraftNotice =
+              'Voice draft added. Review or edit it before sending.';
+        });
+        inputFocus.requestFocus();
+      } catch (error) {
         if (mounted && generation == voiceDraftGeneration) {
           setState(() {
-            recordingError = 'Voice draft could not be transcribed. Your typed draft is unchanged.';
+            recordingError = _voiceCaptureError(error, whileStarting: false);
           });
         }
       }
@@ -2928,21 +3058,44 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       }
       if (!mounted || generation != voiceDraftGeneration) return;
       final path =
-          '${Directory.systemTemp.path}/asael-voice-${DateTime.now().microsecondsSinceEpoch}.m4a';
+          '${Directory.systemTemp.path}/asael-voice-${DateTime.now().microsecondsSinceEpoch}.wav';
       await recorder.start(path);
       if (!mounted || generation != voiceDraftGeneration) {
         await recorder.cancel();
         return;
       }
       setState(() => recording = true);
-    } catch (_) {
+    } catch (error) {
       if (mounted && generation == voiceDraftGeneration) {
         setState(() {
-          recordingError =
-              'Microphone access is required to create a voice draft.';
+          recordingError = _voiceCaptureError(error, whileStarting: true);
         });
       }
     }
+  }
+
+  String _voiceCaptureError(Object error, {required bool whileStarting}) {
+    final message = error.toString().toLowerCase();
+    if (message.contains('permission') || message.contains('denied')) {
+      return 'Microphone access is off. Allow Asael in System Settings → Privacy & Security → Microphone, then try again.';
+    }
+    if (whileStarting) {
+      return 'Asael could not start recording. Check that a microphone is connected, then try again.';
+    }
+    return 'That recording could not be used. Your typed draft is safe, so you can record again.';
+  }
+
+  void _dismissVoiceFeedback() {
+    widget.controller.clearVoiceError();
+    setState(() {
+      recordingError = null;
+      voiceDraftNotice = null;
+    });
+  }
+
+  Future<void> _retryVoiceDraft() async {
+    _dismissVoiceFeedback();
+    await toggleVoiceDraft();
   }
 
   Future<void> _openHistorySheet() async {
@@ -3234,23 +3387,33 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
           Padding(
             padding: const EdgeInsets.only(right: 12),
             child: Center(
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 6,
-                ),
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.surfaceContainerHigh,
-                  borderRadius: BorderRadius.circular(macos ? 6 : 99),
-                  border: macos ? Border.all(color: mac.divider) : null,
-                ),
-                child: const Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.shield_outlined, size: 15),
-                    SizedBox(width: 5),
-                    Text('Governed'),
-                  ],
+              child: Tooltip(
+                message: macos
+                    ? 'Your work stays inside Asael\'s protected, approval-aware execution boundary.'
+                    : 'Actions are governed by approvals and policy.',
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                    borderRadius: BorderRadius.circular(macos ? 6 : 99),
+                    border: macos ? Border.all(color: mac.divider) : null,
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        macos
+                            ? Icons.lock_outline_rounded
+                            : Icons.shield_outlined,
+                        size: 15,
+                      ),
+                      const SizedBox(width: 5),
+                      Text(macos ? 'Private & protected' : 'Governed'),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -3262,10 +3425,20 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
         builder: (_, _) => LayoutBuilder(
           builder: (context, constraints) {
             final assignedAgent = widget.controller.assignedAgent;
+            final voiceErrorMessage =
+                recordingError ?? widget.controller.voiceErrorMessage;
             final conversation = Column(
               children: [
                 AnimatedSwitcher(
                   duration: const Duration(milliseconds: 180),
+                  transitionBuilder: (child, animation) => FadeTransition(
+                    opacity: animation,
+                    child: SizeTransition(
+                      sizeFactor: animation,
+                      axisAlignment: -1,
+                      child: child,
+                    ),
+                  ),
                   child: widget.controller.status != null
                       ? Container(
                           key: ValueKey(widget.controller.status),
@@ -3279,15 +3452,10 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                               .surfaceContainerLow,
                           child: Row(
                             children: [
-                              const SizedBox.square(
-                                dimension: 14,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                ),
-                              ),
+                              const _CommandLiveGlyph(),
                               const SizedBox(width: 10),
                               Text(
-                                widget.controller.status!,
+                                _humanCommandStatus(widget.controller.status!),
                                 style: Theme.of(context).textTheme.labelLarge,
                               ),
                             ],
@@ -3487,20 +3655,30 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                                 .clearAssignedAgent,
                                     ),
                                   SegmentedButton<String>(
-                                    segments: const [
+                                    segments: [
                                       ButtonSegment(
                                         value: 'auto',
-                                        label: Text('Orchestrate'),
-                                        icon: Icon(
-                                          Icons.account_tree_outlined,
+                                        label: Text(
+                                          macos ? 'Use a team' : 'Orchestrate',
+                                        ),
+                                        tooltip: macos
+                                            ? 'Let Asael bring in specialists when they help'
+                                            : null,
+                                        icon: const Icon(
+                                          Icons.groups_2_outlined,
                                           size: 16,
                                         ),
                                       ),
                                       ButtonSegment(
                                         value: 'direct',
-                                        label: Text('Direct'),
-                                        icon: Icon(
-                                          Icons.arrow_forward_rounded,
+                                        label: Text(
+                                          macos ? 'Work alone' : 'Direct',
+                                        ),
+                                        tooltip: macos
+                                            ? 'Keep this request with one agent'
+                                            : null,
+                                        icon: const Icon(
+                                          Icons.person_outline_rounded,
                                           size: 16,
                                         ),
                                       ),
@@ -3530,7 +3708,33 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                               ),
                             ),
                             const SizedBox(height: 8),
-                            if (recording || widget.controller.transcribing)
+                            if (macos &&
+                                (recording ||
+                                    widget.controller.transcribing ||
+                                    voiceErrorMessage != null ||
+                                    voiceDraftNotice != null))
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 8),
+                                child: _VoiceDraftFeedback(
+                                  recording: recording,
+                                  transcribing: widget.controller.transcribing,
+                                  error: voiceErrorMessage,
+                                  notice: voiceDraftNotice,
+                                  onDismiss:
+                                      recording ||
+                                          widget.controller.transcribing
+                                      ? null
+                                      : _dismissVoiceFeedback,
+                                  onRecordAgain:
+                                      voiceErrorMessage == null ||
+                                          widget.controller.sending ||
+                                          widget.controller.transcribing
+                                      ? null
+                                      : _retryVoiceDraft,
+                                ),
+                              ),
+                            if (!macos &&
+                                (recording || widget.controller.transcribing))
                               Padding(
                                 padding: const EdgeInsets.only(bottom: 8),
                                 child: Row(
@@ -3554,14 +3758,13 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                   ],
                                 ),
                               ),
-                            if (recordingError != null ||
-                                widget.controller.voiceError != null)
+                            if (!macos && voiceErrorMessage != null)
                               Padding(
                                 padding: const EdgeInsets.only(bottom: 8),
                                 child: Align(
                                   alignment: Alignment.centerLeft,
                                   child: Text(
-                                    recordingError ?? 'Voice transcription is temporarily unavailable.',
+                                    voiceErrorMessage,
                                     style: TextStyle(
                                       color: Theme.of(context)
                                           .colorScheme
@@ -3906,6 +4109,204 @@ class _ExecutionTargetMenu extends StatelessWidget {
   }
 }
 
+class _VoiceDraftFeedback extends StatelessWidget {
+  const _VoiceDraftFeedback({
+    required this.recording,
+    required this.transcribing,
+    required this.error,
+    required this.notice,
+    required this.onDismiss,
+    required this.onRecordAgain,
+  });
+
+  final bool recording, transcribing;
+  final String? error, notice;
+  final VoidCallback? onDismiss, onRecordAgain;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final state = error != null
+        ? 'error'
+        : recording
+        ? 'recording'
+        : transcribing
+        ? 'transcribing'
+        : 'ready';
+    final (icon, title, detail, color) = switch (state) {
+      'error' => (
+        Icons.info_outline_rounded,
+        'Voice draft needs attention',
+        error!,
+        scheme.error,
+      ),
+      'recording' => (
+        Icons.mic_rounded,
+        'Listening…',
+        'Speak naturally. Stop when you are ready to turn it into text.',
+        scheme.error,
+      ),
+      'transcribing' => (
+        Icons.graphic_eq_rounded,
+        'Writing your words…',
+        'Your recording will appear below as an editable draft.',
+        scheme.primary,
+      ),
+      _ => (
+        Icons.check_circle_outline_rounded,
+        'Voice draft added',
+        notice ?? 'Review or edit it before sending.',
+        scheme.tertiary,
+      ),
+    };
+    return Semantics(
+      liveRegion: true,
+      label: '$title. $detail',
+      child: AnimatedSwitcher(
+        duration: MediaQuery.disableAnimationsOf(context)
+            ? Duration.zero
+            : const Duration(milliseconds: 180),
+        child: Container(
+          key: ValueKey(state),
+          width: double.infinity,
+          padding: const EdgeInsets.fromLTRB(10, 8, 6, 8),
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: .08),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: color.withValues(alpha: .24)),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 30,
+                height: 30,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: .12),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(icon, size: 17, color: color),
+              ),
+              const SizedBox(width: 9),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: Theme.of(context).textTheme.labelMedium
+                          ?.copyWith(color: color),
+                    ),
+                    const SizedBox(height: 1),
+                    Text(
+                      detail,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
+                ),
+              ),
+              if (recording)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  child: _VoiceSignal(color: color),
+                )
+              else if (transcribing)
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 10),
+                  child: SizedBox.square(
+                    dimension: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                )
+              else if (onRecordAgain != null)
+                TextButton.icon(
+                  onPressed: onRecordAgain,
+                  icon: const Icon(Icons.mic_none_rounded, size: 16),
+                  label: const Text('Record again'),
+                ),
+              if (onDismiss != null)
+                IconButton(
+                  tooltip: 'Dismiss voice status',
+                  visualDensity: VisualDensity.compact,
+                  onPressed: onDismiss,
+                  icon: const Icon(Icons.close_rounded, size: 17),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _VoiceSignal extends StatefulWidget {
+  const _VoiceSignal({required this.color});
+
+  final Color color;
+
+  @override
+  State<_VoiceSignal> createState() => _VoiceSignalState();
+}
+
+class _VoiceSignalState extends State<_VoiceSignal>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 900),
+  );
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (MediaQuery.disableAnimationsOf(context)) {
+      controller
+        ..stop()
+        ..value = .3;
+    } else if (!controller.isAnimating) {
+      controller.repeat();
+    }
+  }
+
+  @override
+  void dispose() {
+    controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: controller,
+    builder: (context, _) => SizedBox(
+      width: 30,
+      height: 20,
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          for (var index = 0; index < 5; index++)
+            Container(
+              width: 3,
+              height:
+                  5 +
+                  12 *
+                      (.5 +
+                          .5 *
+                              math.sin(
+                                controller.value * math.pi * 2 + index * .9,
+                              )),
+              decoration: BoxDecoration(
+                color: widget.color.withValues(alpha: .72),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+        ],
+      ),
+    ),
+  );
+}
+
 class _TalkActivityPane extends StatefulWidget {
   const _TalkActivityPane({
     required this.controller,
@@ -3921,6 +4322,7 @@ class _TalkActivityPane extends StatefulWidget {
 
 class _TalkActivityPaneState extends State<_TalkActivityPane> {
   late _TalkRailSection section;
+  bool showTechnicalDetails = false;
 
   @override
   void initState() {
@@ -3938,9 +4340,9 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
         .length;
     final (icon, title, detail) = switch (section) {
       _TalkRailSection.activity => (
-        Icons.hub_outlined,
-        'Live activity',
-        'Tools, specialists, and approvals',
+        Icons.auto_awesome_outlined,
+        'What Asael is doing',
+        'A clear story of your request',
       ),
       _TalkRailSection.artifacts => (
         Icons.auto_awesome_mosaic_outlined,
@@ -4034,7 +4436,7 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
                   const ButtonSegment(
                     value: _TalkRailSection.activity,
                     icon: Icon(Icons.bolt_outlined, size: 16),
-                    tooltip: 'Live activity',
+                    tooltip: 'What Asael is doing',
                   ),
                   ButtonSegment(
                     value: _TalkRailSection.artifacts,
@@ -4069,7 +4471,8 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
                 _TalkRailSection.queue => _queueBody(context),
               },
             ),
-            if (controller.runId != null)
+            if (controller.runId != null &&
+                (!usesMacosPresentation() || showTechnicalDetails))
               Container(
                 padding: const EdgeInsets.fromLTRB(18, 10, 18, 12),
                 decoration: BoxDecoration(
@@ -4085,7 +4488,7 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
                     const SizedBox(width: 7),
                     Expanded(
                       child: Text(
-                        'Governed run ${_shortId(controller.runId!)}',
+                        'Protected run ${_shortId(controller.runId!)}',
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
                           color: scheme.onSurfaceVariant,
@@ -4107,20 +4510,79 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
 
   Widget _activityBody(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final macos = usesMacosPresentation();
     if (controller.activities.isEmpty) {
       return _RailEmpty(
-        icon: Icons.route_outlined,
-        title: 'Activity will appear here',
-        detail: 'Asael shows observable run decisions without exposing private reasoning.',
+        icon: Icons.auto_awesome_outlined,
+        title: 'Ready when you are',
+        detail: 'When work begins, you will see who is helping, what changed, and anything that needs you.',
         color: scheme.onSurfaceVariant,
       );
     }
-    return ListView.separated(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
-      itemCount: controller.activities.length,
-      separatorBuilder: (_, _) => const SizedBox(height: 9),
-      itemBuilder: (context, index) =>
-          _TalkActivityCard(activity: controller.activities[index]),
+    final technicalCount = controller.activities
+        .where(_isTechnicalTalkActivity)
+        .length;
+    final visibleActivities = !macos || showTechnicalDetails
+        ? controller.activities
+        : controller.activities
+              .where((activity) => !_isTechnicalTalkActivity(activity))
+              .toList(growable: false);
+    return Column(
+      children: [
+        if (macos && technicalCount > 0)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 10, 10, 2),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    showTechnicalDetails
+                        ? 'Showing the full execution record'
+                        : 'Technical execution details are hidden',
+                    style: Theme.of(context).textTheme.labelSmall,
+                  ),
+                ),
+                TextButton.icon(
+                  onPressed: () => setState(
+                    () => showTechnicalDetails = !showTechnicalDetails,
+                  ),
+                  icon: Icon(
+                    showTechnicalDetails
+                        ? Icons.visibility_off_outlined
+                        : Icons.tune_rounded,
+                    size: 15,
+                  ),
+                  label: Text(
+                    showTechnicalDetails
+                        ? 'Show less'
+                        : 'Details ($technicalCount)',
+                  ),
+                ),
+              ],
+            ),
+          ),
+        Expanded(
+          child: visibleActivities.isEmpty
+              ? _RailEmpty(
+                  icon: Icons.hourglass_top_rounded,
+                  title: 'Asael is preparing',
+                  detail: 'The useful milestones will appear here as the request moves forward.',
+                  color: scheme.onSurfaceVariant,
+                )
+              : ListView.separated(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+                  itemCount: visibleActivities.length,
+                  separatorBuilder: (_, _) => const SizedBox(height: 9),
+                  itemBuilder: (context, index) {
+                    final activity = visibleActivities[index];
+                    return _TalkActivityCard(
+                      activity: activity,
+                      technical: _isTechnicalTalkActivity(activity),
+                    );
+                  },
+                ),
+        ),
+      ],
     );
   }
 
@@ -4742,19 +5204,194 @@ class _EditQueuedPromptDialogState extends State<_EditQueuedPromptDialog> {
   );
 }
 
+bool _isTechnicalTalkActivity(TalkActivity activity) =>
+    activity.key == 'harness' || activity.key.startsWith('model:');
+
+String _humanCommandStatus(String value) =>
+    switch (value.trim().toLowerCase()) {
+      'connecting' => 'Getting everything ready…',
+      'working' => 'Working on your request…',
+      'queued' => 'Your request is lined up',
+      'resuming' => 'Continuing where Asael left off…',
+      'transcribing voice draft' => 'Writing your voice draft…',
+      'delegated' => 'Specialists are continuing in the background',
+      _ => value,
+    };
+
+String _humanActivityTitle(TalkActivity activity) {
+  final key = activity.key.toLowerCase();
+  final title = activity.title.toLowerCase();
+  if (key.startsWith('tool:')) {
+    if (title.contains('knowledge')) return 'Searched your knowledge';
+    if (title.contains('memory')) return 'Searched your memory';
+    if (title.contains('web') || title.contains('search')) {
+      return 'Searched the web';
+    }
+    if (title.contains('runs.list') || title.contains('recent run')) {
+      return 'Checked recent work';
+    }
+    if (title.contains('local.macos.observe') || title.contains('screenshot')) {
+      return 'Looked at this Mac';
+    }
+    if (title.contains('local.macos') || title.contains('computer')) {
+      return 'Used this Mac';
+    }
+    if (title.contains('gmail') || title.contains('email')) {
+      return 'Worked with your email';
+    }
+    if (title.contains('calendar')) return 'Checked your calendar';
+    if (title.contains('drive') ||
+        title.contains('docs') ||
+        title.contains('sheets') ||
+        title.contains('slides')) {
+      return 'Worked in Google Workspace';
+    }
+    if (activity.title.contains('.') || activity.title.contains('_')) {
+      return 'Used a connected capability';
+    }
+  }
+  if (key == 'council-verdict') {
+    return activity.state == TalkActivityState.failed
+        ? 'Could not verify the specialists’ result'
+        : 'Checked the specialists’ work';
+  }
+  if (key == 'run') return 'Asael';
+  if (key == 'status' && title == 'response ready') return 'Result ready';
+  return activity.title;
+}
+
+String _humanActivityDetail(TalkActivity activity) => switch (activity.detail
+    .trim()) {
+  'Started a governed run.' => 'Started working on your request.',
+  'Response completed.' => 'Finished the answer.',
+  'The governed run reached a terminal response.' => 'Your result is ready.',
+  'The accepted governed run is in progress.' =>
+    'Your request is moving forward.',
+  'A governed cancellation request was sent.' =>
+    'Asael is stopping this work safely.',
+  'Waiting for the run to confirm its terminal state.' =>
+    'Waiting for the work to stop.',
+  _ => activity.detail,
+};
+
+class _CommandLiveGlyph extends StatelessWidget {
+  const _CommandLiveGlyph();
+
+  @override
+  Widget build(BuildContext context) => const _ActivityStoryGlyph(
+    icon: Icons.auto_awesome_rounded,
+    color: null,
+    active: true,
+    size: 22,
+  );
+}
+
+class _ActivityStoryGlyph extends StatefulWidget {
+  const _ActivityStoryGlyph({
+    required this.icon,
+    required this.color,
+    required this.active,
+    this.size = 28,
+  });
+
+  final IconData icon;
+  final Color? color;
+  final bool active;
+  final double size;
+
+  @override
+  State<_ActivityStoryGlyph> createState() => _ActivityStoryGlyphState();
+}
+
+class _ActivityStoryGlyphState extends State<_ActivityStoryGlyph>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1600),
+  );
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _syncAnimation();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ActivityStoryGlyph oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.active != widget.active) _syncAnimation();
+  }
+
+  void _syncAnimation() {
+    if (widget.active && !MediaQuery.disableAnimationsOf(context)) {
+      if (!controller.isAnimating) controller.repeat(reverse: true);
+    } else {
+      controller.stop();
+      controller.value = widget.active ? .5 : 0;
+    }
+  }
+
+  @override
+  void dispose() {
+    controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final resolvedColor = widget.color ?? Theme.of(context).colorScheme.primary;
+    return AnimatedBuilder(
+      animation: controller,
+      builder: (context, _) {
+        final pulse = widget.active ? controller.value : 0.0;
+        return SizedBox.square(
+          dimension: widget.size,
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              if (widget.active)
+                Container(
+                  width: widget.size * (.72 + pulse * .2),
+                  height: widget.size * (.72 + pulse * .2),
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: resolvedColor.withValues(alpha: .2 + pulse * .18),
+                    ),
+                  ),
+                ),
+              Container(
+                width: widget.size * .72,
+                height: widget.size * .72,
+                decoration: BoxDecoration(
+                  color: resolvedColor.withValues(alpha: .12),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  widget.icon,
+                  size: widget.size * .46,
+                  color: resolvedColor,
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
 class _TalkActivityCard extends StatelessWidget {
-  const _TalkActivityCard({required this.activity});
+  const _TalkActivityCard({required this.activity, required this.technical});
 
   final TalkActivity activity;
+  final bool technical;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final (icon, color) = switch (activity.state) {
-      TalkActivityState.active => (
-        Icons.motion_photos_on_outlined,
-        scheme.primary,
-      ),
+      TalkActivityState.active => (Icons.auto_awesome_rounded, scheme.primary),
       TalkActivityState.succeeded => (
         Icons.check_circle_outline,
         scheme.tertiary,
@@ -4766,10 +5403,14 @@ class _TalkActivityCard extends StatelessWidget {
         scheme.onSurfaceVariant,
       ),
     };
+    final title = technical ? activity.title : _humanActivityTitle(activity);
+    final detail = technical ? activity.detail : _humanActivityDetail(activity);
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: scheme.surfaceContainerLow.withValues(alpha: .84),
+        color: technical
+            ? scheme.surfaceContainerLowest.withValues(alpha: .7)
+            : scheme.surfaceContainerLow.withValues(alpha: .9),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: scheme.outlineVariant.withValues(alpha: .8)),
       ),
@@ -4778,24 +5419,50 @@ class _TalkActivityCard extends StatelessWidget {
         children: [
           Padding(
             padding: const EdgeInsets.only(top: 1),
-            child: Icon(icon, size: 17, color: color),
+            child: _ActivityStoryGlyph(
+              icon: icon,
+              color: color,
+              active: activity.state == TalkActivityState.active,
+            ),
           ),
           const SizedBox(width: 10),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  activity.title,
-                  style: const TextStyle(
-                    fontSize: 12.5,
-                    fontWeight: FontWeight.w700,
-                  ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        title,
+                        style: const TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                    if (technical)
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 2,
+                        ),
+                        decoration: BoxDecoration(
+                          color: scheme.surfaceContainerHigh,
+                          borderRadius: BorderRadius.circular(5),
+                        ),
+                        child: Text(
+                          'TECHNICAL',
+                          style: Theme.of(context).textTheme.labelSmall
+                              ?.copyWith(fontSize: 8.5, letterSpacing: .45),
+                        ),
+                      ),
+                  ],
                 ),
                 const SizedBox(height: 3),
                 Text(
-                  activity.detail,
-                  maxLines: 4,
+                  detail,
+                  maxLines: technical ? 5 : 4,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     color: scheme.onSurfaceVariant,
@@ -4880,39 +5547,243 @@ class _TalkEmpty extends StatelessWidget {
   final bool loading;
 
   @override
-  Widget build(BuildContext context) => Center(
-    child: Padding(
-      padding: const EdgeInsets.all(32),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (loading)
-            const SizedBox.square(
-              dimension: 38,
-              child: CircularProgressIndicator(strokeWidth: 2.5),
-            )
-          else
-            const AsaelMark(size: 52),
-          const SizedBox(height: 20),
-          Text(
-            loading
-                ? 'Opening conversation'
-                : selectedThread
-                ? 'This conversation is empty'
-                : 'What needs to move?',
-            style: Theme.of(context).textTheme.headlineSmall,
-          ),
-          const SizedBox(height: 8),
-          Text(
-            loading
-                ? 'Reading the latest public message projection.'
-                : selectedThread
-                ? 'Send a message to continue this durable conversation.'
-                : 'Ask a question or describe an outcome. Asael will keep plans, evidence, and approvals connected.',
-            textAlign: TextAlign.center,
-          ),
-        ],
+  Widget build(BuildContext context) {
+    final macos = usesMacosPresentation();
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (macos)
+              _AgentConstellation(active: loading)
+            else if (loading)
+              const SizedBox.square(
+                dimension: 38,
+                child: CircularProgressIndicator(strokeWidth: 2.5),
+              )
+            else
+              const AsaelMark(size: 52),
+            SizedBox(height: macos ? 14 : 20),
+            Text(
+              loading
+                  ? 'Opening conversation'
+                  : selectedThread
+                  ? 'This conversation is empty'
+                  : 'What needs to move?',
+              style: Theme.of(context).textTheme.headlineSmall,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              loading
+                  ? macos
+                        ? 'Bringing your latest messages back into view.'
+                        : 'Reading the latest public message projection.'
+                  : selectedThread
+                  ? 'Send a message to continue this durable conversation.'
+                  : macos
+                  ? 'Ask naturally. Asael can work alone, bring in specialists, or use this Mac when you choose.'
+                  : 'Ask a question or describe an outcome. Asael will keep plans, evidence, and approvals connected.',
+              textAlign: TextAlign.center,
+              style: macos
+                  ? TextStyle(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    )
+                  : null,
+            ),
+          ],
+        ),
       ),
-    ),
-  );
+    );
+  }
+}
+
+class _AgentConstellation extends StatefulWidget {
+  const _AgentConstellation({required this.active});
+
+  final bool active;
+
+  @override
+  State<_AgentConstellation> createState() => _AgentConstellationState();
+}
+
+class _AgentConstellationState extends State<_AgentConstellation>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController controller;
+
+  Duration get _duration => Duration(milliseconds: widget.active ? 2400 : 6800);
+
+  @override
+  void initState() {
+    super.initState();
+    controller = AnimationController(vsync: this, duration: _duration);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _syncAnimation();
+  }
+
+  @override
+  void didUpdateWidget(covariant _AgentConstellation oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.active != widget.active) {
+      controller.duration = _duration;
+      _syncAnimation();
+    }
+  }
+
+  void _syncAnimation() {
+    final reducedMotion =
+        MediaQuery.disableAnimationsOf(context) ||
+        MediaQuery.accessibleNavigationOf(context);
+    if (reducedMotion || !widget.active) {
+      controller.stop();
+      controller.value = .22;
+    } else if (!controller.isAnimating) {
+      controller.repeat();
+    }
+  }
+
+  @override
+  void dispose() {
+    controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Semantics(
+      label: widget.active
+          ? 'Asael is opening this conversation'
+          : 'Asael and its specialist agents are ready',
+      image: true,
+      child: RepaintBoundary(
+        child: SizedBox(
+          width: 230,
+          height: 126,
+          child: AnimatedBuilder(
+            animation: controller,
+            builder: (context, child) => CustomPaint(
+              painter: _AgentConstellationPainter(
+                phase: controller.value,
+                active: widget.active,
+                primary: scheme.primary,
+                secondary: scheme.secondary,
+                line: scheme.outlineVariant,
+              ),
+              child: child,
+            ),
+            child: Center(
+              child: Container(
+                width: 66,
+                height: 66,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: scheme.surfaceContainerLow.withValues(alpha: .92),
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color: scheme.primary.withValues(alpha: .32),
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: scheme.primary.withValues(alpha: .1),
+                      blurRadius: 24,
+                    ),
+                  ],
+                ),
+                child: const AsaelMark(size: 42),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AgentConstellationPainter extends CustomPainter {
+  const _AgentConstellationPainter({
+    required this.phase,
+    required this.active,
+    required this.primary,
+    required this.secondary,
+    required this.line,
+  });
+
+  final double phase;
+  final bool active;
+  final Color primary, secondary, line;
+
+  static const nodes = <Offset>[
+    Offset(.08, .57),
+    Offset(.2, .22),
+    Offset(.29, .78),
+    Offset(.72, .2),
+    Offset(.8, .73),
+    Offset(.94, .45),
+  ];
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+    final orbit = Rect.fromCenter(
+      center: center,
+      width: size.width * .74,
+      height: size.height * .54,
+    );
+    canvas.drawOval(
+      orbit,
+      Paint()
+        ..color = line.withValues(alpha: .42)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1,
+    );
+    final points = <Offset>[];
+    for (var index = 0; index < nodes.length; index++) {
+      final source = nodes[index];
+      final drift = math.sin((phase * math.pi * 2) + index * 1.15);
+      final point = Offset(
+        source.dx * size.width,
+        source.dy * size.height + drift * (active ? 3.2 : 1.8),
+      );
+      points.add(point);
+      canvas.drawLine(
+        center,
+        point,
+        Paint()
+          ..color = line.withValues(alpha: .26)
+          ..strokeWidth = .8,
+      );
+    }
+    for (var index = 0; index < points.length; index++) {
+      final pulse = .5 + .5 * math.sin((phase * math.pi * 2) + index * .92);
+      final color = index.isEven ? primary : secondary;
+      canvas.drawCircle(
+        points[index],
+        3.2 + pulse * (active ? 2 : 1.2),
+        Paint()..color = color.withValues(alpha: .5 + pulse * .35),
+      );
+    }
+    final angle = phase * math.pi * 2;
+    final travelingPoint = Offset(
+      center.dx + math.cos(angle) * orbit.width / 2,
+      center.dy + math.sin(angle) * orbit.height / 2,
+    );
+    canvas.drawCircle(
+      travelingPoint,
+      active ? 4 : 3,
+      Paint()..color = primary.withValues(alpha: .9),
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _AgentConstellationPainter oldDelegate) =>
+      oldDelegate.phase != phase ||
+      oldDelegate.active != active ||
+      oldDelegate.primary != primary ||
+      oldDelegate.secondary != secondary ||
+      oldDelegate.line != line;
 }

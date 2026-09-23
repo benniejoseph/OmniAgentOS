@@ -1,4 +1,8 @@
-import type { TranscriptionDiarized } from "openai/resources/audio/transcriptions";
+import type {
+  Transcription,
+  TranscriptionDiarized,
+  TranscriptionVerbose,
+} from "openai/resources/audio/transcriptions";
 import {
   DIARIZATION_MODEL,
   GOOGLE_TRANSCRIPTION_MODEL,
@@ -288,18 +292,37 @@ export async function transcribeCaptureMedia(
     abortSignal?.throwIfAborted();
     const startedAt = Date.now();
     try {
-      const result = await withActiveApiKey((apiKey) =>
-        getOpenAIClient(apiKey ? { apiKey } : undefined).audio.transcriptions.create({
-          file: media,
-          model: activeModel,
-          response_format: "verbose_json",
-          timestamp_granularities: ["segment"],
-        })
-      );
+      const result = await withActiveApiKey(async (apiKey) => {
+        const transcriptions = getOpenAIClient(
+          apiKey ? { apiKey } : undefined,
+        ).audio.transcriptions;
+        if (openAiTranscriptionSupportsVerboseJson(activeModel)) {
+          return transcriptions.create(
+            {
+              file: media,
+              model: activeModel,
+              response_format: "verbose_json",
+              timestamp_granularities: ["segment"],
+            },
+            { signal: abortSignal },
+          );
+        }
+        return transcriptions.create(
+          {
+            file: media,
+            model: activeModel,
+            response_format: "json",
+          },
+          { signal: abortSignal },
+        );
+      }) as Transcription | TranscriptionVerbose;
       text = result.text;
       model = activeModel;
-      durationMs = Math.max(1, Math.round(Number(result.duration || 0) * 1_000));
-      segments = (result.segments || []).flatMap((segment) => {
+      durationMs = openAiTranscriptionDurationMs(result);
+      const verboseSegments = "segments" in result
+        ? result.segments || []
+        : [];
+      segments = verboseSegments.flatMap((segment) => {
         const content = segment.text.trim();
         if (!content) return [];
         const startMilliseconds = Math.max(0, Math.round(segment.start * 1_000));
@@ -363,6 +386,26 @@ export async function transcribeCaptureMedia(
       text: segment.text.trim().slice(0, 24_000),
     })).filter((segment) => segment.text),
   };
+}
+
+function openAiTranscriptionSupportsVerboseJson(model: string) {
+  return model.trim().toLowerCase() === "whisper-1";
+}
+
+function openAiTranscriptionDurationMs(
+  result: Transcription | TranscriptionVerbose,
+) {
+  if ("duration" in result && Number.isFinite(result.duration)) {
+    return Math.max(1, Math.round(result.duration * 1_000));
+  }
+  const usage = result.usage;
+  if (usage?.type === "duration" && Number.isFinite(usage.seconds)) {
+    return Math.max(1, Math.round(usage.seconds * 1_000));
+  }
+  // GPT transcription models intentionally return the compact JSON contract,
+  // which does not promise media duration or timestamps. The text remains
+  // canonical; callers receive one bounded segment instead of invented timing.
+  return 1;
 }
 
 function normalizedLanguageTag(value: string | undefined) {

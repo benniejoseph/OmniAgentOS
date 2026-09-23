@@ -676,9 +676,10 @@ class ApiTalkRepository
       NativePaths.captureTranscribe,
       fields: const {},
       bytes: bytes,
-      filename: 'voice-draft.m4a',
-      contentType: 'audio/mp4',
+      filename: 'voice-draft.wav',
+      contentType: 'audio/wav',
       fileField: 'audio',
+      receiveTimeout: const Duration(seconds: 90),
     );
     final text = json['text'];
     if (text is! String || text.trim().isEmpty) {
