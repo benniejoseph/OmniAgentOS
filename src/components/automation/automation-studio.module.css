@@ -464,7 +464,8 @@
 .reviewColumns ul { margin-top: .55rem; padding-left: 1rem; color: var(--studio-muted); font-size: .8125rem; line-height: 1.55; }
 .reviewColumns li + li { margin-top: .35rem; }
 .reviewDigest { margin-top: 1.4rem; border-top: 1px solid var(--studio-line); }
-.reviewDigest > div { display: grid; grid-template-columns: 8rem minmax(0, 1fr); gap: .8rem; border-bottom: 1px solid var(--studio-line); padding: .65rem 0; }
+.reviewDigest > summary { cursor: pointer; padding: .7rem 0; color: var(--studio-muted); font-size: .75rem; font-weight: 720; }
+.reviewDigest dl > div { display: grid; grid-template-columns: 8rem minmax(0, 1fr); gap: .8rem; border-bottom: 1px solid var(--studio-line); padding: .65rem 0; }
 .reviewDigest dt { color: var(--studio-muted); font-size: .75rem; }
 .reviewDigest dd { min-width: 0; font-size: .75rem; }
 .reviewDigest code { display: block; overflow-wrap: anywhere; color: var(--studio-primary); }
@@ -571,7 +572,7 @@
   .exportedMcp { grid-template-columns: auto minmax(0, 1fr); }
   .exportedMcp > a { grid-column: 2; justify-self: start; }
   .reviewColumns { grid-template-columns: 1fr; gap: 1rem; }
-  .reviewDigest > div { grid-template-columns: 1fr; gap: .2rem; }
+  .reviewDigest dl > div { grid-template-columns: 1fr; gap: .2rem; }
   .dialogActions { align-items: stretch; flex-direction: column-reverse; }
   .dialogActions button { width: 100%; }
   .importDisclosure > summary { grid-template-columns: auto minmax(0, 1fr); }

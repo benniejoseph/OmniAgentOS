@@ -1398,18 +1398,14 @@ class _CapabilityDefinitions extends StatelessWidget {
   static const definitions = <(String, String)>[
     ('Connections', 'Authorize an account or API.'),
     (
-      'MCP servers',
-      'Expose live tools and resources through a standard protocol.',
-    ),
-    (
-      'Tools',
-      'Perform one atomic action with explicit risk and approval policy.',
+      'Custom connections',
+      'Add specialist services through MCP when a built-in Connection is not available.',
     ),
     ('Skills', 'Teach an agent a reusable method without granting access.'),
     ('Automations', 'Start reviewed workflow steps from a schedule or event.'),
     (
-      'Plugins',
-      'Bundle declarative Skills, MCP templates, and workflow metadata.',
+      'Extensions',
+      'Add reviewed packs of Skills, connection setup, and Automation templates.',
     ),
   ];
 
@@ -1599,10 +1595,10 @@ class _PluginBoundary extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('Installation is a review, not an authority shortcut.'),
+              Text('An Extension adds methods, not permission.'),
               SizedBox(height: 4),
               Text(
-                'Plugins contain declarative Skills and setup templates—not arbitrary code or embedded secrets. Connections and Tools keep their existing approval boundaries.',
+                'Extensions add Skills and setup templates. Accounts, private data, and sensitive actions keep their own connection and approval controls.',
               ),
             ],
           ),

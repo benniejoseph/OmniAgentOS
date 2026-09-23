@@ -6,7 +6,7 @@ import {
 } from "@/components/automation/automation-studio";
 
 export const metadata: Metadata = {
-  title: "Automation",
+  title: "Capabilities",
 };
 
 export default function AutomationPage() {

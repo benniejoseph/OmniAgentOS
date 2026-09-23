@@ -56,6 +56,10 @@ import {
   privateCaptureAssetContentUrl,
 } from "@/components/media/private-media-preview";
 import { VoiceMode } from "@/components/voice/voice-mode";
+import {
+  CommandComposerField,
+  type CommandSlashAction,
+} from "@/components/command/command-composer-field";
 import workspaceStyles from "@/components/agent-runs-workspace.module.css";
 import { arsenalAgents } from "@/lib/agents/arsenal";
 import type { ContextScopeId } from "@/lib/rag/context-scope";
@@ -76,6 +80,10 @@ import {
   type ClientAgentMode,
 } from "@/lib/command/client-projection";
 import { startProgressiveThreadLoad } from "@/lib/command/progressive-thread-load";
+import type {
+  CommandContextCatalogItem,
+  CommandContextReference,
+} from "@/lib/command/composer-context-contract";
 import {
   commandArtifactContentUrl,
   projectCommandFileArtifactState,
@@ -434,6 +442,18 @@ export function AgentRunsWorkspace({
     : undefined;
   const [preferredAgent, setPreferredAgent] = useState<AgentPresentation | undefined>(
     initialBuiltInAgent,
+  );
+  const [commandReferences, setCommandReferences] = useState<CommandContextCatalogItem[]>(
+    initialBuiltInAgent
+      ? [{
+          kind: "agent",
+          id: initialBuiltInAgent.id,
+          label: initialBuiltInAgent.name,
+          description: initialBuiltInAgent.role,
+          state: "ready",
+          selectable: true,
+        }]
+      : [],
   );
   const preferredAgentId = preferredAgent?.id;
   const activeAssistantName = preferredAgent?.name || "Asael";
@@ -1510,6 +1530,88 @@ export function AgentRunsWorkspace({
     agentRequestIdRef.current = "";
   }
 
+  function selectCommandReference(item: CommandContextCatalogItem) {
+    if (!item.selectable) {
+      setError(`${item.label} is not ready to use yet.`);
+      return;
+    }
+    if (item.kind === "project" && (threadId || conversationLocked)) {
+      setError("Start a new conversation before changing its Project context.");
+      return;
+    }
+    setCommandReferences((current) => {
+      const withoutSingleton = item.kind === "agent" || item.kind === "project"
+        ? current.filter((candidate) => candidate.kind !== item.kind)
+        : current;
+      if (withoutSingleton.some((candidate) =>
+        candidate.kind === item.kind && candidate.id === item.id
+      )) return withoutSingleton;
+      return [...withoutSingleton, item];
+    });
+    if (item.kind === "agent") {
+      setPreferredAgent(builtInAgentPresentation(item.id) || {
+        id: item.id,
+        name: item.label,
+        role: item.description || "Specialist",
+        voice: "Clear, direct, and calm.",
+        visualIdentity: "A focused Asael specialist.",
+        accent: "emerald",
+      });
+    }
+    if (item.kind === "project") {
+      changeContextScope("project");
+      changeProject(item.id);
+    }
+    setError(undefined);
+    setWorkflowPlan(undefined);
+    agentRequestIdRef.current = "";
+    setRunAnnouncement(`${item.label} is attached to the next message as ${commandReferenceKindLabel(item.kind)} context.`);
+  }
+
+  function removeCommandReference(item: CommandContextCatalogItem) {
+    if (item.kind === "project" && (threadId || conversationLocked)) {
+      setError("This conversation is already bound to its Project. Start a new conversation to change it.");
+      return;
+    }
+    setCommandReferences((current) => current.filter((candidate) =>
+      candidate.kind !== item.kind || candidate.id !== item.id
+    ));
+    if (item.kind === "agent" && preferredAgentId === item.id) {
+      setPreferredAgent(undefined);
+    }
+    if (item.kind === "project" && selectedProjectId === item.id) {
+      changeContextScope("explicit_selection");
+      changeProject("");
+    }
+    setWorkflowPlan(undefined);
+    agentRequestIdRef.current = "";
+  }
+
+  function clearPreferredAgentSelection() {
+    setPreferredAgent(undefined);
+    setCommandReferences((current) => current.filter((item) => item.kind !== "agent"));
+    setWorkflowPlan(undefined);
+    agentRequestIdRef.current = "";
+  }
+
+  function clearEphemeralCommandReferences() {
+    setCommandReferences((current) => current.filter((item) =>
+      item.kind === "agent" || item.kind === "project"
+    ));
+  }
+
+  function handleCommandSlashAction(action: CommandSlashAction) {
+    if (action === "plan") {
+      void buildPlan();
+      return;
+    }
+    changeMode(action === "act"
+      ? "execute"
+      : action === "learn"
+        ? "learn"
+        : "research");
+  }
+
   function changeApprovalRequired(nextValue: boolean) {
     if (nextValue === approvalRequired) {
       return;
@@ -1900,6 +2002,15 @@ export function AgentRunsWorkspace({
       setPromptQueueError(runPermission);
       return;
     }
+    const queueUnsupportedReferences = commandReferences.filter((item) =>
+      item.kind !== "agent" && item.kind !== "project"
+    );
+    if (queueUnsupportedReferences.length) {
+      setPromptQueueError(
+        "Attached Skills, files, Extensions, and Connections stay exact and cannot be dropped into the older queue. Let the current work finish, then send this message directly.",
+      );
+      return;
+    }
     const correlationId = crypto.randomUUID();
     setPromptQueueBusyId(correlationId);
     setPromptQueueError(undefined);
@@ -2063,6 +2174,12 @@ export function AgentRunsWorkspace({
     }
     const queueItem = options?.queueItem;
     const submittedGoal = (queueItem?.prompt ?? options?.submittedGoal ?? goal).trim();
+    const submittedCommandReferences = queueItem
+      ? []
+      : commandReferences.map(commandContextReferenceRequest);
+    const hasAttachedCommandContext = submittedCommandReferences.some((reference) =>
+      reference.kind !== "agent" && reference.kind !== "project"
+    );
     if (!submittedGoal) {
       setError("Write a message before asking Asael.");
       return;
@@ -2081,6 +2198,7 @@ export function AgentRunsWorkspace({
       !queueItem &&
       contextScope === "explicit_selection" &&
       contextLoading &&
+      !hasAttachedCommandContext &&
       !options?.prepareContextAutomatically
     ) {
       openTaskDetails("context");
@@ -2091,7 +2209,12 @@ export function AgentRunsWorkspace({
         contextSelectionReviewedRef.current
       ? contextSelectionForTask(submittedGoal)
       : undefined;
-    if (!queueItem && contextScope === "explicit_selection" && !contextSelection) {
+    if (
+      !queueItem &&
+      contextScope === "explicit_selection" &&
+      !contextSelection &&
+      !hasAttachedCommandContext
+    ) {
       if (!contextPreparedForGoal) {
         const prepared = await buildContext({
           query: submittedGoal,
@@ -2174,6 +2297,7 @@ export function AgentRunsWorkspace({
               agentId: submittedAgentId,
               contextScope: resumeRunId ? undefined : contextScope,
               contextSelection: resumeRunId ? undefined : contextSelection,
+              contextReferences: resumeRunId ? undefined : submittedCommandReferences,
               voiceInput: resumeRunId ? undefined : options?.voiceReview,
             }),
         signal: controller.signal,
@@ -2215,6 +2339,7 @@ export function AgentRunsWorkspace({
             { id: `assistant-${Date.now()}`, role: "assistant", content: acknowledgement, createdAt: new Date().toISOString() },
           ]);
           setGoal("");
+          clearEphemeralCommandReferences();
           void refreshThreads();
           setRunAnnouncement("Task moved to a durable background workflow.");
         }
@@ -2249,6 +2374,7 @@ export function AgentRunsWorkspace({
             ]);
           }
           setGoal("");
+          clearEphemeralCommandReferences();
           void refreshThreads();
           setRunAnnouncement("Agent run completed. Review the result and evidence.");
           const mediaRunId = currentRunIdRef.current || completedRunId;
@@ -2263,6 +2389,7 @@ export function AgentRunsWorkspace({
           setClarificationRunId("");
           setWaitingApproval(event);
           waitingApprovalEvent = event;
+          clearEphemeralCommandReferences();
           setRunAnnouncement("Agent run paused for approval.");
         }
         if (event.type === "error") {
@@ -3224,6 +3351,7 @@ export function AgentRunsWorkspace({
               mode={mode}
               approvalRequired={approvalRequired}
               preferredAgent={preferredAgent}
+              commandReferences={commandReferences}
               loading={loading}
               contextLoading={contextLoading}
               contextScope={contextScope}
@@ -3249,7 +3377,10 @@ export function AgentRunsWorkspace({
               onGoalChange={changeGoal}
               onModeChange={changeMode}
               onApprovalChange={changeApprovalRequired}
-              onClearPreferredAgent={() => setPreferredAgent(undefined)}
+              onClearPreferredAgent={clearPreferredAgentSelection}
+              onSelectCommandReference={selectCommandReference}
+              onRemoveCommandReference={removeCommandReference}
+              onCommandSlashAction={handleCommandSlashAction}
               onContext={() => void buildContext()}
               onContextScopeChange={changeContextScope}
               onProjectChange={changeProject}
@@ -5210,6 +5341,7 @@ function GoalStage({
   mode,
   approvalRequired,
   preferredAgent,
+  commandReferences,
   loading,
   contextLoading,
   contextScope,
@@ -5236,6 +5368,9 @@ function GoalStage({
   onModeChange,
   onApprovalChange,
   onClearPreferredAgent,
+  onSelectCommandReference,
+  onRemoveCommandReference,
+  onCommandSlashAction,
   onContext,
   onContextScopeChange,
   onProjectChange,
@@ -5252,6 +5387,7 @@ function GoalStage({
   mode: AgentMode;
   approvalRequired: boolean;
   preferredAgent?: AgentPresentation;
+  commandReferences: readonly CommandContextCatalogItem[];
   loading?: string;
   contextLoading: boolean;
   contextScope: ActiveContextScopeId;
@@ -5278,6 +5414,9 @@ function GoalStage({
   onModeChange: (value: AgentMode) => void;
   onApprovalChange: (value: boolean) => void;
   onClearPreferredAgent: () => void;
+  onSelectCommandReference: (item: CommandContextCatalogItem) => void;
+  onRemoveCommandReference: (item: CommandContextCatalogItem) => void;
+  onCommandSlashAction: (action: CommandSlashAction) => void;
   onContext: () => void;
   onContextScopeChange: (scope: ActiveContextScopeId) => void;
   onProjectChange: (projectId: string) => void;
@@ -5326,35 +5465,26 @@ function GoalStage({
             </div>
           ) : null}
 
-          <label className="block">
-            <span className="sr-only">Message Asael</span>
-            <textarea
-              value={goal}
-              onChange={(event) => onGoalChange(event.currentTarget.value)}
-              onKeyDown={(event) => {
-                if (
-                  event.key === "Enter" &&
-                  !event.shiftKey &&
-                  !event.nativeEvent.isComposing
-                ) {
-                  event.preventDefault();
-                  if (!draftLocked && !goalMissing && !runDisabledReason) {
-                    if (activeRun) onQueue();
-                    else onAgent();
-                  }
-                }
-              }}
-              rows={2}
-              required
-              disabled={draftLocked}
-              placeholder={activeRun
-                ? "Add the next prompt…"
-                : hasConversation
-                  ? "Ask a follow-up…"
-                  : "Message Asael…"}
-              className="max-h-40 min-h-14 w-full resize-none bg-transparent px-4 pb-2 pt-3 text-sm leading-6 outline-none placeholder:text-muted/75 disabled:cursor-not-allowed disabled:opacity-60"
-            />
-          </label>
+          <CommandComposerField
+            value={goal}
+            disabled={draftLocked}
+            placeholder={activeRun
+              ? "Add the next prompt… · / Skills · @ context"
+              : hasConversation
+                ? "Ask a follow-up… · / Skills · @ context"
+                : "Message Asael… · / Skills · @ context"}
+            selected={commandReferences}
+            onChange={onGoalChange}
+            onSubmit={() => {
+              if (!draftLocked && !goalMissing && !runDisabledReason) {
+                if (activeRun) onQueue();
+                else onAgent();
+              }
+            }}
+            onSlashAction={onCommandSlashAction}
+            onSelectReference={onSelectCommandReference}
+            onRemoveReference={onRemoveCommandReference}
+          />
 
           <div className="flex items-center justify-between gap-2 px-2 pb-2">
             <div className="flex min-w-0 items-center gap-1 overflow-x-auto">
@@ -5368,7 +5498,7 @@ function GoalStage({
               >
                 <option value="orchestrate">General</option>
                 <option value="research">Research</option>
-                <option value="execute">Tools</option>
+                <option value="execute">Act</option>
                 <option value="learn">Knowledge</option>
               </select>
               {contextScope === "project" ? (
@@ -6360,6 +6490,29 @@ function builtInAgentPresentation(agentId: AgentId) {
     visualIdentity: agent.persona.visualIdentity,
     accent: agent.accent,
   } satisfies AgentPresentation;
+}
+
+function commandContextReferenceRequest(
+  item: CommandContextCatalogItem,
+): CommandContextReference {
+  return {
+    kind: item.kind,
+    id: item.id,
+    expectedVersion: item.expectedVersion,
+    versionId: item.versionId,
+    bindingSha256: item.bindingSha256,
+  };
+}
+
+function commandReferenceKindLabel(kind: CommandContextCatalogItem["kind"]) {
+  return ({
+    agent: "Agent",
+    skill: "Skill",
+    plugin: "Extension",
+    project: "Project",
+    integration: "Connection",
+    file: "file",
+  } as const)[kind];
 }
 
 function agentPresentationFromApi(agent: JsonRecord): AgentPresentation {

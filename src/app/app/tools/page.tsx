@@ -1,10 +1,10 @@
 import type { Metadata } from "next";
-import { ToolsWorkspace } from "@/components/tools/tools-workspace";
+import { redirect } from "next/navigation";
 
 export const metadata: Metadata = {
-  title: "Tools",
+  title: "Capabilities",
 };
 
 export default function ToolsPage() {
-  return <ToolsWorkspace />;
+  redirect("/app/automation");
 }

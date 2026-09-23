@@ -80,9 +80,8 @@ const tabs: ReadonlyArray<{
   { id: "overview", label: "Overview" },
   { id: "automations", label: "Automations" },
   { id: "skills", label: "Skills" },
-  { id: "connections", label: "Connections & MCP", compactLabel: "Connections" },
-  { id: "plugins", label: "Plugins" },
-  { id: "advanced", label: "Advanced audit", compactLabel: "Advanced" },
+  { id: "connections", label: "Connections" },
+  { id: "plugins", label: "Extensions" },
 ] as const;
 
 const initialLedger = Object.fromEntries(
@@ -91,12 +90,12 @@ const initialLedger = Object.fromEntries(
 
 export function AutomationStudioFallback() {
   return (
-    <div className={styles.studio} aria-label="Loading Automation workspace">
+    <div className={styles.studio} aria-label="Loading Capabilities workspace">
       <header className={styles.header}>
         <div className={styles.identity}>
-          <span className={styles.eyebrow}><Sparkles size={14} aria-hidden="true" />Capability system</span>
-          <h1>Automation</h1>
-          <p>Loading the governed capability inventory…</p>
+          <span className={styles.eyebrow}><Sparkles size={14} aria-hidden="true" />How Asael works</span>
+          <h1>Capabilities</h1>
+          <p>Loading Skills, Extensions, Connections, and Automations…</p>
         </div>
       </header>
       <div className={styles.fallbackTabs} />
@@ -206,9 +205,9 @@ export function AutomationStudio() {
     <div className={styles.studio}>
       <header className={styles.header}>
         <div className={styles.identity}>
-          <span className={styles.eyebrow}><Sparkles size={14} aria-hidden="true" />Capability system</span>
-          <h1>Automation</h1>
-          <p>Define what Asael can access, how agents work, and what should happen again.</p>
+          <span className={styles.eyebrow}><Sparkles size={14} aria-hidden="true" />How Asael works</span>
+          <h1>Capabilities</h1>
+          <p>Choose the knowledge, connections, and reusable methods Asael can use for your work.</p>
         </div>
         <div className={styles.headerActions}>
           <div className={styles.refreshStatus} aria-live="polite">
@@ -230,7 +229,7 @@ export function AutomationStudio() {
         </div>
       </header>
 
-      <nav className={styles.tabs} role="tablist" aria-label="Automation workspace sections" onKeyDown={moveTabFocus}>
+      <nav className={styles.tabs} role="tablist" aria-label="Capabilities workspace sections" onKeyDown={moveTabFocus}>
         {tabs.map((tab) => (
           <button
             key={tab.id}
@@ -283,9 +282,10 @@ function OverviewPanel({
   onNavigate: (tab: StudioTab) => void;
 }) {
   const summary = buildCapabilitySummary(snapshot);
+  const visibleSummary = summary.filter((item) => item.key !== "actions");
   const destinations: Record<(typeof summary)[number]["key"], StudioTab> = {
     access: "connections",
-    actions: "advanced",
+    actions: "overview",
     guidance: "skills",
     repeat: "automations",
     bundles: "plugins",
@@ -303,14 +303,14 @@ function OverviewPanel({
       <section className={styles.sectionIntro}>
         <div>
           <span className={styles.sectionNumber}>01</span>
-          <h2>How a capability becomes useful</h2>
-          <p>Access, action, guidance, and repetition stay separate so authority remains visible.</p>
+          <h2>What Asael can use</h2>
+          <p>Connections provide access, Skills provide a method, and Automations repeat trusted work.</p>
         </div>
         <Link href="/app/workflows">Open workflow queue <ArrowRight size={15} aria-hidden="true" /></Link>
       </section>
 
       <div className={styles.capabilityChain} aria-label="Asael capability chain">
-        {summary.map((item, index) => {
+        {visibleSummary.map((item, index) => {
           const Icon = icons[item.key];
           return (
             <div className={styles.chainStep} key={item.key}>
@@ -323,7 +323,7 @@ function OverviewPanel({
                 </span>
                 <span className={styles.chainValue} data-state={item.state}>{item.value}</span>
               </button>
-              {index < summary.length - 1 ? <ArrowRight className={styles.chainArrow} size={16} aria-hidden="true" /> : null}
+              {index < visibleSummary.length - 1 ? <ArrowRight className={styles.chainArrow} size={16} aria-hidden="true" /> : null}
             </div>
           );
         })}
@@ -335,22 +335,21 @@ function OverviewPanel({
             <div><span className={styles.sectionNumber}>02</span><h2>What each part means</h2></div>
           </div>
           <dl>
-            <div><dt>Connections</dt><dd>Authorize an account or API. They grant access, but do not decide what an agent should do.</dd></div>
-            <div><dt>MCP servers</dt><dd>Expose live tools and resources through a standard protocol. Discovered actions still enter Asael&apos;s review boundary.</dd></div>
-            <div><dt>Tools</dt><dd>One atomic, governed action—read a file, send an email, or update a record—with risk and approval policy.</dd></div>
+            <div><dt>Connections</dt><dd>Link an account or service so Asael can work with information you choose.</dd></div>
+            <div><dt>Custom connections</dt><dd>Add specialist services through MCP when a built-in Connection is not available.</dd></div>
+            <div><dt>Actions</dt><dd>Things Asael can do—read a file, send an email, or update a record. Sensitive actions still ask for approval.</dd></div>
             <div><dt>Skills</dt><dd>Reusable instructions that teach an agent a method. A Skill never grants access on its own.</dd></div>
-            <div><dt>Automations</dt><dd>A trigger and workflow that repeat known work. Every side effect still executes through Tools.</dd></div>
-            <div><dt>Plugins</dt><dd>Reviewed declarative bundles of Skills, MCP templates, and automation templates. No arbitrary code or embedded secrets.</dd></div>
+            <div><dt>Automations</dt><dd>A trigger and workflow that repeat known work. Every change still follows its normal approval rules.</dd></div>
+            <div><dt>Extensions</dt><dd>Add a reviewed pack of Skills, connection setup, and Automation templates. Extensions never receive access by themselves.</dd></div>
           </dl>
         </section>
 
         <section className={styles.healthSection}>
           <div className={styles.sectionHeading}>
             <div><span className={styles.sectionNumber}>03</span><h2>Live inventory</h2></div>
-            <button type="button" onClick={() => onNavigate("advanced")}>Open audit</button>
           </div>
           <div className={styles.healthList}>
-            {automationResourceDefinitions.map((source) => (
+            {automationResourceDefinitions.filter((source) => source.key !== "tools").map((source) => (
               <ResourceHealthRow key={source.key} label={source.label} resource={ledger[source.key]} />
             ))}
           </div>
@@ -931,19 +930,18 @@ function SkillsPanel({ ledger }: { ledger: ResourceLedger }) {
       <PanelHeading
         number="01"
         title="Skills"
-        description="Reusable playbooks teach agents how to work. They can reference governed Tools, but never grant new access."
-        action={<Link href="/app/agents">Manage in Arsenal <ExternalLink size={14} aria-hidden="true" /></Link>}
+        description="Skills are reusable methods. Choose one with / in Command when you want Asael to follow that method."
+        action={<Link href="/app/agents">Manage Skills <ExternalLink size={14} aria-hidden="true" /></Link>}
       />
       <InventorySection
         title="Skill catalog"
-        note="Built-in Skills are maintained by Asael; personal Skills remain owner-scoped and editable."
+        note="Built-in Skills come with Asael. Personal Skills are yours and stay private to your workspace."
         resource={ledger.skills}
         empty="No Skills are available for this workspace."
         wide
       >
         {skills.map((skill, index) => {
           const toolCount = stringListAt(skill, "toolIds").length;
-          const knowledgeCount = stringListAt(skill, "knowledgeTags").length;
           return (
             <InventoryRow
               key={recordKey(skill, index)}
@@ -952,8 +950,7 @@ function SkillsPanel({ ledger }: { ledger: ResourceLedger }) {
               meta={[
                 textAt(skill, ["category"], "uncategorized"),
                 skill.builtIn === true ? "built in" : "personal",
-                `${toolCount} ${toolCount === 1 ? "tool" : "tools"}`,
-                `${knowledgeCount} knowledge ${knowledgeCount === 1 ? "tag" : "tags"}`,
+                `${toolCount} ${toolCount === 1 ? "available action" : "available actions"}`,
               ]}
               status={textAt(skill, ["status"], "unknown")}
               icon={<BookOpen size={16} aria-hidden="true" />}
@@ -977,8 +974,8 @@ function ConnectionsPanel({ ledger }: { ledger: ResourceLedger }) {
     <div>
       <PanelHeading
         number="01"
-        title="Connections & MCP"
-        description="Connections authorize accounts and APIs. MCP servers expose live tools and resources that Asael discovers and reviews."
+        title="Connections"
+        description="Connect the accounts and services Asael can work with. Access remains limited to the permissions you approve."
         action={<Link href="/app/connectors">Manage connections <ExternalLink size={14} aria-hidden="true" /></Link>}
       />
       <div className={styles.splitInventory}>
@@ -1009,10 +1006,10 @@ function ConnectionsPanel({ ledger }: { ledger: ResourceLedger }) {
         </InventorySection>
 
         <InventorySection
-          title="MCP servers"
-          note="Server credentials create access; each discovered Tool keeps its own risk and approval contract."
+          title="Custom connections"
+          note="MCP adds specialist services. Every discovered action still follows Asael's ordinary approval rules."
           resource={ledger.mcp}
-          empty="No MCP servers have been added."
+          empty="No custom connections have been added."
         >
           {connectors.map((connector, index) => (
             <InventoryRow
@@ -1108,10 +1105,10 @@ function PluginsPanel({
       }, "plugin-preview");
       const preview = recordAt(result, "preview");
       const manifest = recordAt(result, "manifest");
-      if (!preview || !manifest) throw new Error("The server did not return an immutable Plugin review.");
+      if (!preview || !manifest) throw new Error("Asael could not prepare this Extension preview.");
       setDialog({ kind: "install", source: "catalog", plugin, preview, manifest });
     } catch (reviewError) {
-      setError(safeMutationError(reviewError, "Plugin review could not be prepared."));
+      setError(safeMutationError(reviewError, "Extension preview could not be prepared."));
     } finally {
       setBusyId(undefined);
     }
@@ -1123,7 +1120,7 @@ function PluginsPanel({
     try {
       previewRequest = importedPluginPreviewPayload(importDraft);
     } catch (parseError) {
-      setImportError(safeMutationError(parseError, "The Plugin manifest could not be parsed."));
+      setImportError(safeMutationError(parseError, "The Extension manifest could not be read."));
       return;
     }
 
@@ -1141,7 +1138,7 @@ function PluginsPanel({
       const preview = recordAt(result, "preview");
       const reviewedManifest = recordAt(result, "manifest");
       if (!preview || !reviewedManifest) {
-        throw new Error("The server did not return an immutable Plugin review.");
+        throw new Error("Asael could not prepare this Extension preview.");
       }
       setDialog({
         kind: "install",
@@ -1151,7 +1148,7 @@ function PluginsPanel({
         manifest: reviewedManifest,
       });
     } catch (reviewError) {
-      setImportError(safeMutationError(reviewError, "Imported Plugin review could not be prepared."));
+      setImportError(safeMutationError(reviewError, "Imported Extension preview could not be prepared."));
     } finally {
       setBusyId(undefined);
     }
@@ -1161,7 +1158,7 @@ function PluginsPanel({
     const previewId = textAt(review.preview, ["previewId"], "");
     const manifestSha256 = textAt(review.preview, ["manifestSha256"], "");
     if (!previewId || !/^[a-f0-9]{64}$/.test(manifestSha256)) {
-      setError("The immutable Plugin review is incomplete. Prepare it again.");
+      setError("This Extension preview expired or is incomplete. Prepare it again.");
       setDialog(undefined);
       return;
     }
@@ -1178,11 +1175,11 @@ function PluginsPanel({
       setNotice(textAt(
         activation,
         ["explanation"],
-        `${pluginTitle(review.plugin)} was installed. MCP credentials and contracts still require separate setup and review.`,
+        `${pluginTitle(review.plugin)} was installed. Any Custom Connection it offers still needs its own setup.`,
       ));
       await onRefresh();
     } catch (installError) {
-      setError(safeMutationError(installError, "Plugin installation failed."));
+      setError(safeMutationError(installError, "Extension installation failed."));
     } finally {
       setBusyId(undefined);
     }
@@ -1192,7 +1189,7 @@ function PluginsPanel({
     const installationId = textAt(plugin, ["installationId"], "");
     const expectedRevision = numberAt(plugin, "revision");
     if (!installationId || expectedRevision < 1) {
-      setError("The installed Plugin does not include a current lifecycle revision. Refresh and try again.");
+      setError("This Extension is out of date. Refresh and try again.");
       return;
     }
     setBusyId(`${action}:${installationId}`);
@@ -1214,7 +1211,7 @@ function PluginsPanel({
       );
       await onRefresh();
     } catch (transitionError) {
-      setError(safeMutationError(transitionError, `Plugin ${action} failed.`));
+      setError(safeMutationError(transitionError, `Extension ${action} failed.`));
     } finally {
       setBusyId(undefined);
     }
@@ -1224,14 +1221,14 @@ function PluginsPanel({
     <div>
       <PanelHeading
         number="01"
-        title="Plugins"
-        description="A Plugin is a reviewed, declarative bundle. It can package Skills, MCP setup templates, and an automation template—but not arbitrary code or secrets."
+        title="Extensions"
+        description="Extensions are optional packs that add Skills, connection setup, and Automation templates. Install only the packs that help your work."
       />
       <div className={styles.pluginBoundary}>
         <ShieldCheck size={20} aria-hidden="true" />
         <div>
-          <strong>Installation is a review, not an authority shortcut.</strong>
-          <p>Asael must show the exact manifest and requested capabilities before installation. Connections and Tools keep their existing approval boundaries.</p>
+          <strong>An Extension adds methods, not permission.</strong>
+          <p>You will see what it adds before installing. Accounts, private data, and sensitive actions still use their own connection and approval controls.</p>
         </div>
       </div>
       {error ? <InlineError>{error}</InlineError> : null}
@@ -1241,7 +1238,7 @@ function PluginsPanel({
           title="Installed"
           note="Bundles currently retained for this workspace."
           resource={ledger.plugins}
-          empty="No Plugins are installed."
+          empty="No Extensions are installed."
         >
           {installations.map((plugin, index) => (
             <InventoryRow
@@ -1279,7 +1276,7 @@ function PluginsPanel({
           title="Available to review"
           note="Catalog entries are not installed and grant no access."
           resource={ledger.plugins}
-          empty="No reviewed Plugin catalog entries are available."
+          empty="No reviewed Extensions are available."
         >
           {catalog.map((plugin, index) => (
             <InventoryRow
@@ -1308,14 +1305,14 @@ function PluginsPanel({
           <span><Box size={16} aria-hidden="true" /></span>
           <div>
             <strong>Import declarative manifest</strong>
-            <small>Advanced · review a personal Asael Plugin from pasted JSON</small>
+            <small>Advanced · import a personal Extension from JSON</small>
           </div>
           <span className={styles.disclosureAction}>Show / hide</span>
         </summary>
         <form onSubmit={(event) => void reviewImportedManifest(event)}>
           <div className={styles.importHeading}>
             <div>
-              <h2>Personal Plugin manifest</h2>
+              <h2>Personal Extension manifest</h2>
               <p>Paste schema v1 JSON only. Executable code and embedded credentials or secrets are rejected; MCP access is connected separately after installation.</p>
             </div>
             <span data-over-limit={importBytes > MAX_PLUGIN_MANIFEST_BYTES}>
@@ -1375,14 +1372,14 @@ function PluginDialogSurface({
   if (dialog.kind === "uninstall") {
     return (
       <div className={styles.dialogLayer}>
-        <button type="button" className={styles.dialogDismiss} aria-label="Close Plugin confirmation" onClick={onClose} disabled={busy} />
+        <button type="button" className={styles.dialogDismiss} aria-label="Close Extension confirmation" onClick={onClose} disabled={busy} />
         <section className={styles.dialog} role="alertdialog" aria-modal="true" aria-labelledby="plugin-uninstall-title">
           <span className={styles.dialogEyebrow}>Confirm removal</span>
           <h2 id="plugin-uninstall-title">Uninstall {pluginTitle(dialog.plugin)}?</h2>
-          <p>The Plugin bundle will leave this workspace. Any account credentials or external connections configured separately are not revoked by this action.</p>
+          <p>The Extension will leave this workspace. Accounts and external Connections configured separately will stay connected.</p>
           <div className={styles.dialogActions}>
             <button type="button" onClick={onClose} disabled={busy} autoFocus>Cancel</button>
-            <button type="button" className={styles.dangerAction} onClick={onUninstall} disabled={busy}>{busy ? "Uninstalling…" : "Uninstall Plugin"}</button>
+            <button type="button" className={styles.dangerAction} onClick={onUninstall} disabled={busy}>{busy ? "Uninstalling…" : "Uninstall Extension"}</button>
           </div>
         </section>
       </div>
@@ -1396,9 +1393,9 @@ function PluginDialogSurface({
   const limitations = stringListAt(preview, "limitations");
   return (
     <div className={styles.dialogLayer}>
-      <button type="button" className={styles.dialogDismiss} aria-label="Close Plugin review" onClick={onClose} disabled={busy} />
+      <button type="button" className={styles.dialogDismiss} aria-label="Close Extension review" onClick={onClose} disabled={busy} />
       <section className={styles.dialog} role="dialog" aria-modal="true" aria-labelledby="plugin-review-title">
-        <span className={styles.dialogEyebrow}>Immutable installation review</span>
+        <span className={styles.dialogEyebrow}>Extension preview</span>
         <h2 id="plugin-review-title">Review {textAt(preview, ["name"], pluginTitle(dialog.plugin))}</h2>
         <p>Published by {textAt(preview, ["publisherName"], textAt(publisher, ["name"], "Unknown publisher"))}. Confirm the exact declared effects and limitations before installing.</p>
         <div className={styles.reviewCounts}>
@@ -1410,13 +1407,16 @@ function PluginDialogSurface({
           <div><h3>What installation does</h3><ul>{effects.map((effect) => <li key={effect}>{effect}</li>)}</ul></div>
           <div><h3>What it does not do</h3><ul>{limitations.map((limitation) => <li key={limitation}>{limitation}</li>)}</ul></div>
         </div>
-        <dl className={styles.reviewDigest}>
-          <div><dt>Manifest SHA-256</dt><dd><code>{textAt(preview, ["manifestSha256"], "Unavailable")}</code></dd></div>
-          <div><dt>Review expires</dt><dd>{formatDateTime(textAt(preview, ["expiresAt"], ""))}</dd></div>
-        </dl>
+        <details className={styles.reviewDigest}>
+          <summary>Technical verification</summary>
+          <dl>
+            <div><dt>Manifest fingerprint</dt><dd><code>{textAt(preview, ["manifestSha256"], "Unavailable")}</code></dd></div>
+            <div><dt>Preview expires</dt><dd>{formatDateTime(textAt(preview, ["expiresAt"], ""))}</dd></div>
+          </dl>
+        </details>
         <div className={styles.dialogActions}>
           <button type="button" onClick={onClose} disabled={busy} autoFocus>Cancel</button>
-          <button type="button" className={styles.installAction} onClick={onInstall} disabled={busy}>{busy ? "Installing…" : "Install reviewed Plugin"}</button>
+          <button type="button" className={styles.installAction} onClick={onInstall} disabled={busy}>{busy ? "Installing…" : "Install Extension"}</button>
         </div>
       </section>
     </div>
@@ -1670,17 +1670,17 @@ async function mutatePlugin(
   }
   if (!response.ok) {
     if (response.status === 403) {
-      throw new Error("Administrator access is required to review or change Plugins.");
+      throw new Error("Administrator access is required to review or change Extensions.");
     }
     throw new Error(textAt(result, ["error", "message"], `Request failed with status ${response.status}.`));
   }
-  if (!isJsonRecord(result)) throw new Error("The Plugin service returned an unreadable response.");
+  if (!isJsonRecord(result)) throw new Error("The Extension service returned an unreadable response.");
   return result;
 }
 
 function resourceErrorMessage(key: AutomationResourceKey, label: string, error: unknown) {
   if (key === "plugins") {
-    return "The Plugin catalog is not available in this deployment. Nothing has been treated as installed.";
+    return "The Extension catalog is not available in this deployment. Nothing has been treated as installed.";
   }
   if (error instanceof DOMException && error.name === "AbortError") {
     return `${label} did not respond within 15 seconds.`;
@@ -1694,7 +1694,7 @@ function recordKey(record: JsonRecord, index: number) {
 }
 
 function chainTitle(key: "access" | "actions" | "guidance" | "repeat" | "bundles") {
-  return ({ access: "Connections & MCP", actions: "Governed Tools", guidance: "Skills", repeat: "Automations", bundles: "Plugins" } as const)[key];
+  return ({ access: "Connections", actions: "Available actions", guidance: "Skills", repeat: "Automations", bundles: "Extensions" } as const)[key];
 }
 
 function triggerDescription(trigger: JsonRecord) {
@@ -1716,7 +1716,7 @@ function mcpDescription(connector: JsonRecord) {
 
 function pluginTitle(plugin: JsonRecord) {
   const manifest = recordAt(plugin, "manifest");
-  return textAt(plugin, ["name", "title"], textAt(manifest, ["name", "title"], "Unnamed Plugin"));
+  return textAt(plugin, ["name", "title"], textAt(manifest, ["name", "title"], "Unnamed Extension"));
 }
 
 function pluginActivationDescription(plugin: JsonRecord) {
@@ -1724,7 +1724,7 @@ function pluginActivationDescription(plugin: JsonRecord) {
   return textAt(
     activation,
     ["explanation"],
-    "The bundle is installed, but MCP credentials, reviewed contracts, and executable workflows are not implied.",
+    "The Extension is installed. Any account or Custom Connection it offers still needs separate setup.",
   );
 }
 
@@ -1740,7 +1740,7 @@ function pluginMeta(plugin: JsonRecord) {
   const workflows = componentCounts
     ? numberAt(componentCounts, "workflowTemplates")
     : recordsAt(manifest, "workflowTemplates").length;
-  return [`${skills} ${skills === 1 ? "skill" : "skills"}`, `${mcpTemplates} MCP ${mcpTemplates === 1 ? "template" : "templates"}`, `${workflows} automation ${workflows === 1 ? "template" : "templates"}`];
+  return [`${skills} ${skills === 1 ? "skill" : "skills"}`, `${mcpTemplates} custom ${mcpTemplates === 1 ? "connection" : "connections"}`, `${workflows} automation ${workflows === 1 ? "template" : "templates"}`];
 }
 
 function riskMeaning(level: 0 | 1 | 2 | 3) {

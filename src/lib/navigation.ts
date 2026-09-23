@@ -22,7 +22,6 @@ import {
   Sparkles,
   TerminalSquare,
   Workflow,
-  Wrench,
 } from "lucide-react";
 import type { ComponentType } from "react";
 
@@ -83,9 +82,9 @@ export const appNav: AppNavItem[] = [
   },
   {
     href: "/app/agents",
-    label: "Arsenal",
-    shortLabel: "Arsenal",
-    description: "Your specialists, capabilities, and adaptation lifecycle.",
+    label: "Agents",
+    shortLabel: "Agents",
+    description: "Your specialists, their Skills, and how they improve with use.",
     icon: Bot,
   },
   {
@@ -131,9 +130,9 @@ export const appNav: AppNavItem[] = [
   },
   {
     href: "/app/automation",
-    label: "Automation Studio",
-    shortLabel: "Automate",
-    description: "Skills, connections, MCP servers, plugins, and repeatable work.",
+    label: "Capabilities",
+    shortLabel: "Capabilities",
+    description: "Skills, Extensions, Connections, and repeatable work.",
     icon: Blocks,
   },
   {
@@ -150,17 +149,10 @@ export const appNav: AppNavItem[] = [
   },
   {
     href: "/app/connectors",
-    label: "Integrations",
-    shortLabel: "Integrate",
-    description: "Connect external tools and APIs the agent is allowed to use.",
+    label: "Connections",
+    shortLabel: "Connect",
+    description: "Connect accounts and services Asael is allowed to use.",
     icon: Cable,
-  },
-  {
-    href: "/app/tools",
-    label: "Tools",
-    shortLabel: "Tools",
-    description: "What the agent can do, with risk levels and an audit trail.",
-    icon: Wrench,
   },
   {
     href: "/app/evaluations",
@@ -354,7 +346,7 @@ export const productPages: Record<string, ProductPage> = {
     ],
   },
   tools: {
-    ...appNavItem("/app/tools"),
+    ...appNavItem("/app/automation"),
     eyebrow: "Governed Execution",
     headline: "Every tool call knows its risk before it runs.",
     summary: "Treat tools as governed capabilities with dry runs, approval rules, execution records, and operator-grade auditability.",

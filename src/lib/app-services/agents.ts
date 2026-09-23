@@ -384,7 +384,7 @@ export function delegationExecutionDetailProjection(
           .filter((toolId) => !mcpToolIds.has(toolId))
           .map((toolId) => Object.freeze({
             toolId,
-            managementHref: "/app/tools",
+      managementHref: "/app/automation",
           })),
       ),
       skills: Object.freeze(grants.skills.map((grant) => Object.freeze({

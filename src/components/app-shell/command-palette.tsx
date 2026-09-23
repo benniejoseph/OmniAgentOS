@@ -20,11 +20,12 @@ export function CommandPalette() {
   const previousFocusRef = useRef<HTMLElement | null>(null);
 
   const results = useMemo(() => {
+    const visibleNavigation = appNav.filter((item) => item.href !== "/app/tools");
     const normalized = query.trim().toLowerCase();
     if (!normalized) {
-      return appNav;
+      return visibleNavigation;
     }
-    return appNav
+    return visibleNavigation
       .filter(
         (item) =>
           item.label.toLowerCase().includes(normalized) ||

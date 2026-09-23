@@ -44,9 +44,9 @@ class _AutomationStudioViewState extends ConsumerState<AutomationStudioView> {
         title: const Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Automation'),
+            Text('Capabilities'),
             Text(
-              'Capabilities and repeatable work',
+              'Skills, connections, extensions, and repeatable work',
               style: TextStyle(fontSize: 12, fontWeight: FontWeight.w400),
             ),
           ],
@@ -79,7 +79,7 @@ class _AutomationStudioViewState extends ConsumerState<AutomationStudioView> {
               NavigationDestination(
                 icon: Icon(Icons.extension_outlined),
                 selectedIcon: Icon(Icons.extension_rounded),
-                label: 'Capabilities',
+                label: 'Skills & more',
               ),
             ],
           ),
@@ -426,7 +426,7 @@ class _PortableCapabilities extends StatelessWidget {
         ),
         const SizedBox(height: 5),
         const Text(
-          'Each source reports independently. Unavailable is never shown as zero.',
+          'Skills teach Asael how to work. Connections provide access. Extensions add optional packs.',
         ),
         const SizedBox(height: 14),
         _CapabilityCard(
@@ -443,19 +443,13 @@ class _PortableCapabilities extends StatelessWidget {
         ),
         _CapabilityCard(
           icon: Icons.hub_outlined,
-          title: 'MCP servers',
+          title: 'Custom connections',
           resource: snapshot.mcp,
           count: snapshot.mcp.data?.length,
         ),
         _CapabilityCard(
-          icon: Icons.build_outlined,
-          title: 'Tools',
-          resource: snapshot.tools,
-          count: snapshot.tools.data?.length,
-        ),
-        _CapabilityCard(
           icon: Icons.extension_outlined,
-          title: 'Plugins',
+          title: 'Extensions',
           resource: snapshot.plugins,
           count: snapshot.plugins.data?.plugins.length,
         ),

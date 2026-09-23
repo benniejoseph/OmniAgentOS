@@ -216,8 +216,8 @@ export function buildCapabilitySummary(
       label: "Actions",
       value: displayCount(snapshot, "tools", activeTools),
       detail: snapshot.tools
-        ? `${tools.length} governed tools in inventory`
-        : "Tool inventory unavailable",
+        ? `${tools.length} actions available to Asael`
+        : "Action inventory unavailable",
       state: stateFor(snapshot, ["tools"]),
     },
     {

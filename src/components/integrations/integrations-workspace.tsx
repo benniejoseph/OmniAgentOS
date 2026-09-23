@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Cable, ChevronDown, ShieldCheck, Wrench } from "lucide-react";
+import { Blocks, Cable, ChevronDown, ShieldCheck } from "lucide-react";
 import { DomainConsole } from "@/components/app-shell/domain-console";
 import { IntegrationTruthPanel } from "@/components/integrations/integration-truth-panel";
 import { SourceCoveragePanel } from "@/components/source-coverage/source-coverage-panel";
@@ -17,7 +17,7 @@ export function IntegrationsWorkspace() {
           </div>
         </div>
         <nav className={styles.pageLinks} aria-label="Integration administration">
-          <Link href="/app/tools"><Wrench size={15} aria-hidden="true" />Tools</Link>
+          <Link href="/app/automation"><Blocks size={15} aria-hidden="true" />Capabilities</Link>
           <span aria-current="page"><Cable size={15} aria-hidden="true" />Integrations</span>
           <Link href="/app/approvals"><ShieldCheck size={15} aria-hidden="true" />Approvals</Link>
         </nav>
