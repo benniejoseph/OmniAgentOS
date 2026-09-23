@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  AGENT_MAX_MODEL_TURNS,
   AGENT_MAX_TOOL_STEPS,
   AGENT_RUN_BUDGET_LIMITS,
   getAppBaseUrl,
@@ -13,13 +14,35 @@ import { ASAEL_PUBLIC_ORIGIN } from "@/lib/identity";
 const gatewayToken = "a".repeat(64);
 
 describe("agent execution limits", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
   it("keeps installed-Mac capacity separate from ordinary agent runs", () => {
     expect(AGENT_MAX_TOOL_STEPS).toBe(6);
-    expect(AGENT_RUN_BUDGET_LIMITS.modelTurns).toBe(7);
+    expect(AGENT_MAX_MODEL_TURNS).toBe(13);
+    expect(AGENT_RUN_BUDGET_LIMITS).toMatchObject({
+      modelTurns: 13,
+      toolCalls: 30,
+    });
     expect(LOCAL_COMPUTER_MAX_TOOL_STEPS).toBe(12);
     expect(LOCAL_COMPUTER_RUN_BUDGET_LIMITS).toEqual({
       ...AGENT_RUN_BUDGET_LIMITS,
       modelTurns: 14,
+    });
+  });
+
+  it("configures model turns independently without widening tool authority", async () => {
+    vi.resetModules();
+    vi.stubEnv("OMNIAGENT_AGENT_MAX_MODEL_TURNS", "11");
+
+    const configured = await import("@/lib/config");
+
+    expect(configured.AGENT_MAX_MODEL_TURNS).toBe(11);
+    expect(configured.AGENT_RUN_BUDGET_LIMITS).toMatchObject({
+      modelTurns: 11,
+      toolCalls: 30,
     });
   });
 });

@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  DEFAULT_AGENT_RUN_BUDGET_LIMITS,
   RunBudgetExceededError,
   budgetPerRemainingModelTurn,
   createRunBudgetState,
@@ -10,6 +11,7 @@ import {
   reserveRunBudget,
   zeroRunBudgetCounters,
 } from "@/lib/runs/budgets";
+import { AGENT_RUN_BUDGET_LIMITS } from "@/lib/config";
 
 const limits = {
   ...zeroRunBudgetCounters(),
@@ -26,6 +28,37 @@ const limits = {
 };
 
 describe("complete run budgets", () => {
+  it("keeps compatibility callers on canonical server authority", () => {
+    expect(DEFAULT_AGENT_RUN_BUDGET_LIMITS).toEqual(AGENT_RUN_BUDGET_LIMITS);
+    expect(DEFAULT_AGENT_RUN_BUDGET_LIMITS).toMatchObject({
+      modelTurns: 13,
+      toolCalls: 30,
+    });
+    expect(() => narrowRunBudgetLimits(DEFAULT_AGENT_RUN_BUDGET_LIMITS, {
+      modelTurns: DEFAULT_AGENT_RUN_BUDGET_LIMITS.modelTurns + 1,
+    })).toThrow("cannot exceed its parent limit");
+  });
+
+  it("inherits a configured server turn ceiling for compatibility callers", async () => {
+    vi.resetModules();
+    vi.stubEnv("OMNIAGENT_AGENT_MAX_MODEL_TURNS", "9");
+
+    const configured = await import("@/lib/config");
+    const compatibility = await import("@/lib/runs/budgets");
+
+    expect(configured.AGENT_RUN_BUDGET_LIMITS.modelTurns).toBe(9);
+    expect(compatibility.DEFAULT_AGENT_RUN_BUDGET_LIMITS.modelTurns).toBe(9);
+    expect(() => compatibility.narrowRunBudgetLimits(
+      compatibility.DEFAULT_AGENT_RUN_BUDGET_LIMITS,
+      { modelTurns: 10 },
+    )).toThrow("cannot exceed its parent limit");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
   it("accounts for every P6.7 dimension and rejects over-budget work before reservation", () => {
     let state = createRunBudgetState(limits, {
       startedAt: "2026-09-06T00:00:00.000Z",
@@ -99,13 +132,13 @@ describe("complete run budgets", () => {
   it("keeps every model turn inside the run budget after fixed context costs", () => {
     let state = createRunBudgetState({
       ...limits,
-      modelTurns: 7,
+      modelTurns: 13,
       tokens: 64_000,
       costMicrousd: 2_500_000,
     });
     state = reserveRunBudget(state, { tokens: 4_096, costMicrousd: 1_000 });
 
-    for (let turn = 0; turn < 7; turn += 1) {
+    for (let turn = 0; turn < 13; turn += 1) {
       state = reserveRunBudget(state, {
         modelTurns: 1,
         tokens: budgetPerRemainingModelTurn(state, "tokens"),
@@ -113,7 +146,7 @@ describe("complete run budgets", () => {
       });
     }
 
-    expect(state.used.modelTurns).toBe(7);
+    expect(state.used.modelTurns).toBe(13);
     expect(state.used.tokens).toBe(64_000);
     expect(state.used.costMicrousd).toBe(2_500_000);
   });

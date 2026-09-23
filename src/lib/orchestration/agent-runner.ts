@@ -95,6 +95,7 @@ import {
 } from "@/lib/delegation/runtime-policy";
 import {
   buildParentDelegationBudgetAuthorityV1,
+  parentDelegationAppServiceIdempotencyKey,
   withParentDelegationBudgetAuthority,
 } from "@/lib/delegation/parent-budget-authority";
 import type { AgentEvent, AgentRunRequest } from "@/lib/orchestration/types";
@@ -3170,7 +3171,14 @@ export async function* runNonOpenAIProviderToolLoop(input: {
 }
 
 function agentDisplayName(agentId: string) {
-  return ({ atlas: "Atlas", scout: "Scout", forge: "Forge", sentinel: "Sentinel", mnemosyne: "Mnemosyne" } as Record<string, string>)[agentId] || "Atlas";
+  return ({
+    atlas: "Atlas",
+    scout: "Scout",
+    meridian: "Meridian",
+    forge: "Forge",
+    sentinel: "Sentinel",
+    mnemosyne: "Mnemosyne",
+  } as Record<string, string>)[agentId] || "Atlas";
 }
 
 function agentToolExecutionScope(
@@ -3202,9 +3210,14 @@ function executeWithDynamicDelegationBudget<T>(input: {
       "Dynamic delegation requires an exact parent-loop budget reservation.",
     );
   }
+  const appServiceIdempotencyKey =
+    parentDelegationAppServiceIdempotencyKey({
+      tenantId: input.parentExecutionScope.tenantId,
+      toolCallIdempotencyKey: input.idempotencyKey,
+    });
   const authority = buildParentDelegationBudgetAuthorityV1({
     parentExecutionScope: input.parentExecutionScope,
-    idempotencyKey: input.idempotencyKey,
+    idempotencyKey: appServiceIdempotencyKey,
     before: input.reservation.before,
     after: input.reservation.after,
     childRootReservation: input.reservation.childRootReservation,

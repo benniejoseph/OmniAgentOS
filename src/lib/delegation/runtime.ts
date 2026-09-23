@@ -786,8 +786,9 @@ function assertPreferredAgentCompatible(input: ParsedDelegateAgentTaskInput) {
     memory: ["mnemosyne"],
   };
   if (!compatible[input.taskKind].includes(input.preferredAgentId)) {
+    const expected = compatible[input.taskKind].join(" or ");
     throw new Error(
-      `${input.preferredAgentId} is not compatible with a ${input.taskKind} delegation.`,
+      `${input.preferredAgentId} is not compatible with a ${input.taskKind} delegation; use ${expected}, or omit preferredAgentId for deterministic discovery.`,
     );
   }
 }

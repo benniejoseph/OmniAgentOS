@@ -148,6 +148,7 @@ import {
   ToolExecutionScopeBindingError,
   type ToolExecutionScopeBinding,
 } from "@/lib/tools/execution-scope";
+import { governedToolExecutionId } from "@/lib/tools/execution-id";
 import {
   buildEffectReceiptV1,
   canonicalJsonSha256,
@@ -835,7 +836,7 @@ export async function executeGovernedTool({
       let existing: ToolExecutionRecord | undefined;
       try {
         existing = await getToolExecution(
-          idempotentToolExecutionId(
+          governedToolExecutionId(
             normalizeTenantId(context?.tenantId),
             idempotencyKey,
           ),
@@ -955,7 +956,7 @@ export async function executeGovernedTool({
     let existing: ToolExecutionRecord | undefined;
     try {
       existing = await getToolExecution(
-        idempotentToolExecutionId(
+        governedToolExecutionId(
           normalizeTenantId(context?.tenantId),
           idempotencyKey,
         ),
@@ -1040,7 +1041,7 @@ export async function executeGovernedTool({
     !effectCanaryRequest
   ) {
     const existing = await getToolExecution(
-      idempotentToolExecutionId(
+      governedToolExecutionId(
         normalizeTenantId(context?.tenantId),
         idempotencyKey,
       ),
@@ -1235,7 +1236,7 @@ export async function executeGovernedTool({
       tool,
       toolInput: preparedInput,
       executionScope: scopedRequest.executionScope,
-      executionId: idempotentToolExecutionId(
+      executionId: governedToolExecutionId(
         normalizeTenantId(context?.tenantId),
         idempotencyKey,
       ),
@@ -1454,7 +1455,7 @@ export async function executeGovernedTool({
 
   if (!dryRun && idempotencyKey && !executionRecord) {
     const claimToken = randomUUID();
-    const intendedExecutionId = idempotentToolExecutionId(
+    const intendedExecutionId = governedToolExecutionId(
       normalizeTenantId(context?.tenantId),
       idempotencyKey,
     );
@@ -3192,7 +3193,7 @@ async function authorizeMoltbookStandingMandate(input: {
       "Moltbook autonomy authority does not match the exact owner, Agent, run, and cycle scope.",
     );
   }
-  const executionId = idempotentToolExecutionId(
+  const executionId = governedToolExecutionId(
     authority.tenantId,
     idempotencyKey,
   );
@@ -3301,15 +3302,6 @@ function isMoltbookAutonomyMutationToolId(
     toolId === "moltbook.agent.follow" ||
     toolId === "moltbook.submolt.subscribe"
   );
-}
-
-function idempotentToolExecutionId(
-  tenantId: string,
-  idempotencyKey: string,
-) {
-  return `idem_${createHash("sha256")
-    .update(`${tenantId}\u0000${idempotencyKey}`)
-    .digest("hex")}`;
 }
 
 function dryRunTool(tool: ToolDefinition, input: Record<string, unknown>) {

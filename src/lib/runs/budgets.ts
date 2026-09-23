@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AGENT_RUN_BUDGET_LIMITS } from "@/lib/config";
 
 export const RUN_BUDGET_SCHEMA_VERSION = 1 as const;
 export const RUN_BUDGET_DIMENSIONS = [
@@ -74,16 +75,7 @@ function normalizeLegacyTokenCounter(value: unknown) {
 
 /** Safe compatibility limits for internal callers that predate request budgets. */
 export const DEFAULT_AGENT_RUN_BUDGET_LIMITS: RunBudgetCountersV1 = Object.freeze({
-  modelTurns: 7,
-  tokens: 64_000,
-  costMicrousd: 2_500_000,
-  wallTimeMs: 240_000,
-  toolCalls: 30,
-  browserActions: 12,
-  agents: 5,
-  fanOut: 4,
-  retries: 2,
-  replans: 1,
+  ...AGENT_RUN_BUDGET_LIMITS,
 });
 
 export class RunBudgetExceededError extends Error {

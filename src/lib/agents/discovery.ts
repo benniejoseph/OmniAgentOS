@@ -204,7 +204,9 @@ export function selectAgentTeamFromCardsV1(input: {
       ? "build" as const
       : requestedKinds.includes("research")
         ? "research" as const
-        : "coordinate" as const;
+        : requestedKinds.includes("verify")
+          ? "verify" as const
+          : "coordinate" as const;
   const selected = new Set<string>();
   const discoveryReceipts: AgentDiscoveryReceiptV1[] = [];
   const discover = (taskKind: AgentCardTaskKind) => {
@@ -220,7 +222,7 @@ export function selectAgentTeamFromCardsV1(input: {
         card.logicalAgentId === input.preferredAgentId &&
         validateAgentCardCompatibilityV1({
           card,
-          request: defaultDiscoveryRequest(input.query, "general"),
+          request: defaultDiscoveryRequest(input.query, primaryKind),
         }).compatible
       )
     : undefined;

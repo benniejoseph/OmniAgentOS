@@ -240,6 +240,10 @@ export const AGENT_MAX_TOOL_STEPS = normalizePositiveInteger(
   process.env.OMNIAGENT_AGENT_MAX_TOOL_STEPS,
   6,
 );
+export const AGENT_MAX_MODEL_TURNS = normalizePositiveInteger(
+  process.env.OMNIAGENT_AGENT_MAX_MODEL_TURNS,
+  13,
+);
 export const LOCAL_COMPUTER_MAX_TOOL_STEPS = normalizePositiveInteger(
   process.env.OMNIAGENT_LOCAL_COMPUTER_MAX_TOOL_STEPS,
   12,
@@ -299,7 +303,7 @@ export const AGENT_MAX_REPLANS = normalizePositiveInteger(
 );
 
 export const AGENT_RUN_BUDGET_LIMITS = Object.freeze({
-  modelTurns: AGENT_MAX_TOOL_STEPS + 1,
+  modelTurns: AGENT_MAX_MODEL_TURNS,
   tokens: AGENT_MAX_TOTAL_TOKENS,
   costMicrousd: AGENT_MAX_COST_MICROUSD,
   wallTimeMs: AGENT_MAX_WALL_CLOCK_MS,

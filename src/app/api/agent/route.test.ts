@@ -756,7 +756,7 @@ describe("agent semantic intent routing", () => {
     );
   });
 
-  it("keeps ordinary runs at six tool steps and seven model turns", async () => {
+  it("keeps ordinary runs at six tool steps with an independent model-turn budget", async () => {
     routeMocks.runAgent.mockImplementation(async function* () {
       yield { type: "run", runId: "run-standard-cap", threadId: "thread-a" };
       yield { type: "done", response: "Bounded result." };
@@ -778,7 +778,7 @@ describe("agent semantic intent routing", () => {
       expect.objectContaining({
         computerUseTarget: undefined,
         maxToolSteps: 6,
-        budgetLimits: expect.objectContaining({ modelTurns: 7 }),
+        budgetLimits: expect.objectContaining({ modelTurns: 13 }),
       }),
       expect.any(AbortSignal),
     );

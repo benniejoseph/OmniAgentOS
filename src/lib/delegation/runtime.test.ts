@@ -73,6 +73,30 @@ describe("dynamic delegation runtime", () => {
     });
   });
 
+  it("discovers Sentinel as the worker for a verification delegation", async () => {
+    const harness = runtimeHarness();
+    const execution = await delegateAgentTask(harness.request({
+      taskKind: "verify",
+      preferredAgentId: undefined,
+    }), harness.dependencies);
+
+    expect(execution.contract.delegateIdentity.logicalAgentId).toBe("sentinel");
+    expect(execution.contract.verifier.identity.logicalAgentId).toBe("sentinel");
+  });
+
+  it("rejects an incompatible preferred worker before child creation", async () => {
+    const harness = runtimeHarness();
+
+    await expect(delegateAgentTask(harness.request({
+      taskKind: "verify",
+      preferredAgentId: "meridian",
+    }), harness.dependencies)).rejects.toThrow(
+      /use sentinel, or omit preferredAgentId/i,
+    );
+    expect(harness.createRun).not.toHaveBeenCalled();
+    expect(harness.createExecution).not.toHaveBeenCalled();
+  });
+
   it("attenuates grants, fan-out, and parent context before queueing", async () => {
     const harness = runtimeHarness({
       parentMessages: [

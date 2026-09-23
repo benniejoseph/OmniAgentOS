@@ -61,6 +61,31 @@ describe("P8.5 internal Agent discovery", () => {
     expect(team.selectionSha256).toMatch(/^[a-f0-9]{64}$/);
   });
 
+  it("selects Sentinel as the primary agent for a verification task", () => {
+    const team = selectAgentTeamFromCardsV1({
+      cards,
+      query: "Verify the exact claims and report the evidence",
+      taskKinds: ["verify"],
+      consequential: false,
+    });
+
+    expect(team.primaryAgentId).toBe("sentinel");
+    expect(team.specialistIds).toEqual(["sentinel"]);
+  });
+
+  it("does not accept a preferred agent that lacks the primary capability", () => {
+    const team = selectAgentTeamFromCardsV1({
+      cards,
+      query: "Verify the exact claims and report the evidence",
+      taskKinds: ["verify"],
+      consequential: false,
+      preferredAgentId: "meridian",
+    });
+
+    expect(team.primaryAgentId).toBe("sentinel");
+    expect(team.specialistIds).toEqual(["sentinel"]);
+  });
+
   it("rejects requests that exceed advertised limits", () => {
     const scout = cards.find((card) => card.logicalAgentId === "scout")!;
     expect(validateAgentCardCompatibilityV1({

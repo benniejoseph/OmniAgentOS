@@ -13,6 +13,7 @@ import {
   canonicalJsonSha256,
   idempotencyKeySha256,
 } from "@/lib/tools/effect-receipt";
+import { governedToolExecutionId } from "@/lib/tools/execution-id";
 
 export const PARENT_DELEGATION_BUDGET_AUTHORITY_VERSION =
   "parent-delegation-budget-authority:1" as const;
@@ -94,6 +95,23 @@ export const parentDelegationBudgetAuthorityV1Schema = authorityBodySchema
 export type ParentDelegationBudgetAuthorityV1 = Readonly<
   z.infer<typeof parentDelegationBudgetAuthorityV1Schema>
 >;
+
+/**
+ * The governed executor persists an idempotent tool intent before dispatching
+ * a first-party application mutation. The application service therefore sees
+ * the durable execution ID, not the model loop's raw call key. Bind the live
+ * parent reservation to that exact identity so the bridge crosses the intent
+ * boundary without widening authority.
+ */
+export function parentDelegationAppServiceIdempotencyKey(input: {
+  tenantId: string;
+  toolCallIdempotencyKey: string;
+}) {
+  return governedToolExecutionId(
+    input.tenantId,
+    input.toolCallIdempotencyKey,
+  );
+}
 
 /**
  * Builds the in-process authority bridge after the parent loop has made its

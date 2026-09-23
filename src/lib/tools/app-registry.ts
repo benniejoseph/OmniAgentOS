@@ -582,13 +582,21 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   })),
   mutationTool("app.agents.delegate", "Delegate bounded agent task", "Create one durable, one-level child task for a Settings-configured specialist. The child receives only explicitly granted read tools and its result remains proposed until verifier review.", requiredObjectSchema({
     objective: text(3, 4_000),
-    taskKind: { type: "string", enum: ["research", "build", "verify", "memory"] },
+    taskKind: {
+      type: "string",
+      enum: ["research", "build", "verify", "memory"],
+      description: "Worker capability to contract. Use research for evidence review by Scout or Meridian, build for Forge, memory for Mnemosyne, and verify only when Sentinel itself should be the child worker. Every child result is independently reviewed by the contracted Sentinel verifier.",
+    },
     acceptanceCriteria: {
       type: "array", minItems: 1, maxItems: 8, uniqueItems: true,
       items: text(3, 500),
     },
     mode: { type: "string", enum: ["isolated", "fork", "team"], default: "isolated" },
-    preferredAgentId: { type: "string", enum: ["scout", "meridian", "forge", "sentinel", "mnemosyne"] },
+    preferredAgentId: {
+      type: "string",
+      enum: ["scout", "meridian", "forge", "sentinel", "mnemosyne"],
+      description: "Optional compatible preference: research uses scout or meridian; build uses forge; verify uses sentinel; memory uses mnemosyne. Omit this field to let deterministic Agent Card discovery select the compatible specialist.",
+    },
     personaBrief: requiredObjectSchema({
       label: text(3, 80),
       guidance: text(3, 1_200),

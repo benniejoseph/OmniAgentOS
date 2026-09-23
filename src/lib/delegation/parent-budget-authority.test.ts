@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildParentDelegationBudgetAuthorityV1,
+  parentDelegationAppServiceIdempotencyKey,
   resolveParentDelegationBudgetAuthority,
   withParentDelegationBudgetAuthority,
 } from "@/lib/delegation/parent-budget-authority";
@@ -18,6 +19,26 @@ import {
 import { createExecutionScope } from "@/lib/security/execution-scope";
 
 describe("parent delegation budget authority", () => {
+  it("binds the model-loop reservation to the governed app-service execution identity", async () => {
+    const fixture = authorityFixture({
+      idempotencyKey: parentDelegationAppServiceIdempotencyKey({
+        tenantId: "tenant-one",
+        toolCallIdempotencyKey: "run-root:call-one",
+      }),
+    });
+
+    await withParentDelegationBudgetAuthority(fixture.authority, async () => {
+      expect(resolveParentDelegationBudgetAuthority({
+        tenantId: "tenant-one",
+        actorId: "actor-one",
+        parentExecutionId: "run-root",
+        parentPrincipalId: "principal:atlas:one",
+        idempotencyKey:
+          "idem_dfd35e2a4fc41b6fe3353bd4e02f96cf1a7c8ad5c91bbc8aac9f523e29211bc9",
+      }).authoritySha256).toBe(fixture.authority.authoritySha256);
+    });
+  });
+
   it("binds one exact live parent reservation to scope and idempotency", async () => {
     const fixture = authorityFixture();
 
@@ -61,7 +82,7 @@ describe("parent delegation budget authority", () => {
   });
 });
 
-function authorityFixture() {
+function authorityFixture(options: { idempotencyKey?: string } = {}) {
   const scope = createExecutionScope({
     tenantId: "tenant-one",
     initiatingActorId: "actor-one",
@@ -93,7 +114,7 @@ function authorityFixture() {
     before,
     authority: buildParentDelegationBudgetAuthorityV1({
       parentExecutionScope: scope,
-      idempotencyKey: "delegation-call:one",
+      idempotencyKey: options.idempotencyKey || "delegation-call:one",
       before,
       after,
       childRootReservation: dynamicDelegationRootReservation(),
