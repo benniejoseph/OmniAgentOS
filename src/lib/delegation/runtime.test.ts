@@ -45,6 +45,7 @@ import {
   deriveExecutionScope,
 } from "@/lib/security/execution-scope";
 import type { resolveRuntimeModelAssignment } from "@/lib/settings/runtime-models";
+import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
 describe("dynamic delegation runtime", () => {
   it("creates one deterministic child and makes retries idempotent", async () => {
@@ -290,6 +291,10 @@ describe("dynamic delegation runtime", () => {
           ...DEFAULT_AGENT_RUN_BUDGET_LIMITS,
           agents: DEFAULT_AGENT_RUN_BUDGET_LIMITS.agents - 1,
         },
+        budgetLimitsSha256: canonicalJsonSha256({
+          ...DEFAULT_AGENT_RUN_BUDGET_LIMITS,
+          agents: DEFAULT_AGENT_RUN_BUDGET_LIMITS.agents - 1,
+        }),
       },
     }]);
 
@@ -299,6 +304,33 @@ describe("dynamic delegation runtime", () => {
     )).rejects.toThrow(/persisted harness budget/i);
     expect(harness.createRun).not.toHaveBeenCalled();
     expect(harness.createExecution).not.toHaveBeenCalled();
+  });
+
+  it("uses the persisted budget digest when generic redaction obscures token limits", async () => {
+    const harness = runtimeHarness();
+    harness.dependencies.listParentEvents.mockResolvedValueOnce([{
+      ...harness.parentHarnessEvent,
+      id: "event:parent:harness:redacted",
+      payload: {
+        ...harness.parentHarnessEvent.payload,
+        budgetLimits: {
+          ...DEFAULT_AGENT_RUN_BUDGET_LIMITS,
+          tokens: "[redacted]",
+        },
+        budgetLimitsSha256: canonicalJsonSha256(
+          DEFAULT_AGENT_RUN_BUDGET_LIMITS,
+        ),
+      },
+    }]);
+
+    const execution = await delegateAgentTask(
+      harness.request(),
+      harness.dependencies,
+    );
+
+    expect(execution.state).toBe("queued");
+    expect(harness.createRun).toHaveBeenCalledTimes(1);
+    expect(harness.createExecution).toHaveBeenCalledTimes(1);
   });
 
   it("rejects a call that bypasses the parent-loop reservation", async () => {

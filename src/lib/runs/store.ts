@@ -1081,6 +1081,7 @@ function domainEventPayload(event: AgentEvent): Record<string, unknown> {
         maxToolResultChars: event.maxToolResultChars,
         maxOutputTokens: event.maxOutputTokens,
         budgetLimits: event.budgetLimits,
+        budgetLimitsSha256: event.budgetLimitsSha256,
         approvalPolicy: event.approvalPolicy,
         autonomy: event.autonomy,
         learningState: event.learningState,

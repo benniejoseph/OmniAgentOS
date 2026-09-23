@@ -321,6 +321,7 @@ describe("agent memory scope", () => {
       type: "harness",
       contextScope: "session",
       contextDecision: "disabled_session",
+      budgetLimitsSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
       contextRationale: [
         "The user limited this run to the current conversation.",
       ],

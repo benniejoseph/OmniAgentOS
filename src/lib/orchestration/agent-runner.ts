@@ -201,6 +201,7 @@ import {
   type GovernedToolCheckpointInput,
   type GovernedToolExecutionResult,
 } from "@/lib/tools/executor";
+import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { getToolExecutionScopeBinding } from "@/lib/tools/execution-scope";
 import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
 import { appendThreadTurn } from "@/lib/threads/store";
@@ -1495,6 +1496,7 @@ export async function* runAgent(
       maxToolResultChars: MAX_TOOL_RESULT_CHARS,
       maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
       budgetLimits,
+      budgetLimitsSha256: canonicalJsonSha256(budgetLimits),
       approvalPolicy: request.agentProfile?.approvalPolicy || "risk_based",
       autonomy: request.agentProfile?.autonomy || "governed",
       adaptationState: activeAdaptations.length

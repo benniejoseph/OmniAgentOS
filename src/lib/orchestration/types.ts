@@ -105,6 +105,8 @@ export type AgentHarnessEvent = {
   maxToolResultChars: number;
   maxOutputTokens: number;
   budgetLimits: RunBudgetCountersV1;
+  /** Stable binding retained when generic event redaction obscures `tokens`. */
+  budgetLimitsSha256?: string;
   approvalPolicy: "always" | "risk_based" | "read_only";
   autonomy: "assist" | "governed" | "execute";
   /** Legacy P7.5-and-earlier receipt fields retained for replay. */

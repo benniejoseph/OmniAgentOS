@@ -822,6 +822,19 @@ function assertParentHarnessBudget(
     );
   }
   const payload = harnessEvents[0].payload as Record<string, unknown>;
+  const persistedBudgetSha256 = payload.budgetLimitsSha256;
+  if (persistedBudgetSha256 !== undefined) {
+    if (
+      typeof persistedBudgetSha256 !== "string" ||
+      !/^[a-f0-9]{64}$/.test(persistedBudgetSha256) ||
+      persistedBudgetSha256 !== authority.harnessBudgetSha256
+    ) {
+      throw new Error(
+        "The live parent reservation does not match its persisted harness budget.",
+      );
+    }
+    return;
+  }
   const budget = runBudgetCountersV1Schema.safeParse(payload.budgetLimits);
   if (
     !budget.success ||
