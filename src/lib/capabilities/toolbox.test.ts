@@ -5,11 +5,14 @@ import {
   AGENT_MODEL_TOOL_LIMIT,
   applyToolSchemaBudget,
   capabilityFunctionName,
+  composeCapabilitySearchQuery,
   loadProgressiveAgentTools,
 } from "@/lib/capabilities/toolbox";
+import { CAPABILITY_MAX_QUERY_LENGTH } from "@/lib/capabilities/types";
 import type { CapabilityDescriptor } from "@/lib/capabilities/types";
 import type { ToolDefinition } from "@/lib/tools/types";
 import { getGovernedTools } from "@/lib/tools/registry";
+import { dynamicDelegationCapabilityQueryPrefix } from "@/lib/delegation/runtime-policy";
 
 describe("progressive agent toolbox", () => {
   it("keeps Google Workspace, document creation, and imported Photos discoverable from Command language", async () => {
@@ -104,6 +107,92 @@ describe("progressive agent toolbox", () => {
       .toEqual(expect.arrayContaining(descriptors.map((item) => item.id)));
     expect(result.definitions.map((item) => item.id))
       .toContain("app.memory.shared.list");
+  });
+
+  it("reserves the exact canary grants from real governed schemas under candidate pressure", async () => {
+    const descriptors = Array.from(
+      { length: AGENT_EXTERNAL_TOOL_DEFAULT_LIMIT },
+      (_, index) => descriptor(`mcp:workspace:search-${index}`),
+    );
+    const userPrompt = [
+      "Delegate two isolated read-only checks in sequence and return immediately after both receipts.",
+      "Scout: inspect delegation runtime, budgets, personas, grants and Sentinel; grant and require Search Knowledge and List Runs, and use both.",
+      "Then Mnemosyne with the Memory curation skill: classify stored GPT/Codex, Claude, Muse and Grok patterns as present, pending or unknown; grant and require Search Memory and Search Knowledge, and use both.",
+      "Use fitting personas. No inherited context, web, computer use, plugins, MCP, mutations or further delegation.",
+      "Keep Sentinel review. Reply only with task IDs and initial states.",
+    ].join(" ");
+    const prefix = dynamicDelegationCapabilityQueryPrefix(userPrompt);
+    const longPrompt = composeCapabilitySearchQuery(
+      prefix,
+      `${userPrompt} ${"coordination noise ".repeat(80)}`,
+    );
+
+    expect(prefix).toBe(
+      "app.agents.delegate knowledge.search runs.list memory.search",
+    );
+    expect(longPrompt.startsWith(prefix)).toBe(true);
+    expect(longPrompt).toHaveLength(CAPABILITY_MAX_QUERY_LENGTH);
+
+    const result = await loadProgressiveAgentTools(
+      { tenantId: "tenant-a", query: longPrompt },
+      {
+        listNative: getGovernedTools,
+        search: vi.fn(async () => ({
+          capabilities: descriptors,
+          query: longPrompt,
+          total: descriptors.length,
+          limit: 50,
+          hasMore: false,
+        })),
+        resolveMcp: vi.fn(async (id) => tool({ id, category: "mcp" })),
+        resolveOpenApi: vi.fn(async () => null),
+      },
+    );
+
+    expect(result.definitions).toHaveLength(AGENT_MODEL_TOOL_LIMIT);
+    expect(result.definitions.slice(0, 4).map((item) => item.id)).toEqual([
+      "app.agents.delegate",
+      "knowledge.search",
+      "runs.list",
+      "memory.search",
+    ]);
+    expect(result.definitions.map((item) => item.id)).not.toContain("web.search");
+    const governed = new Map(getGovernedTools().map((item) => [item.id, item]));
+    for (const id of [
+      "app.agents.delegate",
+      "knowledge.search",
+      "runs.list",
+      "memory.search",
+    ]) {
+      expect(result.definitions.find((item) => item.id === id)?.inputSchema)
+        .toEqual(governed.get(id)?.inputSchema);
+    }
+  });
+
+  it("does not expose delegation for descriptive or negative agent language", async () => {
+    for (const query of [
+      "Explain child agents; do not create one.",
+      "Research delegation patterns without spawning an agent.",
+    ]) {
+      const result = await loadProgressiveAgentTools(
+        { tenantId: "tenant-a", query },
+        {
+          listNative: getGovernedTools,
+          search: vi.fn(async () => ({
+            capabilities: [],
+            query,
+            total: 0,
+            limit: 50,
+            hasMore: false,
+          })),
+          resolveMcp: vi.fn(async () => null),
+          resolveOpenApi: vi.fn(async () => null),
+        },
+      );
+
+      expect(result.definitions.map((item) => item.id))
+        .not.toContain("app.agents.delegate");
+    }
   });
 
   it("hydrates only the top six metadata matches by default", async () => {

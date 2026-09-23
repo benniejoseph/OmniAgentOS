@@ -1,5 +1,6 @@
 import type { AgentMode, ChatMessage } from "@/lib/orchestration/types";
 import type { AgentPerformance } from "@/lib/agents/performance";
+import { hasExplicitDynamicDelegationIntent } from "@/lib/delegation/runtime-policy";
 import {
   renderConversationSummaryContext,
   selectConversationSummariesForContext,
@@ -271,12 +272,22 @@ export function selectAgentTeam(
   consequential = false,
   preferredAgentId?: SupervisorAgentId,
 ) {
+  const explicitDelegation = hasExplicitDynamicDelegationIntent(message);
   const research = mode === "research" || /\b(research|find|compare|source|investigate|explain|analy[sz]e)\b/i.test(message);
   const building = mode === "execute" || /\b(build|create|implement|write|fix|deploy|send|publish|automate)\b/i.test(message);
   const memory = mode === "learn" || /\b(remember|recall|learn|knowledge|what did (we|i)|preference)\b/i.test(message);
   const inferredAgentId: SupervisorAgentId = memory ? "mnemosyne" : building ? "forge" : research ? "scout" : "atlas";
-  const primaryAgentId = preferredAgentId || inferredAgentId;
+  const primaryAgentId = preferredAgentId || (
+    explicitDelegation ? "atlas" : inferredAgentId
+  );
   const specialistIds = new Set<SupervisorDecision["primaryAgentId"]>([primaryAgentId]);
+  if (explicitDelegation) {
+    specialistIds.add("atlas");
+    for (const agentId of explicitlyNamedAgentIds(message)) {
+      specialistIds.add(agentId);
+    }
+    if (inferredAgentId !== "atlas") specialistIds.add(inferredAgentId);
+  }
   if (preferredAgentId && inferredAgentId !== preferredAgentId && inferredAgentId !== "atlas") specialistIds.add(inferredAgentId);
   if (primaryAgentId !== "atlas" && /\b(plan|coordinate|multiple|workflow|project)\b/i.test(message)) specialistIds.add("atlas");
   if (research && building) { specialistIds.add("scout"); specialistIds.add("forge"); }
@@ -284,6 +295,19 @@ export function selectAgentTeam(
   if (/\b(remember|learn|save|reuse|preference)\b/i.test(message)) specialistIds.add("mnemosyne");
   if (specialistIds.size > 1) specialistIds.add("sentinel");
   return { primaryAgentId, specialistIds: [...specialistIds] };
+}
+
+function explicitlyNamedAgentIds(message: string) {
+  const names = [
+    "atlas",
+    "scout",
+    "forge",
+    "sentinel",
+    "mnemosyne",
+  ] as const;
+  return names.filter((name) =>
+    new RegExp(`\\b${name}\\b`, "i").test(message)
+  );
 }
 
 export function measureSupervisorOutcomeEvidence(

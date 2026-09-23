@@ -6,10 +6,13 @@ import {
   DYNAMIC_DELEGATION_READ_TOOL_IDS,
   DYNAMIC_DELEGATION_VERIFIER_BUDGET,
   assertDynamicDelegationApprovalPolicy,
+  dynamicDelegationCapabilityQueryPrefix,
   dynamicDelegationLifecycleBudget,
   dynamicDelegationMaxToolSteps,
   dynamicDelegationParentToolReservation,
   dynamicDelegationRootReservation,
+  extractExplicitDynamicDelegationReadToolIds,
+  hasExplicitDynamicDelegationIntent,
   partitionDynamicDelegationLifecycleBudget,
   reserveDynamicDelegationVerifierSlice,
 } from "@/lib/delegation/runtime-policy";
@@ -116,6 +119,61 @@ describe("dynamic delegation runtime policy", () => {
     expect(DYNAMIC_DELEGATION_READ_TOOL_IDS.every((toolId) =>
       !/(?:create|update|delete|send|execute|delegate)/.test(toolId)
     )).toBe(true);
+  });
+
+  it("extracts only explicitly named safe child read tools", () => {
+    const request = [
+      "Delegate Scout with Search Knowledge and List Runs, then Mnemosyne",
+      "with memory.search. Do not use Web Search or app.memory.write.",
+    ].join(" ");
+
+    expect(hasExplicitDynamicDelegationIntent(request)).toBe(true);
+    expect(extractExplicitDynamicDelegationReadToolIds(request)).toEqual([
+      "knowledge.search",
+      "runs.list",
+      "memory.search",
+    ]);
+    expect(dynamicDelegationCapabilityQueryPrefix(request)).toBe(
+      "app.agents.delegate knowledge.search runs.list memory.search",
+    );
+
+    const negativeList = [
+      "Delegate Scout without Search Knowledge or List Runs.",
+      "Grant Mnemosyne Search Memory instead.",
+    ].join(" ");
+    expect(extractExplicitDynamicDelegationReadToolIds(negativeList)).toEqual([
+      "memory.search",
+    ]);
+    expect(dynamicDelegationCapabilityQueryPrefix(negativeList)).toBe(
+      "app.agents.delegate memory.search",
+    );
+  });
+
+  it("does not infer delegation or unsafe grants from ordinary coordination", () => {
+    expect(hasExplicitDynamicDelegationIntent(
+      "Coordinate the calendar and summarize app.memory.write.",
+    )).toBe(false);
+    expect(extractExplicitDynamicDelegationReadToolIds(
+      "Use app.memory.write and google.gmail.send.",
+    )).toEqual([]);
+    expect(dynamicDelegationCapabilityQueryPrefix(
+      "Search Knowledge for the answer without creating a child Agent.",
+    )).toBe("");
+    expect(hasExplicitDynamicDelegationIntent(
+      "Use Search Memory for this bounded task. No further delegation.",
+    )).toBe(false);
+    expect(dynamicDelegationCapabilityQueryPrefix(
+      "Explain child agents; do not create one.",
+    )).toBe("");
+    expect(dynamicDelegationCapabilityQueryPrefix(
+      "Research delegation patterns without spawning an agent.",
+    )).toBe("");
+    expect(dynamicDelegationCapabilityQueryPrefix(
+      "Do not delegate this task to Scout.",
+    )).toBe("");
+    expect(dynamicDelegationCapabilityQueryPrefix(
+      "We should not delegate this task to Scout.",
+    )).toBe("");
   });
 
   it("fails closed before a live delegation can be parked for approval", () => {

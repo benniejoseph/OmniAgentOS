@@ -120,6 +120,37 @@ describe("supervisor routing", () => {
     expect(routeAgentRequest("What did I decide about my weekly review?", "learn").primaryAgentId).toBe("mnemosyne");
   });
 
+  it("puts explicit child-Agent coordination under Atlas", () => {
+    const decision = routeAgentRequest(
+      "Delegate two isolated checks: Scout should Search Knowledge and List Runs, then Mnemosyne should Search Memory. Keep Sentinel review.",
+      "orchestrate",
+    );
+
+    expect(decision.primaryAgentId).toBe("atlas");
+    expect(decision.specialistIds).toEqual(expect.arrayContaining([
+      "atlas",
+      "scout",
+      "mnemosyne",
+      "sentinel",
+    ]));
+  });
+
+  it("preserves an explicit primary while adding the requested coordinator", () => {
+    const decision = routeAgentRequest(
+      "Use Atlas-style coordination of Scout and Mnemosyne.",
+      "orchestrate",
+      "scout",
+    );
+
+    expect(decision.primaryAgentId).toBe("scout");
+    expect(decision.specialistIds).toEqual(expect.arrayContaining([
+      "scout",
+      "atlas",
+      "mnemosyne",
+      "sentinel",
+    ]));
+  });
+
   it("respects an explicitly selected primary while retaining required expertise", () => {
     const decision = routeAgentRequest("Research and compare the current options.", "research", "forge");
     expect(decision.primaryAgentId).toBe("forge");

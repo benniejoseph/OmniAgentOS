@@ -27,9 +27,9 @@ import {
 } from "@/lib/capabilities/autonomy";
 import {
   capabilityFunctionName,
+  composeCapabilitySearchQuery,
   loadProgressiveAgentTools,
 } from "@/lib/capabilities/toolbox";
-import { CAPABILITY_MAX_QUERY_LENGTH } from "@/lib/capabilities/types";
 import { runWithDatabaseTenantScope } from "@/lib/db/client";
 import { databaseMemoryAccessScopeFromExecutionScope } from "@/lib/db/memory-access-scope";
 import { generateModelToolTurn } from "@/lib/models/gateway";
@@ -91,6 +91,7 @@ import {
 import {
   DYNAMIC_DELEGATION_CHILD_BUDGET,
   assertDynamicDelegationApprovalPolicy,
+  dynamicDelegationCapabilityQueryPrefix,
   dynamicDelegationParentToolReservation,
   dynamicDelegationRootReservation,
 } from "@/lib/delegation/runtime-policy";
@@ -365,9 +366,14 @@ export async function* runAgent(
     request: query,
     recentConversation: safeMessages,
   };
-  const baseCapabilitySearchQuery = combineSemanticCapabilityQuery(
-    request.semanticRouting?.capabilitySearchQuery,
-    buildCapabilitySearchQuery(autonomyQuery),
+  const delegationCapabilityQueryPrefix =
+    dynamicDelegationCapabilityQueryPrefix(query);
+  const baseCapabilitySearchQuery = composeCapabilitySearchQuery(
+    delegationCapabilityQueryPrefix,
+    composeCapabilitySearchQuery(
+      request.semanticRouting?.capabilitySearchQuery,
+      buildCapabilitySearchQuery(autonomyQuery),
+    ),
   );
   const automaticRetrievalQuery = buildAutomaticRetrievalQuery(autonomyQuery);
   // Computer Use is an explicit owner-selected authority boundary. Natural
@@ -1194,12 +1200,15 @@ export async function* runAgent(
       );
     }
     const capabilitySearchQuery = groundToolDiscoveryInMemory
-      ? combineSemanticCapabilityQuery(
-          request.semanticRouting?.capabilitySearchQuery,
-          buildCapabilitySearchQuery({
-            ...autonomyQuery,
-            relevantMemoryHints: retrieval.results.map((item) => item.title),
-          }),
+      ? composeCapabilitySearchQuery(
+          delegationCapabilityQueryPrefix,
+          composeCapabilitySearchQuery(
+            request.semanticRouting?.capabilitySearchQuery,
+            buildCapabilitySearchQuery({
+              ...autonomyQuery,
+              relevantMemoryHints: retrieval.results.map((item) => item.title),
+            }),
+          ),
         )
       : baseCapabilitySearchQuery;
     const resolvedToolboxPromise = toolboxPromise || buildAgentToolbox(request.tenantId, {
@@ -5343,19 +5352,6 @@ type ToolboxEntry = {
   definition: ToolDefinition;
   functionName: string;
 };
-
-function combineSemanticCapabilityQuery(
-  semanticQuery: string | undefined,
-  lexicalQuery: string,
-) {
-  return [semanticQuery, lexicalQuery]
-    .filter(Boolean)
-    .join(" ")
-    .replace(/[\u0000-\u001f\u007f]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, CAPABILITY_MAX_QUERY_LENGTH);
-}
 
 async function buildAgentToolbox(
   tenantId?: string,

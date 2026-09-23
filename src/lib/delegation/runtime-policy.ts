@@ -63,6 +63,127 @@ export const DYNAMIC_DELEGATION_READ_TOOL_IDS = Object.freeze([
   "runs.list",
 ] as const);
 
+type DynamicDelegationReadToolId =
+  (typeof DYNAMIC_DELEGATION_READ_TOOL_IDS)[number];
+
+const dynamicDelegationReadToolAliases = Object.freeze({
+  "memory.search": ["Search Memory"],
+  "knowledge.search": ["Search Knowledge"],
+  "web.search": ["Live Web Search", "Search Web", "Web Search"],
+  "runs.list": ["List Runs"],
+} satisfies Record<DynamicDelegationReadToolId, readonly string[]>);
+
+/**
+ * Delegation is an explicit authority boundary. Ordinary mentions of Agents or
+ * coordination do not opt a run into child creation; the request must name the
+ * delegation operation, a child/sub-agent, or coordination of a built-in Agent.
+ */
+export function hasExplicitDynamicDelegationIntent(message: string) {
+  const text = message.replace(/\s+/g, " ").trim();
+  const canonicalIndexes = explicitPhraseIndexes(text, "app.agents.delegate");
+  if (canonicalIndexes.some((index) =>
+    !isNegatedDelegationPhrase(text, index)
+  )) return true;
+  return [
+    /\b(?:delegate|delegates|delegated|delegating)\b/gi,
+    /\b(?:create|spawn|launch|start|run|assign|use)\b[^.!?\n]{0,56}\b(?:sub[- ]?agents?|child agents?)\b/gi,
+    /\b(?:create|spawn|launch|start|run|assign)\b[^.!?\n]{0,32}\ban?\s+agent\b/gi,
+    /\b(?:perform|run|start|use|create|enable)\b[^.!?\n]{0,32}\bdelegation\b/gi,
+    /\b(?:atlas[- ]style\s+)?coordination\b[^.!?\n]{0,120}\b(?:atlas|scout|meridian|forge|sentinel|mnemosyne)\b/gi,
+    /\bcoordinate\b[^.!?\n]{0,120}\b(?:atlas|scout|meridian|forge|sentinel|mnemosyne)\b/gi,
+  ].some((pattern) => hasNonNegatedMatch(text, pattern));
+}
+
+/**
+ * Converts only explicit, safe child-tool names into canonical grant IDs.
+ * This is discovery guidance, never grant authority; the delegation contract
+ * still validates the exact IDs against the parent's governed read tools.
+ */
+export function extractExplicitDynamicDelegationReadToolIds(
+  message: string,
+): readonly DynamicDelegationReadToolId[] {
+  const matches: Array<{
+    id: DynamicDelegationReadToolId;
+    index: number;
+  }> = [];
+  for (const id of DYNAMIC_DELEGATION_READ_TOOL_IDS) {
+    for (const phrase of [id, ...dynamicDelegationReadToolAliases[id]]) {
+      for (const index of explicitPhraseIndexes(message, phrase)) {
+        if (!isNegatedExplicitToolPhrase(message, index)) {
+          matches.push({ id, index });
+        }
+      }
+    }
+  }
+  matches.sort((left, right) =>
+    left.index - right.index ||
+    DYNAMIC_DELEGATION_READ_TOOL_IDS.indexOf(left.id) -
+      DYNAMIC_DELEGATION_READ_TOOL_IDS.indexOf(right.id)
+  );
+  return Object.freeze([...new Set(matches.map((match) => match.id))]);
+}
+
+export function dynamicDelegationCapabilityQueryPrefix(message: string) {
+  if (!hasExplicitDynamicDelegationIntent(message)) return "";
+  return [
+    "app.agents.delegate",
+    ...extractExplicitDynamicDelegationReadToolIds(message),
+  ].join(" ");
+}
+
+function explicitPhraseIndexes(message: string, phrase: string) {
+  const indexes: number[] = [];
+  const haystack = message.toLowerCase();
+  const needle = phrase.toLowerCase();
+  let fromIndex = 0;
+  while (fromIndex <= haystack.length - needle.length) {
+    const index = haystack.indexOf(needle, fromIndex);
+    if (index < 0) break;
+    const before = haystack[index - 1];
+    const after = haystack[index + needle.length];
+    const embeddedBefore = isCanonicalIdentifierCharacter(before) && !(
+      before === "." &&
+      !isCanonicalIdentifierCharacter(haystack[index - 2])
+    );
+    const embeddedAfter = isCanonicalIdentifierCharacter(after) && !(
+      after === "." &&
+      !isCanonicalIdentifierCharacter(haystack[index + needle.length + 1])
+    );
+    if (!embeddedBefore && !embeddedAfter) {
+      indexes.push(index);
+    }
+    fromIndex = index + needle.length;
+  }
+  return indexes;
+}
+
+function isCanonicalIdentifierCharacter(value: string | undefined) {
+  return Boolean(value && /[a-z0-9._:@/+~-]/i.test(value));
+}
+
+function isNegatedExplicitToolPhrase(message: string, index: number) {
+  const prefix = message.slice(Math.max(0, index - 160), index);
+  const clause = prefix
+    .split(/(?:[.!?;\n]|\bbut\b|\bhowever\b|\binstead\b)/i)
+    .at(-1) || "";
+  return /(?:\bdo\s+not|\bdon't|\bnot|\bnever|\bwithout|\bexclude|\bom(?:it|itting)|\bno)\b/i
+    .test(clause);
+}
+
+function hasNonNegatedMatch(message: string, pattern: RegExp) {
+  pattern.lastIndex = 0;
+  for (let match = pattern.exec(message); match; match = pattern.exec(message)) {
+    if (!isNegatedDelegationPhrase(message, match.index)) return true;
+  }
+  return false;
+}
+
+function isNegatedDelegationPhrase(message: string, index: number) {
+  const prefix = message.slice(Math.max(0, index - 56), index);
+  return /(?:\bdo\s+not|\bdon't|\bnot|\bnever|\bwithout|\bno)\s+(?:(?:use|create|creating|start|starting|allow|perform|spawn|spawning|run)\s+)?(?:an?\s+)?(?:further\s+)?$/i
+    .test(prefix);
+}
+
 export function assertDynamicDelegationApprovalPolicy(input: {
   toolId: string;
   forceApproval: boolean;

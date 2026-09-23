@@ -198,15 +198,17 @@ export function selectAgentTeamFromCardsV1(input: {
 }) {
   const cards = input.cards.map(parseInternalAgentCardV1);
   const requestedKinds = [...new Set(input.taskKinds)];
-  const primaryKind = requestedKinds.includes("memory")
-    ? "memory" as const
-    : requestedKinds.includes("build")
-      ? "build" as const
-      : requestedKinds.includes("research")
-        ? "research" as const
-        : requestedKinds.includes("verify")
-          ? "verify" as const
-          : "coordinate" as const;
+  const primaryKind = requestedKinds.includes("coordinate")
+    ? "coordinate" as const
+    : requestedKinds.includes("memory")
+      ? "memory" as const
+      : requestedKinds.includes("build")
+        ? "build" as const
+        : requestedKinds.includes("research")
+          ? "research" as const
+          : requestedKinds.includes("verify")
+            ? "verify" as const
+            : "coordinate" as const;
   const selected = new Set<string>();
   const discoveryReceipts: AgentDiscoveryReceiptV1[] = [];
   const discover = (taskKind: AgentCardTaskKind) => {
@@ -220,10 +222,12 @@ export function selectAgentTeamFromCardsV1(input: {
   const preferred = input.preferredAgentId
     ? cards.find((card) =>
         card.logicalAgentId === input.preferredAgentId &&
-        validateAgentCardCompatibilityV1({
-          card,
-          request: defaultDiscoveryRequest(input.query, primaryKind),
-        }).compatible
+        requestedKinds.some((taskKind) =>
+          validateAgentCardCompatibilityV1({
+            card,
+            request: defaultDiscoveryRequest(input.query, taskKind),
+          }).compatible
+        )
       )
     : undefined;
   const primaryAgentId = preferred?.logicalAgentId || discover(primaryKind);

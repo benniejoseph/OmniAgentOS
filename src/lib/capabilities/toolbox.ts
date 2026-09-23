@@ -13,6 +13,10 @@ import {
 } from "@/lib/capabilities/types";
 import { getGovernedTools } from "@/lib/tools/registry";
 import type { ToolDefinition } from "@/lib/tools/types";
+import {
+  extractExplicitDynamicDelegationReadToolIds,
+  hasExplicitDynamicDelegationIntent,
+} from "@/lib/delegation/runtime-policy";
 
 export const AGENT_EXTERNAL_TOOL_DEFAULT_LIMIT = 6;
 export const AGENT_EXTERNAL_TOOL_ALLOWLIST_LIMIT = 12;
@@ -54,6 +58,22 @@ export type ToolSchemaBudgetResult = {
 };
 
 /**
+ * Composes a bounded discovery query while preserving authority-bearing
+ * prefixes at the front of the catalog's truncation window.
+ */
+export function composeCapabilitySearchQuery(
+  ...segments: readonly (string | undefined)[]
+) {
+  return segments
+    .filter(Boolean)
+    .join(" ")
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, CAPABILITY_MAX_QUERY_LENGTH);
+}
+
+/**
  * Keeps discovery cheap: connector search returns metadata only, then at most
  * six relevant (or twelve explicitly allowlisted) contracts are hydrated.
  * Action matches may reserve two of those slots for safe same-connector
@@ -71,6 +91,10 @@ export async function loadProgressiveAgentTools(
       tool.status === "active" &&
       tool.riskLevel < 3 &&
       !excluded.has(tool.id) &&
+      (
+        tool.id !== "app.agents.delegate" ||
+        hasExplicitDynamicDelegationIntent(input.query || "")
+      ) &&
       (!hasExplicitAllowlist || preferred.has(tool.id)),
   );
 
@@ -186,10 +210,13 @@ export async function loadProgressiveAgentTools(
     input.query,
     Math.max(0, AGENT_MODEL_TOOL_LIMIT - externalDefinitions.length),
   );
-  return applyToolSchemaBudget(deduplicateDefinitions([
-    ...externalDefinitions,
-    ...selectedNativeDefinitions,
-  ]));
+  return applyToolSchemaBudget(prioritizeSelectedDefinitions(
+    deduplicateDefinitions([
+      ...externalDefinitions,
+      ...selectedNativeDefinitions,
+    ]),
+    input.query,
+  ));
 }
 
 function selectNativeDefinitions(
@@ -197,7 +224,6 @@ function selectNativeDefinitions(
   query: string | undefined,
   limit: number,
 ) {
-  if (definitions.length <= limit) return [...definitions];
   const terms = [...new Set(
     (query || "")
       .normalize("NFKD")
@@ -205,19 +231,33 @@ function selectNativeDefinitions(
       .split(/[^a-z0-9]+/)
       .filter((term) => term.length >= 3),
   )];
-  return definitions
+  const ranked = definitions
     .map((definition, index) => ({
       definition,
       index,
+      exactCanonicalMatch: queryMentionsCanonicalId(query, definition.id),
       score: nativeToolQueryScore(definition, terms),
     }))
     .sort((left, right) =>
+      Number(right.exactCanonicalMatch) - Number(left.exactCanonicalMatch) ||
       right.score - left.score ||
       left.definition.riskLevel - right.definition.riskLevel ||
       left.index - right.index
-    )
-    .slice(0, limit)
-    .map(({ definition }) => definition);
+    );
+  const selected = definitions.length <= limit
+    ? [...definitions]
+    : ranked.slice(0, limit).map(({ definition }) => definition);
+  if (
+    !selected.some((definition) => definition.id === "app.agents.delegate") ||
+    !delegationToolRequested(query, definitions)
+  ) {
+    return selected;
+  }
+  const dependencyIds = dynamicDelegationDependencyIds(query);
+  return deduplicateDefinitions([
+    ...definitions.filter((definition) => dependencyIds.has(definition.id)),
+    ...selected,
+  ]).slice(0, limit);
 }
 
 function nativeToolQueryScore(
@@ -233,6 +273,75 @@ function nativeToolQueryScore(
       (id.includes(term) ? 6 : 0) +
       (name.includes(term) ? 4 : 0) +
       (description.includes(term) ? 1 : 0), 0);
+}
+
+function prioritizeSelectedDefinitions(
+  definitions: readonly ToolDefinition[],
+  query: string | undefined,
+) {
+  const normalizedQuery = query?.toLowerCase() || "";
+  const exact = definitions
+    .filter((definition) => queryMentionsCanonicalId(query, definition.id))
+    .sort((left, right) =>
+      normalizedQuery.indexOf(left.id.toLowerCase()) -
+      normalizedQuery.indexOf(right.id.toLowerCase())
+    );
+  const delegationSelected = definitions.some(
+    (definition) => definition.id === "app.agents.delegate",
+  ) && delegationToolRequested(query, definitions);
+  const dependencyIds = delegationSelected
+    ? dynamicDelegationDependencyIds(query)
+    : new Set<string>();
+  const dependencies = definitions.filter((definition) =>
+    dependencyIds.has(definition.id)
+  );
+  return deduplicateDefinitions([
+    ...exact,
+    ...dependencies,
+    ...definitions,
+  ]);
+}
+
+function delegationToolRequested(
+  query: string | undefined,
+  definitions: readonly ToolDefinition[],
+) {
+  const delegate = definitions.find(
+    (definition) => definition.id === "app.agents.delegate",
+  );
+  if (!delegate || !query?.trim()) return false;
+  return hasExplicitDynamicDelegationIntent(query);
+}
+
+function dynamicDelegationDependencyIds(query: string | undefined) {
+  return new Set<string>([
+    "app.agents.delegate",
+    ...extractExplicitDynamicDelegationReadToolIds(query || ""),
+  ]);
+}
+
+function queryMentionsCanonicalId(
+  query: string | undefined,
+  toolId: string,
+) {
+  if (!query) return false;
+  const haystack = query.toLowerCase();
+  const needle = toolId.toLowerCase();
+  let fromIndex = 0;
+  while (fromIndex <= haystack.length - needle.length) {
+    const index = haystack.indexOf(needle, fromIndex);
+    if (index < 0) return false;
+    const before = haystack[index - 1];
+    const after = haystack[index + needle.length];
+    if (!isCanonicalIdentifierCharacter(before) &&
+        !isCanonicalIdentifierCharacter(after)) return true;
+    fromIndex = index + needle.length;
+  }
+  return false;
+}
+
+function isCanonicalIdentifierCharacter(value: string | undefined) {
+  return Boolean(value && /[a-z0-9._:@/+~-]/i.test(value));
 }
 
 export function applyToolSchemaBudget(

@@ -73,6 +73,41 @@ describe("P8.5 internal Agent discovery", () => {
     expect(team.specialistIds).toEqual(["sentinel"]);
   });
 
+  it("selects Atlas to coordinate mixed delegation work without a preference", () => {
+    const team = selectAgentTeamFromCardsV1({
+      cards,
+      query: "Coordinate Scout and Mnemosyne, then have Sentinel verify both",
+      taskKinds: ["memory", "research", "coordinate", "verify"],
+      consequential: false,
+    });
+
+    expect(team.primaryAgentId).toBe("atlas");
+    expect(team.specialistIds).toEqual(expect.arrayContaining([
+      "atlas",
+      "mnemosyne",
+      "scout",
+      "sentinel",
+    ]));
+  });
+
+  it("preserves a compatible explicit primary for coordinated work", () => {
+    const team = selectAgentTeamFromCardsV1({
+      cards,
+      query: "Coordinate Scout and Mnemosyne",
+      taskKinds: ["memory", "research", "coordinate"],
+      consequential: false,
+      preferredAgentId: "scout",
+    });
+
+    expect(team.primaryAgentId).toBe("scout");
+    expect(team.specialistIds).toEqual(expect.arrayContaining([
+      "scout",
+      "atlas",
+      "mnemosyne",
+      "sentinel",
+    ]));
+  });
+
   it("does not accept a preferred agent that lacks the primary capability", () => {
     const team = selectAgentTeamFromCardsV1({
       cards,
