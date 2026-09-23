@@ -87,7 +87,7 @@ export function CommandComposerField({
   const listboxId = useId();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const catalogRef = useRef<CommandContextCatalog>();
+  const catalogRef = useRef<CommandContextCatalog | undefined>(undefined);
   const selectReferenceRef = useRef(onSelectReference);
   const [trigger, setTrigger] = useState<TriggerState>();
   const [catalog, setCatalog] = useState<CommandContextCatalog>();

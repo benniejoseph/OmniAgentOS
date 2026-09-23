@@ -217,10 +217,14 @@ export function resolveCommandModelSelection(input: {
       "The selected fallback crosses providers without stored disclosure consent.",
     );
   }
+  if (policyTarget.provider === "typesafe") {
+    throw new CommandModelSelectionError(
+      "The selected provider and model are outside this role's Settings policy.",
+    );
+  }
   if (
     selection.provider !== policyTarget.provider ||
-    selection.modelId !== policyTarget.modelId ||
-    policyTarget.provider === "typesafe"
+    selection.modelId !== policyTarget.modelId
   ) {
     throw new CommandModelSelectionError(
       "The selected provider and model are outside this role's Settings policy.",

@@ -128,7 +128,10 @@ import {
   prepareDurableSpecialistDelegation,
   scheduleDurableSpecialistDrain,
 } from "@/lib/subagents/scheduler";
-import type { PreparedDurableSpecialist } from "@/lib/subagents/types";
+import type {
+  DurableSpecialistAgentId,
+  PreparedDurableSpecialist,
+} from "@/lib/subagents/types";
 import {
   buildWorkflowProcedureSnapshot,
   listSavedProcedures,
@@ -1357,8 +1360,12 @@ async function POSTHandler(request: Request) {
                 requestId,
                 objective: executionMessage,
                 mode,
-                primaryAgentId: decision.primaryAgentId,
-                specialistIds: decision.specialistIds,
+                primaryAgentId: isDurableSpecialistAgentId(decision.primaryAgentId)
+                  ? decision.primaryAgentId
+                  : "atlas",
+                specialistIds: decision.specialistIds.filter(
+                  isDurableSpecialistAgentId,
+                ),
                 parentBudgetLimits: budgetLimits,
               });
             }
@@ -2080,4 +2087,10 @@ async function syncDirectMissionTerminal(input: {
 
 function isBuiltInAgentId(value?: string): value is "atlas" | "scout" | "meridian" | "forge" | "sentinel" | "mnemosyne" {
   return value === "atlas" || value === "scout" || value === "meridian" || value === "forge" || value === "sentinel" || value === "mnemosyne";
+}
+
+function isDurableSpecialistAgentId(
+  value: string,
+): value is DurableSpecialistAgentId {
+  return value === "atlas" || value === "scout" || value === "forge" || value === "sentinel" || value === "mnemosyne";
 }

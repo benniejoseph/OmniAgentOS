@@ -128,7 +128,7 @@ export async function createPortableArchive(input: {
         title: task.title,
         detail: task.detail,
         priority: task.priority,
-        agentId: task.agentId,
+        agentId: agentId(task.agentId),
         origin: task.origin,
         dueAt: dateOrNull(task.dueAt),
       })),
