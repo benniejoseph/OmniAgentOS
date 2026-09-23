@@ -26,6 +26,7 @@ import {
 import { ensureSemanticDecisionShadowPilotV1 } from "@/lib/db/semantic-decision-schema";
 import { ensureMobilePushReceiptCanaryV1 } from "@/lib/db/mobile-push-receipt-schema";
 import { ensureDelegationExecutionRuntimeV1 } from "@/lib/db/delegation-execution-schema";
+import { ensureDelegationExecutionRlsCompositionRepairV1 } from "@/lib/db/delegation-execution-rls-schema";
 import { ensureScheduledWorkflowTriggerShadowV1 } from "@/lib/db/workflow-trigger-schedule-schema";
 import { ensureScheduledWorkflowReadOnlyCanaryV1 } from "@/lib/db/workflow-schedule-canary-schema";
 import { ensureScheduledWorkflowPolicyLeaseV1 } from "@/lib/db/workflow-policy-lease-schema";
@@ -209,6 +210,8 @@ export const tenantRootPolicyTables = [
   "omni_agent_release_evaluations",
   "omni_agent_adaptations",
   "omni_delegation_tasks",
+  "omni_delegation_budget_ledgers",
+  "omni_delegation_executions",
   "omni_a2a_peer_rollouts",
   "omni_a2a_task_mappings",
   "omni_a2a_exchanges",
@@ -1751,6 +1754,10 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[200],
       up: ensurePromptQueueRuntimeV1,
+    },
+    {
+      ...databaseSchemaMigrations[201],
+      up: ensureDelegationExecutionRlsCompositionRepairV1,
     },
   ];
 }

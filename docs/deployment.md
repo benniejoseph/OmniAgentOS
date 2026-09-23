@@ -427,6 +427,7 @@ marker in the same transaction.
 | 199 | `scheduled_workflow_policy_lease_v1` | `56d69404165e70123c590cf1637985db06de55889e4de64e28523b92885ca093` | single-use exact-effect PolicyLease and consumption ledgers |
 | 200 | `notification_disposition_runtime_v1` | `99af5ab52a824c435e19e46f918755bfa549a1fecda22f9061940f9030c97c2b` | content-free disposition, digest, and watermark ledgers plus generic notification push cause |
 | 201 | `prompt_queue_runtime_v1` | `e9cd14ec6c526fbd0fbed097cbc8a535e92b60cfd6bae0785a0a0a6c3b584567` | sealed actor-private prompt queue and revision-fenced dispatch lifecycle |
+| 202 | `delegation_execution_rls_composition_repair_v1` | `3d6b28bd2fdb00cc57360506baea3ef120a4ae13e0050be57ba6d266310a3d63` | permissive tenant admission composed with the existing restrictive delegation actor boundary |
 
 Version 196 requires the exact predecessor marker v195
 `moltbook_autonomy_privilege_repair_v1` with checksum

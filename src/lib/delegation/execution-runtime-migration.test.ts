@@ -4,12 +4,17 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { ensureDelegationExecutionRuntimeV1 } from "@/lib/db/delegation-execution-schema";
+import { ensureDelegationExecutionRlsCompositionRepairV1 } from "@/lib/db/delegation-execution-rls-schema";
 
 const migrationPath = resolve(
   process.cwd(),
   "supabase/migrations/20260922120000_delegation_execution_runtime.sql",
 );
 const migration = readFileSync(migrationPath, "utf8");
+const rlsRepairMigration = readFileSync(resolve(
+  process.cwd(),
+  "supabase/migrations/20260923110000_delegation_execution_rls_composition_repair.sql",
+), "utf8");
 const databaseClient = readFileSync(resolve(
   process.cwd(),
   "src/lib/db/client.ts",
@@ -73,5 +78,35 @@ describe("Delegation execution runtime v196 migration", () => {
     expect(migration).not.toContain(
       "GRANT UPDATE (contract",
     );
+  });
+
+  it("repairs policy composition without weakening actor isolation", async () => {
+    expect(manifest.find((entry) => entry.version === 202)).toEqual({
+      version: 202,
+      name: "delegation_execution_rls_composition_repair_v1",
+      checksum: "3d6b28bd2fdb00cc57360506baea3ef120a4ae13e0050be57ba6d266310a3d63",
+    });
+    expect(rlsRepairMigration).toContain("latest_version IS DISTINCT FROM 201");
+    expect(rlsRepairMigration).toContain("AS PERMISSIVE FOR ALL TO PUBLIC");
+    expect(rlsRepairMigration).toContain("AND NOT polpermissive");
+    expect(rlsRepairMigration).toContain("omni_actor_scope_v1_allows(tenant_id, owner_actor_id)");
+    expect(rlsRepairMigration).toContain("SELECT count(*)");
+    expect(databaseClient).toContain('"omni_delegation_budget_ledgers"');
+    expect(databaseClient).toContain('"omni_delegation_executions"');
+    expect(databaseClient).toContain("...databaseSchemaMigrations[201]");
+    expect(databaseClient).toContain(
+      "up: ensureDelegationExecutionRlsCompositionRepairV1",
+    );
+
+    const statements: string[] = [];
+    await ensureDelegationExecutionRlsCompositionRepairV1({
+      query: async (text) => {
+        statements.push(text);
+        return [];
+      },
+    });
+    expect(statements).toHaveLength(1);
+    expect(statements[0]).toContain("CREATE POLICY omni_tenant_isolation");
+    expect(statements[0]).not.toContain("INSERT INTO public.omni_schema_version");
   });
 });

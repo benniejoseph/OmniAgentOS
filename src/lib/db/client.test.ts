@@ -2177,9 +2177,9 @@ describe("ordered database schema versions", () => {
       checksum: "99af5ab52a824c435e19e46f918755bfa549a1fecda22f9061940f9030c97c2b",
     });
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 201,
-      name: "prompt_queue_runtime_v1",
-      checksum: "e9cd14ec6c526fbd0fbed097cbc8a535e92b60cfd6bae0785a0a0a6c3b584567",
+      version: 202,
+      name: "delegation_execution_rls_composition_repair_v1",
+      checksum: "3d6b28bd2fdb00cc57360506baea3ef120a4ae13e0050be57ba6d266310a3d63",
     });
     expect(databaseSchemaMigrations.find((migration) => migration.version === 139)).toEqual({
       version: 139,
