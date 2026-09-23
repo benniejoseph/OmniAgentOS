@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'router/app_router.dart';
 import 'theme/app_theme.dart';
+import 'theme/app_theme_mode_controller.dart';
 import 'theme/macos_app_theme.dart';
 import '../core/platform/desktop_host_bridge.dart';
 import '../core/sync/reconnect_coordinator.dart';
@@ -85,6 +86,7 @@ class _AsaelAppState extends ConsumerState<AsaelApp>
     ref.watch(captureOutboxLifecycleProvider);
     ref.watch(reconnectCoordinatorProvider);
     final router = ref.watch(appRouterProvider);
+    final themeMode = ref.watch(appThemeModeProvider).mode;
     final reconnect = ref.watch(reconnectCoordinatorProvider);
     final localComputer = ref.watch(localComputerCoordinatorProvider);
     _desktopHostBridge.attachRouter(router);
@@ -115,7 +117,7 @@ class _AsaelAppState extends ConsumerState<AsaelApp>
       highContrastDarkTheme: useMacosTheme
           ? MacosAppTheme.dark(highContrast: true)
           : AppTheme.dark(highContrast: true),
-      themeMode: ThemeMode.system,
+      themeMode: themeMode,
       routerConfig: router,
       builder: (context, child) => _LocalComputerStatusLayer(
         coordinator: localComputer,

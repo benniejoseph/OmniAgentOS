@@ -2,18 +2,20 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/platform/desktop_host_bridge.dart';
 import '../brand/asael_mark.dart';
 import '../theme/macos_app_theme.dart';
 import '../theme/macos_workspace_backdrop.dart';
+import '../theme/app_theme_mode_controller.dart';
 import 'app_destination.dart';
 
 /// The installed Mac workspace. This deliberately does not share the tablet
 /// navigation rail: desktop navigation remains labelled, searchable, and
 /// keyboard reachable even at the primary window's minimum width.
-class MacosWorkspaceShell extends StatefulWidget {
+class MacosWorkspaceShell extends ConsumerStatefulWidget {
   const MacosWorkspaceShell({
     super.key,
     required this.navigationShell,
@@ -24,10 +26,11 @@ class MacosWorkspaceShell extends StatefulWidget {
   final ValueChanged<int> onSelect;
 
   @override
-  State<MacosWorkspaceShell> createState() => _MacosWorkspaceShellState();
+  ConsumerState<MacosWorkspaceShell> createState() =>
+      _MacosWorkspaceShellState();
 }
 
-class _MacosWorkspaceShellState extends State<MacosWorkspaceShell> {
+class _MacosWorkspaceShellState extends ConsumerState<MacosWorkspaceShell> {
   final _searchController = TextEditingController();
   final _searchFocus = FocusNode(debugLabel: 'Workspace search');
   final _sidebarScrollController = ScrollController();
@@ -66,6 +69,7 @@ class _MacosWorkspaceShellState extends State<MacosWorkspaceShell> {
     final compactWindow = media.size.width < 980;
     final collapsed = compactWindow || _sidebarCollapsed;
     final reduceMotion = media.disableAnimations;
+    final themeMode = ref.watch(appThemeModeProvider).mode;
 
     final shortcuts = <ShortcutActivator, VoidCallback>{
       const SingleActivator(LogicalKeyboardKey.keyK, meta: true): () =>
@@ -130,6 +134,10 @@ class _MacosWorkspaceShellState extends State<MacosWorkspaceShell> {
                       onOpenCommand: () => _selectPath('/talk'),
                       onOpenInbox: () => _selectPath('/inbox'),
                       onOpenDevices: () => context.push('/devices'),
+                      themeMode: themeMode,
+                      onThemeModeSelected: (mode) => unawaited(
+                        ref.read(appThemeModeProvider).setMode(mode),
+                      ),
                     ),
                     Expanded(
                       child: MacosWorkspaceBackdrop(
@@ -503,6 +511,8 @@ class _MacosGlobalToolbar extends StatelessWidget {
     required this.onOpenCommand,
     required this.onOpenInbox,
     required this.onOpenDevices,
+    required this.themeMode,
+    required this.onThemeModeSelected,
   });
 
   final AppDestination active;
@@ -511,6 +521,8 @@ class _MacosGlobalToolbar extends StatelessWidget {
   final VoidCallback onOpenCommand;
   final VoidCallback onOpenInbox;
   final VoidCallback onOpenDevices;
+  final ThemeMode themeMode;
+  final ValueChanged<ThemeMode> onThemeModeSelected;
 
   @override
   Widget build(BuildContext context) {
@@ -576,6 +588,26 @@ class _MacosGlobalToolbar extends StatelessWidget {
               ),
             ),
             const Spacer(),
+            PopupMenuButton<ThemeMode>(
+              tooltip: 'Appearance: ${_themeModeLabel(themeMode)}',
+              initialValue: themeMode,
+              onSelected: onThemeModeSelected,
+              icon: Icon(_themeModeIcon(themeMode)),
+              itemBuilder: (context) => [
+                for (final mode in ThemeMode.values)
+                  CheckedPopupMenuItem<ThemeMode>(
+                    value: mode,
+                    checked: themeMode == mode,
+                    child: Row(
+                      children: [
+                        Icon(_themeModeIcon(mode), size: 17),
+                        const SizedBox(width: 9),
+                        Text(_themeModeLabel(mode)),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
             IconButton(
               tooltip: canOpenWindow
                   ? 'Open ${active.label} in a new window'
@@ -603,6 +635,18 @@ class _MacosGlobalToolbar extends StatelessWidget {
     );
   }
 }
+
+String _themeModeLabel(ThemeMode mode) => switch (mode) {
+  ThemeMode.system => 'Use Mac appearance',
+  ThemeMode.light => 'Light',
+  ThemeMode.dark => 'Dark',
+};
+
+IconData _themeModeIcon(ThemeMode mode) => switch (mode) {
+  ThemeMode.system => Icons.brightness_auto_rounded,
+  ThemeMode.light => Icons.light_mode_outlined,
+  ThemeMode.dark => Icons.dark_mode_outlined,
+};
 
 class _MacosCommandButton extends StatelessWidget {
   const _MacosCommandButton({required this.onPressed});
