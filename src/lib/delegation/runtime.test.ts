@@ -418,11 +418,12 @@ describe("dynamic delegation runtime", () => {
       runId: harness.parentRun.id,
       identity: buildBuiltInAgentIdentityV1({
         agentId: "atlas",
-        tenantId: harness.parentRun.tenantId,
+        tenantId: harness.parentRun.tenantId || "tenant-runtime",
         controllerActorId: "actor:22222222-2222-4222-8222-222222222222",
       }),
     });
-    harness.dependencies.getRunIdentityPin.mockResolvedValueOnce(mismatchedPin);
+    vi.mocked(harness.dependencies.getRunIdentityPin)
+      .mockResolvedValueOnce(mismatchedPin);
 
     await expect(delegateAgentTask(
       harness.request(),
