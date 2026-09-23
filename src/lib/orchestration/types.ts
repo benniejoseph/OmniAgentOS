@@ -168,6 +168,8 @@ export type AgentEvent =
 
 export type AgentRunRequest = {
   messages: ChatMessage[];
+  /** Trusted server-owned identity for a new root run. */
+  runId?: string;
   /** Explicit owner-selected execution surface. Never inferred or silently changed. */
   computerUseTarget?: ComputerUseTarget;
   /**

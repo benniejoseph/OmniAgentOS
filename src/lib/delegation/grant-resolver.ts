@@ -272,6 +272,11 @@ export async function resolveDelegationGrantsV1(input: {
   for (const toolId of request.governedReadToolIds) {
     requireParentTool(toolId, harness);
     const tool = deps.getNativeTool(toolId);
+    if (tool?.category === "connector") {
+      throw new Error(
+        "A native connector tool requires a verified credential-owner binding before delegation.",
+      );
+    }
     if (!tool || isExternalToolId(toolId) || !isDelegableReadTool(tool)) {
       throw new Error("A requested governed tool is not an active native read tool.");
     }
@@ -496,6 +501,11 @@ export async function revalidateDelegationGrantsV1(input: {
       continue;
     }
     const tool = deps.getNativeTool(toolId);
+    if (tool?.category === "connector") {
+      throw new Error(
+        "A delegated native connector tool lacks a verified credential-owner binding.",
+      );
+    }
     if (!tool || !isDelegableReadTool(tool)) {
       throw new Error("A delegated native tool is no longer read-only.");
     }
@@ -836,6 +846,7 @@ function requireParentTool(
 
 function isDelegableReadTool(tool: ToolDefinition) {
   return tool.status === "active" &&
+    tool.category !== "connector" &&
     tool.riskLevel === 0 &&
     !tool.approvalRequired &&
     tool.operationClass !== "mutation";

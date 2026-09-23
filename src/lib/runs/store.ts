@@ -18,6 +18,10 @@ import {
 } from "@/lib/operations/job-queue";
 import { redactSensitive } from "@/lib/security/context";
 import {
+  canonicalActorIdFromExactRequestBinding,
+  type CanonicalRequestActorBindingV1,
+} from "@/lib/security/canonical-actor";
+import {
   assertExecutionScopeTenant,
   createExecutionScope,
   executionScopesEqual,
@@ -77,6 +81,8 @@ import {
 } from "@/lib/agents/identity-contracts";
 
 export async function createAgentRun(input: {
+  /** Trusted server-owned identity for a new run. Never accept this from an unvalidated client. */
+  id?: string;
   tenantId?: string;
   actorId?: string;
   threadId?: string;
@@ -93,7 +99,7 @@ export async function createAgentRun(input: {
     content: safeRunText(message.content, 30_000),
   }));
   const run: AgentRunRecord = {
-    id: randomUUID(),
+    id: input.id ? exactTrustedRunId(input.id) : randomUUID(),
     tenantId: normalizeTenantId(input.tenantId),
     ownerActorId: requiredOwnerActorId(
       input.actorId || (hasDatabaseUrl() ? "" : "local:file-runtime"),
@@ -321,7 +327,11 @@ export type RunContractLifecycleEventType =
 export async function appendAgentRunIdentityPin(
   runId: string,
   pinValue: AgentRunIdentityPinV1,
-  options: { tenantId: string; executionScope: ExecutionScope },
+  options: {
+    tenantId: string;
+    executionScope: ExecutionScope;
+    requestActorBinding?: CanonicalRequestActorBindingV1;
+  },
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
   assertExecutionScopeTenant(options.executionScope, tenantId);
@@ -332,10 +342,22 @@ export async function appendAgentRunIdentityPin(
     pin.tenantId !== tenantId ||
     !run ||
     pin.logicalAgentId !== run.agentId ||
+    run.ownerActorId !== options.executionScope.initiatingActorId ||
     options.executionScope.executingPrincipalType !== "agent" ||
     options.executionScope.executingPrincipalId !== pin.principalId
   ) {
     throw new Error("Agent run identity pin does not match its run boundary.");
+  }
+  if (
+    pin.actorId !== run.ownerActorId &&
+    canonicalActorIdFromExactRequestBinding(
+      run.ownerActorId,
+      options.requestActorBinding,
+    ) !== pin.actorId
+  ) {
+    throw new Error(
+      "Agent run identity pin does not match its authenticated owner binding.",
+    );
   }
   const boundScope = await getAgentRunExecutionScope(runId, { tenantId });
   if (!boundScope || !executionScopesEqual(boundScope, options.executionScope)) {
@@ -2192,6 +2214,14 @@ function safeRunText(value: string, maxChars: number) {
 function safeRunId(value: string) {
   const safe = value.trim().replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 200);
   if (!safe) throw new Error("Agent run identity is required.");
+  return safe;
+}
+
+function exactTrustedRunId(value: string) {
+  const safe = safeRunId(value);
+  if (safe !== value) {
+    throw new Error("Trusted agent run identity must already be a safe opaque id.");
+  }
   return safe;
 }
 

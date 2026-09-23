@@ -88,3 +88,30 @@ export function canonicalRequestActorBindingFromSecurityContext(
     readableOwnerActorIds,
   });
 }
+
+/**
+ * Returns the canonical actor only when a request binding is the exact,
+ * server-derived bridge for one legacy owner coordinate. It never guesses or
+ * accepts additional aliases.
+ */
+export function canonicalActorIdFromExactRequestBinding(
+  legacyOwnerActorId: string,
+  binding: CanonicalRequestActorBindingV1 | undefined,
+) {
+  if (
+    !binding ||
+    binding.version !== CANONICAL_REQUEST_ACTOR_BINDING_VERSION ||
+    binding.kind !== "auth_user" ||
+    !canonicalAuthUserIdPattern.test(binding.authUserId) ||
+    binding.canonicalActorId !== `actor:${binding.authUserId}` ||
+    binding.canonicalActorId === legacyOwnerActorId ||
+    binding.legacyOwnerActorIds.length !== 1 ||
+    binding.legacyOwnerActorIds[0] !== legacyOwnerActorId ||
+    binding.readableOwnerActorIds.length !== 2 ||
+    binding.readableOwnerActorIds[0] !== binding.canonicalActorId ||
+    binding.readableOwnerActorIds[1] !== legacyOwnerActorId
+  ) {
+    return undefined;
+  }
+  return binding.canonicalActorId;
+}

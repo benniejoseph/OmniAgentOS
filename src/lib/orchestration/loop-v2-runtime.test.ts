@@ -74,6 +74,17 @@ describe("Loop v2 read-only canary enrollment", () => {
 });
 
 describe("Loop v2 read-only canary runtime", () => {
+  it("rejects a server run id outside its execution-scope correlation", async () => {
+    const harness = runtimeHarness();
+    await expect(collect(runLoopV2ReadOnlyCanary(
+      { ...canaryRequest(), runId: "run-other" },
+      undefined,
+      harness.dependencies,
+    ))).rejects.toThrow(/root run ID.*execution scope/i);
+
+    expect(harness.createRun).not.toHaveBeenCalled();
+  });
+
   it("executes only runs.list and commits the verified checkpoint chain", async () => {
     const harness = runtimeHarness();
     const events = await collect(runLoopV2ReadOnlyCanary(
@@ -90,6 +101,9 @@ describe("Loop v2 read-only canary runtime", () => {
         definitionVersionId: "definition:built-in:atlas:v2",
       }),
       expect.objectContaining({ tenantId: "tenant-a" }),
+    );
+    expect(harness.createRun).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "run-canary" }),
     );
     expect(harness.executeTool).toHaveBeenCalledWith(expect.objectContaining({
       toolId: "runs.list",
@@ -138,6 +152,33 @@ describe("Loop v2 read-only canary runtime", () => {
     );
     expect(harness.appendAssistantTurn).toHaveBeenCalledTimes(1);
     expect(harness.failUncheckpointedRun).not.toHaveBeenCalled();
+  });
+
+  it("forwards the exact request actor binding to the identity pin write", async () => {
+    const harness = runtimeHarness();
+    const requestActorBinding = {
+      version: 1 as const,
+      kind: "auth_user" as const,
+      authUserId: "a30f9e6c-51f4-4c3c-a0c0-7c62242f1db6",
+      canonicalActorId: "actor:a30f9e6c-51f4-4c3c-a0c0-7c62242f1db6",
+      legacyOwnerActorIds: ["owner@example.test"],
+      readableOwnerActorIds: [
+        "actor:a30f9e6c-51f4-4c3c-a0c0-7c62242f1db6",
+        "owner@example.test",
+      ],
+    };
+
+    await collect(runLoopV2ReadOnlyCanary(
+      { ...canaryRequest(), requestActorBinding },
+      undefined,
+      harness.dependencies,
+    ));
+
+    expect(harness.appendIdentityPin).toHaveBeenCalledWith(
+      "run-canary",
+      expect.anything(),
+      expect.objectContaining({ requestActorBinding }),
+    );
   });
 
   it("retries the safe read twice before recording a failed replan", async () => {
@@ -364,6 +405,7 @@ function canaryCandidate() {
 
 function canaryRequest() {
   return {
+    runId: "run-canary",
     message: "Show my recent runs",
     messages: [{ role: "user" as const, content: "Show my recent runs" }],
     mode: "orchestrate" as const,
@@ -380,7 +422,7 @@ function canaryRequest() {
       initiatingActorId: "actor-a",
       executingPrincipalType: "agent",
       executingPrincipalId: "atlas",
-      correlationId: "request-a",
+      correlationId: "run-canary",
       purpose: "agent.loop.v2.read_only_canary",
     }),
     enrollment: { enginePin: enginePin() } as LoopV2ReadOnlyCanaryEnrollment,

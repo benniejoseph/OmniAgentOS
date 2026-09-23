@@ -89,6 +89,45 @@ describe("delegation grant resolver", () => {
     expect(resolution.parentAuthorityGrants.governedToolIds).toHaveLength(100);
   });
 
+  it.each([
+    "google.gmail.search",
+    "moltbook.feed.read",
+  ])(
+    "rejects the exact-owner connector %s at creation and worker revalidation",
+    async (toolId) => {
+      const authority = builtInAuthority("scout", [toolId], []);
+
+      await expect(resolveDelegationGrantsV1({
+        ...authority.input,
+        request: { governedReadToolIds: [toolId] },
+      })).rejects.toThrow(/credential-owner binding/i);
+
+      const emptyResolution = await resolveDelegationGrantsV1({
+        ...authority.input,
+        request: {},
+      });
+      const unsafeResolution = {
+        ...emptyResolution,
+        governedToolIds: [toolId],
+        grants: {
+          ...emptyResolution.grants,
+          governedToolIds: [toolId],
+        },
+      };
+      const unsafeContract = contractForResolution(
+        authority,
+        unsafeResolution,
+      );
+
+      await expect(revalidateDelegationGrantsV1({
+        contract: unsafeContract,
+        parentIdentityPin: authority.parentPin,
+        delegateIdentityPin: authority.delegatePin,
+        parentEvents: authority.events,
+      })).rejects.toThrow(/credential-owner binding/i);
+    },
+  );
+
   it("rejects parent attenuation gaps and changed or disabled Skill pins", async () => {
     const skillId = "core.research";
     const skill = requireBuiltInSkill(skillId);

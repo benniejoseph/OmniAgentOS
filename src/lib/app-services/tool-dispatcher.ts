@@ -116,6 +116,7 @@ import {
   showCustomerSuccessPortfolioService,
 } from "@/lib/app-services/customer-success-intelligence";
 import { createAppServiceCaller } from "@/lib/app-services/contracts";
+import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
 import {
@@ -255,6 +256,7 @@ export async function executeFirstPartyAppTool(input: {
   toolId: string;
   toolInput: Record<string, unknown>;
   context?: SecurityContext;
+  requestActorBinding?: CanonicalRequestActorBindingV1;
   executionScope?: ExecutionScope;
   idempotencyKey?: string;
 }): Promise<FirstPartyAppToolDispatch> {
@@ -386,7 +388,13 @@ export async function executeFirstPartyAppTool(input: {
     "app.agents.cards": () => discoverAgentCardsService(caller, input.toolInput as never),
     "app.agents.performance": () => showAgentPerformanceService(caller, input.toolInput as never),
     "app.agents.council.show": () => showAgentCouncilMapService(caller, input.toolInput as never),
-    "app.agents.delegate": () => delegateAgentTaskService(caller, input.toolInput as never),
+    "app.agents.delegate": () =>
+      delegateAgentTaskService(
+        caller,
+        input.toolInput as never,
+        undefined,
+        input.requestActorBinding,
+      ),
     "app.agents.tasks.list": () => listAgentTasksService(caller, input.toolInput as never),
     "app.agents.tasks.show": () => showAgentTaskService(caller, input.toolInput as never),
     "app.agents.tasks.cancel": () => cancelAgentTaskService(caller, input.toolInput as never),

@@ -120,6 +120,19 @@ describe("Loop v2 model-text enrollment", () => {
   });
 });
 
+describe("Loop v2 model-text root identity", () => {
+  it("rejects a server run id outside its execution-scope correlation", async () => {
+    const harness = runtimeHarness();
+    await expect(collect(runLoopV2ModelText(
+      { ...modelRequest(), runId: "run-other" },
+      undefined,
+      harness.dependencies,
+    ))).rejects.toThrow(/root run ID.*execution scope/i);
+
+    expect(harness.createRun).not.toHaveBeenCalled();
+  });
+});
+
 describe("Loop v2 model-text runtime", () => {
   it("makes one metered model call and commits the verified chain", async () => {
     const harness = runtimeHarness();
@@ -137,6 +150,9 @@ describe("Loop v2 model-text runtime", () => {
         definitionVersionId: "definition:built-in:atlas:v2",
       }),
       expect.objectContaining({ tenantId: "tenant-a" }),
+    );
+    expect(harness.createRun).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "run-model-v2" }),
     );
     expect(harness.generateText).toHaveBeenCalledWith(expect.objectContaining({
       input: sourceText(),
@@ -192,6 +208,33 @@ describe("Loop v2 model-text runtime", () => {
     );
     expect(harness.appendAssistantTurn).toHaveBeenCalledTimes(1);
     expect(harness.failUncheckpointedRun).not.toHaveBeenCalled();
+  });
+
+  it("forwards the exact request actor binding to the identity pin write", async () => {
+    const harness = runtimeHarness();
+    const requestActorBinding = {
+      version: 1 as const,
+      kind: "auth_user" as const,
+      authUserId: "a30f9e6c-51f4-4c3c-a0c0-7c62242f1db6",
+      canonicalActorId: "actor:a30f9e6c-51f4-4c3c-a0c0-7c62242f1db6",
+      legacyOwnerActorIds: ["owner@example.test"],
+      readableOwnerActorIds: [
+        "actor:a30f9e6c-51f4-4c3c-a0c0-7c62242f1db6",
+        "owner@example.test",
+      ],
+    };
+
+    await collect(runLoopV2ModelText(
+      { ...modelRequest(), requestActorBinding },
+      undefined,
+      harness.dependencies,
+    ));
+
+    expect(harness.appendIdentityPin).toHaveBeenCalledWith(
+      "run-model-v2",
+      expect.anything(),
+      expect.objectContaining({ requestActorBinding }),
+    );
   });
 
   it("fails through replan without issuing a second logical model call", async () => {
@@ -346,6 +389,7 @@ function modelCandidate(input: string) {
 
 function modelRequest() {
   return {
+    runId: "run-model-v2",
     message: `Summarize this text: ${sourceText()}`,
     mode: "orchestrate" as const,
     threadId: "thread-a",
@@ -361,7 +405,7 @@ function modelRequest() {
       initiatingActorId: "actor-a",
       executingPrincipalType: "agent",
       executingPrincipalId: "atlas",
-      correlationId: "request-a",
+      correlationId: "run-model-v2",
       purpose: "agent.loop.v2.model_text_canary",
     }),
     enrollment: { enginePin: enginePin() } as LoopV2ModelTextEnrollment,
@@ -387,7 +431,7 @@ function contextModelRequest() {
       initiatingActorId: "actor-a",
       executingPrincipalType: "agent",
       executingPrincipalId: agentIdentity.principal.principalId,
-      correlationId: "request-a",
+      correlationId: "run-model-v2",
       contextGrantIds: agentIdentity.principal.contextGrantIds,
       capabilityGrantIds: agentIdentity.principal.capabilityGrantIds,
       purpose: "agent.loop.v2.context_text_canary",
@@ -494,6 +538,7 @@ function runtimeHarness() {
   return {
     dependencies,
     checkpoints,
+    createRun,
     generateText,
     finalizeRun,
     appendAssistantTurn,

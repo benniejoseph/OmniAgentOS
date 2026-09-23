@@ -57,6 +57,7 @@ import {
   failAgentRun,
 } from "@/lib/runs/store";
 import { redactSensitive } from "@/lib/security/context";
+import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
 import {
@@ -98,6 +99,7 @@ export type LoopV2ModelTextCandidate = Readonly<{
 }>;
 
 export type LoopV2ModelTextRequest = Readonly<{
+  runId?: string;
   message: string;
   mode: AgentMode;
   threadId?: string;
@@ -106,6 +108,7 @@ export type LoopV2ModelTextRequest = Readonly<{
   executionScope: ExecutionScope;
   enrollment: LoopV2ModelTextEnrollment;
   agentIdentity?: ResolvedAgentIdentityV1;
+  requestActorBinding?: CanonicalRequestActorBindingV1;
   messages?: readonly ChatMessage[];
   contextScope?: ContextScopeId;
   contextSelection?: ContextSelectionLockBinding;
@@ -274,9 +277,18 @@ export async function* runLoopV2ModelText(
 
   try {
     const summaryInput = assertRuntimeRequest(request);
+    if (
+      request.runId &&
+      request.executionScope.correlationId !== request.runId
+    ) {
+      throw new Error(
+        "The server-owned root run ID must match its execution scope correlation.",
+      );
+    }
     throwIfAborted(abortSignal);
 
     const run = await dependencies.createRun({
+      id: request.runId,
       tenantId: context.tenantId,
       actorId: context.actorId,
       threadId: request.threadId,
@@ -303,6 +315,7 @@ export async function* runLoopV2ModelText(
       await dependencies.appendIdentityPin(runId, agentIdentityPin, {
         tenantId: context.tenantId,
         executionScope,
+        requestActorBinding: request.requestActorBinding,
       });
     }
     if (contextCanary) {

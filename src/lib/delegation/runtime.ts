@@ -66,8 +66,14 @@ import {
 } from "@/lib/runs/store";
 import type { AgentRunRecord } from "@/lib/runs/types";
 import { runBudgetCountersV1Schema } from "@/lib/runs/budgets";
+import {
+  canonicalActorIdFromExactRequestBinding,
+  type CanonicalRequestActorBindingV1,
+} from "@/lib/security/canonical-actor";
 import { redactSensitive } from "@/lib/security/context";
 import {
+  createExecutionScope,
+  deriveExecutionScope,
   executionScopesEqual,
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
@@ -128,6 +134,7 @@ export type DelegateAgentTaskRequest = Readonly<{
   actorId: string;
   parentExecutionScope: ExecutionScope;
   idempotencyKey: string;
+  requestActorBinding?: CanonicalRequestActorBindingV1;
   input: DelegateAgentTaskInput;
   /** Internal test/repair injection; ordinary app tools use the live bridge. */
   parentBudgetAuthority?: ParentDelegationBudgetAuthorityV1;
@@ -180,22 +187,26 @@ export async function delegateAgentTask(
 ): Promise<DelegationExecutionRecordV1> {
   const deps = { ...defaultDependencies, ...dependencies };
   const tenantId = requiredId(request.tenantId, "tenant");
-  const actorId = requiredId(request.actorId, "actor");
+  const parentOwnerActorId = requiredId(request.actorId, "actor");
+  const canonicalActorId = delegationCanonicalActorId(
+    parentOwnerActorId,
+    request.requestActorBinding,
+  );
   const input = sanitizeDelegationInput(request.input);
   assertPreferredAgentCompatible(input);
-  const parentScope = assertParentScope({
+  const invocationScope = assertParentScope({
     scope: request.parentExecutionScope,
     tenantId,
-    actorId,
+    actorId: parentOwnerActorId,
   });
-  const parentRunId = parentScope.correlationId;
+  const parentRunId = invocationScope.correlationId;
   const parentPrincipalId = requiredId(
-    parentScope.executingPrincipalId,
+    invocationScope.executingPrincipalId,
     "parent principal",
   );
   const parentBudgetAuthority = resolveParentDelegationBudgetAuthority({
     tenantId,
-    actorId,
+    actorId: parentOwnerActorId,
     parentExecutionId: parentRunId,
     parentPrincipalId,
     idempotencyKey: request.idempotencyKey,
@@ -205,7 +216,12 @@ export async function delegateAgentTask(
     tenantId,
     idempotencyKey: request.idempotencyKey,
   });
-  const childRunId = deterministicChildRunId(tenantId, actorId, parentRunId, keySha256);
+  const childRunId = deterministicChildRunId(
+    tenantId,
+    canonicalActorId,
+    parentRunId,
+    keySha256,
+  );
   const delegationId = deterministicDelegationId(tenantId, parentRunId, childRunId);
   const purpose = delegationPurpose(input);
 
@@ -219,23 +235,34 @@ export async function delegateAgentTask(
     deps.getRun(parentRunId, { tenantId }),
     deps.getRunScope(parentRunId, { tenantId }),
     deps.getRunIdentityPin(parentRunId, { tenantId }),
-    deps.findExecution({ tenantId, ownerActorId: actorId, executionId: childRunId }),
+    deps.findExecution({
+      tenantId,
+      ownerActorId: canonicalActorId,
+      executionId: childRunId,
+    }),
     deps.listParentEvents(`run:${parentRunId}`, {
       tenantId,
-      actorId,
+      actorId: parentOwnerActorId,
       limit: 200,
       order: "asc",
     }),
   ]);
-  assertCanonicalParent(parentRun, parentIdentityPin, parentScope, actorId);
-  if (
-    !persistedParentScope ||
-    !executionScopesEqual(parentScope, persistedParentScope)
-  ) {
-    throw new Error(
-      "Dynamic delegation requires the exact persisted parent execution scope.",
-    );
-  }
+  assertCanonicalParent(
+    parentRun,
+    parentIdentityPin,
+    invocationScope,
+    parentOwnerActorId,
+    canonicalActorId,
+  );
+  const persistedRootScope = exactPersistedParentScope(
+    persistedParentScope,
+    invocationScope,
+  );
+  const parentScope = canonicalDelegationParentScope(
+    persistedRootScope,
+    invocationScope,
+    canonicalActorId,
+  );
   assertParentHarnessBudget(parentEvents, parentBudgetAuthority);
 
   if (existing) {
@@ -247,7 +274,7 @@ export async function delegateAgentTask(
   const selection = selectAgentTeamFromCardsV1({
     cards: listInternalAgentCardsV1({
       tenantId,
-      controllerActorId: actorId,
+      controllerActorId: canonicalActorId,
     }),
     query: input.objective,
     taskKinds: [input.taskKind],
@@ -267,7 +294,7 @@ export async function delegateAgentTask(
   const assignmentScope = modelAssignmentScopeForAgent(delegateAgentId);
   const runtimeModel = await deps.resolveRuntimeModel({
     tenantId,
-    actorId,
+    actorId: canonicalActorId,
     scope: assignmentScope,
     tier: deploymentRoute.tier,
     requiredFeature: "tools",
@@ -298,7 +325,7 @@ export async function delegateAgentTask(
   const verifierScope = modelAssignmentScopeForAgent("sentinel");
   const verifierRuntimeModel = await deps.resolveRuntimeModel({
     tenantId,
-    actorId,
+    actorId: canonicalActorId,
     scope: verifierScope,
     tier: verifierDeploymentRoute.tier,
     requiredFeature: "json_schema",
@@ -320,8 +347,16 @@ export async function delegateAgentTask(
   }
 
   const [delegateIdentity, verifierIdentity] = await Promise.all([
-    deps.resolveIdentity({ tenantId, actorId, agentId: delegateAgentId }),
-    deps.resolveIdentity({ tenantId, actorId, agentId: "sentinel" }),
+    deps.resolveIdentity({
+      tenantId,
+      actorId: canonicalActorId,
+      agentId: delegateAgentId,
+    }),
+    deps.resolveIdentity({
+      tenantId,
+      actorId: canonicalActorId,
+      agentId: "sentinel",
+    }),
   ]);
   const delegateIdentityPin = buildAgentRunIdentityPinV1({
     runId: childRunId,
@@ -333,11 +368,11 @@ export async function delegateAgentTask(
   });
   const grantResolution = await deps.resolveGrants({
     tenantId,
-    actorId,
+    actorId: canonicalActorId,
     parentExecutionId: parentRunId,
     parentIdentityPin: parentIdentityPin!,
     delegateIdentityPin,
-    parentExecutionScope: persistedParentScope,
+    parentExecutionScope: parentScope,
     parentEvents,
     request: input.grants,
   });
@@ -356,7 +391,7 @@ export async function delegateAgentTask(
   const childRun = await deps.createRun({
     id: childRunId,
     tenantId,
-    actorId,
+    actorId: canonicalActorId,
     mode: taskKindAgentMode(input.taskKind),
     prompt,
     messages: [{ role: "user", content: prompt }],
@@ -404,7 +439,7 @@ export async function delegateAgentTask(
     mode: input.mode,
     scope: {
       tenantId,
-      initiatingActorId: actorId,
+      initiatingActorId: canonicalActorId,
       rootExecutionId: parentRunId,
       rootPrincipalId: parentIdentityPin!.principalId,
       parentExecutionId: parentRunId,
@@ -433,7 +468,7 @@ export async function delegateAgentTask(
     mode: input.mode,
     lineage: {
       tenantId,
-      initiatingActorId: actorId,
+      initiatingActorId: canonicalActorId,
       rootExecutionId: parentRunId,
       rootPrincipalId: parentIdentityPin!.principalId,
       parentExecutionId: parentRunId,
@@ -446,7 +481,7 @@ export async function delegateAgentTask(
       workItemId: parentScope.missionId,
       correlationSha256: canonicalJsonSha256({
         tenantId,
-        actorId,
+        actorId: canonicalActorId,
         parentRunId,
         delegationId,
       }),
@@ -634,22 +669,63 @@ function assertCanonicalParent(
   parentRun: AgentRunRecord | undefined,
   parentIdentityPin: Awaited<ReturnType<typeof getAgentRunIdentityPin>>,
   scope: ExecutionScope,
-  actorId: string,
+  parentOwnerActorId: string,
+  canonicalActorId: string,
 ): asserts parentRun is AgentRunRecord {
   if (!parentRun || !parentIdentityPin) {
     throw new Error("Dynamic delegation requires an identity-bound parent run.");
   }
   if (
-    parentRun.ownerActorId !== actorId ||
+    parentRun.ownerActorId !== parentOwnerActorId ||
     parentRun.id !== scope.correlationId ||
     parentRun.agentId !== parentIdentityPin.logicalAgentId ||
     parentIdentityPin.runId !== parentRun.id ||
-    parentIdentityPin.actorId !== actorId ||
+    parentIdentityPin.actorId !== canonicalActorId ||
     parentIdentityPin.principalId !== scope.executingPrincipalId ||
     !["running", "resuming"].includes(parentRun.status)
   ) {
     throw new Error("Dynamic delegation does not match its active parent run.");
   }
+}
+
+function delegationCanonicalActorId(
+  parentOwnerActorId: string,
+  binding: CanonicalRequestActorBindingV1 | undefined,
+) {
+  if (!binding) return parentOwnerActorId;
+  const canonicalActorId = canonicalActorIdFromExactRequestBinding(
+    parentOwnerActorId,
+    binding,
+  );
+  if (!canonicalActorId) {
+    throw new Error(
+      "Dynamic delegation requires the exact authenticated actor binding.",
+    );
+  }
+  return canonicalActorId;
+}
+
+function canonicalDelegationParentScope(
+  persisted: ExecutionScope,
+  invocation: ExecutionScope,
+  canonicalActorId: string,
+) {
+  if (persisted.initiatingActorId === canonicalActorId) return persisted;
+  return createExecutionScope({
+    tenantId: persisted.tenantId,
+    initiatingActorId: canonicalActorId,
+    executingPrincipalType: persisted.executingPrincipalType,
+    executingPrincipalId: persisted.executingPrincipalId,
+    workspaceId: persisted.workspaceId,
+    projectId: persisted.projectId,
+    missionId: persisted.missionId,
+    delegationId: persisted.delegationId,
+    correlationId: persisted.correlationId,
+    causationId: invocation.causationId || persisted.causationId,
+    contextGrantIds: persisted.contextGrantIds,
+    capabilityGrantIds: persisted.capabilityGrantIds,
+    purpose: "agent.delegation.authority.v2",
+  });
 }
 
 function assertParentScope(input: {
@@ -668,6 +744,35 @@ function assertParentScope(input: {
     throw new Error("Only a root, identity-bound Agent run may create a child.");
   }
   return scope;
+}
+
+function exactPersistedParentScope(
+  persisted: ExecutionScope | undefined,
+  invocation: ExecutionScope,
+) {
+  if (!persisted) {
+    throw new Error(
+      "Dynamic delegation requires the exact persisted parent execution scope.",
+    );
+  }
+  if (persisted.purpose !== "agent.run") {
+    throw new Error(
+      "Dynamic delegation requires the persisted root Agent run scope.",
+    );
+  }
+  if (executionScopesEqual(invocation, persisted)) return persisted;
+  const expectedInvocation = invocation.causationId
+    ? deriveExecutionScope(persisted, {
+        causationId: invocation.causationId,
+        purpose: "agent.tool.execute",
+      })
+    : undefined;
+  if (!expectedInvocation || !executionScopesEqual(invocation, expectedInvocation)) {
+    throw new Error(
+      "Dynamic delegation requires the exact persisted parent execution scope.",
+    );
+  }
+  return persisted;
 }
 
 function assertIdempotentDelegation(

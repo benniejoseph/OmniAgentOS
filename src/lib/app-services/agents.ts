@@ -26,7 +26,10 @@ import {
   delegateAgentTask,
   delegateAgentTaskInputSchema,
 } from "@/lib/delegation/runtime";
-import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
+import {
+  canonicalRequestActorBindingFromSecurityContext,
+  type CanonicalRequestActorBindingV1,
+} from "@/lib/security/canonical-actor";
 import { assertMoltbookAgentMayBeDeleted } from "@/lib/moltbook/store";
 import { redactSensitive } from "@/lib/security/context";
 import { customAgentInputSchema, customAgentPatchSchema, skillInputSchema, skillPatchSchema } from "@/lib/skills/schema";
@@ -183,6 +186,7 @@ export async function delegateAgentTaskService(
   caller: AppServiceCaller,
   input: z.input<typeof agentDelegateServiceInputSchema>,
   dependencies: AgentTaskServiceDependencies = defaultAgentTaskServiceDependencies,
+  requestActorBinding?: CanonicalRequestActorBindingV1,
 ) {
   const value = agentDelegateServiceInputSchema.parse(input);
   const authorized = authorizeAppServiceCall(
@@ -194,6 +198,7 @@ export async function delegateAgentTaskService(
     actorId: caller.context.actorId,
     parentExecutionScope: caller.executionScope!,
     idempotencyKey: caller.idempotencyKey!,
+    requestActorBinding,
     input: value,
   });
   return completeAppServiceCall(

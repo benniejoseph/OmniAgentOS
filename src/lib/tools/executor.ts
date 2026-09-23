@@ -3711,6 +3711,7 @@ async function runTool(
     toolId: tool.id,
     toolInput: parsed,
     context,
+    requestActorBinding,
     executionScope,
     idempotencyKey,
   });

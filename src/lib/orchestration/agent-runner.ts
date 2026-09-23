@@ -323,6 +323,19 @@ export async function* runAgent(
   request: AgentRunRequest,
   abortSignal?: AbortSignal,
 ): AsyncGenerator<AgentEvent> {
+  const requestedRunId = request.runId?.trim();
+  if (requestedRunId && request.preclaimedRunId) {
+    throw new Error("A new root run cannot reuse a preclaimed durable run.");
+  }
+  if (
+    requestedRunId &&
+    request.executionScope &&
+    request.executionScope.correlationId !== requestedRunId
+  ) {
+    throw new Error(
+      "The server-owned root run ID must match its execution scope correlation.",
+    );
+  }
   const mode = request.mode || "orchestrate";
   const localComputerUseRequested = request.computerUseTarget === "local_macos";
   const toolStepAuthority = localComputerUseRequested
@@ -444,6 +457,7 @@ export async function* runAgent(
         prompt: query,
       })
     : await createAgentRun({
+        id: requestedRunId,
         tenantId: request.tenantId,
         actorId:
           request.executionScope?.initiatingActorId ||
@@ -543,6 +557,7 @@ export async function* runAgent(
     await appendAgentRunIdentityPin(runId, agentIdentityPin, {
       tenantId: runTenantId,
       executionScope,
+      requestActorBinding: request.requestActorBinding,
     });
   } catch (error) {
     const message = error instanceof Error

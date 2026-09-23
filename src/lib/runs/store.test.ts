@@ -523,6 +523,82 @@ describe("agent run approval continuations (file mode)", () => {
     ).rejects.toThrow("already bound to a different event");
   });
 
+  it("keeps a trusted root run id and requires an exact legacy-to-canonical owner bridge", async () => {
+    const store = await import("@/lib/runs/store");
+    const {
+      buildAgentRunIdentityPinV1,
+      buildBuiltInAgentIdentityV1,
+    } = await import("@/lib/agents/identity-contracts");
+    const { createExecutionScope } = await import("@/lib/security/execution-scope");
+    const tenantId = "canonical-owner-binding";
+    const legacyActorId = "owner@example.test";
+    const authUserId = "11111111-1111-4111-8111-111111111111";
+    const canonicalActorId = `actor:${authUserId}`;
+    const runId = "22222222-2222-4222-8222-222222222222";
+    const run = await store.createAgentRun({
+      id: runId,
+      tenantId,
+      actorId: legacyActorId,
+      mode: "orchestrate",
+      prompt: "bind canonical identity",
+      messages: [{ role: "user", content: "bind canonical identity" }],
+      agentId: "atlas",
+    });
+    expect(run.id).toBe(runId);
+    await expect(store.getAgentRun(runId, { tenantId })).resolves.toMatchObject({
+      id: runId,
+      ownerActorId: legacyActorId,
+    });
+    await expect(store.createAgentRun({
+      id: " unsafe/run ",
+      tenantId,
+      actorId: legacyActorId,
+      mode: "orchestrate",
+      prompt: "reject unsafe identity",
+      messages: [{ role: "user", content: "reject unsafe identity" }],
+      agentId: "atlas",
+    })).rejects.toThrow(/safe opaque id/i);
+    const pin = buildAgentRunIdentityPinV1({
+      runId,
+      identity: buildBuiltInAgentIdentityV1({
+        agentId: "atlas",
+        tenantId,
+        controllerActorId: canonicalActorId,
+      }),
+    });
+    const scope = createExecutionScope({
+      tenantId,
+      initiatingActorId: legacyActorId,
+      executingPrincipalType: "agent",
+      executingPrincipalId: pin.principalId,
+      correlationId: runId,
+      purpose: "agent.run",
+    });
+    await store.bindAgentRunExecutionScope(runId, scope, { tenantId });
+    const requestActorBinding = {
+      version: 1 as const,
+      kind: "auth_user" as const,
+      authUserId,
+      canonicalActorId,
+      legacyOwnerActorIds: [legacyActorId],
+      readableOwnerActorIds: [canonicalActorId, legacyActorId],
+    };
+
+    await expect(store.appendAgentRunIdentityPin(runId, pin, {
+      tenantId,
+      executionScope: scope,
+      requestActorBinding,
+    })).resolves.toBeDefined();
+    await expect(store.appendAgentRunIdentityPin(runId, pin, {
+      tenantId,
+      executionScope: scope,
+      requestActorBinding: {
+        ...requestActorBinding,
+        readableOwnerActorIds: [legacyActorId, canonicalActorId],
+      },
+    })).rejects.toThrow(/authenticated owner binding/i);
+  });
+
   it("binds one metadata-only Loop v2 context authority to a run", async () => {
     const store = await import("@/lib/runs/store");
     const { buildLoopV2ContextBindingV1 } = await import(

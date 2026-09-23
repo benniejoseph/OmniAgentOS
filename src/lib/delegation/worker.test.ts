@@ -96,6 +96,7 @@ import {
 import { processDelegationExecutionJob } from "@/lib/delegation/worker";
 import type { OperationJobRecord } from "@/lib/operations/job-queue";
 import type { AgentRunRecord } from "@/lib/runs/types";
+import { createExecutionScope } from "@/lib/security/execution-scope";
 import type { RuntimeModelResolution } from "@/lib/settings/runtime-models";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
@@ -414,12 +415,71 @@ describe("delegation execution worker", () => {
       "tool-execution:one",
     ]);
   });
+
+  it("fails closed before claim when the parent owner and root scope diverge", async () => {
+    const harness = workerHarness({ parentOwnerMismatch: true });
+
+    const result = await processDelegationExecutionJob(harness.job);
+
+    expect(result).toMatchObject({
+      status: "failed",
+      message: "identity_binding_mismatch",
+    });
+    expect(mocks.claimQueuedAgentRun).not.toHaveBeenCalled();
+    expect(mocks.runAgent).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the persisted parent scope is not an agent root run", async () => {
+    const harness = workerHarness({ parentScopePurpose: "agent.tool.execute" });
+
+    const result = await processDelegationExecutionJob(harness.job);
+
+    expect(result).toMatchObject({
+      status: "failed",
+      message: "identity_binding_mismatch",
+    });
+    expect(mocks.revalidateGrants).not.toHaveBeenCalled();
+    expect(mocks.claimQueuedAgentRun).not.toHaveBeenCalled();
+    expect(mocks.runAgent).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the child run owner diverges from its contract", async () => {
+    const harness = workerHarness({ childOwnerMismatch: true });
+
+    const result = await processDelegationExecutionJob(harness.job);
+
+    expect(result).toMatchObject({
+      status: "failed",
+      message: "identity_binding_mismatch",
+    });
+    expect(mocks.revalidateGrants).not.toHaveBeenCalled();
+    expect(mocks.claimQueuedAgentRun).not.toHaveBeenCalled();
+    expect(mocks.runAgent).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the child identity pin principal diverges", async () => {
+    const harness = workerHarness({ childPinMismatch: true });
+
+    const result = await processDelegationExecutionJob(harness.job);
+
+    expect(result).toMatchObject({
+      status: "failed",
+      message: "identity_binding_mismatch",
+    });
+    expect(mocks.revalidateGrants).not.toHaveBeenCalled();
+    expect(mocks.claimQueuedAgentRun).not.toHaveBeenCalled();
+    expect(mocks.runAgent).not.toHaveBeenCalled();
+  });
 });
 
 function workerHarness(options: {
   runFailure?: Error;
   personaPrompt?: string;
   storedPrompt?: string;
+  parentOwnerMismatch?: boolean;
+  parentScopePurpose?: string;
+  childOwnerMismatch?: boolean;
+  childPinMismatch?: boolean;
   criterion?: {
     statement: string;
     verificationMethod: "schema" | "evidence" | "governed_receipt" | "parent_verifier";
@@ -555,7 +615,7 @@ function workerHarness(options: {
   let run: AgentRunRecord = {
     id: contract.delegateIdentity.runId,
     tenantId,
-    ownerActorId: actorId,
+    ownerActorId: options.childOwnerMismatch ? "actor-other" : actorId,
     mode: "research",
     status: "queued",
     prompt: storedPrompt,
@@ -566,6 +626,31 @@ function workerHarness(options: {
     startedAt: createdAt,
   };
   const childScope = executionScopeFromDelegationContract(contract);
+  const parentRun: AgentRunRecord = {
+    id: contract.lineage.parentExecutionId,
+    tenantId,
+    ownerActorId: options.parentOwnerMismatch ? "actor-other" : actorId,
+    mode: "orchestrate",
+    status: "completed",
+    prompt: "Coordinate the bounded child.",
+    messages: [{ role: "user", content: "Coordinate the bounded child." }],
+    model: "configured-council-model",
+    agentId: contract.delegatorIdentity.logicalAgentId,
+    memoryContextCount: 0,
+    startedAt: createdAt,
+    completedAt: createdAt,
+  };
+  const parentScope = createExecutionScope({
+    tenantId,
+    initiatingActorId: actorId,
+    executingPrincipalType: "agent",
+    executingPrincipalId: parentIdentityPin.principalId,
+    delegationId: null,
+    correlationId: parentRun.id,
+    contextGrantIds: [],
+    capabilityGrantIds: [],
+    purpose: options.parentScopePurpose || "agent.run",
+  });
   const transitions: string[] = [];
   const job = delegationJob(execution, childScope);
 
@@ -581,11 +666,28 @@ function workerHarness(options: {
     transitions.push(input.transition.to);
     return execution;
   });
-  mocks.getAgentRun.mockImplementation(async () => run);
-  mocks.getAgentRunExecutionScope.mockResolvedValue(childScope);
+  mocks.getAgentRun.mockImplementation(async (runId: string) =>
+    runId === run.id ? run : runId === parentRun.id ? parentRun : undefined
+  );
+  mocks.getAgentRunExecutionScope.mockImplementation(async (runId: string) =>
+    runId === run.id
+      ? childScope
+      : runId === parentRun.id
+        ? parentScope
+        : undefined
+  );
   mocks.getAgentRunIdentityPin.mockImplementation(async (runId: string) =>
     runId === run.id
-      ? childIdentityPin
+      ? options.childPinMismatch
+        ? buildAgentRunIdentityPinV1({
+            runId: "run-child",
+            identity: buildBuiltInAgentIdentityV1({
+              agentId: "scout",
+              tenantId,
+              controllerActorId: "actor-other",
+            }),
+          })
+        : childIdentityPin
       : parentIdentityPin
   );
   mocks.claimQueuedAgentRun.mockImplementation(async () => {

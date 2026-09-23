@@ -318,6 +318,9 @@ async function POSTHandler(request: Request) {
   } catch (error) {
     return forbiddenResponse(error);
   }
+  const directRootRunId = parsed.data.resumeRunId || randomUUID();
+  const requestActorBinding =
+    canonicalRequestActorBindingFromSecurityContext(context);
   const queuedItemId = request.headers
     .get(PROMPT_QUEUE_DISPATCH_ID_HEADER)?.trim();
   const queuedDispatchToken = request.headers
@@ -439,7 +442,7 @@ async function POSTHandler(request: Request) {
     const project = await getOwnedProject(parsed.data.projectId, {
       tenantId: context.tenantId,
       actorId: context.actorId,
-      requestActorBinding: canonicalRequestActorBindingFromSecurityContext(context),
+      requestActorBinding,
     });
     if (!project) {
       return Response.json(
@@ -463,7 +466,7 @@ async function POSTHandler(request: Request) {
           projectId: parsed.data.contextScope === "mission"
             ? parsed.data.missionId
             : parsed.data.projectId,
-          correlationId: requestId,
+          correlationId: directRootRunId,
         });
     } catch (error) {
       if (!(error instanceof SharedContextAuthorityError)) throw error;
@@ -499,7 +502,7 @@ async function POSTHandler(request: Request) {
       });
       promptPersonalMemoryAccess =
         personalContextMemoryAccessFromSecurityContext(context, {
-          correlationId: requestId,
+          correlationId: directRootRunId,
           consentAuthority,
         });
       if (!promptPersonalMemoryAccess) {
@@ -526,7 +529,7 @@ async function POSTHandler(request: Request) {
   }
   const promptMemoryAccess = contextSelection?.evidenceIds.length
     ? agentPromptMemoryAccessFromSecurityContext(context, {
-        correlationId: requestId,
+        correlationId: directRootRunId,
       })
     : undefined;
   const promptEntityGraphAccess = contextSelection?.evidenceIds.some((id) =>
@@ -534,7 +537,7 @@ async function POSTHandler(request: Request) {
   )
     ? requestEntityAccessFromSecurityContext(context, {
         purposeId: "entity.read.v1",
-        correlationId: requestId,
+        correlationId: directRootRunId,
       })
     : undefined;
   let budgetLimits;
@@ -591,7 +594,7 @@ async function POSTHandler(request: Request) {
 
   if (computerUseTarget === "local_macos") {
     try {
-      await startLocalComputerSession(context, requestId);
+      await startLocalComputerSession(context, directRootRunId);
     } catch (error) {
       if (!(error instanceof LocalComputerUnavailableError)) throw error;
       return Response.json({
@@ -1019,6 +1022,11 @@ async function POSTHandler(request: Request) {
         const loopV2Enrollment =
           loopV2CanaryEnrollment || loopV2ContextTextEnrollment ||
           loopV2ModelTextEnrollment;
+        if (parsed.data.resumeRunId && !loopV2CanaryEnrollment) {
+          throw new Error(
+            "The paused run could not be resumed by its pinned Loop v2 runtime.",
+          );
+        }
         if (await stopBeforeMutationIfCanceled()) return;
         let missionOwner = {
           tenantId: context.tenantId,
@@ -1277,7 +1285,7 @@ async function POSTHandler(request: Request) {
                   : promptSharedMemoryAccess?.authority.projectId ||
                     threadProjectId,
                 missionId: mission.id,
-                correlationId: requestId,
+                correlationId: directRootRunId,
                 causationId: missionTask.id,
                 purpose: "workflow.run",
               },
@@ -1467,7 +1475,8 @@ async function POSTHandler(request: Request) {
                 ? mission?.id
                 : undefined
               : mission?.id,
-            correlationId: requestId,
+            correlationId: directRootRunId,
+            causationId: requestId,
             purpose: loopV2CanaryEnrollment
               ? "agent.loop.v2.read_only_canary"
               : loopV2ContextTextEnrollment
@@ -1480,6 +1489,7 @@ async function POSTHandler(request: Request) {
         const directEvents = loopV2CanaryEnrollment
           ? runLoopV2ReadOnlyCanary(
               {
+                runId: directRootRunId,
                 message: safeRequestMessage,
                 messages: safeMessages,
                 mode,
@@ -1488,6 +1498,7 @@ async function POSTHandler(request: Request) {
                 securityContext: context,
                 executionScope: directExecutionScope,
                 agentIdentity,
+                requestActorBinding,
                 enrollment: loopV2CanaryEnrollment,
                 resumeRunId: parsed.data.resumeRunId,
               },
@@ -1496,6 +1507,7 @@ async function POSTHandler(request: Request) {
           : loopV2ModelTextEnrollment
             ? runLoopV2ModelText(
                 {
+                  runId: directRootRunId,
                   message: safeRequestMessage,
                   mode,
                   threadId,
@@ -1503,6 +1515,7 @@ async function POSTHandler(request: Request) {
                   securityContext: context,
                   executionScope: directExecutionScope,
                   agentIdentity,
+                  requestActorBinding,
                   enrollment: loopV2ModelTextEnrollment,
                 },
                 agentAbortController.signal,
@@ -1510,6 +1523,7 @@ async function POSTHandler(request: Request) {
           : loopV2ContextTextEnrollment
             ? runLoopV2ModelText(
                 {
+                  runId: directRootRunId,
                   message: safeRequestMessage,
                   messages: safeMessages,
                   mode,
@@ -1518,6 +1532,7 @@ async function POSTHandler(request: Request) {
                   securityContext: context,
                   executionScope: directExecutionScope,
                   agentIdentity,
+                  requestActorBinding,
                   enrollment: loopV2ContextTextEnrollment,
                   contextScope: parsed.data.contextScope,
                   contextSelection,
@@ -1530,11 +1545,13 @@ async function POSTHandler(request: Request) {
               )
           : runAgent(
               {
+                runId: directRootRunId,
                 mode: parsed.data.mode,
                 threadId,
                 messages: safeMessages,
                 computerUseTarget,
                 securityContext: context,
+                requestActorBinding,
                 semanticRouting: {
                   capabilitySearchQuery:
                     semanticResolution.capabilitySearchQuery,

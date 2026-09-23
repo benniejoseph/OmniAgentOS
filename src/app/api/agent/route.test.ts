@@ -797,14 +797,19 @@ describe("agent semantic intent routing", () => {
 
     expect(response.status).toBe(200);
     await response.text();
+    const runRequest = routeMocks.runAgent.mock.calls[0][0];
     expect(routeMocks.startLocalComputerSession).toHaveBeenCalledWith(
       macContext,
-      "local-mac-request-a",
+      runRequest.runId,
     );
     expect(routeMocks.resolveLoopV2ReadOnlyCanaryEnrollment).not.toHaveBeenCalled();
     expect(routeMocks.resolveLoopV2ModelTextEnrollment).not.toHaveBeenCalled();
+    expect(runRequest.runId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
     expect(routeMocks.runAgent).toHaveBeenCalledWith(
       expect.objectContaining({
+        runId: runRequest.runId,
         computerUseTarget: "local_macos",
         maxToolSteps: 12,
         budgetLimits: expect.objectContaining({
@@ -817,7 +822,8 @@ describe("agent semantic intent routing", () => {
         }),
         securityContext: macContext,
         executionScope: expect.objectContaining({
-          correlationId: "local-mac-request-a",
+          correlationId: runRequest.runId,
+          causationId: "local-mac-request-a",
         }),
       }),
       expect.any(AbortSignal),
@@ -1052,20 +1058,32 @@ describe("agent semantic intent routing", () => {
         canonicalActorId: `actor:${context.auth.userId}`,
       }),
     });
+    const runRequest = routeMocks.runAgent.mock.calls[0][0];
+    expect(runRequest.runId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
     expect(routeMocks.personalContextMemoryAccessFromSecurityContext)
       .toHaveBeenCalledWith(personalContext, {
-        correlationId: "personal-context-a",
+        correlationId: runRequest.runId,
         consentAuthority: { authoritySha256: "a".repeat(64) },
       });
     expect(routeMocks.runAgent).toHaveBeenCalledWith(
       expect.objectContaining({
+        runId: runRequest.runId,
+        securityContext: personalContext,
+        requestActorBinding: expect.objectContaining({
+          canonicalActorId: `actor:${context.auth.userId}`,
+          legacyOwnerActorIds: [context.auth.email],
+        }),
         contextScope: "personal",
         promptPersonalMemoryAccess: {
           schemaVersion: 1,
           authority: "personal",
         },
         executionScope: expect.objectContaining({
-          correlationId: "personal-context-a",
+          initiatingActorId: context.auth.email,
+          correlationId: runRequest.runId,
+          causationId: "personal-context-a",
           workspaceId: null,
           projectId: null,
           missionId: null,
@@ -1095,11 +1113,12 @@ describe("agent semantic intent routing", () => {
 
     expect(response.status).toBe(200);
     await response.text();
+    const runRequest = routeMocks.runAgent.mock.calls[0][0];
     expect(routeMocks.requestSharedMemoryAccessFromSecurityContext)
       .toHaveBeenCalledWith(context, {
         scope: "project",
         projectId: "project-a",
-        correlationId: "project-context-a",
+        correlationId: runRequest.runId,
       });
     expect(routeMocks.runAgent).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1113,7 +1132,8 @@ describe("agent semantic intent routing", () => {
         executionScope: expect.objectContaining({
           workspaceId: "workspace:team-a",
           projectId: "project:launch",
-          correlationId: "project-context-a",
+          correlationId: runRequest.runId,
+          causationId: "project-context-a",
         }),
       }),
       expect.any(AbortSignal),
@@ -1141,11 +1161,12 @@ describe("agent semantic intent routing", () => {
 
     expect(response.status).toBe(200);
     await response.text();
+    const runRequest = routeMocks.runAgent.mock.calls[0][0];
     expect(routeMocks.requestSharedMemoryAccessFromSecurityContext)
       .toHaveBeenCalledWith(context, {
         scope: "project",
         projectId: missionId,
-        correlationId: "mission-context-a",
+        correlationId: runRequest.runId,
       });
     expect(routeMocks.runAgent).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1155,7 +1176,8 @@ describe("agent semantic intent routing", () => {
           workspaceId: "workspace:team-a",
           projectId: "project:launch",
           missionId,
-          correlationId: "mission-context-a",
+          correlationId: runRequest.runId,
+          causationId: "mission-context-a",
         }),
       }),
       expect.any(AbortSignal),
@@ -1429,6 +1451,34 @@ describe("agent Loop v2 canary routing", () => {
     expect(routeMocks.runLoopV2ReadOnlyCanary).not.toHaveBeenCalled();
   });
 
+  it("fails closed when a paused Loop v2 run cannot recover its pinned runtime", async () => {
+    routeMocks.getThread.mockResolvedValue({
+      id: "00000000-0000-4000-8000-000000000002",
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      mode: "orchestrate",
+    });
+
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        message: "yes",
+        threadId: "00000000-0000-4000-8000-000000000002",
+        resumeRunId: "00000000-0000-4000-8000-000000000001",
+        requestId: "loop-v2-missing-pin-a",
+      }),
+    }));
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain(
+      "The paused run could not be resumed by its pinned Loop v2 runtime.",
+    );
+    expect(routeMocks.runLoopV2ReadOnlyCanary).not.toHaveBeenCalled();
+    expect(routeMocks.runLoopV2ModelText).not.toHaveBeenCalled();
+    expect(routeMocks.runAgent).not.toHaveBeenCalled();
+  });
+
   it("uses the pinned canary runner without invoking the legacy loop", async () => {
     const enrollment = { enginePin: { engineVersionId: "loop-v2-test" } };
     routeMocks.resolveLoopV2ReadOnlyCanaryEnrollment.mockResolvedValue(
@@ -1464,14 +1514,21 @@ describe("agent Loop v2 canary routing", () => {
       requiresApproval: false,
       requestUsesMessageField: true,
     }));
+    const runRequest = routeMocks.runLoopV2ReadOnlyCanary.mock.calls[0][0];
+    expect(runRequest.runId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
     expect(routeMocks.runLoopV2ReadOnlyCanary).toHaveBeenCalledWith(
       expect.objectContaining({
+        runId: runRequest.runId,
         message: "Show my recent runs",
         agentId: "atlas",
         enrollment,
         executionScope: expect.objectContaining({
           purpose: "agent.loop.v2.read_only_canary",
           initiatingActorId: "actor-a",
+          correlationId: runRequest.runId,
+          causationId: "loop-v2-list-runs-a",
         }),
       }),
       expect.any(AbortSignal),
@@ -1511,19 +1568,71 @@ describe("agent Loop v2 canary routing", () => {
         requestUsesMessageField: true,
       }),
     );
+    const runRequest = routeMocks.runLoopV2ModelText.mock.calls[0][0];
     expect(routeMocks.runLoopV2ModelText).toHaveBeenCalledWith(
       expect.objectContaining({
+        runId: runRequest.runId,
         message,
         agentId: "atlas",
         enrollment,
         executionScope: expect.objectContaining({
           purpose: "agent.loop.v2.model_text_canary",
           initiatingActorId: "actor-a",
+          correlationId: runRequest.runId,
+          causationId: "loop-v2-model-text-a",
         }),
       }),
       expect.any(AbortSignal),
     );
     expect(routeMocks.runLoopV2ReadOnlyCanary).not.toHaveBeenCalled();
+    expect(routeMocks.runAgent).not.toHaveBeenCalled();
+  });
+
+  it("passes the exact authenticated actor bridge into a Loop v2 root run", async () => {
+    const personalContext = { ...context, actorId: context.auth.email };
+    const enrollment = { enginePin: { engineVersionId: "loop-v2-test" } };
+    routeMocks.authorizeRequest.mockResolvedValue(personalContext);
+    routeMocks.createThread.mockResolvedValue({
+      id: "thread-a",
+      tenantId: personalContext.tenantId,
+      actorId: personalContext.actorId,
+    });
+    routeMocks.resolveLoopV2ReadOnlyCanaryEnrollment.mockResolvedValue(
+      enrollment,
+    );
+    routeMocks.runLoopV2ReadOnlyCanary.mockImplementation(async function* () {
+      yield { type: "run", runId: "run-v2", threadId: "thread-a" };
+      yield { type: "done", response: "Here are your recent runs." };
+    });
+
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        message: "Show my recent runs",
+        requestId: "loop-v2-actor-bridge-a",
+      }),
+    }));
+
+    expect(response.status).toBe(200);
+    await response.text();
+    const runRequest = routeMocks.runLoopV2ReadOnlyCanary.mock.calls[0][0];
+    expect(runRequest).toMatchObject({
+      securityContext: personalContext,
+      requestActorBinding: {
+        canonicalActorId: `actor:${context.auth.userId}`,
+        legacyOwnerActorIds: [context.auth.email],
+        readableOwnerActorIds: [
+          `actor:${context.auth.userId}`,
+          context.auth.email,
+        ],
+      },
+      executionScope: {
+        initiatingActorId: context.auth.email,
+        correlationId: runRequest.runId,
+        causationId: "loop-v2-actor-bridge-a",
+      },
+    });
     expect(routeMocks.runAgent).not.toHaveBeenCalled();
   });
 
@@ -1567,8 +1676,10 @@ describe("agent Loop v2 canary routing", () => {
         requestedAgentId: "atlas",
       }),
     );
+    const runRequest = routeMocks.runLoopV2ModelText.mock.calls[0][0];
     expect(routeMocks.runLoopV2ModelText).toHaveBeenCalledWith(
       expect.objectContaining({
+        runId: runRequest.runId,
         message,
         contextScope: "session",
         enrollment,
@@ -1576,6 +1687,8 @@ describe("agent Loop v2 canary routing", () => {
           purpose: "agent.loop.v2.context_text_canary",
           projectId: null,
           missionId: null,
+          correlationId: runRequest.runId,
+          causationId: "loop-v2-context-text-a",
         }),
       }),
       expect.any(AbortSignal),
@@ -1624,15 +1737,22 @@ describe("agent Loop v2 canary routing", () => {
         resumeRunId: "00000000-0000-4000-8000-000000000001",
       }),
     );
+    const runRequest = routeMocks.runLoopV2ReadOnlyCanary.mock.calls[0][0];
     expect(routeMocks.runLoopV2ReadOnlyCanary).toHaveBeenCalledWith(
       expect.objectContaining({
+        runId: "00000000-0000-4000-8000-000000000001",
         message: "yes",
         threadId: "00000000-0000-4000-8000-000000000002",
         resumeRunId: "00000000-0000-4000-8000-000000000001",
         enrollment,
+        executionScope: expect.objectContaining({
+          correlationId: "00000000-0000-4000-8000-000000000001",
+          causationId: "loop-v2-clarification-a",
+        }),
       }),
       expect.any(AbortSignal),
     );
+    expect(runRequest.runId).toBe(runRequest.executionScope.correlationId);
     expect(routeMocks.runAgent).not.toHaveBeenCalled();
   });
 });

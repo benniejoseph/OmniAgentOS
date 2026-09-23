@@ -6,6 +6,7 @@ import {
   type AgentRunIdentityPinV1,
 } from "@/lib/agents/identity-contracts";
 import { buildDelegationExecutionRecordV1 } from "@/lib/delegation/execution-record";
+import type { createDelegationExecution } from "@/lib/delegation/execution-store";
 import {
   DELEGATION_PERSONA_BRIEF_MAX_GUIDANCE_LENGTH,
 } from "@/lib/delegation/execution-contract";
@@ -39,7 +40,10 @@ import {
   refreshRunBudgetWallTime,
   reserveRunBudget,
 } from "@/lib/runs/budgets";
-import { createExecutionScope } from "@/lib/security/execution-scope";
+import {
+  createExecutionScope,
+  deriveExecutionScope,
+} from "@/lib/security/execution-scope";
 import type { resolveRuntimeModelAssignment } from "@/lib/settings/runtime-models";
 
 describe("dynamic delegation runtime", () => {
@@ -305,18 +309,147 @@ describe("dynamic delegation runtime", () => {
       .toThrow(/live parent-loop budget reservation/i);
     expect(harness.createRun).not.toHaveBeenCalled();
   });
+
+  it("bridges an exact authenticated legacy owner into canonical child authority", async () => {
+    const harness = runtimeHarness({
+      legacyOwnerBinding: {
+        legacyActorId: "owner@example.test",
+        authUserId: "11111111-1111-4111-8111-111111111111",
+      },
+    });
+    const toolScope = deriveExecutionScope(harness.parentExecutionScope, {
+      causationId: "call-delegate-a",
+      purpose: "agent.tool.execute",
+    });
+
+    const execution = await delegateAgentTask({
+      ...harness.request(),
+      parentExecutionScope: toolScope,
+    }, harness.dependencies);
+
+    expect(execution.ownerActorId).toBe(harness.canonicalActorId);
+    expect(harness.createRun).toHaveBeenCalledWith(expect.objectContaining({
+      actorId: harness.canonicalActorId,
+    }));
+    expect(harness.dependencies.listParentEvents).toHaveBeenCalledWith(
+      `run:${harness.parentRun.id}`,
+      expect.objectContaining({ actorId: harness.parentRun.ownerActorId }),
+    );
+    const parentAuthority = harness.createExecution.mock.calls[0][0]
+      .parentExecutionScope;
+    expect(parentAuthority).toMatchObject({
+      tenantId: harness.parentExecutionScope.tenantId,
+      initiatingActorId: harness.canonicalActorId,
+      executingPrincipalId:
+        harness.parentExecutionScope.executingPrincipalId,
+      correlationId: harness.parentExecutionScope.correlationId,
+      contextGrantIds: harness.parentExecutionScope.contextGrantIds,
+      capabilityGrantIds: harness.parentExecutionScope.capabilityGrantIds,
+      purpose: "agent.delegation.authority.v2",
+      causationId: "call-delegate-a",
+    });
+  });
+
+  it("rejects a forged canonical owner binding before child creation", async () => {
+    const harness = runtimeHarness({
+      legacyOwnerBinding: {
+        legacyActorId: "owner@example.test",
+        authUserId: "11111111-1111-4111-8111-111111111111",
+      },
+    });
+    const request = harness.request();
+
+    await expect(delegateAgentTask({
+      ...request,
+      requestActorBinding: {
+        ...request.requestActorBinding!,
+        readableOwnerActorIds: [
+          harness.parentRun.ownerActorId,
+          harness.canonicalActorId,
+        ],
+      },
+    }, harness.dependencies)).rejects.toThrow(/exact authenticated actor binding/i);
+    expect(harness.createRun).not.toHaveBeenCalled();
+    expect(harness.createExecution).not.toHaveBeenCalled();
+  });
+
+  it("rejects a derived tool scope that widens the persisted root grants", async () => {
+    const harness = runtimeHarness();
+    const validToolScope = deriveExecutionScope(harness.parentExecutionScope, {
+      causationId: "call-delegate-a",
+      purpose: "agent.tool.execute",
+    });
+    const widenedToolScope = createExecutionScope({
+      tenantId: validToolScope.tenantId,
+      initiatingActorId: validToolScope.initiatingActorId,
+      executingPrincipalType: validToolScope.executingPrincipalType,
+      executingPrincipalId: validToolScope.executingPrincipalId,
+      workspaceId: validToolScope.workspaceId,
+      projectId: validToolScope.projectId,
+      missionId: validToolScope.missionId,
+      delegationId: validToolScope.delegationId,
+      correlationId: validToolScope.correlationId,
+      causationId: validToolScope.causationId,
+      contextGrantIds: validToolScope.contextGrantIds,
+      capabilityGrantIds: [
+        ...validToolScope.capabilityGrantIds,
+        "capability:forged",
+      ],
+      purpose: validToolScope.purpose,
+    });
+
+    await expect(delegateAgentTask({
+      ...harness.request(),
+      parentExecutionScope: widenedToolScope,
+    }, harness.dependencies)).rejects.toThrow(/exact persisted parent execution scope/i);
+    expect(harness.createRun).not.toHaveBeenCalled();
+    expect(harness.createExecution).not.toHaveBeenCalled();
+    expect(harness.enqueueJob).not.toHaveBeenCalled();
+  });
+
+  it("rejects a canonical binding that does not match the parent identity pin", async () => {
+    const harness = runtimeHarness({
+      legacyOwnerBinding: {
+        legacyActorId: "owner@example.test",
+        authUserId: "11111111-1111-4111-8111-111111111111",
+      },
+    });
+    const mismatchedPin = buildAgentRunIdentityPinV1({
+      runId: harness.parentRun.id,
+      identity: buildBuiltInAgentIdentityV1({
+        agentId: "atlas",
+        tenantId: harness.parentRun.tenantId,
+        controllerActorId: "actor:22222222-2222-4222-8222-222222222222",
+      }),
+    });
+    harness.dependencies.getRunIdentityPin.mockResolvedValueOnce(mismatchedPin);
+
+    await expect(delegateAgentTask(
+      harness.request(),
+      harness.dependencies,
+    )).rejects.toThrow(/active parent run/i);
+    expect(harness.createRun).not.toHaveBeenCalled();
+    expect(harness.createExecution).not.toHaveBeenCalled();
+  });
 });
 
 function runtimeHarness(options: {
   parentMessages?: AgentRunRecord["messages"];
+  legacyOwnerBinding?: {
+    legacyActorId: string;
+    authUserId: string;
+  };
 } = {}) {
   const tenantId = "tenant-runtime";
-  const actorId = "actor-runtime";
+  const actorId = options.legacyOwnerBinding?.legacyActorId || "actor-runtime";
+  const canonicalActorId = options.legacyOwnerBinding
+    ? `actor:${options.legacyOwnerBinding.authUserId}`
+    : actorId;
   const parentRunId = "run-parent-runtime";
   const parentIdentity = buildBuiltInAgentIdentityV1({
     agentId: "atlas",
     tenantId,
-    controllerActorId: actorId,
+    controllerActorId: canonicalActorId,
   });
   const parentPin = buildAgentRunIdentityPinV1({
     runId: parentRunId,
@@ -393,9 +526,9 @@ function runtimeHarness(options: {
       startedAt: new Date().toISOString(),
     };
   }) as typeof createQueuedAgentRun;
-  const createExecution = vi.fn(async (input: {
-    contract: Parameters<typeof buildDelegationExecutionRecordV1>[0]["contract"];
-  }) => {
+  const createExecution = vi.fn(async (
+    input: Parameters<typeof createDelegationExecution>[0],
+  ) => {
     existing = buildDelegationExecutionRecordV1({
       contract: input.contract,
       budgetLedgerRevision: 1,
@@ -452,7 +585,7 @@ function runtimeHarness(options: {
       buildBuiltInAgentIdentityV1({
         agentId: input.agentId as "scout" | "sentinel",
         tenantId,
-        controllerActorId: actorId,
+        controllerActorId: canonicalActorId,
       })),
     resolveRuntimeModel: vi.fn(async () => runtimeResolution()) as typeof resolveRuntimeModelAssignment,
     createRun,
@@ -465,6 +598,8 @@ function runtimeHarness(options: {
 
   return {
     parentRun,
+    parentExecutionScope,
+    canonicalActorId,
     parentHarnessEvent,
     dependencies,
     createRun,
@@ -487,6 +622,18 @@ function runtimeHarness(options: {
         actorId,
         parentExecutionScope,
         idempotencyKey,
+        ...(options.legacyOwnerBinding
+          ? {
+              requestActorBinding: {
+                version: 1 as const,
+                kind: "auth_user" as const,
+                authUserId: options.legacyOwnerBinding.authUserId,
+                canonicalActorId,
+                legacyOwnerActorIds: [actorId],
+                readableOwnerActorIds: [canonicalActorId, actorId],
+              },
+            }
+          : {}),
         parentBudgetAuthority: buildParentDelegationBudgetAuthorityV1({
           parentExecutionScope,
           idempotencyKey,

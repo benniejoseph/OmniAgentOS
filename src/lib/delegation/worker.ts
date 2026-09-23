@@ -99,9 +99,19 @@ export async function processDelegationExecutionJob(
   }
 
   let run = await getAgentRun(payload.runId, { tenantId: job.tenantId });
-  const [boundScope, childIdentityPin, parentIdentityPin] = await Promise.all([
+  const [
+    boundScope,
+    childIdentityPin,
+    parentRun,
+    parentScope,
+    parentIdentityPin,
+  ] = await Promise.all([
     getAgentRunExecutionScope(payload.runId, { tenantId: job.tenantId }),
     getAgentRunIdentityPin(payload.runId, { tenantId: job.tenantId }),
+    getAgentRun(execution.parentExecutionId, { tenantId: job.tenantId }),
+    getAgentRunExecutionScope(execution.parentExecutionId, {
+      tenantId: job.tenantId,
+    }),
     getAgentRunIdentityPin(execution.parentExecutionId, {
       tenantId: job.tenantId,
     }),
@@ -109,12 +119,35 @@ export async function processDelegationExecutionJob(
   if (
     !run ||
     run.agentId !== execution.delegateAgentId ||
+    run.ownerActorId !== execution.ownerActorId ||
     !boundScope ||
     !executionScopesEqual(boundScope, childScope) ||
-    childIdentityPin?.pinSha256 !==
+    !childIdentityPin ||
+    childIdentityPin.pinSha256 !==
       execution.contract.delegateIdentity.identityPinSha256 ||
-    parentIdentityPin?.pinSha256 !==
-      execution.contract.delegatorIdentity.identityPinSha256
+    childIdentityPin.runId !== run.id ||
+    childIdentityPin.tenantId !== execution.tenantId ||
+    childIdentityPin.actorId !== execution.ownerActorId ||
+    childIdentityPin.logicalAgentId !== run.agentId ||
+    childIdentityPin.principalId !== boundScope.executingPrincipalId ||
+    boundScope.initiatingActorId !== execution.ownerActorId ||
+    !parentRun ||
+    !parentScope ||
+    !parentIdentityPin ||
+    parentIdentityPin.pinSha256 !==
+      execution.contract.delegatorIdentity.identityPinSha256 ||
+    parentIdentityPin.actorId !== execution.ownerActorId ||
+    parentIdentityPin.tenantId !== execution.tenantId ||
+    parentIdentityPin.runId !== parentRun.id ||
+    parentIdentityPin.logicalAgentId !== parentRun.agentId ||
+    parentIdentityPin.principalId !== parentScope.executingPrincipalId ||
+    parentRun.id !== execution.parentExecutionId ||
+    parentRun.ownerActorId !== parentScope.initiatingActorId ||
+    parentScope.tenantId !== execution.tenantId ||
+    parentScope.correlationId !== execution.parentExecutionId ||
+    parentScope.executingPrincipalType !== "agent" ||
+    parentScope.delegationId !== null ||
+    parentScope.purpose !== "agent.run"
   ) {
     return failBeforeExecution(job, execution, childScope, "identity_binding_mismatch", run);
   }
@@ -150,7 +183,7 @@ export async function processDelegationExecutionJob(
       `run:${execution.parentExecutionId}`,
       {
         tenantId: job.tenantId,
-        actorId: execution.ownerActorId,
+        actorId: parentRun.ownerActorId,
         limit: 200,
         order: "asc",
       },
