@@ -81,6 +81,7 @@ import {
   resolveRuntimeModelAssignment,
   type RuntimeModelResolution,
 } from "@/lib/settings/runtime-models";
+import { runtimeModelRoutingPolicySha256 } from "@/lib/settings/runtime-model-routing-pin";
 import type { ModelAssignmentScope } from "@/lib/settings/types";
 import { scheduleDurableSpecialistDrain } from "@/lib/subagents/scheduler";
 import {
@@ -595,23 +596,23 @@ export function exactDelegationRuntime(input: {
     ? input.runtimeModel.model
     : input.deploymentRoute.model;
   const tier = input.deploymentRoute.tier;
-  const routingPolicy = {
+  const routingPolicySha256 = runtimeModelRoutingPolicySha256({
     scope: input.scope,
     source: input.runtimeModel.source,
     assignmentId: input.runtimeModel.assignmentId || null,
     assignmentRevision: input.runtimeModel.assignmentRevision || null,
     assignmentConfigurationSha256:
       input.runtimeModel.assignmentConfigurationSha256 || null,
-    provider,
-    model,
+    providerId: provider,
+    modelId: model,
     tier,
-  };
+  });
   return Object.freeze({
     provider,
     model,
     tier,
     routingPolicyId: `model-routing:${input.scope}:${input.runtimeModel.source}`,
-    routingPolicySha256: canonicalJsonSha256(routingPolicy),
+    routingPolicySha256,
   });
 }
 

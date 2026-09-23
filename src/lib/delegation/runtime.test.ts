@@ -15,6 +15,7 @@ import {
 import {
   delegateAgentTask,
   delegateAgentTaskInputSchema,
+  exactDelegationRuntime,
   executionScopeFromDelegationContract,
   type DelegateAgentTaskInput,
 } from "@/lib/delegation/runtime";
@@ -47,9 +48,39 @@ import {
   deriveExecutionScope,
 } from "@/lib/security/execution-scope";
 import type { resolveRuntimeModelAssignment } from "@/lib/settings/runtime-models";
+import { runtimeModelRoutingPolicySha256 } from "@/lib/settings/runtime-model-routing-pin";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
 describe("dynamic delegation runtime", () => {
+  it("uses the same complete routing pin digest as the child runner", () => {
+    const runtimeModel = runtimeResolution();
+    const deploymentRoute = {
+      provider: "openai" as const,
+      model: "deployment-model",
+      fallbackModel: undefined,
+      tier: "reasoning" as const,
+      reason: "Test route",
+    };
+
+    const exact = exactDelegationRuntime({
+      runtimeModel,
+      deploymentRoute,
+      scope: "council",
+    });
+
+    expect(exact.routingPolicySha256).toBe(runtimeModelRoutingPolicySha256({
+      scope: "council",
+      source: runtimeModel.source,
+      providerId: runtimeModel.provider!,
+      modelId: runtimeModel.model!,
+      tier: "reasoning",
+      assignmentId: runtimeModel.assignmentId,
+      assignmentRevision: runtimeModel.assignmentRevision,
+      assignmentConfigurationSha256:
+        runtimeModel.assignmentConfigurationSha256,
+    }));
+  });
+
   it("creates one deterministic child and makes retries idempotent", async () => {
     const harness = runtimeHarness();
     const request = harness.request({ mode: "isolated" });
