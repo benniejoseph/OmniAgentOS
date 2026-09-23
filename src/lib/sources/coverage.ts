@@ -402,7 +402,7 @@ function pickerDomain(
 }
 
 function googleAccountSuffix(grant: RequestOAuthGrant) {
-  const label = grant.connectionLabel.trim().slice(0, 48) ||
+  const label = grant.connectionLabel?.trim().slice(0, 48) ||
     (grant.connectionPurpose === "work" ? "Work" : "Personal");
   const email = grant.accountEmail?.trim().toLowerCase();
   return email ? `${label} (${email})`.slice(0, 88) : label;

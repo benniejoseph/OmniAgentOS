@@ -3,7 +3,7 @@ import { z } from "zod";
 
 import { getActiveGoogleWorkspaceAccess } from "@/lib/connectors/google-workspace-access";
 import type { GoogleWorkspaceCapability } from "@/lib/connectors/google-workspace-capabilities";
-import type { OAuthGrant } from "@/lib/connectors/oauth-store";
+import type { NormalizedOAuthGrant } from "@/lib/connectors/oauth-store";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
 const MAX_PROVIDER_JSON_BYTES = 1_000_000;
@@ -354,7 +354,22 @@ export const googleWorkspaceEffectResultSchema = z.object({
     .optional(),
 }).strict();
 
-export type GoogleWorkspaceEffectResult = z.infer<typeof googleWorkspaceEffectResultSchema>;
+type CanonicalGoogleWorkspaceEffectResult = z.infer<
+  typeof googleWorkspaceEffectResultSchema
+>;
+
+/**
+ * Public construction type retained for older receipt readers and projections.
+ * New provider effects are always parsed by googleWorkspaceEffectResultSchema,
+ * which requires the exact account binding before they can be persisted.
+ */
+export type GoogleWorkspaceEffectResult = Omit<
+  CanonicalGoogleWorkspaceEffectResult,
+  "connectionId" | "connectionLabel" | "connectionPurpose"
+> & Partial<Pick<
+  CanonicalGoogleWorkspaceEffectResult,
+  "connectionId" | "connectionLabel" | "connectionPurpose"
+>>;
 
 type ActionOptions = Readonly<{
   tenantId: string;
@@ -3108,7 +3123,7 @@ type ProviderContext = Readonly<{
   abortSignal?: AbortSignal;
 }>;
 
-function googleConnectionProjection(grant: OAuthGrant): GoogleConnectionProjection {
+function googleConnectionProjection(grant: NormalizedOAuthGrant): GoogleConnectionProjection {
   return Object.freeze({
     connectionId: grant.id,
     ...(grant.accountEmail ? { accountEmail: grant.accountEmail } : {}),

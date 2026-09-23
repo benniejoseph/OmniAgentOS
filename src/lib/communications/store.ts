@@ -63,15 +63,6 @@ export async function upsertPersonContactPolicy(input: {
   optOutReason?: string;
 }, owner: OwnerScope) {
   requireDatabase();
-  if (
-    input.draft.googleConnectionId &&
-    input.draft.googleConnectionId !== input.googleConnectionId
-  ) {
-    throw new CommunicationPolicyError(
-      "The delivery receipt does not match the Google account pinned to this draft.",
-      "delivery_conflict",
-    );
-  }
   const scope = exactOwner(owner);
   await ensureDatabaseSchema();
   const address = normalizeAddress(input.channel, input.address);
@@ -446,6 +437,15 @@ export async function completeMessageDelivery(input: {
   googleConnectionId: string;
 }, owner: OwnerScope) {
   requireDatabase();
+  if (
+    input.draft.googleConnectionId &&
+    input.draft.googleConnectionId !== input.googleConnectionId
+  ) {
+    throw new CommunicationPolicyError(
+      "The delivery receipt does not match the Google account pinned to this draft.",
+      "delivery_conflict",
+    );
+  }
   const scope = exactOwner(owner);
   await ensureDatabaseSchema();
   const now = new Date().toISOString();

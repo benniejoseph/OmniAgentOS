@@ -2,7 +2,7 @@ import {
   OAuthCredentialError,
   getOAuthGrantSecrets,
   saveOAuthGrant,
-  type OAuthGrant,
+  type NormalizedOAuthGrant,
 } from "@/lib/connectors/oauth-store";
 import { refreshOAuthAccess } from "@/lib/connectors/oauth-providers";
 import {
@@ -20,7 +20,7 @@ export async function getActiveGoogleWorkspaceAccess(input: {
   actorId: string;
   connectionId?: string;
   capability: GoogleWorkspaceCapability;
-}): Promise<Readonly<{ accessToken: string; grant: OAuthGrant }>> {
+}): Promise<Readonly<{ accessToken: string; grant: NormalizedOAuthGrant }>> {
   const secrets = await getOAuthGrantSecrets(
     input.tenantId,
     input.actorId,

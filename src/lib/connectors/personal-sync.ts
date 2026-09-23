@@ -8,7 +8,7 @@ import {
   listOAuthGrantsForTenant,
   updateOAuthSyncState,
   OAuthCredentialError,
-  type OAuthGrant,
+  type NormalizedOAuthGrant,
   type OAuthSourceCoverageCheckpoint,
 } from "@/lib/connectors/oauth-store";
 import { getActiveGoogleWorkspaceAccess } from "@/lib/connectors/google-workspace-access";
@@ -104,7 +104,7 @@ type PersonalSourceSettlement = Readonly<{
   error?: string;
 }>;
 
-function googleConnectionSourceNamespace(grant: OAuthGrant) {
+function googleConnectionSourceNamespace(grant: NormalizedOAuthGrant) {
   if (grant.connectionPurpose === "personal") {
     return {
       idempotencyPrefix: "oauth:google",

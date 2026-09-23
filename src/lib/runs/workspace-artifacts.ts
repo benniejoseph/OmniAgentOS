@@ -131,6 +131,7 @@ export async function listRunWorkspaceArtifacts(
       const resourceIdSha256 = sha256(output.resourceId);
       const providerAcknowledgementSha256 = canonicalJsonSha256({
         provider: "google_workspace",
+        connectionId: output.connectionId,
         toolId: reference.toolId,
         resourceType: definition.resourceType,
         resourceIdSha256,
@@ -140,6 +141,7 @@ export async function listRunWorkspaceArtifacts(
       if (
         !receipt ||
         output.toolId !== reference.toolId ||
+        output.connectionId !== input.connectionId ||
         output.resourceType !== definition.resourceType ||
         output.resourceIdSha256 !== resourceIdSha256 ||
         output.observedTargetStateSha256 !== target.expectedTargetStateSha256 ||

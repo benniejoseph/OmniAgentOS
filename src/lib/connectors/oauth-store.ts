@@ -33,8 +33,10 @@ export type OAuthGrant = {
   actorId: string;
   provider: OAuthProvider;
   accountEmail?: string;
-  connectionLabel: string;
-  connectionPurpose: GoogleConnectionPurpose;
+  /** Optional only for legacy/public input compatibility; store reads normalize it. */
+  connectionLabel?: string;
+  /** Optional only for legacy/public input compatibility; store reads normalize it. */
+  connectionPurpose?: GoogleConnectionPurpose;
   scopes: string[];
   status: "active" | "revoked";
   authorizationGeneration: number;
@@ -47,10 +49,18 @@ export type OAuthGrant = {
   createdAt: string;
   updatedAt: string;
 };
+export type NormalizedOAuthGrant = OAuthGrant & Readonly<{
+  connectionLabel: string;
+  connectionPurpose: GoogleConnectionPurpose;
+}>;
 export type RequestOAuthGrant = Omit<OAuthGrant, "sourceCoverage"> & {
   sourceCoverage: OAuthSourceCoverage;
   manageable: boolean;
 };
+export type NormalizedRequestOAuthGrant = RequestOAuthGrant & Readonly<{
+  connectionLabel: string;
+  connectionPurpose: GoogleConnectionPurpose;
+}>;
 export type OAuthSyncLease = Readonly<{
   ownerId: string;
   generation: number;
@@ -292,7 +302,7 @@ export async function listOAuthGrantsForRequest(input: {
   tenantId: string;
   actorId: string;
   requestActorBinding?: CanonicalRequestActorBindingV1;
-}): Promise<RequestOAuthGrant[]> {
+}): Promise<NormalizedRequestOAuthGrant[]> {
   if (!hasDatabaseUrl()) {
     const ledger = await readJsonFile<{ grants: InternalGrant[] }>(
       filePath(),
@@ -425,7 +435,7 @@ async function findRetainedOAuthGrant(
   provider: OAuthProvider,
   selector: OAuthGrantSelector,
 ) {
-  let candidates: OAuthGrant[];
+  let candidates: NormalizedOAuthGrant[];
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`SELECT * FROM omni_oauth_grants WHERE tenant_id = ${tenantId} AND actor_id = ${actorId} AND provider = ${provider} ORDER BY updated_at DESC, id`;
@@ -450,11 +460,13 @@ export async function claimOAuthSyncLease(input: {
   tenantId: string;
   actorId: string;
   provider: OAuthProvider;
-  connectionId: string;
+  connectionId?: string;
 }): Promise<
   | { status: "claimed"; lease: OAuthSyncLease }
   | { status: "busy" }
 > {
+  const connectionId = await exactActiveConnectionId(input);
+  if (!connectionId) return { status: "busy" };
   const ownerId = randomUUID();
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
@@ -469,7 +481,7 @@ export async function claimOAuthSyncLease(input: {
       WHERE tenant_id = ${input.tenantId}
         AND actor_id = ${input.actorId}
         AND provider = ${input.provider}
-        AND id = ${input.connectionId}
+        AND id = ${connectionId}
         AND status = 'active'
         AND (
           sync_lease_owner_id IS NULL
@@ -499,7 +511,7 @@ export async function claimOAuthSyncLease(input: {
           grant.tenantId !== input.tenantId ||
           grant.actorId !== input.actorId ||
           grant.provider !== input.provider ||
-          grant.id !== input.connectionId ||
+          grant.id !== connectionId ||
           grant.status !== "active" ||
           (
             grant.syncLeaseOwnerId &&
@@ -532,7 +544,7 @@ export async function updateOAuthSyncState(input: {
   tenantId: string;
   actorId: string;
   provider: OAuthProvider;
-  connectionId: string;
+  connectionId?: string;
   status: "syncing" | "healthy" | "error";
   cursor?: string;
   error?: string;
@@ -543,6 +555,8 @@ export async function updateOAuthSyncState(input: {
     source: OAuthPersonalSourceId;
   })[];
 }) {
+  const connectionId = await exactActiveConnectionId(input);
+  if (!connectionId) return undefined;
   const now = new Date().toISOString();
   const sourceSettlements = normalizeSourceSettlements(input.sourceSettlements || []);
   if (input.releaseLease && !input.lease) {
@@ -551,12 +565,12 @@ export async function updateOAuthSyncState(input: {
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const sealedCursor = input.cursor
-      ? JSON.stringify(sealJsonPayload(input.cursor, syncCursorBinding({ ...input, id: input.connectionId })))
+      ? JSON.stringify(sealJsonPayload(input.cursor, syncCursorBinding({ ...input, id: connectionId })))
       : undefined;
     const persist = async (sql: ReturnType<typeof getSql>) => {
       let rows = input.lease
-        ? await sql`UPDATE omni_oauth_grants SET sync_status = ${input.status}, sync_error = ${input.error || null}, sync_cursor = COALESCE(${sealedCursor || null}, sync_cursor), synced_items = synced_items + ${input.syncedItems || 0}, last_synced_at = CASE WHEN ${input.status} = 'healthy' THEN ${now}::timestamptz ELSE last_synced_at END, sync_lease_owner_id = CASE WHEN ${Boolean(input.releaseLease)} THEN NULL ELSE sync_lease_owner_id END, sync_lease_expires_at = CASE WHEN ${Boolean(input.releaseLease)} THEN NULL ELSE sync_lease_expires_at END, updated_at = ${now} WHERE tenant_id = ${input.tenantId} AND actor_id = ${input.actorId} AND provider = ${input.provider} AND id = ${input.connectionId} AND status = 'active' AND sync_lease_owner_id = ${input.lease.ownerId} AND sync_lease_generation = ${input.lease.generation} AND sync_lease_expires_at > clock_timestamp() RETURNING *`
-        : await sql`UPDATE omni_oauth_grants SET sync_status = ${input.status}, sync_error = ${input.error || null}, sync_cursor = COALESCE(${sealedCursor || null}, sync_cursor), synced_items = synced_items + ${input.syncedItems || 0}, last_synced_at = CASE WHEN ${input.status} = 'healthy' THEN ${now}::timestamptz ELSE last_synced_at END, updated_at = ${now} WHERE tenant_id = ${input.tenantId} AND actor_id = ${input.actorId} AND provider = ${input.provider} AND id = ${input.connectionId} AND status = 'active' RETURNING *`;
+        ? await sql`UPDATE omni_oauth_grants SET sync_status = ${input.status}, sync_error = ${input.error || null}, sync_cursor = COALESCE(${sealedCursor || null}, sync_cursor), synced_items = synced_items + ${input.syncedItems || 0}, last_synced_at = CASE WHEN ${input.status} = 'healthy' THEN ${now}::timestamptz ELSE last_synced_at END, sync_lease_owner_id = CASE WHEN ${Boolean(input.releaseLease)} THEN NULL ELSE sync_lease_owner_id END, sync_lease_expires_at = CASE WHEN ${Boolean(input.releaseLease)} THEN NULL ELSE sync_lease_expires_at END, updated_at = ${now} WHERE tenant_id = ${input.tenantId} AND actor_id = ${input.actorId} AND provider = ${input.provider} AND id = ${connectionId} AND status = 'active' AND sync_lease_owner_id = ${input.lease.ownerId} AND sync_lease_generation = ${input.lease.generation} AND sync_lease_expires_at > clock_timestamp() RETURNING *`
+        : await sql`UPDATE omni_oauth_grants SET sync_status = ${input.status}, sync_error = ${input.error || null}, sync_cursor = COALESCE(${sealedCursor || null}, sync_cursor), synced_items = synced_items + ${input.syncedItems || 0}, last_synced_at = CASE WHEN ${input.status} = 'healthy' THEN ${now}::timestamptz ELSE last_synced_at END, updated_at = ${now} WHERE tenant_id = ${input.tenantId} AND actor_id = ${input.actorId} AND provider = ${input.provider} AND id = ${connectionId} AND status = 'active' RETURNING *`;
       if (!rows[0]) return undefined;
       for (const settlement of sourceSettlements) {
         rows = await sql`
@@ -572,7 +586,7 @@ export async function updateOAuthSyncState(input: {
             AND id = ${String(rows[0].id)}
             AND actor_id = ${input.actorId}
             AND provider = ${input.provider}
-            AND id = ${input.connectionId}
+            AND id = ${connectionId}
             AND status = 'active'
           RETURNING *
         `;
@@ -581,12 +595,12 @@ export async function updateOAuthSyncState(input: {
       return publicGrant(rows[0]);
     };
     return sourceSettlements.length
-      ? await getSql().transaction(persist) as OAuthGrant | undefined
+      ? await getSql().transaction(persist) as NormalizedOAuthGrant | undefined
       : persist(getSql());
   }
-  let updated: OAuthGrant | undefined;
+  let updated: NormalizedOAuthGrant | undefined;
   await updateJsonFile<{ grants: InternalGrant[] }>(filePath(), { grants: [] }, (ledger) => ({ grants: ledger.grants.map((grant) => {
-    if (grant.tenantId !== input.tenantId || grant.actorId !== input.actorId || grant.provider !== input.provider || grant.id !== input.connectionId || grant.status !== "active") return grant;
+    if (grant.tenantId !== input.tenantId || grant.actorId !== input.actorId || grant.provider !== input.provider || grant.id !== connectionId || grant.status !== "active") return grant;
     if (
       input.lease &&
       (
@@ -603,10 +617,10 @@ export async function updateOAuthSyncState(input: {
   return updated;
 }
 
-function stripTokens(grant: InternalGrant): OAuthGrant {
+function stripTokens(grant: InternalGrant): NormalizedOAuthGrant {
   return { id: grant.id, tenantId: grant.tenantId, actorId: grant.actorId, provider: grant.provider, accountEmail: normalizeAccountEmail(grant.accountEmail || "") || undefined, connectionLabel: normalizeConnectionLabel(grant.connectionLabel || "Personal"), connectionPurpose: grant.connectionPurpose || "personal", scopes: grant.scopes, status: grant.status, authorizationGeneration: Math.max(1, Number(grant.authorizationGeneration || 1)), expiresAt: grant.expiresAt, syncStatus: grant.syncStatus || "idle", syncError: grant.syncError, lastSyncedAt: grant.lastSyncedAt, syncedItems: grant.syncedItems || 0, sourceCoverage: parseSourceCoverage(grant.sourceCoverage), createdAt: grant.createdAt, updatedAt: grant.updatedAt };
 }
-function publicGrant(row: Record<string, unknown>): OAuthGrant { return { id: String(row.id), tenantId: String(row.tenant_id), actorId: String(row.actor_id), provider: String(row.provider) as OAuthProvider, accountEmail: normalizeAccountEmail(String(row.account_email || "")) || undefined, connectionLabel: normalizeConnectionLabel(String(row.connection_label || "Personal")), connectionPurpose: row.connection_purpose === "work" ? "work" : "personal", scopes: Array.isArray(row.scopes) ? row.scopes.map(String) : [], status: String(row.status) as "active" | "revoked", authorizationGeneration: Math.max(1, Number(row.authorization_generation || 1)), expiresAt: row.expires_at ? new Date(String(row.expires_at)).toISOString() : undefined, syncStatus: String(row.sync_status || "idle") as OAuthGrant["syncStatus"], syncError: row.sync_error ? String(row.sync_error) : undefined, lastSyncedAt: row.last_synced_at ? new Date(String(row.last_synced_at)).toISOString() : undefined, syncedItems: Number(row.synced_items || 0), sourceCoverage: parseSourceCoverage(row.source_sync_health), createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString() }; }
+function publicGrant(row: Record<string, unknown>): NormalizedOAuthGrant { return { id: String(row.id), tenantId: String(row.tenant_id), actorId: String(row.actor_id), provider: String(row.provider) as OAuthProvider, accountEmail: normalizeAccountEmail(String(row.account_email || "")) || undefined, connectionLabel: normalizeConnectionLabel(String(row.connection_label || "Personal")), connectionPurpose: row.connection_purpose === "work" ? "work" : "personal", scopes: Array.isArray(row.scopes) ? row.scopes.map(String) : [], status: String(row.status) as "active" | "revoked", authorizationGeneration: Math.max(1, Number(row.authorization_generation || 1)), expiresAt: row.expires_at ? new Date(String(row.expires_at)).toISOString() : undefined, syncStatus: String(row.sync_status || "idle") as OAuthGrant["syncStatus"], syncError: row.sync_error ? String(row.sync_error) : undefined, lastSyncedAt: row.last_synced_at ? new Date(String(row.last_synced_at)).toISOString() : undefined, syncedItems: Number(row.synced_items || 0), sourceCoverage: parseSourceCoverage(row.source_sync_health), createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString() }; }
 function internalGrantFromRow(row: Record<string, unknown>): InternalGrant {
   const grant = publicGrant(row);
   const storedCursor = row.sync_cursor ? String(row.sync_cursor) : undefined;
@@ -803,6 +817,21 @@ function resolveInternalGrant(
   return selected[0];
 }
 
+async function exactActiveConnectionId(input: {
+  tenantId: string;
+  actorId: string;
+  provider: OAuthProvider;
+  connectionId?: string;
+}) {
+  if (input.connectionId) return input.connectionId;
+  const resolved = await getOAuthGrantSecrets(
+    input.tenantId,
+    input.actorId,
+    input.provider,
+  );
+  return resolved?.grant.id;
+}
+
 function sameStringSet(left: readonly string[], right: readonly string[]) {
   if (left.length !== right.length) return false;
   const rightSet = new Set(right);
@@ -814,9 +843,9 @@ const uuidPattern =
 const oauthSyncStatuses = ["idle", "syncing", "healthy", "error"] as const;
 
 function requestOAuthGrant(
-  grant: OAuthGrant,
+  grant: NormalizedOAuthGrant,
   requestActorId: string,
-): RequestOAuthGrant {
+): NormalizedRequestOAuthGrant {
   return {
     id: grant.id,
     tenantId: grant.tenantId,
@@ -903,7 +932,7 @@ function assertRequestOAuthGrantRow(
 }
 
 function assertRequestOAuthGrantRecords(
-  records: OAuthGrant[],
+  records: NormalizedOAuthGrant[],
   tenantId: string,
   canonicalActorId: string,
   exactActorId: string,

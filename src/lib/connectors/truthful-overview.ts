@@ -26,6 +26,7 @@ export const TRUTHFUL_INTEGRATIONS_VERSION =
 
 const timestampSchema = z.string().datetime({ offset: true });
 const countSchema = z.number().int().nonnegative();
+const uuidSchema = z.string().uuid();
 
 const inventoryStateSchema = z.object({
   state: z.enum(["ready", "unavailable"]),
@@ -378,6 +379,15 @@ function projectGoogleService(
   configured: boolean,
   nowMs: number,
 ): TruthfulIntegrationsOverview["installed"][number] {
+  const connectionPurpose = grant.connectionPurpose === "work"
+    ? "work" as const
+    : "personal" as const;
+  const explicitConnectionLabel = grant.connectionLabel?.trim();
+  const connectionLabel = explicitConnectionLabel ||
+    (connectionPurpose === "work" ? "Work" : "Personal");
+  const connectionId = uuidSchema.safeParse(grant.id).success
+    ? grant.id
+    : undefined;
   const hasRead = hasGoogleWorkspaceCapability(
     grant.scopes,
     service.readCapability,
@@ -451,7 +461,9 @@ function projectGoogleService(
                 : "No action required; imports happen only after an explicit picker selection.";
   return {
     id: `google:${grant.id}:${service.id}`,
-    name: `${service.name} · ${grant.connectionLabel}`,
+    name: explicitConnectionLabel
+      ? `${service.name} · ${connectionLabel}`
+      : service.name,
     kind: "google_service",
     adapter: "native",
     category: service.category,
@@ -460,12 +472,16 @@ function projectGoogleService(
     configured,
     connected: grant.status === "active",
     manageable,
-    account: {
-      connectionId: grant.id,
-      email: grant.accountEmail || null,
-      label: grant.connectionLabel,
-      purpose: grant.connectionPurpose,
-    },
+    ...(connectionId
+      ? {
+          account: {
+            connectionId,
+            email: grant.accountEmail || null,
+            label: connectionLabel,
+            purpose: connectionPurpose,
+          },
+        }
+      : {}),
     permissions: {
       mode: !hasRead ? "no_access" : hasWrite ? "write_approval_required" : "read_only",
       granted: [
