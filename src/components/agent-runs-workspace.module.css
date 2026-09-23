@@ -335,6 +335,7 @@
 
 .emptyConversation { position: relative; min-height: 27rem; }
 .emptyConversation > div { position: relative; max-width: 31rem; }
+.emptyMascot { position: relative; z-index: 1; }
 .emptyConversation h2 {
   font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif;
   font-size: 1.65rem;
@@ -344,17 +345,24 @@
 .emptyConversation > div::before,
 .emptyConversation > div::after {
   position: absolute;
-  top: -5.5rem;
+  top: 2.15rem;
   left: 50%;
-  width: 16rem;
-  height: 16rem;
+  width: min(23rem, 86vw);
+  height: 7.5rem;
   border: 1px solid var(--daybook-arc);
   border-radius: 50%;
   content: "";
-  transform: translateX(-50%);
+  transform: translateX(-50%) rotate(-7deg);
+  pointer-events: none;
 }
 
-.emptyConversation > div::after { top: -2.5rem; width: 10rem; height: 10rem; }
+.emptyConversation > div::after {
+  top: 3.7rem;
+  width: min(17rem, 68vw);
+  height: 5rem;
+  opacity: .72;
+  transform: translateX(-50%) rotate(6deg);
+}
 .emptyOrb { width: 3.35rem; height: 3.35rem; }
 
 .composerDock {

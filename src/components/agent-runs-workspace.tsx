@@ -61,6 +61,7 @@ import {
   type CommandSlashAction,
 } from "@/components/command/command-composer-field";
 import { CommandModelPicker } from "@/components/command/command-model-picker";
+import { AsaelLottieMascot } from "@/components/mascot/asael-lottie-mascot";
 import workspaceStyles from "@/components/agent-runs-workspace.module.css";
 import { arsenalAgents } from "@/lib/agents/arsenal";
 import type { ContextScopeId } from "@/lib/rag/context-scope";
@@ -3323,8 +3324,13 @@ export function AgentRunsWorkspace({
               {!turns.length && !currentAssistantResponse ? (
                 <div className={clsx("grid min-h-64 place-items-center text-center", workspaceStyles.emptyConversation)}>
                   <div className="w-full max-w-2xl px-4">
-                    <span className={clsx("mx-auto grid size-11 place-items-center rounded-full bg-primary/10 text-primary", workspaceStyles.emptyOrb)}><Sparkles size={18} aria-hidden="true" /></span>
-                    <h2 className="mt-4 text-xl font-semibold tracking-tight">What should we work through?</h2>
+                    <AsaelLottieMascot
+                      state="idle"
+                      size="hero"
+                      className={clsx("mx-auto", workspaceStyles.emptyMascot)}
+                      decorative
+                    />
+                    <h2 className="mt-1 text-xl font-semibold tracking-tight">What should we work through?</h2>
                     <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-muted">Start with a question or outcome. Follow up naturally, and Asael keeps this conversation together.</p>
                     <div className="mt-5 grid gap-2 text-left sm:grid-cols-3" aria-label="Document creation examples">
                       {[
@@ -4136,23 +4142,12 @@ function InlineTaskProgress({
         className={clsx("group ml-0 flex max-w-2xl items-center gap-3 rounded-xl px-2 py-2 text-left transition hover:bg-surface-raised sm:ml-8", workspaceStyles.progressFlow)}
         aria-haspopup="dialog"
       >
-        <span className={clsx(
-          "grid size-8 shrink-0 place-items-center rounded-full",
-          workspaceStyles.progressNode,
-          terminal
-            ? tone === "danger"
-              ? "bg-danger/10 text-danger"
-              : tone === "warning"
-                ? "bg-warning/10 text-warning"
-                : "bg-success/10 text-success"
-            : "bg-primary/10 text-primary",
-        )}>
-          {terminal ? (
-            <CheckCircle2 size={15} aria-hidden="true" />
-          ) : (
-            <Clock3 size={15} className="animate-pulse" aria-hidden="true" />
-          )}
-        </span>
+        <AsaelLottieMascot
+          state={terminal ? (tone === "success" ? "success" : "attention") : "thinking"}
+          size="small"
+          className={workspaceStyles.progressNode}
+          decorative
+        />
         <span className="min-w-0 flex-1">
           <span className="block text-sm font-semibold">{title}</span>
           <span className="mt-0.5 block truncate text-xs text-muted">{summary}</span>

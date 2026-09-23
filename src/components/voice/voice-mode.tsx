@@ -21,6 +21,10 @@ import {
   type VoiceCommandReply,
   type VoiceCommandReview,
 } from "@/lib/voice/command-review";
+import {
+  AsaelLottieMascot,
+  type AsaelMascotState,
+} from "@/components/mascot/asael-lottie-mascot";
 
 type VoicePhase =
   | "consent"
@@ -806,7 +810,12 @@ export function VoiceMode({
 
             {phase === "consent" ? (
               <div className="relative flex flex-1 flex-col px-6 pb-5 pt-3 text-left">
-                <div className="mx-auto grid size-24 place-items-center rounded-full border border-primary/30 bg-primary/10 text-primary"><ShieldCheck size={34} aria-hidden="true" /></div>
+                <div className="relative mx-auto">
+                  <AsaelLottieMascot state="idle" size="large" decorative />
+                  <span className="absolute bottom-1 right-0 grid size-8 place-items-center rounded-full border border-line bg-background text-primary shadow-sm" aria-hidden="true">
+                    <ShieldCheck size={15} />
+                  </span>
+                </div>
                 <h3 className="mt-6 text-center text-lg font-semibold">Live transcription session</h3>
                 <p className="mt-2 text-center text-sm leading-6 text-muted">OpenAI processes live microphone audio to produce partial text. Asael does not store the audio. The transcript remains an editable command draft until you send it, then the exact agent result streams back in Asael&apos;s versioned voice. Speaking interrupts playback.</p>
                 <div className="mt-5 rounded-xl border border-line bg-surface px-4 py-3 text-xs leading-5 text-muted">
@@ -824,8 +833,9 @@ export function VoiceMode({
             ) : (
               <div className="relative flex flex-1 flex-col items-center overflow-y-auto px-6 pb-4 pt-2 text-center">
                 <div className={clsx("relative grid size-32 place-items-center rounded-full border transition-all duration-300", ["speaking", "replying"].includes(phase) ? "border-primary/40 bg-primary/10 shadow-[0_0_55px_color-mix(in_oklab,var(--color-primary)_25%,transparent)]" : "border-line bg-surface")} aria-hidden="true">
-                  <div className="flex h-20 items-center gap-1">
-                    {meterLevels.map((level, index) => <span key={index} className={clsx("w-1 rounded-full transition-[height,opacity] duration-100", isActivePhase(phase) ? "bg-primary opacity-90" : "bg-muted/45 opacity-55")} style={{ height: `${Math.round(8 + level * 50)}px` }} />)}
+                  <AsaelLottieMascot state={voiceMascotState(phase)} size="large" decorative />
+                  <div className="absolute -bottom-2 flex h-8 items-center gap-0.5 rounded-full border border-line/80 bg-background/90 px-2.5 shadow-sm backdrop-blur">
+                    {meterLevels.map((level, index) => <span key={index} className={clsx("w-0.5 rounded-full transition-[height,opacity] duration-100", isActivePhase(phase) ? "bg-primary opacity-90" : "bg-muted/45 opacity-55")} style={{ height: `${Math.round(4 + level * 18)}px` }} />)}
                   </div>
                   {["requesting", "connecting", "finishing", "reconnecting", "sending", "waiting", "deciding"].includes(phase) ? <span className="absolute inset-0 grid place-items-center rounded-full bg-background/72 backdrop-blur-sm"><Loader2 size={28} className="animate-spin text-primary" /></span> : null}
                   {phase === "error" ? <span className="absolute inset-0 grid place-items-center rounded-full bg-background/80"><Mic size={28} className="text-danger" /></span> : null}
@@ -1019,6 +1029,14 @@ function voiceStatus(phase: VoicePhase, elapsedSeconds: number, error: string) {
   if (phase === "resolved") return { title: "Decision recorded", detail: "The durable approval record is available in Activity." };
   if (phase === "error") return { title: "Voice mode needs attention", detail: error || "Nothing was sent." };
   return { title: "Realtime voice", detail: "Review provider use before starting." };
+}
+
+function voiceMascotState(phase: VoicePhase): AsaelMascotState {
+  if (["listening", "speaking", "replying"].includes(phase)) return "listening";
+  if (phase === "resolved") return "success";
+  if (["review", "approval", "error"].includes(phase)) return "attention";
+  if (["requesting", "connecting", "finishing", "reconnecting", "sending", "waiting", "deciding"].includes(phase)) return "thinking";
+  return "idle";
 }
 
 function confidenceLabel(
