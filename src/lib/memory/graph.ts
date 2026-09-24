@@ -730,16 +730,18 @@ async function searchMemoryGraphForTenant(
 ): Promise<MemoryGraphSearchResult[]> {
   const tenantId = normalizeTenantId(options.tenantId);
   const limit = Math.min(Math.max(options.limit || 6, 1), 24);
-  const [nodes, edges] = await Promise.all([
-    listMemoryGraphNodes(options.nodeLimit || 600, {
-      tenantId,
-      accessScope: options.accessScope,
-    }),
-    listMemoryGraphEdges((options.nodeLimit || 600) * 3, {
-      tenantId,
-      accessScope: options.accessScope,
-    }),
-  ]);
+  const [nodes, edges] = hasDatabaseUrl()
+    ? await searchMemoryGraphRows(query, tenantId, options)
+    : await Promise.all([
+        listMemoryGraphNodes(options.nodeLimit || 600, {
+          tenantId,
+          accessScope: options.accessScope,
+        }),
+        listMemoryGraphEdges((options.nodeLimit || 600) * 3, {
+          tenantId,
+          accessScope: options.accessScope,
+        }),
+      ]);
   if (!nodes.length) {
     return [];
   }
@@ -808,6 +810,161 @@ async function searchMemoryGraphForTenant(
     .filter((item): item is MemoryGraphSearchResult => Boolean(item))
     .sort((left, right) => right.score - left.score)
     .slice(0, limit);
+}
+
+/**
+ * PostgreSQL graph search starts from indexed lexical/tag candidates and only
+ * transfers their bounded connected neighborhood. The previous implementation
+ * loaded the tenant's top 600 nodes and 1,800 edges into Node for every query,
+ * even when only six results could be returned.
+ */
+async function searchMemoryGraphRows(
+  query: string,
+  tenantId: string,
+  options: SearchMemoryGraphOptions,
+): Promise<[MemoryGraphNode[], MemoryGraphEdge[]]> {
+  await ensureDatabaseSchema();
+  const nodeLimit = Math.min(Math.max(options.nodeLimit || 240, 24), 600);
+  const seedLimit = Math.min(nodeLimit, 160);
+  const fallbackLimit = Math.min(24, nodeLimit);
+  const edgeLimit = Math.min(nodeLimit * 3, 1_800);
+  const queryTerms = tokenize(query).slice(0, 24);
+  const searchText = queryTerms.join(" OR ");
+
+  const readNeighborhood = (sql: GraphSqlClient) => sql`
+    WITH search_query AS MATERIALIZED (
+      SELECT websearch_to_tsquery('english', ${searchText}) AS value
+    ),
+    matched AS MATERIALIZED (
+      SELECT
+        node.*,
+        ts_rank_cd(
+          to_tsvector('english', node.label || ' ' || node.summary),
+          search_query.value
+        ) AS lexical_rank
+      FROM omni_memory_graph_nodes node
+      CROSS JOIN search_query
+      WHERE node.tenant_id = ${tenantId}
+        AND NOT EXISTS (
+          SELECT 1 FROM omni_memory_lifecycle_states lifecycle
+          WHERE lifecycle.tenant_id = node.tenant_id
+            AND lifecycle.archived_at IS NOT NULL
+            AND lifecycle.memory_id = ANY(node.memory_ids)
+        )
+        AND (
+          to_tsvector('english', node.label || ' ' || node.summary)
+            @@ search_query.value
+          OR node.tags && ${queryTerms}::text[]
+        )
+      ORDER BY lexical_rank DESC, node.weight DESC,
+        node.source_count DESC, node.updated_at DESC
+      LIMIT ${seedLimit}
+    ),
+    fallback AS MATERIALIZED (
+      SELECT node.*, 0::real AS lexical_rank
+      FROM omni_memory_graph_nodes node
+      WHERE node.tenant_id = ${tenantId}
+        AND NOT EXISTS (
+          SELECT 1 FROM matched WHERE matched.id = node.id
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM omni_memory_lifecycle_states lifecycle
+          WHERE lifecycle.tenant_id = node.tenant_id
+            AND lifecycle.archived_at IS NOT NULL
+            AND lifecycle.memory_id = ANY(node.memory_ids)
+        )
+      ORDER BY node.weight DESC, node.source_count DESC, node.updated_at DESC
+      LIMIT ${fallbackLimit}
+    ),
+    seeds AS MATERIALIZED (
+      SELECT * FROM matched
+      UNION ALL
+      SELECT * FROM fallback
+    ),
+    edge_candidates AS MATERIALIZED (
+      SELECT edge.*
+      FROM omni_memory_graph_edges edge
+      WHERE edge.tenant_id = ${tenantId}
+        AND (
+          edge.source_node_id IN (SELECT id FROM seeds)
+          OR edge.target_node_id IN (SELECT id FROM seeds)
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM omni_memory_lifecycle_states lifecycle
+          WHERE lifecycle.tenant_id = edge.tenant_id
+            AND lifecycle.archived_at IS NOT NULL
+            AND lifecycle.memory_id = ANY(edge.memory_ids)
+        )
+      ORDER BY edge.weight DESC, edge.evidence_count DESC,
+        edge.updated_at DESC
+      LIMIT ${edgeLimit}
+    ),
+    candidate_node_ids AS MATERIALIZED (
+      SELECT id FROM seeds
+      UNION
+      SELECT source_node_id FROM edge_candidates
+      UNION
+      SELECT target_node_id FROM edge_candidates
+    ),
+    selected_nodes AS MATERIALIZED (
+      SELECT node.*
+      FROM omni_memory_graph_nodes node
+      WHERE node.tenant_id = ${tenantId}
+        AND node.id IN (SELECT id FROM candidate_node_ids)
+        AND NOT EXISTS (
+          SELECT 1 FROM omni_memory_lifecycle_states lifecycle
+          WHERE lifecycle.tenant_id = node.tenant_id
+            AND lifecycle.archived_at IS NOT NULL
+            AND lifecycle.memory_id = ANY(node.memory_ids)
+        )
+      ORDER BY
+        CASE WHEN node.id IN (SELECT id FROM seeds) THEN 0 ELSE 1 END,
+        node.weight DESC, node.source_count DESC, node.updated_at DESC
+      LIMIT ${nodeLimit}
+    ),
+    selected_edges AS MATERIALIZED (
+      SELECT edge.*
+      FROM edge_candidates edge
+      WHERE edge.source_node_id IN (SELECT id FROM selected_nodes)
+        AND edge.target_node_id IN (SELECT id FROM selected_nodes)
+    )
+    SELECT 'node'::text AS row_kind, to_jsonb(node) AS graph_record
+    FROM selected_nodes node
+    UNION ALL
+    SELECT 'edge'::text AS row_kind, to_jsonb(edge) AS graph_record
+    FROM selected_edges edge
+  `;
+
+  const legacyRows = await readNeighborhood(getSql());
+  const scopedRows = options.accessScope
+    ? await runWithGraphAccessScope(
+        options.accessScope,
+        tenantId,
+        [MEMORY_PURPOSE_IDS.read, MEMORY_PURPOSE_IDS.retrieve],
+        readNeighborhood,
+      )
+    : [];
+  const rows = [...legacyRows, ...scopedRows];
+  const nodes = mergeGraphRows(
+    rows.flatMap((row) => row.row_kind === "node"
+      ? [memoryGraphNodeFromRow(graphRecord(row.graph_record))]
+      : []),
+    [],
+    nodeLimit,
+    sortNodes,
+  );
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const edges = mergeGraphRows(
+    rows.flatMap((row) => row.row_kind === "edge"
+      ? [memoryGraphEdgeFromRow(graphRecord(row.graph_record))]
+      : []),
+    [],
+    edgeLimit,
+    sortEdges,
+  ).filter((edge) =>
+    nodeIds.has(edge.sourceNodeId) && nodeIds.has(edge.targetNodeId)
+  );
+  return [nodes, edges];
 }
 
 export async function listMemoryGraphNodes(
@@ -2162,6 +2319,23 @@ function longer(left: string, right: string) {
 
 function objectValue(value: unknown) {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function graphRecord(value: unknown) {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  if (typeof value === "string" && value.trim()) {
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Invalid database JSON is rejected by returning an empty record below.
+    }
+  }
+  return {};
 }
 
 function stringArray(value: unknown) {
