@@ -1766,6 +1766,29 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     status = 'Connecting';
     notifyListeners();
     String? terminalInspectionRunId;
+    final pendingText = StringBuffer();
+    Timer? textFlushTimer;
+
+    void flushPendingText() {
+      if (pendingText.length == 0) return;
+      final delta = pendingText.toString();
+      pendingText.clear();
+      if (_disposed || messages.isEmpty) return;
+      messages[messages.length - 1] = messages.last.copyWith(
+        text: messages.last.text + delta,
+      );
+    }
+
+    void scheduleTextFlush() {
+      if (textFlushTimer?.isActive ?? false) return;
+      textFlushTimer = Timer(const Duration(milliseconds: 32), () {
+        textFlushTimer = null;
+        if (_disposed) return;
+        flushPendingText();
+        notifyListeners();
+      });
+    }
+
     try {
       final queueRepository = _promptQueueRepository;
       final events = queuedPrompt != null && queueRepository != null
@@ -1800,6 +1823,11 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       await for (final event in events) {
         if (_disposed) return;
         adoptConversationThreadId(event.data['threadId']);
+        if (event.event != 'delta') {
+          textFlushTimer?.cancel();
+          textFlushTimer = null;
+          flushPendingText();
+        }
         switch (event.event) {
           case 'run':
             final acceptedRunId = safeTalkHistoryId(event.data['runId']);
@@ -1818,9 +1846,12 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
               state: TalkActivityState.active,
             );
           case 'delta':
-            messages[messages.length - 1] = messages.last.copyWith(
-              text: messages.last.text + (event.data['text'] as String? ?? ''),
-            );
+            final delta = event.data['text'] as String? ?? '';
+            if (delta.isNotEmpty) {
+              pendingText.write(delta);
+              scheduleTextFlush();
+            }
+            continue;
           case 'status':
             status = event.data['label'] as String? ?? 'Working';
             _recordActivity(
@@ -2071,9 +2102,15 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
         notifyListeners();
       }
       if (_disposed) return;
+      textFlushTimer?.cancel();
+      textFlushTimer = null;
+      flushPendingText();
       _clearRetry();
     } catch (error) {
       if (_disposed) return;
+      textFlushTimer?.cancel();
+      textFlushTimer = null;
+      flushPendingText();
       final acceptedRunId = runId;
       if (acceptedRunId != null) {
         queuePaused = true;
@@ -2117,6 +2154,8 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
         );
       }
     } finally {
+      textFlushTimer?.cancel();
+      flushPendingText();
       sending = false;
       status = null;
       if (!_disposed) notifyListeners();
