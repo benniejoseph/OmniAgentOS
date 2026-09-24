@@ -48,7 +48,6 @@ import {
   permissionMessage,
   useWorkspaceSession,
 } from "@/components/app-shell/session-context";
-import { ConversationProgressPanel } from "@/components/conversation-progress-panel";
 import { startVisibleRefresh } from "@/lib/client/visible-refresh";
 import {
   PrivateMediaPreview,
@@ -118,6 +117,19 @@ const ConversationCanvas = dynamic(
     loading: () => (
       <div className="grid min-h-[25rem] place-items-center text-sm text-muted">
         Loading conversation map…
+      </div>
+    ),
+  },
+);
+
+const ConversationProgressPanel = dynamic(
+  () => import("@/components/conversation-progress-panel").then((module) =>
+    module.ConversationProgressPanel
+  ),
+  {
+    loading: () => (
+      <div className="grid min-h-32 place-items-center text-sm text-muted">
+        Loading activity…
       </div>
     ),
   },
@@ -532,7 +544,7 @@ export function AgentRunsWorkspace({
   const [feedbackSaving, setFeedbackSaving] = useState(false);
   const [speechLoading, setSpeechLoading] = useState(false);
   const [evidence, setEvidence] = useState<JsonRecord>({});
-  const [evidenceState, setEvidenceState] = useState<"loading" | "ready" | "error">("loading");
+  const [evidenceState, setEvidenceState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [workflowSyncError, setWorkflowSyncError] = useState<string>();
   const [runAnnouncement, setRunAnnouncement] = useState("Run workspace ready.");
   const [waitingApproval, setWaitingApproval] = useState<Extract<StreamEvent, { type: "waiting_approval" }>>();
@@ -562,6 +574,9 @@ export function AgentRunsWorkspace({
   const contextSelectionReviewedRef = useRef(false);
   const evidenceControllerRef = useRef<AbortController | null>(null);
   const evidenceVersionRef = useRef(0);
+  const evidenceVisibleRef = useRef(false);
+  const memoryControllerRef = useRef<AbortController | null>(null);
+  const memoryVersionRef = useRef(0);
   const conversationCanvasControllerRef = useRef<AbortController | null>(null);
   const threadLoadControllerRef = useRef<AbortController | null>(null);
   const threadLoadVersionRef = useRef(0);
@@ -581,6 +596,10 @@ export function AgentRunsWorkspace({
   const conversationsButtonRef = useRef<HTMLButtonElement | null>(null);
   const conversationsSheetRef = useRef<HTMLElement | null>(null);
   const promptQueueDrainRef = useRef(false);
+  const projectsLoadedRef = useRef(false);
+  const threadsRefreshRef = useRef<Promise<void> | null>(null);
+  const threadsRefreshQueuedRef = useRef(false);
+  const runProjectionControllerRef = useRef<AbortController | null>(null);
 
   const refreshPromptQueue = useCallback(async (signal?: AbortSignal) => {
     const payload = await readJson("/api/command/prompt-queue", {
@@ -656,7 +675,16 @@ export function AgentRunsWorkspace({
   }, [initialAgentId]);
 
   useEffect(() => {
-    if (sessionStatus !== "ready") return;
+    const projectsNeeded = Boolean(
+      initialProjectId ||
+      contextScope === "project" ||
+      contextScope === "workspace"
+    );
+    if (
+      sessionStatus !== "ready" ||
+      !projectsNeeded ||
+      projectsLoadedRef.current
+    ) return;
     const controller = new AbortController();
     void readJson("/api/projects", { signal: controller.signal })
       .then((payload) => {
@@ -669,18 +697,21 @@ export function AgentRunsWorkspace({
             status: stringValue(value.status),
           }))
           .filter((value) => value.id && value.title && value.status !== "archived");
+        projectsLoadedRef.current = true;
         setProjects(rows);
         setSelectedProjectId((current) =>
           current && rows.some((project) => project.id === current)
             ? current
             : initialProjectId && rows.some((project) => project.id === initialProjectId)
               ? initialProjectId
-              : ""
+              : contextScope === "project"
+                ? rows[0]?.id || ""
+                : ""
         );
       })
       .catch(() => undefined);
     return () => controller.abort();
-  }, [initialProjectId, sessionStatus]);
+  }, [contextScope, initialProjectId, sessionStatus]);
 
   useEffect(() => {
     if (sessionStatus !== "ready") return;
@@ -863,19 +894,6 @@ export function AgentRunsWorkspace({
   }, []);
 
   useEffect(() => {
-    if (sessionStatus !== "ready" || readPermission || !threadId) {
-      const frame = window.requestAnimationFrame(() => {
-        setConversationMemories([]);
-        setMemoryState(threadId ? "idle" : "ready");
-      });
-      return () => window.cancelAnimationFrame(frame);
-    }
-    void refreshConversationMemories(threadId);
-    // The selected conversation owns its memory view.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [threadId, sessionStatus, readPermission]);
-
-  useEffect(() => {
     if (!mobileConversationsOpen) return;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
@@ -912,7 +930,6 @@ export function AgentRunsWorkspace({
 
   useEffect(() => {
     if (sessionStatus === "ready") {
-      void refreshEvidence();
       void refreshThreads();
       if (initialThreadId && !initialThreadLoadedRef.current) {
         initialThreadLoadedRef.current = true;
@@ -926,8 +943,10 @@ export function AgentRunsWorkspace({
       abortControllerRef.current?.abort();
       contextControllerRef.current?.abort();
       evidenceControllerRef.current?.abort();
+      memoryControllerRef.current?.abort();
       conversationCanvasControllerRef.current?.abort();
       threadLoadControllerRef.current?.abort();
+      runProjectionControllerRef.current?.abort();
       if (deltaFlushTimerRef.current !== null) {
         window.clearTimeout(deltaFlushTimerRef.current);
       }
@@ -937,6 +956,24 @@ export function AgentRunsWorkspace({
     // Session changes are the only automatic evidence refresh trigger.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionStatus, session, role]);
+
+  useEffect(() => {
+    const visible = Boolean(
+      detailsOpen &&
+      activeTab === "evidence" &&
+      sessionStatus === "ready" &&
+      !readPermission
+    );
+    evidenceVisibleRef.current = visible;
+    if (!visible) return;
+    void refreshEvidence();
+    return () => {
+      evidenceVisibleRef.current = false;
+      evidenceControllerRef.current?.abort();
+    };
+    // Evidence is an optional details projection and loads only while visible.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, detailsOpen, readPermission, sessionStatus]);
 
   useEffect(() => {
     if (conversationView !== "map" || sessionStatus !== "ready" || readPermission) return;
@@ -996,71 +1033,60 @@ export function AgentRunsWorkspace({
       return;
     }
     let disposed = false;
-    let timer: number | undefined;
     let controller: AbortController | undefined;
-    const schedule = () => {
-      if (!disposed) {
-        timer = window.setTimeout(() => void poll(), 3_000);
-      }
-    };
-    const poll = async () => {
-      if (document.visibilityState !== "visible") {
-        schedule();
-        return;
-      }
-      controller = new AbortController();
-      try {
-        const next = asRecord(
-          await readJson(
-            `/api/workflows/${encodeURIComponent(activeWorkflowId)}`,
-            { signal: controller.signal },
-          ),
-        );
-        if (disposed) {
-          return;
-        }
-        setWorkflowSyncError(undefined);
-        const nextStatus = stringPath(next, "run.status", "");
-        setWorkflowRun(next);
-        if (nextStatus && nextStatus !== activeWorkflowStatus) {
-          void refreshEvidence();
-          if (["completed", "failed", "canceled"].includes(nextStatus) && threadId) {
-            void refreshThreadTurns(threadId);
-          }
-          if (nextStatus === "completed") {
-            const report = stringPath(next, "run.result.report", "");
-            if (report) {
-              setAgentResponse(report);
-              setTurns((current) => current.at(-1)?.content === report
-                ? current
-                : [...current, {
-                    id: `workflow-${activeWorkflowId}-${Date.now()}`,
-                    role: "assistant",
-                    content: report,
-                    createdAt: new Date().toISOString(),
-                    runId: `workflow:${activeWorkflowId}`,
-                  }]);
-            }
-          }
-          setRunAnnouncement(`Workflow is now ${nextStatus.replace(/_/g, " ")}.`);
-        }
-      } catch (pollError) {
-        if (!disposed && !controller.signal.aborted) {
-          setWorkflowSyncError(
-            `Live workflow updates are temporarily unavailable. Retrying automatically. ${refreshMessage(pollError)}`,
+    const stopRefresh = startVisibleRefresh({
+      refreshOnStart: !activeWorkflowStatus,
+      pollIntervalMs: 3_000,
+      onRefresh: async () => {
+        controller = new AbortController();
+        try {
+          const next = asRecord(
+            await readJson(
+              `/api/workflows/${encodeURIComponent(activeWorkflowId)}`,
+              { signal: controller.signal },
+            ),
           );
+          if (disposed) {
+            return;
+          }
+          setWorkflowSyncError(undefined);
+          const nextStatus = stringPath(next, "run.status", "");
+          setWorkflowRun(next);
+          if (nextStatus && nextStatus !== activeWorkflowStatus) {
+            void refreshEvidence();
+            if (["completed", "failed", "canceled"].includes(nextStatus) && threadId) {
+              void refreshThreadTurns(threadId);
+            }
+            if (nextStatus === "completed") {
+              const report = stringPath(next, "run.result.report", "");
+              if (report) {
+                setAgentResponse(report);
+                setTurns((current) => current.at(-1)?.content === report
+                  ? current
+                  : [...current, {
+                      id: `workflow-${activeWorkflowId}-${Date.now()}`,
+                      role: "assistant",
+                      content: report,
+                      createdAt: new Date().toISOString(),
+                      runId: `workflow:${activeWorkflowId}`,
+                    }]);
+              }
+            }
+            setRunAnnouncement(`Workflow is now ${nextStatus.replace(/_/g, " ")}.`);
+          }
+        } catch (pollError) {
+          if (!disposed && !controller.signal.aborted) {
+            setWorkflowSyncError(
+              `Live workflow updates are temporarily unavailable. Retrying automatically. ${refreshMessage(pollError)}`,
+            );
+          }
         }
-      } finally {
-        schedule();
-      }
-    };
-    void poll();
+      },
+    });
     return () => {
       disposed = true;
       controller?.abort();
-      if (timer !== undefined) {
-        window.clearTimeout(timer);
-      }
+      stopRefresh();
     };
     // Run identity and status control the polling lifecycle.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1069,109 +1095,102 @@ export function AgentRunsWorkspace({
   useEffect(() => {
     if (!activeAgentRunId || loading === "agent" || agentRunTerminal) return;
     let disposed = false;
-    let timer: number | undefined;
     let controller: AbortController | undefined;
-    const schedule = () => {
-      if (!disposed) timer = window.setTimeout(() => void poll(), 3_000);
-    };
-    const poll = async () => {
-      if (document.visibilityState !== "visible") {
-        schedule();
-        return;
-      }
-      controller = new AbortController();
-      try {
-        const payload = asRecord(await readJson(`/api/runs/${encodeURIComponent(activeAgentRunId)}`, { signal: controller.signal }));
-        if (disposed) return;
-        setRunMediaProjection({
-          runId: activeAgentRunId,
-          artifacts: projectCommandMediaArtifacts(payload),
-          files: projectCommandFileArtifacts(payload),
-          fileState: projectCommandFileArtifactState(payload),
-          workspaceArtifacts: projectCommandWorkspaceArtifacts(payload),
-          workspaceArtifactState: projectCommandWorkspaceArtifactState(payload),
-        });
-        setContextUseReceipt(contextUseReceiptFromPayload(payload));
-        const run = asRecord(payload.run);
-        const status = stringValue(run.status);
-        const statusChanged = Boolean(status && status !== directRunStatusRef.current);
-        if (status) directRunStatusRef.current = status;
-        if (status === "waiting_clarification") {
-          const clarification = stringValue(
-            run.response,
-            "Reply to the clarification request to continue this run.",
-          );
-          setWaitingApproval(undefined);
-          setClarificationRunId(activeAgentRunId);
-          setAgentResponse(clarification);
-          setStreamEvents((current) => current.some((event) =>
-            event.type === "clarification" && event.runId === activeAgentRunId
-          ) ? current : [...current, {
-            type: "clarification",
+    const stopRefresh = startVisibleRefresh({
+      refreshOnStart: false,
+      pollIntervalMs: 3_000,
+      onRefresh: async () => {
+        controller = new AbortController();
+        try {
+          const payload = asRecord(await readJson(`/api/runs/${encodeURIComponent(activeAgentRunId)}`, { signal: controller.signal }));
+          if (disposed) return;
+          setRunMediaProjection({
             runId: activeAgentRunId,
-            threadId: stringValue(run.threadId) || threadId || undefined,
-            message: clarification,
-            reasonCode: "ambiguous_read_target",
-          }]);
-          if (statusChanged) setRunAnnouncement("Agent run is waiting for clarification.");
-        } else if (status === "waiting_approval") {
-          const approval = asRecord(run.waitingApproval);
-          setClarificationRunId("");
-          setWaitingApproval({
-            type: "waiting_approval",
-            executionId: stringValue(approval.executionId),
-            toolId: stringValue(approval.toolId),
-            message: `${stringValue(approval.toolName, "A gated action")} needs approval before the task can continue.`,
+            artifacts: projectCommandMediaArtifacts(payload),
+            files: projectCommandFileArtifacts(payload),
+            fileState: projectCommandFileArtifactState(payload),
+            workspaceArtifacts: projectCommandWorkspaceArtifacts(payload),
+            workspaceArtifactState: projectCommandWorkspaceArtifactState(payload),
           });
-          if (statusChanged) setRunAnnouncement("Agent run is waiting for approval.");
-        } else if (status === "running" || status === "resuming" || status === "queued") {
-          setWaitingApproval(undefined);
-          setClarificationRunId("");
-          if (statusChanged) {
-            setRunAnnouncement(status === "resuming" ? "Approved. The task is resuming." : `Agent run is ${status}.`);
-          }
-        } else if (status === "completed") {
-          const response = stringValue(run.response);
-          const nextGrounding = renderSafeGroundingReport(run.grounding);
-          setWaitingApproval(undefined);
-          setClarificationRunId("");
-          setAgentResponse(response);
-          setGrounding(nextGrounding);
-          setStreamEvents((current) => current.some((event) => event.type === "done")
-            ? current
-            : [...current, { type: "done", response, grounding: run.grounding ? nextGrounding : undefined }]);
-          if (response) {
-            setTurns((current) => current.at(-1)?.content === response
+          setContextUseReceipt(contextUseReceiptFromPayload(payload));
+          const run = asRecord(payload.run);
+          const status = stringValue(run.status);
+          const statusChanged = Boolean(status && status !== directRunStatusRef.current);
+          if (status) directRunStatusRef.current = status;
+          if (status === "waiting_clarification") {
+            const clarification = stringValue(
+              run.response,
+              "Reply to the clarification request to continue this run.",
+            );
+            setWaitingApproval(undefined);
+            setClarificationRunId(activeAgentRunId);
+            setAgentResponse(clarification);
+            setStreamEvents((current) => current.some((event) =>
+              event.type === "clarification" && event.runId === activeAgentRunId
+            ) ? current : [...current, {
+              type: "clarification",
+              runId: activeAgentRunId,
+              threadId: stringValue(run.threadId) || threadId || undefined,
+              message: clarification,
+              reasonCode: "ambiguous_read_target",
+            }]);
+            if (statusChanged) setRunAnnouncement("Agent run is waiting for clarification.");
+          } else if (status === "waiting_approval") {
+            const approval = asRecord(run.waitingApproval);
+            setClarificationRunId("");
+            setWaitingApproval({
+              type: "waiting_approval",
+              executionId: stringValue(approval.executionId),
+              toolId: stringValue(approval.toolId),
+              message: `${stringValue(approval.toolName, "A gated action")} needs approval before the task can continue.`,
+            });
+            if (statusChanged) setRunAnnouncement("Agent run is waiting for approval.");
+          } else if (status === "running" || status === "resuming" || status === "queued") {
+            setWaitingApproval(undefined);
+            setClarificationRunId("");
+            if (statusChanged) {
+              setRunAnnouncement(status === "resuming" ? "Approved. The task is resuming." : `Agent run is ${status}.`);
+            }
+          } else if (status === "completed") {
+            const response = stringValue(run.response);
+            const nextGrounding = renderSafeGroundingReport(run.grounding);
+            setWaitingApproval(undefined);
+            setClarificationRunId("");
+            setAgentResponse(response);
+            setGrounding(nextGrounding);
+            setStreamEvents((current) => current.some((event) => event.type === "done")
               ? current
-              : [...current, { id: `assistant-${Date.now()}`, role: "assistant", content: response, createdAt: new Date().toISOString(), runId: activeAgentRunId }]);
+              : [...current, { type: "done", response, grounding: run.grounding ? nextGrounding : undefined }]);
+            if (response) {
+              setTurns((current) => current.at(-1)?.content === response
+                ? current
+                : [...current, { id: `assistant-${Date.now()}`, role: "assistant", content: response, createdAt: new Date().toISOString(), runId: activeAgentRunId }]);
+            }
+            setRunAnnouncement("Agent run completed. Review the result and evidence.");
+            void refreshEvidence();
+            void refreshThreads();
+          } else if (status === "failed") {
+            const message = stringValue(run.error, "Agent run failed.");
+            setWaitingApproval(undefined);
+            setClarificationRunId("");
+            setError(message);
+            setStreamEvents((current) => [...current, { type: "error", message }]);
+            setRunAnnouncement("Agent run failed.");
+          } else if (status === "canceled") {
+            setWaitingApproval(undefined);
+            setClarificationRunId("");
+            setStreamEvents((current) => [...current, { type: "canceled", message: "The task was canceled." }]);
+            setRunAnnouncement("Agent run canceled.");
           }
-          setRunAnnouncement("Agent run completed. Review the result and evidence.");
-          void refreshEvidence();
-          void refreshThreads();
-        } else if (status === "failed") {
-          const message = stringValue(run.error, "Agent run failed.");
-          setWaitingApproval(undefined);
-          setClarificationRunId("");
-          setError(message);
-          setStreamEvents((current) => [...current, { type: "error", message }]);
-          setRunAnnouncement("Agent run failed.");
-        } else if (status === "canceled") {
-          setWaitingApproval(undefined);
-          setClarificationRunId("");
-          setStreamEvents((current) => [...current, { type: "canceled", message: "The task was canceled." }]);
-          setRunAnnouncement("Agent run canceled.");
+        } catch {
+          // Keep the visible last-known state and retry while the run remains active.
         }
-      } catch {
-        // Keep the visible last-known state and retry while the run remains active.
-      } finally {
-        schedule();
-      }
-    };
-    void poll();
+      },
+    });
     return () => {
       disposed = true;
       controller?.abort();
-      if (timer !== undefined) window.clearTimeout(timer);
+      stopRefresh();
     };
     // The run id and terminal state own this polling lifecycle.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2422,8 +2441,6 @@ export function AgentRunsWorkspace({
           clearEphemeralCommandReferences();
           void refreshThreads();
           setRunAnnouncement("Agent run completed. Review the result and evidence.");
-          const mediaRunId = currentRunIdRef.current || completedRunId;
-          if (mediaRunId) void refreshRunMediaArtifacts(mediaRunId);
         }
         if (event.type === "status") {
           setRunAnnouncement(streamEventLabel(event));
@@ -2460,8 +2477,8 @@ export function AgentRunsWorkspace({
       }
       flushPendingDeltas();
       void refreshEvidence();
-      if (currentRunIdRef.current) {
-        void refreshRunContextReceipt(currentRunIdRef.current);
+      if (terminalEvent === "done" && currentRunIdRef.current) {
+        void refreshRunProjection(currentRunIdRef.current);
       }
     } catch (agentError) {
       if (controller.signal.aborted) {
@@ -2535,15 +2552,36 @@ export function AgentRunsWorkspace({
   }
 
   async function refreshThreads() {
+    if (threadsRefreshRef.current) {
+      threadsRefreshQueuedRef.current = true;
+      return threadsRefreshRef.current;
+    }
+    const request = (async () => {
+      do {
+        threadsRefreshQueuedRef.current = false;
+        try {
+          const result = asRecord(await readJson("/api/threads?limit=100"));
+          setThreads(projectClientThreadSummaries(
+            readPath(result, "threads"),
+            ["orchestrate", "research", "execute", "learn"] as const,
+            "orchestrate",
+          ));
+        } catch {
+          // Threads are convenience navigation; agent execution reports its own errors.
+        }
+      } while (threadsRefreshQueuedRef.current);
+    })();
+    threadsRefreshRef.current = request;
     try {
-      const result = asRecord(await readJson("/api/threads?limit=100"));
-      setThreads(projectClientThreadSummaries(
-        readPath(result, "threads"),
-        ["orchestrate", "research", "execute", "learn"] as const,
-        "orchestrate",
-      ));
-    } catch {
-      // Threads are convenience navigation; agent execution reports its own errors.
+      await request;
+    } finally {
+      if (threadsRefreshRef.current === request) {
+        threadsRefreshRef.current = null;
+        if (threadsRefreshQueuedRef.current) {
+          threadsRefreshQueuedRef.current = false;
+          void refreshThreads();
+        }
+      }
     }
   }
 
@@ -2577,14 +2615,35 @@ export function AgentRunsWorkspace({
     }
   }
 
-  async function refreshRunContextReceipt(runId: string) {
+  async function refreshRunProjection(runId: string) {
+    runProjectionControllerRef.current?.abort();
+    const controller = new AbortController();
+    runProjectionControllerRef.current = controller;
     try {
-      const payload = asRecord(await readJson(`/api/runs/${encodeURIComponent(runId)}`));
-      if (runId === currentRunIdRef.current || runId === activeAgentRunId) {
-        setContextUseReceipt(contextUseReceiptFromPayload(payload));
-      }
+      const payload = asRecord(await readJson(
+        `/api/runs/${encodeURIComponent(runId)}`,
+        { signal: controller.signal },
+      ));
+      if (
+        controller.signal.aborted ||
+        (runId !== currentRunIdRef.current && runId !== activeAgentRunId)
+      ) return;
+      setRunMediaProjection({
+        runId,
+        artifacts: projectCommandMediaArtifacts(payload),
+        files: projectCommandFileArtifacts(payload),
+        fileState: projectCommandFileArtifactState(payload),
+        workspaceArtifacts: projectCommandWorkspaceArtifacts(payload),
+        workspaceArtifactState: projectCommandWorkspaceArtifactState(payload),
+      });
+      setContextUseReceipt(contextUseReceiptFromPayload(payload));
     } catch {
-      // The receipt remains inspectable from the next run refresh.
+      // Text remains usable; the active-run poll or next reopen retries the
+      // durable artifact and context projection together.
+    } finally {
+      if (runProjectionControllerRef.current === controller) {
+        runProjectionControllerRef.current = null;
+      }
     }
   }
 
@@ -2597,22 +2656,34 @@ export function AgentRunsWorkspace({
   }
 
   async function refreshConversationMemories(id = threadId) {
+    const version = ++memoryVersionRef.current;
+    memoryControllerRef.current?.abort();
+    const controller = new AbortController();
+    memoryControllerRef.current = controller;
     if (!id) {
       setConversationMemories([]);
       setMemoryState("ready");
+      memoryControllerRef.current = null;
       return;
     }
     setMemoryState("loading");
     setMemoryError(undefined);
     try {
-      const result = asRecord(await readJson(`/api/memory?threadId=${encodeURIComponent(id)}&limit=100`));
-      if (id !== threadId) return;
+      const result = asRecord(await readJson(
+        `/api/memory?threadId=${encodeURIComponent(id)}&limit=100`,
+        { signal: controller.signal },
+      ));
+      if (controller.signal.aborted || version !== memoryVersionRef.current) return;
       setConversationMemories(arrayPath(result, "memories") as unknown as ConversationMemory[]);
       setMemoryState("ready");
     } catch (memoryLoadError) {
-      if (id !== threadId) return;
+      if (controller.signal.aborted || version !== memoryVersionRef.current) return;
       setMemoryError(memoryLoadError instanceof Error ? memoryLoadError.message : "Conversation memory could not be loaded.");
       setMemoryState("error");
+    } finally {
+      if (memoryControllerRef.current === controller) {
+        memoryControllerRef.current = null;
+      }
     }
   }
 
@@ -2641,27 +2712,12 @@ export function AgentRunsWorkspace({
     }
   }
 
-  async function refreshRunMediaArtifacts(id: string) {
-    try {
-      const payload = asRecord(await readJson(`/api/runs/${encodeURIComponent(id)}`));
-      if (currentRunIdRef.current !== id) return;
-      setRunMediaProjection({
-        runId: id,
-        artifacts: projectCommandMediaArtifacts(payload),
-        files: projectCommandFileArtifacts(payload),
-        fileState: projectCommandFileArtifactState(payload),
-        workspaceArtifacts: projectCommandWorkspaceArtifacts(payload),
-        workspaceArtifactState: projectCommandWorkspaceArtifactState(payload),
-      });
-    } catch {
-      // The text response stays usable; a later run poll or reopen retries the
-      // durable media projection without replacing the conversation.
-    }
-  }
-
   async function loadThread(
     id: string,
-    options: { restoreLatestRun?: boolean } = {},
+    options: {
+      restoreLatestRun?: boolean;
+      preserveActivity?: boolean;
+    } = {},
   ) {
     const version = ++threadLoadVersionRef.current;
     threadLoadControllerRef.current?.abort();
@@ -2692,15 +2748,11 @@ export function AgentRunsWorkspace({
           if (loadedProjectId) setSelectedProjectId(loadedProjectId);
           setMode(canonicalClientAgentMode(thread.mode));
           setTurns(loadedTurns);
-          setAgentResponse("");
-          setRunMediaProjection({
-            runId: latestRunId || "",
-            artifacts: [],
-            files: [],
-            fileState: "none",
-            workspaceArtifacts: [],
-            workspaceArtifactState: "none",
-          });
+          memoryControllerRef.current?.abort();
+          memoryVersionRef.current += 1;
+          setConversationMemories([]);
+          setMemoryState("idle");
+          setMemoryError(undefined);
           contextControllerRef.current?.abort();
           contextVersionRef.current += 1;
           setContextPack(undefined);
@@ -2713,17 +2765,28 @@ export function AgentRunsWorkspace({
           setWorkflowPlan(undefined);
           setWorkflowRun(undefined);
           setWorkflowSyncError(undefined);
-          setActiveAgentRunId("");
-          setClarificationRunId("");
-          currentRunIdRef.current = "";
-          clearSelectedActivity();
-          directRunStatusRef.current = "";
-          setStreamEvents([]);
-          setWaitingApproval(undefined);
-          setGrounding(undefined);
-          setContextUseReceipt(undefined);
-          setActiveTab("execute");
-          setDetailsOpen(false);
+          if (!options.preserveActivity) {
+            setAgentResponse("");
+            setRunMediaProjection({
+              runId: latestRunId || "",
+              artifacts: [],
+              files: [],
+              fileState: "none",
+              workspaceArtifacts: [],
+              workspaceArtifactState: "none",
+            });
+            setActiveAgentRunId("");
+            setClarificationRunId("");
+            currentRunIdRef.current = "";
+            clearSelectedActivity();
+            directRunStatusRef.current = "";
+            setStreamEvents([]);
+            setWaitingApproval(undefined);
+            setGrounding(undefined);
+            setContextUseReceipt(undefined);
+            setActiveTab("execute");
+            setDetailsOpen(false);
+          }
           setMobileConversationsOpen(false);
           setConversationView("chat");
           agentRequestIdRef.current = "";
@@ -2775,7 +2838,12 @@ export function AgentRunsWorkspace({
       const run = asRecord(payload.run);
       if (stringValue(run.id) !== id) throw new Error("Run not found.");
       const ownedThreadId = stringValue(run.threadId);
-      if (ownedThreadId) await loadThread(ownedThreadId, { restoreLatestRun: false });
+      if (ownedThreadId) {
+        void loadThread(ownedThreadId, {
+          restoreLatestRun: false,
+          preserveActivity: true,
+        });
+      }
       const status = stringValue(run.status);
       const response = stringValue(run.response);
       const nextGrounding = run.grounding
@@ -2792,6 +2860,9 @@ export function AgentRunsWorkspace({
           accent: card.accent,
         }));
       }
+      setWorkflowPlan(undefined);
+      setWorkflowRun(undefined);
+      setWorkflowSyncError(undefined);
       currentRunIdRef.current = id;
       directRunStatusRef.current = status;
       setSelectedActivityRunId(id);
@@ -2836,6 +2907,8 @@ export function AgentRunsWorkspace({
   function newThread() {
     threadLoadVersionRef.current += 1;
     threadLoadControllerRef.current?.abort();
+    memoryControllerRef.current?.abort();
+    memoryVersionRef.current += 1;
     contextControllerRef.current?.abort();
     contextVersionRef.current += 1;
     setThreadId("");
@@ -2905,7 +2978,11 @@ export function AgentRunsWorkspace({
   }
 
   async function refreshEvidence() {
-    if (sessionStatus !== "ready" || !session) {
+    if (
+      sessionStatus !== "ready" ||
+      !session ||
+      !evidenceVisibleRef.current
+    ) {
       return;
     }
     const version = ++evidenceVersionRef.current;
