@@ -25,6 +25,7 @@ import {
   renderModelComputerObservation,
   type ModelComputerObservation,
 } from "@/lib/models/computer-observation";
+import { resolveModelReasoningEffort } from "@/lib/models/reasoning-effort";
 import { promptCacheKeyForScope } from "@/lib/models/prompt-cache";
 import { recordAiUsageSafely } from "@/lib/usage/ledger";
 import type { AiUsageScope } from "@/lib/usage/types";
@@ -44,12 +45,6 @@ export type OpenAIReadiness = {
   checkedAt: string;
   error?: string;
 };
-
-// Only reasoning models (GPT-5/6 families and o-series) accept `reasoning.effort`
-// parameter; gpt-4o and other chat models reject it with a 400.
-function supportsReasoningEffort(model: string) {
-  return /^(gpt-[56]|o\d)/i.test(model);
-}
 
 export function getOpenAIClient(options: { apiKey?: string } = {}) {
   const requestApiKey = options.apiKey?.trim();
@@ -367,13 +362,20 @@ export async function streamResponseTurn({
   function createTurnStream(selectedModel: string) {
     const scopedPromptCacheKey = promptCacheKey ||
       promptCacheKeyForScope(usageScope);
+    const effectiveReasoningEffort = resolveModelReasoningEffort(
+      "openai",
+      selectedModel,
+      reasoningEffort,
+    );
     return getOpenAIClient(apiKey ? { apiKey } : undefined).responses.create(
     {
       model: selectedModel,
       ...(instructions ? { instructions } : {}),
       input: openAIResponseInput(input) as never,
       ...(tools && tools.length ? { tools: tools as never } : {}),
-      ...(reasoningEffort && supportsReasoningEffort(selectedModel) ? { reasoning: { effort: reasoningEffort } } : {}),
+      ...(effectiveReasoningEffort
+        ? { reasoning: { effort: effectiveReasoningEffort } }
+        : {}),
       ...(maxOutputTokens ? { max_output_tokens: maxOutputTokens } : {}),
       stream: true,
       store: false,
@@ -870,6 +872,11 @@ export async function createStructuredResponseWithMetrics({
   usageScope?: AiUsageScope;
 }) {
   const startedAt = Date.now();
+  const effectiveReasoningEffort = resolveModelReasoningEffort(
+    "openai",
+    model,
+    reasoningEffort,
+  );
   try {
     const response = await getOpenAIClient(apiKey ? { apiKey } : undefined).responses.create(
       {
@@ -884,7 +891,9 @@ export async function createStructuredResponseWithMetrics({
             schema,
           },
         },
-        ...(reasoningEffort && supportsReasoningEffort(model) ? { reasoning: { effort: reasoningEffort } } : {}),
+        ...(effectiveReasoningEffort
+          ? { reasoning: { effort: effectiveReasoningEffort } }
+          : {}),
         store: false,
       },
       { signal: abortSignal },

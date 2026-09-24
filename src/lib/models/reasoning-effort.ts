@@ -36,25 +36,59 @@ const reasoningEfforts: Record<CommandReasoningLevel, ModelReasoningEffort> = {
   ultra: "max",
 };
 
+/**
+ * Provider-native reasoning efforts accepted by the selected model.
+ *
+ * Keep this as the single compatibility boundary for both the Command UI and
+ * server-side provider calls. A saved route may change models without a new
+ * client release, so callers must never infer support from a broad model
+ * family check alone.
+ */
+export function modelReasoningEfforts(
+  provider: SettingsModelProvider,
+  modelId: string,
+): readonly ModelReasoningEffort[] {
+  if (provider !== "openai") return [];
+  const normalized = modelId.trim().toLowerCase();
+
+  if (/^gpt-6(?:[-.]|$)/i.test(normalized)) {
+    return ["low", "medium", "high", "xhigh", "max"];
+  }
+  if (/^gpt-5(?:[-.]|$)/i.test(normalized)) {
+    return ["minimal", "low", "medium", "high"];
+  }
+  if (/^o\d(?:[-.]|$)/i.test(normalized)) {
+    return ["low", "medium", "high"];
+  }
+  return [];
+}
+
+/**
+ * Resolve an effort for the actual provider/model attempt. Unsupported values
+ * fall back to that model's least intensive accepted effort; models without an
+ * adjustable reasoning contract omit the provider parameter entirely.
+ */
+export function resolveModelReasoningEffort(
+  provider: SettingsModelProvider,
+  modelId: string,
+  requested?: ModelReasoningEffort,
+): ModelReasoningEffort | undefined {
+  const supported = modelReasoningEfforts(provider, modelId);
+  if (!supported.length) return undefined;
+  if (requested && supported.includes(requested)) return requested;
+  return supported[0];
+}
+
 /** Browser-safe provider/model compatibility used by Settings and Command. */
 export function commandReasoningOptionsForModel(
   provider: SettingsModelProvider,
   modelId: string,
 ): readonly CommandReasoningOption[] {
-  if (provider !== "openai") return [];
-  const normalized = modelId.trim().toLowerCase();
-  if (!/^(?:gpt-[56](?:[-.]|$)|o\d(?:[-.]|$))/i.test(normalized)) return [];
-
-  const levels: CommandReasoningLevel[] = ["low", "medium", "high"];
-  // The current OpenAI Responses contract exposes xhigh/max, but those
-  // values are intentionally advertised only for catalog-discovered GPT-6.
-  // Older reasoning families keep the conservative low/medium/high surface.
-  if (/^gpt-6(?:[-.]|$)/i.test(normalized)) {
-    levels.push("extra_high", "ultra");
-  }
-  return levels.map((id) => ({
-    id,
-    label: reasoningLabels[id],
-    nativeEffort: reasoningEfforts[id],
-  }));
+  const supported = modelReasoningEfforts(provider, modelId);
+  return COMMAND_REASONING_LEVELS.flatMap((id) => {
+    const nativeEffort = reasoningEfforts[id];
+    return supported.includes(nativeEffort)
+      ? [{ id, label: reasoningLabels[id], nativeEffort }]
+      : [];
+  });
 }
