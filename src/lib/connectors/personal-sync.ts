@@ -341,6 +341,10 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
             // page. Persist canonical evidence immediately; cognition owns
             // semantic memory while the graph queue remains coalesced.
             deferMemoryGraphIndex: true,
+            // A retry after the document commit must replay communication,
+            // meeting, entity, and graph projections without purchasing the
+            // same exact revision's embeddings again.
+            reuseExactCommittedRevision: true,
             usageScope: {
               tenantId: input.tenantId,
               actorId: input.actorId,

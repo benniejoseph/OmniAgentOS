@@ -86,7 +86,7 @@ export type CanonicalKnowledgeEvidence = Readonly<{
   }>;
 }>;
 
-type CreateKnowledgeDocumentInput = {
+export type CreateKnowledgeDocumentInput = {
   idempotencyKey?: string;
   tenantId?: string;
   title: string;
@@ -115,6 +115,172 @@ type SearchKnowledgeOptions = {
 };
 
 export async function createKnowledgeDocument(input: CreateKnowledgeDocumentInput) {
+  const {
+    document,
+    chunks,
+    canonicalSourceWrite,
+  } = prepareKnowledgeDocument(input);
+  if (hasDatabaseUrl()) {
+    const lineage = await insertKnowledgeDocumentDb(
+      document,
+      chunks,
+      canonicalSourceWrite,
+      input.captureIngestGuard,
+    );
+    return {
+      document: lineage ? document : withoutDocumentLineage(document),
+      chunks: lineage ? chunks : chunks.map(withoutChunkLineage),
+      lineage,
+    };
+  }
+
+  let lineage: PersistedKnowledgeLineage | undefined;
+  await updateJsonFile<KnowledgeLedger>(
+    getKnowledgeFile(),
+    { documents: [], chunks: [] },
+    (ledger) => {
+      const existingDocument = ledger.documents.find(
+        (item) => item.id === document.id,
+      );
+      const inserted = !existingDocument;
+      if (
+        inserted &&
+        chunks.some((chunk) =>
+          ledger.chunks.some((existing) => existing.id === chunk.id),
+        )
+      ) {
+        throw new Error(
+          "Knowledge chunk ID conflicts with an existing stored chunk.",
+        );
+      }
+      if (inserted && canonicalSourceWrite) {
+        ledger.sourceLineage = mergeCanonicalSourceLedger(
+          ledger.sourceLineage,
+          canonicalSourceWrite,
+        );
+        lineage = {
+          sourceItemId:
+            canonicalSourceWrite.adapterOutput.sourceItem.sourceItemId,
+          sourceRevisionId:
+            canonicalSourceWrite.adapterOutput.sourceRevision.sourceRevisionId,
+          evidenceUnitIdsByChunkIndex:
+            canonicalSourceWrite.evidenceUnitIdsByChunkIndex,
+        };
+      } else if (existingDocument) {
+        const existingChunks = ledger.chunks
+          .filter((chunk) => chunk.documentId === existingDocument.id)
+          .sort((left, right) => left.chunkIndex - right.chunkIndex);
+        lineage = recoverFileKnowledgeLineage(
+          ledger,
+          existingDocument,
+          existingChunks,
+          document,
+          chunks,
+          canonicalSourceWrite,
+        );
+      }
+      return {
+        ...ledger,
+        documents: inserted
+          ? [document, ...ledger.documents].slice(0, 100)
+          : ledger.documents,
+        chunks: [
+          ...(inserted ? chunks : []).filter(
+            (chunk) => !ledger.chunks.some((item) => item.id === chunk.id),
+          ),
+          ...ledger.chunks,
+        ].slice(0, 1200),
+      };
+    },
+  );
+  return {
+    document: lineage ? document : withoutDocumentLineage(document),
+    chunks: lineage ? chunks : chunks.map(withoutChunkLineage),
+    lineage,
+  };
+}
+
+/**
+ * Resolves an exact, current canonical document before an embedding provider is
+ * called. The proof is deliberately stronger than document-id existence: the
+ * active actor-private source revision, content, chunk payload, and evidence
+ * lineage must all match. A caller may reuse the returned vectors while still
+ * replaying downstream projections that did not settle after the first commit.
+ */
+export async function reuseExactKnowledgeDocument(
+  input: CreateKnowledgeDocumentInput,
+): Promise<Readonly<{
+  document: KnowledgeDocument;
+  chunks: readonly KnowledgeChunk[];
+  lineage: PersistedKnowledgeLineage;
+}> | null> {
+  if (
+    !input.idempotencyKey ||
+    !input.canonicalSourceWrite ||
+    input.captureIngestGuard
+  ) {
+    return null;
+  }
+  const prepared = prepareKnowledgeDocument(input);
+  const output = prepared.canonicalSourceWrite!.adapterOutput;
+  if (
+    !output.sourceItem.allowedPurposeIds.includes(
+      KNOWLEDGE_COGNIFY_PURPOSE_ID,
+    )
+  ) {
+    return null;
+  }
+  const existingDocument = await getKnowledgeDocumentByIdempotencyKey(
+    input.idempotencyKey,
+    { tenantId: prepared.tenantId },
+  );
+  if (!existingDocument) return null;
+
+  // Reject a new provider revision before any embedding expense. The caller's
+  // existing replacement path will retire the old immutable derivation and
+  // ingest the new revision under the same stable provider-item identity.
+  assertStoredKnowledgeDocumentPayload(
+    existingDocument,
+    prepared.document,
+  );
+  if (
+    existingDocument.sourceItemId !== output.sourceItem.sourceItemId ||
+    existingDocument.sourceRevisionId !==
+      output.sourceRevision.sourceRevisionId
+  ) {
+    throw new Error(
+      "Knowledge document ID is already bound to different source lineage.",
+    );
+  }
+  const reusable = await getActorOwnedKnowledgeForCognition({
+    tenantId: prepared.tenantId,
+    actorId: output.sourceItem.ownerActorId,
+    documentId: prepared.document.id,
+  });
+  if (!reusable) {
+    throw new Error(
+      "Stored knowledge document is not current and authorized for exact revision reuse.",
+    );
+  }
+  assertStoredKnowledgePayload(
+    reusable.document,
+    reusable.chunks,
+    prepared.document,
+    prepared.chunks,
+  );
+  assertStoredChunkLineage(
+    reusable.chunks,
+    prepared.chunks,
+    prepared.canonicalSourceWrite!,
+  );
+  return Object.freeze({
+    document: reusable.document,
+    chunks: Object.freeze([...reusable.chunks]),
+    lineage: expectedKnowledgeLineage(prepared.canonicalSourceWrite!),
+  });
+}
+
+function prepareKnowledgeDocument(input: CreateKnowledgeDocumentInput) {
   const now = new Date().toISOString();
   const safeTitle = jsonbSafeTruncate(
     String(redactSensitive(input.title.trim())),
@@ -233,85 +399,7 @@ export async function createKnowledgeDocument(input: CreateKnowledgeDocumentInpu
       canonicalSourceWrite,
     );
   }
-
-  if (hasDatabaseUrl()) {
-    const lineage = await insertKnowledgeDocumentDb(
-      document,
-      chunks,
-      canonicalSourceWrite,
-      input.captureIngestGuard,
-    );
-    return {
-      document: lineage ? document : withoutDocumentLineage(document),
-      chunks: lineage ? chunks : chunks.map(withoutChunkLineage),
-      lineage,
-    };
-  }
-
-  let lineage: PersistedKnowledgeLineage | undefined;
-  await updateJsonFile<KnowledgeLedger>(
-    getKnowledgeFile(),
-    { documents: [], chunks: [] },
-    (ledger) => {
-      const existingDocument = ledger.documents.find(
-        (item) => item.id === document.id,
-      );
-      const inserted = !existingDocument;
-      if (
-        inserted &&
-        chunks.some((chunk) =>
-          ledger.chunks.some((existing) => existing.id === chunk.id),
-        )
-      ) {
-        throw new Error(
-          "Knowledge chunk ID conflicts with an existing stored chunk.",
-        );
-      }
-      if (inserted && canonicalSourceWrite) {
-        ledger.sourceLineage = mergeCanonicalSourceLedger(
-          ledger.sourceLineage,
-          canonicalSourceWrite,
-        );
-        lineage = {
-          sourceItemId:
-            canonicalSourceWrite.adapterOutput.sourceItem.sourceItemId,
-          sourceRevisionId:
-            canonicalSourceWrite.adapterOutput.sourceRevision.sourceRevisionId,
-          evidenceUnitIdsByChunkIndex:
-            canonicalSourceWrite.evidenceUnitIdsByChunkIndex,
-        };
-      } else if (existingDocument) {
-        const existingChunks = ledger.chunks
-          .filter((chunk) => chunk.documentId === existingDocument.id)
-          .sort((left, right) => left.chunkIndex - right.chunkIndex);
-        lineage = recoverFileKnowledgeLineage(
-          ledger,
-          existingDocument,
-          existingChunks,
-          document,
-          chunks,
-          canonicalSourceWrite,
-        );
-      }
-      return {
-        ...ledger,
-        documents: inserted
-          ? [document, ...ledger.documents].slice(0, 100)
-          : ledger.documents,
-        chunks: [
-          ...(inserted ? chunks : []).filter(
-            (chunk) => !ledger.chunks.some((item) => item.id === chunk.id),
-          ),
-          ...ledger.chunks,
-        ].slice(0, 1200),
-      };
-    },
-  );
-  return {
-    document: lineage ? document : withoutDocumentLineage(document),
-    chunks: lineage ? chunks : chunks.map(withoutChunkLineage),
-    lineage,
-  };
+  return { document, chunks, canonicalSourceWrite, tenantId };
 }
 
 export async function deleteKnowledgeDocumentByIdempotencyKey(idempotencyKey: string, options: {
@@ -3303,22 +3391,11 @@ function assertStoredKnowledgePayload(
   requestedDocument: KnowledgeDocument,
   requestedChunks: readonly KnowledgeChunk[],
 ) {
-  if (
-    normalizeTenantId(existingDocument.tenantId) !==
-      normalizeTenantId(requestedDocument.tenantId) ||
-    existingDocument.id !== requestedDocument.id ||
-    existingDocument.contentHash !== requestedDocument.contentHash ||
-    existingDocument.chunkCount !== requestedDocument.chunkCount ||
-    existingDocument.totalCharacters !== requestedDocument.totalCharacters ||
-    existingDocument.title !== requestedDocument.title ||
-    existingDocument.source !== requestedDocument.source ||
-    existingDocument.sourceType !== requestedDocument.sourceType ||
-    sourceContractSha256(existingDocument.tags) !==
-      sourceContractSha256(requestedDocument.tags) ||
-    sourceContractSha256(existingDocument.metadata) !==
-      sourceContractSha256(requestedDocument.metadata) ||
-    existingChunks.length !== requestedChunks.length
-  ) {
+  assertStoredKnowledgeDocumentPayload(
+    existingDocument,
+    requestedDocument,
+  );
+  if (existingChunks.length !== requestedChunks.length) {
     throw new Error(
       "Knowledge document idempotency key is already bound to different content.",
     );
@@ -3345,6 +3422,31 @@ function assertStoredKnowledgePayload(
         "Knowledge document idempotency key is already bound to different chunks.",
       );
     }
+  }
+}
+
+function assertStoredKnowledgeDocumentPayload(
+  existingDocument: KnowledgeDocument,
+  requestedDocument: KnowledgeDocument,
+) {
+  if (
+    normalizeTenantId(existingDocument.tenantId) !==
+      normalizeTenantId(requestedDocument.tenantId) ||
+    existingDocument.id !== requestedDocument.id ||
+    existingDocument.contentHash !== requestedDocument.contentHash ||
+    existingDocument.chunkCount !== requestedDocument.chunkCount ||
+    existingDocument.totalCharacters !== requestedDocument.totalCharacters ||
+    existingDocument.title !== requestedDocument.title ||
+    existingDocument.source !== requestedDocument.source ||
+    existingDocument.sourceType !== requestedDocument.sourceType ||
+    sourceContractSha256(existingDocument.tags) !==
+      sourceContractSha256(requestedDocument.tags) ||
+    sourceContractSha256(existingDocument.metadata) !==
+      sourceContractSha256(requestedDocument.metadata)
+  ) {
+    throw new Error(
+      "Knowledge document idempotency key is already bound to different content.",
+    );
   }
 }
 

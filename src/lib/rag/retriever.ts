@@ -8,6 +8,7 @@ import {
 import { saveMemories } from "@/lib/memory/store";
 import {
   createKnowledgeDocument,
+  reuseExactKnowledgeDocument,
   retireSupersededCaptureKnowledge,
 } from "@/lib/rag/store";
 import { buildContextPack } from "@/lib/rag/context-engine";
@@ -59,6 +60,7 @@ export async function ingestTextDocument({
   executionScope,
   structuredUnits,
   deferMemoryGraphIndex = false,
+  reuseExactCommittedRevision = false,
   onProgress,
 }: {
   idempotencyKey?: string;
@@ -77,6 +79,11 @@ export async function ingestTextDocument({
   executionScope?: ExecutionScope;
   structuredUnits?: CaptureExtractionUnit[];
   deferMemoryGraphIndex?: boolean;
+  /**
+   * Connector retry optimization. Exact canonical revisions reuse their
+   * committed chunks/vectors, while all downstream projections still replay.
+   */
+  reuseExactCommittedRevision?: boolean;
   onProgress?: (progress: KnowledgeIngestProgress) => void | Promise<void>;
 }) {
   if ((usageScope?.actorId || captureIngestGuard?.actorId) && !sourceLineage) {
@@ -121,30 +128,48 @@ export async function ingestTextDocument({
     : undefined;
   await onProgress?.({ stage: "embedding", chunkCount: chunks.length });
   abortSignal?.throwIfAborted();
-  const embeddings = await embedKnowledgeTexts(
-    chunks.map((chunk) => chunk.content),
-    abortSignal,
-    usageScope,
-  );
+  const reusableKnowledge = reuseExactCommittedRevision && canonicalSourceWrite
+    ? await reuseExactKnowledgeDocument({
+        idempotencyKey,
+        tenantId,
+        title: safeTitle,
+        content: safeContent,
+        source: safeSource,
+        sourceType,
+        tags: safeTags,
+        metadata,
+        canonicalSourceWrite,
+        captureIngestGuard,
+        chunks,
+      })
+    : null;
+  abortSignal?.throwIfAborted();
+  const embeddings = reusableKnowledge
+    ? reusableKnowledge.chunks.map((chunk) => chunk.embedding)
+    : await embedKnowledgeTexts(
+        chunks.map((chunk) => chunk.content),
+        abortSignal,
+        usageScope,
+      );
   abortSignal?.throwIfAborted();
   await onProgress?.({ stage: "knowledge", chunkCount: chunks.length });
   abortSignal?.throwIfAborted();
-  const knowledge = await createKnowledgeDocument({
-    idempotencyKey,
-    tenantId,
-    title: safeTitle,
-    content: safeContent,
-    source: safeSource,
-    sourceType,
-    tags: safeTags,
-    metadata,
-    canonicalSourceWrite,
-    captureIngestGuard,
-    chunks: chunks.map((chunk) => ({
-      ...chunk,
-      embedding: embeddings?.[chunk.index],
-    })),
-  });
+  const knowledge = reusableKnowledge || await createKnowledgeDocument({
+      idempotencyKey,
+      tenantId,
+      title: safeTitle,
+      content: safeContent,
+      source: safeSource,
+      sourceType,
+      tags: safeTags,
+      metadata,
+      canonicalSourceWrite,
+      captureIngestGuard,
+      chunks: chunks.map((chunk) => ({
+        ...chunk,
+        embedding: embeddings?.[chunk.index],
+      })),
+    });
   if (canonicalSourceWrite) {
     await onProgress?.({ stage: "entities", chunkCount: chunks.length });
     abortSignal?.throwIfAborted();
