@@ -137,6 +137,12 @@ const frozenDocumentSha256ByVersion = Object.freeze({
     "fixtures.json": "c34a12323a4e6e74993ce3f802ddd38da09ac050eab104f0b3ea04077b7eec56",
     "manifest.json": "3e6df5bf78a96a2eaf831f99685cdfdaafe90510f404429766e89e797f10a961",
   }),
+  27: Object.freeze({
+    "openapi.json": "fc695f308a5525c285d8e1d76c978a7f78f0410151dcf732383bce7a6e54d447",
+    "events.schema.json": "54ad4d7e0a686efecd0b3a436ab16df640755c7c4da9b20f4f703cb45a835049",
+    "fixtures.json": "4d447d8e9867f526e987a7b7159541560e9f4d0f8d4dc12c1aedce28758aa7c9",
+    "manifest.json": "295cc1175541e82f38b37b57807d5279460b8b0afb06d27928e8284b248320f6",
+  }),
 });
 
 const fixtures = Object.freeze({
@@ -167,12 +173,34 @@ const fixtures = Object.freeze({
     mode: "orchestrate",
     strategy: "auto",
     agentId: "agent-fixture",
+    modelSelection: {
+      schemaVersion: 1,
+      assignmentId: "assignment-fixture",
+      assignmentRevision: 7,
+      assignmentConfigurationSha256: "a".repeat(64),
+      route: "primary",
+      provider: "openai",
+      modelId: "gpt-6-astra",
+      reasoningLevel: "ultra",
+    },
     requestId: "native-fixture-request",
   },
   conversationEvents: [
     { type: "run", runId: "run-fixture", threadId: "thread-fixture" },
     { type: "status", label: "Working", detail: "Reviewing evidence." },
     { type: "delta", text: "Here is what needs attention." },
+    {
+      type: "model",
+      provider: "openai",
+      model: "gpt-6-astra",
+      tier: "reasoning",
+      inputTokens: 120,
+      outputTokens: 24,
+      totalTokens: 144,
+      latencyMs: 420,
+      reasoningEffort: "max",
+      commandSelectionSha256: "b".repeat(64),
+    },
     { type: "waiting_approval", executionId: "execution-fixture", toolId: "calendar.event.create", message: "Approval is required." },
     { type: "done", response: "Here is what needs attention." },
   ],
@@ -453,6 +481,7 @@ function openApiQueryParameterSchema(parameter: NativeQueryParameter) {
     type: "string",
     ...(parameter.minLength !== undefined ? { minLength: parameter.minLength } : {}),
     ...(parameter.maxLength !== undefined ? { maxLength: parameter.maxLength } : {}),
+    ...(parameter.enumValues?.length ? { enum: [...parameter.enumValues] } : {}),
   };
 }
 

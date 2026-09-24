@@ -9,6 +9,8 @@ import {
   promptQueueReorderRequestSchema,
   promptQueueUpdateRequestSchema,
 } from "@/lib/command/prompt-queue-contracts";
+import { commandModelSelectionRequestSchema } from "@/lib/models/command-selection";
+import { COMMAND_REASONING_LEVELS } from "@/lib/models/reasoning-effort";
 import {
   LOCAL_COMPUTER_PROTOCOL_VERSION,
   localComputerActionSchema,
@@ -21,12 +23,16 @@ import {
 } from "@/lib/local-computer/contracts";
 import { mobilePushReceiptRequestSchema } from "@/lib/mobile/push-contract";
 import { pluginManifestSchema } from "@/lib/plugins/contracts";
+import {
+  MODEL_ASSIGNMENT_SCOPES,
+  MODEL_PROVIDERS,
+} from "@/lib/settings/types";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 27 as const;
-// v26 remains the rollback bridge while v27 extends the existing governed
-// local-computer courier with the command-runner status and wire schemas only.
-export const NATIVE_API_PREVIOUS_VERSION = 26 as const;
+export const NATIVE_API_CURRENT_VERSION = 28 as const;
+// v27 remains the byte-frozen rollback bridge while v28 publishes the exact
+// Command model-selection envelope and its read-only Settings catalog.
+export const NATIVE_API_PREVIOUS_VERSION = 27 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -468,7 +474,55 @@ export const nativeConversationRequestSchema = z.object({
   strategy: z.enum(["auto", "direct", "durable"]).optional(),
   agentId: z.string().trim().min(1).max(120).regex(/^[a-zA-Z0-9_.:-]+$/).optional(),
   computerUseTarget: z.literal("local_macos").optional(),
+  modelSelection: commandModelSelectionRequestSchema.optional(),
   requestId: z.string().min(1).max(200).regex(/^[A-Za-z0-9._:-]+$/),
+}).strict();
+
+const nativeModelCatalogEntrySchema = z.object({
+  id: opaqueId,
+  tenantId: opaqueId,
+  actorId: z.string().trim().min(1).max(320),
+  provider: z.enum(MODEL_PROVIDERS),
+  modelId: z.string().trim().min(1).max(240),
+  displayName: z.string().trim().min(1).max(240),
+  capabilities: z.array(z.string().trim().min(1).max(120)).max(64),
+  lifecycle: z.enum(["available", "deprecated", "retiring", "unknown"]),
+  lifecycleReason: z.string().trim().min(1).max(1_000).optional(),
+  lifecycleCheckedAt: isoDateTime.optional(),
+  discoveredAt: isoDateTime,
+  updatedAt: isoDateTime,
+  displayModelId: z.string().trim().min(1).max(240),
+  selectable: z.boolean(),
+}).strict();
+
+const nativeCommandReasoningOptionSchema = z.object({
+  id: z.enum(COMMAND_REASONING_LEVELS),
+  label: z.enum(["Low", "Medium", "High", "Extra high", "Ultra"]),
+  nativeEffort: z.enum(["minimal", "low", "medium", "high", "xhigh", "max"]),
+}).strict();
+
+const nativeCommandModelChoiceSchema = z.object({
+  id: z.string().regex(/^[a-f0-9]{24}$/),
+  assignmentId: z.string().trim().min(1).max(240),
+  assignmentRevision: positiveDatabaseInteger,
+  assignmentConfigurationSha256: sha256Digest,
+  route: z.enum(["primary", "fallback"]),
+  provider: z.enum(["openai", "google", "anthropic", "aws_bedrock"]),
+  modelId: z.string().trim().min(1).max(240),
+  displayName: z.string().trim().min(1).max(240),
+  displayModelId: z.string().trim().min(1).max(240),
+  reasoningOptions: z.array(nativeCommandReasoningOptionSchema).max(5),
+}).strict();
+
+export const nativeCommandModelCatalogResponseSchema = z.object({
+  models: z.array(nativeModelCatalogEntrySchema).max(1_000),
+  command: z.object({
+    schemaVersion: z.literal(1),
+    scope: z.enum(MODEL_ASSIGNMENT_SCOPES),
+    defaultChoiceId: z.string().regex(/^[a-f0-9]{24}$/).nullable(),
+    choices: z.array(nativeCommandModelChoiceSchema).max(2),
+    message: z.string().trim().min(1).max(1_000),
+  }).strict(),
 }).strict();
 
 const localComputerPermissionStateSchema = z.enum([
@@ -561,7 +615,24 @@ const agentEventSchemas = [
   z.object({ type: z.literal("harness"), version: z.union([z.literal(1), z.literal(2)]), mode: z.enum(["orchestrate", "research", "execute", "learn"]) }).passthrough(),
   z.object({ type: z.literal("delta"), text: z.string() }).passthrough(),
   z.object({ type: z.literal("memory"), title: z.string(), count: z.number().int().min(0).optional() }).passthrough(),
-  z.object({ type: z.literal("model"), model: z.string(), tier: z.enum(["fast", "reasoning"]), inputTokens: z.number().int().min(0), outputTokens: z.number().int().min(0) }).passthrough(),
+  z.object({
+    type: z.literal("model"),
+    model: z.string().trim().min(1).max(240),
+    provider: z.enum(["openai", "google", "anthropic", "aws_bedrock", "local"])
+      .describe("The provider that completed this model attempt."),
+    tier: z.enum(["fast", "reasoning"]),
+    inputTokens: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+    outputTokens: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+    totalTokens: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER)
+      .describe("The provider-reported total token count for this attempt."),
+    latencyMs: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER)
+      .describe("End-to-end model attempt latency in milliseconds."),
+    reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh", "max"])
+      .optional()
+      .describe("The effective provider-native reasoning effort after server validation."),
+    commandSelectionSha256: sha256Digest.optional()
+      .describe("The digest of the exact server-revalidated Command model selection."),
+  }).passthrough(),
   z.object({ type: z.literal("council_member"), agentId: z.enum(["atlas", "scout", "forge", "sentinel", "mnemosyne"]), agentName: z.string(), role: z.string(), status: z.enum(["thinking", "completed", "failed"]) }).passthrough(),
   z.object({ type: z.literal("council_verdict"), status: z.enum(["passed", "revised", "failed"]), score: z.number(), assessment: z.string(), requiredChanges: z.array(z.string()) }).passthrough(),
   z.object({ type: z.literal("tool"), toolId: z.string(), toolName: z.string(), status: z.enum(["running", "executed", "dry_run", "approval_required", "blocked", "failed"]) }).passthrough(),
@@ -599,6 +670,7 @@ export type NativeQueryParameter = Readonly<{
   maxLength?: number;
   minimum?: number;
   maximum?: number;
+  enumValues?: readonly string[];
 }>;
 
 export type NativeHeaderParameter = Readonly<{
@@ -1361,6 +1433,33 @@ const v26Operations: readonly NativeOperation[] = [
 // computer courier. No endpoint or capability surface is added.
 const v27Operations: readonly NativeOperation[] = [...v26Operations];
 
+// Contract v28 publishes the strict, revision-bound Command model selection
+// and the read-only catalog required to construct it. The catalog grants no
+// model authority: /api/agent still revalidates the exact assignment revision,
+// configuration digest, provider, model, and supported reasoning effort.
+const v28Operations: readonly NativeOperation[] = [
+  ...v27Operations,
+  operation(
+    "settings.models.commandCatalog",
+    "GET",
+    "/api/settings/models",
+    "Read the bounded Command model catalog for one exact Settings assignment scope.",
+    "bearer",
+    undefined,
+    "NativeCommandModelCatalogResponse",
+    {
+      queryParameters: [
+        queryParameter("commandScope", "string", {
+          required: true,
+          minLength: 1,
+          maxLength: 80,
+          enumValues: MODEL_ASSIGNMENT_SCOPES,
+        }),
+      ],
+    },
+  ),
+];
+
 export const nativeContractSchemas = Object.freeze({
   JsonObject: jsonObject,
   NativeClientAttestation: nativeClientAttestationSchema,
@@ -1418,6 +1517,7 @@ export const nativeContractSchemas = Object.freeze({
     items: z.array(promptQueueItemV1Schema).max(40),
   }).strict(),
   NativePromptQueueDispatchRequest: promptQueueDispatchRequestSchema,
+  NativeCommandModelCatalogResponse: nativeCommandModelCatalogResponseSchema,
   NativeConversationRequest: nativeConversationRequestSchema,
   NativeConversationEvent: nativeConversationEventSchema,
   NativeLocalComputerDeviceUpdateRequest: localComputerDeviceUpdateSchema,
@@ -1477,6 +1577,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 25) return v25Operations;
   if (version === 26) return v26Operations;
   if (version === 27) return v27Operations;
+  if (version === 28) return v28Operations;
   return undefined;
 }
 
@@ -1486,7 +1587,7 @@ export function nativeContractDiscovery() {
     contractId: NATIVE_API_CONTRACT_ID,
     currentVersion: NATIVE_API_CURRENT_VERSION,
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
-    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [27, 26],
+    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [28, 27],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,
       state: version === NATIVE_API_CURRENT_VERSION ? "current" as const : "previous" as const,

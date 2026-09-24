@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 27;
-  static const previousVersion = 26;
-  static const supportedVersions = <int>[27, 26];
+  static const currentVersion = 28;
+  static const previousVersion = 27;
+  static const supportedVersions = <int>[28, 27];
   static const discoveryPath = '/api/mobile/contracts';
   static const operationIds = <String>{
     'auth.login',
@@ -150,6 +150,7 @@ abstract final class NativeContract {
     'automation.schedule.show',
     'notifications.dispositions.list',
     'agents.learning.show',
+    'settings.models.commandCatalog',
   };
 
   static bool supports(int version) => supportedVersions.contains(version);
@@ -409,6 +410,17 @@ abstract final class NativePaths {
     return '$path?$encoded';
   }
   static String agentsLearningShow(String id) => '/api/agents/${Uri.encodeComponent(id)}/learning';
+  static String settingsModelsCommandCatalog({required String commandScope}) {
+    final path = '/api/settings/models';
+    final query = <String, String>{
+      'commandScope': commandScope,
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
 }
 
 abstract final class NativeConversationEvents {

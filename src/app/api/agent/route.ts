@@ -374,6 +374,19 @@ async function POSTHandler(request: Request) {
       headers: { "cache-control": "private, no-store" },
     });
   }
+  if (
+    parsed.data.modelSelection &&
+    parsed.data.strategy === "durable"
+  ) {
+    return Response.json({
+      error: "Model selection requires direct execution",
+      message:
+        "Choose Automatic or Direct when selecting a model. Durable work pins its runtime model when the workflow starts.",
+    }, {
+      status: 409,
+      headers: { "cache-control": "private, no-store" },
+    });
+  }
   const activeDeploymentRevision =
     process.env.VERCEL_GIT_COMMIT_SHA?.trim() ||
     process.env.OMNIAGENT_RELEASE_SHA?.trim();
@@ -841,13 +854,23 @@ async function POSTHandler(request: Request) {
     preferredAgentId: requestedBuiltInAgent,
     executionScope: semanticExecutionScope,
   });
+  const modelSelectedDecision = parsed.data.modelSelection
+    ? {
+        ...semanticResolution.decision,
+        route: "direct" as const,
+        reasons: ["Direct execution was required by the explicit model selection."],
+        primaryAgentId: requestedBuiltInAgent || customAgent
+          ? semanticResolution.decision.primaryAgentId
+          : "atlas" as const,
+        specialistIds: [],
+      }
+    : semanticResolution.decision;
   const preliminaryDecision = applySupervisorStrategy(
-    semanticResolution.decision,
-    computerUseTarget === "local_macos"
+    modelSelectedDecision,
+    parsed.data.modelSelection || computerUseTarget === "local_macos" ||
+        commandContext
       ? "direct"
-      : commandContext
-        ? "direct"
-        : parsed.data.strategy,
+      : parsed.data.strategy,
   );
   const semanticDecisionShadowScope = executionScopeFromSecurityContext(context, {
     executingPrincipalType: "agent",
