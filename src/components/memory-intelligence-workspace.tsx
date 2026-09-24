@@ -46,6 +46,7 @@ import type { MemoryTier } from "@/lib/memory/tier-policy";
 import type { MemoryRecord, MemoryType } from "@/lib/memory/types";
 import { SemanticShadowCollector } from "@/components/semantic-shadow-collector";
 import { SemanticShadowReviewQueue } from "@/components/semantic-shadow-review-queue";
+import { startVisibleRefresh } from "@/lib/client/visible-refresh";
 import styles from "@/components/memory-intelligence-workspace.module.css";
 
 const MemoryUniverse = dynamic(
@@ -379,33 +380,33 @@ export function MemoryIntelligenceWorkspace() {
     if (!pollIds.length) return;
 
     const controller = new AbortController();
-    const timer = window.setTimeout(() => {
-      void Promise.all(pollIds.map(async (jobId) => {
-        try {
-          const response = await fetch(
-            `/api/operations/jobs/${encodeURIComponent(jobId)}`,
-            { cache: "no-store", signal: controller.signal },
-          );
+    const stop = startVisibleRefresh({
+      pollIntervalMs: 2_000,
+      onRefresh: async () => {
+        const updates = await fetch(
+          `/api/operations/jobs?ids=${pollIds.map(encodeURIComponent).join(",")}`,
+          { cache: "no-store", signal: controller.signal },
+        ).then(async (response) => {
           const body = await response.json().catch(() => ({})) as {
-            job?: unknown;
+            jobs?: unknown[];
           };
-          return response.ok ? parseCognificationJob(body.job) : undefined;
-        } catch {
-          return undefined;
-        }
-      })).then((updates) => {
+          return response.ok && Array.isArray(body.jobs)
+            ? body.jobs.map(parseCognificationJob)
+            : [];
+        }).catch(() => []);
         if (controller.signal.aborted) return;
-        const jobs = updates.filter((job): job is CognificationJob =>
-          Boolean(job)
-        );
+        const jobs: CognificationJob[] = [];
+        for (const job of updates) {
+          if (job) jobs.push(job);
+        }
         if (jobs.length) {
           setCognitionJobs((current) => mergeCognificationJobs(current, jobs));
         }
-      });
-    }, 2_000);
+      },
+    });
     return () => {
-      window.clearTimeout(timer);
       controller.abort();
+      stop();
     };
   }, [cognitionJobs]);
 

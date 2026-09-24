@@ -35,6 +35,7 @@ import {
   mergeCaptureBatchFiles,
   runCaptureBatch,
 } from "@/lib/capture/batch-client";
+import { startVisibleRefresh } from "@/lib/client/visible-refresh";
 import { listOfflineCaptures, queueOfflineCapture, removeOfflineCapture, type OfflineCapture } from "@/lib/capture/offline";
 import { googleWorkspaceCapabilitiesForScopes } from "@/lib/connectors/google-workspace-capabilities";
 import styles from "./daybook-workspaces.module.css";
@@ -268,20 +269,6 @@ export function CaptureWorkspace() {
   }, []);
 
   useEffect(() => {
-    if (!activeJob || !["queued", "running"].includes(activeJob.status)) return;
-    const timer = window.setTimeout(async () => {
-      try {
-        const response = await fetch(`/api/operations/jobs/${encodeURIComponent(activeJob.id)}`, { cache: "no-store" });
-        const payload = (await response.json().catch(() => ({}))) as { job?: CaptureJob };
-        if (response.ok && payload.job) setActiveJob(payload.job);
-      } catch {
-        // The queued work remains durable; a later poll can recover.
-      }
-    }, 2_000);
-    return () => window.clearTimeout(timer);
-  }, [activeJob]);
-
-  useEffect(() => {
     if (!activeJob || !["completed", "failed", "canceled"].includes(activeJob.status) || completedJobRef.current === activeJob.id) return;
     completedJobRef.current = activeJob.id;
     const frame = window.requestAnimationFrame(() => {
@@ -300,47 +287,67 @@ export function CaptureWorkspace() {
     const pending = batchItems.filter((item) =>
       item.job && ["queued", "running"].includes(item.status) && !durableIds.has(item.job.id)
     );
-    if (!pending.length) return;
-    const timer = window.setTimeout(() => {
-      void Promise.all(pending.map(async (item) => {
+    const activeJobId = activeJob && ["queued", "running"].includes(activeJob.status)
+      ? activeJob.id
+      : undefined;
+    const jobIds = [...new Set([
+      ...(activeJobId ? [activeJobId] : []),
+      ...pending.flatMap((item) => item.job ? [item.job.id] : []),
+    ])];
+    if (!jobIds.length) return;
+
+    const controller = new AbortController();
+    const stop = startVisibleRefresh({
+      pollIntervalMs: 2_000,
+      onRefresh: async () => {
         try {
           const response = await fetch(
-            `/api/operations/jobs/${encodeURIComponent(item.job!.id)}`,
-            { cache: "no-store" },
+            `/api/operations/jobs?ids=${jobIds.map(encodeURIComponent).join(",")}`,
+            { cache: "no-store", signal: controller.signal },
           );
           const payload = (await response.json().catch(() => ({}))) as {
-            job?: CaptureJob;
+            jobs?: CaptureJob[];
           };
-          return response.ok && payload.job
-            ? { id: item.id, job: payload.job }
-            : undefined;
+          if (!response.ok || controller.signal.aborted) return;
+          const updates = new Map(
+            (Array.isArray(payload.jobs) ? payload.jobs : []).map((job) => [
+              job.id,
+              job,
+            ] as const),
+          );
+          if (!updates.size) return;
+
+          if (activeJobId) {
+            const nextActiveJob = updates.get(activeJobId);
+            if (nextActiveJob) setActiveJob(nextActiveJob);
+          }
+          const completed = batchItems.some((item) =>
+            item.status !== "completed" &&
+            item.job &&
+            updates.get(item.job.id)?.status === "completed"
+          );
+          setBatchItems((current) => current.map((item) => {
+            const job = item.job ? updates.get(item.job.id) : undefined;
+            if (!job) return item;
+            const nextStatus = batchStatusFromJob(job);
+            return {
+              ...item,
+              job,
+              status: nextStatus,
+              error: job.lastError || (job.status === "canceled" ? "Indexing was canceled." : undefined),
+            };
+          }));
+          if (completed) void loadWorkspace();
         } catch {
-          return undefined;
+          // The queued work remains durable; a later visible poll can recover.
         }
-      })).then((results) => {
-        const updates = new Map(results.flatMap((result) =>
-          result ? [[result.id, result.job] as const] : []
-        ));
-        if (!updates.size) return;
-        const completed = batchItems.some((item) =>
-          item.status !== "completed" && updates.get(item.id)?.status === "completed"
-        );
-        setBatchItems((current) => current.map((item) => {
-          const job = updates.get(item.id);
-          if (!job) return item;
-          const nextStatus = batchStatusFromJob(job);
-          return {
-            ...item,
-            job,
-            status: nextStatus,
-            error: job.lastError || (job.status === "canceled" ? "Indexing was canceled." : undefined),
-          };
-        }));
-        if (completed) void loadWorkspace();
-      });
-    }, 2_000);
-    return () => window.clearTimeout(timer);
-  }, [batchItems, loadWorkspace, processingJobs]);
+      },
+    });
+    return () => {
+      controller.abort();
+      stop();
+    };
+  }, [activeJob, batchItems, loadWorkspace, processingJobs]);
 
   const filteredDocuments = useMemo(() => documents.filter((document) => {
     if (!captureSearchMatches(libraryQuery, [document.title, document.source])) return false;

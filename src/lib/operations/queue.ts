@@ -9,8 +9,7 @@ import {
 } from "@/lib/observability/slo-policy-store";
 import {
   getOperationJobStats,
-  listTenantWideOperationJobs,
-  projectOperationJobStatus,
+  listOperationJobRecoveryRows,
 } from "@/lib/operations/job-queue";
 import { inspectOperationsRecovery } from "@/lib/operations/recovery";
 import { listAgentRuns } from "@/lib/runs/store";
@@ -133,7 +132,7 @@ export async function getApprovalQueue(limit = 25, options: { tenantId?: string 
 export async function getOperationsOverview(options: { tenantId?: string } = {}) {
   const [
     approvals,
-    workflowRuns,
+    workflowRows,
     workflowStats,
     toolExecutions,
     toolStats,
@@ -141,23 +140,35 @@ export async function getOperationsOverview(options: { tenantId?: string } = {})
     mcpConnectors,
     openApiConnectors,
     operationJobStats,
-    operationJobs,
-    recovery,
+    operationJobRows,
     recoveryEvents,
   ] = await Promise.all([
     getApprovalQueue(25, { tenantId: options.tenantId }),
-    listWorkflowRuns(20, { tenantId: options.tenantId }),
+    listWorkflowRuns(100, { tenantId: options.tenantId }),
     getWorkflowStats({ tenantId: options.tenantId }),
     listToolExecutions(20, { tenantId: options.tenantId }),
     getToolExecutionStats({ tenantId: options.tenantId }),
     listAgentRuns(20, { tenantId: options.tenantId }),
     listMcpConnectors(20, { tenantId: options.tenantId }),
     listOpenApiConnectors(20, { tenantId: options.tenantId }),
-    getOperationJobStats({ tenantId: options.tenantId }),
-    listTenantWideOperationJobs(20, { tenantId: options.tenantId }),
-    inspectOperationsRecovery({ limit: 10, tenantId: options.tenantId }),
+    getOperationJobStats({ tenantId: options.tenantId, latestLimit: 20 }),
+    listOperationJobRecoveryRows(100, { tenantId: options.tenantId }),
     listWorkflowRecoveryEvents(10, { tenantId: options.tenantId }),
   ]);
+  const workflowRuns = workflowRows.slice(0, 20);
+  const recovery = await inspectOperationsRecovery({
+    limit: 10,
+    tenantId: options.tenantId,
+    inspectionSnapshot: {
+      jobs: {
+        ...operationJobStats,
+        latest: operationJobStats.latest.slice(0, 5),
+      },
+      workflows: workflowStats,
+      jobRows: operationJobRows,
+      workflowRows,
+    },
+  });
   const connectorErrors =
     mcpConnectors.filter((connector) => connector.status === "error").length +
     openApiConnectors.filter((connector) => connector.status === "error").length;
@@ -190,7 +201,7 @@ export async function getOperationsOverview(options: { tenantId?: string } = {})
       workflows: workflowRuns.map(publicWorkflowRun),
       toolExecutions,
       agentRuns: agentRuns.map(publicAgentRun),
-      operationJobs: operationJobs.map(projectOperationJobStatus),
+      operationJobs: operationJobStats.latest,
       recoveryEvents,
       connectors: [...mcpConnectors, ...openApiConnectors]
         .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))

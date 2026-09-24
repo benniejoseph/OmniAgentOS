@@ -161,25 +161,21 @@ export function SemanticShadowCollector(props: {
       refreshOnStart: true,
       pollIntervalMs: 2_500,
       onRefresh: async () => {
-        const updates = await Promise.all(activeIds.map(async (jobId) => {
-          try {
-            const response = await fetch(
-              `/api/operations/jobs/${encodeURIComponent(jobId)}`,
-              { cache: "no-store" },
-            );
-            const body = await response.json().catch(() => ({})) as {
-              job?: unknown;
-            };
-            return response.ok
-              ? parseSemanticShadowJob(body.job)
-              : undefined;
-          } catch {
-            return undefined;
-          }
-        }));
-        const validUpdates = updates.filter((job): job is SemanticShadowJob =>
-          Boolean(job)
-        );
+        const updates = await fetch(
+          `/api/operations/jobs?ids=${activeIds.map(encodeURIComponent).join(",")}`,
+          { cache: "no-store" },
+        ).then(async (response) => {
+          const body = await response.json().catch(() => ({})) as {
+            jobs?: unknown[];
+          };
+          return response.ok && Array.isArray(body.jobs)
+            ? body.jobs.map((job) => parseSemanticShadowJob(job))
+            : [];
+        }).catch(() => []);
+        const validUpdates: SemanticShadowJob[] = [];
+        for (const job of updates) {
+          if (job) validUpdates.push(job);
+        }
         if (validUpdates.length) {
           setJobs((current) =>
             mergeSemanticShadowJobs(current, validUpdates)

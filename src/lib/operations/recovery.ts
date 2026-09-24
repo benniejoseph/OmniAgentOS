@@ -1,11 +1,11 @@
 import {
   cancelOperationJobByDedupeKey,
   getOperationJobStats,
-  listOperationJobs,
+  listOperationJobRecoveryRows,
   repairExpiredOperationJobs,
   requeueOperationJobByDedupeKey,
   storageDedupeKey,
-  type OperationJobRecord,
+  type OperationJobRecoveryRow,
   type OperationJobStats,
 } from "@/lib/operations/job-queue";
 import { processWorkflowQueue, enqueueWorkflowRunTick, getWorkflowJobDedupeKey } from "@/lib/workflows/queue";
@@ -75,6 +75,14 @@ export type OperationsRecoveryInput = {
   actorId?: string;
   tenantId?: string;
   executionScope?: ExecutionScope;
+  inspectionSnapshot?: OperationsRecoveryInspectionSnapshot;
+};
+
+export type OperationsRecoveryInspectionSnapshot = {
+  jobs: OperationJobStats;
+  workflows: WorkflowStats;
+  jobRows: readonly OperationJobRecoveryRow[];
+  workflowRows: readonly WorkflowRunRecord[];
 };
 
 const defaultStaleWorkflowMs = 10 * 60 * 1000;
@@ -91,12 +99,22 @@ export async function reconcileOperationsRecovery(input: OperationsRecoveryInput
   const staleWorkflowMs = Math.min(Math.max(Math.round(input.staleWorkflowMs ?? defaultStaleWorkflowMs), 0), 86_400_000);
   const failAfterMs = Math.min(Math.max(Math.round(input.failAfterMs || defaultFailAfterMs), staleWorkflowMs), 7 * 86_400_000);
   const tenantOptions = { tenantId: input.tenantId };
-  const [jobsBefore, workflowsBefore, jobRows, workflowRows] = await Promise.all([
-    getOperationJobStats(tenantOptions),
-    getWorkflowStats(tenantOptions),
-    listOperationJobs(100, tenantOptions),
-    listWorkflowRuns(100, tenantOptions),
-  ]);
+  const inspectionSnapshot = mode === "inspect"
+    ? input.inspectionSnapshot
+    : undefined;
+  const [jobsBefore, workflowsBefore, jobRows, workflowRows] = inspectionSnapshot
+    ? [
+        inspectionSnapshot.jobs,
+        inspectionSnapshot.workflows,
+        inspectionSnapshot.jobRows,
+        inspectionSnapshot.workflowRows,
+      ] as const
+    : await Promise.all([
+        getOperationJobStats(tenantOptions),
+        getWorkflowStats(tenantOptions),
+        listOperationJobRecoveryRows(100, tenantOptions),
+        listWorkflowRuns(100, tenantOptions),
+      ]);
   const staleCandidates = workflowRows
     .filter((run) => isStaleRunnableWorkflow(run, staleWorkflowMs))
     .sort((left, right) => Date.parse(left.updatedAt) - Date.parse(right.updatedAt))
@@ -155,10 +173,12 @@ export async function reconcileOperationsRecovery(input: OperationsRecoveryInput
         tenantId: input.tenantId,
       })
     : undefined;
-  const [jobsAfter, workflowsAfter] = await Promise.all([
-    getOperationJobStats(tenantOptions),
-    getWorkflowStats(tenantOptions),
-  ]);
+  const [jobsAfter, workflowsAfter] = mode === "inspect"
+    ? [jobsBefore, workflowsBefore]
+    : await Promise.all([
+        getOperationJobStats(tenantOptions),
+        getWorkflowStats(tenantOptions),
+      ]);
 
   return {
     mode,
@@ -201,7 +221,7 @@ function isStaleRunnableWorkflow(run: WorkflowRunRecord, staleWorkflowMs: number
 
 function hasActiveWorkflowLease(
   run: WorkflowRunRecord,
-  jobs: OperationJobRecord[],
+  jobs: readonly OperationJobRecoveryRow[],
 ) {
   const dedupeKey = getWorkflowJobDedupeKey(run.id);
   return jobs.some(
@@ -249,7 +269,7 @@ async function requeueStaleWorkflow(
   staleMs: number,
   ageMs: number,
   actorId?: string,
-  jobs: OperationJobRecord[] = [],
+  jobs: readonly OperationJobRecoveryRow[] = [],
   executionScope?: ExecutionScope,
 ) {
   const executionAuthority = run.input.executionAuthorityRequired

@@ -79,6 +79,11 @@ export type OperationJobStats = {
   latest: Array<ReturnType<typeof projectOperationJobStatus>>;
 };
 
+export type OperationJobRecoveryRow = Pick<
+  OperationJobRecord,
+  "id" | "dedupeKey" | "status" | "leaseExpiresAt"
+>;
+
 const ACTOR_PRIVATE_OPERATION_JOB_TYPES = new Set<OperationJobType>([
   "conversation.summary.enrich",
   "market.events.backfill",
@@ -1252,6 +1257,46 @@ export async function listOperationJobs(
     .slice(0, limit);
 }
 
+/** Metadata-only queue view used by recovery inspection and reconciliation. */
+export async function listOperationJobRecoveryRows(
+  limit = 100,
+  options: { tenantId?: string } = {},
+): Promise<OperationJobRecoveryRow[]> {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const boundedLimit = Math.min(Math.max(Math.round(limit), 1), 500);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT id, status, dedupe_key, lease_expires_at
+      FROM omni_operation_jobs
+      WHERE tenant_id = ${tenantId}
+      ORDER BY updated_at DESC
+      LIMIT ${boundedLimit}
+    `;
+    return rows.map((row) => ({
+      id: String(row.id),
+      status: String(row.status) as OperationJobStatus,
+      dedupeKey: row.dedupe_key
+        ? logicalDedupeKey(tenantId, String(row.dedupe_key))
+        : undefined,
+      leaseExpiresAt: row.lease_expires_at
+        ? normalizeDate(row.lease_expires_at)
+        : undefined,
+    }));
+  }
+
+  const ledger = await readJobLedger();
+  return ledger.jobs
+    .filter((job) => jobTenantId(job) === tenantId)
+    .slice(0, boundedLimit)
+    .map((job) => ({
+      id: job.id,
+      status: job.status,
+      dedupeKey: job.dedupeKey,
+      leaseExpiresAt: job.leaseExpiresAt,
+    }));
+}
+
 /**
  * Lists jobs that are safe to include on tenant-wide operational surfaces.
  * Actor-private jobs must only be fetched through an owner-authorized detail
@@ -1268,7 +1313,7 @@ export async function listTenantWideOperationJobs(
       SELECT *
       FROM omni_operation_jobs
       WHERE tenant_id = ${tenantId}
-        AND type <> 'conversation.summary.enrich'
+        AND NOT (type = ANY(${[...ACTOR_PRIVATE_OPERATION_JOB_TYPES]}::text[]))
       ORDER BY updated_at DESC
       LIMIT ${limit}
     `;
@@ -1313,9 +1358,7 @@ export async function getOperationJobsByIds(
   options: { tenantId?: string } = {},
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
-  const ids = [...new Set(jobIds.map((value) => value.trim()).filter((value) =>
-    /^[a-zA-Z0-9_-]{1,200}$/.test(value)
-  ))].slice(0, 100);
+  const ids = normalizedOperationJobIds(jobIds);
   if (!ids.length) return [];
 
   if (hasDatabaseUrl()) {
@@ -1339,6 +1382,80 @@ export async function getOperationJobsByIds(
       Date.parse(right.updatedAt) - Date.parse(left.updatedAt) ||
       left.id.localeCompare(right.id)
     );
+}
+
+/**
+ * Reads only the owner binding and public progress fields required by polling
+ * surfaces. Large queued request payloads never cross the database boundary.
+ */
+export async function getOperationJobStatusesByIds(
+  jobIds: readonly string[],
+  options: { tenantId?: string } = {},
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const ids = normalizedOperationJobIds(jobIds);
+  if (!ids.length) return [];
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT
+        id,
+        tenant_id,
+        type,
+        status,
+        jsonb_strip_nulls(jsonb_build_object(
+          'actorId', payload -> 'actorId',
+          'progress', payload -> 'progress',
+          'result', payload -> 'result'
+        )) AS payload,
+        priority,
+        attempt,
+        max_attempts,
+        run_at,
+        last_error,
+        created_at,
+        updated_at,
+        completed_at
+      FROM omni_operation_jobs
+      WHERE tenant_id = ${tenantId}
+        AND id = ANY(${ids}::text[])
+      ORDER BY updated_at DESC, id COLLATE "C" ASC
+    `;
+    return rows.map(operationJobFromRow);
+  }
+
+  const idSet = new Set(ids);
+  const ledger = await readJobLedger();
+  return ledger.jobs
+    .filter((job) => jobTenantId(job) === tenantId && idSet.has(job.id))
+    .map((job) => ({
+      ...job,
+      tenantId,
+      payload: pollingPayload(job.payload),
+      dedupeKey: undefined,
+      lockedAt: undefined,
+      leaseOwner: undefined,
+      leaseExpiresAt: undefined,
+    }))
+    .sort((left, right) =>
+      Date.parse(right.updatedAt) - Date.parse(left.updatedAt) ||
+      left.id.localeCompare(right.id)
+    );
+}
+
+function normalizedOperationJobIds(jobIds: readonly string[]) {
+  return [...new Set(jobIds.map((value) => value.trim()).filter((value) =>
+    /^[a-zA-Z0-9_-]{1,200}$/.test(value)
+  ))].slice(0, 100);
+}
+
+function pollingPayload(payload: Record<string, unknown>) {
+  return Object.fromEntries(
+    ["actorId", "progress", "result"].flatMap((key) =>
+      payload[key] === undefined ? [] : [[key, payload[key]]]
+    ),
+  );
 }
 
 export async function listRunnableWorkflowTenantIds(limit = 10) {
@@ -1607,55 +1724,81 @@ export async function listMaintenanceTenantIds({
 }
 
 export async function getOperationJobStats(
-  options: { tenantId?: string } = {},
+  options: { tenantId?: string; latestLimit?: number } = {},
 ): Promise<OperationJobStats> {
   const tenantId = normalizeTenantId(options.tenantId);
+  const latestLimit = Math.min(
+    Math.max(Math.round(options.latestLimit ?? 5), 1),
+    100,
+  );
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const [statusRows, runnableRows, delayedRows, expiredRows] = await Promise.all([
-      getSql()`
-        SELECT status, COUNT(*)::int AS count
+    const rows = await getSql()`
+      WITH aggregate AS (
+        SELECT
+          COUNT(*)::int AS stats_total,
+          (COUNT(*) FILTER (WHERE status = 'queued'))::int AS stats_queued,
+          (COUNT(*) FILTER (WHERE status = 'running'))::int AS stats_running,
+          (COUNT(*) FILTER (WHERE status = 'completed'))::int AS stats_completed,
+          (COUNT(*) FILTER (WHERE status = 'failed'))::int AS stats_failed,
+          (COUNT(*) FILTER (WHERE status = 'canceled'))::int AS stats_canceled,
+          (COUNT(*) FILTER (
+            WHERE status = 'queued' AND run_at <= NOW()
+          ))::int AS stats_runnable,
+          (COUNT(*) FILTER (
+            WHERE status = 'queued' AND run_at > NOW()
+          ))::int AS stats_delayed,
+          (COUNT(*) FILTER (
+            WHERE status = 'running'
+              AND lease_expires_at IS NOT NULL
+              AND lease_expires_at <= NOW()
+          ))::int AS stats_expired_leases
         FROM omni_operation_jobs
         WHERE tenant_id = ${tenantId}
-        GROUP BY status
-      `,
-      getSql()`
-        SELECT COUNT(*)::int AS count
-        FROM omni_operation_jobs
-        WHERE status = 'queued'
-          AND tenant_id = ${tenantId}
-          AND run_at <= NOW()
-      `,
-      getSql()`
-        SELECT COUNT(*)::int AS count
-        FROM omni_operation_jobs
-        WHERE status = 'queued'
-          AND tenant_id = ${tenantId}
-          AND run_at > NOW()
-      `,
-      getSql()`
-        SELECT COUNT(*)::int AS count
-        FROM omni_operation_jobs
-        WHERE status = 'running'
-          AND tenant_id = ${tenantId}
-          AND lease_expires_at IS NOT NULL
-          AND lease_expires_at <= NOW()
-      `,
-    ]);
-    const byStatus = statusRows.reduce<Record<string, number>>((acc, row) => {
-      acc[String(row.status)] = Number(row.count);
-      return acc;
-    }, {});
-    return {
-      total: Object.values(byStatus).reduce((sum, count) => sum + count, 0),
-      byStatus,
-      runnable: Number(runnableRows[0]?.count || 0),
-      delayed: Number(delayedRows[0]?.count || 0),
-      expiredLeases: Number(expiredRows[0]?.count || 0),
-      latest: (await listTenantWideOperationJobs(5, { tenantId })).map(
-        projectOperationJobStatus,
       ),
+      latest AS (
+        SELECT
+          id,
+          tenant_id,
+          type,
+          status,
+          jsonb_strip_nulls(jsonb_build_object(
+            'actorId', payload -> 'actorId',
+            'progress', payload -> 'progress',
+            'result', payload -> 'result'
+          )) AS payload,
+          priority,
+          attempt,
+          max_attempts,
+          run_at,
+          last_error,
+          created_at,
+          updated_at,
+          completed_at
+        FROM omni_operation_jobs
+        WHERE tenant_id = ${tenantId}
+          AND NOT (type = ANY(${[...ACTOR_PRIVATE_OPERATION_JOB_TYPES]}::text[]))
+        ORDER BY updated_at DESC
+        LIMIT ${latestLimit}
+      )
+      SELECT aggregate.*, latest.*
+      FROM aggregate
+      LEFT JOIN latest ON TRUE
+      ORDER BY latest.updated_at DESC NULLS LAST
+    `;
+    const stats = rows[0] || {};
+    const byStatus = operationJobStatusCounts(stats);
+    return {
+      total: Number(stats.stats_total || 0),
+      byStatus,
+      runnable: Number(stats.stats_runnable || 0),
+      delayed: Number(stats.stats_delayed || 0),
+      expiredLeases: Number(stats.stats_expired_leases || 0),
+      latest: rows
+        .filter((row) => row.id)
+        .map(operationJobFromRow)
+        .map(projectOperationJobStatus),
     };
   }
 
@@ -1678,9 +1821,24 @@ export async function getOperationJobStats(
     ).length,
     latest: jobs
       .filter((job) => !ACTOR_PRIVATE_OPERATION_JOB_TYPES.has(job.type))
-      .slice(0, 5)
+      .slice(0, latestLimit)
       .map(projectOperationJobStatus),
   };
+}
+
+function operationJobStatusCounts(row: Record<string, unknown>) {
+  const counts: Record<string, number> = {};
+  for (const status of [
+    "queued",
+    "running",
+    "completed",
+    "failed",
+    "canceled",
+  ] as const) {
+    const count = Number(row[`stats_${status}`] || 0);
+    if (count > 0) counts[status] = count;
+  }
+  return counts;
 }
 
 function sanitizeTerminalOperationPayload(
