@@ -16,13 +16,17 @@ import {
   X,
 } from "lucide-react";
 import {
+  Fragment,
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
+import type { CSSProperties } from "react";
+import { createPortal } from "react-dom";
 import { clsx } from "clsx";
 import type {
   CommandContextCatalog,
@@ -56,6 +60,38 @@ type MenuItem = SlashItem | Readonly<{
   description: string;
 }>;
 
+type MenuGroupKey = "approach" | CommandContextKind;
+
+type MenuLayout = Readonly<{
+  left: number;
+  width: number;
+  top?: number;
+  bottom?: number;
+  listMaxHeight: number;
+  theme: Readonly<Record<string, string>>;
+}>;
+
+const mentionKindOrder: readonly CommandContextKind[] = [
+  "agent",
+  "file",
+  "project",
+  "skill",
+  "plugin",
+  "integration",
+];
+
+const menuThemeVariables = [
+  "--background",
+  "--surface",
+  "--surface-raised",
+  "--foreground",
+  "--muted",
+  "--line",
+  "--primary",
+  "--danger",
+  "--warning",
+] as const;
+
 const slashActions: readonly SlashItem[] = [
   { type: "action", id: "research", label: "Research", description: "Investigate with current sources and citations." },
   { type: "action", id: "act", label: "Act", description: "Let Asael use connected services and governed actions." },
@@ -85,11 +121,13 @@ export function CommandComposerField({
   onRemoveReference: (item: CommandContextCatalogItem) => void;
 }) {
   const listboxId = useId();
+  const composerFieldRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const catalogRef = useRef<CommandContextCatalog | undefined>(undefined);
   const selectReferenceRef = useRef(onSelectReference);
   const [trigger, setTrigger] = useState<TriggerState>();
+  const [menuLayout, setMenuLayout] = useState<MenuLayout>();
   const [catalog, setCatalog] = useState<CommandContextCatalog>();
   const [catalogError, setCatalogError] = useState<string>();
   const [catalogLoading, setCatalogLoading] = useState(false);
@@ -167,42 +205,55 @@ export function CommandComposerField({
 
   const menuItems = useMemo<MenuItem[]>(() => {
     if (!trigger) return [];
-    const query = trigger.query.toLowerCase();
+    const query = trigger.query.trim().toLowerCase();
     const matches = (label: string, description: string) =>
       !query || label.toLowerCase().includes(query) || description.toLowerCase().includes(query);
     const selectedKeys = new Set(selected.map(referenceKey));
 
     if (trigger.symbol === "/") {
-      const actions = slashActions.filter((item) => matches(item.label, item.description));
+      const actions = slashActions.filter((item) =>
+        matches(item.label, `Approach approaches ${item.description}`)
+      );
       const skills = (catalog?.items || [])
         .filter((item) =>
           item.kind === "skill" &&
           item.selectable &&
           !selectedKeys.has(referenceKey(item)) &&
-          matches(item.label, item.description)
+          matches(item.label, `${kindSearchTerms("skill")} ${item.description}`)
         )
         .slice(0, 8)
         .map((item) => ({ type: "reference" as const, item }));
       return [...actions, ...skills].slice(0, 12);
     }
 
-    const references = (catalog?.items || [])
-      .filter((item) =>
-        item.selectable &&
-        !selectedKeys.has(referenceKey(item)) &&
-        matches(item.label, `${kindLabel(item.kind)} ${item.description}`)
-      )
-      .slice(0, 18)
-      .map((item) => ({ type: "reference" as const, item }));
-    const upload = matches("Attach files", "Upload documents, images, audio, or video")
-      ? [{
-          type: "upload" as const,
-          id: "upload" as const,
+    const limitPerKind = query ? 8 : 3;
+    return mentionKindOrder.flatMap<MenuItem>((kind) => {
+      const items: MenuItem[] = [];
+      if (
+        kind === "file" &&
+        matches(
+          "Attach files",
+          "File files document documents upload attachment attachments image images audio video",
+        )
+      ) {
+        items.push({
+          type: "upload",
+          id: "upload",
           label: "Attach files",
           description: "Upload, index, and use them as exact context.",
-        }]
-      : [];
-    return [...upload, ...references];
+        });
+      }
+      items.push(...(catalog?.items || [])
+        .filter((item) =>
+          item.kind === kind &&
+          item.selectable &&
+          !selectedKeys.has(referenceKey(item)) &&
+          matches(item.label, `${kindSearchTerms(item.kind)} ${item.description}`)
+        )
+        .slice(0, limitPerKind)
+        .map((item) => ({ type: "reference" as const, item })));
+      return items;
+    });
   }, [catalog, selected, trigger]);
 
   const currentIndex = menuItems.length
@@ -211,6 +262,60 @@ export function CommandComposerField({
   const activeOptionId = menuItems[currentIndex]
     ? `${listboxId}-option-${currentIndex}`
     : undefined;
+  const menuOpen = Boolean(trigger);
+
+  useLayoutEffect(() => {
+    if (!menuOpen) {
+      setMenuLayout(undefined);
+      return;
+    }
+
+    const positionMenu = () => {
+      const anchor = composerFieldRef.current;
+      if (!anchor) return;
+      const rect = anchor.getBoundingClientRect();
+      const viewportWidth = document.documentElement.clientWidth;
+      const viewportHeight = document.documentElement.clientHeight;
+      const gutter = 8;
+      const aboveSpace = Math.max(0, rect.top - gutter * 2);
+      const belowSpace = Math.max(0, viewportHeight - rect.bottom - gutter * 2);
+      const opensAbove = aboveSpace >= 260 || aboveSpace >= belowSpace;
+      const availableHeight = opensAbove ? aboveSpace : belowSpace;
+      const availableWidth = Math.max(0, viewportWidth - gutter * 2);
+      const width = Math.min(Math.max(240, rect.width - gutter * 2), availableWidth);
+      const left = Math.max(
+        gutter,
+        Math.min(rect.left + gutter, viewportWidth - gutter - width),
+      );
+      const computedStyle = window.getComputedStyle(anchor);
+      const theme = Object.fromEntries(
+        menuThemeVariables.map((name) => [name, computedStyle.getPropertyValue(name)]),
+      );
+
+      setMenuLayout({
+        left,
+        width,
+        ...(opensAbove
+          ? { bottom: viewportHeight - rect.top + gutter }
+          : { top: rect.bottom + gutter }),
+        listMaxHeight: Math.max(96, Math.min(288, availableHeight - 104)),
+        theme,
+      });
+    };
+
+    positionMenu();
+    window.addEventListener("resize", positionMenu);
+    document.addEventListener("scroll", positionMenu, true);
+    return () => {
+      window.removeEventListener("resize", positionMenu);
+      document.removeEventListener("scroll", positionMenu, true);
+    };
+  }, [menuOpen]);
+
+  useEffect(() => {
+    if (!trigger || !activeOptionId) return;
+    document.getElementById(activeOptionId)?.scrollIntoView({ block: "nearest" });
+  }, [activeOptionId, trigger]);
 
   function updateTrigger(nextValue: string, caret: number) {
     const next = triggerAtCaret(nextValue, caret);
@@ -286,7 +391,7 @@ export function CommandComposerField({
   }
 
   return (
-    <div className="relative">
+    <div ref={composerFieldRef} className="relative">
       <input
         ref={fileInputRef}
         type="file"
@@ -379,45 +484,71 @@ export function CommandComposerField({
         />
       </label>
 
-      {trigger ? (
-        <div className="absolute inset-x-2 bottom-full z-50 mb-2 overflow-hidden rounded-2xl border border-line bg-surface/98 shadow-2xl backdrop-blur-xl">
+      {trigger && menuLayout && typeof document !== "undefined" ? createPortal(
+        <div
+          className="fixed z-[100] overflow-hidden rounded-2xl border border-line bg-surface/98 text-foreground shadow-2xl backdrop-blur-xl"
+          style={{
+            left: menuLayout.left,
+            width: menuLayout.width,
+            top: menuLayout.top,
+            bottom: menuLayout.bottom,
+            ...menuLayout.theme,
+          } as CSSProperties}
+        >
           <div className="flex items-center justify-between gap-3 border-b border-line/70 px-3 py-2">
             <div className="flex min-w-0 items-center gap-2">
               <span className="grid size-7 place-items-center rounded-full bg-primary/10 font-mono text-xs font-bold text-primary">{trigger.symbol}</span>
               <span className="min-w-0">
                 <strong className="block text-xs">{trigger.symbol === "/" ? "Use a Skill or choose an approach" : "Add context"}</strong>
-                <span className="block truncate text-[11px] text-muted">{trigger.symbol === "/" ? "Skills teach Asael how to work." : "Files, Agents, Projects, Extensions, Skills, and Connections."}</span>
+                <span className="block truncate text-[11px] text-muted">{trigger.symbol === "/" ? "Approaches guide the task; Skills teach Asael how to work." : "Agents, Files, Projects, Skills, Plugins, and Integrations."}</span>
               </span>
             </div>
             {catalogLoading || uploading ? <Loader2 size={14} className="animate-spin text-primary" aria-label="Loading command context" /> : null}
           </div>
-          <div id={listboxId} role="listbox" className="max-h-72 overflow-y-auto p-1.5">
+          <div
+            id={listboxId}
+            role="listbox"
+            className="overflow-y-auto p-1.5"
+            style={{ maxHeight: menuLayout.listMaxHeight }}
+          >
             {menuItems.map((item, index) => {
               const presentation = menuItemPresentation(item);
               const Icon = presentation.icon;
+              const group = menuItemGroup(item);
+              const previousGroup = index ? menuItemGroup(menuItems[index - 1]) : undefined;
+              const startsGroup = !previousGroup || previousGroup.key !== group.key;
+              const groupSize = menuItems.filter((candidate) => menuItemGroup(candidate).key === group.key).length;
               return (
-                <button
-                  key={presentation.key}
-                  id={`${listboxId}-option-${index}`}
-                  type="button"
-                  role="option"
-                  aria-selected={index === currentIndex}
-                  onMouseEnter={() => setActiveIndex(index)}
-                  onClick={() => choose(item)}
-                  className={clsx(
-                    "flex min-h-12 w-full items-center gap-3 rounded-xl px-3 py-2 text-left transition",
-                    index === currentIndex ? "bg-primary/10" : "hover:bg-surface-raised",
-                  )}
-                >
-                  <span className="grid size-8 shrink-0 place-items-center rounded-full bg-background text-primary"><Icon size={15} aria-hidden="true" /></span>
-                  <span className="min-w-0 flex-1">
-                    <span className="flex items-center gap-2">
-                      <strong className="truncate text-xs">{presentation.label}</strong>
-                      {presentation.kind ? <small className="shrink-0 uppercase tracking-[.12em] text-muted">{presentation.kind}</small> : null}
+                <Fragment key={presentation.key}>
+                  {startsGroup ? (
+                    <div className={clsx("flex items-center gap-2 px-3 pb-1 pt-2", index ? "mt-1 border-t border-line/55" : "")} role="presentation">
+                      <span className="text-[10px] font-bold uppercase tracking-[.16em] text-muted">{group.label}</span>
+                      <span className="rounded-full bg-surface-raised px-1.5 py-0.5 text-[9px] font-semibold text-muted" aria-hidden="true">{groupSize}</span>
+                      <span className="h-px min-w-4 flex-1 bg-line/60" aria-hidden="true" />
+                    </div>
+                  ) : null}
+                  <button
+                    id={`${listboxId}-option-${index}`}
+                    type="button"
+                    role="option"
+                    aria-selected={index === currentIndex}
+                    onMouseEnter={() => setActiveIndex(index)}
+                    onClick={() => choose(item)}
+                    className={clsx(
+                      "flex min-h-12 w-full items-center gap-3 rounded-xl px-3 py-2 text-left transition",
+                      index === currentIndex ? "bg-primary/10" : "hover:bg-surface-raised",
+                    )}
+                  >
+                    <span className="grid size-8 shrink-0 place-items-center rounded-full bg-background text-primary"><Icon size={15} aria-hidden="true" /></span>
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-center gap-2">
+                        <strong className="truncate text-xs">{presentation.label}</strong>
+                        {presentation.kind ? <small className="shrink-0 uppercase tracking-[.12em] text-muted">{presentation.kind}</small> : null}
+                      </span>
+                      <span className="mt-0.5 block truncate text-[11px] text-muted">{presentation.description}</span>
                     </span>
-                    <span className="mt-0.5 block truncate text-[11px] text-muted">{presentation.description}</span>
-                  </span>
-                </button>
+                  </button>
+                </Fragment>
               );
             })}
             {!menuItems.length && !catalogLoading ? (
@@ -433,7 +564,8 @@ export function CommandComposerField({
             <span>↑↓ choose · Enter add · Esc close</span>
             <span>{selected.length} attached</span>
           </div>
-        </div>
+        </div>,
+        document.body,
       ) : null}
     </div>
   );
@@ -461,11 +593,38 @@ function kindLabel(kind: CommandContextKind) {
   return ({
     agent: "Agent",
     skill: "Skill",
-    plugin: "Extension",
+    plugin: "Plugin",
     project: "Project",
-    integration: "Connection",
+    integration: "Integration",
     file: "File",
   } as const)[kind];
+}
+
+function kindSearchTerms(kind: CommandContextKind) {
+  return ({
+    agent: "Agent Agents assistant assistants",
+    skill: "Skill Skills capability capabilities",
+    plugin: "Plugin Plugins Extension Extensions MCP server servers",
+    project: "Project Projects workspace workspaces",
+    integration: "Integration Integrations Connection Connections connected service services",
+    file: "File Files document documents attachment attachments",
+  } as const)[kind];
+}
+
+function menuItemGroup(item: MenuItem): Readonly<{ key: MenuGroupKey; label: string }> {
+  if (item.type === "action") return { key: "approach", label: "Approaches" };
+  const key = item.type === "upload" ? "file" : item.item.kind;
+  return {
+    key,
+    label: ({
+      agent: "Agents",
+      skill: "Skills",
+      plugin: "Plugins",
+      project: "Projects",
+      integration: "Integrations",
+      file: "Files",
+    } as const)[key],
+  };
 }
 
 function kindIcon(kind: CommandContextKind) {
