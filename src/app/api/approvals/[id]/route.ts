@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { after } from "next/server";
 import { z } from "zod";
 import { getMcpGovernedTool, getOpenApiGovernedTool } from "@/lib/connectors/governed-tools";
 import {
@@ -15,7 +16,10 @@ import {
   getAgentResumeJobDedupeKey,
   wakeOperationJobByDedupeKey,
 } from "@/lib/operations/job-queue";
-import { rejectAgentRunApproval } from "@/lib/orchestration/agent-runner";
+import {
+  rejectAgentRunApproval,
+  resumeAgentRunAfterToolApproval,
+} from "@/lib/orchestration/agent-runner";
 import {
   persistToolAfterCheckpointShadow,
   persistToolBeforeCheckpointShadow,
@@ -54,6 +58,7 @@ import {
 } from "@/lib/workflows/runner";
 
 export const runtime = "nodejs";
+export const maxDuration = 300;
 export const GET = withDatabaseRequestScope(GETHandler);
 export const POST = withDatabaseRequestScope(POSTHandler);
 
@@ -697,14 +702,41 @@ async function POSTHandler(
     }
   }
 
-  const resumeJobs = await wakeOperationJobByDedupeKey(
-    getAgentResumeJobDedupeKey(claim.record.id),
-    { tenantId: securityContext.tenantId },
-  );
+  let resumeJobCount = 0;
+  if (waitingRun && result.computerObservation) {
+    const tenantId = securityContext.tenantId;
+    const executionId = claim.record.id;
+    after(async () => {
+      try {
+        await resumeAgentRunAfterToolApproval({
+          executionId,
+          toolExecution: result,
+          tenantId,
+        });
+      } catch {
+        console.warn(
+          "Ephemeral local observation resume failed; the durable queue will reconcile the run without raw observation data.",
+        );
+      } finally {
+        await wakeOperationJobByDedupeKey(
+          getAgentResumeJobDedupeKey(executionId),
+          { tenantId },
+        ).catch(() => {
+          console.warn("Agent resume reconciliation wake failed.");
+        });
+      }
+    });
+  } else {
+    const resumeJobs = await wakeOperationJobByDedupeKey(
+      getAgentResumeJobDedupeKey(claim.record.id),
+      { tenantId: securityContext.tenantId },
+    );
+    resumeJobCount = resumeJobs.length;
+  }
   const continuation = {
     scheduled: true,
     status: "queued" as const,
-    resumeJobs: resumeJobs.length,
+    resumeJobs: resumeJobCount,
   };
 
   // The approval decision and durable execution claim both succeeded even when

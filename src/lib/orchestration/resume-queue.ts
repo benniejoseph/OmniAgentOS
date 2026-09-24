@@ -399,6 +399,7 @@ async function processAgentResumeJobInActorScope(
         toolExecution: {
           record: toolExecution,
           result: toolExecution.output,
+          computerObservation: undefined,
         },
         abortSignal: controller.signal,
         resumeFence,

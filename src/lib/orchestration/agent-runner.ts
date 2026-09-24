@@ -227,6 +227,12 @@ type PendingOpenAIComputerObservation = Readonly<{
   observation: ModelComputerObservation;
 }>;
 
+type ApprovedAgentToolExecution = Readonly<{
+  record: ToolExecutionRecord;
+  result?: unknown;
+  computerObservation?: ModelComputerObservation;
+}>;
+
 type EphemeralLocalObservationState = Readonly<{
   observation: ModelComputerObservation;
   /** A fresh observe may cross at most one sole list-apps turn. */
@@ -3563,7 +3569,7 @@ function assertCheckpointResumeFence(
 
 export function resumeAgentRunAfterToolApproval(input: {
   executionId: string;
-  toolExecution: { record: ToolExecutionRecord; result?: unknown };
+  toolExecution: ApprovedAgentToolExecution;
   tenantId?: string;
   abortSignal?: AbortSignal;
   resumeFence?: AgentRunResumeFence;
@@ -3586,7 +3592,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
   resumeFence,
 }: {
   executionId: string;
-  toolExecution: { record: ToolExecutionRecord; result?: unknown };
+  toolExecution: ApprovedAgentToolExecution;
   tenantId?: string;
   abortSignal?: AbortSignal;
   resumeFence?: AgentRunResumeFence;
@@ -3913,8 +3919,26 @@ async function resumeAgentRunAfterToolApprovalInScope({
       result: toolExecution.result,
     }),
   ];
-  let pendingComputerObservations: PendingOpenAIComputerObservation[] = [];
-  let latestLocalObservation: EphemeralLocalObservationState | undefined;
+  const approvedObservationTransition = transitionEphemeralLocalObservation(
+    undefined,
+    continuation.pendingToolCall.toolId,
+    {
+      record: toolExecution.record,
+      result: toolExecution.result,
+      ...(toolExecution.computerObservation
+        ? { computerObservation: toolExecution.computerObservation }
+        : {}),
+    },
+    true,
+  );
+  let pendingComputerObservations: PendingOpenAIComputerObservation[] =
+    approvedObservationTransition.disclosedObservation
+      ? [{
+          callId: continuation.pendingToolCall.callId,
+          observation: approvedObservationTransition.disclosedObservation,
+        }]
+      : [];
+  let latestLocalObservation = approvedObservationTransition.nextState;
 
   // Buffer delta writes onto a background chain — a blocking DB write per
   // delta clamps streaming to one delta per write round-trip (see runAgent).
@@ -4570,7 +4594,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
   run: AgentRunRecord;
   continuation: AgentRunContinuation;
   executionId: string;
-  toolExecution: { record: ToolExecutionRecord; result?: unknown };
+  toolExecution: ApprovedAgentToolExecution;
   tenantId?: string;
   abortSignal?: AbortSignal;
   executionScope?: ExecutionScope;
@@ -4851,6 +4875,18 @@ async function resumeProviderBoundAgentRunAfterApproval({
       toolExecution.result,
     ),
   );
+  const approvedObservationTransition = transitionEphemeralLocalObservation(
+    undefined,
+    continuation.pendingToolCall.toolId,
+    {
+      record: toolExecution.record,
+      result: toolExecution.result,
+      ...(toolExecution.computerObservation
+        ? { computerObservation: toolExecution.computerObservation }
+        : {}),
+    },
+    true,
+  );
   let carriedResults: ModelToolResult[] = [
     ...providerState.toolResultsBeforeApproval,
     providerToolResult(
@@ -4867,9 +4903,10 @@ async function resumeProviderBoundAgentRunAfterApproval({
       },
       toolExecution.record.status !== "executed" &&
         toolExecution.record.status !== "dry_run",
+      approvedObservationTransition.disclosedObservation,
     ),
   ];
-  let latestLocalObservation: EphemeralLocalObservationState | undefined;
+  let latestLocalObservation = approvedObservationTransition.nextState;
 
   const runId = run.id;
   let pendingDeltaText = "";
