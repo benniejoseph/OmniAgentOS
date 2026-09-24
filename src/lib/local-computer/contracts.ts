@@ -202,16 +202,31 @@ function ipv6Bytes(hostname: string): number[] | undefined {
   return groups.flatMap((group) => [group >> 8, group & 0xff]);
 }
 
+export const localComputerInteractionPurposeSchema = z.enum([
+  "navigation",
+  "selection",
+  "media_control",
+  "submit",
+  "file_transfer",
+  "destructive",
+  "financial",
+  "account_security",
+  "permission_change",
+  "unknown",
+]);
+
 export const localComputerClickInputSchema = z.union([
   z.object({
     snapshotRevision: sha256,
     elementId: z.string().min(3).max(120).regex(/^[A-Za-z0-9_.:-]+$/),
+    interactionPurpose: localComputerInteractionPurposeSchema,
   }).strict(),
   z.object({
     snapshotRevision: sha256,
     coordinateSpace: z.literal("screenshot_pixel"),
     x: z.number().finite().min(0).max(32_768),
     y: z.number().finite().min(0).max(32_768),
+    interactionPurpose: localComputerInteractionPurposeSchema,
   }).strict(),
 ]);
 
