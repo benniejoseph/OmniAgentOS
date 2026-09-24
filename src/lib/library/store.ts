@@ -37,6 +37,22 @@ export type WorkspaceLibraryResult = Readonly<{
   countsAreLowerBound: boolean;
 }>;
 
+export type WorkspaceLibraryItemQuery = Readonly<{
+  tenantId: string;
+  actorId: string;
+  requestActorBinding?: CanonicalRequestActorBindingV1;
+  libraryItemId: string;
+}>;
+
+export class WorkspaceLibraryResolutionConflictError extends Error {
+  readonly code = "workspace_library_resolution_conflict" as const;
+
+  constructor(libraryItemId: string) {
+    super(`Workspace Library item ${libraryItemId} resolved to conflicting records.`);
+    this.name = "WorkspaceLibraryResolutionConflictError";
+  }
+}
+
 type SqlRow = Record<string, unknown>;
 type LocalCaptureAssetLedger = {
   assets: Array<CaptureAsset & { contentPath?: string }>;
@@ -77,6 +93,328 @@ export async function listWorkspaceLibrary(
     countsByKind: Object.freeze(countsByKind),
     countsAreLowerBound: batch.countsAreLowerBound,
   });
+}
+
+export async function getWorkspaceLibraryItem(
+  input: WorkspaceLibraryItemQuery,
+): Promise<WorkspaceLibraryItem | null> {
+  const query = normalizeItemQuery(input);
+  return hasDatabaseUrl()
+    ? getDatabaseWorkspaceLibraryItem(query)
+    : getLocalWorkspaceLibraryItem(query);
+}
+
+async function getDatabaseWorkspaceLibraryItem(
+  input: NormalizedWorkspaceLibraryItemQuery,
+): Promise<WorkspaceLibraryItem | null> {
+  await ensureDatabaseSchema();
+  const [canonicalActorId, exactActorId] = captureActorReadOrder(
+    input.actorId,
+    input.requestActorBinding,
+    input.actorId,
+  );
+  const sql = getSql();
+  let rows: SqlRow[];
+
+  switch (input.sourceAuthority) {
+    case "capture_asset":
+      rows = await sql`
+        SELECT asset.id, asset.tenant_id, asset.actor_id, asset.filename,
+          asset.media_type, asset.byte_count, asset.content_sha256,
+          asset.status, asset.extraction_status, asset.tags,
+          asset.created_at, asset.updated_at,
+          document.title AS knowledge_title,
+          document.id AS knowledge_document_id_joined,
+          document.source_revision_id
+        FROM omni_capture_assets asset
+        LEFT JOIN omni_knowledge_documents document
+          ON document.tenant_id = asset.tenant_id
+          AND document.id = asset.knowledge_document_id
+        WHERE asset.tenant_id = ${input.tenantId}
+          AND asset.id = ${input.sourceId}
+          AND asset.actor_id IN (${canonicalActorId}, ${exactActorId})
+          AND COALESCE(asset.metadata->>'internalKind', '') = ''
+        LIMIT 2
+      `;
+      return mapSingleExactLibraryRow(
+        input.libraryItemId,
+        rows,
+        (row) => captureAssetLibraryItem(row, exactActorId),
+      );
+    case "capture_recording":
+    case "capture_transcript":
+      rows = await sql`
+        SELECT recording.id, recording.tenant_id, recording.actor_id,
+          recording.title, recording.status, recording.tags,
+          recording.duration_ms, recording.byte_count,
+          recording.segment_count, recording.created_at,
+          recording.updated_at, LEFT(recording.transcript, 600)
+            AS transcript_preview,
+          document.id AS knowledge_document_id_joined,
+          document.source_revision_id,
+          document.content_hash AS knowledge_content_sha256,
+          COALESCE(revision_count.version_count, 1)::integer
+            AS transcript_version_count
+        FROM omni_capture_recordings recording
+        LEFT JOIN omni_knowledge_documents document
+          ON document.tenant_id = recording.tenant_id
+          AND document.id = recording.knowledge_document_id
+        LEFT JOIN LATERAL (
+          SELECT COUNT(*) AS version_count
+          FROM omni_source_revisions revision
+          WHERE revision.tenant_id = recording.tenant_id
+            AND revision.source_item_id = document.source_item_id
+        ) revision_count ON TRUE
+        WHERE recording.tenant_id = ${input.tenantId}
+          AND recording.id = ${input.sourceId}
+          AND recording.actor_id IN (${canonicalActorId}, ${exactActorId})
+        LIMIT 2
+      `;
+      return mapSingleExactLibraryRow(
+        input.libraryItemId,
+        rows,
+        (row) => captureRecordingLibraryItems(row).find(
+          (item) => item.id === input.libraryItemId,
+        ) || null,
+      );
+    case "project_artifact":
+      rows = await sql`
+        SELECT artifact.id, artifact.tenant_id, artifact.project_id,
+          artifact.task_id, artifact.status, artifact.title,
+          LEFT(artifact.content, 600) AS content,
+          encode(sha256(convert_to(artifact.content, 'UTF8')), 'hex')
+            AS content_sha256,
+          octet_length(convert_to(artifact.content, 'UTF8'))
+            AS content_byte_count,
+          artifact.memory_id, artifact.evidence_refs,
+          artifact.created_at, artifact.updated_at,
+          project.actor_id AS owner_actor_id,
+          project.title AS project_title,
+          mapping.workspace_id AS canonical_workspace_id,
+          mapping.project_id AS canonical_project_id,
+          mapping.work_item_id AS canonical_work_item_id
+        FROM omni_project_artifacts artifact
+        JOIN omni_projects project
+          ON project.tenant_id = artifact.tenant_id
+          AND project.id = artifact.project_id
+        LEFT JOIN omni_work_compatibility_mappings mapping
+          ON mapping.tenant_id = artifact.tenant_id
+          AND mapping.source_kind = 'legacy_project_task'
+          AND mapping.source_id = artifact.task_id
+          AND mapping.state = 'active'
+        WHERE artifact.tenant_id = ${input.tenantId}
+          AND artifact.id = ${input.sourceId}
+          AND project.actor_id IN (${canonicalActorId}, ${exactActorId})
+        LIMIT 2
+      `;
+      return mapSingleExactLibraryRow(
+        input.libraryItemId,
+        rows,
+        projectArtifactLibraryItem,
+      );
+    case "mission_artifact":
+      rows = await sql`
+        SELECT artifact.id, artifact.tenant_id, artifact.actor_id,
+          artifact.mission_id, artifact.task_id, artifact.kind,
+          artifact.title, artifact.mime_type,
+          jsonb_strip_nulls(jsonb_build_object(
+            'summary', LEFT(artifact.data->>'summary', 600),
+            'report', LEFT(artifact.data->>'report', 600),
+            'text', LEFT(artifact.data->>'text', 600),
+            'content', LEFT(artifact.data->>'content', 600),
+            'message', LEFT(artifact.data->>'message', 600)
+          )) AS data,
+          encode(sha256(convert_to(artifact.data::TEXT, 'UTF8')), 'hex')
+            AS data_sha256,
+          octet_length(convert_to(artifact.data::TEXT, 'UTF8'))
+            AS data_byte_count,
+          artifact.created_at, artifact.updated_at,
+          mission.title AS mission_title,
+          COALESCE(task_mapping.workspace_id, mission_mapping.workspace_id)
+            AS canonical_workspace_id,
+          COALESCE(task_mapping.project_id, mission_mapping.project_id)
+            AS canonical_project_id,
+          task_mapping.work_item_id AS canonical_work_item_id
+        FROM omni_mission_artifacts artifact
+        JOIN omni_missions mission
+          ON mission.tenant_id = artifact.tenant_id
+          AND mission.actor_id = artifact.actor_id
+          AND mission.id = artifact.mission_id
+        LEFT JOIN omni_work_compatibility_mappings task_mapping
+          ON task_mapping.tenant_id = artifact.tenant_id
+          AND task_mapping.source_kind = 'legacy_mission_task'
+          AND task_mapping.source_id = artifact.task_id
+          AND task_mapping.state = 'active'
+        LEFT JOIN omni_work_compatibility_mappings mission_mapping
+          ON mission_mapping.tenant_id = artifact.tenant_id
+          AND mission_mapping.source_kind = 'legacy_mission'
+          AND mission_mapping.source_id = artifact.mission_id
+          AND mission_mapping.state = 'active'
+        WHERE artifact.tenant_id = ${input.tenantId}
+          AND artifact.id = ${input.sourceId}
+          AND artifact.actor_id IN (${canonicalActorId}, ${exactActorId})
+        LIMIT 2
+      `;
+      return mapSingleExactLibraryRow(
+        input.libraryItemId,
+        rows,
+        missionArtifactLibraryItem,
+      );
+    case "source_item":
+      rows = await sql`
+        SELECT source_item.id, source_item.tenant_id,
+          source_item.owner_actor_id, source_item.workspace_id,
+          source_item.project_id, source_item.mission_id,
+          source_item.connection_id, source_item.visibility,
+          source_item.source_kind, source_item.current_revision_id,
+          source_item.adapter_id, source_item.created_at,
+          source_item.updated_at, revision.content_sha256,
+          revision.content_byte_length, revision.media_type,
+          revision.created_at AS revision_created_at,
+          document.id AS knowledge_document_id_joined,
+          document.title AS knowledge_title,
+          COALESCE(revision_count.version_count, 1)::integer AS version_count
+        FROM omni_source_items source_item
+        JOIN omni_source_revisions revision
+          ON revision.tenant_id = source_item.tenant_id
+          AND revision.source_item_id = source_item.id
+          AND revision.id = source_item.current_revision_id
+        LEFT JOIN omni_knowledge_documents document
+          ON document.tenant_id = source_item.tenant_id
+          AND document.source_item_id = source_item.id
+          AND document.source_revision_id = revision.id
+        LEFT JOIN LATERAL (
+          SELECT COUNT(*) AS version_count
+          FROM omni_source_revisions historical_revision
+          WHERE historical_revision.tenant_id = source_item.tenant_id
+            AND historical_revision.source_item_id = source_item.id
+        ) revision_count ON TRUE
+        WHERE source_item.tenant_id = ${input.tenantId}
+          AND source_item.id = ${input.sourceId}
+          AND source_item.owner_actor_id IN (${canonicalActorId}, ${exactActorId})
+          AND source_item.visibility <> 'agent_private'
+          AND source_item.connection_id <> 'first_party.capture'
+          AND (
+            source_item.retention_expires_at IS NULL
+            OR source_item.retention_expires_at > CURRENT_TIMESTAMP
+          )
+        LIMIT 2
+      `;
+      return mapSingleExactLibraryRow(
+        input.libraryItemId,
+        rows,
+        sourceItemLibraryItem,
+      );
+  }
+}
+
+async function getLocalWorkspaceLibraryItem(
+  input: NormalizedWorkspaceLibraryItemQuery,
+): Promise<WorkspaceLibraryItem | null> {
+  const [canonicalActorId, exactActorId] = captureActorReadOrder(
+    input.actorId,
+    input.requestActorBinding,
+    input.actorId,
+  );
+  const readableActorIds = new Set([canonicalActorId, exactActorId]);
+
+  switch (input.sourceAuthority) {
+    case "capture_asset": {
+      const ledger = await readJsonFile<LocalCaptureAssetLedger>(
+        getDataPath("capture-assets.json"),
+        { assets: [] },
+      );
+      const matches = ledger.assets.filter((asset) =>
+        asset.id === input.sourceId &&
+        asset.tenantId === input.tenantId &&
+        readableActorIds.has(asset.actorId) &&
+        !optionalText(asset.metadata.internalKind)
+      );
+      return mapSingleExactLibraryRow(
+        input.libraryItemId,
+        matches,
+        (asset) => captureAssetLibraryItem(asset, exactActorId),
+      );
+    }
+    case "capture_recording":
+    case "capture_transcript": {
+      const ledger = await readJsonFile<LocalCaptureRecordingLedger>(
+        getDataPath("capture-recordings.json"),
+        { recordings: [] },
+      );
+      const matches = ledger.recordings.filter((recording) =>
+        recording.id === input.sourceId &&
+        recording.tenantId === input.tenantId &&
+        readableActorIds.has(recording.actorId)
+      );
+      return mapSingleExactLibraryRow(
+        input.libraryItemId,
+        matches,
+        (recording) => captureRecordingLibraryItems({
+          ...recording,
+          transcript_preview: recording.transcript.slice(0, 600),
+          created_at: recording.startedAt,
+          updated_at: recording.updatedAt,
+        }).find((item) => item.id === input.libraryItemId) || null,
+      );
+    }
+    case "project_artifact": {
+      const ledger = await readJsonFile<ProjectLedger>(
+        getDataPath("projects.json"),
+        { projects: [], tasks: [], artifacts: [] },
+      );
+      const matches = ledger.artifacts.flatMap((artifact) => {
+        if (artifact.id !== input.sourceId || artifact.tenantId !== input.tenantId) {
+          return [];
+        }
+        const projects = ledger.projects.filter((project) =>
+          project.id === artifact.projectId &&
+          project.tenantId === input.tenantId &&
+          readableActorIds.has(project.actorId)
+        );
+        return projects.map((project) => ({ artifact, project }));
+      });
+      return mapSingleExactLibraryRow(
+        input.libraryItemId,
+        matches,
+        ({ artifact, project }) => projectArtifactLibraryItem({
+          ...artifact,
+          owner_actor_id: project.actorId,
+          project_title: project.title,
+        }),
+      );
+    }
+    case "mission_artifact": {
+      const ledger = await readJsonFile<MissionLedger>(
+        getDataPath("missions.json"),
+        { missions: [], tasks: [], attempts: [], artifacts: [] },
+      );
+      const matches = ledger.artifacts.flatMap((artifact) => {
+        if (artifact.id !== input.sourceId || artifact.tenantId !== input.tenantId) {
+          return [];
+        }
+        const missions = ledger.missions.filter((mission) =>
+          mission.id === artifact.missionId &&
+          mission.tenantId === input.tenantId &&
+          mission.actorId === artifact.actorId &&
+          readableActorIds.has(mission.actorId)
+        );
+        return missions.map((mission) => ({ artifact, mission }));
+      });
+      return mapSingleExactLibraryRow(
+        input.libraryItemId,
+        matches,
+        ({ artifact, mission }) => missionArtifactLibraryItem({
+          ...artifact,
+          mission_title: mission.title,
+        }),
+      );
+    }
+    case "source_item":
+      // Connected-source convergence is durable-database only. Local mode has
+      // no source-item ledger, so it must not manufacture a partial record.
+      return null;
+  }
 }
 
 async function listDatabaseLibraryCandidates(
@@ -1050,6 +1388,24 @@ type NormalizedWorkspaceLibraryQuery = Readonly<{
   offset: number;
 }>;
 
+type NormalizedWorkspaceLibraryItemQuery = Readonly<{
+  tenantId: string;
+  actorId: string;
+  requestActorBinding?: CanonicalRequestActorBindingV1;
+  libraryItemId: string;
+  sourceAuthority: WorkspaceLibraryItem["sourceAuthority"];
+  sourceId: string;
+}>;
+
+const workspaceLibrarySourceAuthorities = [
+  "capture_asset",
+  "capture_recording",
+  "capture_transcript",
+  "project_artifact",
+  "mission_artifact",
+  "source_item",
+] as const satisfies readonly WorkspaceLibraryItem["sourceAuthority"][];
+
 function normalizeQuery(input: WorkspaceLibraryQuery): NormalizedWorkspaceLibraryQuery {
   const tenantId = boundedIdentity(input.tenantId, "tenant");
   const actorId = boundedIdentity(input.actorId, "actor");
@@ -1068,6 +1424,47 @@ function normalizeQuery(input: WorkspaceLibraryQuery): NormalizedWorkspaceLibrar
     limit,
     offset,
   });
+}
+
+function normalizeItemQuery(
+  input: WorkspaceLibraryItemQuery,
+): NormalizedWorkspaceLibraryItemQuery {
+  const tenantId = boundedIdentity(input.tenantId, "tenant");
+  const actorId = boundedIdentity(input.actorId, "actor");
+  const libraryItemId = boundedIdentity(input.libraryItemId, "item");
+  const sourceAuthority = workspaceLibrarySourceAuthorities.find(
+    (authority) => libraryItemId.startsWith(`library:${authority}:`),
+  );
+  if (!sourceAuthority) {
+    throw new Error("Workspace library item id has an unsupported authority.");
+  }
+  const sourceId = boundedIdentity(
+    libraryItemId.slice(`library:${sourceAuthority}:`.length),
+    "source",
+  );
+  return Object.freeze({
+    tenantId,
+    actorId,
+    ...(input.requestActorBinding ? { requestActorBinding: input.requestActorBinding } : {}),
+    libraryItemId,
+    sourceAuthority,
+    sourceId,
+  });
+}
+
+function mapSingleExactLibraryRow<T>(
+  libraryItemId: string,
+  rows: readonly T[],
+  mapRow: (row: T) => WorkspaceLibraryItem | null,
+) {
+  if (rows.length > 1) {
+    throw new WorkspaceLibraryResolutionConflictError(libraryItemId);
+  }
+  const item = rows[0] === undefined ? null : mapRow(rows[0]);
+  if (item && item.id !== libraryItemId) {
+    throw new WorkspaceLibraryResolutionConflictError(libraryItemId);
+  }
+  return item;
 }
 
 function libraryCandidateLimit(input: NormalizedWorkspaceLibraryQuery) {

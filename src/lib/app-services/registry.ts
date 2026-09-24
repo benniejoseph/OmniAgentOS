@@ -2,7 +2,7 @@ import type { AppServiceOperationContract } from "@/lib/app-services/contracts";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
 export const APP_SERVICE_REGISTRY_VERSION =
-  "p9.2-app-service-registry:1" as const;
+  "p9.2-app-service-registry:2" as const;
 
 const readOnlyEventContract = "read_only:no_domain_mutation";
 
@@ -27,6 +27,7 @@ export const APP_SERVICE_OPERATION_CONTRACTS = Object.freeze([
   mutation("app.market_research.journal.generate", "run.agent", "market_forward_forecast", "market-forward-shadow-events.v1"),
   mutation("app.market_research.journal.score", "manage.workflow", "market_forecast_outcome", "market-forward-shadow-events.v1"),
   read("app.library.list", "read", "workspace_library"),
+  read("app.library.show", "read", "workspace_library_item"),
   read("app.memory.readable.show", "read", "memory_overview"),
   read("app.memory.intelligence.show", "read", "memory_intelligence"),
   read("app.memory.shared.list", "read", "shared_memory"),

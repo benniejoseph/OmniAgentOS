@@ -6,7 +6,7 @@ import {
 } from "@/lib/app-services/agents";
 import { createAppServiceCaller } from "@/lib/app-services/contracts";
 import { showTruthfulIntegrationsService } from "@/lib/app-services/integrations";
-import { listWorkspaceLibraryService } from "@/lib/app-services/library";
+import { showWorkspaceLibraryItemService } from "@/lib/app-services/library";
 import { listPluginsService } from "@/lib/app-services/plugins";
 import { showProjectService } from "@/lib/app-services/projects";
 import type {
@@ -102,12 +102,15 @@ export async function resolveCommandContextReferences(input: {
         ? showTruthfulIntegrationsService(caller, {})
         : undefined,
       kinds.has("file")
-        ? listWorkspaceLibraryService(caller, {
-            query: "",
-            kinds: [],
-            limit: 100,
-            offset: 0,
-          })
+        ? Promise.all(
+            [...new Set(
+              input.references
+                .filter((reference) => reference.kind === "file")
+                .map((reference) => reference.id),
+            )].map((libraryItemId) =>
+              showWorkspaceLibraryItemService(caller, { libraryItemId })
+            ),
+          )
         : undefined,
     ]);
   } catch (error) {
@@ -314,9 +317,9 @@ export async function resolveCommandContextReferences(input: {
         });
       }
       case "file": {
-        const file = files?.data.items.find(
-          (candidate) => candidate.id === reference.id,
-        );
+        const file = files?.find(
+          (result) => result.data.item?.id === reference.id,
+        )?.data.item;
         if (!file) throw notFound("Library item");
         if (file.status !== "ready") {
           throw changed("Library item", "is no longer ready");
