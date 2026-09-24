@@ -23,6 +23,7 @@ import 'talk_command_context.dart';
 import 'talk_history.dart';
 import 'talk_history_view.dart';
 import 'talk_model_selection.dart';
+import 'talk_rich_message.dart';
 
 export 'talk_history.dart';
 export 'talk_command_context.dart';
@@ -3488,6 +3489,13 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   Future<void> _openPromptQueueSheet() =>
       _openRailSheet(_TalkRailSection.queue);
 
+  Future<void> _copyAssistantResponse(String text) async {
+    await Clipboard.setData(ClipboardData(text: text));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(const SnackBar(content: Text('Answer copied')));
+  }
+
   Widget _buildQuickEntry(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final macos = usesMacosPresentation();
@@ -3713,6 +3721,16 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
               return Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  IconButton(
+                    tooltip: 'What Asael is doing',
+                    onPressed: () => _openRailSheet(_TalkRailSection.activity),
+                    icon: widget.controller.activities.isEmpty
+                        ? const Icon(Icons.bolt_outlined)
+                        : Badge.count(
+                            count: widget.controller.activities.length,
+                            child: const Icon(Icons.bolt_outlined),
+                          ),
+                  ),
                   if (widget.controller.artifacts.isNotEmpty)
                     IconButton(
                       tooltip: 'Run artifacts',
@@ -3904,12 +3922,73 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                             CrossAxisAlignment.start,
                                         mainAxisSize: MainAxisSize.min,
                                         children: [
-                                          SelectableText(m.text),
+                                          if (m.role == TalkRole.assistant)
+                                            TalkRichMessage(
+                                              text: m.text,
+                                              failed: m.failed,
+                                            )
+                                          else
+                                            SelectableText(m.text),
                                           if (showArtifact) ...[
                                             const SizedBox(height: 12),
                                             _TalkInlineArtifactPreview(
                                               artifact: artifact,
                                               content: artifactContent,
+                                            ),
+                                          ],
+                                          if (m.role == TalkRole.assistant &&
+                                              !m.streaming &&
+                                              m.text.isNotEmpty) ...[
+                                            const SizedBox(height: 9),
+                                            Divider(
+                                              height: 1,
+                                              color: Theme.of(context)
+                                                  .colorScheme
+                                                  .outlineVariant,
+                                            ),
+                                            const SizedBox(height: 5),
+                                            Wrap(
+                                              spacing: 4,
+                                              runSpacing: 4,
+                                              children: [
+                                                TextButton.icon(
+                                                  onPressed: () =>
+                                                      _copyAssistantResponse(
+                                                        m.text,
+                                                      ),
+                                                  icon: const Icon(
+                                                    Icons.copy_rounded,
+                                                    size: 15,
+                                                  ),
+                                                  label: const Text(
+                                                    'Copy answer',
+                                                  ),
+                                                ),
+                                                if (i ==
+                                                        widget
+                                                                .controller
+                                                                .messages
+                                                                .length -
+                                                            1 &&
+                                                    widget
+                                                        .controller
+                                                        .activities
+                                                        .isNotEmpty)
+                                                  TextButton.icon(
+                                                    onPressed: () =>
+                                                        _openRailSheet(
+                                                          _TalkRailSection
+                                                              .activity,
+                                                        ),
+                                                    icon: const Icon(
+                                                      Icons.bolt_outlined,
+                                                      size: 15,
+                                                    ),
+                                                    label: const Text(
+                                                      'View work',
+                                                    ),
+                                                  ),
+                                              ],
                                             ),
                                           ],
                                           if (m.failed &&
@@ -5271,7 +5350,7 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
       _TalkRailSection.activity => (
         Icons.auto_awesome_outlined,
         'What Asael is doing',
-        'A clear story of your request',
+        'Plans, tools, approvals and evidence',
       ),
       _TalkRailSection.artifacts => (
         Icons.auto_awesome_mosaic_outlined,
@@ -5458,6 +5537,30 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
               .toList(growable: false);
     return Column(
       children: [
+        if (macos)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(
+                  Icons.visibility_outlined,
+                  size: 15,
+                  color: scheme.onSurfaceVariant,
+                ),
+                const SizedBox(width: 7),
+                Expanded(
+                  child: Text(
+                    'This is the observable work log. Private model reasoning is never exposed or stored.',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                      height: 1.35,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
         if (macos && technicalCount > 0)
           Padding(
             padding: const EdgeInsets.fromLTRB(14, 10, 10, 2),
