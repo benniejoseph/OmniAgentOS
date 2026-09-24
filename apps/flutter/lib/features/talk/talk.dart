@@ -920,7 +920,9 @@ abstract interface class TalkCommandContextRepository {
 }
 
 abstract interface class TalkCommandModelSelectionRepository {
-  Future<TalkCommandModelCatalog> loadCommandModelCatalog();
+  Future<TalkCommandModelCatalog> loadCommandModelCatalog({
+    required String commandScope,
+  });
 }
 
 abstract interface class TalkArtifactRepository {
@@ -997,12 +999,14 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     return contextRepository.loadCommandContextCatalog();
   }
 
-  Future<TalkCommandModelCatalog> loadCommandModelCatalog() async {
+  Future<TalkCommandModelCatalog> loadCommandModelCatalog({
+    required String commandScope,
+  }) async {
     final modelRepository = _commandModelRepository;
     if (modelRepository == null) {
       throw StateError('Model choices are not available in this Asael build.');
     }
-    return modelRepository.loadCommandModelCatalog();
+    return modelRepository.loadCommandModelCatalog(commandScope: commandScope);
   }
 
   List<String> get workflowIds => List.unmodifiable(_workflowIds);
@@ -3229,6 +3233,11 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     );
   }
 
+  String get commandModelScope => talkCommandModelScope(
+    agentId: widget.controller.assignedAgent?.id,
+    computerUse: executionTarget == TalkExecutionTarget.thisMac,
+  );
+
   bool get voiceDraftBusy =>
       startingVoiceDraft ||
       recording ||
@@ -3236,6 +3245,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       widget.controller.transcribing;
 
   Future<void> loadCommandModelCatalog() async {
+    final expectedScope = commandModelScope;
     final generation = ++commandModelLoadGeneration;
     if (mounted) {
       setState(() {
@@ -3244,8 +3254,19 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       });
     }
     try {
-      final catalog = await widget.controller.loadCommandModelCatalog();
+      final catalog = await widget.controller.loadCommandModelCatalog(
+        commandScope: expectedScope,
+      );
       if (!mounted || generation != commandModelLoadGeneration) return;
+      if (expectedScope != commandModelScope) {
+        unawaited(loadCommandModelCatalog());
+        return;
+      }
+      if (catalog.scope != expectedScope) {
+        throw FormatException(
+          'The model catalog did not match the selected work context.',
+        );
+      }
       setState(() {
         commandModelCatalog = catalog;
         final selected = catalog.choices
@@ -3394,6 +3415,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     });
     if (reference.kind == 'agent') {
       widget.controller.assignAgent(id: reference.id, name: reference.label);
+      resetCommandModelCatalog();
     }
   }
 
@@ -3404,7 +3426,33 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     if (reference.kind == 'agent' &&
         widget.controller.assignedAgent?.id == reference.id) {
       widget.controller.clearAssignedAgent();
+      resetCommandModelCatalog();
     }
+  }
+
+  void clearAssignedAgent() {
+    if (widget.controller.assignedAgent == null) return;
+    widget.controller.clearAssignedAgent();
+    setState(() {
+      commandReferences.removeWhere((item) => item.kind == 'agent');
+    });
+    resetCommandModelCatalog();
+  }
+
+  void selectExecutionTarget(TalkExecutionTarget value) {
+    if (value == executionTarget) return;
+    setState(() => executionTarget = value);
+    resetCommandModelCatalog();
+  }
+
+  void resetCommandModelCatalog() {
+    setState(() {
+      commandModelCatalog = null;
+      commandModelChoiceId = null;
+      commandReasoningLevel = null;
+      commandModelError = null;
+    });
+    unawaited(loadCommandModelCatalog());
   }
 
   void selectCommandApproach(String mode) {
@@ -3422,6 +3470,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     setState(() {
       commandModelChoiceId = choice?.id;
       commandReasoningLevel = null;
+      if (choice != null) strategy = 'direct';
     });
   }
 
@@ -3432,7 +3481,10 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
             true) {
       return;
     }
-    setState(() => commandReasoningLevel = reasoningLevel);
+    setState(() {
+      commandReasoningLevel = reasoningLevel;
+      if (reasoningLevel != null) strategy = 'direct';
+    });
   }
 
   Future<void> toggleVoiceDraft() async {
@@ -3711,7 +3763,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                         'Commands run directly as ${assignedAgent.name}',
                                     onDeleted: widget.controller.sending
                                         ? null
-                                        : widget.controller.clearAssignedAgent,
+                                        : clearAssignedAgent,
                                   ),
                                 _ModelThinkingControls(
                                   catalog: commandModelCatalog,
@@ -3729,8 +3781,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                   value: executionTarget,
                                   compact: true,
                                   localComputer: widget.localComputer,
-                                  onChanged: (value) =>
-                                      setState(() => executionTarget = value),
+                                  onChanged: selectExecutionTarget,
                                 ),
                               ],
                             ),
@@ -4197,9 +4248,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                           'Commands run directly as ${assignedAgent.name}',
                                       onDeleted: widget.controller.sending
                                           ? null
-                                          : widget
-                                                .controller
-                                                .clearAssignedAgent,
+                                          : clearAssignedAgent,
                                     ),
                                   SegmentedButton<String>(
                                     segments: [
@@ -4259,8 +4308,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                   _ExecutionTargetMenu(
                                     value: executionTarget,
                                     localComputer: widget.localComputer,
-                                    onChanged: (value) =>
-                                        setState(() => executionTarget = value),
+                                    onChanged: selectExecutionTarget,
                                   ),
                                 ],
                               ),
@@ -4881,7 +4929,7 @@ class _ModelThinkingControls extends StatelessWidget {
         ? 'Choose a specific model to set Thinking. Automatic lets the saved Settings route decide.'
         : options.isEmpty
         ? '${choice.displayName} does not advertise adjustable Thinking levels.'
-        : 'Automatic lets ${choice.displayName} use its configured Thinking level.';
+        : 'Automatic lets ${choice.displayName} use its provider and runtime default.';
     final menu = PopupMenuButton<String>(
       key: const ValueKey('talk-thinking-selector'),
       initialValue: reasoning?.id ?? automaticValue,
@@ -4897,7 +4945,7 @@ class _ModelThinkingControls extends StatelessWidget {
             contentPadding: EdgeInsets.zero,
             leading: Icon(Icons.auto_mode_rounded, size: 19),
             title: Text('Automatic'),
-            subtitle: Text('Use the configured Thinking level'),
+            subtitle: Text('Use the provider and runtime default'),
           ),
         ),
         for (final option in options)

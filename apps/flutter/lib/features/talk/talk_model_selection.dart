@@ -13,13 +13,43 @@ const _supportedReasoningLevels = {
   'extra_high',
   'ultra',
 };
+const _supportedModelScopes = {
+  'main_agent',
+  'orchestrator',
+  'planner',
+  'verifier',
+  'council',
+  'market_research',
+  'code_builder',
+  'memory',
+  'embeddings',
+  'vision',
+  'audio',
+  'audio_diarization',
+  'web_search',
+  'image_generation',
+  'video_generation',
+  'computer_use',
+  'speech_synthesis',
+  'realtime_transcription',
+  'semantic_decision',
+};
+
+String talkCommandModelScope({String? agentId, required bool computerUse}) {
+  if (computerUse) return 'computer_use';
+  return switch (agentId) {
+    'forge' => 'code_builder',
+    'sentinel' => 'verifier',
+    'meridian' => 'market_research',
+    'mnemosyne' => 'memory',
+    'scout' => 'council',
+    _ => 'main_agent',
+  };
+}
 
 @immutable
 class TalkCommandReasoningOption {
-  const TalkCommandReasoningOption({
-    required this.id,
-    required this.label,
-  });
+  const TalkCommandReasoningOption({required this.id, required this.label});
 
   final String id;
   final String label;
@@ -81,10 +111,7 @@ class TalkCommandModelChoice {
     }
     final json = Map<String, dynamic>.from(value);
     final id = _requiredModelText(json['id'], maximum: 80);
-    final assignmentId = _requiredModelText(
-      json['assignmentId'],
-      maximum: 240,
-    );
+    final assignmentId = _requiredModelText(json['assignmentId'], maximum: 240);
     final revision = json['assignmentRevision'];
     final configurationSha = _requiredModelText(
       json['assignmentConfigurationSha256'],
@@ -93,10 +120,7 @@ class TalkCommandModelChoice {
     final route = _requiredModelText(json['route'], maximum: 20);
     final provider = _requiredModelText(json['provider'], maximum: 40);
     final modelId = _requiredModelText(json['modelId'], maximum: 240);
-    final displayName = _requiredModelText(
-      json['displayName'],
-      maximum: 160,
-    );
+    final displayName = _requiredModelText(json['displayName'], maximum: 160);
     final displayModelId = _requiredModelText(
       json['displayModelId'],
       maximum: 240,
@@ -143,11 +167,13 @@ class TalkCommandModelChoice {
 @immutable
 class TalkCommandModelCatalog {
   const TalkCommandModelCatalog({
+    required this.scope,
     required this.defaultChoiceId,
     required this.choices,
     required this.message,
   });
 
+  final String scope;
   final String? defaultChoiceId;
   final List<TalkCommandModelChoice> choices;
   final String message;
@@ -161,10 +187,11 @@ class TalkCommandModelCatalog {
     }
     final json = Map<String, dynamic>.from(raw);
     final choicesValue = json['choices'];
+    final scope = _requiredModelText(json['scope'], maximum: 40);
     final defaultChoiceId = json['defaultChoiceId'];
     final message = _requiredModelText(json['message'], maximum: 300);
     if (json['schemaVersion'] != 1 ||
-        json['scope'] != 'main_agent' ||
+        !_supportedModelScopes.contains(scope) ||
         choicesValue is! List ||
         choicesValue.length > 2 ||
         (defaultChoiceId != null && defaultChoiceId is! String) ||
@@ -175,7 +202,9 @@ class TalkCommandModelCatalog {
       for (final value in choicesValue) TalkCommandModelChoice.fromJson(value),
     ];
     if (choices.map((choice) => choice.id).toSet().length != choices.length) {
-      throw const FormatException('The Settings model choices contain duplicates.');
+      throw const FormatException(
+        'The Settings model choices contain duplicates.',
+      );
     }
     final normalizedDefault = defaultChoiceId is String
         ? _requiredModelText(defaultChoiceId, maximum: 80)
@@ -185,6 +214,7 @@ class TalkCommandModelCatalog {
       throw const FormatException('The default Settings model is invalid.');
     }
     return TalkCommandModelCatalog(
+      scope: scope,
       defaultChoiceId: normalizedDefault,
       choices: List.unmodifiable(choices),
       message: message,
@@ -194,10 +224,7 @@ class TalkCommandModelCatalog {
 
 @immutable
 class TalkCommandModelSelection {
-  const TalkCommandModelSelection({
-    required this.choice,
-    this.reasoningLevel,
-  });
+  const TalkCommandModelSelection({required this.choice, this.reasoningLevel});
 
   final TalkCommandModelChoice choice;
   final String? reasoningLevel;

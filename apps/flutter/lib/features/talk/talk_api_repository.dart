@@ -476,10 +476,11 @@ class ApiTalkRepository
   }
 
   @override
-  Future<TalkCommandModelCatalog> loadCommandModelCatalog() async {
+  Future<TalkCommandModelCatalog> loadCommandModelCatalog({
+    required String commandScope,
+  }) async {
     final payload = await api.getJsonFresh(
-      '/api/settings/models',
-      query: const {'commandScope': 'main_agent'},
+      NativePaths.settingsModelsCommandCatalog(commandScope: commandScope),
     );
     return TalkCommandModelCatalog.fromJson(payload);
   }
