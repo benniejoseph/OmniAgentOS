@@ -37,17 +37,45 @@ Set these through the platform secret/configuration store, never in source contr
 - `OMNIAGENT_NATIVE_MIN_ANDROID_VERSION`, `OMNIAGENT_NATIVE_MIN_IOS_VERSION`, and `OMNIAGENT_NATIVE_MIN_MACOS_VERSION`: optional stable `major.minor.patch` minimums for native compatibility telemetry. An absent or empty value defaults to `1.0.0`; a malformed configured value invalidates the policy and holds adoption unavailable. These settings do not authorize Agent enrollment.
 
 Native contract artifacts are committed immutable release inputs. Production
-advertises v25 as current and deliberately retains v20 as the one
-rollback-compatible previous version. V21-v24 are immutable historical archives:
-they were generated during development but were not promoted into the production
-compatibility pair. Do not retire v20 until the v25 rollback window closes. A
-published version is never regenerated in place. Run
+advertises v27 as current and deliberately retains v26 as the one
+rollback-compatible previous version. V20-v25 remain immutable historical
+artifacts and are not advertised by current discovery. Do not retire v26 until
+the v27 rollback window closes. A published version is never regenerated in
+place. Run
 `npm run check:native-contracts` before a native-contract release; the check
 fails if the generated OpenAPI, event schema, fixtures, integrity manifests,
-Dart SDK, or frozen v7-v24 document hashes drift. Removing an archived version
+Dart SDK, or frozen v7-v26 document hashes drift. Removing an archived version
 requires a separately reviewed adoption decision and is not implied by a
-Vercel deployment. The v25 contract and its web/native management surfaces were
-promoted together in the 2026-09-22 adaptive-runtime release recorded below.
+Vercel deployment. V25/v20 remains the historical 2026-09-22 adaptive-runtime
+compatibility pair; v27/v26 is the current governed local-command release pair.
+
+### Governed local command runner release
+
+Migration `20260924110000_governed_local_command_runner.sql` installs internal
+schema v205 (`governed_local_command_runner_v1`) before the v27 command courier
+is advertised. Native v27 retains frozen v26. Owner-only Asael `1.19.0+30`
+embeds two different signed, credential-free helpers: the existing visual
+Computer Use helper keeps its closed UI-action allowlist and no shell; the new
+`AsaelCommandRunnerHelper.app` accepts only an approved direct executable plus
+argument vector, opaque owner-selected starting-folder grant, bounded relative
+directory, and timeout of at most 30 seconds. Folder grants constrain the
+starting directory and are not an operating-system filesystem sandbox.
+
+Every command requires a fresh persisted approval. Shells and security-sensitive
+launchers are denied before dispatch; the helper uses a minimal environment and
+isolated temporary home, bounds and sanitizes output, and terminates the process
+group on Stop or timeout. Raw stdout/stderr are one-turn untrusted evidence and a
+short-lived local artifact only. Durable approval, event, continuation, and tool
+stores retain metadata and digests rather than terminal content.
+
+The code deployment used for the authenticated live canaries was
+`dpl_3Mq43NNkse6aFonhfJEfEoZuhDpJ`. A natural-language Git-status request returned
+the exact current branch and dirty state through the approval/resume boundary;
+`sudo whoami` failed closed before approval or execution. The installed package
+is `Asael-1.19.0-30-macOS.dmg`, SHA-256
+`da3919c3c87de5bb6d9fae8f9952ae3d290443164714a6af0317a7f987a96ebd`; the prior
+1.18.0+29 app remains recoverable in Trash. The worker protocol is unchanged,
+so this release does not require a Fly deployment.
 
 ### Licensed TradingView chart assets
 
@@ -428,6 +456,9 @@ marker in the same transaction.
 | 200 | `notification_disposition_runtime_v1` | `99af5ab52a824c435e19e46f918755bfa549a1fecda22f9061940f9030c97c2b` | content-free disposition, digest, and watermark ledgers plus generic notification push cause |
 | 201 | `prompt_queue_runtime_v1` | `e9cd14ec6c526fbd0fbed097cbc8a535e92b60cfd6bae0785a0a0a6c3b584567` | sealed actor-private prompt queue and revision-fenced dispatch lifecycle |
 | 202 | `delegation_execution_rls_composition_repair_v1` | `3d6b28bd2fdb00cc57360506baea3ef120a4ae13e0050be57ba6d266310a3d63` | permissive tenant admission composed with the existing restrictive delegation actor boundary |
+| 203 | `agent_daily_learning_v1` | `88fa0dd240ba1920d2bb66395bb2b268dc98bd682282fbe3633d1df4b1d01f96` | actor-private daily learning observations and reviewed adaptation proposals |
+| 204 | `google_multi_account_connections_v1` | `8c7ae456bdbcc92f00adb2f24728cf03dc2b082cae7880e0f87ce71d15314cd8` | actor-owned Google account connection separation and scope-safe identity binding |
+| 205 | `governed_local_command_runner_v1` | `a9c301b4ef3030962b2ae9f69b8df9c2cb2914e90b0d9c8a3c6032f91691015a` | exact command workspace grants, approval/courier binding, and metadata-only execution receipts |
 
 Version 196 requires the exact predecessor marker v195
 `moltbook_autonomy_privilege_repair_v1` with checksum
@@ -440,15 +471,17 @@ SHA-256 `40dd780827cc9b8b80598ae736c3b1ddc1970b2f720e1bd7709565a1f78fec42`.
 A partial application intentionally makes newer code fail schema verification
 rather than silently skipping a boundary.
 
-The chain remains expand-only for the v20 rollback bridge: older clients do not
-receive the new routes or authority, and existing queue, notification, workflow,
-and Agent records keep their prior meanings. The first v197 attempt failed its
+The chain remains expand-only across the historical v20 bridge and current v26
+rollback client: older clients do not receive the new routes or authority, and
+existing queue, notification, workflow, and Agent records keep their prior
+meanings. The first v197 attempt failed its
 boundary assertion and rolled back atomically because production default table
 privileges had supplied broader grants than the migration allowed. V197-v201 now
 explicitly revoke serving-role table privileges before granting the narrow
 operations they require. The successful retry installed exact v196-v201 markers,
 verified forced RLS on all 12 affected tables, and found zero broad mutation
-grants on those tables.
+grants on those tables. Subsequent ordered releases installed exact v202-v205
+markers; production schema discovery now terminates at v205.
 
 The compatible web release is Vercel deployment
 `dpl_6mjgZgpMm8QxdEzejY2opB5vodpY`, built from exact source revision

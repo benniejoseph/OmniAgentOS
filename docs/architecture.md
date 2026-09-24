@@ -2,7 +2,7 @@
 
 ## Governing architecture decisions
 
-ADRs 005–012 in the [architecture decision record index](adr/README.md) are
+ADRs 005–013 in the [architecture decision record index](adr/README.md) are
 authoritative for the target-state choices they record. They fix the
 canonical-truth boundary, split agent behavior from security authority, move
 large bytes behind a scoped
@@ -11,12 +11,15 @@ A2A adapter, keep AP2 deterministic and human-present first, converge work on
 `Workspace -> Project -> WorkItem`, and keep native clients on one
 server-authoritative versioned API while implementing macOS as a shared Flutter
 client with a thin AppKit host, release-path-specific sandboxing, and a separately
-signed local Computer Use helper. Each decision includes additive migration,
+signed visual Computer Use helper plus a separate signed governed-command helper.
+Each decision includes additive migration,
 rollback, and security floors. Recording the decisions changes no runtime, schema,
 grant, event, rollout, or held authority.
 
-`src/lib/architecture/decision-registry.ts` is the schema-versioned runtime
-index of those seven accepted decisions. The Phase 0 production gate combines
+`src/lib/architecture/decision-registry.ts` remains the schema-versioned runtime
+index of the first seven accepted decisions, ADRs 005–011; the native packaging
+boundaries in ADRs 012–013 are release decisions rather than Phase 0 registry
+inputs. The Phase 0 production gate combines
 that registry with the real execution-scope, run-contract, tenant-rollout,
 canonical-status, and P0.5 observer implementations. It records only a
 content-free scoped receipt and has no model, tool, mutation, or external
@@ -197,13 +200,14 @@ target records the bounded typed run event `execution_target_retired` and fails
 without executing or redirecting the work. This compatibility shape is not an
 execution target.
 
-`local_macos` requires an authenticated compatible macOS client, a current
-device lease, and both Accessibility and Screen Recording. Production advertises
-native contract v25 as current while deliberately retaining v20 as the only
-rollback-compatible previous contract; v21-v24 remain immutable historical
-archives and were not promoted into that compatibility pair. V20 remains
-supported for the v25 rollback window. Its assigned `computer_use` model is
-tenant-configurable;
+`local_macos` requires an authenticated compatible macOS client and a current
+device lease; visual actions additionally require both Accessibility and Screen
+Recording. Production advertises
+native contract v27 as current while deliberately retaining v26 as the only
+rollback-compatible previous contract. Earlier contracts remain immutable historical
+archives rather than members of the active compatibility pair. A v26 client keeps
+visual Computer Use but cannot claim the v27 command-runner action. Its assigned
+`computer_use` model is tenant-configurable;
 the resolver requires one configured runtime that supports both governed tools
 and vision. No hard-coded provider/model fallback may split those requirements
 across runtimes. Every local action still enters the governed tool executor.
@@ -214,15 +218,22 @@ sequenceDiagram
   participant A as Agent API / governed executor
   participant Q as Local command ledger
   participant F as Authenticated Flutter courier
-  participant H as Signed credential-free helper
+  participant H as Signed visual helper
+  participant C as Signed command helper
   participant M as Installed Mac
 
   U->>A: prompt + explicit local_macos target
   A->>Q: enqueue exact governed execution
   F->>Q: claim with an exact compatible native device session
-  F->>H: expiring action over child pipes
-  H->>M: ScreenCaptureKit / AX / Quartz
-  H-->>F: bounded result + optional observation
+  alt visual action
+    F->>H: expiring visual action over child pipes
+    H->>M: ScreenCaptureKit / AX / Quartz
+    H-->>F: bounded result + optional observation
+  else approved direct command
+    F->>C: exact executable + argv + local workspace grant
+    C->>M: direct process, no shell
+    C-->>F: metadata + one-turn bounded output
+  end
   F->>Q: idempotent completion receipt
   Q-->>A: public result + one-turn observation
 ```
@@ -237,10 +248,19 @@ replayed after lease expiry. The primary Flutter engine is the only claimant and
 uses a bounded courier long poll instead of high-frequency empty requests;
 auxiliary workspace engines can observe status and invoke stop.
 
-The host spawns `AsaelComputerUseHelper.app` on demand from `Contents/Helpers`. The
-helper verifies its signed parent and bundle containment, receives a stripped
-environment and no credential, and has no server, socket, shell, filesystem, or
-Apple Events interface. Its closed action set is observe, list apps, activate an
+Migration 205 extends that same actor/device/session/run/execution courier with
+`run_command`, an exact native v27 capability, and bounded metadata for an
+owner-selected local workspace. The server accepts only an opaque workspace ID and
+display name advertised by the exact active device; the bookmark and absolute path
+remain local. `local.macos.command.run` is always risk two and always creates one
+fresh exact approval for the executable, arguments, relative directory, workspace,
+and timeout. The workspace constrains the working directory but is not presented as a
+filesystem sandbox.
+
+The host spawns the visual `AsaelComputerUseHelper.app` on demand from
+`Contents/Helpers`. The helper verifies its signed parent and bundle containment,
+receives a stripped environment and no credential, and has no server, socket, shell,
+filesystem, or Apple Events interface. Its closed action set is observe, list apps, activate an
 already-running app, open one validated HTTP(S) URL in allowlisted Chrome, press,
 click, type, key, and scroll. `open_url` uses LaunchServices rather than shell or
 AppleScript, rejects credentials and unsafe schemes, waits for at most 15 seconds,
@@ -250,6 +270,17 @@ applications, System Settings, secure fields, Secure Event Input, and stale
 screen/Accessibility revisions fail closed. Risk-two browser navigation, press,
 click, type, and key actions remain approval-gated. A persistent ready/active
 menu-bar indicator and immediate stop terminate the helper and cancel pending work.
+
+The host routes only `run_command` to the separate signed
+`AsaelCommandRunnerHelper.app`. That helper executes one validated program resolved
+only from fixed system executable directories, directly with an argument vector, a
+fixed minimal environment and isolated home, and a timeout
+of at most 30 seconds. It canonicalizes the workspace and relative working directory,
+rejects `..` and symlink escape, and refuses shells, `sudo`, AppleScript,
+LaunchServices, Keychain/security administration, and system-control launchers. Stop
+terminates the active process group. It has neither Asael credentials nor a network or
+server interface; the executable itself still has the ordinary authority of the
+owner's macOS account, which is disclosed at approval time.
 
 Private-release credential continuity uses a different separately signed child,
 `AsaelCredentialBroker.app`. The Computer Use helper remains credential-free and
@@ -265,7 +296,8 @@ is non-interactive; the explicit legacy migration copies and verifies broker
 values before deleting only verified legacy sources, with conflict and unknown
 keys failing closed.
 
-For image-based clicks, v13 and v14 bind each screenshot's exact pixel dimensions,
+For image-based clicks, the current v27 and rollback v26 contracts retain the
+v13-introduced binding between each screenshot's exact pixel dimensions,
 display provenance, snapshot revision, and `screenshot_pixel` coordinate space.
 The helper privately maps the top-left image point to current macOS global logical
 coordinates and refuses missing, stale, out-of-bounds, display-drifted, or raw
@@ -280,6 +312,13 @@ council execution is skipped because those siblings cannot inspect the private
 evidence and must not rewrite a verified result. Bounded string values from non-secure
 Accessibility elements are readable, while secure elements remain redacted and
 Secure Event Input remains refused.
+
+Command stdout and stderr follow the same one-turn privacy rule but use a temporary
+terminal artifact rather than a screenshot. They are bounded, sanitized, marked as
+untrusted, and supplied once to the assigned model. After consumption, durable
+command, tool, run, approval, event, and conversation state retains only exit state,
+byte counts, truncation flags, SHA-256 digests, timing, and the governed receipt. A
+durable retry cannot reconstruct output and must not pretend that it can.
 
 Migration 181 is the installed retirement boundary. Production records checksum
 `2d8bfc80ac843fe49ca79024022b873f5046a68822892ace7ff78d393025cf4d`,
@@ -304,6 +343,20 @@ or private observation in durable records. Fly app `omniagent-os-browser`, machi
 Playwright secrets were then removed. The unrelated `omniagent-os-worker` v335 is
 the only remaining Fly runtime and remains healthy. The earlier
 migration-179/native-v11 read-only canary remains historical evidence only.
+
+The newer governed-command release is additive to that visual history. Migration 205
+is installed, production advertises native v27 with v26 rollback, and signed Asael
+`1.19.0` build `30` is installed with both execution helpers. Its private package is
+`apps/flutter/build/distribution/macos/Asael-1.19.0-30-macOS.dmg`, SHA-256
+`da3919c3c87de5bb6d9fae8f9952ae3d290443164714a6af0317a7f987a96ebd`. The live
+positive canary asked naturally for the OmniAgent branch and worktree state, approved
+the exact `git status --short --branch --untracked-files=all` request, and received
+temporary output reporting `codex/native-delegation-boundary`, four commits ahead,
+and the user-owned untracked `docs/research/INFINA_HANDS_FREE_ASAEL.md`; the assigned
+agent grounded its answer in that output. A separate natural request for
+`sudo whoami` failed closed as a prohibited security-sensitive launcher before an
+approval was created or a process executed. Production deployment
+`dpl_3Mq43NNkse6aFonhfJEfEoZuhDpJ` served the code used for those live canaries.
 
 App Builder no longer depends on browser automation. New checkpoint readiness is
 derived deterministically from lint and typecheck; preview and production readiness
@@ -634,10 +687,10 @@ reconciled without replay: linked active runs receive a bounded extension,
 linked terminal runs settle from canonical run state, and an unlinked lease
 fails for explicit operator resume.
 
-The queue schema, routes, and web/native clients are deployed. The native v24
-document remains an immutable historical archive; production migration v201
-provides the durable queue boundary, while current native v25 exposes it through
-the same governed application service.
+The queue schema, routes, and web/native clients are deployed. The native v24 and
+v25 documents remain immutable historical archives; production migration v201
+provides the durable queue boundary, while current native v27 exposes it through
+the same governed application service and v26 remains the rollback contract.
 
 ### Adaptive-runtime management observability
 
@@ -648,7 +701,7 @@ detail exposes observed/evaluated/active/rolled-back records; child-task detail
 exposes exact immutable Skill, Plugin, MCP, and native-read pins plus the durable
 grant-validation result; trigger detail includes occurrence receipts and
 PolicyLease outcomes; notification history exposes content-free dispositions.
-The production native v25 contract maps to those same APIs. No management read
+The production native v27 contract maps to those same APIs. No management read
 grants mutation authority, digest-bound execution grants are not editable or
 revocable in place, and the native surface deliberately omits Agent retirement.
 

@@ -33,23 +33,26 @@ integration:
 - scoped file and microphone permission integration;
 - update, signing, and notarization plumbing; and
 - a separately signed, credential-free local Computer Use helper for the
-  explicitly selected **This Mac** target.
+  explicitly selected **This Mac** target; and
+- a different separately signed, credential-free command helper for exact,
+  approval-gated direct-executable work inside an owner-selected workspace.
 
 The ordinary desktop Swift-to-Flutter channel carries a small allowlisted intent
-contract, such as opening Today, Command, Capture, or Inbox. A separate local
-Computer Use channel carries only status, permission, stop, and one exact expiring
-command envelope between Flutter and the helper. Flutter retains the authenticated
-native bearer and uses the same server-authoritative services as every other client;
-the helper receives no bearer, connector content, domain object, or credential.
+contract, such as opening Today, Command, Capture, or Inbox. The local execution
+channel carries only status, permission, stop, workspace-grant inventory, and one
+exact expiring visual-action or structured command envelope between Flutter and the
+appropriate helper. Flutter retains the authenticated native bearer and uses the
+same server-authoritative services as every other client; neither helper receives a
+bearer, connector content, domain object, or credential.
 
 The macOS client first enrolled on native contract v8 and advances through ADR 011's
-current/previous discovery window. The platform identifier is `macos`.
-Source-current contract v13 retains frozen v12 as its supported previous version.
-V11 introduced the device readiness, claim, completion, and stop courier needed by
-the local helper; v12 added exact run/execution screenshot presentation; v13 adds
-governed Chrome URL delivery and a snapshot-bound `screenshot_pixel` coordinate
-contract. Canonical v13 promotion remains a release gate and is not implied by the
-source contract.
+current/previous discovery window. The platform identifier is `macos`. Production
+now advertises native contract v27 as current and retains frozen v26 as the only
+supported previous version. V11 introduced the device readiness, claim, completion,
+and stop courier; v12 added exact run/execution screenshot presentation; v13 added
+governed Chrome URL delivery and snapshot-bound `screenshot_pixel` coordinates; and
+v27 adds the governed command-runner capability and workspace inventory. A v26
+client keeps visual Computer Use but cannot claim a v27 command.
 The ordinary file-based macOS Keychain protects native session credentials under a
 stable Asael service namespace without a shared access group. Every Keychain
 operation is bounded so an operating-system authorization stall cannot hold the
@@ -73,10 +76,11 @@ but the owner-only host must not be treated as sandbox-confined.
 Ordinary product operation does not request Accessibility or Screen Recording. Those
 permissions belong only to the explicitly enabled local Computer Use path, are
 requested at point of use, and remain visible and revocable in macOS System Settings.
-The separate helper is also not an App Sandbox boundary in the owner-only package;
-its narrower authority comes from its small reviewed executable, stable separate
-signature, verified signed parent, stripped environment, child-only pipes, lack of
-credentials or network/server interface, TCC, and a closed action allowlist.
+The separate helpers are also not App Sandbox boundaries in the owner-only package;
+their narrower authority comes from small reviewed executables, stable separate
+signatures, verified signed parents, stripped environments, child-only pipes, lack
+of credentials or network/server interfaces, TCC for the visual helper, and closed
+per-helper operation contracts.
 
 Quick Entry uses Command-Shift-Space through a registered system hot key that does
 not require Accessibility permission. Its native-to-Flutter route contains only an
@@ -93,10 +97,10 @@ closed `observe`, `list_apps`, `activate_app`, `open_url`, `press`, `click`, `ty
 `key`, and `scroll` contract. `open_url` accepts only a credential-free absolute
 HTTP(S) URL for allowlisted Chrome and returns a fresh observation plus a closed
 effect verdict without claiming page-load success. Image clicks use only coordinates
-inside the exact v13 screenshot, declared as `screenshot_pixel`; raw macOS global
+inside the exact current screenshot, declared as `screenshot_pixel`; raw macOS global
 coordinates are rejected.
 
-Terminal applications and System Settings are refused. The helper has no shell,
+Terminal applications and System Settings are refused by the visual helper. It has no shell,
 arbitrary AppleScript, general filesystem, Apple Events, or credential interface;
 secure fields and Secure Event Input fail closed. Every state-changing action is
 bound to the latest exact Accessibility/screen observation, and governed risk-two
@@ -105,6 +109,19 @@ shows ready versus active use, and its stop command terminates the helper immedi
 Server stop disables the device and cancels queued or claimed commands; sign-out and
 app exit stop locally and make a best-effort server stop. Permission loss makes the
 short readiness lease ineligible, preventing any new claim while queued work expires.
+
+The command helper is a separate capability defined by ADR 013. The model can request
+only `local.macos.command.run` with an opaque owner-selected workspace grant ID, one
+executable basename, a bounded argument array, an in-workspace relative directory,
+and a timeout of at most 30 seconds. Every request is risk two and requires a fresh
+exact approval. `AsaelCommandRunnerHelper.app` invokes the program directly without a
+shell and refuses shell interpreters, privilege escalation, AppleScript, security or
+Keychain administration, LaunchServices, and system-control programs. The workspace
+grant constrains the working directory; it is not a filesystem sandbox, so the UI
+states that the approved executable otherwise has the authority of the owner's macOS
+account. Bounded stdout and stderr are untrusted, one-turn evidence: the temporary
+artifact rail and assigned model may see them once, while durable records retain only
+exit metadata, byte counts, truncation flags, hashes, timing, and governed receipts.
 
 ## State, offline behavior, and convergence
 
@@ -124,8 +141,8 @@ does not alter system trust, grant Apple distribution authority, or authorize
 installation elsewhere. Because a self-signed identity has no Apple Team Identifier,
 the local packager omits Hardened Runtime so nested Flutter libraries remain loadable;
 the main owner-only application is not sandboxed. The packager compiles and embeds
-the helper under `Contents/Helpers`, signs nested code and the helper before the host,
-and verifies the result strictly.
+both execution helpers under `Contents/Helpers`, signs nested code and each helper
+before the host, and verifies the result strictly.
 
 Distribution to another Mac uses the existing bundle identity, Hardened Runtime, an
 Apple Development or Developer ID signature as appropriate, notarization, and a
@@ -135,7 +152,8 @@ Apple Developer signing and APNs credentials are proven.
 
 The release does not claim native payment signing, unrestricted local computer
 control, or background data access that has not been separately reviewed and proven.
-The local helper is a bounded Computer Use slice, not unrestricted control.
+The visual helper is a bounded Computer Use slice, and the command helper is a bounded
+direct-executable runner; neither grants unrestricted control.
 
 ## Alternatives considered
 
@@ -178,7 +196,10 @@ its generated native contracts are already the supported shared-client foundatio
    isolated-browser requests, preserve historical evidence as read-only, apply
    migration 181 to revoke profiles/takeovers and scrub known connector credentials,
    then decommission the separate Fly browser service after rollback capture.
-9. Privately sign, package, and install on the owner's Mac only after focused release
+9. Add migration 205 and native v27/v26 for owner-selected command workspaces,
+   exact structured direct execution, mandatory per-command approval, a separately
+   signed command helper, ephemeral output, and metadata-only durable receipts.
+10. Privately sign, package, and install on the owner's Mac only after focused release
    checks; require Apple-issued signing and notarization before distributing to
    another Mac.
 
@@ -189,6 +210,9 @@ weakening authorization. A client rollback uses the still-supported previous con
 only where that frozen contract permits it; `macos` sessions themselves require v8 or later and therefore
 fail explicitly rather than impersonating iOS or Android. Revocation, wipe, queued
 intent quarantine, audit history, and server canonical state survive a client rollback.
+For the current window, v26 preserves visual Computer Use but cannot claim the v27
+command-runner action; disabling the tool therefore removes command execution without
+weakening the older visual boundary.
 
 ## Consequences
 
@@ -209,9 +233,16 @@ intent quarantine, audit history, and server canonical state survive a client ro
 - The native-only v13/v12 source cutover adds migration 180 run binding, governed
   Chrome URL delivery, screenshot-pixel mapping, configurable tools-and-vision model
   resolution, and deterministic App Builder readiness without product browser
-  automation. Migration 181 installation, canonical deployment, the matching signed
-  client, Fly browser-service decommission, and a new local navigation/screenshot
-  canary remain pending release evidence.
+  automation. The later migration-181/native-v14 release, matching signed client,
+  local navigation/screenshot canary, and Fly browser-service decommission are
+  retained as completed historical release evidence.
+- Migration 205, production native v27/v26, and signed Asael `1.19.0` build `30`
+  complete the governed command-runner release. The installed positive canary ran
+  `git status --short --branch --untracked-files=all` in the approved OmniAgent
+  workspace, returned the expected branch and one user-owned untracked research file,
+  and let the assigned agent use that ephemeral output. A separate request to run
+  `sudo whoami` failed closed before approval or execution. No raw stdout or stderr
+  was retained as durable conversation, approval, tool, command, or event state.
 - The repository carries no browser-automation dependency, CI job, benchmark, or
   visual-smoke runtime. Focused component/contract tests cover web behavior and the
   signed native canary verifies installed-Mac control.

@@ -1,15 +1,16 @@
 # Computer Use targets
 
-Status: native-only source, data-plane, web, signed owner-Mac, live canary,
-durable privacy inspection, and Fly browser-service decommission are complete
-· 2026-09-17
+Status: native-only source, data-plane, web, signed owner-Mac, visual and governed
+command live canaries, durable privacy boundaries, and Fly browser-service
+decommission are complete · 2026-09-24
 
 ## Decision
 
 Computer Use has one product execution target: **This Mac**. It operates the
 Mac on which the authenticated Asael app is installed through the compatible
-native device courier and a separately signed, credential-free helper spawned
-on demand by Asael.
+native device courier. Asael spawns one separately signed, credential-free visual
+helper for ScreenCaptureKit and Accessibility actions and a different separately
+signed, credential-free command helper for approved direct-executable work.
 
 Native Talk defaults to **Asael only**, which grants no local computer-control
 target. The user must select **This Mac** explicitly, and the native client
@@ -65,18 +66,18 @@ build cover web changes; the signed native canary covers installed-Mac control.
 
 ### Device courier
 
-Only an authenticated compatible macOS client (current v14 or previous v13) may publish
+Only an authenticated compatible macOS client (current v27 or previous v26) may publish
 a local-device readiness lease, claim a command, return its completion receipt,
 or stop the device. The Flutter app holds the native bearer. The helper receives
 neither that bearer nor any server, connector, model, App Group, or Keychain
 credential.
 
-The browser URL action was added in v13 and remains in v14. It requires the
+The browser URL action was added in v13 and remains available in v26 and v27. It requires the
 exact active device and native login session to attest a compatible contract in
-the same transaction that enqueues it. V14 removes the retired remote-frame
-read from the native surface while retaining local `open_url`, screenshot
-presentation, and snapshot-bound pixel coordinates; v13 is the one supported
-rollback contract.
+the same transaction that enqueues it. The current contracts retain the v14 removal
+of the retired remote-frame read plus local `open_url`, screenshot presentation, and
+snapshot-bound pixel coordinates. V27 alone adds `run_command`; v26 is the supported
+rollback contract and cannot claim that action.
 
 The server binds each local session to the exact tenant, actor, native device,
 mobile session, agent-run correlation ID, and run ID. Migration 180 adds the
@@ -101,7 +102,7 @@ Only the primary Flutter engine claims commands. Auxiliary workspace windows
 may display status and stop local control, but cannot race the primary window
 for device commands.
 
-### Local helper
+### Visual helper
 
 The private packager builds `AsaelComputerUseHelper.app` separately, embeds it
 under `Contents/Helpers`, and signs it independently before signing the host.
@@ -122,7 +123,7 @@ The helper uses:
 
 Every pointer or keyboard effect after observation must carry the exact current
 snapshot revision. Element actions use an exact element identifier when available.
-A v13-or-v14 image click instead carries `coordinateSpace: "screenshot_pixel"` and a
+A current v26-or-v27 image click carries `coordinateSpace: "screenshot_pixel"` and a
 point inside the exact bounded screenshot. The observation privately binds that
 image's width, height, captured display, logical bounds, scale, and revision;
 the helper maps from top-left image pixels to current macOS global logical
@@ -156,13 +157,14 @@ the installed 1.6.8+15 restart proof confirmed that the broker target stays
 canonical without repeating legacy migration or transferring Computer Use
 authority to the credential broker.
 
-### First-slice restrictions
+### Visual Computer Use restrictions
 
-This slice intentionally has no authority to:
+The visual helper intentionally has no authority to:
 
 - operate Terminal, iTerm, Warp, other supported terminal applications, or
   System Settings;
-- run shell commands, arbitrary AppleScript, or general filesystem actions;
+- run shell commands, direct executables, arbitrary AppleScript, or general
+  filesystem actions;
 - read or type into a secure field or continue while Secure Event Input is
   active;
 - install software, change macOS security settings, or silently acquire a new
@@ -186,6 +188,39 @@ or the server stop route also stop locally and attempt the device-bound server
 stop. Permission loss makes the short device lease ineligible immediately, so
 the Mac cannot claim another command; any already queued work expires without
 execution.
+
+### Governed local command runner
+
+Migration 205 and native v27 add `local.macos.command.run` without widening the
+visual helper. Every request carries one owner-selected opaque workspace grant ID,
+one executable basename, a bounded argument vector, a relative working directory
+inside that workspace, and a timeout of at most 30 seconds. It always enters the
+governed tool executor as risk two and always requires a fresh approval showing those
+exact coordinates. A v26 client continues visual Computer Use but cannot advertise or
+claim this v27 capability.
+
+The owner selects starting folders in the native app. Their security-scoped bookmarks
+and absolute roots remain on the Mac; only a bounded ID and display name travel in the
+readiness lease. `AsaelCommandRunnerHelper.app` canonicalizes the workspace and
+working directory and refuses `..` or symlink escape. The workspace grant constrains
+the working directory but is not a filesystem sandbox: an approved executable still
+has the ordinary filesystem authority of the owner's macOS account, which the
+approval UI states explicitly.
+
+The separately signed helper receives no Asael bearer, connector credential, App
+Group authority, or inherited application environment. It invokes the program
+directly with a fixed minimal environment and isolated home; it never evaluates a
+shell string. Shell interpreters, `sudo`, AppleScript, LaunchServices, Keychain and
+security administration, and system-control launchers are denied. Stop terminates the
+active process group, timeout kills it, and uncertain or expired claims are not
+replayed.
+
+Bounded stdout and stderr are sanitized and treated as untrusted one-turn evidence.
+The native Conversation rail may show a short-lived terminal artifact and the
+assigned model may consume the output once. Durable command, tool, run, approval,
+event, continuation, and conversation state retains only exit status, byte counts,
+truncation flags, output hashes, timing, and the governed receipt. Relaunch or a
+durable retry cannot reconstruct raw output.
 
 ## Owner-Mac release evidence
 
@@ -260,13 +295,46 @@ lineage is irreversible. That deletion removed the executable browser/profile
 state only; migration-181 database audit rows and historical effect receipts
 remain under their existing retention policy.
 
+### Governed-command release evidence
+
+The direct-command extension is released without replacing the visual canaries:
+
+1. migration 205 is installed and the local and production migration ledgers align;
+2. production advertises native v27 current and v26 previous. Production deployment
+   `dpl_3Mq43NNkse6aFonhfJEfEoZuhDpJ` served the command-runner code used by the live
+   canaries;
+3. signed Asael `1.19.0` build `30` is installed at `/Applications/Asael.app` with
+   both execution helpers. Its package
+   `apps/flutter/build/distribution/macos/Asael-1.19.0-30-macOS.dmg` has SHA-256
+   `da3919c3c87de5bb6d9fae8f9952ae3d290443164714a6af0317a7f987a96ebd`;
+4. the natural positive request asked for the OmniAgent Git branch and uncommitted
+   state. After exact approval, the helper directly ran
+   `git status --short --branch --untracked-files=all` in the selected workspace and
+   returned exit 0 in about 860 ms. The temporary artifact reported branch
+   `codex/native-delegation-boundary`, four commits ahead, and the user-owned
+   untracked `docs/research/INFINA_HANDS_FREE_ASAEL.md`; the assigned agent grounded
+   its answer in that ephemeral output; and
+5. a separate natural request to use `sudo` for `whoami` failed closed with
+   `Shells and security-sensitive command launchers are not permitted.` No approval
+   was created and no process executed.
+
+The release validation was intentionally bounded to TypeScript compilation, the
+production Vercel build, private macOS packaging, contract discovery, and those live
+positive and negative installed-app canaries. It did not add or run a broad test or
+audit suite.
+
 ## Native-only release gate
 
-The native-only P13.3 gate is complete. Source/runtime Playwright removal,
-migrations 181-182, canonical v14/v13, signed Asael 1.6.8+15, broker restart,
+The native-only visual P13.3 gate remains complete. Source/runtime Playwright removal,
+migrations 181-182, historical canonical v14/v13, signed Asael 1.6.8+15, broker restart,
 natural-language Chrome screenshot canaries, durable screenshot/Accessibility
 privacy inspection, and removal of the obsolete Fly app/machine/volume/secrets
 are all proven together. The surviving worker/OpenAI egress service is healthy.
+
+The later governed-command gate is also complete: migration 205, canonical v27/v26,
+signed Asael 1.19.0+30, separate command-helper packaging, exact workspace and
+approval presentation, one-turn output delivery, and both allow and deny live
+canaries are proven together.
 
 This closes only the P13.3 Computer Use cutover. It does not claim that the
 separate real provider-delivered APNs receipt is complete; that P13.2 operational

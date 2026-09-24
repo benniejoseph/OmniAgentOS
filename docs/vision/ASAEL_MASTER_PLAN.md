@@ -1295,28 +1295,30 @@ checkpoint; its owner-only signature does not authorize production APNs.
 | P13.2 | Add menu-bar Today, global capture, share extension, drag/drop, microphone, file intake, and notification actions. | Reuse Workspace/Capture/voice/outbox; create macOS surfaces. | Every local permission is opt-in, scoped, visible, and revocable. | User can capture and supervise work without giving unrestricted filesystem or microphone access. |
 | P13.3 | Keep **This Mac** as the sole consented Computer Use target and retire the remote isolated browser. | Reuse the governed executor, approvals, native device identity, and one-turn observations; keep the signed credential-free local helper and remove Playwright product/development runtime. | Explicit target, actor/device/session/run binding, closed action allowlist, stable signing, user-granted Accessibility and Screen Recording, visible indicator, kill switch, no silent fallback, and session isolation are mandatory. | Asael operates an approved non-secure local app through the governed executor; the natural-language Chrome screenshot canary passes without durable private observations, and the obsolete Fly browser app/volume/secrets are removed. |
 | P13.4 | Add offline cache and state reconciliation. | Reuse native contract/events. | Server remains authoritative; conflicts are visible and recoverable. | macOS, mobile, and web converge on identical work, memory, approval, and run state after reconnect. |
+| P13.5 | Add governed local command execution for owner-requested development and system work. | Reuse the governed executor, persisted approvals, native device courier, and temporary artifact rail; create a separately signed direct-executable helper. | Every command is exact executable plus arguments, uses an owner-selected starting-folder grant, requires fresh approval, exposes no shell string, and keeps raw output ephemeral. A folder grant is not represented as a filesystem sandbox. | A natural-language command completes through approval and temporary evidence, unsafe launchers fail before execution, durable stores retain only metadata/digests, and Stop terminates the process group. |
 
-**Current status:** P13.1 and P13.4 are implemented for the private owner-Mac
-product and P13.2 is code-complete, with its real provider-delivered APNs receipt
-still open. Canonical native v15 retains frozen v14 and adds exact received,
-opened, and action receipts plus cold-launch routing. P13.3 is complete:
-migrations 181-182 remain live; cutover fixes `0f5477a` and `590b213` pass the
-credential-restart and natural-language Chrome screenshot canaries; durable
-inspection retains no screenshot or Accessibility snapshot content; and the
-obsolete Playwright Fly app, machine, volume, and secrets are removed. The
-separate worker/OpenAI egress service remains healthy at `v335`. The earlier
-native-v11 TextEdit canary remains valid historical first-slice evidence.
+**Current status:** P13.1, P13.3, P13.4, and P13.5 are implemented for the
+private owner-Mac product. P13.2 is code-complete, with its real provider-
+delivered APNs receipt still externally blocked. Production advertises native
+v27 with frozen v26 rollback compatibility; migration v205 is installed; and
+owner-only Asael 1.19.0 build 30 is installed. P13.3 retains zero durable
+screenshot/Accessibility content and the obsolete Playwright Fly app, machine,
+volume, and secrets remain removed. P13.5 adds a second credential-free signed
+helper dedicated to approved direct executable/argument requests; it does not
+add a shell to the visual Computer Use helper. The separate worker/OpenAI egress
+service remains protocol-compatible. Earlier v11-v15 canaries remain historical
+evidence rather than the current release checkpoint.
 
-The macOS presentation is independently designed rather than stretching the
-Android/web composition. Asael 1.8.0 build 18 includes the v15 notification and
-receipt work on top of the presentation checkpoint at revision `9a365b0`, which
+The historical Asael 1.8.0 presentation checkpoint independently designed the
+macOS surface rather than stretching the Android/web composition. Build 18
+included the v15 notification and receipt work on top of revision `9a365b0`, which
 covers every current main destination, detail route, authentication state,
 Quick Entry, and device-management surface with a native labelled sidebar,
 desktop density, keyboard/pointer behavior, searchable master-detail layouts,
 stable graph interaction, and keyboard-accessible resizable inspectors. The
 40-case presentation gate plus the 14-case responsive patch gate pass, and the
-owner-only package is installed with strict nested signing. The previous
-1.7.1+17 application remains recoverable in Trash. The current package is
+owner-only package was installed with strict nested signing. The previous
+1.7.1+17 application was retained in Trash. That historical package is
 `Asael-1.8.0-18-macOS.dmg`, SHA-256
 `a7f87e2f567484843cbbdddf7fd46e96194ebd9efc37aec003f5f5a1b5b16371`,
 and the installed app has CDHash
@@ -1437,9 +1439,24 @@ P13.4 now stores encrypted actor/tenant-bound offline projections, exposes
 freshness and stale state, preserves the user's conflicting edit for recovery,
 and performs one bounded full reconciliation when connectivity, focus, or the
 authenticated principal changes. Server truth remains authoritative. Xcode 27 on
-macOS 27 built the current owner release; production serves native v14 with frozen
-v13 compatibility and Asael `1.6.8` build `15` is the installed release checkpoint
-with the **This Mac** helper and frozen credential broker.
+macOS 27 built the owner releases; the v14/v13 and Asael 1.6.8+15 statements are
+retained as historical reconciliation evidence, not the current checkpoint.
+
+P13.5 is complete through ADR 013, migration
+`20260924110000_governed_local_command_runner.sql` (internal schema v205), and
+native v27 with frozen v26. `AsaelCommandRunnerHelper.app` is separately signed,
+credential-free, and accepts only a bounded direct executable plus argument vector
+after an exact persisted approval. Owner-selected folder grants provide an opaque
+starting location; they are not described as an operating-system filesystem
+sandbox. Shells, `sudo`, and security-sensitive launchers are refused, while
+timeout/Stop terminate the child process group. Raw stdout/stderr are sanitized,
+bounded, and retained only as one-turn untrusted evidence plus a short-lived local
+artifact; durable records contain metadata and digests. The live Git-status canary
+reported branch `codex/native-delegation-boundary`, four commits ahead, and the
+one user-owned untracked research file; a live `sudo whoami` request failed closed
+before approval or execution. Asael 1.19.0 build 30 is installed from
+`Asael-1.19.0-30-macOS.dmg`, SHA-256
+`da3919c3c87de5bb6d9fae8f9952ae3d290443164714a6af0317a7f987a96ebd`.
 
 **Phase gate:** native clients are alternate interaction surfaces for one core—not independent products with divergent truth or policy.
 
@@ -3438,18 +3455,15 @@ The task tables above are the source of truth. A phase is checked only after eve
 - [x] **Phase 10 — Workspaces and Salesforce-connected CSM:** P10.1–P10.14 complete; live Salesforce activation remains external configuration, not implementation.
 - [x] **Phase 11 — cohesive product projections:** P11.1–P11.9 complete.
 - [x] **Phase 12 — mobile application:** P12.1–P12.6 and the private Android operational gate are complete; native v15 adds durable received/opened/action receipts, cold-launch handling, and complete approval/meeting/customer-risk/terminal-run producers while retaining frozen v14. The latest live FCM canary reached provider acceptance but is not counted as delivery because the disconnected Android client returned no v15 receipt within 12 seconds. iOS and app-store publication are owner-excluded.
-- [ ] **Phase 13 — macOS application:** P13.1, P13.3, and P13.4 are complete for the private owner-Mac product. P13.2 is code-complete with bulk Capture, drag/drop, registered Share Extension/App Group intake, native notification actions, durable v15 receipts/cold-launch handling, APNs token/environment handling, and governed acknowledgement. Its entitlement split now makes restricted APS authority explicit and fail-closed, but one real provider-delivered APNs receipt remains externally blocked by the absent Apple Team identity/profile and APNs provider credential. P13.3 has proven source/runtime Playwright removal, installed migrations 181-182 with zero active remote-browser authority and the repaired `open_url` boundary, credential-restart and natural-language Chrome screenshot canaries, zero durable screenshot/Accessibility content, and deletion of the obsolete Fly browser app, machine, volume, and secrets. Asael `1.10.0` build `20` is installed with the native Automation Studio and APS correctly absent from the private self-signed package. The surviving worker/OpenAI egress service remains protocol-compatible. Developer ID/notarized distribution is outside the private-install scope.
+- [ ] **Phase 13 — macOS application:** P13.1, P13.3, P13.4, and P13.5 are complete for the private owner-Mac product. P13.2 is code-complete with bulk Capture, drag/drop, registered Share Extension/App Group intake, native notification actions, durable receipts/cold-launch handling, APNs token/environment handling, and governed acknowledgement. Its entitlement split makes restricted APS authority explicit and fail-closed, but one real provider-delivered APNs receipt remains externally blocked by the absent Apple Team identity/profile and APNs provider credential. P13.3 retains zero active remote-browser authority, the repaired `open_url` boundary, live Chrome canaries, zero durable screenshot/Accessibility content, and removal of the obsolete Fly browser app, machine, volume, and secrets. P13.5 provides the separately signed, approval-gated direct command helper with ephemeral output. Asael `1.19.0` build `30` is installed; native discovery is v27 current/v26 previous; and APS remains correctly absent from the private self-signed package. The surviving worker/OpenAI egress service remains protocol-compatible. Developer ID/notarized distribution is outside the private-install scope.
 
-The latest installed native checkpoint is Asael 1.10.0 build 20, package
-SHA-256 `4cce04a64e0392d0fb3a116fc73786c4433fde729fd3656a7a6dcec200a9829b`
-and host CDHash `3b37c910c60da364cf3f87bc2cacfe0fffb1e854`. Migrations 183–186 are
-installed. Vercel deployment `dpl_4GoUPJgEbXVqzdSbNYUJAqoYb5xk` is canonical
-and healthy at exact revision `cebbf10a17be90b7bca8f6e3fb065e3112423be4`,
-and discovery reports native v17 current/v16 previous. The native six-section
-Automation Studio was visually verified with live connections, MCP, governed
-tools, Skills, workflows, triggers, and Plugin inventory. The old 1.8.0+18 app
-is recoverable in Trash. The unchecked Phase 13 state continues to mean only
-the external provider-delivered APNs proof.
+The latest installed native checkpoint is Asael 1.19.0 build 30, package
+SHA-256 `da3919c3c87de5bb6d9fae8f9952ae3d290443164714a6af0317a7f987a96ebd`.
+Migrations through v205 are installed and production discovery reports native
+v27 current/v26 previous. The native Automation Studio remains available, and
+the local command runner's positive and fail-closed canaries passed in the live
+app. The prior 1.18.0+29 app is recoverable in Trash. The unchecked Phase 13
+state continues to mean only the external provider-delivered APNs proof.
 
 The same release introduces TypeSafe Jev as a Settings-discovered provider and
 reserves it as the only provider for the dedicated `semantic_decision` scope.
