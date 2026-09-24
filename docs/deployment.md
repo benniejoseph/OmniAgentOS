@@ -288,6 +288,53 @@ review, package/signature verification, and live installed-app behavior. The
 owner-only self-signed package deliberately lacks production APNs entitlement,
 and this release does not install a passive custom wake-word listener.
 
+### Continuous native Computer Use release
+
+Commits `cce4b821`, `80bbed6a`, `36df30de`, `7a71803f`, `3223e0bb`, and
+`0c9c4fe0` make an explicitly selected **This Mac** request one bounded visual
+task rather than a sequence of unrelated approval prompts. The governed
+executor independently binds the grant to the initiating actor, exact Agent
+run, executing principal, tool, and declared interaction purpose. Safe
+navigation, selection, non-sensitive text entry, scrolling, and media control
+may continue within that task. Every action remains serialized and returns a
+fresh screenshot and Accessibility observation for the next model turn; stale
+observations fail quickly and require a fresh observe before retry.
+
+Task-scoped keyboard authority is intentionally narrow. It covers ordinary
+unmodified navigation keys, media Space/arrows, Shift+Tab, and the exact
+Command+Home page-navigation shortcut. Return, Delete, every other modified
+shortcut, submission or sending, file transfer, destructive, financial,
+account/security, permission-changing, and unknown effects still create a fresh
+approval. `local.macos.command.run` remains outside task authority and requires
+one exact approval every time.
+
+Vercel deployment `dpl_GWtwwNMwaroDcX8ixTGe18FY2Vj5` is promoted to
+`https://asael.bennierichard.com` at exact server revision
+`0c9c4fe0b93dbd216c496d0579f6af7b63c0162b`; canonical health reported that
+revision with the database and OpenAI configured. Owner-only Asael `1.23.4+39`
+is installed from
+`apps/flutter/build/distribution/macos/Asael-1.23.4-39-macOS.dmg`, SHA-256
+`d058a2ffbdfe857588d62ce5af4b914741ad9869c77d65a6547135e59391eb3e`,
+with installed host CDHash `d23513f87785b0e9eb0468eb0985a7c3a1922dc5`.
+The prior 1.23.3+38 app is recoverable at
+`/Users/benniejoseph/.Trash/Asael-1.23.3-38-pre-1.23.4-39.app`.
+
+The installed-app production canary used the natural request “In Chrome,
+Netflix tab, play the first item from Continue Watching for Bennie.” Governed
+run `e1d403dc-127c-49de-b510-4377def68e1b` completed with zero approval pauses
+and zero human approval records. It listed applications, activated the existing
+Chrome/Netflix tab, navigated with bounded scrolls, recovered one rejected
+stale-observation click through a fresh observe, selected the first Continue
+Watching item, and visually verified the Netflix `/watch/` player for **The
+King: Eternal Monarch — Episode 3** with advancing progress and the pause
+control visible, which is the playing state. Every successful visual mutation
+returned fresh observation evidence and no native command remained queued or
+claimed after completion. No full test suite or audit was run; release
+validation was limited to the production build, canonical health, governed
+trace inspection, and live installed-app behavior. No database migration, Fly
+release, worker image, or additional native package was required for the final
+server policy refinement.
+
 ### Licensed TradingView chart assets
 
 TradingView Advanced Charts v32.2.0 is a restricted, non-redistributable client dependency. Its files must never be committed to the public OmniAgentOS repository. `npm run sync:tradingview` uses the operator's existing GitHub authorization to clone the exact `v32.2.0` tag, verifies commit `f936c921ba510ba20ac51a71b8b4c5c03c043dbc`, and stages only the required `charting_library` directory under the Git-ignored `public/vendor/tradingview` path. The release marker is also ignored. Do not put a GitHub token in the repository, Vercel environment, script arguments, or logs.
