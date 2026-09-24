@@ -2,17 +2,31 @@
 
 Status: researched on 2026-09-23 and implemented as the first owner-only macOS Ambient Command release on 2026-09-24. The shipped edge uses the menu bar, a global shortcut, or an Apple Vocal Shortcut for activation; it does not install a passive custom wake-word listener.
 
-The implementation publishes native API v29, streams activated microphone audio through an ephemeral provider WebRTC credential, retains only the editable command draft, and can play the configured Agent voice through bounded temporary audio that is deleted after playback. **Use this Mac** dispatches through the ordinary authenticated Asael run and governed Computer Use executor. Voice still cannot approve an action or grant authority.
+The implementation publishes native API v29, streams activated microphone audio through an ephemeral provider WebRTC credential, and can play the configured Agent voice through bounded temporary audio that is deleted after playback. The current native surface retains no editable Ambient draft: recognized speech appears only as a read-only request after capture. **Use this Mac** dispatches through the ordinary authenticated Asael run and governed Computer Use executor. Voice still cannot approve an action or grant authority.
 
 ## Shipped checkpoint — 2026-09-24
 
-The first native slice is installed as owner-only Asael `1.23.1+36`. It provides
-the compact Ambient Command window, original animated state feedback, ephemeral
-realtime transcription, editable review, governed dispatch, bounded speech,
-barge-in, menu/shortcut/deep-link entry, offline and error states, and durable
-run handoff. A live installed-app canary completed the full
-`microphone -> review -> Ask Asael -> result` path and rendered
-`AMBIENT_LIVE_OK` exactly.
+The refined native slice is installed as owner-only Asael `1.23.2+37`. Ambient
+Voice is now a dedicated `600x126` bottom-right rounded HUD rather than an
+editor or full command form. It provides original animated state feedback,
+ephemeral realtime transcription, governed dispatch, bounded speech, barge-in,
+menu/shortcut/deep-link entry, offline and error states, and durable run
+handoff. Recognized speech appears read-only and only after a request has
+actually been captured. Silence produces an honest retry state instead of an
+empty or invented request. The separate Quick Entry experience is unchanged.
+
+The final owner-only package is
+`apps/flutter/build/distribution/macos/Asael-1.23.2-37-macOS.dmg`, SHA-256
+`6875652875db7afe1c32fa416a7c4e6f53f31bd6bb49b5edb09248a4b6ac9a61`,
+with installed host CDHash `ee0c53b0568ea1b6a96c6776cef2abd7c2dd3132` after
+strict nested-signature verification. Live validation used the installed app
+and confirmed the dedicated HUD, microphone listening without partial-text
+disclosure, truthful silent-input recovery and retry, and normal window
+restoration. The full final request is read-only, scrollable, and expandable
+before sending. Focused implementation review confirmed that disclosure path.
+This was a native-only refinement: no
+server, schema, or Fly deployment was required, and no test suite or audit was
+run.
 
 Local system navigation remains a separate explicit capability. Ambient Command
 enables **Use this Mac** only after the current native device is enabled, freshly

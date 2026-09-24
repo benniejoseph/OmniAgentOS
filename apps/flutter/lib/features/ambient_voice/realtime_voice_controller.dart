@@ -243,7 +243,7 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
     _sessionLanguage = normalizedLanguage;
     _setPhase(
       AmbientRealtimeVoicePhase.requestingPermission,
-      'Waiting for macOS microphone permission.',
+      'Checking the microphone.',
     );
     try {
       final stream = await navigator.mediaDevices.getUserMedia({
@@ -261,10 +261,7 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
       }
       _microphoneStream = stream;
       _microphoneEnabled = true;
-      _setPhase(
-        AmbientRealtimeVoicePhase.connecting,
-        'Opening a short-lived transcription connection.',
-      );
+      _setPhase(AmbientRealtimeVoicePhase.connecting, 'Getting ready…');
       final credential = await _issueSession(
         reconnectAttempt: 0,
         mode: mode,
@@ -295,10 +292,7 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
     if (!isListening) return;
     final generation = _generation;
     final activePhase = _phase;
-    _setPhase(
-      AmbientRealtimeVoicePhase.finishing,
-      'Finishing the current turn before review.',
-    );
+    _setPhase(AmbientRealtimeVoicePhase.finishing, 'Finishing your request.');
     final channel = _dataChannel;
     if (channel?.state == RTCDataChannelState.RTCDataChannelOpen &&
         activePhase == AmbientRealtimeVoicePhase.speechDetected) {
@@ -320,7 +314,7 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
     await _stopLocalTransport(stopMicrophone: true);
     _setPhase(
       AmbientRealtimeVoicePhase.review,
-      'Review the visible transcript before sending anything.',
+      'Recognized request ready to send.',
     );
   }
 
@@ -330,7 +324,7 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
     _reviewAttested = false;
     _errorMessage = null;
     _phase = AmbientRealtimeVoicePhase.review;
-    _detail = 'Edited transcript. Confirm it before sending.';
+    _detail = 'Recognized request confirmed.';
     _notify();
   }
 
@@ -566,9 +560,7 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
         _reconnectInFlight = false;
         _setPhase(
           AmbientRealtimeVoicePhase.listening,
-          _microphoneEnabled
-              ? 'Listening. Partial transcription appears as you speak.'
-              : 'Connected with the microphone off.',
+          _microphoneEnabled ? 'Speak naturally.' : 'Microphone off.',
         );
       }
     };
@@ -690,18 +682,12 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
     if (type == 'input_audio_buffer.speech_started') {
       if (_speechPlaying) unawaited(interruptSpeech());
       _level = .48;
-      _setPhase(
-        AmbientRealtimeVoicePhase.speechDetected,
-        'Speech detected. Live transcription is updating.',
-      );
+      _setPhase(AmbientRealtimeVoicePhase.speechDetected, 'Listening…');
       return;
     }
     if (type == 'input_audio_buffer.speech_stopped') {
       _level = .08;
-      _setPhase(
-        AmbientRealtimeVoicePhase.listening,
-        'Turn detected. Listening for more.',
-      );
+      _setPhase(AmbientRealtimeVoicePhase.listening, 'Listening for more.');
       return;
     }
     if (type == 'error') {
@@ -750,10 +736,7 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
     }
     _reconnectInFlight = true;
     _reconnectCount = attempt;
-    _setPhase(
-      AmbientRealtimeVoicePhase.reconnecting,
-      'Connection interrupted. Reconnecting, attempt $attempt of 3.',
-    );
+    _setPhase(AmbientRealtimeVoicePhase.reconnecting, 'Reconnecting…');
     try {
       final credential = await _issueSession(
         reconnectAttempt: attempt,

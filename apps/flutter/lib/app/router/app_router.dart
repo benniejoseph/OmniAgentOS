@@ -206,7 +206,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           quickEntry: true,
           ambientVoice: true,
           onQuickEntryReady: () {
-            unawaited(appDesktopHostBridge.showQuickEntryPresentation());
+            unawaited(appDesktopHostBridge.showAmbientVoicePresentation());
           },
           onExitQuickEntry: () {
             final router = GoRouter.of(context);

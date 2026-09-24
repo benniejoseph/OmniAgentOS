@@ -1964,6 +1964,8 @@ private final class DesktopHostController: NSObject {
   private static let regularWindowMinimumSize = NSSize(width: 1_024, height: 700)
   private static let quickEntryWindowMinimumSize = NSSize(width: 680, height: 320)
   private static let quickEntryWindowSize = NSSize(width: 760, height: 400)
+  private static let ambientVoiceWindowMinimumSize = NSSize(width: 500, height: 112)
+  private static let ambientVoiceWindowSize = NSSize(width: 600, height: 126)
   private static let appGroupIdentifier = "group.app.omniagent.omniagent"
   private static let sharedCaptureInbox = "ShareInbox"
   private static let sharedCaptureManifest = "manifest.json"
@@ -1998,6 +2000,7 @@ private final class DesktopHostController: NSObject {
   private let notificationBridgeEvents = NativeNotificationBridgeEventStore()
   private var hasStarted = false
   private var isQuickEntryPresented = false
+  private var isAmbientVoicePresented = false
   private var regularWindowFrame: NSRect?
   private var deliveredSharedCaptureIds = Set<String>()
   private var sharedCaptureDeliveryInFlight = false
@@ -2115,6 +2118,11 @@ private final class DesktopHostController: NSObject {
       case "showQuickEntryPresentation":
         DispatchQueue.main.async {
           self.showQuickEntryWindow()
+        }
+        result(nil)
+      case "showAmbientVoicePresentation":
+        DispatchQueue.main.async {
+          self.showAmbientVoiceWindow()
         }
         result(nil)
       case "requestRemoteNotifications":
@@ -2878,6 +2886,7 @@ private final class DesktopHostController: NSObject {
     if !isQuickEntryPresented {
       regularWindowFrame = window.frame
     }
+    restoreAmbientWindowChrome(window)
     isQuickEntryPresented = true
     window.minSize = Self.quickEntryWindowMinimumSize
     window.level = .floating
@@ -2899,8 +2908,70 @@ private final class DesktopHostController: NSObject {
     focus(window)
   }
 
+  private func showAmbientVoiceWindow() {
+    dispatchPrecondition(condition: .onQueue(.main))
+
+    guard let window = window ?? NSApp.windows.first(where: { $0 is MainFlutterWindow }) else {
+      NSApp.activate(ignoringOtherApps: true)
+      return
+    }
+
+    self.window = window
+    if !isQuickEntryPresented {
+      regularWindowFrame = window.frame
+    }
+    isQuickEntryPresented = true
+    isAmbientVoicePresented = true
+    window.minSize = Self.ambientVoiceWindowMinimumSize
+    window.level = .floating
+    window.collectionBehavior.insert(.fullScreenAuxiliary)
+    window.styleMask.insert(.fullSizeContentView)
+    window.titleVisibility = .hidden
+    window.titlebarAppearsTransparent = true
+    window.isMovableByWindowBackground = true
+    window.isOpaque = false
+    window.backgroundColor = .clear
+    window.hasShadow = true
+    window.contentView?.wantsLayer = true
+    window.contentView?.layer?.cornerRadius = 30
+    window.contentView?.layer?.masksToBounds = true
+    for type in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
+      window.standardWindowButton(type)?.isHidden = true
+    }
+
+    let visibleFrame = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
+    if let visibleFrame {
+      let x = visibleFrame.maxX - Self.ambientVoiceWindowSize.width - 28
+      let y = visibleFrame.minY + 28
+      window.setFrame(
+        NSRect(origin: NSPoint(x: x, y: y), size: Self.ambientVoiceWindowSize),
+        display: true,
+        animate: window.isVisible
+      )
+    } else {
+      window.setContentSize(Self.ambientVoiceWindowSize)
+      window.center()
+    }
+    focus(window)
+  }
+
+  private func restoreAmbientWindowChrome(_ window: NSWindow) {
+    guard isAmbientVoicePresented else { return }
+    isAmbientVoicePresented = false
+    // Restore the shared Asael chrome instead of inventing a second "normal"
+    // titlebar state when the HUD closes or hands off to Quick Entry.
+    configureAsaelWindowChrome(window, role: .main)
+    window.isMovableByWindowBackground = false
+    window.contentView?.layer?.cornerRadius = 0
+    window.contentView?.layer?.masksToBounds = false
+    for type in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
+      window.standardWindowButton(type)?.isHidden = false
+    }
+  }
+
   private func restoreMainWindowPresentation(_ window: NSWindow) {
     guard isQuickEntryPresented else { return }
+    restoreAmbientWindowChrome(window)
     isQuickEntryPresented = false
     window.level = .normal
     window.collectionBehavior.remove(.fullScreenAuxiliary)

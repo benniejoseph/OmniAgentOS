@@ -727,6 +727,14 @@ class DesktopHostBridge {
     await _invokePresentationMethod('showQuickEntryPresentation');
   }
 
+  /// Presents the voice-only HUD independently from the larger Quick Entry
+  /// composer. No transcript, destination, command, or authority crosses this
+  /// presentation-only bridge.
+  Future<void> showAmbientVoicePresentation() async {
+    if (!_enabled) return;
+    await _invokePresentationMethod('showAmbientVoicePresentation');
+  }
+
   Future<void> _invokePresentationMethod(String method) async {
     try {
       await _channel.invokeMethod<void>(method);

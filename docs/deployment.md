@@ -245,9 +245,11 @@ Command edge. Native contract v29 retains frozen v28 and exposes the bounded
 realtime transcription and speech operations. The compact native surface opens
 from the Asael menu, the configured global shortcut, or `asael://ambient-voice`;
 the URL is suitable for an owner-created Apple Vocal Shortcut. Activated audio
-uses an ephemeral WebRTC credential, the transcript remains editable before
-dispatch, temporary speech audio is deleted after playback, and neither voice
-nor the native bridge can approve an action or grant local-computer authority.
+uses an ephemeral WebRTC credential, recognized speech is shown read-only only
+after capture, temporary speech audio is deleted after playback, and neither
+voice nor the native bridge can approve an action or grant local-computer
+authority. Ambient Voice does not expose an editor or full command form;
+Quick Entry remains the separate text-entry surface.
 
 Vercel deployment `dpl_omUXE7N5pHWhRXZk3AVZnKq8Uide` is promoted to
 `https://asael.bennierichard.com` at exact server revision
@@ -256,27 +258,35 @@ HTTP 200 for `/api/health`, native discovery, both advertised v29/v28 manifests,
 and the licensed TradingView standalone asset. No schema, Fly protocol, or
 worker image changed.
 
-Owner-only Asael `1.23.1+36` is installed from
-`apps/flutter/build/distribution/macos/Asael-1.23.1-36-macOS.dmg`, SHA-256
-`13a838d7695e7816083b06e33af472be29a5d748606ce67c2b127ef3046cafde`,
-with installed host CDHash `fbca944f1c687b7b1a25bf171ca7ea79d13f39fb` after
+Owner-only Asael `1.23.2+37` is installed from
+`apps/flutter/build/distribution/macos/Asael-1.23.2-37-macOS.dmg`, SHA-256
+`6875652875db7afe1c32fa416a7c4e6f53f31bd6bb49b5edb09248a4b6ac9a61`,
+with installed host CDHash `ee0c53b0568ea1b6a96c6776cef2abd7c2dd3132` after
 strict host, helper, extension, broker, and framework signature verification.
-The previous 1.23.0+35 and 1.22.0+34 applications remain recoverable in Trash.
+It supersedes the owner-only 1.23.1+36 Ambient release.
 
-Live validation in the installed application covered microphone opening,
-listening, finalization, editable review, a governed **Ask Asael** dispatch, and
-the exact visible completion `AMBIENT_LIVE_OK`. The **Use this Mac** destination
+The `1.23.2+37` native refinement removes the editor and full form in favor of
+a dedicated `600x126` rounded voice HUD anchored at the bottom-right. The HUD
+shows a recognized request read-only and only after capture; partial provider
+text stays hidden while listening, and the complete final request remains
+scrollable and expandable before sending. Silent input truthfully returns to a
+retry state. Quick Entry is unchanged. Live validation in the installed
+application covered HUD entry, microphone listening, hidden partial text,
+silent-input recovery and retry, and normal window restoration. Focused
+implementation review covered full-request disclosure. The earlier governed
+dispatch canary rendered `AMBIENT_LIVE_OK` exactly.
+The **Use this Mac** destination
 truthfully remained disabled because the independent local-computer kill switch
 was off, despite Accessibility, Screen Recording, and the signed helper being
 ready. The client now publishes an immediate heartbeat and requires fresh server
 readiness before local dispatch; a deterministic HTTP failure is shown directly
 instead of entering ambiguous-transport recovery. A full local-navigation
-canary therefore requires the owner to enable that switch first. No test suite
-or audit was run for this release; review was limited to focused analyzer,
-package/signature verification, production endpoints, and live installed-app
-behavior. The owner-only self-signed package deliberately lacks production APNs
-entitlement, and this release does not install a passive custom wake-word
-listener.
+canary therefore requires the owner to enable that switch first. The HUD
+refinement was native-only: no server, schema, database, or Fly deployment was
+required. No test suite or audit was run; review was limited to implementation
+review, package/signature verification, and live installed-app behavior. The
+owner-only self-signed package deliberately lacks production APNs entitlement,
+and this release does not install a passive custom wake-word listener.
 
 ### Licensed TradingView chart assets
 

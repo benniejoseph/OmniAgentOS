@@ -3392,6 +3392,13 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
         return;
       }
     }
+    if (recordingError != null || voiceDraftNotice != null) {
+      setState(() {
+        recordingError = null;
+        voiceDraftNotice = null;
+      });
+    }
+    widget.controller.clearVoiceError();
     final realtime = realtimeVoice;
     if (realtime == null) {
       await toggleVoiceDraft();
@@ -3426,7 +3433,6 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     }
     if (realtime.isListening) {
       await realtime.stopAndReview();
-      if (mounted) inputFocus.requestFocus();
       return;
     }
     await _startAmbientVoice();
@@ -3853,6 +3859,12 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
         .showSnackBar(const SnackBar(content: Text('Answer copied')));
   }
 
+  bool get _emptyAmbientRealtimeReview {
+    final realtime = realtimeVoice;
+    return realtime?.phase == AmbientRealtimeVoicePhase.review &&
+        realtime!.transcript.trim().isEmpty;
+  }
+
   AmbientVoicePhase get _ambientVoicePhase {
     final realtime = realtimeVoice;
     if (_realtimeAppearsOffline) return AmbientVoicePhase.offline;
@@ -3874,7 +3886,9 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
         case AmbientRealtimeVoicePhase.finishing:
           return AmbientVoicePhase.transcribing;
         case AmbientRealtimeVoicePhase.review:
-          return AmbientVoicePhase.review;
+          return _emptyAmbientRealtimeReview
+              ? AmbientVoicePhase.error
+              : AmbientVoicePhase.review;
         case AmbientRealtimeVoicePhase.idle:
         case AmbientRealtimeVoicePhase.playingSpeech:
         case AmbientRealtimeVoicePhase.stopped:
@@ -3914,6 +3928,9 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
 
   String get _ambientVoiceDetail {
     final realtime = realtimeVoice;
+    if (_emptyAmbientRealtimeReview) {
+      return 'I didn’t catch that. Try again.';
+    }
     if (realtime != null &&
         const {
           AmbientRealtimeVoicePhase.requestingPermission,
@@ -3930,19 +3947,17 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     }
     final status = widget.controller.status;
     return switch (_ambientVoicePhase) {
-      AmbientVoicePhase.asleep =>
-        'Say what you want Asael to do, or type a request.',
-      AmbientVoicePhase.starting => 'Opening a private live transcription session. Asael does not store raw audio.',
-      AmbientVoicePhase.listening => 'Speak naturally. Audio goes only to your configured transcription provider and is not stored by Asael.',
-      AmbientVoicePhase.transcribing =>
-        'Your words are becoming an editable command.',
+      AmbientVoicePhase.asleep => 'Say what you want Asael to do.',
+      AmbientVoicePhase.starting => 'Opening the private voice connection.',
+      AmbientVoicePhase.listening => 'Speak naturally.',
+      AmbientVoicePhase.transcribing => 'Finishing your request.',
       AmbientVoicePhase.review =>
         executionTarget == TalkExecutionTarget.thisMac
-            ? 'Review the words and confirm that Asael should operate this Mac.'
-            : 'Review or edit the words before Asael starts.',
+            ? 'Send the recognized request to this Mac.'
+            : 'Send the recognized request to Asael.',
       AmbientVoicePhase.running =>
         status == null
-            ? 'The governed task is continuing in the background.'
+            ? 'The task is continuing in the background.'
             : _humanCommandStatus(status),
       AmbientVoicePhase.speaking => 'Speak at any time to interrupt.',
       AmbientVoicePhase.approval => 'Open the visible approval to review the exact action. Voice cannot approve it.',
@@ -3956,7 +3971,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
         recordingError ??
             realtime?.errorMessage ??
             widget.controller.voiceErrorMessage ??
-            'The request did not finish. Your reviewed words remain visible.',
+            'The request did not finish. Try speaking again.',
     };
   }
 
@@ -4163,16 +4178,17 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       child: AmbientVoiceSurface(
         phase: phase,
         level: realtimeVoice?.level ?? voiceLevel,
-        transcript: input,
-        focusNode: inputFocus,
+        transcript: input.text,
         useThisMac: executionTarget == TalkExecutionTarget.thisMac,
         thisMacAvailable: _thisMacReadyForCommand,
         thisMacUnavailableReason: _thisMacUnavailableMessage,
         detail: _ambientVoiceDetail,
         error: phase == AmbientVoicePhase.error
-            ? recordingError ??
-                  realtimeVoice?.errorMessage ??
-                  widget.controller.voiceErrorMessage
+            ? _emptyAmbientRealtimeReview
+                  ? _ambientVoiceDetail
+                  : recordingError ??
+                        realtimeVoice?.errorMessage ??
+                        widget.controller.voiceErrorMessage
             : null,
         lastResult: _ambientLastResult,
         onDestinationChanged: _selectAmbientDestination,
