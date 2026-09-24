@@ -1,9 +1,13 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../app/macos/macos_page_scaffold.dart';
 import '../../app/theme/macos_app_theme.dart';
+import '../../core/config/app_config.dart';
 import '../auth/application/session_controller.dart';
 import 'automation_controller.dart';
 import 'automation_models.dart';
@@ -130,6 +134,7 @@ class _MacosAutomationStudioViewState
       resource: controller.snapshot.skills,
     ),
     AutomationStudioSection.connections => _ConnectionsSection(
+      controller: controller,
       connections: controller.snapshot.connections,
       mcp: controller.snapshot.mcp,
     ),
@@ -832,22 +837,67 @@ class _SkillsSection extends StatelessWidget {
   );
 }
 
-class _ConnectionsSection extends StatelessWidget {
-  const _ConnectionsSection({required this.connections, required this.mcp});
+class _ConnectionsSection extends StatefulWidget {
+  const _ConnectionsSection({
+    required this.controller,
+    required this.connections,
+    required this.mcp,
+  });
 
+  final AutomationController controller;
   final AutomationResource<AutomationConnectionInventory> connections;
   final AutomationResource<List<AutomationMcpServer>> mcp;
 
   @override
+  State<_ConnectionsSection> createState() => _ConnectionsSectionState();
+}
+
+class _ConnectionsSectionState extends State<_ConnectionsSection>
+    with WidgetsBindingObserver {
+  bool _openingBrowser = false;
+  bool _refreshOnResume = false;
+  String? _linkError;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && _refreshOnResume) {
+      _refreshOnResume = false;
+      unawaited(widget.controller.refresh());
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) => _SplitInventory(
     key: const ValueKey('automation-connections'),
+    header: _ConnectionAccessCard(
+      busy: _openingBrowser,
+      refreshing: widget.controller.refreshing,
+      error: _linkError,
+      onConnectWork: () => _openWebConnection(connectWork: true),
+      onManage: _openWebConnection,
+      onRefresh: widget.controller.refreshing
+          ? null
+          : widget.controller.refresh,
+    ),
     footer: const _McpDirectionNote(),
     left: _WorkspaceSection(
       number: '01',
       title: 'Account and API connections',
       description: 'Connections authorize access; they do not decide what an agent should do.',
       child: _ResourceBody<AutomationConnectionInventory>(
-        resource: connections,
+        resource: widget.connections,
         emptyMessage: 'No account or API connections are installed.',
         builder: (inventory) {
           final accounts = inventory.installed
@@ -891,7 +941,7 @@ class _ConnectionsSection extends StatelessWidget {
       description:
           'MCP exposes live tools and resources through a standard protocol.',
       child: _ResourceBody<List<AutomationMcpServer>>(
-        resource: mcp,
+        resource: widget.mcp,
         emptyMessage: 'No MCP servers have been added.',
         builder: (items) => _InventoryList(
           children: [
@@ -911,6 +961,267 @@ class _ConnectionsSection extends StatelessWidget {
       ),
     ),
   );
+
+  Future<void> _openWebConnection({bool connectWork = false}) async {
+    if (_openingBrowser) return;
+    setState(() {
+      _openingBrowser = true;
+      _linkError = null;
+    });
+    try {
+      final uri = _connectionUri(connectWork: connectWork);
+      if (uri == null) {
+        throw StateError('The configured Asael web address is not trusted.');
+      }
+      final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!opened) throw StateError('macOS could not open the system browser.');
+      _refreshOnResume = true;
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _linkError = error is StateError
+              ? error.message.toString()
+              : 'Asael could not open Connections in the system browser.';
+        });
+      }
+    } finally {
+      if (mounted) setState(() => _openingBrowser = false);
+    }
+  }
+
+  Uri? _connectionUri({required bool connectWork}) {
+    final base = Uri.tryParse(AppConfig.apiBaseUrl);
+    if (base == null || !base.hasAuthority || !_isTrustedAsaelBase(base)) {
+      return null;
+    }
+    return base.replace(
+      path: connectWork ? '/api/oauth/google/authorize' : '/app/connectors',
+      queryParameters: connectWork
+          ? const {'account': 'work', 'returnTo': '/app/connectors'}
+          : null,
+      fragment: null,
+    );
+  }
+
+  bool _isTrustedAsaelBase(Uri uri) {
+    if (uri.scheme == 'https') return true;
+    return uri.scheme == 'http' &&
+        (uri.host == 'localhost' || uri.host == '127.0.0.1');
+  }
+}
+
+class _ConnectionAccessCard extends StatelessWidget {
+  const _ConnectionAccessCard({
+    required this.busy,
+    required this.refreshing,
+    required this.error,
+    required this.onConnectWork,
+    required this.onManage,
+    required this.onRefresh,
+  });
+
+  final bool busy, refreshing;
+  final String? error;
+  final VoidCallback onConnectWork, onManage;
+  final Future<void> Function()? onRefresh;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final mac = MacosThemeColors.of(context);
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            scheme.primary.withValues(alpha: .16),
+            scheme.surface.withValues(alpha: .88),
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        border: Border.all(color: scheme.primary.withValues(alpha: .28)),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Wrap(
+              spacing: 16,
+              runSpacing: 14,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    color: scheme.primary.withValues(alpha: .14),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Icon(
+                    Icons.add_link_rounded,
+                    color: scheme.primary,
+                    size: 22,
+                  ),
+                ),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 630),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Connect Google safely',
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Sign-in and Google consent open in your system browser. Asael refreshes this inventory when you return.',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: scheme.onSurfaceVariant,
+                          height: 1.45,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final cards = [
+                  const _GooglePurposeCard(
+                    icon: Icons.person_outline_rounded,
+                    title: 'Personal',
+                    detail: 'Private mail, calendar, Drive files, and photos stay with your owner account.',
+                  ),
+                  const _GooglePurposeCard(
+                    icon: Icons.work_outline_rounded,
+                    title: 'Work',
+                    detail: 'Business context stays separate. This connection never becomes your Asael login.',
+                  ),
+                ];
+                if (constraints.maxWidth >= 720) {
+                  return Row(
+                    children: [
+                      Expanded(child: cards.first),
+                      const SizedBox(width: 12),
+                      Expanded(child: cards.last),
+                    ],
+                  );
+                }
+                return Column(
+                  children: [
+                    cards.first,
+                    const SizedBox(height: 10),
+                    cards.last,
+                  ],
+                );
+              },
+            ),
+            if (error != null) ...[
+              const SizedBox(height: 12),
+              Text(
+                error!,
+                style: Theme.of(context).textTheme.bodySmall
+                    ?.copyWith(color: scheme.error),
+              ),
+            ],
+            const SizedBox(height: 14),
+            Wrap(
+              spacing: 10,
+              runSpacing: 8,
+              children: [
+                FilledButton.icon(
+                  key: const ValueKey('automation-connect-work-google'),
+                  onPressed: busy ? null : onConnectWork,
+                  icon: busy
+                      ? const SizedBox.square(
+                          dimension: 15,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.work_outline_rounded, size: 17),
+                  label: const Text('Connect Work'),
+                ),
+                OutlinedButton.icon(
+                  key: const ValueKey('automation-manage-connections'),
+                  onPressed: busy ? null : onManage,
+                  icon: const Icon(Icons.open_in_new_rounded, size: 17),
+                  label: const Text('Manage connections'),
+                ),
+                TextButton.icon(
+                  key: const ValueKey('automation-refresh-connections'),
+                  onPressed: onRefresh == null
+                      ? null
+                      : () => unawaited(onRefresh!()),
+                  icon: refreshing
+                      ? const SizedBox.square(
+                          dimension: 15,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.refresh_rounded, size: 17),
+                  label: const Text('Refresh status'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 2),
+            Divider(color: mac.divider, height: 16),
+            Text(
+              'Connecting grants only the permissions shown by Google. Every later send, edit, or delete action still follows Asael’s approval rules.',
+              style: Theme.of(context).textTheme.labelSmall
+                  ?.copyWith(color: scheme.onSurfaceVariant),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _GooglePurposeCard extends StatelessWidget {
+  const _GooglePurposeCard({
+    required this.icon,
+    required this.title,
+    required this.detail,
+  });
+
+  final IconData icon;
+  final String title, detail;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.all(13),
+      decoration: BoxDecoration(
+        color: scheme.surface.withValues(alpha: .72),
+        border: Border.all(color: MacosThemeColors.of(context).divider),
+        borderRadius: BorderRadius.circular(11),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 18, color: scheme.primary),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: Theme.of(context).textTheme.labelLarge),
+                const SizedBox(height: 3),
+                Text(
+                  detail,
+                  style: Theme.of(context).textTheme.bodySmall
+                      ?.copyWith(color: scheme.onSurfaceVariant, height: 1.35),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _PluginsSection extends StatelessWidget {
@@ -1091,10 +1402,12 @@ class _SplitInventory extends StatelessWidget {
     super.key,
     required this.left,
     required this.right,
+    this.header,
     this.footer,
   });
 
   final Widget left, right;
+  final Widget? header;
   final Widget? footer;
 
   @override
@@ -1102,6 +1415,7 @@ class _SplitInventory extends StatelessWidget {
     builder: (context, constraints) => ListView(
       padding: const EdgeInsets.all(20),
       children: [
+        if (header != null) ...[header!, const SizedBox(height: 16)],
         if (constraints.maxWidth >= 960)
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
