@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'agent_governance.dart';
 import 'agent_governance_view.dart';
+import 'agent_learning.dart';
 
 typedef Json = Map<String, dynamic>;
 
@@ -679,6 +680,10 @@ abstract interface class MoltbookAgentsRepository {
   Future<void> changeMoltbook(String agentId, Json input);
 }
 
+abstract interface class AgentLearningRepository {
+  Future<AgentDailyLearningStatus> loadLearning(String agentId);
+}
+
 class AgentsController extends ChangeNotifier {
   AgentsController(
     this.repository, {
@@ -687,19 +692,25 @@ class AgentsController extends ChangeNotifier {
     this.skillMutationsAvailable = false,
     this.agentDeleteAvailable = false,
     this.moltbookAvailable = false,
+    this.learningReadAvailable = false,
     this.governanceReadAvailable = false,
     this.governanceMutationAvailable = false,
   });
   final AgentsRepository repository;
   final bool canManage;
   final bool mutationsAvailable;
-  final bool skillMutationsAvailable, agentDeleteAvailable, moltbookAvailable;
+  final bool skillMutationsAvailable,
+      agentDeleteAvailable,
+      moltbookAvailable,
+      learningReadAvailable;
   final bool governanceReadAvailable, governanceMutationAvailable;
   bool get canMutate => canMutateAgents;
   bool get canMutateAgents => canManage && mutationsAvailable;
   bool get canMutateSkills => canManage && skillMutationsAvailable;
   bool get canDeleteAgents => canManage && agentDeleteAvailable;
   bool get canManageMoltbook => canManage && moltbookAvailable;
+  bool get canReadLearning =>
+      learningReadAvailable && repository is AgentLearningRepository;
   bool get canReadGovernance =>
       governanceReadAvailable && repository is AgentGovernanceRepository;
   bool get canManageGovernance =>
@@ -794,6 +805,14 @@ class AgentsController extends ChangeNotifier {
       throw StateError('Agent release and adaptation evidence is unavailable.');
     }
     return (source as AgentGovernanceRepository).loadGovernance(agentId);
+  }
+
+  Future<AgentDailyLearningStatus> loadLearning(String agentId) {
+    final source = repository;
+    if (!canReadLearning || source is! AgentLearningRepository) {
+      throw StateError('Daily learning evidence is unavailable here.');
+    }
+    return (source as AgentLearningRepository).loadLearning(agentId);
   }
 
   Future<AgentGovernanceSnapshot> manageRelease(

@@ -7,6 +7,7 @@ import '../../app/macos/macos_page_scaffold.dart';
 import '../../app/theme/macos_app_theme.dart';
 import 'agent_council.dart';
 import 'agent_governance_view.dart';
+import 'agent_learning.dart';
 import 'agents.dart';
 import 'task_authority_view.dart';
 
@@ -3198,6 +3199,15 @@ class _AgentDetail extends StatelessWidget {
           const SizedBox(height: 18),
           _OutcomeSummary(performance: performance),
         ],
+        const SizedBox(height: 18),
+        _InspectorSection(
+          title: 'Daily learning',
+          child: _AgentDailyLearningCard(
+            key: ValueKey('macos-agent-learning-${agent.id}'),
+            agent: agent,
+            controller: controller,
+          ),
+        ),
         if (!agent.builtIn) ...[
           const SizedBox(height: 18),
           _InspectorSection(
@@ -3288,6 +3298,267 @@ class _AgentDetail extends StatelessWidget {
       ],
     );
   }
+}
+
+class _AgentDailyLearningCard extends StatefulWidget {
+  const _AgentDailyLearningCard({
+    super.key,
+    required this.agent,
+    required this.controller,
+  });
+
+  final AgentProfile agent;
+  final AgentsController controller;
+
+  @override
+  State<_AgentDailyLearningCard> createState() =>
+      _AgentDailyLearningCardState();
+}
+
+class _AgentDailyLearningCardState extends State<_AgentDailyLearningCard> {
+  AgentDailyLearningStatus? _status;
+  Object? _error;
+  bool _loading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.controller.canReadLearning) Future<void>.microtask(_load);
+  }
+
+  @override
+  void didUpdateWidget(covariant _AgentDailyLearningCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.agent.id != widget.agent.id ||
+        !identical(oldWidget.controller, widget.controller)) {
+      _status = null;
+      _error = null;
+      if (widget.controller.canReadLearning) Future<void>.microtask(_load);
+    }
+  }
+
+  Future<void> _load() async {
+    if (_loading || !widget.controller.canReadLearning) return;
+    setState(() {
+      _loading = true;
+      _status = null;
+      _error = null;
+    });
+    try {
+      final status = await widget.controller.loadLearning(widget.agent.id);
+      if (mounted) setState(() => _status = status);
+    } catch (error) {
+      if (mounted) setState(() => _error = error);
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!widget.controller.canReadLearning) {
+      return const _MoltbookNotice(
+        icon: Icons.system_update_outlined,
+        title: 'Daily learning is unavailable',
+        message: 'Update Asael to the native contract that includes verified Daily learning evidence.',
+      );
+    }
+    if (_loading) {
+      return const _LearningFrame(
+        child: Padding(
+          padding: EdgeInsets.symmetric(vertical: 18),
+          child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+        ),
+      );
+    }
+    final status = _status;
+    if (status == null) {
+      return _MoltbookNotice(
+        icon: Icons.cloud_off_outlined,
+        title: 'Learning evidence could not be verified',
+        message:
+            'Asael is not showing cached or inferred learning health. ${_learningErrorMessage(_error)}',
+        action: TextButton.icon(
+          key: const Key('macos-agent-learning-retry'),
+          onPressed: _load,
+          icon: const Icon(Icons.refresh_rounded, size: 16),
+          label: const Text('Try again'),
+        ),
+      );
+    }
+    if (!status.available) {
+      return _MoltbookNotice(
+        icon: Icons.storage_outlined,
+        title: 'Canonical learning store is unavailable',
+        message: 'Latest day and evidence counts remain unknown. Asael does not replace missing canonical evidence with local estimates.',
+        action: TextButton.icon(
+          onPressed: _load,
+          icon: const Icon(Icons.refresh_rounded, size: 16),
+          label: const Text('Check again'),
+        ),
+      );
+    }
+
+    final day = status.latestCompletedDay;
+    return _LearningFrame(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.auto_awesome_outlined, size: 18),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      day == null
+                          ? 'Waiting for the first review'
+                          : day.localDate,
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                    Text(
+                      day == null
+                          ? 'No completed Daily learning day yet'
+                          : 'Latest local day · ${day.timezone}',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                key: const Key('macos-agent-learning-refresh'),
+                tooltip: 'Refresh Daily learning',
+                onPressed: _load,
+                icon: const Icon(Icons.refresh_rounded, size: 17),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final width = (constraints.maxWidth - 8) / 2;
+              return Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _LearningMetric(
+                    width: width,
+                    value: day == null ? '—' : '${day.observationsReviewed}',
+                    label: 'work reviewed',
+                  ),
+                  _LearningMetric(
+                    width: width,
+                    value: day == null ? '—' : '${day.explicitCorrectionCount}',
+                    label: 'corrections',
+                  ),
+                  _LearningMetric(
+                    width: width,
+                    value: day == null ? '—' : '${day.actionableEvidenceCount}',
+                    label: 'actionable evidence',
+                  ),
+                  _LearningMetric(
+                    width: width,
+                    value: '${status.pendingReviewedAdaptationCount}',
+                    label: 'reviewed adaptations pending',
+                  ),
+                ],
+              );
+            },
+          ),
+          const SizedBox(height: 11),
+          Text(
+            day == null
+                ? 'Daily review will appear after this Agent has completed work with reviewable outcomes.'
+                : day.actionableEvidenceCount > 0
+                ? 'Explicit corrections produced evidence that can be reviewed before any adaptation is activated.'
+                : 'The latest review found no correction-backed evidence requiring action.',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+          const SizedBox(height: 8),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Icon(Icons.lock_outline_rounded, size: 15),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  'Content-free summary only. Private reasoning is never shown, and a Daily learning review never changes behavior or authority automatically.',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LearningFrame extends StatelessWidget {
+  const _LearningFrame({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final mac = MacosThemeColors.of(context);
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: mac.hover,
+        border: Border.all(color: mac.divider),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: child,
+    );
+  }
+}
+
+class _LearningMetric extends StatelessWidget {
+  const _LearningMetric({
+    required this.width,
+    required this.value,
+    required this.label,
+  });
+
+  final double width;
+  final String value, label;
+
+  @override
+  Widget build(BuildContext context) {
+    final mac = MacosThemeColors.of(context);
+    return SizedBox(
+      width: width,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: mac.toolbar,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(value, style: Theme.of(context).textTheme.titleMedium),
+              const SizedBox(height: 1),
+              Text(label, style: Theme.of(context).textTheme.bodySmall),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+String _learningErrorMessage(Object? error) {
+  final message = '$error'.trim();
+  if (message.isEmpty || message == 'null') {
+    return 'The service did not return a verified projection.';
+  }
+  return message;
 }
 
 class _MoltbookAgentConsole extends StatefulWidget {

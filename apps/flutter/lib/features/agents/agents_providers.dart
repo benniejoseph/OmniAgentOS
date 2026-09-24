@@ -51,6 +51,9 @@ final agentsControllerProvider = ChangeNotifierProvider<AgentsController>((
       'moltbook.connection.show',
       'moltbook.connection.manage',
     ].every(NativeContract.supportsOperation),
+    learningReadAvailable: NativeContract.supportsOperation(
+      'agents.learning.show',
+    ),
     governanceReadAvailable: const [
       'agents.release.show',
       'agents.adaptations.list',

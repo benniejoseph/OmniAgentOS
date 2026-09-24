@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { agentDailyLearningStatusV1Schema } from "@/lib/agents/learning-contracts";
 import {
   promptQueueCreateRequestSchema,
   promptQueueDeleteRequestSchema,
@@ -21,11 +22,10 @@ import { mobilePushReceiptRequestSchema } from "@/lib/mobile/push-contract";
 import { pluginManifestSchema } from "@/lib/plugins/contracts";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 25 as const;
-// v20 is the deployed bridge for this rollout. Contracts v21-v24 remain
-// immutable archives, but were never promoted to production and therefore
-// cannot safely replace the installed client's compatibility window.
-export const NATIVE_API_PREVIOUS_VERSION = 20 as const;
+export const NATIVE_API_CURRENT_VERSION = 26 as const;
+// v25 is the deployed native management surface and remains the rollback
+// bridge while v26 adds only the content-free Daily learning read projection.
+export const NATIVE_API_PREVIOUS_VERSION = 25 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -1338,6 +1338,23 @@ const v25Operations: readonly NativeOperation[] = [
   ),
 ];
 
+// Contract v26 adds one read-only, content-free Daily learning projection for
+// the exact current Agent definition. It carries counts and lifecycle state
+// only and grants no behavior, model, tool, context, budget, or mutation
+// authority.
+const v26Operations: readonly NativeOperation[] = [
+  ...v25Operations,
+  operation(
+    "agents.learning.show",
+    "GET",
+    "/api/agents/{id}/learning",
+    "Read one Agent's content-free Daily learning evidence status for its exact current definition.",
+    "bearer",
+    undefined,
+    "NativeAgentDailyLearningResponse",
+  ),
+];
+
 export const nativeContractSchemas = Object.freeze({
   JsonObject: jsonObject,
   NativeClientAttestation: nativeClientAttestationSchema,
@@ -1371,6 +1388,10 @@ export const nativeContractSchemas = Object.freeze({
   NativePluginUninstallRequest: nativePluginUninstallRequestSchema,
   NativeAgentTaskCancelRequest: nativeAgentTaskCancelRequestSchema,
   NativeAgentTaskCancelResponse: nativeAgentTaskCancelResponseSchema,
+  NativeAgentDailyLearningResponse: z.object({
+    learning: agentDailyLearningStatusV1Schema,
+    serviceReceipt: jsonObject,
+  }).strict(),
   NativePromptQueueList: promptQueueListV1Schema,
   NativePromptQueueCreateRequest: promptQueueCreateRequestSchema,
   NativePromptQueueCreateResponse: z.object({
@@ -1448,6 +1469,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 23) return v23Operations;
   if (version === 24) return v24Operations;
   if (version === 25) return v25Operations;
+  if (version === 26) return v26Operations;
   return undefined;
 }
 
@@ -1457,7 +1479,7 @@ export function nativeContractDiscovery() {
     contractId: NATIVE_API_CONTRACT_ID,
     currentVersion: NATIVE_API_CURRENT_VERSION,
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
-    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [25, 20],
+    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [26, 25],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,
       state: version === NATIVE_API_CURRENT_VERSION ? "current" as const : "previous" as const,

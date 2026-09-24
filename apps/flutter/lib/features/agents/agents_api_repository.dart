@@ -2,12 +2,14 @@ import '../../core/network/api_client.dart';
 import '../../generated/native_contract.g.dart';
 import 'agents.dart';
 import 'agent_governance.dart';
+import 'agent_learning.dart';
 
 class ApiAgentsRepository
     implements
         AgentsRepository,
         MoltbookAgentsRepository,
-        AgentGovernanceRepository {
+        AgentGovernanceRepository,
+        AgentLearningRepository {
   const ApiAgentsRepository(this.api);
   final ApiClient api;
 
@@ -139,6 +141,15 @@ class ApiAgentsRepository
       release: release,
       definitionVersion: adaptation.definitionVersion,
       adaptations: adaptation.items,
+    );
+  }
+
+  @override
+  Future<AgentDailyLearningStatus> loadLearning(String agentId) async {
+    _requireAgentId(agentId);
+    return AgentDailyLearningStatus.fromResponse(
+      await api.getJsonFresh(NativePaths.agentsLearningShow(agentId)),
+      expectedAgentId: agentId,
     );
   }
 
