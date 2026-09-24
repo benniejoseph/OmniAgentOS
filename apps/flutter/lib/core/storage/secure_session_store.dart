@@ -8,6 +8,26 @@ import 'package:flutter/services.dart';
 
 import '../auth/biometric_gate.dart';
 
+typedef OfflineProjectionOwner = ({String tenantId, String actorId});
+
+class _CredentialSnapshot {
+  const _CredentialSnapshot({
+    required this.accessToken,
+    required this.refreshToken,
+    required this.accessExpiresAt,
+  });
+
+  static const empty = _CredentialSnapshot(
+    accessToken: null,
+    refreshToken: null,
+    accessExpiresAt: null,
+  );
+
+  final String? accessToken;
+  final String? refreshToken;
+  final String? accessExpiresAt;
+}
+
 class SecureSessionStore {
   SecureSessionStore(FlutterSecureStorage storage)
     : this.withStorage(FlutterSecureValueStore(storage));
@@ -33,19 +53,42 @@ class SecureSessionStore {
   static const _legacyTokenKey = 'omniagent.session_token';
   final AsaelSecureValueStore _storage;
   bool _biometricReleaseUnlocked = false;
+  bool? _biometricEnabledSnapshot;
+  Future<bool>? _biometricEnabledLoad;
+  _CredentialSnapshot? _credentialSnapshot;
+  Future<_CredentialSnapshot>? _credentialLoad;
+  int _credentialGeneration = 0;
+  String? _deviceIdSnapshot;
+  bool _deviceIdLoaded = false;
+  Future<String?>? _deviceIdLoad;
+  Future<String>? _deviceIdCreation;
+  int _deviceIdGeneration = 0;
+  OfflineProjectionOwner? _offlineProjectionOwnerSnapshot;
+  bool _offlineProjectionOwnerLoaded = false;
+  Future<OfflineProjectionOwner?>? _offlineProjectionOwnerLoad;
+  int _offlineProjectionOwnerGeneration = 0;
+  final Map<String, DeviceSecretMaterial> _deviceSecretSnapshots = {};
+  final Map<String, Future<DeviceSecretMaterial>> _deviceSecretLoads = {};
+  int _protectedSnapshotGeneration = 0;
 
   /// Performs only a non-interactive readiness probe. On macOS this never
   /// reads legacy secret bytes; an old store is surfaced as an explicit
   /// migration state for the bootstrap UI.
   Future<void> prepare() => _bounded(_storage.prepare());
 
-  Future<void> migrateLegacyCredentials() =>
-      _storage.migrateLegacyCredentials().timeout(
-        _migrationTimeout,
-        onTimeout: () => throw const SecureStoreUnavailableException(
-          'Credential migration did not finish. Your original session is still safe.',
-        ),
-      );
+  Future<void> migrateLegacyCredentials() async {
+    await _storage.migrateLegacyCredentials().timeout(
+      _migrationTimeout,
+      onTimeout: () => throw const SecureStoreUnavailableException(
+        'Credential migration did not finish. Your original session is still safe.',
+      ),
+    );
+    _biometricEnabledSnapshot = null;
+    _biometricEnabledLoad = null;
+    _invalidateDeviceIdSnapshot();
+    _invalidateOfflineProjectionOwnerSnapshot();
+    _invalidateProtectedSnapshots();
+  }
 
   Future<T> _bounded<T>(Future<T> operation) => operation.timeout(
     _operationTimeout,
@@ -63,7 +106,7 @@ class SecureSessionStore {
 
   Future<String?> readToken() async {
     await _requireBiometricRelease();
-    return _readTokenWithoutRelease();
+    return (await _readCredentialSnapshot()).accessToken;
   }
 
   Future<String?> readTokenForRemoteWipe() => _readTokenWithoutRelease();
@@ -71,27 +114,27 @@ class SecureSessionStore {
   Future<String?> _readTokenWithoutRelease() async {
     final token = await _read(_tokenKey);
     if (token != null) return token;
-    final legacyToken = await _read(_legacyTokenKey);
-    if (legacyToken == null) return null;
-    await _write(_tokenKey, legacyToken);
-    await _delete(_legacyTokenKey);
-    return legacyToken;
+    return _read(_legacyTokenKey);
   }
 
   Future<void> writeToken(String token) async {
+    _invalidateCredentialSnapshot();
     await _write(_tokenKey, token);
     await _delete(_legacyTokenKey);
   }
 
   Future<String?> readRefreshToken() async {
     await _requireBiometricRelease();
-    return _read(_refreshTokenKey);
+    return (await _readCredentialSnapshot()).refreshToken;
   }
 
   Future<bool> hasStoredCredentials() async {
-    return await _read(_tokenKey) != null ||
-        await _read(_refreshTokenKey) != null ||
-        await _read(_legacyTokenKey) != null;
+    final values = await Future.wait<String?>([
+      _read(_tokenKey),
+      _read(_refreshTokenKey),
+      _read(_legacyTokenKey),
+    ]);
+    return values.any((value) => value != null && value.isNotEmpty);
   }
 
   Future<void> writeTokens({
@@ -99,6 +142,8 @@ class SecureSessionStore {
     required String refreshToken,
     required String accessExpiresAt,
   }) async {
+    _invalidateCredentialSnapshot();
+    final generation = _credentialGeneration;
     // Store the new refresh credential first and publish its matching access
     // token last. A crash cannot expose the new access token with an old
     // refresh token.
@@ -106,13 +151,28 @@ class SecureSessionStore {
     await _write(_accessExpiresAtKey, accessExpiresAt);
     await _write(_tokenKey, accessToken);
     await _delete(_legacyTokenKey);
+    if (generation != _credentialGeneration) {
+      await Future.wait([
+        _delete(_tokenKey),
+        _delete(_refreshTokenKey),
+        _delete(_accessExpiresAtKey),
+        _delete(_legacyTokenKey),
+      ]);
+      return;
+    }
+    _credentialSnapshot = _CredentialSnapshot(
+      accessToken: accessToken,
+      refreshToken: refreshToken,
+      accessExpiresAt: accessExpiresAt,
+    );
     _biometricReleaseUnlocked = true;
   }
 
   Future<bool> accessTokenNeedsRefresh({
     Duration leeway = const Duration(seconds: 30),
   }) async {
-    final value = await _read(_accessExpiresAtKey);
+    await _requireBiometricRelease();
+    final value = (await _readCredentialSnapshot()).accessExpiresAt;
     if (value == null) return false;
     final expiresAt = DateTime.tryParse(value)?.toUtc();
     if (expiresAt == null) return true;
@@ -120,16 +180,53 @@ class SecureSessionStore {
   }
 
   Future<String> readOrCreateDeviceId() async {
-    final existing = await _read(_deviceIdKey);
+    final existing = await readExistingDeviceId();
     if (existing != null && existing.isNotEmpty) return existing;
-    final random = Random.secure();
-    final bytes = List<int>.generate(24, (_) => random.nextInt(256));
-    final created = 'asael-${base64UrlEncode(bytes).replaceAll('=', '')}';
-    await _write(_deviceIdKey, created);
-    return created;
+    final inFlight = _deviceIdCreation;
+    if (inFlight != null) return inFlight;
+    late final Future<String> created;
+    created = () async {
+      final current = await _read(_deviceIdKey);
+      if (current != null && current.isNotEmpty) {
+        _deviceIdSnapshot = current;
+        _deviceIdLoaded = true;
+        return current;
+      }
+      final random = Random.secure();
+      final bytes = List<int>.generate(24, (_) => random.nextInt(256));
+      final value = 'asael-${base64UrlEncode(bytes).replaceAll('=', '')}';
+      await _write(_deviceIdKey, value);
+      _deviceIdSnapshot = value;
+      _deviceIdLoaded = true;
+      return value;
+    }();
+    _deviceIdCreation = created;
+    try {
+      return await created;
+    } finally {
+      if (identical(_deviceIdCreation, created)) _deviceIdCreation = null;
+    }
   }
 
-  Future<String?> readExistingDeviceId() => _read(_deviceIdKey);
+  Future<String?> readExistingDeviceId() async {
+    if (_deviceIdLoaded) return _deviceIdSnapshot;
+    final inFlight = _deviceIdLoad;
+    if (inFlight != null) return inFlight;
+    final generation = _deviceIdGeneration;
+    final created = _read(_deviceIdKey);
+    _deviceIdLoad = created;
+    try {
+      final value = await created;
+      if (generation != _deviceIdGeneration) {
+        return _deviceIdLoaded ? _deviceIdSnapshot : null;
+      }
+      _deviceIdSnapshot = value;
+      _deviceIdLoaded = true;
+      return value;
+    } finally {
+      if (identical(_deviceIdLoad, created)) _deviceIdLoad = null;
+    }
+  }
 
   Future<String?> readPushRegistrationId() => _read(_pushRegistrationIdKey);
 
@@ -227,14 +324,45 @@ class SecureSessionStore {
         actorId.length > 320) {
       throw const FormatException('The offline projection owner is invalid.');
     }
+    final owner = (tenantId: tenantId, actorId: actorId);
+    _invalidateOfflineProjectionOwnerSnapshot();
     await _write(
       _offlineProjectionOwnerKey,
       jsonEncode({'version': 1, 'tenantId': tenantId, 'actorId': actorId}),
     );
+    _offlineProjectionOwnerSnapshot = owner;
+    _offlineProjectionOwnerLoaded = true;
   }
 
-  Future<({String tenantId, String actorId})?>
-  readOfflineProjectionOwner() async {
+  Future<OfflineProjectionOwner?> readOfflineProjectionOwner() async {
+    if (_offlineProjectionOwnerLoaded) {
+      return _offlineProjectionOwnerSnapshot;
+    }
+    final inFlight = _offlineProjectionOwnerLoad;
+    if (inFlight != null) return inFlight;
+    final generation = _offlineProjectionOwnerGeneration;
+    late final Future<OfflineProjectionOwner?> created;
+    created = _readOfflineProjectionOwnerFromStorage();
+    _offlineProjectionOwnerLoad = created;
+    try {
+      final owner = await created;
+      if (generation != _offlineProjectionOwnerGeneration) {
+        return _offlineProjectionOwnerLoaded
+            ? _offlineProjectionOwnerSnapshot
+            : null;
+      }
+      _offlineProjectionOwnerSnapshot = owner;
+      _offlineProjectionOwnerLoaded = true;
+      return owner;
+    } finally {
+      if (identical(_offlineProjectionOwnerLoad, created)) {
+        _offlineProjectionOwnerLoad = null;
+      }
+    }
+  }
+
+  Future<OfflineProjectionOwner?>
+  _readOfflineProjectionOwnerFromStorage() async {
     final encoded = await _read(_offlineProjectionOwnerKey);
     if (encoded == null) return null;
     try {
@@ -261,35 +389,78 @@ class SecureSessionStore {
 
   Future<DeviceSecretMaterial> _readOrCreateDeviceSecret(String key) async {
     await _requireBiometricRelease();
-    final encoded = await _read(key);
-    if (encoded != null) return DeviceSecretMaterial.decode(encoded);
-    final random = Random.secure();
-    final idBytes = List<int>.generate(18, (_) => random.nextInt(256));
-    final keyBytes = List<int>.generate(32, (_) => random.nextInt(256));
-    final material = DeviceSecretMaterial(
-      id: base64UrlEncode(idBytes).replaceAll('=', ''),
-      bytes: Uint8List.fromList(keyBytes),
-    );
-    await _write(key, material.encode());
-    return material;
+    final cached = _deviceSecretSnapshots[key];
+    if (cached != null) return cached;
+    final inFlight = _deviceSecretLoads[key];
+    if (inFlight != null) return inFlight;
+    final generation = _protectedSnapshotGeneration;
+    late final Future<DeviceSecretMaterial> created;
+    created = () async {
+      final encoded = await _read(key);
+      if (encoded != null) return DeviceSecretMaterial.decode(encoded);
+      final random = Random.secure();
+      final idBytes = List<int>.generate(18, (_) => random.nextInt(256));
+      final keyBytes = List<int>.generate(32, (_) => random.nextInt(256));
+      final material = DeviceSecretMaterial(
+        id: base64UrlEncode(idBytes).replaceAll('=', ''),
+        bytes: Uint8List.fromList(keyBytes),
+      );
+      await _write(key, material.encode());
+      return material;
+    }();
+    _deviceSecretLoads[key] = created;
+    try {
+      final material = await created;
+      if (generation == _protectedSnapshotGeneration) {
+        _deviceSecretSnapshots[key] = material;
+      }
+      return material;
+    } finally {
+      if (identical(_deviceSecretLoads[key], created)) {
+        _deviceSecretLoads.remove(key);
+      }
+    }
   }
 
-  Future<bool> readBiometricEnabled() async =>
+  Future<bool> readBiometricEnabled() async {
+    final cached = _biometricEnabledSnapshot;
+    if (cached != null) return cached;
+    final inFlight = _biometricEnabledLoad;
+    if (inFlight != null) return inFlight;
+    final load = _readBiometricEnabledFromStorage();
+    _biometricEnabledLoad = load;
+    try {
+      final enabled = await load;
+      _biometricEnabledSnapshot = enabled;
+      return enabled;
+    } finally {
+      if (identical(_biometricEnabledLoad, load)) {
+        _biometricEnabledLoad = null;
+      }
+    }
+  }
+
+  Future<bool> _readBiometricEnabledFromStorage() async =>
       await _read(_biometricEnabledKey) == 'true';
 
   Future<void> setBiometricEnabled(bool enabled) async {
     if (enabled) {
       await _write(_biometricEnabledKey, 'true');
+      _biometricEnabledSnapshot = true;
       _biometricReleaseUnlocked = true;
     } else {
       await _delete(_biometricEnabledKey);
+      _biometricEnabledSnapshot = false;
       _biometricReleaseUnlocked = true;
     }
   }
 
   void unlockBiometricRelease() => _biometricReleaseUnlocked = true;
 
-  void lockBiometricRelease() => _biometricReleaseUnlocked = false;
+  void lockBiometricRelease() {
+    _biometricReleaseUnlocked = false;
+    _invalidateProtectedSnapshots();
+  }
 
   Future<void> _requireBiometricRelease() async {
     if (_biometricReleaseUnlocked || !await readBiometricEnabled()) return;
@@ -297,11 +468,14 @@ class SecureSessionStore {
   }
 
   Future<void> clear() async {
+    _invalidateOfflineProjectionOwnerSnapshot();
+    _invalidateProtectedSnapshots();
     await Future.wait([
       _delete(_tokenKey),
       _delete(_refreshTokenKey),
       _delete(_accessExpiresAtKey),
       _delete(_legacyTokenKey),
+      _delete(_offlineProjectionOwnerKey),
       _delete(_pushRegistrationIdKey),
       _delete(_pendingPushAcknowledgementKey),
       _clearPendingPushReceiptRecords(),
@@ -310,6 +484,9 @@ class SecureSessionStore {
   }
 
   Future<void> clearForRemoteWipe() async {
+    _invalidateDeviceIdSnapshot();
+    _invalidateOfflineProjectionOwnerSnapshot();
+    _invalidateProtectedSnapshots();
     await Future.wait([
       _delete(_tokenKey),
       _delete(_refreshTokenKey),
@@ -325,7 +502,68 @@ class SecureSessionStore {
       _delete(_pendingPushAcknowledgementKey),
       _clearPendingPushReceiptRecords(),
     ]);
+    _biometricEnabledSnapshot = false;
     _biometricReleaseUnlocked = false;
+  }
+
+  Future<_CredentialSnapshot> _readCredentialSnapshot() async {
+    final cached = _credentialSnapshot;
+    if (cached != null) return cached;
+    final inFlight = _credentialLoad;
+    if (inFlight != null) return inFlight;
+    final generation = _credentialGeneration;
+    final created = () async {
+      final values = await Future.wait<String?>([
+        _read(_tokenKey),
+        _read(_refreshTokenKey),
+        _read(_accessExpiresAtKey),
+        _read(_legacyTokenKey),
+      ]);
+      return _CredentialSnapshot(
+        accessToken: values[0] ?? values[3],
+        refreshToken: values[1],
+        accessExpiresAt: values[2],
+      );
+    }();
+    _credentialLoad = created;
+    try {
+      final snapshot = await created;
+      if (generation != _credentialGeneration) {
+        return _credentialSnapshot ?? _CredentialSnapshot.empty;
+      }
+      _credentialSnapshot = snapshot;
+      return snapshot;
+    } finally {
+      if (identical(_credentialLoad, created)) _credentialLoad = null;
+    }
+  }
+
+  void _invalidateCredentialSnapshot() {
+    _credentialGeneration += 1;
+    _credentialSnapshot = null;
+    _credentialLoad = null;
+  }
+
+  void _invalidateDeviceIdSnapshot() {
+    _deviceIdGeneration += 1;
+    _deviceIdSnapshot = null;
+    _deviceIdLoaded = false;
+    _deviceIdLoad = null;
+    _deviceIdCreation = null;
+  }
+
+  void _invalidateOfflineProjectionOwnerSnapshot() {
+    _offlineProjectionOwnerGeneration += 1;
+    _offlineProjectionOwnerSnapshot = null;
+    _offlineProjectionOwnerLoaded = false;
+    _offlineProjectionOwnerLoad = null;
+  }
+
+  void _invalidateProtectedSnapshots() {
+    _protectedSnapshotGeneration += 1;
+    _deviceSecretSnapshots.clear();
+    _deviceSecretLoads.clear();
+    _invalidateCredentialSnapshot();
   }
 }
 

@@ -205,6 +205,10 @@ class ApiClient {
     String path, {
     Map<String, dynamic>? query,
   }) async {
+    final maximumOfflineAge = _offlineProjectionMaxAge(path);
+    if (maximumOfflineAge == null) {
+      return _json(() => _dio.get<Object?>(path, queryParameters: query));
+    }
     final ownerValue = await _store.readOfflineProjectionOwner();
     final owner = ownerValue == null
         ? null
@@ -233,7 +237,15 @@ class ApiClient {
       }
       try {
         final projection = await projectionStore.read(owner, key);
-        if (projection != null) return projection.payload;
+        final age = projection == null
+            ? null
+            : DateTime.now().toUtc().difference(projection.writtenAt);
+        if (projection != null &&
+            age != null &&
+            !age.isNegative &&
+            age <= maximumOfflineAge) {
+          return projection.payload;
+        }
       } catch (_) {
         // Corrupt, expired, or unavailable entries cannot mask the real
         // transport failure or widen the active actor scope.
@@ -454,6 +466,32 @@ Future<ApiException> _streamApiException(DioException error) async {
 bool _canUseOfflineProjection(ApiException error) =>
     error.statusCode == null ||
     const {408, 429, 500, 502, 503, 504}.contains(error.statusCode);
+
+/// Offline fallback is deliberately allowlisted. Private control-plane reads
+/// (approvals, settings, device state, operations, push, payments, and agent
+/// governance) must never silently receive a generic month-old response.
+Duration? _offlineProjectionMaxAge(String value) {
+  final path = Uri.tryParse(value)?.path ?? value.split('?').first;
+  if (path == NativePaths.bootstrapGet) return const Duration(hours: 1);
+  if (_isPathWithin(path, '/api/market')) return const Duration(minutes: 15);
+  if (_isPathWithin(path, '/api/today')) return const Duration(hours: 6);
+  if (_isPathWithin(path, '/api/meetings')) return const Duration(hours: 12);
+  if (const <String>{
+    '/api/projects',
+    '/api/memory',
+    '/api/knowledge',
+    '/api/missions',
+    '/api/customer-accounts',
+    '/api/threads',
+    '/api/artifacts',
+  }.any((prefix) => _isPathWithin(path, prefix))) {
+    return const Duration(hours: 24);
+  }
+  return null;
+}
+
+bool _isPathWithin(String path, String prefix) =>
+    path == prefix || path.startsWith('$prefix/');
 
 Future<bool> _clearAndAcknowledgeRemoteWipe(
   Dio dio,
