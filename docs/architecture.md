@@ -1521,6 +1521,33 @@ grants no execution authority: `/api/agent` independently revalidates the pinned
 assignment revision/configuration digest, provider/model readiness, credential,
 capability, and reasoning intensity before the selected model can run.
 
+Web Command composes a separate exact-reference envelope for Agents, Skills,
+enabled Extensions, Projects, connected Integrations, and Library files. The
+catalog is a private no-store projection, not an authority grant. At the direct
+request boundary, the server discards display labels, re-resolves each ID under
+the authenticated tenant/actor, checks version and binding digests, enforces the
+single-primary-Agent and single-Project invariants, and persists only digest and
+count pins. A file reference resolves by exact Library authority and source ID,
+not by scanning a recent-item page; canonical/exact actor readability is required,
+and duplicate or mismatched projections fail closed. Conversation scope remains
+`session`; selecting reviewed durable memory remains the independent signed
+`explicit_selection` contract. Because a
+workflow plan cannot yet durably pin ephemeral references, the browser refuses
+planning rather than dropping them.
+
+Capture-file hydration opens content only after the ready Library item, current
+asset digest, exact owner binding, extraction receipt, chunk order, evidence
+digests, and locators agree. At most eight query-ranked evidence units share a
+7,000-character disclosure budget and pass through sensitive-pattern redaction;
+safe UTF-8 text is the bounded fallback. The prompt marks every excerpt as
+untrusted. An actor-private connected source may use the cognition reader only
+when the current source item, revision, canonical document, cognition purpose,
+retention state, content hash, chunk lineage, evidence digests, locators, and safe
+text media type agree. Shared, metadata-only, unlinked, binary, and integrity-
+ineligible sources are pinned without body injection. Durable events retain only
+content mode, hashes, evidence counts, and truncation state rather than disclosed
+text.
+
 The sixteenth request-bound slice is an opt-in Capture recording-history
 catalog. Migration v53 adds the composite owner/update/ID index. PostgreSQL
 takes at most one bounded page from each validated canonical/current-email

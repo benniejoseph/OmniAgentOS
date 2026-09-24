@@ -50,6 +50,39 @@ Vercel deployment. V25/v20 remains the historical 2026-09-22 adaptive-runtime
 compatibility pair; v27/v26 is the historical governed local-command release
 pair; v28/v27 is the current scoped model-selection release pair.
 
+### Web Command structured-context release
+
+Web Command defaults a new conversation to `session` scope. Attached Agents,
+Skills, files, Extensions, Projects, and Connections are separate exact
+references that the server resolves again for the authenticated tenant and actor;
+they do not grant connector, tool, delegation, membership, or mutation authority.
+Choosing `explicit_selection` still requires the exact reviewed selection lock.
+Workflow planning does not yet persist ephemeral reference pins, so `/Plan`
+must refuse while they are attached and direct the owner to send the message
+directly. File revalidation resolves the exact Library authority and source ID
+instead of scanning a recent-item page, requires canonical/exact actor readability,
+and fails closed on duplicate or mismatched projections.
+
+For a ready Capture asset, the direct path verifies the current content digest
+and extraction receipt before disclosing at most 7,000 characters across the
+attached references. It prefers ranked immutable evidence units, redacts
+sensitive patterns, and falls back to verified UTF-8 text only for safe text
+media. An actor-private connected source may contribute bounded indexed knowledge
+only when its current item, revision, document, cognition purpose, retention,
+content hash, chunk lineage, evidence digests, and locators agree. Shared,
+metadata-only, unlinked, binary, and integrity-ineligible sources never insert a
+body into the text prompt. Typed run evidence records content mode, disclosure and
+receipt digests, evidence counts, and truncation state, never the disclosed
+document text.
+
+The production release is commit
+`54ba3158bdaf538143afeb703f009561a2ff13f5`, Vercel deployment
+`dpl_9ephgqkRkWui1djmaCb9S9ZfZQQi`. Canonical health and the licensed
+TradingView artifact passed. An authenticated browser canary attached one exact
+Library item, observed the `/Plan` refusal, completed a direct run with its
+selected-context pin, and rendered `WEB_CONTEXT_REF_OK`. This release changes no
+database schema, native contract, Fly protocol, or worker image.
+
 ### Governed local command runner release
 
 Migration `20260924110000_governed_local_command_runner.sql` installs internal
