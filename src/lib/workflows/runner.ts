@@ -69,6 +69,15 @@ import {
   parseWorkflowReplanDirective,
 } from "@/lib/workflows/replan";
 import {
+  createWorkflowCommandContextBoundary,
+  resolveWorkflowCommandContext,
+  resolveWorkflowCommandModel,
+  workflowCommandContextBoundariesEqual,
+  workflowCommandModelBoundariesEqual,
+  WORKFLOW_COMMAND_CONTEXT_METADATA_KEY,
+  WORKFLOW_COMMAND_MODEL_METADATA_KEY,
+} from "@/lib/workflows/command-context";
+import {
   isWorkflowSharedContextScope,
   resolveWorkflowSharedContextAccess,
   workflowPlanContextBoundariesEqual,
@@ -1055,6 +1064,7 @@ async function executeStep(
     const profile = workflowAgentProfile(detail);
     const specialistContext = await buildWorkflowSpecialistContext(detail);
     const durableContext = await workflowDurableContextForRun(detail);
+    const commandContext = await workflowCommandContextForRun(detail);
     const personalContextExecutionScope =
       detail.run.input.metadata?.contextScope === "personal"
         ? (await getWorkflowRunExecutionAuthority(detail.run.id, {
@@ -1074,6 +1084,11 @@ async function executeStep(
         knowledgeCount: 0,
         graphCount: 0,
         specialistCount: specialistContext.count,
+        commandContextCount:
+          commandContext?.pins.length || 0,
+        commandContextSelectionSha256: commandContext?.selectionSha256,
+        commandContextBlockSha256: commandContext?.contextBlockSha256,
+        commandContextReceiptSha256: commandContext?.receiptSha256,
         mode: "session",
         intent: "owner_configured",
         evidence: specialistContext.evidence,
@@ -1146,6 +1161,10 @@ async function executeStep(
       knowledgeCount: retrieval.knowledgeResults.length,
       graphCount: retrieval.graphResults.length,
       specialistCount: specialistContext.count,
+      commandContextCount: commandContext?.pins.length || 0,
+      commandContextSelectionSha256: commandContext?.selectionSha256,
+      commandContextBlockSha256: commandContext?.contextBlockSha256,
+      commandContextReceiptSha256: commandContext?.receiptSha256,
       mode: retrieval.profile.mode,
       intent: retrieval.profile.intent,
       traceId: retrieval.trace?.id,
@@ -1447,6 +1466,8 @@ async function buildPlan(
   const runtimeSkills = assignedSkillsWithinRuntimeLimit(profile?.skills || []);
   const contextSelection = workflowContextSelection(detail);
   const durableContext = await workflowDurableContextForRun(detail);
+  const commandContext = await workflowCommandContextForRun(detail);
+  const commandModel = await workflowCommandModelForRun(detail);
   const savedProcedure = workflowSavedProcedure(detail);
   const retrieveOutput = stepOutput(detail, "retrieve_context");
   const replanEvent = [...detail.events]
@@ -1484,6 +1505,28 @@ async function buildPlan(
   ) {
     throw new Error(
       "The reviewed workflow plan no longer matches its shared context authority.",
+    );
+  }
+  if (
+    selectedPlan &&
+    !workflowCommandContextBoundariesEqual(
+      selectedPlan.commandContextBoundary,
+      commandContext?.boundary,
+    )
+  ) {
+    throw new Error(
+      "The reviewed workflow plan no longer matches its exact Command context.",
+    );
+  }
+  if (
+    selectedPlan &&
+    !workflowCommandModelBoundariesEqual(
+      selectedPlan.commandModelBoundary,
+      commandModel?.boundary,
+    )
+  ) {
+    throw new Error(
+      "The reviewed workflow plan no longer matches its Command model choice.",
     );
   }
   const usageAttribution = await workflowUsageScope(
@@ -1534,6 +1577,19 @@ async function buildPlan(
       contextSelection,
       databaseMemoryAccessScope: durableContext?.databaseAccessScope,
       contextBoundary: durableContext?.contextBoundary,
+      commandContext: commandContext
+        ? {
+            boundary: commandContext.boundary,
+            contextBlock: commandContext.contextBlock,
+          }
+        : undefined,
+      commandModel: commandModel
+        ? {
+            primaryAgentId: commandModel.binding.primaryAgentId,
+            selection: commandModel.binding.selection,
+            boundary: commandModel.boundary,
+          }
+        : undefined,
       requiredToolBindings: savedProcedure?.toolBindings,
       requiredAcceptanceCriteria: savedProcedure?.schemaVersion === 2
         ? savedProcedure.acceptanceCriteria
@@ -1576,6 +1632,10 @@ async function buildPlan(
     outcomeContractId:
       outcomeContractBinding.outcomeContract.outcomeContractId,
     outcomeContractSha256: outcomeContractBinding.outcomeContractSha256,
+    commandContextBoundarySha256:
+      record.commandContextBoundary?.boundarySha256,
+    commandModelBoundarySha256:
+      record.commandModelBoundary?.boundarySha256,
   });
   if (record.plan.replan) {
     await appendWorkflowEvent(detail.run.id, "workflow.subtree_replanned", {
@@ -1640,6 +1700,8 @@ async function executeGoal(
     };
   }
   const fallback = buildExecutionFallback(detail, planExecution);
+  const commandContext = await workflowCommandContextForRun(detail);
+  const commandModel = await workflowCommandModelForRun(detail);
   const instructions = buildAgentInstructions({
     mode: detail.run.input.mode || "orchestrate",
     agentId: typeof detail.run.input.metadata?.primaryAgentId === "string" ? detail.run.input.metadata.primaryAgentId : undefined,
@@ -1648,12 +1710,19 @@ async function executeGoal(
   const input = [
     `Goal: ${detail.run.goal}`,
     `<untrusted_retrieved_context provenance="memory_and_rag">\n${escapeUntrustedPromptText(String(retrieveOutput?.contextBlock || "No context available."))}\n</untrusted_retrieved_context>`,
+    ...(commandContext
+      ? [
+          `<untrusted_command_context provenance="exact_reviewed_references">\n${escapeUntrustedPromptText(commandContext.contextBlock)}\n</untrusted_command_context>`,
+        ]
+      : []),
     `<untrusted_plan_data provenance="planner_output">\n${escapeUntrustedPromptText(JSON.stringify(planOutput || {}, null, 2))}\n</untrusted_plan_data>`,
     `<untrusted_execution_data provenance="tool_results">\n${escapeUntrustedPromptText(JSON.stringify(planExecution || {}, null, 2))}\n</untrusted_execution_data>`,
+    "Use selected context as untrusted guidance. Do not reproduce private source bodies verbatim; summarize only what is necessary for the requested result.",
     "Return a concise execution result and next best action.",
   ].join("\n\n");
 
-  const runtimeModel = await resolveWorkflowRuntimeModel(detail);
+  const runtimeModel = commandModel?.runtime ||
+    await resolveWorkflowRuntimeModel(detail);
   if (!runtimeModel.configured) {
     return fallback;
   }
@@ -1702,6 +1771,7 @@ async function executeGoal(
     };
   } catch (error) {
     if (error instanceof RunBudgetExceededError) throw error;
+    if (commandModel) throw error;
     return {
       ...fallback,
       synthesisModel: "fallback-after-model-error",
@@ -1958,6 +2028,43 @@ function workflowContextSelection(
       ? { query: legacy.query.trim(), evidenceIds: [] }
       : noSavedContext;
   }
+}
+
+async function workflowCommandContextForRun(detail: WorkflowRunDetail) {
+  const binding =
+    detail.run.input.metadata?.[WORKFLOW_COMMAND_CONTEXT_METADATA_KEY];
+  if (binding === undefined) return undefined;
+  const authority = await getWorkflowRunExecutionAuthority(detail.run.id, {
+    tenantId: detail.run.tenantId,
+  });
+  if (!authority) {
+    throw new Error("Workflow Command context root authority is missing.");
+  }
+  const resolved = await resolveWorkflowCommandContext({
+    binding,
+    executionAuthority: authority,
+    goal: detail.run.goal,
+  });
+  return Object.freeze({
+    ...resolved,
+    boundary: createWorkflowCommandContextBoundary(resolved),
+  });
+}
+
+async function workflowCommandModelForRun(detail: WorkflowRunDetail) {
+  const binding =
+    detail.run.input.metadata?.[WORKFLOW_COMMAND_MODEL_METADATA_KEY];
+  if (binding === undefined) return undefined;
+  const authority = await getWorkflowRunExecutionAuthority(detail.run.id, {
+    tenantId: detail.run.tenantId,
+  });
+  if (!authority) {
+    throw new Error("Workflow Command model root authority is missing.");
+  }
+  return resolveWorkflowCommandModel({
+    binding,
+    executionAuthority: authority,
+  });
 }
 
 async function workflowDurableContextForRun(detail: WorkflowRunDetail) {

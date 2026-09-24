@@ -7,6 +7,11 @@ import {
 } from "@/lib/agents/identity-store";
 import { createAppServiceCaller } from "@/lib/app-services/contracts";
 import { listWorkflowsService } from "@/lib/app-services/workflows";
+import { commandContextReferencesSchema } from "@/lib/command/composer-context-contract";
+import {
+  CommandContextResolutionError,
+  resolveCommandContextReferences,
+} from "@/lib/command/context-reference-runtime";
 import { WORKFLOW_RUN_BUDGET_LIMITS } from "@/lib/config";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import {
@@ -46,6 +51,17 @@ import {
 import {
   publicWorkflowRunDetail,
 } from "@/lib/workflows/public";
+import {
+  createWorkflowCommandContextBinding,
+  createWorkflowCommandContextBoundary,
+  createWorkflowCommandModelBinding,
+  primaryAgentIdForWorkflowCommand,
+  resolveReviewedWorkflowCommandModel,
+  workflowCommandContextBoundariesEqual,
+  workflowCommandModelBoundariesEqual,
+  WORKFLOW_COMMAND_CONTEXT_METADATA_KEY,
+  WORKFLOW_COMMAND_MODEL_METADATA_KEY,
+} from "@/lib/workflows/command-context";
 import { getThread } from "@/lib/threads/store";
 import { getCustomAgent, listAgentSkills } from "@/lib/skills/store";
 import {
@@ -74,6 +90,10 @@ import {
   workflowPersonalPlanContextBoundary,
   WORKFLOW_PERSONAL_CONTEXT_METADATA_KEY,
 } from "@/lib/workflows/personal-context";
+import {
+  CommandModelSelectionError,
+  commandModelSelectionRequestSchema,
+} from "@/lib/models/command-selection";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -87,6 +107,10 @@ const workflowStartSchema = z.object({
   requireApproval: z.boolean().optional(),
   maxAttempts: z.number().int().min(1).max(5).optional(),
   budgets: runBudgetCountersV1Schema.partial().optional(),
+  contextReferences: commandContextReferencesSchema.optional(),
+  modelSelection: commandModelSelectionRequestSchema.optional(),
+  primaryAgentId: z.string().trim().min(1).max(120)
+    .regex(/^[a-zA-Z0-9_.:-]+$/).optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
 }).strict();
 
@@ -148,8 +172,17 @@ async function POSTHandler(request: Request) {
       { status: 400 },
     );
   }
-  const { budgets: _requestedBudgets, ...requestedWorkflowStart } = parsed.data;
+  const {
+    budgets: _requestedBudgets,
+    contextReferences: _requestedContextReferences,
+    modelSelection: _requestedModelSelection,
+    primaryAgentId: _requestedPrimaryAgentId,
+    ...requestedWorkflowStart
+  } = parsed.data;
   void _requestedBudgets;
+  void _requestedContextReferences;
+  void _requestedModelSelection;
+  void _requestedPrimaryAgentId;
   let idempotencyKey: string | undefined;
   try {
     idempotencyKey = requestIdempotencyKey(request);
@@ -178,6 +211,8 @@ async function POSTHandler(request: Request) {
       [WORKFLOW_AGENT_PRIVATE_CONTEXT_METADATA_KEY]:
         _untrustedAgentPrivateContext,
       [WORKFLOW_PERSONAL_CONTEXT_METADATA_KEY]: _untrustedPersonalContext,
+      [WORKFLOW_COMMAND_CONTEXT_METADATA_KEY]: _untrustedCommandContext,
+      [WORKFLOW_COMMAND_MODEL_METADATA_KEY]: _untrustedCommandModel,
       contextSelection: _untrustedContextSelection,
       agentIdentity: _untrustedAgentIdentity,
       agentProfile: _untrustedAgentProfile,
@@ -187,6 +222,8 @@ async function POSTHandler(request: Request) {
     void _untrustedSharedContext;
     void _untrustedAgentPrivateContext;
     void _untrustedPersonalContext;
+    void _untrustedCommandContext;
+    void _untrustedCommandModel;
     void _untrustedContextSelection;
     void _untrustedAgentIdentity;
     void _untrustedAgentProfile;
@@ -464,6 +501,83 @@ async function POSTHandler(request: Request) {
         });
       }
     }
+    const commandReferences = parsed.data.contextReferences || [];
+    const commandAgentReference = commandReferences.find(
+      (reference) => reference.kind === "agent",
+    );
+    const commandProjectReference = commandReferences.find(
+      (reference) => reference.kind === "project",
+    );
+    const primaryAgentId = primaryAgentIdForWorkflowCommand(
+      commandReferences,
+      parsed.data.primaryAgentId || requestedAgentId,
+    );
+    if (
+      commandAgentReference &&
+      parsed.data.primaryAgentId &&
+      commandAgentReference.id !== parsed.data.primaryAgentId
+    ) {
+      return Response.json({
+        error: "Invalid Command context",
+        message: "The selected Agent must match the workflow's primary Agent.",
+      }, { status: 400, headers: { "cache-control": "private, no-store" } });
+    }
+    if (
+      requestedAgentId &&
+      primaryAgentId !== requestedAgentId
+    ) {
+      return Response.json({
+        error: "Invalid Command context",
+        message: "The selected Agent must match the Agent-private workflow scope.",
+      }, { status: 400, headers: { "cache-control": "private, no-store" } });
+    }
+    const authoritativeProjectId = sharedContextAccess?.authority.projectId ||
+      metadataString(clientMetadata.projectId) || commandProjectReference?.id;
+    if (
+      commandProjectReference &&
+      authoritativeProjectId !== commandProjectReference.id
+    ) {
+      return Response.json({
+        error: "Invalid Command context",
+        message: "The selected project must match the workflow's project scope.",
+      }, { status: 400, headers: { "cache-control": "private, no-store" } });
+    }
+    let commandContext;
+    try {
+      commandContext = await resolveCommandContextReferences({
+        context,
+        references: commandReferences,
+        query: normalizedWorkflowGoal(parsed.data.goal),
+        agentId: commandAgentReference ? primaryAgentId : undefined,
+        projectId: commandProjectReference ? authoritativeProjectId : undefined,
+      });
+    } catch (error) {
+      if (!(error instanceof CommandContextResolutionError)) throw error;
+      return Response.json({
+        error: error.code,
+        message: error.message,
+      }, {
+        status: error.status,
+        headers: { "cache-control": "private, no-store" },
+      });
+    }
+    let commandModel;
+    if (parsed.data.modelSelection) {
+      try {
+        commandModel = await resolveReviewedWorkflowCommandModel({
+          tenantId: context.tenantId,
+          actorId: context.actorId,
+          primaryAgentId,
+          selection: parsed.data.modelSelection,
+        });
+      } catch (error) {
+        if (!(error instanceof CommandModelSelectionError)) throw error;
+        return Response.json({
+          error: "model_drift",
+          message: error.message,
+        }, { status: 409, headers: { "cache-control": "private, no-store" } });
+      }
+    }
     const executionAuthority = {
       executionScope: executionScopeFromSecurityContext(context, {
         ...(agentPrivateSelection
@@ -508,6 +622,22 @@ async function POSTHandler(request: Request) {
           workflowExecutionScope: executionAuthority.executionScope,
         })
       : undefined;
+    const commandContextBinding = commandContext
+      ? createWorkflowCommandContextBinding({
+          context,
+          references: commandReferences,
+          resolved: commandContext,
+          workflowExecutionScope: executionAuthority.executionScope,
+        })
+      : undefined;
+    const commandModelBinding = commandModel && parsed.data.modelSelection
+      ? createWorkflowCommandModelBinding({
+          primaryAgentId,
+          selection: parsed.data.modelSelection,
+          boundary: commandModel.boundary,
+          workflowExecutionScope: executionAuthority.executionScope,
+        })
+      : undefined;
     const requestedPlanContextBoundary = sharedContextAccess &&
         isWorkflowSharedContextScope(contextScope)
       ? workflowPlanContextBoundary(sharedContextAccess, contextScope)
@@ -528,6 +658,33 @@ async function POSTHandler(request: Request) {
       return Response.json({
         error: "The selected workflow plan has a different context boundary.",
         message: "Generate a fresh plan for the selected context before starting.",
+      }, { status: 409 });
+    }
+    const requestedCommandContextBoundary = commandContext
+      ? createWorkflowCommandContextBoundary(commandContext)
+      : undefined;
+    if (
+      selectedPlan &&
+      !workflowCommandContextBoundariesEqual(
+        selectedPlan.commandContextBoundary,
+        requestedCommandContextBoundary,
+      )
+    ) {
+      return Response.json({
+        error: "The selected workflow plan has different Command context.",
+        message: "Generate a fresh plan for the selected references before starting.",
+      }, { status: 409 });
+    }
+    if (
+      selectedPlan &&
+      !workflowCommandModelBoundariesEqual(
+        selectedPlan.commandModelBoundary,
+        commandModel?.boundary,
+      )
+    ) {
+      return Response.json({
+        error: "The selected workflow plan has a different model choice.",
+        message: "Generate a fresh plan after choosing the model again.",
       }, { status: 409 });
     }
     const workflowStart = {
@@ -560,6 +717,22 @@ async function POSTHandler(request: Request) {
               [WORKFLOW_PERSONAL_CONTEXT_METADATA_KEY]: personalContextBinding,
             }
           : {}),
+        ...(commandContextBinding
+          ? {
+              [WORKFLOW_COMMAND_CONTEXT_METADATA_KEY]: commandContextBinding,
+            }
+          : {}),
+        ...(commandModelBinding
+          ? {
+              [WORKFLOW_COMMAND_MODEL_METADATA_KEY]: commandModelBinding,
+            }
+          : {}),
+        ...(
+          parsed.data.primaryAgentId || commandAgentReference ||
+            parsed.data.modelSelection
+            ? { primaryAgentId }
+            : {}
+        ),
       },
     };
     if (selectedPlan?.workflowRunId) {

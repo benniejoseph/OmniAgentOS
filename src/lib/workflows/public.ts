@@ -15,6 +15,10 @@ import type {
 import { WORKFLOW_SHARED_CONTEXT_METADATA_KEY } from "@/lib/workflows/shared-context";
 import { WORKFLOW_AGENT_PRIVATE_CONTEXT_METADATA_KEY } from "@/lib/workflows/agent-private-context";
 import { WORKFLOW_PERSONAL_CONTEXT_METADATA_KEY } from "@/lib/workflows/personal-context";
+import {
+  WORKFLOW_COMMAND_CONTEXT_METADATA_KEY,
+  WORKFLOW_COMMAND_MODEL_METADATA_KEY,
+} from "@/lib/workflows/command-context";
 
 function outcomeEvaluationFor(run: WorkflowRunRecord) {
   try {
@@ -52,11 +56,15 @@ export function publicWorkflowRun(run: WorkflowRunRecord) {
     [WORKFLOW_SHARED_CONTEXT_METADATA_KEY]: _privateSharedContext,
     [WORKFLOW_AGENT_PRIVATE_CONTEXT_METADATA_KEY]: _privateAgentContext,
     [WORKFLOW_PERSONAL_CONTEXT_METADATA_KEY]: _privatePersonalContext,
+    [WORKFLOW_COMMAND_CONTEXT_METADATA_KEY]: _privateCommandContext,
+    [WORKFLOW_COMMAND_MODEL_METADATA_KEY]: _privateCommandModel,
     ...publicMetadata
   } = metadata || {};
   void _privateSharedContext;
   void _privateAgentContext;
   void _privatePersonalContext;
+  void _privateCommandContext;
+  void _privateCommandModel;
   return {
     ...run,
     input: {

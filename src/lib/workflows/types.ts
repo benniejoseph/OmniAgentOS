@@ -1,6 +1,10 @@
 import type { RunBudgetCountersV1 } from "@/lib/runs/budgets";
 import type { AgentRunIdentityPinV1 } from "@/lib/agents/identity-contracts";
 import type { WorkflowPlanContextBoundaryV1 } from "@/lib/workflows/shared-context";
+import type {
+  WorkflowCommandContextBoundaryV1,
+  WorkflowCommandModelBoundaryV1,
+} from "@/lib/workflows/command-context";
 
 export type WorkflowRunStatus =
   | "queued"
@@ -157,6 +161,10 @@ export type WorkflowPlanRecord = {
   contextTraceId?: string;
   /** Content-free server-derived shared-context authority bound at planning. */
   contextBoundary?: WorkflowPlanContextBoundaryV1;
+  /** Content-free exact Command reference boundary; hydrated content is never persisted. */
+  commandContextBoundary?: WorkflowCommandContextBoundaryV1;
+  /** Content-free exact per-command model selection boundary. */
+  commandModelBoundary?: WorkflowCommandModelBoundaryV1;
   highestRiskLevel: 0 | 1 | 2 | 3;
   approvalRequired: boolean;
   confidence: number;
