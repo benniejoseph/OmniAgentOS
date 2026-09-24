@@ -20,8 +20,13 @@ import { observeGoogleDriveCanonicalMetadata } from "@/lib/connectors/google-dri
 import { observeGoogleDriveShadow } from "@/lib/connectors/google-drive-shadow";
 import { extractCaptureFile } from "@/lib/capture/files";
 import { ingestTextDocument } from "@/lib/rag/retriever";
-import { deleteKnowledgeDocumentByIdempotencyKey } from "@/lib/rag/store";
-import { getKnowledgeDocumentByIdempotencyKey } from "@/lib/rag/store";
+import {
+  deleteKnowledgeDocumentByIdempotencyKey,
+  getActorOwnedKnowledgeForCognition,
+  getCanonicalKnowledgeEvidenceByChunkIds,
+  getKnowledgeDocumentByIdempotencyKey,
+} from "@/lib/rag/store";
+import { normalizeTextForChunking } from "@/lib/rag/chunk";
 import {
   cancelGoogleCalendarMeeting,
   projectGoogleCalendarMeeting,
@@ -30,6 +35,8 @@ import {
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { mapInboundCommunication } from "@/lib/communications/store";
 import { sourceContractSha256 } from "@/lib/sources/contracts";
+import { KNOWLEDGE_COGNIFY_PURPOSE_ID } from "@/lib/sources/purposes";
+import { contentSha256Hex } from "@/lib/sources/text-lineage";
 import { runWithDatabaseActorScope } from "@/lib/db/client";
 
 type SyncCursor = {
@@ -56,6 +63,9 @@ const GMAIL_HISTORY_RECORD_PAGE_SIZE = 10;
 const GMAIL_PENDING_ITEM_LIMIT = 5_000;
 const CALENDAR_ITEM_PAGE_SIZE = 10;
 const DRIVE_ITEM_PAGE_SIZE = 3;
+const GOOGLE_DRIVE_REVISION_MARKER_KEY = "googleDriveProviderRevision";
+const GOOGLE_DRIVE_REVISION_MARKER_VERSION = 1;
+const GOOGLE_DRIVE_REUSE_MAX_CHUNKS = 128;
 type SyncItem = {
   id: string;
   kind: "mail" | "calendar" | "drive";
@@ -66,6 +76,7 @@ type SyncItem = {
   sourceCreatedAt?: string;
   sourceUpdatedAt?: string;
   capturedAt?: string;
+  metadata?: Record<string, unknown>;
   communication?: {
     provider: "gmail";
     providerMessageId: string;
@@ -102,6 +113,16 @@ type PersonalSourceSettlement = Readonly<{
   imported: number;
   removed: number;
   error?: string;
+}>;
+type GoogleDriveSyncIdentity = Readonly<{
+  tenantId: string;
+  actorId: string;
+  provider: OAuthProvider;
+  idempotencyPrefix: string;
+}>;
+type GoogleDriveRevisionMarker = Readonly<{
+  schemaVersion: typeof GOOGLE_DRIVE_REVISION_MARKER_VERSION;
+  snapshotSha256: string;
 }>;
 
 function googleConnectionSourceNamespace(grant: NormalizedOAuthGrant) {
@@ -229,7 +250,13 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
         cursor,
         grantedSources,
         input.abortSignal,
-        { tenantId: input.tenantId, actorId: input.actorId, provider: input.provider },
+        {
+          tenantId: input.tenantId,
+          actorId: input.actorId,
+          provider: input.provider,
+          idempotencyPrefix:
+            googleConnectionSourceNamespace(secrets.grant).idempotencyPrefix,
+        },
       );
     }
     const sourceExecutionScope = createExecutionScope({
@@ -336,6 +363,7 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
             source: `${sourceNamespace.sourcePrefix}:${item.kind}:${item.id}`,
             sourceType: "api",
             tags: ["connected-source", input.provider, item.kind],
+            metadata: item.metadata,
             abortSignal: input.abortSignal,
             // Provider backfills can touch several documents in one bounded
             // page. Persist canonical evidence immediately; cognition owns
@@ -563,7 +591,7 @@ async function observeGoogleSources(
   cursor: SyncCursor,
   sources: readonly PersonalSourceId[],
   signal?: AbortSignal,
-  identity?: { tenantId: string; actorId: string; provider: OAuthProvider },
+  identity?: GoogleDriveSyncIdentity,
 ): Promise<readonly GoogleSourceObservationSettlement[]> {
   const headers = { authorization: `Bearer ${accessToken}`, accept: "application/json" };
   const requests = sources.map((source) => ({
@@ -818,7 +846,7 @@ async function googleDrive(
   headers: Record<string, string>,
   cursor: SyncCursor,
   signal?: AbortSignal,
-  identity?: { tenantId: string; actorId: string; provider: OAuthProvider },
+  identity?: GoogleDriveSyncIdentity,
 ) {
   const windowStart = cursor.driveWindowStart || cursor.driveModifiedAfter ||
     new Date(Date.now() - 30 * 86_400_000).toISOString();
@@ -839,13 +867,34 @@ async function googleDrive(
   const items = await Promise.all(files.map(async (file): Promise<SyncItem> => {
     const id = String(file.id || "");
     const mimeType = String(file.mimeType || "");
+    const providerRevisionId = String(
+      file.headRevisionId || file.version || file.modifiedTime || id,
+    );
+    const revisionMarker = googleDriveRevisionMarker(
+      file,
+      providerRevisionId,
+    );
     const exportMime = mimeType === "application/vnd.google-apps.document"
       ? "text/plain"
       : mimeType === "application/vnd.google-apps.spreadsheet"
         ? "text/csv"
         : undefined;
+    const download = downloadableDriveFile(
+      mimeType,
+      String(file.fileExtension || ""),
+      Number(file.size || 0),
+    );
+    const reusableContent = id && identity && (exportMime || download)
+      ? await reconstructCurrentGoogleDriveDocument({
+          tenantId: identity.tenantId,
+          actorId: identity.actorId,
+          idempotencyKey: `${identity.idempotencyPrefix}:drive:${id}`,
+          revisionMarker,
+          signal,
+        })
+      : undefined;
     let extracted = "";
-    if (id && exportMime) {
+    if (id && !reusableContent && exportMime) {
       const exportUrl = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}/export?mimeType=${encodeURIComponent(exportMime)}`;
       try {
         extracted = (await providerText(exportUrl, headers, signal)).slice(0, 100_000);
@@ -854,9 +903,7 @@ async function googleDrive(
         // its useful metadata and let the next sync reconcile it.
       }
     }
-    if (id && !extracted) {
-      const size = Number(file.size || 0);
-      const download = downloadableDriveFile(mimeType, String(file.fileExtension || ""), size);
+    if (id && !reusableContent && !extracted) {
       if (download) {
         try {
           const bytes = await providerBytes(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?alt=media`, headers, signal, 5 * 1024 * 1024);
@@ -886,20 +933,14 @@ async function googleDrive(
       id,
       kind: "drive",
       title: String(file.name || "Google Drive file"),
-      providerRevisionId: String(
-        file.headRevisionId || file.version || file.modifiedTime || id,
-      ),
+      providerRevisionId,
       sourceCreatedAt,
       sourceUpdatedAt,
       capturedAt: sourceUpdatedAt,
-      content: [
-        `File: ${String(file.name || "Untitled")}`,
-        `Type: ${mimeType}`,
-        `Modified: ${String(file.modifiedTime || "")}`,
-        `Link: ${String(file.webViewLink || "")}`,
-        `Description: ${String(file.description || "")}`,
-        extracted ? `Content:\n${extracted}` : "",
-      ].filter(Boolean).join("\n"),
+      metadata: {
+        [GOOGLE_DRIVE_REVISION_MARKER_KEY]: revisionMarker,
+      },
+      content: reusableContent || googleDriveDocumentContent(file, extracted),
     };
   }));
   const nextPageToken = optionalProviderString(payload.nextPageToken);
@@ -919,6 +960,191 @@ async function googleDrive(
           driveWindowEnd: undefined,
         },
   };
+}
+
+function googleDriveRevisionMarker(
+  file: Record<string, unknown>,
+  providerRevisionId: string,
+): GoogleDriveRevisionMarker {
+  // The digest covers every provider field used to construct the normalized
+  // document, not only Drive's binary head. A rename or description change
+  // must therefore miss the preflight even if headRevisionId is unchanged.
+  return Object.freeze({
+    schemaVersion: GOOGLE_DRIVE_REVISION_MARKER_VERSION,
+    snapshotSha256: sourceContractSha256({
+      providerRevisionId,
+      id: String(file.id || ""),
+      name: String(file.name || ""),
+      mimeType: String(file.mimeType || ""),
+      createdTime: String(file.createdTime || ""),
+      modifiedTime: String(file.modifiedTime || ""),
+      version: String(file.version || ""),
+      headRevisionId: String(file.headRevisionId || ""),
+      webViewLink: String(file.webViewLink || ""),
+      description: String(file.description || ""),
+      size: String(file.size || ""),
+      fileExtension: String(file.fileExtension || ""),
+    }),
+  });
+}
+
+function googleDriveDocumentContent(
+  file: Record<string, unknown>,
+  extracted: string,
+) {
+  return [
+    `File: ${String(file.name || "Untitled")}`,
+    `Type: ${String(file.mimeType || "")}`,
+    `Modified: ${String(file.modifiedTime || "")}`,
+    `Link: ${String(file.webViewLink || "")}`,
+    `Description: ${String(file.description || "")}`,
+    extracted ? `Content:\n${extracted}` : "",
+  ].filter(Boolean).join("\n");
+}
+
+/**
+ * Recovers an exact current Drive document before provider export/download or
+ * OCR. The actor-owned cognition read is the authorization boundary. The
+ * second canonical read supplies immutable locators only; every row must still
+ * match that authorized document, current revision, and evidence identity.
+ */
+async function reconstructCurrentGoogleDriveDocument(input: {
+  tenantId: string;
+  actorId: string;
+  idempotencyKey: string;
+  revisionMarker: GoogleDriveRevisionMarker;
+  signal?: AbortSignal;
+}): Promise<string | undefined> {
+  try {
+    input.signal?.throwIfAborted();
+    const document = await getKnowledgeDocumentByIdempotencyKey(
+      input.idempotencyKey,
+      { tenantId: input.tenantId },
+    );
+    input.signal?.throwIfAborted();
+    if (
+      !document ||
+      !googleDriveRevisionMarkerMatches(
+        document.metadata,
+        input.revisionMarker,
+      )
+    ) return undefined;
+
+    const source = await getActorOwnedKnowledgeForCognition({
+      tenantId: input.tenantId,
+      actorId: input.actorId,
+      documentId: document.id,
+    });
+    input.signal?.throwIfAborted();
+    if (
+      !source ||
+      source.document.id !== document.id ||
+      source.chunks.length < 1 ||
+      source.chunks.length > GOOGLE_DRIVE_REUSE_MAX_CHUNKS ||
+      source.document.chunkCount !== source.chunks.length
+    ) return undefined;
+
+    const canonical = await getCanonicalKnowledgeEvidenceByChunkIds(
+      source.chunks.map((chunk) => chunk.id),
+      { tenantId: input.tenantId },
+    );
+    input.signal?.throwIfAborted();
+    if (canonical.length !== source.chunks.length) return undefined;
+
+    const observedAt = new Date().toISOString();
+    let containerLength: number | undefined;
+    let containerSha256: string | undefined;
+    let reconstructed = "";
+    let coveredUntil = 0;
+    for (const [index, authorizedChunk] of source.chunks.entries()) {
+      const candidate = canonical[index];
+      const evidence = candidate?.evidenceUnit;
+      const locator = evidence?.locator;
+      if (
+        !candidate ||
+        !evidence ||
+        !locator ||
+        candidate.chunk.id !== authorizedChunk.id ||
+        candidate.chunk.chunkIndex !== index ||
+        candidate.chunk.content !== authorizedChunk.content ||
+        candidate.chunk.sourceRevisionId !== source.sourceRevisionId ||
+        candidate.chunk.evidenceUnitId !== authorizedChunk.evidenceUnitId ||
+        evidence.evidenceUnitId !== authorizedChunk.evidenceUnitId ||
+        evidence.tenantId !== input.tenantId ||
+        evidence.ownerActorId !== input.actorId ||
+        evidence.visibility !== "user_private" ||
+        !evidence.allowedPurposeIds.includes(KNOWLEDGE_COGNIFY_PURPOSE_ID) ||
+        evidence.sourceItemId !== source.sourceItemId ||
+        evidence.sourceRevisionId !== source.sourceRevisionId ||
+        evidence.capturedAt > observedAt ||
+        evidence.extractedAt > observedAt ||
+        (evidence.retentionExpiresAt !== null &&
+          evidence.retentionExpiresAt <= observedAt) ||
+        !candidate.sourceState.isCurrent ||
+        candidate.sourceState.operation !== "upsert" ||
+        locator.kind !== "text_span" ||
+        locator.offsetUnit !== "utf16_code_unit"
+      ) return undefined;
+
+      containerLength ??= locator.containerLength;
+      containerSha256 ??= locator.containerSha256;
+      if (
+        locator.containerLength !== containerLength ||
+        locator.containerSha256 !== containerSha256 ||
+        locator.endOffsetExclusive <= coveredUntil ||
+        locator.endOffsetExclusive - locator.startOffset !==
+          authorizedChunk.content.length
+      ) return undefined;
+      if (locator.startOffset > coveredUntil) {
+        // A two-character paragraph delimiter is the only legal uncovered
+        // region emitted by the canonical normalizer/chunker.
+        if (
+          index === 0 ||
+          locator.startOffset !== coveredUntil + 2 ||
+          locator.endOffsetExclusive <= locator.startOffset
+        ) return undefined;
+        reconstructed += "\n\n";
+        coveredUntil += 2;
+      }
+
+      const overlap = coveredUntil - locator.startOffset;
+      if (
+        overlap < 0 ||
+        overlap >= authorizedChunk.content.length ||
+        reconstructed.slice(locator.startOffset, coveredUntil) !==
+          authorizedChunk.content.slice(0, overlap)
+      ) return undefined;
+      reconstructed += authorizedChunk.content.slice(overlap);
+      coveredUntil = locator.endOffsetExclusive;
+    }
+
+    if (
+      containerLength === undefined ||
+      containerSha256 === undefined ||
+      coveredUntil !== containerLength ||
+      reconstructed.length !== containerLength ||
+      normalizeTextForChunking(reconstructed) !== reconstructed ||
+      contentSha256Hex(reconstructed) !== containerSha256 ||
+      source.document.totalCharacters !== containerLength ||
+      source.document.contentHash !== containerSha256
+    ) return undefined;
+    return reconstructed;
+  } catch (error) {
+    if (isPersonalSyncInterruption(error, input.signal)) throw error;
+    // Missing, legacy, incomplete, unauthorized, or corrupt proof must never
+    // become a cache hit. The normal provider fetch/extraction path remains
+    // authoritative and will reconcile the document.
+    return undefined;
+  }
+}
+
+function googleDriveRevisionMarkerMatches(
+  metadata: Record<string, unknown>,
+  expected: GoogleDriveRevisionMarker,
+) {
+  const stored = record(metadata[GOOGLE_DRIVE_REVISION_MARKER_KEY]);
+  return stored.schemaVersion === expected.schemaVersion &&
+    stored.snapshotSha256 === expected.snapshotSha256;
 }
 
 function googleMessage(value: Record<string, unknown>): SyncItem {
