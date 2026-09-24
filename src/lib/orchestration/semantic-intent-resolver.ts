@@ -25,9 +25,11 @@ import type { ExecutionScope } from "@/lib/security/execution-scope";
 import { resolveRuntimeModelAssignment } from "@/lib/settings/runtime-models";
 
 const SEMANTIC_INTENT_TIMEOUT_MS = 8_000;
-const SEMANTIC_INTENT_CAPABILITY_LIMIT = 48;
-const SEMANTIC_INTENT_HISTORY_LIMIT = 6;
-const SEMANTIC_INTENT_HISTORY_CHARS = 600;
+// Routing needs a ranked shortlist, not the complete runtime toolbox. The
+// executor performs its own governed discovery after the route is fixed.
+const SEMANTIC_INTENT_CAPABILITY_LIMIT = 24;
+const SEMANTIC_INTENT_HISTORY_LIMIT = 4;
+const SEMANTIC_INTENT_HISTORY_CHARS = 400;
 
 const semanticIntentJsonSchema = {
   type: "object",
@@ -311,20 +313,31 @@ async function loadCapabilityCandidates(
   tenantId: string,
   query: string,
 ) {
-  const outcomes = await Promise.allSettled([
-    dependencies.searchCapabilities({
-      tenantId,
-      query,
-      limit: SEMANTIC_INTENT_CAPABILITY_LIMIT,
-    }),
-    dependencies.searchCapabilities({
-      tenantId,
-      limit: 24,
-    }),
-  ]);
-  const capabilities = outcomes.flatMap((outcome) =>
-    outcome.status === "fulfilled" ? outcome.value.capabilities : []
+  const queried = await dependencies.searchCapabilities({
+    tenantId,
+    query,
+    limit: SEMANTIC_INTENT_CAPABILITY_LIMIT,
+  }).then(
+    (result) => result.capabilities,
+    () => [] as CapabilityDescriptor[],
   );
+  if (queried.length >= 8) {
+    return queried.slice(0, SEMANTIC_INTENT_CAPABILITY_LIMIT);
+  }
+
+  // A broad connector scan multiplies MCP/OpenAPI metadata reads without
+  // improving a well-matched catalog. When recall is sparse, supplement only
+  // with the small in-process native catalog; the query-ranked search above
+  // has already considered every configured source.
+  const nativeBaseline = await dependencies.searchCapabilities({
+    tenantId,
+    limit: 12,
+    sources: ["native"],
+  }).then(
+    (result) => result.capabilities,
+    () => [] as CapabilityDescriptor[],
+  );
+  const capabilities = [...queried, ...nativeBaseline];
   return [...new Map(
     capabilities.map((capability) => [capability.id, capability]),
   ).values()].slice(0, SEMANTIC_INTENT_CAPABILITY_LIMIT);

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { createAppServiceCaller, createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
-import { cancelRunService, recordRunFeedbackService, showRunService } from "@/lib/app-services/runs";
+import { cancelRunService, recordRunFeedbackService, showRunServiceWithRecord } from "@/lib/app-services/runs";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { foldRunProjection } from "@/lib/events/projections";
@@ -10,7 +10,6 @@ import { listRunGeneratedArtifacts } from "@/lib/runs/generated-artifacts";
 import { listRunMediaArtifacts } from "@/lib/runs/media-artifacts";
 import { listRunWorkspaceArtifacts } from "@/lib/runs/workspace-artifacts";
 import { publicAgentRun } from "@/lib/runs/public";
-import { getAgentRun } from "@/lib/runs/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
@@ -40,18 +39,20 @@ async function GETHandler(
     return forbiddenResponse(error);
   }
 
-  let result;
+  let service;
   try {
-    result = await showRunService(createAppServiceCaller({ context: auth }), { runId: id });
+    service = await showRunServiceWithRecord(
+      createAppServiceCaller({ context: auth }),
+      { runId: id },
+    );
   } catch (error) {
     if (!(error instanceof Error) || error.message !== "Run not found.") throw error;
     return Response.json({ error: "Run not found." }, { status: 404 });
   }
+  const { result, run } = service;
   if (!result.data.run) {
     return Response.json({ error: "Run not found." }, { status: 404 });
   }
-
-  const run = await getAgentRun(id, { tenantId: auth.tenantId });
   if (!run) return Response.json({ error: "Run not found." }, { status: 404 });
   // Media is consumed with the terminal result. Avoid rebuilding a potentially
   // long event projection during the three-second active-run polling loop.

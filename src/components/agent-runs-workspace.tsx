@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
@@ -47,7 +48,6 @@ import {
   permissionMessage,
   useWorkspaceSession,
 } from "@/components/app-shell/session-context";
-import { ConversationCanvas } from "@/components/conversation-canvas";
 import { ConversationProgressPanel } from "@/components/conversation-progress-panel";
 import { startVisibleRefresh } from "@/lib/client/visible-refresh";
 import {
@@ -109,6 +109,19 @@ import {
   type CommandWorkspaceArtifact,
   type CommandWorkspaceArtifactState,
 } from "@/lib/command/workspace-artifact-projection";
+
+const ConversationCanvas = dynamic(
+  () => import("@/components/conversation-canvas").then((module) =>
+    module.ConversationCanvas
+  ),
+  {
+    loading: () => (
+      <div className="grid min-h-[25rem] place-items-center text-sm text-muted">
+        Loading conversation map…
+      </div>
+    ),
+  },
+);
 
 type JsonRecord = Record<string, unknown>;
 type ThreadSummary = { id: string; title: string; updatedAt: string; mode: AgentMode };

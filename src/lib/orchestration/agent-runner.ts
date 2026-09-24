@@ -1095,11 +1095,11 @@ export async function* runAgent(
               executionScope,
               credentialSource: "deployment_environment" as const,
             },
-            queryPlanning: {
-              beforeSemanticModelCall: () => {
-                reserveModelTurnWithoutRetry();
-              },
-            },
+            // The bounded agent path already performs semantic intent routing.
+            // Deterministic retrieval planning is substantially faster and
+            // remains the safe fallback used by Loop v2, so do not spend a
+            // second model turn rewriting the same request before retrieval.
+            queryPlanning: { allowSemanticModel: false },
           } : {}),
           ...(personalPromptMemoryAccessScope
             ? {

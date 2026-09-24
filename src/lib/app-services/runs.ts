@@ -79,6 +79,18 @@ export async function showRunService(
   caller: AppServiceCaller,
   input: z.input<typeof runShowServiceInputSchema>,
 ) {
+  return (await showRunServiceWithRecord(caller, input)).result;
+}
+
+/**
+ * Route-only variant that keeps the authorized store record in server memory
+ * so artifact/status projections do not issue the same full run query again.
+ * The public app-service payload and receipt remain unchanged.
+ */
+export async function showRunServiceWithRecord(
+  caller: AppServiceCaller,
+  input: z.input<typeof runShowServiceInputSchema>,
+) {
   const value = runShowServiceInputSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.runs.show"));
   const [run, contextReceipt, agentIdentity] = await Promise.all([
@@ -87,11 +99,12 @@ export async function showRunService(
     getAgentIdentityCardForRun(value.runId, { tenantId: caller.context.tenantId }),
   ]);
   await assertRunReadable(run, caller);
-  return completeAppServiceCall(authorized, {
+  const result = completeAppServiceCall(authorized, {
     run: run ? publicAgentRun(run) : null,
     contextReceipt: run ? contextReceipt : null,
     agentIdentity: run ? agentIdentity : null,
   }, { resourceCount: run ? 1 : 0 });
+  return { result, run };
 }
 
 export async function inspectRunTrajectoryService(

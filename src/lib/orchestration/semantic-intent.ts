@@ -244,6 +244,37 @@ export function deterministicSemanticFallback(input: {
   };
 }
 
+/**
+ * Records a supervisor decision that is already fixed by a stronger runtime
+ * invariant (for example an explicitly selected model or local-computer
+ * target). This preserves the observable semantic receipt without spending a
+ * model turn on a decision that the caller is not allowed to apply.
+ */
+export function deterministicSemanticInvariant(input: {
+  baseline: SupervisorDecision;
+}): SemanticSupervisorResolution {
+  return {
+    decision: input.baseline,
+    capabilitySearchQuery: "",
+    receipt: {
+      schemaVersion: SEMANTIC_INTENT_SCHEMA_VERSION,
+      policyVersion: SEMANTIC_INTENT_POLICY_VERSION,
+      source: "deterministic_invariant",
+      intent: "not_evaluated",
+      executionShape: "not_evaluated",
+      confidence: null,
+      entityCount: 0,
+      unresolvedEntityCount: 0,
+      capabilityQuery: "",
+      matchedCapabilityIds: [],
+      route: input.baseline.route,
+      requiresApproval: input.baseline.requiresApproval,
+      clarificationAdvisory: false,
+      fallbackReasonCode: "deterministic_invariant",
+    },
+  };
+}
+
 export function attachSemanticModelReceipt(
   resolution: SemanticSupervisorResolution,
   model: NonNullable<SemanticIntentReceipt["model"]>,

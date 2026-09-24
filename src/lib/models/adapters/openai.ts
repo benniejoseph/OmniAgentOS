@@ -66,6 +66,7 @@ export const openAIModelAdapter: ModelProviderAdapter = {
       name: request.name,
       abortSignal: request.abortSignal,
       reasoningEffort: request.reasoningEffort,
+      maxOutputTokens: request.maxOutputTokens,
       model: target.model,
       apiKey: getModelRuntimeApiKey(request, "openai"),
     });

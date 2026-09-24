@@ -17,6 +17,7 @@ import {
 import { clsx } from "clsx";
 import { NotificationDispositionHistory } from "@/components/app-shell/notification-disposition-history";
 import { useWorkspaceSession } from "@/components/app-shell/session-context";
+import { startVisibleRefresh } from "@/lib/client/visible-refresh";
 
 type NotificationStatus = "unread" | "read" | "snoozed" | "dismissed" | "acted";
 type PersonalNotification = {
@@ -152,13 +153,13 @@ export function NotificationCenter() {
       );
       if (!loadedOnceRef.current && !loadControllerRef.current) void load();
     }, INITIAL_NOTIFICATION_REFRESH_DELAY_MS);
-    const interval = window.setInterval(() => void load({ quiet: true }), 60_000);
-    const onFocus = () => void load({ quiet: true });
-    window.addEventListener("focus", onFocus);
+    const stopRefresh = startVisibleRefresh({
+      onRefresh: () => load({ quiet: true }),
+      pollIntervalMs: 60_000,
+    });
     return () => {
       window.clearTimeout(initial);
-      window.clearInterval(interval);
-      window.removeEventListener("focus", onFocus);
+      stopRefresh();
       loadControllerRef.current?.abort();
     };
     // Session identity controls the polling lifecycle.

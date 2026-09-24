@@ -115,6 +115,7 @@ import {
   routeAgentRequest,
 } from "@/lib/orchestration/supervisor";
 import { resolveSemanticIntent } from "@/lib/orchestration/semantic-intent-resolver";
+import { deterministicSemanticInvariant } from "@/lib/orchestration/semantic-intent";
 import { runRoutingSemanticDecisionShadow } from "@/lib/semantic-decisions/routing-shadow";
 import { redactSensitive } from "@/lib/security/context";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
@@ -141,6 +142,7 @@ import {
   parseWorkflowProcedureSnapshot,
   savedProceduresFromWorkspaceTemplates,
   toSupervisorKnownProcedures,
+  type SavedProcedure,
 } from "@/lib/workflows/saved-procedures";
 import {
   createWorkflowSharedContextBinding,
@@ -485,6 +487,9 @@ async function POSTHandler(request: Request) {
     parsed.data.contextReferences || [];
   const effectiveModelSelection = queuedDispatch?.model.commandSelection ||
     parsed.data.modelSelection;
+  const deterministicIntentInvariant = Boolean(
+    effectiveModelSelection || computerUseTarget === "local_macos",
+  );
   let commandContext;
   try {
     commandContext = await resolveCommandContextReferences({
@@ -857,34 +862,36 @@ async function POSTHandler(request: Request) {
       });
     }
   }
-  let savedProcedures;
-  try {
-    const memoryProcedures = await listSavedProcedures({
-      tenantId: context.tenantId,
-      actorId: context.actorId,
-    });
-    const actorBinding = canonicalRequestActorBindingFromSecurityContext(context);
-    const templateProcedures = hasDatabaseUrl() && actorBinding
-      ? savedProceduresFromWorkspaceTemplates(await listWorkspaceTemplates({
-          tenantId: context.tenantId,
-          workspaceId: promptSharedMemoryAccess?.authority.workspaceId ||
-            personalWorkspaceId(actorBinding.canonicalActorId),
-          canonicalActorId: actorBinding.canonicalActorId,
-        }, { activeOnly: true, limit: 100 }))
-      : [];
-    savedProcedures = mergeSavedProcedureCatalogs(
-      memoryProcedures,
-      templateProcedures,
-    );
-  } catch (error) {
-    console.error(
-      "Saved procedure catalog unavailable.",
-      String(redactSensitive(error instanceof Error ? error.message : "Unknown procedure catalog error.")),
-    );
-    return Response.json(
-      { error: "Saved procedures unavailable", message: "The saved procedure catalog could not be validated." },
-      { status: 503 },
-    );
+  let savedProcedures: readonly SavedProcedure[] = [];
+  if (!deterministicIntentInvariant) {
+    try {
+      const actorBinding = canonicalRequestActorBindingFromSecurityContext(context);
+      const memoryProcedures = await listSavedProcedures({
+        tenantId: context.tenantId,
+        actorId: context.actorId,
+      });
+      const workspaceTemplates = hasDatabaseUrl() && actorBinding
+        ? await listWorkspaceTemplates({
+            tenantId: context.tenantId,
+            workspaceId: promptSharedMemoryAccess?.authority.workspaceId ||
+              personalWorkspaceId(actorBinding.canonicalActorId),
+            canonicalActorId: actorBinding.canonicalActorId,
+          }, { activeOnly: true, limit: 100 })
+        : [];
+      savedProcedures = mergeSavedProcedureCatalogs(
+        memoryProcedures,
+        savedProceduresFromWorkspaceTemplates(workspaceTemplates),
+      );
+    } catch (error) {
+      console.error(
+        "Saved procedure catalog unavailable.",
+        String(redactSensitive(error instanceof Error ? error.message : "Unknown procedure catalog error.")),
+      );
+      return Response.json(
+        { error: "Saved procedures unavailable", message: "The saved procedure catalog could not be validated." },
+        { status: 503 },
+      );
+    }
   }
   let safeMessages = (parsed.data.messages || []).map((message) => ({
     ...message,
@@ -913,18 +920,21 @@ async function POSTHandler(request: Request) {
     correlationId: requestId,
     purpose: "agent.intent.semantic_resolution",
   });
-  const semanticResolution = await resolveSemanticIntent({
-    tenantId: context.tenantId,
-    actorId: context.actorId,
-    requestId,
-    message: safeRequestMessage,
-    recentConversation: semanticConversation,
-    mode,
-    baseline: deterministicDecision,
-    preferredAgentId: requestedBuiltInAgent,
-    executionScope: semanticExecutionScope,
-  });
+  const semanticResolution = deterministicIntentInvariant
+    ? deterministicSemanticInvariant({ baseline: deterministicDecision })
+    : await resolveSemanticIntent({
+        tenantId: context.tenantId,
+        actorId: context.actorId,
+        requestId,
+        message: safeRequestMessage,
+        recentConversation: semanticConversation,
+        mode,
+        baseline: deterministicDecision,
+        preferredAgentId: requestedBuiltInAgent,
+        executionScope: semanticExecutionScope,
+      });
   const modelSelectedDecision = effectiveModelSelection
+    && semanticResolution.decision.route !== "clarify"
     ? {
         ...semanticResolution.decision,
         route: "direct" as const,

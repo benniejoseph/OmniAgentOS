@@ -822,6 +822,7 @@ export async function createStructuredResponse({
   name,
   abortSignal,
   reasoningEffort,
+  maxOutputTokens,
   model,
   apiKey,
   usageScope,
@@ -832,6 +833,7 @@ export async function createStructuredResponse({
   name: string;
   abortSignal?: AbortSignal;
   reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+  maxOutputTokens?: number;
   model: string;
   apiKey?: string;
   usageScope?: AiUsageScope;
@@ -843,6 +845,7 @@ export async function createStructuredResponse({
     name,
     abortSignal,
     reasoningEffort,
+    maxOutputTokens,
     model,
     apiKey,
     usageScope,
@@ -856,6 +859,7 @@ export async function createStructuredResponseWithMetrics({
   name,
   abortSignal,
   reasoningEffort,
+  maxOutputTokens,
   model,
   apiKey,
   usageScope,
@@ -866,6 +870,7 @@ export async function createStructuredResponseWithMetrics({
   name: string;
   abortSignal?: AbortSignal;
   reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+  maxOutputTokens?: number;
   model: string;
   /** Server-only request credential. Never persist or include in receipts. */
   apiKey?: string;
@@ -893,6 +898,9 @@ export async function createStructuredResponseWithMetrics({
         },
         ...(effectiveReasoningEffort
           ? { reasoning: { effort: effectiveReasoningEffort } }
+          : {}),
+        ...(maxOutputTokens
+          ? { max_output_tokens: Math.min(Math.max(maxOutputTokens, 64), 16_000) }
           : {}),
         store: false,
       },
