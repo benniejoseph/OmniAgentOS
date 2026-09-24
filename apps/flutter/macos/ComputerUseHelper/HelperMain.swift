@@ -418,6 +418,12 @@ private final class ComputerUseExecutor {
   private static let maximumSnapshotDepth = 8
   private static let maximumSnapshotBytes = 96 * 1_024
   private static let maximumScreenshotBytes = 1_300_000
+  // Chromium can leave Accessibility IPCs waiting for the system default
+  // timeout. A screenshot click must finish its live verification while the
+  // command lease is still valid, or fail closed without posting an event.
+  private static let liveAccessibilityTimeoutSeconds: Float = 0.25
+  private static let maximumHitTargetAncestorDepth = 16
+  private static let postActionAccessibilityBudgetSeconds = 1.25
 
   private let trustedHostPID = getppid()
   private let snapshotNonce = UUID().uuidString.lowercased()
@@ -676,7 +682,8 @@ private final class ComputerUseExecutor {
   private func observe(
     _ input: [String: Any],
     expectedApplication: NSRunningApplication? = nil,
-    expectedBundleIdentifier: String? = nil
+    expectedBundleIdentifier: String? = nil,
+    accessibilityDeadline: Date? = nil
   ) async throws -> [String: Any] {
     guard input.keys.allSatisfy({ $0 == "includeScreenshot" }),
           input["includeScreenshot"] == nil || input["includeScreenshot"] is Bool
@@ -721,7 +728,12 @@ private final class ComputerUseExecutor {
     snapshotDisplayBounds = activeDisplayBounds()
     snapshotScreenshotMapping = nil
     let frontmost = app.map(frontmostApplication)
-    let accessibility = app.map { accessibilitySnapshot(pid: $0.processIdentifier) }
+    let accessibility = app.map {
+      accessibilitySnapshot(
+        pid: $0.processIdentifier,
+        deadline: accessibilityDeadline
+      )
+    }
       ?? "No frontmost application is available."
 
     var observation: [String: Any] = [
@@ -754,13 +766,19 @@ private final class ComputerUseExecutor {
     ]
   }
 
-  private func accessibilitySnapshot(pid: pid_t) -> String {
+  private func accessibilitySnapshot(pid: pid_t, deadline: Date? = nil) -> String {
     let application = AXUIElementCreateApplication(pid)
     let root = axElementAttribute(application, kAXFocusedWindowAttribute as String)
       ?? application
     var lines: [String] = []
     var bytes = 0
-    walk(element: root, depth: 0, lines: &lines, bytes: &bytes)
+    walk(
+      element: root,
+      depth: 0,
+      lines: &lines,
+      bytes: &bytes,
+      deadline: deadline
+    )
     if lines.isEmpty { return "The active application exposes no readable accessibility elements." }
     if elements.count >= Self.maximumSnapshotNodes || bytes >= Self.maximumSnapshotBytes {
       lines.append("… snapshot bounded by Asael …")
@@ -772,11 +790,13 @@ private final class ComputerUseExecutor {
     element: AXUIElement,
     depth: Int,
     lines: inout [String],
-    bytes: inout Int
+    bytes: inout Int,
+    deadline: Date?
   ) {
     guard depth <= Self.maximumSnapshotDepth,
           elements.count < Self.maximumSnapshotNodes,
-          bytes < Self.maximumSnapshotBytes
+          bytes < Self.maximumSnapshotBytes,
+          deadline.map({ Date() < $0 }) ?? true
     else { return }
 
     let identifier = "e:\(snapshotRevision.prefix(12)):\(elements.count + 1)"
@@ -804,8 +824,18 @@ private final class ComputerUseExecutor {
     guard let children = copyAttribute(element, kAXChildrenAttribute as String) as? [AXUIElement]
     else { return }
     for child in children.prefix(80) {
-      walk(element: child, depth: depth + 1, lines: &lines, bytes: &bytes)
-      if elements.count >= Self.maximumSnapshotNodes || bytes >= Self.maximumSnapshotBytes { break }
+      walk(
+        element: child,
+        depth: depth + 1,
+        lines: &lines,
+        bytes: &bytes,
+        deadline: deadline
+      )
+      if elements.count >= Self.maximumSnapshotNodes
+          || bytes >= Self.maximumSnapshotBytes
+          || !(deadline.map({ Date() < $0 }) ?? true) {
+        break
+      }
     }
   }
 
@@ -877,13 +907,17 @@ private final class ComputerUseExecutor {
       // topmost at the screenshot point. Frame-area guessing cannot establish
       // z-order and can authorize a covered element that will not receive the
       // actual click.
-      try verifyObservedTarget(
-        revision: revision,
-        expectedElement: snapshotFocusedWindow,
-        expectedIdentity: snapshotWindowIdentity
-      )
-      guard let observedTarget = currentObservedHitTarget(at: globalPoint)
-      else { throw HelperFailure.rejected("screenshot_coordinate_refused") }
+      let observedTarget = try withBoundedAccessibilityMessaging {
+        try verifyObservedTarget(
+          revision: revision,
+          expectedElement: snapshotFocusedWindow,
+          expectedIdentity: snapshotWindowIdentity
+        )
+        guard revision == snapshotRevision,
+              let target = currentObservedHitTarget(at: globalPoint)
+        else { throw HelperFailure.rejected("screenshot_coordinate_refused") }
+        return target
+      }
       point = globalPoint
       expectedElement = observedTarget.element
       expectedIdentity = observedTarget.identity
@@ -899,15 +933,6 @@ private final class ComputerUseExecutor {
         expectedElement: expectedElement,
         expectedIdentity: expectedIdentity
       )
-    } else {
-      guard revision == snapshotRevision,
-            captureTargetIsCurrent(),
-            let targetFrame = expectedIdentity.frame,
-            targetFrame.width > 0,
-            targetFrame.height > 0,
-            targetFrame.contains(point),
-            elementBelongsToFocusedSnapshotWindow(expectedElement)
-      else { throw HelperFailure.rejected("screenshot_coordinate_refused") }
     }
     guard let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown,
                              mouseCursorPosition: point, mouseButton: .left),
@@ -1059,12 +1084,19 @@ private final class ComputerUseExecutor {
   ) async -> [String: Any] {
     try? await Task.sleep(nanoseconds: 300_000_000)
     guard let expectedApplication,
-          let expectedBundleIdentifier,
-          let readback = try? await observe(
-            ["includeScreenshot": true],
-            expectedApplication: expectedApplication,
-            expectedBundleIdentifier: expectedBundleIdentifier
-          ),
+          let expectedBundleIdentifier
+    else { return result(summary: summary, data: data) }
+    let readback = try? await withBoundedAccessibilityMessaging {
+      try await observe(
+        ["includeScreenshot": true],
+        expectedApplication: expectedApplication,
+        expectedBundleIdentifier: expectedBundleIdentifier,
+        accessibilityDeadline: Date().addingTimeInterval(
+          Self.postActionAccessibilityBudgetSeconds
+        )
+      )
+    }
+    guard let readback,
           let observation = readback["observation"] as? [String: Any]
     else {
       return result(summary: summary, data: data)
@@ -1231,6 +1263,36 @@ private final class ComputerUseExecutor {
     )
   }
 
+  /// Accessibility is a synchronous cross-process protocol. Use a short,
+  /// process-wide timeout only around freshness checks whose safe failure mode
+  /// is refusal (or omission of best-effort readback), then restore the macOS
+  /// default immediately. Commands are consumed serially by this helper.
+  private func withBoundedAccessibilityMessaging<T>(
+    _ operation: () throws -> T
+  ) throws -> T {
+    let systemWide = AXUIElementCreateSystemWide()
+    guard AXUIElementSetMessagingTimeout(
+      systemWide,
+      Self.liveAccessibilityTimeoutSeconds
+    ) == .success
+    else { throw HelperFailure.rejected("accessibility_unavailable") }
+    defer { _ = AXUIElementSetMessagingTimeout(systemWide, 0) }
+    return try operation()
+  }
+
+  private func withBoundedAccessibilityMessaging<T>(
+    _ operation: () async throws -> T
+  ) async throws -> T {
+    let systemWide = AXUIElementCreateSystemWide()
+    guard AXUIElementSetMessagingTimeout(
+      systemWide,
+      Self.liveAccessibilityTimeoutSeconds
+    ) == .success
+    else { throw HelperFailure.rejected("accessibility_unavailable") }
+    defer { _ = AXUIElementSetMessagingTimeout(systemWide, 0) }
+    return try await operation()
+  }
+
   private func copyAttribute(_ element: AXUIElement, _ attribute: String) -> AnyObject? {
     var value: CFTypeRef?
     guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success
@@ -1308,35 +1370,96 @@ private final class ComputerUseExecutor {
       &hitElement
     )
     guard status == .success, let hitElement else { return nil }
-    guard let currentIdentity = elementIdentity(hitElement),
+    var hitPID: pid_t = 0
+    guard AXUIElementGetPid(hitElement, &hitPID) == .success,
+          hitPID == expectedPID,
+          let metadata = screenshotHitTargetMetadata(hitElement),
+          let currentIdentity = metadata.identity,
           !isSecure(role: currentIdentity.role, subrole: currentIdentity.subrole),
           let hitFrame = currentIdentity.frame,
           hitFrame.width > 0,
           hitFrame.height > 0,
           hitFrame.contains(point),
-          elementBelongsToFocusedSnapshotWindow(hitElement)
+          elementBelongsToFocusedSnapshotWindow(
+            hitElement,
+            directWindowCandidates: metadata.directWindowCandidates
+          )
     else { return nil }
     return (hitElement, currentIdentity)
+  }
+
+  /// Fetches only the security-relevant hit-target attributes in one IPC.
+  /// Reading title, help and value independently is unnecessary for a pixel
+  /// click and allowed an unresponsive Chromium renderer to multiply the AX
+  /// messaging timeout until the native command lease expired.
+  private func screenshotHitTargetMetadata(
+    _ element: AXUIElement
+  ) -> (
+    identity: SnapshotElementIdentity?,
+    directWindowCandidates: [AXUIElement]
+  )? {
+    let attributes: [CFString] = [
+      kAXRoleAttribute as CFString,
+      kAXSubroleAttribute as CFString,
+      kAXPositionAttribute as CFString,
+      kAXSizeAttribute as CFString,
+      kAXWindowAttribute as CFString,
+      kAXTopLevelUIElementAttribute as CFString,
+    ]
+    var copiedValues: CFArray?
+    let status = AXUIElementCopyMultipleAttributeValues(
+      element,
+      attributes as CFArray,
+      [],
+      &copiedValues
+    )
+    guard status == .success,
+          let values = copiedValues as? [Any],
+          values.count == attributes.count,
+          let role = values[0] as? String,
+          let targetFrame = frame(
+            positionValue: values[2],
+            sizeValue: values[3]
+          )
+    else { return nil }
+    let subrole = values[1] as? String
+    let directWindowCandidates = [values[4], values[5]].compactMap(axElementValue)
+    return (
+      SnapshotElementIdentity(
+        role: bounded(role, limit: 80),
+        subrole: subrole.map { bounded($0, limit: 80) },
+        label: nil,
+        value: nil,
+        frame: targetFrame
+      ),
+      directWindowCandidates
+    )
   }
 
   /// Confirms a live Accessibility element belongs to the exact focused window
   /// captured by the screenshot. Dynamic browser descendants do not have to be
   /// present in the bounded text snapshot, but they must still resolve through
   /// the current application's Accessibility hierarchy to that same window.
-  private func elementBelongsToFocusedSnapshotWindow(_ element: AXUIElement) -> Bool {
+  private func elementBelongsToFocusedSnapshotWindow(
+    _ element: AXUIElement,
+    directWindowCandidates: [AXUIElement] = []
+  ) -> Bool {
     guard let expectedPID = snapshotFrontmostPID,
           let snapshotFocusedWindow,
           let currentWindow = currentFocusedWindow(pid: expectedPID),
           CFEqual(currentWindow, snapshotFocusedWindow)
     else { return false }
     if CFEqual(element, currentWindow) { return true }
+    if !directWindowCandidates.isEmpty {
+      return directWindowCandidates.contains { CFEqual($0, currentWindow) }
+    }
     if let elementWindow = axElementAttribute(element, kAXWindowAttribute as String) {
       return CFEqual(elementWindow, currentWindow)
     }
 
     var cursor = element
     var visited = 0
-    while visited < 64 {
+    while visited < Self.maximumHitTargetAncestorDepth {
       guard let parent = axElementAttribute(cursor, kAXParentAttribute as String)
       else { return false }
       if CFEqual(parent, currentWindow) { return true }
@@ -1363,6 +1486,30 @@ private final class ComputerUseExecutor {
           size.width.isFinite, size.height.isFinite
     else { return nil }
     return CGRect(origin: position, size: size)
+  }
+
+  private func frame(positionValue: Any, sizeValue: Any) -> CGRect? {
+    let rawPosition = positionValue as CFTypeRef
+    let rawSize = sizeValue as CFTypeRef
+    guard CFGetTypeID(rawPosition) == AXValueGetTypeID(),
+          CFGetTypeID(rawSize) == AXValueGetTypeID()
+    else { return nil }
+    let positionValue = rawPosition as! AXValue
+    let sizeValue = rawSize as! AXValue
+    var position = CGPoint.zero
+    var size = CGSize.zero
+    guard AXValueGetValue(positionValue, .cgPoint, &position),
+          AXValueGetValue(sizeValue, .cgSize, &size),
+          position.x.isFinite, position.y.isFinite,
+          size.width.isFinite, size.height.isFinite
+    else { return nil }
+    return CGRect(origin: position, size: size)
+  }
+
+  private func axElementValue(_ value: Any) -> AXUIElement? {
+    let reference = value as CFTypeRef
+    guard CFGetTypeID(reference) == AXUIElementGetTypeID() else { return nil }
+    return (reference as! AXUIElement)
   }
 
   private func isSecure(role: String, subrole: String?) -> Bool {
