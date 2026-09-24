@@ -13,6 +13,7 @@ import {
   applySemanticIntentPolicy,
   attachSemanticModelReceipt,
   deterministicSemanticFallback,
+  deterministicSemanticInvariant,
   semanticIntentCandidateSchema,
   type SemanticSupervisorResolution,
 } from "@/lib/orchestration/semantic-intent";
@@ -156,6 +157,19 @@ export function createSemanticIntentResolver(
         baseline: input.baseline,
         reasonCode: "model_unavailable",
       });
+    }
+    // The deterministic supervisor already proves that an ordinary
+    // orchestrated request is one bounded, non-consequential direct turn when
+    // its score is zero. A semantic model cannot safely widen that authority,
+    // while toolbox discovery still ranks capabilities from the original
+    // request. Avoid buying a second model call on this dominant fast path.
+    if (
+      input.mode === "orchestrate" &&
+      input.baseline.route === "direct" &&
+      input.baseline.score === 0 &&
+      !input.baseline.requiresApproval
+    ) {
+      return deterministicSemanticInvariant({ baseline: input.baseline });
     }
 
     const lexicalQuery = buildCapabilitySearchQuery({
