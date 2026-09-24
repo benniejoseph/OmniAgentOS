@@ -3033,6 +3033,61 @@ const LOCAL_COMPUTER_SAFE_INTERACTION_PURPOSES = new Set([
   "media_control",
 ]);
 
+const LOCAL_COMPUTER_TASK_NAVIGATION_KEYS = new Set([
+  "tab",
+  "escape",
+  "left",
+  "right",
+  "down",
+  "up",
+  "home",
+  "end",
+  "page_up",
+  "page_down",
+]);
+
+const LOCAL_COMPUTER_TASK_MEDIA_KEYS = new Set([
+  "space",
+  "left",
+  "right",
+  "down",
+  "up",
+]);
+
+function localComputerTaskKeyAuthorizationApplies(
+  preparedInput: Record<string, unknown>,
+) {
+  const key = preparedInput.key;
+  const purpose = preparedInput.interactionPurpose;
+  const modifiers = preparedInput.modifiers;
+  if (
+    typeof key !== "string" ||
+    typeof purpose !== "string" ||
+    !Array.isArray(modifiers) ||
+    modifiers.some((modifier) => typeof modifier !== "string") ||
+    new Set(modifiers).size !== modifiers.length
+  ) {
+    return false;
+  }
+
+  const normalizedModifiers = [...modifiers].sort().join("+");
+  if (!normalizedModifiers) {
+    return purpose === "navigation"
+      ? LOCAL_COMPUTER_TASK_NAVIGATION_KEYS.has(key)
+      : purpose === "media_control" && LOCAL_COMPUTER_TASK_MEDIA_KEYS.has(key);
+  }
+
+  // Keep task-scoped shortcut authority intentionally tiny. Shift+Tab is the
+  // reverse of ordinary focus navigation. Command+Home is the one explicit
+  // browser/document navigation shortcut required by the live Mac flow. All
+  // other modified keys, including close/quit/delete and arbitrary Command,
+  // Control, or Option chords, must cross a fresh approval boundary.
+  return purpose === "navigation" && (
+    (key === "tab" && normalizedModifiers === "shift") ||
+    (key === "home" && normalizedModifiers === "command")
+  );
+}
+
 function localComputerTaskAuthorizationApplies(input: {
   explicitlyAuthorized: boolean;
   toolId: string;
@@ -3075,10 +3130,7 @@ function localComputerTaskAuthorizationApplies(input: {
   }
 
   if (input.toolId !== "local.macos.key") return true;
-  const modifiers = input.preparedInput.modifiers;
-  return Array.isArray(modifiers) && modifiers.every(
-    (modifier) => modifier === "shift",
-  );
+  return localComputerTaskKeyAuthorizationApplies(input.preparedInput);
 }
 
 function localComputerActionForTool(toolId: string) {
