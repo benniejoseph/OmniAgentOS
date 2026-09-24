@@ -1933,20 +1933,43 @@ export async function listAgentRunSummaries(
     await ensureDatabaseSchema();
     const rows = await getSql()`
       SELECT
-        id, tenant_id, owner_actor_id, mode, status, prompt, response, grounding, feedback, error, continuation, agent_id, specialist_ids,
+        id, tenant_id, owner_actor_id, mode, status,
+        LEFT(prompt, 2000) AS prompt,
+        LEFT(response, 4000) AS response,
+        error,
+        CASE
+          WHEN status IN ('waiting_approval', 'resuming') THEN continuation
+          ELSE NULL
+        END AS continuation,
+        agent_id, specialist_ids,
         started_at, completed_at
       FROM omni_agent_runs
       WHERE tenant_id = ${tenantId}
       ORDER BY started_at DESC
       LIMIT ${boundedLimit}
     `;
-    return rows.map(runFromRow);
+    return rows.map(runFromRow).map(projectAgentRunSummary);
   }
 
   const ledger = await readRunLedger();
   return ledger.runs
     .filter((run) => normalizeTenantId(run.tenantId) === tenantId)
-    .slice(0, boundedLimit);
+    .slice(0, boundedLimit)
+    .map(projectAgentRunSummary);
+}
+
+function projectAgentRunSummary(run: AgentRunRecord): AgentRunRecord {
+  return {
+    ...run,
+    prompt: run.prompt.slice(0, 2_000),
+    messages: [],
+    response: run.response?.slice(0, 4_000),
+    grounding: undefined,
+    feedback: undefined,
+    continuation: ["waiting_approval", "resuming"].includes(run.status)
+      ? run.continuation
+      : undefined,
+  };
 }
 
 export async function getRunStats(options: { tenantId?: string } = {}) {
