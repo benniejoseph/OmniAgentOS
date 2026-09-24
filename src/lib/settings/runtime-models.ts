@@ -1,8 +1,10 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
   hasAnthropicKey,
   hasGeminiKey,
   hasOpenAIKey,
 } from "@/lib/config";
+import { getDatabasePoolMax } from "@/lib/db/client";
 import {
   bindModelRuntime,
   type ModelRuntimeCredential,
@@ -41,6 +43,20 @@ import type {
 import type { AiUsageScope } from "@/lib/usage/types";
 
 type RuntimeProviderId = Exclude<ProviderId, "local">;
+
+type RuntimeModelRequestCache = {
+  settings: Map<string, Promise<RuntimeSettingsSnapshot>>;
+  credentials: Map<string, Promise<ModelRuntimeCredential | undefined>>;
+};
+
+type RuntimeSettingsSnapshot = {
+  assignments: ModelAssignment[];
+  catalog: ModelCatalogEntry[];
+  connections: Awaited<ReturnType<typeof listProviderConnections>>;
+};
+
+const runtimeModelRequestCache =
+  new AsyncLocalStorage<RuntimeModelRequestCache>();
 
 export type DeploymentModelFallback = Readonly<{
   provider: RuntimeProviderId;
@@ -83,6 +99,28 @@ export type RuntimeModelResolution = Readonly<{
 }>;
 
 /**
+ * Shares Settings routing reads and vault openings only inside one request.
+ * No model assignment or plaintext credential crosses a request boundary, so
+ * revocation remains visible on the next command while a multi-stage agent
+ * turn avoids repeating the same three database reads for every subsystem.
+ */
+export function withRuntimeModelRequestCache<
+  TArgs extends unknown[],
+  TResult,
+>(
+  handler: (...args: TArgs) => TResult | Promise<TResult>,
+): (...args: TArgs) => Promise<TResult> {
+  return (...args) => {
+    const existing = runtimeModelRequestCache.getStore();
+    if (existing) return Promise.resolve(handler(...args));
+    return Promise.resolve(runtimeModelRequestCache.run(
+      { settings: new Map(), credentials: new Map() },
+      () => handler(...args),
+    ));
+  };
+}
+
+/**
  * Resolves a stored model-assignment scope into request-bound
  * server runtime state. Plaintext credentials remain captured by closures and
  * a WeakMap; callers receive no serializable secret fields.
@@ -116,15 +154,8 @@ export async function resolveRuntimeModelAssignment(input: {
   let catalog: ModelCatalogEntry[];
   let connections: Awaited<ReturnType<typeof listProviderConnections>>;
   try {
-    [assignments, catalog, connections] = await Promise.all([
-      listModelAssignments({ tenantId, actorId }),
-      listModelCatalog({ tenantId, actorId }),
-      listProviderConnections({
-        tenantId,
-        actorId,
-        includeDeploymentFallback: false,
-      }),
-    ]);
+    ({ assignments, catalog, connections } =
+      await readRuntimeSettingsSnapshot(tenantId, actorId));
   } catch {
     if (input.commandSelection) {
       throw new CommandModelSelectionError(
@@ -468,6 +499,25 @@ async function readProviderCredential(
   connectionId: string;
   },
 ): Promise<ModelRuntimeCredential | undefined> {
+  const cache = runtimeModelRequestCache.getStore();
+  if (!cache) return openProviderCredential(provider, input);
+  const key = [provider, input.tenantId, input.actorId, input.connectionId]
+    .join("\0");
+  const existing = cache.credentials.get(key);
+  if (existing) return existing;
+  const pending = openProviderCredential(provider, input);
+  cache.credentials.set(key, pending);
+  return pending;
+}
+
+async function openProviderCredential(
+  provider: SettingsModelProvider,
+  input: {
+    tenantId: string;
+    actorId: string;
+    connectionId: string;
+  },
+): Promise<ModelRuntimeCredential | undefined> {
   try {
     const result = await getProviderCredentials(input);
     if (provider === "aws_bedrock") {
@@ -488,6 +538,47 @@ async function readProviderCredential(
     return apiKey ? { kind: "api_key", apiKey } : undefined;
   } catch {
     return undefined;
+  }
+}
+
+async function readRuntimeSettingsSnapshot(
+  tenantId: string,
+  actorId: string,
+): Promise<RuntimeSettingsSnapshot> {
+  const load = async () => {
+    if (getDatabasePoolMax() === 1) {
+      const assignments = await listModelAssignments({ tenantId, actorId });
+      const catalog = await listModelCatalog({ tenantId, actorId });
+      const connections = await listProviderConnections({
+        tenantId,
+        actorId,
+        includeDeploymentFallback: false,
+      });
+      return { assignments, catalog, connections };
+    }
+    const [assignments, catalog, connections] = await Promise.all([
+      listModelAssignments({ tenantId, actorId }),
+      listModelCatalog({ tenantId, actorId }),
+      listProviderConnections({
+        tenantId,
+        actorId,
+        includeDeploymentFallback: false,
+      }),
+    ]);
+    return { assignments, catalog, connections };
+  };
+  const cache = runtimeModelRequestCache.getStore();
+  if (!cache) return load();
+  const key = `${tenantId}\0${actorId}`;
+  const existing = cache.settings.get(key);
+  if (existing) return existing;
+  const pending = load();
+  cache.settings.set(key, pending);
+  try {
+    return await pending;
+  } catch (error) {
+    if (cache.settings.get(key) === pending) cache.settings.delete(key);
+    throw error;
   }
 }
 

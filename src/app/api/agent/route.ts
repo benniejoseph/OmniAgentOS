@@ -12,6 +12,7 @@ import {
   WORKFLOW_RUN_BUDGET_LIMITS,
 } from "@/lib/config";
 import { hasDatabaseUrl, withDatabaseRequestScope } from "@/lib/db/client";
+import { withRuntimeModelRequestCache } from "@/lib/settings/runtime-models";
 import {
   PROMPT_QUEUE_DISPATCH_ID_HEADER,
   PROMPT_QUEUE_DISPATCH_REVISION_HEADER,
@@ -164,7 +165,9 @@ export const runtime = "nodejs";
 // gpt-5 research/orchestrate runs can exceed 60s; 300s is the Vercel Pro ceiling.
 // On Hobby this is silently capped to 60s (harmless).
 export const maxDuration = 300;
-export const POST = withDatabaseRequestScope(POSTHandler);
+export const POST = withRuntimeModelRequestCache(
+  withDatabaseRequestScope(POSTHandler),
+);
 
 const chatMessageSchema = z.object({
   role: z.enum(["user", "assistant"]),
