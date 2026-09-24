@@ -23,8 +23,10 @@ import {
 } from "@/lib/command/prompt-queue-store";
 import {
   createPromptQueueDispatchLifecycle,
+  persistPromptQueueDispatchReceipt,
   promptQueueTerminalPersistenceErrorEvent,
   PromptQueueTerminalReceiptError,
+  type PromptQueueDispatchReceiptBinding,
 } from "@/lib/command/prompt-queue-lifecycle";
 import { commandContextReferencesSchema } from "@/lib/command/composer-context-contract";
 import { commandModelSelectionRequestSchema } from "@/lib/models/command-selection";
@@ -350,13 +352,12 @@ async function POSTHandler(request: Request) {
     .get(PROMPT_QUEUE_DISPATCH_REVISION_HEADER)?.trim();
   if (
     parsed.data.contextReferences?.length &&
-    (queuedItemId || parsed.data.resumeRunId)
+    parsed.data.resumeRunId
   ) {
     return Response.json({
       error: "Command context cannot be changed",
-      message: parsed.data.resumeRunId
-        ? "Resume the paused run with the context it already pinned. Start a new command to choose different context."
-        : "Queued commands must pin their context when they enter the queue. Send this contextual command directly.",
+      message:
+        "Resume the paused run with the context it already pinned. Start a new command to choose different context.",
     }, {
       status: 409,
       headers: { "cache-control": "private, no-store" },
@@ -412,6 +413,8 @@ async function POSTHandler(request: Request) {
   let queuedLifecycle: ReturnType<
     typeof createPromptQueueDispatchLifecycle
   > | undefined;
+  let queuedLifecycleBinding: PromptQueueDispatchReceiptBinding | undefined;
+  let commandContextSecurity = context;
   if (queuedItemId && queuedDispatchToken) {
     const queuedSessionId = context.auth?.sessionId?.trim();
     if (!queuedSessionId) {
@@ -444,13 +447,16 @@ async function POSTHandler(request: Request) {
           missionId: parsed.data.missionId,
           projectId: parsed.data.projectId,
           computerUseTarget: parsed.data.computerUseTarget,
+          contextReferences: parsed.data.contextReferences,
+          modelSelection: parsed.data.modelSelection,
         },
       });
       const canonicalQueueContext = {
         ...context,
         actorId: queueActorBinding.canonicalActorId,
       };
-      queuedLifecycle = createPromptQueueDispatchLifecycle({
+      commandContextSecurity = canonicalQueueContext;
+      queuedLifecycleBinding = {
         itemId: queuedItemId,
         dispatchToken: queuedDispatchToken,
         tenantId: context.tenantId,
@@ -463,7 +469,10 @@ async function POSTHandler(request: Request) {
             purpose: "prompt_queue.dispatch",
           },
         ),
-      });
+      };
+      queuedLifecycle = createPromptQueueDispatchLifecycle(
+        queuedLifecycleBinding,
+      );
     } catch (error) {
       if (!(error instanceof PromptQueueStoreError)) throw error;
       return Response.json({ error: error.code, message: error.message }, {
@@ -472,22 +481,82 @@ async function POSTHandler(request: Request) {
       });
     }
   }
+  const effectiveContextReferences = queuedDispatch?.context?.references ||
+    parsed.data.contextReferences || [];
+  const effectiveModelSelection = queuedDispatch?.model.commandSelection ||
+    parsed.data.modelSelection;
   let commandContext;
   try {
     commandContext = await resolveCommandContextReferences({
-      context,
-      references: parsed.data.contextReferences || [],
+      context: commandContextSecurity,
+      references: effectiveContextReferences,
       query: safeRequestMessage,
       agentId: parsed.data.agentId,
       projectId: parsed.data.projectId,
     });
   } catch (error) {
     if (!(error instanceof CommandContextResolutionError)) throw error;
+    if (queuedLifecycleBinding) {
+      try {
+        await persistPromptQueueDispatchReceipt(queuedLifecycleBinding, {
+          terminal: "failed",
+          progressLabel: "Queued context could not be revalidated",
+          failureCode: error.code,
+        });
+      } catch {
+        return Response.json({
+          error: "Prompt queue receipt unavailable",
+          message:
+            "The queued context failed validation, but its terminal receipt could not be recorded. Reconnect before retrying.",
+        }, {
+          status: 503,
+          headers: { "cache-control": "private, no-store" },
+        });
+      }
+    }
     return Response.json({
       error: error.code,
       message: error.message,
     }, {
       status: error.status,
+      headers: { "cache-control": "private, no-store" },
+    });
+  }
+  if (
+    queuedDispatch?.context &&
+    (
+      !commandContext ||
+      commandContext.selectionSha256 !==
+        queuedDispatch.context.selectionSha256 ||
+      commandContext.contextBlockSha256 !==
+        queuedDispatch.context.contextBlockSha256 ||
+      commandContext.receiptSha256 !== queuedDispatch.context.receiptSha256
+    )
+  ) {
+    if (queuedLifecycleBinding) {
+      try {
+        await persistPromptQueueDispatchReceipt(queuedLifecycleBinding, {
+          terminal: "failed",
+          progressLabel: "Queued context changed before admission",
+          failureCode: "command_context_changed",
+        });
+      } catch {
+        return Response.json({
+          error: "Prompt queue receipt unavailable",
+          message:
+            "The queued context changed, but its terminal receipt could not be recorded. Reconnect before retrying.",
+        }, {
+          status: 503,
+          headers: { "cache-control": "private, no-store" },
+        });
+      }
+    }
+    return Response.json({
+      error: "command_context_changed",
+      message:
+        "The selected context changed after it entered the queue. Edit the queued prompt to review and pin it again.",
+    }, {
+      status: 409,
       headers: { "cache-control": "private, no-store" },
     });
   }
@@ -855,7 +924,7 @@ async function POSTHandler(request: Request) {
     preferredAgentId: requestedBuiltInAgent,
     executionScope: semanticExecutionScope,
   });
-  const modelSelectedDecision = parsed.data.modelSelection
+  const modelSelectedDecision = effectiveModelSelection
     ? {
         ...semanticResolution.decision,
         route: "direct" as const,
@@ -868,7 +937,7 @@ async function POSTHandler(request: Request) {
     : semanticResolution.decision;
   const preliminaryDecision = applySupervisorStrategy(
     modelSelectedDecision,
-    parsed.data.modelSelection || computerUseTarget === "local_macos" ||
+    effectiveModelSelection || computerUseTarget === "local_macos" ||
         commandContext
       ? "direct"
       : parsed.data.strategy,
@@ -1173,7 +1242,7 @@ async function POSTHandler(request: Request) {
           );
         }
         const loopV2Enrollment =
-          parsed.data.modelSelection
+          effectiveModelSelection
             ? undefined
             : loopV2CanaryEnrollment || loopV2ContextTextEnrollment ||
               loopV2ModelTextEnrollment;
@@ -1645,7 +1714,7 @@ async function POSTHandler(request: Request) {
                 : "agent.run",
           },
         );
-        const directEvents = loopV2CanaryEnrollment && !parsed.data.modelSelection
+        const directEvents = loopV2CanaryEnrollment && !effectiveModelSelection
           ? runLoopV2ReadOnlyCanary(
               {
                 runId: directRootRunId,
@@ -1663,7 +1732,7 @@ async function POSTHandler(request: Request) {
               },
               agentAbortController.signal,
             )
-          : loopV2ModelTextEnrollment && !parsed.data.modelSelection
+          : loopV2ModelTextEnrollment && !effectiveModelSelection
             ? runLoopV2ModelText(
                 {
                   runId: directRootRunId,
@@ -1679,7 +1748,7 @@ async function POSTHandler(request: Request) {
                 },
                 agentAbortController.signal,
               )
-          : loopV2ContextTextEnrollment && !parsed.data.modelSelection
+          : loopV2ContextTextEnrollment && !effectiveModelSelection
             ? runLoopV2ModelText(
                 {
                   runId: directRootRunId,
@@ -1727,7 +1796,7 @@ async function POSTHandler(request: Request) {
                 promptEntityGraphAccess,
                 executionScope: directExecutionScope,
                 agentIdentity,
-                commandModelSelection: parsed.data.modelSelection,
+                commandModelSelection: effectiveModelSelection,
                 runtimeModelPin: queuedDispatch ? {
                   provider: queuedDispatch.model.providerId,
                   model: queuedDispatch.model.modelId,

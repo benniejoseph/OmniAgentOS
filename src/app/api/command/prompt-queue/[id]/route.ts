@@ -4,8 +4,10 @@ import {
 } from "@/lib/command/prompt-queue-contracts";
 import {
   deletePromptQueueItem,
+  getPromptQueueItem,
   updatePromptQueueItem,
 } from "@/lib/command/prompt-queue-store";
+import { resolvePromptQueueContextPin } from "@/lib/command/prompt-queue-context";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -48,10 +50,35 @@ async function PATCHHandler(
     return forbiddenResponse(error);
   }
   try {
+    const authority = promptQueueAuthority(
+      security,
+      "prompt_queue.update",
+      id,
+    );
+    let contextPin;
+    if (
+      parsed.data.prompt !== undefined ||
+      parsed.data.contextReferences !== undefined ||
+      parsed.data.modelSelection !== undefined
+    ) {
+      const current = await getPromptQueueItem(id, authority);
+      contextPin = await resolvePromptQueueContextPin({
+        context: { ...security, actorId: authority.ownerActorId },
+        references:
+          parsed.data.contextReferences ?? current.context?.references ?? [],
+        prompt: parsed.data.prompt ?? current.prompt,
+        agentId: current.agent.logicalAgentId,
+        projectId: current.target.projectId,
+      });
+    }
     const item = await updatePromptQueueItem({
       itemId: id,
-      ...parsed.data,
-      authority: promptQueueAuthority(security, "prompt_queue.update", id),
+      expectedRevision: parsed.data.expectedRevision,
+      prompt: parsed.data.prompt,
+      state: parsed.data.state,
+      contextPin,
+      modelSelection: parsed.data.modelSelection,
+      authority,
     });
     return Response.json({ item });
   } catch (error) {

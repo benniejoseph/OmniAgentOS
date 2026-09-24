@@ -3,6 +3,7 @@ import {
   createPromptQueueItem,
   listPromptQueueItems,
 } from "@/lib/command/prompt-queue-store";
+import { resolvePromptQueueContextPin } from "@/lib/command/prompt-queue-context";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -62,9 +63,18 @@ async function POSTHandler(request: Request) {
     return forbiddenResponse(error);
   }
   try {
+    const authority = promptQueueAuthority(context, "prompt_queue.create");
+    const contextPin = await resolvePromptQueueContextPin({
+      context: { ...context, actorId: authority.ownerActorId },
+      references: parsed.data.contextReferences || [],
+      prompt: parsed.data.prompt,
+      agentId: parsed.data.agentId,
+      projectId: parsed.data.target.projectId,
+    });
     const result = await createPromptQueueItem({
       request: parsed.data,
-      authority: promptQueueAuthority(context, "prompt_queue.create"),
+      authority,
+      contextPin,
     });
     return Response.json(result, { status: result.created ? 201 : 200 });
   } catch (error) {

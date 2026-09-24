@@ -9,11 +9,13 @@ import type { ResolvedAgentIdentityV1 } from "@/lib/agents/identity-contracts";
 import {
   PROMPT_QUEUE_MAX_ITEMS,
   promptQueueAgentPinV1Schema,
+  promptQueueContextPinV1Schema,
   promptQueueCreateRequestSchema,
   promptQueueItemV1Schema,
   promptQueueModelPinV1Schema,
   promptQueueTargetV1Schema,
   type PromptQueueAgentPinV1,
+  type PromptQueueContextPinV1,
   type PromptQueueCreateRequest,
   type PromptQueueItemV1,
 } from "@/lib/command/prompt-queue-contracts";
@@ -26,6 +28,7 @@ import type { ExecutionScope } from "@/lib/security/execution-scope";
 import { resolveRuntimeModelAssignment } from "@/lib/settings/runtime-models";
 import { runtimeModelRoutingPolicySha256 } from "@/lib/settings/runtime-model-routing-pin";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
+import type { CommandModelSelectionRequest } from "@/lib/models/command-selection";
 
 type QueueSql = ReturnType<typeof getSql>;
 
@@ -98,8 +101,13 @@ export async function listPromptQueueItems(
 export async function createPromptQueueItem(input: {
   request: PromptQueueCreateRequest;
   authority: PromptQueueAuthority;
+  contextPin?: PromptQueueContextPinV1 | null;
 }): Promise<{ item: PromptQueueItemV1; created: boolean }> {
   const request = promptQueueCreateRequestSchema.parse(input.request);
+  const contextPin = validateContextPinForReferences(
+    input.contextPin || null,
+    request.contextReferences || [],
+  );
   const promptSha256 = sha256(request.prompt);
   const target = promptQueueTargetV1Schema.parse(request.target);
   const targetSha256 = canonicalJsonSha256(target);
@@ -114,6 +122,17 @@ export async function createPromptQueueItem(input: {
       promptSha256,
     ),
   );
+  const sealedContextReferences = contextPin
+    ? sealJsonPayload(
+        { references: contextPin.references },
+        contextBinding(
+          input.authority.tenantId,
+          input.authority.ownerActorId,
+          id,
+          contextPin.selectionSha256,
+        ),
+      )
+    : null;
   let existing: PromptQueueItemV1 | undefined;
   let preflightClosedGenerationRetries = 0;
   while (true) {
@@ -123,6 +142,9 @@ export async function createPromptQueueItem(input: {
         request,
         promptSha256,
         targetSha256,
+        contextSelectionSha256: contextPin?.selectionSha256 || null,
+        contextReceiptSha256: contextPin?.receiptSha256 || null,
+        modelSelection: request.modelSelection || null,
       });
       break;
     } catch (error) {
@@ -153,6 +175,7 @@ export async function createPromptQueueItem(input: {
     mode: request.mode,
     agentId: request.agentId,
     executionTarget: target.executionTarget,
+    commandModelSelection: request.modelSelection,
   });
   const pins = Object.freeze({
     agent: Object.freeze({ ...resolvedPins.agent }),
@@ -178,6 +201,9 @@ export async function createPromptQueueItem(input: {
             request,
             promptSha256,
             targetSha256,
+            contextPin?.selectionSha256 || null,
+            contextPin?.receiptSha256 || null,
+            request.modelSelection || null,
           ),
           created: false,
         };
@@ -209,6 +235,9 @@ export async function createPromptQueueItem(input: {
           origin_session_id, last_modified_session_id, client_correlation_id,
           sealed_prompt, prompt_sha256, prompt_characters,
           mode, strategy, target, target_sha256, agent_pin, model_pin,
+          sealed_context_references, context_selection_sha256,
+          context_block_sha256, context_receipt_sha256,
+          context_reference_count,
           state, position_key, lifecycle_revision,
           queue_grants_authority, created_at, updated_at
         ) VALUES (
@@ -218,6 +247,11 @@ export async function createPromptQueueItem(input: {
           ${promptSha256}, ${request.prompt.length}, ${request.mode},
           ${request.strategy}, ${target}::jsonb, ${targetSha256},
           ${pins.agent}::jsonb, ${pins.model}::jsonb,
+          ${sealedContextReferences}::jsonb,
+          ${contextPin?.selectionSha256 || null},
+          ${contextPin?.contextBlockSha256 || null},
+          ${contextPin?.receiptSha256 || null},
+          ${contextPin?.references.length || 0},
           'queued', ${position}, 0, FALSE, ${now}, ${now}
         )
         RETURNING *
@@ -254,6 +288,9 @@ export async function createPromptQueueItem(input: {
           request,
           promptSha256,
           targetSha256,
+          contextSelectionSha256: contextPin?.selectionSha256 || null,
+          contextReceiptSha256: contextPin?.receiptSha256 || null,
+          modelSelection: request.modelSelection || null,
         });
         if (reconciled) return { item: reconciled, created: false };
       }
@@ -267,6 +304,9 @@ async function preflightPromptQueueCreate(input: {
   request: PromptQueueCreateRequest;
   promptSha256: string;
   targetSha256: string;
+  contextSelectionSha256: string | null;
+  contextReceiptSha256: string | null;
+  modelSelection: CommandModelSelectionRequest | null;
 }) {
   return getSql().transaction(async (sql: QueueSql) => {
     // Serialize this cheap database-only check with creators for the same
@@ -287,6 +327,9 @@ async function preflightPromptQueueCreate(input: {
         input.request,
         input.promptSha256,
         input.targetSha256,
+        input.contextSelectionSha256,
+        input.contextReceiptSha256,
+        input.modelSelection,
       );
     }
     const countRows = await sql`
@@ -311,6 +354,9 @@ async function readPromptQueueCorrelation(input: {
   request: PromptQueueCreateRequest;
   promptSha256: string;
   targetSha256: string;
+  contextSelectionSha256: string | null;
+  contextReceiptSha256: string | null;
+  modelSelection: CommandModelSelectionRequest | null;
 }) {
   const rows = await getSql()`
     SELECT * FROM omni_prompt_queue_items
@@ -325,6 +371,9 @@ async function readPromptQueueCorrelation(input: {
         input.request,
         input.promptSha256,
         input.targetSha256,
+        input.contextSelectionSha256,
+        input.contextReceiptSha256,
+        input.modelSelection,
       )
     : undefined;
 }
@@ -334,6 +383,9 @@ function validateExistingPromptQueueCorrelation(
   request: PromptQueueCreateRequest,
   promptSha256: string,
   targetSha256: string,
+  contextSelectionSha256: string | null,
+  contextReceiptSha256: string | null,
+  modelSelection: CommandModelSelectionRequest | null,
 ) {
   if (row.state === "deleted") {
     throw new PromptQueueStoreError(
@@ -347,7 +399,11 @@ function validateExistingPromptQueueCorrelation(
     existing.targetSha256 !== targetSha256 ||
     existing.mode !== request.mode ||
     existing.strategy !== request.strategy ||
-    existing.agent.logicalAgentId !== request.agentId
+    existing.agent.logicalAgentId !== request.agentId ||
+    (existing.context?.selectionSha256 || null) !== contextSelectionSha256 ||
+    (existing.context?.receiptSha256 || null) !== contextReceiptSha256 ||
+    canonicalJsonSha256(existing.model.commandSelection || null) !==
+      canonicalJsonSha256(modelSelection)
   ) {
     throw new PromptQueueStoreError(
       "conflict",
@@ -362,6 +418,9 @@ async function reconcileUnknownPromptQueueCreate(input: {
   request: PromptQueueCreateRequest;
   promptSha256: string;
   targetSha256: string;
+  contextSelectionSha256: string | null;
+  contextReceiptSha256: string | null;
+  modelSelection: CommandModelSelectionRequest | null;
 }) {
   try {
     return await readPromptQueueCorrelation(input);
@@ -382,31 +441,63 @@ export async function updatePromptQueueItem(input: {
   expectedRevision: number;
   prompt?: string;
   state?: "queued" | "paused";
+  contextPin?: PromptQueueContextPinV1 | null;
+  modelSelection?: CommandModelSelectionRequest | null;
   authority: PromptQueueAuthority;
 }): Promise<PromptQueueItemV1> {
   let replacementPins: Awaited<ReturnType<typeof resolvePins>> | undefined;
   let promptSha256: string | undefined;
   let sealedPrompt: ReturnType<typeof sealJsonPayload> | undefined;
-  if (input.prompt !== undefined) {
-    promptSha256 = sha256(input.prompt);
+  let sealedContextReferences: ReturnType<typeof sealJsonPayload> | null = null;
+  const changesPinnedIntent =
+    input.prompt !== undefined ||
+    input.contextPin !== undefined ||
+    input.modelSelection !== undefined;
+  if (changesPinnedIntent) {
     const current = await readPromptQueueItem(input.itemId, input.authority);
+    if (input.prompt !== undefined && current.context && input.contextPin === undefined) {
+      throw new PromptQueueStoreError(
+        "conflict",
+        "The queued context must be revalidated when its prompt changes.",
+      );
+    }
+    const effectivePrompt = input.prompt ?? current.prompt;
+    const effectiveModelSelection = input.modelSelection === undefined
+      ? current.model.commandSelection || undefined
+      : input.modelSelection || undefined;
+    promptSha256 = input.prompt === undefined ? undefined : sha256(effectivePrompt);
     replacementPins = await resolvePins({
       tenantId: input.authority.tenantId,
       actorId: input.authority.requestActorId,
-      prompt: input.prompt,
+      prompt: effectivePrompt,
       mode: current.mode,
       agentId: current.agent.logicalAgentId,
       executionTarget: current.target.executionTarget,
+      commandModelSelection: effectiveModelSelection,
     });
-    sealedPrompt = sealJsonPayload(
-      { prompt: input.prompt },
-      promptBinding(
-        input.authority.tenantId,
-        input.authority.ownerActorId,
-        input.itemId,
-        promptSha256,
-      ),
-    );
+    if (input.prompt !== undefined && promptSha256) {
+      sealedPrompt = sealJsonPayload(
+        { prompt: effectivePrompt },
+        promptBinding(
+          input.authority.tenantId,
+          input.authority.ownerActorId,
+          input.itemId,
+          promptSha256,
+        ),
+      );
+    }
+    if (input.contextPin) {
+      const contextPin = promptQueueContextPinV1Schema.parse(input.contextPin);
+      sealedContextReferences = sealJsonPayload(
+        { references: contextPin.references },
+        contextBinding(
+          input.authority.tenantId,
+          input.authority.ownerActorId,
+          input.itemId,
+          contextPin.selectionSha256,
+        ),
+      );
+    }
   }
   return getSql().transaction(async (sql: QueueSql) => {
     await lockActorPromptQueue(sql, input.authority);
@@ -432,7 +523,7 @@ export async function updatePromptQueueItem(input: {
     if (input.state === "queued" && current.state !== "paused" && current.state !== "failed") {
       throw new PromptQueueStoreError("invalid_state", "Only a paused or failed prompt can be resumed.");
     }
-    const nextState = input.prompt !== undefined && current.state === "failed"
+    const nextState = changesPinnedIntent && current.state === "failed"
       ? "queued"
       : input.state || current.state;
     if (current.state === "failed" && nextState === "queued") {
@@ -458,6 +549,31 @@ export async function updatePromptQueueItem(input: {
           prompt_characters = COALESCE(${input.prompt?.length || null}, prompt_characters),
           agent_pin = COALESCE(${replacementPins?.agent || null}::jsonb, agent_pin),
           model_pin = COALESCE(${replacementPins?.model || null}::jsonb, model_pin),
+          sealed_context_references = CASE
+            WHEN ${input.contextPin !== undefined}
+              THEN ${sealedContextReferences}::jsonb
+            ELSE sealed_context_references
+          END,
+          context_selection_sha256 = CASE
+            WHEN ${input.contextPin !== undefined}
+              THEN ${input.contextPin?.selectionSha256 || null}
+            ELSE context_selection_sha256
+          END,
+          context_block_sha256 = CASE
+            WHEN ${input.contextPin !== undefined}
+              THEN ${input.contextPin?.contextBlockSha256 || null}
+            ELSE context_block_sha256
+          END,
+          context_receipt_sha256 = CASE
+            WHEN ${input.contextPin !== undefined}
+              THEN ${input.contextPin?.receiptSha256 || null}
+            ELSE context_receipt_sha256
+          END,
+          context_reference_count = CASE
+            WHEN ${input.contextPin !== undefined}
+              THEN ${input.contextPin?.references.length || 0}
+            ELSE context_reference_count
+          END,
           state = ${nextState},
           run_id = CASE WHEN ${nextState} = 'queued' THEN NULL ELSE run_id END,
           result_thread_id = CASE WHEN ${nextState} = 'queued' THEN NULL ELSE result_thread_id END,
@@ -509,6 +625,7 @@ export async function deletePromptQueueItem(input: {
     const changed = await sql`
       UPDATE omni_prompt_queue_items
       SET state = 'deleted', sealed_prompt = NULL,
+          sealed_context_references = NULL,
           dispatch_token_sha256 = NULL, dispatch_lease_expires_at = NULL,
           failure_code = NULL,
           last_modified_session_id = ${input.authority.sessionId},
@@ -596,6 +713,7 @@ export async function claimPromptQueueDispatch(input: {
   itemId: string;
   expectedRevision: number;
   force: boolean;
+  contextPin?: PromptQueueContextPinV1 | null;
   authority: PromptQueueAuthority;
 }): Promise<ClaimedPromptQueueDispatch> {
   const current = await readPromptQueueItem(input.itemId, input.authority);
@@ -609,6 +727,7 @@ export async function claimPromptQueueDispatch(input: {
     );
   }
   await assertCurrentPins(current, input.authority);
+  assertCurrentContextPin(current, input.contextPin || null);
   const dispatchToken = randomBytes(32).toString("base64url");
   const tokenSha256 = sha256(dispatchToken);
   const now = new Date();
@@ -633,6 +752,8 @@ export async function claimPromptQueueDispatch(input: {
       locked.agent.definitionSha256 !== current.agent.definitionSha256 ||
       locked.agent.principalSha256 !== current.agent.principalSha256 ||
       locked.model.routingPolicySha256 !== current.model.routingPolicySha256 ||
+      locked.model.commandSelectionSha256 !== current.model.commandSelectionSha256 ||
+      locked.context?.receiptSha256 !== current.context?.receiptSha256 ||
       locked.promptSha256 !== current.promptSha256
     ) stale();
     const changed = await sql`
@@ -677,6 +798,8 @@ export async function validatePromptQueueDispatch(input: {
     missionId?: string;
     projectId?: string;
     computerUseTarget?: string;
+    contextReferences?: unknown;
+    modelSelection?: unknown;
   };
 }): Promise<PromptQueueItemV1> {
   const candidateRows = await getSql()`
@@ -707,6 +830,8 @@ export async function validatePromptQueueDispatch(input: {
     missionId: input.request.missionId || null,
     projectId: input.request.projectId || null,
     computerUseTarget: input.request.computerUseTarget || null,
+    contextReferences: input.request.contextReferences || null,
+    modelSelection: input.request.modelSelection || null,
   };
   const expectedRequest = {
     message: candidate.prompt,
@@ -719,6 +844,8 @@ export async function validatePromptQueueDispatch(input: {
     computerUseTarget: candidate.target.executionTarget === "local_macos"
       ? "local_macos"
       : null,
+    contextReferences: candidate.context?.references || null,
+    modelSelection: candidate.model.commandSelection || null,
   };
   if (canonicalJsonSha256(exactRequest) !== canonicalJsonSha256(expectedRequest)) {
     throw new PromptQueueStoreError(
@@ -1026,6 +1153,13 @@ async function readPromptQueueItem(
   return publicItemFromRow(rows[0]);
 }
 
+export async function getPromptQueueItem(
+  itemId: string,
+  authority: Pick<PromptQueueAuthority, "tenantId" | "ownerActorId">,
+) {
+  return readPromptQueueItem(itemId, authority);
+}
+
 async function resolvePins(input: {
   tenantId: string;
   actorId: string;
@@ -1033,6 +1167,7 @@ async function resolvePins(input: {
   mode: "orchestrate" | "research" | "execute" | "learn";
   agentId: string;
   executionTarget: "asael" | "local_macos";
+  commandModelSelection?: CommandModelSelectionRequest;
 }) {
   const identity = await resolveAgentIdentityForExecution({
     tenantId: input.tenantId,
@@ -1045,11 +1180,14 @@ async function resolvePins(input: {
     mode: input.mode,
     modelPolicy: identity.definition.modelPolicy,
   });
+  const tier = input.commandModelSelection?.reasoningLevel
+    ? "reasoning" as const
+    : deployment.tier;
   const runtime = await resolveRuntimeModelAssignment({
     tenantId: input.tenantId,
     actorId: input.actorId,
     scope: modelAssignmentScopeForAgent(input.agentId, computerUse),
-    tier: deployment.tier,
+    tier,
     requiredFeature: "tools",
     requiredFeatures: computerUse ? ["vision"] : undefined,
     deploymentFallback: {
@@ -1058,6 +1196,7 @@ async function resolvePins(input: {
       fallbackModel: deployment.fallbackModel,
       reason: deployment.reason,
     },
+    commandSelection: input.commandModelSelection,
   });
   if (!runtime.configured || !runtime.provider || !runtime.model) {
     throw new PromptQueueStoreError(
@@ -1069,7 +1208,7 @@ async function resolvePins(input: {
   const modelBase = {
     providerId: runtime.provider,
     modelId: runtime.model,
-    tier: deployment.tier,
+    tier,
     assignmentId: runtime.assignmentId || null,
     assignmentRevision: runtime.assignmentRevision || null,
     assignmentConfigurationSha256: runtime.assignmentConfigurationSha256 || null,
@@ -1081,6 +1220,8 @@ async function resolvePins(input: {
       source: runtime.source,
       ...modelBase,
     }),
+    commandSelection: input.commandModelSelection || null,
+    commandSelectionSha256: runtime.commandSelectionSha256 || null,
   });
   return { agent, model };
 }
@@ -1096,6 +1237,7 @@ async function assertCurrentPins(
     mode: item.mode,
     agentId: item.agent.logicalAgentId,
     executionTarget: item.target.executionTarget,
+    commandModelSelection: item.model.commandSelection || undefined,
   });
   if (
     current.agent.definitionVersionId !== item.agent.definitionVersionId ||
@@ -1112,6 +1254,14 @@ async function assertCurrentPins(
     throw new PromptQueueStoreError(
       "model_drift",
       "The configured model route changed after this prompt was queued. Edit the prompt to review and pin the current route.",
+    );
+  }
+  if (
+    current.model.commandSelectionSha256 !== item.model.commandSelectionSha256
+  ) {
+    throw new PromptQueueStoreError(
+      "model_drift",
+      "The selected model choice changed after this prompt was queued. Edit the prompt to review and pin it again.",
     );
   }
 }
@@ -1132,6 +1282,34 @@ function publicItemFromRow(row: Record<string, unknown>): PromptQueueItemV1 {
       typeof (opened as { prompt?: unknown }).prompt === "string"
     ? (opened as { prompt: string }).prompt
     : "";
+  const contextReferenceCount = Number(row.context_reference_count || 0);
+  let context: PromptQueueContextPinV1 | null = null;
+  if (contextReferenceCount > 0) {
+    const selectionSha256 = String(row.context_selection_sha256 || "");
+    const openedContext = openJsonPayload(
+      row.sealed_context_references,
+      contextBinding(
+        String(row.tenant_id || ""),
+        String(row.owner_actor_id || ""),
+        id,
+        selectionSha256,
+      ),
+    );
+    const references = openedContext && typeof openedContext === "object" &&
+        !Array.isArray(openedContext)
+      ? (openedContext as { references?: unknown }).references
+      : undefined;
+    context = promptQueueContextPinV1Schema.parse({
+      schemaVersion: 1,
+      references,
+      selectionSha256,
+      contextBlockSha256: row.context_block_sha256,
+      receiptSha256: row.context_receipt_sha256,
+    });
+    if (context.references.length !== contextReferenceCount) {
+      throw new Error("The sealed prompt queue context count is invalid.");
+    }
+  }
   return promptQueueItemV1Schema.parse({
     schemaVersion: Number(row.schema_version),
     id,
@@ -1146,6 +1324,7 @@ function publicItemFromRow(row: Record<string, unknown>): PromptQueueItemV1 {
     targetSha256: row.target_sha256,
     agent: row.agent_pin,
     model: row.model_pin,
+    context,
     state: row.state,
     position: Number(row.position_key),
     lifecycleRevision: Number(row.lifecycle_revision),
@@ -1182,6 +1361,63 @@ function promptBinding(
   promptSha256: string,
 ) {
   return `prompt-queue:v1:${tenantId}:${actorId}:${itemId}:${promptSha256}`;
+}
+
+function contextBinding(
+  tenantId: string,
+  actorId: string,
+  itemId: string,
+  selectionSha256: string,
+) {
+  return `prompt-queue-context:v1:${tenantId}:${actorId}:${itemId}:${selectionSha256}`;
+}
+
+function validateContextPinForReferences(
+  input: PromptQueueContextPinV1 | null,
+  references: PromptQueueContextPinV1["references"],
+) {
+  if (!references.length) {
+    if (input) {
+      throw new PromptQueueStoreError(
+        "conflict",
+        "The queued context pin does not match its empty selection.",
+      );
+    }
+    return null;
+  }
+  if (!input) {
+    throw new PromptQueueStoreError(
+      "conflict",
+      "The queued context selection was not revalidated.",
+    );
+  }
+  const contextPin = promptQueueContextPinV1Schema.parse(input);
+  if (
+    contextPin.selectionSha256 !== canonicalJsonSha256(references) ||
+    canonicalJsonSha256(contextPin.references) !== canonicalJsonSha256(references)
+  ) {
+    throw new PromptQueueStoreError(
+      "conflict",
+      "The queued context pin does not match its exact references.",
+    );
+  }
+  return contextPin;
+}
+
+function assertCurrentContextPin(
+  item: PromptQueueItemV1,
+  current: PromptQueueContextPinV1 | null,
+) {
+  if (
+    item.context?.selectionSha256 !== current?.selectionSha256 ||
+    item.context?.contextBlockSha256 !== current?.contextBlockSha256 ||
+    item.context?.receiptSha256 !== current?.receiptSha256
+  ) {
+    throw new PromptQueueStoreError(
+      "identity_drift",
+      "The selected context changed after this prompt was queued. Edit the prompt to review and pin the current context.",
+    );
+  }
 }
 
 async function lockActorPromptQueue(
@@ -1237,6 +1473,14 @@ async function appendQueueEventFromRow(
       agentDefinitionVersionId: agent.definitionVersionId,
       agentPrincipalVersionId: agent.principalVersionId,
       modelRoutingPolicySha256: model.routingPolicySha256,
+      commandModelSelectionSha256: model.commandSelectionSha256 || null,
+      contextSelectionSha256: row.context_selection_sha256
+        ? String(row.context_selection_sha256)
+        : null,
+      contextReceiptSha256: row.context_receipt_sha256
+        ? String(row.context_receipt_sha256)
+        : null,
+      contextReferenceCount: Number(row.context_reference_count || 0),
       executionTarget: target.executionTarget,
       runId: row.run_id ? String(row.run_id) : null,
       queueGrantsAuthority: false,
@@ -1255,6 +1499,11 @@ function eventPayload(item: PromptQueueItemV1) {
     agentDefinitionVersionId: item.agent.definitionVersionId,
     agentPrincipalVersionId: item.agent.principalVersionId,
     modelRoutingPolicySha256: item.model.routingPolicySha256,
+    commandModelSelectionSha256:
+      item.model.commandSelectionSha256 || null,
+    contextSelectionSha256: item.context?.selectionSha256 || null,
+    contextReceiptSha256: item.context?.receiptSha256 || null,
+    contextReferenceCount: item.context?.references.length || 0,
     executionTarget: item.target.executionTarget,
     runId: item.runId,
     queueGrantsAuthority: false,

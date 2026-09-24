@@ -6,7 +6,9 @@ import {
 } from "@/lib/command/prompt-queue-contracts";
 import {
   claimPromptQueueDispatch,
+  getPromptQueueItem,
 } from "@/lib/command/prompt-queue-store";
+import { resolvePromptQueueContextPin } from "@/lib/command/prompt-queue-context";
 import {
   persistPromptQueueDispatchReceipt,
   type PromptQueueDispatchReceiptBinding,
@@ -193,10 +195,19 @@ async function preparePromptQueueDispatchHandler(
   }
   let claimed;
   try {
+    const current = await getPromptQueueItem(id, authority);
+    const contextPin = await resolvePromptQueueContextPin({
+      context: { ...context, actorId: authority.ownerActorId },
+      references: current.context?.references || [],
+      prompt: current.prompt,
+      agentId: current.agent.logicalAgentId,
+      projectId: current.target.projectId,
+    });
     claimed = await claimPromptQueueDispatch({
       itemId: id,
       expectedRevision: parsed.data.expectedRevision,
       force: parsed.data.force,
+      contextPin,
       authority,
     });
   } catch (error) {
@@ -252,6 +263,8 @@ async function preparePromptQueueDispatchHandler(
           item.target.executionTarget === "local_macos"
             ? "local_macos"
             : undefined,
+        contextReferences: item.context?.references,
+        modelSelection: item.model.commandSelection || undefined,
         requestId: `prompt-queue-${item.id}-${item.lifecycleRevision}`,
       }),
       signal: request.signal,

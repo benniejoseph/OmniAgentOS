@@ -32,7 +32,10 @@ import { ensureScheduledWorkflowTriggerShadowV1 } from "@/lib/db/workflow-trigge
 import { ensureScheduledWorkflowReadOnlyCanaryV1 } from "@/lib/db/workflow-schedule-canary-schema";
 import { ensureScheduledWorkflowPolicyLeaseV1 } from "@/lib/db/workflow-policy-lease-schema";
 import { ensureNotificationDispositionRuntimeV1 } from "@/lib/db/notification-disposition-schema";
-import { ensurePromptQueueRuntimeV1 } from "@/lib/db/prompt-queue-schema";
+import {
+  ensurePromptQueueContextPinsV1,
+  ensurePromptQueueRuntimeV1,
+} from "@/lib/db/prompt-queue-schema";
 import { ensureAgentDailyLearningV1 } from "@/lib/db/agent-learning-schema";
 import { ensureGoogleMultiAccountConnectionsV1 } from "@/lib/db/google-multi-account-schema";
 import { ensureDeclarativePluginsV1 } from "@/lib/db/plugin-schema";
@@ -1775,6 +1778,10 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[204],
       up: ensureLocalComputerCommandRunnerV1,
+    },
+    {
+      ...databaseSchemaMigrations[205],
+      up: ensurePromptQueueContextPinsV1,
     },
   ];
 }

@@ -1023,5 +1023,10 @@
     "version": 205,
     "name": "governed_local_command_runner_v1",
     "checksum": "a9c301b4ef3030962b2ae9f69b8df9c2cb2914e90b0d9c8a3c6032f91691015a"
+  },
+  {
+    "version": 206,
+    "name": "prompt_queue_context_pins_v1",
+    "checksum": "5de8d38921e0d4d0f7e79bcfe4745f780ce973b009c874a519d09bfd8f3ff777"
   }
 ]

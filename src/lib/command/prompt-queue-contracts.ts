@@ -1,5 +1,8 @@
 import { z } from "zod";
 
+import { commandContextReferencesSchema } from "@/lib/command/composer-context-contract";
+import { commandModelSelectionRequestSchema } from "@/lib/models/command-selection";
+
 export const PROMPT_QUEUE_SCHEMA_VERSION = 1 as const;
 export const PROMPT_QUEUE_MAX_ITEMS = 40;
 export const PROMPT_QUEUE_MAX_PROMPT_CHARS = 20_000;
@@ -45,6 +48,8 @@ export const promptQueueModelPinV1Schema = z.object({
   assignmentRevision: positiveIntegerSchema.nullable(),
   assignmentConfigurationSha256: sha256Schema.nullable(),
   routingPolicySha256: sha256Schema,
+  commandSelection: commandModelSelectionRequestSchema.nullable().optional(),
+  commandSelectionSha256: sha256Schema.nullable().optional(),
 }).strict().superRefine((value, context) => {
   const assignmentFields = [
     value.assignmentId,
@@ -59,7 +64,22 @@ export const promptQueueModelPinV1Schema = z.object({
       message: "A model assignment pin must be complete or absent.",
     });
   }
+  if (Boolean(value.commandSelection) !== Boolean(value.commandSelectionSha256)) {
+    context.addIssue({
+      code: "custom",
+      path: ["commandSelection"],
+      message: "An explicit command model selection and its digest must be pinned together.",
+    });
+  }
 });
+
+export const promptQueueContextPinV1Schema = z.object({
+  schemaVersion: z.literal(1),
+  references: commandContextReferencesSchema.min(1),
+  selectionSha256: sha256Schema,
+  contextBlockSha256: sha256Schema,
+  receiptSha256: sha256Schema,
+}).strict();
 
 export const promptQueueItemV1Schema = z.object({
   schemaVersion: z.literal(PROMPT_QUEUE_SCHEMA_VERSION),
@@ -75,6 +95,7 @@ export const promptQueueItemV1Schema = z.object({
   targetSha256: sha256Schema,
   agent: promptQueueAgentPinV1Schema,
   model: promptQueueModelPinV1Schema,
+  context: promptQueueContextPinV1Schema.nullable(),
   state: z.enum([
     "queued",
     "paused",
@@ -108,15 +129,23 @@ export const promptQueueCreateRequestSchema = z.object({
   strategy: z.enum(["direct", "auto"]).default("direct"),
   agentId: governedAgentIdSchema.default("atlas"),
   target: promptQueueTargetV1Schema,
+  contextReferences: commandContextReferencesSchema.optional(),
+  modelSelection: commandModelSelectionRequestSchema.optional(),
 }).strict();
 
 export const promptQueueUpdateRequestSchema = z.object({
   expectedRevision: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
   prompt: z.string().trim().min(1).max(PROMPT_QUEUE_MAX_PROMPT_CHARS).optional(),
   state: z.enum(["queued", "paused"]).optional(),
+  contextReferences: commandContextReferencesSchema.optional(),
+  modelSelection: commandModelSelectionRequestSchema.nullable().optional(),
 }).strict().refine(
-  (value) => value.prompt !== undefined || value.state !== undefined,
-  { message: "A prompt or lifecycle change is required." },
+  (value) =>
+    value.prompt !== undefined ||
+    value.state !== undefined ||
+    value.contextReferences !== undefined ||
+    value.modelSelection !== undefined,
+  { message: "A prompt, context, model, or lifecycle change is required." },
 );
 
 export const promptQueueDeleteRequestSchema = z.object({
@@ -142,5 +171,6 @@ export const promptQueueDispatchRequestSchema = z.object({
 export type PromptQueueTargetV1 = Readonly<z.infer<typeof promptQueueTargetV1Schema>>;
 export type PromptQueueAgentPinV1 = Readonly<z.infer<typeof promptQueueAgentPinV1Schema>>;
 export type PromptQueueModelPinV1 = Readonly<z.infer<typeof promptQueueModelPinV1Schema>>;
+export type PromptQueueContextPinV1 = Readonly<z.infer<typeof promptQueueContextPinV1Schema>>;
 export type PromptQueueItemV1 = Readonly<z.infer<typeof promptQueueItemV1Schema>>;
 export type PromptQueueCreateRequest = Readonly<z.infer<typeof promptQueueCreateRequestSchema>>;

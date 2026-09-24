@@ -2,6 +2,8 @@ import {
   PromptQueueStoreError,
   type PromptQueueAuthority,
 } from "@/lib/command/prompt-queue-store";
+import { CommandContextResolutionError } from "@/lib/command/context-reference-runtime";
+import { CommandModelSelectionError } from "@/lib/models/command-selection";
 import {
   canonicalRequestActorBindingFromSecurityContext,
 } from "@/lib/security/canonical-actor";
@@ -46,6 +48,24 @@ export function promptQueueAuthority(
 }
 
 export function promptQueueErrorResponse(error: unknown) {
+  if (error instanceof CommandContextResolutionError) {
+    return Response.json({
+      error: error.code,
+      message: error.message,
+    }, {
+      status: error.status,
+      headers: { "cache-control": "private, no-store" },
+    });
+  }
+  if (error instanceof CommandModelSelectionError) {
+    return Response.json({
+      error: "model_drift",
+      message: error.message,
+    }, {
+      status: 409,
+      headers: { "cache-control": "private, no-store" },
+    });
+  }
   if (error instanceof PromptQueueStoreError) {
     return Response.json({
       error: error.code,
