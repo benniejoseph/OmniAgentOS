@@ -30,6 +30,7 @@ import type { MemoryMaintenanceReport } from "@/lib/memory/lifecycle";
 import type { SecurityContext } from "@/lib/security/types";
 import {
   getOperationJobStats,
+  listRunnableOperationDispatchTenants,
   listMaintenanceTenantIds,
 } from "@/lib/operations/job-queue";
 import {
@@ -750,6 +751,20 @@ async function runAllTenantScheduledWork({
   const runFast = lane === "fast" || lane === "all";
   const runBackground = lane === "background" || lane === "all";
   const runMaintenance = lane === "maintenance" || lane === "all";
+  const dispatchTenants = runFast || runBackground
+    ? await listRunnableOperationDispatchTenants({
+        workflowLimit: runFast ? queueLimit : 0,
+        agentResumeLimit: runFast ? queueLimit : 0,
+        agentExecuteLimit: runFast ? queueLimit : 0,
+        backgroundLimit: runBackground ? Math.min(queueLimit, 3) : 0,
+      })
+    : {
+        workflowTenantIds: [],
+        agentResumeTenantIds: [],
+        agentExecuteTenantIds: [],
+        backgroundTenantIds: [],
+      };
+  const dispatchBudgetMs = Math.max(1_000, deadlineAt - Date.now());
   const [
     localComputerObservationScrub,
     queue,
@@ -763,7 +778,8 @@ async function runAllTenantScheduledWork({
     runFast
       ? processAllTenantWorkflowQueues({
           limit: queueLimit,
-          timeBudgetMs: boundedBudgetMs,
+          timeBudgetMs: dispatchBudgetMs,
+          tenantIds: dispatchTenants.workflowTenantIds,
         })
       : Promise.resolve({
           requested: 0,
@@ -779,7 +795,8 @@ async function runAllTenantScheduledWork({
     runFast
       ? processAllTenantAgentResumeQueues({
           limit: queueLimit,
-          timeBudgetMs: boundedBudgetMs,
+          timeBudgetMs: dispatchBudgetMs,
+          tenantIds: dispatchTenants.agentResumeTenantIds,
         })
       : Promise.resolve({
           tenantIds: [],
@@ -792,7 +809,8 @@ async function runAllTenantScheduledWork({
     runFast
       ? processAllTenantDurableSpecialistQueues({
           limit: queueLimit,
-          timeBudgetMs: boundedBudgetMs,
+          timeBudgetMs: dispatchBudgetMs,
+          tenantIds: dispatchTenants.agentExecuteTenantIds,
         })
       : Promise.resolve({
           tenantIds: [],
@@ -805,7 +823,8 @@ async function runAllTenantScheduledWork({
     runBackground
       ? processAllTenantBackgroundOperationQueues({
           limit: Math.min(queueLimit, 3),
-          timeBudgetMs: boundedBudgetMs,
+          timeBudgetMs: dispatchBudgetMs,
+          tenantIds: dispatchTenants.backgroundTenantIds,
         })
       : Promise.resolve({
           tenantIds: [],

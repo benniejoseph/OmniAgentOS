@@ -142,7 +142,11 @@ export function processWorkflowQueue(
 }
 
 export async function processAllTenantWorkflowQueues(
-  input: { limit?: number; timeBudgetMs?: number } = {},
+  input: {
+    limit?: number;
+    timeBudgetMs?: number;
+    tenantIds?: readonly string[];
+  } = {},
 ): Promise<AllTenantWorkflowQueueResult> {
   const limit = Math.min(Math.max(input.limit || WORKFLOW_DRAIN_LIMIT, 1), 10);
   const deadlineSignal = AbortSignal.timeout(
@@ -151,7 +155,9 @@ export async function processAllTenantWorkflowQueues(
       240_000,
     ),
   );
-  const tenantIds = await listRunnableWorkflowTenantIds(limit);
+  const tenantIds = input.tenantIds
+    ? boundedDispatchTenantIds(input.tenantIds, limit)
+    : await listRunnableWorkflowTenantIds(limit);
   const tenantResults: AllTenantWorkflowQueueResult["tenantResults"] = [];
   const jobs: WorkflowQueueJobResult[] = [];
   let remaining = limit;
@@ -196,6 +202,11 @@ export async function processAllTenantWorkflowQueues(
     tenantIds,
     tenantResults,
   };
+}
+
+function boundedDispatchTenantIds(tenantIds: readonly string[], limit: number) {
+  return [...new Set(tenantIds.map((tenantId) => tenantId.trim()).filter(Boolean))]
+    .slice(0, limit);
 }
 
 async function processWorkflowQueueInScope(

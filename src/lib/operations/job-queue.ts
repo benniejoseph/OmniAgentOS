@@ -84,6 +84,20 @@ export type OperationJobRecoveryRow = Pick<
   "id" | "dedupeKey" | "status" | "leaseExpiresAt"
 >;
 
+export type OperationDispatchTenantSnapshot = {
+  workflowTenantIds: string[];
+  agentResumeTenantIds: string[];
+  agentExecuteTenantIds: string[];
+  backgroundTenantIds: string[];
+};
+
+type OperationDispatchTenantSnapshotInput = {
+  workflowLimit?: number;
+  agentResumeLimit?: number;
+  agentExecuteLimit?: number;
+  backgroundLimit?: number;
+};
+
 const ACTOR_PRIVATE_OPERATION_JOB_TYPES = new Set<OperationJobType>([
   "conversation.summary.enrich",
   "market.events.backfill",
@@ -1458,182 +1472,118 @@ function pollingPayload(payload: Record<string, unknown>) {
   );
 }
 
-export async function listRunnableWorkflowTenantIds(limit = 10) {
-  const boundedLimit = Math.min(Math.max(limit, 1), 25);
+export async function listRunnableOperationDispatchTenants(
+  input: OperationDispatchTenantSnapshotInput = {},
+): Promise<OperationDispatchTenantSnapshot> {
+  const limits = {
+    workflow: boundedDispatchLimit(input.workflowLimit),
+    agent_resume: boundedDispatchLimit(input.agentResumeLimit),
+    agent_execute: boundedDispatchLimit(input.agentExecuteLimit),
+    background: boundedDispatchLimit(input.backgroundLimit),
+  } as const;
+  const empty: OperationDispatchTenantSnapshot = {
+    workflowTenantIds: [],
+    agentResumeTenantIds: [],
+    agentExecuteTenantIds: [],
+    backgroundTenantIds: [],
+  };
+  if (Object.values(limits).every((limit) => limit === 0)) {
+    return empty;
+  }
+  const activeJobTypes: OperationJobType[] = [
+    ...(limits.workflow > 0 ? ["workflow.tick" as const] : []),
+    ...(limits.agent_resume > 0 ? ["agent.resume" as const] : []),
+    ...(limits.agent_execute > 0 ? ["agent.execute" as const] : []),
+    ...(limits.background > 0 ? [...BACKGROUND_OPERATION_JOB_TYPES] : []),
+  ];
+
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     return runWithDatabaseSystemScope(
-      "Find tenant-owned workflow work for the dedicated worker.",
+      "Build one bounded tenant dispatch snapshot for runnable operation lanes.",
       async () => {
         const rows = await getSql()`
-          SELECT tenant_id
-          FROM (
+          WITH operation_candidates AS MATERIALIZED (
             SELECT
               tenant_id,
-              MIN(CASE
-                WHEN status = 'queued' THEN run_at
-                ELSE lease_expires_at
-              END) AS runnable_at
+              CASE
+                WHEN type = 'workflow.tick' THEN 'workflow'
+                WHEN type = 'agent.resume' THEN 'agent_resume'
+                WHEN type = 'agent.execute' THEN 'agent_execute'
+                ELSE 'background'
+              END AS lane,
+              MIN(
+                CASE
+                  WHEN status = 'queued' THEN run_at
+                  ELSE lease_expires_at
+                END
+              ) AS runnable_at
             FROM omni_operation_jobs
-            WHERE type = 'workflow.tick'
+            WHERE type = ANY(${activeJobTypes}::text[])
               AND (
                 (status = 'queued' AND run_at <= NOW())
                 OR (status = 'running' AND lease_expires_at <= NOW())
               )
-            GROUP BY tenant_id
+            GROUP BY 1, 2
+          ),
+          workflow_candidates AS (
+            SELECT tenant_id, runnable_at
+            FROM operation_candidates
+            WHERE lane = 'workflow'
             UNION ALL
             SELECT tenant_id, MIN(updated_at) AS runnable_at
             FROM omni_workflow_runs
-            WHERE status = 'queued'
+            WHERE ${limits.workflow} > 0
+              AND status = 'queued'
             GROUP BY tenant_id
-          ) candidates
-          GROUP BY tenant_id
-          ORDER BY MIN(runnable_at) ASC, tenant_id ASC
-          LIMIT ${boundedLimit}
-        `;
-        return rows.map((row) => String(row.tenant_id));
-      },
-    );
-  }
-
-  const now = Date.now();
-  const ledger = await readJobLedger();
-  const tenants = new Set(
-    ledger.jobs
-      .filter(
-        (job) =>
-          job.type === "workflow.tick" &&
-          (
-            (job.status === "queued" && Date.parse(job.runAt) <= now) ||
-            (job.status === "running" && Date.parse(job.leaseExpiresAt || "") <= now)
           ),
-      )
-      .map(jobTenantId),
-  );
-  return [...tenants].sort().slice(0, boundedLimit);
-}
-
-export async function listRunnableAgentResumeTenantIds(limit = 10) {
-  const boundedLimit = Math.min(Math.max(limit, 1), 25);
-  if (hasDatabaseUrl()) {
-    await ensureDatabaseSchema();
-    return runWithDatabaseSystemScope(
-      "Find tenant-owned agent continuation work for the dedicated worker.",
-      async () => {
-        const rows = await getSql()`
-          SELECT tenant_id
-          FROM omni_operation_jobs
-          WHERE type = 'agent.resume'
-            AND (
-              (status = 'queued' AND run_at <= NOW())
-              OR (status = 'running' AND lease_expires_at <= NOW())
-            )
-          GROUP BY tenant_id
-          ORDER BY MIN(
-            CASE
-              WHEN status = 'queued' THEN run_at
-              ELSE lease_expires_at
-            END
-          ) ASC, tenant_id ASC
-          LIMIT ${boundedLimit}
+          lane_candidates AS (
+            SELECT lane, tenant_id, runnable_at
+            FROM operation_candidates
+            WHERE lane <> 'workflow'
+            UNION ALL
+            SELECT 'workflow' AS lane, tenant_id, MIN(runnable_at) AS runnable_at
+            FROM workflow_candidates
+            GROUP BY tenant_id
+          ),
+          ranked AS (
+            SELECT
+              lane,
+              tenant_id,
+              ROW_NUMBER() OVER (
+                PARTITION BY lane
+                ORDER BY runnable_at ASC, tenant_id ASC
+              ) AS lane_rank
+            FROM lane_candidates
+          )
+          SELECT lane, tenant_id, lane_rank
+          FROM ranked
+          WHERE
+            (lane = 'workflow' AND lane_rank <= ${limits.workflow})
+            OR (lane = 'agent_resume' AND lane_rank <= ${limits.agent_resume})
+            OR (lane = 'agent_execute' AND lane_rank <= ${limits.agent_execute})
+            OR (lane = 'background' AND lane_rank <= ${limits.background})
+          ORDER BY lane ASC, lane_rank ASC
         `;
-        return rows.map((row) => String(row.tenant_id));
-      },
-    );
-  }
-
-  const now = Date.now();
-  const ledger = await readJobLedger();
-  return [
-    ...new Set(
-      ledger.jobs
-        .filter(
-          (job) =>
-            job.type === "agent.resume" &&
-            ((job.status === "queued" && Date.parse(job.runAt) <= now) ||
-              (job.status === "running" &&
-                Date.parse(job.leaseExpiresAt || "") <= now)),
-        )
-        .map(jobTenantId),
-    ),
-  ]
-    .sort()
-    .slice(0, boundedLimit);
-}
-
-export async function listRunnableAgentExecuteTenantIds(limit = 10) {
-  const boundedLimit = Math.min(Math.max(limit, 1), 25);
-  if (hasDatabaseUrl()) {
-    await ensureDatabaseSchema();
-    return runWithDatabaseSystemScope(
-      "Find tenant-owned durable specialist work for the dedicated worker.",
-      async () => {
-        const rows = await getSql()`
-          SELECT tenant_id
-          FROM omni_operation_jobs
-          WHERE type = 'agent.execute'
-            AND (
-              (status = 'queued' AND run_at <= NOW())
-              OR (status = 'running' AND lease_expires_at <= NOW())
-            )
-          GROUP BY tenant_id
-          ORDER BY MIN(
-            CASE
-              WHEN status = 'queued' THEN run_at
-              ELSE lease_expires_at
-            END
-          ) ASC, tenant_id ASC
-          LIMIT ${boundedLimit}
-        `;
-        return rows.map((row) => String(row.tenant_id));
-      },
-    );
-  }
-
-  const now = Date.now();
-  const ledger = await readJobLedger();
-  return [
-    ...new Set(
-      ledger.jobs
-        .filter(
-          (job) =>
-            job.type === "agent.execute" &&
-            ((job.status === "queued" && Date.parse(job.runAt) <= now) ||
-              (job.status === "running" &&
-                Date.parse(job.leaseExpiresAt || "") <= now)),
-        )
-        .map(jobTenantId),
-    ),
-  ]
-    .sort()
-    .slice(0, boundedLimit);
-}
-
-export async function listRunnableBackgroundJobTenantIds(limit = 10) {
-  const boundedLimit = Math.min(Math.max(limit, 1), 25);
-  if (hasDatabaseUrl()) {
-    await ensureDatabaseSchema();
-    return runWithDatabaseSystemScope(
-      "Find tenant-owned background operation work for the dedicated worker.",
-      async () => {
-        const rows = await getSql()`
-          SELECT tenant_id
-          FROM omni_operation_jobs
-          WHERE type = ANY(${[...BACKGROUND_OPERATION_JOB_TYPES]}::text[])
-            AND (
-              (status = 'queued' AND run_at <= NOW())
-              OR (status = 'running' AND lease_expires_at <= NOW())
-            )
-          GROUP BY tenant_id
-          ORDER BY MIN(
-            CASE
-              WHEN status = 'queued' THEN run_at
-              ELSE lease_expires_at
-            END
-          ) ASC, tenant_id ASC
-          LIMIT ${boundedLimit}
-        `;
-        return rows.map((row) => String(row.tenant_id));
+        const snapshot = { ...empty };
+        for (const row of rows) {
+          const tenantId = String(row.tenant_id);
+          switch (String(row.lane)) {
+            case "workflow":
+              snapshot.workflowTenantIds.push(tenantId);
+              break;
+            case "agent_resume":
+              snapshot.agentResumeTenantIds.push(tenantId);
+              break;
+            case "agent_execute":
+              snapshot.agentExecuteTenantIds.push(tenantId);
+              break;
+            case "background":
+              snapshot.backgroundTenantIds.push(tenantId);
+              break;
+          }
+        }
+        return snapshot;
       },
     );
   }
@@ -1643,21 +1593,108 @@ export async function listRunnableBackgroundJobTenantIds(limit = 10) {
     BACKGROUND_OPERATION_JOB_TYPES,
   );
   const ledger = await readJobLedger();
-  return [
-    ...new Set(
-      ledger.jobs
-        .filter(
-          (job) =>
-            backgroundTypes.has(job.type) &&
-            ((job.status === "queued" && Date.parse(job.runAt) <= now) ||
-              (job.status === "running" &&
-                Date.parse(job.leaseExpiresAt || "") <= now)),
-        )
-        .map(jobTenantId),
+  const candidates: Record<keyof typeof limits, Map<string, number>> = {
+    workflow: new Map(),
+    agent_resume: new Map(),
+    agent_execute: new Map(),
+    background: new Map(),
+  };
+  for (const job of ledger.jobs) {
+    const runnableAt = runnableOperationJobTime(job, now);
+    if (runnableAt === undefined) continue;
+    const lane = job.type === "workflow.tick"
+      ? "workflow"
+      : job.type === "agent.resume"
+        ? "agent_resume"
+        : job.type === "agent.execute"
+          ? "agent_execute"
+          : backgroundTypes.has(job.type)
+            ? "background"
+            : undefined;
+    if (!lane || limits[lane] === 0) continue;
+    const tenantId = jobTenantId(job);
+    const previous = candidates[lane].get(tenantId);
+    if (previous === undefined || runnableAt < previous) {
+      candidates[lane].set(tenantId, runnableAt);
+    }
+  }
+
+  return {
+    workflowTenantIds: sortedDispatchTenantIds(
+      candidates.workflow,
+      limits.workflow,
     ),
-  ]
-    .sort()
-    .slice(0, boundedLimit);
+    agentResumeTenantIds: sortedDispatchTenantIds(
+      candidates.agent_resume,
+      limits.agent_resume,
+    ),
+    agentExecuteTenantIds: sortedDispatchTenantIds(
+      candidates.agent_execute,
+      limits.agent_execute,
+    ),
+    backgroundTenantIds: sortedDispatchTenantIds(
+      candidates.background,
+      limits.background,
+    ),
+  };
+}
+
+function boundedDispatchLimit(limit: number | undefined) {
+  return Math.min(Math.max(Math.round(limit || 0), 0), 25);
+}
+
+function boundedLegacyDispatchLimit(limit: number) {
+  return Math.min(Math.max(Math.round(limit), 1), 25);
+}
+
+function runnableOperationJobTime(job: OperationJobRecord, now: number) {
+  if (job.status === "queued") {
+    const runAt = Date.parse(job.runAt);
+    return runAt <= now ? runAt : undefined;
+  }
+  if (job.status === "running") {
+    const leaseExpiresAt = Date.parse(job.leaseExpiresAt || "");
+    return leaseExpiresAt <= now ? leaseExpiresAt : undefined;
+  }
+  return undefined;
+}
+
+function sortedDispatchTenantIds(
+  candidates: Map<string, number>,
+  limit: number,
+) {
+  return [...candidates]
+    .sort((left, right) => left[1] - right[1] || left[0].localeCompare(right[0]))
+    .slice(0, limit)
+    .map(([tenantId]) => tenantId);
+}
+
+export async function listRunnableWorkflowTenantIds(limit = 10) {
+  const snapshot = await listRunnableOperationDispatchTenants({
+    workflowLimit: boundedLegacyDispatchLimit(limit),
+  });
+  return snapshot.workflowTenantIds;
+}
+
+export async function listRunnableAgentResumeTenantIds(limit = 10) {
+  const snapshot = await listRunnableOperationDispatchTenants({
+    agentResumeLimit: boundedLegacyDispatchLimit(limit),
+  });
+  return snapshot.agentResumeTenantIds;
+}
+
+export async function listRunnableAgentExecuteTenantIds(limit = 10) {
+  const snapshot = await listRunnableOperationDispatchTenants({
+    agentExecuteLimit: boundedLegacyDispatchLimit(limit),
+  });
+  return snapshot.agentExecuteTenantIds;
+}
+
+export async function listRunnableBackgroundJobTenantIds(limit = 10) {
+  const snapshot = await listRunnableOperationDispatchTenants({
+    backgroundLimit: boundedLegacyDispatchLimit(limit),
+  });
+  return snapshot.backgroundTenantIds;
 }
 
 export async function listMaintenanceTenantIds({

@@ -90,16 +90,20 @@ export async function processAgentResumeQueue({
 export async function processAllTenantAgentResumeQueues({
   limit = 5,
   timeBudgetMs = 240_000,
+  tenantIds: dispatchTenantIds,
 }: {
   limit?: number;
   timeBudgetMs?: number;
+  tenantIds?: readonly string[];
 } = {}) {
   const boundedLimit = Math.min(Math.max(Math.round(limit), 1), 10);
   const deadline = Date.now() + Math.min(
     Math.max(Math.round(timeBudgetMs), 1_000),
     240_000,
   );
-  const tenantIds = await listRunnableAgentResumeTenantIds(boundedLimit);
+  const tenantIds = dispatchTenantIds
+    ? boundedDispatchTenantIds(dispatchTenantIds, boundedLimit)
+    : await listRunnableAgentResumeTenantIds(boundedLimit);
   const tenantResults: Array<{
     tenantId: string;
     result: AgentResumeQueueResult;
@@ -133,6 +137,11 @@ export async function processAllTenantAgentResumeQueues({
       0,
     ),
   };
+}
+
+function boundedDispatchTenantIds(tenantIds: readonly string[], limit: number) {
+  return [...new Set(tenantIds.map((tenantId) => tenantId.trim()).filter(Boolean))]
+    .slice(0, limit);
 }
 
 async function processAgentResumeJob(

@@ -742,13 +742,17 @@ async function processBackgroundOperationQueueInScope({
 export async function processAllTenantBackgroundOperationQueues({
   limit = 3,
   timeBudgetMs = 240_000,
+  tenantIds: dispatchTenantIds,
 }: {
   limit?: number;
   timeBudgetMs?: number;
+  tenantIds?: readonly string[];
 } = {}) {
   const boundedLimit = Math.min(Math.max(Math.round(limit), 1), 3);
   const startedAt = Date.now();
-  const tenantIds = await listRunnableBackgroundJobTenantIds(boundedLimit);
+  const tenantIds = dispatchTenantIds
+    ? boundedDispatchTenantIds(dispatchTenantIds, boundedLimit)
+    : await listRunnableBackgroundJobTenantIds(boundedLimit);
   const results: BackgroundJobResult[] = [];
 
   for (const tenantId of tenantIds) {
@@ -768,6 +772,11 @@ export async function processAllTenantBackgroundOperationQueues({
     tenantIds,
     ...summarizeBackgroundResults(results),
   };
+}
+
+function boundedDispatchTenantIds(tenantIds: readonly string[], limit: number) {
+  return [...new Set(tenantIds.map((tenantId) => tenantId.trim()).filter(Boolean))]
+    .slice(0, limit);
 }
 
 type BackgroundJobResult = {

@@ -103,16 +103,20 @@ export async function processDurableSpecialistQueue({
 export async function processAllTenantDurableSpecialistQueues({
   limit = 4,
   timeBudgetMs = 240_000,
+  tenantIds: dispatchTenantIds,
 }: {
   limit?: number;
   timeBudgetMs?: number;
+  tenantIds?: readonly string[];
 } = {}) {
   const boundedLimit = Math.min(Math.max(Math.round(limit), 1), 10);
   const deadline = Date.now() + Math.min(
     Math.max(Math.round(timeBudgetMs), 1_000),
     240_000,
   );
-  const tenantIds = await listRunnableAgentExecuteTenantIds(boundedLimit);
+  const tenantIds = dispatchTenantIds
+    ? boundedDispatchTenantIds(dispatchTenantIds, boundedLimit)
+    : await listRunnableAgentExecuteTenantIds(boundedLimit);
   const tenantResults: Array<{
     tenantId: string;
     result: ReturnType<typeof summarize>;
@@ -139,6 +143,11 @@ export async function processAllTenantDurableSpecialistQueues({
     failed: tenantResults.reduce((sum, item) => sum + item.result.failed, 0),
     stale: tenantResults.reduce((sum, item) => sum + item.result.stale, 0),
   };
+}
+
+function boundedDispatchTenantIds(tenantIds: readonly string[], limit: number) {
+  return [...new Set(tenantIds.map((tenantId) => tenantId.trim()).filter(Boolean))]
+    .slice(0, limit);
 }
 
 async function processSpecialistJob(
