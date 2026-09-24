@@ -14,6 +14,7 @@ class PaymentsView extends StatefulWidget {
 }
 
 class _PaymentsViewState extends State<PaymentsView> {
+  Future<void>? _loadInFlight;
   Json? readiness, reviews, authenticators, transactions;
   Object? error;
   bool loading = true;
@@ -24,24 +25,42 @@ class _PaymentsViewState extends State<PaymentsView> {
     _load();
   }
 
-  Future<void> _load() async {
+  Future<void> _load() {
+    final inFlight = _loadInFlight;
+    if (inFlight != null) return inFlight;
+    final operation = _performLoad();
+    _loadInFlight = operation;
+    return operation.whenComplete(() {
+      if (identical(_loadInFlight, operation)) _loadInFlight = null;
+    });
+  }
+
+  Future<void> _performLoad() async {
     setState(() {
       loading = true;
       error = null;
     });
     try {
-      final values = await Future.wait([
+      final primary = await Future.wait([
         widget.api.getJson(NativePaths.paymentsReadiness),
         widget.api.getJson(NativePaths.paymentsReviews),
+      ]);
+      if (!mounted) return;
+      setState(() {
+        readiness = primary[0];
+        reviews = primary[1];
+      });
+      final secondary = await Future.wait([
         widget.api.getJson(NativePaths.paymentsAuthenticators),
         widget.api.getJson(NativePaths.paymentsTransactions),
       ]);
-      readiness = values[0];
-      reviews = values[1];
-      authenticators = values[2];
-      transactions = values[3];
+      if (!mounted) return;
+      setState(() {
+        authenticators = secondary[0];
+        transactions = secondary[1];
+      });
     } catch (value) {
-      error = value;
+      if (mounted) setState(() => error = value);
     } finally {
       if (mounted) setState(() => loading = false);
     }
@@ -126,65 +145,72 @@ class _PaymentsViewState extends State<PaymentsView> {
                               padding: const EdgeInsets.only(bottom: 9),
                               child: _ReviewCard(review: Json.from(value)),
                             ),
-                        const SizedBox(height: 22),
-                        _SectionHeading(
-                          title: 'Hardware-backed signers',
-                          count: credentials
-                              .where((item) => item['state'] == 'active')
-                              .length,
-                        ),
-                        const SizedBox(height: 8),
-                        if (credentials.isEmpty)
-                          const _Empty(
-                            message: 'No payment signer is registered.',
+                        if (loading &&
+                            (authenticators == null || transactions == null))
+                          const Padding(
+                            padding: EdgeInsets.symmetric(vertical: 32),
+                            child: Center(child: CircularProgressIndicator()),
                           )
-                        else
-                          _Surface(
-                            child: Column(
-                              children: [
-                                for (
-                                  var index = 0;
-                                  index < credentials.length;
-                                  index++
-                                ) ...[
-                                  _CredentialRow(
-                                    value: Json.from(credentials[index]),
-                                  ),
-                                  if (index != credentials.length - 1)
-                                    const Divider(height: 1),
-                                ],
-                              ],
-                            ),
+                        else ...[
+                          const SizedBox(height: 22),
+                          _SectionHeading(
+                            title: 'Hardware-backed signers',
+                            count: credentials
+                                .where((item) => item['state'] == 'active')
+                                .length,
                           ),
-                        const SizedBox(height: 22),
-                        _SectionHeading(
-                          title: 'Payment evidence',
-                          count: transactionItems.length,
-                        ),
-                        const SizedBox(height: 8),
-                        if (transactionItems.isEmpty)
-                          const _Empty(
-                            message:
-                                'No reconciled payment lifecycle is recorded.',
-                          )
-                        else
-                          _Surface(
-                            child: Column(
-                              children: [
-                                for (
-                                  var index = 0;
-                                  index < transactionItems.length;
-                                  index++
-                                ) ...[
-                                  _TransactionRow(
-                                    value: Json.from(transactionItems[index]),
-                                  ),
-                                  if (index != transactionItems.length - 1)
-                                    const Divider(height: 1),
+                          const SizedBox(height: 8),
+                          if (credentials.isEmpty)
+                            const _Empty(
+                              message: 'No payment signer is registered.',
+                            )
+                          else
+                            _Surface(
+                              child: Column(
+                                children: [
+                                  for (
+                                    var index = 0;
+                                    index < credentials.length;
+                                    index++
+                                  ) ...[
+                                    _CredentialRow(
+                                      value: Json.from(credentials[index]),
+                                    ),
+                                    if (index != credentials.length - 1)
+                                      const Divider(height: 1),
+                                  ],
                                 ],
-                              ],
+                              ),
                             ),
+                          const SizedBox(height: 22),
+                          _SectionHeading(
+                            title: 'Payment evidence',
+                            count: transactionItems.length,
                           ),
+                          const SizedBox(height: 8),
+                          if (transactionItems.isEmpty)
+                            const _Empty(
+                              message: 'No reconciled payment lifecycle is recorded.',
+                            )
+                          else
+                            _Surface(
+                              child: Column(
+                                children: [
+                                  for (
+                                    var index = 0;
+                                    index < transactionItems.length;
+                                    index++
+                                  ) ...[
+                                    _TransactionRow(
+                                      value: Json.from(transactionItems[index]),
+                                    ),
+                                    if (index != transactionItems.length - 1)
+                                      const Divider(height: 1),
+                                  ],
+                                ],
+                              ),
+                            ),
+                        ],
                       ],
                     ],
                   ),

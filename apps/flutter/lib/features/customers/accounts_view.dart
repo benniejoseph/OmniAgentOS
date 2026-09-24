@@ -52,6 +52,54 @@ class CustomerAccountSummary {
   final int openRisks, pendingApprovals;
 }
 
+List<CustomerAccountSummary> customerAccountSummariesFromResponses(
+  Json accountsResponse, [
+  Json? portfolioResponse,
+]) {
+  final portfolio = _map(portfolioResponse?['portfolio']);
+  final intelligence = <String, Json>{
+    for (final value
+        in (portfolio['accounts'] as List? ?? const []).whereType<Map>())
+      if (value['accountId'] != null)
+        value['accountId'].toString(): Json.from(value),
+  };
+  return (accountsResponse['accounts'] as List? ?? const [])
+      .whereType<Map>()
+      .map((value) {
+        final account = Json.from(value);
+        return CustomerAccountSummary.fromJson(
+          account,
+          intelligence[account['accountId']?.toString()],
+        );
+      })
+      .where((value) => value.id.isNotEmpty)
+      .toList(growable: false);
+}
+
+List<CustomerAccountSummary> mergeCustomerAccountCoreWithCachedIntelligence(
+  List<CustomerAccountSummary> primary,
+  List<CustomerAccountSummary> cached,
+) {
+  final cachedById = {for (final account in cached) account.id: account};
+  return primary
+      .map((account) {
+        final previous = cachedById[account.id];
+        if (previous == null) return account;
+        return CustomerAccountSummary(
+          id: account.id,
+          name: account.name,
+          lifecycle: account.lifecycle,
+          owner: account.owner,
+          attention: previous.attention,
+          health: previous.health,
+          score: previous.score,
+          openRisks: previous.openRisks,
+          pendingApprovals: previous.pendingApprovals,
+        );
+      })
+      .toList(growable: false);
+}
+
 class AccountsView extends StatefulWidget {
   const AccountsView({super.key, required this.api, required this.onOpen});
 
@@ -63,6 +111,7 @@ class AccountsView extends StatefulWidget {
 }
 
 class _AccountsViewState extends State<AccountsView> {
+  Future<void>? _loadInFlight;
   List<CustomerAccountSummary> accounts = const [];
   Object? error;
   bool loading = true;
@@ -74,39 +123,47 @@ class _AccountsViewState extends State<AccountsView> {
     _load();
   }
 
-  Future<void> _load() async {
+  Future<void> _load() {
+    final inFlight = _loadInFlight;
+    if (inFlight != null) return inFlight;
+    final operation = _performLoad();
+    _loadInFlight = operation;
+    return operation.whenComplete(() {
+      if (identical(_loadInFlight, operation)) _loadInFlight = null;
+    });
+  }
+
+  Future<void> _performLoad() async {
     setState(() {
       loading = true;
       error = null;
     });
     try {
-      final responses = await Future.wait([
-        widget.api.getJson(NativePaths.customersList, query: {'limit': 200}),
-        widget.api.getJson(
-          NativePaths.customersPortfolio,
-          query: {'limit': 200},
-        ),
-      ]);
-      final portfolio = _map(responses[1]['portfolio']);
-      final intelligence = <String, Json>{
-        for (final value
-            in (portfolio['accounts'] as List? ?? const []).whereType<Map>())
-          if (value['accountId'] != null)
-            value['accountId'].toString(): Json.from(value),
-      };
-      accounts = (responses[0]['accounts'] as List? ?? const [])
-          .whereType<Map>()
-          .map((value) {
-            final account = Json.from(value);
-            return CustomerAccountSummary.fromJson(
-              account,
-              intelligence[account['accountId']?.toString()],
-            );
-          })
-          .where((value) => value.id.isNotEmpty)
-          .toList(growable: false);
+      final accountResponse = await widget.api.getJson(
+        NativePaths.customersList,
+        query: {'limit': 200},
+      );
+      if (!mounted) return;
+      final primary = customerAccountSummariesFromResponses(accountResponse);
+      setState(() {
+        accounts = mergeCustomerAccountCoreWithCachedIntelligence(
+          primary,
+          accounts,
+        );
+      });
+      final portfolioResponse = await widget.api.getJson(
+        NativePaths.customersPortfolio,
+        query: {'limit': 200},
+      );
+      if (!mounted) return;
+      setState(() {
+        accounts = customerAccountSummariesFromResponses(
+          accountResponse,
+          portfolioResponse,
+        );
+      });
     } catch (value) {
-      error = value;
+      if (mounted) setState(() => error = value);
     } finally {
       if (mounted) setState(() => loading = false);
     }

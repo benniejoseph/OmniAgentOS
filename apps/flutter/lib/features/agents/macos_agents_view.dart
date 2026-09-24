@@ -56,6 +56,7 @@ class _MacosAgentsViewState extends State<MacosAgentsView>
   String? _selectedExecutionId;
   String? _selectedTaskId;
   Timer? _liveRefreshTimer;
+  bool _pageVisible = false;
 
   @override
   void initState() {
@@ -69,9 +70,6 @@ class _MacosAgentsViewState extends State<MacosAgentsView>
       }
       _syncLiveRefreshTimer();
     }
-    if (widget.controller.ledger == null && !widget.controller.loading) {
-      widget.controller.refresh();
-    }
   }
 
   @override
@@ -84,6 +82,17 @@ class _MacosAgentsViewState extends State<MacosAgentsView>
       }
       _syncLiveRefreshTimer();
     }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final visible =
+        TickerMode.valuesOf(context).enabled &&
+        (ModalRoute.of(context)?.isCurrent ?? true);
+    if (_pageVisible == visible) return;
+    _pageVisible = visible;
+    _syncLiveRefreshTimer();
   }
 
   @override
@@ -433,6 +442,10 @@ class _MacosAgentsViewState extends State<MacosAgentsView>
         widget.councilController?.projection == null &&
         widget.councilController?.loading != true) {
       widget.councilController?.refresh();
+    } else if (_workspace != _AgentWorkspace.liveWork &&
+        widget.controller.ledger == null &&
+        !widget.controller.loading) {
+      widget.controller.refresh();
     }
     _syncLiveRefreshTimer();
   }
@@ -580,6 +593,7 @@ class _MacosAgentsViewState extends State<MacosAgentsView>
         lifecycle == null || lifecycle == AppLifecycleState.resumed;
     if (widget.councilController == null ||
         _workspace != _AgentWorkspace.liveWork ||
+        !_pageVisible ||
         !isVisible) {
       return;
     }
@@ -5987,10 +6001,6 @@ String _formatTimestamp(String value) {
   final period = timestamp.hour < 12 ? 'AM' : 'PM';
   return '${timestamp.day}/${timestamp.month}/${timestamp.year} · $hour:$minute $period';
 }
-
-String _shortId(String value) => value.length <= 12
-    ? value
-    : '${value.substring(0, 6)}…${value.substring(value.length - 4)}';
 
 String _formatKnownMicrousd(int value) {
   if (value <= 0) return r'$0.00';

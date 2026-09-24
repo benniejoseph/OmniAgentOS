@@ -411,10 +411,22 @@ class ResultsSnapshot {
   final List<GeneratedArtifactSummary> createdFiles;
 }
 
+class GeneratedArtifactsSnapshot {
+  const GeneratedArtifactsSnapshot({required this.files, this.sourceError});
+
+  final List<GeneratedArtifactSummary> files;
+  final String? sourceError;
+}
+
 abstract interface class ResultsRepository {
   Future<ResultsSnapshot> list();
   Future<ResultItem?> detail(String key);
   Future<void> cancel(String runId);
+}
+
+abstract interface class ProgressiveResultsRepository {
+  Future<ResultsSnapshot> listPrimary();
+  Future<GeneratedArtifactsSnapshot> listGeneratedArtifacts();
 }
 
 abstract interface class GeneratedArtifactResultsRepository {
@@ -426,18 +438,49 @@ abstract interface class GeneratedArtifactResultsRepository {
 class ResultsController extends ChangeNotifier {
   ResultsController(this.repository);
   final ResultsRepository repository;
+  Future<void>? _refreshing;
   ResultsSnapshot? snapshot;
   bool loading = false;
   Object? error;
   String query = '';
   ResultKind? kind;
   String? status;
-  Future<void> refresh() async {
+  Future<void> refresh() {
+    final refreshing = _refreshing;
+    if (refreshing != null) return refreshing;
+    final operation = _refresh();
+    _refreshing = operation;
+    return operation.whenComplete(() {
+      if (identical(_refreshing, operation)) _refreshing = null;
+    });
+  }
+
+  Future<void> _refresh() async {
     loading = true;
     error = null;
     notifyListeners();
     try {
-      snapshot = await repository.list();
+      final source = repository;
+      final progressive = source is ProgressiveResultsRepository
+          ? source as ProgressiveResultsRepository
+          : null;
+      if (progressive != null) {
+        final primary = await progressive.listPrimary();
+        snapshot = primary;
+        notifyListeners();
+        final generated = await progressive.listGeneratedArtifacts();
+        snapshot = ResultsSnapshot(
+          items: primary.items,
+          evaluations: primary.evaluations,
+          sourceErrors: [
+            ...primary.sourceErrors,
+            if (generated.sourceError != null) generated.sourceError!,
+          ],
+          createdFiles: generated.files,
+        );
+      } else {
+        snapshot = await source.list();
+      }
     } catch (e) {
       error = e;
     } finally {

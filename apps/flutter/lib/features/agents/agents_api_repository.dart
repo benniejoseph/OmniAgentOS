@@ -7,6 +7,7 @@ import 'agent_learning.dart';
 class ApiAgentsRepository
     implements
         AgentsRepository,
+        ProgressiveAgentsRepository,
         MoltbookAgentsRepository,
         AgentGovernanceRepository,
         AgentLearningRepository {
@@ -20,12 +21,24 @@ class ApiAgentsRepository
 
   @override
   Future<AgentLedger> load() async {
-    final responses = await Future.wait([
+    final primary = await loadPrimary();
+    return AgentLedger(
+      agents: primary.agents,
+      skills: primary.skills,
+      performance: await loadPerformance(),
+    );
+  }
+
+  @override
+  Future<AgentLedger> loadPrimary() async {
+    // Roster and skills are the primary editing projection. Performance is a
+    // secondary read, so load it in a second bounded wave rather than opening
+    // three database-backed requests alongside the live Agent Council read.
+    final primary = await Future.wait([
       api.getJson(NativePaths.agentsList),
       api.getJson(NativePaths.skillsList),
-      api.getJson(NativePaths.agentsPerformance),
     ]);
-    final a = responses[0], s = responses[1], p = responses[2];
+    final a = primary[0], s = primary[1];
     return AgentLedger(
       agents: [
         ...(a['builtIns'] as List? ?? const []).whereType<Map>().map(
@@ -42,11 +55,17 @@ class ApiAgentsRepository
           .whereType<Map>()
           .map((j) => AgentSkill.fromJson(Map<String, dynamic>.from(j)))
           .toList(),
-      performance: (p['agents'] as List? ?? const [])
-          .whereType<Map>()
-          .map((j) => AgentPerformance.fromJson(Map<String, dynamic>.from(j)))
-          .toList(),
+      performance: const [],
     );
+  }
+
+  @override
+  Future<List<AgentPerformance>> loadPerformance() async {
+    final response = await api.getJson(NativePaths.agentsPerformance);
+    return (response['agents'] as List? ?? const [])
+        .whereType<Map>()
+        .map((j) => AgentPerformance.fromJson(Map<String, dynamic>.from(j)))
+        .toList(growable: false);
   }
 
   @override
@@ -122,15 +141,17 @@ class ApiAgentsRepository
   @override
   Future<AgentGovernanceSnapshot> loadGovernance(String agentId) async {
     _requireAgentId(agentId);
-    final responses = await Future.wait([
-      api.getJsonFresh(NativePaths.agentsReleaseShow(agentId)),
-      api.getJsonFresh(NativePaths.agentsAdaptationsList(agentId)),
-    ]);
+    final releaseResponse = await api.getJsonFresh(
+      NativePaths.agentsReleaseShow(agentId),
+    );
+    final adaptationResponse = await api.getJsonFresh(
+      NativePaths.agentsAdaptationsList(agentId),
+    );
     final adaptation = AgentAdaptationProjection.listFromResponse(
-      responses[1],
+      adaptationResponse,
       expectedAgentId: agentId,
     );
-    final release = AgentReleaseProjection.fromResponse(responses[0]);
+    final release = AgentReleaseProjection.fromResponse(releaseResponse);
     if (release.agentId != agentId ||
         release.latestDefinitionVersion != adaptation.definitionVersion) {
       throw const FormatException(

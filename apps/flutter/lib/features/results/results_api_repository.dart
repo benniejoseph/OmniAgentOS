@@ -17,12 +17,29 @@ Object? _readPath(Object? source, String path) {
 }
 
 class ApiResultsRepository
-    implements ResultsRepository, GeneratedArtifactResultsRepository {
+    implements
+        ResultsRepository,
+        ProgressiveResultsRepository,
+        GeneratedArtifactResultsRepository {
   const ApiResultsRepository(this.api);
   final ApiClient api;
   @override
   Future<ResultsSnapshot> list() async {
-    final artifactRequest = _loadGeneratedArtifacts();
+    final primary = await listPrimary();
+    final generated = await listGeneratedArtifacts();
+    return ResultsSnapshot(
+      items: primary.items,
+      evaluations: primary.evaluations,
+      sourceErrors: [
+        ...primary.sourceErrors,
+        if (generated.sourceError != null) generated.sourceError!,
+      ],
+      createdFiles: generated.files,
+    );
+  }
+
+  @override
+  Future<ResultsSnapshot> listPrimary() async {
     final responses = await Future.wait([
       api.getJson(
         NativePaths.workspaceSummary,
@@ -47,27 +64,6 @@ class ApiResultsRepository
     source('runs', 'runs', ResultItem.agent);
     source('workflows', 'runs', ResultItem.workflow);
     source('approvals', 'items', ResultItem.approval);
-    final artifactResponse = await artifactRequest;
-    final createdFiles = <GeneratedArtifactSummary>[];
-    if (artifactResponse.error != null) {
-      errors.add('created files unavailable');
-    } else {
-      final rawArtifacts = artifactResponse.value?['artifacts'];
-      if (rawArtifacts is! List) {
-        errors.add('created files unavailable');
-      } else {
-        final seen = <String>{};
-        for (final raw in rawArtifacts.take(50)) {
-          final artifact = GeneratedArtifactSummary.tryParse(raw);
-          if (artifact != null && seen.add(artifact.id)) {
-            createdFiles.add(artifact);
-          }
-        }
-        createdFiles.sort(
-          (left, right) => right.updatedAt.compareTo(left.updatedAt),
-        );
-      }
-    }
     final unique = <String, ResultItem>{};
     for (final i in items) {
       final old = unique[i.key];
@@ -92,8 +88,37 @@ class ApiResultsRepository
       items: sorted,
       evaluations: evals,
       sourceErrors: errors,
-      createdFiles: List.unmodifiable(createdFiles),
     );
+  }
+
+  @override
+  Future<GeneratedArtifactsSnapshot> listGeneratedArtifacts() async {
+    final artifactResponse = await _loadGeneratedArtifacts();
+    if (artifactResponse.error != null) {
+      return const GeneratedArtifactsSnapshot(
+        files: [],
+        sourceError: 'created files unavailable',
+      );
+    }
+    final rawArtifacts = artifactResponse.value?['artifacts'];
+    if (rawArtifacts is! List) {
+      return const GeneratedArtifactsSnapshot(
+        files: [],
+        sourceError: 'created files unavailable',
+      );
+    }
+    final seen = <String>{};
+    final createdFiles = <GeneratedArtifactSummary>[];
+    for (final raw in rawArtifacts.take(50)) {
+      final artifact = GeneratedArtifactSummary.tryParse(raw);
+      if (artifact != null && seen.add(artifact.id)) {
+        createdFiles.add(artifact);
+      }
+    }
+    createdFiles.sort(
+      (left, right) => right.updatedAt.compareTo(left.updatedAt),
+    );
+    return GeneratedArtifactsSnapshot(files: List.unmodifiable(createdFiles));
   }
 
   Future<({Map<String, dynamic>? value, Object? error})>

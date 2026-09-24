@@ -65,8 +65,10 @@ final agentsControllerProvider = ChangeNotifierProvider<AgentsController>((
   );
   final unregister = ref
       .read(reconnectCoordinatorProvider)
-      .register('agents', c.refresh);
+      .register(
+        'agents',
+        () => c.ledger == null ? Future<void>.value() : c.refresh(),
+      );
   ref.onDispose(unregister);
-  c.refresh();
   return c;
 });

@@ -25,6 +25,7 @@ class MacosPaymentsView extends StatefulWidget {
 class _MacosPaymentsViewState extends State<MacosPaymentsView> {
   final _searchController = TextEditingController();
   final _searchFocus = FocusNode(debugLabel: 'Search payment evidence');
+  Future<void>? _loadInFlight;
   _Json? _readiness;
   _Json? _reviews;
   _Json? _authenticators;
@@ -49,7 +50,17 @@ class _MacosPaymentsViewState extends State<MacosPaymentsView> {
     super.dispose();
   }
 
-  Future<void> _load() async {
+  Future<void> _load() {
+    final inFlight = _loadInFlight;
+    if (inFlight != null) return inFlight;
+    final operation = _performLoad();
+    _loadInFlight = operation;
+    return operation.whenComplete(() {
+      if (identical(_loadInFlight, operation)) _loadInFlight = null;
+    });
+  }
+
+  Future<void> _performLoad() async {
     if (mounted) {
       setState(() {
         _loading = true;
@@ -57,18 +68,23 @@ class _MacosPaymentsViewState extends State<MacosPaymentsView> {
       });
     }
     try {
-      final values = await Future.wait([
+      final primary = await Future.wait([
         widget.api.getJson(NativePaths.paymentsReadiness),
         widget.api.getJson(NativePaths.paymentsReviews),
+      ]);
+      if (!mounted) return;
+      setState(() {
+        _readiness = primary[0];
+        _reviews = primary[1];
+      });
+      final secondary = await Future.wait([
         widget.api.getJson(NativePaths.paymentsAuthenticators),
         widget.api.getJson(NativePaths.paymentsTransactions),
       ]);
       if (!mounted) return;
       setState(() {
-        _readiness = values[0];
-        _reviews = values[1];
-        _authenticators = values[2];
-        _transactions = values[3];
+        _authenticators = secondary[0];
+        _transactions = secondary[1];
       });
     } catch (error) {
       if (mounted) setState(() => _error = error);
@@ -167,11 +183,11 @@ class _MacosPaymentsViewState extends State<MacosPaymentsView> {
               selectedId: selected == null ? null : _itemId(_section, selected),
               loading: _loading,
               error: _error,
-              hasCachedData:
-                  _readiness != null ||
-                  mandates.isNotEmpty ||
-                  signers.isNotEmpty ||
-                  evidence.isNotEmpty,
+              hasCachedData: switch (_section) {
+                _PaymentSection.mandates => _reviews != null,
+                _PaymentSection.signers => _authenticators != null,
+                _PaymentSection.evidence => _transactions != null,
+              },
               readiness: _readiness,
               trustPolicyLoaded: _reviews?['trustPolicy'] is Map,
               onRetry: _load,

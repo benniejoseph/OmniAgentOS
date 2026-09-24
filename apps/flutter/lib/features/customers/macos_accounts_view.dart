@@ -7,8 +7,6 @@ import '../../core/network/api_client.dart';
 import '../../generated/native_contract.g.dart';
 import 'accounts_view.dart';
 
-typedef _Json = Map<String, dynamic>;
-
 enum _AccountFilter { all, needsAttention, active, atRisk }
 
 enum _AccountSort { attention, name, health, owner }
@@ -29,6 +27,7 @@ class MacosAccountsView extends StatefulWidget {
 class _MacosAccountsViewState extends State<MacosAccountsView> {
   final _searchController = TextEditingController();
   final _searchFocus = FocusNode(debugLabel: 'Search customer accounts');
+  Future<void>? _loadInFlight;
   List<CustomerAccountSummary> _accounts = const [];
   Object? _error;
   bool _loading = true;
@@ -49,7 +48,17 @@ class _MacosAccountsViewState extends State<MacosAccountsView> {
     super.dispose();
   }
 
-  Future<void> _load() async {
+  Future<void> _load() {
+    final inFlight = _loadInFlight;
+    if (inFlight != null) return inFlight;
+    final operation = _performLoad();
+    _loadInFlight = operation;
+    return operation.whenComplete(() {
+      if (identical(_loadInFlight, operation)) _loadInFlight = null;
+    });
+  }
+
+  Future<void> _performLoad() async {
     if (mounted) {
       setState(() {
         _loading = true;
@@ -57,43 +66,40 @@ class _MacosAccountsViewState extends State<MacosAccountsView> {
       });
     }
     try {
-      final responses = await Future.wait([
-        widget.api.getJson(NativePaths.customersList, query: {'limit': 200}),
-        widget.api.getJson(
-          NativePaths.customersPortfolio,
-          query: {'limit': 200},
-        ),
-      ]);
-      final portfolio = _map(responses[1]['portfolio']);
-      final intelligence = <String, _Json>{
-        for (final value
-            in (portfolio['accounts'] as List? ?? const []).whereType<Map>())
-          if (value['accountId'] != null)
-            value['accountId'].toString(): _Json.from(value),
-      };
-      final loaded = (responses[0]['accounts'] as List? ?? const [])
-          .whereType<Map>()
-          .map((value) {
-            final account = _Json.from(value);
-            return CustomerAccountSummary.fromJson(
-              account,
-              intelligence[account['accountId']?.toString()],
-            );
-          })
-          .where((account) => account.id.isNotEmpty)
-          .toList(growable: false);
+      final accountResponse = await widget.api.getJson(
+        NativePaths.customersList,
+        query: {'limit': 200},
+      );
       if (!mounted) return;
-      setState(() {
-        _accounts = loaded;
-        if (loaded.every((account) => account.id != _selectedId)) {
-          _selectedId = loaded.firstOrNull?.id;
-        }
-      });
+      final primary = customerAccountSummariesFromResponses(accountResponse);
+      _replaceAccounts(
+        mergeCustomerAccountCoreWithCachedIntelligence(primary, _accounts),
+      );
+      final portfolioResponse = await widget.api.getJson(
+        NativePaths.customersPortfolio,
+        query: {'limit': 200},
+      );
+      if (!mounted) return;
+      _replaceAccounts(
+        customerAccountSummariesFromResponses(
+          accountResponse,
+          portfolioResponse,
+        ),
+      );
     } catch (error) {
       if (mounted) setState(() => _error = error);
     } finally {
       if (mounted) setState(() => _loading = false);
     }
+  }
+
+  void _replaceAccounts(List<CustomerAccountSummary> loaded) {
+    setState(() {
+      _accounts = loaded;
+      if (loaded.every((account) => account.id != _selectedId)) {
+        _selectedId = loaded.firstOrNull?.id;
+      }
+    });
   }
 
   @override
@@ -1131,9 +1137,6 @@ String _initials(String value) {
   if (words.isEmpty) return 'A';
   return words.map((word) => word[0].toUpperCase()).join();
 }
-
-_Json _map(Object? value) =>
-    value is Map ? _Json.from(value) : <String, dynamic>{};
 
 String _humanize(String value) => value
     .split(RegExp(r'[._:-]'))

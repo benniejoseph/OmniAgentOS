@@ -355,11 +355,12 @@ class InboxController extends ChangeNotifier {
     actionError = null;
     notifyListeners();
     try {
-      await Future.wait([
-        _loadApprovals(),
-        _loadNotifications(),
-        _loadDispositions(),
-      ]);
+      // Approvals and notifications make the inbox useful. Load those as one
+      // bounded request wave, render them immediately, and only then fetch the
+      // auxiliary delivery-decision history used by its inspector.
+      await Future.wait([_loadApprovals(), _loadNotifications()]);
+      notifyListeners();
+      await _loadDispositions();
       completion.complete();
     } catch (error, stackTrace) {
       completion.completeError(error, stackTrace);
@@ -396,10 +397,16 @@ class InboxController extends ChangeNotifier {
 
   Future<void> decide(ApprovalItem item, bool approve, {String? reason}) async {
     deciding.add(item.id);
+    actionError = null;
+    approvalsError = null;
+    notificationsError = null;
     notifyListeners();
     try {
       await repository.decide(item, approve: approve, reason: reason);
-      await refresh();
+      // An approval decision can affect the queue and its user notification,
+      // but it cannot rewrite historical delivery dispositions. Refresh only
+      // the two affected projections.
+      await Future.wait([_loadApprovals(), _loadNotifications()]);
     } catch (e) {
       actionError = e;
     } finally {

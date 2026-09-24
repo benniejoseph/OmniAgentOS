@@ -671,6 +671,11 @@ abstract interface class AgentsRepository {
   Future<void> deleteSkill(String id);
 }
 
+abstract interface class ProgressiveAgentsRepository {
+  Future<AgentLedger> loadPrimary();
+  Future<List<AgentPerformance>> loadPerformance();
+}
+
 abstract interface class MoltbookAgentsRepository {
   Future<MoltbookProjection> loadMoltbook(
     String agentId, {
@@ -704,6 +709,7 @@ class AgentsController extends ChangeNotifier {
       moltbookAvailable,
       learningReadAvailable;
   final bool governanceReadAvailable, governanceMutationAvailable;
+  Future<void>? _refreshing;
   bool get canMutate => canMutateAgents;
   bool get canMutateAgents => canManage && mutationsAvailable;
   bool get canMutateSkills => canManage && skillMutationsAvailable;
@@ -718,12 +724,37 @@ class AgentsController extends ChangeNotifier {
   AgentLedger? ledger;
   bool loading = false;
   Object? error;
-  Future<void> refresh() async {
+  Future<void> refresh() {
+    final refreshing = _refreshing;
+    if (refreshing != null) return refreshing;
+    final operation = _refresh();
+    _refreshing = operation;
+    return operation.whenComplete(() {
+      if (identical(_refreshing, operation)) _refreshing = null;
+    });
+  }
+
+  Future<void> _refresh() async {
     loading = true;
     error = null;
     notifyListeners();
     try {
-      ledger = await repository.load();
+      final source = repository;
+      final progressive = source is ProgressiveAgentsRepository
+          ? source as ProgressiveAgentsRepository
+          : null;
+      if (progressive != null) {
+        final primary = await progressive.loadPrimary();
+        ledger = primary;
+        notifyListeners();
+        ledger = AgentLedger(
+          agents: primary.agents,
+          skills: primary.skills,
+          performance: await progressive.loadPerformance(),
+        );
+      } else {
+        ledger = await source.load();
+      }
     } catch (e) {
       error = e;
     } finally {
@@ -734,8 +765,26 @@ class AgentsController extends ChangeNotifier {
 
   Future<void> saveAgent(Json value, {String? id}) async {
     _requireManageableAgent(id);
-    await repository.saveAgent(value, id: id);
-    await refresh();
+    final saved = await repository.saveAgent(value, id: id);
+    final current = ledger;
+    if (current == null) {
+      await _refreshAfterMutation();
+      return;
+    }
+    final agents = [...current.agents];
+    final index = agents.indexWhere((agent) => agent.id == saved.id);
+    if (index < 0) {
+      agents.add(saved);
+    } else {
+      agents[index] = saved;
+    }
+    ledger = AgentLedger(
+      agents: List.unmodifiable(agents),
+      skills: current.skills,
+      performance: current.performance,
+    );
+    error = null;
+    notifyListeners();
   }
 
   Future<void> saveSkill(Json value, {String? id}) async {
@@ -743,7 +792,7 @@ class AgentsController extends ChangeNotifier {
       throw StateError('Skill changes are not available here.');
     }
     await repository.saveSkill(value, id: id);
-    await refresh();
+    await _refreshAfterMutation();
   }
 
   Future<void> removeAgent(String id) async {
@@ -753,7 +802,7 @@ class AgentsController extends ChangeNotifier {
       throw StateError('Agent deletion is not available here.');
     }
     await repository.deleteAgent(id);
-    await refresh();
+    await _refreshAfterMutation();
   }
 
   Future<void> removeSkill(String id) async {
@@ -761,7 +810,19 @@ class AgentsController extends ChangeNotifier {
       throw StateError('Skill changes are not available here.');
     }
     await repository.deleteSkill(id);
-    await refresh();
+    await _refreshAfterMutation();
+  }
+
+  Future<void> _refreshAfterMutation() async {
+    final refreshing = _refreshing;
+    if (refreshing != null) await refreshing;
+    final operation = _refresh();
+    _refreshing = operation;
+    try {
+      await operation;
+    } finally {
+      if (identical(_refreshing, operation)) _refreshing = null;
+    }
   }
 
   void _requireManageableAgent(String? id) {
@@ -871,7 +932,9 @@ class _AgentsViewState extends State<AgentsView>
     super.initState();
     tabs = TabController(length: widget.liveWork == null ? 3 : 4, vsync: this)
       ..addListener(_onTabChanged);
-    if (widget.controller.ledger == null) widget.controller.refresh();
+    if (widget.liveWork == null && widget.controller.ledger == null) {
+      widget.controller.refresh();
+    }
   }
 
   @override
@@ -882,7 +945,14 @@ class _AgentsViewState extends State<AgentsView>
   }
 
   void _onTabChanged() {
-    if (!tabs.indexIsChanging && mounted) setState(() {});
+    if (!tabs.indexIsChanging && mounted) {
+      setState(() {});
+      if (!_showingLiveWork &&
+          widget.controller.ledger == null &&
+          !widget.controller.loading) {
+        widget.controller.refresh();
+      }
+    }
   }
 
   int get _agentsTab => widget.liveWork == null ? 0 : 1;
