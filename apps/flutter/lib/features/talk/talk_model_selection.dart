@@ -226,6 +226,65 @@ class TalkCommandModelCatalog {
 class TalkCommandModelSelection {
   const TalkCommandModelSelection({required this.choice, this.reasoningLevel});
 
+  factory TalkCommandModelSelection.fromRequestJson(Object? value) {
+    if (value is! Map) {
+      throw const FormatException('A pinned model choice is invalid.');
+    }
+    final json = Map<String, dynamic>.from(value);
+    final assignmentId = _requiredModelText(json['assignmentId'], maximum: 240);
+    final assignmentRevision = json['assignmentRevision'];
+    final assignmentConfigurationSha256 = _requiredModelText(
+      json['assignmentConfigurationSha256'],
+      maximum: 64,
+    );
+    final route = _requiredModelText(json['route'], maximum: 20);
+    final provider = _requiredModelText(json['provider'], maximum: 40);
+    final modelId = _requiredModelText(json['modelId'], maximum: 240);
+    final reasoningLevel = json['reasoningLevel'] == null
+        ? null
+        : _requiredModelText(json['reasoningLevel'], maximum: 40);
+    if (json['schemaVersion'] != 1 ||
+        assignmentId.isEmpty ||
+        assignmentRevision is! int ||
+        assignmentRevision < 1 ||
+        assignmentRevision > 9007199254740991 ||
+        !RegExp(r'^[a-f0-9]{64}$').hasMatch(assignmentConfigurationSha256) ||
+        !const {'primary', 'fallback'}.contains(route) ||
+        !_supportedModelProviders.contains(provider) ||
+        modelId.isEmpty ||
+        (reasoningLevel != null &&
+            !_supportedReasoningLevels.contains(reasoningLevel))) {
+      throw const FormatException('A pinned model choice is invalid.');
+    }
+    final reasoningOptions = reasoningLevel == null
+        ? const <TalkCommandReasoningOption>[]
+        : [
+            TalkCommandReasoningOption(
+              id: reasoningLevel,
+              label: switch (reasoningLevel) {
+                'extra_high' => 'Extra high',
+                _ =>
+                  '${reasoningLevel[0].toUpperCase()}${reasoningLevel.substring(1)}',
+              },
+            ),
+          ];
+    return TalkCommandModelSelection(
+      choice: TalkCommandModelChoice(
+        id: assignmentId,
+        assignmentId: assignmentId,
+        assignmentRevision: assignmentRevision,
+        assignmentConfigurationSha256: assignmentConfigurationSha256,
+        route: route,
+        provider: provider,
+        modelId: modelId,
+        displayName: modelId,
+        displayModelId: modelId,
+        reasoningOptions: List.unmodifiable(reasoningOptions),
+      ),
+      reasoningLevel: reasoningLevel,
+    );
+  }
+
   final TalkCommandModelChoice choice;
   final String? reasoningLevel;
 
@@ -245,7 +304,7 @@ class TalkCommandModelSelection {
       'route': choice.route,
       'provider': choice.provider,
       'modelId': choice.modelId,
-      if (reasoning != null) 'reasoningLevel': reasoning,
+      'reasoningLevel': ?reasoning,
     };
   }
 }

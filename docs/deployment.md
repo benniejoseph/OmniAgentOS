@@ -37,18 +37,19 @@ Set these through the platform secret/configuration store, never in source contr
 - `OMNIAGENT_NATIVE_MIN_ANDROID_VERSION`, `OMNIAGENT_NATIVE_MIN_IOS_VERSION`, and `OMNIAGENT_NATIVE_MIN_MACOS_VERSION`: optional stable `major.minor.patch` minimums for native compatibility telemetry. An absent or empty value defaults to `1.0.0`; a malformed configured value invalidates the policy and holds adoption unavailable. These settings do not authorize Agent enrollment.
 
 Native contract artifacts are committed immutable release inputs. Production
-advertises v28 as current and deliberately retains v27 as the one
-rollback-compatible previous version. V20-v26 remain immutable historical
-artifacts and are not advertised by current discovery. Do not retire v27 until
-the v28 rollback window closes. A published version is never regenerated in
+advertises v29 as current and deliberately retains v28 as the one
+rollback-compatible previous version. V20-v27 remain immutable historical
+artifacts and are not advertised by current discovery. Do not retire v28 until
+the v29 rollback window closes. A published version is never regenerated in
 place. Run
 `npm run check:native-contracts` before a native-contract release; the check
 fails if the generated OpenAPI, event schema, fixtures, integrity manifests,
-Dart SDK, or frozen v7-v27 document hashes drift. Removing an archived version
+Dart SDK, or frozen v7-v28 document hashes drift. Removing an archived version
 requires a separately reviewed adoption decision and is not implied by a
 Vercel deployment. V25/v20 remains the historical 2026-09-22 adaptive-runtime
 compatibility pair; v27/v26 is the historical governed local-command release
-pair; v28/v27 is the current scoped model-selection release pair.
+pair; v28/v27 is the historical scoped model-selection release pair; v29/v28
+is the current native Ambient Command voice release pair.
 
 ### Web Command durable structured-context release
 

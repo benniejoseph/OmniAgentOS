@@ -56,6 +56,35 @@ class TalkCommandContextReference {
     );
   }
 
+  factory TalkCommandContextReference.fromRequestJson(
+    Map<String, dynamic> json,
+  ) {
+    final kind = json['kind']?.toString() ?? '';
+    final id = json['id']?.toString() ?? '';
+    final expectedVersion = (json['expectedVersion'] as num?)?.toInt();
+    final versionId = json['versionId']?.toString();
+    final bindingSha256 = json['bindingSha256']?.toString();
+    if (!talkCommandContextKinds.contains(kind) ||
+        id.isEmpty ||
+        id.length > 320 ||
+        (expectedVersion != null && expectedVersion < 1) ||
+        (versionId != null && versionId.length > 320) ||
+        (bindingSha256 != null &&
+            !RegExp(r'^[a-f0-9]{64}$').hasMatch(bindingSha256))) {
+      throw const FormatException('A pinned Command context was invalid.');
+    }
+    return TalkCommandContextReference(
+      kind: kind,
+      id: id,
+      label: id,
+      description: 'Pinned ${kind.replaceAll('_', ' ')} context',
+      selectable: true,
+      expectedVersion: expectedVersion,
+      versionId: versionId,
+      bindingSha256: bindingSha256,
+    );
+  }
+
   final String kind;
   final String id;
   final String label;

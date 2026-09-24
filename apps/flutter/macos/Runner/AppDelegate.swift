@@ -1899,6 +1899,51 @@ private final class DesktopHostController: NSObject {
     case dismiss
   }
 
+  /// A presentation-only reflection of the Flutter voice surface. These states
+  /// never carry a prompt, approval, execution target, or Computer Use grant.
+  private enum AmbientVoiceState: String {
+    case asleep
+    case listening
+    case review
+    case running
+    case speaking
+    case approval
+    case offline
+    case error
+
+    var title: String {
+      switch self {
+      case .asleep: "Ready"
+      case .listening: "Listening"
+      case .review: "Review before sending"
+      case .running: "Working"
+      case .speaking: "Speaking"
+      case .approval: "Approval needed"
+      case .offline: "Offline"
+      case .error: "Needs attention"
+      }
+    }
+
+    var symbolName: String {
+      switch self {
+      case .asleep: "sparkles"
+      case .listening: "mic.fill"
+      case .review: "text.bubble.fill"
+      case .running: "sparkles"
+      case .speaking: "waveform.circle.fill"
+      case .approval: "exclamationmark.shield.fill"
+      case .offline: "wifi.slash"
+      case .error: "exclamationmark.triangle.fill"
+      }
+    }
+  }
+
+  private enum AmbientVoiceRequestSource: String {
+    case menu
+    case shortcut
+    case vocalShortcut = "vocal_shortcut"
+  }
+
   private static let notificationCategory = "ASAEL_ACTIONABLE_V1"
   private static let completeNotificationAction = "ASAEL_COMPLETE_V1"
   private static let snoozeNotificationAction = "ASAEL_SNOOZE_15_V1"
@@ -1914,6 +1959,7 @@ private final class DesktopHostController: NSObject {
   private static let hotKeySignature: OSType = 0x41534145 // "ASAE"
   private static let quickEntryHotKeyID: UInt32 = 1
   private static let quickEntryShortcutDefaultsKey = "AsaelQuickEntryShortcutV1"
+  private static let ambientVoiceAvailabilityDefaultsKey = "AsaelAmbientVoiceAvailableV1"
   private static let desktopChannelName = "app.omniagent.omniagent/desktop"
   private static let regularWindowMinimumSize = NSSize(width: 1_024, height: 700)
   private static let quickEntryWindowMinimumSize = NSSize(width: 680, height: 320)
@@ -1934,12 +1980,18 @@ private final class DesktopHostController: NSObject {
   private var channel: FlutterMethodChannel?
   private var statusItem: NSStatusItem?
   private weak var statusQuickEntryMenuItem: NSMenuItem?
+  private weak var statusAmbientVoiceMenuItem: NSMenuItem?
+  private weak var statusAmbientVoiceStateMenuItem: NSMenuItem?
   private weak var applicationQuickEntryMenuItem: NSMenuItem?
+  private weak var applicationAmbientVoiceMenuItem: NSMenuItem?
   private var hotKey: EventHotKeyRef?
   private var hotKeyEventHandler: EventHandlerRef?
   private var quickEntryShortcut = QuickEntryShortcut.commandShiftSpace
   private var shortcutRegistered = false
   private var pendingRoute: Route?
+  private var pendingAmbientVoiceSource: AmbientVoiceRequestSource?
+  private var ambientVoiceAvailable = true
+  private var ambientVoiceState = AmbientVoiceState.asleep
   private var isDartReady = false
   private var isNotificationHandlerReady = false
   private var notificationDeliveryInFlight = false
@@ -1955,6 +2007,7 @@ private final class DesktopHostController: NSObject {
     guard !hasStarted else { return }
     hasStarted = true
     quickEntryShortcut = savedQuickEntryShortcut()
+    ambientVoiceAvailable = savedAmbientVoiceAvailability()
     configureApplicationMenu()
     configureStatusItem()
     let registered = registerQuickEntryHotKey()
@@ -1965,6 +2018,8 @@ private final class DesktopHostController: NSObject {
     channel?.setMethodCallHandler(nil)
     channel = nil
     isDartReady = false
+    pendingAmbientVoiceSource = nil
+    ambientVoiceState = .asleep
     isNotificationHandlerReady = false
     notificationDeliveryInFlight = false
     deliveredSharedCaptureIds.removeAll()
@@ -1983,11 +2038,18 @@ private final class DesktopHostController: NSObject {
       self.statusItem = nil
     }
     statusQuickEntryMenuItem = nil
+    statusAmbientVoiceMenuItem = nil
+    statusAmbientVoiceStateMenuItem = nil
     if let applicationQuickEntryMenuItem,
        let menu = applicationQuickEntryMenuItem.menu {
       menu.removeItem(applicationQuickEntryMenuItem)
     }
     applicationQuickEntryMenuItem = nil
+    if let applicationAmbientVoiceMenuItem,
+       let menu = applicationAmbientVoiceMenuItem.menu {
+      menu.removeItem(applicationAmbientVoiceMenuItem)
+    }
+    applicationAmbientVoiceMenuItem = nil
     for controller in Array(workspaceWindows.values) {
       controller.close()
     }
@@ -2000,10 +2062,22 @@ private final class DesktopHostController: NSObject {
     self.window = window
     isDartReady = false
     isNotificationHandlerReady = false
+    ambientVoiceState = .asleep
+    if hasStarted {
+      updateAmbientVoicePresentation()
+    }
 
     channel.setMethodCallHandler { [weak self] call, result in
       guard let self else {
         result(FlutterError(code: "host_unavailable", message: "Desktop host is unavailable.", details: nil))
+        return
+      }
+
+      if self.handleAmbientVoiceMethod(
+        call,
+        allowsStateUpdates: true,
+        result: result
+      ) {
         return
       }
 
@@ -2012,6 +2086,7 @@ private final class DesktopHostController: NSObject {
         DispatchQueue.main.async {
           self.isDartReady = true
           self.flushPendingRoute()
+          self.flushPendingAmbientVoiceRequest()
           self.deliverNextSharedCapture()
         }
         result(nil)
@@ -2098,6 +2173,13 @@ private final class DesktopHostController: NSObject {
         result(FlutterError(code: "window_unavailable", message: "The workspace window is unavailable.", details: nil))
         return
       }
+      if self.handleAmbientVoiceMethod(
+        call,
+        allowsStateUpdates: false,
+        result: result
+      ) {
+        return
+      }
       switch call.method {
       case "flutterReady":
         result(nil)
@@ -2135,6 +2217,114 @@ private final class DesktopHostController: NSObject {
         result(FlutterMethodNotImplemented)
       }
     }
+  }
+
+  private func handleAmbientVoiceMethod(
+    _ call: FlutterMethodCall,
+    allowsStateUpdates: Bool,
+    result: @escaping FlutterResult
+  ) -> Bool {
+    switch call.method {
+    case "getAmbientVoiceAvailability":
+      guard call.arguments == nil else {
+        result(FlutterError(
+          code: "invalid_ambient_voice_availability",
+          message: "The ambient voice availability request is invalid.",
+          details: nil
+        ))
+        return true
+      }
+      DispatchQueue.main.async {
+        result(self.ambientVoiceAvailabilityPayload())
+      }
+      return true
+
+    case "setAmbientVoiceAvailability":
+      guard let values = call.arguments as? [String: Any],
+            values.count == 1,
+            let available = values["available"] as? Bool
+      else {
+        result(FlutterError(
+          code: "invalid_ambient_voice_availability",
+          message: "The ambient voice availability update is invalid.",
+          details: nil
+        ))
+        return true
+      }
+      DispatchQueue.main.async {
+        self.setAmbientVoiceAvailability(available)
+        result(self.ambientVoiceAvailabilityPayload())
+      }
+      return true
+
+    case "updateAmbientVoiceState":
+      guard allowsStateUpdates else {
+        result(FlutterError(
+          code: "ambient_voice_primary_window_required",
+          message: "Only the primary Ambient Voice window can publish voice state.",
+          details: nil
+        ))
+        return true
+      }
+      guard let values = call.arguments as? [String: Any],
+            values.count == 1,
+            let rawState = values["state"] as? String,
+            let state = AmbientVoiceState(rawValue: rawState)
+      else {
+        result(FlutterError(
+          code: "invalid_ambient_voice_state",
+          message: "The ambient voice presentation state is invalid.",
+          details: nil
+        ))
+        return true
+      }
+      DispatchQueue.main.async {
+        guard self.ambientVoiceAvailable || state == .asleep else {
+          result(FlutterError(
+            code: "ambient_voice_unavailable",
+            message: "Ambient Voice is turned off.",
+            details: nil
+          ))
+          return
+        }
+        self.ambientVoiceState = state
+        self.updateAmbientVoicePresentation()
+        result(self.ambientVoiceAvailabilityPayload())
+      }
+      return true
+
+    default:
+      return false
+    }
+  }
+
+  private func savedAmbientVoiceAvailability() -> Bool {
+    let defaults = UserDefaults.standard
+    guard defaults.object(forKey: Self.ambientVoiceAvailabilityDefaultsKey) != nil else {
+      return true
+    }
+    return defaults.bool(forKey: Self.ambientVoiceAvailabilityDefaultsKey)
+  }
+
+  private func setAmbientVoiceAvailability(_ available: Bool) {
+    dispatchPrecondition(condition: .onQueue(.main))
+    ambientVoiceAvailable = available
+    UserDefaults.standard.set(
+      available,
+      forKey: Self.ambientVoiceAvailabilityDefaultsKey
+    )
+    if !available {
+      ambientVoiceState = .asleep
+      pendingAmbientVoiceSource = nil
+    }
+    updateQuickEntryMenus(registrationSucceeded: shortcutRegistered)
+  }
+
+  private func ambientVoiceAvailabilityPayload() -> [String: Any] {
+    [
+      "available": ambientVoiceAvailable,
+      "state": ambientVoiceState.rawValue,
+    ]
   }
 
   private func quickEntryShortcut(_ arguments: Any?) -> QuickEntryShortcut? {
@@ -2199,12 +2389,22 @@ private final class DesktopHostController: NSObject {
   }
 
   func handleOpenURLs(_ urls: [URL]) {
-    guard urls.contains(where: { url in
+    let handlesSharedCapture = urls.contains { url in
       url.scheme?.lowercased() == "asael" && url.host?.lowercased() == "capture-shared"
-    }) else { return }
+    }
+    let opensAmbientVoice = urls.contains { url in
+      url.scheme?.lowercased() == "asael" && url.host?.lowercased() == "ambient-voice"
+    }
+    guard handlesSharedCapture || opensAmbientVoice else { return }
     DispatchQueue.main.async { [weak self] in
-      self?.showMainWindow()
-      self?.deliverNextSharedCapture()
+      guard let self else { return }
+      if handlesSharedCapture {
+        self.showMainWindow()
+        self.deliverNextSharedCapture()
+      }
+      if opensAmbientVoice {
+        self.requestAmbientVoice(source: .vocalShortcut)
+      }
     }
   }
 
@@ -2721,6 +2921,7 @@ private final class DesktopHostController: NSObject {
 
   private func request(_ route: Route) {
     dispatchPrecondition(condition: .onQueue(.main))
+    pendingAmbientVoiceSource = nil
     if route != .quickEntry {
       showMainWindow()
     } else if let window = window ?? NSApp.windows.first(where: { $0 is MainFlutterWindow }) {
@@ -2738,6 +2939,33 @@ private final class DesktopHostController: NSObject {
     channel.invokeMethod("openRoute", arguments: ["route": route.rawValue])
   }
 
+  private func requestAmbientVoice(source: AmbientVoiceRequestSource) {
+    dispatchPrecondition(condition: .onQueue(.main))
+    guard ambientVoiceAvailable else {
+      request(.quickEntry)
+      return
+    }
+
+    pendingRoute = nil
+    if let window = window ?? NSApp.windows.first(where: { $0 is MainFlutterWindow }) {
+      self.window = window
+      focus(window)
+    } else {
+      NSApp.activate(ignoringOtherApps: true)
+    }
+
+    guard isDartReady, let channel else {
+      // Attention requests contain no command payload. Keep only the newest
+      // source so startup cannot replay stale voice activations.
+      pendingAmbientVoiceSource = source
+      return
+    }
+    channel.invokeMethod(
+      "openAmbientVoice",
+      arguments: ["source": source.rawValue]
+    )
+  }
+
   private func flushPendingRoute() {
     dispatchPrecondition(condition: .onQueue(.main))
     guard isDartReady, let route = pendingRoute, let channel else { return }
@@ -2746,6 +2974,20 @@ private final class DesktopHostController: NSObject {
       showMainWindow()
     }
     channel.invokeMethod("openRoute", arguments: ["route": route.rawValue])
+  }
+
+  private func flushPendingAmbientVoiceRequest() {
+    dispatchPrecondition(condition: .onQueue(.main))
+    guard isDartReady,
+          ambientVoiceAvailable,
+          let source = pendingAmbientVoiceSource,
+          let channel
+    else { return }
+    pendingAmbientVoiceSource = nil
+    channel.invokeMethod(
+      "openAmbientVoice",
+      arguments: ["source": source.rawValue]
+    )
   }
 
   private func configureStatusItem() {
@@ -2766,6 +3008,20 @@ private final class DesktopHostController: NSObject {
     }
 
     let menu = NSMenu(title: "Asael")
+    let ambientState = NSMenuItem(title: "Voice: Ready", action: nil, keyEquivalent: "")
+    ambientState.isEnabled = false
+    menu.addItem(ambientState)
+    statusAmbientVoiceStateMenuItem = ambientState
+
+    let ambientVoice = menuItem(
+      title: "Talk to Asael",
+      key: "",
+      action: #selector(openAmbientVoice)
+    )
+    menu.addItem(ambientVoice)
+    statusAmbientVoiceMenuItem = ambientVoice
+    menu.addItem(.separator())
+
     menu.addItem(menuItem(title: "Today", key: "1", action: #selector(openToday)))
     menu.addItem(menuItem(title: "Command", key: "2", action: #selector(openCommand)))
 
@@ -2791,8 +3047,16 @@ private final class DesktopHostController: NSObject {
     dispatchPrecondition(condition: .onQueue(.main))
     guard let menu = NSApp.mainMenu?.items.first?.submenu else { return }
 
+    let ambientVoice = menuItem(
+      title: "Talk to Asael",
+      key: "",
+      action: #selector(openAmbientVoice)
+    )
+    menu.insertItem(ambientVoice, at: min(1, menu.items.count))
+    applicationAmbientVoiceMenuItem = ambientVoice
+
     let item = menuItem(title: "Quick Entry", key: " ", action: #selector(openQuickEntry))
-    menu.insertItem(item, at: min(1, menu.items.count))
+    menu.insertItem(item, at: min(2, menu.items.count))
     applicationQuickEntryMenuItem = item
 
     let newWindow = menuItem(
@@ -2800,7 +3064,51 @@ private final class DesktopHostController: NSObject {
       key: "n",
       action: #selector(openConversationWindow)
     )
-    menu.insertItem(newWindow, at: min(2, menu.items.count))
+    menu.insertItem(newWindow, at: min(3, menu.items.count))
+  }
+
+  private func updateAmbientVoicePresentation() {
+    dispatchPrecondition(condition: .onQueue(.main))
+
+    let stateTitle = ambientVoiceAvailable
+      ? "Voice: \(ambientVoiceState.title)"
+      : "Voice: Off"
+    statusAmbientVoiceStateMenuItem?.title = stateTitle
+
+    let actionTitle: String
+    if !ambientVoiceAvailable {
+      actionTitle = "Ambient Voice is off"
+    } else if ambientVoiceState == .asleep {
+      actionTitle = "Talk to Asael"
+    } else {
+      actionTitle = "Return to Ambient Voice"
+    }
+    for item in [statusAmbientVoiceMenuItem, applicationAmbientVoiceMenuItem].compactMap({ $0 }) {
+      item.title = actionTitle
+      item.isEnabled = ambientVoiceAvailable
+      item.keyEquivalent = ambientVoiceAvailable && quickEntryShortcut != .disabled ? " " : ""
+      item.keyEquivalentModifierMask = quickEntryShortcut.menuModifiers
+      if !ambientVoiceAvailable {
+        item.toolTip = "Turn on Ambient Voice in Asael settings to use this action."
+      } else if quickEntryShortcut != .disabled && !shortcutRegistered {
+        item.toolTip = "The global shortcut is unavailable. Ambient Voice remains available here."
+      } else {
+        item.toolTip = "Open Asael's voice surface. This does not grant Computer Use authority."
+      }
+    }
+
+    guard let button = statusItem?.button else { return }
+    let symbol = ambientVoiceAvailable ? ambientVoiceState.symbolName : "sparkles"
+    let description = ambientVoiceAvailable
+      ? "Asael Voice: \(ambientVoiceState.title)"
+      : "Asael — Ambient Voice is off"
+    let image = NSImage(systemSymbolName: symbol, accessibilityDescription: description)
+      ?? NSImage(systemSymbolName: "sparkles", accessibilityDescription: "Asael")
+    image?.isTemplate = true
+    button.image = image
+    button.toolTip = description
+    button.setAccessibilityLabel(description)
+    button.title = image == nil ? "A" : ""
   }
 
   private func menuItem(title: String, key: String, action: Selector) -> NSMenuItem {
@@ -2851,7 +3159,7 @@ private final class DesktopHostController: NSObject {
           .fromOpaque(userData)
           .takeUnretainedValue()
         DispatchQueue.main.async {
-          controller.request(.quickEntry)
+          controller.requestAmbientVoice(source: .shortcut)
         }
         return noErr
       },
@@ -2898,9 +3206,13 @@ private final class DesktopHostController: NSObject {
 
   private func updateQuickEntryMenus(registrationSucceeded: Bool) {
     for item in [statusQuickEntryMenuItem, applicationQuickEntryMenuItem].compactMap({ $0 }) {
-      item.keyEquivalent = quickEntryShortcut == .disabled ? "" : " "
+      let shortcutTargetsQuickEntry = !ambientVoiceAvailable
+      item.keyEquivalent = shortcutTargetsQuickEntry && quickEntryShortcut != .disabled ? " " : ""
       item.keyEquivalentModifierMask = quickEntryShortcut.menuModifiers
-      if quickEntryShortcut == .disabled {
+      if !shortcutTargetsQuickEntry {
+        item.title = "Quick Entry"
+        item.toolTip = "Open Quick Entry. The global shortcut opens Ambient Voice."
+      } else if quickEntryShortcut == .disabled {
         item.title = "Quick Entry"
         item.toolTip = "The global shortcut is disabled. Quick Entry remains available here."
       } else if registrationSucceeded {
@@ -2911,6 +3223,7 @@ private final class DesktopHostController: NSObject {
         item.toolTip = "Another application owns \(quickEntryShortcut.displayName). Quick Entry remains available here."
       }
     }
+    updateAmbientVoicePresentation()
   }
 
   @objc private func openToday() {
@@ -2923,6 +3236,10 @@ private final class DesktopHostController: NSObject {
 
   @objc private func openQuickEntry() {
     request(.quickEntry)
+  }
+
+  @objc private func openAmbientVoice() {
+    requestAmbientVoice(source: .menu)
   }
 
   @objc private func openQuickCapture() {

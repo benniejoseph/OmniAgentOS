@@ -19,6 +19,8 @@ import '../../core/network/api_exception.dart';
 import '../../core/platform/desktop_host_bridge.dart';
 import '../../core/platform/local_computer_bridge.dart';
 import '../../generated/native_contract.g.dart';
+import '../ambient_voice/ambient_voice_view.dart';
+import '../ambient_voice/realtime_voice_controller.dart';
 import '../computer_use/local_computer.dart';
 import 'talk_command_context.dart';
 import 'talk_history.dart';
@@ -420,6 +422,8 @@ class TalkQueuedPrompt {
     required this.executionTarget,
     this.assignedAgent,
     this.threadId,
+    this.contextReferences = const [],
+    this.modelSelection,
     this.lifecycleRevision = 0,
     this.state = 'queued',
     this.providerId,
@@ -437,6 +441,8 @@ class TalkQueuedPrompt {
   final TalkExecutionTarget executionTarget;
   final TalkAssignedAgent? assignedAgent;
   final String? threadId;
+  final List<TalkCommandContextReference> contextReferences;
+  final TalkCommandModelSelection? modelSelection;
   final String clientCorrelationId;
   final int lifecycleRevision;
   final String state;
@@ -467,6 +473,8 @@ class TalkQueuedPrompt {
     executionTarget: executionTarget,
     assignedAgent: assignedAgent,
     threadId: threadId,
+    contextReferences: contextReferences,
+    modelSelection: modelSelection,
     clientCorrelationId: clientCorrelationId,
     lifecycleRevision: lifecycleRevision ?? this.lifecycleRevision,
     state: state ?? this.state,
@@ -1013,6 +1021,18 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   Set<String> get monitoringWorkflowIds =>
       Set.unmodifiable(_workflowMonitorTokens.keys);
   bool get monitoringAcceptedRun => _runMonitorToken != null;
+  bool get waitingForApproval => _runLifecycleStatus == 'waiting_approval';
+  String? get pendingApprovalRoute {
+    for (final activity in activities.reversed) {
+      if (activity.key.startsWith('approval:') &&
+          activity.state == TalkActivityState.waiting &&
+          activity.actionRoute != null) {
+        return activity.actionRoute;
+      }
+    }
+    return null;
+  }
+
   bool get hasPendingConversationWork =>
       sending ||
       (runId != null && !_acceptedRunIsTerminal) ||
@@ -1153,28 +1173,16 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     if (_disposed || text.isEmpty) return;
     final targetAgent = assignedAgent;
     if (sending) {
-      if (modelSelection != null) {
-        promptQueueError = StateError(
-          'A specific Model or Thinking level must be sent directly. Wait for the current work to finish, then send this request.',
-        );
-        notifyListeners();
-        return;
-      }
-      if (contextReferences.any(
-        (item) => item.kind != 'agent' && item.kind != 'project',
-      )) {
-        promptQueueError = StateError(
-          'Attached Skills, files, Extensions, and Connections must be sent directly after the current work finishes.',
-        );
-        notifyListeners();
-        return;
-      }
       enqueuePrompt(
         text,
         mode: mode,
-        strategy: targetAgent == null ? strategy : 'direct',
+        strategy: targetAgent == null && modelSelection == null
+            ? strategy
+            : 'direct',
         executionTarget: executionTarget,
         assignedAgent: targetAgent,
+        contextReferences: contextReferences,
+        modelSelection: modelSelection,
       );
       return;
     }
@@ -1196,6 +1204,8 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
     TalkAssignedAgent? assignedAgent,
+    List<TalkCommandContextReference> contextReferences = const [],
+    TalkCommandModelSelection? modelSelection,
   }) {
     final text = input.trim();
     if (_disposed ||
@@ -1215,6 +1225,8 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       executionTarget: executionTarget,
       assignedAgent: assignedAgent ?? this.assignedAgent,
       threadId: threadId,
+      contextReferences: List.unmodifiable(contextReferences),
+      modelSelection: modelSelection,
       syncState: _promptQueueRepository == null
           ? TalkPromptQueueSyncState.synced
           : TalkPromptQueueSyncState.pending,
@@ -1379,6 +1391,8 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
         strategy: item.strategy,
         executionTarget: item.executionTarget,
         assignedAgent: item.assignedAgent,
+        contextReferences: item.contextReferences,
+        modelSelection: item.modelSelection,
         queuedPrompt: item,
       );
       await reconcilePromptQueue();
@@ -1393,6 +1407,8 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       strategy: item.strategy,
       executionTarget: item.executionTarget,
       assignedAgent: item.assignedAgent,
+      contextReferences: item.contextReferences,
+      modelSelection: item.modelSelection,
     );
   }
 
@@ -2124,6 +2140,8 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
             strategy: next.strategy,
             executionTarget: next.executionTarget,
             assignedAgent: next.assignedAgent,
+            contextReferences: next.contextReferences,
+            modelSelection: next.modelSelection,
             queuedPrompt: next,
             queuedForce: false,
           );
@@ -2145,6 +2163,8 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
           strategy: next.strategy,
           executionTarget: next.executionTarget,
           assignedAgent: next.assignedAgent,
+          contextReferences: next.contextReferences,
+          modelSelection: next.modelSelection,
         );
       }
     } finally {
@@ -3092,7 +3112,9 @@ class TalkView extends StatefulWidget {
     required this.controller,
     this.controllerResolver,
     this.voiceRecorder,
+    this.ambientRealtimeFactory,
     this.quickEntry = false,
+    this.ambientVoice = false,
     this.onQuickEntryReady,
     this.onExitQuickEntry,
     this.localComputer,
@@ -3101,7 +3123,9 @@ class TalkView extends StatefulWidget {
   final TalkController controller;
   final TalkController Function()? controllerResolver;
   final VoiceDraftRecorder? voiceRecorder;
+  final AmbientRealtimeVoiceController Function()? ambientRealtimeFactory;
   final bool quickEntry;
+  final bool ambientVoice;
   final VoidCallback? onQuickEntryReady;
   final VoidCallback? onExitQuickEntry;
   final LocalComputerCoordinator? localComputer;
@@ -3114,6 +3138,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   final inputFocus = FocusNode(debugLabel: 'Asael command composer');
   final scroll = ScrollController();
   late final VoiceDraftRecorder recorder;
+  AmbientRealtimeVoiceController? realtimeVoice;
   String strategy = 'auto';
   String commandMode = 'orchestrate';
   final commandReferences = <TalkCommandContextReference>[];
@@ -3132,18 +3157,30 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   String? recordingError;
   String? voiceDraftNotice;
   int voiceDraftGeneration = 0;
+  bool ambientSessionSent = false;
+  String? ambientSubmittedText;
+  String? ambientSpokenText;
+  bool syncingRealtimeTranscript = false;
+  DesktopAmbientVoiceState? lastPublishedAmbientState;
 
   @override
   void initState() {
     super.initState();
     recorder = widget.voiceRecorder ?? RecordVoiceDraftRecorder();
+    if (widget.ambientVoice) {
+      realtimeVoice = widget.ambientRealtimeFactory?.call()
+        ?..addListener(_handleRealtimeVoiceChanged);
+    }
+    input.addListener(_handleComposerChanged);
     WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) unawaited(loadCommandModelCatalog());
     });
     if (widget.quickEntry) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) widget.onQuickEntryReady?.call();
+        if (!mounted) return;
+        widget.onQuickEntryReady?.call();
+        if (widget.ambientVoice) unawaited(_startAmbientVoice());
       });
     } else {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -3193,11 +3230,50 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     voiceDraftGeneration += 1;
+    if (widget.ambientVoice) {
+      unawaited(
+        appDesktopHostBridge.updateAmbientVoiceState(
+          DesktopAmbientVoiceState.asleep,
+        ),
+      );
+    }
+    input.removeListener(_handleComposerChanged);
     input.dispose();
     inputFocus.dispose();
     scroll.dispose();
+    final realtime = realtimeVoice;
+    realtimeVoice = null;
+    realtime?.removeListener(_handleRealtimeVoiceChanged);
+    realtime?.dispose();
     unawaited(_disposeRecorder());
     super.dispose();
+  }
+
+  void _handleComposerChanged() {
+    final realtime = realtimeVoice;
+    if (!syncingRealtimeTranscript &&
+        !ambientSessionSent &&
+        realtime?.phase == AmbientRealtimeVoicePhase.review &&
+        realtime!.transcript != input.text) {
+      realtime.editTranscript(input.text);
+    }
+    if (mounted && widget.ambientVoice) setState(() {});
+  }
+
+  void _handleRealtimeVoiceChanged() {
+    final realtime = realtimeVoice;
+    if (!mounted || realtime == null) return;
+    final conversationId = realtime.conversationId;
+    if (conversationId != null) {
+      widget.controller.adoptConversationThreadId(conversationId);
+    }
+    if (!ambientSessionSent && input.text != realtime.transcript) {
+      syncingRealtimeTranscript = true;
+      input.text = realtime.transcript;
+      input.selection = TextSelection.collapsed(offset: input.text.length);
+      syncingRealtimeTranscript = false;
+    }
+    setState(() {});
   }
 
   Future<void> _disposeRecorder() async {
@@ -3242,7 +3318,88 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       startingVoiceDraft ||
       recording ||
       finalizingVoiceDraft ||
+      _realtimeVoiceBusy ||
       widget.controller.transcribing;
+
+  bool get _realtimeVoiceBusy => _realtimeCaptureActive;
+
+  bool get _realtimeCaptureActive => switch (realtimeVoice?.phase) {
+    AmbientRealtimeVoicePhase.requestingPermission ||
+    AmbientRealtimeVoicePhase.connecting ||
+    AmbientRealtimeVoicePhase.listening ||
+    AmbientRealtimeVoicePhase.speechDetected ||
+    AmbientRealtimeVoicePhase.reconnecting ||
+    AmbientRealtimeVoicePhase.finishing => true,
+    _ => false,
+  };
+
+  Future<void> _startAmbientVoice() async {
+    if (appDesktopHostBridge.supported) {
+      try {
+        final availability = await appDesktopHostBridge
+            .getAmbientVoiceAvailability();
+        if (!availability.available) {
+          if (mounted) {
+            setState(() {
+              recordingError = 'Ambient Command is turned off. Turn it on in Settings → General to use the microphone.';
+            });
+          }
+          return;
+        }
+      } catch (error) {
+        if (mounted) {
+          setState(() {
+            recordingError = 'Asael could not read the Ambient Command setting. Open Settings and try again.';
+          });
+        }
+        return;
+      }
+    }
+    final realtime = realtimeVoice;
+    if (realtime == null) {
+      await toggleVoiceDraft();
+      return;
+    }
+    if (realtime.isSpeechPlaying) await realtime.interruptSpeech();
+    ambientSessionSent = false;
+    ambientSubmittedText = null;
+    ambientSpokenText = null;
+    try {
+      await realtime.start(
+        conversationId: widget.controller.threadId,
+        mode: commandMode,
+        providerConsent: true,
+      );
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => recordingError = _ambientRealtimeError(error));
+    }
+  }
+
+  Future<void> _toggleAmbientVoice() async {
+    final realtime = realtimeVoice;
+    if (realtime == null) {
+      await toggleVoiceDraft();
+      return;
+    }
+    if (realtime.isSpeechPlaying) {
+      await realtime.interruptSpeech();
+      await _startAmbientVoice();
+      return;
+    }
+    if (realtime.isListening) {
+      await realtime.stopAndReview();
+      if (mounted) inputFocus.requestFocus();
+      return;
+    }
+    await _startAmbientVoice();
+  }
+
+  String _ambientRealtimeError(Object error) => switch (error) {
+    AmbientVoiceException(:final message) => message,
+    ApiException(:final message) => _boundedDisplayText(message, 320),
+    _ => 'Realtime voice could not start. Check the microphone and the model selected in Settings, then try again.',
+  };
 
   Future<void> loadCommandModelCatalog() async {
     final expectedScope = commandModelScope;
@@ -3299,6 +3456,11 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
 
   Future<void> interruptVoiceDraft() async {
     voiceDraftGeneration += 1;
+    final realtime = realtimeVoice;
+    if (realtime != null) {
+      if (realtime.isSpeechPlaying) await realtime.interruptSpeech();
+      if (_realtimeCaptureActive) await realtime.cancel();
+    }
     if (mounted && (startingVoiceDraft || recording || finalizingVoiceDraft)) {
       setState(() {
         startingVoiceDraft = false;
@@ -3371,16 +3533,6 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     }
     final controller = widget.controllerResolver?.call() ?? widget.controller;
     final exactModelSelection = commandModelSelection;
-    if (controller.sending && exactModelSelection != null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'A specific Model or Thinking level cannot be queued. Wait for the current work to finish, then send this request.',
-          ),
-        ),
-      );
-      return;
-    }
     input.clear();
     if (recordingError != null || voiceDraftNotice != null) {
       setState(() {
@@ -3401,7 +3553,9 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
         (item) => item.kind != 'agent' && item.kind != 'project',
       );
     });
-    if (widget.quickEntry) widget.onExitQuickEntry?.call();
+    if (widget.quickEntry && !widget.ambientVoice) {
+      widget.onExitQuickEntry?.call();
+    }
     unawaited(work);
   }
 
@@ -3665,6 +3819,353 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
         .showSnackBar(const SnackBar(content: Text('Answer copied')));
   }
 
+  AmbientVoicePhase get _ambientVoicePhase {
+    final realtime = realtimeVoice;
+    if (_realtimeAppearsOffline) return AmbientVoicePhase.offline;
+    if (recordingError != null ||
+        widget.controller.voiceErrorMessage != null ||
+        realtime?.phase == AmbientRealtimeVoicePhase.error) {
+      return AmbientVoicePhase.error;
+    }
+    if (realtime?.isSpeechPlaying == true) return AmbientVoicePhase.speaking;
+    if (realtime != null) {
+      switch (realtime.phase) {
+        case AmbientRealtimeVoicePhase.requestingPermission:
+        case AmbientRealtimeVoicePhase.connecting:
+          return AmbientVoicePhase.starting;
+        case AmbientRealtimeVoicePhase.listening:
+        case AmbientRealtimeVoicePhase.speechDetected:
+        case AmbientRealtimeVoicePhase.reconnecting:
+          return AmbientVoicePhase.listening;
+        case AmbientRealtimeVoicePhase.finishing:
+          return AmbientVoicePhase.transcribing;
+        case AmbientRealtimeVoicePhase.review:
+          return AmbientVoicePhase.review;
+        case AmbientRealtimeVoicePhase.idle:
+        case AmbientRealtimeVoicePhase.playingSpeech:
+        case AmbientRealtimeVoicePhase.stopped:
+        case AmbientRealtimeVoicePhase.error:
+          break;
+      }
+    }
+    if (startingVoiceDraft) return AmbientVoicePhase.starting;
+    if (recording) return AmbientVoicePhase.listening;
+    if (finalizingVoiceDraft || widget.controller.transcribing) {
+      return AmbientVoicePhase.transcribing;
+    }
+    if (widget.controller.waitingForApproval) {
+      return AmbientVoicePhase.approval;
+    }
+    final status = widget.controller.status?.toLowerCase() ?? '';
+    if (widget.controller.sending) {
+      if (status.contains('approval') ||
+          status.contains('authorization') ||
+          status.contains('your input')) {
+        return AmbientVoicePhase.approval;
+      }
+      return AmbientVoicePhase.running;
+    }
+    if (ambientSessionSent) {
+      final reply = widget.controller.messages.lastOrNull;
+      if (reply?.failed == true) return AmbientVoicePhase.error;
+      if (reply?.role == TalkRole.assistant && reply!.text.trim().isNotEmpty) {
+        return AmbientVoicePhase.completed;
+      }
+    }
+    if (input.text.trim().isNotEmpty || voiceDraftNotice != null) {
+      return AmbientVoicePhase.review;
+    }
+    return AmbientVoicePhase.asleep;
+  }
+
+  String get _ambientVoiceDetail {
+    final realtime = realtimeVoice;
+    if (realtime != null &&
+        const {
+          AmbientRealtimeVoicePhase.requestingPermission,
+          AmbientRealtimeVoicePhase.connecting,
+          AmbientRealtimeVoicePhase.listening,
+          AmbientRealtimeVoicePhase.speechDetected,
+          AmbientRealtimeVoicePhase.reconnecting,
+          AmbientRealtimeVoicePhase.finishing,
+          AmbientRealtimeVoicePhase.review,
+          AmbientRealtimeVoicePhase.playingSpeech,
+          AmbientRealtimeVoicePhase.error,
+        }.contains(realtime.phase)) {
+      return realtime.detail;
+    }
+    final status = widget.controller.status;
+    return switch (_ambientVoicePhase) {
+      AmbientVoicePhase.asleep =>
+        'Say what you want Asael to do, or type a request.',
+      AmbientVoicePhase.starting => 'Opening a private live transcription session. Asael does not store raw audio.',
+      AmbientVoicePhase.listening => 'Speak naturally. Audio goes only to your configured transcription provider and is not stored by Asael.',
+      AmbientVoicePhase.transcribing =>
+        'Your words are becoming an editable command.',
+      AmbientVoicePhase.review =>
+        executionTarget == TalkExecutionTarget.thisMac
+            ? 'Review the words and confirm that Asael should operate this Mac.'
+            : 'Review or edit the words before Asael starts.',
+      AmbientVoicePhase.running =>
+        status == null
+            ? 'The governed task is continuing in the background.'
+            : _humanCommandStatus(status),
+      AmbientVoicePhase.speaking => 'Speak at any time to interrupt.',
+      AmbientVoicePhase.approval => 'Open the visible approval to review the exact action. Voice cannot approve it.',
+      AmbientVoicePhase.completed =>
+        executionTarget == TalkExecutionTarget.thisMac
+            ? 'The requested Mac task has finished.'
+            : 'Asael has finished this request.',
+      AmbientVoicePhase.offline =>
+        'Check your network and configured voice provider, then try again.',
+      AmbientVoicePhase.error =>
+        recordingError ??
+            realtime?.errorMessage ??
+            widget.controller.voiceErrorMessage ??
+            'The request did not finish. Your reviewed words remain visible.',
+    };
+  }
+
+  bool get _realtimeAppearsOffline {
+    final realtime = realtimeVoice;
+    if (realtime?.phase != AmbientRealtimeVoicePhase.error) return false;
+    final message =
+        '${realtime?.errorCode ?? ''} ${realtime?.errorMessage ?? ''}'
+            .toLowerCase();
+    return message.contains('network') ||
+        message.contains('connection') ||
+        message.contains('offline') ||
+        message.contains('timeout') ||
+        message.contains('too long to connect');
+  }
+
+  String? get _ambientLastResult {
+    if (!ambientSessionSent) return null;
+    final reply = widget.controller.messages.lastOrNull;
+    if (reply?.role != TalkRole.assistant || reply!.text.trim().isEmpty) {
+      return ambientSubmittedText == null
+          ? null
+          : 'Working on “${_boundedRunText(ambientSubmittedText, 100)}”';
+    }
+    return _boundedRunText(reply.text, 180);
+  }
+
+  void _selectAmbientDestination(bool useThisMac) {
+    selectExecutionTarget(
+      useThisMac ? TalkExecutionTarget.thisMac : TalkExecutionTarget.agent,
+    );
+  }
+
+  Future<void> _closeAmbientVoice() async {
+    await interruptVoiceDraft();
+    await realtimeVoice?.cancel();
+    lastPublishedAmbientState = DesktopAmbientVoiceState.asleep;
+    unawaited(
+      appDesktopHostBridge.updateAmbientVoiceState(
+        DesktopAmbientVoiceState.asleep,
+      ),
+    );
+    widget.onExitQuickEntry?.call();
+  }
+
+  Future<void> _stopAmbientWork() async {
+    await interruptVoiceDraft();
+    await realtimeVoice?.interruptSpeech();
+    final localComputer = widget.localComputer;
+    await Future.wait<void>([
+      widget.controller.cancel(),
+      if (localComputer?.active == true) localComputer!.stopNow(),
+    ]);
+  }
+
+  Future<void> _openAmbientApproval() async {
+    final route = widget.controller.pendingApprovalRoute ?? '/inbox';
+    await interruptVoiceDraft();
+    await realtimeVoice?.interruptSpeech();
+    lastPublishedAmbientState = DesktopAmbientVoiceState.asleep;
+    unawaited(
+      appDesktopHostBridge.updateAmbientVoiceState(
+        DesktopAmbientVoiceState.asleep,
+      ),
+    );
+    await appDesktopHostBridge.showMainPresentation();
+    if (mounted) context.go(route);
+  }
+
+  Future<void> _submitAmbientVoice() async {
+    if (voiceDraftBusy || widget.controller.sending) return;
+    final text = input.text.trim();
+    if (text.isEmpty) return;
+    if (executionTarget == TalkExecutionTarget.thisMac &&
+        widget.localComputer?.canClaimCommands == false) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Open the main Asael window to use this Mac.'),
+        ),
+      );
+      return;
+    }
+    final realtime = realtimeVoice;
+    if (realtime != null) {
+      try {
+        if (realtime.transcript != text ||
+            realtime.phase != AmbientRealtimeVoicePhase.review) {
+          realtime.editTranscript(text);
+        }
+        realtime.attestReview(true);
+        await realtime.finish(AmbientVoiceOutcome.sent);
+      } catch (error) {
+        if (!mounted) return;
+        setState(() => recordingError = _ambientRealtimeError(error));
+        return;
+      }
+    }
+    if (!mounted) return;
+    setState(() {
+      ambientSessionSent = true;
+      ambientSubmittedText = text;
+      recordingError = null;
+    });
+    submit();
+  }
+
+  void _scheduleAmbientSpeech(AmbientVoicePhase phase) {
+    final realtime = realtimeVoice;
+    if (realtime == null || phase != AmbientVoicePhase.completed) return;
+    final reply = widget.controller.messages.lastOrNull;
+    if (reply?.role != TalkRole.assistant ||
+        reply!.failed ||
+        reply.streaming ||
+        reply.text.trim().isEmpty ||
+        ambientSpokenText == reply.text) {
+      return;
+    }
+    ambientSpokenText = reply.text;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || realtimeVoice != realtime) return;
+      unawaited(_speakAmbientResult(realtime, reply.text));
+    });
+  }
+
+  Future<void> _speakAmbientResult(
+    AmbientRealtimeVoiceController realtime,
+    String text,
+  ) async {
+    try {
+      await realtime.speak(
+        text,
+        threadId: widget.controller.threadId,
+        runId: widget.controller.runId,
+        agentId: widget.controller.assignedAgent?.id,
+      );
+    } catch (error) {
+      if (!mounted || realtimeVoice != realtime) return;
+      setState(() {
+        recordingError =
+            'The answer is ready on screen, but Asael could not play it aloud. ${_ambientRealtimeError(error)}';
+      });
+    }
+  }
+
+  Future<void> _openAmbientFromToolbar() async {
+    try {
+      final availability = await appDesktopHostBridge
+          .getAmbientVoiceAvailability();
+      if (!mounted) return;
+      if (!availability.available) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Ambient Command is off. Turn it on in Settings → General.',
+            ),
+          ),
+        );
+        return;
+      }
+      unawaited(context.push('/ambient-voice'));
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Ambient Command could not open. Check Settings and try again.',
+          ),
+        ),
+      );
+    }
+  }
+
+  Widget _buildAmbientVoice(BuildContext context) {
+    final phase = _ambientVoicePhase;
+    _publishAmbientVoiceState(phase);
+    _scheduleAmbientSpeech(phase);
+    final canSend =
+        !voiceDraftBusy &&
+        !widget.controller.sending &&
+        input.text.trim().isNotEmpty;
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.escape): () =>
+            unawaited(_closeAmbientVoice()),
+        const SingleActivator(LogicalKeyboardKey.enter, meta: true): () {
+          if (canSend) unawaited(_submitAmbientVoice());
+        },
+      },
+      child: AmbientVoiceSurface(
+        phase: phase,
+        level: realtimeVoice?.level ?? voiceLevel,
+        transcript: input,
+        focusNode: inputFocus,
+        useThisMac: executionTarget == TalkExecutionTarget.thisMac,
+        thisMacAvailable: widget.localComputer?.canClaimCommands == true,
+        detail: _ambientVoiceDetail,
+        error: phase == AmbientVoicePhase.error
+            ? recordingError ??
+                  realtimeVoice?.errorMessage ??
+                  widget.controller.voiceErrorMessage
+            : null,
+        lastResult: _ambientLastResult,
+        onDestinationChanged: _selectAmbientDestination,
+        onMicrophonePressed:
+            widget.controller.sending || widget.controller.transcribing
+            ? null
+            : () => unawaited(_toggleAmbientVoice()),
+        onSend: canSend ? () => unawaited(_submitAmbientVoice()) : null,
+        onStop:
+            phase == AmbientVoicePhase.running ||
+                phase == AmbientVoicePhase.approval
+            ? () => unawaited(_stopAmbientWork())
+            : null,
+        onReviewApproval: phase == AmbientVoicePhase.approval
+            ? () => unawaited(_openAmbientApproval())
+            : null,
+        onClose: () => unawaited(_closeAmbientVoice()),
+      ),
+    );
+  }
+
+  void _publishAmbientVoiceState(AmbientVoicePhase phase) {
+    final state = switch (phase) {
+      AmbientVoicePhase.starting ||
+      AmbientVoicePhase.listening ||
+      AmbientVoicePhase.transcribing => DesktopAmbientVoiceState.listening,
+      AmbientVoicePhase.review => DesktopAmbientVoiceState.review,
+      AmbientVoicePhase.running => DesktopAmbientVoiceState.running,
+      AmbientVoicePhase.speaking => DesktopAmbientVoiceState.speaking,
+      AmbientVoicePhase.approval => DesktopAmbientVoiceState.approval,
+      AmbientVoicePhase.offline => DesktopAmbientVoiceState.offline,
+      AmbientVoicePhase.error => DesktopAmbientVoiceState.error,
+      AmbientVoicePhase.asleep ||
+      AmbientVoicePhase.completed => DesktopAmbientVoiceState.asleep,
+    };
+    if (lastPublishedAmbientState == state) return;
+    lastPublishedAmbientState = state;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !widget.ambientVoice) return;
+      unawaited(appDesktopHostBridge.updateAmbientVoiceState(state));
+    });
+  }
+
   Widget _buildQuickEntry(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final macos = usesMacosPresentation();
@@ -3851,6 +4352,12 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
+    if (widget.ambientVoice) {
+      return ListenableBuilder(
+        listenable: widget.controller,
+        builder: (_, _) => _buildAmbientVoice(context),
+      );
+    }
     if (widget.quickEntry) return _buildQuickEntry(context);
     final macos = usesMacosPresentation();
     final mac = MacosThemeColors.of(context);
@@ -3867,6 +4374,12 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
           ),
         ),
         actions: [
+          if (appDesktopHostBridge.supported)
+            IconButton(
+              tooltip: 'Open Ambient Command',
+              onPressed: () => unawaited(_openAmbientFromToolbar()),
+              icon: const Icon(Icons.graphic_eq_rounded),
+            ),
           if (appDesktopHostBridge.supported)
             IconButton(
               tooltip: 'Open a new Conversation window',
@@ -3973,7 +4486,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                     opacity: animation,
                     child: SizeTransition(
                       sizeFactor: animation,
-                      axisAlignment: -1,
+                      alignment: Alignment.topCenter,
                       child: child,
                     ),
                   ),
@@ -6196,6 +6709,12 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
                                           'Agent v${prompt.agentDefinitionVersion}',
                                       color: scheme.onSurfaceVariant,
                                     ),
+                                  if (prompt.contextReferences.isNotEmpty)
+                                    _QueueStatusChip(
+                                      label:
+                                          '${prompt.contextReferences.length} context ${prompt.contextReferences.length == 1 ? 'item' : 'items'}',
+                                      color: scheme.onSurfaceVariant,
+                                    ),
                                 ],
                               ),
                               if (prompt.progressLabel != null ||
@@ -6529,13 +7048,12 @@ class _ActivityStoryGlyph extends StatefulWidget {
     required this.icon,
     required this.color,
     required this.active,
-    this.size = 28,
   });
 
   final IconData icon;
   final Color? color;
   final bool active;
-  final double size;
+  final double size = 28;
 
   @override
   State<_ActivityStoryGlyph> createState() => _ActivityStoryGlyphState();

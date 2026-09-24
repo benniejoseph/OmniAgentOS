@@ -17,6 +17,9 @@ typedef DesktopApnsRegistrationHandler = Future<void> Function(
 typedef DesktopSharedCaptureHandler = Future<void> Function(
   DesktopSharedCapture capture,
 );
+typedef DesktopAmbientVoiceRequestHandler = Future<void> Function(
+  DesktopAmbientVoiceRequest request,
+);
 
 enum DesktopNotificationCommand { open, complete, snooze15, dismiss }
 
@@ -36,6 +39,81 @@ enum DesktopQuickEntryShortcut {
       'The native shortcut selection is invalid.',
     ),
   );
+}
+
+enum DesktopAmbientVoiceState {
+  asleep,
+  listening,
+  review,
+  running,
+  speaking,
+  approval,
+  offline,
+  error,
+}
+
+enum DesktopAmbientVoiceRequestSource {
+  menu('menu'),
+  shortcut('shortcut'),
+  vocalShortcut('vocal_shortcut');
+
+  const DesktopAmbientVoiceRequestSource(this.id);
+  final String id;
+
+  static DesktopAmbientVoiceRequestSource fromId(String id) =>
+      values.firstWhere(
+        (value) => value.id == id,
+        orElse: () => throw const FormatException(
+          'The ambient voice request source is invalid.',
+        ),
+      );
+}
+
+class DesktopAmbientVoiceRequest {
+  const DesktopAmbientVoiceRequest({required this.source});
+
+  factory DesktopAmbientVoiceRequest.fromArguments(Object? arguments) {
+    if (arguments is! Map ||
+        arguments.length != 1 ||
+        arguments['source'] is! String) {
+      throw const FormatException('The ambient voice request is invalid.');
+    }
+    return DesktopAmbientVoiceRequest(
+      source: DesktopAmbientVoiceRequestSource.fromId(
+        arguments['source'] as String,
+      ),
+    );
+  }
+
+  final DesktopAmbientVoiceRequestSource source;
+}
+
+class DesktopAmbientVoiceAvailability {
+  const DesktopAmbientVoiceAvailability({
+    required this.available,
+    required this.state,
+  });
+
+  factory DesktopAmbientVoiceAvailability.fromArguments(Object? arguments) {
+    if (arguments is! Map ||
+        arguments.length != 2 ||
+        arguments['available'] is! bool ||
+        arguments['state'] is! String) {
+      throw const FormatException('The ambient voice availability is invalid.');
+    }
+    final stateName = arguments['state'] as String;
+    return DesktopAmbientVoiceAvailability(
+      available: arguments['available'] as bool,
+      state: DesktopAmbientVoiceState.values.firstWhere(
+        (value) => value.name == stateName,
+        orElse: () =>
+            throw const FormatException('The ambient voice state is invalid.'),
+      ),
+    );
+  }
+
+  final bool available;
+  final DesktopAmbientVoiceState state;
 }
 
 class DesktopShortcutState {
@@ -258,6 +336,8 @@ class DesktopHostBridge {
   DesktopApnsRegistration? _pendingApnsRegistration;
   DesktopSharedCaptureHandler? _sharedCaptureHandler;
   final List<DesktopSharedCapture> _pendingSharedCaptures = [];
+  DesktopAmbientVoiceRequestHandler? _ambientVoiceRequestHandler;
+  DesktopAmbientVoiceRequest? _pendingAmbientVoiceRequest;
   bool _initialized = false;
 
   Future<void> initialize() async {
@@ -301,6 +381,27 @@ class DesktopHostBridge {
         }
         _dispatch(route);
         return null;
+      case 'openAmbientVoice':
+        try {
+          final request = DesktopAmbientVoiceRequest.fromArguments(
+            call.arguments,
+          );
+          final handler = _ambientVoiceRequestHandler;
+          if (handler == null) {
+            // Attention requests carry no work or authority. Last-write-wins
+            // avoids replaying a burst of stale shortcut invocations once the
+            // Flutter voice surface becomes ready.
+            _pendingAmbientVoiceRequest = request;
+          } else {
+            await handler(request);
+          }
+          return null;
+        } on FormatException catch (error) {
+          throw PlatformException(
+            code: 'invalid_ambient_voice_request',
+            message: error.message,
+          );
+        }
       case 'notificationAction':
         try {
           final action = DesktopNotificationAction.fromArguments(
@@ -487,6 +588,17 @@ class DesktopHostBridge {
     }
   }
 
+  void attachAmbientVoiceRequestHandler(
+    DesktopAmbientVoiceRequestHandler? handler,
+  ) {
+    _ambientVoiceRequestHandler = handler;
+    final pending = _pendingAmbientVoiceRequest;
+    if (handler != null && pending != null) {
+      _pendingAmbientVoiceRequest = null;
+      unawaited(handler(pending));
+    }
+  }
+
   Future<void> completeSharedCapture(String requestId) async {
     await _invokeSharedCaptureMethod('completeSharedCapture', requestId);
   }
@@ -536,6 +648,50 @@ class DesktopHostBridge {
       {'shortcut': shortcut.id},
     );
     return DesktopShortcutState.fromArguments(result);
+  }
+
+  Future<DesktopAmbientVoiceAvailability> getAmbientVoiceAvailability() async {
+    if (!_enabled) {
+      return const DesktopAmbientVoiceAvailability(
+        available: false,
+        state: DesktopAmbientVoiceState.asleep,
+      );
+    }
+    final result = await _channel.invokeMethod<Object?>(
+      'getAmbientVoiceAvailability',
+    );
+    return DesktopAmbientVoiceAvailability.fromArguments(result);
+  }
+
+  Future<DesktopAmbientVoiceAvailability> setAmbientVoiceAvailability(
+    bool available,
+  ) async {
+    if (!_enabled) {
+      return DesktopAmbientVoiceAvailability(
+        available: available,
+        state: DesktopAmbientVoiceState.asleep,
+      );
+    }
+    final result = await _channel.invokeMethod<Object?>(
+      'setAmbientVoiceAvailability',
+      {'available': available},
+    );
+    return DesktopAmbientVoiceAvailability.fromArguments(result);
+  }
+
+  /// Publishes presentation state only. This cannot dispatch a prompt, select
+  /// an execution target, approve an action, or grant Computer Use authority.
+  Future<DesktopAmbientVoiceAvailability> updateAmbientVoiceState(
+    DesktopAmbientVoiceState state,
+  ) async {
+    if (!_enabled) {
+      return DesktopAmbientVoiceAvailability(available: false, state: state);
+    }
+    final result = await _channel.invokeMethod<Object?>(
+      'updateAmbientVoiceState',
+      {'state': state.name},
+    );
+    return DesktopAmbientVoiceAvailability.fromArguments(result);
   }
 
   Future<void> openWorkspaceWindow(String route) async {
@@ -595,6 +751,8 @@ class DesktopHostBridge {
     _pendingApnsRegistration = null;
     _sharedCaptureHandler = null;
     _pendingSharedCaptures.clear();
+    _ambientVoiceRequestHandler = null;
+    _pendingAmbientVoiceRequest = null;
     _initialized = false;
   }
 }

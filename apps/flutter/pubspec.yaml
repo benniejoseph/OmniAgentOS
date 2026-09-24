@@ -1,7 +1,7 @@
 name: asael
 description: Asael command center for mobile and desktop.
 publish_to: 'none'
-version: 1.22.0+34
+version: 1.23.0+35
 
 environment:
   sdk: ^3.13.0
@@ -17,6 +17,8 @@ dependencies:
   local_auth: ^3.0.2
   file_picker: ^12.2.0
   record: ^7.1.1
+  flutter_webrtc: ^1.6.2+hotfix.3
+  audioplayers: ^6.8.1
   mime: ^2.1.0
   cryptography: ^2.9.0
   path_provider: ^2.1.6

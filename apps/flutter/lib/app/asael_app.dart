@@ -25,6 +25,28 @@ class AsaelApp extends ConsumerStatefulWidget {
 class _AsaelAppState extends ConsumerState<AsaelApp>
     with WidgetsBindingObserver {
   final _desktopHostBridge = appDesktopHostBridge;
+  DesktopAmbientVoiceRequest? _pendingAmbientVoiceRequest;
+
+  Future<void> _handleAmbientVoiceRequest(
+    DesktopAmbientVoiceRequest request,
+  ) async {
+    if (!mounted) return;
+    if (ref.read(sessionOwnerKeyProvider) == null) {
+      _pendingAmbientVoiceRequest = request;
+      return;
+    }
+    _openAmbientVoice();
+  }
+
+  void _openAmbientVoice() {
+    if (!mounted) return;
+    final router = ref.read(appRouterProvider);
+    if (router.routerDelegate.currentConfiguration.uri.path ==
+        '/ambient-voice') {
+      return;
+    }
+    unawaited(router.push<void>('/ambient-voice'));
+  }
 
   Future<void> _handleSharedCapture(DesktopSharedCapture capture) async {
     final router = ref.read(appRouterProvider);
@@ -86,10 +108,18 @@ class _AsaelAppState extends ConsumerState<AsaelApp>
     ref.watch(captureOutboxLifecycleProvider);
     ref.watch(reconnectCoordinatorProvider);
     final router = ref.watch(appRouterProvider);
+    final owner = ref.watch(sessionOwnerKeyProvider);
+    if (owner != null && _pendingAmbientVoiceRequest != null) {
+      _pendingAmbientVoiceRequest = null;
+      WidgetsBinding.instance.addPostFrameCallback((_) => _openAmbientVoice());
+    }
     final themeMode = ref.watch(appThemeModeProvider).mode;
     final reconnect = ref.watch(reconnectCoordinatorProvider);
     final localComputer = ref.watch(localComputerCoordinatorProvider);
     _desktopHostBridge.attachRouter(router);
+    _desktopHostBridge.attachAmbientVoiceRequestHandler(
+      _handleAmbientVoiceRequest,
+    );
     final push = ref.watch(mobilePushCoordinatorProvider);
     push?.attachRouter(router);
     _desktopHostBridge.attachNotificationHandler(

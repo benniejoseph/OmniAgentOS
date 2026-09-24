@@ -811,6 +811,7 @@ TalkQueuedPrompt _promptQueueItem(Object? value) {
   final target = item['target'];
   final agent = item['agent'];
   final model = item['model'];
+  final context = item['context'];
   if (schemaVersion != 1 ||
       !RegExp(
         r'^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$',
@@ -836,6 +837,30 @@ TalkQueuedPrompt _promptQueueItem(Object? value) {
   final targetMap = Map<String, dynamic>.from(target);
   final agentMap = Map<String, dynamic>.from(agent);
   final modelMap = Map<String, dynamic>.from(model);
+  final contextReferences = <TalkCommandContextReference>[];
+  if (context != null) {
+    if (context is! Map) {
+      throw const FormatException('The queue context pin is invalid.');
+    }
+    final contextMap = Map<String, dynamic>.from(context);
+    final references = contextMap['references'];
+    if (contextMap['schemaVersion'] != 1 ||
+        references is! List ||
+        references.isEmpty ||
+        references.length > 20) {
+      throw const FormatException('The queue context pin is invalid.');
+    }
+    for (final reference in references) {
+      if (reference is! Map) {
+        throw const FormatException('The queue context pin is invalid.');
+      }
+      contextReferences.add(
+        TalkCommandContextReference.fromRequestJson(
+          Map<String, dynamic>.from(reference),
+        ),
+      );
+    }
+  }
   final executionTarget = targetMap['executionTarget'] == 'local_macos'
       ? TalkExecutionTarget.thisMac
       : targetMap['executionTarget'] == 'asael'
@@ -844,6 +869,9 @@ TalkQueuedPrompt _promptQueueItem(Object? value) {
   final logicalAgentId = _queueText(agentMap['logicalAgentId'], maximum: 120);
   final providerId = _queueText(modelMap['providerId'], maximum: 40);
   final modelId = _queueText(modelMap['modelId'], maximum: 240);
+  final modelSelection = modelMap['commandSelection'] == null
+      ? null
+      : TalkCommandModelSelection.fromRequestJson(modelMap['commandSelection']);
   final definitionVersion = _queueRevision(agentMap['definitionVersion']);
   if (logicalAgentId.isEmpty ||
       providerId.isEmpty ||
@@ -863,6 +891,8 @@ TalkQueuedPrompt _promptQueueItem(Object? value) {
       name: logicalAgentId == 'atlas' ? 'Asael' : logicalAgentId,
     ),
     threadId: _queueNullableText(targetMap['threadId'], maximum: 240),
+    contextReferences: List.unmodifiable(contextReferences),
+    modelSelection: modelSelection,
     lifecycleRevision: revision,
     state: state,
     providerId: providerId,
@@ -879,10 +909,20 @@ Json _promptQueueCreateRequest(TalkQueuedPrompt prompt) => {
   'mode': prompt.mode,
   'strategy': prompt.strategy,
   'agentId': prompt.assignedAgent?.id ?? 'atlas',
+  if (prompt.contextReferences.isNotEmpty)
+    'contextReferences': [
+      for (final reference in prompt.contextReferences)
+        reference.toRequestJson(),
+    ],
+  if (prompt.modelSelection != null)
+    'modelSelection': prompt.modelSelection!.toRequestJson(),
   'target': {
     'threadId': prompt.threadId,
     'missionId': null,
-    'projectId': null,
+    'projectId': prompt.contextReferences
+        .where((reference) => reference.kind == 'project')
+        .firstOrNull
+        ?.id,
     'executionTarget': prompt.executionTarget == TalkExecutionTarget.thisMac
         ? 'local_macos'
         : 'asael',
@@ -912,6 +952,33 @@ List<TalkQueuedPrompt> _applyPromptQueueOutbox(
           ? Map<String, dynamic>.from(values['target'] as Map)
           : const <String, dynamic>{};
       final agentId = _queueText(values['agentId'], maximum: 120);
+      TalkCommandModelSelection? modelSelection;
+      if (values['modelSelection'] != null) {
+        try {
+          modelSelection = TalkCommandModelSelection.fromRequestJson(
+            values['modelSelection'],
+          );
+        } on FormatException {
+          continue;
+        }
+      }
+      final contextReferences = <TalkCommandContextReference>[];
+      final rawReferences = values['contextReferences'];
+      if (rawReferences is List && rawReferences.length <= 20) {
+        for (final value in rawReferences) {
+          if (value is! Map) continue;
+          try {
+            contextReferences.add(
+              TalkCommandContextReference.fromRequestJson(
+                Map<String, dynamic>.from(value),
+              ),
+            );
+          } on FormatException {
+            contextReferences.clear();
+            break;
+          }
+        }
+      }
       items.add(
         TalkQueuedPrompt(
           id: 'local-$correlation',
@@ -927,6 +994,8 @@ List<TalkQueuedPrompt> _applyPromptQueueOutbox(
             name: agentId.isEmpty || agentId == 'atlas' ? 'Asael' : agentId,
           ),
           threadId: _queueNullableText(target['threadId'], maximum: 240),
+          contextReferences: List.unmodifiable(contextReferences),
+          modelSelection: modelSelection,
           syncState: TalkPromptQueueSyncState.pending,
         ),
       );

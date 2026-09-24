@@ -40,7 +40,7 @@
 	<key>NSMainNibFile</key>
 	<string>MainMenu</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Asael uses the microphone only when you choose to record a voice capture.</string>
+	<string>Asael uses the microphone only when you open voice capture or Ambient Command, turning speech into an editable request without storing raw audio.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 </dict>

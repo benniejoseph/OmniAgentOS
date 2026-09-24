@@ -7,6 +7,8 @@ import 'package:go_router/go_router.dart';
 
 import '../../core/network/api_client.dart';
 import '../../core/platform/desktop_host_bridge.dart';
+import '../../core/storage/secure_session_store.dart';
+import '../../features/ambient_voice/realtime_voice_controller.dart';
 import '../../features/auth/application/session_controller.dart';
 import '../../features/auth/presentation/login_screen.dart';
 import '../../features/auth/presentation/session_bootstrap_screen.dart';
@@ -103,11 +105,13 @@ class ProviderBoundTalkRoute extends ConsumerWidget {
   const ProviderBoundTalkRoute({
     super.key,
     this.quickEntry = false,
+    this.ambientVoice = false,
     this.onQuickEntryReady,
     this.onExitQuickEntry,
   });
 
   final bool quickEntry;
+  final bool ambientVoice;
   final VoidCallback? onQuickEntryReady;
   final VoidCallback? onExitQuickEntry;
 
@@ -121,6 +125,15 @@ class ProviderBoundTalkRoute extends ConsumerWidget {
       localComputerCoordinatorProvider.select((coordinator) => coordinator),
     ),
     quickEntry: quickEntry,
+    ambientVoice: ambientVoice,
+    ambientRealtimeFactory: ambientVoice
+        ? () => AmbientRealtimeVoiceController(
+            api: ref.read(apiClientProvider),
+            sessionStore: ref.read(secureSessionStoreProvider),
+            onConversationBound: (id) =>
+                ref.read(talkControllerProvider).adoptConversationThreadId(id),
+          )
+        : null,
     onQuickEntryReady: onQuickEntryReady,
     onExitQuickEntry: onExitQuickEntry,
   );
@@ -175,7 +188,33 @@ final appRouterProvider = Provider<GoRouter>((ref) {
             unawaited(appDesktopHostBridge.showQuickEntryPresentation());
           },
           onExitQuickEntry: () {
-            context.go('/talk');
+            final router = GoRouter.of(context);
+            if (router.canPop()) {
+              router.pop();
+            } else {
+              router.go('/talk');
+            }
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              unawaited(appDesktopHostBridge.showMainPresentation());
+            });
+          },
+        ),
+      ),
+      GoRoute(
+        path: '/ambient-voice',
+        builder: (context, _) => ProviderBoundTalkRoute(
+          quickEntry: true,
+          ambientVoice: true,
+          onQuickEntryReady: () {
+            unawaited(appDesktopHostBridge.showQuickEntryPresentation());
+          },
+          onExitQuickEntry: () {
+            final router = GoRouter.of(context);
+            if (router.canPop()) {
+              router.pop();
+            } else {
+              router.go('/talk');
+            }
             WidgetsBinding.instance.addPostFrameCallback((_) {
               unawaited(appDesktopHostBridge.showMainPresentation());
             });

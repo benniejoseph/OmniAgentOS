@@ -68,8 +68,10 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
   bool loading = true;
   String? saving;
   DesktopShortcutState? desktopShortcut;
+  DesktopAmbientVoiceAvailability? desktopAmbientVoice;
   Object? desktopError;
   bool desktopSaving = false;
+  bool ambientVoiceSaving = false;
   int macosSection = 0;
   String macosQuery = '';
 
@@ -87,6 +89,12 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
     } catch (error) {
       if (mounted) setState(() => desktopError = error);
     }
+    try {
+      final state = await appDesktopHostBridge.getAmbientVoiceAvailability();
+      if (mounted) setState(() => desktopAmbientVoice = state);
+    } catch (error) {
+      if (mounted) setState(() => desktopError = error);
+    }
   }
 
   Future<void> _setDesktopShortcut(DesktopQuickEntryShortcut shortcut) async {
@@ -101,6 +109,23 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
       if (mounted) setState(() => desktopError = error);
     } finally {
       if (mounted) setState(() => desktopSaving = false);
+    }
+  }
+
+  Future<void> _setDesktopAmbientVoiceAvailability(bool available) async {
+    setState(() {
+      ambientVoiceSaving = true;
+      desktopError = null;
+    });
+    try {
+      final state = await appDesktopHostBridge.setAmbientVoiceAvailability(
+        available,
+      );
+      if (mounted) setState(() => desktopAmbientVoice = state);
+    } catch (error) {
+      if (mounted) setState(() => desktopError = error);
+    } finally {
+      if (mounted) setState(() => ambientVoiceSaving = false);
     }
   }
 
@@ -331,6 +356,53 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
                                   Row(
                                     children: [
                                       Icon(
+                                        Icons.graphic_eq_rounded,
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .primary,
+                                      ),
+                                      const SizedBox(width: 12),
+                                      const Expanded(
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              'Ambient Command',
+                                              style: TextStyle(
+                                                fontWeight: FontWeight.w700,
+                                              ),
+                                            ),
+                                            Text(
+                                              'Open a compact voice window from anywhere. Live audio goes only to your configured transcription provider and is not stored by Asael.',
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      const SizedBox(width: 12),
+                                      Switch.adaptive(
+                                        value:
+                                            desktopAmbientVoice?.available ??
+                                            false,
+                                        onChanged:
+                                            ambientVoiceSaving ||
+                                                desktopAmbientVoice == null
+                                            ? null
+                                            : _setDesktopAmbientVoiceAvailability,
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    'You can also create a macOS Vocal Shortcut that opens asael://ambient-voice.',
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .bodySmall,
+                                  ),
+                                  const Divider(height: 28),
+                                  Row(
+                                    children: [
+                                      Icon(
                                         Icons.keyboard_command_key_rounded,
                                         color: Theme.of(context)
                                             .colorScheme
@@ -343,13 +415,13 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
                                               CrossAxisAlignment.start,
                                           children: [
                                             Text(
-                                              'Quick Entry shortcut',
+                                              'Global Asael shortcut',
                                               style: TextStyle(
                                                 fontWeight: FontWeight.w700,
                                               ),
                                             ),
                                             Text(
-                                              'Choose one global shortcut or leave it available from the menu bar only.',
+                                              'Opens Ambient Command when it is enabled; otherwise it opens Quick Entry.',
                                             ),
                                           ],
                                         ),
@@ -398,7 +470,7 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
                                     Text(
                                       shortcut.shortcut ==
                                               DesktopQuickEntryShortcut.disabled
-                                          ? 'Global shortcut disabled. Quick Entry remains in the Asael menu.'
+                                          ? 'Global shortcut disabled. Ambient Command and Quick Entry remain in the Asael menu.'
                                           : shortcut.registered
                                           ? 'Shortcut is active system-wide.'
                                           : 'This shortcut is already owned by another application. Choose another preset.',
@@ -740,8 +812,7 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
         const SizedBox(height: 24),
         const MacosSectionHeader(
           title: 'Desktop experience',
-          description:
-              'Quick Entry and independent windows are native to this Mac.',
+          description: 'Ambient Command, shortcuts, and independent windows are native to this Mac.',
         ),
         const SizedBox(height: 10),
         _Surface(
@@ -751,6 +822,43 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
               children: [
                 Row(
                   children: [
+                    const Icon(Icons.graphic_eq_rounded),
+                    const SizedBox(width: 12),
+                    const Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Ambient Command',
+                            style: TextStyle(fontWeight: FontWeight.w700),
+                          ),
+                          SizedBox(height: 2),
+                          Text(
+                            'Talk to Asael from a compact window. Live audio is not stored by Asael, and “Use this Mac” keeps Command’s normal review and approval safeguards.',
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    Switch.adaptive(
+                      value: desktopAmbientVoice?.available ?? false,
+                      onChanged:
+                          ambientVoiceSaving || desktopAmbientVoice == null
+                          ? null
+                          : _setDesktopAmbientVoiceAvailability,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                const Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    'Optional hands-free entry: create a macOS Vocal Shortcut that opens asael://ambient-voice.',
+                  ),
+                ),
+                const Divider(height: 28),
+                Row(
+                  children: [
                     const Icon(Icons.keyboard_command_key_rounded),
                     const SizedBox(width: 12),
                     const Expanded(
@@ -758,12 +866,12 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            'Quick Entry shortcut',
+                            'Global Asael shortcut',
                             style: TextStyle(fontWeight: FontWeight.w700),
                           ),
                           SizedBox(height: 2),
                           Text(
-                            'Open Asael from anywhere without changing windows.',
+                            'Opens Ambient Command when enabled; otherwise it opens Quick Entry.',
                           ),
                         ],
                       ),
@@ -803,7 +911,7 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
                     alignment: Alignment.centerLeft,
                     child: Text(
                       shortcut.shortcut == DesktopQuickEntryShortcut.disabled
-                          ? 'Global shortcut disabled. Quick Entry remains available from the Asael menu.'
+                          ? 'Global shortcut disabled. Ambient Command and Quick Entry remain available from the Asael menu.'
                           : shortcut.registered
                           ? 'Shortcut is active system-wide.'
                           : 'That shortcut is owned by another application. Choose another preset.',
