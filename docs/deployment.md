@@ -77,6 +77,27 @@ is `Asael-1.19.0-30-macOS.dmg`, SHA-256
 1.18.0+29 app remains recoverable in Trash. The worker protocol is unchanged,
 so this release does not require a Fly deployment.
 
+### Rich native Command response release
+
+Owner-only Asael `1.20.0+31` replaces plain assistant text with a bounded native
+rich-response renderer for headings, emphasis, inline code, lists, quotes,
+rules, simple tables, and fenced code with an explicit copy action. Links are
+interactive only for `http` and `https`; raw HTML, scripts, custom schemes, and
+remote image embedding remain inert. Completed answers expose **Copy answer**,
+and the current answer exposes **View work** on both wide and narrow layouts.
+The work surface projects observable plans, tools, approvals, evidence, agents,
+context, and results. It does not expose or store private model reasoning.
+
+The installed package is `Asael-1.20.0-31-macOS.dmg`, SHA-256
+`5c3c81e93c9d73bfaf5d50264199a3ac4ce6aa1ed22a8c7ac842f63ddfaad83e`,
+with installed host CDHash `a99a5e9ba136b70ed848a88bc6c9074e6803ee1e`.
+The prior 1.19.0+30 app is recoverable in Trash. A live authenticated Command
+request visibly rendered the requested heading, bold and italic spans, inline
+code, two bullets, a copyable Bash block, and a two-column table. **View work**
+then showed the result, agent, memory context, and evidence projection with the
+private-reasoning disclosure. No native contract, database, Vercel, Fly, or
+worker release changes are required for this native-only presentation slice.
+
 ### Licensed TradingView chart assets
 
 TradingView Advanced Charts v32.2.0 is a restricted, non-redistributable client dependency. Its files must never be committed to the public OmniAgentOS repository. `npm run sync:tradingview` uses the operator's existing GitHub authorization to clone the exact `v32.2.0` tag, verifies commit `f936c921ba510ba20ac51a71b8b4c5c03c043dbc`, and stages only the required `charting_library` directory under the Git-ignored `public/vendor/tradingview` path. The release marker is also ignored. Do not put a GitHub token in the repository, Vercel environment, script arguments, or logs.
