@@ -26,6 +26,7 @@ import {
   ASAEL_VOICE_PROFILE_VERSION,
   versionedVoiceProfile,
 } from "@/lib/voice/profile";
+import { REALTIME_AUDIO_RETENTION } from "@/lib/voice/realtime-session";
 
 export const runtime = "nodejs";
 export const maxDuration = 180;
@@ -42,6 +43,8 @@ const schema = z.object({
   ).optional(),
   voiceProfileVersion: z.literal(ASAEL_VOICE_PROFILE_VERSION)
     .default(ASAEL_VOICE_PROFILE_VERSION),
+  audioRetention: z.literal(REALTIME_AUDIO_RETENTION)
+    .default(REALTIME_AUDIO_RETENTION),
 }).strict();
 
 const privateNoStoreHeaders = { "cache-control": "private, no-store" };
@@ -54,6 +57,7 @@ async function POSTHandler(request: Request) {
       action: "run.agent",
       resourceType: "media",
       metadata: { operation: "stream_speech" },
+      nativeMutationCapability: "voice.speech.stream",
     });
   } catch (error) {
     return forbiddenResponse(error);
@@ -216,6 +220,7 @@ async function POSTHandler(request: Request) {
             runId: parsed.data.runId,
             characters: parsed.data.text.length,
             outputBytes,
+            audioRetention: parsed.data.audioRetention,
           },
         }),
         appendScopedDomainEvent({
@@ -240,6 +245,7 @@ async function POSTHandler(request: Request) {
             runId: parsed.data.runId,
             characters: parsed.data.text.length,
             outputBytes,
+            audioRetention: parsed.data.audioRetention,
           },
         }).catch((error) => {
           console.warn(
@@ -257,6 +263,7 @@ async function POSTHandler(request: Request) {
         ...privateNoStoreHeaders,
         "x-asael-audio-encoding": profile.encoding,
         "x-asael-audio-sample-rate": String(profile.sampleRate),
+        "x-asael-audio-retention": parsed.data.audioRetention,
         "x-asael-voice-profile": profile.profileVersion,
         "x-asael-voice-profile-sha256": profile.sha256,
       },

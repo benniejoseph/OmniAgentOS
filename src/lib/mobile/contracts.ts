@@ -29,10 +29,10 @@ import {
 } from "@/lib/settings/types";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 28 as const;
-// v27 remains the byte-frozen rollback bridge while v28 publishes the exact
-// Command model-selection envelope and its read-only Settings catalog.
-export const NATIVE_API_PREVIOUS_VERSION = 27 as const;
+export const NATIVE_API_CURRENT_VERSION = 29 as const;
+// v28 remains the byte-frozen rollback bridge while v29 publishes the
+// authenticated Ambient Voice session and versioned speech-stream boundary.
+export const NATIVE_API_PREVIOUS_VERSION = 28 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -45,6 +45,97 @@ const mobilePushOpaqueId = z.string().trim().min(1).max(240);
 const jsonObject = z.record(z.string(), z.unknown());
 const sha256Digest = z.string().regex(/^[a-f0-9]{64}$/);
 const LOCAL_COMPUTER_PREVIEW_BINDING_CONTRACT_VERSION = 12;
+const nativeVoiceLanguageSchema = z.string().trim().toLowerCase().regex(/^[a-z]{2}$/);
+const nativeVoiceAudioRetentionSchema = z.literal("not_stored_by_asael");
+const nativeVoiceTranscriptRetentionSchema = z.literal("command_draft_until_sent");
+const nativeVoiceProfileVersionSchema = z.literal("asael-voice:1");
+const nativeVoiceOpaqueTokenSchema = z.string().trim().min(1).max(240).regex(
+  /^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$/,
+);
+
+export const nativeRealtimeVoiceSessionStartRequestSchema = z.object({
+  sessionId: z.string().uuid().optional(),
+  conversationId: z.string().uuid().optional(),
+  mode: z.enum(["orchestrate", "research", "execute", "learn"])
+    .default("orchestrate"),
+  language: nativeVoiceLanguageSchema.optional(),
+  providerConsent: z.literal(true),
+  audioRetention: nativeVoiceAudioRetentionSchema,
+  reconnectAttempt: z.number().int().min(0).max(3).default(0),
+}).strict().superRefine((value, context) => {
+  if (value.reconnectAttempt > 0 && (!value.sessionId || !value.conversationId)) {
+    context.addIssue({
+      code: "custom",
+      message: "Reconnects require the existing session and conversation.",
+      path: ["sessionId"],
+    });
+  }
+});
+
+export const nativeRealtimeVoiceSessionStartResponseSchema = z.object({
+  schemaVersion: z.literal(1),
+  sessionId: z.string().uuid(),
+  conversationId: z.string().uuid(),
+  clientSecret: z.string().min(4).max(4_096).regex(/^ek_[A-Za-z0-9._:-]+$/),
+  clientSecretExpiresAt: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  transportUrl: z.literal("https://api.openai.com/v1/realtime/calls"),
+  provider: z.literal("openai"),
+  model: z.string().trim().min(1).max(240),
+  language: z.union([z.literal("auto"), nativeVoiceLanguageSchema]),
+  turnDetection: z.literal("server_vad"),
+  audioRetention: nativeVoiceAudioRetentionSchema,
+  transcriptRetention: nativeVoiceTranscriptRetentionSchema,
+  reconnectAttempt: z.number().int().min(0).max(3),
+}).strict();
+
+export const nativeRealtimeVoiceSessionFinishRequestSchema = z.object({
+  sessionId: z.string().uuid(),
+  conversationId: z.string().uuid(),
+  outcome: z.enum(["sent", "canceled", "failed"]),
+  durationMilliseconds: z.number().int().min(0).max(10 * 60 * 1_000),
+  turnCount: z.number().int().min(0).max(1_000),
+  reconnectCount: z.number().int().min(0).max(3),
+  transcriptCharacters: z.number().int().min(0).max(100_000),
+  confidenceBand: z.enum(["high", "low", "unavailable", "edited"]),
+  confidenceMean: z.number().min(0).max(1).optional(),
+  confidenceMinimum: z.number().min(0).max(1).optional(),
+  confidenceSampleCount: z.number().int().min(0).max(10_000),
+  reviewRequired: z.boolean(),
+  reviewAttested: z.boolean(),
+}).strict().superRefine((value, context) => {
+  if (value.outcome === "sent" && !value.reviewAttested) {
+    context.addIssue({
+      code: "custom",
+      message: "Sent voice commands require a review attestation.",
+      path: ["reviewAttested"],
+    });
+  }
+  if (
+    value.confidenceBand === "high" &&
+    (value.confidenceMean === undefined ||
+      value.confidenceMinimum === undefined ||
+      value.confidenceSampleCount < 1)
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "High-confidence completion metadata is incomplete.",
+      path: ["confidenceBand"],
+    });
+  }
+});
+
+export const nativeRealtimeVoiceSessionFinishResponseSchema = z.object({
+  recorded: z.literal(true),
+}).strict();
+
+export const nativeSpeechStreamRequestSchema = z.object({
+  text: z.string().trim().min(1).max(4_000),
+  agentId: nativeVoiceOpaqueTokenSchema.optional(),
+  threadId: z.string().uuid().optional(),
+  runId: nativeVoiceOpaqueTokenSchema.optional(),
+  voiceProfileVersion: nativeVoiceProfileVersionSchema,
+  audioRetention: nativeVoiceAudioRetentionSchema,
+}).strict();
 
 export const nativeAgentTaskCancelRequestSchema = z.object({
   expectedRevision: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
@@ -655,11 +746,20 @@ export type NativeOperation = Readonly<{
   summary: string;
   auth: "public" | "bearer";
   requestSchema?: string;
-  responseSchema: string;
+  responseSchema?: string;
   mediaType?: "application/json" | "text/event-stream" | "multipart/form-data";
+  responseMediaType?: "application/json" | "text/event-stream" | "audio/pcm";
+  responseHeaders?: readonly NativeResponseHeader[];
   queryParameters?: readonly NativeQueryParameter[];
   headerParameters?: readonly NativeHeaderParameter[];
   binaryResponse?: boolean;
+}>;
+
+export type NativeResponseHeader = Readonly<{
+  name: string;
+  description: string;
+  constValue?: string;
+  pattern?: string;
 }>;
 
 export type NativeQueryParameter = Readonly<{
@@ -1460,6 +1560,71 @@ const v28Operations: readonly NativeOperation[] = [
   ),
 ];
 
+// Contract v29 exposes the existing authenticated realtime transcription and
+// versioned speech services to native clients. Audio remains ephemeral, voice
+// completion receipts remain content-free, and command execution continues
+// through the existing governed conversation and visible approval boundaries.
+const v29Operations: readonly NativeOperation[] = [
+  ...v28Operations,
+  operation(
+    "voice.realtime.session.start",
+    "POST",
+    "/api/voice/realtime/session",
+    "Create or reconnect one actor-owned ephemeral realtime transcription session.",
+    "bearer",
+    "NativeRealtimeVoiceSessionStartRequest",
+    "NativeRealtimeVoiceSessionStartResponse",
+  ),
+  operation(
+    "voice.realtime.session.finish",
+    "PATCH",
+    "/api/voice/realtime/session",
+    "Record bounded content-free review and confidence metadata for one voice session.",
+    "bearer",
+    "NativeRealtimeVoiceSessionFinishRequest",
+    "NativeRealtimeVoiceSessionFinishResponse",
+  ),
+  operation(
+    "voice.speech.stream",
+    "POST",
+    "/api/media/speech",
+    "Stream an actor-scoped Agent reply under the pinned Asael voice profile without retaining audio.",
+    "bearer",
+    "NativeSpeechStreamRequest",
+    undefined,
+    {
+      responseMediaType: "audio/pcm",
+      responseHeaders: [
+        {
+          name: "x-asael-audio-retention",
+          description: "Asael does not retain generated speech audio.",
+          constValue: "not_stored_by_asael",
+        },
+        {
+          name: "x-asael-audio-encoding",
+          description: "PCM sample encoding.",
+          constValue: "pcm_s16le",
+        },
+        {
+          name: "x-asael-audio-sample-rate",
+          description: "PCM sample rate in hertz.",
+          constValue: "24000",
+        },
+        {
+          name: "x-asael-voice-profile",
+          description: "Pinned Asael voice profile version.",
+          constValue: "asael-voice:1",
+        },
+        {
+          name: "x-asael-voice-profile-sha256",
+          description: "Digest of the exact resolved Agent voice profile.",
+          pattern: "^[a-f0-9]{64}$",
+        },
+      ],
+    },
+  ),
+];
+
 export const nativeContractSchemas = Object.freeze({
   JsonObject: jsonObject,
   NativeClientAttestation: nativeClientAttestationSchema,
@@ -1518,6 +1683,11 @@ export const nativeContractSchemas = Object.freeze({
   }).strict(),
   NativePromptQueueDispatchRequest: promptQueueDispatchRequestSchema,
   NativeCommandModelCatalogResponse: nativeCommandModelCatalogResponseSchema,
+  NativeRealtimeVoiceSessionStartRequest: nativeRealtimeVoiceSessionStartRequestSchema,
+  NativeRealtimeVoiceSessionStartResponse: nativeRealtimeVoiceSessionStartResponseSchema,
+  NativeRealtimeVoiceSessionFinishRequest: nativeRealtimeVoiceSessionFinishRequestSchema,
+  NativeRealtimeVoiceSessionFinishResponse: nativeRealtimeVoiceSessionFinishResponseSchema,
+  NativeSpeechStreamRequest: nativeSpeechStreamRequestSchema,
   NativeConversationRequest: nativeConversationRequestSchema,
   NativeConversationEvent: nativeConversationEventSchema,
   NativeLocalComputerDeviceUpdateRequest: localComputerDeviceUpdateSchema,
@@ -1578,6 +1748,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 26) return v26Operations;
   if (version === 27) return v27Operations;
   if (version === 28) return v28Operations;
+  if (version === 29) return v29Operations;
   return undefined;
 }
 
@@ -1587,7 +1758,7 @@ export function nativeContractDiscovery() {
     contractId: NATIVE_API_CONTRACT_ID,
     currentVersion: NATIVE_API_CURRENT_VERSION,
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
-    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [28, 27],
+    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [29, 28],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,
       state: version === NATIVE_API_CURRENT_VERSION ? "current" as const : "previous" as const,
@@ -1618,8 +1789,14 @@ function operation(
   summary: string,
   auth: NativeOperation["auth"],
   requestSchema: string | undefined,
-  responseSchema: string,
-  options: Pick<NativeOperation, "queryParameters" | "headerParameters" | "binaryResponse"> = {},
+  responseSchema: string | undefined,
+  options: Pick<NativeOperation,
+    | "queryParameters"
+    | "headerParameters"
+    | "binaryResponse"
+    | "responseMediaType"
+    | "responseHeaders"
+  > = {},
 ): NativeOperation {
   return {
     id,

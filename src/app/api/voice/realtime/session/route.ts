@@ -5,6 +5,10 @@ import { withDatabaseRequestScope } from "@/lib/db/client";
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import {
+  nativeRealtimeVoiceSessionFinishRequestSchema,
+  nativeRealtimeVoiceSessionStartRequestSchema,
+} from "@/lib/mobile/contracts";
+import {
   checkSharedRateLimit,
   RateLimitStoreUnavailableError,
 } from "@/lib/http/rate-limit";
@@ -27,65 +31,13 @@ export const runtime = "nodejs";
 export const POST = withDatabaseRequestScope(POSTHandler);
 export const PATCH = withDatabaseRequestScope(PATCHHandler);
 
-const languageSchema = z.string().trim().toLowerCase().regex(/^[a-z]{2}$/);
-const sessionSchema = z.object({
-  sessionId: z.string().uuid().optional(),
-  conversationId: z.string().uuid().optional(),
-  mode: z.enum(["orchestrate", "research", "execute", "learn"]).default("orchestrate"),
-  language: languageSchema.optional(),
-  providerConsent: z.literal(true),
-  audioRetention: z.literal(REALTIME_AUDIO_RETENTION),
-  reconnectAttempt: z.number().int().min(0).max(3).default(0),
-}).strict().superRefine((value, context) => {
-  if (value.reconnectAttempt > 0 && (!value.sessionId || !value.conversationId)) {
-    context.addIssue({
-      code: "custom",
-      message: "Reconnects require the existing session and conversation.",
-      path: ["sessionId"],
-    });
-  }
-});
-
-const completionSchema = z.object({
-  sessionId: z.string().uuid(),
-  conversationId: z.string().uuid(),
-  outcome: z.enum(["sent", "canceled", "failed"]),
-  durationMilliseconds: z.number().int().min(0).max(10 * 60 * 1_000),
-  turnCount: z.number().int().min(0).max(1_000),
-  reconnectCount: z.number().int().min(0).max(3),
-  transcriptCharacters: z.number().int().min(0).max(100_000),
-  confidenceBand: z.enum(["high", "low", "unavailable", "edited"]),
-  confidenceMean: z.number().min(0).max(1).optional(),
-  confidenceMinimum: z.number().min(0).max(1).optional(),
-  confidenceSampleCount: z.number().int().min(0).max(10_000),
-  reviewRequired: z.boolean(),
-  reviewAttested: z.boolean(),
-}).strict().superRefine((value, context) => {
-  if (value.outcome === "sent" && !value.reviewAttested) {
-    context.addIssue({
-      code: "custom",
-      message: "Sent voice commands require a review attestation.",
-      path: ["reviewAttested"],
-    });
-  }
-  if (
-    value.confidenceBand === "high" &&
-    (value.confidenceMean === undefined ||
-      value.confidenceMinimum === undefined ||
-      value.confidenceSampleCount < 1)
-  ) {
-    context.addIssue({
-      code: "custom",
-      message: "High-confidence completion metadata is incomplete.",
-      path: ["confidenceBand"],
-    });
-  }
-});
-
 const privateNoStoreHeaders = { "cache-control": "private, no-store" };
 
 async function POSTHandler(request: Request) {
-  const parsed = await parseRequest(request, sessionSchema);
+  const parsed = await parseRequest(
+    request,
+    nativeRealtimeVoiceSessionStartRequestSchema,
+  );
   if (parsed instanceof Response) return parsed;
 
   let context;
@@ -97,6 +49,7 @@ async function POSTHandler(request: Request) {
       metadata: {
         operation: parsed.reconnectAttempt ? "reconnect" : "start",
       },
+      nativeMutationCapability: "voice.session.manage",
     });
   } catch (error) {
     return forbiddenResponse(error);
@@ -304,7 +257,10 @@ function describeRealtimeSessionFailure(error: unknown) {
 }
 
 async function PATCHHandler(request: Request) {
-  const parsed = await parseRequest(request, completionSchema);
+  const parsed = await parseRequest(
+    request,
+    nativeRealtimeVoiceSessionFinishRequestSchema,
+  );
   if (parsed instanceof Response) return parsed;
 
   let context;
@@ -315,6 +271,7 @@ async function PATCHHandler(request: Request) {
       resourceType: "voice_session",
       resourceId: parsed.sessionId,
       metadata: { operation: "finish", outcome: parsed.outcome },
+      nativeMutationCapability: "voice.session.manage",
     });
   } catch (error) {
     return forbiddenResponse(error);

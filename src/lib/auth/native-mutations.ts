@@ -33,6 +33,8 @@ export const NATIVE_MUTATION_CAPABILITIES = [
   "computer.use.command.claim",
   "computer.use.command.complete",
   "computer.use.stop",
+  "voice.session.manage",
+  "voice.speech.stream",
 ] as const;
 
 export type NativeMutationCapability =
@@ -95,6 +97,10 @@ export function nativeMutationCapabilityPolicy(
 }
 
 function minimumVersion(capability: NativeMutationCapability) {
+  if (
+    capability === "voice.session.manage" ||
+    capability === "voice.speech.stream"
+  ) return 29;
   if (capability === "prompt.queue.manage") return 24;
   if (
     capability === "agents.release.manage" ||

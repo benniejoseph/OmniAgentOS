@@ -143,6 +143,12 @@ const frozenDocumentSha256ByVersion = Object.freeze({
     "fixtures.json": "4d447d8e9867f526e987a7b7159541560e9f4d0f8d4dc12c1aedce28758aa7c9",
     "manifest.json": "295cc1175541e82f38b37b57807d5279460b8b0afb06d27928e8284b248320f6",
   }),
+  28: Object.freeze({
+    "openapi.json": "267bab2002c64f600153de2795eb43958e9273c9761694d6e9b53951aeefec6c",
+    "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9",
+    "fixtures.json": "0a1f493aff026d2b5ffc3c445e9ec45365b471b3a3c5a0fcb065689a460a9a0f",
+    "manifest.json": "f3ba0654e8fb84bde0477129283750f1a099131b1a68bf53a939a42f0dbc256a",
+  }),
 });
 
 const fixtures = Object.freeze({
@@ -204,6 +210,36 @@ const fixtures = Object.freeze({
     { type: "waiting_approval", executionId: "execution-fixture", toolId: "calendar.event.create", message: "Approval is required." },
     { type: "done", response: "Here is what needs attention." },
   ],
+  realtimeVoiceSessionStartRequest: {
+    providerConsent: true,
+    audioRetention: "not_stored_by_asael",
+    mode: "orchestrate",
+    language: "en",
+    reconnectAttempt: 0,
+  },
+  realtimeVoiceSessionFinishRequest: {
+    sessionId: "33333333-3333-4333-8333-333333333333",
+    conversationId: "22222222-2222-4222-8222-222222222222",
+    outcome: "sent",
+    durationMilliseconds: 12_500,
+    turnCount: 2,
+    reconnectCount: 0,
+    transcriptCharacters: 84,
+    confidenceBand: "high",
+    confidenceMean: 0.92,
+    confidenceMinimum: 0.71,
+    confidenceSampleCount: 12,
+    reviewRequired: false,
+    reviewAttested: true,
+  },
+  speechStreamRequest: {
+    text: "Here is what needs attention.",
+    agentId: "asael",
+    threadId: "22222222-2222-4222-8222-222222222222",
+    runId: "run-fixture",
+    voiceProfileVersion: "asael-voice:1",
+    audioRetention: "not_stored_by_asael",
+  },
 });
 
 void generate().catch((error: unknown) => {
@@ -329,6 +365,7 @@ function openApiDocument(version: number, operations: readonly NativeOperation[]
     }));
     const parameters = [...pathParameters, ...queryParameters, ...headerParameters];
     const mediaType = operation.mediaType || "application/json";
+    const responseMediaType = operation.responseMediaType || mediaType;
     const requestBody = operation.requestSchema && operation.method !== "GET"
       ? {
           required: true,
@@ -350,8 +387,15 @@ function openApiDocument(version: number, operations: readonly NativeOperation[]
       responses: {
         "200": {
           description: "Successful response.",
+          ...(operation.responseHeaders?.length
+            ? { headers: responseHeaders(operation.responseHeaders) }
+            : {}),
           content: {
-            [mediaType]: { schema: ref(operation.responseSchema) },
+            [responseMediaType]: {
+              schema: operation.responseSchema
+                ? ref(operation.responseSchema)
+                : { type: "string", format: "binary" },
+            },
             ...(operation.binaryResponse
               ? {
                   "application/octet-stream": {
@@ -409,6 +453,25 @@ function errorResponse() {
     description: "Bounded error response.",
     content: { "application/json": { schema: ref("NativeErrorResponse") } },
   };
+}
+
+function responseHeaders(
+  headers: NonNullable<NativeOperation["responseHeaders"]>,
+) {
+  return Object.fromEntries(headers.map((header) => [
+    header.name,
+    {
+      description: header.description,
+      required: true,
+      schema: {
+        type: "string",
+        ...(header.constValue !== undefined
+          ? { const: header.constValue }
+          : {}),
+        ...(header.pattern !== undefined ? { pattern: header.pattern } : {}),
+      },
+    },
+  ]));
 }
 
 function ref(name: string) {

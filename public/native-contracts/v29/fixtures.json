@@ -1,0 +1,109 @@
+{
+  "loginRequest": {
+    "email": "operator@example.test",
+    "password": "fixture-password",
+    "device": {
+      "id": "asael-fixture-device",
+      "name": "Asael on macOS",
+      "platform": "macos",
+      "appVersion": "1.0.0",
+      "buildNumber": 2,
+      "clientContractVersion": 29
+    }
+  },
+  "refreshRequest": {
+    "refreshToken": "fixture-refresh-token-00000000000000000000",
+    "deviceId": "asael-fixture-device",
+    "client": {
+      "platform": "macos",
+      "appVersion": "1.0.0",
+      "buildNumber": 2,
+      "clientContractVersion": 29
+    }
+  },
+  "conversationRequest": {
+    "message": "Summarize what needs my attention.",
+    "mode": "orchestrate",
+    "strategy": "auto",
+    "agentId": "agent-fixture",
+    "modelSelection": {
+      "schemaVersion": 1,
+      "assignmentId": "assignment-fixture",
+      "assignmentRevision": 7,
+      "assignmentConfigurationSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "route": "primary",
+      "provider": "openai",
+      "modelId": "gpt-6-astra",
+      "reasoningLevel": "ultra"
+    },
+    "requestId": "native-fixture-request"
+  },
+  "conversationEvents": [
+    {
+      "type": "run",
+      "runId": "run-fixture",
+      "threadId": "thread-fixture"
+    },
+    {
+      "type": "status",
+      "label": "Working",
+      "detail": "Reviewing evidence."
+    },
+    {
+      "type": "delta",
+      "text": "Here is what needs attention."
+    },
+    {
+      "type": "model",
+      "provider": "openai",
+      "model": "gpt-6-astra",
+      "tier": "reasoning",
+      "inputTokens": 120,
+      "outputTokens": 24,
+      "totalTokens": 144,
+      "latencyMs": 420,
+      "reasoningEffort": "max",
+      "commandSelectionSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    {
+      "type": "waiting_approval",
+      "executionId": "execution-fixture",
+      "toolId": "calendar.event.create",
+      "message": "Approval is required."
+    },
+    {
+      "type": "done",
+      "response": "Here is what needs attention."
+    }
+  ],
+  "realtimeVoiceSessionStartRequest": {
+    "providerConsent": true,
+    "audioRetention": "not_stored_by_asael",
+    "mode": "orchestrate",
+    "language": "en",
+    "reconnectAttempt": 0
+  },
+  "realtimeVoiceSessionFinishRequest": {
+    "sessionId": "33333333-3333-4333-8333-333333333333",
+    "conversationId": "22222222-2222-4222-8222-222222222222",
+    "outcome": "sent",
+    "durationMilliseconds": 12500,
+    "turnCount": 2,
+    "reconnectCount": 0,
+    "transcriptCharacters": 84,
+    "confidenceBand": "high",
+    "confidenceMean": 0.92,
+    "confidenceMinimum": 0.71,
+    "confidenceSampleCount": 12,
+    "reviewRequired": false,
+    "reviewAttested": true
+  },
+  "speechStreamRequest": {
+    "text": "Here is what needs attention.",
+    "agentId": "asael",
+    "threadId": "22222222-2222-4222-8222-222222222222",
+    "runId": "run-fixture",
+    "voiceProfileVersion": "asael-voice:1",
+    "audioRetention": "not_stored_by_asael"
+  }
+}
