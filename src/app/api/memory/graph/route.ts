@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { withDatabaseRequestScope } from "@/lib/db/client";
+import {
+  getDatabasePoolMax,
+  withDatabaseRequestScope,
+} from "@/lib/db/client";
 import { retrieveGraphRelationshipPaths } from "@/lib/entities/graph-retrieval";
 import { getGraphStorageDecisionReport } from "@/lib/entities/graph-query-telemetry";
 import {
@@ -284,20 +287,24 @@ async function GETHandler(request: Request) {
     }, { headers: privateNoStoreHeaders });
   }
 
-  const [nodes, edges, stats] = await Promise.all([
-    listMemoryGraphNodes(limit, {
-      tenantId: context.tenantId,
-      accessScope: requestAccess?.databaseAccessScope,
-    }),
-    listMemoryGraphEdges(limit * 2, {
-      tenantId: context.tenantId,
-      accessScope: requestAccess?.databaseAccessScope,
-    }),
-    getMemoryGraphStats({
-      tenantId: context.tenantId,
-      accessScope: requestAccess?.databaseAccessScope,
-    }),
-  ]);
+  let nodes: Awaited<ReturnType<typeof listMemoryGraphNodes>>;
+  let edges: Awaited<ReturnType<typeof listMemoryGraphEdges>>;
+  let stats: Awaited<ReturnType<typeof getMemoryGraphStats>>;
+  const graphReadOptions = {
+    tenantId: context.tenantId,
+    accessScope: requestAccess?.databaseAccessScope,
+  };
+  if (getDatabasePoolMax() === 1) {
+    nodes = await listMemoryGraphNodes(limit, graphReadOptions);
+    edges = await listMemoryGraphEdges(limit * 2, graphReadOptions);
+    stats = await getMemoryGraphStats(graphReadOptions);
+  } else {
+    [nodes, edges, stats] = await Promise.all([
+      listMemoryGraphNodes(limit, graphReadOptions),
+      listMemoryGraphEdges(limit * 2, graphReadOptions),
+      getMemoryGraphStats(graphReadOptions),
+    ]);
+  }
 
   return Response.json({ nodes, edges, stats }, {
     headers: privateNoStoreHeaders,

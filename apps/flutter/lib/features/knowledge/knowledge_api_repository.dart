@@ -9,38 +9,22 @@ class ApiKnowledgeRepository implements KnowledgeRepository {
 
   @override
   Future<KnowledgeState> load({String query = '', String type = 'all'}) async {
-    final responses = await Future.wait([
-      api.getJson(
-        NativePaths.memoryIntelligenceGet,
-        query: {'view': 'overview', 'limit': 40},
-      ),
-      api.getJson(
-        NativePaths.memoryIntelligenceGet,
-        query: {
-          'view': 'memory',
-          if (query.isNotEmpty) 'q': query,
-          'limit': 100,
-        },
-      ),
-      api.getJson(
-        NativePaths.memoryIntelligenceGet,
-        query: {
-          'view': 'knowledge',
-          if (query.isNotEmpty) 'q': query,
-          'limit': 100,
-        },
-      ),
-      api.getJson(NativePaths.memoryGraphGet, query: {'limit': 100}),
-    ]);
-    final overviewJson = responses[0],
-        memoryJson = responses[1],
-        knowledgeJson = responses[2],
-        graphJson = responses[3];
-    final memoryPage = memoryJson['memory'] is Map
-        ? Map<String, dynamic>.from(memoryJson['memory'] as Map)
+    final response = await api.getJson(
+      NativePaths.memoryIntelligenceGet,
+      query: {
+        'view': 'workspace',
+        if (query.isNotEmpty) 'q': query,
+        'limit': 100,
+      },
+    );
+    final graphJson = response['graph'] is Map
+        ? Map<String, dynamic>.from(response['graph'] as Map)
         : const <String, dynamic>{};
-    final knowledgePage = knowledgeJson['knowledge'] is Map
-        ? Map<String, dynamic>.from(knowledgeJson['knowledge'] as Map)
+    final memoryPage = response['memory'] is Map
+        ? Map<String, dynamic>.from(response['memory'] as Map)
+        : const <String, dynamic>{};
+    final knowledgePage = response['knowledge'] is Map
+        ? Map<String, dynamic>.from(response['knowledge'] as Map)
         : const <String, dynamic>{};
     return KnowledgeState(
       memories: _list(memoryPage['items'])
@@ -63,8 +47,8 @@ class ApiKnowledgeRepository implements KnowledgeRepository {
       stats: graphJson['stats'] is Map
           ? Map<String, dynamic>.from(graphJson['stats'] as Map)
           : const {},
-      overview: overviewJson['overview'] is Map
-          ? Map<String, dynamic>.from(overviewJson['overview'] as Map)
+      overview: response['overview'] is Map
+          ? Map<String, dynamic>.from(response['overview'] as Map)
           : const {},
     );
   }

@@ -204,12 +204,38 @@ class KnowledgeController extends ChangeNotifier {
   bool loading = false;
   Object? error;
   String query = '', type = 'all';
-  Future<void> refresh() async {
+  Future<void>? _refreshOperation;
+
+  Future<void> refresh() {
+    final active = _refreshOperation;
+    if (active != null) return active;
+
+    final operation = Future<void>.microtask(_performRefresh);
+    late final Future<void> tracked;
+    tracked = operation.whenComplete(() {
+      if (identical(_refreshOperation, tracked)) _refreshOperation = null;
+    });
+    _refreshOperation = tracked;
+    return tracked;
+  }
+
+  Future<void> _performRefresh() async {
     loading = true;
     error = null;
     notifyListeners();
     try {
-      state = await repository.load(query: query, type: type);
+      while (true) {
+        final requestedQuery = query;
+        final requestedType = type;
+        final next = await repository.load(
+          query: requestedQuery,
+          type: requestedType,
+        );
+        if (requestedQuery == query && requestedType == type) {
+          state = next;
+          break;
+        }
+      }
     } catch (e) {
       error = e;
     } finally {

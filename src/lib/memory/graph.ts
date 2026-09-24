@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   ensureDatabaseSchema,
+  getDatabasePoolMax,
   getDatabaseTenantContext,
   getSql,
   hasDatabaseUrl,
@@ -1257,11 +1258,26 @@ async function getMemoryGraphStatsForTenant(
   tenantId: string,
   accessScope?: DatabaseMemoryAccessScope,
 ): Promise<MemoryGraphStats> {
-  const [nodes, edges, latestBuild] = await Promise.all([
-    listMemoryGraphNodes(MEMORY_GRAPH_NODE_LIMIT, { tenantId, accessScope }),
-    listMemoryGraphEdges(MEMORY_GRAPH_EDGE_LIMIT, { tenantId, accessScope }),
-    getLatestGraphBuild(tenantId),
-  ]);
+  let nodes: MemoryGraphNode[];
+  let edges: MemoryGraphEdge[];
+  let latestBuild: MemoryGraphBuildRecord | undefined;
+  if (getDatabasePoolMax() === 1) {
+    nodes = await listMemoryGraphNodes(MEMORY_GRAPH_NODE_LIMIT, {
+      tenantId,
+      accessScope,
+    });
+    edges = await listMemoryGraphEdges(MEMORY_GRAPH_EDGE_LIMIT, {
+      tenantId,
+      accessScope,
+    });
+    latestBuild = await getLatestGraphBuild(tenantId);
+  } else {
+    [nodes, edges, latestBuild] = await Promise.all([
+      listMemoryGraphNodes(MEMORY_GRAPH_NODE_LIMIT, { tenantId, accessScope }),
+      listMemoryGraphEdges(MEMORY_GRAPH_EDGE_LIMIT, { tenantId, accessScope }),
+      getLatestGraphBuild(tenantId),
+    ]);
+  }
   return graphStatsFromRecords(nodes, edges, latestBuild);
 }
 
