@@ -14,3 +14,4 @@
 | [010](010-workspace-model.md) | Workspace, project, and work-item model | Accepted |
 | [011](011-native-api.md) | Versioned, server-authoritative native API | Accepted |
 | [012](012-macos-client.md) | Shared Flutter macOS client with a thin native host | Accepted |
+| [013](013-governed-local-command-runner.md) | Governed local command runner for the owner Mac | Accepted |
