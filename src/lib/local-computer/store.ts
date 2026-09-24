@@ -435,8 +435,16 @@ function localComputerHelperInput(
   action: LocalComputerAction,
   input: Record<string, unknown>,
 ) {
-  if (action !== "observe" && action !== "open_url") return input;
-  const { presentScreenshot: _presentScreenshot, ...helperInput } = input;
+  const {
+    interactionPurpose: _interactionPurpose,
+    ...nativeInput
+  } = input;
+  void _interactionPurpose;
+  if (action !== "observe" && action !== "open_url") return nativeInput;
+  const {
+    presentScreenshot: _presentScreenshot,
+    ...helperInput
+  } = nativeInput;
   void _presentScreenshot;
   return helperInput;
 }

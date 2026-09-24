@@ -470,6 +470,7 @@ export async function executeGovernedTool({
   approvalGrantClaim,
   policyLeaseClaim,
   moltbookAutonomy,
+  localComputerTaskAuthorized = false,
   checkpointBeforeEffect,
 }: {
   toolId: string;
@@ -503,6 +504,12 @@ export async function executeGovernedTool({
     ClaimedMoltbookAutonomyCycle,
     "authority" | "leaseToken" | "leaseExpiresAt"
   >;
+  /**
+   * Exact, request-scoped user authority for bounded non-consequential visual
+   * interactions on This Mac. The executor independently checks the actor,
+   * run, principal, tool, declared purpose, and keyboard modifiers.
+   */
+  localComputerTaskAuthorized?: boolean;
   /** Dormant checkpoint shadow hook invoked after intent persistence. */
   checkpointBeforeEffect?: (
     input: GovernedToolCheckpointInput,
@@ -1160,6 +1167,7 @@ export async function executeGovernedTool({
             effectBinding,
             approvalGrantClaim,
             moltbookAutonomy,
+            localComputerTaskAuthorized,
             checkpointBeforeEffect,
           });
         }
@@ -1278,6 +1286,15 @@ export async function executeGovernedTool({
       agentRunId,
       idempotencyKey,
     });
+  const localComputerTaskAuthorityApproval =
+    localComputerTaskAuthorizationApplies({
+      explicitlyAuthorized: localComputerTaskAuthorized,
+      toolId: tool.id,
+      preparedInput,
+      context,
+      executionScope: scopedRequest.executionScope,
+      agentRunId,
+    });
   const effectiveApproved =
     (approved &&
       durableApprovalClaim &&
@@ -1288,12 +1305,15 @@ export async function executeGovernedTool({
         boundPolicyLeaseApproval
       ) &&
       (tool.riskLevel < 3 || hasRisk3Quorum(existingRecord))) ||
-    moltbookStandingMandateApproval;
-  const effectiveApprovalReason = moltbookStandingMandateApproval
-    ? "Owner-enabled Moltbook autonomy charter authorized this bounded public action."
-    : boundPolicyLeaseApproval
-      ? `Single-use schedule PolicyLease ${policyLeaseClaim?.lease.leaseId} fenced this exact reviewed effect.`
-      : approvalReason;
+    moltbookStandingMandateApproval ||
+    localComputerTaskAuthorityApproval;
+  const effectiveApprovalReason = localComputerTaskAuthorityApproval
+    ? "The initiating user explicitly authorized this bounded Computer Use task; this safe visual interaction is covered by that task authority."
+    : moltbookStandingMandateApproval
+      ? "Owner-enabled Moltbook autonomy charter authorized this bounded public action."
+      : boundPolicyLeaseApproval
+        ? `Single-use schedule PolicyLease ${policyLeaseClaim?.lease.leaseId} fenced this exact reviewed effect.`
+        : approvalReason;
 
   // Trust profiles remain advisory evidence. Automatic execution now requires
   // a consumed grant with an exact plan, principal, contract, target, budget,
@@ -1569,6 +1589,7 @@ export async function executeGovernedTool({
           agentRunId,
           effectBinding,
           moltbookAutonomy,
+          localComputerTaskAuthorized,
           checkpointBeforeEffect,
         });
       }
@@ -2995,6 +3016,70 @@ const LOCAL_COMPUTER_TOOL_ACTIONS = {
   "local.macos.scroll": "scroll",
   "local.macos.command.run": "run_command",
 } as const;
+
+const LOCAL_COMPUTER_TASK_AUTHORIZED_TOOL_IDS = new Set([
+  "local.macos.activate_app",
+  "local.macos.open_url",
+  "local.macos.press",
+  "local.macos.click",
+  "local.macos.type",
+  "local.macos.key",
+  "local.macos.scroll",
+]);
+
+const LOCAL_COMPUTER_SAFE_INTERACTION_PURPOSES = new Set([
+  "navigation",
+  "selection",
+  "media_control",
+]);
+
+function localComputerTaskAuthorizationApplies(input: {
+  explicitlyAuthorized: boolean;
+  toolId: string;
+  preparedInput: Record<string, unknown>;
+  context?: SecurityContext;
+  executionScope?: ExecutionScope;
+  agentRunId?: string;
+}) {
+  const scope = input.executionScope;
+  if (
+    input.explicitlyAuthorized !== true ||
+    !LOCAL_COMPUTER_TASK_AUTHORIZED_TOOL_IDS.has(input.toolId) ||
+    input.toolId === "local.macos.command.run" ||
+    !scope ||
+    !scope.initiatingActorId ||
+    !input.context?.actorId ||
+    scope.initiatingActorId !== input.context.actorId ||
+    scope.executingPrincipalType !== "agent" ||
+    !input.agentRunId ||
+    input.agentRunId !== scope.correlationId
+  ) {
+    return false;
+  }
+
+  if (
+    input.toolId !== "local.macos.press" &&
+    input.toolId !== "local.macos.click" &&
+    input.toolId !== "local.macos.key"
+  ) {
+    return true;
+  }
+
+  if (
+    typeof input.preparedInput.interactionPurpose !== "string" ||
+    !LOCAL_COMPUTER_SAFE_INTERACTION_PURPOSES.has(
+      input.preparedInput.interactionPurpose,
+    )
+  ) {
+    return false;
+  }
+
+  if (input.toolId !== "local.macos.key") return true;
+  const modifiers = input.preparedInput.modifiers;
+  return Array.isArray(modifiers) && modifiers.every(
+    (modifier) => modifier === "shift",
+  );
+}
 
 function localComputerActionForTool(toolId: string) {
   return Object.hasOwn(LOCAL_COMPUTER_TOOL_ACTIONS, toolId)

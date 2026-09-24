@@ -266,11 +266,19 @@ filesystem, or Apple Events interface. Its closed action set is observe, list ap
 already-running app, open one validated HTTP(S) URL in allowlisted Chrome, press,
 click, type, key, and scroll. `open_url` uses LaunchServices rather than shell or
 AppleScript, rejects credentials and unsafe schemes, waits for at most 15 seconds,
-then returns a fresh observation with a `confirmed`, `suspected_noop`, or
-`unverifiable` effect verdict without claiming that the page loaded. Terminal
+then returns a fresh screenshot plus Accessibility observation with a `confirmed`,
+`suspected_noop`, or `unverifiable` effect verdict without claiming that the page
+loaded. Visual mutations likewise attempt a bounded post-action observation; a
+failed readback does not make an already-performed action replayable. Terminal
 applications, System Settings, secure fields, Secure Event Input, and stale
-screen/Accessibility revisions fail closed. Risk-two browser navigation, press,
-click, type, and key actions remain approval-gated. A persistent ready/active
+screen/Accessibility revisions fail closed. Risk-two visual actions remain in the
+governed executor and audit ledger. An explicit owner-selected **This Mac** request
+acts as run-scoped authority only for bounded navigation, selection, media control,
+and non-sensitive text entry. The model must classify press, click, and key intent;
+submission, file transfer, destructive, financial, account/security, permission,
+unknown, and broad modified-shortcut effects still create a per-action approval.
+`local.macos.command.run` is excluded and always requires a fresh approval. A
+persistent ready/active
 menu-bar indicator and immediate stop terminate the helper and cancel pending work.
 
 The host routes only `run_command` to the separate signed
@@ -303,7 +311,11 @@ v13-introduced binding between each screenshot's exact pixel dimensions,
 display provenance, snapshot revision, and `screenshot_pixel` coordinate space.
 The helper privately maps the top-left image point to current macOS global logical
 coordinates and refuses missing, stale, out-of-bounds, display-drifted, or raw
-global coordinate input. Element IDs remain preferred when available.
+global coordinate input. Element IDs remain preferred when available. For dynamic
+web content outside the bounded Accessibility text walk, a screenshot click may use
+the current live hit descendant only while the exact revision, display, application
+PID/bundle, focused window, point containment, and non-secure target checks still
+match.
 
 The local screenshot and Accessibility snapshot are treated as untrusted, bounded
 one-turn model input. They may transit the command row while the governed call waits,

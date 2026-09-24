@@ -511,21 +511,21 @@ private final class ComputerUseExecutor {
       guard input.isEmpty else { throw HelperFailure.rejected("invalid_input") }
       return result(summary: "Listed visible applications.", data: ["applications": runningApps()])
     case "activate_app":
-      return try activateApp(input)
+      return try await activateApp(input)
     case "open_url":
       return try await openURL(input)
     case "observe":
       return try await observe(input)
     case "press":
-      return try press(input)
+      return try await press(input)
     case "click":
-      return try click(input)
+      return try await click(input)
     case "type":
-      return try typeText(input)
+      return try await typeText(input)
     case "key":
-      return try key(input)
+      return try await key(input)
     case "scroll":
-      return try scroll(input)
+      return try await scroll(input)
     default:
       throw HelperFailure.rejected("unsupported_action")
     }
@@ -563,7 +563,7 @@ private final class ComputerUseExecutor {
       }
   }
 
-  private func activateApp(_ input: [String: Any]) throws -> [String: Any] {
+  private func activateApp(_ input: [String: Any]) async throws -> [String: Any] {
     guard input.count == 1,
           let bundleId = input["bundleId"] as? String,
           isSafeIdentifier(bundleId),
@@ -574,9 +574,11 @@ private final class ComputerUseExecutor {
     guard app.activate(options: [.activateAllWindows]) else {
       throw HelperFailure.rejected("activation_failed")
     }
-    return result(
+    return await postActionResult(
       summary: "Activated \(bounded(app.localizedName ?? "application", limit: 100)).",
-      data: ["bundleId": bundleId]
+      data: ["bundleId": bundleId],
+      expectedApplication: app,
+      expectedBundleIdentifier: bundleId
     )
   }
 
@@ -636,7 +638,7 @@ private final class ComputerUseExecutor {
     // never turn the action into a replayable failure and never disclose the
     // Accessibility tree of whichever unrelated app became frontmost.
     let postActionResult = try? await observe(
-      ["includeScreenshot": false],
+      ["includeScreenshot": true],
       expectedApplication: application,
       expectedBundleIdentifier: bundleIdentifier
     )
@@ -807,7 +809,7 @@ private final class ComputerUseExecutor {
     }
   }
 
-  private func press(_ input: [String: Any]) throws -> [String: Any] {
+  private func press(_ input: [String: Any]) async throws -> [String: Any] {
     guard input.keys.allSatisfy({ $0 == "elementId" || $0 == "snapshotRevision" }),
           let elementId = input["elementId"] as? String,
           let revision = input["snapshotRevision"] as? String,
@@ -822,10 +824,14 @@ private final class ComputerUseExecutor {
     )
     let status = AXUIElementPerformAction(element, kAXPressAction as CFString)
     guard status == .success else { throw HelperFailure.rejected("press_failed") }
-    return result(summary: "Pressed the approved accessibility element.")
+    return await postActionResult(
+      summary: "Pressed the accessibility element.",
+      expectedApplication: snapshotTargetApplication,
+      expectedBundleIdentifier: snapshotFrontmostBundleIdentifier
+    )
   }
 
-  private func click(_ input: [String: Any]) throws -> [String: Any] {
+  private func click(_ input: [String: Any]) async throws -> [String: Any] {
     guard AXIsProcessTrusted() else { throw HelperFailure.rejected("accessibility_denied") }
     guard let revision = input["snapshotRevision"] as? String else {
       throw HelperFailure.rejected("invalid_input")
@@ -833,6 +839,7 @@ private final class ComputerUseExecutor {
     let point: CGPoint
     let expectedElement: AXUIElement
     let expectedIdentity: SnapshotElementIdentity
+    let requiresSnapshotElementVerification: Bool
     if let elementId = input["elementId"] as? String,
        input.keys.allSatisfy({ $0 == "elementId" || $0 == "snapshotRevision" }),
        elementId.hasPrefix("e:\(revision.prefix(12)):"),
@@ -842,6 +849,7 @@ private final class ComputerUseExecutor {
       point = CGPoint(x: targetFrame.midX, y: targetFrame.midY)
       expectedElement = element
       expectedIdentity = identity
+      requiresSnapshotElementVerification = true
     } else if input["x"] != nil || input["y"] != nil || input["coordinateSpace"] != nil {
       guard input.keys.allSatisfy({
               $0 == "x" || $0 == "y" || $0 == "coordinateSpace"
@@ -879,16 +887,28 @@ private final class ComputerUseExecutor {
       point = globalPoint
       expectedElement = observedTarget.element
       expectedIdentity = observedTarget.identity
+      requiresSnapshotElementVerification = false
     } else {
       throw HelperFailure.rejected("invalid_input")
     }
     guard !isSecure(role: expectedIdentity.role, subrole: expectedIdentity.subrole)
     else { throw HelperFailure.rejected("secure_input_refused") }
-    try verifyObservedTarget(
-      revision: revision,
-      expectedElement: expectedElement,
-      expectedIdentity: expectedIdentity
-    )
+    if requiresSnapshotElementVerification {
+      try verifyObservedTarget(
+        revision: revision,
+        expectedElement: expectedElement,
+        expectedIdentity: expectedIdentity
+      )
+    } else {
+      guard revision == snapshotRevision,
+            captureTargetIsCurrent(),
+            let targetFrame = expectedIdentity.frame,
+            targetFrame.width > 0,
+            targetFrame.height > 0,
+            targetFrame.contains(point),
+            elementBelongsToFocusedSnapshotWindow(expectedElement)
+      else { throw HelperFailure.rejected("screenshot_coordinate_refused") }
+    }
     guard let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown,
                              mouseCursorPosition: point, mouseButton: .left),
           let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp,
@@ -896,10 +916,14 @@ private final class ComputerUseExecutor {
     else { throw HelperFailure.rejected("event_creation_failed") }
     down.post(tap: .cghidEventTap)
     up.post(tap: .cghidEventTap)
-    return result(summary: "Clicked the approved on-screen location.")
+    return await postActionResult(
+      summary: "Clicked the on-screen location.",
+      expectedApplication: snapshotTargetApplication,
+      expectedBundleIdentifier: snapshotFrontmostBundleIdentifier
+    )
   }
 
-  private func typeText(_ input: [String: Any]) throws -> [String: Any] {
+  private func typeText(_ input: [String: Any]) async throws -> [String: Any] {
     guard input.count == 2,
           let revision = input["snapshotRevision"] as? String,
           let text = input["text"] as? String,
@@ -926,10 +950,14 @@ private final class ComputerUseExecutor {
       up.post(tap: .cghidEventTap)
       offset += chunk.count
     }
-    return result(summary: "Typed \(units.count) characters into the approved application.")
+    return await postActionResult(
+      summary: "Typed \(units.count) characters into the active application.",
+      expectedApplication: snapshotTargetApplication,
+      expectedBundleIdentifier: snapshotFrontmostBundleIdentifier
+    )
   }
 
-  private func key(_ input: [String: Any]) throws -> [String: Any] {
+  private func key(_ input: [String: Any]) async throws -> [String: Any] {
     guard input.keys.allSatisfy({
             $0 == "key" || $0 == "modifiers" || $0 == "snapshotRevision"
           }),
@@ -963,10 +991,14 @@ private final class ComputerUseExecutor {
     up.flags = flags
     down.post(tap: .cghidEventTap)
     up.post(tap: .cghidEventTap)
-    return result(summary: "Sent the approved keyboard shortcut.")
+    return await postActionResult(
+      summary: "Sent the keyboard shortcut.",
+      expectedApplication: snapshotTargetApplication,
+      expectedBundleIdentifier: snapshotFrontmostBundleIdentifier
+    )
   }
 
-  private func scroll(_ input: [String: Any]) throws -> [String: Any] {
+  private func scroll(_ input: [String: Any]) async throws -> [String: Any] {
     guard input.keys.allSatisfy({
             $0 == "deltaX" || $0 == "deltaY" || $0 == "snapshotRevision"
           }),
@@ -992,7 +1024,11 @@ private final class ComputerUseExecutor {
       expectedIdentity: focusTarget.identity
     )
     event.post(tap: .cghidEventTap)
-    return result(summary: "Scrolled the active application.")
+    return await postActionResult(
+      summary: "Scrolled the active application.",
+      expectedApplication: snapshotTargetApplication,
+      expectedBundleIdentifier: snapshotFrontmostBundleIdentifier
+    )
   }
 
   private func verifyKeyboardTarget() throws {
@@ -1010,6 +1046,30 @@ private final class ComputerUseExecutor {
     if isSecure(role: role, subrole: subrole) {
       throw HelperFailure.rejected("secure_input_refused")
     }
+  }
+
+  /// Returns fresh model evidence for an effect that has already completed.
+  /// Observation is deliberately best-effort: a readback failure must not turn
+  /// a performed input event into a retryable failure that could replay it.
+  private func postActionResult(
+    summary: String,
+    data: [String: Any]? = nil,
+    expectedApplication: NSRunningApplication?,
+    expectedBundleIdentifier: String?
+  ) async -> [String: Any] {
+    try? await Task.sleep(nanoseconds: 300_000_000)
+    guard let expectedApplication,
+          let expectedBundleIdentifier,
+          let readback = try? await observe(
+            ["includeScreenshot": true],
+            expectedApplication: expectedApplication,
+            expectedBundleIdentifier: expectedBundleIdentifier
+          ),
+          let observation = readback["observation"] as? [String: Any]
+    else {
+      return result(summary: summary, data: data)
+    }
+    return result(summary: summary, data: data, observation: observation)
   }
 
   private func captureScreenshot() async throws -> CapturedScreenshot {
@@ -1231,7 +1291,14 @@ private final class ComputerUseExecutor {
   private func currentObservedHitTarget(
     at point: CGPoint
   ) -> (element: AXUIElement, identity: SnapshotElementIdentity)? {
-    guard let expectedPID = snapshotFrontmostPID else { return nil }
+    guard captureTargetIsCurrent(),
+          let expectedPID = snapshotFrontmostPID,
+          let focusedWindow = currentFocusedWindow(pid: expectedPID),
+          let snapshotFocusedWindow,
+          CFEqual(focusedWindow, snapshotFocusedWindow),
+          let focusedWindowFrame = frame(focusedWindow),
+          focusedWindowFrame.contains(point)
+    else { return nil }
     let application = AXUIElementCreateApplication(expectedPID)
     var hitElement: AXUIElement?
     let status = AXUIElementCopyElementAtPosition(
@@ -1241,21 +1308,43 @@ private final class ComputerUseExecutor {
       &hitElement
     )
     guard status == .success, let hitElement else { return nil }
-    let snapshotMatch = elements.first { _, element in
-      CFEqual(element, hitElement)
-    }
-    let storedIdentity = snapshotMatch.flatMap { identifier, _ in
-      elementIdentities[identifier]
-    }
-    let currentIdentity = elementIdentity(hitElement)
-    guard SnapshotPixelHitPolicy.disposition(
-      hitFound: true,
-      hitBelongsToSnapshot: snapshotMatch != nil,
-      identityMatches: storedIdentity != nil && currentIdentity == storedIdentity
-    ) == .exactSnapshotElement,
-      let storedIdentity
+    guard let currentIdentity = elementIdentity(hitElement),
+          !isSecure(role: currentIdentity.role, subrole: currentIdentity.subrole),
+          let hitFrame = currentIdentity.frame,
+          hitFrame.width > 0,
+          hitFrame.height > 0,
+          hitFrame.contains(point),
+          elementBelongsToFocusedSnapshotWindow(hitElement)
     else { return nil }
-    return (hitElement, storedIdentity)
+    return (hitElement, currentIdentity)
+  }
+
+  /// Confirms a live Accessibility element belongs to the exact focused window
+  /// captured by the screenshot. Dynamic browser descendants do not have to be
+  /// present in the bounded text snapshot, but they must still resolve through
+  /// the current application's Accessibility hierarchy to that same window.
+  private func elementBelongsToFocusedSnapshotWindow(_ element: AXUIElement) -> Bool {
+    guard let expectedPID = snapshotFrontmostPID,
+          let snapshotFocusedWindow,
+          let currentWindow = currentFocusedWindow(pid: expectedPID),
+          CFEqual(currentWindow, snapshotFocusedWindow)
+    else { return false }
+    if CFEqual(element, currentWindow) { return true }
+    if let elementWindow = axElementAttribute(element, kAXWindowAttribute as String) {
+      return CFEqual(elementWindow, currentWindow)
+    }
+
+    var cursor = element
+    var visited = 0
+    while visited < 64 {
+      guard let parent = axElementAttribute(cursor, kAXParentAttribute as String)
+      else { return false }
+      if CFEqual(parent, currentWindow) { return true }
+      if CFEqual(parent, cursor) { return false }
+      cursor = parent
+      visited += 1
+    }
+    return false
   }
 
   private func frame(_ element: AXUIElement) -> CGRect? {

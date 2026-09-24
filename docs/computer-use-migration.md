@@ -173,11 +173,21 @@ The visual helper intentionally has no authority to:
 
 The agent-visible allowlist is `observe`, `list_apps`, `activate_app`,
 `open_url`, `press`, `click`, `type`, `key`, and `scroll`. Observation and
-listing are read-only; browser URL delivery, press, click, type, and key remain
-risk-two and approval-gated. `open_url` accepts only allowlisted Chrome and an
+listing are read-only. The other visual operations retain their risk-two audit
+classification, but one explicit **This Mac** request supplies bounded,
+run-scoped authority for navigation, selection, media control, and non-sensitive
+text entry. `press`, `click`, and `key` must declare their interaction purpose;
+submit, file transfer, destructive, financial, account/security, permission, and
+unknown effects leave that task authority and enter the ordinary per-action
+approval path. Modified command/control/option shortcuts are also excluded.
+The direct command runner is never covered by task authority and always requires
+a fresh approval. `open_url` accepts only allowlisted Chrome and an
 absolute HTTP(S) URL without embedded credentials, waits for at most 15 seconds,
-then returns a fresh observation and a closed effect verdict without claiming
-the page finished loading. Accessibility
+then returns a fresh Accessibility plus screenshot observation and a closed
+effect verdict without claiming the page finished loading. Every visual mutation
+attempts one bounded post-action observation so the model can continue a
+serialized see-act-see loop; a readback failure never makes an already-performed
+effect replayable. Accessibility
 and Screen Recording must both be granted by the user in macOS before the
 server accepts the Mac as ready.
 

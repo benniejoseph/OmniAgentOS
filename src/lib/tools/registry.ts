@@ -1131,6 +1131,23 @@ function localMacComputerTools(): ToolDefinition[] {
     maxLength: 120,
     pattern: "^[A-Za-z0-9_.:-]+$",
   };
+  const interactionPurpose = {
+    type: "string",
+    enum: [
+      "navigation",
+      "selection",
+      "media_control",
+      "submit",
+      "file_transfer",
+      "destructive",
+      "financial",
+      "account_security",
+      "permission_change",
+      "unknown",
+    ],
+    description:
+      "Declare the intended effect of this interaction. Navigation, selection, and media controls may be covered by an explicit bounded Computer Use task; consequential or unknown effects still require their normal approval boundary.",
+  };
   const localTool = (input: {
     id: string;
     name: string;
@@ -1312,8 +1329,8 @@ function localMacComputerTools(): ToolDefinition[] {
       riskLevel: 2,
       approvalRequired: true,
       operationClass: "mutation",
-      properties: { snapshotRevision, elementId },
-      required: ["snapshotRevision", "elementId"],
+      properties: { snapshotRevision, elementId, interactionPurpose },
+      required: ["snapshotRevision", "elementId", "interactionPurpose"],
     }),
     localTool({
       id: "local.macos.click",
@@ -1326,6 +1343,7 @@ function localMacComputerTools(): ToolDefinition[] {
       properties: {
         snapshotRevision,
         elementId,
+        interactionPurpose,
         coordinateSpace: {
           type: "string",
           enum: ["screenshot_pixel"],
@@ -1345,7 +1363,7 @@ function localMacComputerTools(): ToolDefinition[] {
           description: "Vertical pixel position inside the latest screenshot height.",
         },
       },
-      required: ["snapshotRevision"],
+      required: ["snapshotRevision", "interactionPurpose"],
       constraints: {
         oneOf: [
           {
@@ -1389,6 +1407,7 @@ function localMacComputerTools(): ToolDefinition[] {
       operationClass: "mutation",
       properties: {
         snapshotRevision,
+        interactionPurpose,
         key: {
           type: "string",
           enum: [
@@ -1407,7 +1426,12 @@ function localMacComputerTools(): ToolDefinition[] {
           default: [],
         },
       },
-      required: ["snapshotRevision", "key", "modifiers"],
+      required: [
+        "snapshotRevision",
+        "interactionPurpose",
+        "key",
+        "modifiers",
+      ],
     }),
     localTool({
       id: "local.macos.scroll",

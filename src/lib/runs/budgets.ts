@@ -280,11 +280,25 @@ export function budgetPerRemainingModelTurn(
   );
 }
 
+const LOCAL_COMPUTER_VISUAL_ACTION_TOOL_IDS = new Set([
+  "local.macos.activate_app",
+  "local.macos.open_url",
+  "local.macos.press",
+  "local.macos.click",
+  "local.macos.type",
+  "local.macos.key",
+  "local.macos.scroll",
+]);
+
 export function isBrowserActionTool(input: {
   id?: string;
   name?: string;
   category?: string;
 }) {
+  if (
+    input.id &&
+    LOCAL_COMPUTER_VISUAL_ACTION_TOOL_IDS.has(input.id)
+  ) return true;
   const identity = `${input.id || ""} ${input.name || ""}`.toLowerCase();
   return input.category === "browser"
     || /(?:^|[.:/_-])browser(?:[.:/_-]|$)/.test(identity)

@@ -103,7 +103,11 @@ import {
   parentDelegationAppServiceIdempotencyKey,
   withParentDelegationBudgetAuthority,
 } from "@/lib/delegation/parent-budget-authority";
-import type { AgentEvent, AgentRunRequest } from "@/lib/orchestration/types";
+import type {
+  AgentEvent,
+  AgentRunRequest,
+  ComputerUseTarget,
+} from "@/lib/orchestration/types";
 import {
   AUTHORIZED_CONTEXT_RETRIEVAL_SOURCES,
   buildContextPack,
@@ -214,6 +218,7 @@ import { formatLiveWebSearchContext, runLiveWebSearch, shouldUseLiveWebSearch } 
 
 const MAX_TOOL_RESULT_CHARS = 8_000;
 const MAX_TOOL_CALLS_PER_TURN = 5;
+const LOCAL_COMPUTER_TOOL_CALLS_PER_TURN = 1;
 const MAX_TOOL_ARGUMENT_BYTES = 64_000;
 const WORKSPACE_ACCESS_CONTEXT_TIMEOUT_MS = 3_000;
 const AGENT_CONTEXT_TASK_TOKEN_LIMIT = 4_096;
@@ -260,7 +265,7 @@ function transitionEphemeralLocalObservation(
       discardPriorLocalObservations: true,
     };
   }
-  if (toolId === "local.macos.observe") {
+  if (toolId.startsWith("local.macos.") && execution.computerObservation) {
     const fresh =
       execution.record.status === "executed" &&
         execution.computerObservation
@@ -297,6 +302,14 @@ function transitionEphemeralLocalObservation(
     return { discardPriorLocalObservations: true };
   }
   return { discardPriorLocalObservations: true };
+}
+
+function toolCallsPerTurnForComputerUse(
+  target?: ComputerUseTarget,
+) {
+  return target === "local_macos"
+    ? LOCAL_COMPUTER_TOOL_CALLS_PER_TURN
+    : MAX_TOOL_CALLS_PER_TURN;
 }
 
 function withoutLocalOpenAIObservations(
@@ -395,6 +408,9 @@ export async function* runAgent(
   // browser wording never chooses a control surface on the user's behalf.
   const computerUseRequested = localComputerUseRequested;
   const computerUseTarget = request.computerUseTarget;
+  const maxToolCallsPerTurn = toolCallsPerTurnForComputerUse(
+    computerUseTarget,
+  );
   const automaticDeploymentModelRoute = request.runtimeModelPin
     ? {
         provider: request.runtimeModelPin.provider,
@@ -622,9 +638,9 @@ export async function* runAgent(
         maxOutputTokens: budgetLimits.tokens,
         maxToolResultBytes:
           AGENT_MAX_TOOL_STEPS *
-          MAX_TOOL_CALLS_PER_TURN *
+          maxToolCallsPerTurn *
           MAX_TOOL_RESULT_CHARS,
-        maxExternalEffects: AGENT_MAX_TOOL_STEPS * MAX_TOOL_CALLS_PER_TURN,
+        maxExternalEffects: AGENT_MAX_TOOL_STEPS * maxToolCallsPerTurn,
         maxCostMicrousd: budgetLimits.costMicrousd,
         maxWallClockMs: budgetLimits.wallTimeMs,
         maxBrowserActions: budgetLimits.browserActions,
@@ -996,7 +1012,8 @@ export async function* runAgent(
       yield await emit({
         type: "status",
         label: "This Mac connected",
-        detail: "Using the explicitly selected Mac where Asael is installed. Consequential actions still pause for approval.",
+        detail:
+          "Running this objective as one bounded see-and-act session. Sending, deleting, purchases, security changes, unknown effects, and terminal commands still pause for approval.",
       });
     }
     if (sharedPromptMemoryAccessScope) {
@@ -1532,7 +1549,7 @@ export async function* runAgent(
       toolboxSha256: stableToolboxFingerprint(toolbox.tools),
       instructionsSha256: createHash("sha256").update(instructions).digest("hex"),
       maxToolSteps,
-      maxToolCallsPerTurn: MAX_TOOL_CALLS_PER_TURN,
+      maxToolCallsPerTurn,
       maxToolResultChars: MAX_TOOL_RESULT_CHARS,
       maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
       budgetLimits,
@@ -1872,6 +1889,7 @@ export async function* runAgent(
           moltbookAutonomy: request.moltbookAutonomy,
           executionScope,
           runId: run.id,
+          computerUseTarget,
           assignmentId: runtimeModel.assignmentId,
           credentialSource: runtimeModel.source === "tenant_assignment"
             ? "tenant_vault"
@@ -1899,7 +1917,8 @@ export async function* runAgent(
           checkpointBeforeTool: checkpointBeforeGovernedTool,
           checkpointAfterTool: checkpointAfterGovernedTool,
           reserveTools: reserveToolBudget,
-          serializeToolCalls: Boolean(request.moltbookAutonomy) ||
+          serializeToolCalls: computerUseTarget === "local_macos" ||
+            Boolean(request.moltbookAutonomy) ||
             isExpandedCheckpointShadowEnrollment(checkpointShadowEnrollment),
           maxToolSteps,
         });
@@ -2229,7 +2248,7 @@ export async function* runAgent(
         toolSteps += 1;
         const outputs: Array<{ type: "function_call_output"; call_id: string; output: string }> = [];
 
-        const callsThisTurn = turn.functionCalls.slice(0, MAX_TOOL_CALLS_PER_TURN);
+        const callsThisTurn = turn.functionCalls.slice(0, maxToolCallsPerTurn);
         if (
           latestLocalObservation &&
           !isSoleLocalAppListCall(turn.functionCalls, toolbox.byFunctionName)
@@ -2283,6 +2302,8 @@ export async function* runAgent(
               item.call.callId,
             ),
             agentRunId: run.id,
+            localComputerTaskAuthorized:
+              computerUseTarget === "local_macos",
             checkpointBeforeEffect: checkpointBeforeGovernedTool,
           })));
           for (let index = 0; index < prepared.length; index += 1) {
@@ -2402,6 +2423,8 @@ export async function* runAgent(
               mcpSessionScope: agentMcpSessionScope(run.id, securityContext),
               executionScope: toolExecutionScope,
               agentRunId: run.id,
+              localComputerTaskAuthorized:
+                computerUseTarget === "local_macos",
               checkpointBeforeEffect: checkpointBeforeGovernedTool,
             }),
           });
@@ -2441,7 +2464,11 @@ export async function* runAgent(
               budgetState: runBudgetState,
               conversationItems: withContinuationQueue(
                 conversationItems ?? [],
-                queuedCallsAfterPause(turn.functionCalls, callIndex),
+                queuedCallsAfterPause(
+                  turn.functionCalls,
+                  callIndex,
+                  maxToolCallsPerTurn,
+                ),
               ),
               canonicalConversation: canonicalConversationFromOpenAIItems([
                 ...(conversationItems ?? []),
@@ -2508,7 +2535,7 @@ export async function* runAgent(
           }
         }
 
-        for (const call of turn.functionCalls.slice(MAX_TOOL_CALLS_PER_TURN)) {
+        for (const call of turn.functionCalls.slice(maxToolCallsPerTurn)) {
           outputs.push(functionCallOutput(call, { error: "Per-turn tool call limit reached; call skipped." }));
         }
 
@@ -2775,6 +2802,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   moltbookAutonomy?: AgentRunRequest["moltbookAutonomy"];
   executionScope?: ExecutionScope;
   runId: string;
+  computerUseTarget?: ComputerUseTarget;
   assignmentId?: string;
   credentialSource?: "tenant_vault" | "deployment_environment";
   abortSignal?: AbortSignal;
@@ -2997,7 +3025,10 @@ export async function* runNonOpenAIProviderToolLoop(input: {
     }
 
     toolSteps += 1;
-    const callsThisTurn = turn.toolCalls.slice(0, MAX_TOOL_CALLS_PER_TURN);
+    const maxToolCallsPerTurn = toolCallsPerTurnForComputerUse(
+      input.computerUseTarget,
+    );
+    const callsThisTurn = turn.toolCalls.slice(0, maxToolCallsPerTurn);
     if (
       latestLocalObservation &&
       !isSoleLocalAppListCall(turn.toolCalls, input.toolbox.byFunctionName)
@@ -3067,6 +3098,8 @@ export async function* runNonOpenAIProviderToolLoop(input: {
             ),
             executionScope: toolExecutionScope,
             agentRunId: input.runId,
+            localComputerTaskAuthorized:
+              input.computerUseTarget === "local_macos",
             checkpointBeforeEffect: input.checkpointBeforeTool,
           });
         }),
@@ -3185,6 +3218,8 @@ export async function* runNonOpenAIProviderToolLoop(input: {
             ),
             executionScope: toolExecutionScope,
             agentRunId: input.runId,
+            localComputerTaskAuthorized:
+              input.computerUseTarget === "local_macos",
             checkpointBeforeEffect: input.checkpointBeforeTool,
           }),
         });
@@ -3226,7 +3261,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
               pendingCall: call,
               queuedCalls: [
                 ...callsThisTurn.slice(callIndex + 1),
-                ...turn.toolCalls.slice(MAX_TOOL_CALLS_PER_TURN).map(
+                ...turn.toolCalls.slice(maxToolCallsPerTurn).map(
                   (queuedCall) => ({
                     ...queuedCall,
                     skipReason: "Per-turn tool call limit reached; call skipped.",
@@ -3259,17 +3294,17 @@ export async function* runNonOpenAIProviderToolLoop(input: {
       }
     }
 
-    for (const call of turn.toolCalls.slice(MAX_TOOL_CALLS_PER_TURN)) {
+    for (const call of turn.toolCalls.slice(maxToolCallsPerTurn)) {
       outputs.push(providerToolResult(call, {
         error: "Per-turn tool call limit reached; call skipped.",
       }, true));
     }
-    if (turn.toolCalls.length > MAX_TOOL_CALLS_PER_TURN) {
+    if (turn.toolCalls.length > maxToolCallsPerTurn) {
       yield {
         type: "status",
         label: "tool call budget enforced",
         detail:
-          `${turn.toolCalls.length - MAX_TOOL_CALLS_PER_TURN} excess tool call(s) were rejected.`,
+          `${turn.toolCalls.length - maxToolCallsPerTurn} excess tool call(s) were rejected.`,
       };
     }
     if (toolSteps >= maxToolSteps) {
@@ -3451,7 +3486,11 @@ function restoreAgentRunBudgetState(
   return restoreLegacyAgentRunBudgetState({
     startedAt: run.startedAt,
     toolSteps: continuation.toolSteps,
-    toolCallsPerStep: MAX_TOOL_CALLS_PER_TURN,
+    toolCallsPerStep: toolCallsPerTurnForComputerUse(
+      continuation.computerUseTarget === "local_macos"
+        ? "local_macos"
+        : undefined,
+    ),
   });
 }
 
@@ -3607,6 +3646,11 @@ async function resumeAgentRunAfterToolApprovalInScope({
     continuation.maxToolSteps,
     Math.max(AGENT_MAX_TOOL_STEPS, LOCAL_COMPUTER_MAX_TOOL_STEPS),
     AGENT_MAX_TOOL_STEPS,
+  );
+  const maxToolCallsPerTurn = toolCallsPerTurnForComputerUse(
+    continuation.computerUseTarget === "local_macos"
+      ? "local_macos"
+      : undefined,
   );
   const executionScope = await resolveContinuationExecutionScope(
     run,
@@ -4034,6 +4078,8 @@ async function resumeAgentRunAfterToolApprovalInScope({
           mcpSessionScope: agentMcpSessionScope(run.id, continuation.context),
           executionScope: toolExecutionScope,
           agentRunId: run.id,
+          localComputerTaskAuthorized:
+            continuation.computerUseTarget === "local_macos",
           checkpointBeforeEffect: checkpointBeforeResumeTool,
         }),
       });
@@ -4296,7 +4342,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
       toolSteps += 1;
       const outputs: AgentRunContinuation["outputsBeforeApproval"] = [];
 
-      const callsThisTurn = turn.functionCalls.slice(0, MAX_TOOL_CALLS_PER_TURN);
+      const callsThisTurn = turn.functionCalls.slice(0, maxToolCallsPerTurn);
       if (
         latestLocalObservation &&
         !isSoleLocalAppListCall(turn.functionCalls, toolbox.byFunctionName)
@@ -4362,6 +4408,8 @@ async function resumeAgentRunAfterToolApprovalInScope({
             ),
             executionScope: toolExecutionScope,
             agentRunId: run.id,
+            localComputerTaskAuthorized:
+              continuation.computerUseTarget === "local_macos",
             checkpointBeforeEffect: checkpointBeforeResumeTool,
           }),
         });
@@ -4405,7 +4453,11 @@ async function resumeAgentRunAfterToolApprovalInScope({
               budgetState: runBudgetState,
             conversationItems: withContinuationQueue(
               conversationItems,
-              queuedCallsAfterPause(turn.functionCalls, callIndex),
+              queuedCallsAfterPause(
+                turn.functionCalls,
+                callIndex,
+                maxToolCallsPerTurn,
+              ),
             ),
             canonicalConversation: canonicalConversationFromOpenAIItems([
               ...conversationItems,
@@ -4469,7 +4521,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
         }
       }
 
-      for (const call of turn.functionCalls.slice(MAX_TOOL_CALLS_PER_TURN)) {
+      for (const call of turn.functionCalls.slice(maxToolCallsPerTurn)) {
         outputs.push(functionCallOutput(call, { error: "Per-turn tool call limit reached; call skipped." }));
       }
 
@@ -5068,6 +5120,8 @@ async function resumeProviderBoundAgentRunAfterApproval({
           mcpSessionScope: agentMcpSessionScope(run.id, continuation.context),
           executionScope: toolExecutionScope,
           agentRunId: run.id,
+          localComputerTaskAuthorized:
+            continuation.computerUseTarget === "local_macos",
           checkpointBeforeEffect: checkpointBeforeResumeTool,
         }),
       });
@@ -5139,6 +5193,9 @@ async function resumeProviderBoundAgentRunAfterApproval({
       requestActorBinding: resumeActorBinding,
       executionScope,
       runId: run.id,
+      computerUseTarget: continuation.computerUseTarget === "local_macos"
+        ? "local_macos"
+        : undefined,
       assignmentId: resumeRuntimeModel.assignmentId,
       credentialSource: resumeCredentialSource,
       abortSignal: resumeAbortSignal,
@@ -5193,9 +5250,11 @@ async function resumeProviderBoundAgentRunAfterApproval({
       checkpointBeforeTool: checkpointBeforeResumeTool,
       checkpointAfterTool: checkpointAfterResumeTool,
       reserveTools: reserveResumeTools,
-      serializeToolCalls: isExpandedCheckpointShadowEnrollment(
-        continuation.checkpointShadowEnrollment,
-      ),
+      serializeToolCalls:
+        continuation.computerUseTarget === "local_macos" ||
+        isExpandedCheckpointShadowEnrollment(
+          continuation.checkpointShadowEnrollment,
+        ),
     });
     let result: NonOpenAIProviderLoopResult;
     try {
@@ -5758,10 +5817,11 @@ function assertSafeToolArgumentValue(value: unknown) {
 function queuedCallsAfterPause(
   calls: ResponseFunctionCall[],
   pausedCallIndex: number,
+  maxToolCallsPerTurn = MAX_TOOL_CALLS_PER_TURN,
 ): QueuedFunctionCall[] {
   return calls.slice(pausedCallIndex + 1).map((call, offset) => {
     const originalIndex = pausedCallIndex + 1 + offset;
-    return originalIndex >= MAX_TOOL_CALLS_PER_TURN
+    return originalIndex >= maxToolCallsPerTurn
       ? { ...call, skipReason: "Per-turn tool call limit reached; call skipped." }
       : call;
   });
