@@ -158,16 +158,18 @@ export function createSemanticIntentResolver(
         reasonCode: "model_unavailable",
       });
     }
-    // The deterministic supervisor already proves that an ordinary
-    // orchestrated request is one bounded, non-consequential direct turn when
-    // its score is zero. A semantic model cannot safely widen that authority,
-    // while toolbox discovery still ranks capabilities from the original
-    // request. Avoid buying a second model call on this dominant fast path.
+    // Skip the semantic turn only when the request is positively recognizable
+    // as conversation. A zero lexical score alone is not proof: natural
+    // actions such as "pay this invoice" or "share this file" can omit every
+    // verb known to the deterministic supervisor. Those requests still need
+    // semantic classification even though the governed executor remains the
+    // final authority for every effect.
     if (
       input.mode === "orchestrate" &&
       input.baseline.route === "direct" &&
       input.baseline.score === 0 &&
-      !input.baseline.requiresApproval
+      !input.baseline.requiresApproval &&
+      isDeterministicallyConversationalRequest(input.message)
     ) {
       return deterministicSemanticInvariant({ baseline: input.baseline });
     }
@@ -278,6 +280,35 @@ export function createSemanticIntentResolver(
         : {}),
     });
   };
+}
+
+/**
+ * A deliberately narrow, positive fast path for turns whose execution shape
+ * is already clear without a model. Ambiguous confirmations and modal action
+ * requests are excluded so recent conversation can still disambiguate them.
+ */
+function isDeterministicallyConversationalRequest(message: string) {
+  const text = message.replace(/\s+/g, " ").trim();
+  if (!text) return true;
+  if (/^(?:hi|hello|hey|thanks|thank you)[.!\s]*$/i.test(text)) return true;
+
+  // These terms conservatively cover user-visible effects that frequently
+  // appear in natural requests but are absent from the supervisor's small
+  // routing vocabulary. False positives merely retain the semantic turn.
+  const mayRequestAction = /\b(?:approve|attach|book|buy|cancel|change|click|close|copy|create|delete|download|edit|email|enter|fill|follow|forward|generate|install|join|launch|like|log\s*in|move|navigate|open|order|pay|play|post|publish|purchase|remove|rename|reply|run|schedule|send|share|sign|start|stop|submit|transfer|trigger|turn\s+(?:on|off)|type|uninstall|update|upload|write)\b/i;
+  if (mayRequestAction.test(text)) return false;
+
+  if (/^(?:explain|describe|define|summari[sz]e)(?:\s|:|$)/i.test(text)) {
+    return true;
+  }
+  if (
+    /^(?:can|could|would) you (?:explain|describe|define|summari[sz]e)(?:\s|:|$)/i
+      .test(text)
+  ) {
+    return true;
+  }
+
+  return /^(?:what|why|who|when|where|which|how)\b/i.test(text);
 }
 
 export const resolveSemanticIntent = createSemanticIntentResolver();

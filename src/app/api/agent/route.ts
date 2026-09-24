@@ -490,9 +490,11 @@ async function POSTHandler(request: Request) {
     parsed.data.contextReferences || [];
   const effectiveModelSelection = queuedDispatch?.model.commandSelection ||
     parsed.data.modelSelection;
-  const deterministicIntentInvariant = Boolean(
-    effectiveModelSelection || computerUseTarget === "local_macos",
-  );
+  // A selected model changes only the runtime used after routing. It must not
+  // suppress saved-procedure matching or change the execution shape. Local
+  // Computer Use remains a fixed direct harness because its governed tool set
+  // and target are established before semantic routing.
+  const deterministicIntentInvariant = computerUseTarget === "local_macos";
   let commandContext;
   try {
     commandContext = await resolveCommandContextReferences({
@@ -936,22 +938,9 @@ async function POSTHandler(request: Request) {
         preferredAgentId: requestedBuiltInAgent,
         executionScope: semanticExecutionScope,
       });
-  const modelSelectedDecision = effectiveModelSelection
-    && semanticResolution.decision.route !== "clarify"
-    ? {
-        ...semanticResolution.decision,
-        route: "direct" as const,
-        reasons: ["Direct execution was required by the explicit model selection."],
-        primaryAgentId: requestedBuiltInAgent || customAgent
-          ? semanticResolution.decision.primaryAgentId
-          : "atlas" as const,
-        specialistIds: [],
-      }
-    : semanticResolution.decision;
   const preliminaryDecision = applySupervisorStrategy(
-    modelSelectedDecision,
-    effectiveModelSelection || computerUseTarget === "local_macos" ||
-        commandContext
+    semanticResolution.decision,
+    computerUseTarget === "local_macos" || commandContext
       ? "direct"
       : parsed.data.strategy,
   );
