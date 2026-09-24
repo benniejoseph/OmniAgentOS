@@ -477,6 +477,7 @@ async function POSTHandler(request: Request) {
     commandContext = await resolveCommandContextReferences({
       context,
       references: parsed.data.contextReferences || [],
+      query: safeRequestMessage,
       agentId: parsed.data.agentId,
       projectId: parsed.data.projectId,
     });

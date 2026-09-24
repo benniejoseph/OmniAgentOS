@@ -470,7 +470,7 @@ export function AgentRunsWorkspace({
   const [error, setError] = useState<string>();
   const [contextPack, setContextPack] = useState<JsonRecord>();
   const [contextScope, setContextScope] = useState<ActiveContextScopeId>(
-    initialContextScope || "explicit_selection",
+    initialContextScope || "session",
   );
   const [projects, setProjects] = useState<CommandProject[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState(
@@ -1589,7 +1589,7 @@ export function AgentRunsWorkspace({
       setPreferredAgent(undefined);
     }
     if (item.kind === "project" && selectedProjectId === item.id) {
-      changeContextScope("explicit_selection");
+      changeContextScope("session");
       changeProject("");
     }
     setWorkflowPlan(undefined);
@@ -1813,6 +1813,15 @@ export function AgentRunsWorkspace({
     }
     if (workflowInProgress) {
       setError("Wait for the active workflow to finish or cancel it before replacing its plan.");
+      return;
+    }
+    const unsupportedPlanReferences = commandReferences.filter((item) =>
+      item.kind !== "agent" && item.kind !== "project"
+    );
+    if (unsupportedPlanReferences.length) {
+      setError(
+        "Planning with attached Skills, files, Extensions, or Connections is not available yet. Send this message directly so Asael keeps every attachment.",
+      );
       return;
     }
     const taskQuery = goal.trim();
@@ -2193,9 +2202,6 @@ export function AgentRunsWorkspace({
     const submittedCommandReferences = queueItem
       ? []
       : commandReferences.map(commandContextReferenceRequest);
-    const hasAttachedCommandContext = submittedCommandReferences.some((reference) =>
-      reference.kind !== "agent" && reference.kind !== "project"
-    );
     if (!submittedGoal) {
       setError("Write a message before asking Asael.");
       return;
@@ -2214,7 +2220,6 @@ export function AgentRunsWorkspace({
       !queueItem &&
       contextScope === "explicit_selection" &&
       contextLoading &&
-      !hasAttachedCommandContext &&
       !options?.prepareContextAutomatically
     ) {
       openTaskDetails("context");
@@ -2228,8 +2233,7 @@ export function AgentRunsWorkspace({
     if (
       !queueItem &&
       contextScope === "explicit_selection" &&
-      !contextSelection &&
-      !hasAttachedCommandContext
+      !contextSelection
     ) {
       if (!contextPreparedForGoal) {
         const prepared = await buildContext({

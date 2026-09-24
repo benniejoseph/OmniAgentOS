@@ -13,6 +13,10 @@ import type {
   CommandContextKind,
   CommandContextReference,
 } from "@/lib/command/composer-context-contract";
+import {
+  CommandFileContextHydrationError,
+  hydrateCommandFileContext,
+} from "@/lib/command/file-context-hydrator";
 import { redactSensitive } from "@/lib/security/context";
 import type { SecurityContext } from "@/lib/security/types";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
@@ -26,6 +30,11 @@ export type ResolvedCommandContextPinV1 = Readonly<{
   expectedVersion?: number;
   versionId?: string;
   bindingSha256?: string;
+  contentMode?: string;
+  contentDisclosureSha256?: string;
+  contentReceiptSha256?: string;
+  contentEvidenceUnitCount?: number;
+  contentTruncated?: boolean;
 }>;
 
 export type ResolvedCommandContextV1 = Readonly<{
@@ -61,6 +70,7 @@ export class CommandContextResolutionError extends Error {
 export async function resolveCommandContextReferences(input: {
   context: SecurityContext;
   references: readonly CommandContextReference[];
+  query?: string;
   agentId?: string;
   projectId?: string;
 }): Promise<ResolvedCommandContextV1 | undefined> {
@@ -112,7 +122,11 @@ export async function resolveCommandContextReferences(input: {
   }
 
   const [agents, skills, plugins, project, integrations, files] = sources;
-  const resolved = input.references.map((reference) => {
+  const fileCharacterBudget = Math.max(
+    240,
+    Math.floor(7_000 / Math.max(1, input.references.length)),
+  );
+  const resolved = await Promise.all(input.references.map(async (reference) => {
     switch (reference.kind) {
       case "agent": {
         const agent = [
@@ -322,6 +336,27 @@ export async function resolveCommandContextReferences(input: {
           file.currentVersion.contentSha256,
           "Library item",
         );
+        let hydration;
+        try {
+          hydration = await hydrateCommandFileContext({
+            context: input.context,
+            file,
+            query: input.query || "",
+            maxCharacters: fileCharacterBudget,
+          });
+        } catch (error) {
+          if (error instanceof CommandFileContextHydrationError) {
+            if (error.code === "content_changed") {
+              throw changed("Library item", "indexed content changed");
+            }
+            throw new CommandContextResolutionError(
+              "command_context_unavailable",
+              "The selected file content could not be verified. Refresh the Library item and try again.",
+              503,
+            );
+          }
+          throw error;
+        }
         return resolvedReference(reference, {
           exactPin: {
             id: file.id,
@@ -332,6 +367,17 @@ export async function resolveCommandContextReferences(input: {
             contentSha256: file.currentVersion.contentSha256,
             mediaType: file.currentVersion.mediaType,
             byteCount: file.currentVersion.byteCount,
+            contentMode: hydration.contentMode,
+            hydration: hydration.pin,
+          },
+          pinMetadata: {
+            contentMode: hydration.contentMode,
+            contentDisclosureSha256: hydration.pin.disclosureSha256,
+            ...(hydration.pin.extractionReceiptSha256
+              ? { contentReceiptSha256: hydration.pin.extractionReceiptSha256 }
+              : {}),
+            contentEvidenceUnitCount: hydration.pin.includedUnitCount,
+            contentTruncated: hydration.pin.truncated,
           },
           context: {
             kind: "file",
@@ -344,12 +390,13 @@ export async function resolveCommandContextReferences(input: {
             versionNumber: file.currentVersion.versionNumber,
             contentSha256: file.currentVersion.contentSha256,
             citationRefs: file.citationRefs,
-            use: "Exact unified-Library projection only. No client filesystem path is accepted or disclosed.",
+            content: hydration.promptContext,
+            use: "Exact unified-Library projection with server-verified, bounded prompt content when available. No client filesystem path is accepted or disclosed.",
           },
         });
       }
     }
-  });
+  }));
 
   const pins = resolved.map(({ context: _context, ...pin }) => pin);
   const kindCounts: Partial<Record<CommandContextKind, number>> = {};
@@ -417,7 +464,18 @@ function assertPrimaryReferenceAgreement(input: {
 
 function resolvedReference(
   reference: CommandContextReference,
-  input: { exactPin: Record<string, unknown>; context: Record<string, unknown> },
+  input: {
+    exactPin: Record<string, unknown>;
+    context: Record<string, unknown>;
+    pinMetadata?: Pick<
+      ResolvedCommandContextPinV1,
+      | "contentMode"
+      | "contentDisclosureSha256"
+      | "contentReceiptSha256"
+      | "contentEvidenceUnitCount"
+      | "contentTruncated"
+    >;
+  },
 ) {
   return Object.freeze({
     kind: reference.kind,
@@ -429,6 +487,7 @@ function resolvedReference(
     ...(reference.bindingSha256
       ? { bindingSha256: reference.bindingSha256 }
       : {}),
+    ...(input.pinMetadata || {}),
     pinSha256: canonicalJsonSha256(input.exactPin),
     context: Object.freeze(input.context),
   });
