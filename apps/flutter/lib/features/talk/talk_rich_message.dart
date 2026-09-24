@@ -445,17 +445,28 @@ List<InlineSpan> _inlineSpans(
       );
       if (punctuation.isNotEmpty) spans.add(TextSpan(text: punctuation));
     } else {
+      final underscoreInsideIdentifier =
+          token.startsWith('_') &&
+          (_isInlineIdentifierCharacter(value, match.start - 1) ||
+              _isInlineIdentifierCharacter(value, match.end));
       spans.add(
-        TextSpan(
-          text: token.substring(1, token.length - 1),
-          style: const TextStyle(fontStyle: FontStyle.italic),
-        ),
+        underscoreInsideIdentifier
+            ? TextSpan(text: token)
+            : TextSpan(
+                text: token.substring(1, token.length - 1),
+                style: const TextStyle(fontStyle: FontStyle.italic),
+              ),
       );
     }
     cursor = match.end;
   }
   if (cursor < value.length) spans.add(TextSpan(text: value.substring(cursor)));
   return spans;
+}
+
+bool _isInlineIdentifierCharacter(String value, int index) {
+  if (index < 0 || index >= value.length) return false;
+  return RegExp(r'[A-Za-z0-9]').hasMatch(value[index]);
 }
 
 InlineSpan _linkSpan(

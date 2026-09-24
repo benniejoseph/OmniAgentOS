@@ -1824,10 +1824,12 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
             final model = event.data['model']?.toString() ?? 'model';
             final tokens = event.data['totalTokens'] as int? ?? 0;
             final latency = event.data['latencyMs'] as int? ?? 0;
+            final thinking = _modelThinkingLabel(event.data['reasoningEffort']);
             _recordActivity(
               key: 'model:${event.data['iteration'] ?? activities.length}',
               title: 'Model response',
-              detail: '$provider · $model · $tokens tokens · ${latency}ms',
+              detail:
+                  '$provider · $model${thinking == null ? '' : ' · $thinking thinking'} · $tokens tokens · ${latency}ms',
               state: TalkActivityState.succeeded,
             );
           case 'council_member':
@@ -2933,6 +2935,16 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     if (text.isEmpty) return text;
     return '${text[0].toUpperCase()}${text.substring(1)}';
   }
+
+  static String? _modelThinkingLabel(Object? value) => switch (value) {
+    'minimal' => 'Minimal',
+    'low' => 'Low',
+    'medium' => 'Medium',
+    'high' => 'High',
+    'xhigh' => 'Extra high',
+    'max' => 'Ultra',
+    _ => null,
+  };
 
   static String _countDetail(Object? value, String label) {
     final count = value is int ? value : 1;
