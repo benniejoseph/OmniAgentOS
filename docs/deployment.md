@@ -121,6 +121,25 @@ visible transcript through ordinary Command handling. No native contract,
 database, Vercel, Fly, or worker release changes are required for this
 native-only experience slice.
 
+### Native Command model/thinking evidence patch
+
+Owner-only Asael `1.21.1+33` preserves underscores inside identifiers in rich
+answers and includes the effective server-emitted Thinking intensity in the
+observable model receipt. It does not display private reasoning. A true cold
+launch started with Automatic routing; the owner then selected the validated
+OpenAI `gpt-6-astra` route and Ultra. The live answer rendered
+`MODEL_ULTRA_LIVE_OK` exactly, and **View work** showed
+`openai · gpt-6-astra · Ultra thinking · 9726 tokens · 4207ms`.
+
+The installed package is `Asael-1.21.1-33-macOS.dmg`, SHA-256
+`c3fbf35f61b3361e8d1c287056c738ab3a7e93fba62575fe4194b677c1e58245`,
+with installed host CDHash `9f5a757f44abcba280526f83954a0b3b9d764656`.
+The prior 1.21.0+32 app is recoverable in Trash. This canary covers the direct
+`main_agent` Command path; specialized-Agent and This Mac scope parity,
+durable-route conflict handling, and native-contract publication are separate
+follow-up work. No database, Vercel, Fly, or worker release is required for
+this native-only patch.
+
 ### Licensed TradingView chart assets
 
 TradingView Advanced Charts v32.2.0 is a restricted, non-redistributable client dependency. Its files must never be committed to the public OmniAgentOS repository. `npm run sync:tradingview` uses the operator's existing GitHub authorization to clone the exact `v32.2.0` tag, verifies commit `f936c921ba510ba20ac51a71b8b4c5c03c043dbc`, and stages only the required `charting_library` directory under the Git-ignored `public/vendor/tradingview` path. The release marker is also ignored. Do not put a GitHub token in the repository, Vercel environment, script arguments, or logs.
