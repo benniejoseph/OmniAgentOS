@@ -633,7 +633,8 @@ class ApiTalkRepository
       // governed action has already started but before the run event arrived.
       // Only this no-run-id branch may use actor-scoped thread history, and it
       // remains fail-closed if a single exact turn cannot be identified.
-      final fallbackAnchor = await recoveryAnchor;
+      final mayHaveReachedServer = _mayHaveReachedAgentBeforeFailure(error);
+      final fallbackAnchor = mayHaveReachedServer ? await recoveryAnchor : null;
       // A custom-Agent request must never adopt an actor-concurrent history
       // turn without first proving that turn's logical Agent identity. The
       // native history projection does not carry that proof, so this legacy
@@ -775,6 +776,31 @@ class ApiTalkRepository
     }
     return text;
   }
+}
+
+bool _mayHaveReachedAgentBeforeFailure(Object error) {
+  if (error is ApiException) {
+    if (error.statusCode != null) return false;
+    return const {
+      'stream_ended_without_terminal_event',
+      'sendTimeout',
+      'receiveTimeout',
+      'connectionError',
+      'unknown',
+    }.contains(error.diagnosticCode);
+  }
+  if (error is! DioException || error.response != null) return false;
+  return switch (error.type) {
+    DioExceptionType.sendTimeout ||
+    DioExceptionType.receiveTimeout ||
+    DioExceptionType.connectionError ||
+    DioExceptionType.unknown => true,
+    DioExceptionType.connectionTimeout ||
+    DioExceptionType.transformTimeout ||
+    DioExceptionType.badCertificate ||
+    DioExceptionType.badResponse ||
+    DioExceptionType.cancel => false,
+  };
 }
 
 const _terminalConversationEvents = {

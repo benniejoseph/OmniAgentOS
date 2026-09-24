@@ -74,6 +74,16 @@ String _boundedRunText(Object? value, int maximum) {
 ({String message, String detail}) _talkFailure(Object error) {
   if (error is ApiException) {
     final code = _boundedDisplayText(error.diagnosticCode, 80);
+    final statusCode = error.statusCode;
+    if (statusCode != null && statusCode >= 400 && statusCode < 500) {
+      return (
+        message: _boundedDisplayText(error.message, 400).isNotEmpty
+            ? _boundedDisplayText(error.message, 400)
+            : 'Asael could not start this request.',
+        detail:
+            'The command was rejected before a governed run started (HTTP $statusCode${code.isEmpty ? '' : ', $code'}).',
+      );
+    }
     return (
       message: _boundedDisplayText(error.message, 400).isNotEmpty
           ? _boundedDisplayText(error.message, 400)
@@ -3323,6 +3333,33 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
 
   bool get _realtimeVoiceBusy => _realtimeCaptureActive;
 
+  bool get _thisMacReadyForCommand {
+    final localComputer = widget.localComputer;
+    return localComputer?.canClaimCommands == true &&
+        localComputer?.phase == LocalComputerBrokerPhase.ready;
+  }
+
+  String get _thisMacUnavailableMessage {
+    final localComputer = widget.localComputer;
+    if (localComputer == null || !localComputer.canClaimCommands) {
+      return 'Open the main Asael window to use this Mac.';
+    }
+    return switch (localComputer.phase) {
+      LocalComputerBrokerPhase.permissionsRequired => 'Allow Accessibility and Screen Recording in Settings before Asael uses this Mac.',
+      LocalComputerBrokerPhase.degraded =>
+        'This Mac is reconnecting. Wait for the ready status, then try again.',
+      LocalComputerBrokerPhase.starting =>
+        'Asael is still checking this Mac. Try again when it is ready.',
+      LocalComputerBrokerPhase.active =>
+        'Asael is already using this Mac. Finish or stop that task first.',
+      LocalComputerBrokerPhase.unavailable =>
+        'This build cannot use the installed Mac.',
+      LocalComputerBrokerPhase.disabled || LocalComputerBrokerPhase.stopped =>
+        'Turn on This Mac in Settings before sending a computer task.',
+      LocalComputerBrokerPhase.ready => 'This Mac is ready.',
+    };
+  }
+
   bool get _realtimeCaptureActive => switch (realtimeVoice?.phase) {
     AmbientRealtimeVoicePhase.requestingPermission ||
     AmbientRealtimeVoicePhase.connecting ||
@@ -3523,12 +3560,9 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     final value = input.text.trim();
     if (value.isEmpty) return;
     if (executionTarget == TalkExecutionTarget.thisMac &&
-        widget.localComputer?.canClaimCommands == false) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Open the main Asael window to use This Mac.'),
-        ),
-      );
+        !_thisMacReadyForCommand) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(_thisMacUnavailableMessage)));
       return;
     }
     final controller = widget.controllerResolver?.call() ?? widget.controller;
@@ -3951,6 +3985,13 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   }
 
   void _selectAmbientDestination(bool useThisMac) {
+    if (useThisMac && !_thisMacReadyForCommand) {
+      setState(() => recordingError = _thisMacUnavailableMessage);
+      return;
+    }
+    if (recordingError == _thisMacUnavailableMessage) {
+      setState(() => recordingError = null);
+    }
     selectExecutionTarget(
       useThisMac ? TalkExecutionTarget.thisMac : TalkExecutionTarget.agent,
     );
@@ -3996,14 +4037,20 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     if (voiceDraftBusy || widget.controller.sending) return;
     final text = input.text.trim();
     if (text.isEmpty) return;
-    if (executionTarget == TalkExecutionTarget.thisMac &&
-        widget.localComputer?.canClaimCommands == false) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Open the main Asael window to use this Mac.'),
-        ),
-      );
-      return;
+    if (executionTarget == TalkExecutionTarget.thisMac) {
+      final localComputer = widget.localComputer;
+      final ready =
+          _thisMacReadyForCommand &&
+          localComputer != null &&
+          await localComputer.prepareForCommand();
+      if (!mounted) return;
+      if (!ready) {
+        final message = _thisMacUnavailableMessage;
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(message)));
+        setState(() => recordingError = message);
+        return;
+      }
     }
     final realtime = realtimeVoice;
     if (realtime != null) {
@@ -4102,7 +4149,9 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     final canSend =
         !voiceDraftBusy &&
         !widget.controller.sending &&
-        input.text.trim().isNotEmpty;
+        input.text.trim().isNotEmpty &&
+        (executionTarget != TalkExecutionTarget.thisMac ||
+            _thisMacReadyForCommand);
     return CallbackShortcuts(
       bindings: {
         const SingleActivator(LogicalKeyboardKey.escape): () =>
@@ -4117,7 +4166,8 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
         transcript: input,
         focusNode: inputFocus,
         useThisMac: executionTarget == TalkExecutionTarget.thisMac,
-        thisMacAvailable: widget.localComputer?.canClaimCommands == true,
+        thisMacAvailable: _thisMacReadyForCommand,
+        thisMacUnavailableReason: _thisMacUnavailableMessage,
         detail: _ambientVoiceDetail,
         error: phase == AmbientVoicePhase.error
             ? recordingError ??

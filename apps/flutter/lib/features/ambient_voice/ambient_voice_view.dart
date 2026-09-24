@@ -28,6 +28,7 @@ class AmbientVoiceSurface extends StatelessWidget {
     required this.focusNode,
     required this.useThisMac,
     required this.thisMacAvailable,
+    required this.thisMacUnavailableReason,
     required this.detail,
     required this.onDestinationChanged,
     required this.onMicrophonePressed,
@@ -45,6 +46,7 @@ class AmbientVoiceSurface extends StatelessWidget {
   final FocusNode focusNode;
   final bool useThisMac;
   final bool thisMacAvailable;
+  final String thisMacUnavailableReason;
   final String detail;
   final ValueChanged<bool> onDestinationChanged;
   final VoidCallback? onMicrophonePressed;
@@ -239,6 +241,7 @@ class AmbientVoiceSurface extends StatelessWidget {
                     _DestinationSwitch(
                       useThisMac: useThisMac,
                       thisMacAvailable: thisMacAvailable,
+                      unavailableReason: thisMacUnavailableReason,
                       enabled: !_working && !_capturing,
                       onChanged: onDestinationChanged,
                     ),
@@ -419,39 +422,46 @@ class _DestinationSwitch extends StatelessWidget {
   const _DestinationSwitch({
     required this.useThisMac,
     required this.thisMacAvailable,
+    required this.unavailableReason,
     required this.enabled,
     required this.onChanged,
   });
 
   final bool useThisMac;
   final bool thisMacAvailable;
+  final String unavailableReason;
   final bool enabled;
   final ValueChanged<bool> onChanged;
 
   @override
-  Widget build(BuildContext context) => SegmentedButton<bool>(
-    segments: [
-      const ButtonSegment<bool>(
-        value: false,
-        icon: Icon(Icons.auto_awesome_outlined, size: 16),
-        label: Text('Ask Asael'),
-      ),
-      ButtonSegment<bool>(
-        value: true,
-        enabled: thisMacAvailable,
-        icon: const Icon(Icons.laptop_mac_rounded, size: 16),
-        label: const Text('Use this Mac'),
-      ),
-    ],
-    selected: {useThisMac},
-    showSelectedIcon: false,
-    onSelectionChanged: !enabled
-        ? null
-        : (selection) => onChanged(selection.first),
-    style: ButtonStyle(
-      visualDensity: VisualDensity.compact,
-      padding: const WidgetStatePropertyAll(
-        EdgeInsets.symmetric(horizontal: 11, vertical: 8),
+  Widget build(BuildContext context) => Tooltip(
+    message: thisMacAvailable
+        ? 'Send through Asael’s governed computer tools.'
+        : unavailableReason,
+    child: SegmentedButton<bool>(
+      segments: [
+        const ButtonSegment<bool>(
+          value: false,
+          icon: Icon(Icons.auto_awesome_outlined, size: 16),
+          label: Text('Ask Asael'),
+        ),
+        ButtonSegment<bool>(
+          value: true,
+          enabled: thisMacAvailable,
+          icon: const Icon(Icons.laptop_mac_rounded, size: 16),
+          label: const Text('Use this Mac'),
+        ),
+      ],
+      selected: {useThisMac},
+      showSelectedIcon: false,
+      onSelectionChanged: !enabled
+          ? null
+          : (selection) => onChanged(selection.first),
+      style: ButtonStyle(
+        visualDensity: VisualDensity.compact,
+        padding: const WidgetStatePropertyAll(
+          EdgeInsets.symmetric(horizontal: 11, vertical: 8),
+        ),
       ),
     ),
   );

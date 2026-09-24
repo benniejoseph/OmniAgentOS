@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
@@ -341,7 +342,7 @@ class ApiClient {
       if (body == null) throw const ApiException('The stream was empty.');
       return body;
     } on DioException catch (error) {
-      throw ApiException.fromDio(error);
+      throw await _streamApiException(error);
     }
   }
 
@@ -386,7 +387,7 @@ class ApiClient {
       if (body == null) throw const ApiException('The stream was empty.');
       return body;
     } on DioException catch (error) {
-      throw ApiException.fromDio(error);
+      throw await _streamApiException(error);
     }
   }
 
@@ -403,6 +404,51 @@ class ApiClient {
       throw ApiException.fromDio(error);
     }
   }
+}
+
+Future<ApiException> _streamApiException(DioException error) async {
+  final statusCode = error.response?.statusCode;
+  final body = error.response?.data;
+  if (statusCode == null || body is! ResponseBody) {
+    return ApiException.fromDio(error);
+  }
+  Map<String, dynamic>? payload;
+  try {
+    const maximumBytes = 32 * 1024;
+    final bytes = BytesBuilder(copy: false);
+    await for (final chunk in body.stream) {
+      if (bytes.length + chunk.length > maximumBytes) {
+        payload = null;
+        break;
+      }
+      bytes.add(chunk);
+    }
+    if (bytes.length > 0) {
+      final decoded = jsonDecode(utf8.decode(bytes.takeBytes()));
+      if (decoded is Map) payload = Map<String, dynamic>.from(decoded);
+    }
+  } catch (_) {
+    payload = null;
+  }
+  final nestedError = payload?['error'];
+  final message = nestedError is Map
+      ? (nestedError['message'] ?? nestedError['code'])?.toString()
+      : (payload?['message'] ?? nestedError)?.toString();
+  if (statusCode == 409) {
+    return ApiConflictException(
+      message ?? 'The requested state changed. Refresh and try again.',
+      serverState: payload?['current'] is Map
+          ? Map<String, dynamic>.from(payload!['current'] as Map)
+          : null,
+      diagnosticCode: error.type.name,
+    );
+  }
+  final fallback = ApiException.fromDio(error);
+  return ApiException(
+    message ?? fallback.message,
+    statusCode: statusCode,
+    diagnosticCode: error.type.name,
+  );
 }
 
 bool _canUseOfflineProjection(ApiException error) =>

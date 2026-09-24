@@ -641,6 +641,37 @@ class LocalComputerCoordinator extends ChangeNotifier
     }
   }
 
+  Future<bool> prepareForCommand() async {
+    if (_disposed ||
+        !authenticated ||
+        !canClaimCommands ||
+        !host.supported ||
+        _changing ||
+        _explicitlyStopped ||
+        active) {
+      return false;
+    }
+    try {
+      final current = await host.getStatus();
+      status = current;
+      if (!current.ready) {
+        lastError = null;
+        _notify();
+        return false;
+      }
+      final published = await repository.updateDevice(current);
+      device = published;
+      _lastHeartbeatAt = DateTime.now().toUtc();
+      lastError = null;
+      _notify();
+      return published.enabled && published.online;
+    } catch (_) {
+      lastError = 'This Mac could not confirm its secure connection.';
+      _notify();
+      return false;
+    }
+  }
+
   Future<void> stopNow({String reason = 'user_stop'}) async {
     if (_changing) return;
     _changing = true;
