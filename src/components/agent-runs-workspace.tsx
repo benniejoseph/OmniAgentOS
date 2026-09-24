@@ -154,7 +154,9 @@ type PromptQueueItem = {
     providerId: "openai" | "google" | "anthropic" | "aws_bedrock";
     modelId: string;
     tier: "fast" | "reasoning";
+    reasoningLevel?: string;
   };
+  contextReferenceCount: number;
   state: "queued" | "paused" | "dispatching" | "completed" | "failed";
   position: number;
   lifecycleRevision: number;
@@ -721,6 +723,15 @@ export function AgentRunsWorkspace({
   const agentRunTerminal = streamEvents.some((event) => ["done", "error", "canceled"].includes(event.type));
   const reviewedPlanId = stringPath(workflowPlan, "plan.id", "");
   const reviewedPlanStatus = stringPath(workflowPlan, "plan.status", "");
+  const reviewedPlanContextCount = numberValue(
+    readPath(workflowPlan, "plan.commandContextBoundary.referenceCount"),
+    0,
+  );
+  const reviewedPlanModelScope = stringPath(
+    workflowPlan,
+    "plan.commandModelBoundary.assignmentScope",
+    "",
+  );
   const reviewedPlanReady = Boolean(
     reviewedPlanId && reviewedPlanStatus === "planned",
   );
@@ -3834,6 +3845,18 @@ export function AgentRunsWorkspace({
                     {activeWorkflowId ? "Workflow started" : "Start reviewed plan"}
                   </button>
                   <StatusPill label={`risk ${stringPath(workflowPlan, "plan.highestRiskLevel", "0")}`} tone={numberValue(readPath(workflowPlan, "plan.highestRiskLevel"), 0) >= 2 ? "warning" : "neutral"} />
+                  {reviewedPlanContextCount ? (
+                    <StatusPill
+                      label={`${reviewedPlanContextCount} context item${reviewedPlanContextCount === 1 ? "" : "s"} pinned`}
+                      tone="success"
+                    />
+                  ) : null}
+                  {reviewedPlanModelScope ? (
+                    <StatusPill
+                      label={`Model pinned · ${reviewedPlanModelScope.replaceAll("_", " ")}`}
+                      tone="success"
+                    />
+                  ) : null}
                 </div>
                 {reviewedPlanStatus === "failed" ? (
                   <div
@@ -5305,7 +5328,18 @@ function PromptQueuePanel({
                       <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted">
                         <span className="font-semibold capitalize text-foreground">{item.state}</span>
                         <span>{item.agent.logicalAgentId} v{item.agent.definitionVersion}</span>
-                        <span>{item.model.providerId} · {item.model.modelId}</span>
+                        <span>
+                          {item.model.providerId} · {item.model.modelId}
+                          {item.model.reasoningLevel
+                            ? ` · ${item.model.reasoningLevel} thinking`
+                            : ""}
+                        </span>
+                        {item.contextReferenceCount ? (
+                          <span>
+                            {item.contextReferenceCount} context item
+                            {item.contextReferenceCount === 1 ? "" : "s"}
+                          </span>
+                        ) : null}
                         {item.progressLabel ? <span>{item.progressLabel}</span> : null}
                       </div>
                     </div>
@@ -6635,6 +6669,11 @@ function promptQueueItemFromValue(value: unknown): PromptQueueItem | undefined {
   const target = asRecord(item.target);
   const agent = asRecord(item.agent);
   const model = asRecord(item.model);
+  const commandSelection = asRecord(model.commandSelection);
+  const contextPin = asRecord(item.context);
+  const contextReferences = Array.isArray(contextPin.references)
+    ? contextPin.references
+    : [];
   const state = stringValue(item.state);
   const mode = stringValue(item.mode);
   const strategy = stringValue(item.strategy);
@@ -6674,7 +6713,9 @@ function promptQueueItemFromValue(value: unknown): PromptQueueItem | undefined {
       providerId: providerId as PromptQueueItem["model"]["providerId"],
       modelId: stringValue(model.modelId),
       tier: tier as PromptQueueItem["model"]["tier"],
+      reasoningLevel: stringValue(commandSelection.reasoningLevel) || undefined,
     },
+    contextReferenceCount: contextReferences.length,
     state: state as PromptQueueItem["state"],
     position: numberValue(item.position, 0),
     lifecycleRevision: numberValue(item.lifecycleRevision, 0),
