@@ -1184,23 +1184,36 @@ export async function searchMemories(
     tenantId?: string;
     accessScope?: DatabaseMemoryAccessScope;
     workingMemoryReference?: string;
+    asOfTime?: string;
+    includeUnmatchedCandidates?: boolean;
   } = {},
 ): Promise<MemorySearchResult[]> {
   const localEmbeddingSpace = isLocalRetrievalEmbeddingSpace(
     options.queryEmbeddingSpaceId,
   );
-  if (hasDatabaseUrl() && !options.accessScope && !localEmbeddingSpace) {
-    const results = await searchMemoriesDb(query, {
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const tenantId = normalizeTenantId(options.tenantId);
+    const search = (sql: MemorySqlClient) => searchMemoriesDb(query, {
       ...options,
-      queryEmbedding: retrievalEmbeddingSpaceSupportsStoredVectorIndex(
-        options.queryEmbeddingSpaceId,
-      )
+      tenantId,
+      includeUnmatchedCandidates:
+        options.includeUnmatchedCandidates ?? localEmbeddingSpace,
+      queryEmbedding: !localEmbeddingSpace &&
+          retrievalEmbeddingSpaceSupportsStoredVectorIndex(
+            options.queryEmbeddingSpaceId,
+          )
         ? options.queryEmbedding
         : undefined,
-    });
-    if (results.length) {
-      return results;
-    }
+    }, sql);
+    return options.accessScope
+      ? runWithDatabaseMemoryAccessScope(
+          options.accessScope,
+          tenantId,
+          search,
+          [MEMORY_PURPOSE_IDS.read, MEMORY_PURPOSE_IDS.retrieve],
+        )
+      : search(getSql());
   }
 
   const memories = await listMemories({
@@ -3107,61 +3120,89 @@ async function searchMemoriesDb(
     queryEmbedding?: number[];
     tenantId?: string;
     workingMemoryReference?: string;
+    asOfTime?: string;
+    includeUnmatchedCandidates?: boolean;
   },
+  sql: MemorySqlClient,
 ): Promise<MemorySearchResult[]> {
-  await ensureDatabaseSchema();
-  const limit = options.limit || 8;
+  const limit = Math.min(Math.max(options.limit || 8, 1), 100);
   const queryText = query.trim();
+  const lexicalQuery = webSearchOrQuery(queryText);
   const tenantId = normalizeTenantId(options.tenantId);
   const vector = toVectorLiteral(options.queryEmbedding);
-  const candidateLimit = Math.min(limit * 8, 800);
+  const asOfTime = normalizeMemorySearchAsOfTime(options.asOfTime);
+  const vectorCandidateLimit = Math.min(Math.max(limit * 4, 32), 240);
   const workingMemoryReference = normalizeWorkingMemoryReference(
     options.workingMemoryReference,
   ) || "";
 
   if (vector) {
     try {
-      const rows = await getSql()`
-        SELECT memory.*,
+      const rows = await sql`
+        WITH vector_candidates AS MATERIALIZED (
+          SELECT memory.id,
+                 memory.embedding_vector <=> ${vector}::vector AS distance
+          FROM omni_memories memory
+          LEFT JOIN omni_memory_lifecycle_states lifecycle
+            ON lifecycle.tenant_id = memory.tenant_id
+           AND lifecycle.memory_id = memory.id
+          WHERE memory.tenant_id = ${tenantId}
+            AND memory.claim_status = 'active'
+            AND lifecycle.archived_at IS NULL
+            AND (memory.valid_from IS NULL OR memory.valid_from <= ${asOfTime}::timestamptz)
+            AND (memory.valid_to IS NULL OR memory.valid_to > ${asOfTime}::timestamptz)
+            AND (memory.retention_expires_at IS NULL OR memory.retention_expires_at > ${asOfTime}::timestamptz)
+            AND (
+              memory.tier <> 'working'
+              OR ${workingMemoryReference} = ANY(memory.evidence_refs)
+            )
+            AND memory.embedding_vector IS NOT NULL
+          ORDER BY memory.embedding_vector <=> ${vector}::vector
+          LIMIT ${vectorCandidateLimit}
+        )
+        SELECT to_jsonb(memory) - ARRAY[
+                 'embedding', 'embedding_vector'
+               ]::text[] AS memory_record,
                lifecycle.pinned_at AS lifecycle_pinned_at,
                lifecycle.archived_at AS lifecycle_archived_at,
                lifecycle.archive_reason AS lifecycle_archive_reason,
                lifecycle.duplicate_of_memory_id AS lifecycle_duplicate_of_memory_id,
-               GREATEST(0, 1 - (memory.embedding_vector <=> ${vector}::vector)) AS vector_score,
+               GREATEST(0, 1 - candidate.distance) AS vector_score,
                CASE
-                 WHEN ${queryText} = '' THEN 0
+                 WHEN ${lexicalQuery} = '' THEN 0
                  ELSE ts_rank_cd(
                    to_tsvector('english', memory.title || ' ' || memory.content),
-                   plainto_tsquery('english', ${queryText})
+                   websearch_to_tsquery('english', ${lexicalQuery})
                  )
                END AS lexical_score,
-               1 / (1 + EXTRACT(EPOCH FROM (NOW() - memory.updated_at)) / 604800) AS recency_score
-        FROM omni_memories memory
+               1 / (1 + EXTRACT(EPOCH FROM (${asOfTime}::timestamptz - memory.updated_at)) / 604800) AS recency_score
+        FROM vector_candidates candidate
+        INNER JOIN omni_memories memory
+          ON memory.id = candidate.id
         LEFT JOIN omni_memory_lifecycle_states lifecycle
           ON lifecycle.tenant_id = memory.tenant_id
          AND lifecycle.memory_id = memory.id
         WHERE memory.tenant_id = ${tenantId}
           AND memory.claim_status = 'active'
           AND lifecycle.archived_at IS NULL
-          AND (memory.valid_from IS NULL OR memory.valid_from <= NOW())
-          AND (memory.valid_to IS NULL OR memory.valid_to > NOW())
-          AND (memory.retention_expires_at IS NULL OR memory.retention_expires_at > NOW())
+          AND (memory.valid_from IS NULL OR memory.valid_from <= ${asOfTime}::timestamptz)
+          AND (memory.valid_to IS NULL OR memory.valid_to > ${asOfTime}::timestamptz)
+          AND (memory.retention_expires_at IS NULL OR memory.retention_expires_at > ${asOfTime}::timestamptz)
           AND (
             memory.tier <> 'working'
             OR ${workingMemoryReference} = ANY(memory.evidence_refs)
           )
-          AND memory.embedding_vector IS NOT NULL
         ORDER BY ((
-          (0.52 * GREATEST(0, 1 - (memory.embedding_vector <=> ${vector}::vector))) +
+          (0.52 * GREATEST(0, 1 - candidate.distance)) +
           (0.22 * CASE
-            WHEN ${queryText} = '' THEN 0
+            WHEN ${lexicalQuery} = '' THEN 0
             ELSE ts_rank_cd(
               to_tsvector('english', memory.title || ' ' || memory.content),
-              plainto_tsquery('english', ${queryText})
+              websearch_to_tsquery('english', ${lexicalQuery})
             )
           END) +
           (0.10 * memory.importance) +
-          (0.06 * (1 / (1 + EXTRACT(EPOCH FROM (NOW() - memory.updated_at)) / 604800))) +
+          (0.06 * (1 / (1 + EXTRACT(EPOCH FROM (${asOfTime}::timestamptz - memory.updated_at)) / 604800))) +
           (0.10 * memory.confidence)
         ) * CASE memory.tier
           WHEN 'commitment' THEN 1.15
@@ -3174,27 +3215,62 @@ async function searchMemoriesDb(
           WHEN 'summary' THEN 0.96
           ELSE 1.00
         END) DESC
-        LIMIT ${candidateLimit}
+        LIMIT ${limit}
       `;
-      return rows.map(memorySearchResultFromRow)
-        .sort((left, right) => right.score - left.score)
-        .slice(0, limit);
+      return rows.map(memorySearchResultFromRow);
     } catch {
-      return searchMemoriesLexicalDb(
+      return searchMemoriesLexicalCandidatesDb(
         queryText,
         limit,
         tenantId,
         workingMemoryReference,
+        asOfTime,
+        sql,
+        Boolean(options.includeUnmatchedCandidates),
       );
     }
   }
 
-  return searchMemoriesLexicalDb(
+  return searchMemoriesLexicalCandidatesDb(
     queryText,
     limit,
     tenantId,
     workingMemoryReference,
+    asOfTime,
+    sql,
+    Boolean(options.includeUnmatchedCandidates),
   );
+}
+
+async function searchMemoriesLexicalCandidatesDb(
+  query: string,
+  limit: number,
+  tenantId: string,
+  workingMemoryReference: string,
+  asOfTime: string,
+  sql: MemorySqlClient,
+  includeUnmatchedCandidates: boolean,
+) {
+  const matched = await searchMemoriesLexicalDb(
+    query,
+    limit,
+    tenantId,
+    workingMemoryReference,
+    asOfTime,
+    sql,
+  );
+  if (!includeUnmatchedCandidates || matched.length >= limit) {
+    return matched;
+  }
+  const fallback = await searchMemoryPriorityCandidatesDb({
+    limit: limit - matched.length,
+    tenantId,
+    workingMemoryReference,
+    asOfTime,
+    excludeIds: matched.map((result) => result.record.id),
+    sql,
+  });
+  return [...matched, ...fallback];
 }
 
 async function searchMemoriesLexicalDb(
@@ -3202,23 +3278,32 @@ async function searchMemoriesLexicalDb(
   limit: number,
   tenantId: string,
   workingMemoryReference: string,
+  asOfTime: string,
+  sql: MemorySqlClient,
 ) {
-  const rows = await getSql()`
+  const lexicalQuery = webSearchOrQuery(query);
+  const rows = await sql`
     SELECT ranked.*
     FROM (
-      SELECT memory.*,
+      SELECT to_jsonb(memory) - ARRAY[
+               'embedding', 'embedding_vector'
+             ]::text[] AS memory_record,
+             memory.confidence AS rank_confidence,
+             memory.tier AS rank_tier,
+             memory.importance AS rank_importance,
+             memory.updated_at AS rank_updated_at,
              lifecycle.pinned_at AS lifecycle_pinned_at,
              lifecycle.archived_at AS lifecycle_archived_at,
              lifecycle.archive_reason AS lifecycle_archive_reason,
              lifecycle.duplicate_of_memory_id AS lifecycle_duplicate_of_memory_id,
              CASE
-               WHEN ${query} = '' THEN 0
+               WHEN ${lexicalQuery} = '' THEN 0
                ELSE ts_rank_cd(
                  to_tsvector('english', memory.title || ' ' || memory.content),
-                 plainto_tsquery('english', ${query})
+                 websearch_to_tsquery('english', ${lexicalQuery})
                )
              END AS lexical_score,
-             1 / (1 + EXTRACT(EPOCH FROM (NOW() - memory.updated_at)) / 604800) AS recency_score
+             1 / (1 + EXTRACT(EPOCH FROM (${asOfTime}::timestamptz - memory.updated_at)) / 604800) AS recency_score
       FROM omni_memories memory
       LEFT JOIN omni_memory_lifecycle_states lifecycle
         ON lifecycle.tenant_id = memory.tenant_id
@@ -3226,22 +3311,23 @@ async function searchMemoriesLexicalDb(
       WHERE memory.tenant_id = ${tenantId}
         AND memory.claim_status = 'active'
         AND lifecycle.archived_at IS NULL
-        AND (memory.valid_from IS NULL OR memory.valid_from <= NOW())
-        AND (memory.valid_to IS NULL OR memory.valid_to > NOW())
-        AND (memory.retention_expires_at IS NULL OR memory.retention_expires_at > NOW())
+        AND (memory.valid_from IS NULL OR memory.valid_from <= ${asOfTime}::timestamptz)
+        AND (memory.valid_to IS NULL OR memory.valid_to > ${asOfTime}::timestamptz)
+        AND (memory.retention_expires_at IS NULL OR memory.retention_expires_at > ${asOfTime}::timestamptz)
         AND (
           memory.tier <> 'working'
           OR ${workingMemoryReference} = ANY(memory.evidence_refs)
         )
         AND (
-          ${query} = ''
-          OR to_tsvector('english', memory.title || ' ' || memory.content) @@ plainto_tsquery('english', ${query})
+          ${lexicalQuery} = ''
+          OR to_tsvector('english', memory.title || ' ' || memory.content) @@
+            websearch_to_tsquery('english', ${lexicalQuery})
         )
     ) ranked
     ORDER BY (
                ranked.lexical_score *
-               (0.35 + ranked.confidence * 0.65) *
-               CASE ranked.tier
+               (0.35 + ranked.rank_confidence * 0.65) *
+               CASE ranked.rank_tier
                  WHEN 'commitment' THEN 1.15
                  WHEN 'working' THEN 1.12
                  WHEN 'procedural' THEN 1.10
@@ -3253,14 +3339,79 @@ async function searchMemoriesLexicalDb(
                  ELSE 1.00
                END
              ) DESC,
-             ranked.importance DESC,
-             ranked.updated_at DESC
-    LIMIT ${Math.min(limit * 8, 800)}
+             ranked.rank_importance DESC,
+             ranked.rank_updated_at DESC
+    LIMIT ${limit}
   `;
 
-  return rows.map(memorySearchResultFromRow)
-    .sort((left, right) => right.score - left.score)
-    .slice(0, limit);
+  return rows.map(memorySearchResultFromRow);
+}
+
+async function searchMemoryPriorityCandidatesDb(input: {
+  limit: number;
+  tenantId: string;
+  workingMemoryReference: string;
+  asOfTime: string;
+  excludeIds: readonly string[];
+  sql: MemorySqlClient;
+}) {
+  if (input.limit <= 0) return [];
+  const rows = await input.sql`
+    SELECT to_jsonb(memory) - ARRAY[
+             'embedding', 'embedding_vector'
+           ]::text[] AS memory_record,
+           lifecycle.pinned_at AS lifecycle_pinned_at,
+           lifecycle.archived_at AS lifecycle_archived_at,
+           lifecycle.archive_reason AS lifecycle_archive_reason,
+           lifecycle.duplicate_of_memory_id AS lifecycle_duplicate_of_memory_id,
+           0::double precision AS vector_score,
+           0::double precision AS lexical_score,
+           1 / (
+             1 + EXTRACT(
+               EPOCH FROM (${input.asOfTime}::timestamptz - memory.updated_at)
+             ) / 604800
+           ) AS recency_score
+    FROM omni_memories memory
+    LEFT JOIN omni_memory_lifecycle_states lifecycle
+      ON lifecycle.tenant_id = memory.tenant_id
+     AND lifecycle.memory_id = memory.id
+    WHERE memory.tenant_id = ${input.tenantId}
+      AND memory.claim_status = 'active'
+      AND lifecycle.archived_at IS NULL
+      AND (memory.valid_from IS NULL OR memory.valid_from <= ${input.asOfTime}::timestamptz)
+      AND (memory.valid_to IS NULL OR memory.valid_to > ${input.asOfTime}::timestamptz)
+      AND (memory.retention_expires_at IS NULL OR memory.retention_expires_at > ${input.asOfTime}::timestamptz)
+      AND (
+        memory.tier <> 'working'
+        OR ${input.workingMemoryReference} = ANY(memory.evidence_refs)
+      )
+      AND memory.id <> ALL(${[...input.excludeIds]}::text[])
+    ORDER BY
+      (lifecycle.pinned_at IS NOT NULL) DESC,
+      memory.importance DESC,
+      memory.confidence DESC,
+      memory.updated_at DESC,
+      memory.id COLLATE "C"
+    LIMIT ${input.limit}
+  `;
+  return rows.map(memorySearchResultFromRow);
+}
+
+function normalizeMemorySearchAsOfTime(value?: string) {
+  const parsed = value ? new Date(value) : new Date();
+  if (!Number.isFinite(parsed.getTime())) {
+    throw new Error("Memory search as-of time is invalid.");
+  }
+  return parsed.toISOString();
+}
+
+function webSearchOrQuery(value: string) {
+  return Array.from(new Set(
+    value
+      .normalize("NFKC")
+      .toLocaleLowerCase("und")
+      .match(/[\p{L}\p{N}]+/gu) || [],
+  )).filter((term) => term.length > 1).slice(0, 32).join(" OR ");
 }
 
 async function runWithDatabaseMemoryAccessScope<T>(
@@ -3973,10 +4124,12 @@ function normalizeTenantId(value?: string) {
 }
 
 function memorySearchResultFromRow(row: Record<string, unknown>): MemorySearchResult {
+  const storedMemory = databaseRecord(row.memory_record);
+  const memoryRow = storedMemory ? { ...storedMemory, ...row } : row;
   const vectorScore = Number(row.vector_score || 0);
   const lexicalScore = Number(row.lexical_score || 0);
   const recencyScore = Number(row.recency_score || 0);
-  const memory = memoryFromRow(row);
+  const memory = memoryFromRow(memoryRow);
   const confidence = clamp01(memory.confidence ?? 0.7);
   const tierWeight = memoryTierPolicy(
     resolveMemoryTier(memory.tier, memory.type),

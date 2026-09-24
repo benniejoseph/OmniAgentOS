@@ -71,7 +71,10 @@ import {
 } from "@/lib/rag/deletion-events";
 import { invalidateRunsForDeletedContext } from "@/lib/runs/context-invalidation";
 import { buildCaptureKnowledgeSupersessionEvent } from "@/lib/rag/capture-supersession-event";
-import { KNOWLEDGE_COGNIFY_PURPOSE_ID } from "@/lib/sources/purposes";
+import {
+  CONTEXT_COMPILER_V2_PURPOSE_ID,
+  KNOWLEDGE_COGNIFY_PURPOSE_ID,
+} from "@/lib/sources/purposes";
 import { purgeKnowledgeCognitionsForDocuments } from "@/lib/knowledge/cognification-store";
 
 type RagSqlClient = ReturnType<typeof getSql>;
@@ -112,6 +115,11 @@ type SearchKnowledgeOptions = {
   queryEmbeddingSpaceId?: string;
   tags?: string[];
   tenantId?: string;
+};
+
+type SearchAuthorizedCanonicalKnowledgeOptions = SearchKnowledgeOptions & {
+  executionScope: ExecutionScope;
+  asOfTime: string;
 };
 
 export async function createKnowledgeDocument(input: CreateKnowledgeDocumentInput) {
@@ -2066,7 +2074,10 @@ export async function getCanonicalKnowledgeEvidenceByChunkIds(
     await ensureDatabaseSchema();
     const rows = await getSql()`
       SELECT
-        chunk.*,
+        to_jsonb(chunk) - ARRAY[
+          'embedding', 'embedding_vector'
+        ]::text[] AS canonical_chunk,
+        chunk.source_revision_id AS canonical_source_revision_id,
         to_jsonb(evidence) AS canonical_evidence,
         source_item.current_revision_id AS canonical_current_revision_id,
         source_item.adapter_operation AS canonical_adapter_operation
@@ -2083,14 +2094,14 @@ export async function getCanonicalKnowledgeEvidenceByChunkIds(
     `;
     return orderCanonicalKnowledgeEvidence(
       rows.map((row) => ({
-        chunk: chunkFromRow(row),
+        chunk: chunkFromRow(storedRecord(row.canonical_chunk)),
         evidenceUnit: evidenceUnitFromStoredRow(
           storedRecord(row.canonical_evidence),
         ),
         sourceState: canonicalSourceState({
           currentRevisionId: row.canonical_current_revision_id,
           operation: row.canonical_adapter_operation,
-          sourceRevisionId: row.source_revision_id,
+          sourceRevisionId: row.canonical_source_revision_id,
         }),
       })),
       ids,
@@ -2246,6 +2257,52 @@ export async function searchKnowledge(
     .map(sanitizeKnowledgeChunk);
   const documentsById = new Map(documents.map((document) => [document.id, document]));
   return rankChunksInMemory(chunks, documentsById, query, options).slice(0, limit);
+}
+
+/**
+ * Retrieves only current canonical evidence that the initiating actor may use
+ * for Context Compiler v2. PostgreSQL applies the actor, scope, purpose,
+ * grants, retention, temporal, and current-revision predicates before ranking
+ * or transferring chunk bodies.
+ */
+export async function searchAuthorizedCanonicalKnowledge(
+  query: string,
+  options: SearchAuthorizedCanonicalKnowledgeOptions,
+): Promise<KnowledgeSearchResult[]> {
+  const tenantId = normalizeTenantId(options.tenantId);
+  if (tenantId !== normalizeTenantId(options.executionScope.tenantId)) {
+    throw new Error(
+      "Canonical knowledge search tenant does not match its execution scope.",
+    );
+  }
+  const asOfTime = normalizeKnowledgeSearchAsOfTime(options.asOfTime);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    return searchAuthorizedCanonicalKnowledgeDb(query, {
+      ...options,
+      tenantId,
+      asOfTime,
+      queryEmbedding: retrievalEmbeddingSpaceSupportsStoredVectorIndex(
+        options.queryEmbeddingSpaceId,
+      )
+        ? options.queryEmbedding
+        : undefined,
+    });
+  }
+
+  const results = await searchKnowledge(query, options);
+  const canonical = await getCanonicalKnowledgeEvidenceByChunkIds(
+    results.map((result) => result.chunk.id),
+    { tenantId },
+  );
+  const canonicalByChunkId = new Map(
+    canonical.map((candidate) => [candidate.chunk.id, candidate]),
+  );
+  return results.filter((result) => canonicalKnowledgeAllowsExecutionScope(
+    canonicalByChunkId.get(result.chunk.id),
+    options.executionScope,
+    asOfTime,
+  ));
 }
 
 export async function getKnowledgeStats(options: { tenantId?: string } = {}) {
@@ -2961,6 +3018,340 @@ async function searchKnowledgeDb(
   return (await searchKnowledgeLexicalDb(queryText, candidateLimit, tenantId, options.tags)).slice(0, limit);
 }
 
+async function searchAuthorizedCanonicalKnowledgeDb(
+  query: string,
+  options: SearchAuthorizedCanonicalKnowledgeOptions,
+): Promise<KnowledgeSearchResult[]> {
+  const limit = Math.min(Math.max(options.limit || 8, 1), 100);
+  const candidateLimit = hasTagFilter(options)
+    ? Math.min(limit * 3, 200)
+    : limit;
+  const tenantId = normalizeTenantId(options.tenantId);
+  const scope = options.executionScope;
+  const asOfTime = normalizeKnowledgeSearchAsOfTime(options.asOfTime);
+  const lexicalQuery = webSearchOrQuery(query);
+  const vector = toVectorLiteral(options.queryEmbedding);
+  const workspaceId = scope.workspaceId || "";
+  const projectId = scope.projectId || "";
+  const missionId = scope.missionId || "";
+  const contextGrantIds = [...scope.contextGrantIds];
+  const vectorCandidateLimit = Math.min(
+    Math.max(candidateLimit * 4, 32),
+    240,
+  );
+
+  const authorizeRows = async (
+    withVector: string | undefined,
+    requireLexicalMatch = false,
+    excludeIds: readonly string[] = [],
+  ) => {
+    const rankedLexicalQuery = withVector || requireLexicalMatch
+      ? lexicalQuery
+      : "";
+    if (withVector) {
+      return getSql()`
+        WITH authorized_vector_candidates AS MATERIALIZED (
+          SELECT to_jsonb(c) - ARRAY[
+                   'embedding', 'embedding_vector'
+                 ]::text[] AS chunk_record,
+                 c.id AS chunk_id,
+                 c.title AS rank_title,
+                 c.content AS rank_content,
+                 c.updated_at AS rank_updated_at,
+                 d.title AS document_title,
+                 d.source_item_id AS document_source_item_id,
+                 d.source_revision_id AS document_source_revision_id,
+                 d.source_type AS document_source_type,
+                 d.content_hash AS document_content_hash,
+                 d.chunk_count AS document_chunk_count,
+                 d.total_characters AS document_total_characters,
+                 d.metadata AS document_metadata,
+                 d.created_at AS document_created_at,
+                 d.updated_at AS document_updated_at,
+                 c.embedding_vector <=> ${withVector}::vector AS distance
+          FROM omni_knowledge_chunks c
+          INNER JOIN omni_knowledge_documents d
+            ON d.tenant_id = c.tenant_id
+           AND d.id = c.document_id
+           AND d.source_revision_id = c.source_revision_id
+          INNER JOIN omni_evidence_units evidence
+            ON evidence.tenant_id = c.tenant_id
+           AND evidence.id = c.evidence_unit_id
+           AND evidence.source_revision_id = c.source_revision_id
+          INNER JOIN omni_source_revisions source_revision
+            ON source_revision.tenant_id = evidence.tenant_id
+           AND source_revision.id = evidence.source_revision_id
+           AND source_revision.source_item_id = evidence.source_item_id
+          INNER JOIN omni_source_items source_item
+            ON source_item.tenant_id = evidence.tenant_id
+           AND source_item.id = evidence.source_item_id
+           AND source_item.current_revision_id = evidence.source_revision_id
+          WHERE c.tenant_id = ${tenantId}
+            AND source_item.adapter_operation = 'upsert'
+            AND source_revision.adapter_operation = 'upsert'
+            AND evidence.adapter_operation = 'upsert'
+            AND d.source_item_id = evidence.source_item_id
+            AND d.source_revision_id = source_revision.id
+            AND source_revision.connection_id = evidence.connection_id
+            AND source_revision.owner_actor_id = evidence.owner_actor_id
+            AND source_revision.visibility = evidence.visibility
+            AND source_revision.sensitivity = evidence.sensitivity
+            AND source_revision.workspace_id IS NOT DISTINCT FROM evidence.workspace_id
+            AND source_revision.project_id IS NOT DISTINCT FROM evidence.project_id
+            AND source_revision.mission_id IS NOT DISTINCT FROM evidence.mission_id
+            AND source_revision.captured_at = evidence.captured_at
+            AND source_revision.adapter_observed_at = evidence.adapter_observed_at
+            AND evidence.permission_grant_ids <@ source_revision.permission_grant_ids
+            AND evidence.allowed_purpose_ids <@ source_revision.allowed_purpose_ids
+            AND evidence.retention_policy_id = source_revision.retention_policy_id
+            AND source_item.owner_actor_id = evidence.owner_actor_id
+            AND source_item.connection_id = source_revision.connection_id
+            AND source_item.visibility = evidence.visibility
+            AND source_item.sensitivity = evidence.sensitivity
+            AND source_item.workspace_id IS NOT DISTINCT FROM evidence.workspace_id
+            AND source_item.project_id IS NOT DISTINCT FROM evidence.project_id
+            AND source_item.mission_id IS NOT DISTINCT FROM evidence.mission_id
+            AND source_item.captured_at = source_revision.captured_at
+            AND source_revision.permission_grant_ids <@ source_item.permission_grant_ids
+            AND source_revision.allowed_purpose_ids <@ source_item.allowed_purpose_ids
+            AND source_revision.retention_policy_id = source_item.retention_policy_id
+            AND evidence.evidence_byte_length = octet_length(c.content)
+            AND evidence.owner_actor_id = ${scope.initiatingActorId}
+            AND (evidence.workspace_id IS NULL OR evidence.workspace_id = ${workspaceId})
+            AND (evidence.project_id IS NULL OR evidence.project_id = ${projectId})
+            AND (evidence.mission_id IS NULL OR evidence.mission_id = ${missionId})
+            AND ${CONTEXT_COMPILER_V2_PURPOSE_ID} = ANY(evidence.allowed_purpose_ids)
+            AND ${CONTEXT_COMPILER_V2_PURPOSE_ID} = ANY(source_revision.allowed_purpose_ids)
+            AND ${CONTEXT_COMPILER_V2_PURPOSE_ID} = ANY(source_item.allowed_purpose_ids)
+            AND evidence.permission_grant_ids <@ ${contextGrantIds}::text[]
+            AND (
+              source_item.retention_expires_at IS NULL
+              OR source_item.retention_expires_at > ${asOfTime}::timestamptz
+            )
+            AND (
+              source_revision.retention_expires_at IS NULL
+              OR source_revision.retention_expires_at > ${asOfTime}::timestamptz
+            )
+            AND (
+              evidence.retention_expires_at IS NULL
+              OR evidence.retention_expires_at > ${asOfTime}::timestamptz
+            )
+            AND source_item.captured_at <= ${asOfTime}::timestamptz
+            AND source_revision.captured_at <= ${asOfTime}::timestamptz
+            AND evidence.captured_at <= ${asOfTime}::timestamptz
+            AND evidence.extracted_at <= ${asOfTime}::timestamptz
+            AND source_item.adapter_observed_at <= ${asOfTime}::timestamptz
+            AND source_revision.adapter_observed_at <= ${asOfTime}::timestamptz
+            AND evidence.adapter_observed_at <= ${asOfTime}::timestamptz
+            AND c.embedding_vector IS NOT NULL
+          ORDER BY c.embedding_vector <=> ${withVector}::vector
+          LIMIT ${vectorCandidateLimit}
+        )
+        SELECT candidate.*,
+               GREATEST(
+                 0,
+                 1 - candidate.distance
+               ) AS vector_score,
+               CASE
+                 WHEN ${rankedLexicalQuery} = '' THEN 0
+                 ELSE ts_rank_cd(
+                   to_tsvector(
+                     'english',
+                     candidate.rank_title || ' ' || candidate.rank_content
+                   ),
+                   websearch_to_tsquery('english', ${rankedLexicalQuery})
+                 )
+               END AS lexical_score,
+               1 / (
+                 1 + EXTRACT(
+                   EPOCH FROM (
+                     ${asOfTime}::timestamptz - candidate.rank_updated_at
+                   )
+                 ) / 604800
+               ) AS recency_score
+        FROM authorized_vector_candidates candidate
+        ORDER BY (
+          (0.68 * GREATEST(
+            0,
+            1 - candidate.distance
+          )) +
+          (0.24 * CASE
+            WHEN ${rankedLexicalQuery} = '' THEN 0
+            ELSE ts_rank_cd(
+              to_tsvector(
+                'english',
+                candidate.rank_title || ' ' || candidate.rank_content
+              ),
+              websearch_to_tsquery('english', ${rankedLexicalQuery})
+            )
+          END) +
+          (0.08 * (1 / (
+            1 + EXTRACT(
+              EPOCH FROM (
+                ${asOfTime}::timestamptz - candidate.rank_updated_at
+              )
+            ) / 604800
+          )))
+        ) DESC
+        LIMIT ${candidateLimit}
+      `;
+    }
+
+    return getSql()`
+      SELECT to_jsonb(c) - ARRAY[
+               'embedding', 'embedding_vector'
+             ]::text[] AS chunk_record,
+             c.id AS chunk_id,
+             d.title AS document_title,
+             d.source_item_id AS document_source_item_id,
+             d.source_revision_id AS document_source_revision_id,
+             d.source_type AS document_source_type,
+             d.content_hash AS document_content_hash,
+             d.chunk_count AS document_chunk_count,
+             d.total_characters AS document_total_characters,
+             d.metadata AS document_metadata,
+             d.created_at AS document_created_at,
+             d.updated_at AS document_updated_at,
+             0::double precision AS vector_score,
+             CASE
+               WHEN ${rankedLexicalQuery} = '' THEN 0
+               ELSE ts_rank_cd(
+                 to_tsvector('english', c.title || ' ' || c.content),
+                 websearch_to_tsquery('english', ${rankedLexicalQuery})
+               )
+             END AS lexical_score,
+             1 / (
+               1 + EXTRACT(
+                 EPOCH FROM (${asOfTime}::timestamptz - c.updated_at)
+               ) / 604800
+             ) AS recency_score
+      FROM omni_knowledge_chunks c
+      INNER JOIN omni_knowledge_documents d
+        ON d.tenant_id = c.tenant_id
+       AND d.id = c.document_id
+       AND d.source_revision_id = c.source_revision_id
+      INNER JOIN omni_evidence_units evidence
+        ON evidence.tenant_id = c.tenant_id
+       AND evidence.id = c.evidence_unit_id
+       AND evidence.source_revision_id = c.source_revision_id
+      INNER JOIN omni_source_revisions source_revision
+        ON source_revision.tenant_id = evidence.tenant_id
+       AND source_revision.id = evidence.source_revision_id
+       AND source_revision.source_item_id = evidence.source_item_id
+      INNER JOIN omni_source_items source_item
+        ON source_item.tenant_id = evidence.tenant_id
+       AND source_item.id = evidence.source_item_id
+       AND source_item.current_revision_id = evidence.source_revision_id
+      WHERE c.tenant_id = ${tenantId}
+        AND source_item.adapter_operation = 'upsert'
+        AND source_revision.adapter_operation = 'upsert'
+        AND evidence.adapter_operation = 'upsert'
+        AND d.source_item_id = evidence.source_item_id
+        AND d.source_revision_id = source_revision.id
+        AND source_revision.connection_id = evidence.connection_id
+        AND source_revision.owner_actor_id = evidence.owner_actor_id
+        AND source_revision.visibility = evidence.visibility
+        AND source_revision.sensitivity = evidence.sensitivity
+        AND source_revision.workspace_id IS NOT DISTINCT FROM evidence.workspace_id
+        AND source_revision.project_id IS NOT DISTINCT FROM evidence.project_id
+        AND source_revision.mission_id IS NOT DISTINCT FROM evidence.mission_id
+        AND source_revision.captured_at = evidence.captured_at
+        AND source_revision.adapter_observed_at = evidence.adapter_observed_at
+        AND evidence.permission_grant_ids <@ source_revision.permission_grant_ids
+        AND evidence.allowed_purpose_ids <@ source_revision.allowed_purpose_ids
+        AND evidence.retention_policy_id = source_revision.retention_policy_id
+        AND source_item.owner_actor_id = evidence.owner_actor_id
+        AND source_item.connection_id = source_revision.connection_id
+        AND source_item.visibility = evidence.visibility
+        AND source_item.sensitivity = evidence.sensitivity
+        AND source_item.workspace_id IS NOT DISTINCT FROM evidence.workspace_id
+        AND source_item.project_id IS NOT DISTINCT FROM evidence.project_id
+        AND source_item.mission_id IS NOT DISTINCT FROM evidence.mission_id
+        AND source_item.captured_at = source_revision.captured_at
+        AND source_revision.permission_grant_ids <@ source_item.permission_grant_ids
+        AND source_revision.allowed_purpose_ids <@ source_item.allowed_purpose_ids
+        AND source_revision.retention_policy_id = source_item.retention_policy_id
+        AND evidence.evidence_byte_length = octet_length(c.content)
+        AND evidence.owner_actor_id = ${scope.initiatingActorId}
+        AND (evidence.workspace_id IS NULL OR evidence.workspace_id = ${workspaceId})
+        AND (evidence.project_id IS NULL OR evidence.project_id = ${projectId})
+        AND (evidence.mission_id IS NULL OR evidence.mission_id = ${missionId})
+        AND ${CONTEXT_COMPILER_V2_PURPOSE_ID} = ANY(evidence.allowed_purpose_ids)
+        AND ${CONTEXT_COMPILER_V2_PURPOSE_ID} = ANY(source_revision.allowed_purpose_ids)
+        AND ${CONTEXT_COMPILER_V2_PURPOSE_ID} = ANY(source_item.allowed_purpose_ids)
+        AND evidence.permission_grant_ids <@ ${contextGrantIds}::text[]
+        AND (
+          source_item.retention_expires_at IS NULL
+          OR source_item.retention_expires_at > ${asOfTime}::timestamptz
+        )
+        AND (
+          source_revision.retention_expires_at IS NULL
+          OR source_revision.retention_expires_at > ${asOfTime}::timestamptz
+        )
+        AND (
+          evidence.retention_expires_at IS NULL
+          OR evidence.retention_expires_at > ${asOfTime}::timestamptz
+        )
+        AND source_item.captured_at <= ${asOfTime}::timestamptz
+        AND source_revision.captured_at <= ${asOfTime}::timestamptz
+        AND evidence.captured_at <= ${asOfTime}::timestamptz
+        AND evidence.extracted_at <= ${asOfTime}::timestamptz
+        AND source_item.adapter_observed_at <= ${asOfTime}::timestamptz
+        AND source_revision.adapter_observed_at <= ${asOfTime}::timestamptz
+        AND evidence.adapter_observed_at <= ${asOfTime}::timestamptz
+        AND c.id <> ALL(${[...excludeIds]}::text[])
+        AND (
+          ${rankedLexicalQuery} = ''
+          OR to_tsvector('english', c.title || ' ' || c.content) @@
+            websearch_to_tsquery('english', ${rankedLexicalQuery})
+        )
+      ORDER BY (
+        (0.24 * CASE
+          WHEN ${rankedLexicalQuery} = '' THEN 0
+          ELSE ts_rank_cd(
+            to_tsvector('english', c.title || ' ' || c.content),
+            websearch_to_tsquery('english', ${rankedLexicalQuery})
+          )
+        END) +
+        (0.08 * (1 / (
+          1 + EXTRACT(
+            EPOCH FROM (${asOfTime}::timestamptz - c.updated_at)
+          ) / 604800
+        )))
+      ) DESC,
+      c.updated_at DESC,
+      c.id COLLATE "C"
+      LIMIT ${candidateLimit}
+    `;
+  };
+
+  const lexicalRows = async () => {
+    const matched = await authorizeRows(undefined, true);
+    if (matched.length >= candidateLimit) return matched;
+    const fallback = await authorizeRows(
+      undefined,
+      false,
+      matched.map((row) => String(row.chunk_id)),
+    );
+    return [...matched, ...fallback].slice(0, candidateLimit);
+  };
+
+  let rows: Record<string, unknown>[];
+  if (vector) {
+    try {
+      rows = await authorizeRows(vector);
+    } catch {
+      rows = await lexicalRows();
+    }
+  } else {
+    rows = await lexicalRows();
+  }
+  return filterKnowledgeResultsByTags(
+    rows.map(knowledgeResultFromRow),
+    options.tags,
+  ).slice(0, limit);
+}
+
 async function searchKnowledgeLexicalDb(query: string, limit: number, tenantId: string, tags?: string[]) {
   const rows = await getSql()`
     SELECT c.*,
@@ -3103,7 +3494,10 @@ function rankChunksInMemory(
 }
 
 function knowledgeResultFromRow(row: Record<string, unknown>): KnowledgeSearchResult {
-  const chunk = chunkFromRow(row);
+  const storedChunk = row.chunk_record
+    ? storedRecord(row.chunk_record)
+    : row;
+  const chunk = chunkFromRow(storedChunk);
   const vectorScore = Number(row.vector_score || 0);
   const lexicalScore = Number(row.lexical_score || 0);
   const recencyScore = Number(row.recency_score || 0);
@@ -3113,7 +3507,9 @@ function knowledgeResultFromRow(row: Record<string, unknown>): KnowledgeSearchRe
     chunk,
     document: {
       id: chunk.documentId,
-      tenantId: String(row.tenant_id || row.document_tenant_id || "default"),
+      tenantId: String(
+        storedChunk.tenant_id || row.document_tenant_id || "default",
+      ),
       sourceItemId: optionalString(row.document_source_item_id),
       sourceRevisionId: optionalString(row.document_source_revision_id),
       title: String(row.document_title || ""),
@@ -3805,6 +4201,61 @@ function normalizeTenantId(value?: string) {
     .trim()
     .replace(/[^a-zA-Z0-9_.:-]/g, "_")
     .slice(0, 120) || "default";
+}
+
+function normalizeKnowledgeSearchAsOfTime(value?: string) {
+  const parsed = value ? new Date(value) : new Date();
+  if (!Number.isFinite(parsed.getTime())) {
+    throw new Error("Canonical knowledge search as-of time is invalid.");
+  }
+  return parsed.toISOString();
+}
+
+function webSearchOrQuery(value: string) {
+  return Array.from(new Set(
+    value
+      .normalize("NFKC")
+      .toLocaleLowerCase("und")
+      .match(/[\p{L}\p{N}]+/gu) || [],
+  )).filter((term) => term.length > 1).slice(0, 32).join(" OR ");
+}
+
+function canonicalKnowledgeAllowsExecutionScope(
+  canonical: CanonicalKnowledgeEvidence | undefined,
+  executionScope: ExecutionScope,
+  asOfTime: string,
+) {
+  if (!canonical) return false;
+  const evidence = canonical.evidenceUnit;
+  if (
+    canonical.sourceState.operation === "delete" ||
+    !canonical.sourceState.isCurrent ||
+    evidence.tenantId !== executionScope.tenantId ||
+    evidence.ownerActorId !== executionScope.initiatingActorId ||
+    !nullableScopeMatches(evidence.workspaceId, executionScope.workspaceId) ||
+    !nullableScopeMatches(evidence.projectId, executionScope.projectId) ||
+    !nullableScopeMatches(evidence.missionId, executionScope.missionId) ||
+    !evidence.allowedPurposeIds.includes(CONTEXT_COMPILER_V2_PURPOSE_ID) ||
+    evidence.permissionGrantIds.some(
+      (id) => !executionScope.contextGrantIds.includes(id),
+    ) ||
+    (
+      evidence.retentionExpiresAt !== null &&
+      evidence.retentionExpiresAt <= asOfTime
+    ) ||
+    evidence.capturedAt > asOfTime ||
+    evidence.extractedAt > asOfTime
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function nullableScopeMatches(
+  evidenceValue: string | null,
+  executionValue: string | null,
+) {
+  return evidenceValue === null || evidenceValue === executionValue;
 }
 
 function tokenize(value: string) {

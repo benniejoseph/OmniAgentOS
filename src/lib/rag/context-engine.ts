@@ -28,7 +28,10 @@ import {
 import type { MemorySearchResult } from "@/lib/memory/types";
 import { searchMemoryGraph } from "@/lib/memory/graph";
 import { searchMemories } from "@/lib/memory/store";
-import { searchKnowledge } from "@/lib/rag/store";
+import {
+  searchAuthorizedCanonicalKnowledge,
+  searchKnowledge,
+} from "@/lib/rag/store";
 import { embedRetrievalTexts } from "@/lib/rag/retrieval-embedding";
 import { rerankRetrievalCandidates } from "@/lib/rag/learned-reranker";
 import {
@@ -331,6 +334,8 @@ export async function buildContextPack(
           queryEmbeddingSpaceId,
           tenantId,
           workingMemoryReference: options.workingMemoryReference,
+          asOfTime: compilerAsOfTime,
+          includeUnmatchedCandidates: true,
         })
       : Promise.resolve([]),
     retrievalSources.memory !== "exclude" && databaseMemoryAccessScope
@@ -341,16 +346,30 @@ export async function buildContextPack(
           tenantId,
           accessScope: databaseMemoryAccessScope,
           workingMemoryReference: options.workingMemoryReference,
+          asOfTime: compilerAsOfTime,
+          includeUnmatchedCandidates: true,
         })
       : Promise.resolve([]),
     retrievalSources.knowledge === "exclude"
       ? Promise.resolve([])
-      : searchKnowledge(retrievalQuery || normalizedQuery, {
-          limit: candidateLimit,
-          queryEmbedding,
-          queryEmbeddingSpaceId,
-          tenantId,
-        }),
+      : retrievalSources.knowledge === "canonical_authorized"
+        ? searchAuthorizedCanonicalKnowledge(
+            retrievalQuery || normalizedQuery,
+            {
+              limit: candidateLimit,
+              queryEmbedding,
+              queryEmbeddingSpaceId,
+              tenantId,
+              executionScope: compilerV2Request!.executionScope,
+              asOfTime: compilerAsOfTime,
+            },
+          )
+        : searchKnowledge(retrievalQuery || normalizedQuery, {
+            limit: candidateLimit,
+            queryEmbedding,
+            queryEmbeddingSpaceId,
+            tenantId,
+          }),
     retrievalSources.topicGraph === "exclude"
       ? Promise.resolve([])
       : searchMemoryGraph(retrievalQuery || normalizedQuery, {
