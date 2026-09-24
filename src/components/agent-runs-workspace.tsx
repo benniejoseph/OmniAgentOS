@@ -1537,6 +1537,14 @@ export function AgentRunsWorkspace({
     agentRequestIdRef.current = "";
   }
 
+  function changeCommandModelSelection(
+    selection: CommandModelSelectionRequest | undefined,
+  ) {
+    setCommandModelSelection(selection);
+    setWorkflowPlan(undefined);
+    agentRequestIdRef.current = "";
+  }
+
   function selectCommandReference(item: CommandContextCatalogItem) {
     if (!item.selectable) {
       setError(`${item.label} is not ready to use yet.`);
@@ -1815,15 +1823,6 @@ export function AgentRunsWorkspace({
       setError("Wait for the active workflow to finish or cancel it before replacing its plan.");
       return;
     }
-    const unsupportedPlanReferences = commandReferences.filter((item) =>
-      item.kind !== "agent" && item.kind !== "project"
-    );
-    if (unsupportedPlanReferences.length) {
-      setError(
-        "Planning with attached Skills, files, Extensions, or Connections is not available yet. Send this message directly so Asael keeps every attachment.",
-      );
-      return;
-    }
     const taskQuery = goal.trim();
     if (contextScope === "project" && !selectedProjectId) {
       setError("Choose a project before using project context.");
@@ -1883,6 +1882,11 @@ export function AgentRunsWorkspace({
           missionId: contextScope === "mission"
             ? initialMissionId
             : undefined,
+          primaryAgentId: preferredAgentId || undefined,
+          contextReferences: commandReferences.map(
+            commandContextReferenceRequest,
+          ),
+          modelSelection: commandModelSelection,
         }),
       });
       const nextPlan = asRecord(result);
@@ -1981,6 +1985,11 @@ export function AgentRunsWorkspace({
           mode,
           planId: reviewedPlanId || undefined,
           requireApproval: approvalRequired,
+          primaryAgentId: preferredAgentId || undefined,
+          contextReferences: commandReferences.map(
+            commandContextReferenceRequest,
+          ),
+          modelSelection: commandModelSelection,
           metadata: {
             source: "agent-runs-workspace",
             threadId: workflowThreadId,
@@ -2021,21 +2030,6 @@ export function AgentRunsWorkspace({
       setPromptQueueError(runPermission);
       return;
     }
-    if (commandModelSelection) {
-      setPromptQueueError(
-        "This exact model and thinking choice applies to a direct message. Let the current work finish, then send it directly.",
-      );
-      return;
-    }
-    const queueUnsupportedReferences = commandReferences.filter((item) =>
-      item.kind !== "agent" && item.kind !== "project"
-    );
-    if (queueUnsupportedReferences.length) {
-      setPromptQueueError(
-        "Attached Skills, files, Extensions, and Connections stay exact and cannot be dropped into the older queue. Let the current work finish, then send this message directly.",
-      );
-      return;
-    }
     const correlationId = crypto.randomUUID();
     setPromptQueueBusyId(correlationId);
     setPromptQueueError(undefined);
@@ -2049,6 +2043,10 @@ export function AgentRunsWorkspace({
           mode,
           strategy: "direct",
           agentId: preferredAgentId || "atlas",
+          contextReferences: commandReferences.map(
+            commandContextReferenceRequest,
+          ),
+          modelSelection: commandModelSelection,
           target: {
             threadId: threadId || null,
             missionId: initialMissionId || null,
@@ -2061,6 +2059,8 @@ export function AgentRunsWorkspace({
       if (!item) throw new Error("The server returned an invalid queue item.");
       setPromptQueue((current) => mergePromptQueueItems(current, [item]));
       setGoal("");
+      setCommandModelSelection(undefined);
+      clearEphemeralCommandReferences();
       setRunAnnouncement("Prompt added to the persistent queue.");
     } catch (queueError) {
       setPromptQueueError(refreshMessage(queueError));
@@ -3409,7 +3409,7 @@ export function AgentRunsWorkspace({
               onSelectCommandReference={selectCommandReference}
               onRemoveCommandReference={removeCommandReference}
               onCommandSlashAction={handleCommandSlashAction}
-              onCommandModelSelection={setCommandModelSelection}
+              onCommandModelSelection={changeCommandModelSelection}
               onContext={() => void buildContext()}
               onContextScopeChange={changeContextScope}
               onProjectChange={changeProject}
