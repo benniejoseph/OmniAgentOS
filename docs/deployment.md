@@ -238,6 +238,46 @@ preserved the specialist and loaded its validated catalog with Automatic
 selection before any command was sent. No test suite or audit was run for this
 release.
 
+### Native Ambient Command release
+
+Commits `7c5784f7` and `52775277` ship the first owner-only macOS Ambient
+Command edge. Native contract v29 retains frozen v28 and exposes the bounded
+realtime transcription and speech operations. The compact native surface opens
+from the Asael menu, the configured global shortcut, or `asael://ambient-voice`;
+the URL is suitable for an owner-created Apple Vocal Shortcut. Activated audio
+uses an ephemeral WebRTC credential, the transcript remains editable before
+dispatch, temporary speech audio is deleted after playback, and neither voice
+nor the native bridge can approve an action or grant local-computer authority.
+
+Vercel deployment `dpl_omUXE7N5pHWhRXZk3AVZnKq8Uide` is promoted to
+`https://asael.bennierichard.com` at exact server revision
+`7c5784f73ef9e9d15e6f7ab22269230b461ffccb`. Focused production checks returned
+HTTP 200 for `/api/health`, native discovery, both advertised v29/v28 manifests,
+and the licensed TradingView standalone asset. No schema, Fly protocol, or
+worker image changed.
+
+Owner-only Asael `1.23.1+36` is installed from
+`apps/flutter/build/distribution/macos/Asael-1.23.1-36-macOS.dmg`, SHA-256
+`13a838d7695e7816083b06e33af472be29a5d748606ce67c2b127ef3046cafde`,
+with installed host CDHash `fbca944f1c687b7b1a25bf171ca7ea79d13f39fb` after
+strict host, helper, extension, broker, and framework signature verification.
+The previous 1.23.0+35 and 1.22.0+34 applications remain recoverable in Trash.
+
+Live validation in the installed application covered microphone opening,
+listening, finalization, editable review, a governed **Ask Asael** dispatch, and
+the exact visible completion `AMBIENT_LIVE_OK`. The **Use this Mac** destination
+truthfully remained disabled because the independent local-computer kill switch
+was off, despite Accessibility, Screen Recording, and the signed helper being
+ready. The client now publishes an immediate heartbeat and requires fresh server
+readiness before local dispatch; a deterministic HTTP failure is shown directly
+instead of entering ambiguous-transport recovery. A full local-navigation
+canary therefore requires the owner to enable that switch first. No test suite
+or audit was run for this release; review was limited to focused analyzer,
+package/signature verification, production endpoints, and live installed-app
+behavior. The owner-only self-signed package deliberately lacks production APNs
+entitlement, and this release does not install a passive custom wake-word
+listener.
+
 ### Licensed TradingView chart assets
 
 TradingView Advanced Charts v32.2.0 is a restricted, non-redistributable client dependency. Its files must never be committed to the public OmniAgentOS repository. `npm run sync:tradingview` uses the operator's existing GitHub authorization to clone the exact `v32.2.0` tag, verifies commit `f936c921ba510ba20ac51a71b8b4c5c03c043dbc`, and stages only the required `charting_library` directory under the Git-ignored `public/vendor/tradingview` path. The release marker is also ignored. Do not put a GitHub token in the repository, Vercel environment, script arguments, or logs.

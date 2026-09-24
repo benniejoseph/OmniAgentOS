@@ -4,6 +4,25 @@ Status: researched on 2026-09-23 and implemented as the first owner-only macOS A
 
 The implementation publishes native API v29, streams activated microphone audio through an ephemeral provider WebRTC credential, retains only the editable command draft, and can play the configured Agent voice through bounded temporary audio that is deleted after playback. **Use this Mac** dispatches through the ordinary authenticated Asael run and governed Computer Use executor. Voice still cannot approve an action or grant authority.
 
+## Shipped checkpoint — 2026-09-24
+
+The first native slice is installed as owner-only Asael `1.23.1+36`. It provides
+the compact Ambient Command window, original animated state feedback, ephemeral
+realtime transcription, editable review, governed dispatch, bounded speech,
+barge-in, menu/shortcut/deep-link entry, offline and error states, and durable
+run handoff. A live installed-app canary completed the full
+`microphone -> review -> Ask Asael -> result` path and rendered
+`AMBIENT_LIVE_OK` exactly.
+
+Local system navigation remains a separate explicit capability. Ambient Command
+enables **Use this Mac** only after the current native device is enabled, freshly
+online, and ready through the signed helper. The live release correctly showed
+that destination as unavailable while the independent kill switch was off; it
+did not dispatch and then mask a deterministic 409 as recovery. Enabling that
+switch and exercising the approval-bound local-navigation canary is the remaining
+operator step. A passive custom wake word, Android parity, and a full-duplex
+shell remain later work rather than implied behavior of this release.
+
 ## Decision
 
 Build a macOS-first **Asael Ambient Command** surface: an optional local wake trigger, fast spoken capture, direct routing to an Asael conversation, agent, Project, Mission, or prompt queue, and spoken status for durable work.
