@@ -1297,17 +1297,20 @@ checkpoint; its owner-only signature does not authorize production APNs.
 | P13.4 | Add offline cache and state reconciliation. | Reuse native contract/events. | Server remains authoritative; conflicts are visible and recoverable. | macOS, mobile, and web converge on identical work, memory, approval, and run state after reconnect. |
 | P13.5 | Add governed local command execution for owner-requested development and system work. | Reuse the governed executor, persisted approvals, native device courier, and temporary artifact rail; create a separately signed direct-executable helper. | Every command is exact executable plus arguments, uses an owner-selected starting-folder grant, requires fresh approval, exposes no shell string, and keeps raw output ephemeral. A folder grant is not represented as a filesystem sandbox. | A natural-language command completes through approval and temporary evidence, unsafe launchers fail before execution, durable stores retain only metadata/digests, and Stop terminates the process group. |
 | P13.6 | Render rich Command answers and expose a truthful observable work log. | Reuse the shared Talk controller/activity projection; create a bounded native rich-response renderer and responsive activity entry point. | Interpret only supported Markdown blocks and safe web links; never treat model HTML or custom schemes as executable UI, and never expose or persist private chain-of-thought. | Live Command output renders structured text, code, and tables with copy actions, while View work shows only real plans, tools, approvals, evidence, context, agents, and outcomes. |
+| P13.7 | Add a stateful Asael companion and make voice capture states truthful. | Reuse the shared Talk controller and recorder; create one original segmented Lottie asset and an optional amplitude adapter. | The mascot grants no authority, reduced motion resolves to poster frames, capture/transcription remain explicit and interruptible, and a transcript is editable text rather than implicit command authority. | Ready, working, listening, transcribing, success, and attention states are visible and accessible; live voice capture shows actual levels and succeeds through retry without an idle or enabled-send gap. |
 
-**Current status:** P13.1, P13.3, P13.4, P13.5, and P13.6 are implemented for the
+**Current status:** P13.1, P13.3, P13.4, P13.5, P13.6, and P13.7 are implemented for the
 private owner-Mac product. P13.2 is code-complete, with its real provider-
 delivered APNs receipt still externally blocked. Production advertises native
 v27 with frozen v26 rollback compatibility; migration v205 is installed; and
-owner-only Asael 1.20.0 build 31 is installed. P13.3 retains zero durable
+owner-only Asael 1.21.0 build 32 is installed. P13.3 retains zero durable
 screenshot/Accessibility content and the obsolete Playwright Fly app, machine,
 volume, and secrets remain removed. P13.5 adds a second credential-free signed
 helper dedicated to approved direct executable/argument requests; it does not
 add a shell to the visual Computer Use helper. P13.6 adds bounded rich answers,
 copy actions, and an observable work log that excludes private reasoning. The
+P13.7 mascot communicates only observable app state, respects reduced motion,
+and closes the voice startup/finalization and submission-enable gaps. The
 separate worker/OpenAI egress service remains protocol-compatible. Earlier
 v11-v15 canaries remain historical evidence rather than the current release
 checkpoint.
@@ -1474,6 +1477,20 @@ log. Asael 1.20.0 build 31 is installed from
 `Asael-1.20.0-31-macOS.dmg`, SHA-256
 `5c3c81e93c9d73bfaf5d50264199a3ac4ce6aa1ed22a8c7ac842f63ddfaad83e`;
 the installed app CDHash is `a99a5e9ba136b70ed848a88bc6c9074e6803ee1e`.
+
+P13.7 is complete in the shared Flutter Talk surface. One original raster-free
+Lottie composition carries six segmented states: ready, listening,
+transcribing, working, success, and attention. The bounded widget is
+repaint-isolated, semantically labelled, and freezes to a meaningful poster
+frame when reduced motion is requested. The recorder exposes an optional live
+amplitude stream, while startup, recording finalization, and transcription are
+separate truthful UI states; prompt submission remains disabled across that
+whole boundary. The installed live canary covered ready/working transitions,
+real listening levels, no-clear-speech attention/retry, and successful spoken
+transcription. Asael 1.21.0 build 32 is installed from
+`Asael-1.21.0-32-macOS.dmg`, SHA-256
+`2d7f80c11b59dad633db1adb99ea4ccf4baae17899ce7668f7d1961906330a33`;
+the installed app CDHash is `4ca36fd3f7ab27e1debadf4706236b8b9e8415c3`.
 
 **Phase gate:** native clients are alternate interaction surfaces for one core—not independent products with divergent truth or policy.
 
@@ -3472,14 +3489,14 @@ The task tables above are the source of truth. A phase is checked only after eve
 - [x] **Phase 10 — Workspaces and Salesforce-connected CSM:** P10.1–P10.14 complete; live Salesforce activation remains external configuration, not implementation.
 - [x] **Phase 11 — cohesive product projections:** P11.1–P11.9 complete.
 - [x] **Phase 12 — mobile application:** P12.1–P12.6 and the private Android operational gate are complete; native v15 adds durable received/opened/action receipts, cold-launch handling, and complete approval/meeting/customer-risk/terminal-run producers while retaining frozen v14. The latest live FCM canary reached provider acceptance but is not counted as delivery because the disconnected Android client returned no v15 receipt within 12 seconds. iOS and app-store publication are owner-excluded.
-- [ ] **Phase 13 — macOS application:** P13.1, P13.3, P13.4, P13.5, and P13.6 are complete for the private owner-Mac product. P13.2 is code-complete with bulk Capture, drag/drop, registered Share Extension/App Group intake, native notification actions, durable receipts/cold-launch handling, APNs token/environment handling, and governed acknowledgement. Its entitlement split makes restricted APS authority explicit and fail-closed, but one real provider-delivered APNs receipt remains externally blocked by the absent Apple Team identity/profile and APNs provider credential. P13.3 retains zero active remote-browser authority, the repaired `open_url` boundary, live Chrome canaries, zero durable screenshot/Accessibility content, and removal of the obsolete Fly browser app, machine, volume, and secrets. P13.5 provides the separately signed, approval-gated direct command helper with ephemeral output. P13.6 provides bounded rich responses, copy actions, and a truthful observable work log without private reasoning. Asael `1.20.0` build `31` is installed; native discovery is v27 current/v26 previous; and APS remains correctly absent from the private self-signed package. The surviving worker/OpenAI egress service remains protocol-compatible. Developer ID/notarized distribution is outside the private-install scope.
+- [ ] **Phase 13 — macOS application:** P13.1, P13.3, P13.4, P13.5, P13.6, and P13.7 are complete for the private owner-Mac product. P13.2 is code-complete with bulk Capture, drag/drop, registered Share Extension/App Group intake, native notification actions, durable receipts/cold-launch handling, APNs token/environment handling, and governed acknowledgement. Its entitlement split makes restricted APS authority explicit and fail-closed, but one real provider-delivered APNs receipt remains externally blocked by the absent Apple Team identity/profile and APNs provider credential. P13.3 retains zero active remote-browser authority, the repaired `open_url` boundary, live Chrome canaries, zero durable screenshot/Accessibility content, and removal of the obsolete Fly browser app, machine, volume, and secrets. P13.5 provides the separately signed, approval-gated direct command helper with ephemeral output. P13.6 provides bounded rich responses, copy actions, and a truthful observable work log without private reasoning. P13.7 provides the reduced-motion-safe stateful mascot and truthful voice startup/listening/finalization/transcription feedback. Asael `1.21.0` build `32` is installed; native discovery is v27 current/v26 previous; and APS remains correctly absent from the private self-signed package. The surviving worker/OpenAI egress service remains protocol-compatible. Developer ID/notarized distribution is outside the private-install scope.
 
-The latest installed native checkpoint is Asael 1.20.0 build 31, package
-SHA-256 `5c3c81e93c9d73bfaf5d50264199a3ac4ce6aa1ed22a8c7ac842f63ddfaad83e`.
+The latest installed native checkpoint is Asael 1.21.0 build 32, package
+SHA-256 `2d7f80c11b59dad633db1adb99ea4ccf4baae17899ce7668f7d1961906330a33`.
 Migrations through v205 are installed and production discovery reports native
 v27 current/v26 previous. The native Automation Studio remains available, and
 the local command runner's positive and fail-closed canaries plus the rich
-response/work-log canary passed in the live app. The prior 1.19.0+30 app is
+response/work-log and mascot/voice canaries passed in the live app. The prior 1.20.0+31 app is
 recoverable in Trash. The unchecked Phase 13
 state continues to mean only the external provider-delivered APNs proof.
 

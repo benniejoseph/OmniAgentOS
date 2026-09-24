@@ -98,6 +98,29 @@ then showed the result, agent, memory context, and evidence projection with the
 private-reasoning disclosure. No native contract, database, Vercel, Fly, or
 worker release changes are required for this native-only presentation slice.
 
+### Stateful mascot and voice-feedback release
+
+Owner-only Asael `1.21.0+32` adds one original, raster-free Lottie companion
+with ready, listening, transcribing, working, success, and attention states.
+It is used only as activity feedback; the Asael product mark remains the app
+identity. The widget has bounded sizing, repaint isolation, semantic live-region
+labels, and reduced-motion poster frames. Voice capture now exposes microphone
+startup and recorder finalization rather than briefly appearing idle, displays
+real recorder amplitude while listening, and disables prompt submission for the
+entire capture/transcription boundary. Transcription still creates editable text
+and does not itself grant authority to run a command.
+
+The installed package is `Asael-1.21.0-32-macOS.dmg`, SHA-256
+`2d7f80c11b59dad633db1adb99ea4ccf4baae17899ce7668f7d1961906330a33`,
+with installed host CDHash `4ca36fd3f7ab27e1debadf4706236b8b9e8415c3`.
+The prior 1.20.0+31 app is recoverable in Trash. Live validation in the installed
+app covered the ready and working transitions, a completed Command response,
+opening/listening with live levels, the no-clear-speech attention/retry path, and
+a successful spoken transcription. The user's concurrent UI action then sent the
+visible transcript through ordinary Command handling. No native contract,
+database, Vercel, Fly, or worker release changes are required for this
+native-only experience slice.
+
 ### Licensed TradingView chart assets
 
 TradingView Advanced Charts v32.2.0 is a restricted, non-redistributable client dependency. Its files must never be committed to the public OmniAgentOS repository. `npm run sync:tradingview` uses the operator's existing GitHub authorization to clone the exact `v32.2.0` tag, verifies commit `f936c921ba510ba20ac51a71b8b4c5c03c043dbc`, and stages only the required `charting_library` directory under the Git-ignored `public/vendor/tradingview` path. The release marker is also ignored. Do not put a GitHub token in the repository, Vercel environment, script arguments, or logs.
