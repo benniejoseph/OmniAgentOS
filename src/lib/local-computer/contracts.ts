@@ -230,6 +230,25 @@ export const localComputerClickInputSchema = z.union([
   }).strict(),
 ]);
 
+// The governed tool input above must carry purpose so policy can decide
+// whether one task-scoped grant applies. Purpose is deliberately stripped
+// before the command crosses the native courier boundary; the helper receives
+// only the exact click target. Keep that wire contract separate so validating
+// a claimed command cannot reject the intentionally minimized payload after
+// the database claim has already been acquired.
+const localComputerHelperClickInputSchema = z.union([
+  z.object({
+    snapshotRevision: sha256,
+    elementId: z.string().min(3).max(120).regex(/^[A-Za-z0-9_.:-]+$/),
+  }).strict(),
+  z.object({
+    snapshotRevision: sha256,
+    coordinateSpace: z.literal("screenshot_pixel"),
+    x: z.number().finite().min(0).max(32_768),
+    y: z.number().finite().min(0).max(32_768),
+  }).strict(),
+]);
+
 const commandExecutableDenylist = new Set([
   "ash",
   "bash",
@@ -335,7 +354,7 @@ export const localComputerCommandSchema = z.object({
   }
   if (
     value.action === "click" &&
-    !localComputerClickInputSchema.safeParse(value.input).success
+    !localComputerHelperClickInputSchema.safeParse(value.input).success
   ) {
     context.addIssue({
       code: "custom",
