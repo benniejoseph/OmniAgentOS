@@ -11,6 +11,7 @@ import 'package:go_router/go_router.dart';
 import 'package:record/record.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../app/brand/asael_mascot.dart';
 import '../../app/brand/asael_mark.dart';
 import '../../app/platform/macos_presentation.dart';
 import '../../app/theme/macos_app_theme.dart';
@@ -2961,7 +2962,12 @@ abstract interface class VoiceDraftRecorder {
   Future<void> dispose();
 }
 
-class RecordVoiceDraftRecorder implements VoiceDraftRecorder {
+abstract interface class VoiceDraftAmplitudeSource {
+  Stream<double> voiceLevels();
+}
+
+class RecordVoiceDraftRecorder
+    implements VoiceDraftRecorder, VoiceDraftAmplitudeSource {
   RecordVoiceDraftRecorder() : _recorder = AudioRecorder();
 
   final AudioRecorder _recorder;
@@ -2978,6 +2984,14 @@ class RecordVoiceDraftRecorder implements VoiceDraftRecorder {
     ),
     path: outputPath,
   );
+
+  @override
+  Stream<double> voiceLevels() => _recorder
+      .onAmplitudeChanged(const Duration(milliseconds: 90))
+      .map((amplitude) {
+        final current = amplitude.current.isFinite ? amplitude.current : -60.0;
+        return ((current + 60) / 60).clamp(0.0, 1.0).toDouble();
+      });
 
   @override
   Future<String?> stop() async {
@@ -3094,7 +3108,11 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   Object? commandModelError;
   int commandModelLoadGeneration = 0;
   TalkExecutionTarget executionTarget = TalkExecutionTarget.agent;
+  bool startingVoiceDraft = false;
   bool recording = false;
+  bool finalizingVoiceDraft = false;
+  double voiceLevel = 0;
+  StreamSubscription<double>? voiceLevelSubscription;
   String? recordingError;
   String? voiceDraftNotice;
   int voiceDraftGeneration = 0;
@@ -3168,6 +3186,12 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
 
   Future<void> _disposeRecorder() async {
     try {
+      await voiceLevelSubscription?.cancel();
+      voiceLevelSubscription = null;
+    } catch (_) {
+      // Amplitude observation is optional and cannot block recorder cleanup.
+    }
+    try {
       await recorder.cancel();
     } catch (_) {
       // The platform may already have ended the interrupted recording.
@@ -3192,6 +3216,12 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       reasoningLevel: commandReasoningLevel,
     );
   }
+
+  bool get voiceDraftBusy =>
+      startingVoiceDraft ||
+      recording ||
+      finalizingVoiceDraft ||
+      widget.controller.transcribing;
 
   Future<void> loadCommandModelCatalog() async {
     final generation = ++commandModelLoadGeneration;
@@ -3236,7 +3266,20 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
 
   Future<void> interruptVoiceDraft() async {
     voiceDraftGeneration += 1;
-    if (mounted && recording) setState(() => recording = false);
+    if (mounted && (startingVoiceDraft || recording || finalizingVoiceDraft)) {
+      setState(() {
+        startingVoiceDraft = false;
+        recording = false;
+        finalizingVoiceDraft = false;
+        voiceLevel = 0;
+      });
+    }
+    try {
+      await voiceLevelSubscription?.cancel();
+      voiceLevelSubscription = null;
+    } catch (_) {
+      // Amplitude observation is optional and has no recording authority.
+    }
     try {
       await recorder.cancel();
     } catch (_) {
@@ -3244,7 +3287,44 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     }
   }
 
+  Future<void> _startVoiceLevelTracking() async {
+    await voiceLevelSubscription?.cancel();
+    voiceLevelSubscription = null;
+    final VoiceDraftAmplitudeSource? amplitudeSource =
+        recorder is VoiceDraftAmplitudeSource
+        ? recorder as VoiceDraftAmplitudeSource
+        : null;
+    if (amplitudeSource == null) {
+      if (mounted && recording) setState(() => voiceLevel = .18);
+      return;
+    }
+    try {
+      voiceLevelSubscription = amplitudeSource.voiceLevels().listen(
+        (level) {
+          if (!mounted || !recording) return;
+          final smoothed = voiceLevel * .54 + level * .46;
+          setState(() => voiceLevel = smoothed.clamp(0.0, 1.0).toDouble());
+        },
+        onError: (_) {
+          if (mounted && recording) setState(() => voiceLevel = .18);
+        },
+      );
+    } catch (_) {
+      if (mounted && recording) setState(() => voiceLevel = .18);
+    }
+  }
+
+  Future<void> _stopVoiceLevelTracking() async {
+    try {
+      await voiceLevelSubscription?.cancel();
+    } finally {
+      voiceLevelSubscription = null;
+      if (mounted && voiceLevel != 0) setState(() => voiceLevel = 0);
+    }
+  }
+
   void submit() {
+    if (voiceDraftBusy) return;
     final value = input.text.trim();
     if (value.isEmpty) return;
     if (executionTarget == TalkExecutionTarget.thisMac &&
@@ -3344,7 +3424,12 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   }
 
   Future<void> toggleVoiceDraft() async {
-    if (widget.controller.transcribing || widget.controller.sending) return;
+    if (startingVoiceDraft ||
+        finalizingVoiceDraft ||
+        widget.controller.transcribing ||
+        widget.controller.sending) {
+      return;
+    }
     setState(() {
       recordingError = null;
       voiceDraftNotice = null;
@@ -3352,7 +3437,12 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     widget.controller.clearVoiceError();
     if (recording) {
       final generation = voiceDraftGeneration;
-      setState(() => recording = false);
+      setState(() {
+        recording = false;
+        finalizingVoiceDraft = true;
+        voiceLevel = 0;
+      });
+      await _stopVoiceLevelTracking();
       try {
         final path = await recorder.stop();
         if (path == null) throw StateError('Voice recording was not saved.');
@@ -3363,6 +3453,8 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
         } catch (_) {
           // The OS may have already cleared the temporary recording.
         }
+        if (!mounted || generation != voiceDraftGeneration) return;
+        setState(() => finalizingVoiceDraft = false);
         final transcript = await widget.controller.transcribeVoice(bytes);
         if (!mounted ||
             generation != voiceDraftGeneration ||
@@ -3383,6 +3475,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       } catch (error) {
         if (mounted && generation == voiceDraftGeneration) {
           setState(() {
+            finalizingVoiceDraft = false;
             recordingError = _voiceCaptureError(error, whileStarting: false);
           });
         }
@@ -3391,6 +3484,10 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     }
 
     final generation = ++voiceDraftGeneration;
+    setState(() {
+      startingVoiceDraft = true;
+      voiceLevel = 0;
+    });
     try {
       if (!await recorder.hasPermission()) {
         throw StateError('Microphone permission was not granted.');
@@ -3403,10 +3500,18 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
         await recorder.cancel();
         return;
       }
-      setState(() => recording = true);
+      setState(() {
+        startingVoiceDraft = false;
+        recording = true;
+        voiceLevel = .12;
+      });
+      await _startVoiceLevelTracking();
     } catch (error) {
       if (mounted && generation == voiceDraftGeneration) {
         setState(() {
+          startingVoiceDraft = false;
+          recording = false;
+          voiceLevel = 0;
           recordingError = _voiceCaptureError(error, whileStarting: true);
         });
       }
@@ -3911,11 +4016,9 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                       : null,
                                 ),
                                 child: m.streaming && m.text.isEmpty
-                                    ? const SizedBox.square(
-                                        dimension: 18,
-                                        child: CircularProgressIndicator(
-                                          strokeWidth: 2,
-                                        ),
+                                    ? const AsaelMascot(
+                                        state: AsaelMascotState.working,
+                                        size: 38,
                                       )
                                     : Column(
                                         crossAxisAlignment:
@@ -4152,20 +4255,23 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                             ),
                             const SizedBox(height: 8),
                             if (macos &&
-                                (recording ||
+                                (startingVoiceDraft ||
+                                    recording ||
+                                    finalizingVoiceDraft ||
                                     widget.controller.transcribing ||
                                     voiceErrorMessage != null ||
                                     voiceDraftNotice != null))
                               Padding(
                                 padding: const EdgeInsets.only(bottom: 8),
                                 child: _VoiceDraftFeedback(
+                                  starting: startingVoiceDraft,
                                   recording: recording,
+                                  finalizing: finalizingVoiceDraft,
                                   transcribing: widget.controller.transcribing,
+                                  level: voiceLevel,
                                   error: voiceErrorMessage,
                                   notice: voiceDraftNotice,
-                                  onDismiss:
-                                      recording ||
-                                          widget.controller.transcribing
+                                  onDismiss: voiceDraftBusy
                                       ? null
                                       : _dismissVoiceFeedback,
                                   onRecordAgain:
@@ -4177,7 +4283,10 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                 ),
                               ),
                             if (!macos &&
-                                (recording || widget.controller.transcribing))
+                                (startingVoiceDraft ||
+                                    recording ||
+                                    finalizingVoiceDraft ||
+                                    widget.controller.transcribing))
                               Padding(
                                 padding: const EdgeInsets.only(bottom: 8),
                                 child: Row(
@@ -4194,8 +4303,12 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                     ),
                                     const SizedBox(width: 8),
                                     Text(
-                                      recording
+                                      startingVoiceDraft
+                                          ? 'Opening the microphone…'
+                                          : recording
                                           ? 'Recording · tap stop to review transcript'
+                                          : finalizingVoiceDraft
+                                          ? 'Finishing the recording…'
                                           : 'Turning voice into an editable draft…',
                                     ),
                                   ],
@@ -4230,8 +4343,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                   defaultTargetPlatform == TargetPlatform.macOS,
                               minLines: 1,
                               maxLines: 5,
-                              onSubmitted:
-                                  widget.controller.transcribing || recording
+                              onSubmitted: voiceDraftBusy
                                   ? null
                                   : (_) => submit(),
                               hintText: 'Describe an outcome or ask a question',
@@ -4239,12 +4351,18 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
                                   IconButton(
-                                    tooltip: recording
+                                    tooltip: startingVoiceDraft
+                                        ? 'Opening microphone'
+                                        : finalizingVoiceDraft
+                                        ? 'Finishing voice draft'
+                                        : recording
                                         ? 'Stop and transcribe voice draft'
                                         : 'Record voice draft',
                                     onPressed:
                                         widget.controller.sending ||
-                                            widget.controller.transcribing
+                                            widget.controller.transcribing ||
+                                            startingVoiceDraft ||
+                                            finalizingVoiceDraft
                                         ? null
                                         : toggleVoiceDraft,
                                     color: recording
@@ -4260,7 +4378,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                     tooltip: widget.controller.sending
                                         ? 'Add to prompt queue'
                                         : 'Send message',
-                                    onPressed: recording ? null : submit,
+                                    onPressed: voiceDraftBusy ? null : submit,
                                     icon: Icon(
                                       widget.controller.sending
                                           ? Icons.playlist_add_rounded
@@ -5119,15 +5237,19 @@ class _ExecutionTargetMenu extends StatelessWidget {
 
 class _VoiceDraftFeedback extends StatelessWidget {
   const _VoiceDraftFeedback({
+    required this.starting,
     required this.recording,
+    required this.finalizing,
     required this.transcribing,
+    required this.level,
     required this.error,
     required this.notice,
     required this.onDismiss,
     required this.onRecordAgain,
   });
 
-  final bool recording, transcribing;
+  final bool starting, recording, finalizing, transcribing;
+  final double level;
   final String? error, notice;
   final VoidCallback? onDismiss, onRecordAgain;
 
@@ -5136,35 +5258,51 @@ class _VoiceDraftFeedback extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final state = error != null
         ? 'error'
+        : starting
+        ? 'starting'
         : recording
         ? 'recording'
+        : finalizing
+        ? 'finalizing'
         : transcribing
         ? 'transcribing'
         : 'ready';
-    final (icon, title, detail, color) = switch (state) {
+    final (title, detail, color, mascotState) = switch (state) {
       'error' => (
-        Icons.info_outline_rounded,
         'Voice draft needs attention',
         error!,
         scheme.error,
+        AsaelMascotState.attention,
+      ),
+      'starting' => (
+        'Opening the microphone…',
+        'Asael will only turn this recording into an editable draft.',
+        scheme.primary,
+        AsaelMascotState.ready,
       ),
       'recording' => (
-        Icons.mic_rounded,
         'Listening…',
         'Speak naturally. Stop when you are ready to turn it into text.',
         scheme.error,
+        AsaelMascotState.listening,
+      ),
+      'finalizing' => (
+        'Finishing the recording…',
+        'Securing this voice draft before transcription starts.',
+        scheme.secondary,
+        AsaelMascotState.transcribing,
       ),
       'transcribing' => (
-        Icons.graphic_eq_rounded,
         'Writing your words…',
         'Your recording will appear below as an editable draft.',
         scheme.primary,
+        AsaelMascotState.transcribing,
       ),
       _ => (
-        Icons.check_circle_outline_rounded,
         'Voice draft added',
         notice ?? 'Review or edit it before sending.',
         scheme.tertiary,
+        AsaelMascotState.success,
       ),
     };
     return Semantics(
@@ -5185,16 +5323,7 @@ class _VoiceDraftFeedback extends StatelessWidget {
           ),
           child: Row(
             children: [
-              Container(
-                width: 30,
-                height: 30,
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  color: color.withValues(alpha: .12),
-                  shape: BoxShape.circle,
-                ),
-                child: Icon(icon, size: 17, color: color),
-              ),
+              AsaelMascot(state: mascotState, size: 38),
               const SizedBox(width: 9),
               Expanded(
                 child: Column(
@@ -5218,7 +5347,7 @@ class _VoiceDraftFeedback extends StatelessWidget {
               if (recording)
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 8),
-                  child: _VoiceSignal(color: color),
+                  child: _VoiceSignal(color: color, level: level),
                 )
               else if (transcribing)
                 const Padding(
@@ -5250,9 +5379,10 @@ class _VoiceDraftFeedback extends StatelessWidget {
 }
 
 class _VoiceSignal extends StatefulWidget {
-  const _VoiceSignal({required this.color});
+  const _VoiceSignal({required this.color, required this.level});
 
   final Color color;
+  final double level;
 
   @override
   State<_VoiceSignal> createState() => _VoiceSignalState();
@@ -5284,35 +5414,42 @@ class _VoiceSignalState extends State<_VoiceSignal>
   }
 
   @override
-  Widget build(BuildContext context) => AnimatedBuilder(
-    animation: controller,
-    builder: (context, _) => SizedBox(
-      width: 30,
-      height: 20,
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          for (var index = 0; index < 5; index++)
-            Container(
-              width: 3,
-              height:
-                  5 +
-                  12 *
-                      (.5 +
-                          .5 *
-                              math.sin(
-                                controller.value * math.pi * 2 + index * .9,
-                              )),
-              decoration: BoxDecoration(
-                color: widget.color.withValues(alpha: .72),
-                borderRadius: BorderRadius.circular(2),
+  Widget build(BuildContext context) {
+    final level = widget.level.clamp(.08, 1.0).toDouble();
+    return AnimatedBuilder(
+      animation: controller,
+      builder: (context, _) => SizedBox(
+        width: 30,
+        height: 20,
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            for (var index = 0; index < 5; index++)
+              Container(
+                width: 3,
+                height:
+                    4 +
+                    13 *
+                        level *
+                        (.35 +
+                            .65 *
+                                (.5 +
+                                    .5 *
+                                        math.sin(
+                                          controller.value * math.pi * 2 +
+                                              index * .9,
+                                        ))),
+                decoration: BoxDecoration(
+                  color: widget.color.withValues(alpha: .72),
+                  borderRadius: BorderRadius.circular(2),
+                ),
               ),
-            ),
-        ],
+          ],
+        ),
       ),
-    ),
-  );
+    );
+  }
 }
 
 class _TalkActivityPane extends StatefulWidget {
@@ -6323,12 +6460,8 @@ class _CommandLiveGlyph extends StatelessWidget {
   const _CommandLiveGlyph();
 
   @override
-  Widget build(BuildContext context) => const _ActivityStoryGlyph(
-    icon: Icons.auto_awesome_rounded,
-    color: null,
-    active: true,
-    size: 22,
-  );
+  Widget build(BuildContext context) =>
+      const AsaelMascot(state: AsaelMascotState.working, size: 26);
 }
 
 class _ActivityStoryGlyph extends StatefulWidget {
@@ -6601,7 +6734,12 @@ class _TalkEmpty extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             if (macos)
-              _AgentConstellation(active: loading)
+              AsaelMascot(
+                state: loading
+                    ? AsaelMascotState.working
+                    : AsaelMascotState.ready,
+                size: 132,
+              )
             else if (loading)
               const SizedBox.square(
                 dimension: 38,
@@ -6641,194 +6779,4 @@ class _TalkEmpty extends StatelessWidget {
       ),
     );
   }
-}
-
-class _AgentConstellation extends StatefulWidget {
-  const _AgentConstellation({required this.active});
-
-  final bool active;
-
-  @override
-  State<_AgentConstellation> createState() => _AgentConstellationState();
-}
-
-class _AgentConstellationState extends State<_AgentConstellation>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController controller;
-
-  Duration get _duration => Duration(milliseconds: widget.active ? 2400 : 6800);
-
-  @override
-  void initState() {
-    super.initState();
-    controller = AnimationController(vsync: this, duration: _duration);
-  }
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    _syncAnimation();
-  }
-
-  @override
-  void didUpdateWidget(covariant _AgentConstellation oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.active != widget.active) {
-      controller.duration = _duration;
-      _syncAnimation();
-    }
-  }
-
-  void _syncAnimation() {
-    final reducedMotion =
-        MediaQuery.disableAnimationsOf(context) ||
-        MediaQuery.accessibleNavigationOf(context);
-    if (reducedMotion || !widget.active) {
-      controller.stop();
-      controller.value = .22;
-    } else if (!controller.isAnimating) {
-      controller.repeat();
-    }
-  }
-
-  @override
-  void dispose() {
-    controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Semantics(
-      label: widget.active
-          ? 'Asael is opening this conversation'
-          : 'Asael and its specialist agents are ready',
-      image: true,
-      child: RepaintBoundary(
-        child: SizedBox(
-          width: 230,
-          height: 126,
-          child: AnimatedBuilder(
-            animation: controller,
-            builder: (context, child) => CustomPaint(
-              painter: _AgentConstellationPainter(
-                phase: controller.value,
-                active: widget.active,
-                primary: scheme.primary,
-                secondary: scheme.secondary,
-                line: scheme.outlineVariant,
-              ),
-              child: child,
-            ),
-            child: Center(
-              child: Container(
-                width: 66,
-                height: 66,
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  color: scheme.surfaceContainerLow.withValues(alpha: .92),
-                  shape: BoxShape.circle,
-                  border: Border.all(
-                    color: scheme.primary.withValues(alpha: .32),
-                  ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: scheme.primary.withValues(alpha: .1),
-                      blurRadius: 24,
-                    ),
-                  ],
-                ),
-                child: const AsaelMark(size: 42),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _AgentConstellationPainter extends CustomPainter {
-  const _AgentConstellationPainter({
-    required this.phase,
-    required this.active,
-    required this.primary,
-    required this.secondary,
-    required this.line,
-  });
-
-  final double phase;
-  final bool active;
-  final Color primary, secondary, line;
-
-  static const nodes = <Offset>[
-    Offset(.08, .57),
-    Offset(.2, .22),
-    Offset(.29, .78),
-    Offset(.72, .2),
-    Offset(.8, .73),
-    Offset(.94, .45),
-  ];
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final center = Offset(size.width / 2, size.height / 2);
-    final orbit = Rect.fromCenter(
-      center: center,
-      width: size.width * .74,
-      height: size.height * .54,
-    );
-    canvas.drawOval(
-      orbit,
-      Paint()
-        ..color = line.withValues(alpha: .42)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1,
-    );
-    final points = <Offset>[];
-    for (var index = 0; index < nodes.length; index++) {
-      final source = nodes[index];
-      final drift = math.sin((phase * math.pi * 2) + index * 1.15);
-      final point = Offset(
-        source.dx * size.width,
-        source.dy * size.height + drift * (active ? 3.2 : 1.8),
-      );
-      points.add(point);
-      canvas.drawLine(
-        center,
-        point,
-        Paint()
-          ..color = line.withValues(alpha: .26)
-          ..strokeWidth = .8,
-      );
-    }
-    for (var index = 0; index < points.length; index++) {
-      final pulse = .5 + .5 * math.sin((phase * math.pi * 2) + index * .92);
-      final color = index.isEven ? primary : secondary;
-      canvas.drawCircle(
-        points[index],
-        3.2 + pulse * (active ? 2 : 1.2),
-        Paint()..color = color.withValues(alpha: .5 + pulse * .35),
-      );
-    }
-    final angle = phase * math.pi * 2;
-    final travelingPoint = Offset(
-      center.dx + math.cos(angle) * orbit.width / 2,
-      center.dy + math.sin(angle) * orbit.height / 2,
-    );
-    canvas.drawCircle(
-      travelingPoint,
-      active ? 4 : 3,
-      Paint()..color = primary.withValues(alpha: .9),
-    );
-  }
-
-  @override
-  bool shouldRepaint(covariant _AgentConstellationPainter oldDelegate) =>
-      oldDelegate.phase != phase ||
-      oldDelegate.active != active ||
-      oldDelegate.primary != primary ||
-      oldDelegate.secondary != secondary ||
-      oldDelegate.line != line;
 }
