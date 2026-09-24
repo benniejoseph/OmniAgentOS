@@ -177,24 +177,44 @@ export function CustomerAccountsWorkspace({
     controllerRef.current = controller;
     setLoading(true);
     try {
-      const [payload, portfolioPayload] = await Promise.all([
-        readJson("/api/customer-accounts?limit=200", { signal: controller.signal }),
-        readJson("/api/customer-accounts/portfolio?limit=200", { signal: controller.signal }),
+      const accountsRequest = readJson("/api/customer-accounts?limit=200", {
+        signal: controller.signal,
+      });
+      const supportingReads = Promise.allSettled([
+        readJson("/api/customer-accounts/portfolio?limit=200", {
+          signal: controller.signal,
+        }).then((portfolioPayload) => {
+          if (!controller.signal.aborted) {
+            setCustomerPortfolio(
+              (portfolioPayload as CustomerSuccessPortfolioPayload).portfolio,
+            );
+          }
+        }),
+        loadSalesforce(controller.signal),
       ]);
+      const payload = await accountsRequest;
       if (controller.signal.aborted) return;
       const nextAccounts = (payload.accounts || []) as CustomerAccountRevision[];
       setAccounts(nextAccounts);
-      setCustomerPortfolio((portfolioPayload as CustomerSuccessPortfolioPayload).portfolio);
       setWorkspaceContext(payload.context as WorkspaceContext);
-      await loadSalesforce(controller.signal);
       const targetId = initialAccountId || nextAccounts[0]?.accountId;
-      if (targetId) await loadDetail(targetId, controller.signal);
-      else {
-        setSelected(undefined);
-        setCustomerHealth(undefined);
-        setCustomerWorkflows(undefined);
-        setCustomerIntelligence(undefined);
-      }
+      const detailRead = targetId
+        ? loadDetail(targetId, controller.signal)
+        : Promise.resolve().then(() => {
+            setSelected(undefined);
+            setCustomerHealth(undefined);
+            setCustomerWorkflows(undefined);
+            setCustomerIntelligence(undefined);
+          });
+      const [supportingResults, detailResult] = await Promise.all([
+        supportingReads,
+        Promise.allSettled([detailRead]).then(([result]) => result),
+      ]);
+      if (controller.signal.aborted) return;
+      const readFailures = [supportingResults[0], detailResult]
+        .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+        .map((result) => message(result.reason));
+      if (readFailures.length) throw new Error(readFailures.join(" "));
       setError(undefined);
     } catch (loadError) {
       if (!controller.signal.aborted) setError(message(loadError));

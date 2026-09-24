@@ -1,11 +1,26 @@
+"use client";
+
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { Blocks, Cable, ChevronDown, ShieldCheck } from "lucide-react";
+import { useState } from "react";
 import { DomainConsole } from "@/components/app-shell/domain-console";
 import { IntegrationTruthPanel } from "@/components/integrations/integration-truth-panel";
-import { SourceCoveragePanel } from "@/components/source-coverage/source-coverage-panel";
 import styles from "./integrations-workspace.module.css";
 
+const SourceCoveragePanel = dynamic(
+  () => import("@/components/source-coverage/source-coverage-panel").then(
+    (module) => module.SourceCoveragePanel,
+  ),
+  {
+    ssr: false,
+    loading: () => <p role="status">Opening knowledge coverage…</p>,
+  },
+);
+
 export function IntegrationsWorkspace() {
+  const [coverageOpened, setCoverageOpened] = useState(false);
+
   return (
     <div className={styles.workspace}>
       <header className={styles.pageHeader}>
@@ -25,7 +40,9 @@ export function IntegrationsWorkspace() {
 
       <IntegrationTruthPanel>
         <section className={styles.coverageSection} aria-labelledby="coverage-disclosure-title">
-          <details>
+          <details onToggle={(event) => {
+            if (event.currentTarget.open) setCoverageOpened(true);
+          }}>
             <summary>
               <span className={styles.coverageSummaryIcon}><ShieldCheck size={18} aria-hidden="true" /></span>
               <span className={styles.coverageSummaryCopy}>
@@ -35,7 +52,7 @@ export function IntegrationsWorkspace() {
               <span className={styles.coverageSummaryAction}>View coverage <ChevronDown size={16} aria-hidden="true" /></span>
             </summary>
             <div className={styles.coverageBody}>
-              <SourceCoveragePanel surface="integrations" />
+              {coverageOpened ? <SourceCoveragePanel surface="integrations" /> : null}
             </div>
           </details>
         </section>

@@ -21,12 +21,13 @@ import {
   Sparkles,
   Waypoints,
 } from "lucide-react";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { PriceChart } from "@/components/market-research/price-chart";
 import {
   MARKET_INTERVALS,
+  type MarketAnalysisVersion,
   type MarketBarsResult,
   type MarketBacktestsResult,
   type MarketAnalysisVersionsResult,
@@ -44,6 +45,13 @@ import {
   type MarketTechnicalLayerId,
 } from "@/lib/market-research/contracts";
 import styles from "@/components/market-research/market-research-workspace.module.css";
+
+const PriceChart = dynamic(
+  () => import("@/components/market-research/price-chart").then(
+    (module) => module.PriceChart,
+  ),
+  { ssr: false, loading: () => <ChartLoading /> },
+);
 
 type WorkspaceTab = "overview" | "events" | "technicals" | "backtests" | "journal";
 
@@ -78,6 +86,7 @@ export function MarketResearchWorkspace() {
   const [selectedId, setSelectedId] = useState<MarketInstrumentId>("xauusd.spot");
   const [interval, setInterval] = useState<MarketInterval>("15min");
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("overview");
+  const [overviewChartActive, setOverviewChartActive] = useState(false);
   const [bars, setBars] = useState<MarketBarsResult>();
   const [events, setEvents] = useState<MarketEventsResult>();
   const [liveCalendar, setLiveCalendar] = useState<MarketLiveCalendarResult>();
@@ -149,6 +158,13 @@ export function MarketResearchWorkspace() {
   const selected = useMemo(() => overview?.instruments.find((instrument) =>
     instrument.instrumentId === selectedId
   ), [overview, selectedId]);
+  const matchingBars = bars?.instrumentId === selectedId && bars.interval === interval
+    ? bars
+    : undefined;
+  const matchingAnalysisVersions = analysisVersions?.instrumentId === selectedId &&
+    analysisVersions.interval === interval
+    ? analysisVersions
+    : undefined;
   const baselines = baselinesByInstrument[selectedId];
   const marketProviderReady = selected?.providerMapping.provider
     ? overview?.providers.find((provider) =>
@@ -568,7 +584,10 @@ export function MarketResearchWorkspace() {
   }, [loadBaselines, loadReplays, replayJobs, selectedId]);
 
   useEffect(() => {
-    if (!selected) return;
+    const barsRequired = activeTab === "technicals" ||
+      activeTab === "backtests" ||
+      (activeTab === "overview" && overviewChartActive);
+    if (!selected || !barsRequired) return;
     const controller = new AbortController();
     const timer = window.setTimeout(
       () => void loadBars(selected, interval, controller.signal),
@@ -578,23 +597,25 @@ export function MarketResearchWorkspace() {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [interval, loadBars, selected]);
+  }, [activeTab, interval, loadBars, overviewChartActive, selected]);
 
   useEffect(() => {
-    if (activeTab !== "technicals" || !bars?.snapshotId) return;
+    if (activeTab !== "technicals" || !matchingBars?.snapshotId) return;
     const controller = new AbortController();
     const timer = window.setTimeout(
-      () => void loadFeatures(bars.snapshotId, controller.signal),
+      () => void loadFeatures(matchingBars.snapshotId, controller.signal),
       0,
     );
     return () => {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [activeTab, bars?.snapshotId, loadFeatures]);
+  }, [activeTab, loadFeatures, matchingBars?.snapshotId]);
 
   useEffect(() => {
-    if (activeTab !== "technicals") return;
+    const chartRequired = activeTab === "technicals" ||
+      (activeTab === "overview" && overviewChartActive);
+    if (!chartRequired) return;
     const controller = new AbortController();
     const timer = window.setTimeout(
       () => void loadAnalysisVersions(selectedId, interval, controller.signal),
@@ -604,7 +625,7 @@ export function MarketResearchWorkspace() {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [activeTab, interval, loadAnalysisVersions, selectedId]);
+  }, [activeTab, interval, loadAnalysisVersions, overviewChartActive, selectedId]);
 
   const toggleTechnicalLayer = useCallback((layerId: MarketTechnicalLayerId) => {
     setVisibleTechnicalLayers((current) => current.includes(layerId)
@@ -797,7 +818,7 @@ export function MarketResearchWorkspace() {
           {loading ? <InstrumentSkeleton /> : null}
         </div>
         <div className={styles.quickState}>
-          <span><Clock3 size={14} /> {bars?.asOf ? `Bars to ${formatTime(bars.asOf)}` : "No live snapshot"}</span>
+          <span><Clock3 size={14} /> {matchingBars?.asOf ? `Bars to ${formatTime(matchingBars.asOf)}` : "Chart loads on request"}</span>
           <span><ShieldCheck size={14} /> No trade execution</span>
         </div>
       </section>
@@ -825,11 +846,14 @@ export function MarketResearchWorkspace() {
             instrument={selected}
             overview={overview}
             events={events}
-            bars={bars}
+            bars={matchingBars}
             barsLoading={barsLoading}
             barsError={barsError}
             interval={interval}
             onIntervalChange={setInterval}
+            chartActive={activeTab === "technicals" || overviewChartActive}
+            onActivateChart={() => setOverviewChartActive(true)}
+            latestAnalysis={matchingAnalysisVersions?.versions[0]}
             features={features}
             visibleTechnicalLayers={visibleTechnicalLayers}
             onToggleTechnicalLayer={toggleTechnicalLayer}
@@ -862,11 +886,11 @@ export function MarketResearchWorkspace() {
             <TechnicalLab
               instrument={selected}
               overview={overview}
-              bars={bars}
+              bars={matchingBars}
               features={features}
               loading={featuresLoading || barsLoading}
               error={featuresError || barsError}
-              versions={analysisVersions}
+              versions={matchingAnalysisVersions}
               versionsLoading={analysisVersionsLoading}
               versionsError={analysisVersionsError}
             />
@@ -886,7 +910,7 @@ export function MarketResearchWorkspace() {
           {activeTab === "backtests" ? (
             <BacktestLab
               instrument={selected}
-              bars={bars?.instrumentId === selectedId ? bars : undefined}
+              bars={matchingBars}
               backtests={backtests?.instrumentId === selectedId ? backtests : undefined}
               loading={backtestsLoading}
               error={backtestsError || barsError}
@@ -911,6 +935,9 @@ function ResearchDesk({
   barsError,
   interval,
   onIntervalChange,
+  chartActive,
+  onActivateChart,
+  latestAnalysis,
   features,
   visibleTechnicalLayers,
   onToggleTechnicalLayer,
@@ -926,6 +953,9 @@ function ResearchDesk({
   barsError?: string;
   interval: MarketInterval;
   onIntervalChange: (interval: MarketInterval) => void;
+  chartActive: boolean;
+  onActivateChart: () => void;
+  latestAnalysis?: MarketAnalysisVersion;
   features?: MarketTechnicalFeaturesResult;
   visibleTechnicalLayers: MarketTechnicalLayerId[];
   onToggleTechnicalLayer: (layerId: MarketTechnicalLayerId) => void;
@@ -1009,10 +1039,13 @@ function ResearchDesk({
             </div>
           ) : null}
           <div className={styles.chartBody}>
-            {hasMatchingBars && bars ? (
+            {!chartActive ? (
+              <ChartDeferred onActivate={onActivateChart} />
+            ) : hasMatchingBars && bars ? (
               <PriceChart
                 instrument={instrument}
                 bars={bars}
+                latestAnalysis={latestAnalysis}
                 features={technicalMode ? matchingFeatures : undefined}
                 visibleLayerIds={technicalMode ? visibleTechnicalLayers : undefined}
                 onAnalysisSaved={onAnalysisSaved}
@@ -1940,6 +1973,21 @@ function formatForecastWindow(start: string, end: string) {
 
 function Metric({ label, value, detail }: { label: string; value: string; detail: string }) {
   return <article className={styles.metric}><small>{label}</small><strong>{value}</strong><span>{detail}</span></article>;
+}
+
+function ChartDeferred({ onActivate }: { onActivate: () => void }) {
+  return (
+    <div className={styles.chartEmpty}>
+      <Rocket size={25} />
+      <strong>Live chart is ready on demand</strong>
+      <p>Open it when you need price context. Until then, Asael skips the market-data request and TradingView runtime so the research desk stays fast.</p>
+      <div className={styles.labButtons}>
+        <button type="button" onClick={onActivate}>
+          Load live chart <ArrowRight size={14} />
+        </button>
+      </div>
+    </div>
+  );
 }
 
 function ChartEmpty({ mappingRequired, providerReady, error }: { mappingRequired: boolean; providerReady: boolean; error?: string }) {

@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 
 import styles from "@/components/market-research/market-research-workspace.module.css";
 import type {
-  MarketAnalysisVersionsResult,
+  MarketAnalysisVersion,
   MarketBarsResult,
   MarketInstrument,
   MarketSerializedChartState,
@@ -87,12 +87,14 @@ let chartLibraryPromise: Promise<TradingViewWidgetConstructor> | undefined;
 export function PriceChart({
   instrument,
   bars,
+  latestAnalysis,
   features,
   visibleLayerIds,
   onAnalysisSaved,
 }: {
   instrument: MarketInstrument;
   bars: MarketBarsResult;
+  latestAnalysis?: MarketAnalysisVersion;
   features?: MarketTechnicalFeaturesResult;
   visibleLayerIds?: readonly MarketTechnicalLayerId[];
   onAnalysisSaved?: () => void;
@@ -103,6 +105,8 @@ export function PriceChart({
   const systemShapeIdsRef = useRef<Array<string | number>>([]);
   const overlayRevisionRef = useRef(0);
   const activeSnapshotRef = useRef<TradingViewMarketSnapshot>({ instrument, bars });
+  const latestAnalysisRef = useRef(latestAnalysis);
+  const restoredAnalysisIdRef = useRef<string | undefined>(undefined);
   const appliedSnapshotRef = useRef({
     instrumentId: instrument.instrumentId,
     snapshotId: bars.snapshotId,
@@ -114,6 +118,9 @@ export function PriceChart({
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [savedLabel, setSavedLabel] = useState<string>();
   const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    latestAnalysisRef.current = latestAnalysis;
+  }, [latestAnalysis]);
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -183,8 +190,15 @@ export function PriceChart({
       return widget.chartReady().then(async () => {
         if (disposed) return;
         try {
-          const restoredAt = await restoreLatestChartState(widget.activeChart(), snapshot);
-          if (!disposed && restoredAt) setSavedLabel(`Restored ${formatSavedTime(restoredAt)}`);
+          const restored = await restoreChartState(
+            widget.activeChart(),
+            snapshot,
+            latestAnalysisRef.current,
+          );
+          if (!disposed && restored) {
+            restoredAnalysisIdRef.current = restored.id;
+            setSavedLabel(`Restored ${formatSavedTime(restored.savedAt)}`);
+          }
         } catch {
           if (!disposed) setSaveState("error");
         }
@@ -236,13 +250,18 @@ export function PriceChart({
           await chart.setResolution(resolution);
         }
         const snapshot = activeSnapshotRef.current;
-        const restoredAt = await restoreLatestChartState(chart, snapshot);
+        const restored = await restoreChartState(
+          chart,
+          snapshot,
+          latestAnalysisRef.current,
+        );
         if (
           widgetRef.current === widget &&
           activeSnapshotRef.current.instrument.instrumentId === snapshot.instrument.instrumentId &&
           activeSnapshotRef.current.bars.interval === snapshot.bars.interval
         ) {
-          setSavedLabel(restoredAt ? `Restored ${formatSavedTime(restoredAt)}` : undefined);
+          restoredAnalysisIdRef.current = restored?.id;
+          setSavedLabel(restored ? `Restored ${formatSavedTime(restored.savedAt)}` : undefined);
           setSaveState("idle");
         }
       })().catch(() => {
@@ -252,6 +271,30 @@ export function PriceChart({
     }
     widget.activeChart().resetData();
   }, [bars, instrument]);
+
+  useEffect(() => {
+    const widget = widgetRef.current;
+    if (!widget || !readyRef.current || status !== "ready" || !latestAnalysis) return;
+    const snapshot = activeSnapshotRef.current;
+    if (!analysisMatchesSnapshot(latestAnalysis, snapshot)) return;
+    if (restoredAnalysisIdRef.current === latestAnalysis.id) return;
+    let disposed = false;
+    void widget.activeChart().applyLineToolsState(
+      deserializeChartState(latestAnalysis.chartState),
+    ).then(() => {
+      if (
+        disposed ||
+        widgetRef.current !== widget ||
+        latestAnalysisRef.current?.id !== latestAnalysis.id
+      ) return;
+      restoredAnalysisIdRef.current = latestAnalysis.id;
+      setSavedLabel(`Restored ${formatSavedTime(latestAnalysis.savedAt)}`);
+      setSaveState("idle");
+    }).catch(() => {
+      if (!disposed && widgetRef.current === widget) setSaveState("error");
+    });
+    return () => { disposed = true; };
+  }, [bars.interval, instrument.instrumentId, latestAnalysis, status]);
 
   const visibleLayersKey = [...(visibleLayerIds || [])].sort().join(",");
   useEffect(() => {
@@ -313,12 +356,13 @@ export function PriceChart({
         }),
       });
       const payload = await response.json() as {
-        version?: { savedAt: string };
+        version?: MarketAnalysisVersion;
         error?: string;
       };
       if (!response.ok || !payload.version) {
         throw new Error(payload.error || "Chart analysis could not be saved.");
       }
+      restoredAnalysisIdRef.current = payload.version.id;
       setSavedLabel(`Saved ${formatSavedTime(payload.version.savedAt)}`);
       setSaveState("saved");
       onAnalysisSaved?.();
@@ -378,24 +422,24 @@ export function PriceChart({
   );
 }
 
-async function restoreLatestChartState(
+async function restoreChartState(
   chart: ReturnType<TradingViewWidget["activeChart"]>,
   snapshot: TradingViewMarketSnapshot,
+  latestAnalysis?: MarketAnalysisVersion,
 ) {
-  const query = new URLSearchParams({
-    instrumentId: snapshot.instrument.instrumentId,
-    interval: snapshot.bars.interval,
-    limit: "1",
-  });
-  const response = await fetch(`/api/market-research/analysis?${query}`, {
-    cache: "no-store",
-  });
-  if (!response.ok) return undefined;
-  const payload = await response.json() as MarketAnalysisVersionsResult;
-  const latest = payload.versions[0];
-  if (!latest) return undefined;
-  await chart.applyLineToolsState(deserializeChartState(latest.chartState));
-  return latest.savedAt;
+  if (!latestAnalysis || !analysisMatchesSnapshot(latestAnalysis, snapshot)) {
+    return undefined;
+  }
+  await chart.applyLineToolsState(deserializeChartState(latestAnalysis.chartState));
+  return latestAnalysis;
+}
+
+function analysisMatchesSnapshot(
+  analysis: MarketAnalysisVersion,
+  snapshot: TradingViewMarketSnapshot,
+) {
+  return analysis.instrumentId === snapshot.instrument.instrumentId &&
+    analysis.interval === snapshot.bars.interval;
 }
 
 function serializeChartState(state: TradingViewLineToolsState): MarketSerializedChartState {
