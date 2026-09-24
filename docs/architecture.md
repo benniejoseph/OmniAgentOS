@@ -203,10 +203,12 @@ execution target.
 `local_macos` requires an authenticated compatible macOS client and a current
 device lease; visual actions additionally require both Accessibility and Screen
 Recording. Production advertises
-native contract v27 as current while deliberately retaining v26 as the only
+native contract v28 as current while deliberately retaining v27 as the only
 rollback-compatible previous contract. Earlier contracts remain immutable historical
-archives rather than members of the active compatibility pair. A v26 client keeps
-visual Computer Use but cannot claim the v27 command-runner action. Its assigned
+archives rather than members of the active compatibility pair. A v27 client keeps
+visual Computer Use and the governed command runner with Automatic routing, but it
+cannot send v28's explicit model-selection envelope or consume its scoped Command
+catalog through the generated boundary. Its assigned
 `computer_use` model is tenant-configurable;
 the resolver requires one configured runtime that supports both governed tools
 and vision. No hard-coded provider/model fallback may split those requirements
@@ -296,7 +298,7 @@ is non-interactive; the explicit legacy migration copies and verifies broker
 values before deleting only verified legacy sources, with conflict and unknown
 keys failing closed.
 
-For image-based clicks, the current v27 and rollback v26 contracts retain the
+For image-based clicks, the current v28 and rollback v27 contracts retain the
 v13-introduced binding between each screenshot's exact pixel dimensions,
 display provenance, snapshot revision, and `screenshot_pixel` coordinate space.
 The helper privately maps the top-left image point to current macOS global logical
@@ -357,6 +359,20 @@ agent grounded its answer in that output. A separate natural request for
 `sudo whoami` failed closed as a prohibited security-sensitive launcher before an
 approval was created or a process executed. Production deployment
 `dpl_3Mq43NNkse6aFonhfJEfEoZuhDpJ` served the code used for those live canaries.
+
+The current scoped model-selection release is additive to that command-runner
+history. Native v28 retains frozen v27 and carries the strict optional
+`modelSelection` envelope plus content-free effective-model receipt fields. The
+Command client derives one Settings scope from the selected Agent or **This Mac**,
+clears stale Model/Thinking state when that context changes, and refuses a catalog
+whose returned scope does not match. Exact Model or Thinking selection forces the
+direct path; a durable explicit-selection request fails closed with `409`. The
+server still resolves and revalidates the exact assignment, revision, configuration
+digest, provider connection, model lifecycle/capabilities, and reasoning intensity
+before disclosure or execution. Vercel deployment
+`dpl_6ayXL7trkpGDUcYk76GL8k3UGVcG` is canonical at revision
+`5155ca23f35517815966d7e356a30d0c7586d60c`, and owner-only Asael `1.22.0+34`
+is installed with the v28 generated boundary.
 
 App Builder no longer depends on browser automation. New checkpoint readiness is
 derived deterministically from lint and typecheck; preview and production readiness
@@ -689,8 +705,8 @@ fails for explicit operator resume.
 
 The queue schema, routes, and web/native clients are deployed. The native v24 and
 v25 documents remain immutable historical archives; production migration v201
-provides the durable queue boundary, while current native v27 exposes it through
-the same governed application service and v26 remains the rollback contract.
+provides the durable queue boundary, while current native v28 exposes it through
+the same governed application service and v27 remains the rollback contract.
 
 ### Adaptive-runtime management observability
 
@@ -701,7 +717,7 @@ detail exposes observed/evaluated/active/rolled-back records; child-task detail
 exposes exact immutable Skill, Plugin, MCP, and native-read pins plus the durable
 grant-validation result; trigger detail includes occurrence receipts and
 PolicyLease outcomes; notification history exposes content-free dispositions.
-The production native v27 contract maps to those same APIs. No management read
+The production native v28 contract maps to those same APIs. No management read
 grants mutation authority, digest-bound execution grants are not editable or
 revocable in place, and the native surface deliberately omits Agent retirement.
 
@@ -1493,6 +1509,17 @@ remain visible but read-only.
 File fallback stays exact-owner and applies the same integrity checks. Provider
 credentials, catalog refresh, model assignments, runtime resolution, events,
 portable data, and canonical writes remain exact-owner contracts.
+
+Native v28 adds a narrower Command picker over that catalog rather than a second
+model authority. The caller must supply one enum-bounded `commandScope`; the
+private/no-store response echoes that exact scope and returns only its validated
+primary/fallback choices. The macOS client derives `computer_use` for **This Mac**;
+`code_builder`, `verifier`, `market_research`, `memory`, or `council` for the
+matching specialist; and `main_agent` for Atlas, custom Agents, and unassigned
+direct work. A context change clears the previous selection. Catalog presence
+grants no execution authority: `/api/agent` independently revalidates the pinned
+assignment revision/configuration digest, provider/model readiness, credential,
+capability, and reasoning intensity before the selected model can run.
 
 The sixteenth request-bound slice is an opt-in Capture recording-history
 catalog. Migration v53 adds the composite owner/update/ID index. PostgreSQL

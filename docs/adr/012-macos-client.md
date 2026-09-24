@@ -47,12 +47,14 @@ bearer, connector content, domain object, or credential.
 
 The macOS client first enrolled on native contract v8 and advances through ADR 011's
 current/previous discovery window. The platform identifier is `macos`. Production
-now advertises native contract v27 as current and retains frozen v26 as the only
+now advertises native contract v28 as current and retains frozen v27 as the only
 supported previous version. V11 introduced the device readiness, claim, completion,
 and stop courier; v12 added exact run/execution screenshot presentation; v13 added
 governed Chrome URL delivery and snapshot-bound `screenshot_pixel` coordinates; and
-v27 adds the governed command-runner capability and workspace inventory. A v26
-client keeps visual Computer Use but cannot claim a v27 command.
+v27 added the governed command-runner capability and workspace inventory. V28 adds
+the read-only scope-correct Command model catalog, strict explicit-selection envelope,
+and content-free effective-model receipt. A v27 client keeps visual Computer Use and
+governed commands with Automatic routing but cannot claim v28 explicit selection.
 The ordinary file-based macOS Keychain protects native session credentials under a
 stable Asael service namespace without a shared access group. Every Keychain
 operation is bounded so an operating-system authorization stall cannot hold the
@@ -199,7 +201,10 @@ its generated native contracts are already the supported shared-client foundatio
 9. Add migration 205 and native v27/v26 for owner-selected command workspaces,
    exact structured direct execution, mandatory per-command approval, a separately
    signed command helper, ephemeral output, and metadata-only durable receipts.
-10. Privately sign, package, and install on the owner's Mac only after focused release
+10. Publish native v28/v27 for scope-correct Settings catalogs and strict explicit
+   Model/Thinking selection; clear stale selection when Agent or target changes,
+   force explicit choices onto direct execution, and reject durable conflicts.
+11. Privately sign, package, and install on the owner's Mac only after focused release
    checks; require Apple-issued signing and notarization before distributing to
    another Mac.
 
@@ -210,9 +215,10 @@ weakening authorization. A client rollback uses the still-supported previous con
 only where that frozen contract permits it; `macos` sessions themselves require v8 or later and therefore
 fail explicitly rather than impersonating iOS or Android. Revocation, wipe, queued
 intent quarantine, audit history, and server canonical state survive a client rollback.
-For the current window, v26 preserves visual Computer Use but cannot claim the v27
-command-runner action; disabling the tool therefore removes command execution without
-weakening the older visual boundary.
+For the current window, v27 preserves visual Computer Use and the command-runner
+action with Automatic routing but cannot send v28's explicit model-selection
+envelope. Disabling either governed tool still removes its execution authority
+without weakening the older visual boundary.
 
 ## Consequences
 
@@ -243,6 +249,13 @@ weakening the older visual boundary.
   and let the assigned agent use that ephemeral output. A separate request to run
   `sudo whoami` failed closed before approval or execution. No raw stdout or stderr
   was retained as durable conversation, approval, tool, command, or event state.
+- Production native v28/v27 and signed Asael `1.22.0` build `34` complete the
+  scope-correct Command model-selection release. The installed direct canary returned
+  `SCOPE_V28_ULTRA_OK` through `openai · gpt-6-astra · Ultra thinking`; **This Mac**
+  cleared the explicit selection, and Forge preserved the specialist while loading
+  its validated Settings scope with Automatic selection.
+  Explicit choices are direct-only, durable conflicts fail closed, and the observable
+  receipt retains effective metadata rather than private model reasoning.
 - The repository carries no browser-automation dependency, CI job, benchmark, or
   visual-smoke runtime. Focused component/contract tests cover web behavior and the
   signed native canary verifies installed-Mac control.

@@ -37,17 +37,18 @@ Set these through the platform secret/configuration store, never in source contr
 - `OMNIAGENT_NATIVE_MIN_ANDROID_VERSION`, `OMNIAGENT_NATIVE_MIN_IOS_VERSION`, and `OMNIAGENT_NATIVE_MIN_MACOS_VERSION`: optional stable `major.minor.patch` minimums for native compatibility telemetry. An absent or empty value defaults to `1.0.0`; a malformed configured value invalidates the policy and holds adoption unavailable. These settings do not authorize Agent enrollment.
 
 Native contract artifacts are committed immutable release inputs. Production
-advertises v27 as current and deliberately retains v26 as the one
-rollback-compatible previous version. V20-v25 remain immutable historical
-artifacts and are not advertised by current discovery. Do not retire v26 until
-the v27 rollback window closes. A published version is never regenerated in
+advertises v28 as current and deliberately retains v27 as the one
+rollback-compatible previous version. V20-v26 remain immutable historical
+artifacts and are not advertised by current discovery. Do not retire v27 until
+the v28 rollback window closes. A published version is never regenerated in
 place. Run
 `npm run check:native-contracts` before a native-contract release; the check
 fails if the generated OpenAPI, event schema, fixtures, integrity manifests,
-Dart SDK, or frozen v7-v26 document hashes drift. Removing an archived version
+Dart SDK, or frozen v7-v27 document hashes drift. Removing an archived version
 requires a separately reviewed adoption decision and is not implied by a
 Vercel deployment. V25/v20 remains the historical 2026-09-22 adaptive-runtime
-compatibility pair; v27/v26 is the current governed local-command release pair.
+compatibility pair; v27/v26 is the historical governed local-command release
+pair; v28/v27 is the current scoped model-selection release pair.
 
 ### Governed local command runner release
 
@@ -139,6 +140,44 @@ The prior 1.21.0+32 app is recoverable in Trash. This canary covers the direct
 durable-route conflict handling, and native-contract publication are separate
 follow-up work. No database, Vercel, Fly, or worker release is required for
 this native-only patch.
+
+### Scoped native Command model-selection release
+
+Native v28 retains frozen v27 and publishes one strict optional
+`modelSelection` envelope plus the provider/model/effective-Thinking fields used
+by the content-free observable model receipt. An explicit Model or Thinking
+choice forces direct execution and disables team fan-out. Combining an explicit
+selection with durable execution returns a private/no-store `409`; an explicit
+built-in or custom Agent remains authoritative rather than being silently
+replaced. The server revalidates the exact Settings assignment, revision,
+configuration digest, provider connection, model lifecycle/capabilities, and
+reasoning intensity before the model call.
+
+`GET /api/settings/models?commandScope=...` is now the only Command picker
+catalog. The required scope is one of `main_agent`, `council`, `code_builder`,
+`verifier`, `market_research`, `memory`, or `computer_use`. The native client
+reloads that exact scope when the Agent or **This Mac** target changes and clears
+the old Model/Thinking selection before exposing the new choices.
+
+Vercel deployment `dpl_6ayXL7trkpGDUcYk76GL8k3UGVcG` is canonical and healthy
+at exact revision `5155ca23f35517815966d7e356a30d0c7586d60c`. Native discovery
+reports v28 current/v27 previous, the v28 manifest is reachable, and the licensed
+TradingView asset returns HTTP 200. No schema or worker protocol changed, so no
+database migration or Fly release was required.
+
+Owner-only Asael `1.22.0+34` is installed from
+`Asael-1.22.0-34-macOS.dmg`, SHA-256
+`14cfef27f044521933c84d0183cd8049759d82937ae07d60a07ffb8aa36d42f0`,
+with installed host CDHash `0277d3ea418ffcba9305867c22bbaacdb19788e0` after
+strict nested-signature verification. The prior 1.21.1+33 app is recoverable at
+`/Users/benniejoseph/.Trash/Asael-1.21.1-33-pre-1.22.0-34.app`. The live
+authenticated canary rendered `SCOPE_V28_ULTRA_OK` exactly and **View work**
+showed `openai · gpt-6-astra · Ultra thinking · 12613 tokens · 3781ms` while
+explicitly keeping private model reasoning hidden. Switching to **This Mac**
+cleared the old selection and loaded its validated catalog; selecting Forge
+preserved the specialist and loaded its validated catalog with Automatic
+selection before any command was sent. No test suite or audit was run for this
+release.
 
 ### Licensed TradingView chart assets
 
@@ -534,7 +573,7 @@ SHA-256 `40dd780827cc9b8b80598ae736c3b1ddc1970b2f720e1bd7709565a1f78fec42`.
 A partial application intentionally makes newer code fail schema verification
 rather than silently skipping a boundary.
 
-The chain remains expand-only across the historical v20 bridge and current v26
+The chain remains expand-only across the historical v20 bridge and current v27
 rollback client: older clients do not receive the new routes or authority, and
 existing queue, notification, workflow, and Agent records keep their prior
 meanings. The first v197 attempt failed its

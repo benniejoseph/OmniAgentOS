@@ -1276,7 +1276,7 @@ seconds, so that attempt is not counted as delivery. The owner has explicitly de
 app-store publication; neither is a completion blocker for this private Android
 build. Phase 13 is now active as the private macOS client sequence.
 
-The current native release advances the generated contract to v16, retains
+The v16 native release advances the generated contract to v16, retains
 frozen v15, and adds authenticated read-only Plugin inventory to the
 Capabilities surface. Production discovery now serves v16/v15 at exact web
 revision `52f3e5bbf38b7c5ef9cdd0aefabdcb54c0a6822a`. The locally signed macOS
@@ -1296,14 +1296,14 @@ checkpoint; its owner-only signature does not authorize production APNs.
 | P13.3 | Keep **This Mac** as the sole consented Computer Use target and retire the remote isolated browser. | Reuse the governed executor, approvals, native device identity, and one-turn observations; keep the signed credential-free local helper and remove Playwright product/development runtime. | Explicit target, actor/device/session/run binding, closed action allowlist, stable signing, user-granted Accessibility and Screen Recording, visible indicator, kill switch, no silent fallback, and session isolation are mandatory. | Asael operates an approved non-secure local app through the governed executor; the natural-language Chrome screenshot canary passes without durable private observations, and the obsolete Fly browser app/volume/secrets are removed. |
 | P13.4 | Add offline cache and state reconciliation. | Reuse native contract/events. | Server remains authoritative; conflicts are visible and recoverable. | macOS, mobile, and web converge on identical work, memory, approval, and run state after reconnect. |
 | P13.5 | Add governed local command execution for owner-requested development and system work. | Reuse the governed executor, persisted approvals, native device courier, and temporary artifact rail; create a separately signed direct-executable helper. | Every command is exact executable plus arguments, uses an owner-selected starting-folder grant, requires fresh approval, exposes no shell string, and keeps raw output ephemeral. A folder grant is not represented as a filesystem sandbox. | A natural-language command completes through approval and temporary evidence, unsafe launchers fail before execution, durable stores retain only metadata/digests, and Stop terminates the process group. |
-| P13.6 | Render rich Command answers and expose a truthful observable work log. | Reuse the shared Talk controller/activity projection; create a bounded native rich-response renderer and responsive activity entry point. | Interpret only supported Markdown blocks and safe web links; never treat model HTML or custom schemes as executable UI, and never expose or persist private chain-of-thought. | Live Command output renders structured text, code, and tables with copy actions, while View work shows only real plans, tools, approvals, evidence, context, agents, and outcomes. |
+| P13.6 | Render rich Command answers, expose a truthful observable work log, and make Model/Thinking selection scope-correct. | Reuse the shared Talk controller/activity projection and Settings assignments; create a bounded native rich-response renderer, responsive activity entry point, and exact scoped model picker. | Interpret only supported Markdown blocks and safe web links; never treat model HTML or custom schemes as executable UI, never expose or persist private chain-of-thought, and never let a displayed catalog or stale selection grant execution authority. | Live Command output renders structured text, code, and tables with copy actions; View work shows only real plans, tools, approvals, evidence, context, agents, outcomes, and effective model metadata; Agent/**This Mac** changes reload the exact Settings scope and clear stale selection. |
 | P13.7 | Add a stateful Asael companion and make voice capture states truthful. | Reuse the shared Talk controller and recorder; create one original segmented Lottie asset and an optional amplitude adapter. | The mascot grants no authority, reduced motion resolves to poster frames, capture/transcription remain explicit and interruptible, and a transcript is editable text rather than implicit command authority. | Ready, working, listening, transcribing, success, and attention states are visible and accessible; live voice capture shows actual levels and succeeds through retry without an idle or enabled-send gap. |
 
 **Current status:** P13.1, P13.3, P13.4, P13.5, P13.6, and P13.7 are implemented for the
 private owner-Mac product. P13.2 is code-complete, with its real provider-
 delivered APNs receipt still externally blocked. Production advertises native
-v27 with frozen v26 rollback compatibility; migration v205 is installed; and
-owner-only Asael 1.21.1 build 33 is installed. P13.3 retains zero durable
+v28 with frozen v27 rollback compatibility; migration v205 is installed; and
+owner-only Asael 1.22.0 build 34 is installed. P13.3 retains zero durable
 screenshot/Accessibility content and the obsolete Playwright Fly app, machine,
 volume, and secrets remain removed. P13.5 adds a second credential-free signed
 helper dedicated to approved direct executable/argument requests; it does not
@@ -1313,9 +1313,12 @@ P13.7 mascot communicates only observable app state, respects reduced motion,
 and closes the voice startup/finalization and submission-enable gaps. The
 latest P13.6 presentation patch preserves identifiers containing underscores
 and displays the effective server-emitted Thinking intensity in the observable
-model receipt without exposing private reasoning. Its cold-launch canary proves
-the direct `main_agent` path; specialized-Agent and This Mac scope parity,
-durable-route conflict handling, and native-contract publication remain open.
+model receipt without exposing private reasoning. Native v28 closes the scoped
+selection follow-up: **This Mac** maps to `computer_use`; Forge, Sentinel,
+Meridian, Mnemosyne, and Scout map to their exact specialist scopes; and
+Atlas/custom/unassigned direct work maps to `main_agent`. Context changes clear
+old Model/Thinking state, explicit choices force direct execution, durable
+conflicts fail closed, and the server revalidates the exact Settings assignment.
 The separate worker/OpenAI egress service remains protocol-compatible. Earlier
 v11-v15 canaries remain historical evidence rather than the current release
 checkpoint.
@@ -1505,6 +1508,20 @@ A true cold launch exposed the validated Settings route, accepted
 `gpt-6-astra` with Ultra, rendered `MODEL_ULTRA_LIVE_OK` exactly, and projected
 the effective `Ultra thinking` model receipt. The prior 1.21.0+32 app is
 recoverable in Trash.
+
+The governed scoped-selection release is installed as Asael 1.22.0 build 34
+from `Asael-1.22.0-34-macOS.dmg`, SHA-256
+`14cfef27f044521933c84d0183cd8049759d82937ae07d60a07ffb8aa36d42f0`;
+the installed app CDHash is `0277d3ea418ffcba9305867c22bbaacdb19788e0`.
+Production deployment `dpl_6ayXL7trkpGDUcYk76GL8k3UGVcG` is healthy at exact
+revision `5155ca23f35517815966d7e356a30d0c7586d60c` and advertises native v28
+with frozen v27. The installed app rendered `SCOPE_V28_ULTRA_OK` exactly and its
+protected work log showed `openai · gpt-6-astra · Ultra thinking · 12613 tokens ·
+3781ms`. Switching to **This Mac** cleared the previous choice and loaded its
+validated scope; selecting Forge preserved the specialist and loaded its scope
+with Automatic selection before execution. The prior 1.21.1+33
+app is recoverable in Trash. This release changed no database schema or worker
+protocol and required no Fly deployment.
 
 **Phase gate:** native clients are alternate interaction surfaces for one core—not independent products with divergent truth or policy.
 
@@ -3503,15 +3520,16 @@ The task tables above are the source of truth. A phase is checked only after eve
 - [x] **Phase 10 — Workspaces and Salesforce-connected CSM:** P10.1–P10.14 complete; live Salesforce activation remains external configuration, not implementation.
 - [x] **Phase 11 — cohesive product projections:** P11.1–P11.9 complete.
 - [x] **Phase 12 — mobile application:** P12.1–P12.6 and the private Android operational gate are complete; native v15 adds durable received/opened/action receipts, cold-launch handling, and complete approval/meeting/customer-risk/terminal-run producers while retaining frozen v14. The latest live FCM canary reached provider acceptance but is not counted as delivery because the disconnected Android client returned no v15 receipt within 12 seconds. iOS and app-store publication are owner-excluded.
-- [ ] **Phase 13 — macOS application:** P13.1, P13.3, P13.4, P13.5, P13.6, and P13.7 are complete for the private owner-Mac product. P13.2 is code-complete with bulk Capture, drag/drop, registered Share Extension/App Group intake, native notification actions, durable receipts/cold-launch handling, APNs token/environment handling, and governed acknowledgement. Its entitlement split makes restricted APS authority explicit and fail-closed, but one real provider-delivered APNs receipt remains externally blocked by the absent Apple Team identity/profile and APNs provider credential. P13.3 retains zero active remote-browser authority, the repaired `open_url` boundary, live Chrome canaries, zero durable screenshot/Accessibility content, and removal of the obsolete Fly browser app, machine, volume, and secrets. P13.5 provides the separately signed, approval-gated direct command helper with ephemeral output. P13.6 provides bounded rich responses, copy actions, a truthful observable work log without private reasoning, identifier-safe rich text, and the effective Thinking receipt for the proven direct main-Agent path. P13.7 provides the reduced-motion-safe stateful mascot and truthful voice startup/listening/finalization/transcription feedback. Asael `1.21.1` build `33` is installed; native discovery is v27 current/v26 previous; and APS remains correctly absent from the private self-signed package. The surviving worker/OpenAI egress service remains protocol-compatible. Developer ID/notarized distribution is outside the private-install scope.
+- [ ] **Phase 13 — macOS application:** P13.1, P13.3, P13.4, P13.5, P13.6, and P13.7 are complete for the private owner-Mac product. P13.2 is code-complete with bulk Capture, drag/drop, registered Share Extension/App Group intake, native notification actions, durable receipts/cold-launch handling, APNs token/environment handling, and governed acknowledgement. Its entitlement split makes restricted APS authority explicit and fail-closed, but one real provider-delivered APNs receipt remains externally blocked by the absent Apple Team identity/profile and APNs provider credential. P13.3 retains zero active remote-browser authority, the repaired `open_url` boundary, live Chrome canaries, zero durable screenshot/Accessibility content, and removal of the obsolete Fly browser app, machine, volume, and secrets. P13.5 provides the separately signed, approval-gated direct command helper with ephemeral output. P13.6 provides bounded rich responses, copy actions, a truthful observable work log without private reasoning, identifier-safe rich text, effective Thinking receipts, scope-correct Agent/**This Mac** catalogs, and direct-only exact Model/Thinking selection. P13.7 provides the reduced-motion-safe stateful mascot and truthful voice startup/listening/finalization/transcription feedback. Asael `1.22.0` build `34` is installed; native discovery is v28 current/v27 previous; and APS remains correctly absent from the private self-signed package. The surviving worker/OpenAI egress service remains protocol-compatible. Developer ID/notarized distribution is outside the private-install scope.
 
-The latest installed native checkpoint is Asael 1.21.1 build 33, package
-SHA-256 `c3fbf35f61b3361e8d1c287056c738ab3a7e93fba62575fe4194b677c1e58245`.
+The latest installed native checkpoint is Asael 1.22.0 build 34, package
+SHA-256 `14cfef27f044521933c84d0183cd8049759d82937ae07d60a07ffb8aa36d42f0`.
 Migrations through v205 are installed and production discovery reports native
-v27 current/v26 previous. The native Automation Studio remains available, and
+v28 current/v27 previous. The native Automation Studio remains available, and
 the local command runner's positive and fail-closed canaries plus the rich
 response/work-log, model/Thinking, and mascot/voice canaries passed in the live
-app. The prior 1.21.0+32 app is recoverable in Trash. The unchecked Phase 13
+app. The scoped direct, **This Mac**, and Forge catalog canaries also passed. The
+prior 1.21.1+33 app is recoverable in Trash. The unchecked Phase 13
 state continues to mean only the external provider-delivered APNs proof.
 
 The same release introduces TypeSafe Jev as a Settings-discovered provider and
