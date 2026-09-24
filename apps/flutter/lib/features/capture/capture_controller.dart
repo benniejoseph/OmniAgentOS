@@ -164,9 +164,12 @@ class CaptureController extends ChangeNotifier {
       final tracked = batchItems.map((item) => item.id).toSet();
       final entries = (await outbox.list(owner!))
           .where((entry) => !tracked.contains(entry.id));
-      for (final entry in entries) {
+      for (final metadata in entries) {
         if (generation != _generation) break;
+        CaptureOutboxEntry? entry;
         try {
+          entry = await outbox.get(owner!, metadata.id);
+          if (entry == null || generation != _generation) continue;
           final synced = await repository.submit(
             entry.draft,
             idempotencyKey: entry.idempotencyKey,
@@ -179,6 +182,9 @@ class CaptureController extends ChangeNotifier {
           if (generation != _generation) break;
           syncError = value;
           if (_stopSyncAfter(value)) break;
+        } finally {
+          _wipeCapturePayload(entry);
+          entry = null;
         }
       }
       if (generation == _generation) pending = await outbox.list(owner!);
@@ -377,61 +383,66 @@ class CaptureController extends ChangeNotifier {
       _failBatch(item, _captureFailureMessage(value), retryable: false);
       return;
     }
-    if (queued == null || generation != _generation) return;
-    _setBatchItem(
-      item.copyWith(
-        state: CaptureBatchState.uploading,
-        progressStage: 'uploading',
-        detail: 'Uploading through the governed Capture service.',
-        retryable: false,
-      ),
-    );
-
-    Object? lastFailure;
-    for (var attempt = 1; attempt <= 3; attempt += 1) {
+    if (queued == null) return;
+    try {
       if (generation != _generation) return;
-      try {
-        final response = await repository.submit(
-          queued.draft,
-          idempotencyKey: queued.idempotencyKey,
-          owner: owner!,
-        );
+      _setBatchItem(
+        item.copyWith(
+          state: CaptureBatchState.uploading,
+          progressStage: 'uploading',
+          detail: 'Uploading through the governed Capture service.',
+          retryable: false,
+        ),
+      );
+      Object? lastFailure;
+      for (var attempt = 1; attempt <= 3; attempt += 1) {
         if (generation != _generation) return;
-        if (response.jobId.trim().isEmpty) {
-          throw const FormatException(
-            'The Capture service did not return a processing job.',
+        try {
+          final response = await repository.submit(
+            queued.draft,
+            idempotencyKey: queued.idempotencyKey,
+            owner: owner!,
           );
-        }
-        receipt = response;
-        if (response.jobStatus == 'completed') {
-          await _completeBatch(item, response.jobId, generation);
-        } else if (_terminalFailure(response.jobStatus)) {
-          _failBatch(
-            item,
-            response.lastError ?? 'Server processing did not complete.',
-            retryable: false,
-            jobId: response.jobId,
-          );
-        } else {
-          _setBatchItem(
-            item.copyWith(
-              state: CaptureBatchState.processing,
-              jobId: response.jobId,
-              progressStage: response.progressStage ?? response.jobStatus,
-              detail: 'Uploaded. Extraction and indexing are running.',
+          if (generation != _generation) return;
+          if (response.jobId.trim().isEmpty) {
+            throw const FormatException(
+              'The Capture service did not return a processing job.',
+            );
+          }
+          receipt = response;
+          if (response.jobStatus == 'completed') {
+            await _completeBatch(item, response.jobId, generation);
+          } else if (_terminalFailure(response.jobStatus)) {
+            _failBatch(
+              item,
+              response.lastError ?? 'Server processing did not complete.',
               retryable: false,
-            ),
-          );
+              jobId: response.jobId,
+            );
+          } else {
+            _setBatchItem(
+              item.copyWith(
+                state: CaptureBatchState.processing,
+                jobId: response.jobId,
+                progressStage: response.progressStage ?? response.jobStatus,
+                detail: 'Uploaded. Extraction and indexing are running.',
+                retryable: false,
+              ),
+            );
+          }
+          return;
+        } catch (value) {
+          lastFailure = value;
+          if (!_retryableCaptureError(value) || attempt == 3) break;
+          await _delay(Duration(milliseconds: 250 * (1 << (attempt - 1))));
         }
-        return;
-      } catch (value) {
-        lastFailure = value;
-        if (!_retryableCaptureError(value) || attempt == 3) break;
-        await _delay(Duration(milliseconds: 250 * (1 << (attempt - 1))));
       }
-    }
-    if (generation == _generation) {
-      _failBatch(item, _captureFailureMessage(lastFailure), retryable: true);
+      if (generation == _generation) {
+        _failBatch(item, _captureFailureMessage(lastFailure), retryable: true);
+      }
+    } finally {
+      _wipeCapturePayload(queued);
+      queued = null;
     }
   }
 
@@ -601,4 +612,10 @@ String _captureFailureMessage(Object? error) {
         : 'The Capture service rejected this document.';
   }
   return 'This document could not be queued. The other files were not affected.';
+}
+
+void _wipeCapturePayload(CaptureOutboxEntry? entry) {
+  final bytes = entry?.draft.file?.bytes;
+  if (bytes == null || bytes.isEmpty) return;
+  bytes.fillRange(0, bytes.length, 0);
 }

@@ -10,11 +10,13 @@ import 'package:path_provider/path_provider.dart';
 import '../../core/storage/secure_session_store.dart';
 import 'capture_models.dart';
 
-const _outboxSchemaVersion = 1;
+const _outboxSchemaVersion = 2;
+const _legacyOutboxSchemaVersion = 1;
 const _outboxDirectory = 'asael-capture-outbox-v1';
 const _maxOutboxEntries = captureBatchMaxFiles;
 const _maxOutboxBytes = 64 * 1024 * 1024;
 const _maxAttachmentBytes = captureAttachmentMaxBytes;
+const _maxMetadataEnvelopeBytes = 64 * 1024;
 
 class CaptureOwnerBinding {
   const CaptureOwnerBinding({required this.tenantId, required this.actorId});
@@ -146,7 +148,7 @@ class EncryptedCaptureOutbox implements CaptureOutbox {
       final context = await _context();
       final entries = <CaptureOutboxEntry>[];
       for (final file in await _entryFiles(context.directory)) {
-        final entry = await _decrypt(file, context.secret);
+        final entry = await _decryptMetadata(file, context.secret);
         if (owner.owns(entry)) entries.add(entry);
       }
       entries.sort((left, right) => left.createdAt.compareTo(right.createdAt));
@@ -164,13 +166,7 @@ class EncryptedCaptureOutbox implements CaptureOutbox {
         final context = await _context();
         final file = File('${context.directory.path}/$entryId.capture');
         if (!await file.exists()) return null;
-        final entry = await _decrypt(file, context.secret);
-        if (!owner.owns(entry)) {
-          throw const CaptureOutboxIntegrityException(
-            'The capture outbox owner does not match the active session.',
-          );
-        }
-        return entry;
+        return _decrypt(file, context.secret, owner: owner);
       });
 
   @override
@@ -183,7 +179,7 @@ class EncryptedCaptureOutbox implements CaptureOutbox {
         final context = await _context();
         final file = File('${context.directory.path}/$entryId.capture');
         if (!await file.exists()) return;
-        final entry = await _decrypt(file, context.secret);
+        final entry = await _decryptMetadata(file, context.secret);
         if (!owner.owns(entry)) {
           throw const CaptureOutboxIntegrityException(
             'The capture outbox owner does not match the active session.',
@@ -220,61 +216,233 @@ class EncryptedCaptureOutbox implements CaptureOutbox {
     CaptureOutboxEntry entry,
     DeviceSecretMaterial material,
   ) async {
-    final plaintext = utf8.encode(jsonEncode(_entryToJson(entry)));
-    final nonce = _cipher.newNonce();
-    final secretBox = await _cipher.encrypt(
-      plaintext,
-      secretKey: SecretKey(material.bytes),
-      nonce: nonce,
-      aad: _associatedData(entry.id),
+    final secretKey = SecretKey(material.bytes);
+    final metadata = await _encryptEnvelope(
+      entry.id,
+      'metadata',
+      _entryMetadataToJson(entry),
+      secretKey,
     );
-    return jsonEncode({
+    final payload = await _encryptEnvelope(
+      entry.id,
+      'payload',
+      _entryToJson(entry),
+      secretKey,
+    );
+    return '${jsonEncode(metadata)}\n${jsonEncode(payload)}';
+  }
+
+  Future<Map<String, Object?>> _encryptEnvelope(
+    String id,
+    String record,
+    Map<String, Object?> value,
+    SecretKey secretKey,
+  ) async {
+    final secretBox = await _cipher.encrypt(
+      utf8.encode(jsonEncode(value)),
+      secretKey: secretKey,
+      nonce: _cipher.newNonce(),
+      aad: _associatedData(_outboxSchemaVersion, id, record),
+    );
+    return {
       'schemaVersion': _outboxSchemaVersion,
       'algorithm': 'aes-256-gcm',
-      'id': entry.id,
+      'record': record,
+      'id': id,
       'nonce': base64UrlEncode(secretBox.nonce).replaceAll('=', ''),
       'cipherText': base64UrlEncode(secretBox.cipherText).replaceAll('=', ''),
       'mac': base64UrlEncode(secretBox.mac.bytes).replaceAll('=', ''),
-    });
+    };
   }
 
   Future<CaptureOutboxEntry> _decrypt(
     File file,
-    DeviceSecretMaterial material,
-  ) async {
+    DeviceSecretMaterial material, {
+    CaptureOwnerBinding? owner,
+  }) async {
     try {
-      final envelope = jsonDecode(await file.readAsString());
-      if (envelope is! Map ||
-          envelope['schemaVersion'] != _outboxSchemaVersion ||
-          envelope['algorithm'] != 'aes-256-gcm' ||
-          envelope['id'] is! String ||
-          envelope['nonce'] is! String ||
-          envelope['cipherText'] is! String ||
-          envelope['mac'] is! String) {
-        throw const FormatException('Invalid encrypted capture envelope.');
+      final encoded = await file.readAsString();
+      final separator = encoded.indexOf('\n');
+      if (separator < 0) {
+        final entry = await _decryptLegacyEnvelope(file, encoded, material);
+        _requireOwner(entry, owner);
+        return entry;
       }
-      final id = envelope['id'] as String;
-      if (!_validId(id) || !file.path.endsWith('/$id.capture')) {
+      final metadataEnvelope = jsonDecode(encoded.substring(0, separator));
+      final payloadEnvelope = jsonDecode(encoded.substring(separator + 1));
+      final id = _validateEnvelope(
+        metadataEnvelope,
+        file,
+        expectedRecord: 'metadata',
+      );
+      if (_validateEnvelope(payloadEnvelope, file, expectedRecord: 'payload') !=
+          id) {
         throw const FormatException('Encrypted capture identity mismatch.');
       }
-      final plaintext = await _cipher.decrypt(
-        SecretBox(
-          _decodeBase64Url(envelope['cipherText'] as String),
-          nonce: _decodeBase64Url(envelope['nonce'] as String),
-          mac: Mac(_decodeBase64Url(envelope['mac'] as String)),
-        ),
-        secretKey: SecretKey(material.bytes),
-        aad: _associatedData(id),
+      if (owner != null) {
+        final metadataValue = await _decryptEnvelopeValue(
+          metadataEnvelope as Map,
+          SecretKey(material.bytes),
+          id,
+          'metadata',
+        );
+        _requireOwner(_metadataEntryFromJson(metadataValue), owner);
+      }
+      final value = await _decryptEnvelopeValue(
+        payloadEnvelope as Map,
+        SecretKey(material.bytes),
+        id,
+        'payload',
       );
-      final value = jsonDecode(utf8.decode(plaintext));
       final entry = _entryFromJson(value);
       if (entry.id != id) {
         throw const FormatException('Encrypted capture payload mismatch.');
       }
       return entry;
+    } on CaptureOutboxIntegrityException {
+      rethrow;
     } catch (_) {
       throw const CaptureOutboxIntegrityException();
     }
+  }
+
+  Future<CaptureOutboxEntry> _decryptMetadata(
+    File file,
+    DeviceSecretMaterial material,
+  ) async {
+    try {
+      final header = await _readEnvelopeHeader(file);
+      if (header.legacy) {
+        // Version 1 encrypted metadata and attachment bytes together. Decode
+        // one legacy entry at a time, return only its lightweight projection,
+        // and keep the normal upload path lazy. New entries never take this
+        // compatibility path.
+        return _metadataOnly(
+          await _decryptLegacyEnvelope(
+            file,
+            await file.readAsString(),
+            material,
+          ),
+        );
+      }
+      final id = _validateEnvelope(
+        header.envelope,
+        file,
+        expectedRecord: 'metadata',
+      );
+      final value = await _decryptEnvelopeValue(
+        header.envelope,
+        SecretKey(material.bytes),
+        id,
+        'metadata',
+      );
+      final entry = _metadataEntryFromJson(value);
+      if (entry.id != id) {
+        throw const FormatException('Encrypted capture metadata mismatch.');
+      }
+      return entry;
+    } catch (_) {
+      throw const CaptureOutboxIntegrityException();
+    }
+  }
+
+  Future<_EncryptedOutboxHeader> _readEnvelopeHeader(File file) async {
+    final length = await file.length();
+    final handle = await file.open();
+    late List<int> prefix;
+    try {
+      prefix = await handle.read(min(length, _maxMetadataEnvelopeBytes));
+    } finally {
+      await handle.close();
+    }
+    final separator = prefix.indexOf(10);
+    if (separator < 0) {
+      final text = utf8.decode(prefix, allowMalformed: true);
+      if (text.contains('"schemaVersion":$_legacyOutboxSchemaVersion')) {
+        return const _EncryptedOutboxHeader.legacy();
+      }
+      throw const FormatException('Invalid encrypted capture header.');
+    }
+    final value = jsonDecode(utf8.decode(prefix.sublist(0, separator)));
+    if (value is! Map) {
+      throw const FormatException('Invalid encrypted capture header.');
+    }
+    return _EncryptedOutboxHeader(value);
+  }
+
+  Future<Object?> _decryptEnvelopeValue(
+    Map envelope,
+    SecretKey secretKey,
+    String id,
+    String record,
+  ) async {
+    final plaintext = await _cipher.decrypt(
+      SecretBox(
+        _decodeBase64Url(envelope['cipherText'] as String),
+        nonce: _decodeBase64Url(envelope['nonce'] as String),
+        mac: Mac(_decodeBase64Url(envelope['mac'] as String)),
+      ),
+      secretKey: secretKey,
+      aad: _associatedData(_outboxSchemaVersion, id, record),
+    );
+    return jsonDecode(utf8.decode(plaintext));
+  }
+
+  String _validateEnvelope(
+    Object? value,
+    File file, {
+    required String expectedRecord,
+  }) {
+    if (value is! Map ||
+        value['schemaVersion'] != _outboxSchemaVersion ||
+        value['algorithm'] != 'aes-256-gcm' ||
+        value['record'] != expectedRecord ||
+        value['id'] is! String ||
+        value['nonce'] is! String ||
+        value['cipherText'] is! String ||
+        value['mac'] is! String) {
+      throw const FormatException('Invalid encrypted capture envelope.');
+    }
+    final id = value['id'] as String;
+    if (!_validId(id) || !file.path.endsWith('/$id.capture')) {
+      throw const FormatException('Encrypted capture identity mismatch.');
+    }
+    return id;
+  }
+
+  Future<CaptureOutboxEntry> _decryptLegacyEnvelope(
+    File file,
+    String encoded,
+    DeviceSecretMaterial material,
+  ) async {
+    final envelope = jsonDecode(encoded);
+    if (envelope is! Map ||
+        envelope['schemaVersion'] != _legacyOutboxSchemaVersion ||
+        envelope['algorithm'] != 'aes-256-gcm' ||
+        envelope['id'] is! String ||
+        envelope['nonce'] is! String ||
+        envelope['cipherText'] is! String ||
+        envelope['mac'] is! String) {
+      throw const FormatException('Invalid encrypted capture envelope.');
+    }
+    final id = envelope['id'] as String;
+    if (!_validId(id) || !file.path.endsWith('/$id.capture')) {
+      throw const FormatException('Encrypted capture identity mismatch.');
+    }
+    final plaintext = await _cipher.decrypt(
+      SecretBox(
+        _decodeBase64Url(envelope['cipherText'] as String),
+        nonce: _decodeBase64Url(envelope['nonce'] as String),
+        mac: Mac(_decodeBase64Url(envelope['mac'] as String)),
+      ),
+      secretKey: SecretKey(material.bytes),
+      aad: _associatedData(_legacyOutboxSchemaVersion, id),
+    );
+    final entry = _entryFromJson(jsonDecode(utf8.decode(plaintext)));
+    if (entry.id != id) {
+      throw const FormatException('Encrypted capture payload mismatch.');
+    }
+    return entry;
   }
 
   Future<T> _serial<T>(Future<T> Function() action) {
@@ -295,6 +463,36 @@ class _OutboxContext {
   final Directory directory;
   final DeviceSecretMaterial secret;
 }
+
+class _EncryptedOutboxHeader {
+  const _EncryptedOutboxHeader(this.envelope) : legacy = false;
+  const _EncryptedOutboxHeader.legacy()
+    : envelope = const <Object?, Object?>{},
+      legacy = true;
+
+  final Map envelope;
+  final bool legacy;
+}
+
+Map<String, Object?> _entryMetadataToJson(CaptureOutboxEntry entry) => {
+  'schemaVersion': _outboxSchemaVersion,
+  'id': entry.id,
+  'tenantId': entry.tenantId,
+  'actorId': entry.actorId,
+  'createdAt': entry.createdAt.toIso8601String(),
+  'idempotencyKey': entry.idempotencyKey,
+  'draft': {
+    'kind': entry.draft.kind.name,
+    'title': entry.draft.title,
+    'tags': entry.draft.tags,
+    if (entry.draft.file != null)
+      'attachment': {
+        'name': entry.draft.file!.name,
+        'contentType': entry.draft.file!.contentType,
+        'byteLength': entry.draft.file!.byteLength,
+      },
+  },
+};
 
 Map<String, Object?> _entryToJson(CaptureOutboxEntry entry) => {
   'schemaVersion': _outboxSchemaVersion,
@@ -319,7 +517,8 @@ Map<String, Object?> _entryToJson(CaptureOutboxEntry entry) => {
 
 CaptureOutboxEntry _entryFromJson(Object? value) {
   if (value is! Map ||
-      value['schemaVersion'] != _outboxSchemaVersion ||
+      (value['schemaVersion'] != _outboxSchemaVersion &&
+          value['schemaVersion'] != _legacyOutboxSchemaVersion) ||
       value['id'] is! String ||
       value['tenantId'] is! String ||
       value['actorId'] is! String ||
@@ -393,6 +592,111 @@ CaptureOutboxEntry _entryFromJson(Object? value) {
   );
 }
 
+CaptureOutboxEntry _metadataEntryFromJson(Object? value) {
+  if (value is! Map ||
+      value['schemaVersion'] != _outboxSchemaVersion ||
+      value['id'] is! String ||
+      value['tenantId'] is! String ||
+      value['actorId'] is! String ||
+      value['createdAt'] is! String ||
+      value['idempotencyKey'] is! String ||
+      value['draft'] is! Map) {
+    throw const FormatException('Invalid capture outbox metadata.');
+  }
+  final id = value['id'] as String;
+  final tenantId = value['tenantId'] as String;
+  final actorId = value['actorId'] as String;
+  final createdAt = DateTime.tryParse(value['createdAt'] as String)?.toUtc();
+  final idempotencyKey = value['idempotencyKey'] as String;
+  final draftValue = value['draft'] as Map;
+  final kind = CaptureKind.values
+      .where((candidate) => candidate.name == draftValue['kind'])
+      .firstOrNull;
+  final tagsValue = draftValue['tags'];
+  final tags = tagsValue is List
+      ? tagsValue.whereType<String>().toList(growable: false)
+      : null;
+  final title = draftValue['title'];
+  CaptureAttachment? attachment;
+  final attachmentValue = draftValue['attachment'];
+  if (attachmentValue != null) {
+    if (attachmentValue is! Map ||
+        attachmentValue['name'] is! String ||
+        attachmentValue['contentType'] is! String ||
+        attachmentValue['byteLength'] is! int) {
+      throw const FormatException('Invalid capture attachment metadata.');
+    }
+    final byteLength = attachmentValue['byteLength'] as int;
+    if (byteLength <= 0 || byteLength > _maxAttachmentBytes) {
+      throw const FormatException('Invalid capture attachment length.');
+    }
+    attachment = CaptureAttachment(
+      name: attachmentValue['name'] as String,
+      contentType: attachmentValue['contentType'] as String,
+      bytes: Uint8List(0),
+      byteLength: byteLength,
+    );
+  }
+  if (!_validId(id) ||
+      tenantId.trim().isEmpty ||
+      tenantId.length > 200 ||
+      actorId.trim().isEmpty ||
+      actorId.length > 320 ||
+      createdAt == null ||
+      idempotencyKey != 'capture-offline-$id' ||
+      kind == null ||
+      title is! String ||
+      title.length > 240 ||
+      tags == null ||
+      tags.length > 50 ||
+      tags.any((tag) => tag.trim().length > 80)) {
+    throw const FormatException('Invalid capture outbox metadata fields.');
+  }
+  return CaptureOutboxEntry(
+    id: id,
+    tenantId: tenantId,
+    actorId: actorId,
+    createdAt: createdAt,
+    idempotencyKey: idempotencyKey,
+    draft: CaptureDraft(
+      kind: kind,
+      title: title,
+      tags: tags,
+      file: attachment,
+      content: '',
+    ),
+  );
+}
+
+CaptureOutboxEntry _metadataOnly(CaptureOutboxEntry entry) {
+  final file = entry.draft.file;
+  final metadata = CaptureOutboxEntry(
+    id: entry.id,
+    tenantId: entry.tenantId,
+    actorId: entry.actorId,
+    createdAt: entry.createdAt,
+    idempotencyKey: entry.idempotencyKey,
+    draft: CaptureDraft(
+      kind: entry.draft.kind,
+      title: entry.draft.title,
+      tags: entry.draft.tags,
+      file: file == null
+          ? null
+          : CaptureAttachment(
+              name: file.name,
+              contentType: file.contentType,
+              bytes: Uint8List(0),
+              byteLength: file.byteLength,
+            ),
+      content: '',
+    ),
+  );
+  if (file != null && file.bytes.isNotEmpty) {
+    file.bytes.fillRange(0, file.bytes.length, 0);
+  }
+  return metadata;
+}
+
 void _validateOwner(CaptureOwnerBinding owner) {
   if (owner.tenantId.trim().isEmpty ||
       owner.tenantId.length > 200 ||
@@ -402,8 +706,18 @@ void _validateOwner(CaptureOwnerBinding owner) {
   }
 }
 
-List<int> _associatedData(String id) =>
-    utf8.encode('asael.capture-outbox:$_outboxSchemaVersion:$id');
+void _requireOwner(CaptureOutboxEntry entry, CaptureOwnerBinding? owner) {
+  if (owner != null && !owner.owns(entry)) {
+    throw const CaptureOutboxIntegrityException(
+      'The capture outbox owner does not match the active session.',
+    );
+  }
+}
+
+List<int> _associatedData(int version, String id, [String? record]) =>
+    utf8.encode(
+      'asael.capture-outbox:$version:$id${record == null ? '' : ':$record'}',
+    );
 
 String _opaqueId() {
   final random = Random.secure();

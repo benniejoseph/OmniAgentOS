@@ -33,7 +33,8 @@ class CaptureDraft {
     }
     if (file != null &&
         (file!.bytes.isEmpty ||
-            file!.bytes.length > captureAttachmentMaxBytes)) {
+            file!.bytes.length > captureAttachmentMaxBytes ||
+            file!.byteLength != file!.bytes.length)) {
       return 'Choose a non-empty attachment up to 5 MB.';
     }
     return null;
@@ -47,10 +48,12 @@ class CaptureAttachment {
     required this.name,
     required this.bytes,
     required this.contentType,
-  });
+    int? byteLength,
+  }) : byteLength = byteLength ?? bytes.length;
 
   final String name, contentType;
   final Uint8List bytes;
+  final int byteLength;
 }
 
 class CaptureReceipt {

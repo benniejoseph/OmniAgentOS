@@ -352,7 +352,7 @@ class CaptureDropIntake {
       for (final entry in controller.pending)
         if (entry.draft.file case final file?)
           if (normalizeCaptureDropFilename(file.name) case final name?)
-            captureSelectionKey(name, file.bytes.length),
+            captureSelectionKey(name, file.byteLength),
     };
     final available = (captureBatchMaxFiles - controller.pending.length).clamp(
       0,
