@@ -487,6 +487,45 @@ private final class CredentialBrokerController: NSObject {
   }
 }
 
+private enum BoundedJSONObjectLineDecodeResult {
+  case incomplete
+  case objects([[String: Any]])
+  case invalid
+}
+
+/// Reassembles and parses helper JSON away from AppKit's main queue.
+///
+/// Computer-use observations can legitimately include a compressed screenshot,
+/// so decoding the bounded response on the UI queue causes visible stalls even
+/// though capture itself runs in the isolated helper.
+private final class BoundedJSONObjectLineDecoder {
+  init(maximumLineBytes: Int, maximumBufferBytes: Int) {
+    self.maximumLineBytes = maximumLineBytes
+    self.maximumBufferBytes = maximumBufferBytes
+  }
+
+  private let maximumLineBytes: Int
+  private let maximumBufferBytes: Int
+  private var buffer = Data()
+
+  func append(_ data: Data) -> BoundedJSONObjectLineDecodeResult {
+    buffer.append(data)
+    guard buffer.count <= maximumBufferBytes else { return .invalid }
+
+    var objects: [[String: Any]] = []
+    while let newline = buffer.firstIndex(of: 0x0a) {
+      let line = Data(buffer[..<newline])
+      buffer.removeSubrange(...newline)
+      guard !line.isEmpty,
+            line.count <= maximumLineBytes,
+            let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any]
+      else { return .invalid }
+      objects.append(object)
+    }
+    return objects.isEmpty ? .incomplete : .objects(objects)
+  }
+}
+
 /// A credential-free broker for Asael's separately signed local Computer Use helper.
 ///
 /// The Flutter client holds the authenticated server session. The helper receives
@@ -542,18 +581,36 @@ private final class LocalComputerController: NSObject {
   private static let maximumCommandResponseBytes = 256 * 1_024
   private static let maximumResponseBytes = 4 * 1_024 * 1_024
   private static let maximumRequestBytes = 96 * 1_024
+  private static let internetDateFormatter = ISO8601DateFormatter()
+  private static let fractionalInternetDateFormatter: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter
+  }()
 
   private var channels: [ObjectIdentifier: FlutterMethodChannel] = [:]
   private var process: Process?
   private var inputPipe: Pipe?
   private var outputPipe: Pipe?
   private var errorPipe: Pipe?
-  private var outputBuffer = Data()
+  private let outputDecodeQueue = DispatchQueue(
+    label: "app.omniagent.omniagent.computer-use-response",
+    qos: .userInitiated
+  )
+  private var outputDecoder: BoundedJSONObjectLineDecoder?
   private var pending: [String: PendingRequest] = [:]
   private var completed: [String: CompletedRequest] = [:]
   private var completionOrder: [String] = []
   private var completionExpiryWorkItem: DispatchWorkItem?
   private lazy var commandWorkspaceGrants = Self.loadCommandWorkspaceGrants()
+  private var cachedPublicCommandWorkspaces: [[String: Any]]?
+  // Embedded helpers cannot change without replacing and relaunching the app.
+  // Cache their bundle metadata instead of reopening both bundles on every
+  // two-second native status refresh.
+  private lazy var cachedHelperInstalled = computeHelperInstalled()
+  private lazy var cachedHelperVersion = computeHelperVersion()
+  private lazy var cachedCommandHelperInstalled = computeCommandHelperInstalled()
+  private lazy var cachedCommandHelperVersion = computeCommandHelperVersion()
   private var commandProcess: Process?
   private var commandInputPipe: Pipe?
   private var commandOutputPipe: Pipe?
@@ -742,7 +799,14 @@ private final class LocalComputerController: NSObject {
       completion(status())
       return
     }
-    let shouldClose = !enabled && process == nil
+    // The Flutter coordinator refreshes its projection while Computer Use is
+    // disabled. Do not launch and tear down the signed helper on every poll;
+    // permission discovery resumes when the user enables or explicitly asks
+    // for permissions.
+    guard enabled || process != nil else {
+      completion(status())
+      return
+    }
     guard ensureHelper() else {
       completion(status())
       return
@@ -754,7 +818,6 @@ private final class LocalComputerController: NSObject {
     ) { [weak self] response in
       guard let self else { return }
       self.updatePermissions(from: response)
-      if shouldClose { self.terminateHelper(expected: true, pendingOutcome: "canceled") }
       completion(self.status())
     }
   }
@@ -880,7 +943,7 @@ private final class LocalComputerController: NSObject {
       "id": id,
       "action": "run_command",
       "input": helperInput,
-      "expiresAt": ISO8601DateFormatter().string(from: expiration),
+      "expiresAt": Self.internetDateFormatter.string(from: expiration),
     ]
 
     active = true
@@ -1071,7 +1134,9 @@ private final class LocalComputerController: NSObject {
       "id": id,
       "action": action,
       "input": input,
-      "expiresAt": ISO8601DateFormatter().string(from: Date().addingTimeInterval(lifetime)),
+      "expiresAt": Self.internetDateFormatter.string(
+        from: Date().addingTimeInterval(lifetime)
+      ),
     ]
   }
 
@@ -1141,10 +1206,21 @@ private final class LocalComputerController: NSObject {
     launched.standardInput = input
     launched.standardOutput = output
     launched.standardError = errors
-    output.fileHandleForReading.readabilityHandler = { [weak self] handle in
+    let decoder = BoundedJSONObjectLineDecoder(
+      maximumLineBytes: Self.maximumResponseBytes,
+      maximumBufferBytes: Self.maximumResponseBytes * 2
+    )
+    output.fileHandleForReading.readabilityHandler = { [weak self, weak decoder] handle in
       let data = handle.availableData
-      guard !data.isEmpty else { return }
-      DispatchQueue.main.async { self?.ingest(data) }
+      guard !data.isEmpty, let self, let decoder else { return }
+      self.outputDecodeQueue.async { [weak self, weak decoder] in
+        guard let self, let decoder else { return }
+        let decoded = decoder.append(data)
+        DispatchQueue.main.async { [weak self, weak decoder] in
+          guard let self, let decoder else { return }
+          self.ingest(decoded, from: decoder)
+        }
+      }
     }
     errors.fileHandleForReading.readabilityHandler = { handle in
       // Drain but never surface potentially sensitive operating-system details.
@@ -1163,7 +1239,7 @@ private final class LocalComputerController: NSObject {
       inputPipe = input
       outputPipe = output
       errorPipe = errors
-      outputBuffer.removeAll(keepingCapacity: true)
+      outputDecoder = decoder
       expectedTermination = false
       return true
     } catch {
@@ -1173,19 +1249,24 @@ private final class LocalComputerController: NSObject {
     }
   }
 
-  private func ingest(_ data: Data) {
-    outputBuffer.append(data)
-    guard outputBuffer.count <= Self.maximumResponseBytes * 2 else {
+  private func ingest(
+    _ decoded: BoundedJSONObjectLineDecodeResult,
+    from decoder: BoundedJSONObjectLineDecoder
+  ) {
+    guard outputDecoder === decoder else { return }
+    let responses: [[String: Any]]
+    switch decoded {
+    case .incomplete:
+      return
+    case .invalid:
       terminateHelper(expected: false, pendingOutcome: "failed")
       return
+    case .objects(let objects):
+      responses = objects
     }
-    while let newline = outputBuffer.firstIndex(of: 0x0a) {
-      let line = Data(outputBuffer[..<newline])
-      outputBuffer.removeSubrange(...newline)
-      guard !line.isEmpty,
-            line.count <= Self.maximumResponseBytes,
-            let response = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
-            let id = response["id"] as? String,
+
+    for response in responses {
+      guard let id = response["id"] as? String,
             let outcome = response["outcome"] as? String,
             ["succeeded", "failed", "canceled"].contains(outcome),
             let request = pending.removeValue(forKey: id)
@@ -1244,7 +1325,7 @@ private final class LocalComputerController: NSObject {
     inputPipe = nil
     outputPipe = nil
     errorPipe = nil
-    outputBuffer.removeAll(keepingCapacity: false)
+    outputDecoder = nil
   }
 
   private func failPending(outcome: String, code: String) {
@@ -1355,6 +1436,10 @@ private final class LocalComputerController: NSObject {
   }
 
   private var helperInstalled: Bool {
+    cachedHelperInstalled
+  }
+
+  private func computeHelperInstalled() -> Bool {
     guard let helperBundleURL,
           let bundle = Bundle(url: helperBundleURL),
           bundle.bundleIdentifier == Self.helperBundleIdentifier,
@@ -1377,6 +1462,10 @@ private final class LocalComputerController: NSObject {
   }
 
   private var helperVersion: String {
+    cachedHelperVersion
+  }
+
+  private func computeHelperVersion() -> String {
     guard let helperBundleURL,
           let bundle = Bundle(url: helperBundleURL),
           let version = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
@@ -1386,6 +1475,10 @@ private final class LocalComputerController: NSObject {
   }
 
   private var commandHelperInstalled: Bool {
+    cachedCommandHelperInstalled
+  }
+
+  private func computeCommandHelperInstalled() -> Bool {
     guard let commandHelperBundleURL,
           let bundle = Bundle(url: commandHelperBundleURL),
           bundle.bundleIdentifier == Self.commandHelperBundleIdentifier,
@@ -1415,6 +1508,10 @@ private final class LocalComputerController: NSObject {
   }
 
   private var commandHelperVersion: String {
+    cachedCommandHelperVersion
+  }
+
+  private func computeCommandHelperVersion() -> String {
     guard let commandHelperBundleURL,
           let bundle = Bundle(url: commandHelperBundleURL),
           let version = bundle.object(
@@ -1426,6 +1523,7 @@ private final class LocalComputerController: NSObject {
   }
 
   private var publicCommandWorkspaces: [[String: Any]] {
+    if let cachedPublicCommandWorkspaces { return cachedPublicCommandWorkspaces }
     let grants = commandWorkspaceGrants
       .filter { Self.isWorkspaceId($0.id) && Self.isWorkspaceName($0.name) }
       .sorted {
@@ -1435,7 +1533,7 @@ private final class LocalComputerController: NSObject {
         return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
       }
     var seenPaths = Set<String>()
-    return grants.compactMap { grant -> [String: Any]? in
+    let projection = grants.compactMap { grant -> [String: Any]? in
       guard let path = Self.canonicalPath(grant.lastKnownPath),
             seenPaths.insert(path).inserted
       else { return nil }
@@ -1445,6 +1543,8 @@ private final class LocalComputerController: NSObject {
         "path": path,
       ]
     }
+    cachedPublicCommandWorkspaces = projection
+    return projection
   }
 
   private func resolveCommandWorkspace(_ workspaceId: String) -> ResolvedCommandWorkspace? {
@@ -1486,6 +1586,7 @@ private final class LocalComputerController: NSObject {
   }
 
   private func persistCommandWorkspaceGrants() {
+    cachedPublicCommandWorkspaces = nil
     let sanitized = Array(commandWorkspaceGrants.prefix(Self.maximumCommandWorkspaceCount))
     guard let encoded = try? JSONEncoder().encode(sanitized),
           encoded.count <= 2 * 1_024 * 1_024
@@ -1697,9 +1798,8 @@ private final class LocalComputerController: NSObject {
   }
 
   private static func parseDate(_ value: String) -> Date? {
-    let fractional = ISO8601DateFormatter()
-    fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    return fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value)
+    fractionalInternetDateFormatter.date(from: value)
+      ?? internetDateFormatter.date(from: value)
   }
 }
 
@@ -1971,6 +2071,10 @@ private final class DesktopHostController: NSObject {
   private static let sharedCaptureManifest = "manifest.json"
   private static let sharedCaptureMaxFiles = 25
   private static let sharedCaptureMaxFileBytes = 5 * 1_024 * 1_024
+  private static let sharedCaptureIOQueue = DispatchQueue(
+    label: "app.omniagent.omniagent.shared-capture-io",
+    qos: .utility
+  )
   private static let sharedCaptureRequestPattern = try! NSRegularExpression(
     pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
   )
@@ -2003,7 +2107,11 @@ private final class DesktopHostController: NSObject {
   private var isAmbientVoicePresented = false
   private var regularWindowFrame: NSRect?
   private var deliveredSharedCaptureIds = Set<String>()
+  private var sharedCaptureRemovalIds = Set<String>()
   private var sharedCaptureDeliveryInFlight = false
+  private var sharedCaptureScanInFlight = false
+  private var sharedCaptureScanRequested = false
+  private var sharedCaptureScanGeneration = 0
   private var workspaceWindows: [UUID: AsaelWorkspaceWindowController] = [:]
 
   func start() {
@@ -2026,7 +2134,11 @@ private final class DesktopHostController: NSObject {
     isNotificationHandlerReady = false
     notificationDeliveryInFlight = false
     deliveredSharedCaptureIds.removeAll()
+    sharedCaptureRemovalIds.removeAll()
     sharedCaptureDeliveryInFlight = false
+    sharedCaptureScanGeneration += 1
+    sharedCaptureScanInFlight = false
+    sharedCaptureScanRequested = false
 
     if let hotKey {
       UnregisterEventHotKey(hotKey)
@@ -2430,7 +2542,7 @@ private final class DesktopHostController: NSObject {
     return sharedCaptureRequestPattern.firstMatch(in: value, range: range) != nil
   }
 
-  private func sharedCaptureInboxURL(create: Bool = false) -> URL? {
+  private static func sharedCaptureInboxURL(create: Bool = false) -> URL? {
     guard let container = FileManager.default.containerURL(
       forSecurityApplicationGroupIdentifier: Self.appGroupIdentifier
     ) else { return nil }
@@ -2447,51 +2559,93 @@ private final class DesktopHostController: NSObject {
 
   private func deliverNextSharedCapture() {
     dispatchPrecondition(condition: .onQueue(.main))
-    guard isDartReady,
-          !sharedCaptureDeliveryInFlight,
-          let channel,
-          let inbox = sharedCaptureInboxURL(create: true),
-          let candidates = try? FileManager.default.contentsOfDirectory(
-            at: inbox,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
-          )
-    else { return }
+    guard isDartReady, !sharedCaptureDeliveryInFlight, let channel else { return }
+    guard !sharedCaptureScanInFlight else {
+      sharedCaptureScanRequested = true
+      return
+    }
 
-    let capture = candidates
-      .sorted { $0.lastPathComponent < $1.lastPathComponent }
-      .compactMap(validatedSharedCapture)
-      .first { !deliveredSharedCaptureIds.contains($0.requestId) }
-    guard let capture else { return }
-
-    deliveredSharedCaptureIds.insert(capture.requestId)
-    sharedCaptureDeliveryInFlight = true
-    request(.capture)
-    channel.invokeMethod(
-      "sharedCapture",
-      arguments: [
-        "requestId": capture.requestId,
-        "files": capture.files.map(\.path),
-      ]
-    ) { [weak self] response in
+    sharedCaptureScanInFlight = true
+    sharedCaptureScanRequested = false
+    sharedCaptureScanGeneration += 1
+    let generation = sharedCaptureScanGeneration
+    let excluded = deliveredSharedCaptureIds.union(sharedCaptureRemovalIds)
+    Self.sharedCaptureIOQueue.async { [weak self, weak channel] in
+      let capture = Self.nextSharedCapture(excluding: excluded)
       DispatchQueue.main.async {
-        guard let self else { return }
-        self.sharedCaptureDeliveryInFlight = false
-        if response is FlutterError {
-          self.deliveredSharedCaptureIds.remove(capture.requestId)
-          self.scheduleSharedCaptureRetry()
-        } else {
+        guard let self,
+              let channel,
+              generation == self.sharedCaptureScanGeneration
+        else { return }
+        self.sharedCaptureScanInFlight = false
+        let rescanRequested = self.sharedCaptureScanRequested
+        self.sharedCaptureScanRequested = false
+        guard self.isDartReady, self.channel === channel else { return }
+        guard let capture else {
+          if rescanRequested { self.deliverNextSharedCapture() }
+          return
+        }
+        guard !self.deliveredSharedCaptureIds.contains(capture.requestId),
+              !self.sharedCaptureRemovalIds.contains(capture.requestId)
+        else {
           self.deliverNextSharedCapture()
+          return
+        }
+
+        self.deliveredSharedCaptureIds.insert(capture.requestId)
+        self.sharedCaptureDeliveryInFlight = true
+        self.request(.capture)
+        channel.invokeMethod(
+          "sharedCapture",
+          arguments: [
+            "requestId": capture.requestId,
+            "files": capture.files.map(\.path),
+          ]
+        ) { [weak self] response in
+          DispatchQueue.main.async {
+            guard let self else { return }
+            self.sharedCaptureDeliveryInFlight = false
+            if response is FlutterError {
+              self.deliveredSharedCaptureIds.remove(capture.requestId)
+              self.scheduleSharedCaptureRetry()
+            } else {
+              self.deliverNextSharedCapture()
+            }
+          }
         }
       }
     }
   }
 
-  private func validatedSharedCapture(_ candidate: URL) -> ValidatedSharedCapture? {
+  private static func nextSharedCapture(
+    excluding requestIds: Set<String>
+  ) -> ValidatedSharedCapture? {
+    guard let inbox = sharedCaptureInboxURL(create: true),
+          let candidates = try? FileManager.default.contentsOfDirectory(
+            at: inbox,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+          )
+    else { return nil }
+    for candidate in candidates.sorted(by: {
+      $0.lastPathComponent < $1.lastPathComponent
+    }) {
+      let requestId = candidate.lastPathComponent.lowercased()
+      if requestIds.contains(requestId) { continue }
+      if let capture = validatedSharedCapture(candidate, inbox: inbox) {
+        return capture
+      }
+    }
+    return nil
+  }
+
+  private static func validatedSharedCapture(
+    _ candidate: URL,
+    inbox: URL
+  ) -> ValidatedSharedCapture? {
     let requestId = candidate.lastPathComponent.lowercased()
     guard Self.isSharedCaptureRequestId(requestId),
           candidate.lastPathComponent == requestId,
-          let inbox = sharedCaptureInboxURL(),
           Self.isDirectChild(candidate, of: inbox),
           let attributes = try? FileManager.default.attributesOfItem(atPath: candidate.path),
           attributes[.type] as? FileAttributeType == .typeDirectory,
@@ -2555,17 +2709,23 @@ private final class DesktopHostController: NSObject {
 
   private func completeSharedCapture(_ requestId: String) {
     dispatchPrecondition(condition: .onQueue(.main))
-    defer {
-      deliveredSharedCaptureIds.remove(requestId)
-      deliverNextSharedCapture()
+    deliveredSharedCaptureIds.remove(requestId)
+    sharedCaptureRemovalIds.insert(requestId)
+    Self.sharedCaptureIOQueue.async { [weak self] in
+      if let inbox = Self.sharedCaptureInboxURL(),
+         let capture = Self.validatedSharedCapture(
+           inbox.appendingPathComponent(requestId, isDirectory: true),
+           inbox: inbox
+         ),
+         capture.requestId == requestId {
+        try? FileManager.default.removeItem(at: capture.directory)
+      }
+      DispatchQueue.main.async {
+        guard let self else { return }
+        self.sharedCaptureRemovalIds.remove(requestId)
+        self.deliverNextSharedCapture()
+      }
     }
-    guard let inbox = sharedCaptureInboxURL(),
-          let capture = validatedSharedCapture(
-            inbox.appendingPathComponent(requestId, isDirectory: true)
-          ),
-          capture.requestId == requestId
-    else { return }
-    try? FileManager.default.removeItem(at: capture.directory)
   }
 
   private func scheduleSharedCaptureRetry() {
