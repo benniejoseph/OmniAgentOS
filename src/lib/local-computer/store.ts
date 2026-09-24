@@ -9,6 +9,7 @@ import {
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import {
   LOCAL_COMPUTER_COMMAND_LEASE_SECONDS,
+  LOCAL_COMPUTER_COMMAND_RUNNER_CONTRACT_VERSION,
   LOCAL_COMPUTER_COMMAND_TIMEOUT_MS,
   LOCAL_COMPUTER_DEVICE_LEASE_SECONDS,
   LOCAL_COMPUTER_NATIVE_CONTRACT_VERSION,
@@ -18,7 +19,9 @@ import {
   LOCAL_COMPUTER_SCREENSHOT_COORDINATE_CONTRACT_VERSION,
   localComputerActionSchema,
   localComputerClickInputSchema,
+  localComputerCommandRunnerSchema,
   localComputerResultSchema,
+  localComputerRunCommandInputSchema,
   type LocalComputerAction,
   type LocalComputerCompletionRequest,
   type LocalComputerDeviceUpdate,
@@ -36,7 +39,7 @@ import {
 } from "@/lib/tools/audit-store";
 
 type LocalComputerSql = ReturnType<typeof getSql>;
-const LOCAL_COMPUTER_OBSERVATION_TTL_SECONDS = 5 * 60;
+const LOCAL_COMPUTER_EPHEMERAL_RESULT_TTL_SECONDS = 5 * 60;
 
 export class LocalComputerUnavailableError extends Error {
   readonly status = 409;
@@ -67,21 +70,25 @@ export async function updateLocalComputerDevice(
     now.getTime() + LOCAL_COMPUTER_DEVICE_LEASE_SECONDS * 1_000,
   ).toISOString();
   const permissions = input.permissions;
-  const eligible = input.enabled &&
-    permissions.accessibility === "granted" &&
+  const visualReady = permissions.accessibility === "granted" &&
     permissions.screenRecording === "granted";
+  const commandReady = native.contractVersion >=
+      LOCAL_COMPUTER_COMMAND_RUNNER_CONTRACT_VERSION &&
+    input.commandRunner?.helperInstalled === true &&
+    input.commandRunner.workspaces.length > 0;
+  const eligible = input.enabled && (visualReady || commandReady);
   const rows = await getSql()`
     INSERT INTO omni_local_computer_devices (
       tenant_id, owner_actor_id, user_id, mobile_session_id, device_id,
       platform, native_contract_version, enabled, helper_version,
-      permission_status, activity_state, lifecycle_revision, last_seen_at,
-      lease_expires_at, stopped_at, created_at, updated_at
+      permission_status, activity_state, command_runner, lifecycle_revision,
+      last_seen_at, lease_expires_at, stopped_at, created_at, updated_at
     )
     SELECT
       ${context.tenantId}, ${context.actorId}, ${native.userId}, session.id,
       ${native.deviceId}, 'macos', ${native.contractVersion}, ${eligible},
-      ${input.helperVersion}, ${permissions}::jsonb, ${input.activityState}, 1,
-      ${now.toISOString()}, ${leaseExpiresAt},
+      ${input.helperVersion}, ${permissions}::jsonb, ${input.activityState},
+      ${input.commandRunner || null}::jsonb, 1, ${now.toISOString()}, ${leaseExpiresAt},
       ${eligible ? null : now.toISOString()}, ${now.toISOString()},
       ${now.toISOString()}
     FROM omni_mobile_sessions session
@@ -100,6 +107,7 @@ export async function updateLocalComputerDevice(
       helper_version = EXCLUDED.helper_version,
       permission_status = EXCLUDED.permission_status,
       activity_state = EXCLUDED.activity_state,
+      command_runner = EXCLUDED.command_runner,
       lifecycle_revision = omni_local_computer_devices.lifecycle_revision + 1,
       last_seen_at = EXCLUDED.last_seen_at,
       lease_expires_at = EXCLUDED.lease_expires_at,
@@ -162,8 +170,20 @@ export async function startLocalComputerSession(
       AND device.mobile_session_id = ${native.sessionId}
       AND device.enabled
       AND device.lease_expires_at > NOW()
-      AND device.permission_status ->> 'accessibility' = 'granted'
-      AND device.permission_status ->> 'screenRecording' = 'granted'
+      AND (
+        (
+          device.permission_status ->> 'accessibility' = 'granted'
+          AND device.permission_status ->> 'screenRecording' = 'granted'
+        )
+        OR (
+          device.native_contract_version >= ${LOCAL_COMPUTER_COMMAND_RUNNER_CONTRACT_VERSION}
+          AND device.command_runner ->> 'helperInstalled' = 'true'
+          AND jsonb_array_length(COALESCE(
+            device.command_runner -> 'workspaces',
+            '[]'::jsonb
+          )) > 0
+        )
+      )
     ON CONFLICT (tenant_id, owner_actor_id, correlation_id) DO UPDATE SET
       device_id = EXCLUDED.device_id,
       state = 'active',
@@ -175,7 +195,7 @@ export async function startLocalComputerSession(
   `;
   if (!rows[0]) {
     throw new LocalComputerUnavailableError(
-      "This Mac is not online with both Accessibility and Screen Recording enabled.",
+      "This Mac is not online with visual permissions or an installed command runner workspace.",
     );
   }
   await appendLocalComputerEvent({
@@ -193,7 +213,25 @@ export async function startLocalComputerSession(
       expiresAt,
     },
   });
-  return { id, deviceId: native.deviceId, expiresAt };
+  const deviceRows = await getSql()`
+    SELECT command_runner
+    FROM omni_local_computer_devices
+    WHERE tenant_id = ${context.tenantId}
+      AND owner_actor_id = ${context.actorId}
+      AND device_id = ${native.deviceId}
+      AND mobile_session_id = ${native.sessionId}
+    LIMIT 1
+  `;
+  const commandRunner = localComputerCommandRunnerSchema.safeParse(
+    deviceRows[0]?.command_runner,
+  );
+  const workspaces = commandRunner.success && commandRunner.data.helperInstalled
+    ? commandRunner.data.workspaces.map(({ id: workspaceId, name }) => ({
+        id: workspaceId,
+        name,
+      }))
+    : [];
+  return { id, deviceId: native.deviceId, expiresAt, workspaces };
 }
 
 export async function stopLocalComputerDevice(
@@ -248,16 +286,20 @@ export async function claimLocalComputerCommand(context: SecurityContext) {
   await ensureDatabaseSchema();
   await getSql()`
     UPDATE omni_local_computer_commands
-    SET result = result - 'observation', state = 'consumed',
+    SET result = result - 'observation' - 'terminalOutput', state = 'consumed',
         consumed_at = COALESCE(consumed_at, NOW()),
-        error_code = COALESCE(error_code, 'observation_expired'),
+        error_code = COALESCE(error_code, CASE
+          WHEN action = 'observe' THEN 'observation_expired'
+          WHEN action = 'run_command' THEN 'terminal_output_expired'
+          ELSE 'ephemeral_result_expired'
+        END),
         updated_at = NOW()
     WHERE tenant_id = ${context.tenantId}
       AND owner_actor_id = ${context.actorId}
       AND device_id = ${native.deviceId}
-      AND result ? 'observation'
+      AND (result ? 'observation' OR result ? 'terminalOutput')
       AND completed_at <= NOW() - (
-        ${LOCAL_COMPUTER_OBSERVATION_TTL_SECONDS} * INTERVAL '1 second'
+        ${LOCAL_COMPUTER_EPHEMERAL_RESULT_TTL_SECONDS} * INTERVAL '1 second'
       )
   `;
   await getSql()`
@@ -418,18 +460,23 @@ export async function scrubExpiredLocalComputerObservations(
       WITH expired AS (
         SELECT ctid
         FROM omni_local_computer_commands
-        WHERE result ? 'observation'
+        WHERE (result ? 'observation' OR result ? 'terminalOutput')
           AND completed_at <= NOW() - (
-            ${LOCAL_COMPUTER_OBSERVATION_TTL_SECONDS} * INTERVAL '1 second'
+            ${LOCAL_COMPUTER_EPHEMERAL_RESULT_TTL_SECONDS} * INTERVAL '1 second'
           )
         ORDER BY completed_at ASC, tenant_id ASC, id ASC
         FOR UPDATE SKIP LOCKED
         LIMIT ${limit}
       )
       UPDATE omni_local_computer_commands target
-      SET result = target.result - 'observation', state = 'consumed',
+      SET result = target.result - 'observation' - 'terminalOutput',
+          state = 'consumed',
           consumed_at = COALESCE(target.consumed_at, NOW()),
-          error_code = COALESCE(target.error_code, 'observation_expired'),
+          error_code = COALESCE(target.error_code, CASE
+            WHEN target.action = 'observe' THEN 'observation_expired'
+            WHEN target.action = 'run_command' THEN 'terminal_output_expired'
+            ELSE 'ephemeral_result_expired'
+          END),
           updated_at = NOW()
       FROM expired
       WHERE target.ctid = expired.ctid
@@ -451,6 +498,7 @@ export async function completeLocalComputerCommand(
   requireStorage();
   const id = opaque(commandId, "command id", 80);
   const result = completion.result || null;
+  const hasTerminalOutput = Boolean(result?.terminalOutput);
   const resultSha256 = result ? canonicalJsonSha256(result) : null;
   await ensureDatabaseSchema();
   const rows = await getSql()`
@@ -464,6 +512,11 @@ export async function completeLocalComputerCommand(
       AND device_id = ${native.deviceId}
       AND id = ${id}
       AND state = 'claimed'
+      AND (
+        ${completion.outcome !== "succeeded"}
+        OR (action = 'run_command' AND ${hasTerminalOutput})
+        OR (action <> 'run_command' AND NOT ${hasTerminalOutput})
+      )
       AND claim_token_sha256 = ${digest([completion.claimToken])}
       AND claim_expires_at > NOW()
     RETURNING *
@@ -518,13 +571,30 @@ async function enqueueLocalComputerCommand(input: {
   const clickInput = action === "click"
     ? localComputerClickInputSchema.safeParse(input.toolInput)
     : undefined;
+  const runCommandInput = action === "run_command"
+    ? localComputerRunCommandInputSchema.safeParse(input.toolInput)
+    : undefined;
   if (clickInput && !clickInput.success) {
     throw new LocalComputerCommandError(
       "invalid_input",
       "A local Mac click must identify one observed element or one exact screenshot-pixel point.",
     );
   }
-  const toolInput = clickInput?.success ? clickInput.data : input.toolInput;
+  if (runCommandInput && !runCommandInput.success) {
+    throw new LocalComputerCommandError(
+      "invalid_input",
+      runCommandInput.error.issues[0]?.message ||
+        "A local Mac command must use one advertised workspace and a bounded direct executable.",
+    );
+  }
+  const toolInput = clickInput?.success
+    ? clickInput.data
+    : runCommandInput?.success
+      ? runCommandInput.data
+      : input.toolInput;
+  const commandWorkspaceId = runCommandInput?.success
+    ? runCommandInput.data.workspaceId
+    : "";
   const executionId = opaque(input.executionId, "execution id", 240);
   const runId = opaque(input.runId, "run id", 240);
   const commandId = `local_computer_command_${digest([
@@ -581,6 +651,29 @@ async function enqueueLocalComputerCommand(input: {
           AND device.native_contract_version >= ${requiredNativeContractVersion}
           AND device.enabled
           AND device.lease_expires_at > NOW()
+          AND (
+            ${action === "run_command"}
+            OR (
+              device.permission_status ->> 'accessibility' = 'granted'
+              AND device.permission_status ->> 'screenRecording' = 'granted'
+            )
+          )
+          AND (
+            ${action !== "run_command"}
+            OR (
+              device.command_runner ->> 'helperInstalled' = 'true'
+              AND EXISTS (
+                SELECT 1
+                FROM jsonb_array_elements(
+                  COALESCE(
+                    device.command_runner -> 'workspaces',
+                    '[]'::jsonb
+                  )
+                ) workspace
+                WHERE workspace ->> 'id' = ${commandWorkspaceId}
+              )
+            )
+          )
           AND native_session.platform = 'macos'
           AND native_session.client_contract_version >= ${requiredNativeContractVersion}
           AND native_session.client_attested_at IS NOT NULL
@@ -632,6 +725,29 @@ async function enqueueLocalComputerCommand(input: {
         AND device.native_contract_version >= ${requiredNativeContractVersion}
         AND device.enabled
         AND device.lease_expires_at > NOW()
+        AND (
+          ${action === "run_command"}
+          OR (
+            device.permission_status ->> 'accessibility' = 'granted'
+            AND device.permission_status ->> 'screenRecording' = 'granted'
+          )
+        )
+        AND (
+          ${action !== "run_command"}
+          OR (
+            device.command_runner ->> 'helperInstalled' = 'true'
+            AND EXISTS (
+              SELECT 1
+              FROM jsonb_array_elements(
+                COALESCE(
+                  device.command_runner -> 'workspaces',
+                  '[]'::jsonb
+                )
+              ) workspace
+              WHERE workspace ->> 'id' = ${commandWorkspaceId}
+            )
+          )
+        )
         AND native_session.platform = 'macos'
         AND native_session.client_contract_version >= ${requiredNativeContractVersion}
         AND native_session.client_attested_at IS NOT NULL
@@ -718,31 +834,45 @@ async function waitForLocalComputerCommand(
     }
     if (row.state === "completed" || row.state === "consumed") {
       if (
-        row.action === "observe" &&
+        (row.action === "observe" || row.action === "run_command") &&
         Date.now() >=
           Date.parse(dateText(row.completed_at)) +
-            LOCAL_COMPUTER_OBSERVATION_TTL_SECONDS * 1_000
+            LOCAL_COMPUTER_EPHEMERAL_RESULT_TTL_SECONDS * 1_000
       ) {
         await getSql()`
           UPDATE omni_local_computer_commands
-          SET result = result - 'observation', state = 'consumed',
+          SET result = result - 'observation' - 'terminalOutput',
+              state = 'consumed',
               consumed_at = COALESCE(consumed_at, NOW()),
-              error_code = COALESCE(error_code, 'observation_expired'),
+              error_code = COALESCE(error_code, ${row.action === "observe"
+                ? "observation_expired"
+                : "terminal_output_expired"}),
               updated_at = NOW()
           WHERE tenant_id = ${input.executionScope.tenantId}
             AND owner_actor_id = ${input.executionScope.initiatingActorId || ""}
             AND id = ${command.id}
-            AND result ? 'observation'
+            AND (result ? 'observation' OR result ? 'terminalOutput')
         `;
         throw new LocalComputerCommandError(
-          "observation_expired",
-          "The local Mac observation expired before it could be consumed.",
+          row.action === "observe"
+            ? "observation_expired"
+            : "terminal_output_expired",
+          row.action === "observe"
+            ? "The local Mac observation expired before it could be consumed."
+            : "The local Mac command output expired before it could be consumed.",
         );
       }
-      if (row.state === "consumed" && row.action === "observe") {
+      if (
+        row.state === "consumed" &&
+        (row.action === "observe" || row.action === "run_command")
+      ) {
         throw new LocalComputerCommandError(
-          "observation_consumed",
-          "The local Mac observation was already consumed. Run a fresh observe command.",
+          row.action === "observe"
+            ? "observation_consumed"
+            : "terminal_output_consumed",
+          row.action === "observe"
+            ? "The local Mac observation was already consumed. Run a fresh observe command."
+            : "The local Mac command output was already consumed and cannot be replayed.",
         );
       }
       const parsed = localComputerResultSchema.safeParse(row.result);
@@ -753,7 +883,13 @@ async function waitForLocalComputerCommand(
         );
       }
       const result = parsed.data;
-      const publicResult = stripObservation(result);
+      if (row.action === "run_command" && !result.terminalOutput) {
+        throw new LocalComputerCommandError(
+          "terminal_output_missing",
+          "The installed Mac returned no bounded output for the governed command.",
+        );
+      }
+      const publicResult = stripEphemeralResult(result);
       if (row.state === "completed") {
         const consumed = await getSql()`
           UPDATE omni_local_computer_commands
@@ -765,10 +901,17 @@ async function waitForLocalComputerCommand(
             AND state = 'completed'
           RETURNING id
         `;
-        if (row.action === "observe" && !consumed[0]) {
+        if (
+          (row.action === "observe" || row.action === "run_command") &&
+          !consumed[0]
+        ) {
           throw new LocalComputerCommandError(
-            "observation_consumed",
-            "The local Mac observation was already consumed. Run a fresh observe command.",
+            row.action === "observe"
+              ? "observation_consumed"
+              : "terminal_output_consumed",
+            row.action === "observe"
+              ? "The local Mac observation was already consumed. Run a fresh observe command."
+              : "The local Mac command output was already consumed and cannot be replayed.",
           );
         }
       }
@@ -789,9 +932,14 @@ async function waitForLocalComputerCommand(
           action: String(row.action),
           resultSha256: String(row.result_sha256),
           observationDisclosedEphemerally: Boolean(result.observation),
+          terminalOutputDisclosedEphemerally: Boolean(result.terminalOutput),
         },
       });
-      return { publicResult, observation: result.observation };
+      return {
+        publicResult,
+        observation: result.observation,
+        terminalOutput: result.terminalOutput,
+      };
     }
     if (["failed", "canceled", "expired"].includes(String(row.state))) {
       throw new LocalComputerCommandError(
@@ -816,9 +964,33 @@ async function waitForLocalComputerCommand(
   );
 }
 
-function stripObservation(result: ReturnType<typeof localComputerResultSchema.parse>) {
-  const { observation: _observation, ...publicResult } = result;
+function stripEphemeralResult(
+  result: ReturnType<typeof localComputerResultSchema.parse>,
+) {
+  if (result.terminalOutput) {
+    const output = result.terminalOutput;
+    return {
+      summary: result.summary,
+      data: {
+        effectVerdict: "confirmed",
+        exitCode: output.exitCode,
+        durationMs: output.durationMs,
+        stdoutBytes: output.stdoutBytes,
+        stderrBytes: output.stderrBytes,
+        stdoutSha256: output.stdoutSha256,
+        stderrSha256: output.stderrSha256,
+        stdoutTruncated: output.stdoutTruncated,
+        stderrTruncated: output.stderrTruncated,
+      },
+    };
+  }
+  const {
+    observation: _observation,
+    terminalOutput: _terminalOutput,
+    ...publicResult
+  } = result;
   void _observation;
+  void _terminalOutput;
   return publicResult;
 }
 
@@ -854,6 +1026,9 @@ function requireStorage() {
 
 function publicDevice(row: Record<string, unknown>) {
   const permissions = objectRecord(row.permission_status);
+  const commandRunner = localComputerCommandRunnerSchema.safeParse(
+    row.command_runner,
+  );
   const online = Boolean(row.enabled) && Date.parse(dateText(row.lease_expires_at)) > Date.now();
   return {
     schemaVersion: LOCAL_COMPUTER_PROTOCOL_VERSION,
@@ -866,6 +1041,7 @@ function publicDevice(row: Record<string, unknown>) {
       screenRecording: String(permissions.screenRecording || "unknown"),
     },
     activityState: String(row.activity_state),
+    ...(commandRunner.success ? { commandRunner: commandRunner.data } : {}),
     lifecycleRevision: Number(row.lifecycle_revision),
     lastSeenAt: dateText(row.last_seen_at),
     leaseExpiresAt: dateText(row.lease_expires_at),
@@ -904,7 +1080,9 @@ function digest(parts: readonly string[]) {
 }
 
 function toolIdForLocalComputerAction(action: LocalComputerAction) {
-  return `local.macos.${action}`;
+  return action === "run_command"
+    ? "local.macos.command.run"
+    : `local.macos.${action}`;
 }
 
 function requiredNativeContractVersionForCommand(
@@ -913,6 +1091,9 @@ function requiredNativeContractVersionForCommand(
 ) {
   if (action === "open_url") {
     return LOCAL_COMPUTER_OPEN_URL_CONTRACT_VERSION;
+  }
+  if (action === "run_command") {
+    return LOCAL_COMPUTER_COMMAND_RUNNER_CONTRACT_VERSION;
   }
   if (action === "click" && input.coordinateSpace === "screenshot_pixel") {
     return LOCAL_COMPUTER_SCREENSHOT_COORDINATE_CONTRACT_VERSION;

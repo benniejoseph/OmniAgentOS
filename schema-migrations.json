@@ -1018,5 +1018,10 @@
     "version": 204,
     "name": "google_multi_account_connections_v1",
     "checksum": "8c7ae456bdbcc92f00adb2f24728cf03dc2b082cae7880e0f87ce71d15314cd8"
+  },
+  {
+    "version": 205,
+    "name": "governed_local_command_runner_v1",
+    "checksum": "a9c301b4ef3030962b2ae9f69b8df9c2cb2914e90b0d9c8a3c6032f91691015a"
   }
 ]

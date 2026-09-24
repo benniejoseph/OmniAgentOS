@@ -504,12 +504,42 @@ private final class LocalComputerController: NSObject {
     let expiresAt: Date
   }
 
+  private struct CommandWorkspaceGrant: Codable {
+    let id: String
+    var name: String
+    var bookmarkData: Data
+    var lastKnownPath: String
+  }
+
+  private struct ResolvedCommandWorkspace {
+    let id: String
+    let name: String
+    let root: URL
+    let accessURL: URL
+  }
+
   private static let allowedActions: Set<String> = [
     "observe", "list_apps", "activate_app", "open_url", "press", "click", "type", "key", "scroll",
+    "run_command",
+  ]
+  private static let commandInputKeys: Set<String> = [
+    "workspaceId", "executable", "arguments", "relativeDirectory", "timeoutSeconds",
+  ]
+  private static let forbiddenCommandExecutables: Set<String> = [
+    "ash", "bash", "csh", "dash", "env", "exec", "fish", "ksh", "launchctl",
+    "login", "nohup", "open", "osascript", "script", "security", "sh", "sudo",
+    "tcsh", "time", "xargs", "zsh",
   ]
   private static let helperBundleName = "AsaelComputerUseHelper.app"
   private static let helperExecutableName = "AsaelComputerUseHelper"
   private static let helperBundleIdentifier = "app.omniagent.omniagent.computer-use-helper"
+  private static let commandHelperBundleName = "AsaelCommandRunnerHelper.app"
+  private static let commandHelperExecutableName = "AsaelCommandRunnerHelper"
+  private static let commandHelperBundleIdentifier =
+    "app.omniagent.omniagent.command-runner-helper"
+  private static let commandWorkspaceDefaultsKey = "AsaelCommandWorkspaceGrantsV1"
+  private static let maximumCommandWorkspaceCount = 32
+  private static let maximumCommandResponseBytes = 256 * 1_024
   private static let maximumResponseBytes = 4 * 1_024 * 1_024
   private static let maximumRequestBytes = 96 * 1_024
 
@@ -523,6 +553,18 @@ private final class LocalComputerController: NSObject {
   private var completed: [String: CompletedRequest] = [:]
   private var completionOrder: [String] = []
   private var completionExpiryWorkItem: DispatchWorkItem?
+  private lazy var commandWorkspaceGrants = Self.loadCommandWorkspaceGrants()
+  private var commandProcess: Process?
+  private var commandInputPipe: Pipe?
+  private var commandOutputPipe: Pipe?
+  private var commandErrorPipe: Pipe?
+  private var commandOutputBuffer = Data()
+  private var commandTimeoutWorkItem: DispatchWorkItem?
+  private var commandCompletion: (([String: Any]) -> Void)?
+  private var commandExecutionId: String?
+  private var commandWorkspaceAccessURL: URL?
+  private var commandWorkspaceAccessStarted = false
+  private var commandWorkspaceId: String?
   private var statusItem: NSStatusItem?
   private weak var statusMenuItem: NSMenuItem?
   private var expectedTermination = false
@@ -588,6 +630,23 @@ private final class LocalComputerController: NSObject {
       setEnabled(requested) { status in result(status) }
     case "executeLocalComputerCommand":
       execute(call.arguments, result: result)
+    case "addCommandWorkspace":
+      guard call.arguments == nil else {
+        result(invalidArguments())
+        return
+      }
+      addCommandWorkspace { response in result(response) }
+    case "removeCommandWorkspace":
+      guard let values = call.arguments as? [String: Any],
+            values.count == 1,
+            let workspaceId = values["workspaceId"] as? String,
+            Self.isWorkspaceId(workspaceId)
+      else {
+        result(invalidArguments())
+        return
+      }
+      removeCommandWorkspace(workspaceId)
+      result(status())
     case "stop":
       guard call.arguments == nil else {
         result(invalidArguments())
@@ -598,6 +657,65 @@ private final class LocalComputerController: NSObject {
     default:
       result(FlutterMethodNotImplemented)
     }
+  }
+
+  private func addCommandWorkspace(completion: @escaping ([String: Any]) -> Void) {
+    let panel = NSOpenPanel()
+    panel.title = "Allow Asael to work in a folder"
+    panel.message = "Choose one folder Asael may use for explicitly approved commands."
+    panel.prompt = "Allow Folder"
+    panel.canChooseDirectories = true
+    panel.canChooseFiles = false
+    panel.canCreateDirectories = true
+    panel.allowsMultipleSelection = false
+    panel.resolvesAliases = true
+    panel.begin { [weak self] response in
+      guard let self else { return }
+      guard response == .OK, let selected = panel.url else {
+        completion(self.status())
+        return
+      }
+      guard let root = Self.canonicalDirectory(selected),
+            let bookmark = try? root.bookmarkData(
+              options: [.withSecurityScope],
+              includingResourceValuesForKeys: nil,
+              relativeTo: nil
+            ),
+            !bookmark.isEmpty,
+            bookmark.count <= 256 * 1_024
+      else {
+        completion(self.status())
+        return
+      }
+
+      let name = Self.commandWorkspaceName(for: root)
+      if let index = self.commandWorkspaceGrants.firstIndex(where: {
+        Self.canonicalPath($0.lastKnownPath) == root.path
+      }) {
+        self.commandWorkspaceGrants[index].name = name
+        self.commandWorkspaceGrants[index].bookmarkData = bookmark
+        self.commandWorkspaceGrants[index].lastKnownPath = root.path
+      } else if self.commandWorkspaceGrants.count < Self.maximumCommandWorkspaceCount,
+                let workspaceId = Self.makeWorkspaceId(),
+                !self.commandWorkspaceGrants.contains(where: { $0.id == workspaceId }) {
+        self.commandWorkspaceGrants.append(CommandWorkspaceGrant(
+          id: workspaceId,
+          name: name,
+          bookmarkData: bookmark,
+          lastKnownPath: root.path
+        ))
+      }
+      self.persistCommandWorkspaceGrants()
+      completion(self.status())
+    }
+  }
+
+  private func removeCommandWorkspace(_ workspaceId: String) {
+    if commandWorkspaceId == workspaceId {
+      terminateCommandHelper(outcome: "canceled", code: "workspace_access_revoked")
+    }
+    commandWorkspaceGrants.removeAll { $0.id == workspaceId }
+    persistCommandWorkspaceGrants()
   }
 
   private func setEnabled(
@@ -688,6 +806,15 @@ private final class LocalComputerController: NSObject {
       result(prior.output)
       return
     }
+    if action == "run_command" {
+      executeCommand(
+        id: id,
+        input: input,
+        expiration: expiration,
+        result: result
+      )
+      return
+    }
     guard ensureHelper() else {
       result(commandFailure("helper_unavailable"))
       return
@@ -705,6 +832,233 @@ private final class LocalComputerController: NSObject {
       self.remember(id: id, output: channelResponse, expiresAt: expiration)
       result(channelResponse)
     }
+  }
+
+  private func executeCommand(
+    id: String,
+    input: [String: Any],
+    expiration: Date,
+    result: @escaping FlutterResult
+  ) {
+    guard commandHelperInstalled,
+          Set(input.keys) == Self.commandInputKeys,
+          let workspaceId = input["workspaceId"] as? String,
+          Self.isWorkspaceId(workspaceId),
+          let executable = input["executable"] as? String,
+          Self.isCommandExecutable(executable),
+          !Self.forbiddenCommandExecutables.contains(executable.lowercased()),
+          let arguments = input["arguments"] as? [String],
+          arguments.count <= 64,
+          arguments.allSatisfy(Self.isSafeCommandArgument),
+          arguments.reduce(0, { $0 + $1.utf8.count }) <= 48 * 1_024,
+          let relativeDirectory = input["relativeDirectory"] as? String,
+          Self.isSafeRelativeDirectory(relativeDirectory),
+          let timeoutSeconds = input["timeoutSeconds"] as? Int,
+          (1...30).contains(timeoutSeconds),
+          let workspace = resolveCommandWorkspace(workspaceId),
+          let workingDirectory = Self.resolveCommandWorkingDirectory(
+            root: workspace.root,
+            relativeDirectory: relativeDirectory
+          )
+    else {
+      result(commandFailure("invalid_command_input"))
+      return
+    }
+
+    let didStartAccess = workspace.accessURL.startAccessingSecurityScopedResource()
+    let helperInput: [String: Any] = [
+      "workspaceId": workspace.id,
+      "workspaceName": workspace.name,
+      "workspaceRoot": workspace.root.path,
+      "workingDirectory": workingDirectory.path,
+      "executable": executable,
+      "arguments": arguments,
+      "relativeDirectory": relativeDirectory,
+      "timeoutSeconds": timeoutSeconds,
+    ]
+    let helperEnvelope: [String: Any] = [
+      "id": id,
+      "action": "run_command",
+      "input": helperInput,
+      "expiresAt": ISO8601DateFormatter().string(from: expiration),
+    ]
+
+    active = true
+    updateStatusItem()
+    let launched = launchCommandHelper(
+      envelope: helperEnvelope,
+      expiresIn: min(
+        expiration.timeIntervalSinceNow,
+        TimeInterval(timeoutSeconds) + 2
+      ),
+      workspace: workspace,
+      didStartAccess: didStartAccess
+    ) { [weak self] response in
+      guard let self else { return }
+      self.active = false
+      self.updateStatusItem()
+      var channelResponse = response
+      channelResponse.removeValue(forKey: "id")
+      self.remember(id: id, output: channelResponse, expiresAt: expiration)
+      result(channelResponse)
+    }
+    if !launched {
+      active = false
+      updateStatusItem()
+      if didStartAccess { workspace.accessURL.stopAccessingSecurityScopedResource() }
+      result(commandFailure("command_helper_unavailable"))
+    }
+  }
+
+  private func launchCommandHelper(
+    envelope: [String: Any],
+    expiresIn: TimeInterval,
+    workspace: ResolvedCommandWorkspace,
+    didStartAccess: Bool,
+    completion: @escaping ([String: Any]) -> Void
+  ) -> Bool {
+    guard commandProcess == nil,
+          let id = envelope["id"] as? String,
+          let executableURL = commandHelperExecutableURL,
+          FileManager.default.isExecutableFile(atPath: executableURL.path),
+          JSONSerialization.isValidJSONObject(envelope),
+          var requestData = try? JSONSerialization.data(withJSONObject: envelope),
+          requestData.count <= Self.maximumRequestBytes
+    else { return false }
+
+    let launched = Process()
+    let input = Pipe()
+    let output = Pipe()
+    let errors = Pipe()
+    launched.executableURL = executableURL
+    launched.arguments = []
+    launched.environment = [
+      "LANG": "en_US.UTF-8",
+      "LC_ALL": "en_US.UTF-8",
+      "PATH": "/usr/bin:/bin",
+    ]
+    launched.standardInput = input
+    launched.standardOutput = output
+    launched.standardError = errors
+    output.fileHandleForReading.readabilityHandler = { [weak self, weak launched] handle in
+      let data = handle.availableData
+      guard !data.isEmpty else { return }
+      DispatchQueue.main.async {
+        guard let self, let launched, self.commandProcess === launched else { return }
+        self.ingestCommandHelper(data)
+      }
+    }
+    errors.fileHandleForReading.readabilityHandler = { handle in
+      _ = handle.availableData
+    }
+    launched.terminationHandler = { [weak self, weak launched] _ in
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+        guard let self, let launched, self.commandProcess === launched else { return }
+        self.terminateCommandHelper(outcome: "failed", code: "command_helper_unavailable")
+      }
+    }
+
+    do {
+      try launched.run()
+    } catch {
+      output.fileHandleForReading.readabilityHandler = nil
+      errors.fileHandleForReading.readabilityHandler = nil
+      return false
+    }
+    _ = setpgid(launched.processIdentifier, launched.processIdentifier)
+    commandProcess = launched
+    commandInputPipe = input
+    commandOutputPipe = output
+    commandErrorPipe = errors
+    commandOutputBuffer.removeAll(keepingCapacity: true)
+    commandCompletion = completion
+    commandExecutionId = id
+    commandWorkspaceAccessURL = workspace.accessURL
+    commandWorkspaceAccessStarted = didStartAccess
+    commandWorkspaceId = workspace.id
+
+    let timeout = DispatchWorkItem { [weak self, weak launched] in
+      guard let self, let launched, self.commandProcess === launched else { return }
+      self.terminateCommandHelper(outcome: "failed", code: "command_helper_timeout")
+    }
+    commandTimeoutWorkItem = timeout
+    DispatchQueue.main.asyncAfter(
+      deadline: .now() + min(max(expiresIn, 0.25), 122),
+      execute: timeout
+    )
+
+    requestData.append(0x0a)
+    do {
+      try input.fileHandleForWriting.write(contentsOf: requestData)
+      try input.fileHandleForWriting.close()
+      return true
+    } catch {
+      terminateCommandHelper(outcome: "failed", code: "command_helper_unavailable")
+      return true
+    }
+  }
+
+  private func ingestCommandHelper(_ data: Data) {
+    commandOutputBuffer.append(data)
+    guard commandOutputBuffer.count <= Self.maximumCommandResponseBytes,
+          let newline = commandOutputBuffer.firstIndex(of: 0x0a)
+    else {
+      if commandOutputBuffer.count > Self.maximumCommandResponseBytes {
+        terminateCommandHelper(outcome: "failed", code: "command_helper_invalid_response")
+      }
+      return
+    }
+    let line = Data(commandOutputBuffer[..<newline])
+    let trailing = commandOutputBuffer[commandOutputBuffer.index(after: newline)...]
+    guard !line.isEmpty,
+          trailing.isEmpty,
+          let response = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+          response["id"] as? String == commandExecutionId,
+          let outcome = response["outcome"] as? String,
+          ["succeeded", "failed", "canceled"].contains(outcome)
+    else {
+      terminateCommandHelper(outcome: "failed", code: "command_helper_invalid_response")
+      return
+    }
+    finishCommandHelper(response)
+  }
+
+  private func finishCommandHelper(_ response: [String: Any]) {
+    commandTimeoutWorkItem?.cancel()
+    commandTimeoutWorkItem = nil
+    let completion = commandCompletion
+    commandCompletion = nil
+    commandProcess?.terminationHandler = nil
+    commandOutputPipe?.fileHandleForReading.readabilityHandler = nil
+    commandErrorPipe?.fileHandleForReading.readabilityHandler = nil
+    try? commandInputPipe?.fileHandleForWriting.close()
+    if commandWorkspaceAccessStarted {
+      commandWorkspaceAccessURL?.stopAccessingSecurityScopedResource()
+    }
+    commandProcess = nil
+    commandInputPipe = nil
+    commandOutputPipe = nil
+    commandErrorPipe = nil
+    commandOutputBuffer.removeAll(keepingCapacity: false)
+    commandExecutionId = nil
+    commandWorkspaceAccessURL = nil
+    commandWorkspaceAccessStarted = false
+    commandWorkspaceId = nil
+    completion?(response)
+  }
+
+  private func terminateCommandHelper(outcome: String, code: String) {
+    guard commandProcess != nil || commandCompletion != nil else { return }
+    let terminating = commandProcess
+    let id = commandExecutionId ?? "invalid"
+    if let terminating, terminating.isRunning {
+      terminating.terminate()
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak terminating] in
+        guard let terminating, terminating.isRunning else { return }
+        kill(terminating.processIdentifier, SIGKILL)
+      }
+    }
+    finishCommandHelper(Self.ipcResponse(id: id, outcome: outcome, code: code))
   }
 
   private func envelope(
@@ -906,6 +1260,7 @@ private final class LocalComputerController: NSObject {
   private func stop(reason: String, notifyFlutter: Bool) {
     enabled = false
     active = false
+    terminateCommandHelper(outcome: "canceled", code: "stopped")
     terminateHelper(expected: true, pendingOutcome: "canceled")
     clearCompletedRequests()
     removeStatusItem()
@@ -988,6 +1343,9 @@ private final class LocalComputerController: NSObject {
       "accessibility": accessibility,
       "screenRecording": screenRecording,
       "helperVersion": helperVersion,
+      "commandHelperInstalled": commandHelperInstalled,
+      "commandHelperVersion": commandHelperVersion,
+      "commandWorkspaces": commandHelperInstalled ? publicCommandWorkspaces : [],
     ]
   }
 
@@ -1025,6 +1383,239 @@ private final class LocalComputerController: NSObject {
           version.count <= 40
     else { return "unavailable" }
     return version
+  }
+
+  private var commandHelperInstalled: Bool {
+    guard let commandHelperBundleURL,
+          let bundle = Bundle(url: commandHelperBundleURL),
+          bundle.bundleIdentifier == Self.commandHelperBundleIdentifier,
+          let version = bundle.object(
+            forInfoDictionaryKey: "CFBundleShortVersionString"
+          ) as? String,
+          version.range(
+            of: #"^[0-9]+\.[0-9]+\.[0-9]+$"#,
+            options: .regularExpression
+          ) != nil,
+          let executable = commandHelperExecutableURL
+    else { return false }
+    return FileManager.default.isExecutableFile(atPath: executable.path)
+  }
+
+  private var commandHelperBundleURL: URL? {
+    Bundle.main.bundleURL
+      .appendingPathComponent("Contents", isDirectory: true)
+      .appendingPathComponent("Helpers", isDirectory: true)
+      .appendingPathComponent(Self.commandHelperBundleName, isDirectory: true)
+  }
+
+  private var commandHelperExecutableURL: URL? {
+    commandHelperBundleURL?
+      .appendingPathComponent("Contents/MacOS", isDirectory: true)
+      .appendingPathComponent(Self.commandHelperExecutableName, isDirectory: false)
+  }
+
+  private var commandHelperVersion: String {
+    guard let commandHelperBundleURL,
+          let bundle = Bundle(url: commandHelperBundleURL),
+          let version = bundle.object(
+            forInfoDictionaryKey: "CFBundleShortVersionString"
+          ) as? String,
+          version.count <= 40
+    else { return "unavailable" }
+    return version
+  }
+
+  private var publicCommandWorkspaces: [[String: Any]] {
+    let grants = commandWorkspaceGrants
+      .filter { Self.isWorkspaceId($0.id) && Self.isWorkspaceName($0.name) }
+      .sorted {
+        if $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedSame {
+          return $0.id < $1.id
+        }
+        return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+      }
+    var seenPaths = Set<String>()
+    return grants.compactMap { grant -> [String: Any]? in
+      guard let path = Self.canonicalPath(grant.lastKnownPath),
+            seenPaths.insert(path).inserted
+      else { return nil }
+      return [
+        "id": grant.id,
+        "name": grant.name,
+        "path": path,
+      ]
+    }
+  }
+
+  private func resolveCommandWorkspace(_ workspaceId: String) -> ResolvedCommandWorkspace? {
+    guard let index = commandWorkspaceGrants.firstIndex(where: { $0.id == workspaceId })
+    else { return nil }
+    var isStale = false
+    guard let bookmarked = try? URL(
+      resolvingBookmarkData: commandWorkspaceGrants[index].bookmarkData,
+      options: [.withSecurityScope, .withoutUI],
+      relativeTo: nil,
+      bookmarkDataIsStale: &isStale
+    ) else { return nil }
+    let didStartAccess = bookmarked.startAccessingSecurityScopedResource()
+    defer {
+      if didStartAccess { bookmarked.stopAccessingSecurityScopedResource() }
+    }
+    guard let root = Self.canonicalDirectory(bookmarked) else { return nil }
+
+    var changed = isStale
+    if isStale,
+       let refreshed = try? root.bookmarkData(
+         options: [.withSecurityScope],
+         includingResourceValuesForKeys: nil,
+         relativeTo: nil
+       ) {
+      commandWorkspaceGrants[index].bookmarkData = refreshed
+    }
+    if commandWorkspaceGrants[index].lastKnownPath != root.path {
+      commandWorkspaceGrants[index].lastKnownPath = root.path
+      changed = true
+    }
+    if changed { persistCommandWorkspaceGrants() }
+    return ResolvedCommandWorkspace(
+      id: commandWorkspaceGrants[index].id,
+      name: commandWorkspaceGrants[index].name,
+      root: root,
+      accessURL: bookmarked
+    )
+  }
+
+  private func persistCommandWorkspaceGrants() {
+    let sanitized = Array(commandWorkspaceGrants.prefix(Self.maximumCommandWorkspaceCount))
+    guard let encoded = try? JSONEncoder().encode(sanitized),
+          encoded.count <= 2 * 1_024 * 1_024
+    else { return }
+    UserDefaults.standard.set(encoded, forKey: Self.commandWorkspaceDefaultsKey)
+  }
+
+  private static func loadCommandWorkspaceGrants() -> [CommandWorkspaceGrant] {
+    guard let data = UserDefaults.standard.data(forKey: commandWorkspaceDefaultsKey),
+          data.count <= 2 * 1_024 * 1_024,
+          let decoded = try? JSONDecoder().decode([CommandWorkspaceGrant].self, from: data)
+    else { return [] }
+    var seen = Set<String>()
+    return decoded.compactMap { grant in
+      guard seen.count < maximumCommandWorkspaceCount,
+            isWorkspaceId(grant.id),
+            seen.insert(grant.id).inserted,
+            isWorkspaceName(grant.name),
+            !grant.bookmarkData.isEmpty,
+            grant.bookmarkData.count <= 256 * 1_024,
+            grant.lastKnownPath.hasPrefix("/"),
+            grant.lastKnownPath.utf8.count <= 4_096,
+            !grant.lastKnownPath.unicodeScalars.contains(where: {
+              $0.value < 0x20 || $0.value == 0x7f
+            })
+      else { return nil }
+      return grant
+    }
+  }
+
+  private static func canonicalDirectory(_ url: URL) -> URL? {
+    let canonical = url.standardizedFileURL.resolvingSymlinksInPath()
+    guard canonical.isFileURL, canonical.path.hasPrefix("/"),
+          canonical.path.utf8.count <= 4_096,
+          !canonical.path.unicodeScalars.contains(where: {
+            $0.value < 0x20 || $0.value == 0x7f
+          })
+    else { return nil }
+    var isDirectory: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: canonical.path, isDirectory: &isDirectory),
+          isDirectory.boolValue
+    else { return nil }
+    return canonical
+  }
+
+  private static func canonicalPath(_ path: String) -> String? {
+    guard path.hasPrefix("/"), path.utf8.count <= 4_096,
+          !path.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7f })
+    else { return nil }
+    return URL(fileURLWithPath: path, isDirectory: true)
+      .standardizedFileURL
+      .resolvingSymlinksInPath()
+      .path
+  }
+
+  private static func resolveCommandWorkingDirectory(
+    root: URL,
+    relativeDirectory: String
+  ) -> URL? {
+    let candidate = relativeDirectory.isEmpty
+      ? root
+      : root.appendingPathComponent(relativeDirectory, isDirectory: true)
+    guard let canonical = canonicalDirectory(candidate),
+          root.path == "/"
+            || canonical.path == root.path
+            || canonical.path.hasPrefix(root.path + "/")
+    else { return nil }
+    return canonical
+  }
+
+  private static func commandWorkspaceName(for root: URL) -> String {
+    let proposed = root.lastPathComponent.isEmpty ? "Root" : root.lastPathComponent
+    let safeScalars = proposed.unicodeScalars.filter {
+      $0.value >= 0x20 && $0.value != 0x7f
+    }
+    var scalarText = ""
+    for scalar in safeScalars { scalarText.unicodeScalars.append(scalar) }
+    let sanitized = scalarText.trimmingCharacters(in: .whitespacesAndNewlines)
+    let name = sanitized.isEmpty ? "Workspace" : sanitized
+    return String(name.prefix(120))
+  }
+
+  private static func makeWorkspaceId() -> String? {
+    var bytes = [UInt8](repeating: 0, count: 16)
+    let status = bytes.withUnsafeMutableBytes { buffer in
+      SecRandomCopyBytes(kSecRandomDefault, buffer.count, buffer.baseAddress!)
+    }
+    guard status == errSecSuccess else { return nil }
+    return "local_workspace_" + bytes.map { String(format: "%02x", $0) }.joined()
+  }
+
+  private static func isWorkspaceId(_ value: String) -> Bool {
+    value.range(
+      of: #"^local_workspace_[a-f0-9]{32}$"#,
+      options: .regularExpression
+    ) != nil
+  }
+
+  private static func isWorkspaceName(_ value: String) -> Bool {
+    (1...120).contains(value.count)
+      && !value.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7f })
+  }
+
+  private static func isCommandExecutable(_ value: String) -> Bool {
+    value.utf8.count <= 64
+      && value.range(
+        of: #"^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$"#,
+        options: .regularExpression
+      ) != nil
+  }
+
+  private static func isSafeCommandArgument(_ value: String) -> Bool {
+    value.utf8.count <= 8 * 1_024
+      && !value.unicodeScalars.contains(where: {
+        $0.value == 0 || ($0.value < 0x20 && $0.value != 0x09) || $0.value == 0x7f
+      })
+  }
+
+  private static func isSafeRelativeDirectory(_ value: String) -> Bool {
+    guard !value.isEmpty,
+          value.utf8.count <= 1_024,
+          !value.hasPrefix("/"),
+          !value.hasPrefix("~"),
+          !value.contains("\\"),
+          !value.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7f })
+    else { return false }
+    if value == "." { return true }
+    return value.split(separator: "/", omittingEmptySubsequences: false).allSatisfy {
+      !$0.isEmpty && $0 != "." && $0 != ".."
+    }
   }
 
   private func remember(id: String, output: [String: Any], expiresAt: Date) {

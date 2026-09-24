@@ -224,6 +224,9 @@ task_dmg="$task_dist_dir/Asael-${task_version}-${task_build}-macOS.dmg"
 task_helper_source_dir="$task_flutter_dir/macos/ComputerUseHelper"
 task_helper_app="$task_staged_app/Contents/Helpers/AsaelComputerUseHelper.app"
 task_helper_executable="$task_helper_app/Contents/MacOS/AsaelComputerUseHelper"
+task_command_helper_source_dir="$task_flutter_dir/macos/CommandRunnerHelper"
+task_command_helper_app="$task_staged_app/Contents/Helpers/AsaelCommandRunnerHelper.app"
+task_command_helper_executable="$task_command_helper_app/Contents/MacOS/AsaelCommandRunnerHelper"
 task_credential_broker_app="$task_staged_app/Contents/Helpers/AsaelCredentialBroker.app"
 
 mkdir -p "$task_dmg_source_dir"
@@ -280,6 +283,46 @@ else
 fi
 chmod 0755 "$task_helper_executable"
 
+# Build the separately signed, one-shot command runner. It accepts one bounded
+# executable-plus-argv request over child pipes, carries no credentials, and
+# receives an owner-approved workspace path only from the native host.
+if [[ ! -f "$task_command_helper_source_dir/HelperMain.swift" \
+      || ! -f "$task_command_helper_source_dir/Info.plist" ]]; then
+  echo "The local command runner helper sources are incomplete." >&2
+  exit 1
+fi
+task_command_helper_build_dir="$task_stage_dir/command-helper-build"
+mkdir -p "$task_command_helper_build_dir" "$task_command_helper_app/Contents/MacOS"
+cp "$task_command_helper_source_dir/Info.plist" "$task_command_helper_app/Contents/Info.plist"
+/usr/libexec/PlistBuddy \
+  -c "Set :CFBundleShortVersionString $task_version" \
+  "$task_command_helper_app/Contents/Info.plist"
+/usr/libexec/PlistBuddy \
+  -c "Set :CFBundleVersion $task_build" \
+  "$task_command_helper_app/Contents/Info.plist"
+
+task_command_helper_slices=()
+for task_helper_architecture in $task_helper_architectures; do
+  task_command_helper_slice="$task_command_helper_build_dir/AsaelCommandRunnerHelper-$task_helper_architecture"
+  xcrun swiftc \
+    -parse-as-library \
+    -O \
+    -whole-module-optimization \
+    -sdk "$task_helper_sdk" \
+    -target "$task_helper_architecture-apple-macos14.0" \
+    -framework CryptoKit \
+    -framework Security \
+    "$task_command_helper_source_dir/HelperMain.swift" \
+    -o "$task_command_helper_slice"
+  task_command_helper_slices+=("$task_command_helper_slice")
+done
+if [[ "${#task_command_helper_slices[@]}" -eq 1 ]]; then
+  cp "${task_command_helper_slices[0]}" "$task_command_helper_executable"
+else
+  lipo -create "${task_command_helper_slices[@]}" -output "$task_command_helper_executable"
+fi
+chmod 0755 "$task_command_helper_executable"
+
 if [[ -n "$task_signing_identity" ]]; then
   task_codesign_args=(
     --force
@@ -320,6 +363,13 @@ if [[ -n "$task_signing_identity" ]]; then
     "${task_codesign_args[@]}" \
     --identifier "app.omniagent.omniagent.computer-use-helper" \
     "$task_helper_app"
+
+  codesign_with_active_identity \
+    "${task_codesign_keychain_args[@]}" \
+    "${task_codesign_args[@]}" \
+    --identifier "app.omniagent.omniagent.command-runner-helper" \
+    "$task_command_helper_app"
+  codesign --verify --strict --verbose=2 "$task_command_helper_app"
 
   codesign_with_active_identity \
     "${task_codesign_keychain_args[@]}" \

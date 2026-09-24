@@ -79,7 +79,10 @@ import { assertConnectorSecretBinding } from "@/lib/connectors/secret-binding";
 import { getOpenApiConnector, getOpenApiOperationById } from "@/lib/connectors/openapi-store";
 import { getMcpConnector, getMcpToolById } from "@/lib/connectors/store";
 import { readResponseTextLimited } from "@/lib/http/body";
-import { localComputerOpenUrlInputSchema } from "@/lib/local-computer/contracts";
+import {
+  localComputerOpenUrlInputSchema,
+  localComputerRunCommandInputSchema,
+} from "@/lib/local-computer/contracts";
 import { executeLocalComputerCommand } from "@/lib/local-computer/store";
 import {
   clipVideoMediaAsset,
@@ -185,6 +188,18 @@ type LocalComputerToolResult = Readonly<{
       mimeType: "image/jpeg" | "image/png" | "image/webp";
       dataBase64: string;
     }>;
+  }>;
+  terminalOutput?: Readonly<{
+    stdout: string;
+    stderr: string;
+    exitCode: number;
+    durationMs: number;
+    stdoutBytes: number;
+    stderrBytes: number;
+    stdoutSha256: string;
+    stderrSha256: string;
+    stdoutTruncated: boolean;
+    stderrTruncated: boolean;
   }>;
 }>;
 
@@ -1192,7 +1207,14 @@ export async function executeGovernedTool({
   const persistedSingleApproval = Boolean(
     existingRecord?.status === "executing" && executionClaimToken,
   );
+  // Local command execution must always cross the durable, single-action
+  // approval boundary. An in-request `approved` flag, a plan grant, or a
+  // schedule lease must never become standing authority to execute another
+  // process on the user's Mac.
+  const requiresPersistedSingleApproval =
+    tool.id === "local.macos.command.run";
   const directUserApproval = Boolean(
+    !requiresPersistedSingleApproval &&
     scopedRequest.executionScope?.executingPrincipalType === "user" &&
     scopedRequest.executionScope.executingPrincipalId ===
       scopedRequest.executionScope.initiatingActorId,
@@ -1200,6 +1222,7 @@ export async function executeGovernedTool({
   let boundPlanGrantApproval = false;
   if (
     approved &&
+    !requiresPersistedSingleApproval &&
     !persistedSingleApproval &&
     !directUserApproval &&
     approvalGrantClaim &&
@@ -1225,6 +1248,7 @@ export async function executeGovernedTool({
   }
   const boundPolicyLeaseApproval = Boolean(
     approved &&
+    !requiresPersistedSingleApproval &&
     !persistedSingleApproval &&
     !directUserApproval &&
     policyLeaseClaim &&
@@ -1894,11 +1918,12 @@ export async function executeGovernedTool({
       throw error;
     }
     const computerObservation: ModelComputerObservation | undefined =
-      localComputerResult?.observation
+      localComputerResult?.observation || localComputerResult?.terminalOutput
         ? localComputerModelObservation({
             executionId: saved.id,
             operation: tool.id,
             observation: localComputerResult.observation,
+            terminalOutput: localComputerResult.terminalOutput,
           })
         : undefined;
     await recordTrustOutcomeSafely(
@@ -2968,6 +2993,7 @@ const LOCAL_COMPUTER_TOOL_ACTIONS = {
   "local.macos.type": "type",
   "local.macos.key": "key",
   "local.macos.scroll": "scroll",
+  "local.macos.command.run": "run_command",
 } as const;
 
 function localComputerActionForTool(toolId: string) {
@@ -2993,16 +3019,19 @@ function asLocalComputerToolResult(
 function localComputerModelObservation(input: {
   executionId: string;
   operation: string;
-  observation: NonNullable<LocalComputerToolResult["observation"]>;
+  observation?: NonNullable<LocalComputerToolResult["observation"]>;
+  terminalOutput?: NonNullable<LocalComputerToolResult["terminalOutput"]>;
 }) {
-  const application = input.observation.frontmostApplication;
+  const application = input.observation?.frontmostApplication;
+  const snapshotRevision = input.observation?.snapshotRevision ||
+    canonicalJsonSha256(input.terminalOutput || {});
   return sanitizeModelComputerObservation({
     schemaVersion: 1,
     source: "local_macos",
     trust: "untrusted_data",
     executionId: input.executionId,
     operation: input.operation,
-    snapshotRevision: input.observation.snapshotRevision,
+    snapshotRevision,
     ...(application
       ? {
           applicationState: {
@@ -3012,11 +3041,19 @@ function localComputerModelObservation(input: {
           },
         }
       : {}),
-    ...(input.observation.accessibilitySnapshot
+    ...(input.observation?.accessibilitySnapshot
       ? { accessibilitySnapshot: input.observation.accessibilitySnapshot }
       : {}),
-    ...(input.observation.screenshot
+    ...(input.observation?.screenshot
       ? { screenshot: input.observation.screenshot }
+      : {}),
+    ...(input.terminalOutput
+      ? {
+          terminalOutput: {
+            stdout: input.terminalOutput.stdout,
+            stderr: input.terminalOutput.stderr,
+          },
+        }
       : {}),
   }, { includeImage: true });
 }
@@ -3750,6 +3787,9 @@ async function runTool(
       [LOCAL_COMPUTER_TOOL_RESULT]: true,
       publicResult: completed.publicResult,
       ...(completed.observation ? { observation: completed.observation } : {}),
+      ...(completed.terminalOutput
+        ? { terminalOutput: completed.terminalOutput }
+        : {}),
     } satisfies LocalComputerToolResult;
   }
 
@@ -5002,6 +5042,10 @@ function parseInput(tool: ToolDefinition, input: Record<string, unknown>) {
     return localComputerOpenUrlInputSchema.parse(input);
   }
 
+  if (tool.id === "local.macos.command.run") {
+    return localComputerRunCommandInputSchema.parse(input);
+  }
+
   if (tool.id === "memory.search" || tool.id === "knowledge.search") {
     return searchSchema.parse(input);
   }
@@ -5207,6 +5251,16 @@ function describeSideEffects(toolId: string) {
       "outbound HTTP call to a public endpoint",
       "side effects depend on the target API and method",
       "SSRF-guarded; redirects are not followed; response is truncated in the audit record",
+    ];
+  }
+
+  if (toolId === "local.macos.command.run") {
+    return [
+      "starts one exact executable and argument vector from one advertised local workspace",
+      "never invokes a shell or accepts an absolute filesystem path",
+      "requires persisted human approval for every command",
+      "does not replay after an indeterminate native execution",
+      "retains only exit metadata and output digests; stdout and stderr are disclosed ephemerally for one model turn",
     ];
   }
 

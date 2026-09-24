@@ -16,6 +16,7 @@ import '../../app/platform/macos_presentation.dart';
 import '../../app/theme/macos_app_theme.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/platform/desktop_host_bridge.dart';
+import '../../core/platform/local_computer_bridge.dart';
 import '../../generated/native_contract.g.dart';
 import '../computer_use/local_computer.dart';
 import 'talk_command_context.dart';
@@ -368,10 +369,15 @@ class TalkWorkspaceArtifactSummary {
 }
 
 class TalkArtifactContent {
-  const TalkArtifactContent({required this.assetId, required this.bytes});
+  const TalkArtifactContent({
+    required this.assetId,
+    required this.bytes,
+    this.terminal,
+  });
 
   final String assetId;
   final Uint8List bytes;
+  final LocalComputerTerminalPreview? terminal;
 }
 
 class LegacyComputerPreviewRetired implements Exception {
@@ -1148,8 +1154,9 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
         notifyListeners();
         return;
       }
-      if (contextReferences.any((item) =>
-          item.kind != 'agent' && item.kind != 'project')) {
+      if (contextReferences.any(
+        (item) => item.kind != 'agent' && item.kind != 'project',
+      )) {
         promptQueueError = StateError(
           'Attached Skills, files, Extensions, and Connections must be sent directly after the current work finishes.',
         );
@@ -1529,7 +1536,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       notifyListeners();
       return;
     }
-    if (artifact.kind == 'computer') {
+    if (artifact.kind == 'computer' || artifact.kind == 'terminal') {
       // Historical remote-browser frames are no longer readable. Current
       // This Mac screenshots return through the in-memory preview map above
       // and never use the retired frame endpoint.
@@ -1587,6 +1594,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     artifactError = null;
     artifactLoading = false;
     for (final content in temporaryContents) {
+      if (content.terminal != null) continue;
       PaintingBinding.instance.imageCache.evict(
         MemoryImage(content.bytes),
         includeLive: true,
@@ -1735,19 +1743,19 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
             )
           : contextReferences.isNotEmpty
           ? (_commandContextRepository ??
-                (throw StateError(
-                  'This Asael build cannot send selected Command context.',
-                )))
-              .sendWithCommandContext(
-                message: text,
-                contextReferences: contextReferences,
-                threadId: threadId,
-                mode: mode,
-                strategy: strategy,
-                executionTarget: executionTarget,
-                agentId: assignedAgent?.id,
-                modelSelection: modelSelection,
-              )
+                    (throw StateError(
+                      'This Asael build cannot send selected Command context.',
+                    )))
+                .sendWithCommandContext(
+                  message: text,
+                  contextReferences: contextReferences,
+                  threadId: threadId,
+                  mode: mode,
+                  strategy: strategy,
+                  executionTarget: executionTarget,
+                  agentId: assignedAgent?.id,
+                  modelSelection: modelSelection,
+                )
           : repository.send(
               message: text,
               threadId: threadId,
@@ -1868,7 +1876,8 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
               state: _toolActivityState(toolStatus),
             );
             if (toolStatus == 'executed' &&
-                toolId == 'local.macos.observe' &&
+                (toolId == 'local.macos.observe' ||
+                    toolId == 'local.macos.command.run') &&
                 executionId.isNotEmpty) {
               final acceptedRunId = runId;
               if (acceptedRunId != null) {
@@ -2518,15 +2527,30 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   }) {
     final source = localComputerPreviews;
     if (source == null) return;
-    final previews = <LocalComputerScreenshotPreview>[];
+    final LocalComputerTerminalPreviewSource? terminalSource =
+        source is LocalComputerTerminalPreviewSource
+        ? source as LocalComputerTerminalPreviewSource
+        : null;
+    final screenshotPreviews = <LocalComputerScreenshotPreview>[];
+    final terminalPreviews = <LocalComputerTerminalPreview>[];
     if (executionId == null) {
-      previews.addAll(source.takeRunPreviews(expectedRunId));
+      screenshotPreviews.addAll(source.takeRunPreviews(expectedRunId));
+      if (terminalSource != null) {
+        terminalPreviews.addAll(
+          terminalSource.takeRunTerminalPreviews(expectedRunId),
+        );
+      }
     } else {
-      final preview = source.takePreview(expectedRunId, executionId);
-      if (preview != null) previews.add(preview);
+      final screenshot = source.takePreview(expectedRunId, executionId);
+      if (screenshot != null) screenshotPreviews.add(screenshot);
+      final terminal = terminalSource?.takeTerminalPreview(
+        expectedRunId,
+        executionId,
+      );
+      if (terminal != null) terminalPreviews.add(terminal);
     }
-    var attached = 0;
-    for (final preview in previews) {
+    var screenshotsAttached = 0;
+    for (final preview in screenshotPreviews) {
       if (preview.runId != expectedRunId ||
           !preview.expiresAt.isAfter(DateTime.now().toUtc())) {
         continue;
@@ -2562,18 +2586,97 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       artifacts.add(artifact);
       _selectLocalPreview(artifact);
       _scheduleLocalPreviewExpiry(assetId, preview.expiresAt);
-      attached += 1;
+      screenshotsAttached += 1;
     }
-    if (attached > 0) {
+    if (screenshotsAttached > 0) {
       _recordActivity(
         key: 'local-computer-preview:$expectedRunId',
-        title: attached == 1
+        title: screenshotsAttached == 1
             ? 'Screenshot ready'
-            : '$attached screenshots ready',
+            : '$screenshotsAttached screenshots ready',
         detail: 'Private previews are available only in this app session and are not kept in Conversation history.',
         state: TalkActivityState.succeeded,
       );
     }
+
+    for (final preview in terminalPreviews) {
+      if (preview.runId != expectedRunId ||
+          !preview.expiresAt.isAfter(DateTime.now().toUtc())) {
+        continue;
+      }
+      final assetId = 'local_terminal_${preview.executionId}';
+      final bytes = Uint8List.fromList(
+        utf8.encode(_terminalExportText(preview)),
+      );
+      final artifact = TalkMediaArtifactSummary(
+        assetId: assetId,
+        kind: 'terminal',
+        operation: 'local_macos_command',
+        filename: '${preview.executable}-output.txt',
+        mediaType: 'text/plain; charset=utf-8',
+        byteCount: bytes.length,
+        status: 'temporary',
+        sourceRunId: expectedRunId,
+        contextLabel:
+            '${preview.workspaceName} · exit ${preview.output.exitCode}',
+        title: '${preview.executable} output',
+      );
+      _localPreviewArtifacts.removeWhere(
+        (candidate) => candidate.assetId == assetId,
+      );
+      _localPreviewArtifacts.add(artifact);
+      _localPreviewContents[assetId] = TalkArtifactContent(
+        assetId: assetId,
+        bytes: bytes,
+        terminal: preview,
+      );
+      artifacts.removeWhere((candidate) => candidate.assetId == assetId);
+      artifacts.add(artifact);
+      _selectLocalPreview(artifact);
+      _scheduleLocalPreviewExpiry(assetId, preview.expiresAt);
+      _recordActivity(
+        key: 'local-command-output:${preview.executionId}',
+        title: 'Command finished',
+        detail:
+            'Exit ${preview.output.exitCode} · ${_terminalDuration(preview.output.durationMs)} · temporary output attached',
+        state: preview.output.exitCode == 0
+            ? TalkActivityState.succeeded
+            : TalkActivityState.failed,
+      );
+    }
+  }
+
+  static String _terminalExportText(LocalComputerTerminalPreview preview) {
+    final output = preview.output;
+    final folder = preview.relativeDirectory == '.'
+        ? preview.workspaceName
+        : '${preview.workspaceName}/${preview.relativeDirectory}';
+    final buffer = StringBuffer()
+      ..writeln('Command: ${preview.commandLabel}')
+      ..writeln('Folder: $folder')
+      ..writeln('Exit status: ${output.exitCode}')
+      ..writeln('Duration: ${_terminalDuration(output.durationMs)}')
+      ..writeln()
+      ..writeln('STDOUT')
+      ..writeln(output.stdout.isEmpty ? '(no output)' : output.stdout);
+    if (output.stdoutTruncated) {
+      buffer.writeln('[Output was shortened for this temporary preview.]');
+    }
+    buffer
+      ..writeln()
+      ..writeln('STDERR')
+      ..writeln(output.stderr.isEmpty ? '(no errors)' : output.stderr);
+    if (output.stderrTruncated) {
+      buffer.writeln(
+        '[Error output was shortened for this temporary preview.]',
+      );
+    }
+    return buffer.toString();
+  }
+
+  static String _terminalDuration(int milliseconds) {
+    if (milliseconds < 1000) return '${milliseconds}ms';
+    return '${(milliseconds / 1000).toStringAsFixed(1)}s';
   }
 
   void _selectLocalPreview(TalkMediaArtifactSummary artifact) {
@@ -2609,7 +2712,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       artifactLoading = false;
       artifactError = null;
     }
-    if (content != null) {
+    if (content != null && content.terminal == null) {
       PaintingBinding.instance.imageCache.evict(
         MemoryImage(content.bytes),
         includeLive: true,
@@ -3232,9 +3335,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   void selectCommandReasoning(String? reasoningLevel) {
     final choice = selectedCommandModel;
     if (reasoningLevel != null &&
-        choice?.reasoningOptions.any(
-              (option) => option.id == reasoningLevel,
-            ) !=
+        choice?.reasoningOptions.any((option) => option.id == reasoningLevel) !=
             true) {
       return;
     }
@@ -3742,7 +3843,8 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                 artifactContent != null &&
                                 artifactContent.assetId == artifact.assetId &&
                                 (artifact.kind == 'image' ||
-                                    artifact.kind == 'computer');
+                                    artifact.kind == 'computer' ||
+                                    artifact.kind == 'terminal');
                             return Align(
                               alignment: m.role == TalkRole.user
                                   ? Alignment.centerRight
@@ -4053,8 +4155,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                   widget.controller.transcribing || recording
                                   ? null
                                   : (_) => submit(),
-                              hintText:
-                                  'Describe an outcome or ask a question',
+                              hintText: 'Describe an outcome or ask a question',
                               suffixIcon: Row(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
@@ -4152,6 +4253,15 @@ class _TalkInlineArtifactPreview extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final terminal = content.terminal;
+    if (terminal != null) {
+      return _TerminalOutputPreview(
+        preview: terminal,
+        filename: artifact.filename,
+        bytes: content.bytes,
+        compact: true,
+      );
+    }
     final scheme = Theme.of(context).colorScheme;
     final temporary = artifact.status == 'temporary';
     final title = artifact.kind == 'computer'
@@ -4232,6 +4342,192 @@ class _TalkInlineArtifactPreview extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _TerminalOutputPreview extends StatelessWidget {
+  const _TerminalOutputPreview({
+    required this.preview,
+    required this.filename,
+    required this.bytes,
+    this.compact = false,
+    this.embedded = false,
+  });
+
+  final LocalComputerTerminalPreview preview;
+  final String filename;
+  final Uint8List bytes;
+  final bool compact;
+  final bool embedded;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final output = preview.output;
+    final folder = preview.relativeDirectory == '.'
+        ? preview.workspaceName
+        : '${preview.workspaceName}/${preview.relativeDirectory}';
+    final succeeded = output.exitCode == 0;
+    return Semantics(
+      label:
+          'Temporary terminal output for ${preview.executable}, exit ${output.exitCode}',
+      child: Container(
+        decoration: BoxDecoration(
+          color: scheme.surfaceContainerLowest,
+          borderRadius: embedded ? null : BorderRadius.circular(12),
+          border: embedded ? null : Border.all(color: scheme.outlineVariant),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 9, 6, 8),
+              child: Row(
+                children: [
+                  Icon(Icons.terminal_rounded, size: 18, color: scheme.primary),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          preview.commandLabel,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontFamily: 'Menlo',
+                            fontSize: 11.5,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        Text(
+                          '$folder · ${TalkController._terminalDuration(output.durationMs)} · temporary',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: scheme.onSurfaceVariant,
+                            fontSize: 10.5,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 7,
+                      vertical: 3,
+                    ),
+                    decoration: BoxDecoration(
+                      color: (succeeded ? scheme.primary : scheme.error)
+                          .withValues(alpha: .12),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(
+                      'Exit ${output.exitCode}',
+                      style: TextStyle(
+                        color: succeeded ? scheme.primary : scheme.error,
+                        fontSize: 10.5,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Copy terminal output',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () => _copy(context),
+                    icon: const Icon(Icons.copy_all_outlined, size: 17),
+                  ),
+                  IconButton(
+                    tooltip: 'Save terminal output as…',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: _save,
+                    icon: const Icon(Icons.download_rounded, size: 18),
+                  ),
+                ],
+              ),
+            ),
+            Divider(height: 1, color: scheme.outlineVariant),
+            ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: compact ? 210 : 270,
+                minHeight: compact ? 120 : 160,
+              ),
+              child: ColoredBox(
+                color: scheme.surfaceContainerHighest,
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.all(12),
+                  child: SelectableText.rich(
+                    TextSpan(
+                      style: TextStyle(
+                        color: scheme.onSurface,
+                        fontFamily: 'Menlo',
+                        fontSize: 11,
+                        height: 1.45,
+                      ),
+                      children: [
+                        TextSpan(
+                          text: 'STDOUT\n',
+                          style: TextStyle(
+                            color: scheme.primary,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        TextSpan(
+                          text: output.stdout.isEmpty
+                              ? '(no output)\n'
+                              : '${output.stdout}\n',
+                        ),
+                        if (output.stdoutTruncated)
+                          TextSpan(
+                            text: '[Output shortened in this preview.]\n',
+                            style: TextStyle(color: scheme.onSurfaceVariant),
+                          ),
+                        TextSpan(
+                          text: '\nSTDERR\n',
+                          style: TextStyle(
+                            color: output.stderr.isEmpty
+                                ? scheme.onSurfaceVariant
+                                : scheme.error,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        TextSpan(
+                          text: output.stderr.isEmpty
+                              ? '(no errors)'
+                              : output.stderr,
+                        ),
+                        if (output.stderrTruncated)
+                          TextSpan(
+                            text: '\n[Error output shortened in this preview.]',
+                            style: TextStyle(color: scheme.onSurfaceVariant),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _copy(BuildContext context) async {
+    await Clipboard.setData(ClipboardData(text: utf8.decode(bytes)));
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(const SnackBar(content: Text('Terminal output copied')));
+  }
+
+  Future<void> _save() async {
+    await FilePicker.saveFile(
+      dialogTitle: 'Save terminal output',
+      fileName: filename,
+      bytes: bytes,
     );
   }
 }
@@ -4343,7 +4639,9 @@ class _ModelThinkingControls extends StatelessWidget {
                   contentPadding: EdgeInsets.zero,
                   leading: Icon(Icons.refresh_rounded, size: 19),
                   title: Text('Refresh model choices'),
-                  subtitle: Text('Read the validated route from Settings again'),
+                  subtitle: Text(
+                    'Read the validated route from Settings again',
+                  ),
                 ),
               ),
           ],
@@ -4367,8 +4665,8 @@ class _ModelThinkingControls extends StatelessWidget {
     TalkCommandModelChoice? choice,
     TalkCommandReasoningOption? reasoning,
   ) {
-    final options = choice?.reasoningOptions ??
-        const <TalkCommandReasoningOption>[];
+    final options =
+        choice?.reasoningOptions ?? const <TalkCommandReasoningOption>[];
     final enabled = choice != null && options.isNotEmpty;
     final help = choice == null
         ? 'Choose a specific model to set Thinking. Automatic lets the saved Settings route decide.'
@@ -4451,10 +4749,7 @@ class _ModelThinkingControls extends StatelessWidget {
             Text(
               '$label · $value',
               overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                color: foreground,
-                fontWeight: FontWeight.w600,
-              ),
+              style: TextStyle(color: foreground, fontWeight: FontWeight.w600),
             ),
             const SizedBox(width: 4),
             Icon(Icons.expand_more_rounded, size: 16, color: foreground),
@@ -4503,39 +4798,52 @@ class _ExecutionTargetMenu extends StatelessWidget {
     final macActive = coordinator?.active == true;
     final auxiliaryWindow =
         coordinator != null && !coordinator.canClaimCommands;
-    final status = auxiliaryWindow
-        ? 'Use the main Asael window for This Mac.'
-        : coordinator == null
-        ? 'This Mac status is unavailable in this client.'
-        : switch (coordinator.phase) {
-            LocalComputerBrokerPhase.ready => 'This Mac is ready.',
-            LocalComputerBrokerPhase.active =>
-              'Asael is currently operating this Mac.',
-            LocalComputerBrokerPhase.permissionsRequired =>
-              'This Mac needs Accessibility and Screen Recording permission.',
-            LocalComputerBrokerPhase.disabled ||
-            LocalComputerBrokerPhase.stopped =>
-              'Local Computer Use is disabled in Settings.',
-            LocalComputerBrokerPhase.degraded =>
-              'This Mac is reconnecting to the command service.',
-            LocalComputerBrokerPhase.starting => 'This Mac status is loading.',
-            LocalComputerBrokerPhase.unavailable =>
-              'Local Computer Use is available only in the signed macOS app.',
-          };
+    final status = _statusText(coordinator, auxiliaryWindow);
+    final nativeStatus = coordinator?.status;
+    final workspaces = nativeStatus?.commandWorkspaces ?? const [];
+    final canManageFolders =
+        coordinator != null &&
+        !auxiliaryWindow &&
+        !coordinator.changing &&
+        nativeStatus?.commandHelperInstalled == true;
     return Semantics(
       label: 'Execution target: ${value.label}. $status',
       button: true,
       child: Tooltip(
         message: value == TalkExecutionTarget.thisMac ? status : value.detail,
-        child: PopupMenuButton<TalkExecutionTarget>(
+        child: PopupMenuButton<String>(
           key: const ValueKey('talk-execution-target'),
-          initialValue: value,
-          tooltip: 'Choose where computer actions run',
-          onSelected: onChanged,
+          initialValue: 'target:${value.name}',
+          constraints: const BoxConstraints(minWidth: 340, maxWidth: 420),
+          tooltip: 'Choose how Asael can work',
+          onSelected: (selection) {
+            if (selection == 'target:agent') {
+              onChanged(TalkExecutionTarget.agent);
+              return;
+            }
+            if (selection == 'target:thisMac') {
+              onChanged(TalkExecutionTarget.thisMac);
+              return;
+            }
+            if (selection == 'workspace:add') {
+              if (coordinator != null) {
+                unawaited(coordinator.addCommandWorkspace());
+              }
+              return;
+            }
+            const removePrefix = 'workspace:remove:';
+            if (selection.startsWith(removePrefix) && coordinator != null) {
+              unawaited(
+                coordinator.removeCommandWorkspace(
+                  selection.substring(removePrefix.length),
+                ),
+              );
+            }
+          },
           itemBuilder: (context) => [
             for (final target in TalkExecutionTarget.values)
-              PopupMenuItem(
-                value: target,
+              PopupMenuItem<String>(
+                value: 'target:${target.name}',
                 enabled:
                     target != TalkExecutionTarget.thisMac || !auxiliaryWindow,
                 child: ListTile(
@@ -4544,9 +4852,11 @@ class _ExecutionTargetMenu extends StatelessWidget {
                   leading: Icon(target.icon, size: 19),
                   title: Text(target.label),
                   subtitle: Text(
-                    target == TalkExecutionTarget.thisMac && auxiliaryWindow
-                        ? 'Open Conversation in the main Asael window to use this Mac.'
+                    target == TalkExecutionTarget.thisMac
+                        ? status
                         : target.detail,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
                   ),
                   trailing: target == TalkExecutionTarget.thisMac
                       ? Icon(
@@ -4563,6 +4873,63 @@ class _ExecutionTargetMenu extends StatelessWidget {
                       : null,
                 ),
               ),
+            const PopupMenuDivider(),
+            PopupMenuItem<String>(
+              enabled: false,
+              height: 64,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Text(
+                    'Command folders',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    _commandFolderStatus(nativeStatus, auxiliaryWindow),
+                    style: TextStyle(
+                      color: scheme.onSurfaceVariant,
+                      fontSize: 11.5,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            for (final workspace in workspaces)
+              PopupMenuItem<String>(
+                value: 'workspace:remove:${workspace.id}',
+                enabled: canManageFolders,
+                child: ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.folder_outlined, size: 19),
+                  title: Text(
+                    workspace.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  subtitle: Text(
+                    '${workspace.path}\nChoose to remove command access',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  trailing: const Icon(Icons.remove_circle_outline, size: 18),
+                ),
+              ),
+            PopupMenuItem<String>(
+              value: 'workspace:add',
+              enabled: canManageFolders,
+              child: const ListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.create_new_folder_outlined, size: 19),
+                title: Text('Allow another folder'),
+                subtitle: Text(
+                  'Choose a starting folder for approved commands',
+                ),
+              ),
+            ),
           ],
           child: DecoratedBox(
             decoration: BoxDecoration(
@@ -4608,6 +4975,66 @@ class _ExecutionTargetMenu extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  String _statusText(
+    LocalComputerCoordinator? coordinator,
+    bool auxiliaryWindow,
+  ) {
+    if (auxiliaryWindow) {
+      return 'Open Conversation in the main Asael window to use this Mac.';
+    }
+    if (coordinator == null) {
+      return 'This Mac status is unavailable in this client.';
+    }
+    final status = coordinator.status;
+    if (status == null) {
+      return coordinator.phase == LocalComputerBrokerPhase.starting
+          ? 'Checking this Mac…'
+          : 'This Mac is unavailable.';
+    }
+    if (coordinator.active) return 'Asael is working on this Mac now.';
+    if (coordinator.phase == LocalComputerBrokerPhase.degraded) {
+      return 'This Mac is reconnecting.';
+    }
+    if (!status.enabled ||
+        coordinator.phase == LocalComputerBrokerPhase.stopped) {
+      return 'Turn on This Mac in Settings to use local apps or commands.';
+    }
+    final appControl = status.computerUseReady;
+    final commands = status.commandRunnerReady;
+    if (appControl && commands) {
+      return 'Can use apps and start approved commands from ${status.commandWorkspaces.length} ${status.commandWorkspaces.length == 1 ? 'folder' : 'folders'}.';
+    }
+    if (commands) {
+      return 'Can start approved commands from ${status.commandWorkspaces.length} ${status.commandWorkspaces.length == 1 ? 'folder' : 'folders'}.';
+    }
+    if (appControl && status.commandHelperInstalled) {
+      return 'Can use apps. Add a command folder to allow terminal work.';
+    }
+    if (appControl) return 'Can use apps on this Mac.';
+    if (coordinator.phase == LocalComputerBrokerPhase.permissionsRequired) {
+      return 'Allow Accessibility and Screen Recording in System Settings.';
+    }
+    return 'This Mac is not ready yet.';
+  }
+
+  String _commandFolderStatus(
+    LocalComputerStatus? status,
+    bool auxiliaryWindow,
+  ) {
+    if (auxiliaryWindow) {
+      return 'Manage folder access from the main Asael window.';
+    }
+    if (status == null) return 'Checking the local command runner…';
+    if (!status.commandHelperInstalled) {
+      return 'The local command runner is not installed in this build.';
+    }
+    final count = status.commandWorkspaces.length;
+    if (count == 0) {
+      return 'Add a starting folder. Every exact command still needs approval.';
+    }
+    return '$count approved starting ${count == 1 ? 'folder' : 'folders'}. Every exact command still needs approval.';
   }
 }
 
@@ -5114,79 +5541,88 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                AspectRatio(
-                  aspectRatio: 16 / 10,
-                  child: ColoredBox(
-                    color: scheme.surfaceContainerHighest,
-                    child: controller.artifactLoading
-                        ? const Center(child: CircularProgressIndicator())
-                        : content != null &&
-                              (selected.kind == 'image' ||
-                                  selected.kind == 'computer')
-                        ? Image.memory(
-                            content.bytes,
-                            fit: BoxFit.contain,
-                            errorBuilder: (_, _, _) => _artifactPlaceholder(
+                if (content?.terminal case final terminal?)
+                  _TerminalOutputPreview(
+                    preview: terminal,
+                    filename: selected.filename,
+                    bytes: content!.bytes,
+                    embedded: true,
+                  )
+                else ...[
+                  AspectRatio(
+                    aspectRatio: 16 / 10,
+                    child: ColoredBox(
+                      color: scheme.surfaceContainerHighest,
+                      child: controller.artifactLoading
+                          ? const Center(child: CircularProgressIndicator())
+                          : content != null &&
+                                (selected.kind == 'image' ||
+                                    selected.kind == 'computer')
+                          ? Image.memory(
+                              content.bytes,
+                              fit: BoxFit.contain,
+                              errorBuilder: (_, _, _) => _artifactPlaceholder(
+                                context,
+                                selected,
+                                'Preview could not be decoded',
+                              ),
+                            )
+                          : _artifactPlaceholder(
                               context,
                               selected,
-                              'Preview could not be decoded',
+                              controller.artifactError
+                                      is LegacyComputerPreviewRetired
+                                  ? 'Legacy browser preview retired'
+                                  : controller.artifactError == null
+                                  ? selected.isPresentation
+                                        ? 'Private presentation ready to save'
+                                        : 'Ready to save'
+                                  : 'Preview unavailable',
                             ),
-                          )
-                        : _artifactPlaceholder(
-                            context,
-                            selected,
-                            controller.artifactError
-                                    is LegacyComputerPreviewRetired
-                                ? 'Legacy browser preview retired'
-                                : controller.artifactError == null
-                                ? selected.isPresentation
-                                      ? 'Private presentation ready to save'
-                                      : 'Ready to save'
-                                : 'Preview unavailable',
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 10, 8, 8),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                selected.title ?? selected.filename,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontSize: 12.5,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              Text(
+                                selected.isPresentation
+                                    ? '${selected.filename} · ${selected.slideCount == null ? 'PowerPoint' : '${selected.slideCount} slides'} · Private · ${TalkController._humanBytes(selected.byteCount)}'
+                                    : '${selected.mediaType} · ${TalkController._humanBytes(selected.byteCount)}',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: scheme.onSurfaceVariant,
+                                  fontSize: 10.5,
+                                ),
+                              ),
+                            ],
                           ),
-                  ),
-                ),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 10, 8, 8),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              selected.title ?? selected.filename,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                fontSize: 12.5,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                            Text(
-                              selected.isPresentation
-                                  ? '${selected.filename} · ${selected.slideCount == null ? 'PowerPoint' : '${selected.slideCount} slides'} · Private · ${TalkController._humanBytes(selected.byteCount)}'
-                                  : '${selected.mediaType} · ${TalkController._humanBytes(selected.byteCount)}',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                color: scheme.onSurfaceVariant,
-                                fontSize: 10.5,
-                              ),
-                            ),
-                          ],
                         ),
-                      ),
-                      IconButton(
-                        tooltip: 'Save artifact as…',
-                        onPressed: content == null
-                            ? null
-                            : () => _saveArtifact(selected, content.bytes),
-                        icon: const Icon(Icons.download_rounded, size: 19),
-                      ),
-                    ],
+                        IconButton(
+                          tooltip: 'Save artifact as…',
+                          onPressed: content == null
+                              ? null
+                              : () => _saveArtifact(selected, content.bytes),
+                          icon: const Icon(Icons.download_rounded, size: 19),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
+                ],
               ],
             ),
           ),
@@ -5209,7 +5645,9 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
                     borderRadius: BorderRadius.circular(12),
                   ),
                   leading: Icon(
-                    artifact.kind == 'computer'
+                    artifact.kind == 'terminal'
+                        ? Icons.terminal_rounded
+                        : artifact.kind == 'computer'
                         ? Icons.screenshot_monitor_outlined
                         : artifact.isPresentation
                         ? Icons.slideshow_rounded
@@ -5250,7 +5688,9 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(
-            artifact.kind == 'computer'
+            artifact.kind == 'terminal'
+                ? Icons.terminal_rounded
+                : artifact.kind == 'computer'
                 ? Icons.screenshot_monitor_outlined
                 : artifact.isPresentation
                 ? Icons.slideshow_rounded

@@ -181,6 +181,14 @@ export type AgentRunRequest = {
   /** Explicit owner-selected execution surface. Never inferred or silently changed. */
   computerUseTarget?: ComputerUseTarget;
   /**
+   * Trusted, request-local catalog advertised by the exact installed Mac.
+   * Paths never cross the native boundary; IDs grant no authority by themselves.
+   */
+  localComputerWorkspaces?: readonly Readonly<{
+    id: string;
+    name: string;
+  }>[];
+  /**
    * Live authenticated request identity for owner-scoped governed tools.
    * This value is never persisted in a continuation; approval resumes under
    * the approving request's freshly authorized context.

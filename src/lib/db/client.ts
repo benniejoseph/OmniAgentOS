@@ -19,6 +19,7 @@ import {
 } from "@/lib/db/app-builder-repository-schema";
 import { ensureMarketDeterministicBacktestsV1 } from "@/lib/db/market-backtest-schema";
 import {
+  ensureLocalComputerCommandRunnerV1,
   ensureLocalComputerOpenUrlActionV1,
   ensureLocalComputerRuntimeV1,
   ensureLocalComputerRuntimeV2,
@@ -1770,6 +1771,10 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[203],
       up: ensureGoogleMultiAccountConnectionsV1,
+    },
+    {
+      ...databaseSchemaMigrations[204],
+      up: ensureLocalComputerCommandRunnerV1,
     },
   ];
 }

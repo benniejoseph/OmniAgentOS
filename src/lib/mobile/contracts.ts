@@ -14,6 +14,7 @@ import {
   localComputerActionSchema,
   localComputerClaimRequestSchema,
   localComputerCommandSchema,
+  localComputerCommandRunnerSchema,
   localComputerCompletionRequestSchema,
   localComputerDeviceUpdateSchema,
   localComputerStopRequestSchema,
@@ -22,10 +23,10 @@ import { mobilePushReceiptRequestSchema } from "@/lib/mobile/push-contract";
 import { pluginManifestSchema } from "@/lib/plugins/contracts";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 26 as const;
-// v25 is the deployed native management surface and remains the rollback
-// bridge while v26 adds only the content-free Daily learning read projection.
-export const NATIVE_API_PREVIOUS_VERSION = 25 as const;
+export const NATIVE_API_CURRENT_VERSION = 27 as const;
+// v26 remains the rollback bridge while v27 extends the existing governed
+// local-computer courier with the command-runner status and wire schemas only.
+export const NATIVE_API_PREVIOUS_VERSION = 26 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -487,6 +488,7 @@ export const nativeLocalComputerDeviceResponseSchema = z.object({
     screenRecording: localComputerPermissionStateSchema,
   }).strict(),
   activityState: z.enum(["idle", "active", "stopped", "error"]),
+  commandRunner: localComputerCommandRunnerSchema.optional(),
   lifecycleRevision: positiveDatabaseInteger,
   lastSeenAt: isoDateTime,
   leaseExpiresAt: isoDateTime,
@@ -1355,6 +1357,10 @@ const v26Operations: readonly NativeOperation[] = [
   ),
 ];
 
+// Contract v27 changes only strict schemas carried by the existing local
+// computer courier. No endpoint or capability surface is added.
+const v27Operations: readonly NativeOperation[] = [...v26Operations];
+
 export const nativeContractSchemas = Object.freeze({
   JsonObject: jsonObject,
   NativeClientAttestation: nativeClientAttestationSchema,
@@ -1470,6 +1476,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 24) return v24Operations;
   if (version === 25) return v25Operations;
   if (version === 26) return v26Operations;
+  if (version === 27) return v27Operations;
   return undefined;
 }
 
@@ -1479,7 +1486,7 @@ export function nativeContractDiscovery() {
     contractId: NATIVE_API_CONTRACT_ID,
     currentVersion: NATIVE_API_CURRENT_VERSION,
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
-    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [26, 25],
+    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [27, 26],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,
       state: version === NATIVE_API_CURRENT_VERSION ? "current" as const : "previous" as const,

@@ -7,10 +7,13 @@ export const LOCAL_COMPUTER_NATIVE_CONTRACT_VERSION = 11 as const;
 export const LOCAL_COMPUTER_PRESENT_SCREENSHOT_CONTRACT_VERSION = 12 as const;
 export const LOCAL_COMPUTER_OPEN_URL_CONTRACT_VERSION = 13 as const;
 export const LOCAL_COMPUTER_SCREENSHOT_COORDINATE_CONTRACT_VERSION = 13 as const;
+export const LOCAL_COMPUTER_COMMAND_RUNNER_CONTRACT_VERSION = 27 as const;
 export const LOCAL_COMPUTER_DEVICE_LEASE_SECONDS = 24;
 export const LOCAL_COMPUTER_COMMAND_LEASE_SECONDS = 30;
 export const LOCAL_COMPUTER_COMMAND_TIMEOUT_MS = 45_000;
 export const LOCAL_COMPUTER_MAX_SCREENSHOT_BYTES = 1_300_000;
+export const LOCAL_COMPUTER_MAX_TERMINAL_OUTPUT_BYTES = 32 * 1_024;
+export const LOCAL_COMPUTER_MAX_TERMINAL_STREAM_BYTES = 4 * 1_024 * 1_024;
 
 export const localComputerActionSchema = z.enum([
   "observe",
@@ -22,21 +25,52 @@ export const localComputerActionSchema = z.enum([
   "type",
   "key",
   "scroll",
+  "run_command",
 ]);
 export type LocalComputerAction = z.infer<typeof localComputerActionSchema>;
 
 const permissionState = z.enum(["granted", "denied", "unknown"]);
 const sha256 = z.string().regex(/^[a-f0-9]{64}$/);
+const commandWorkspaceId = z.string()
+  .regex(/^local_workspace_[a-f0-9]{32}$/);
+const semanticVersion = z.string().regex(/^[0-9]+\.[0-9]+\.[0-9]+$/);
+
+export const localComputerCommandRunnerSchema = z.object({
+  helperInstalled: z.boolean(),
+  helperVersion: semanticVersion,
+  workspaces: z.array(z.object({
+    id: commandWorkspaceId,
+    name: z.string().trim().min(1).max(120)
+      .regex(/^[^\u0000-\u001f\u007f]+$/),
+  }).strict()).max(32),
+}).strict().superRefine((value, context) => {
+  if (!value.helperInstalled && value.workspaces.length) {
+    context.addIssue({
+      code: "custom",
+      path: ["workspaces"],
+      message: "A missing command helper cannot advertise workspaces.",
+    });
+  }
+  if (new Set(value.workspaces.map((workspace) => workspace.id)).size !==
+    value.workspaces.length) {
+    context.addIssue({
+      code: "custom",
+      path: ["workspaces"],
+      message: "Command workspace IDs must be unique.",
+    });
+  }
+});
 
 export const localComputerDeviceUpdateSchema = z.object({
   schemaVersion: z.literal(LOCAL_COMPUTER_PROTOCOL_VERSION),
   enabled: z.boolean(),
-  helperVersion: z.string().regex(/^[0-9]+\.[0-9]+\.[0-9]+$/),
+  helperVersion: semanticVersion,
   permissions: z.object({
     accessibility: permissionState,
     screenRecording: permissionState,
   }).strict(),
   activityState: z.enum(["idle", "active", "stopped", "error"]),
+  commandRunner: localComputerCommandRunnerSchema.optional(),
 }).strict();
 
 export const localComputerClaimRequestSchema = z.object({
@@ -181,6 +215,87 @@ export const localComputerClickInputSchema = z.union([
   }).strict(),
 ]);
 
+const commandExecutableDenylist = new Set([
+  "ash",
+  "bash",
+  "csh",
+  "dash",
+  "env",
+  "exec",
+  "fish",
+  "ksh",
+  "launchctl",
+  "login",
+  "nohup",
+  "open",
+  "osascript",
+  "script",
+  "security",
+  "sh",
+  "sudo",
+  "tcsh",
+  "time",
+  "xargs",
+  "zsh",
+]);
+const commandArgument = z.string().max(8_192).superRefine((value, context) => {
+  if (
+    /[\u0000-\u0008\u000b-\u001f\u007f]/.test(value) ||
+    Buffer.byteLength(value, "utf8") > 8_192
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "A command argument contains a control character or exceeds 8 KiB.",
+    });
+  }
+});
+
+export const localComputerRunCommandInputSchema = z.object({
+  workspaceId: commandWorkspaceId,
+  executable: z.string().trim().min(1).max(64)
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/)
+    .superRefine((value, context) => {
+      if (commandExecutableDenylist.has(value.toLowerCase())) {
+        context.addIssue({
+          code: "custom",
+          message: "Shells and security-sensitive command launchers are not permitted.",
+        });
+      }
+    }),
+  arguments: z.array(commandArgument).max(64),
+  relativeDirectory: z.string().trim().min(1).max(1_024)
+    .superRefine((value, context) => {
+      const segments = value.split("/");
+      if (
+        (value !== "." && segments.some((segment) =>
+          !segment || segment === "." || segment === "..")) ||
+        value.startsWith("/") ||
+        value.startsWith("~") ||
+        value.includes("\\") ||
+        /[\u0000-\u001f\u007f]/.test(value)
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: "The command directory must stay inside the selected workspace.",
+        });
+      }
+    }),
+  timeoutSeconds: z.number().int().min(1).max(30),
+}).strict().superRefine((value, context) => {
+  if (
+    value.arguments.reduce(
+      (total, argument) => total + Buffer.byteLength(argument, "utf8"),
+      0,
+    ) > 49_152
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["arguments"],
+      message: "The combined command arguments exceed 48 KiB.",
+    });
+  }
+});
+
 export const localComputerCommandSchema = z.object({
   schemaVersion: z.literal(LOCAL_COMPUTER_PROTOCOL_VERSION),
   id: z.string().regex(/^local_computer_command_[a-f0-9]{48}$/),
@@ -211,6 +326,16 @@ export const localComputerCommandSchema = z.object({
       code: "custom",
       path: ["input"],
       message: "The local computer click input is invalid or ambiguous.",
+    });
+  }
+  if (
+    value.action === "run_command" &&
+    !localComputerRunCommandInputSchema.safeParse(value.input).success
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["input"],
+      message: "The governed local command input is invalid or unsafe.",
     });
   }
 });
@@ -316,9 +441,40 @@ const screenshotSchema = z.object({
   }
 });
 
+const terminalDisplayText = z.string().max(
+  LOCAL_COMPUTER_MAX_TERMINAL_OUTPUT_BYTES,
+).superRefine((value, context) => {
+  if (
+    Buffer.byteLength(value, "utf8") > LOCAL_COMPUTER_MAX_TERMINAL_OUTPUT_BYTES
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "Retained terminal output exceeds 32 KiB.",
+    });
+  }
+});
+
+export const localComputerTerminalOutputSchema = z.object({
+  stdout: terminalDisplayText,
+  stderr: terminalDisplayText,
+  exitCode: z.number().int().min(-1).max(255),
+  durationMs: z.number().int().min(0).max(LOCAL_COMPUTER_COMMAND_TIMEOUT_MS),
+  stdoutBytes: z.number().int().min(0).max(
+    LOCAL_COMPUTER_MAX_TERMINAL_STREAM_BYTES,
+  ),
+  stderrBytes: z.number().int().min(0).max(
+    LOCAL_COMPUTER_MAX_TERMINAL_STREAM_BYTES,
+  ),
+  stdoutSha256: sha256,
+  stderrSha256: sha256,
+  stdoutTruncated: z.boolean(),
+  stderrTruncated: z.boolean(),
+}).strict();
+
 export const localComputerResultSchema = z.object({
   summary: z.string().trim().min(1).max(1_000),
   data: z.record(z.string(), z.unknown()).optional(),
+  terminalOutput: localComputerTerminalOutputSchema.optional(),
   observation: z.object({
     snapshotRevision: sha256,
     frontmostApplication: frontmostApplicationSchema.optional(),
@@ -351,6 +507,37 @@ export const localComputerResultSchema = z.object({
     context.addIssue({
       code: "custom",
       message: "The combined local computer result is too large.",
+    });
+  }
+  if (value.terminalOutput) {
+    const output = value.terminalOutput;
+    const data = value.data || {};
+    const mirroredFields = [
+      "exitCode",
+      "durationMs",
+      "stdoutBytes",
+      "stderrBytes",
+      "stdoutSha256",
+      "stderrSha256",
+      "stdoutTruncated",
+      "stderrTruncated",
+    ] as const;
+    if (
+      data.effectVerdict !== "confirmed" ||
+      mirroredFields.some((field) => data[field] !== output[field])
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["data"],
+        message:
+          "Terminal result metadata must mirror the ephemeral output and confirm process execution.",
+      });
+    }
+  }
+  if (value.terminalOutput && value.observation) {
+    context.addIssue({
+      code: "custom",
+      message: "A local result cannot mix terminal output with a visual observation.",
     });
   }
   const observation = value.observation;

@@ -651,9 +651,16 @@ async function POSTHandler(request: Request) {
     );
   }
 
+  let localComputerWorkspaces:
+    | readonly Readonly<{ id: string; name: string }>[]
+    | undefined;
   if (computerUseTarget === "local_macos") {
     try {
-      await startLocalComputerSession(context, directRootRunId);
+      const localSession = await startLocalComputerSession(
+        context,
+        directRootRunId,
+      );
+      localComputerWorkspaces = localSession.workspaces;
     } catch (error) {
       if (!(error instanceof LocalComputerUnavailableError)) throw error;
       return Response.json({
@@ -1678,6 +1685,7 @@ async function POSTHandler(request: Request) {
                 threadId,
                 messages: safeMessages,
                 computerUseTarget,
+                localComputerWorkspaces,
                 securityContext: context,
                 requestActorBinding,
                 semanticRouting: {

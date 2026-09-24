@@ -1189,6 +1189,64 @@ function localMacComputerTools(): ToolDefinition[] {
       properties: {},
     }),
     localTool({
+      id: "local.macos.command.run",
+      name: "Run a Command on This Mac",
+      description:
+        "Run one bounded direct executable from one exact starting workspace advertised by the installed Mac. The working folder is not an operating-system filesystem sandbox. This never opens or drives a Terminal application, never accepts a shell command string, never resolves an arbitrary working-directory path, and always pauses for human approval. Standard output and error are disclosed to the model as untrusted evidence for one turn only; durable records retain only exit metadata, byte counts, digests, and truncation state.",
+      riskLevel: 2,
+      approvalRequired: true,
+      operationClass: "mutation",
+      properties: {
+        workspaceId: {
+          type: "string",
+          minLength: 48,
+          maxLength: 48,
+          pattern: "^local_workspace_[a-f0-9]{32}$",
+          description:
+            "Exact workspace ID from the current This Mac workspace catalog. Never invent an ID or pass a filesystem path.",
+        },
+        executable: {
+          type: "string",
+          minLength: 1,
+          maxLength: 64,
+          pattern: "^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$",
+          description:
+            "One executable basename. Shells, launchers, absolute paths, slashes, and command strings are refused.",
+        },
+        arguments: {
+          type: "array",
+          maxItems: 64,
+          items: {
+            type: "string",
+            maxLength: 8_192,
+            pattern: "^[^\\u0000-\\u0008\\u000b-\\u001f\\u007f]*$",
+          },
+          description:
+            "Exact argument vector for the executable. Do not combine arguments into a shell string.",
+        },
+        relativeDirectory: {
+          type: "string",
+          minLength: 1,
+          maxLength: 1_024,
+          description:
+            "A directory relative to the selected workspace, or '.' for its root. Absolute paths and parent traversal are refused.",
+        },
+        timeoutSeconds: {
+          type: "integer",
+          minimum: 1,
+          maximum: 30,
+          description: "Maximum process runtime before the native runner terminates it.",
+        },
+      },
+      required: [
+        "workspaceId",
+        "executable",
+        "arguments",
+        "relativeDirectory",
+        "timeoutSeconds",
+      ],
+    }),
+    localTool({
       id: "local.macos.activate_app",
       name: "Activate App on This Mac",
       description:

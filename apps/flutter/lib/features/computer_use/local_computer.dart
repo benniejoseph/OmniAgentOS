@@ -11,9 +11,11 @@ import '../../generated/native_contract.g.dart';
 import '../auth/application/session_controller.dart';
 
 const localComputerProtocolVersion = 1;
+const localCommandRunnerVersion = '1.0.0';
 const _localComputerPreviewTtl = Duration(minutes: 5);
 const _maximumLocalComputerPreviews = 8;
 const _maximumLocalComputerScreenshotBytes = 1300000;
+const _maximumLocalCommandOutputPreviews = 8;
 
 enum LocalComputerWindowRole { primary, auxiliary }
 
@@ -68,10 +70,50 @@ class LocalComputerScreenshotPreview {
   final String? applicationName;
 }
 
+class LocalComputerTerminalPreview {
+  const LocalComputerTerminalPreview({
+    required this.runId,
+    required this.executionId,
+    required this.workspaceId,
+    required this.workspaceName,
+    required this.executable,
+    required this.arguments,
+    required this.relativeDirectory,
+    required this.output,
+    required this.capturedAt,
+    required this.expiresAt,
+  });
+
+  final String runId;
+  final String executionId;
+  final String workspaceId;
+  final String workspaceName;
+  final String executable;
+  final List<String> arguments;
+  final String relativeDirectory;
+  final LocalComputerTerminalOutput output;
+  final DateTime capturedAt;
+  final DateTime expiresAt;
+
+  String get commandLabel {
+    final value = [executable, ...arguments].join(' ');
+    if (value.runes.length <= 320) return value;
+    return '${String.fromCharCodes(value.runes.take(319))}\u2026';
+  }
+}
+
 abstract interface class LocalComputerPreviewSource {
   LocalComputerScreenshotPreview? takePreview(String runId, String executionId);
   List<LocalComputerScreenshotPreview> takeRunPreviews(String runId);
   void discardRunPreviews(String runId);
+}
+
+abstract interface class LocalComputerTerminalPreviewSource {
+  LocalComputerTerminalPreview? takeTerminalPreview(
+    String runId,
+    String executionId,
+  );
+  List<LocalComputerTerminalPreview> takeRunTerminalPreviews(String runId);
 }
 
 final localComputerWindowContextProvider = Provider<LocalComputerWindowContext>(
@@ -279,6 +321,16 @@ class ApiLocalComputerRepository implements LocalComputerRepository {
             : status.enabled
             ? 'idle'
             : 'stopped',
+        'commandRunner': {
+          'helperInstalled': status.commandHelperInstalled,
+          'helperVersion': status.commandHelperInstalled
+              ? status.commandHelperVersion
+              : localCommandRunnerVersion,
+          'workspaces': [
+            for (final workspace in status.commandWorkspaces)
+              {'id': workspace.id, 'name': workspace.name},
+          ],
+        },
       },
     );
     return LocalComputerDeviceSnapshot.fromJson(json);
@@ -346,7 +398,13 @@ abstract interface class LocalComputerNativeHost {
   Future<void> dispose();
 }
 
-class BridgeLocalComputerNativeHost implements LocalComputerNativeHost {
+abstract interface class LocalComputerCommandWorkspaceHost {
+  Future<LocalComputerStatus> addCommandWorkspace();
+  Future<LocalComputerStatus> removeCommandWorkspace(String workspaceId);
+}
+
+class BridgeLocalComputerNativeHost
+    implements LocalComputerNativeHost, LocalComputerCommandWorkspaceHost {
   const BridgeLocalComputerNativeHost(this.bridge);
   final LocalComputerBridge bridge;
 
@@ -366,6 +424,12 @@ class BridgeLocalComputerNativeHost implements LocalComputerNativeHost {
   Future<LocalComputerStatus> setEnabled(bool enabled) =>
       bridge.setEnabled(enabled);
   @override
+  Future<LocalComputerStatus> addCommandWorkspace() =>
+      bridge.addCommandWorkspace();
+  @override
+  Future<LocalComputerStatus> removeCommandWorkspace(String workspaceId) =>
+      bridge.removeCommandWorkspace(workspaceId);
+  @override
   Future<LocalComputerCommandResult> execute(LocalComputerCommand command) =>
       bridge.execute(command);
   @override
@@ -375,7 +439,7 @@ class BridgeLocalComputerNativeHost implements LocalComputerNativeHost {
 }
 
 class LocalComputerCoordinator extends ChangeNotifier
-    implements LocalComputerPreviewSource {
+    implements LocalComputerPreviewSource, LocalComputerTerminalPreviewSource {
   LocalComputerCoordinator({
     required this.repository,
     required this.host,
@@ -405,6 +469,7 @@ class LocalComputerCoordinator extends ChangeNotifier
   LocalComputerCompletion? _pendingCompletion;
   Timer? _pendingCompletionExpiryTimer;
   final Map<String, LocalComputerScreenshotPreview> _previews = {};
+  final Map<String, LocalComputerTerminalPreview> _terminalPreviews = {};
   Timer? _previewExpiryTimer;
   DateTime? _lastHeartbeatAt;
   bool authenticated;
@@ -430,13 +495,17 @@ class LocalComputerCoordinator extends ChangeNotifier
       return LocalComputerBrokerPhase.degraded;
     }
     if (_explicitlyStopped) return LocalComputerBrokerPhase.stopped;
-    if (!current.helperInstalled || !current.enabled) {
+    if (!current.enabled ||
+        (!current.helperInstalled && !current.commandHelperInstalled)) {
       return LocalComputerBrokerPhase.disabled;
     }
-    if (current.accessibility != LocalComputerPermission.granted ||
-        current.screenRecording != LocalComputerPermission.granted) {
+    if (!current.commandRunnerReady &&
+        current.helperInstalled &&
+        (current.accessibility != LocalComputerPermission.granted ||
+            current.screenRecording != LocalComputerPermission.granted)) {
       return LocalComputerBrokerPhase.permissionsRequired;
     }
+    if (!current.ready) return LocalComputerBrokerPhase.disabled;
     if (active) return LocalComputerBrokerPhase.active;
     return LocalComputerBrokerPhase.ready;
   }
@@ -485,6 +554,59 @@ class LocalComputerCoordinator extends ChangeNotifier
       status = await host.requestPermissions();
     } catch (_) {
       lastError = 'macOS permissions could not be requested.';
+    } finally {
+      _changing = false;
+      _notify();
+    }
+  }
+
+  Future<void> addCommandWorkspace() async {
+    if (!host.supported || !authenticated || _changing) return;
+    final workspaceHost = host;
+    if (workspaceHost is! LocalComputerCommandWorkspaceHost) {
+      lastError = 'Command folders are not available in this app build.';
+      _notify();
+      return;
+    }
+    final commandWorkspaceHost =
+        workspaceHost as LocalComputerCommandWorkspaceHost;
+    _changing = true;
+    lastError = null;
+    _notify();
+    try {
+      status = await commandWorkspaceHost.addCommandWorkspace();
+      _lastHeartbeatAt = null;
+      _restartCommandLoop();
+    } catch (_) {
+      lastError = 'That folder could not be added for governed commands.';
+    } finally {
+      _changing = false;
+      _notify();
+    }
+  }
+
+  Future<void> removeCommandWorkspace(String workspaceId) async {
+    if (!host.supported || !authenticated || _changing) return;
+    final workspaceHost = host;
+    if (workspaceHost is! LocalComputerCommandWorkspaceHost) {
+      lastError = 'Command folders are not available in this app build.';
+      _notify();
+      return;
+    }
+    final commandWorkspaceHost =
+        workspaceHost as LocalComputerCommandWorkspaceHost;
+    if (!RegExp(r'^local_workspace_[a-f0-9]{32}$').hasMatch(workspaceId)) {
+      return;
+    }
+    _changing = true;
+    lastError = null;
+    _notify();
+    try {
+      status = await commandWorkspaceHost.removeCommandWorkspace(workspaceId);
+      _lastHeartbeatAt = null;
+      _restartCommandLoop();
+    } catch (_) {
+      lastError = 'That command workspace could not be removed.';
     } finally {
       _changing = false;
       _notify();
@@ -573,7 +695,8 @@ class LocalComputerCoordinator extends ChangeNotifier
         _expirePendingCompletionIfNeeded();
         status = await host.getStatus();
         if (!_loopCurrent(generation)) return;
-        if (status?.helperInstalled == true) {
+        if (status?.helperInstalled == true ||
+            status?.commandHelperInstalled == true) {
           final now = DateTime.now().toUtc();
           if (_lastHeartbeatAt == null ||
               now.difference(_lastHeartbeatAt!) >= heartbeatInterval) {
@@ -642,6 +765,7 @@ class LocalComputerCoordinator extends ChangeNotifier
       );
       if (!_loopCurrent(generation)) return;
       _stageRequestedScreenshot(claim, result);
+      _stageTerminalOutput(claim, result);
       completion = _completion(claim, result);
     }
     _setPendingCompletion(completion);
@@ -675,6 +799,7 @@ class LocalComputerCoordinator extends ChangeNotifier
       return;
     }
     _previews.remove(_previewKey(pending.runId, pending.executionId));
+    _terminalPreviews.remove(_previewKey(pending.runId, pending.executionId));
     _schedulePreviewExpiry();
     _clearPendingCompletion(expected: pending);
     lastError = 'The command receipt expired; its temporary result was erased.';
@@ -694,6 +819,19 @@ class LocalComputerCoordinator extends ChangeNotifier
           'summary': result.summary,
           if (result.data != null) 'data': result.data,
           if (result.observation != null) 'observation': result.observation,
+          if (result.terminalOutput != null)
+            'terminalOutput': {
+              'stdout': result.terminalOutput!.stdout,
+              'stderr': result.terminalOutput!.stderr,
+              'exitCode': result.terminalOutput!.exitCode,
+              'durationMs': result.terminalOutput!.durationMs,
+              'stdoutBytes': result.terminalOutput!.stdoutBytes,
+              'stderrBytes': result.terminalOutput!.stderrBytes,
+              'stdoutSha256': result.terminalOutput!.stdoutSha256,
+              'stderrSha256': result.terminalOutput!.stderrSha256,
+              'stdoutTruncated': result.terminalOutput!.stdoutTruncated,
+              'stderrTruncated': result.terminalOutput!.stderrTruncated,
+            },
         }
       else
         'errorCode': result.errorCode ?? 'native_command_failed',
@@ -761,8 +899,35 @@ class LocalComputerCoordinator extends ChangeNotifier
   }
 
   @override
+  LocalComputerTerminalPreview? takeTerminalPreview(
+    String runId,
+    String executionId,
+  ) {
+    _purgeExpiredPreviews();
+    final preview = _terminalPreviews.remove(_previewKey(runId, executionId));
+    _schedulePreviewExpiry();
+    return preview;
+  }
+
+  @override
+  List<LocalComputerTerminalPreview> takeRunTerminalPreviews(String runId) {
+    _purgeExpiredPreviews();
+    final matches =
+        _terminalPreviews.values
+            .where((preview) => preview.runId == runId)
+            .toList(growable: false)
+          ..sort((left, right) => left.capturedAt.compareTo(right.capturedAt));
+    for (final preview in matches) {
+      _terminalPreviews.remove(_previewKey(preview.runId, preview.executionId));
+    }
+    _schedulePreviewExpiry();
+    return matches;
+  }
+
+  @override
   void discardRunPreviews(String runId) {
     _previews.removeWhere((_, preview) => preview.runId == runId);
+    _terminalPreviews.removeWhere((_, preview) => preview.runId == runId);
     _schedulePreviewExpiry();
   }
 
@@ -810,18 +975,81 @@ class LocalComputerCoordinator extends ChangeNotifier
     _schedulePreviewExpiry();
   }
 
+  void _stageTerminalOutput(
+    LocalComputerClaim claim,
+    LocalComputerCommandResult result,
+  ) {
+    final output = result.terminalOutput;
+    if (claim.action != 'run_command' ||
+        result.outcome != LocalComputerOutcome.succeeded ||
+        output == null) {
+      return;
+    }
+    final workspaceId = claim.input['workspaceId'];
+    final executable = claim.input['executable'];
+    final rawArguments = claim.input['arguments'];
+    final relativeDirectory = claim.input['relativeDirectory'];
+    if (workspaceId is! String ||
+        executable is! String ||
+        rawArguments is! List ||
+        rawArguments.any((value) => value is! String) ||
+        relativeDirectory is! String) {
+      return;
+    }
+    final data = result.data;
+    final projectedWorkspaceName = data?['workspaceName'];
+    final localWorkspace = status?.commandWorkspaces
+        .where((workspace) => workspace.id == workspaceId)
+        .firstOrNull;
+    final workspaceName =
+        projectedWorkspaceName is String &&
+            projectedWorkspaceName.trim().isNotEmpty &&
+            projectedWorkspaceName.trim().length <= 120 &&
+            !RegExp(r'[\u0000-\u001f\u007f]').hasMatch(projectedWorkspaceName)
+        ? projectedWorkspaceName.trim()
+        : localWorkspace?.name ?? 'Command workspace';
+    final now = DateTime.now().toUtc();
+    final preview = LocalComputerTerminalPreview(
+      runId: claim.runId,
+      executionId: claim.executionId,
+      workspaceId: workspaceId,
+      workspaceName: workspaceName,
+      executable: executable,
+      arguments: List<String>.unmodifiable(rawArguments.cast<String>()),
+      relativeDirectory: relativeDirectory,
+      output: output,
+      capturedAt: now,
+      expiresAt: now.add(previewTtl),
+    );
+    _purgeExpiredPreviews(now);
+    _terminalPreviews[_previewKey(claim.runId, claim.executionId)] = preview;
+    while (_terminalPreviews.length > _maximumLocalCommandOutputPreviews) {
+      final oldest = _terminalPreviews.entries.reduce(
+        (left, right) => left.value.capturedAt.isBefore(right.value.capturedAt)
+            ? left
+            : right,
+      );
+      _terminalPreviews.remove(oldest.key);
+    }
+    _schedulePreviewExpiry();
+  }
+
   void _purgeExpiredPreviews([DateTime? at]) {
     final now = at ?? DateTime.now().toUtc();
     _previews.removeWhere((_, preview) => !preview.expiresAt.isAfter(now));
+    _terminalPreviews.removeWhere(
+      (_, preview) => !preview.expiresAt.isAfter(now),
+    );
   }
 
   void _schedulePreviewExpiry() {
     _previewExpiryTimer?.cancel();
     _previewExpiryTimer = null;
-    if (_disposed || _previews.isEmpty) return;
-    final nextExpiry = _previews.values
-        .map((preview) => preview.expiresAt)
-        .reduce((left, right) => left.isBefore(right) ? left : right);
+    if (_disposed || (_previews.isEmpty && _terminalPreviews.isEmpty)) return;
+    final nextExpiry = [
+      ..._previews.values.map((preview) => preview.expiresAt),
+      ..._terminalPreviews.values.map((preview) => preview.expiresAt),
+    ].reduce((left, right) => left.isBefore(right) ? left : right);
     final remaining = nextExpiry.toUtc().difference(DateTime.now().toUtc());
     _previewExpiryTimer = Timer(
       remaining > Duration.zero ? remaining : Duration.zero,
@@ -837,6 +1065,7 @@ class LocalComputerCoordinator extends ChangeNotifier
     _previewExpiryTimer?.cancel();
     _previewExpiryTimer = null;
     _previews.clear();
+    _terminalPreviews.clear();
   }
 
   static String _previewKey(String runId, String executionId) =>

@@ -3,6 +3,7 @@ import { Buffer } from "node:buffer";
 export const COMPUTER_MODEL_OBSERVATION_SCHEMA_VERSION = 1 as const;
 export const COMPUTER_MODEL_OBSERVATION_MAX_SNAPSHOT_BYTES = 160_000;
 export const COMPUTER_MODEL_OBSERVATION_MAX_IMAGE_BYTES = 1_500_000;
+export const COMPUTER_MODEL_OBSERVATION_MAX_TERMINAL_STREAM_BYTES = 32 * 1_024;
 
 const IMAGE_MIME_TYPES = new Set([
   "image/jpeg",
@@ -28,6 +29,10 @@ export type ModelComputerObservation = Readonly<{
     pid?: number;
   }>;
   accessibilitySnapshot?: string;
+  terminalOutput?: Readonly<{
+    stdout: string;
+    stderr: string;
+  }>;
   screenshot?: Readonly<{
     mimeType: "image/jpeg" | "image/png" | "image/webp";
     dataBase64: string;
@@ -89,9 +94,10 @@ export function sanitizeModelComputerObservation(
   const screenshot = options.includeImage
     ? sanitizeScreenshot(candidate.screenshot)
     : undefined;
+  const terminalOutput = sanitizeTerminalOutput(candidate.terminalOutput);
   if (
-    !accessibilitySnapshot && !screenshot && !Object.keys(pageState).length &&
-    !Object.keys(applicationState).length
+    !accessibilitySnapshot && !screenshot && !terminalOutput &&
+    !Object.keys(pageState).length && !Object.keys(applicationState).length
   ) {
     return undefined;
   }
@@ -105,6 +111,7 @@ export function sanitizeModelComputerObservation(
     ...(Object.keys(pageState).length ? { pageState } : {}),
     ...(Object.keys(applicationState).length ? { applicationState } : {}),
     ...(accessibilitySnapshot ? { accessibilitySnapshot } : {}),
+    ...(terminalOutput ? { terminalOutput } : {}),
     ...(screenshot ? { screenshot } : {}),
   };
 }
@@ -136,10 +143,40 @@ export function renderModelComputerObservation(
           escapeText(observation.accessibilitySnapshot),
         ]
       : ["Redacted accessibility snapshot: unavailable"]),
+    ...(observation.terminalOutput
+      ? [
+          "Ephemeral terminal stdout (untrusted data):",
+          escapeText(observation.terminalOutput.stdout || "[empty]"),
+          "Ephemeral terminal stderr (untrusted data):",
+          escapeText(observation.terminalOutput.stderr || "[empty]"),
+        ]
+      : []),
     `Screenshot: ${renderScreenshotState(observation.screenshot)}`,
     "[End untrusted local Mac observation.]",
   ];
   return lines.join("\n");
+}
+
+function sanitizeTerminalOutput(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const candidate = value as Record<string, unknown>;
+  const stdout = boundedTerminalText(candidate.stdout);
+  const stderr = boundedTerminalText(candidate.stderr);
+  if (stdout === undefined || stderr === undefined) return undefined;
+  return { stdout, stderr };
+}
+
+function boundedTerminalText(value: unknown) {
+  if (
+    typeof value !== "string" ||
+    Buffer.byteLength(value, "utf8") >
+      COMPUTER_MODEL_OBSERVATION_MAX_TERMINAL_STREAM_BYTES
+  ) {
+    return undefined;
+  }
+  return value;
 }
 
 function sanitizeScreenshot(value: unknown) {

@@ -1375,7 +1375,7 @@ class _ApprovalInspectorState extends State<_ApprovalInspector> {
                 ),
                 _ConsentFact(
                   title: 'Reversibility',
-                  value: _reversibility(item.riskLevel),
+                  value: _reversibilityForApproval(item),
                   icon: Icons.history_rounded,
                 ),
                 _ConsentFact(
@@ -1385,6 +1385,10 @@ class _ApprovalInspectorState extends State<_ApprovalInspector> {
                       'This action requires human approval by policy.',
                   icon: Icons.pause_circle_outline_rounded,
                 ),
+                if (_isLocalMacCommandApproval(item)) ...[
+                  const SizedBox(height: 12),
+                  _LocalCommandApprovalCard(input: item.input),
+                ],
                 if (item.input.isNotEmpty) ...[
                   const SizedBox(height: 20),
                   Text(
@@ -1536,6 +1540,99 @@ class _ExactInputs extends StatelessWidget {
   }
 }
 
+class _LocalCommandApprovalCard extends StatelessWidget {
+  const _LocalCommandApprovalCard({required this.input});
+
+  final Json input;
+
+  @override
+  Widget build(BuildContext context) {
+    final mac = MacosThemeColors.of(context);
+    final executable = input['executable'] as String;
+    final arguments = (input['arguments'] as List).cast<String>();
+    final workspaceId = input['workspaceId'] as String;
+    final relativeDirectory = input['relativeDirectory'] as String;
+    final timeoutSeconds = input['timeoutSeconds'] as int;
+    final commandTokens = <String>[
+      'Executable: $executable',
+      for (var index = 0; index < arguments.length; index += 1)
+        'Argument ${index + 1}: ${arguments[index]}',
+    ].join('\n');
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: mac.hover,
+        borderRadius: BorderRadius.circular(9),
+        border: Border.all(color: mac.divider),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.terminal_rounded, size: 18),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Command on This Mac',
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 5),
+          Text(
+            'Asael starts this executable directly, without a shell, from the approved folder. The command may access anything your macOS account allows, so review every argument.',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+          const SizedBox(height: 11),
+          Text(
+            'Executable and arguments',
+            style: Theme.of(context).textTheme.labelMedium,
+          ),
+          const SizedBox(height: 5),
+          Container(
+            width: double.infinity,
+            constraints: const BoxConstraints(maxHeight: 190),
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: mac.canvas,
+              borderRadius: BorderRadius.circular(7),
+              border: Border.all(color: mac.divider),
+            ),
+            child: SingleChildScrollView(
+              child: SelectableText(
+                commandTokens,
+                style: Theme.of(context).textTheme.bodySmall
+                    ?.copyWith(fontFamily: 'Menlo', height: 1.45),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          _InspectorFactLine(
+            icon: Icons.folder_outlined,
+            label: 'Folder ID',
+            value: workspaceId,
+          ),
+          _InspectorFactLine(
+            icon: Icons.folder_open_outlined,
+            label: 'Starts in',
+            value: relativeDirectory == '.'
+                ? 'Workspace root'
+                : relativeDirectory,
+          ),
+          _InspectorFactLine(
+            icon: Icons.timer_outlined,
+            label: 'Time limit',
+            value:
+                '$timeoutSeconds ${timeoutSeconds == 1 ? 'second' : 'seconds'}',
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _InspectorFactLine extends StatelessWidget {
   const _InspectorFactLine({
     required this.icon,
@@ -1566,6 +1663,9 @@ class _InspectorFactLine extends StatelessWidget {
 }
 
 String _whatWillHappen(ApprovalItem item) {
+  if (_isLocalMacCommandApproval(item)) {
+    return 'The listed executable starts directly from the approved folder on this Mac. The exact command still requires this approval. Asael records the exit status and evidence, while raw output remains a temporary local preview.';
+  }
   if (item.kind == 'tool') {
     return 'The ${item.title} tool executes for real with the inputs below, and the output is recorded in the tool audit ledger.';
   }
@@ -1573,6 +1673,20 @@ String _whatWillHappen(ApprovalItem item) {
     return 'The workflow resumes. Exact reviewed reversible actions receive short-lived, budgeted plan grants; dynamic or changed targets still pause for their own approval.';
   }
   return 'The monitoring policy change is applied and starts affecting SLO evaluation, incidents, and alerts.';
+}
+
+bool _isLocalMacCommandApproval(ApprovalItem item) {
+  final input = item.input;
+  final workspaceId = input['workspaceId'];
+  return item.kind == 'tool' &&
+      input.length == 5 &&
+      workspaceId is String &&
+      RegExp(r'^local_workspace_[a-f0-9]{32}$').hasMatch(workspaceId) &&
+      input['executable'] is String &&
+      input['arguments'] is List &&
+      (input['arguments'] as List).every((value) => value is String) &&
+      input['relativeDirectory'] is String &&
+      input['timeoutSeconds'] is int;
 }
 
 String _reversibility(int riskLevel) {
@@ -1583,6 +1697,13 @@ String _reversibility(int riskLevel) {
     return 'Side-effecting. It may reach external systems and may not be reversible. Review the inputs first.';
   }
   return 'High impact. It requires two distinct admin approvals, and the requester cannot approve their own request.';
+}
+
+String _reversibilityForApproval(ApprovalItem item) {
+  if (_isLocalMacCommandApproval(item)) {
+    return 'The command can change files or local state available to your macOS account. Its effects may not be reversible.';
+  }
+  return _reversibility(item.riskLevel);
 }
 
 String _kindLabel(String kind) => switch (kind) {

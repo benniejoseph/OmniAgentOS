@@ -245,6 +245,15 @@ function transitionEphemeralLocalObservation(
   execution: GovernedToolExecutionResult,
   soleToolInTurn: boolean,
 ): EphemeralObservationTransition {
+  if (toolId === "local.macos.command.run") {
+    return {
+      ...(execution.record.status === "executed" &&
+          execution.computerObservation
+        ? { disclosedObservation: execution.computerObservation }
+        : {}),
+      discardPriorLocalObservations: true,
+    };
+  }
   if (toolId === "local.macos.observe") {
     const fresh =
       execution.record.status === "executed" &&
@@ -1117,10 +1126,14 @@ export async function* runAgent(
       "local.macos.type",
       "local.macos.key",
       "local.macos.scroll",
+      ...(request.localComputerWorkspaces?.length
+        ? ["local.macos.command.run" as const]
+        : []),
     ] as const;
     const configuredToolIds = localComputerUseRequested
       ? request.agentProfile
         ? localComputerToolIds.filter((id) =>
+            id === "local.macos.command.run" ||
             profileConfiguredToolIds?.includes(id)
           )
         : [...localComputerToolIds]
@@ -1368,6 +1381,7 @@ export async function* runAgent(
             }
           : undefined,
       computerUse: computerUseTarget,
+      localComputerWorkspaces: request.localComputerWorkspaces,
     });
     const toolIds = toolbox.tools
       .map((entry) => entry.definition.id)
