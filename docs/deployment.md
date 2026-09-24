@@ -50,18 +50,23 @@ Vercel deployment. V25/v20 remains the historical 2026-09-22 adaptive-runtime
 compatibility pair; v27/v26 is the historical governed local-command release
 pair; v28/v27 is the current scoped model-selection release pair.
 
-### Web Command structured-context release
+### Web Command durable structured-context release
 
 Web Command defaults a new conversation to `session` scope. Attached Agents,
 Skills, files, Extensions, Projects, and Connections are separate exact
 references that the server resolves again for the authenticated tenant and actor;
 they do not grant connector, tool, delegation, membership, or mutation authority.
 Choosing `explicit_selection` still requires the exact reviewed selection lock.
-Workflow planning does not yet persist ephemeral reference pins, so `/Plan`
-must refuse while they are attached and direct the owner to send the message
-directly. File revalidation resolves the exact Library authority and source ID
-instead of scanning a recent-item page, requires canonical/exact actor readability,
-and fails closed on duplicate or mismatched projections.
+Reviewed planning now carries the exact references and an optional explicit
+Model/Thinking choice through plan review, workflow start, retrieval, and every
+replan. The public plan stores only content-free counts and digests. The private
+run binding stores the exact reference pins plus the canonical actor binding;
+document bodies are resolved again only at the retrieval boundary and are never
+persisted in the plan, run metadata, event stream, or step output. The selected
+model is revalidated at planning and execution, while verifier routing remains
+independent. File revalidation resolves the exact Library authority and source
+ID instead of scanning a recent-item page, requires canonical/exact actor
+readability, and fails closed on duplicate or mismatched projections.
 
 For a ready Capture asset, the direct path verifies the current content digest
 and extraction receipt before disclosing at most 7,000 characters across the
@@ -75,13 +80,33 @@ body into the text prompt. Typed run evidence records content mode, disclosure a
 receipt digests, evidence counts, and truncation state, never the disclosed
 document text.
 
+The persistent prompt queue applies the same boundary. Migration
+`20260924130000_prompt_queue_context_pins.sql` installs schema v206
+(`prompt_queue_context_pins_v1`): exact references are sealed separately from
+the prompt, while only selection/context/receipt digests and a bounded reference
+count remain queryable. Create, edit, claim, dispatch, and the final Agent-route
+admission all re-resolve the current reference authority and explicit model pin.
+Version, digest, actor, or model-route drift closes the item with a terminal
+receipt instead of silently changing context. Queueing clears the ephemeral
+composer pins only after persistence succeeds; queue cards and reviewed plans
+show the content-free context count and pinned model/Thinking choice.
+
 The production release is commit
-`54ba3158bdaf538143afeb703f009561a2ff13f5`, Vercel deployment
-`dpl_9ephgqkRkWui1djmaCb9S9ZfZQQi`. Canonical health and the licensed
-TradingView artifact passed. An authenticated browser canary attached one exact
-Library item, observed the `/Plan` refusal, completed a direct run with its
-selected-context pin, and rendered `WEB_CONTEXT_REF_OK`. This release changes no
-database schema, native contract, Fly protocol, or worker image.
+`07ecaaadce88b58c785f8d8f8a189baff6ecca1d`, Vercel deployment
+`dpl_44qWvXTcxUqLaD9ZtSSWYtmyqKHz`. Canonical health reported that exact
+revision and the licensed TradingView artifact returned HTTP 200. The linked
+Supabase migration ledger is aligned through `20260924130000`. A live installed
+Asael Command run attached exact `@Atlas`, pinned `gpt-6-astra` with Low
+Thinking, and rendered `PLAN_CONTEXT_OK`. A production internal canary attached
+exact Skill `core.critic` version 1, created reviewed plan
+`09609f80-d94a-47eb-ad9a-cb7a008f946f` with one content-free reference pin,
+started workflow `wf_b54eaf45de29ce33e61acdc6f9332525929eb17f`, observed three completed
+steps, and canceled it at its harmless approval boundary. No private command
+binding appeared in the public response. The real-session queue admission also
+rejected the service-only canary as designed; authenticated Web queue dispatch
+remains a live-UI check because both browser controllers were unavailable, and
+must not be bypassed by relaxing session authority. No full suite or audit was
+run. This release changes no native contract, Fly protocol, or worker image.
 
 ### Governed local command runner release
 
@@ -594,6 +619,7 @@ marker in the same transaction.
 | 203 | `agent_daily_learning_v1` | `88fa0dd240ba1920d2bb66395bb2b268dc98bd682282fbe3633d1df4b1d01f96` | actor-private daily learning observations and reviewed adaptation proposals |
 | 204 | `google_multi_account_connections_v1` | `8c7ae456bdbcc92f00adb2f24728cf03dc2b082cae7880e0f87ce71d15314cd8` | actor-owned Google account connection separation and scope-safe identity binding |
 | 205 | `governed_local_command_runner_v1` | `a9c301b4ef3030962b2ae9f69b8df9c2cb2914e90b0d9c8a3c6032f91691015a` | exact command workspace grants, approval/courier binding, and metadata-only execution receipts |
+| 206 | `prompt_queue_context_pins_v1` | `5de8d38921e0d4d0f7e79bcfe4745f780ce973b009c874a519d09bfd8f3ff777` | sealed exact Command references plus content-free digests/counts for reviewed and queued work |
 
 Version 196 requires the exact predecessor marker v195
 `moltbook_autonomy_privilege_repair_v1` with checksum
