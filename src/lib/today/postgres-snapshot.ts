@@ -388,15 +388,23 @@ export async function loadPostgresTodaySnapshot({
         SELECT
           memories.id,
           memories.title,
-          memories.content,
+          LEFT(memories.content, 240) AS content,
           memories.type,
           memories.updated_at
         FROM omni_memories memories
+        LEFT JOIN omni_memory_lifecycle_states lifecycle
+          ON lifecycle.tenant_id = memories.tenant_id
+         AND lifecycle.memory_id = memories.id
         CROSS JOIN runtime_settings
         WHERE memories.tenant_id = ${safeTenantId}
           AND memories.claim_status = 'active'
+          AND lifecycle.archived_at IS NULL
           AND (memories.valid_from IS NULL OR memories.valid_from <= NOW())
           AND (memories.valid_to IS NULL OR memories.valid_to > NOW())
+          AND (
+            memories.retention_expires_at IS NULL
+            OR memories.retention_expires_at > NOW()
+          )
         ORDER BY memories.updated_at DESC
         LIMIT 6
       ),
@@ -633,7 +641,7 @@ function projectSnapshot(
     memories: asRecordArray(row.memories, 6).map((memory) => ({
       id: safeText(memory.id, 200),
       title: safeTextBlock(memory.title, 240),
-      content: safeTextBlock(memory.content, 200_000).slice(0, 240),
+      content: safeTextBlock(memory.content, 240),
       type: memoryType(memory.type),
       updatedAt: requiredDate(memory.updated_at),
     })),
