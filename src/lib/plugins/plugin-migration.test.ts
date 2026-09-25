@@ -15,11 +15,13 @@ describe("declarative Plugin v1 migration", () => {
   it("is ordered after v185 and registered as v186", () => {
     expect(migration).toContain("latest_version IS DISTINCT FROM 185");
     expect(migration).toContain("mobile_push_receipt_canary_v1");
-    expect(manifest.at(-1)).toEqual({
+    const index = manifest.findIndex((entry) => entry.version === 186);
+    expect(manifest[index]).toEqual({
       version: 186,
       name: "declarative_plugins_v1",
       checksum: "0cb2bc195736819e3fd5c3a6ab44a8c48ca3dcc55b63d097a69aaf9824b06825",
     });
+    expect(manifest[index - 1]?.version).toBe(185);
   });
 
   it("forces actor RLS, immutable receipts, and reversible installation state", () => {

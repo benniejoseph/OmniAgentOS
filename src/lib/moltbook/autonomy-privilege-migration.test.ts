@@ -28,11 +28,13 @@ describe("Moltbook autonomy privilege repair v195", () => {
     expect(migrationChecksum).toBe(
       "c02b2ca195cbb00c206320eb2074fed7981c282c356f1d4320c6c1ac866adf94",
     );
-    expect(manifest.at(-1)).toEqual({
+    const index = manifest.findIndex((entry) => entry.version === 195);
+    expect(manifest[index]).toEqual({
       version: 195,
       name: migrationName,
       checksum: migrationChecksum,
     });
+    expect(manifest[index - 1]?.version).toBe(194);
     expect(migration).toContain("latest_version IS DISTINCT FROM 194");
     expect(migration).toContain("name = 'moltbook_autonomy_v1'");
     expect(migration).toContain(

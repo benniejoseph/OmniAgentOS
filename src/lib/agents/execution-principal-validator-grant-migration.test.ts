@@ -41,7 +41,7 @@ describe("execution principal row validator grant v1", () => {
   });
 
   it("publishes the ordered schema marker", () => {
-    expect(manifest.at(-1)).toEqual({
+    expect(manifest.find((entry) => entry.version === 193)).toEqual({
       version: 193,
       name: "execution_principal_row_validator_grant_v1",
       checksum:

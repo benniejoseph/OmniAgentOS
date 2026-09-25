@@ -2176,10 +2176,30 @@ describe("ordered database schema versions", () => {
       name: "notification_disposition_runtime_v1",
       checksum: "99af5ab52a824c435e19e46f918755bfa549a1fecda22f9061940f9030c97c2b",
     });
-    expect(databaseSchemaMigrations.at(-1)).toEqual({
+    expect(databaseSchemaMigrations.find((migration) => migration.version === 202)).toEqual({
       version: 202,
       name: "delegation_execution_rls_composition_repair_v1",
       checksum: "3d6b28bd2fdb00cc57360506baea3ef120a4ae13e0050be57ba6d266310a3d63",
+    });
+    expect(databaseSchemaMigrations.find((migration) => migration.version === 203)).toEqual({
+      version: 203,
+      name: "agent_daily_learning_v1",
+      checksum: "88fa0dd240ba1920d2bb66395bb2b268dc98bd682282fbe3633d1df4b1d01f96",
+    });
+    expect(databaseSchemaMigrations.find((migration) => migration.version === 204)).toEqual({
+      version: 204,
+      name: "google_multi_account_connections_v1",
+      checksum: "8c7ae456bdbcc92f00adb2f24728cf03dc2b082cae7880e0f87ce71d15314cd8",
+    });
+    expect(databaseSchemaMigrations.find((migration) => migration.version === 205)).toEqual({
+      version: 205,
+      name: "governed_local_command_runner_v1",
+      checksum: "a9c301b4ef3030962b2ae9f69b8df9c2cb2914e90b0d9c8a3c6032f91691015a",
+    });
+    expect(databaseSchemaMigrations.find((migration) => migration.version === 206)).toEqual({
+      version: 206,
+      name: "prompt_queue_context_pins_v1",
+      checksum: "5de8d38921e0d4d0f7e79bcfe4745f780ce973b009c874a519d09bfd8f3ff777",
     });
     expect(databaseSchemaMigrations.find((migration) => migration.version === 139)).toEqual({
       version: 139,

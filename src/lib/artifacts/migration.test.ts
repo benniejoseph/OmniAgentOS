@@ -30,7 +30,7 @@ describe("generated artifact persistence migration", () => {
     expect(migrationChecksum).toBe(
       "4065c615c77bf4baf5921d5dcd468359ed8113bc49ba5291908bdfc3b9f36ebf",
     );
-    expect(databaseSchemaMigrations.at(-1)).toEqual({
+    expect(databaseSchemaMigrations.find((migration) => migration.version === 189)).toEqual({
       version: 189,
       name: migrationName,
       checksum: migrationChecksum,
