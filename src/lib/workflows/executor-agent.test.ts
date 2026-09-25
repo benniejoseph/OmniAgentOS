@@ -30,6 +30,7 @@ vi.mock("@/lib/delegation/channel-store", () => ({
   sendDelegationMessage: mocks.sendDelegationMessage,
 }));
 
+import { BUILT_IN_AGENT_DEFINITION_VERSION } from "@/lib/agents/identity-contracts";
 import {
   createWorkflowExecutionBudget,
   executeAgentPlanNode,
@@ -242,7 +243,10 @@ describe("workflow agent node execution", () => {
           grants: { toolIds: [] },
           delegationContract: {
             version: "p8.1-delegation-contract:1",
-            delegate: { agentId: "scout", definitionVersion: 1 },
+            delegate: {
+              agentId: "scout",
+              definitionVersion: BUILT_IN_AGENT_DEFINITION_VERSION,
+            },
           },
         },
         output: {

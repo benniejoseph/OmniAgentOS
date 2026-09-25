@@ -304,7 +304,7 @@ describe("governed Agent delegation application services", () => {
 
     expect(projected.authority).toMatchObject({
       immutable: true,
-      nativeReadTools: [{ toolId: "knowledge.search", managementHref: "/app/tools" }],
+      nativeReadTools: [{ toolId: "knowledge.search", managementHref: "/app/automation" }],
       skills: [{
         capabilityGrantId: "capability:skill",
         skillId: "skill-one",

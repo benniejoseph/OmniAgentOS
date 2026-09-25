@@ -111,7 +111,8 @@ describe("semantic intent policy", () => {
 
     expect(resolution.decision).toMatchObject({
       route: "durable_workflow",
-      primaryAgentId: "scout",
+      // Coordinated work without a preferred Agent is led by the coordinator.
+      primaryAgentId: "atlas",
       requiresApproval: false,
     });
     expect(resolution.decision.specialistIds).toEqual(

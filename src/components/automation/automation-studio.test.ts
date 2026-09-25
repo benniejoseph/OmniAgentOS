@@ -177,19 +177,26 @@ describe("Automation Studio contracts", () => {
     expect(source).toContain("MAX_PLUGIN_MANIFEST_BYTES");
     expect(source).toContain("importedPluginPreviewPayload");
     expect(source).toContain("Import declarative manifest");
-    expect(source).toContain("Connections and Tools keep their existing approval boundaries");
+    expect(source).toContain(
+      "Accounts, private data, and sensitive actions still use their own connection and approval controls",
+    );
     expect(source).toContain("currently read-only MCP surface");
     expect(source).toContain("useSearchParams");
     expect(source).toContain("ArrowRight");
     expect(source).toContain("ArrowLeft");
   });
 
-  it("makes Automation primary while retaining legacy destinations", () => {
+  it("makes Automation primary while retaining legacy destinations", async () => {
     const automationGroup = appNavGroups.find((group) => group.label === "Automation");
     expect(automationGroup?.items.map((item) => item.href)).toEqual(["/app/automation"]);
     expect(appNav.some((item) => item.href === "/app/workflows")).toBe(true);
     expect(appNav.some((item) => item.href === "/app/connectors")).toBe(true);
-    expect(appNav.some((item) => item.href === "/app/tools")).toBe(true);
+    // Tools now live inside Capabilities; the legacy URL redirects there.
+    expect(appNav.some((item) => item.href === "/app/tools")).toBe(false);
+    await expect(readFile(
+      path.join(process.cwd(), "src/app/app/tools/page.tsx"),
+      "utf8",
+    )).resolves.toContain('redirect("/app/automation")');
   });
 
   it("renders responsive content-free schedule outcomes and exact PolicyLease receipts", () => {

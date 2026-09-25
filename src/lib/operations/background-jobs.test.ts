@@ -1,7 +1,7 @@
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 
 beforeAll(async () => {
   process.env.OMNIAGENT_DATA_DIR = await mkdtemp(
@@ -543,6 +543,15 @@ describe("background operation jobs", () => {
   });
 
   it("processes runnable background work for each discovered tenant", async () => {
+    // Discovery spans every tenant and serves the oldest runnable work first,
+    // so this test uses its own ledger instead of work left by earlier tests.
+    const previousDataDirectory = process.env.OMNIAGENT_DATA_DIR;
+    onTestFinished(() => {
+      process.env.OMNIAGENT_DATA_DIR = previousDataDirectory;
+    });
+    process.env.OMNIAGENT_DATA_DIR = await mkdtemp(
+      path.join(tmpdir(), "omni-background-dispatch-"),
+    );
     const jobs = await import("@/lib/operations/background-jobs");
     const queue = await import("@/lib/operations/job-queue");
     const first = await jobs.enqueueKnowledgeIngestJob({
@@ -562,7 +571,12 @@ describe("background operation jobs", () => {
 
     await expect(
       jobs.processAllTenantBackgroundOperationQueues({ limit: 2 }),
-    ).resolves.toMatchObject({ leased: 2, completed: 2, failed: 0 });
+    ).resolves.toMatchObject({
+      tenantIds: ["tenant-background-a", "tenant-background-b"],
+      leased: 2,
+      completed: 2,
+      failed: 0,
+    });
     await expect(
       queue.getOperationJob(first.id, { tenantId: "tenant-background-a" }),
     ).resolves.toMatchObject({ status: "completed" });

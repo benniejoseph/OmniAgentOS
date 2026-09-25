@@ -42,6 +42,7 @@ import type {
 import type { AgentRunRecord } from "@/lib/runs/types";
 import {
   DEFAULT_AGENT_RUN_BUDGET_LIMITS,
+  RUN_BUDGET_DIMENSIONS,
   createRunBudgetState,
   refreshRunBudgetWallTime,
   reserveRunBudget,
@@ -145,10 +146,8 @@ describe("dynamic delegation runtime", () => {
         { role: "assistant", content: "parent-private-response-marker" },
       ],
     });
-    const execution = await delegateAgentTask(
-      harness.request({ mode: "isolated" }),
-      harness.dependencies,
-    );
+    const request = harness.request({ mode: "isolated" });
+    const execution = await delegateAgentTask(request, harness.dependencies);
 
     expect(execution.contract.lineage).toMatchObject({
       depth: 1,
@@ -181,9 +180,18 @@ describe("dynamic delegation runtime", () => {
       browserActions: 0,
       agents: 2,
       fanOut: 0,
-      retries: 0,
+      // Exactly one child retry for malformed structured output; Sentinel
+      // receives none, so the lifecycle holds no other retry authority.
+      retries: 1,
       replans: 0,
     });
+    const parentRemaining =
+      request.parentBudgetAuthority.parentBudgetRemainingBefore;
+    for (const dimension of RUN_BUDGET_DIMENSIONS) {
+      expect(execution.contract.budgets[dimension]).toBeLessThanOrEqual(
+        parentRemaining[dimension],
+      );
+    }
     expect(execution.contract.contextCapsule.parentTranscript).toEqual({
       included: false,
       manifestId: null,

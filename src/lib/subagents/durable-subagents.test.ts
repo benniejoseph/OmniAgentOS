@@ -2,7 +2,10 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_AGENT_RUN_BUDGET_LIMITS } from "@/lib/runs/budgets";
+import {
+  DEFAULT_AGENT_RUN_BUDGET_LIMITS,
+  RUN_BUDGET_DIMENSIONS,
+} from "@/lib/runs/budgets";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 
 function parentExecutionScope(
@@ -38,20 +41,32 @@ describe("durable specialist delegation", () => {
     const { deriveSpecialistBudgetLimits } = await import(
       "@/lib/subagents/scheduler"
     );
-    const child = deriveSpecialistBudgetLimits(
-      DEFAULT_AGENT_RUN_BUDGET_LIMITS,
-      2,
-    );
+    const parent = DEFAULT_AGENT_RUN_BUDGET_LIMITS;
+    const specialistCount = 2;
+    const child = deriveSpecialistBudgetLimits(parent, specialistCount);
 
+    // A specialist is a single Agent that can neither fan out nor replan.
     expect(child).toMatchObject({
-      modelTurns: 3,
-      tokens: 32_000,
-      toolCalls: 15,
       agents: 1,
       fanOut: 0,
-      retries: 1,
       replans: 0,
     });
+    for (const dimension of RUN_BUDGET_DIMENSIONS) {
+      expect(child[dimension]).toBeLessThanOrEqual(parent[dimension]);
+      if (
+        dimension === "agents" ||
+        dimension === "fanOut" ||
+        dimension === "replans"
+      ) continue;
+      // Every other dimension is an equal partition of the parent authority,
+      // so the specialists together can never exceed it.
+      expect(child[dimension]).toBe(
+        Math.floor(parent[dimension] / specialistCount),
+      );
+      expect(child[dimension] * specialistCount).toBeLessThanOrEqual(
+        parent[dimension],
+      );
+    }
   });
 
   it("prepares deterministic queued runs and jobs across supervisor retries", async () => {
