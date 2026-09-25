@@ -1,5 +1,6 @@
 import {
   createOAuthAuthorization,
+  googleConnectorAccountPolicyForIdentity,
   type GoogleConnectionPurpose,
   isOAuthProvider,
   normalizeOAuthReturnTo,
@@ -21,8 +22,15 @@ async function GETHandler(request: Request, context: { params: Promise<{ provide
   const authorizationIntent = requestUrl.searchParams.get("intent") === "repair"
     ? "repair" as const
     : undefined;
-  const googleConnectionPurpose: GoogleConnectionPurpose =
-    requestUrl.searchParams.get("account") === "work" ? "work" : "personal";
+  if (provider === "google" && requestUrl.searchParams.get("account") === "work") {
+    return Response.json(
+      {
+        error: "Work is a separate Asael account. Switch accounts before connecting Google Workspace.",
+      },
+      { status: 409, headers: { "cache-control": "private, no-store" } },
+    );
+  }
+  const googleConnectionPurpose: GoogleConnectionPurpose = "personal";
   const requestedConnectionId = requestUrl.searchParams.get("connectionId") || undefined;
   try {
     if (provider === "salesforce") {
@@ -38,6 +46,16 @@ async function GETHandler(request: Request, context: { params: Promise<{ provide
         returnTo,
       }), 302);
     }
+    if (!security.auth?.email) {
+      return Response.json(
+        { error: "Google Workspace connection requires a signed-in private account." },
+        { status: 403, headers: { "cache-control": "private, no-store" } },
+      );
+    }
+    const googleConnectorAccount = googleConnectorAccountPolicyForIdentity({
+      email: security.auth.email,
+      tenantId: security.tenantId,
+    });
     if (requestedConnectionId) {
       const existing = await getOAuthGrantSecrets(
         security.tenantId,
@@ -60,6 +78,7 @@ async function GETHandler(request: Request, context: { params: Promise<{ provide
       actorId: security.actorId,
       returnTo,
       googleConnectionPurpose,
+      googleConnectorAccount,
       ...(requestedConnectionId ? { connectionId: requestedConnectionId } : {}),
       ...(authorizationIntent ? { authorizationIntent } : {}),
     }), 302);

@@ -11,7 +11,7 @@ export function PrivateWorkspaceCta() {
             Open the operating workspace.
           </h2>
           <p className="mt-3 text-sm opacity-70">
-            Private owner access · Email/password authentication · No public
+            Approved private accounts · Google or password access · No public
             registration
           </p>
         </div>

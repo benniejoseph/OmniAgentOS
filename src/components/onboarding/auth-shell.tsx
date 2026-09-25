@@ -88,8 +88,8 @@ export function AuthShell({ children }: { children: React.ReactNode }) {
               </div>
             </div>
             <div className="mt-12 flex items-center justify-between rounded-lg border border-primary/20 bg-background/60 px-4 py-3 text-sm">
-              <span className="text-muted">Owner access</span>
-              <strong className="text-primary">Single account</strong>
+              <span className="text-muted">Approved access</span>
+              <strong className="text-primary">Personal · Work</strong>
             </div>
           </aside>
 

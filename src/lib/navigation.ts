@@ -570,7 +570,7 @@ export const marketingPages = {
     eyebrow: "Private deployment",
     headline: "No public plans or registration.",
     summary:
-      "This deployment is privately operated. Use the configured owner account to enter the workspace.",
+      "This deployment is privately operated. Use an approved account to enter its isolated workspace.",
     icon: Database,
     sections: [
       "One private operator workspace.",

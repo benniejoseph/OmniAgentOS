@@ -36,7 +36,14 @@ import {
   runCaptureBatch,
 } from "@/lib/capture/batch-client";
 import { startVisibleRefresh } from "@/lib/client/visible-refresh";
-import { listOfflineCaptures, queueOfflineCapture, removeOfflineCapture, type OfflineCapture } from "@/lib/capture/offline";
+import {
+  claimLegacyOfflineCaptures,
+  listOfflineCaptures,
+  queueOfflineCapture,
+  removeOfflineCapture,
+  type OfflineCapture,
+  type OfflineCaptureOwner,
+} from "@/lib/capture/offline";
 import { googleWorkspaceCapabilitiesForScopes } from "@/lib/connectors/google-workspace-capabilities";
 import styles from "./daybook-workspaces.module.css";
 
@@ -147,6 +154,11 @@ export function CaptureWorkspace() {
   const workspaceLoadControllerRef = useRef<AbortController | null>(null);
   const captureBlocked = permissionMessage(session, status, "write.memory");
   const visualBlocked = permissionMessage(session, status, "run.agent");
+  const offlineOwner = useMemo<OfflineCaptureOwner | undefined>(() => {
+    const tenantId = session?.context?.tenantId;
+    const actorId = session?.context?.actorId;
+    return tenantId && actorId ? { tenantId, actorId } : undefined;
+  }, [session?.context?.actorId, session?.context?.tenantId]);
 
   const loadWorkspace = useCallback(async () => {
     if (status !== "ready" || !session) return;
@@ -256,17 +268,28 @@ export function CaptureWorkspace() {
   }, []);
 
   useEffect(() => {
+    if (!offlineOwner) return;
     let active = true;
     const refreshCount = async () => {
-      const captures = await listOfflineCaptures().catch(() => []);
+      const captures = await listOfflineCaptures(offlineOwner).catch(() => []);
       if (active) setOfflinePending(captures.length);
     };
-    const flush = () => { void flushOfflineCaptures().then(refreshCount); };
-    void refreshCount();
+    const flush = () => {
+      void flushOfflineCaptures(offlineOwner).then(refreshCount);
+    };
+    const initialize = async () => {
+      await claimLegacyOfflineCaptures(
+        offlineOwner,
+        session?.account?.canClaimLegacyOfflineCaptures === true,
+      ).catch(() => 0);
+      if (!active) return;
+      await refreshCount();
+      if (navigator.onLine) flush();
+    };
+    void initialize();
     window.addEventListener("online", flush);
-    if (navigator.onLine) flush();
     return () => { active = false; window.removeEventListener("online", flush); };
-  }, []);
+  }, [offlineOwner, session?.account?.canClaimLegacyOfflineCaptures]);
 
   useEffect(() => {
     if (!activeJob || !["completed", "failed", "canceled"].includes(activeJob.status) || completedJobRef.current === activeJob.id) return;
@@ -527,7 +550,9 @@ export function CaptureWorkspace() {
           : "None of the selected files could be queued. Review the file-level errors and retry.",
       });
       await loadWorkspace();
-      const pending = await listOfflineCaptures().catch(() => []);
+      const pending = offlineOwner
+        ? await listOfflineCaptures(offlineOwner).catch(() => [])
+        : [];
       setOfflinePending(pending.length);
     } finally {
       setSubmitting(false);
@@ -540,7 +565,8 @@ export function CaptureWorkspace() {
     capture: Pick<OfflineCapture, "title" | "content" | "tags" | "file">,
   ) {
     try {
-      await queueOfflineCapture(capture);
+      if (!offlineOwner) throw new Error("Sign in again before saving offline work.");
+      await queueOfflineCapture(offlineOwner, capture);
       setBatchItem(item.id, { status: "offline", error: undefined });
       return "offline" as const;
     } catch (error) {
@@ -576,9 +602,14 @@ export function CaptureWorkspace() {
   }
 
   async function queueCurrentNote() {
-    await queueOfflineCapture({ title: title.trim(), content: content.trim(), tags: tags.trim() });
+    if (!offlineOwner) throw new Error("Sign in again before saving offline work.");
+    await queueOfflineCapture(offlineOwner, {
+      title: title.trim(),
+      content: content.trim(),
+      tags: tags.trim(),
+    });
     resetCaptureDraft();
-    const pending = await listOfflineCaptures();
+    const pending = await listOfflineCaptures(offlineOwner);
     setOfflinePending(pending.length);
     setCaptureNotice({ tone: "success", text: "Saved privately on this device. Asael will store and index it when you are back online." });
   }
@@ -1123,14 +1154,22 @@ function captureForm(capture: Pick<OfflineCapture, "title" | "content" | "tags" 
   return form;
 }
 
-async function flushOfflineCaptures() {
+async function flushOfflineCaptures(owner: OfflineCaptureOwner) {
   if (!navigator.onLine) return;
-  const captures = await listOfflineCaptures();
+  const captures = await listOfflineCaptures(owner);
   for (const capture of captures) {
     try {
-      const response = await fetch("/api/capture", { method: "POST", body: captureForm(capture), headers: { "idempotency-key": capture.id } });
+      const response = await fetch("/api/capture", {
+        method: "POST",
+        body: captureForm(capture),
+        headers: {
+          "idempotency-key": capture.id,
+          "x-omni-correlation-id": capture.id,
+          "x-asael-capture-owner-sha256": capture.ownerSha256,
+        },
+      });
       if (!response.ok) break;
-      await removeOfflineCapture(capture.id);
+      await removeOfflineCapture(owner, capture.id);
     } catch {
       break;
     }

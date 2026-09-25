@@ -226,6 +226,7 @@ export async function loadWorkspaceAccessSnapshot(
         item.tenantId === safeScope.tenantId &&
         item.actorId === safeScope.actorId &&
         item.provider === "google" &&
+        item.connectionPurpose !== "work" &&
         item.status === "active",
     );
     if (grant) {

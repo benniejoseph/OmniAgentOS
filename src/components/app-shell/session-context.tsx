@@ -30,6 +30,11 @@ export type WorkspaceSession = {
   membership?: {
     role?: WorkspaceRole;
   };
+  account?: {
+    email?: string;
+    label?: string;
+    canClaimLegacyOfflineCaptures?: boolean;
+  };
 };
 
 export type WorkspacePermission =
@@ -121,6 +126,7 @@ export function WorkspaceSessionProvider({
       const body = (await response.json().catch(() => ({}))) as { error?: string; message?: string };
       throw new Error(body.message || body.error || "Sign out failed.");
     }
+    window.sessionStorage.clear();
     setSession((current) => ({
       authEnabled: current?.authEnabled ?? true,
       authenticated: false,

@@ -1,5 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
 import { getAppBaseUrl } from "@/lib/config";
+import {
+  privateAccountAllowlistConfigured,
+  privateAccountPolicyForIdentity,
+} from "@/lib/auth/private-account-policy";
 import { openJsonPayload, sealJsonPayload } from "@/lib/security/sealed-payload";
 import { GOOGLE_WORKSPACE_OAUTH_SCOPES } from "@/lib/connectors/google-workspace-capabilities";
 
@@ -70,7 +74,7 @@ export function oauthConfigured(provider: OAuthProvider) {
   return Boolean(
     process.env[config.clientIdEnv]?.trim() &&
       process.env[config.clientSecretEnv]?.trim() &&
-      (provider !== "google" || googleOwnerEmail()),
+      (provider !== "google" || privateAccountAllowlistConfigured()),
   );
 }
 
@@ -81,7 +85,7 @@ export function googleConnectorAccountPolicy(
     ? googleOwnerEmail()
     : (
         process.env.OMNIAGENT_GOOGLE_WORK_EMAIL ||
-        "benniejoseph.richard@gmail.com"
+        ""
       ).trim().toLowerCase();
   if (!isNormalizedEmail(email)) {
     throw new Error(
@@ -97,6 +101,21 @@ export function googleConnectorAccountPolicy(
   };
 }
 
+export function googleConnectorAccountPolicyForIdentity(input: {
+  email: string;
+  tenantId: string;
+}): GoogleConnectorAccountPolicy {
+  const account = privateAccountPolicyForIdentity(input);
+  if (!account) {
+    throw new Error("The signed-in private account does not match its workspace policy.");
+  }
+  return {
+    purpose: "personal",
+    email: account.email,
+    label: account.label,
+  };
+}
+
 export function createOAuthAuthorization(
   provider: OAuthProvider,
   identity: {
@@ -106,6 +125,7 @@ export function createOAuthAuthorization(
     returnTo?: string;
     authorizationIntent?: "connect" | "repair";
     googleConnectionPurpose?: GoogleConnectionPurpose;
+    googleConnectorAccount?: GoogleConnectorAccountPolicy;
     connectionId?: string;
   },
 ) {
@@ -114,14 +134,15 @@ export function createOAuthAuthorization(
   if (
     !clientId ||
     !process.env[config.clientSecretEnv]?.trim() ||
-    (provider === "google" && !googleOwnerEmail())
+    (provider === "google" && !privateAccountAllowlistConfigured())
   ) {
     throw new Error(`${config.label} OAuth is not configured.`);
   }
   const verifier = randomBytes(48).toString("base64url");
   const challenge = createHash("sha256").update(verifier).digest("base64url");
   const googleAccount = provider === "google"
-    ? googleConnectorAccountPolicy(identity.googleConnectionPurpose || "personal")
+    ? identity.googleConnectorAccount ||
+      googleConnectorAccountPolicy(identity.googleConnectionPurpose || "personal")
     : undefined;
   const state = sealJsonPayload(
     {
@@ -132,6 +153,7 @@ export function createOAuthAuthorization(
       verifier,
       returnTo: normalizeOAuthReturnTo(identity.returnTo),
       googleConnectionPurpose: googleAccount?.purpose || null,
+      googleAccountEmail: googleAccount?.email || null,
       connectionId: identity.connectionId || null,
       expiresAt: Date.now() + 10 * 60_000,
     },
@@ -168,6 +190,7 @@ export function openOAuthState(provider: OAuthProvider, encoded: string) {
       verifier: string;
       returnTo?: string;
       googleConnectionPurpose?: string | null;
+      googleAccountEmail?: string | null;
       connectionId?: string | null;
       expiresAt: number;
     };
@@ -185,6 +208,12 @@ export function openOAuthState(provider: OAuthProvider, encoded: string) {
         state.googleConnectionPurpose === undefined ||
         state.googleConnectionPurpose === "personal" ||
         state.googleConnectionPurpose === "work"
+      ) ||
+      !(
+        state.googleAccountEmail === null ||
+        state.googleAccountEmail === undefined ||
+        (typeof state.googleAccountEmail === "string" &&
+          isNormalizedEmail(state.googleAccountEmail))
       ) ||
       !(
         state.connectionId === null ||
@@ -211,7 +240,10 @@ export async function exchangeOAuthCode(
   provider: OAuthProvider,
   code: string,
   verifier: string,
-  options?: { googleConnectionPurpose?: GoogleConnectionPurpose },
+  options?: {
+    googleConnectionPurpose?: GoogleConnectionPurpose;
+    googleConnectorAccount?: GoogleConnectorAccountPolicy;
+  },
 ) {
   const config = oauthProviders[provider];
   const body = new URLSearchParams({ client_id: process.env[config.clientIdEnv] || "", client_secret: process.env[config.clientSecretEnv] || "", code, code_verifier: verifier, redirect_uri: `${getAppBaseUrl()}/api/oauth/${provider}/callback`, grant_type: "authorization_code" });
@@ -234,7 +266,10 @@ export async function exchangeOAuthCode(
   if (provider === "google") {
     const identity = await validateGoogleConnectorIdentity(
       result,
-      options?.googleConnectionPurpose || "personal",
+      options?.googleConnectorAccount ||
+        googleConnectorAccountPolicy(
+          options?.googleConnectionPurpose || "personal",
+        ),
     ).catch(async (error) => {
       await revokeOAuthAccess(
         "google",
@@ -332,11 +367,11 @@ export function isSalesforceInstanceUrl(value: unknown): value is string {
 
 async function validateGoogleConnectorIdentity(
   tokens: Record<string, unknown>,
-  purpose: GoogleConnectionPurpose,
+  accountPolicy: GoogleConnectorAccountPolicy,
 ) {
   const idToken = typeof tokens.id_token === "string" ? tokens.id_token : "";
   const clientId = process.env.GOOGLE_OAUTH_CLIENT_ID?.trim() || "";
-  const expectedEmail = googleConnectorAccountPolicy(purpose).email;
+  const expectedEmail = accountPolicy.email;
   if (!idToken || !clientId || !expectedEmail) {
     throw new OAuthProviderError(
       "Google could not verify the allowed private Workspace account.",

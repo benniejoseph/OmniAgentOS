@@ -1,5 +1,5 @@
 import {
-  googleConnectorAccountPolicy,
+  googleConnectorAccountPolicyForIdentity,
   oauthConfigured,
   oauthProviders,
 } from "@/lib/connectors/oauth-providers";
@@ -19,7 +19,13 @@ async function GETHandler(request: Request) {
   try { security = await authorizeRequest({ request, action: "read", resourceType: "oauth_grant" }); } catch (error) { return forbiddenResponse(error); }
   const readable = new URL(request.url).searchParams.get("ownerScope") === "readable";
   try {
-    const grants = readable
+    const account = security.auth?.email
+      ? googleConnectorAccountPolicyForIdentity({
+          email: security.auth.email,
+          tenantId: security.tenantId,
+        })
+      : undefined;
+    const grants = (readable
       ? await listOAuthGrantsForRequest({
           tenantId: security.tenantId,
           actorId: security.actorId,
@@ -28,7 +34,11 @@ async function GETHandler(request: Request) {
         })
       : (await listOAuthGrants(security.tenantId, security.actorId)).map(
           (grant) => ({ ...grant, manageable: true }),
-        );
+        )).filter((grant) =>
+          grant.provider !== "google" ||
+          (account &&
+            grant.accountEmail === account.email &&
+            grant.connectionPurpose === account.purpose));
     return Response.json({
       providers: Object.entries(oauthProviders).map(([id, config]) => ({
         id,
@@ -38,7 +48,7 @@ async function GETHandler(request: Request) {
         authorizeUrl: `/api/oauth/${id}/authorize`,
         ...(id === "google"
           ? {
-              accounts: googleAccountOptions(),
+              accounts: account ? [account] : [],
             }
           : {}),
       })),
@@ -67,15 +77,4 @@ async function GETHandler(request: Request) {
       },
     );
   }
-}
-
-function googleAccountOptions() {
-  return (["personal", "work"] as const).flatMap((purpose) => {
-    try {
-      const policy = googleConnectorAccountPolicy(purpose);
-      return [{ purpose: policy.purpose, label: policy.label, email: policy.email }];
-    } catch {
-      return [];
-    }
-  });
 }

@@ -41,7 +41,7 @@ const quickStart = [
     title: "Enter the private workspace",
     href: "/login",
     action: "Sign in",
-    body: "Use the configured owner account to continue into the operating workspace.",
+    body: "Use an approved private account to open its isolated operating workspace.",
     icon: KeyRound,
   },
   {
@@ -301,7 +301,7 @@ export function DocsGuide() {
               <p className="text-sm font-semibold uppercase tracking-[0.22em] text-primary">Quick path</p>
               <h2 className="mt-4 text-4xl font-semibold tracking-normal sm:text-5xl">Start with the safest path to value.</h2>
               <p className="mt-5 text-base leading-7 text-muted">
-                New users should understand the product in demo mode, sign in with owner access, then follow readiness from the dashboard and command center.
+                Approved users can understand the product in demo mode, sign in to their isolated account, then follow readiness from the dashboard and command center.
               </p>
             </div>
             <div className="grid gap-px overflow-hidden rounded-lg border border-line bg-line md:grid-cols-2">

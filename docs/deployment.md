@@ -27,7 +27,7 @@ Set these through the platform secret/configuration store, never in source contr
 - `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_REGION`, and `AWS_BEDROCK_*_MODEL`: optional deployment fallback for Bedrock. Prefer Settings-managed, tenant-scoped Bedrock credentials and assignments; never expose either credential path to the browser.
 - `OMNIAGENT_MCP_ALLOWED_HOSTS` and `OMNIAGENT_MCP_ALLOWED_ORIGINS`: optional comma-separated additions to the inbound MCP DNS-rebinding and browser-origin allowlists. The canonical `NEXT_PUBLIC_APP_URL` and Vercel deployment hosts are included automatically.
 - `OMNIAGENT_BOOTSTRAP_EMAIL` and `OMNIAGENT_BOOTSTRAP_PASSWORD`: required before first auth-store access. Confirm the persisted admin, then rotate or remove bootstrap credentials.
-- `OMNIAGENT_OWNER_EMAIL`, `GOOGLE_OAUTH_CLIENT_ID`, and `GOOGLE_OAUTH_CLIENT_SECRET`: the exact private owner and server-side Google OAuth web client. Register `${NEXT_PUBLIC_APP_URL}/api/oauth/google/callback`; Asael verifies the returned Google identity against the owner before sealing provider tokens with `OMNIAGENT_CREDENTIAL_KEYRING`.
+- `OMNIAGENT_PRIVATE_ACCOUNT_ALLOWLIST_JSON`, `GOOGLE_OAUTH_CLIENT_ID`, and `GOOGLE_OAUTH_CLIENT_SECRET`: the server-owned private account admission policy and Google OAuth web client. Each allowlisted email maps to one distinct immutable tenant and must set `tenantMode` to `existing` only when intentionally adopting a known legacy tenant, or `new` when the tenant must not already exist at first provisioning. Register both `${NEXT_PUBLIC_APP_URL}/api/auth/google/callback` for Asael sign-in and `${NEXT_PUBLIC_APP_URL}/api/oauth/google/callback` for the signed-in account's Workspace connection. `OMNIAGENT_OWNER_EMAIL` remains a single-account compatibility fallback only when the JSON allowlist is unset.
 - `OMNIAGENT_REPORT_SIGNING_SECRET`: production signing key for evaluation evidence. Set `OMNIAGENT_REPORT_SIGNING_KEY_ID`; use `OMNIAGENT_REPORT_SIGNING_KEYS` JSON during rotation.
 - `OMNIAGENT_ACCESS_REQUEST_FILE`: optional durable fallback path for local/non-database deployments. With `DATABASE_URL`, access requests are tenant-scoped in Postgres and appear in the admin Inbox for review.
 - `SALESFORCE_OAUTH_CLIENT_ID` and `SALESFORCE_OAUTH_CLIENT_SECRET`: server-only credentials for the read-only Salesforce Connected App. Register `${NEXT_PUBLIC_APP_URL}/api/oauth/salesforce/callback` and grant only `api` plus `refresh_token`; leaving either value unset keeps the Account 360 Salesforce health state at `configuration_required`.
@@ -635,7 +635,7 @@ Keep `OPENAI_API_KEY` only on Vercel; the normal release shell does not need it,
 
 Platform-provided `VERCEL_*` values supply deployment metadata and are not copied into `.env.example`. See [api-reference.md](api-reference.md) for route authentication and response expectations.
 
-### Private Google Workspace connection
+### Private Google Workspace accounts
 
 Asael uses its native server-side OAuth/REST connector as the canonical Google
 integration. The official Google Workspace remote MCP servers remain a
@@ -643,7 +643,8 @@ Developer Preview and do not cover this product's complete governed mutation
 and Photos Picker requirements.
 
 Configure one Web application OAuth client in the same Google Cloud project as
-the enabled APIs. Its only production redirect URI is
+the enabled APIs. Its production redirect URIs are
+`https://asael.bennierichard.com/api/auth/google/callback` and
 `https://asael.bennierichard.com/api/oauth/google/callback`. Enable Gmail,
 Calendar, Drive, Docs, Sheets, Slides, and Photos Picker APIs. The OAuth consent
 configuration must declare the scopes requested by
@@ -652,14 +653,16 @@ configuration must declare the scopes requested by
 `gmail.modify`, `calendar.events`, `calendar.calendarlist.readonly`, `drive`,
 and `photospicker.mediaitems.readonly`.
 
-Keep the audience External and In production for this owner-only application.
+Keep the audience External and In production for this private application.
 An unverified sensitive/restricted-scope warning is expected for a private app;
 do not repeatedly force consent or reset sync state merely to hide that warning.
 After a scope expansion the owner must authorize once. Normal one-hour access
 token expiry is refreshed with the retained refresh token and is not a broken
 connection. Gmail and Drive deletion means recoverable Trash by default;
 permanent Gmail deletion and unrestricted Photos-library background access are
-not requested.
+not requested. Google login accepts only an exact active allowlist entry. Each
+signed-in account sees one Google Workspace connection verified against its own
+email; Personal and Work are separate tenants rather than side-by-side grants.
 
 ## Schema and migration rollout
 

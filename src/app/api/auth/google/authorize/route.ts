@@ -1,4 +1,4 @@
-import { createGoogleOwnerAuthorization } from "@/lib/auth/google";
+import { createGooglePrivateAuthorization } from "@/lib/auth/google";
 import { enforcePrivateNoStore } from "@/lib/http/response";
 
 export const runtime = "nodejs";
@@ -6,7 +6,7 @@ export const runtime = "nodejs";
 export async function GET() {
   try {
     return enforcePrivateNoStore(
-      Response.redirect(createGoogleOwnerAuthorization(), 302),
+      Response.redirect(createGooglePrivateAuthorization(), 302),
     );
   } catch (error) {
     return enforcePrivateNoStore(

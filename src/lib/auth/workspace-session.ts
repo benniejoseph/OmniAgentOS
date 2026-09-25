@@ -1,4 +1,5 @@
-import { googleOwnerLoginConfigured } from "@/lib/auth/google";
+import { googlePrivateLoginConfigured } from "@/lib/auth/google";
+import { privateAccountPolicyForIdentity } from "@/lib/auth/private-account-policy";
 import { getSessionToken } from "@/lib/auth/session";
 import {
   getSessionIdentity,
@@ -21,11 +22,17 @@ export async function resolveWorkspaceSession(request: Request) {
   if (context) {
     enterDatabaseSecurityContext(context);
   }
+  const account = identity
+    ? privateAccountPolicyForIdentity({
+        email: identity.user.email,
+        tenantId: identity.tenant.id,
+      })
+    : undefined;
 
   return {
     authEnabled,
     bootstrapConfigured: isBootstrapConfigured(),
-    googleLoginConfigured: googleOwnerLoginConfigured(),
+    googleLoginConfigured: googlePrivateLoginConfigured(),
     authenticated: Boolean(identity || trustedHeaderContext),
     context: context || (!authEnabled ? headerContext : undefined),
     user: identity?.user,
@@ -33,6 +40,13 @@ export async function resolveWorkspaceSession(request: Request) {
     membership: identity?.membership || (trustedHeaderContext
       ? { role: trustedHeaderContext.role }
       : undefined),
+    account: account
+      ? {
+          email: account.email,
+          label: account.label,
+          canClaimLegacyOfflineCaptures: account.tenantMode === "existing",
+        }
+      : undefined,
   };
 }
 

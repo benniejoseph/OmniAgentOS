@@ -1,6 +1,6 @@
 import {
   exchangeOAuthCode,
-  googleConnectorAccountPolicy,
+  googleConnectorAccountPolicyForIdentity,
   isOAuthProvider,
   normalizeOAuthReturnTo,
   openOAuthState,
@@ -30,14 +30,29 @@ async function GETHandler(request: Request, context: { params: Promise<{ provide
   try {
     const state = openOAuthState(provider, stateValue);
     if (state.tenantId !== security.tenantId) throw new Error("OAuth tenant changed during authorization.");
-    const googleConnectionPurpose = state.googleConnectionPurpose === "work"
-      ? "work" as const
-      : "personal" as const;
+    if (provider === "google" && state.googleConnectionPurpose === "work") {
+      throw new Error("The retired side-by-side Work connection cannot be authorized.");
+    }
+    const googleConnectionPurpose = "personal" as const;
+    const googleConnectorAccount = provider === "google"
+      ? googleConnectorAccountPolicyForIdentity({
+          email: security.auth?.email || "",
+          tenantId: security.tenantId,
+        })
+      : undefined;
+    if (
+      provider === "google" &&
+      state.googleAccountEmail !== googleConnectorAccount?.email
+    ) {
+      throw new Error("Google account identity changed during authorization.");
+    }
     const tokens = await exchangeOAuthCode(
       provider,
       code,
       state.verifier,
-      provider === "google" ? { googleConnectionPurpose } : undefined,
+      provider === "google"
+        ? { googleConnectionPurpose, googleConnectorAccount }
+        : undefined,
     );
     if (provider === "salesforce") {
       const access = await resolveSalesforceRequestAccess(security, {
@@ -68,7 +83,7 @@ async function GETHandler(request: Request, context: { params: Promise<{ provide
       });
     } else {
       if (state.actorId !== security.actorId) throw new Error("OAuth identity changed during authorization.");
-      const accountPolicy = googleConnectorAccountPolicy(googleConnectionPurpose);
+      const accountPolicy = googleConnectorAccount!;
       await saveOAuthGrant({
         tenantId: security.tenantId,
         actorId: security.actorId,

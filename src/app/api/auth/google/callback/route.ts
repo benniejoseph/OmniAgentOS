@@ -1,4 +1,4 @@
-import { exchangeGoogleOwnerCode } from "@/lib/auth/google";
+import { exchangeGooglePrivateCode } from "@/lib/auth/google";
 import { sessionCookie } from "@/lib/auth/session";
 import { authenticateFederatedIdentity } from "@/lib/auth/store";
 import { getAppBaseUrl } from "@/lib/config";
@@ -16,9 +16,14 @@ export async function GET(request: Request) {
     );
   }
   try {
-    const profile = await exchangeGoogleOwnerCode(code, state);
-    const result = await authenticateFederatedIdentity({ email: profile.email });
-    if (!result) throw new Error("The verified Google identity is not an active Asael owner.");
+    const profile = await exchangeGooglePrivateCode(code, state);
+    const result = await authenticateFederatedIdentity({
+      email: profile.email,
+      name: profile.name,
+    });
+    if (!result) {
+      throw new Error("The verified Google identity is not an active private account.");
+    }
     return enforcePrivateNoStore(
       new Response(null, {
         status: 302,

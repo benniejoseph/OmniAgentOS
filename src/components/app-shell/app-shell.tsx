@@ -3,6 +3,7 @@
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import {
+  ArrowLeftRight,
   ArrowRight,
   ChevronDown,
   LogIn,
@@ -104,6 +105,20 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
     }
   }
 
+  async function handleSwitchAccount() {
+    setSigningOut(true);
+    setSignOutError(undefined);
+    try {
+      await signOut();
+      setMobileOpen(false);
+      router.replace("/login?switch=1");
+      router.refresh();
+    } catch (error) {
+      setSignOutError(error instanceof Error ? error.message : "Account switch failed.");
+      setSigningOut(false);
+    }
+  }
+
   function closeMobileNavigation() {
     setMobileOpen(false);
     window.setTimeout(() => {
@@ -196,6 +211,7 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
               signingOut={signingOut}
               signOutError={signOutError}
               onSignOut={() => void handleSignOut()}
+              onSwitchAccount={() => void handleSwitchAccount()}
             />
           )}
         </div>
@@ -365,6 +381,7 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
                 signingOut={signingOut}
                 signOutError={signOutError}
                 onSignOut={() => void handleSignOut()}
+                onSwitchAccount={() => void handleSwitchAccount()}
               />
             </div>
           </div>
@@ -567,6 +584,7 @@ function AccountPanel({
   signingOut,
   signOutError,
   onSignOut,
+  onSwitchAccount,
 }: {
   session: ReturnType<typeof useWorkspaceSession>["session"];
   sessionStatus: ReturnType<typeof useWorkspaceSession>["status"];
@@ -575,6 +593,7 @@ function AccountPanel({
   signingOut: boolean;
   signOutError?: string;
   onSignOut: () => void;
+  onSwitchAccount: () => void;
 }) {
   if (sessionStatus === "loading") {
     return (
@@ -613,6 +632,7 @@ function AccountPanel({
     session.context?.actorId ||
     (session.authEnabled ? "Workspace member" : "Local workspace");
   const tenantName = session.tenant?.name || session.tenant?.slug || session.context?.tenantId;
+  const accountLabel = session.account?.label || tenantName;
 
   return (
     <div className="rounded-md border border-line bg-background p-3">
@@ -623,22 +643,33 @@ function AccountPanel({
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold">{accountName}</p>
           <p className="mt-0.5 truncate text-xs text-muted">
-            {session.authEnabled ? tenantName || "Workspace" : "Local mode"} · {role}
+            {session.authEnabled ? accountLabel || "Workspace" : "Local mode"} · {role}
           </p>
         </div>
       </div>
       {!session.authEnabled ? (
         <p className="mt-3 text-xs leading-5 text-muted">Authentication is disabled. Requests use the configured local role.</p>
       ) : (
-        <button
-          type="button"
-          onClick={onSignOut}
-          disabled={signingOut}
-          className="mt-3 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-line px-3 text-sm font-semibold hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          <LogOut size={15} aria-hidden="true" />
-          {signingOut ? "Signing out" : "Sign out"}
-        </button>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+          <button
+            type="button"
+            onClick={onSwitchAccount}
+            disabled={signingOut}
+            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-primary px-3 text-sm font-semibold text-primary-ink disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <ArrowLeftRight size={15} aria-hidden="true" />
+            {signingOut ? "Switching" : "Switch account"}
+          </button>
+          <button
+            type="button"
+            onClick={onSignOut}
+            disabled={signingOut}
+            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-line px-3 text-sm font-semibold hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <LogOut size={15} aria-hidden="true" />
+            Sign out
+          </button>
+        </div>
       )}
       {signOutError ? <p className="mt-2 text-xs text-danger" role="alert">{signOutError}</p> : null}
     </div>

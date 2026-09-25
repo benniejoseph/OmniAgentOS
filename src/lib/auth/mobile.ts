@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { createOpaqueToken, hashSessionToken } from "@/lib/auth/crypto";
+import { privateAccountPolicyForIdentity } from "@/lib/auth/private-account-policy";
 import {
   authenticatePassword,
   destroySession,
-  getAuthControlPlane,
+  hasExactPrivateAccountBinding,
 } from "@/lib/auth/store";
 import type { AuthSessionIdentity } from "@/lib/auth/types";
 import type {
@@ -110,8 +111,17 @@ export async function rotateMobileRefreshToken(
         const rows = await sql`
           SELECT
             session.*,
+            auth_user.email AS auth_user_email,
             auth_user.status AS auth_user_status,
-            membership.status AS membership_status
+            membership.status AS membership_status,
+            membership.role AS membership_role,
+            EXISTS (
+              SELECT 1
+              FROM omni_auth_memberships other_membership
+              WHERE other_membership.user_id = session.user_id
+                AND other_membership.tenant_id <> session.tenant_id
+                AND other_membership.status = 'active'
+            ) AS has_other_active_membership
           FROM omni_mobile_sessions session
           LEFT JOIN omni_auth_users auth_user
             ON auth_user.id = session.user_id
@@ -140,7 +150,14 @@ export async function rotateMobileRefreshToken(
         }
         if (
           row.auth_user_status !== "active" ||
-          row.membership_status !== "active"
+          row.membership_status !== "active" ||
+          row.has_other_active_membership === true ||
+          String(row.has_other_active_membership) === "true" ||
+          !privateAccountPolicyForIdentity({
+            email: String(row.auth_user_email || ""),
+            tenantId: session.tenantId,
+            role: String(row.membership_role || "") as AuthSessionIdentity["membership"]["role"],
+          })
         ) {
           await sql`
             UPDATE omni_mobile_sessions
@@ -964,19 +981,47 @@ async function getMobileAccessIdentity(accessToken: string): Promise<MobileIdent
         JOIN omni_auth_tenants t ON t.id = s.tenant_id
         JOIN omni_auth_memberships m ON m.user_id = s.user_id AND m.tenant_id = s.tenant_id
         WHERE s.access_token_hash = ${hash} AND s.access_expires_at > NOW() AND s.revoked_at IS NULL
-          AND u.status = 'active' AND m.status = 'active' LIMIT 1
+          AND u.status = 'active' AND m.status = 'active'
+          AND NOT EXISTS (
+            SELECT 1
+            FROM omni_auth_memberships other_membership
+            WHERE other_membership.user_id = s.user_id
+              AND other_membership.tenant_id <> s.tenant_id
+              AND other_membership.status = 'active'
+          )
+        LIMIT 1
       `;
-      return rows[0] ? mobileIdentityFromRow(rows[0]) : null;
+      if (!rows[0]) return null;
+      const identity = mobileIdentityFromRow(rows[0]);
+      return privateAccountPolicyForIdentity({
+        email: identity.user.email,
+        tenantId: identity.tenant.id,
+        role: identity.membership.role,
+      })
+        ? identity
+        : null;
     });
   }
   const ledger = await readMobileLedger();
   const session = ledger.sessions.find((item) => item.accessTokenHash === hash && !item.revokedAt && new Date(item.accessExpiresAt).getTime() > Date.now());
   if (!session) return null;
-  const control = await import("@/lib/auth/store").then((module) => module.getAuthControlPlane({ tenantId: session.tenantId }));
-  const user = control.users.find((item) => item.id === session.userId && item.status === "active");
-  const membership = control.memberships.find((item) => item.userId === session.userId && item.status === "active");
+  const { getAuthControlPlane } = await import("@/lib/auth/store");
+  const control = await getAuthControlPlane({ tenantId: session.tenantId });
+  const user = control.users.find((item) =>
+    item.id === session.userId && item.status === "active");
+  const membership = control.memberships.find((item) =>
+    item.userId === session.userId &&
+    item.tenantId === session.tenantId &&
+    item.status === "active");
   const tenant = control.tenants.find((item) => item.id === session.tenantId);
-  return user && membership && tenant ? mobileIdentity(session, { user, membership, tenant } as AuthSessionIdentity) : null;
+  return user && membership && tenant && await hasExactPrivateAccountBinding({
+    userId: user.id,
+    email: user.email,
+    tenantId: tenant.id,
+    role: membership.role,
+  })
+    ? mobileIdentity(session, { user, membership, tenant } as AuthSessionIdentity)
+    : null;
 }
 
 function mobileIdentity(session: MobileSessionRecord, identity: Pick<AuthSessionIdentity, "user" | "tenant" | "membership">): MobileIdentity {
@@ -1074,13 +1119,20 @@ function publicMobileDeviceSession(
   };
 }
 async function hasActiveMobileMembership(session: MobileSessionRecord) {
+  const { getAuthControlPlane } = await import("@/lib/auth/store");
   const control = await getAuthControlPlane({ tenantId: session.tenantId });
-  return control.users.some((user) =>
-    user.id === session.userId && user.status === "active") &&
-    control.memberships.some((membership) =>
-      membership.userId === session.userId &&
-      membership.tenantId === session.tenantId &&
-      membership.status === "active");
+  const user = control.users.find((candidate) =>
+    candidate.id === session.userId && candidate.status === "active");
+  const membership = control.memberships.find((candidate) =>
+      candidate.userId === session.userId &&
+      candidate.tenantId === session.tenantId &&
+      candidate.status === "active");
+  return Boolean(user && membership) && await hasExactPrivateAccountBinding({
+      userId: session.userId,
+      email: user!.email,
+      tenantId: session.tenantId,
+      role: membership!.role,
+    });
 }
 function legacyMobileDevice(device: MobileDevice): MobileDevice {
   return {

@@ -82,13 +82,13 @@ export function PersonalConnections({
   const grants = (oauth.grants || []).filter(
     (item) => item.provider === "google" && item.status === "active",
   );
-  const accounts = (["personal", "work"] as const).map((purpose) =>
-    provider?.accounts?.find((account) => account.purpose === purpose) || {
-      purpose,
-      label: purpose === "work" ? "Work" : "Personal",
-      email: "",
-    }
-  );
+  const account = provider?.accounts?.[0] || (grants[0]
+    ? {
+        purpose: grants[0].connectionPurpose,
+        label: grants[0].connectionLabel,
+        email: grants[0].accountEmail || "",
+      }
+    : undefined);
 
   async function refreshIntegrationViews() {
     window.dispatchEvent(new Event(INTEGRATION_STATUS_CHANGED_EVENT));
@@ -110,13 +110,14 @@ export function PersonalConnections({
             </span>
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">
-                Connected accounts
+                Workspace connection
               </p>
               <h2 id="personal-sources-title" className="mt-1 text-xl font-semibold">
                 Google Workspace
               </h2>
               <p className="mt-1 max-w-2xl text-sm leading-6 text-muted">
-                Keep private and work context separate. Asael only uses the exact account you choose for an action.
+                Connect only the Google identity that belongs to this signed-in Asael account.
+                Its mail, calendar, files, and selected photos stay inside this workspace.
               </p>
             </div>
           </div>
@@ -127,7 +128,7 @@ export function PersonalConnections({
             className="inline-flex min-h-10 items-center justify-center gap-2 self-start rounded-md border border-line bg-background px-3 text-sm font-semibold transition hover:bg-surface-raised disabled:opacity-60"
           >
             {loading ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <RefreshCw size={15} aria-hidden="true" />}
-            Refresh accounts
+            Refresh connection
           </button>
         </div>
 
@@ -137,24 +138,25 @@ export function PersonalConnections({
           </p>
         ) : null}
 
-        <div className="mt-5 grid gap-4 xl:grid-cols-2">
-          {accounts.map((account) => (
+        <div className="mt-5">
+          {account ? (
             <GoogleAccountCard
-              key={account.purpose}
               account={account}
               provider={provider}
-              grant={grants.find((grant) => grant.connectionPurpose === account.purpose)}
+              grant={grants.find((grant) =>
+                grant.connectionPurpose === account.purpose &&
+                (!account.email || grant.accountEmail === account.email))}
               ownershipReady={oauth.requestReadContracts?.oauthGrants === "readable_v1"}
               disabledReason={disabledReason}
               loading={loading}
               onChanged={refreshIntegrationViews}
             />
-          ))}
+          ) : (
+            <p className="rounded-lg border border-warning/35 bg-warning/10 px-4 py-3 text-sm text-foreground">
+              This signed-in account could not be matched to its private workspace policy.
+            </p>
+          )}
         </div>
-
-        <p className="mt-4 text-xs leading-5 text-muted">
-          Your Work Google account is connector-only. It does not become an Asael login and cannot replace the private app owner.
-        </p>
       </div>
     </section>
   );
@@ -197,7 +199,9 @@ function GoogleAccountCard({
   );
   const grantedPermissions = permissions.filter((permission) => permission.granted);
   const lastSuccessfulSyncAt = latestSuccessfulSyncAt(grant);
-  const AccountIcon = account.purpose === "work" ? BriefcaseBusiness : CircleUserRound;
+  const AccountIcon = account.label.toLowerCase().includes("work")
+    ? BriefcaseBusiness
+    : CircleUserRound;
 
   function blockUnavailableAction() {
     if (!actionDisabledReason) return false;
@@ -289,12 +293,10 @@ function GoogleAccountCard({
                 />
               </div>
               <p className="mt-1 truncate text-sm text-muted">
-                {grant?.accountEmail || account.email || (account.purpose === "work" ? "Work Google account" : "Private Google account")}
+                {grant?.accountEmail || account.email || "Private Google account"}
               </p>
               <p className="mt-1 text-xs leading-5 text-muted">
-                {account.purpose === "work"
-                  ? "Business mail, calendar, files, and selected photos stay in the Work lane."
-                  : "Private mail, calendar, files, and selected photos stay in the Personal lane."}
+                Mail, calendar, files, and selected photos remain isolated to this Asael account.
               </p>
             </div>
           </div>
@@ -345,7 +347,7 @@ function GoogleAccountCard({
                 actionDisabledReason && "pointer-events-none opacity-60",
               )}
             >
-              Connect {account.label}
+                Connect Google
             </a>
           )}
         </div>

@@ -42,7 +42,7 @@ export function LoginForm() {
         setGoogleLoginConfigured(Boolean(validSession.googleLoginConfigured));
         const googleResult = new URLSearchParams(window.location.search).get("google");
         if (googleResult === "failed") {
-          setError("Google sign-in could not be verified. Use the configured owner account and try again.");
+          setError("Google sign-in could not be verified. Choose an approved Personal or Work account and try again.");
         } else if (googleResult === "denied") {
           setError("Google sign-in was canceled.");
         }
@@ -140,13 +140,13 @@ export function LoginForm() {
           <LogIn size={21} aria-hidden="true" />
         </div>
         <p className="mt-6 text-xs font-semibold uppercase tracking-[0.14em] text-primary">
-          Private owner access
+          Private account access
         </p>
         <h1 className="mt-3 text-3xl font-semibold tracking-[-0.035em]">
           Welcome back
         </h1>
         <p className="mt-3 text-sm leading-6 text-muted">
-          Sign in to your Asael workspace.
+          Choose your Personal or Work Google account. Each opens its own isolated Asael workspace.
         </p>
       </div>
 
@@ -190,7 +190,7 @@ export function LoginForm() {
           </a>
           <div className="flex items-center gap-3 text-xs text-muted" aria-hidden="true">
             <span className="h-px flex-1 bg-line" />
-            Password fallback
+            Password access
             <span className="h-px flex-1 bg-line" />
           </div>
         </>
@@ -248,7 +248,7 @@ export function LoginForm() {
       </button>
 
       <p className="text-center text-xs leading-5 text-muted">
-        Private workspace · No public registration
+        Private app · Approved accounts only · No public registration
       </p>
     </form>
   );

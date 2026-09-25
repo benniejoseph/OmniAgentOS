@@ -1,5 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
 import { getAppBaseUrl } from "@/lib/config";
+import {
+  privateAccountAllowlistConfigured,
+  privateAccountPolicyForEmail,
+} from "@/lib/auth/private-account-policy";
 import { openJsonPayload, sealJsonPayload } from "@/lib/security/sealed-payload";
 
 const googleAuthorizeUrl = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -12,18 +16,22 @@ type LoginState = {
   expiresAt: number;
 };
 
-export function googleOwnerLoginConfigured() {
+export function googlePrivateLoginConfigured() {
   return Boolean(
     process.env.GOOGLE_OAUTH_CLIENT_ID?.trim() &&
       process.env.GOOGLE_OAUTH_CLIENT_SECRET?.trim() &&
-      ownerEmail(),
+      privateAccountAllowlistConfigured(),
   );
 }
 
-export function createGoogleOwnerAuthorization() {
+export function createGooglePrivateAuthorization() {
   const clientId = process.env.GOOGLE_OAUTH_CLIENT_ID?.trim();
-  if (!clientId || !process.env.GOOGLE_OAUTH_CLIENT_SECRET?.trim() || !ownerEmail()) {
-    throw new Error("Google owner login is not configured.");
+  if (
+    !clientId ||
+    !process.env.GOOGLE_OAUTH_CLIENT_SECRET?.trim() ||
+    !privateAccountAllowlistConfigured()
+  ) {
+    throw new Error("Google private-account login is not configured.");
   }
   const verifier = randomBytes(48).toString("base64url");
   const challenge = createHash("sha256").update(verifier).digest("base64url");
@@ -45,10 +53,12 @@ export function createGoogleOwnerAuthorization() {
   return url.toString();
 }
 
-export async function exchangeGoogleOwnerCode(code: string, encodedState: string) {
+export async function exchangeGooglePrivateCode(code: string, encodedState: string) {
   const clientId = process.env.GOOGLE_OAUTH_CLIENT_ID?.trim();
   const clientSecret = process.env.GOOGLE_OAUTH_CLIENT_SECRET?.trim();
-  if (!clientId || !clientSecret) throw new Error("Google owner login is not configured.");
+  if (!clientId || !clientSecret) {
+    throw new Error("Google private-account login is not configured.");
+  }
   const state = openLoginState(encodedState);
   const tokenResponse = await fetch(googleTokenUrl, {
     method: "POST",
@@ -84,11 +94,11 @@ export async function exchangeGoogleOwnerCode(code: string, encodedState: string
     claims.email_verified !== "true" ||
     expiresAt <= Date.now() ||
     String(claims.nonce || "") !== state.nonce ||
-    email !== ownerEmail()
+    !privateAccountPolicyForEmail(email)
   ) {
-    throw new Error("Google identity is not authorized for this private workspace.");
+    throw new Error("Google identity is not authorized for this private app.");
   }
-  return { email, name: String(claims.name || "Asael Owner") };
+  return { email, name: String(claims.name || "Asael account") };
 }
 
 function openLoginState(encoded: string): LoginState {
@@ -104,10 +114,8 @@ function googleOwnerCallbackUrl() {
   return `${getAppBaseUrl()}/api/auth/google/callback`;
 }
 
-function ownerEmail() {
-  return (
-    process.env.OMNIAGENT_OWNER_EMAIL || process.env.OMNIAGENT_BOOTSTRAP_EMAIL || ""
-  )
-    .trim()
-    .toLowerCase();
-}
+// Compatibility exports keep older callers and frozen focused checks readable
+// while the product language and policy are now private-account based.
+export const googleOwnerLoginConfigured = googlePrivateLoginConfigured;
+export const createGoogleOwnerAuthorization = createGooglePrivateAuthorization;
+export const exchangeGoogleOwnerCode = exchangeGooglePrivateCode;

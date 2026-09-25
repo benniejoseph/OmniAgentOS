@@ -128,6 +128,12 @@ export async function saveOAuthGrant(input: {
   const now = new Date().toISOString();
   const authorizationMode = input.authorizationMode || "reauthorize";
   const connectionPurpose = input.connectionPurpose || "personal";
+  if (input.provider === "google" && connectionPurpose !== "personal") {
+    throw new OAuthCredentialError(
+      "Work Google accounts must be connected from their own Asael account.",
+      "account_identity_changed",
+    );
+  }
   const incomingEmail = normalizeAccountEmail(
     input.accountEmail || tokenString(input.tokens.google_account_email),
   );
@@ -377,9 +383,9 @@ export async function listOAuthGrantsForRequest(input: {
 }
 
 export async function listOAuthGrantsForTenant(tenantId: string) {
-  if (hasDatabaseUrl()) { await ensureDatabaseSchema(); const rows = await getSql()`SELECT * FROM omni_oauth_grants WHERE tenant_id = ${tenantId} AND provider = 'google' AND status = 'active' ORDER BY last_synced_at ASC NULLS FIRST, updated_at ASC`; return rows.map(publicGrant); }
+  if (hasDatabaseUrl()) { await ensureDatabaseSchema(); const rows = await getSql()`SELECT * FROM omni_oauth_grants WHERE tenant_id = ${tenantId} AND provider = 'google' AND connection_purpose = 'personal' AND status = 'active' ORDER BY last_synced_at ASC NULLS FIRST, updated_at ASC`; return rows.map(publicGrant); }
   const ledger = await readJsonFile<{ grants: InternalGrant[] }>(filePath(), { grants: [] });
-  return ledger.grants.filter((grant) => grant.tenantId === tenantId && grant.provider === "google" && grant.status === "active").sort((left, right) => (left.lastSyncedAt || "").localeCompare(right.lastSyncedAt || "")).map(stripTokens);
+  return ledger.grants.filter((grant) => grant.tenantId === tenantId && grant.provider === "google" && (grant.connectionPurpose || "personal") === "personal" && grant.status === "active").sort((left, right) => (left.lastSyncedAt || "").localeCompare(right.lastSyncedAt || "")).map(stripTokens);
 }
 
 export async function revokeOAuthGrant(
@@ -389,7 +395,13 @@ export async function revokeOAuthGrant(
   selector?: OAuthGrantSelector,
 ) {
   const now = new Date().toISOString();
-  const existing = await getOAuthGrantSecrets(tenantId, actorId, provider, selector);
+  const existing = await getOAuthGrantSecretsInternal(
+    tenantId,
+    actorId,
+    provider,
+    selector,
+    { allowLegacyGoogleWork: true },
+  );
   if (!existing) return;
   const sealedTokens = sealOAuthTokens({}, oauthGrantBinding(existing.grant));
   if (hasDatabaseUrl()) {
@@ -406,6 +418,21 @@ export async function getOAuthGrantSecrets(
   provider: OAuthProvider,
   selector?: OAuthGrantSelector,
 ) {
+  return getOAuthGrantSecretsInternal(
+    tenantId,
+    actorId,
+    provider,
+    selector,
+  );
+}
+
+async function getOAuthGrantSecretsInternal(
+  tenantId: string,
+  actorId: string,
+  provider: OAuthProvider,
+  selector?: OAuthGrantSelector,
+  options: { allowLegacyGoogleWork?: boolean } = {},
+) {
   let candidates: InternalGrant[];
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
@@ -417,6 +444,13 @@ export async function getOAuthGrantSecrets(
   }
   const internal = resolveInternalGrant(candidates, selector);
   if (!internal) return undefined;
+  if (
+    provider === "google" &&
+    (internal.connectionPurpose || "personal") === "work" &&
+    !options.allowLegacyGoogleWork
+  ) {
+    return undefined;
+  }
   const opened = openOAuthGrantTokens(internal);
   if (opened.needsRewrap) {
     await rewrapOAuthTokens(internal, opened.tokens);
