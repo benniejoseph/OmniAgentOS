@@ -167,11 +167,18 @@ describe("native mutation capability enrollment", () => {
           "agents.tasks.cancel",
           asOf,
         ),
+      ).toMatchObject({ state: "active", minimumContractVersion: 22 });
+      expect(
+        nativeMutationEnrollment(
+          context(22 - 1, undefined, platform),
+          "agents.tasks.cancel",
+          asOf,
+        ),
       ).toMatchObject({ state: "held", minimumContractVersion: 22 });
     }
   });
 
-  it("holds prompt queue mutations on the deployed v20 bridge", () => {
+  it("enrolls prompt queue mutations only on native v24", () => {
     for (const platform of ["android", "macos"] as const) {
       expect(
         nativeMutationEnrollment(
@@ -183,6 +190,13 @@ describe("native mutation capability enrollment", () => {
       expect(
         nativeMutationEnrollment(
           context(NATIVE_API_PREVIOUS_VERSION, undefined, platform),
+          "prompt.queue.manage",
+          asOf,
+        ),
+      ).toMatchObject({ state: "active", minimumContractVersion: 24 });
+      expect(
+        nativeMutationEnrollment(
+          context(24 - 1, undefined, platform),
           "prompt.queue.manage",
           asOf,
         ),
@@ -205,6 +219,13 @@ describe("native mutation capability enrollment", () => {
       expect(
         nativeMutationEnrollment(
           context(NATIVE_API_PREVIOUS_VERSION, undefined, "macos"),
+          capability,
+          asOf,
+        ),
+      ).toMatchObject({ state: "active", minimumContractVersion: 25 });
+      expect(
+        nativeMutationEnrollment(
+          context(25 - 1, undefined, "macos"),
           capability,
           asOf,
         ),

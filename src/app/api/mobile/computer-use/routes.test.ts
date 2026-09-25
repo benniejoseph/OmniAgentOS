@@ -40,6 +40,7 @@ import {
 import { POST as claimCommand } from "@/app/api/mobile/computer-use/commands/claim/route";
 import { POST as completeCommand } from "@/app/api/mobile/computer-use/commands/[id]/complete/route";
 import { POST as stopDevice } from "@/app/api/mobile/computer-use/stop/route";
+import { NATIVE_API_CURRENT_VERSION } from "@/lib/mobile/contracts";
 
 const context = {
   tenantId: "tenant-one",
@@ -121,7 +122,9 @@ describe("local macOS Computer Use native routes", () => {
       activityState: "idle",
     }));
     expect(update.status).toBe(200);
-    expect(update.headers.get("x-asael-native-contract-version")).toBe("14");
+    expect(update.headers.get("x-asael-native-contract-version")).toBe(
+      String(NATIVE_API_CURRENT_VERSION),
+    );
     expect(mocks.updateDevice).toHaveBeenCalledWith(context, expect.objectContaining({
       enabled: true,
       helperVersion: "1.0.0",

@@ -9,6 +9,12 @@ beforeAll(async () => {
   delete process.env.DATABASE_URL;
   delete process.env.OMNIAGENT_BOOTSTRAP_EMAIL;
   delete process.env.OMNIAGENT_BOOTSTRAP_PASSWORD;
+  // Every private account is admitted by the server-owned allowlist, one
+  // account per tenant (ae543b61).
+  process.env.OMNIAGENT_PRIVATE_ACCOUNT_ALLOWLIST_JSON = JSON.stringify([
+    { email: "mobile@example.com", tenantId: "mobile-tenant", tenantName: "Mobile Tenant", tenantMode: "new", label: "Mobile", role: "operator" },
+    { email: "membership-change@example.com", tenantId: "membership-change-tenant", tenantName: "Membership Change Tenant", tenantMode: "new", label: "Membership change", role: "operator" },
+  ]);
 });
 
 describe("native mobile authentication", () => {

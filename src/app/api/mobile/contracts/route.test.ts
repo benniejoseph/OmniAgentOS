@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { GET } from "@/app/api/mobile/contracts/route";
+import {
+  NATIVE_API_CURRENT_VERSION,
+  NATIVE_API_PREVIOUS_VERSION,
+} from "@/lib/mobile/contracts";
 
 describe("native contract discovery route", () => {
   it("publishes current and previous immutable contract documents", async () => {
@@ -9,12 +13,20 @@ describe("native contract discovery route", () => {
     await expect(response.json()).resolves.toMatchObject({
       schemaVersion: 1,
       contractId: "asael.native-api",
-      currentVersion: 25,
-      previousVersion: 20,
-      supportedVersions: [25, 20],
+      currentVersion: NATIVE_API_CURRENT_VERSION,
+      previousVersion: NATIVE_API_PREVIOUS_VERSION,
+      supportedVersions: [NATIVE_API_CURRENT_VERSION, NATIVE_API_PREVIOUS_VERSION],
       versions: [
-        { version: 25, state: "current", openapi: "/native-contracts/v25/openapi.json" },
-        { version: 20, state: "previous", openapi: "/native-contracts/v20/openapi.json" },
+        {
+          version: NATIVE_API_CURRENT_VERSION,
+          state: "current",
+          openapi: `/native-contracts/v${NATIVE_API_CURRENT_VERSION}/openapi.json`,
+        },
+        {
+          version: NATIVE_API_PREVIOUS_VERSION,
+          state: "previous",
+          openapi: `/native-contracts/v${NATIVE_API_PREVIOUS_VERSION}/openapi.json`,
+        },
       ],
     });
   });

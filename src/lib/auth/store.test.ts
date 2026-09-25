@@ -3,11 +3,22 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 
+// Every private account is admitted by the server-owned allowlist, one
+// account per tenant (ae543b61).
+const privateAccounts = [
+  { email: "existing@example.com", tenantId: "tenant-a", tenantName: "Tenant A", tenantMode: "new", label: "Existing", role: "admin" },
+  { email: "rotate@example.com", tenantId: "tenant-rotate", tenantName: "Tenant Rotate", tenantMode: "new", label: "Rotate", role: "operator" },
+  { email: "federated-owner@example.com", tenantId: "tenant-federated", tenantName: "Tenant Federated", tenantMode: "new", label: "Federated", role: "admin" },
+  { email: "bootstrap-session@example.com", tenantId: "tenant-session-bootstrap", tenantName: "Tenant Session Bootstrap", tenantMode: "new", label: "Bootstrap", role: "admin" },
+  { email: "should-not-be-provisioned@example.com", tenantId: "tenant-not-provisioned", tenantName: "Tenant Not Provisioned", tenantMode: "new", label: "Not provisioned", role: "admin" },
+];
+
 beforeAll(async () => {
   process.env.OMNIAGENT_DATA_DIR = await mkdtemp(path.join(tmpdir(), "omni-auth-"));
   delete process.env.DATABASE_URL;
   delete process.env.OMNIAGENT_BOOTSTRAP_EMAIL;
   delete process.env.OMNIAGENT_BOOTSTRAP_PASSWORD;
+  process.env.OMNIAGENT_PRIVATE_ACCOUNT_ALLOWLIST_JSON = JSON.stringify(privateAccounts);
 });
 
 describe("auth identity creation (file mode)", () => {
@@ -37,6 +48,33 @@ describe("auth identity creation (file mode)", () => {
       code: "identity_conflict",
       status: 409,
     });
+
+    // Re-pointing the allowlist at tenant-b still cannot attach the existing
+    // global identity there: the store's global email check must hold too.
+    process.env.OMNIAGENT_PRIVATE_ACCOUNT_ALLOWLIST_JSON = JSON.stringify(
+      privateAccounts.map((account) =>
+        account.email === "existing@example.com"
+          ? { ...account, tenantId: "tenant-b", tenantName: "Tenant B" }
+          : account,
+      ),
+    );
+    try {
+      await expect(
+        auth.createUserWithMembership({
+          email: "EXISTING@example.com",
+          password: "a different secure password",
+          role: "viewer",
+          tenantId: "tenant-b",
+          tenantName: "Tenant B",
+        }),
+      ).rejects.toMatchObject({
+        name: "IdentityConflictError",
+        code: "identity_conflict",
+        status: 409,
+      });
+    } finally {
+      process.env.OMNIAGENT_PRIVATE_ACCOUNT_ALLOWLIST_JSON = JSON.stringify(privateAccounts);
+    }
 
     const tenantA = await auth.getAuthControlPlane({ tenantId: "tenant-a" });
     const tenantB = await auth.getAuthControlPlane({ tenantId: "tenant-b" });

@@ -294,6 +294,7 @@ describe("local Computer Use command binding", () => {
         coordinateSpace: "screenshot_pixel",
         x: 720,
         y: 450,
+        interactionPurpose: "selection",
       },
       executionId: "run-v13-authorized:screenshot-click",
       runId: "run-v13-authorized",
@@ -321,6 +322,7 @@ describe("local Computer Use command binding", () => {
       toolInput: {
         snapshotRevision: "a".repeat(64),
         elementId: "e:aaaaaaaaaaaa:7",
+        interactionPurpose: "selection",
       },
       executionId: "run-v12-authorized:element-click",
       runId: "run-v12-authorized",
@@ -344,6 +346,7 @@ describe("local Computer Use command binding", () => {
         snapshotRevision: "a".repeat(64),
         x: 720,
         y: 450,
+        interactionPurpose: "selection",
       },
       executionId: "run-v12-authorized:ambiguous-click",
       runId: "run-v12-authorized",

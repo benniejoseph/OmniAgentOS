@@ -5,6 +5,10 @@ import {
   nativeClientCompatibility,
   nativeClientPolicy,
 } from "@/lib/auth/native-client-contract";
+import {
+  NATIVE_API_CURRENT_VERSION,
+  NATIVE_API_PREVIOUS_VERSION,
+} from "@/lib/mobile/contracts";
 
 afterEach(() => {
   delete process.env.OMNIAGENT_NATIVE_MIN_ANDROID_VERSION;
@@ -29,8 +33,8 @@ describe("native client compatibility contract", () => {
       platform: "ios",
       appVersion: "1.0.0",
       buildNumber: 1,
-      clientContractVersion: 16,
-    })).toBe("upgrade_required");
+      clientContractVersion: NATIVE_API_CURRENT_VERSION + 1,
+    })).toBe("unknown");
     expect(evaluateNativeClientCompatibility({
       platform: "ios",
       appVersion: "1.0.0",
@@ -41,13 +45,19 @@ describe("native client compatibility contract", () => {
       platform: "macos",
       appVersion: "1.0.0",
       buildNumber: 1,
-      clientContractVersion: 20,
+      clientContractVersion: NATIVE_API_CURRENT_VERSION,
     })).toBe("compatible");
     expect(evaluateNativeClientCompatibility({
       platform: "macos",
       appVersion: "1.0.0",
       buildNumber: 1,
-      clientContractVersion: 19,
+      clientContractVersion: NATIVE_API_PREVIOUS_VERSION,
+    })).toBe("compatible");
+    expect(evaluateNativeClientCompatibility({
+      platform: "macos",
+      appVersion: "1.0.0",
+      buildNumber: 1,
+      clientContractVersion: NATIVE_API_PREVIOUS_VERSION - 1,
     })).toBe("upgrade_required");
   });
 
@@ -57,7 +67,7 @@ describe("native client compatibility contract", () => {
       platform: "android",
       appVersion: "1.9.9",
       buildNumber: 20,
-      clientContractVersion: 20,
+      clientContractVersion: NATIVE_API_CURRENT_VERSION,
     })).toBe("upgrade_required");
     expect(nativeClientPolicy().agentCatalogEnrollment.state).toBe("held");
   });
@@ -87,7 +97,7 @@ describe("native client compatibility contract", () => {
       platform: "ios" as const,
       appVersion: "1.0.0",
       buildNumber: 1,
-      clientContractVersion: 20,
+      clientContractVersion: NATIVE_API_CURRENT_VERSION,
     };
     const asOf = new Date("2026-09-04T12:00:00.000Z");
     expect(nativeClientCompatibility(client, { asOf }).status).toBe("unknown");

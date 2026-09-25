@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
+  NATIVE_API_SUPPORTED_VERSIONS,
   nativeBootstrapResponseSchema,
   nativeContractDiscovery,
   nativeContractSchemas,
@@ -18,8 +19,19 @@ import {
 
 describe("native API contracts", () => {
   it("retains exactly the current and previous rollout versions", () => {
-    expect(NATIVE_API_CURRENT_VERSION).toBe(25);
-    expect(NATIVE_API_PREVIOUS_VERSION).toBe(20);
+    // Tripwire: a native contract bump must be a deliberate, reviewed change.
+    // The other tests follow these constants.
+    expect(NATIVE_API_CURRENT_VERSION).toBe(29);
+    expect(NATIVE_API_PREVIOUS_VERSION).toBe(28);
+    expect(NATIVE_API_SUPPORTED_VERSIONS).toEqual([
+      NATIVE_API_CURRENT_VERSION,
+      NATIVE_API_PREVIOUS_VERSION,
+    ]);
+    expect(NATIVE_API_PREVIOUS_VERSION).toBeLessThan(NATIVE_API_CURRENT_VERSION);
+    expect(nativeOperationsForVersion(NATIVE_API_CURRENT_VERSION)).toBeDefined();
+    expect(nativeOperationsForVersion(NATIVE_API_PREVIOUS_VERSION)).toBeDefined();
+    expect(nativeOperationsForVersion(NATIVE_API_CURRENT_VERSION + 1))
+      .toBeUndefined();
     expect(nativeOperationsForVersion(8)?.length).toBeLessThan(
       nativeOperationsForVersion(7)?.length || 0,
     );
@@ -74,9 +86,27 @@ describe("native API contracts", () => {
     expect(nativeOperationsForVersion(25)?.length).toBe(
       (nativeOperationsForVersion(24)?.length || 0) + 7,
     );
+    const discovery = nativeContractDiscovery();
     expect(nativeContractSchemas.NativeContractDiscovery.parse(
-      nativeContractDiscovery(),
-    ).supportedVersions).toEqual([25, 20]);
+      discovery,
+    ).supportedVersions).toEqual([
+      NATIVE_API_CURRENT_VERSION,
+      NATIVE_API_PREVIOUS_VERSION,
+    ]);
+    for (const supportedVersions of [
+      [NATIVE_API_CURRENT_VERSION + 1, NATIVE_API_CURRENT_VERSION],
+      [NATIVE_API_CURRENT_VERSION, NATIVE_API_PREVIOUS_VERSION - 1],
+      [
+        NATIVE_API_CURRENT_VERSION,
+        NATIVE_API_PREVIOUS_VERSION,
+        NATIVE_API_PREVIOUS_VERSION - 1,
+      ],
+    ]) {
+      expect(nativeContractSchemas.NativeContractDiscovery.safeParse({
+        ...discovery,
+        supportedVersions,
+      }).success).toBe(false);
+    }
   });
 
   it("exposes only explicit local Computer Use in the current request schema", () => {
@@ -315,13 +345,26 @@ describe("native API contracts", () => {
     );
   });
 
-  it("advertises deployed v20 as the compatibility bridge while v21-v24 stay archived", async () => {
+  it("keeps the retired v20 bridge and v21-v24 archived outside the advertised window", async () => {
     const discovery = nativeContractDiscovery();
-    expect(discovery.supportedVersions).toEqual([25, 20]);
-    expect(discovery.versions).toEqual([
-      expect.objectContaining({ version: 25, state: "current" }),
-      expect.objectContaining({ version: 20, state: "previous" }),
+    expect(discovery.supportedVersions).toEqual([
+      NATIVE_API_CURRENT_VERSION,
+      NATIVE_API_PREVIOUS_VERSION,
     ]);
+    expect(discovery.versions).toEqual([
+      expect.objectContaining({
+        version: NATIVE_API_CURRENT_VERSION,
+        state: "current",
+      }),
+      expect.objectContaining({
+        version: NATIVE_API_PREVIOUS_VERSION,
+        state: "previous",
+      }),
+    ]);
+    for (const archived of [20, 21, 22, 23, 24]) {
+      expect(discovery.supportedVersions).not.toContain(archived);
+      expect(nativeOperationsForVersion(archived)).toBeDefined();
+    }
     expect(nativeOperationsForVersion(20)).toEqual(
       nativeOperationsForVersion(19),
     );
@@ -734,7 +777,7 @@ describe("native API contracts", () => {
       user: { id: "user-one", email: "operator@example.test", status: "active", createdAt: timestamp, updatedAt: timestamp },
       tenant: { id: "tenant-one", name: "Example", slug: "example", createdAt: timestamp, updatedAt: timestamp },
       membership: { id: "membership-one", tenantId: "tenant-one", userId: "user-one", role: "operator", status: "active", createdAt: timestamp, updatedAt: timestamp },
-      device: { id: "device-one", name: "Asael on macOS", platform: "macos", appVersion: "1.0.0", buildNumber: 2, clientContractVersion: 25 },
+      device: { id: "device-one", name: "Asael on macOS", platform: "macos", appVersion: "1.0.0", buildNumber: 2, clientContractVersion: NATIVE_API_CURRENT_VERSION },
     };
     expect(nativeBootstrapResponseSchema.parse({
       authenticated: true,
@@ -746,9 +789,12 @@ describe("native API contracts", () => {
         mobileBasePath: "/api/mobile",
         nativeContract: {
           id: "asael.native-api",
-          currentVersion: 25,
-          previousVersion: 20,
-          supportedVersions: [25, 20],
+          currentVersion: NATIVE_API_CURRENT_VERSION,
+          previousVersion: NATIVE_API_PREVIOUS_VERSION,
+          supportedVersions: [
+            NATIVE_API_CURRENT_VERSION,
+            NATIVE_API_PREVIOUS_VERSION,
+          ],
           discoveryPath: "/api/mobile/contracts",
         },
       },
@@ -757,15 +803,18 @@ describe("native API contracts", () => {
         platform: "macos",
         appVersion: "1.0.0",
         buildNumber: 2,
-        clientContractVersion: 25,
+        clientContractVersion: NATIVE_API_CURRENT_VERSION,
         minimumVersion: "1.0.0",
-        requiredContractVersion: 25,
-        supportedContractVersions: [25, 20],
+        requiredContractVersion: NATIVE_API_CURRENT_VERSION,
+        supportedContractVersions: [
+          NATIVE_API_CURRENT_VERSION,
+          NATIVE_API_PREVIOUS_VERSION,
+        ],
         status: "compatible",
         agentCatalogEnrollment: { state: "held", clientReady: true },
       },
       nativeClientPolicy: { schemaVersion: 1 },
-    }).api.nativeContract.currentVersion).toBe(25);
+    }).api.nativeContract.currentVersion).toBe(NATIVE_API_CURRENT_VERSION);
   });
 });
 
