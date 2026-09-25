@@ -209,7 +209,135 @@ async function discoverBedrock(credentials: Record<string, string>): Promise<Cat
   if (!/^[a-z]{2}(?:-gov)?-[a-z]+-\d$/.test(region)) {
     throw new ProviderValidationError("request_rejected", 400);
   }
-  const url = new URL(`https://bedrock.${region}.amazonaws.com/foundation-models`);
+  const [foundationModels, inferenceProfiles] = await Promise.all([
+    discoverBedrockFoundationModels(credentials, region),
+    discoverBedrockInferenceProfiles(credentials, region),
+  ]);
+
+  // Inference profiles are the only valid runtime identifiers for some newer
+  // models. Keep them first so the bounded catalog cannot discard an invocable
+  // profile in favor of a less useful foundation-model record.
+  return dedupeCatalogModels([
+    ...inferenceProfiles,
+    ...foundationModels,
+  ]).slice(0, 1_000);
+}
+
+async function discoverBedrockFoundationModels(
+  credentials: Record<string, string>,
+  region: string,
+): Promise<CatalogModel[]> {
+  const url = bedrockControlPlaneUrl(region, "/foundation-models", {
+    byInferenceType: "ON_DEMAND",
+  });
+  const body = await signedBedrockJson(url, credentials, region);
+  const data = Array.isArray(body.modelSummaries) ? body.modelSummaries : [];
+  return data
+    .map(recordValue)
+    .filter((item) => {
+      if (typeof item.modelId !== "string") return false;
+      const inferenceTypes = Array.isArray(item.inferenceTypesSupported)
+        ? item.inferenceTypesSupported.map((value) => String(value).toUpperCase())
+        : [];
+      return inferenceTypes.includes("ON_DEMAND");
+    })
+    .slice(0, 1_000)
+    .map((item) => {
+      const modelId = String(item.modelId);
+      const lifecycle = recordValue(item.modelLifecycle);
+      const isLegacy = String(lifecycle.status || "").toUpperCase() === "LEGACY";
+      return {
+        ...catalogModel(
+          modelId,
+          typeof item.modelName === "string" ? item.modelName : modelId,
+          inferProviderModelCapabilities(modelId),
+        ),
+        lifecycle: isLegacy ? "deprecated" : "available",
+        lifecycleReason: isLegacy
+          ? "AWS reports this foundation model as legacy."
+          : "AWS lists this foundation model for direct on-demand inference in the configured region.",
+      };
+    });
+}
+
+async function discoverBedrockInferenceProfiles(
+  credentials: Record<string, string>,
+  region: string,
+): Promise<CatalogModel[]> {
+  const profiles: Record<string, unknown>[] = [];
+  const seenTokens = new Set<string>();
+  let nextToken: string | undefined;
+
+  do {
+    const url = bedrockControlPlaneUrl(region, "/inference-profiles", {
+      maxResults: String(Math.max(1, 1_000 - profiles.length)),
+      type: "SYSTEM_DEFINED",
+      ...(nextToken ? { nextToken } : {}),
+    });
+    const body = await signedBedrockJson(url, credentials, region);
+    const page = Array.isArray(body.inferenceProfileSummaries)
+      ? body.inferenceProfileSummaries.map(recordValue)
+      : [];
+    profiles.push(...page.slice(0, 1_000 - profiles.length));
+
+    const candidate = typeof body.nextToken === "string" && body.nextToken
+      ? body.nextToken
+      : undefined;
+    if (!candidate || profiles.length >= 1_000 || seenTokens.has(candidate)) break;
+    seenTokens.add(candidate);
+    nextToken = candidate;
+  } while (nextToken);
+
+  return profiles
+    .filter((item) => (
+      typeof item.inferenceProfileId === "string"
+      && String(item.type || "").toUpperCase() === "SYSTEM_DEFINED"
+      && String(item.status || "").toUpperCase() === "ACTIVE"
+    ))
+    .map((item) => {
+      const profileId = String(item.inferenceProfileId);
+      const backingModelIds = bedrockProfileModelIds(item.models);
+      const capabilityHint = [profileId, ...backingModelIds].join(" ");
+      const description = typeof item.description === "string"
+        ? item.description
+        : "AWS system-defined cross-Region inference profile.";
+      return {
+        ...catalogModel(
+          profileId,
+          typeof item.inferenceProfileName === "string"
+            ? item.inferenceProfileName
+            : profileId,
+          inferProviderModelCapabilities(capabilityHint),
+          description,
+        ),
+        lifecycle: "available" as const,
+        lifecycleReason: "AWS reports this system-defined inference profile as active and invocable through Bedrock Runtime.",
+      };
+    })
+    .sort((left, right) => (
+      bedrockProfilePriority(left.modelId, region)
+      - bedrockProfilePriority(right.modelId, region)
+      || left.displayName.localeCompare(right.displayName)
+    ));
+}
+
+function bedrockControlPlaneUrl(
+  region: string,
+  pathname: string,
+  query: Record<string, string> = {},
+) {
+  const url = new URL(`https://bedrock.${region}.amazonaws.com${pathname}`);
+  for (const [name, value] of Object.entries(query)) {
+    url.searchParams.set(name, value);
+  }
+  return url;
+}
+
+async function signedBedrockJson(
+  url: URL,
+  credentials: Record<string, string>,
+  region: string,
+) {
   const headers = signedAwsHeaders({
     url,
     region,
@@ -217,17 +345,31 @@ async function discoverBedrock(credentials: Record<string, string>): Promise<Cat
     secretAccessKey: credentials.secretAccessKey,
     sessionToken: credentials.sessionToken,
   });
-  const body = await providerJson(url.toString(), { headers });
-  const data = Array.isArray(body.modelSummaries) ? body.modelSummaries : [];
-  return data.map(recordValue).filter((item) => typeof item.modelId === "string").slice(0, 1_000).map((item) => {
-    const modelId = String(item.modelId);
-    const lifecycle = recordValue(item.modelLifecycle);
-    const state = String(lifecycle.status || "").toUpperCase() === "LEGACY" ? "deprecated" : "unknown";
-    return {
-      ...catalogModel(modelId, typeof item.modelName === "string" ? item.modelName : modelId, inferProviderModelCapabilities(modelId)),
-      lifecycle: state,
-      lifecycleReason: state === "deprecated" ? "AWS reports this foundation model as legacy." : undefined,
-    };
+  return providerJson(url.toString(), { headers });
+}
+
+function bedrockProfileModelIds(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map(recordValue)
+    .map((item) => typeof item.modelArn === "string" ? item.modelArn : "")
+    .map((arn) => arn.match(/:foundation-model\/(.+)$/)?.[1] || "")
+    .filter(Boolean);
+}
+
+function bedrockProfilePriority(modelId: string, region: string) {
+  if (modelId.startsWith("global.")) return 0;
+  const geography = region.split("-", 1)[0];
+  if (geography && modelId.startsWith(`${geography}.`)) return 1;
+  return 2;
+}
+
+function dedupeCatalogModels(models: CatalogModel[]) {
+  const seen = new Set<string>();
+  return models.filter((model) => {
+    if (seen.has(model.modelId)) return false;
+    seen.add(model.modelId);
+    return true;
   });
 }
 
@@ -280,7 +422,7 @@ function signedAwsHeaders(input: {
   const canonicalRequest = [
     "GET",
     input.url.pathname,
-    "",
+    canonicalAwsQuery(input.url),
     canonicalHeaders,
     signedHeaderNames.join(";"),
     payloadHash,
@@ -298,6 +440,28 @@ function signedAwsHeaders(input: {
       `AWS4-HMAC-SHA256 Credential=${input.accessKeyId}/${scope}, ` +
       `SignedHeaders=${signedHeaderNames.join(";")}, Signature=${signature}`,
   };
+}
+
+function canonicalAwsQuery(url: URL) {
+  return [...url.searchParams.entries()]
+    .map(([name, value]) => [awsUriEncode(name), awsUriEncode(value)] as const)
+    .sort(([leftName, leftValue], [rightName, rightValue]) => (
+      compareAwsCanonicalComponent(leftName, rightName)
+      || compareAwsCanonicalComponent(leftValue, rightValue)
+    ))
+    .map(([name, value]) => `${name}=${value}`)
+    .join("&");
+}
+
+function compareAwsCanonicalComponent(left: string, right: string) {
+  if (left === right) return 0;
+  return left < right ? -1 : 1;
+}
+
+function awsUriEncode(value: string) {
+  return encodeURIComponent(value).replace(/[!'()*]/g, (character) => (
+    `%${character.charCodeAt(0).toString(16).toUpperCase()}`
+  ));
 }
 
 function catalogModel(modelId: string, displayName: string, capabilities: string[], providerDescription = ""): CatalogModel {
