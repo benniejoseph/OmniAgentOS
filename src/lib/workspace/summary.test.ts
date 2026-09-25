@@ -1,9 +1,53 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+const sourceMocks = vi.hoisted(() => {
+  const entries = new Map<string, unknown>();
+  return {
+    entries,
+    listAgentRunSummaries: vi.fn(),
+    unstableCache: (
+      callback: (...args: unknown[]) => Promise<unknown>,
+      keyParts: string[] = [],
+    ) =>
+      async (...args: unknown[]) => {
+        // Next keys an entry by the callback source, key parts, and arguments.
+        const key = `${callback.toString()}-${keyParts.join(",")}-${JSON.stringify(args)}`;
+        if (!entries.has(key)) entries.set(key, await callback(...args));
+        return entries.get(key);
+      },
+  };
+});
+
+vi.mock("next/cache", () => ({
+  unstable_cache: sourceMocks.unstableCache,
+}));
+
+vi.mock("@/lib/runs/store", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/runs/store")>()),
+  listAgentRunSummaries: sourceMocks.listAgentRunSummaries,
+}));
+
+vi.mock("@/lib/workflows/store", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/workflows/store")>()),
+  listWorkflowRunSummaries: async () => [],
+}));
+
+vi.mock("@/lib/operations/queue", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/operations/queue")>()),
+  getApprovalQueue: async () => ({ items: [] }),
+}));
+
+import {
+  getDatabaseActorContext,
+  runWithDatabaseActorScope,
+} from "@/lib/db/client";
 import type { AgentRunRecord } from "@/lib/runs/types";
 import { loadWorkspaceSummary } from "@/lib/workspace/summary";
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  sourceMocks.entries.clear();
+  sourceMocks.listAgentRunSummaries.mockReset();
 });
 
 describe("workspace summary", () => {
@@ -121,6 +165,37 @@ describe("workspace summary", () => {
     });
   });
 
+  it("never serves one actor's cached runs to another actor", async () => {
+    const privateRuns = [
+      privateRun("run-a", "actor-a", "Draft my offer letter"),
+      privateRun("run-b", "actor-b", "Plan the team offsite"),
+    ];
+    // Row-level security returns only the active actor scope's runs.
+    sourceMocks.listAgentRunSummaries.mockImplementation(async () => {
+      const actorIds = getDatabaseActorContext();
+      return privateRuns.filter((run) => actorIds.includes(run.ownerActorId));
+    });
+    const readAs = (actorId: string) =>
+      runWithDatabaseActorScope("tenant-a", [actorId], () =>
+        loadWorkspaceSummary({ tenantId: "tenant-a", role: "operator" }));
+
+    const ownerA = await readAs("actor-a");
+    const repeatA = await readAs("actor-a");
+    const ownerB = await readAs("actor-b");
+
+    expect(repeatA).toEqual(ownerA);
+    expect(ownerA.sources.runs).toMatchObject({
+      status: "ready",
+      data: [{ id: "run-a", prompt: "Draft my offer letter" }],
+    });
+    expect(ownerB.sources.runs).toMatchObject({
+      status: "ready",
+      data: [{ id: "run-b", prompt: "Plan the team offsite" }],
+    });
+    expect(JSON.stringify(ownerB)).not.toContain("Draft my offer letter");
+    expect(sourceMocks.listAgentRunSummaries).toHaveBeenCalledTimes(2);
+  });
+
   it("serializes source reads when the runtime has one database connection", async () => {
     vi.stubEnv("VERCEL", "1");
     let releaseRuns!: (value: AgentRunRecord[]) => void;
@@ -145,3 +220,23 @@ describe("workspace summary", () => {
     expect(getApprovals).toHaveBeenCalledOnce();
   });
 });
+
+function privateRun(
+  id: string,
+  ownerActorId: string,
+  prompt: string,
+): AgentRunRecord {
+  return {
+    id,
+    tenantId: "tenant-a",
+    ownerActorId,
+    mode: "research",
+    status: "completed",
+    prompt,
+    messages: [],
+    memoryContextCount: 0,
+    response: `Done: ${prompt}`,
+    startedAt: "2026-09-26T00:00:00.000Z",
+    completedAt: "2026-09-26T00:00:01.000Z",
+  };
+}

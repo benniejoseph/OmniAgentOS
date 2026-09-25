@@ -1752,6 +1752,7 @@ inherits mutation authority. All three ledgers use forced tenant RLS.
 - Inbound MCP: actor-owned export policy plus hash-only service-key scopes, strict tenant re-entry, host/origin validation, and the same governed executor used by first-party tool calls.
 - Every auth failure, policy block, and allow/deny decision is recorded to the security audit and observability ledgers with correlation IDs.
 - New mutations use the strict scoped event writer and immutable `*.scope_bound` events; the ownership and compatibility inventory is documented in [vision/EXECUTION_SCOPE.md](vision/EXECUTION_SCOPE.md).
+- Shared data caches: Next's data cache spans requests, actors, and instances, but RLS applies only while an entry is filled. Cached reads of actor-filtered rows (workspace summary, readiness, full capabilities) go through `actorScopedCache` in `src/lib/db/actor-scoped-cache.ts`. It keys each entry by a digest of the tenant and readable actor set and fills it under exactly that scope. A call without an actor scope reads uncached.
 
 ### User-private memory canary
 

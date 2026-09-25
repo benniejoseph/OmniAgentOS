@@ -1,4 +1,3 @@
-import { unstable_cache } from "next/cache";
 import { after } from "next/server";
 import { resolveCapability, searchCapabilities } from "@/lib/capabilities/catalog";
 import { loadSharedSettingsStorageSnapshot } from "@/lib/capabilities/settings-cache";
@@ -20,6 +19,7 @@ import {
 } from "@/lib/config";
 import { getOpenApiConnectorStats } from "@/lib/connectors/openapi-store";
 import { getMcpConnectorStats } from "@/lib/connectors/store";
+import { actorScopedCache } from "@/lib/db/actor-scoped-cache";
 import {
   getStorageBackend,
   getVectorStoreStatus,
@@ -52,9 +52,10 @@ export const runtime = "nodejs";
 export const maxDuration = 30;
 export const GET = withDatabaseRequestScope(GETHandler);
 
-const loadCachedFullCapabilities = unstable_cache(
+// The snapshot carries the actor's own runs, so it is cached per actor scope.
+const loadCachedFullCapabilities = actorScopedCache(
   loadFullCapabilities,
-  ["full-capabilities-v1"],
+  ["full-capabilities-v2"],
   { revalidate: 15 },
 );
 

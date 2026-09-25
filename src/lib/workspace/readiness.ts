@@ -6,7 +6,7 @@ import { getKnowledgeStats } from "@/lib/rag/store";
 import { getRunStats } from "@/lib/runs/store";
 import { getWorkflowStats } from "@/lib/workflows/store";
 import { listOAuthGrantsForTenant } from "@/lib/connectors/oauth-store";
-import { unstable_cache } from "next/cache";
+import { actorScopedCache } from "@/lib/db/actor-scoped-cache";
 
 export type WorkspaceReadinessChecks = {
   identity: boolean;
@@ -108,13 +108,14 @@ export async function loadWorkspaceReadiness(
   );
 }
 
-const loadCachedWorkspaceReadiness = unstable_cache(
+// Agent run counts are actor-filtered, so readiness is cached per actor scope.
+const loadCachedWorkspaceReadiness = actorScopedCache(
   (tenantId: string, identityReady: boolean) =>
     loadWorkspaceReadinessSources(
       { tenantId, identityReady },
       defaultDependencies,
     ),
-  ["workspace-readiness-v2"],
+  ["workspace-readiness-v3"],
   { revalidate: 15 },
 );
 

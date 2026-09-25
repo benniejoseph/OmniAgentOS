@@ -1,4 +1,4 @@
-import { unstable_cache } from "next/cache";
+import { actorScopedCache } from "@/lib/db/actor-scoped-cache";
 import { getDatabasePoolMax } from "@/lib/db/client";
 import { getApprovalQueue, type ApprovalQueueItem } from "@/lib/operations/queue";
 import { listAgentRunSummaries } from "@/lib/runs/store";
@@ -45,9 +45,10 @@ const defaultDependencies: WorkspaceSummaryDependencies = {
   getApprovals: getApprovalQueue,
 };
 
-// Next's data cache is shared across serverless instances. The arguments are
-// part of the cache key, so tenant and permission boundaries remain isolated.
-const loadCachedWorkspaceSummary = unstable_cache(
+// Run prompts and responses are private to their actor. The arguments and the
+// active actor scope key each entry, so tenant, actor, and permission
+// boundaries remain isolated in Next's shared data cache.
+const loadCachedWorkspaceSummary = actorScopedCache(
   (
     tenantId: string,
     role: SecurityRole,
@@ -61,7 +62,7 @@ const loadCachedWorkspaceSummary = unstable_cache(
       boundedApprovalLimit,
       dependencies: defaultDependencies,
     }),
-  ["workspace-summary-v1"],
+  ["workspace-summary-v2"],
   { revalidate: 15 },
 );
 

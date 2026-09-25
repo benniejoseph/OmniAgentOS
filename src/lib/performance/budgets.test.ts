@@ -216,8 +216,8 @@ describe("frontend performance budgets", () => {
     );
     expect(healthBadge).toContain("/api/health?public=1");
     expect(healthBadge).toContain('cache: "force-cache"');
-    expect(workspaceSummary).toContain("unstable_cache");
-    expect(workspaceSummary).toContain('["workspace-summary-v1"]');
+    expect(workspaceSummary).toContain("actorScopedCache(");
+    expect(workspaceSummary).toContain('["workspace-summary-v2"]');
     expect(workspaceSummary).toContain("{ revalidate: 15 }");
     expect(todayRoute).not.toContain("unstable_cache");
     expect(todayRoute).toContain("showTodayService(");

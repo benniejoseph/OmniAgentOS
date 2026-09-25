@@ -1,8 +1,58 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const readinessMocks = vi.hoisted(() => {
+  const entries = new Map<string, unknown>();
+  return {
+    entries,
+    getRunStats: vi.fn(),
+    unstableCache: (
+      callback: (...args: unknown[]) => Promise<unknown>,
+      keyParts: string[] = [],
+    ) =>
+      async (...args: unknown[]) => {
+        // Next keys an entry by the callback source, key parts, and arguments.
+        const key = `${callback.toString()}-${keyParts.join(",")}-${JSON.stringify(args)}`;
+        if (!entries.has(key)) entries.set(key, await callback(...args));
+        return entries.get(key);
+      },
+  };
+});
+
+vi.mock("next/cache", () => ({
+  unstable_cache: readinessMocks.unstableCache,
+}));
+vi.mock("@/lib/runs/store", () => ({ getRunStats: readinessMocks.getRunStats }));
+vi.mock("@/lib/memory/store", () => ({ getMemoryStats: async () => ({ total: 0 }) }));
+vi.mock("@/lib/rag/store", () => ({
+  getKnowledgeStats: async () => ({ documents: 0 }),
+}));
+vi.mock("@/lib/connectors/store", () => ({
+  getMcpConnectorStats: async () => ({ active: 0 }),
+}));
+vi.mock("@/lib/connectors/openapi-store", () => ({
+  getOpenApiConnectorStats: async () => ({ active: 0 }),
+}));
+vi.mock("@/lib/connectors/oauth-store", () => ({
+  listOAuthGrantsForTenant: async () => [],
+}));
+vi.mock("@/lib/workflows/store", () => ({
+  getWorkflowStats: async () => ({ byStatus: {} }),
+}));
+vi.mock("@/lib/evaluations/store", () => ({ getEvalStats: async () => ({ total: 0 }) }));
+
+import {
+  getDatabaseActorContext,
+  runWithDatabaseActorScope,
+} from "@/lib/db/client";
 import {
   calculateWorkspaceReadiness,
   loadWorkspaceReadiness,
 } from "@/lib/workspace/readiness";
+
+afterEach(() => {
+  readinessMocks.entries.clear();
+  readinessMocks.getRunStats.mockReset();
+});
 
 describe("workspace readiness", () => {
   it("maps aggregate tenant stats to five readiness checks", () => {
@@ -45,6 +95,27 @@ describe("workspace readiness", () => {
       completedCount: 1,
       firstSuccessfulRun: false,
     });
+  });
+
+  it("keeps each actor's first-run check in its own cache entry", async () => {
+    // Row-level security counts only the active actor scope's agent runs.
+    readinessMocks.getRunStats.mockImplementation(async () => ({
+      byStatus: getDatabaseActorContext().includes("actor-a")
+        ? { completed: 1 }
+        : {},
+    }));
+    const readAs = (actorId: string) =>
+      runWithDatabaseActorScope("tenant-a", [actorId], () =>
+        loadWorkspaceReadiness({ tenantId: "tenant-a", identityReady: true }));
+
+    const ownerA = await readAs("actor-a");
+    const repeatA = await readAs("actor-a");
+    const ownerB = await readAs("actor-b");
+
+    expect(ownerA.checks.firstRun).toBe(true);
+    expect(repeatA).toEqual(ownerA);
+    expect(ownerB.checks.firstRun).toBe(false);
+    expect(readinessMocks.getRunStats).toHaveBeenCalledTimes(2);
   });
 
   it("loads every aggregate for the requested tenant", async () => {
