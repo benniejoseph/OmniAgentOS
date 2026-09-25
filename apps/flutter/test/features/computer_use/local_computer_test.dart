@@ -615,6 +615,7 @@ class _NoopTalkRepository implements TalkRepository {
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
     String? agentId,
+    TalkCommandModelSelection? modelSelection,
   }) => const Stream.empty();
 
   @override

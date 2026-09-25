@@ -330,6 +330,7 @@ class _RecordingTalkRepository implements TalkRepository {
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
     String? agentId,
+    TalkCommandModelSelection? modelSelection,
   }) {
     messages.add(message);
     calls.add((message: message, strategy: strategy, agentId: agentId));
@@ -360,6 +361,7 @@ class _WaitingApprovalTalkRepository implements TalkRepository {
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
     String? agentId,
+    TalkCommandModelSelection? modelSelection,
   }) async* {
     yield const SseEvent(
       event: 'run',

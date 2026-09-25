@@ -80,6 +80,7 @@ class _HistoryRepository implements TalkRepository, TalkHistoryRepository {
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
     String? agentId,
+    TalkCommandModelSelection? modelSelection,
   }) async* {
     sentThreadIds.add(threadId);
     yield const SseEvent(

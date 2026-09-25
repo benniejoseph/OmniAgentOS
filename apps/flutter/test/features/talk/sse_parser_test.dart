@@ -46,6 +46,7 @@ class _TalkRepository implements TalkRepository {
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
     String? agentId,
+    TalkCommandModelSelection? modelSelection,
   }) async* {
     calls.add((
       message: message,
@@ -90,6 +91,7 @@ class _ActivityTalkRepository implements TalkRepository {
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
     String? agentId,
+    TalkCommandModelSelection? modelSelection,
   }) async* {
     yield const SseEvent(
       event: 'run',
@@ -170,6 +172,7 @@ class _DelegatedTalkRepository implements TalkRepository {
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
     String? agentId,
+    TalkCommandModelSelection? modelSelection,
   }) async* {
     yield const SseEvent(
       event: 'delegated',
@@ -311,6 +314,7 @@ class _TerminalTalkRepository
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
     String? agentId,
+    TalkCommandModelSelection? modelSelection,
   }) async* {
     yield const SseEvent(
       event: 'run',
@@ -349,6 +353,7 @@ class _LocalPreviewTalkRepository implements TalkRepository {
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
     String? agentId,
+    TalkCommandModelSelection? modelSelection,
   }) async* {
     yield const SseEvent(
       event: 'run',
@@ -396,6 +401,7 @@ class _HeldLocalPreviewTalkRepository implements TalkRepository {
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
     String? agentId,
+    TalkCommandModelSelection? modelSelection,
   }) => events.stream;
 
   @override
@@ -477,6 +483,7 @@ class _QueuedTalkRepository implements TalkRepository {
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
     String? agentId,
+    TalkCommandModelSelection? modelSelection,
   }) async* {
     calls.add(message);
     targets.add(executionTarget);
@@ -544,6 +551,7 @@ class _DisconnectedAcceptedRunRepository implements TalkRepository {
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
     String? agentId,
+    TalkCommandModelSelection? modelSelection,
   }) async* {
     sends += 1;
     yield const SseEvent(
@@ -607,6 +615,7 @@ class _ApprovalRecoveryRepository implements TalkRepository {
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
     String? agentId,
+    TalkCommandModelSelection? modelSelection,
   }) async* {
     sends += 1;
     yield const SseEvent(
@@ -658,6 +667,7 @@ class _ReentryRecoveryRepository implements TalkRepository {
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
     String? agentId,
+    TalkCommandModelSelection? modelSelection,
   }) async* {
     yield const SseEvent(
       event: 'run',

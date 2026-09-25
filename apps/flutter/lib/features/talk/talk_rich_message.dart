@@ -413,7 +413,7 @@ List<InlineSpan> _inlineSpans(
               token.substring(1, token.length - 1),
               style: baseStyle?.copyWith(
                 fontFamily: 'monospace',
-                fontSize: (baseStyle?.fontSize ?? 14) * .9,
+                fontSize: (baseStyle.fontSize ?? 14) * .9,
               ),
             ),
           ),
