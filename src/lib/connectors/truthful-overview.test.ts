@@ -13,15 +13,19 @@ import {
 import type { UsageSummary, UsageTotals } from "@/lib/usage/summary";
 
 const now = "2026-09-07T12:00:00.000Z";
+const googleConnectionId = "0f5c2a8e-6d3b-4c1a-9e7f-2b8d4a6c1e90";
 
 describe("truthful integrations overview", () => {
   it("separates installed access from catalog suggestions and reports exact permission and sync states", () => {
     const overview = projectTruthfulIntegrationsOverview({
       oauth: { state: "ready", value: [{
-        id: "grant-google",
+        id: googleConnectionId,
         tenantId: "tenant:test",
         actorId: "owner@example.test",
         provider: "google",
+        accountEmail: "personal.account@example.test",
+        connectionLabel: "Personal",
+        connectionPurpose: "personal",
         scopes: [
           "https://www.googleapis.com/auth/gmail.readonly",
           "https://www.googleapis.com/auth/gmail.send",
@@ -103,7 +107,14 @@ describe("truthful integrations overview", () => {
 
     expect(overview.version).toBe(TRUTHFUL_INTEGRATIONS_VERSION);
     expect(overview.installed).toHaveLength(6);
-    expect(overview.installed.find((item) => item.name === "Gmail")).toMatchObject({
+    expect(overview.installed.find((item) => item.id === `google:${googleConnectionId}:gmail`)).toMatchObject({
+      name: "Gmail · Personal",
+      account: {
+        connectionId: googleConnectionId,
+        email: "personal.account@example.test",
+        label: "Personal",
+        purpose: "personal",
+      },
       connected: true,
       state: "working",
       permissions: { mode: "write_approval_required" },
@@ -138,7 +149,10 @@ describe("truthful integrations overview", () => {
       installed: false,
     });
     expect(overview.installed.every((item) => item.sync.cursor.rawValueIncluded === false)).toBe(true);
-    expect(JSON.stringify(overview)).not.toContain("grant-google");
+    // The opaque connection ID is the caller's own selector; owner coordinates stay private.
+    const serialized = JSON.stringify(overview);
+    expect(serialized).not.toContain("tenant:test");
+    expect(serialized).not.toContain("owner@example.test");
   });
 
   it("omits retired remote browser connectors from the integration projection", () => {

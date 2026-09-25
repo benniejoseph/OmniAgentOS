@@ -6,6 +6,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { sealJsonPayload } from "@/lib/security/sealed-payload";
 
 let dataDir = "";
+// The OAuth callback binds every Google save to the verified account email.
+const googleAccountEmail = "sync-owner@example.test";
 const previousKeyring = process.env.OMNIAGENT_CREDENTIAL_KEYRING;
 const previousLegacySecret = process.env.OMNIAGENT_EXECUTION_PAYLOAD_SECRET;
 
@@ -40,6 +42,7 @@ describe("OAuth source synchronization lease", () => {
     };
     await store.saveOAuthGrant({
       ...owner,
+      accountEmail: googleAccountEmail,
       tokens: {
         access_token: "test-access-token",
         refresh_token: "retained-refresh-token",
@@ -103,6 +106,7 @@ describe("OAuth source synchronization lease", () => {
 
     await store.saveOAuthGrant({
       ...owner,
+      accountEmail: googleAccountEmail,
       authorizationMode: "reauthorize",
       tokens: {
         access_token: "replacement-access-token",
@@ -125,6 +129,7 @@ describe("OAuth source synchronization lease", () => {
 
     await store.saveOAuthGrant({
       ...owner,
+      accountEmail: googleAccountEmail,
       authorizationMode: "reauthorize",
       tokens: {
         access_token: "expanded-access-token",
@@ -155,6 +160,7 @@ describe("OAuth source synchronization lease", () => {
     };
     await store.saveOAuthGrant({
       ...owner,
+      accountEmail: googleAccountEmail,
       tokens: {
         access_token: "test-access-token",
         scope: "drive.readonly",
@@ -198,6 +204,7 @@ describe("OAuth source synchronization lease", () => {
     };
     await store.saveOAuthGrant({
       ...owner,
+      accountEmail: googleAccountEmail,
       tokens: {
         access_token: "initial-access-token",
         scope: "drive.readonly",
@@ -247,6 +254,7 @@ describe("OAuth source synchronization lease", () => {
     };
     await store.saveOAuthGrant({
       ...owner,
+      accountEmail: googleAccountEmail,
       tokens: {
         access_token: "owner-access",
         google_account_sub: "stable-owner-subject",
@@ -257,18 +265,36 @@ describe("OAuth source synchronization lease", () => {
 
     await expect(store.saveOAuthGrant({
       ...owner,
+      accountEmail: googleAccountEmail,
       tokens: {
         access_token: "different-access",
         google_account_sub: "different-google-subject",
         scope: "drive.readonly",
         expires_in: 3_600,
       },
-    })).rejects.toMatchObject({ code: "account_identity_changed" });
+    })).rejects.toMatchObject({
+      code: "account_identity_changed",
+      message: "The Google account identity changed during authorization.",
+    });
+    await expect(store.saveOAuthGrant({
+      ...owner,
+      accountEmail: "different-account@example.test",
+      tokens: {
+        access_token: "different-account-access",
+        google_account_sub: "stable-owner-subject",
+        scope: "drive.readonly",
+        expires_in: 3_600,
+      },
+    })).rejects.toMatchObject({
+      code: "account_identity_changed",
+      message: "The Google account identity changed during authorization.",
+    });
     await expect(store.getOAuthGrantSecrets(
       owner.tenantId,
       owner.actorId,
       owner.provider,
     )).resolves.toMatchObject({
+      grant: { accountEmail: googleAccountEmail },
       tokens: {
         access_token: "owner-access",
         google_account_sub: "stable-owner-subject",

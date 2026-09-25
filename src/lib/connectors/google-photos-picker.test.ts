@@ -85,12 +85,35 @@ import {
 import { OAuthCredentialError } from "@/lib/connectors/oauth-store";
 
 const identity = { tenantId: "tenant-a", actorId: "owner-a" };
+// Google access always resolves one exact, normalized account connection.
+const googleConnectionId = "9d2b4f6a-1c3e-4a5b-8c7d-0e1f2a3b4c5d";
+const googleGrant = {
+  id: googleConnectionId,
+  ...identity,
+  provider: "google",
+  accountEmail: "photos.owner@example.test",
+  connectionLabel: "Personal",
+  connectionPurpose: "personal",
+  scopes: ["https://www.googleapis.com/auth/photospicker.mediaitems.readonly"],
+  status: "active",
+  authorizationGeneration: 1,
+  createdAt: "2026-09-11T06:00:00.000Z",
+  updatedAt: "2026-09-11T06:00:00.000Z",
+};
+const boundIdentity = {
+  ...identity,
+  connectionId: googleConnectionId,
+  connectionPurpose: "personal",
+  connectionLabel: "Personal",
+  accountEmail: "photos.owner@example.test",
+};
 const photoBytes = new Uint8Array([1, 2, 3, 4]);
 
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.getActiveGoogleWorkspaceAccess.mockResolvedValue({
     accessToken: "photos-access-token",
+    grant: googleGrant,
   });
   mocks.saveCaptureAsset.mockImplementation(async (input) => captureAsset({
     id: "capture_asset_photo_a",
@@ -168,6 +191,13 @@ describe("Google Photos durable imports", () => {
         }),
       }),
     );
+    // Import re-resolves credentials for the exact connection sealed into the handle.
+    expect(mocks.getActiveGoogleWorkspaceAccess).toHaveBeenLastCalledWith({
+      tenantId: "tenant-a",
+      actorId: "owner-a",
+      connectionId: googleConnectionId,
+      capability: "photos.pick",
+    });
     expect(mocks.saveCaptureAsset).toHaveBeenCalledWith(expect.objectContaining({
       tenantId: "tenant-a",
       actorId: "owner-a",
@@ -176,6 +206,7 @@ describe("Google Photos durable imports", () => {
       metadata: expect.objectContaining({
         importSource: "google_photos_picker",
         providerItemKey: expect.stringMatching(/^[a-f0-9]{40}$/),
+        googleConnectionId,
       }),
     }));
     expect(result).toMatchObject({
@@ -230,7 +261,7 @@ describe("Google Photos durable imports", () => {
     expect(first.sessionDeleted).toBe(false);
     expect(replay.sessionDeleted).toBe(false);
     expect(mocks.listExactCaptureAssetsByMetadata).toHaveBeenCalledWith(
-      identity,
+      boundIdentity,
       {
         field: "importSource",
         value: "google_photos_picker",
@@ -247,11 +278,24 @@ describe("Google Photos durable imports", () => {
   });
 
   it("rejects a scope owned by another actor before reading provider content", async () => {
+    // The sealed handle is validated first, so the scope check needs a genuine owner handle.
+    const handle = await createHandle();
+    fetchMock().mockClear();
+
     await expect(importGooglePhotosPickerSelection(
       identity,
-      "not-used",
+      handle,
       executionScope("request", "owner-b"),
     )).rejects.toThrow("does not match the authenticated actor");
+    // A handle sealed for this owner cannot be opened by another actor either.
+    await expect(importGooglePhotosPickerSelection(
+      { ...identity, actorId: "owner-b" },
+      handle,
+      executionScope("request", "owner-b"),
+    )).rejects.toThrow("The photo selection handle is invalid.");
+    expect(mocks.getActiveGoogleWorkspaceAccess).not.toHaveBeenCalledWith(
+      expect.objectContaining({ actorId: "owner-b" }),
+    );
     expect(fetchMock()).not.toHaveBeenCalled();
     expect(mocks.saveCaptureAsset).not.toHaveBeenCalled();
   });
@@ -470,22 +514,24 @@ describe("Google Photos import deletion", () => {
     const scope = executionScope("delete-request");
 
     await expect(deleteImportedGooglePhotos(identity, scope)).resolves.toEqual({
+      connectionId: googleConnectionId,
       assets: 1,
       documents: 4,
       memories: 6,
       jobsCanceled: 2,
     });
     expect(mocks.listExactCaptureAssetsByMetadata).toHaveBeenCalledWith(
-      identity,
+      boundIdentity,
       {
         field: "importSource",
         value: "google_photos_picker",
+        secondary: { field: "googleConnectionId", value: googleConnectionId },
         limit: 100,
       },
     );
     expect(mocks.deleteCaptureAssetWithKnowledge).toHaveBeenCalledWith(
       asset,
-      { ...identity, executionScope: scope },
+      { ...boundIdentity, executionScope: scope },
     );
     expect(mocks.cancelOperationJobByDedupeKey).toHaveBeenNthCalledWith(
       1,
@@ -509,7 +555,7 @@ describe("Google Photos import deletion", () => {
     );
   });
 
-  it("does not cancel or delete jobs bound to another actor or another asset", async () => {
+  it("does not cancel or delete jobs bound to another actor, connection, or asset", async () => {
     const asset = captureAsset({ ingestJobId: "job-photo-a" });
     mocks.listExactCaptureAssetsByMetadata
       .mockResolvedValueOnce([asset])
@@ -539,12 +585,28 @@ describe("Google Photos import deletion", () => {
           },
         },
       }),
+      legacyVideoJob(identity, {
+        payload: {
+          ...legacyVideoJob(identity).payload,
+          request: {
+            source: legacyVideoSource(identity),
+            metadata: {
+              provider: "google",
+              category: "photos",
+              mediaType: "video",
+              providerItemKey: providerKey("provider-video-a"),
+              googleConnectionId: "4e8a2c6f-0b1d-4f3a-9c5e-7d9b1f3a5c7e",
+            },
+          },
+        },
+      }),
     ]);
 
     await expect(deleteImportedGooglePhotos(
       identity,
       executionScope("isolated-delete"),
     )).resolves.toEqual({
+      connectionId: googleConnectionId,
       assets: 1,
       documents: 0,
       memories: 0,

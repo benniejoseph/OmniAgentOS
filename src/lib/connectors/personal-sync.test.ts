@@ -33,6 +33,12 @@ const GOOGLE_SYNC_SCOPES = [
   "https://www.googleapis.com/auth/calendar.events",
   "https://www.googleapis.com/auth/drive",
 ];
+// Store reads always normalize the connection identity onto the grant.
+const GOOGLE_PERSONAL_CONNECTION = {
+  accountEmail: "owner@example.com",
+  connectionLabel: "Personal",
+  connectionPurpose: "personal",
+} as const;
 
 describe("personal OAuth synchronization", () => {
   beforeEach(() => {
@@ -44,6 +50,7 @@ describe("personal OAuth synchronization", () => {
         tenantId: "personal",
         actorId: "owner",
         provider: "google",
+        ...GOOGLE_PERSONAL_CONNECTION,
         status: "active",
         authorizationGeneration: 1,
         expiresAt: new Date(Date.now() + 3600_000).toISOString(),
@@ -83,6 +90,20 @@ describe("personal OAuth synchronization", () => {
     });
     const result = await syncPersonalProvider({ tenantId: "personal", actorId: "owner", provider: "google" });
     expect(result).toMatchObject({ imported: 3, removed: 1, cursorAdvanced: true });
+    expect(mocks.claimLease).toHaveBeenCalledWith({
+      tenantId: "personal",
+      actorId: "owner",
+      provider: "google",
+      connectionId: "google-grant",
+    });
+    for (const [update] of mocks.updateState.mock.calls) {
+      expect(update).toMatchObject({
+        tenantId: "personal",
+        actorId: "owner",
+        provider: "google",
+        connectionId: "google-grant",
+      });
+    }
     expect(mocks.ingest).toHaveBeenCalledWith(expect.objectContaining({
       idempotencyKey: "oauth:google:mail:m1",
       deferMemoryGraphIndex: true,
@@ -483,6 +504,7 @@ describe("personal OAuth synchronization", () => {
         tenantId: "personal",
         actorId: "owner",
         provider: "google",
+        ...GOOGLE_PERSONAL_CONNECTION,
         status: "active",
         authorizationGeneration: 1,
         expiresAt: new Date(Date.now() + 3600_000).toISOString(),
@@ -552,6 +574,7 @@ describe("personal OAuth synchronization", () => {
         tenantId: "personal",
         actorId: "owner",
         provider: "google",
+        ...GOOGLE_PERSONAL_CONNECTION,
         status: "active",
         authorizationGeneration: 1,
         expiresAt: new Date(Date.now() + 3600_000).toISOString(),
@@ -646,6 +669,7 @@ describe("personal OAuth synchronization", () => {
         tenantId: "personal",
         actorId: "owner",
         provider: "google",
+        ...GOOGLE_PERSONAL_CONNECTION,
         status: "active",
         authorizationGeneration: 1,
         scopes: ["https://www.googleapis.com/auth/gmail.modify"],
@@ -684,6 +708,7 @@ describe("personal OAuth synchronization", () => {
         tenantId: "personal",
         actorId: "owner",
         provider: "google",
+        ...GOOGLE_PERSONAL_CONNECTION,
         status: "active",
         authorizationGeneration: 1,
         expiresAt: new Date(Date.now() + 3600_000).toISOString(),

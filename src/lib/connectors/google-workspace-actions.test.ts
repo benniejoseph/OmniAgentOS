@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { GOOGLE_WORKSPACE_OAUTH_SCOPES } from "@/lib/connectors/google-workspace-capabilities";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
 const access = vi.hoisted(() => ({
@@ -24,30 +25,63 @@ const owner = {
   actorId: "owner-google",
   executionId: "execution-google",
 };
+// Workspace access always resolves one exact, normalized Google account connection.
+const googleConnectionId = "3f6c9a2e-7b1d-4e5f-8a9c-0d2e4f6a8b1c";
+const otherGoogleConnectionId = "7a1e5c3b-2d4f-4b6a-9c8e-1f0d2b4a6c8e";
+const googleGrant = {
+  id: googleConnectionId,
+  tenantId: owner.tenantId,
+  actorId: owner.actorId,
+  provider: "google",
+  accountEmail: "workspace.owner@example.test",
+  connectionLabel: "Personal",
+  connectionPurpose: "personal",
+  scopes: [...GOOGLE_WORKSPACE_OAUTH_SCOPES],
+  status: "active",
+  authorizationGeneration: 1,
+  createdAt: "2026-09-11T06:00:00.000Z",
+  updatedAt: "2026-09-11T06:00:00.000Z",
+};
+const googleConnectionBinding = {
+  connectionId: googleConnectionId,
+  accountEmail: "workspace.owner@example.test",
+  connectionLabel: "Personal",
+  connectionPurpose: "personal",
+};
 
 describe("governed Google Workspace actions", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     access.getActive.mockResolvedValue({
       accessToken: "access-token",
-      grant: { id: "grant-google" },
+      grant: googleGrant,
     });
   });
 
   it("rejects untrusted provider IDs before any credential is opened", () => {
     expect(() => parseGoogleWorkspaceActionInput("google.drive.trash", {
+      connectionId: googleConnectionId,
       fileId: "../../another-user/file",
     })).toThrow(/resource ID/i);
+    // A mutation must name one exact account connection, never a default or alias.
+    for (const connectionId of [undefined, "grant-google"]) {
+      expect(() => parseGoogleWorkspaceActionInput("google.drive.trash", {
+        connectionId,
+        fileId: "file_1",
+      })).toThrow(/connectionId/);
+    }
     expect(access.getActive).not.toHaveBeenCalled();
   });
 
   it("keeps uploaded file bytes sealed while retaining approval-safe evidence", () => {
     const contentBase64 = Buffer.from("private file body", "utf8").toString("base64");
     expect(googleWorkspaceAuditInput("google.drive.create", {
+      connectionId: googleConnectionId,
       name: "private.txt",
       mimeType: "text/plain",
       contentBase64,
     })).toMatchObject({
+      connectionId: googleConnectionId,
       name: "private.txt",
       contentBase64: "[sealed binary content]",
       contentBytes: 17,
@@ -64,22 +98,25 @@ describe("governed Google Workspace actions", () => {
 
     const result = await executeGoogleWorkspaceAction(
       "google.gmail.trash",
-      { messageId: "message_1" },
+      { connectionId: googleConnectionId, messageId: "message_1" },
       owner,
     );
 
     expect(access.getActive).toHaveBeenCalledWith({
       tenantId: owner.tenantId,
       actorId: owner.actorId,
+      connectionId: googleConnectionId,
       capability: "gmail.trash",
     });
     expect(fetchMock.mock.calls[1]?.[0].toString()).toContain(
       "/messages/message_1/trash",
     );
     expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({ method: "POST" });
+    // The verified receipt names the exact account the mutation ran against.
     expect(result).toMatchObject({
       toolId: "google.gmail.trash",
       resourceId: "message_1",
+      ...googleConnectionBinding,
       verificationState: "verified",
     });
   });
@@ -298,6 +335,7 @@ describe("governed Google Workspace actions", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(executeGoogleWorkspaceAction("google.drive.update", {
+      connectionId: googleConnectionId,
       fileId: "file_1",
       mimeType: "text/plain",
       contentBase64: Buffer.from("replacement", "utf8").toString("base64"),
@@ -310,6 +348,7 @@ describe("governed Google Workspace actions", () => {
 
   it("creates a native Google document from structured editable content", async () => {
     const input = {
+      connectionId: googleConnectionId,
       title: "Quarterly plan",
       blocks: [
         { type: "heading", level: 1, text: "Overview" },
@@ -374,6 +413,7 @@ describe("governed Google Workspace actions", () => {
     expect(access.getActive).toHaveBeenCalledWith({
       tenantId: owner.tenantId,
       actorId: owner.actorId,
+      connectionId: googleConnectionId,
       capability: "docs.write",
     });
     const driveCreate = fetchMock.mock.calls.find(([request, init]) =>
@@ -403,7 +443,7 @@ describe("governed Google Workspace actions", () => {
   });
 
   it("reconciles a previously-created Google document by its Drive execution marker", async () => {
-    const input = { title: "Research notes", bodyText: "Durable exact content" };
+    const input = { connectionId: googleConnectionId, title: "Research notes", bodyText: "Durable exact content" };
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(json({
         files: [{
@@ -443,7 +483,7 @@ describe("governed Google Workspace actions", () => {
   });
 
   it("pages the Drive marker search and refuses a duplicate on a later page", async () => {
-    const input = { title: "Research notes", bodyText: "Durable exact content" };
+    const input = { connectionId: googleConnectionId, title: "Research notes", bodyText: "Durable exact content" };
     const markerFile = (id: string) => ({
       id,
       name: input.title,
@@ -472,9 +512,16 @@ describe("governed Google Workspace actions", () => {
   });
 
   it("rejects marker files whose intent, actor scope, or create version differs", async () => {
-    const input = { title: "Research notes", bodyText: "Durable exact content" };
+    const input = { connectionId: googleConnectionId, title: "Research notes", bodyText: "Durable exact content" };
     for (const mismatch of [
       { asaelIntent: "0".repeat(64) },
+      // The same request made through another connected account is not this effect.
+      {
+        asaelIntent: nativeCreateProperties("google.docs.create", {
+          ...input,
+          connectionId: otherGoogleConnectionId,
+        }).asaelIntent,
+      },
       { asaelScope: "1".repeat(64) },
       { asaelCreateVersion: "1" },
     ]) {
@@ -502,7 +549,7 @@ describe("governed Google Workspace actions", () => {
   });
 
   it("fails closed when Drive reports an incomplete marker search", async () => {
-    const input = { title: "Research notes", bodyText: "Durable exact content" };
+    const input = { connectionId: googleConnectionId, title: "Research notes", bodyText: "Durable exact content" };
     const fetchMock = vi.fn().mockResolvedValueOnce(json({
       files: [],
       incompleteSearch: true,
@@ -518,6 +565,7 @@ describe("governed Google Workspace actions", () => {
 
   it("resumes a marker-owned blank Google document without creating a duplicate", async () => {
     const input = {
+      connectionId: googleConnectionId,
       title: "Research notes",
       blocks: [
         { type: "heading", level: 1, text: "Plan" },
@@ -585,7 +633,7 @@ describe("governed Google Workspace actions", () => {
   });
 
   it("refuses to repair a marker-owned document containing ambiguous user content", async () => {
-    const input = { title: "Research notes", bodyText: "Intended body" };
+    const input = { connectionId: googleConnectionId, title: "Research notes", bodyText: "Intended body" };
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(json({
         files: [{
@@ -619,7 +667,7 @@ describe("governed Google Workspace actions", () => {
   });
 
   it("refuses to repair a marker-owned document when another tab exists", async () => {
-    const input = { title: "Research notes", bodyText: "Intended body" };
+    const input = { connectionId: googleConnectionId, title: "Research notes", bodyText: "Intended body" };
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(json({
         files: [{
@@ -666,7 +714,7 @@ describe("governed Google Workspace actions", () => {
   });
 
   it("refuses to overwrite a styled but text-empty Google document", async () => {
-    const input = { title: "Research notes", bodyText: "Intended body" };
+    const input = { connectionId: googleConnectionId, title: "Research notes", bodyText: "Intended body" };
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(json({
         files: [{
@@ -705,6 +753,7 @@ describe("governed Google Workspace actions", () => {
 
   it("creates and verifies a native Google spreadsheet with bounded RAW values", async () => {
     const input = {
+      connectionId: googleConnectionId,
       title: "Market journal",
       sheetName: "Signals",
       values: [["Symbol", "Bias"], ["XAUUSD", "Bullish"]],
@@ -825,6 +874,7 @@ describe("governed Google Workspace actions", () => {
 
   it("reconciles a native Google spreadsheet without repeating its writes", async () => {
     const input = {
+      connectionId: googleConnectionId,
       title: "Market journal",
       sheetName: "Signals",
       values: [["Symbol", "Bias"], ["NAS100", "Bearish"]],
@@ -872,6 +922,7 @@ describe("governed Google Workspace actions", () => {
 
   it("resumes a marker-owned spreadsheet by adding an exact owned sheet", async () => {
     const input = {
+      connectionId: googleConnectionId,
       title: "Market journal",
       sheetName: "Signals",
       values: [["Symbol", "Bias"], ["XAUUSD", "Bullish"]],
@@ -951,6 +1002,7 @@ describe("governed Google Workspace actions", () => {
 
   it("reconciles a concurrent deterministic sheet-ID collision without overwriting", async () => {
     const input = {
+      connectionId: googleConnectionId,
       title: "Market journal",
       sheetName: "Signals",
       values: [["Symbol", "Bias"]],
@@ -1019,6 +1071,7 @@ describe("governed Google Workspace actions", () => {
 
   it("preserves a collaborator-formatted default sheet while adding the owned sheet", async () => {
     const input = {
+      connectionId: googleConnectionId,
       title: "Market journal",
       sheetName: "Signals",
       values: [["Symbol", "Bias"]],
@@ -1094,6 +1147,7 @@ describe("governed Google Workspace actions", () => {
 
   it("fails closed when another sheet already owns the requested name", async () => {
     const input = {
+      connectionId: googleConnectionId,
       title: "Market journal",
       sheetName: "Signals",
       values: [["Symbol", "Bias"]],
@@ -1130,6 +1184,7 @@ describe("governed Google Workspace actions", () => {
     const marker = sha256(owner.executionId);
     const prefix = `asael_${marker.slice(0, 20)}`;
     const input = {
+      connectionId: googleConnectionId,
       title: "Weekly market brief",
       slides: [
         {
@@ -1242,6 +1297,7 @@ describe("governed Google Workspace actions", () => {
     const marker = sha256(owner.executionId);
     const prefix = `asael_${marker.slice(0, 20)}`;
     const input = {
+      connectionId: googleConnectionId,
       title: "Seed recovery brief",
       slides: [{ title: "XAUUSD", body: "Monitor the weekly range." }],
     };
@@ -1347,6 +1403,7 @@ describe("governed Google Workspace actions", () => {
     const marker = sha256(owner.executionId);
     const prefix = `asael_${marker.slice(0, 20)}`;
     const input = {
+      connectionId: googleConnectionId,
       title: "Weekly market brief",
       slides: [
         {
@@ -1413,6 +1470,7 @@ describe("governed Google Workspace actions", () => {
     const marker = sha256(owner.executionId);
     const prefix = `asael_${marker.slice(0, 20)}`;
     const input = {
+      connectionId: googleConnectionId,
       title: "Weekly market brief",
       slides: [
         { title: "XAUUSD", body: "Monitor the weekly range." },
@@ -1502,6 +1560,7 @@ describe("governed Google Workspace actions", () => {
 
   it("refuses to delete a blank-looking slide with notes or a custom background", async () => {
     const input = {
+      connectionId: googleConnectionId,
       title: "Weekly market brief",
       slides: [{ title: "XAUUSD", body: "Monitor the weekly range." }],
     };
@@ -1557,6 +1616,7 @@ describe("governed Google Workspace actions", () => {
     const marker = sha256(owner.executionId);
     const prefix = `asael_${marker.slice(0, 20)}`;
     const input = {
+      connectionId: googleConnectionId,
       title: "Weekly market brief",
       slides: [{ title: "Checklist", bullets: ["Wait", "Confirm"] }],
     };
@@ -1594,48 +1654,59 @@ describe("governed Google Workspace actions", () => {
   });
 
   it("strictly bounds native Workspace create schemas without binary escape hatches", () => {
+    // Each input names a valid connection, so only the bound under test can fail.
     expect(() => parseGoogleWorkspaceActionInput("google.docs.create", {
+      connectionId: googleConnectionId,
       title: "Plan",
       bodyText: "Plain",
       blocks: [{ type: "paragraph", text: "Structured" }],
     })).toThrow(/exactly one/i);
     expect(() => parseGoogleWorkspaceActionInput("google.docs.create", {
+      connectionId: googleConnectionId,
       title: "Plan",
       bodyText: "Plain",
       contentBase64: "cHJpdmF0ZQ==",
     })).toThrow();
     expect(() => parseGoogleWorkspaceActionInput("google.docs.create", {
+      connectionId: googleConnectionId,
       title: "Plan",
       blocks: [{ type: "bullets", items: ["one\ntwo"] }],
     })).toThrow(/one line/i);
     expect(() => parseGoogleWorkspaceActionInput("google.sheets.create", {
+      connectionId: googleConnectionId,
       title: "Journal",
       sheetName: "Bad/Name",
       values: [["value"]],
     })).toThrow(/sheet name/i);
     expect(() => parseGoogleWorkspaceActionInput("google.sheets.create", {
+      connectionId: googleConnectionId,
       title: "Journal",
       sheetName: "Signals",
       values: [["=IMPORTDATA(\"https://example.test\")"]],
     })).toThrow(/formulas/i);
     expect(() => parseGoogleWorkspaceActionInput("google.sheets.create", {
+      connectionId: googleConnectionId,
       title: "Journal",
       sheetName: "Signals",
       values: [[...Array.from({ length: 5 }, () => "x".repeat(50_000))]],
     })).toThrow(/200000 string characters/i);
     expect(() => parseGoogleWorkspaceActionInput("google.slides.create", {
+      connectionId: googleConnectionId,
       title: "Deck",
       slides: [{ title: "Empty" }],
     })).toThrow(/body text, bullets/i);
     expect(() => parseGoogleWorkspaceActionInput("google.slides.create", {
+      connectionId: googleConnectionId,
       title: "Deck",
       slides: [{ title: "Title", body: "Body", imageBase64: "cHJpdmF0ZQ==" }],
     })).toThrow();
     expect(() => parseGoogleWorkspaceActionInput("google.slides.create", {
+      connectionId: googleConnectionId,
       title: "Deck",
       slides: [],
     })).toThrow();
     expect(() => parseGoogleWorkspaceActionInput("google.slides.create", {
+      connectionId: googleConnectionId,
       title: "Deck",
       slides: Array.from({ length: 25 }, (_, index) => ({
         title: `Slide ${index + 1}`,
@@ -1649,6 +1720,7 @@ describe("governed Google Workspace actions", () => {
     const heading = googleWorkspaceEffectTarget(
       "google.docs.create",
       {
+        connectionId: googleConnectionId,
         title: "Structured note",
         blocks: [{ type: "heading", level: 1, text: "Plan" }],
       },
@@ -1657,6 +1729,7 @@ describe("governed Google Workspace actions", () => {
     const paragraph = googleWorkspaceEffectTarget(
       "google.docs.create",
       {
+        connectionId: googleConnectionId,
         title: "Structured note",
         blocks: [{ type: "paragraph", text: "Plan" }],
       },
@@ -1669,6 +1742,7 @@ describe("governed Google Workspace actions", () => {
 
   it("does not reconcile a requested paragraph that was restyled as a heading", async () => {
     const input = {
+      connectionId: googleConnectionId,
       title: "Structured note",
       blocks: [{ type: "paragraph", text: "Plan" }],
     };
@@ -1713,6 +1787,7 @@ describe("governed Google Workspace actions", () => {
       .mockResolvedValueOnce(json(observed));
     vi.stubGlobal("fetch", fetchMock);
     const input = {
+      connectionId: googleConnectionId,
       documentId: "document_1",
       text: "after",
       expectedCurrentSha256: sha256("before"),
@@ -1757,6 +1832,7 @@ describe("governed Google Workspace actions", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(executeGoogleWorkspaceAction("google.docs.update", {
+      connectionId: googleConnectionId,
       documentId: "document_1",
       text: "after",
       expectedCurrentSha256: sha256("before"),
@@ -1781,6 +1857,7 @@ describe("governed Google Workspace actions", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(executeGoogleWorkspaceAction("google.docs.update", {
+      connectionId: googleConnectionId,
       documentId: "document_1",
       text: "after",
       expectedCurrentSha256: sha256("before"),
@@ -1795,6 +1872,7 @@ describe("governed Google Workspace actions", () => {
     const fetchMock = vi.fn().mockResolvedValue(json({ range: "Sheet1!A1:B2", values }));
     vi.stubGlobal("fetch", fetchMock);
     const input = {
+      connectionId: googleConnectionId,
       spreadsheetId: "spreadsheet_1",
       range: "Sheet1!A1:B2",
       values,
@@ -1827,6 +1905,7 @@ describe("governed Google Workspace actions", () => {
     const result = await reconcileGoogleWorkspaceMutation(
       "google.sheets.update",
       {
+        connectionId: googleConnectionId,
         spreadsheetId: "spreadsheet_1",
         range: "Sheet1!A1",
         values: [[2]],
@@ -1840,6 +1919,7 @@ describe("governed Google Workspace actions", () => {
 
   it("refuses ambiguous RAW strings that exact reads cannot distinguish from formulas", () => {
     expect(() => parseGoogleWorkspaceActionInput("google.sheets.update", {
+      connectionId: googleConnectionId,
       spreadsheetId: "spreadsheet_1",
       range: "Sheet1!A1",
       values: [["=1+1"]],
@@ -1847,11 +1927,12 @@ describe("governed Google Workspace actions", () => {
     })).toThrow(/cannot accept strings beginning with '='.*formulas/i);
 
     expect(parseGoogleWorkspaceActionInput("google.sheets.update", {
+      connectionId: googleConnectionId,
       spreadsheetId: "spreadsheet_1",
       range: "Sheet1!A1",
       values: [[""]],
       expectedCurrentSha256: "0".repeat(64),
-    })).toMatchObject({ values: [[""]] });
+    })).toMatchObject({ connectionId: googleConnectionId, values: [[""]] });
 
     expect(access.getActive).not.toHaveBeenCalled();
   });
@@ -1939,7 +2020,7 @@ describe("governed Google Workspace actions", () => {
 
     await executeGoogleWorkspaceAction(
       "calendar.delete",
-      { calendarId: "primary", eventId: "event_1" },
+      { connectionId: googleConnectionId, calendarId: "primary", eventId: "event_1" },
       owner,
     );
 
@@ -1958,7 +2039,7 @@ describe("governed Google Workspace actions", () => {
 
     await expect(executeGoogleWorkspaceAction(
       "calendar.update",
-      { calendarId: "primary", eventId: "event_1", summary: "Updated" },
+      { connectionId: googleConnectionId, calendarId: "primary", eventId: "event_1", summary: "Updated" },
       owner,
     )).rejects.toThrow(/cancelled/i);
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH"))
@@ -1968,21 +2049,30 @@ describe("governed Google Workspace actions", () => {
   it("binds calendar effect identity to both calendar and event IDs", () => {
     const first = googleWorkspaceEffectTarget(
       "calendar.delete",
-      { calendarId: "calendar_a", eventId: "shared_event" },
+      { connectionId: googleConnectionId, calendarId: "calendar_a", eventId: "shared_event" },
       owner.executionId,
     );
     const second = googleWorkspaceEffectTarget(
       "calendar.delete",
-      { calendarId: "calendar_b", eventId: "shared_event" },
+      { connectionId: googleConnectionId, calendarId: "calendar_b", eventId: "shared_event" },
+      owner.executionId,
+    );
+    // The same calendar and event IDs in another connected account are a different target.
+    const otherConnection = googleWorkspaceEffectTarget(
+      "calendar.delete",
+      { connectionId: otherGoogleConnectionId, calendarId: "calendar_a", eventId: "shared_event" },
       owner.executionId,
     );
     expect(first.targetSha256).not.toBe(second.targetSha256);
+    expect(first.targetSha256).not.toBe(otherConnection.targetSha256);
     expect(() => parseGoogleWorkspaceActionInput("calendar.update", {
+      connectionId: googleConnectionId,
       eventId: "event_1",
       summary: "Updated",
       timeZone: "Asia/Kolkata",
     })).toThrow(/time zone requires start and end/i);
     expect(parseGoogleWorkspaceActionInput("calendar.delete", {
+      connectionId: googleConnectionId,
       calendarId: "en.usa#holiday+private@group.v.calendar.google.com",
       eventId: "e".repeat(1_024),
     })).toMatchObject({

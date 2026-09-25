@@ -44,6 +44,7 @@ const tenantId = "tenant-a";
 const authUserId = "11111111-1111-4111-8111-111111111111";
 const actorId = "oauth-owner@example.test";
 const canonicalActorId = `actor:${authUserId}`;
+const googleAccountEmail = "google-owner@example.test";
 const binding: CanonicalRequestActorBindingV1 = {
   version: 1,
   kind: "auth_user",
@@ -89,6 +90,9 @@ describe("request-bound OAuth connection metadata", () => {
       expect.objectContaining({
         actorId,
         provider: "google",
+        accountEmail: googleAccountEmail,
+        connectionLabel: "Personal",
+        connectionPurpose: "personal",
         syncError: "provider warning",
         manageable: false,
       }),
@@ -131,7 +135,7 @@ describe("request-bound OAuth connection metadata", () => {
     ]);
   });
 
-  it("rejects unexpected owners, duplicate ids, and provider collisions", async () => {
+  it("rejects unexpected owners, duplicate ids, and purpose or account collisions", async () => {
     mocks.rows.push(grantRow(
       "22222222-2222-4222-8222-222222222222",
       "unexpected-owner@example.test",
@@ -166,19 +170,45 @@ describe("request-bound OAuth connection metadata", () => {
       0,
       mocks.rows.length,
       grantRow("44444444-4444-4444-8444-444444444444", canonicalActorId),
-      grantRow("55555555-5555-4555-8555-555555555555", actorId),
+      {
+        ...grantRow("55555555-5555-4555-8555-555555555555", actorId),
+        account_email: "second-google-owner@example.test",
+      },
     );
-    const providerCollisionRead = listOAuthGrantsForRequest({
+    const purposeCollisionRead = listOAuthGrantsForRequest({
       tenantId,
       actorId,
       requestActorBinding: binding,
     });
-    await expect(providerCollisionRead).rejects.toBeInstanceOf(
+    await expect(purposeCollisionRead).rejects.toBeInstanceOf(
       OAuthGrantReadConflictError,
     );
-    await expect(providerCollisionRead).rejects.toMatchObject({
+    await expect(purposeCollisionRead).rejects.toMatchObject({
       name: "OAuthGrantReadConflictError",
-      message: "OAuth connection provider ownership is ambiguous.",
+      message: "OAuth connection purpose ownership is ambiguous.",
+    });
+
+    mocks.rows.splice(
+      0,
+      mocks.rows.length,
+      grantRow("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", canonicalActorId),
+      {
+        ...grantRow("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", actorId),
+        connection_label: "Work",
+        connection_purpose: "work",
+      },
+    );
+    const accountCollisionRead = listOAuthGrantsForRequest({
+      tenantId,
+      actorId,
+      requestActorBinding: binding,
+    });
+    await expect(accountCollisionRead).rejects.toBeInstanceOf(
+      OAuthGrantReadConflictError,
+    );
+    await expect(accountCollisionRead).rejects.toMatchObject({
+      name: "OAuthGrantReadConflictError",
+      message: "OAuth account identity is ambiguous.",
     });
   });
 
@@ -276,6 +306,9 @@ function grantRow(id: string, ownerActorId: string) {
     tenant_id: tenantId,
     actor_id: ownerActorId,
     provider: "google",
+    account_email: googleAccountEmail,
+    connection_label: "Personal",
+    connection_purpose: "personal",
     scopes: ["https://www.googleapis.com/auth/drive.readonly"],
     status: "active",
     authorization_generation: "2",

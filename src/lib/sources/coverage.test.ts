@@ -9,14 +9,15 @@ import {
 } from "@/lib/sources/coverage";
 
 const now = "2026-09-08T12:00:00.000Z";
+const googleConnectionId = "3c9e1f4a-8b2d-4e6f-a1c3-5d7b9e0f2a4c";
 
 describe("P11.9 source coverage projection", () => {
   it("reports granular backfill, freshness, index completeness, and explicit blind spots", () => {
     const projection = projectSourceCoverage({
       integrations: { state: "ready", value: overview([
-        googleIntegration("google:gmail", "Gmail"),
-        googleIntegration("google:google-calendar", "Google Calendar"),
-        googleIntegration("google:google-drive", "Google Drive"),
+        googleIntegration(`google:${googleConnectionId}:gmail`, "Gmail"),
+        googleIntegration(`google:${googleConnectionId}:google-calendar`, "Google Calendar"),
+        googleIntegration(`google:${googleConnectionId}:google-drive`, "Google Drive"),
       ]) },
       oauth: { state: "ready", value: [googleGrant({
         mail: checkpoint("complete", "2026-09-08T11:30:00.000Z"),
@@ -34,19 +35,20 @@ describe("P11.9 source coverage projection", () => {
       providerContentIncluded: false,
       actorCoordinatesIncluded: false,
     });
-    expect(domain(projection, "gmail")).toMatchObject({
+    expect(domain(projection, `gmail:${googleConnectionId}`)).toMatchObject({
+      label: "Gmail · Personal (personal.account@example.test)",
       availability: "connected",
       coverage: { state: "complete", observedItems: 12 },
       backfill: { state: "complete" },
       freshness: { state: "current", lastVerifiedAt: "2026-09-08T11:30:00.000Z" },
       blindSpot: false,
     });
-    expect(domain(projection, "google_calendar")).toMatchObject({
+    expect(domain(projection, `google_calendar:${googleConnectionId}`)).toMatchObject({
       coverage: { state: "partial" },
       backfill: { state: "in_progress" },
       blindSpot: true,
     });
-    expect(domain(projection, "google_drive").freshness.state).toBe("stale");
+    expect(domain(projection, `google_drive:${googleConnectionId}`).freshness.state).toBe("stale");
     expect(domain(projection, "contacts")).toMatchObject({
       availability: "unsupported",
       coverage: { state: "unknown" },
@@ -67,14 +69,14 @@ describe("P11.9 source coverage projection", () => {
   it("keeps a connected source unknown until a source-specific checkpoint exists", () => {
     const projection = projectSourceCoverage({
       integrations: { state: "ready", value: overview([
-        googleIntegration("google:gmail", "Gmail"),
+        googleIntegration(`google:${googleConnectionId}:gmail`, "Gmail"),
       ]) },
       oauth: { state: "ready", value: [googleGrant({})] },
       ownedSources: { state: "ready", value: ownedInventory() },
       generatedAt: now,
     });
 
-    expect(domain(projection, "gmail")).toMatchObject({
+    expect(domain(projection, `gmail:${googleConnectionId}`)).toMatchObject({
       availability: "connected",
       coverage: { state: "unknown", observedItems: 12 },
       backfill: { state: "unknown" },
@@ -148,10 +150,13 @@ function checkpoint(
 
 function googleGrant(sourceCoverage: RequestOAuthGrant["sourceCoverage"]): RequestOAuthGrant {
   return {
-    id: "grant:test",
+    id: googleConnectionId,
     tenantId: "tenant:test",
     actorId: "actor:test",
     provider: "google",
+    accountEmail: "personal.account@example.test",
+    connectionLabel: "Personal",
+    connectionPurpose: "personal",
     scopes: [],
     status: "active",
     authorizationGeneration: 1,

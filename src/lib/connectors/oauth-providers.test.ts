@@ -40,9 +40,17 @@ describe("OAuth provider authorization", () => {
     expect(url.searchParams.get("scope")).toContain("gmail.modify");
     expect(url.searchParams.get("scope")).toContain("calendar.calendarlist.readonly");
     expect(url.searchParams.get("scope")).toContain("/auth/drive");
-    expect(url.searchParams.has("prompt")).toBe(false);
+    // A normal connect asks Google for account selection, never forced consent.
+    expect(url.searchParams.get("prompt")).toBe("select_account");
+    expect(url.searchParams.get("login_hint")).toBe("owner@example.com");
     const state = openOAuthState("google", url.searchParams.get("state") || "");
-    expect(state).toMatchObject({ tenantId: "tenant-a", actorId: "user-a", provider: "google" });
+    expect(state).toMatchObject({
+      tenantId: "tenant-a",
+      actorId: "user-a",
+      provider: "google",
+      googleConnectionPurpose: "personal",
+      googleAccountEmail: "owner@example.com",
+    });
   });
 
   it("rejects tampered state", () => {

@@ -3,6 +3,7 @@ import { createAppServiceCaller } from "@/lib/app-services/contracts";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 
 const mocks = vi.hoisted(() => ({
+  access: vi.fn(),
   begin: vi.fn(),
   complete: vi.fn(),
   create: vi.fn(),
@@ -33,12 +34,17 @@ vi.mock("@/lib/communications/gmail-delivery", () => {
   };
 });
 vi.mock("@/lib/threads/store", () => ({ getOwnedThread: mocks.getThread }));
+vi.mock("@/lib/connectors/google-workspace-access", () => ({
+  getActiveGoogleWorkspaceAccess: mocks.access,
+}));
 
 import {
   createCommunicationDraftService,
   deliverCommunicationDraftService,
 } from "@/lib/app-services/communications";
 import { GmailDeliveryOutcomeUnknownError } from "@/lib/communications/gmail-delivery";
+
+const googleConnectionId = "5b1d7e3a-9c2f-4a6b-8d0e-1f3a5c7e9b2d";
 
 describe("governed communication application service", () => {
   beforeEach(() => {
@@ -48,8 +54,26 @@ describe("governed communication application service", () => {
   });
 
   it("binds draft attribution to the authenticated execution scope", async () => {
+    mocks.access.mockResolvedValue({
+      accessToken: "gmail-access-token",
+      grant: {
+        id: googleConnectionId,
+        tenantId: "tenant-a",
+        actorId: "actor-a",
+        provider: "google",
+        accountEmail: "owner@example.com",
+        connectionLabel: "Personal",
+        connectionPurpose: "personal",
+        scopes: ["https://www.googleapis.com/auth/gmail.send"],
+        status: "active",
+        authorizationGeneration: 1,
+        createdAt: "2026-09-01T00:00:00.000Z",
+        updatedAt: "2026-09-01T00:00:00.000Z",
+      },
+    });
     mocks.create.mockResolvedValue({ id: "message_draft:123e4567-e89b-12d3-a456-426614174000" });
     const result = await createCommunicationDraftService(caller(), {
+      connectionId: googleConnectionId,
       policyId: "contact_policy:123e4567-e89b-12d3-a456-426614174001",
       purpose: "support",
       disclosure: "relationship_context",
@@ -57,8 +81,15 @@ describe("governed communication application service", () => {
       body: "Exact draft body",
       canonicalThreadId: "thread-a",
     });
+    expect(mocks.access).toHaveBeenCalledWith({
+      tenantId: "tenant-a",
+      actorId: "actor-a",
+      connectionId: googleConnectionId,
+      capability: "gmail.send",
+    });
     expect(mocks.create).toHaveBeenCalledWith(
       expect.objectContaining({
+        googleConnectionId,
         executingAgentId: "agent-main",
         projectId: "project-a",
         missionId: "mission-a",
@@ -71,6 +102,7 @@ describe("governed communication application service", () => {
         executionScope: expect.objectContaining({ initiatingActorId: "actor-a" }),
       }),
     );
+    expect(JSON.stringify(mocks.create.mock.calls)).not.toContain("gmail-access-token");
     expect(result.receipt.operation).toBe("app.communications.drafts.create");
   });
 
