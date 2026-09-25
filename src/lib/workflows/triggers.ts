@@ -132,6 +132,9 @@ type DispatchWorkflowTriggerInput = {
 type SignatureVerification = {
   verified: boolean;
   error?: string;
+  /** Replay identity derived only from material the verified signature covers. */
+  deliveryKey?: string;
+  signatureDigest?: string;
 };
 
 export class WorkflowTriggerNotFoundError extends Error {
@@ -143,6 +146,10 @@ export class WorkflowTriggerNotFoundError extends Error {
 
 const defaultGoalTemplate = "Handle {{event.type}} from {{event.source}}: {{payload.summary}}";
 const signatureMaxAgeMs = 5 * 60 * 1000;
+// Integer timestamps and dot-free keys, so a v2 signed message splits into
+// timestamp, key, and body exactly one way.
+const signedTimestampPattern = /^\d{1,16}$/;
+const signedDeliveryKeyPattern = /^[A-Za-z0-9_:-]{1,200}$/;
 const scheduleDueGraceMs = 60_000;
 const scheduleEvaluationLimit = 10_000;
 const scheduleRruleSchema = z.object({
@@ -1696,7 +1703,7 @@ async function dispatchWorkflowTriggerForTenant(
   const payload = parsePayload(input.bodyText);
   const eventType = inferEventType(payload, headers);
   const verification = verifyTriggerSignature(trigger, input.bodyText, headers);
-  const delivery = triggerDeliveryIdentity(trigger, input.bodyText, headers);
+  const delivery = triggerDeliveryIdentity(trigger, input.bodyText, headers, verification);
   const rejectedPayload = rejectedTriggerPayloadEvidence(input.bodyText, payload);
   const deliveryExecutionScope = createTriggerDeliveryExecutionScope(
     trigger,
@@ -1896,21 +1903,47 @@ async function dispatchWorkflowTriggerForTenant(
   }
 }
 
+/**
+ * Signs an x-omni webhook delivery. Without a delivery key the signature covers
+ * `${timestamp}.${body}`, so only an identical resend deduplicates. With one, the
+ * `v2=` signature also covers `x-omni-delivery-key`, so a re-signed retry of the
+ * same delivery deduplicates too.
+ */
 export function signWorkflowTriggerPayload({
   secret,
   bodyText,
   timestamp = String(Date.now()),
+  deliveryKey,
 }: {
   secret: string;
   bodyText: string;
   timestamp?: string;
+  deliveryKey?: string;
 }) {
+  if (deliveryKey === undefined) {
+    const signature = createHmac("sha256", secret)
+      .update(`${timestamp}.${bodyText}`)
+      .digest("hex");
+    return {
+      timestamp,
+      signature: `sha256=${signature}`,
+    };
+  }
+  if (!signedDeliveryKeyPattern.test(deliveryKey)) {
+    throw new Error(
+      "Webhook delivery keys must be 1-200 letters, numbers, underscores, colons, or hyphens.",
+    );
+  }
+  if (!signedTimestampPattern.test(timestamp)) {
+    throw new Error("Keyed webhook timestamps must be integer milliseconds.");
+  }
   const signature = createHmac("sha256", secret)
-    .update(`${timestamp}.${bodyText}`)
+    .update(`v2.${timestamp}.${deliveryKey}.${bodyText}`)
     .digest("hex");
   return {
     timestamp,
-    signature: `sha256=${signature}`,
+    deliveryKey,
+    signature: `v2=${signature}`,
   };
 }
 
@@ -3515,13 +3548,16 @@ function verifyTriggerSignature(
     return { verified: false, error: "Trigger secret env var is not configured." };
   }
 
+  // Delivery-id headers are unsigned, so a verified delivery is identified only by
+  // what its signature covers. GitHub signs just the body; x-omni v1 signs the
+  // timestamp and body; x-omni v2 also signs the delivery key.
   const githubSignature = String(headers["x-hub-signature-256"] || "");
   if (githubSignature) {
     const expected = `sha256=${createHmac("sha256", secret)
       .update(bodyText)
       .digest("hex")}`;
     return safeEqual(githubSignature, expected)
-      ? { verified: true }
+      ? verifiedDelivery("github", githubSignature, githubSignature)
       : { verified: false, error: "GitHub webhook signature mismatch." };
   }
 
@@ -3536,10 +3572,45 @@ function verifyTriggerSignature(
     return { verified: false, error: "Webhook signature timestamp is outside the allowed window." };
   }
 
+  if (signature.startsWith("v2=")) {
+    const deliveryKey = String(headers["x-omni-delivery-key"] || "");
+    if (!signedDeliveryKeyPattern.test(deliveryKey)) {
+      return { verified: false, error: "Webhook delivery key is missing or invalid." };
+    }
+    if (!signedTimestampPattern.test(timestamp)) {
+      return { verified: false, error: "Keyed webhook timestamps must be integer milliseconds." };
+    }
+    const expected = signWorkflowTriggerPayload({
+      secret,
+      bodyText,
+      timestamp,
+      deliveryKey,
+    }).signature;
+    return safeEqual(signature, expected)
+      ? verifiedDelivery("delivery", deliveryKey, signature)
+      : { verified: false, error: "Webhook signature mismatch." };
+  }
+
   const expected = signWorkflowTriggerPayload({ secret, bodyText, timestamp }).signature;
   return safeEqual(signature, expected)
-    ? { verified: true }
+    ? verifiedDelivery("signature", signature, signature)
     : { verified: false, error: "Webhook signature mismatch." };
+}
+
+function verifiedDelivery(
+  kind: "github" | "signature" | "delivery",
+  identity: string,
+  signature: string,
+): SignatureVerification {
+  return {
+    verified: true,
+    deliveryKey: `${kind}:${sha256Hex(identity)}`,
+    signatureDigest: sha256Hex(signature),
+  };
+}
+
+function sha256Hex(value: string) {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 function safeEqual(actual: string, expected: string) {
@@ -4267,7 +4338,15 @@ function triggerDeliveryIdentity(
   trigger: WorkflowTriggerRecord,
   bodyText: string,
   headers: Record<string, unknown>,
+  verification: SignatureVerification,
 ) {
+  if (verification.verified && verification.deliveryKey) {
+    return {
+      deliveryKey: verification.deliveryKey,
+      signatureDigest: verification.signatureDigest,
+    };
+  }
+  // Unsigned development triggers and rejected evidence keep header identity.
   const explicitKey =
     headers["x-omni-delivery-key"] ||
     headers["x-github-delivery"] ||

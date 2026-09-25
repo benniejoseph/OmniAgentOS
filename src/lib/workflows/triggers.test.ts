@@ -187,24 +187,23 @@ describe("workflow trigger tenant isolation (file mode)", () => {
       authMode: "hmac_sha256",
       secretEnvVar: "TEST_CONCURRENT_WEBHOOK_SECRET",
     });
-    const bodyText = JSON.stringify({ action: "synchronize" });
-    const signature = `sha256=${createHmac("sha256", secret)
-      .update(bodyText)
-      .digest("hex")}`;
     const deliveryCount = 6;
 
     const results = await Promise.all(
-      Array.from({ length: deliveryCount }, (_, index) =>
-        triggers.dispatchWorkflowTrigger({
+      Array.from({ length: deliveryCount }, (_, index) => {
+        const bodyText = JSON.stringify({ action: "synchronize", after: `commit-${index}` });
+        return triggers.dispatchWorkflowTrigger({
           triggerId: trigger.id,
           bodyText,
           headers: {
-            "x-hub-signature-256": signature,
+            "x-hub-signature-256": `sha256=${createHmac("sha256", secret)
+              .update(bodyText)
+              .digest("hex")}`,
             "x-github-delivery": `concurrent-delivery-${index}`,
             "x-github-event": "push",
           },
-        }),
-      ),
+        });
+      }),
     );
 
     expect(results.every((result) => result.event.status === "enqueued")).toBe(true);
@@ -214,5 +213,183 @@ describe("workflow trigger tenant isolation (file mode)", () => {
       triggerCount: deliveryCount,
       failureCount: 0,
     });
+  });
+
+  it("treats one signed GitHub body as one delivery whatever its unsigned headers claim", async () => {
+    const triggers = await import("@/lib/workflows/triggers");
+    const secret = "github-replay-test-secret";
+    process.env.TEST_GITHUB_REPLAY_WEBHOOK_SECRET = secret;
+    const trigger = await triggers.createWorkflowTrigger({
+      tenantId: "tenant-a",
+      name: "GitHub replay webhook",
+      source: "github",
+      authMode: "hmac_sha256",
+      secretEnvVar: "TEST_GITHUB_REPLAY_WEBHOOK_SECRET",
+    });
+    const bodyText = JSON.stringify({ action: "closed", number: 7 });
+    const signature = `sha256=${createHmac("sha256", secret)
+      .update(bodyText)
+      .digest("hex")}`;
+    const dispatch = (headers: Record<string, string>) =>
+      triggers.dispatchWorkflowTrigger({
+        triggerId: trigger.id,
+        bodyText,
+        headers: {
+          "x-hub-signature-256": signature,
+          "x-github-event": "pull_request",
+          ...headers,
+        },
+      });
+
+    const first = await dispatch({ "x-github-delivery": "github-delivery-1" });
+    const replays = [
+      await dispatch({ "x-github-delivery": "github-delivery-2" }),
+      await dispatch({
+        "x-omni-delivery-key": "fresh-delivery-key",
+        "idempotency-key": "fresh-idempotency-key",
+      }),
+      await dispatch({ "x-omni-signature": "sha256=unverified" }),
+    ];
+
+    expect(first).toMatchObject({ replayed: false, event: { status: "enqueued" } });
+    expect(replays.map((result) => result.replayed)).toEqual([true, true, true]);
+    expect(replays.map((result) => result.event.workflowRunId)).toEqual(
+      Array(replays.length).fill(first.workflow?.run.id),
+    );
+    await expect(
+      triggers.getWorkflowTrigger(trigger.id, { tenantId: "tenant-a" }),
+    ).resolves.toMatchObject({ triggerCount: 1, failureCount: 0 });
+  });
+
+  it("treats a replayed x-omni signature as one delivery despite fresh delivery headers", async () => {
+    const triggers = await import("@/lib/workflows/triggers");
+    const secret = "omni-replay-test-secret";
+    process.env.TEST_OMNI_REPLAY_WEBHOOK_SECRET = secret;
+    const trigger = await triggers.createWorkflowTrigger({
+      tenantId: "tenant-a",
+      name: "Signed replay webhook",
+      authMode: "hmac_sha256",
+      secretEnvVar: "TEST_OMNI_REPLAY_WEBHOOK_SECRET",
+    });
+    const bodyText = JSON.stringify({ type: "invoice.paid", summary: "Invoice 42 paid" });
+    const signed = triggers.signWorkflowTriggerPayload({ secret, bodyText });
+    const dispatch = (headers: Record<string, string>) =>
+      triggers.dispatchWorkflowTrigger({
+        triggerId: trigger.id,
+        bodyText,
+        headers: {
+          "x-omni-timestamp": signed.timestamp,
+          "x-omni-signature": signed.signature,
+          ...headers,
+        },
+      });
+
+    const first = await dispatch({ "x-omni-delivery-key": "invoice-42" });
+    const replays = [
+      await dispatch({ "x-omni-delivery-key": "invoice-42-replay" }),
+      await dispatch({ "x-webhook-id": "fresh-webhook-id" }),
+      await dispatch({ "idempotency-key": "fresh-idempotency-key" }),
+      await dispatch({}),
+    ];
+
+    expect(first).toMatchObject({ replayed: false, event: { status: "enqueued" } });
+    expect(replays.map((result) => result.replayed)).toEqual([true, true, true, true]);
+    await expect(
+      triggers.getWorkflowTrigger(trigger.id, { tenantId: "tenant-a" }),
+    ).resolves.toMatchObject({ triggerCount: 1, failureCount: 0 });
+  });
+
+  it("deduplicates re-signed v2 retries by their signed delivery key", async () => {
+    const triggers = await import("@/lib/workflows/triggers");
+    const secret = "omni-v2-test-secret";
+    process.env.TEST_OMNI_V2_WEBHOOK_SECRET = secret;
+    const trigger = await triggers.createWorkflowTrigger({
+      tenantId: "tenant-a",
+      name: "Keyed webhook",
+      authMode: "hmac_sha256",
+      secretEnvVar: "TEST_OMNI_V2_WEBHOOK_SECRET",
+    });
+    const bodyText = JSON.stringify({ type: "order.created", summary: "Order 9 created" });
+    const now = Date.now();
+    const sign = (deliveryKey: string, offsetMs = 0) =>
+      triggers.signWorkflowTriggerPayload({
+        secret,
+        bodyText,
+        deliveryKey,
+        timestamp: String(now + offsetMs),
+      });
+    const dispatch = (
+      signed: { timestamp: string; signature: string },
+      deliveryKey?: string,
+    ) =>
+      triggers.dispatchWorkflowTrigger({
+        triggerId: trigger.id,
+        bodyText,
+        headers: {
+          "x-omni-timestamp": signed.timestamp,
+          "x-omni-signature": signed.signature,
+          ...(deliveryKey ? { "x-omni-delivery-key": deliveryKey } : {}),
+        },
+      });
+    const v1 = triggers.signWorkflowTriggerPayload({ secret, bodyText, timestamp: String(now) });
+
+    const first = await dispatch(sign("order-9"), "order-9");
+    const retry = await dispatch(sign("order-9", 1_000), "order-9");
+    const next = await dispatch(sign("order-10"), "order-10");
+    const swapped = await dispatch(sign("order-9", 2_000), "order-11");
+    const unkeyed = await dispatch(sign("order-12"));
+    const relabelled = await dispatch(
+      { ...v1, signature: v1.signature.replace(/^sha256=/, "v2=") },
+      "order-13",
+    );
+    const fractional = `${now}.5`;
+    const nonConforming = await dispatch(
+      {
+        timestamp: fractional,
+        signature: `v2=${createHmac("sha256", secret)
+          .update(`v2.${fractional}.order-14.${bodyText}`)
+          .digest("hex")}`,
+      },
+      "order-14",
+    );
+
+    expect(first).toMatchObject({ replayed: false, event: { status: "enqueued" } });
+    expect(retry).toMatchObject({
+      replayed: true,
+      event: { workflowRunId: first.workflow?.run.id },
+    });
+    expect(next).toMatchObject({ replayed: false, event: { status: "enqueued" } });
+    expect(next.workflow?.run.id).not.toBe(first.workflow?.run.id);
+    expect(swapped.event).toMatchObject({
+      status: "rejected",
+      error: "Webhook signature mismatch.",
+    });
+    expect(unkeyed.event).toMatchObject({
+      status: "rejected",
+      error: "Webhook delivery key is missing or invalid.",
+    });
+    expect(relabelled.event).toMatchObject({
+      status: "rejected",
+      error: "Webhook signature mismatch.",
+    });
+    // A fractional timestamp would let `v2.t.K.B` be re-split into another key and body.
+    expect(nonConforming.event).toMatchObject({
+      status: "rejected",
+      error: "Keyed webhook timestamps must be integer milliseconds.",
+    });
+    expect(() =>
+      triggers.signWorkflowTriggerPayload({ secret, bodyText, deliveryKey: "order.9" }),
+    ).toThrow("Webhook delivery keys");
+    expect(() =>
+      triggers.signWorkflowTriggerPayload({
+        secret,
+        bodyText,
+        deliveryKey: "order-14",
+        timestamp: fractional,
+      }),
+    ).toThrow("integer milliseconds");
+    await expect(
+      triggers.getWorkflowTrigger(trigger.id, { tenantId: "tenant-a" }),
+    ).resolves.toMatchObject({ triggerCount: 2, failureCount: 4 });
   });
 });
