@@ -23,13 +23,19 @@ describe("Google integration UI consistency", () => {
       expect(source).toContain('capabilities.has("calendar.events.write")');
       expect(source).toContain('capabilities.has("drive.write")');
       expect(source).toContain('capabilities.has("photos.pick")');
-      expect(source).toContain("Read + send + trash");
-      expect(source).toContain("Full read + write");
-      expect(source).toContain("User-picked only");
     }
+    expect(personalConnections).toContain("Read, send, organize, and move messages to Trash.");
+    expect(personalConnections).toContain("View and change accessible files.");
+    expect(personalConnections).toContain("Import only photos you explicitly choose.");
+    expect(connectedSources).toContain("Read + send + trash");
+    expect(connectedSources).toContain("Full read + write");
+    expect(connectedSources).toContain("User-picked only");
     expect(personalConnections).not.toContain("The read-only connection remains active");
     expect(connectedSources).not.toContain("Google access stays read-only");
-    expect(personalConnections).toContain("Managed by owner");
+    expect(personalConnections).toContain('? "Managed by owner"');
+    expect(personalConnections).toContain("grant && grant.manageable !== true");
+    expect(personalConnections).toContain("only its stored owner can use or change it");
+    expect(personalConnections).toContain("if (!grant || blockUnavailableAction()) return;");
     expect(connectedSources).toContain("Managed by owner");
     expect(truthPanel).toContain('return integration.permissions.mode === "no_access" ? "No access" : "User-picked only"');
   });
@@ -57,14 +63,19 @@ describe("Google integration UI consistency", () => {
     expect(truthPanel).toContain("window.removeEventListener(INTEGRATION_STATUS_CHANGED_EVENT");
     expect(personalConnections).toContain("window.dispatchEvent(new Event(INTEGRATION_STATUS_CHANGED_EVENT))");
     expect(connectedSources).toContain("window.dispatchEvent(new Event(INTEGRATION_STATUS_CHANGED_EVENT))");
-    expect(personalConnections).toContain("await refreshIntegrationViews()");
+    expect(personalConnections).toContain("onChanged={refreshIntegrationViews}");
+    expect(personalConnections).toContain("await onChanged()");
     expect(connectedSources).toContain("await refreshIntegrationViews()");
   });
 
   it("forces fresh consent only from explicit repair actions", () => {
-    expect(personalConnections).toContain("withRepairIntent(");
-    expect(personalConnections).toContain("intent=repair");
-    expect(connectedSources).toContain("const repairUrl = addReturnTo(");
+    expect(personalConnections).toContain('if (repair) params.set("intent", "repair")');
+    expect(personalConnections).toMatch(
+      /googleAuthorizeUrl\(\s*provider\?\.authorizeUrl \|\| "\/api\/oauth\/google\/authorize",\s*account\.purpose,\s*grant\?\.id,\s*Boolean\(grant\),\s*\)/,
+    );
+    expect(connectedSources).toContain("const repairUrl = googleAccountAuthorizeUrl(");
+    expect(connectedSources).toContain('intent: "repair"');
+    expect(connectedSources).toContain('if (grant?.id) params.set("connectionId", grant.id);');
     expect(connectedSources).toContain('addReturnTo(provider?.authorizeUrl || "/api/oauth/google/authorize")');
     expect(connectedSources).toContain('<a href={repairUrl} className="action-button">Manage access</a>');
   });

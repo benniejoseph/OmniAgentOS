@@ -463,7 +463,7 @@ function ConnectionStatus({
       : !connected
         ? "Not connected"
         : manageable !== true
-          ? "Read only"
+          ? "Managed by owner"
           : syncStatus === "error"
             ? "Needs attention"
             : syncStatus === "syncing"
