@@ -66,7 +66,7 @@ build cover web changes; the signed native canary covers installed-Mac control.
 
 ### Device courier
 
-Only an authenticated compatible macOS client (current v27 or previous v26) may publish
+Only an authenticated compatible macOS client (current v29 or previous v28) may publish
 a local-device readiness lease, claim a command, return its completion receipt,
 or stop the device. The Flutter app holds the native bearer. The helper receives
 neither that bearer nor any server, connector, model, App Group, or Keychain

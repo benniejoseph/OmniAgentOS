@@ -203,12 +203,12 @@ execution target.
 `local_macos` requires an authenticated compatible macOS client and a current
 device lease; visual actions additionally require both Accessibility and Screen
 Recording. Production advertises
-native contract v28 as current while deliberately retaining v27 as the only
+native contract v29 as current while deliberately retaining v28 as the only
 rollback-compatible previous contract. Earlier contracts remain immutable historical
-archives rather than members of the active compatibility pair. A v27 client keeps
-visual Computer Use and the governed command runner with Automatic routing, but it
-cannot send v28's explicit model-selection envelope or consume its scoped Command
-catalog through the generated boundary. Its assigned
+archives rather than members of the active compatibility pair. A v28 client keeps
+visual Computer Use, the governed command runner, and explicit model selection, but
+it cannot open v29's authenticated Ambient Voice session or speech stream through
+the generated boundary. Its assigned
 `computer_use` model is tenant-configurable;
 the resolver requires one configured runtime that supports both governed tools
 and vision. No hard-coded provider/model fallback may split those requirements
@@ -306,7 +306,7 @@ is non-interactive; the explicit legacy migration copies and verifies broker
 values before deleting only verified legacy sources, with conflict and unknown
 keys failing closed.
 
-For image-based clicks, the current v28 and rollback v27 contracts retain the
+For image-based clicks, the current v29 and rollback v28 contracts retain the
 v13-introduced binding between each screenshot's exact pixel dimensions,
 display provenance, snapshot revision, and `screenshot_pixel` coordinate space.
 The helper privately maps the top-left image point to current macOS global logical
@@ -372,7 +372,7 @@ agent grounded its answer in that output. A separate natural request for
 approval was created or a process executed. Production deployment
 `dpl_3Mq43NNkse6aFonhfJEfEoZuhDpJ` served the code used for those live canaries.
 
-The current scoped model-selection release is additive to that command-runner
+The scoped model-selection release is additive to that command-runner
 history. Native v28 retains frozen v27 and carries the strict optional
 `modelSelection` envelope plus content-free effective-model receipt fields. The
 Command client derives one Settings scope from the selected Agent or **This Mac**,
@@ -385,6 +385,14 @@ before disclosure or execution. Vercel deployment
 `dpl_6ayXL7trkpGDUcYk76GL8k3UGVcG` is canonical at revision
 `5155ca23f35517815966d7e356a30d0c7586d60c`, and owner-only Asael `1.22.0+34`
 is installed with the v28 generated boundary.
+
+The current Ambient Voice release is additive to that model-selection history.
+Native v29 retains frozen v28 and publishes the existing authenticated realtime
+transcription session and versioned speech stream as `voice.session.manage` and
+`voice.speech.stream`, both with a v29 minimum. Speech audio is not retained by
+Asael, session completion records only content-free review and confidence
+metadata, and a voice command still executes through the governed conversation
+and its visible approval boundaries.
 
 App Builder no longer depends on browser automation. New checkpoint readiness is
 derived deterministically from lint and typecheck; preview and production readiness
@@ -717,8 +725,8 @@ fails for explicit operator resume.
 
 The queue schema, routes, and web/native clients are deployed. The native v24 and
 v25 documents remain immutable historical archives; production migration v201
-provides the durable queue boundary, while current native v28 exposes it through
-the same governed application service and v27 remains the rollback contract.
+provides the durable queue boundary, while current native v29 exposes it through
+the same governed application service and v28 remains the rollback contract.
 
 ### Adaptive-runtime management observability
 
@@ -729,7 +737,7 @@ detail exposes observed/evaluated/active/rolled-back records; child-task detail
 exposes exact immutable Skill, Plugin, MCP, and native-read pins plus the durable
 grant-validation result; trigger detail includes occurrence receipts and
 PolicyLease outcomes; notification history exposes content-free dispositions.
-The production native v28 contract maps to those same APIs. No management read
+The production native v29 contract maps to those same APIs. No management read
 grants mutation authority, digest-bound execution grants are not editable or
 revocable in place, and the native surface deliberately omits Agent retirement.
 
