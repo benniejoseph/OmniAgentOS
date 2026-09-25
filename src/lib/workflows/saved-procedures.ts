@@ -107,6 +107,14 @@ export type WorkflowProcedureSnapshotV2 = Readonly<{
 
 export type WorkflowProcedureSnapshot = WorkflowProcedureSnapshotV1 | WorkflowProcedureSnapshotV2;
 
+/**
+ * Procedures saved as workspace memory, for reviewed schedules only.
+ *
+ * Any member or governed tool call can write workspace memory, so these never
+ * route Command; a schedule runs one only after the user reviews its exact
+ * snapshot. An ID saved more than once is ambiguous, so every copy is skipped
+ * and the remaining procedures stay available.
+ */
 export async function listSavedProcedures(input: {
   tenantId: string;
   actorId: string;
@@ -121,12 +129,21 @@ export async function listSavedProcedures(input: {
   const procedures = records.flatMap((record) => {
     const parsed = parseSavedProcedureMemory(record, tenantId);
     return parsed ? [parsed] : [];
-  }).sort((left, right) => left.id.localeCompare(right.id));
-  const ids = procedures.map((procedure) => procedure.id);
-  if (new Set(ids).size !== ids.length) {
-    throw new Error("Saved procedure IDs must be unique within a tenant.");
+  });
+  const idCounts = new Map<string, number>();
+  for (const procedure of procedures) {
+    idCounts.set(procedure.id, (idCounts.get(procedure.id) || 0) + 1);
   }
-  return Object.freeze(procedures);
+  const distinct = procedures
+    .filter((procedure) => idCounts.get(procedure.id) === 1)
+    .sort((left, right) => left.id.localeCompare(right.id));
+  if (distinct.length !== procedures.length) {
+    console.warn("Skipped saved procedures with duplicate IDs.", {
+      skippedProcedures: procedures.length - distinct.length,
+      duplicatedIds: idCounts.size - distinct.length,
+    });
+  }
+  return Object.freeze(distinct);
 }
 
 export function toSupervisorKnownProcedures(
@@ -209,17 +226,6 @@ export function savedProceduresFromWorkspaceTemplates(
       acceptanceCriteria: Object.freeze([...playbook.acceptanceCriteria]),
     })];
   }));
-}
-
-export function mergeSavedProcedureCatalogs(
-  ...catalogs: readonly (readonly SavedProcedure[])[]
-): readonly SavedProcedure[] {
-  const merged = catalogs.flat().sort((left, right) => left.id.localeCompare(right.id));
-  const ids = merged.map((procedure) => procedure.id);
-  if (new Set(ids).size !== ids.length) {
-    throw new Error("Saved procedure IDs must be unique within a workspace.");
-  }
-  return Object.freeze(merged);
 }
 
 export function parseSavedProcedureContractV1(

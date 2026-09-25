@@ -635,6 +635,31 @@ evidence. Public trajectory metadata hashes correlation, event, and causation
 identifiers and never includes prompts, model deliberation, tool output,
 secrets, or private reasoning.
 
+### Known procedures
+
+A Command request can skip model planning and run a deterministic procedure,
+which binds exact tools, inputs, and acceptance criteria. Only the active
+playbook of a published workspace template can be chosen this way. Templates
+are versioned, owner-bound, and published through the approval-required
+`app.workspace_templates.publish` tool. Procedures saved as workspace memory
+never route Command, because any member or governed tool call can write that
+memory. They run only through a reviewed schedule, which pins the exact
+snapshot.
+
+`resolveKnownProcedure` in `src/lib/orchestration/supervisor.ts` matches the
+whole normalized request against an alias. The alias may be wrapped only by a
+closed invocation grammar:
+`[can/could/would you] [please] [run/start/execute/launch/trigger/kick off] [my/the/our] <alias> [now] [please]`.
+A request that only mentions an alias stays on the bounded agent loop, for
+example "why did my weekly digest fail?" or "run my weekly digest and email
+Sam".
+
+Publishing a playbook whose alias another active template in the workspace
+already uses returns `409`. A leftover collision routes to clarification
+instead of guessing. The schedule catalog skips every copy of a procedure ID
+saved more than once and logs only counts. A bad entry therefore never fails
+the whole catalog.
+
 ### Reviewed recurring schedules
 
 The implemented schedule path extends the existing workflow engine rather than

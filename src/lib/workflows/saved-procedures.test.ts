@@ -1,7 +1,7 @@
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { routeAgentRequest } from "@/lib/orchestration/supervisor";
 import { buildWorkspaceTemplateVersion } from "@/lib/workspace-templates/contracts";
 
@@ -80,6 +80,45 @@ describe("saved procedure contracts", () => {
         requiredToolIds: ["mcp:github:actions_run_trigger"],
       },
     });
+  });
+
+  it("skips every copy of a duplicated procedure ID and keeps the rest", async () => {
+    const { saveMemory } = await import("@/lib/memory/store");
+    const procedures = await import("@/lib/workflows/saved-procedures");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    for (const [id, alias] of [
+      ["workflow:digest", "weekly digest"],
+      ["workflow:digest", "planted digest"],
+      ["workflow:release", "run release"],
+    ]) {
+      await saveMemory({
+        tenantId: "tenant-duplicates",
+        type: "procedure",
+        title: alias,
+        content: JSON.stringify({
+          schemaVersion: 1,
+          id,
+          aliases: [alias],
+          toolBindings: [{ toolId: "app.projects.list", input: { limit: 5 } }],
+        }),
+        tags: [procedures.SAVED_PROCEDURE_V1_TAG],
+        scope: "workspace",
+        source: "manual",
+        assertedBy: "user",
+      });
+    }
+
+    const loaded = await procedures.listSavedProcedures({
+      tenantId: "tenant-duplicates",
+      actorId: "actor-a",
+    });
+
+    expect(loaded.map((procedure) => procedure.id)).toEqual(["workflow:release"]);
+    expect(warn).toHaveBeenCalledWith(
+      "Skipped saved procedures with duplicate IDs.",
+      { skippedProcedures: 2, duplicatedIds: 1 },
+    );
+    warn.mockRestore();
   });
 
   it("detects a changed workflow snapshot before planning", async () => {

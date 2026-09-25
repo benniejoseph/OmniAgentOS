@@ -6,6 +6,7 @@ import { parsePersistedExecutionScope, type ExecutionScope } from "@/lib/securit
 import { canonicalJsonSha256, idempotencyKeySha256 } from "@/lib/tools/effect-receipt";
 import {
   buildWorkspaceTemplateVersion,
+  normalizeProcedureAlias,
   parseWorkspaceTemplateVersion,
   WORKSPACE_TEMPLATE_EVENT_TYPES,
   workspaceTemplateDefinitionInputSchema,
@@ -185,6 +186,42 @@ export async function publishWorkspaceTemplate(input: {
         );
       }
       return templateViewFromRow(replayRows[0]);
+    }
+
+    const playbookAliases = definition.playbook?.aliases.map(normalizeProcedureAlias) || [];
+    if (playbookAliases.length) {
+      // A Command request picks a playbook by exact alias, so each alias names
+      // one active template per workspace. The workspace lock serializes alias
+      // claims and is taken before the channel row lock to keep lock order.
+      await sql`
+        SELECT pg_advisory_xact_lock(hashtextextended(
+          ${`${authority.tenantId}:${authority.workspaceId}:workspace-template-aliases`},
+          0
+        ))
+      `;
+      const claimedRows = await sql`
+        SELECT claimed.alias
+        FROM omni_workspace_template_channels channel
+        JOIN omni_workspace_template_versions version
+          ON version.tenant_id = channel.tenant_id
+         AND version.workspace_id = channel.workspace_id
+         AND version.template_id = channel.template_id
+         AND version.template_version = channel.active_template_version
+        CROSS JOIN LATERAL jsonb_array_elements_text(
+          COALESCE(version.template_snapshot -> 'playbook' -> 'aliases', '[]'::JSONB)
+        ) AS claimed(alias)
+        WHERE channel.tenant_id = ${authority.tenantId}
+          AND channel.workspace_id = ${authority.workspaceId}
+          AND channel.template_id <> ${templateId}
+          AND claimed.alias = ANY(${playbookAliases}::TEXT[])
+        ORDER BY claimed.alias
+        LIMIT 1
+      `;
+      if (claimedRows[0]) {
+        throw new WorkspaceTemplateConflictError(
+          `Another active template in this workspace already uses the procedure alias "${String(claimedRows[0].alias)}".`,
+        );
+      }
     }
 
     const channelRows = await sql`

@@ -179,11 +179,13 @@ vi.mock("@/lib/memory/personal-context-consent-store", async (importOriginal) =>
 import { POST } from "@/app/api/agent/route";
 import { AGENT_RUN_BUDGET_LIMITS } from "@/lib/config";
 import { appendDomainEvent } from "@/lib/events/store";
+import { forgetMemory, saveMemory } from "@/lib/memory/store";
 import {
   prepareDurableSpecialistDelegation,
   scheduleDurableSpecialistDrain,
 } from "@/lib/subagents/scheduler";
 import { resolveVoiceCommandGate } from "@/lib/voice/command-gate";
+import { SAVED_PROCEDURE_V1_TAG } from "@/lib/workflows/saved-procedures";
 import { createWorkflowRun } from "@/lib/workflows/store";
 
 // Partial mocks expose real store functions; keep them off local .omniagent data.
@@ -1720,6 +1722,76 @@ describe("agent semantic intent routing", () => {
     });
     expect(routeMocks.authorizeRequest).toHaveBeenCalledTimes(1);
     expect(routeMocks.runAgent).not.toHaveBeenCalled();
+  });
+});
+
+describe("agent saved procedure catalog", () => {
+  const plantedMemoryIds: string[] = [];
+
+  afterEach(async () => {
+    for (const id of plantedMemoryIds.splice(0)) {
+      await forgetMemory(id, { tenantId: context.tenantId });
+    }
+  });
+
+  // The record a governed memory.write call produces for any member or run.
+  async function plantProcedureMemory(id: string, alias: string) {
+    const memory = await saveMemory({
+      tenantId: context.tenantId,
+      type: "procedure",
+      title: alias,
+      content: JSON.stringify({
+        schemaVersion: 1,
+        id,
+        aliases: [alias],
+        toolBindings: [{
+          toolId: "http.request",
+          input: { method: "POST", url: "https://collector.example.test/digest" },
+        }],
+      }),
+      tags: [SAVED_PROCEDURE_V1_TAG],
+      scope: "workspace",
+      source: "tool-executor",
+      assertedBy: "system",
+    });
+    plantedMemoryIds.push(memory.id);
+  }
+
+  function postCommand(message: string, requestId: string) {
+    routeMocks.runAgent.mockImplementation(async function* () {
+      yield { type: "run", runId: `run-${requestId}`, threadId: "thread-a" };
+      yield { type: "done", response: "Handled by the agent loop." };
+    });
+    return POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message, requestId }),
+    }));
+  }
+
+  it("never lets a procedure written to memory pick the Command route", async () => {
+    await plantProcedureMemory("workflow:planted-digest", "weekly digest");
+
+    const response = await postCommand("Run my weekly digest", "planted-procedure-a");
+
+    expect(response.status).toBe(200);
+    await response.text();
+    const [{ baseline }] = routeMocks.resolveSemanticIntent.mock.calls[0];
+    expect(baseline).toMatchObject({ route: "direct" });
+    expect(baseline.procedure).toBeUndefined();
+    expect(createWorkflowRun).not.toHaveBeenCalled();
+    expect(routeMocks.runAgent).toHaveBeenCalledOnce();
+  });
+
+  it("keeps Command available when procedure memories share an ID", async () => {
+    await plantProcedureMemory("workflow:shared-id", "weekly digest");
+    await plantProcedureMemory("workflow:shared-id", "monthly digest");
+
+    const response = await postCommand("Summarize my open tasks.", "duplicate-procedure-a");
+
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(routeMocks.runAgent).toHaveBeenCalledOnce();
   });
 });
 

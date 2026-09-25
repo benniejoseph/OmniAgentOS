@@ -2406,6 +2406,154 @@ databaseDescribe("Postgres schema integration", () => {
       vi.resetModules();
     }
   });
+
+  test("keeps each procedure alias on one active workspace template", async () => {
+    const tenantId = "tenant_template_aliases";
+    const userId = "00000000-0000-4000-8000-000000000071";
+    const actorId = `actor:${userId}`;
+    const workspaceId = "workspace:template-aliases";
+    await admin`
+      INSERT INTO omni_auth_tenants (id, name, slug)
+      VALUES (${tenantId}, 'Template aliases', 'template-aliases')
+    `;
+    await admin`
+      INSERT INTO omni_auth_users (id, email, password_hash)
+      VALUES (${userId}, 'template-aliases@example.test', 'test-only')
+    `;
+    await admin`
+      INSERT INTO omni_auth_memberships (id, tenant_id, user_id, role)
+      VALUES ('membership:template-aliases', ${tenantId}, ${userId}, 'admin')
+    `;
+    await admin`
+      INSERT INTO omni_tenant_workspaces (
+        tenant_id, workspace_id, display_name, owner_actor_id, state,
+        lifecycle_revision, created_by_actor_id, activated_by_actor_id,
+        created_at, activated_at, updated_at
+      ) VALUES (
+        ${tenantId}, ${workspaceId}, 'Template aliases', ${actorId}, 'active',
+        1, ${actorId}, ${actorId},
+        statement_timestamp(), statement_timestamp(), statement_timestamp()
+      )
+    `;
+    await admin`
+      INSERT INTO omni_tenant_workspace_memberships (
+        tenant_id, workspace_id, subject_kind, subject_key,
+        subject_actor_id, membership_generation, access_level, state,
+        lifecycle_revision, created_by_actor_id, activated_by_actor_id,
+        created_at, activated_at, updated_at
+      ) VALUES (
+        ${tenantId}, ${workspaceId}, 'user', ${actorId}, ${actorId}, 1,
+        'manager', 'active', 1, ${actorId}, ${actorId},
+        statement_timestamp(), statement_timestamp(), statement_timestamp()
+      )
+    `;
+
+    // Two pooled connections let concurrent publishes contend for the
+    // workspace alias lock instead of queueing for a single connection.
+    vi.stubEnv("OMNIAGENT_DATABASE_POOL_MAX", "2");
+    vi.resetModules();
+    const client = await import("@/lib/db/client");
+    const { publishWorkspaceTemplate } = await import(
+      "@/lib/workspace-templates/store"
+    );
+    try {
+      const publish = (
+        idempotencyKey: string,
+        name: string,
+        aliases: string[] | null,
+        templateId?: string,
+      ) => client.runWithDatabaseActorScope(tenantId, [actorId], () =>
+        publishWorkspaceTemplate({
+          authority: {
+            tenantId,
+            workspaceId,
+            canonicalActorId: actorId,
+            idempotencyKey,
+            executionScope: createExecutionScope({
+              tenantId,
+              initiatingActorId: actorId,
+              executingPrincipalType: "user",
+              executingPrincipalId: actorId,
+              workspaceId,
+              correlationId: `correlation:${idempotencyKey}`,
+              purpose: "workspace.template.publish",
+            }),
+          },
+          definition: {
+            ...(templateId ? { templateId } : {}),
+            name,
+            description: "",
+            project: {
+              title: name,
+              objective: "Verify the release.",
+              status: "draft",
+              tasks: [],
+            },
+            playbook: aliases && {
+              aliases,
+              mode: "orchestrate",
+              toolBindings: [{ toolId: "app.projects.list", input: { limit: 5 } }],
+              acceptanceCriteria: ["Focused checks pass."],
+            },
+          },
+        }));
+
+      await publish("template-aliases:notes", "Notes", null);
+      const release = await publish(
+        "template-aliases:release:v1",
+        "Release",
+        ["Run release", "Ship it"],
+      );
+      const revised = await publish(
+        "template-aliases:release:v2",
+        "Release",
+        ["Run release"],
+        release.templateId,
+      );
+      const hotfix = await publish(
+        "template-aliases:hotfix",
+        "Hotfix",
+        ["Ship  it!"],
+      );
+      await expect(publish(
+        "template-aliases:rollback",
+        "Rollback",
+        ["Rollback", "RUN release"],
+      )).rejects.toMatchObject({
+        code: "workspace_template_conflict",
+        message: expect.stringContaining('procedure alias "run release"'),
+      });
+      const race = await Promise.allSettled([
+        publish("template-aliases:race:a", "Race A", ["Race"]),
+        publish("template-aliases:race:b", "Race B", ["race!"]),
+      ]);
+      const [persisted] = await admin`
+        SELECT count(*)::int AS versions,
+          count(DISTINCT template_id)::int AS templates,
+          count(*) FILTER (WHERE name = 'Rollback')::int AS rollbacks
+        FROM omni_workspace_template_versions
+        WHERE tenant_id = ${tenantId}
+      `;
+
+      expect(revised).toMatchObject({
+        templateId: release.templateId,
+        version: 2,
+      });
+      expect(hotfix.playbook?.aliases).toEqual(["ship it"]);
+      expect(race.map((result) => result.status).sort()).toEqual([
+        "fulfilled",
+        "rejected",
+      ]);
+      expect(race.find((result) => result.status === "rejected")).toMatchObject({
+        reason: { code: "workspace_template_conflict" },
+      });
+      expect(persisted).toEqual({ versions: 5, templates: 4, rollbacks: 0 });
+    } finally {
+      await client.closeDatabaseClient();
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
 });
 
 async function dropDatabaseRole(

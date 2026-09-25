@@ -153,7 +153,7 @@ export function resolveKnownProcedure(
   if (procedures.length > 128) {
     throw new Error("Known procedure resolution is bounded to 128 procedures.");
   }
-  const normalizedMessage = normalizeProcedurePhrase(message);
+  const invocations = procedureInvocationPhrases(normalizeProcedurePhrase(message));
   const ids = procedures.map((procedure) => boundedProcedureId(procedure.id));
   if (new Set(ids).size !== ids.length) {
     throw new Error("Known procedure IDs must be unique.");
@@ -166,9 +166,7 @@ export function resolveKnownProcedure(
       .map(normalizeProcedurePhrase)
       .filter(Boolean))]
       .sort((left, right) => right.length - left.length);
-    const matchedAlias = aliases.find((alias) =>
-      ` ${normalizedMessage} `.includes(` ${alias} `)
-    );
+    const matchedAlias = aliases.find((alias) => invocations.has(alias));
     return matchedAlias
       ? [{
           procedure: Object.freeze({
@@ -196,6 +194,42 @@ export function resolveKnownProcedure(
 
 function normalizeProcedurePhrase(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+// A saved procedure starts only when the whole request invokes it by alias,
+// optionally wrapped as [can/could/would you] [please] [run/start/...]
+// [my/the/our] <alias> [now] [please]. A request that only mentions an alias,
+// such as "why did my weekly digest fail?", "don't run my weekly digest", or
+// "run my weekly digest and email Sam", stays on the bounded agent loop instead
+// of starting static tool bindings that ignore the rest of the request.
+const PROCEDURE_INVOCATION_LEADING_SLOTS: readonly (readonly string[])[] = [
+  ["can you", "could you", "would you"],
+  ["please"],
+  ["run", "start", "execute", "launch", "trigger", "kick off"],
+  ["my", "the", "our"],
+];
+const PROCEDURE_INVOCATION_TRAILING_SLOTS: readonly (readonly string[])[] = [
+  ["please"],
+  ["now"],
+];
+
+function procedureInvocationPhrases(normalizedMessage: string): ReadonlySet<string> {
+  let forms = [normalizedMessage];
+  for (const slot of PROCEDURE_INVOCATION_TRAILING_SLOTS) {
+    forms = forms.flatMap((form) => [
+      form,
+      ...slot.flatMap((phrase) =>
+        form.endsWith(` ${phrase}`) ? [form.slice(0, -phrase.length - 1)] : []),
+    ]);
+  }
+  for (const slot of PROCEDURE_INVOCATION_LEADING_SLOTS) {
+    forms = forms.flatMap((form) => [
+      form,
+      ...slot.flatMap((phrase) =>
+        form.startsWith(`${phrase} `) ? [form.slice(phrase.length + 1)] : []),
+    ]);
+  }
+  return new Set(forms);
 }
 
 function boundedProcedureId(value: string) {

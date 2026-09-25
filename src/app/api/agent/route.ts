@@ -138,8 +138,6 @@ import type {
 } from "@/lib/subagents/types";
 import {
   buildWorkflowProcedureSnapshot,
-  listSavedProcedures,
-  mergeSavedProcedureCatalogs,
   parseWorkflowProcedureSnapshot,
   savedProceduresFromWorkspaceTemplates,
   toSupervisorKnownProcedures,
@@ -892,14 +890,15 @@ async function POSTHandler(request: Request) {
       });
     }
   }
+  // Only active playbooks of published workspace templates can pick a
+  // deterministic procedure: they are versioned, owner-bound, and published
+  // through an approval-required tool. Procedure memories are not a routing
+  // source, because any member or governed tool call can write workspace
+  // memory; they run only through an explicitly reviewed schedule.
   let savedProcedures: readonly SavedProcedure[] = [];
   if (!deterministicIntentInvariant) {
     try {
       const actorBinding = canonicalRequestActorBindingFromSecurityContext(context);
-      const memoryProcedures = await listSavedProcedures({
-        tenantId: context.tenantId,
-        actorId: context.actorId,
-      });
       const workspaceTemplates = hasDatabaseUrl() && actorBinding
         ? await listWorkspaceTemplates({
             tenantId: context.tenantId,
@@ -908,17 +907,14 @@ async function POSTHandler(request: Request) {
             canonicalActorId: actorBinding.canonicalActorId,
           }, { activeOnly: true, limit: 100 })
         : [];
-      savedProcedures = mergeSavedProcedureCatalogs(
-        memoryProcedures,
-        savedProceduresFromWorkspaceTemplates(workspaceTemplates),
-      );
+      savedProcedures = savedProceduresFromWorkspaceTemplates(workspaceTemplates);
     } catch (error) {
       console.error(
         "Saved procedure catalog unavailable.",
         String(redactSensitive(error instanceof Error ? error.message : "Unknown procedure catalog error.")),
       );
       return Response.json(
-        { error: "Saved procedures unavailable", message: "The saved procedure catalog could not be validated." },
+        { error: "Saved procedures unavailable", message: "The saved procedure catalog could not be loaded." },
         { status: 503 },
       );
     }

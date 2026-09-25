@@ -88,6 +88,34 @@ describe("supervisor routing", () => {
     }])).toEqual({ state: "none" });
   });
 
+  it("starts a saved procedure only when the whole request invokes it", () => {
+    const procedures = [{
+      id: "workflow:weekly-digest",
+      aliases: ["weekly digest"],
+      requiredToolIds: [],
+    }];
+    for (const request of [
+      "Weekly digest",
+      "Run weekly digest.",
+      "Please run my weekly digest now",
+      "Can you start the weekly digest?",
+      "Run my weekly digest, please.",
+    ]) {
+      expect(resolveKnownProcedure(request, procedures)).toMatchObject({
+        state: "resolved",
+        matchedAlias: "weekly digest",
+      });
+    }
+    for (const request of [
+      "Why did my weekly digest fail?",
+      "Don't run my weekly digest.",
+      "Run my weekly digest and email it to Sam.",
+      "Summarize last week's weekly digest",
+    ]) {
+      expect(resolveKnownProcedure(request, procedures)).toEqual({ state: "none" });
+    }
+  });
+
   it("fails closed when a destructive request has an ambiguous target", () => {
     const decision = routeAgentRequest("Delete the old project", "orchestrate");
     expect(decision).toMatchObject({

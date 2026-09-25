@@ -91,6 +91,8 @@ describe("workspace template store", () => {
       [],
       [],
       [],
+      [],
+      [],
       [{ published_at: new Date("2026-09-07T10:00:00.000Z") }],
       [],
       [],
@@ -103,6 +105,8 @@ describe("workspace template store", () => {
     expect(first.templateVersionId).toBe(`${first.templateId}:v1`);
 
     mocks.responses.push(
+      [],
+      [],
       [],
       [],
       [{ active_template_version: 1, owner_actor_id: canonicalActorId }],
@@ -128,7 +132,7 @@ describe("workspace template store", () => {
   it("rejects a reused publication idempotency key with changed content", async () => {
     const { publishWorkspaceTemplate, WorkspaceTemplateConflictError } = await import("@/lib/workspace-templates/store");
     mocks.responses.push(
-      [], [], [], [{ published_at: new Date("2026-09-07T10:00:00.000Z") }], [], [],
+      [], [], [], [], [], [{ published_at: new Date("2026-09-07T10:00:00.000Z") }], [], [],
     );
     const first = await publishWorkspaceTemplate({
       authority: mutationAuthority("workspace.template.publish", "same-key"),
@@ -146,5 +150,51 @@ describe("workspace template store", () => {
       authority: mutationAuthority("workspace.template.publish", "same-key"),
       definition: { ...definition, name: "Changed" },
     })).rejects.toBeInstanceOf(WorkspaceTemplateConflictError);
+  });
+
+  it("rejects a playbook alias that another active workspace template uses", async () => {
+    const { publishWorkspaceTemplate, WorkspaceTemplateConflictError } = await import("@/lib/workspace-templates/store");
+    mocks.responses.push([], [], [], [{ alias: "run release" }]);
+
+    const publication = publishWorkspaceTemplate({
+      authority: mutationAuthority("workspace.template.publish", "publish-collision"),
+      definition: {
+        ...definition,
+        playbook: { ...definition.playbook, aliases: ["Deploy", "Run  Release!"] },
+      },
+    });
+
+    await expect(publication).rejects.toBeInstanceOf(WorkspaceTemplateConflictError);
+    await expect(publication).rejects.toThrow(/procedure alias "run release"/);
+    expect(mocks.calls[2]).toMatchObject({
+      text: expect.stringContaining("pg_advisory_xact_lock"),
+      values: [`${tenantId}:${workspaceId}:workspace-template-aliases`],
+    });
+    expect(mocks.calls[3]).toMatchObject({
+      text: expect.stringContaining("jsonb_array_elements_text"),
+      values: [
+        tenantId,
+        workspaceId,
+        expect.stringMatching(/^workspace-template:/),
+        ["deploy", "run release"],
+      ],
+    });
+    expect(mocks.calls.some((call) => call.text.includes("INSERT INTO"))).toBe(false);
+    expect(mocks.events).not.toHaveBeenCalled();
+  });
+
+  it("claims no procedure aliases for a template without a playbook", async () => {
+    const { publishWorkspaceTemplate } = await import("@/lib/workspace-templates/store");
+    mocks.responses.push(
+      [], [], [], [{ published_at: new Date("2026-09-07T10:00:00.000Z") }], [], [],
+    );
+
+    await expect(publishWorkspaceTemplate({
+      authority: mutationAuthority("workspace.template.publish", "publish-project-only"),
+      definition: { ...definition, playbook: null },
+    })).resolves.toMatchObject({ version: 1, playbook: null });
+    expect(mocks.calls.some((call) =>
+      call.values.includes(`${tenantId}:${workspaceId}:workspace-template-aliases`))).toBe(false);
+    expect(mocks.calls.some((call) => call.text.includes("jsonb_array_elements_text"))).toBe(false);
   });
 });
