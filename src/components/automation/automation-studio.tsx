@@ -1439,7 +1439,6 @@ function AdvancedPanel({
         number="01"
         title="Capability audit"
         description="Inspect inventory boundaries and verify that access, instructions, and execution policy remain independently observable."
-        action={<Link href="/app/tools">Open Tool ledger <ExternalLink size={14} aria-hidden="true" /></Link>}
       />
       <div className={styles.auditGrid}>
         <section className={styles.auditSources}>

@@ -87,7 +87,7 @@ const userSurfaces = [
   ["/app/memory", "Memory, RAG, graph, and provenance"],
   ["/app/workflows", "Durable workflows, queues, approvals, and recovery"],
   ["/app/connectors", "MCP and OpenAPI connector management"],
-  ["/app/tools", "Governed tool execution and audit"],
+  ["/app/automation", "Capabilities: Skills, Extensions, Connections, and tool risk audit"],
   ["/app/evaluations", "Regression runs, signed reports, and release gates"],
   ["/app/observability", "Runtime events, SLOs, incidents, and alerts"],
   ["/app/security", "Tenant isolation, auth posture, and audit controls"],

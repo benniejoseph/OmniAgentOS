@@ -197,6 +197,11 @@ describe("Automation Studio contracts", () => {
       path.join(process.cwd(), "src/app/app/tools/page.tsx"),
       "utf8",
     )).resolves.toContain('redirect("/app/automation")');
+    // A Capabilities link to the legacy URL would only redirect back here.
+    await expect(readFile(
+      path.join(process.cwd(), "src/components/automation/automation-studio.tsx"),
+      "utf8",
+    )).resolves.not.toContain('"/app/tools"');
   });
 
   it("renders responsive content-free schedule outcomes and exact PolicyLease receipts", () => {
