@@ -1,8 +1,8 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../../core/auth/biometric_gate.dart';
 import '../data/session_repository.dart';
 import '../domain/app_session.dart';
+import 'biometric_session_lock_controller.dart';
 
 class SessionController extends AsyncNotifier<AppSession?> {
   @override
@@ -23,6 +23,9 @@ class SessionController extends AsyncNotifier<AppSession?> {
     try {
       await ref.read(sessionRepositoryProvider).signOut();
     } finally {
+      ref
+          .read(biometricSessionLockControllerProvider)
+          .resetAfterSessionCleared();
       state = const AsyncData(null);
     }
   }
@@ -42,13 +45,7 @@ class SessionController extends AsyncNotifier<AppSession?> {
   }
 
   Future<void> lockForBiometrics() async {
-    if (!await ref.read(sessionRepositoryProvider).lockBiometricRelease()) {
-      return;
-    }
-    state = AsyncError(
-      const BiometricGateException(BiometricGateFailure.notRecognized),
-      StackTrace.current,
-    );
+    await ref.read(biometricSessionLockControllerProvider).lock();
   }
 }
 

@@ -120,8 +120,14 @@ class SessionRepository {
   }
 
   Future<bool> lockBiometricRelease() async {
-    if (!await _store.readBiometricEnabled()) return false;
+    // Revoke every cached protected value before consulting the persisted
+    // preference. If protected storage is temporarily unavailable, callers can
+    // fail closed without leaving a token or encryption key released in RAM.
     _store.lockBiometricRelease();
+    if (!await _store.readBiometricEnabled()) {
+      _store.unlockBiometricRelease();
+      return false;
+    }
     return true;
   }
 
