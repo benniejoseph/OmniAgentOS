@@ -237,4 +237,34 @@ describe("native mutation capability enrollment", () => {
       ),
     ).not.toHaveProperty("agents.release.retire");
   });
+
+  it("enrolls Ambient Voice sessions and speech streams only on native v29", () => {
+    for (const platform of ["android", "macos"] as const) {
+      for (const capability of [
+        "voice.session.manage",
+        "voice.speech.stream",
+      ] as const) {
+        expect(
+          nativeMutationEnrollment(
+            context(NATIVE_API_CURRENT_VERSION, undefined, platform),
+            capability,
+            asOf,
+          ),
+        ).toMatchObject({ state: "active", minimumContractVersion: 29 });
+        // A v28 rollback client is still compatible, but it cannot open a
+        // v29 voice session or speech stream.
+        expect(
+          nativeMutationEnrollment(
+            context(29 - 1, undefined, platform),
+            capability,
+            asOf,
+          ),
+        ).toMatchObject({
+          state: "held",
+          minimumContractVersion: 29,
+          reason: expect.stringContaining("v29"),
+        });
+      }
+    }
+  });
 });
