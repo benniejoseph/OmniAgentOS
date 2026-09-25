@@ -79,10 +79,15 @@ import { getOpenApiConnector, getOpenApiOperationById } from "@/lib/connectors/o
 import { getMcpConnector, getMcpToolById } from "@/lib/connectors/store";
 import { readResponseTextLimited } from "@/lib/http/body";
 import {
+  LOCAL_COMPUTER_TASK_AUTHORITY_REFUSED_ERROR_CODE,
+  LOCAL_COMPUTER_TASK_AUTHORITY_UNATTESTED_ERROR_CODE,
   localComputerOpenUrlInputSchema,
   localComputerRunCommandInputSchema,
 } from "@/lib/local-computer/contracts";
-import { executeLocalComputerCommand } from "@/lib/local-computer/store";
+import {
+  executeLocalComputerCommand,
+  LocalComputerCommandError,
+} from "@/lib/local-computer/store";
 import {
   clipVideoMediaAsset,
   createImageMediaAsset,
@@ -129,6 +134,7 @@ import {
   getToolExecutionApprovalFingerprint,
   getToolExecutionEffectIntentV2,
   getToolExecutionWorkflowEffectBindingSha256,
+  localComputerTaskAuthorityIntentOutput,
   persistClaimedToolEffectIntentV2,
   publicToolExecution,
   reclaimStaleMemoryForgetToolExecutionClaim,
@@ -478,6 +484,7 @@ export async function executeGovernedTool({
   policyLeaseClaim,
   moltbookAutonomy,
   localComputerTaskAuthority,
+  taskAuthorityReviewReason,
   checkpointBeforeEffect,
 }: {
   toolId: string;
@@ -518,6 +525,11 @@ export async function executeGovernedTool({
    * and navigation target.
    */
   localComputerTaskAuthority?: LocalComputerTaskAuthority;
+  /**
+   * Why This Mac sent a task-authorized action back for review. The executor
+   * sets this only on its own re-entry, and it only explains the request.
+   */
+  taskAuthorityReviewReason?: string;
   /** Dormant checkpoint shadow hook invoked after intent persistence. */
   checkpointBeforeEffect?: (
     input: GovernedToolCheckpointInput,
@@ -1305,18 +1317,27 @@ export async function executeGovernedTool({
   });
   const localComputerTaskAuthorityApproval =
     localComputerTaskAuthorityDecision.covered;
+  const reviewedApproval =
+    approved &&
+    durableApprovalClaim &&
+    (
+      persistedSingleApproval ||
+      directUserApproval ||
+      boundPlanGrantApproval ||
+      boundPolicyLeaseApproval
+    ) &&
+    (tool.riskLevel < 3 || hasRisk3Quorum(existingRecord));
   const effectiveApproved =
-    (approved &&
-      durableApprovalClaim &&
-      (
-        persistedSingleApproval ||
-        directUserApproval ||
-        boundPlanGrantApproval ||
-        boundPolicyLeaseApproval
-      ) &&
-      (tool.riskLevel < 3 || hasRisk3Quorum(existingRecord))) ||
+    reviewedApproval ||
     moltbookStandingMandateApproval ||
     localComputerTaskAuthorityApproval;
+  // With no reviewed approval beside it, task authority alone lets this
+  // action run. The Mac must then check the real on-screen target itself;
+  // when it cannot, the action goes to the user for review instead.
+  const localComputerTaskAuthorityOnly =
+    localComputerTaskAuthorityApproval &&
+    !reviewedApproval &&
+    !moltbookStandingMandateApproval;
   const effectiveApprovalReason = localComputerTaskAuthorityApproval
     ? "The initiating user explicitly authorized this bounded Computer Use task; this safe visual interaction is covered by that task authority."
     : moltbookStandingMandateApproval
@@ -1329,6 +1350,8 @@ export async function executeGovernedTool({
   // a consumed grant with an exact plan, principal, contract, target, budget,
   // and expiry binding; a tenant + action-class streak cannot confer authority.
   const decision = evaluateToolPolicy({ tool, approved: effectiveApproved });
+  const approvalReviewReason =
+    localComputerTaskAuthorityDecision.reviewReason ?? taskAuthorityReviewReason;
   const baseRecord = {
     tenantId: existingRecord?.tenantId || context?.tenantId,
     actorId: existingRecord?.actorId || context?.actorId,
@@ -1343,10 +1366,8 @@ export async function executeGovernedTool({
         : redactSensitive(preparedInput)
     ) as Record<string, unknown>,
     reason:
-      decision.approvalRequired &&
-      !decision.allowed &&
-      localComputerTaskAuthorityDecision.reviewReason
-        ? `${decision.reason} ${localComputerTaskAuthorityDecision.reviewReason}`
+      decision.approvalRequired && !decision.allowed && approvalReviewReason
+        ? `${decision.reason} ${approvalReviewReason}`
         : decision.reason,
   };
   let executionRecord = existingRecord;
@@ -1542,6 +1563,9 @@ export async function executeGovernedTool({
         __idempotencyKeyHash: createHash("sha256")
           .update(idempotencyKey)
           .digest("hex"),
+        ...(decision.approvalRequired && localComputerTaskAuthorityOnly
+          ? localComputerTaskAuthorityIntentOutput()
+          : {}),
         ...(intendedEffectContext
           ? {
               __effectIdempotencyKeySha256:
@@ -1773,6 +1797,9 @@ export async function executeGovernedTool({
           token: claimToken,
           claimedAt: new Date().toISOString(),
         },
+        ...(decision.approvalRequired && localComputerTaskAuthorityOnly
+          ? localComputerTaskAuthorityIntentOutput()
+          : {}),
       },
     });
     const intendedProviderEffect = prepareProviderEffectMaterial(
@@ -2011,6 +2038,31 @@ export async function executeGovernedTool({
       completedAt: new Date().toISOString(),
     });
     const saved = await persistRecord(record);
+    const taskAuthorityReview = localComputerTaskAuthorityOnly
+      ? localComputerTaskAuthorityReviewReason(error)
+      : undefined;
+    if (taskAuthorityReview) {
+      // The Mac did not act, so this is not a trust failure. The same action
+      // goes to the user for review on a new record: the refused command keeps
+      // its execution identity, and a replay of it stays failed.
+      return executeGovernedTool({
+        toolId,
+        input,
+        dryRun,
+        approved: false,
+        context,
+        requestActorBinding,
+        abortSignal,
+        idempotencyKey: idempotencyKey ? `${idempotencyKey}:review` : undefined,
+        forceApproval: true,
+        mcpSessionScope,
+        executionScope,
+        agentRunId,
+        effectBinding,
+        checkpointBeforeEffect,
+        taskAuthorityReviewReason: taskAuthorityReview,
+      });
+    }
     await recordTrustOutcomeSafely(
       tool,
       toolRuntimeContext,
@@ -3234,6 +3286,21 @@ function decideLocalComputerTaskAuthority(input: {
   return {
     covered: localComputerTaskKeyAuthorizationApplies(input.preparedInput),
   };
+}
+
+/**
+ * Maps the Mac's refusal of a task-authorized action to the reason shown when
+ * the same action is offered for review. Any other failure stays a failure.
+ */
+function localComputerTaskAuthorityReviewReason(error: unknown) {
+  if (!(error instanceof LocalComputerCommandError)) return undefined;
+  if (error.code === LOCAL_COMPUTER_TASK_AUTHORITY_UNATTESTED_ERROR_CODE) {
+    return "This version of the Mac app cannot check what a task-authorized action would touch on screen, so this one needs your review.";
+  }
+  if (error.code === LOCAL_COMPUTER_TASK_AUTHORITY_REFUSED_ERROR_CODE) {
+    return "Your Mac checked what this action would touch on screen and found it is not something task authority covers.";
+  }
+  return undefined;
 }
 
 function localComputerActionForTool(toolId: string) {

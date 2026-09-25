@@ -187,6 +187,18 @@ as key events and a typed line break arrives as Return. Task-authorized
 the same site; other subdomains do not), because a URL can carry page data to
 its destination. Anything else enters the per-action approval path with a
 reason that names the limit.
+The model declares the interaction purpose, so the server cannot see what a
+press, click, key, or typed text will really touch. When task authority alone
+lets one of those four run, its execution intent carries a private
+server-side marker, and the command store hands that command only to a helper
+that checks the real on-screen target. Any other claim fails with
+`task_authority_unattested`; a helper that checks and refuses reports
+`task_authority_refused`. Either way the Mac has not acted, and the executor
+offers the same action for review on a new approval record whose reason says
+why. No released helper performs that check yet, so these four actions
+currently always ask; `activate_app`, `scroll`, and named-site `open_url` still
+continue within the task. A human-approved action never carries the marker,
+and a refusal code on an action the user already reviewed stays a failure.
 The direct command runner is never covered by task authority and always requires
 a fresh approval. `open_url` accepts only allowlisted Chrome and an
 absolute HTTP(S) URL without embedded credentials, waits for at most 15 seconds,

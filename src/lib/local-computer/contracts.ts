@@ -8,6 +8,15 @@ export const LOCAL_COMPUTER_PRESENT_SCREENSHOT_CONTRACT_VERSION = 12 as const;
 export const LOCAL_COMPUTER_OPEN_URL_CONTRACT_VERSION = 13 as const;
 export const LOCAL_COMPUTER_SCREENSHOT_COORDINATE_CONTRACT_VERSION = 13 as const;
 export const LOCAL_COMPUTER_COMMAND_RUNNER_CONTRACT_VERSION = 27 as const;
+// A press, click, key, or type that runs on This Mac task authority alone may
+// reach the Mac only when the helper checks its real on-screen target. Any
+// other claim fails, and the executor offers the action for review instead.
+export const LOCAL_COMPUTER_TASK_AUTHORITY_ATTESTED_ACTIONS: ReadonlySet<string> =
+  new Set(["press", "click", "key", "type"]);
+export const LOCAL_COMPUTER_TASK_AUTHORITY_UNATTESTED_ERROR_CODE =
+  "task_authority_unattested";
+export const LOCAL_COMPUTER_TASK_AUTHORITY_REFUSED_ERROR_CODE =
+  "task_authority_refused";
 export const LOCAL_COMPUTER_DEVICE_LEASE_SECONDS = 24;
 export const LOCAL_COMPUTER_COMMAND_LEASE_SECONDS = 30;
 export const LOCAL_COMPUTER_COMMAND_TIMEOUT_MS = 45_000;

@@ -17,6 +17,8 @@ import {
   LOCAL_COMPUTER_PRESENT_SCREENSHOT_CONTRACT_VERSION,
   LOCAL_COMPUTER_PROTOCOL_VERSION,
   LOCAL_COMPUTER_SCREENSHOT_COORDINATE_CONTRACT_VERSION,
+  LOCAL_COMPUTER_TASK_AUTHORITY_ATTESTED_ACTIONS,
+  LOCAL_COMPUTER_TASK_AUTHORITY_UNATTESTED_ERROR_CODE,
   localComputerActionSchema,
   localComputerClickInputSchema,
   localComputerCommandRunnerSchema,
@@ -35,6 +37,7 @@ import type { SecurityContext } from "@/lib/security/types";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import {
   getToolExecution,
+  isLocalComputerTaskAuthorityExecution,
   openToolExecutionInput,
 } from "@/lib/tools/audit-store";
 
@@ -375,6 +378,7 @@ export async function claimLocalComputerCommand(context: SecurityContext) {
   }
   const row = rows[0];
   let commandInput: Record<string, unknown>;
+  let taskAuthority = false;
   try {
     const execution = await getToolExecution(String(row.execution_id), {
       tenantId: context.tenantId,
@@ -391,6 +395,8 @@ export async function claimLocalComputerCommand(context: SecurityContext) {
     if (canonicalJsonSha256(commandInput) !== String(row.input_sha256)) {
       throw new Error("The governed tool input digest does not match.");
     }
+    taskAuthority = isLocalComputerTaskAuthorityExecution(execution) &&
+      LOCAL_COMPUTER_TASK_AUTHORITY_ATTESTED_ACTIONS.has(String(row.action));
   } catch (error) {
     await getSql()`
       UPDATE omni_local_computer_commands
@@ -407,6 +413,26 @@ export async function claimLocalComputerCommand(context: SecurityContext) {
         ? error.message
         : "The governed local computer command binding is invalid.",
     );
+  }
+  if (taskAuthority) {
+    // Task authority alone approved this action, and no native client checks
+    // its real on-screen target yet. The Mac never receives the command; the
+    // executor offers the same action for the user's review instead.
+    await getSql()`
+      UPDATE omni_local_computer_commands
+      SET state = 'failed', outcome = 'failed',
+          error_code = ${LOCAL_COMPUTER_TASK_AUTHORITY_UNATTESTED_ERROR_CODE},
+          completed_at = NOW(), updated_at = NOW()
+      WHERE tenant_id = ${context.tenantId}
+        AND owner_actor_id = ${context.actorId}
+        AND id = ${String(row.id)}
+        AND state = 'claimed'
+    `;
+    return {
+      schemaVersion: LOCAL_COMPUTER_PROTOCOL_VERSION,
+      command: null,
+      pollAfterMs: 0,
+    };
   }
   return {
     schemaVersion: LOCAL_COMPUTER_PROTOCOL_VERSION,

@@ -314,6 +314,14 @@ site named in the user's request, with `www.` treated as the same site. When
 approval is forced, for example by web voice input or an "always approve" Agent
 profile, the forced review outranks task authority.
 
+A press, click, key, or type that task authority alone would cover reaches the
+Mac only when the helper checks the real on-screen target. No released helper
+does yet, so the command store fails such a command at claim with
+`task_authority_unattested`, and the executor offers the same action as a
+fresh approval. `activate_app`, `scroll`, and named-site `open_url` still
+continue within the task. Expect these review prompts on This Mac tasks until
+the native release that adds the on-screen check.
+
 Vercel deployment `dpl_GWtwwNMwaroDcX8ixTGe18FY2Vj5` is promoted to
 `https://asael.bennierichard.com` at exact server revision
 `0c9c4fe0b93dbd216c496d0579f6af7b63c0162b`; canonical health reported that

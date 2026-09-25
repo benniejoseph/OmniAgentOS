@@ -19,16 +19,26 @@ vi.mock("@/lib/db/client", () => ({
 vi.mock("@/lib/events/store", () => ({
   appendScopedDomainEvent: mocks.appendScopedDomainEvent,
 }));
-vi.mock("@/lib/tools/audit-store", () => ({
-  getToolExecution: mocks.getToolExecution,
-  openToolExecutionInput: mocks.openToolExecutionInput,
-}));
+vi.mock("@/lib/tools/audit-store", async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import("@/lib/tools/audit-store")
+  >();
+  return {
+    getToolExecution: mocks.getToolExecution,
+    isLocalComputerTaskAuthorityExecution:
+      actual.isLocalComputerTaskAuthorityExecution,
+    localComputerTaskAuthorityIntentOutput:
+      actual.localComputerTaskAuthorityIntentOutput,
+    openToolExecutionInput: mocks.openToolExecutionInput,
+  };
+});
 
 import {
   claimLocalComputerCommand,
   executeLocalComputerCommand,
 } from "@/lib/local-computer/store";
 import { createExecutionScope } from "@/lib/security/execution-scope";
+import { localComputerTaskAuthorityIntentOutput } from "@/lib/tools/audit-store";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
 describe("local Computer Use command binding", () => {
@@ -277,6 +287,59 @@ describe("local Computer Use command binding", () => {
     expect(claimed.command?.input).not.toHaveProperty("presentScreenshot");
   });
 
+  it.each([
+    ["press", "local.macos.press", { elementId: "e:aaaaaaaaaaaa:3" }],
+    ["click", "local.macos.click", { elementId: "e:aaaaaaaaaaaa:4" }],
+    ["key", "local.macos.key", { key: "tab" }],
+    ["type", "local.macos.type", { text: "XAUUSD" }],
+  ] as const)(
+    "never hands the Mac a %s that runs on task authority alone",
+    async (action, toolId, fields) => {
+      const toolInput = { snapshotRevision: "a".repeat(64), ...fields };
+      const sql = claimSql(action, toolInput);
+      mocks.getToolExecution.mockResolvedValueOnce({
+        toolId,
+        output: localComputerTaskAuthorityIntentOutput(),
+      });
+      mocks.openToolExecutionInput.mockReturnValueOnce(toolInput);
+
+      const claimed = await claimLocalComputerCommand(nativeSecurityContext());
+
+      // No helper checks the real on-screen target yet, so the command fails
+      // at claim and the executor asks the user instead.
+      expect(claimed).toMatchObject({ command: null, pollAfterMs: 0 });
+      const gate = sql.mock.calls[3];
+      expect(sqlText(gate?.[0])).toContain("SET state = 'failed'");
+      expect(sqlText(gate?.[0])).toContain("AND state = 'claimed'");
+      expect(gate?.slice(1)).toContain("task_authority_unattested");
+      expect(gate?.slice(1)).toContain(`local_computer_command_${"c".repeat(48)}`);
+    },
+  );
+
+  it("delivers reviewed and URL commands that carry no on-screen check", async () => {
+    const click = { snapshotRevision: "a".repeat(64), elementId: "e:aaaaaaaaaaaa:5" };
+    claimSql("click", click);
+    mocks.getToolExecution.mockResolvedValueOnce({
+      toolId: "local.macos.click",
+      output: {},
+    });
+    mocks.openToolExecutionInput.mockReturnValueOnce(click);
+    await expect(claimLocalComputerCommand(nativeSecurityContext())).resolves
+      .toMatchObject({ command: { action: "click" } });
+
+    // The executor bounds task-authorized navigation to sites the user named;
+    // the helper has no on-screen target to check for a URL.
+    const url = { browser: "chrome", url: "https://www.tradingview.com/" };
+    claimSql("open_url", url);
+    mocks.getToolExecution.mockResolvedValueOnce({
+      toolId: "local.macos.open_url",
+      output: localComputerTaskAuthorityIntentOutput(),
+    });
+    mocks.openToolExecutionInput.mockReturnValueOnce(url);
+    await expect(claimLocalComputerCommand(nativeSecurityContext())).resolves
+      .toMatchObject({ command: { action: "open_url" } });
+  });
+
   it("requires v13 for an exact screenshot-pixel click", async () => {
     const transactionSql = vi.fn().mockResolvedValueOnce([]);
     const sql = Object.assign(vi.fn(), {
@@ -389,6 +452,26 @@ function nativeSecurityContext() {
       clientContractVersion: 13,
     },
   };
+}
+
+/** Scrub, stale-claim, and claim queries, then any follow-up update. */
+function claimSql(action: string, toolInput: Record<string, unknown>) {
+  const sql = vi
+    .fn()
+    .mockResolvedValueOnce([])
+    .mockResolvedValueOnce([])
+    .mockResolvedValueOnce([{
+      id: `local_computer_command_${"c".repeat(48)}`,
+      run_id: `run-claim-${action}`,
+      execution_id: `run-claim-${action}:execution`,
+      action,
+      input_sha256: canonicalJsonSha256(toolInput),
+      claim_generation: 1,
+      expires_at: new Date(Date.now() + 30_000).toISOString(),
+    }])
+    .mockResolvedValue([]);
+  mocks.getSql.mockReturnValue(sql);
+  return sql;
 }
 
 function sqlText(strings: unknown) {

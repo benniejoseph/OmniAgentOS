@@ -9,7 +9,8 @@ const mocks = vi.hoisted(() => ({
   executeLocalComputerCommand: vi.fn(),
 }));
 
-vi.mock("@/lib/local-computer/store", () => ({
+vi.mock("@/lib/local-computer/store", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/local-computer/store")>()),
   executeLocalComputerCommand: mocks.executeLocalComputerCommand,
 }));
 
@@ -449,7 +450,207 @@ describe("governed local Mac tools", () => {
     }
     expect(mocks.executeLocalComputerCommand).toHaveBeenCalledTimes(3);
   });
+
+  it.each([
+    ["task_authority_unattested", "cannot check what a task-authorized action"],
+    ["task_authority_refused", "not something task authority covers"],
+  ] as const)(
+    "offers a task-authorized click the Mac turned back (%s) for review",
+    async (code, reason) => {
+      const { LocalComputerCommandError } = await import(
+        "@/lib/local-computer/store"
+      );
+      const executor = await import("@/lib/tools/executor");
+      const store = await import("@/lib/tools/audit-store");
+      const seen = markerProbe(store);
+      mocks.executeLocalComputerCommand.mockImplementation(async (command) => {
+        await seen.record(command.executionId);
+        if (seen.marked.length === 1) {
+          throw new LocalComputerCommandError(
+            code,
+            `The installed Mac did not complete the action (${code}).`,
+          );
+        }
+        return { publicResult: { summary: "Opened the next Finder item." } };
+      });
+      const input = {
+        snapshotRevision: "e".repeat(64),
+        elementId: "e1-4",
+        interactionPurpose: "navigation",
+      };
+
+      const review = await executor.executeGovernedTool({
+        toolId: "local.macos.click",
+        input,
+        dryRun: false,
+        context: securityContext(),
+        executionScope: executionScope(code, `run-local-${code}`),
+        agentRunId: `run-local-${code}`,
+        idempotencyKey: `local-mac-click-${code}`,
+        localComputerTaskAuthority: { objective: "Open the next Finder item." },
+      });
+
+      // Task authority alone let this click run, so the Mac had to check what
+      // it would touch. When it cannot, or it refuses, the user decides.
+      expect(review.record.status).toBe("approval_required");
+      expect(review.record.reason).toContain(reason);
+      expect(seen.marked).toEqual([true]);
+      expect(seen.publicMarkerLeaked).toBe(false);
+      const turnedBack = mocks.executeLocalComputerCommand.mock.calls[0]![0]
+        .executionId as string;
+      expect(review.record.id).not.toBe(turnedBack);
+      expect(
+        await store.getToolExecution(turnedBack, { tenantId: "tenant-local" }),
+      ).toMatchObject({ status: "failed" });
+
+      const claimToken = `local-mac-${code}-review-claim`;
+      const claim = await store.approveAndClaimToolExecution({
+        id: review.record.id,
+        tenantId: "tenant-local",
+        approvedBy: "owner-local",
+        approvedRole: "admin",
+        claimToken,
+      });
+      const executed = await executor.executeGovernedTool({
+        toolId: review.record.toolId,
+        input: store.openToolExecutionInput(claim.record!),
+        dryRun: false,
+        approved: true,
+        context: securityContext(),
+        agentRunId: `run-local-${code}`,
+        existingRecord: claim.record,
+        executionClaimToken: claimToken,
+      });
+
+      // The approved click is a new command, and a reviewed action never
+      // carries the task-authority marker.
+      expect(executed.record.status).toBe("executed");
+      expect(seen.marked).toEqual([true, false]);
+      expect(mocks.executeLocalComputerCommand.mock.calls[1]![0]).toMatchObject({
+        executionId: review.record.id,
+        toolInput: input,
+      });
+    },
+  );
+
+  it("marks a task-only click that carries no idempotency key", async () => {
+    const { LocalComputerCommandError } = await import(
+      "@/lib/local-computer/store"
+    );
+    const executor = await import("@/lib/tools/executor");
+    const store = await import("@/lib/tools/audit-store");
+    const seen = markerProbe(store);
+    mocks.executeLocalComputerCommand.mockImplementationOnce(async (command) => {
+      await seen.record(command.executionId);
+      throw new LocalComputerCommandError(
+        "task_authority_unattested",
+        "The installed Mac did not complete the action (task_authority_unattested).",
+      );
+    });
+
+    const review = await executor.executeGovernedTool({
+      toolId: "local.macos.click",
+      input: {
+        snapshotRevision: "9".repeat(64),
+        elementId: "e1-6",
+        interactionPurpose: "navigation",
+      },
+      dryRun: false,
+      context: securityContext(),
+      executionScope: executionScope("unkeyed", "run-local-unkeyed"),
+      agentRunId: "run-local-unkeyed",
+      localComputerTaskAuthority: { objective: "Open the next Finder item." },
+    });
+
+    expect(seen.marked).toEqual([true]);
+    expect(review.record.status).toBe("approval_required");
+  });
+
+  it("keeps other Mac failures, and failures of reviewed actions, as failures", async () => {
+    const { LocalComputerCommandError } = await import(
+      "@/lib/local-computer/store"
+    );
+    const executor = await import("@/lib/tools/executor");
+    const store = await import("@/lib/tools/audit-store");
+    const seen = markerProbe(store);
+    const failWith = (code: string) =>
+      mocks.executeLocalComputerCommand.mockImplementationOnce(
+        async (command) => {
+          await seen.record(command.executionId);
+          throw new LocalComputerCommandError(code, `Failed (${code}).`);
+        },
+      );
+    const click = {
+      toolId: "local.macos.click",
+      input: {
+        snapshotRevision: "f".repeat(64),
+        elementId: "e1-5",
+        interactionPurpose: "selection",
+      },
+      dryRun: false,
+      context: securityContext(),
+      executionScope: executionScope("failures", "run-local-failures"),
+      agentRunId: "run-local-failures",
+    } as const;
+
+    failWith("command_timeout");
+    const timedOut = await executor.executeGovernedTool({
+      ...click,
+      idempotencyKey: "local-mac-click-timeout",
+      localComputerTaskAuthority: { objective: "Select the Finder item." },
+    });
+    expect(timedOut.record.status).toBe("failed");
+
+    const pending = await executor.executeGovernedTool({
+      ...click,
+      idempotencyKey: "local-mac-click-reviewed",
+    });
+    expect(pending.record.status).toBe("approval_required");
+    const claimToken = "local-mac-click-reviewed-claim";
+    const claim = await store.approveAndClaimToolExecution({
+      id: pending.record.id,
+      tenantId: "tenant-local",
+      approvedBy: "owner-local",
+      approvedRole: "admin",
+      claimToken,
+    });
+    failWith("task_authority_refused");
+    const refused = await executor.executeGovernedTool({
+      toolId: pending.record.toolId,
+      input: store.openToolExecutionInput(claim.record!),
+      dryRun: false,
+      approved: true,
+      context: securityContext(),
+      agentRunId: "run-local-failures",
+      existingRecord: claim.record,
+      executionClaimToken: claimToken,
+    });
+
+    // The user already reviewed this click, so a refusal code from the Mac
+    // cannot start another review.
+    expect(refused.record.status).toBe("failed");
+    expect(seen.marked).toEqual([true, false]);
+    expect(mocks.executeLocalComputerCommand).toHaveBeenCalledTimes(2);
+  });
 });
+
+/** Records what the command store would see when it claims each execution. */
+function markerProbe(store: typeof import("@/lib/tools/audit-store")) {
+  const probe = {
+    marked: [] as boolean[],
+    publicMarkerLeaked: false,
+    async record(executionId: string) {
+      const record = await store.getToolExecution(executionId, {
+        tenantId: "tenant-local",
+      });
+      probe.marked.push(store.isLocalComputerTaskAuthorityExecution(record!));
+      probe.publicMarkerLeaked ||= JSON.stringify(
+        store.publicToolExecution(record!),
+      ).includes("__localComputerTaskAuthority");
+    },
+  };
+  return probe;
+}
 
 function securityContext() {
   return {

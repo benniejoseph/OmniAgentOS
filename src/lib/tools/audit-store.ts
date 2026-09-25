@@ -100,6 +100,8 @@ const APPROVAL_MATERIAL_BINDING_OUTPUT_KEY =
 const WORKFLOW_EFFECT_BINDING_OUTPUT_KEY =
   "__workflowEffectBindingSha256";
 const OPERATION_CLASS_OUTPUT_KEY = "__operationClass";
+const LOCAL_COMPUTER_TASK_AUTHORITY_OUTPUT_KEY =
+  "__localComputerTaskAuthority";
 
 export function createToolExecutionRecord(
   input: Omit<ToolExecutionRecord, "id" | "createdAt">,
@@ -681,6 +683,22 @@ export function getToolExecutionWorkflowEffectBindingSha256(
 ) {
   const value = parseObject(record.output)[WORKFLOW_EFFECT_BINDING_OUTPUT_KEY];
   return isSha256(value) ? value : undefined;
+}
+
+/**
+ * Marks an execution intent whose only approval is the user's This Mac task
+ * authority. The approval claim rebuilds intent output from an allowlist, so
+ * a human-approved execution never carries this marker.
+ */
+export function localComputerTaskAuthorityIntentOutput() {
+  return { [LOCAL_COMPUTER_TASK_AUTHORITY_OUTPUT_KEY]: true } as const;
+}
+
+export function isLocalComputerTaskAuthorityExecution(
+  record: ToolExecutionRecord,
+) {
+  return parseObject(record.output)[LOCAL_COMPUTER_TASK_AUTHORITY_OUTPUT_KEY] ===
+    true;
 }
 
 export function getToolExecutionEffectIntentV2(
@@ -1551,6 +1569,7 @@ export function publicToolExecution(record: ToolExecutionRecord) {
     delete publicOutput[APPROVAL_MATERIAL_BINDING_OUTPUT_KEY];
     delete publicOutput[WORKFLOW_EFFECT_BINDING_OUTPUT_KEY];
     delete publicOutput[EFFECT_INTENT_V2_OUTPUT_KEY];
+    delete publicOutput[LOCAL_COMPUTER_TASK_AUTHORITY_OUTPUT_KEY];
     delete publicOutput.__idempotencyKeyHash;
     delete publicOutput.__effectIdempotencyKeySha256;
     delete publicOutput.__effectInputSha256;
