@@ -20,6 +20,24 @@ typedef DesktopSharedCaptureHandler = Future<void> Function(
 typedef DesktopAmbientVoiceRequestHandler = Future<void> Function(
   DesktopAmbientVoiceRequest request,
 );
+typedef DesktopSystemLifecycleHandler = Future<void> Function(
+  DesktopSystemLifecycleEvent event,
+);
+
+/// Content-free operating-system lifecycle signals from the primary macOS
+/// host. Ordinary application focus changes are intentionally absent.
+enum DesktopSystemLifecycleEvent {
+  systemWillSleep,
+  systemDidWake,
+  sessionLocked,
+  sessionUnlocked;
+
+  bool get protectsWorkspace =>
+      this == systemWillSleep || this == sessionLocked;
+
+  bool get restoresWorkspace =>
+      this == systemDidWake || this == sessionUnlocked;
+}
 
 enum DesktopNotificationCommand { open, complete, snooze15, dismiss }
 
@@ -338,6 +356,9 @@ class DesktopHostBridge {
   final List<DesktopSharedCapture> _pendingSharedCaptures = [];
   DesktopAmbientVoiceRequestHandler? _ambientVoiceRequestHandler;
   DesktopAmbientVoiceRequest? _pendingAmbientVoiceRequest;
+  DesktopSystemLifecycleHandler? _systemLifecycleHandler;
+  final List<DesktopSystemLifecycleEvent> _pendingSystemLifecycleEvents = [];
+  bool _systemLifecycleDispatchInFlight = false;
   bool _initialized = false;
 
   Future<void> initialize() async {
@@ -512,6 +533,26 @@ class DesktopHostBridge {
             message: error.message,
           );
         }
+      case 'systemWillSleep':
+      case 'systemDidWake':
+      case 'sessionLocked':
+      case 'sessionUnlocked':
+        if (call.arguments != null) {
+          throw PlatformException(
+            code: 'invalid_system_lifecycle_event',
+            message: 'The native system lifecycle event must be content-free.',
+          );
+        }
+        final event = switch (call.method) {
+          'systemWillSleep' => DesktopSystemLifecycleEvent.systemWillSleep,
+          'systemDidWake' => DesktopSystemLifecycleEvent.systemDidWake,
+          'sessionLocked' => DesktopSystemLifecycleEvent.sessionLocked,
+          'sessionUnlocked' => DesktopSystemLifecycleEvent.sessionUnlocked,
+          _ => throw StateError('Unreachable system lifecycle event.'),
+        };
+        _enqueueSystemLifecycleEvent(event);
+        await _drainSystemLifecycleEvents();
+        return null;
       default:
         throw PlatformException(
           code: 'unsupported_desktop_intent',
@@ -596,6 +637,44 @@ class DesktopHostBridge {
     if (handler != null && pending != null) {
       _pendingAmbientVoiceRequest = null;
       unawaited(handler(pending));
+    }
+  }
+
+  /// Attaches the single application-level consumer for sleep, wake, and
+  /// login-session protection changes. Events are serialized and retained
+  /// briefly until the consumer is ready, including during cold launch.
+  void attachSystemLifecycleHandler(DesktopSystemLifecycleHandler? handler) {
+    _systemLifecycleHandler = handler;
+    if (handler != null) {
+      unawaited(_drainSystemLifecycleEvents());
+    }
+  }
+
+  void _enqueueSystemLifecycleEvent(DesktopSystemLifecycleEvent event) {
+    if (_pendingSystemLifecycleEvents.lastOrNull == event) return;
+    if (_pendingSystemLifecycleEvents.length >= 16) {
+      _pendingSystemLifecycleEvents.removeAt(0);
+    }
+    _pendingSystemLifecycleEvents.add(event);
+  }
+
+  Future<void> _drainSystemLifecycleEvents() async {
+    if (_systemLifecycleDispatchInFlight) return;
+    final handler = _systemLifecycleHandler;
+    if (handler == null) return;
+    _systemLifecycleDispatchInFlight = true;
+    try {
+      while (_pendingSystemLifecycleEvents.isNotEmpty &&
+          identical(_systemLifecycleHandler, handler)) {
+        final event = _pendingSystemLifecycleEvents.removeAt(0);
+        await handler(event);
+      }
+    } finally {
+      _systemLifecycleDispatchInFlight = false;
+      if (_systemLifecycleHandler != null &&
+          _pendingSystemLifecycleEvents.isNotEmpty) {
+        unawaited(_drainSystemLifecycleEvents());
+      }
     }
   }
 
@@ -761,6 +840,9 @@ class DesktopHostBridge {
     _pendingSharedCaptures.clear();
     _ambientVoiceRequestHandler = null;
     _pendingAmbientVoiceRequest = null;
+    _systemLifecycleHandler = null;
+    _pendingSystemLifecycleEvents.clear();
+    _systemLifecycleDispatchInFlight = false;
     _initialized = false;
   }
 }

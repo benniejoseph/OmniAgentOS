@@ -1999,6 +1999,15 @@ private final class DesktopHostController: NSObject {
     case dismiss
   }
 
+  /// Content-free events emitted only by the primary desktop host. Focus and
+  /// activation changes are intentionally not part of this contract.
+  private enum SystemLifecycleEvent: String {
+    case systemWillSleep
+    case systemDidWake
+    case sessionLocked
+    case sessionUnlocked
+  }
+
   /// A presentation-only reflection of the Flutter voice surface. These states
   /// never carry a prompt, approval, execution target, or Computer Use grant.
   private enum AmbientVoiceState: String {
@@ -2102,6 +2111,13 @@ private final class DesktopHostController: NSObject {
   private var isNotificationHandlerReady = false
   private var notificationDeliveryInFlight = false
   private let notificationBridgeEvents = NativeNotificationBridgeEventStore()
+  private var workspaceLifecycleObservers: [NSObjectProtocol] = []
+  private var distributedLifecycleObservers: [NSObjectProtocol] = []
+  private var pendingSystemLifecycleEvents: [SystemLifecycleEvent] = []
+  private var systemLifecycleDeliveryInFlight = false
+  private var systemLifecycleDeliveryGeneration = 0
+  private var systemIsSleeping = false
+  private var lastSessionProtectionEvent: SystemLifecycleEvent?
   private var hasStarted = false
   private var isQuickEntryPresented = false
   private var isAmbientVoicePresented = false
@@ -2119,6 +2135,7 @@ private final class DesktopHostController: NSObject {
     hasStarted = true
     quickEntryShortcut = savedQuickEntryShortcut()
     ambientVoiceAvailable = savedAmbientVoiceAvailability()
+    observeSystemLifecycle()
     configureApplicationMenu()
     configureStatusItem()
     let registered = registerQuickEntryHotKey()
@@ -2133,6 +2150,12 @@ private final class DesktopHostController: NSObject {
     ambientVoiceState = .asleep
     isNotificationHandlerReady = false
     notificationDeliveryInFlight = false
+    removeSystemLifecycleObservers()
+    pendingSystemLifecycleEvents.removeAll()
+    systemLifecycleDeliveryGeneration += 1
+    systemLifecycleDeliveryInFlight = false
+    systemIsSleeping = false
+    lastSessionProtectionEvent = nil
     deliveredSharedCaptureIds.removeAll()
     sharedCaptureRemovalIds.removeAll()
     sharedCaptureDeliveryInFlight = false
@@ -2177,6 +2200,8 @@ private final class DesktopHostController: NSObject {
     self.window = window
     isDartReady = false
     isNotificationHandlerReady = false
+    systemLifecycleDeliveryGeneration += 1
+    systemLifecycleDeliveryInFlight = false
     ambientVoiceState = .asleep
     if hasStarted {
       updateAmbientVoicePresentation()
@@ -2203,6 +2228,7 @@ private final class DesktopHostController: NSObject {
           self.flushPendingRoute()
           self.flushPendingAmbientVoiceRequest()
           self.deliverNextSharedCapture()
+          self.deliverNextSystemLifecycleEvent()
         }
         result(nil)
       case "notificationHandlerReady":
@@ -2924,6 +2950,138 @@ private final class DesktopHostController: NSObject {
         }
         self.notificationBridgeEvents.remove(id: id)
         self.deliverNextNotificationEvent()
+      }
+    }
+  }
+
+  private func observeSystemLifecycle() {
+    dispatchPrecondition(condition: .onQueue(.main))
+    guard workspaceLifecycleObservers.isEmpty,
+          distributedLifecycleObservers.isEmpty
+    else { return }
+
+    let workspaceCenter = NSWorkspace.shared.notificationCenter
+    workspaceLifecycleObservers = [
+      workspaceCenter.addObserver(
+        forName: NSWorkspace.willSleepNotification,
+        object: nil,
+        queue: .main
+      ) { [weak self] _ in
+        self?.receiveSystemLifecycleEvent(.systemWillSleep)
+      },
+      workspaceCenter.addObserver(
+        forName: NSWorkspace.didWakeNotification,
+        object: nil,
+        queue: .main
+      ) { [weak self] _ in
+        self?.receiveSystemLifecycleEvent(.systemDidWake)
+      },
+      workspaceCenter.addObserver(
+        forName: NSWorkspace.sessionDidResignActiveNotification,
+        object: nil,
+        queue: .main
+      ) { [weak self] _ in
+        self?.receiveSystemLifecycleEvent(.sessionLocked)
+      },
+      workspaceCenter.addObserver(
+        forName: NSWorkspace.sessionDidBecomeActiveNotification,
+        object: nil,
+        queue: .main
+      ) { [weak self] _ in
+        self?.receiveSystemLifecycleEvent(.sessionUnlocked)
+      },
+    ]
+
+    let distributedCenter = DistributedNotificationCenter.default()
+    distributedLifecycleObservers = [
+      distributedCenter.addObserver(
+        forName: Notification.Name("com.apple.screenIsLocked"),
+        object: nil,
+        queue: .main
+      ) { [weak self] _ in
+        self?.receiveSystemLifecycleEvent(.sessionLocked)
+      },
+      distributedCenter.addObserver(
+        forName: Notification.Name("com.apple.screenIsUnlocked"),
+        object: nil,
+        queue: .main
+      ) { [weak self] _ in
+        self?.receiveSystemLifecycleEvent(.sessionUnlocked)
+      },
+    ]
+  }
+
+  private func removeSystemLifecycleObservers() {
+    dispatchPrecondition(condition: .onQueue(.main))
+    let workspaceCenter = NSWorkspace.shared.notificationCenter
+    for observer in workspaceLifecycleObservers {
+      workspaceCenter.removeObserver(observer)
+    }
+    workspaceLifecycleObservers.removeAll()
+
+    let distributedCenter = DistributedNotificationCenter.default()
+    for observer in distributedLifecycleObservers {
+      distributedCenter.removeObserver(observer)
+    }
+    distributedLifecycleObservers.removeAll()
+  }
+
+  private func receiveSystemLifecycleEvent(_ event: SystemLifecycleEvent) {
+    dispatchPrecondition(condition: .onQueue(.main))
+    switch event {
+    case .systemWillSleep:
+      guard !systemIsSleeping else { return }
+      systemIsSleeping = true
+    case .systemDidWake:
+      guard systemIsSleeping else { return }
+      systemIsSleeping = false
+    case .sessionLocked:
+      guard lastSessionProtectionEvent != .sessionLocked else { return }
+      lastSessionProtectionEvent = .sessionLocked
+    case .sessionUnlocked:
+      guard lastSessionProtectionEvent != .sessionUnlocked else { return }
+      lastSessionProtectionEvent = .sessionUnlocked
+    }
+
+    if pendingSystemLifecycleEvents.last != event {
+      if pendingSystemLifecycleEvents.count >= 16 {
+        pendingSystemLifecycleEvents.removeFirst()
+      }
+      pendingSystemLifecycleEvents.append(event)
+    }
+    deliverNextSystemLifecycleEvent()
+  }
+
+  private func deliverNextSystemLifecycleEvent() {
+    dispatchPrecondition(condition: .onQueue(.main))
+    guard isDartReady,
+          !systemLifecycleDeliveryInFlight,
+          let channel,
+          let event = pendingSystemLifecycleEvents.first
+    else { return }
+
+    let generation = systemLifecycleDeliveryGeneration
+    systemLifecycleDeliveryInFlight = true
+    channel.invokeMethod(event.rawValue, arguments: nil) { [weak self] response in
+      DispatchQueue.main.async {
+        guard let self,
+              generation == self.systemLifecycleDeliveryGeneration
+        else { return }
+        self.systemLifecycleDeliveryInFlight = false
+        if response is FlutterError {
+          DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.deliverNextSystemLifecycleEvent()
+          }
+          return
+        }
+        if (response as AnyObject?) === FlutterMethodNotImplemented {
+          self.isDartReady = false
+          return
+        }
+        if self.pendingSystemLifecycleEvents.first == event {
+          self.pendingSystemLifecycleEvents.removeFirst()
+        }
+        self.deliverNextSystemLifecycleEvent()
       }
     }
   }
