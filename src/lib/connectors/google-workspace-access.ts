@@ -27,7 +27,9 @@ export async function getActiveGoogleWorkspaceAccess(input: {
     "google",
     input.connectionId ? { connectionId: input.connectionId } : undefined,
   );
-  if (!secrets) {
+  // The store matches connectionId exactly; re-check here so a lookup
+  // regression can never hand out or refresh another account's token.
+  if (!secrets || (input.connectionId && secrets.grant.id !== input.connectionId)) {
     throw new OAuthCredentialError(
       "The Google connection was not found.",
       "grant_not_found",

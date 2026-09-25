@@ -74,6 +74,31 @@ describe("active Google Workspace access", () => {
     }));
   });
 
+  it("never returns or refreshes a token for a connection other than the requested one", async () => {
+    for (const credentialState of ["active", "refresh_required"] as const) {
+      mocks.getOAuthGrantSecrets.mockResolvedValueOnce({
+        grant: { ...grant, id: "grant-google-other-account" },
+        tokens: { access_token: "other-account-token", refresh_token: "other-refresh" },
+        credentialState,
+      });
+
+      await expect(getActiveGoogleWorkspaceAccess({
+        tenantId: "tenant-a",
+        actorId: "actor-a",
+        connectionId: grant.id,
+        capability: "gmail.send",
+      })).rejects.toMatchObject({ code: "grant_not_found" });
+    }
+    expect(mocks.getOAuthGrantSecrets).toHaveBeenCalledWith(
+      "tenant-a",
+      "actor-a",
+      "google",
+      { connectionId: grant.id },
+    );
+    expect(mocks.refreshOAuthAccess).not.toHaveBeenCalled();
+    expect(mocks.saveOAuthGrant).not.toHaveBeenCalled();
+  });
+
   it("fails before opening the provider when capability is not granted", async () => {
     mocks.getOAuthGrantSecrets.mockResolvedValue({
       grant,

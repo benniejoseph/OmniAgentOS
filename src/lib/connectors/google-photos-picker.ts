@@ -208,12 +208,13 @@ export async function importGooglePhotosPickerSelection(
   signal?: AbortSignal,
 ) {
   const sealed = openSessionHandle(identity, handle);
+  // Refuse a foreign scope before credential lookup can refresh the token.
+  const trustedRequestScope = requirePickerExecutionScope(identity, executionScope);
   const access = await googlePhotosAccess({
     ...identity,
     connectionId: sealed.connectionId,
   });
   const boundIdentity = boundPickerIdentity(identity, access.grant);
-  const trustedRequestScope = requirePickerExecutionScope(boundIdentity, executionScope);
   const accessToken = access.accessToken;
   const session = parsePickingSession(await providerJson(
     `${PICKER_API}/sessions/${encodeURIComponent(sealed.sessionId)}`,
@@ -343,9 +344,9 @@ export async function deleteImportedGooglePhotos(
   identity: PickerIdentity,
   executionScope: ExecutionScope,
 ) {
+  const trustedScope = requirePickerExecutionScope(identity, executionScope);
   const access = await googlePhotosAccess(identity);
   const boundIdentity = boundPickerIdentity(identity, access.grant);
-  const trustedScope = requirePickerExecutionScope(boundIdentity, executionScope);
   const legacyVideoCleanup = await planLegacyVideoCleanup(boundIdentity);
   let assetsDeleted = 0;
   let documents = 0;

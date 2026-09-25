@@ -281,12 +281,21 @@ describe("Google Photos durable imports", () => {
     // The sealed handle is validated first, so the scope check needs a genuine owner handle.
     const handle = await createHandle();
     fetchMock().mockClear();
+    mocks.getActiveGoogleWorkspaceAccess.mockClear();
 
     await expect(importGooglePhotosPickerSelection(
       identity,
       handle,
       executionScope("request", "owner-b"),
     )).rejects.toThrow("does not match the authenticated actor");
+    await expect(deleteImportedGooglePhotos(
+      identity,
+      executionScope("delete", "owner-b"),
+    )).rejects.toThrow("does not match the authenticated actor");
+    // Credential lookup can refresh and persist the owner's token, so a
+    // foreign scope must be refused before it.
+    expect(mocks.getActiveGoogleWorkspaceAccess).not.toHaveBeenCalled();
+    expect(mocks.listExactCaptureAssetsByMetadata).not.toHaveBeenCalled();
     // A handle sealed for this owner cannot be opened by another actor either.
     await expect(importGooglePhotosPickerSelection(
       { ...identity, actorId: "owner-b" },
