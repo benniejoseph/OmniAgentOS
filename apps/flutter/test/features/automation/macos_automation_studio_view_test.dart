@@ -200,6 +200,46 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('Connections hands off to the web page, not a Work OAuth link', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1240, 820);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final controller = AutomationController(
+      _Repository(_snapshot()),
+      canManage: true,
+      mutationsAvailable: true,
+    );
+    await controller.refresh();
+
+    await tester.pumpWidget(_app(controller: controller));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const ValueKey('automation-section-connections')),
+    );
+    await tester.pumpAndSettle();
+
+    // Work is a separate Asael account, and the server refuses account=work.
+    expect(
+      find.byKey(const ValueKey('automation-connect-work-google')),
+      findsNothing,
+    );
+    expect(find.text('Connect Work'), findsNothing);
+    expect(
+      find.byKey(const ValueKey('automation-manage-connections')),
+      findsOneWidget,
+    );
+    expect(find.text('One Google account per Asael account'), findsOneWidget);
+    expect(
+      find.textContaining('sign in to your Work Asael account'),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('schedule history exposes exact macOS execution evidence', (
     tester,
   ) async {

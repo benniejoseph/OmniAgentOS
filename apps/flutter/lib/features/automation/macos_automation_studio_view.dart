@@ -914,7 +914,6 @@ class _ConnectionsSectionState extends State<_ConnectionsSection>
       busy: _openingBrowser,
       refreshing: widget.controller.refreshing,
       error: _linkError,
-      onConnectWork: () => _openWebConnection(connectWork: true),
       onManage: _openWebConnection,
       onRefresh: widget.controller.refreshing
           ? null
@@ -991,14 +990,14 @@ class _ConnectionsSectionState extends State<_ConnectionsSection>
     ),
   );
 
-  Future<void> _openWebConnection({bool connectWork = false}) async {
+  Future<void> _openWebConnection() async {
     if (_openingBrowser) return;
     setState(() {
       _openingBrowser = true;
       _linkError = null;
     });
     try {
-      final uri = _connectionUri(connectWork: connectWork);
+      final uri = _connectionUri();
       if (uri == null) {
         throw StateError('The configured Asael web address is not trusted.');
       }
@@ -1018,18 +1017,15 @@ class _ConnectionsSectionState extends State<_ConnectionsSection>
     }
   }
 
-  Uri? _connectionUri({required bool connectWork}) {
+  // Open the Connections page rather than a direct OAuth handoff: the browser
+  // keeps its own Asael session, so the page shows which account will own the
+  // Google connection before consent starts.
+  Uri? _connectionUri() {
     final base = Uri.tryParse(AppConfig.apiBaseUrl);
     if (base == null || !base.hasAuthority || !_isTrustedAsaelBase(base)) {
       return null;
     }
-    return base.replace(
-      path: connectWork ? '/api/oauth/google/authorize' : '/app/connectors',
-      queryParameters: connectWork
-          ? const {'account': 'work', 'returnTo': '/app/connectors'}
-          : null,
-      fragment: null,
-    );
+    return base.replace(path: '/app/connectors', fragment: null);
   }
 
   bool _isTrustedAsaelBase(Uri uri) {
@@ -1044,14 +1040,13 @@ class _ConnectionAccessCard extends StatelessWidget {
     required this.busy,
     required this.refreshing,
     required this.error,
-    required this.onConnectWork,
     required this.onManage,
     required this.onRefresh,
   });
 
   final bool busy, refreshing;
   final String? error;
-  final VoidCallback onConnectWork, onManage;
+  final VoidCallback onManage;
   final Future<void> Function()? onRefresh;
 
   @override
@@ -1105,7 +1100,7 @@ class _ConnectionAccessCard extends StatelessWidget {
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        'Sign-in and Google consent open in your system browser. Asael refreshes this inventory when you return.',
+                        'Google consent opens in your system browser. Stay signed in to the same Asael account there; Asael refreshes this inventory when you return.',
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
                           color: scheme.onSurfaceVariant,
                           height: 1.45,
@@ -1117,37 +1112,10 @@ class _ConnectionAccessCard extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 16),
-            LayoutBuilder(
-              builder: (context, constraints) {
-                final cards = [
-                  const _GooglePurposeCard(
-                    icon: Icons.person_outline_rounded,
-                    title: 'Personal',
-                    detail: 'Private mail, calendar, Drive files, and photos stay with your owner account.',
-                  ),
-                  const _GooglePurposeCard(
-                    icon: Icons.work_outline_rounded,
-                    title: 'Work',
-                    detail: 'Business context stays separate. This connection never becomes your Asael login.',
-                  ),
-                ];
-                if (constraints.maxWidth >= 720) {
-                  return Row(
-                    children: [
-                      Expanded(child: cards.first),
-                      const SizedBox(width: 12),
-                      Expanded(child: cards.last),
-                    ],
-                  );
-                }
-                return Column(
-                  children: [
-                    cards.first,
-                    const SizedBox(height: 10),
-                    cards.last,
-                  ],
-                );
-              },
+            const _GooglePurposeCard(
+              icon: Icons.person_outline_rounded,
+              title: 'One Google account per Asael account',
+              detail: 'Mail, calendar, Drive files, and selected photos stay inside the Asael account that connects them. To connect Work Google, sign in to your Work Asael account.',
             ),
             if (error != null) ...[
               const SizedBox(height: 12),
@@ -1163,20 +1131,14 @@ class _ConnectionAccessCard extends StatelessWidget {
               runSpacing: 8,
               children: [
                 FilledButton.icon(
-                  key: const ValueKey('automation-connect-work-google'),
-                  onPressed: busy ? null : onConnectWork,
+                  key: const ValueKey('automation-manage-connections'),
+                  onPressed: busy ? null : onManage,
                   icon: busy
                       ? const SizedBox.square(
                           dimension: 15,
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
-                      : const Icon(Icons.work_outline_rounded, size: 17),
-                  label: const Text('Connect Work'),
-                ),
-                OutlinedButton.icon(
-                  key: const ValueKey('automation-manage-connections'),
-                  onPressed: busy ? null : onManage,
-                  icon: const Icon(Icons.open_in_new_rounded, size: 17),
+                      : const Icon(Icons.open_in_new_rounded, size: 17),
                   label: const Text('Manage connections'),
                 ),
                 TextButton.icon(
