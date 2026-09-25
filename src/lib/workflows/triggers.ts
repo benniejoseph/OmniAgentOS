@@ -1258,7 +1258,7 @@ export async function processDueWorkflowSchedulesForTenant(input: {
     async () => {
       await ensureDatabaseSchema();
       return getSql()`
-        SELECT DISTINCT owner_actor_id
+        SELECT DISTINCT trigger.owner_actor_id COLLATE "C" AS owner_actor_id
         FROM omni_workflow_triggers trigger
         WHERE trigger.tenant_id = ${tenantId}
           AND trigger.trigger_kind = 'schedule'
@@ -1280,7 +1280,7 @@ export async function processDueWorkflowSchedulesForTenant(input: {
                 AND occurrence.status IN ('claimed', 'enqueued')
             )
           )
-        ORDER BY owner_actor_id COLLATE "C"
+        ORDER BY trigger.owner_actor_id COLLATE "C"
         LIMIT ${limit}
       `;
     },

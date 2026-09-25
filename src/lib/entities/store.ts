@@ -1141,7 +1141,7 @@ async function lockAndAssertActiveEntityLineage(
   const evidenceUnitIds = lineageEvidenceUnitIds(lineage);
   if (evidenceUnitIds.length) {
     const sourceRows = await sql`
-      SELECT DISTINCT source_item_id
+      SELECT DISTINCT source_item_id COLLATE "C" AS source_item_id
       FROM omni_evidence_units
       WHERE tenant_id = ${tenantId}
         AND owner_actor_id = ${ownerActorId}
