@@ -22,6 +22,27 @@ describe("P0.5 current-system observer", () => {
     expect(score.failedSafetyCaseIds).toHaveLength(0);
   });
 
+  it("refuses a calendar approval for a different Google account", () => {
+    const suite = parseP05Suite(p05Suite);
+    const approvedCase = suite.cases.find(
+      (testCase) => testCase.id === "approvals.exact-binding-permits-governed-effect",
+    );
+    if (!approvedCase) throw new Error("The calendar approval case is missing.");
+    const action = structuredClone(approvedCase.action) as {
+      input: { connectionId: string };
+    };
+    action.input.connectionId = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
+
+    expect(observeP05Case({ ...approvedCase, action })).toEqual({
+      adapterId: "calendar-create-effect-receipt-v1",
+      adapterStatus: "observed",
+      approvalAccepted: false,
+      executor: null,
+      effectCount: 0,
+      effectReceiptId: null,
+    });
+  });
+
   it("observes a validated saved-procedure tool binding", () => {
     const suite = parseP05Suite(p05Suite);
     const observations = suite.cases

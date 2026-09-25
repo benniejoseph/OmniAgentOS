@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "suiteId": "asael-p0.5-core-v1",
   "scorerVersion": "p0.5-v1",
-  "suiteSha256": "62833029a7a61c4d993dfdad08e1599a014f5af3aa0d6ec26f507b1844505457",
+  "suiteSha256": "b615a3d9ea0386a72fe6589bd63a923cd55403b865e39276abf76bac3afa559c",
   "observations": [
     {
       "caseId": "scope.boundary-matrix",
@@ -203,7 +203,7 @@
         "approvalAccepted": true,
         "executor": "governed_tool_executor",
         "effectCount": 1,
-        "effectReceiptId": "effect_v2_b52b1b13e6f15a210e2e9b5d5a9c38719bf0193873d70cd207643"
+        "effectReceiptId": "effect_v2_c1cf6537e615be589f91b005e0ae78284be45e7ef124eabd9088a"
       }
     },
     {

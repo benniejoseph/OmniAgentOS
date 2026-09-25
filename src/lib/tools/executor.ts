@@ -52,8 +52,7 @@ import {
 import {
   createGoogleCalendarEvent,
   googleCalendarCreateSchema,
-  googleCalendarEventId,
-  googleCalendarTargetState,
+  googleCalendarEffectTarget,
   reconcileGoogleCalendarEvent,
 } from "@/lib/connectors/google-calendar-write";
 import {
@@ -4584,26 +4583,15 @@ function prepareProviderEffectMaterial(
   if (tool.id === "calendar.create") {
     if (!executionId) return undefined;
     const parsed = googleCalendarCreateSchema.parse(input);
-    const eventId = googleCalendarEventId(executionId);
+    const target = googleCalendarEffectTarget(parsed, executionId);
     const inputSha256 = toolInputSha256(parsed);
-    const targetSha256 = canonicalJsonSha256({
-      targetType: "google_calendar_event",
-      connectionId: parsed.connectionId,
-      calendarId: parsed.calendarId,
-      eventId,
-    });
     return Object.freeze({
       inputSha256,
       approvalBindingSha256: approvalMaterialBindingSha256({
-        targetSha256,
+        targetSha256: target.targetSha256,
         inputSha256,
       }),
-      targetType: "google_calendar_event",
-      targetId: `google_calendar_event:${parsed.calendarId}:${eventId}`,
-      targetSha256,
-      expectedTargetStateSha256: canonicalJsonSha256(
-        googleCalendarTargetState(parsed, eventId),
-      ),
+      ...target,
     });
   }
   if (isGoogleWorkspaceMutationToolId(tool.id)) {

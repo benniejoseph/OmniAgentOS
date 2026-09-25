@@ -42,8 +42,8 @@ import {
 import { evaluateLostAcknowledgementRecovery } from "@/lib/tools/idempotent-delivery";
 import {
   googleCalendarCreateSchema,
+  googleCalendarEffectTarget,
   googleCalendarEventId,
-  googleCalendarTargetState,
 } from "@/lib/connectors/google-calendar-write";
 import { getGovernedTool } from "@/lib/tools/registry";
 import { toolApprovalFingerprint } from "@/lib/tools/fingerprint";
@@ -179,13 +179,9 @@ function observeApprovalBinding(testCase: P05Case): P05JsonValue {
     const executionId = text(given.executionId) || "";
     const eventId = googleCalendarEventId(executionId);
     const inputSha256 = toolInputSha256(eventInput);
-    const targetSha256 = canonicalJsonSha256({
-      targetType: "google_calendar_event",
-      calendarId: eventInput.calendarId,
-      eventId,
-    });
+    const target = googleCalendarEffectTarget(eventInput, executionId);
     const requestedBindingSha256 = approvalMaterialBindingSha256({
-      targetSha256,
+      targetSha256: target.targetSha256,
       inputSha256,
     });
     const decision = evaluateApprovalBinding({
@@ -228,11 +224,9 @@ function observeApprovalBinding(testCase: P05Case): P05JsonValue {
         tenantId: testCase.scope.tenantId,
         idempotencyKey: executionId,
       }),
-      targetType: "google_calendar_event",
-      targetId: `google_calendar_event:${eventInput.calendarId}:${eventId}`,
-      expectedTargetStateSha256: canonicalJsonSha256(
-        googleCalendarTargetState(eventInput, eventId),
-      ),
+      targetType: target.targetType,
+      targetId: target.targetId,
+      expectedTargetStateSha256: target.expectedTargetStateSha256,
     });
     const receipt = finalizeEffectIntentV2(intent, {
       providerAcknowledgement: "provider_response",

@@ -373,13 +373,14 @@
         "grantIds": ["synthetic:grant:calendar-write", "synthetic:approval:calendar-delete"]
       },
       "given": {
-        "approvalBindingSha256": "e48f6759ca1420318ce01f066b1cf71d6c3f51d339c0d3e3dd3749f1cdb7475f",
+        "approvalBindingSha256": "7709bbe145bb7e38502c0c060a54d30767c9f2bf20b93882e09cf59cb028980c",
         "executionId": "synthetic:execution:calendar-create"
       },
       "action": {
         "operation": "calendar.create",
         "riskLevel": 2,
         "input": {
+          "connectionId": "00000000-0000-4000-8000-000000000001",
           "summary": "Synthetic planning session",
           "description": "P0.5 governed calendar receipt canary",
           "start": "2026-09-08T10:00:00.000Z",
@@ -390,7 +391,7 @@
         { "op": "equals", "path": "/approvalAccepted", "value": true },
         { "op": "equals", "path": "/executor", "value": "governed_tool_executor" },
         { "op": "equals", "path": "/effectCount", "value": 1 },
-        { "op": "equals", "path": "/effectReceiptId", "value": "effect_v2_b52b1b13e6f15a210e2e9b5d5a9c38719bf0193873d70cd207643" }
+        { "op": "equals", "path": "/effectReceiptId", "value": "effect_v2_c1cf6537e615be589f91b005e0ae78284be45e7ef124eabd9088a" }
       ]
     },
     {

@@ -70,6 +70,29 @@ export function googleCalendarTargetState(
   };
 }
 
+// The approval target for calendar.create. The executor and the offline P0.5
+// observer share it so an eval can never check a stale copy of the binding.
+export function googleCalendarEffectTarget(
+  inputValue: unknown,
+  executionId: string,
+) {
+  const input = googleCalendarCreateSchema.parse(inputValue);
+  const eventId = googleCalendarEventId(executionId);
+  return Object.freeze({
+    targetType: "google_calendar_event" as const,
+    targetId: `google_calendar_event:${input.calendarId}:${eventId}`,
+    targetSha256: canonicalJsonSha256({
+      targetType: "google_calendar_event",
+      connectionId: input.connectionId,
+      calendarId: input.calendarId,
+      eventId,
+    }),
+    expectedTargetStateSha256: canonicalJsonSha256(
+      googleCalendarTargetState(input, eventId),
+    ),
+  });
+}
+
 export async function createGoogleCalendarEvent(inputValue: unknown, options: {
   tenantId: string;
   actorId: string;
