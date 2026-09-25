@@ -308,6 +308,12 @@ account/security, permission-changing, and unknown effects still create a fresh
 approval. `local.macos.command.run` remains outside task authority and requires
 one exact approval every time.
 
+Task-scoped text entry covers single-line text of at most 500 characters with
+no tab, line break, or control character. Task-scoped navigation covers only a
+site named in the user's request, with `www.` treated as the same site. When
+approval is forced, for example by web voice input or an "always approve" Agent
+profile, the forced review outranks task authority.
+
 Vercel deployment `dpl_GWtwwNMwaroDcX8ixTGe18FY2Vj5` is promoted to
 `https://asael.bennierichard.com` at exact server revision
 `0c9c4fe0b93dbd216c496d0579f6af7b63c0162b`; canonical health reported that

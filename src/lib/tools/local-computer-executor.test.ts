@@ -345,7 +345,7 @@ describe("governed local Mac tools", () => {
       context: securityContext(),
       executionScope: executionScope("task", "run-local-task"),
       agentRunId: "run-local-task",
-      localComputerTaskAuthorized: true,
+      localComputerTaskAuthority: { objective: "Open the next Finder item." },
     } as const;
 
     const covered = await executeGovernedTool({
@@ -365,6 +365,89 @@ describe("governed local Mac tools", () => {
     expect(forced.record.status).toBe("approval_required");
     expect(forced.record.reason).not.toContain("task authority");
     expect(mocks.executeLocalComputerCommand).toHaveBeenCalledOnce();
+  });
+
+  it("keeps task-authorized typing to short single-line text", async () => {
+    const { executeGovernedTool } = await import("@/lib/tools/executor");
+    const typeText = (text: string, key: string) => executeGovernedTool({
+      toolId: "local.macos.type",
+      input: { snapshotRevision: "d".repeat(64), text },
+      dryRun: false,
+      context: securityContext(),
+      executionScope: executionScope("type", "run-local-type"),
+      agentRunId: "run-local-type",
+      idempotencyKey: `local-mac-type-${key}`,
+      localComputerTaskAuthority: { objective: "Search TradingView for gold." },
+    });
+
+    const search = await typeText("XAUUSD gold", "search");
+    expect(search.record.status).toBe("executed");
+    expect(mocks.executeLocalComputerCommand).toHaveBeenCalledOnce();
+
+    // A typed line break reaches the app as Return, which sends in most chat
+    // and mail apps. Tab moves focus mid-text. Neither may skip review.
+    for (const [key, text] of [
+      ["line-feed", "Looks good\n"],
+      ["carriage-return", "Looks good\r"],
+      ["tab", "name\tsecond field"],
+      ["line-separator", "first\u2028second"],
+      ["escape", "text\u001b"],
+      ["c1-next-line", "text\u0085more"],
+      ["long", "x".repeat(501)],
+    ] as const) {
+      const pending = await typeText(text, key);
+      expect(pending.record.status, key).toBe("approval_required");
+      expect(pending.record.reason, key).toContain("single-line");
+    }
+    expect(mocks.executeLocalComputerCommand).toHaveBeenCalledOnce();
+  });
+
+  it("keeps task-authorized navigation on sites the user named", async () => {
+    const { executeGovernedTool } = await import("@/lib/tools/executor");
+    const openUrl = (url: string, key: string, objective: string) =>
+      executeGovernedTool({
+        toolId: "local.macos.open_url",
+        input: { browser: "chrome", url },
+        dryRun: false,
+        context: securityContext(),
+        executionScope: executionScope("open", "run-local-open"),
+        agentRunId: "run-local-open",
+        idempotencyKey: `local-mac-open-${key}`,
+        localComputerTaskAuthority: { objective },
+      });
+    const named = "Open tradingview.com and show the XAUUSD chart.";
+
+    for (const [key, url] of [
+      ["apex", "https://tradingview.com/chart/?symbol=OANDA%3AXAUUSD"],
+      ["www", "https://www.tradingview.com/chart/?symbol=OANDA%3AXAUUSD"],
+    ] as const) {
+      const opened = await openUrl(url, key, named);
+      expect(opened.record.status, key).toBe("executed");
+    }
+    expect(
+      (await openUrl(
+        "https://www.youtube.com/results?search_query=gold",
+        "named-url",
+        "Search https://www.youtube.com/ for gold price videos",
+      )).record.status,
+    ).toBe("executed");
+    expect(mocks.executeLocalComputerCommand).toHaveBeenCalledTimes(3);
+
+    // A URL can carry page data to whoever runs the destination. On-screen
+    // text must not be able to pick a destination the user never named.
+    for (const [key, url, objective] of [
+      ["unnamed", "https://attacker.example/c?d=secret", named],
+      ["suffix-lookalike", "https://tradingview.com.attacker.example/", named],
+      ["prefix-lookalike", "https://eviltradingview.com/", named],
+      ["other-subdomain", "https://accounts.tradingview.com/", named],
+      ["brand-only", "https://www.tradingview.com/", "Open TradingView."],
+      ["email-domain", "https://example.org/", "Email me at owner@example.org."],
+    ] as const) {
+      const pending = await openUrl(url, key, objective);
+      expect(pending.record.status, key).toBe("approval_required");
+      expect(pending.record.reason, key).toContain("sites named");
+    }
+    expect(mocks.executeLocalComputerCommand).toHaveBeenCalledTimes(3);
   });
 });
 

@@ -2302,8 +2302,9 @@ export async function* runAgent(
               item.call.callId,
             ),
             agentRunId: run.id,
-            localComputerTaskAuthorized:
-              computerUseTarget === "local_macos",
+            localComputerTaskAuthority: computerUseTarget === "local_macos"
+              ? { objective: run.prompt }
+              : undefined,
             checkpointBeforeEffect: checkpointBeforeGovernedTool,
           })));
           for (let index = 0; index < prepared.length; index += 1) {
@@ -2423,8 +2424,9 @@ export async function* runAgent(
               mcpSessionScope: agentMcpSessionScope(run.id, securityContext),
               executionScope: toolExecutionScope,
               agentRunId: run.id,
-              localComputerTaskAuthorized:
-                computerUseTarget === "local_macos",
+              localComputerTaskAuthority: computerUseTarget === "local_macos"
+                ? { objective: run.prompt }
+                : undefined,
               checkpointBeforeEffect: checkpointBeforeGovernedTool,
             }),
           });
@@ -3098,8 +3100,9 @@ export async function* runNonOpenAIProviderToolLoop(input: {
             ),
             executionScope: toolExecutionScope,
             agentRunId: input.runId,
-            localComputerTaskAuthorized:
-              input.computerUseTarget === "local_macos",
+            localComputerTaskAuthority: input.computerUseTarget === "local_macos"
+              ? { objective: input.prompt }
+              : undefined,
             checkpointBeforeEffect: input.checkpointBeforeTool,
           });
         }),
@@ -3218,8 +3221,9 @@ export async function* runNonOpenAIProviderToolLoop(input: {
             ),
             executionScope: toolExecutionScope,
             agentRunId: input.runId,
-            localComputerTaskAuthorized:
-              input.computerUseTarget === "local_macos",
+            localComputerTaskAuthority: input.computerUseTarget === "local_macos"
+              ? { objective: input.prompt }
+              : undefined,
             checkpointBeforeEffect: input.checkpointBeforeTool,
           }),
         });
@@ -4078,8 +4082,10 @@ async function resumeAgentRunAfterToolApprovalInScope({
           mcpSessionScope: agentMcpSessionScope(run.id, continuation.context),
           executionScope: toolExecutionScope,
           agentRunId: run.id,
-          localComputerTaskAuthorized:
-            continuation.computerUseTarget === "local_macos",
+          localComputerTaskAuthority:
+            continuation.computerUseTarget === "local_macos"
+              ? { objective: run.prompt }
+              : undefined,
           checkpointBeforeEffect: checkpointBeforeResumeTool,
         }),
       });
@@ -4408,8 +4414,10 @@ async function resumeAgentRunAfterToolApprovalInScope({
             ),
             executionScope: toolExecutionScope,
             agentRunId: run.id,
-            localComputerTaskAuthorized:
-              continuation.computerUseTarget === "local_macos",
+            localComputerTaskAuthority:
+              continuation.computerUseTarget === "local_macos"
+                ? { objective: run.prompt }
+                : undefined,
             checkpointBeforeEffect: checkpointBeforeResumeTool,
           }),
         });
@@ -5120,8 +5128,10 @@ async function resumeProviderBoundAgentRunAfterApproval({
           mcpSessionScope: agentMcpSessionScope(run.id, continuation.context),
           executionScope: toolExecutionScope,
           agentRunId: run.id,
-          localComputerTaskAuthorized:
-            continuation.computerUseTarget === "local_macos",
+          localComputerTaskAuthority:
+            continuation.computerUseTarget === "local_macos"
+              ? { objective: run.prompt }
+              : undefined,
           checkpointBeforeEffect: checkpointBeforeResumeTool,
         }),
       });

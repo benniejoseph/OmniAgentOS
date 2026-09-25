@@ -603,6 +603,58 @@ describe("non-OpenAI governed provider tool loop", () => {
     expect(collected.result.text).toBe("A fresh observation is required.");
   });
 
+  it("scopes This Mac task authority to the user's own request", async () => {
+    const run = async (computerUseTarget?: "local_macos") => {
+      const executeTool = vi.fn(async (request: { toolId: string }) => ({
+        record: executionRecord(request.toolId, "executed"),
+        result: { activated: true },
+      }));
+      await collect(runNonOpenAIProviderToolLoop({
+        provider: "google",
+        tier: "reasoning",
+        instructions: "Act on This Mac.",
+        prompt: "Open tradingview.com in Chrome.",
+        tools: [modelTool("local_activate_app")],
+        toolbox: {
+          byFunctionName: new Map([
+            ["local_activate_app", {
+              definition: toolDefinition("local.macos.activate_app"),
+              functionName: "local_activate_app",
+            }],
+          ]),
+        },
+        securityContext: {
+          tenantId: "tenant-local",
+          actorId: "owner-local",
+          role: "admin",
+          source: "default",
+        },
+        runId: "run-local-task-authority",
+        computerUseTarget,
+        maxToolSteps: 1,
+        generateTurn: vi.fn(async (request: ModelToolTurnRequest) =>
+          request.toolResults?.length
+            ? turn({ text: "Chrome is open." })
+            : turn({
+                toolCalls: [{
+                  callId: "call-activate",
+                  name: "local_activate_app",
+                  argumentsJson: "{\"bundleId\":\"com.google.Chrome\"}",
+                }],
+              })),
+        executeTool: executeTool as never,
+      }));
+      return executeTool.mock.calls[0]?.[0];
+    };
+
+    expect(await run("local_macos")).toMatchObject({
+      localComputerTaskAuthority: {
+        objective: "Open tradingview.com in Chrome.",
+      },
+    });
+    expect(await run()).toMatchObject({ localComputerTaskAuthority: undefined });
+  });
+
   it("drops local Mac evidence before an approval continuation", async () => {
     let turnIndex = 0;
     const generateTurn = vi.fn(async (request: ModelToolTurnRequest) => {

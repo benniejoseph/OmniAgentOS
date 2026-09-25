@@ -431,6 +431,14 @@ export type GovernedToolCheckpointInput = Readonly<{
   executionScope: ExecutionScope;
 }>;
 
+/**
+ * Request-scoped This Mac task authority. The objective is the initiating
+ * user's own request text; it bounds where task-authorized navigation may go.
+ */
+export type LocalComputerTaskAuthority = Readonly<{
+  objective: string;
+}>;
+
 export class ToolInputValidationError extends Error {
   constructor(message: string) {
     super(message);
@@ -469,7 +477,7 @@ export async function executeGovernedTool({
   approvalGrantClaim,
   policyLeaseClaim,
   moltbookAutonomy,
-  localComputerTaskAuthorized = false,
+  localComputerTaskAuthority,
   checkpointBeforeEffect,
 }: {
   toolId: string;
@@ -506,9 +514,10 @@ export async function executeGovernedTool({
   /**
    * Exact, request-scoped user authority for bounded non-consequential visual
    * interactions on This Mac. The executor independently checks the actor,
-   * run, principal, tool, declared purpose, and keyboard modifiers.
+   * run, principal, tool, declared purpose, keyboard modifiers, typed text,
+   * and navigation target.
    */
-  localComputerTaskAuthorized?: boolean;
+  localComputerTaskAuthority?: LocalComputerTaskAuthority;
   /** Dormant checkpoint shadow hook invoked after intent persistence. */
   checkpointBeforeEffect?: (
     input: GovernedToolCheckpointInput,
@@ -1166,7 +1175,7 @@ export async function executeGovernedTool({
             effectBinding,
             approvalGrantClaim,
             moltbookAutonomy,
-            localComputerTaskAuthorized,
+            localComputerTaskAuthority,
             checkpointBeforeEffect,
           });
         }
@@ -1285,16 +1294,17 @@ export async function executeGovernedTool({
       agentRunId,
       idempotencyKey,
     });
+  const localComputerTaskAuthorityDecision = decideLocalComputerTaskAuthority({
+    authority: localComputerTaskAuthority,
+    forceApproval: effectiveForceApproval,
+    toolId: tool.id,
+    preparedInput,
+    context,
+    executionScope: scopedRequest.executionScope,
+    agentRunId,
+  });
   const localComputerTaskAuthorityApproval =
-    localComputerTaskAuthorizationApplies({
-      explicitlyAuthorized: localComputerTaskAuthorized,
-      forceApproval: effectiveForceApproval,
-      toolId: tool.id,
-      preparedInput,
-      context,
-      executionScope: scopedRequest.executionScope,
-      agentRunId,
-    });
+    localComputerTaskAuthorityDecision.covered;
   const effectiveApproved =
     (approved &&
       durableApprovalClaim &&
@@ -1332,7 +1342,12 @@ export async function executeGovernedTool({
         ? googleWorkspaceAuditInput(tool.id, preparedInput)
         : redactSensitive(preparedInput)
     ) as Record<string, unknown>,
-    reason: decision.reason,
+    reason:
+      decision.approvalRequired &&
+      !decision.allowed &&
+      localComputerTaskAuthorityDecision.reviewReason
+        ? `${decision.reason} ${localComputerTaskAuthorityDecision.reviewReason}`
+        : decision.reason,
   };
   let executionRecord = existingRecord;
   let activeExecutionClaimToken = executionClaimToken;
@@ -1589,7 +1604,7 @@ export async function executeGovernedTool({
           agentRunId,
           effectBinding,
           moltbookAutonomy,
-          localComputerTaskAuthorized,
+          localComputerTaskAuthority,
           checkpointBeforeEffect,
         });
       }
@@ -3033,6 +3048,64 @@ const LOCAL_COMPUTER_SAFE_INTERACTION_PURPOSES = new Set([
   "media_control",
 ]);
 
+const LOCAL_COMPUTER_TASK_MAX_TYPED_CHARACTERS = 500;
+
+// C0 controls (including tab, line feed, and carriage return), DEL, C1
+// controls, and Unicode line and paragraph separators. The helper types text
+// as key events, so a line break arrives as Return (which sends in most chat
+// and mail apps) and a tab moves focus to another control mid-text.
+const LOCAL_COMPUTER_TASK_UNSAFE_TEXT = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u;
+
+// A domain name the user wrote, bare or inside a URL. The look-behind skips
+// the domain of an email address and fragments of longer names.
+const LOCAL_COMPUTER_TASK_NAMED_DOMAIN =
+  /(?<![\p{L}\p{N}@._-])(?:[\p{L}\p{N}](?:[\p{L}\p{N}-]*[\p{L}\p{N}])?\.)+\p{L}[\p{L}\p{N}-]*[\p{L}\p{N}](?![\p{L}\p{N}_-])/giu;
+
+type LocalComputerTaskAuthorityDecision = Readonly<{
+  covered: boolean;
+  /** Why an action inside an authorized This Mac task still needs review. */
+  reviewReason?: string;
+}>;
+
+function localComputerTaskTextCovered(text: unknown) {
+  return typeof text === "string" &&
+    text.length <= LOCAL_COMPUTER_TASK_MAX_TYPED_CHARACTERS &&
+    !LOCAL_COMPUTER_TASK_UNSAFE_TEXT.test(text);
+}
+
+/** `www.example.com` and `example.com` are one site; other subdomains are not. */
+function localComputerTaskSiteKey(hostname: string) {
+  const host = hostname.toLowerCase().replace(/\.$/, "");
+  return host.startsWith("www.") ? host.slice(4) : host;
+}
+
+/**
+ * A URL can carry page data to whoever runs its destination, so on-screen
+ * text must not choose where task authority navigates. Only a site the user
+ * named in their own request qualifies; anything else crosses review.
+ */
+function localComputerTaskNavigationCovered(url: unknown, objective: string) {
+  if (typeof url !== "string") return false;
+  let target: string;
+  try {
+    target = localComputerTaskSiteKey(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+  for (const [named] of objective.matchAll(LOCAL_COMPUTER_TASK_NAMED_DOMAIN)) {
+    try {
+      if (
+        localComputerTaskSiteKey(new URL(`https://${named}`).hostname) === target
+      ) {
+        return true;
+      }
+    } catch {
+      // Not a valid host name, so it names no site.
+    }
+  }
+  return false;
+}
+
 const LOCAL_COMPUTER_TASK_NAVIGATION_KEYS = new Set([
   "tab",
   "escape",
@@ -3088,22 +3161,22 @@ function localComputerTaskKeyAuthorizationApplies(
   );
 }
 
-function localComputerTaskAuthorizationApplies(input: {
-  explicitlyAuthorized: boolean;
+function decideLocalComputerTaskAuthority(input: {
+  authority?: LocalComputerTaskAuthority;
   forceApproval: boolean;
   toolId: string;
   preparedInput: Record<string, unknown>;
   context?: SecurityContext;
   executionScope?: ExecutionScope;
   agentRunId?: string;
-}) {
+}): LocalComputerTaskAuthorityDecision {
   const scope = input.executionScope;
   // Forced approval (voice input, an "always approve" agent profile, or a
   // durable approval record) outranks task authority. A task authorization
   // widens what runs without review; it must never narrow a forced review.
-  if (input.forceApproval) return false;
+  if (input.forceApproval) return { covered: false };
   if (
-    input.explicitlyAuthorized !== true ||
+    !input.authority ||
     !LOCAL_COMPUTER_TASK_AUTHORIZED_TOOL_IDS.has(input.toolId) ||
     input.toolId === "local.macos.command.run" ||
     !scope ||
@@ -3114,7 +3187,30 @@ function localComputerTaskAuthorizationApplies(input: {
     !input.agentRunId ||
     input.agentRunId !== scope.correlationId
   ) {
-    return false;
+    return { covered: false };
+  }
+
+  if (input.toolId === "local.macos.type") {
+    return localComputerTaskTextCovered(input.preparedInput.text)
+      ? { covered: true }
+      : {
+          covered: false,
+          reviewReason:
+            `This Mac task authority types only short single-line text (up to ${LOCAL_COMPUTER_TASK_MAX_TYPED_CHARACTERS} characters); line breaks, tabs, and control characters can send a message or move focus.`,
+        };
+  }
+
+  if (input.toolId === "local.macos.open_url") {
+    return localComputerTaskNavigationCovered(
+      input.preparedInput.url,
+      input.authority.objective,
+    )
+      ? { covered: true }
+      : {
+          covered: false,
+          reviewReason:
+            "This Mac task authority opens only sites named in your request.",
+        };
   }
 
   if (
@@ -3122,7 +3218,7 @@ function localComputerTaskAuthorizationApplies(input: {
     input.toolId !== "local.macos.click" &&
     input.toolId !== "local.macos.key"
   ) {
-    return true;
+    return { covered: true };
   }
 
   if (
@@ -3131,11 +3227,13 @@ function localComputerTaskAuthorizationApplies(input: {
       input.preparedInput.interactionPurpose,
     )
   ) {
-    return false;
+    return { covered: false };
   }
 
-  if (input.toolId !== "local.macos.key") return true;
-  return localComputerTaskKeyAuthorizationApplies(input.preparedInput);
+  if (input.toolId !== "local.macos.key") return { covered: true };
+  return {
+    covered: localComputerTaskKeyAuthorizationApplies(input.preparedInput),
+  };
 }
 
 function localComputerActionForTool(toolId: string) {

@@ -180,6 +180,13 @@ text entry. `press`, `click`, and `key` must declare their interaction purpose;
 submit, file transfer, destructive, financial, account/security, permission, and
 unknown effects leave that task authority and enter the ordinary per-action
 approval path. Modified command/control/option shortcuts are also excluded.
+Task-authorized `type` covers only single-line text of at most 500 characters
+with no tab, line break, or control character, because the helper types text
+as key events and a typed line break arrives as Return. Task-authorized
+`open_url` covers only a site the user named in the request (`www.` counts as
+the same site; other subdomains do not), because a URL can carry page data to
+its destination. Anything else enters the per-action approval path with a
+reason that names the limit.
 The direct command runner is never covered by task authority and always requires
 a fresh approval. `open_url` accepts only allowlisted Chrome and an
 absolute HTTP(S) URL without embedded credentials, waits for at most 15 seconds,
