@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const routeMocks = vi.hoisted(() => {
   class OAuthGrantReadConflictError extends Error {}
@@ -27,7 +27,8 @@ vi.mock("@/lib/security/canonical-actor", () => ({
     routeMocks.canonicalRequestActorBindingFromSecurityContext,
 }));
 
-vi.mock("@/lib/connectors/oauth-providers", () => ({
+vi.mock("@/lib/connectors/oauth-providers", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/connectors/oauth-providers")>()),
   oauthConfigured: vi.fn(() => true),
   oauthProviders: {
     google: {
@@ -57,6 +58,11 @@ const context = {
     tenantName: "Tenant A",
   },
 };
+const privateAccount = {
+  purpose: "personal",
+  email: context.auth.email,
+  label: "Personal",
+} as const;
 const requestActorBinding = {
   version: 1,
   kind: "auth_user",
@@ -70,12 +76,23 @@ const requestActorBinding = {
 };
 
 beforeEach(() => {
+  vi.stubEnv("OMNIAGENT_PRIVATE_ACCOUNT_ALLOWLIST_JSON", JSON.stringify([{
+    email: context.auth.email,
+    tenantId: context.tenantId,
+    tenantName: context.auth.tenantName,
+    tenantMode: "existing",
+    label: privateAccount.label,
+  }]));
   routeMocks.authorizeRequest.mockReset().mockResolvedValue(context);
   routeMocks.canonicalRequestActorBindingFromSecurityContext
     .mockReset()
     .mockReturnValue(requestActorBinding);
   routeMocks.listOAuthGrants.mockReset().mockResolvedValue([]);
   routeMocks.listOAuthGrantsForRequest.mockReset().mockResolvedValue([]);
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 describe("OAuth connection metadata route", () => {
@@ -85,6 +102,10 @@ describe("OAuth connection metadata route", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("private, no-store");
     await expect(response.json()).resolves.toEqual(expect.objectContaining({
+      providers: [expect.objectContaining({
+        id: "google",
+        accounts: [privateAccount],
+      })],
       grants: [],
       requestReadContracts: { oauthGrants: "exact_v1" },
     }));
@@ -96,6 +117,38 @@ describe("OAuth connection metadata route", () => {
     expect(
       routeMocks.canonicalRequestActorBindingFromSecurityContext,
     ).not.toHaveBeenCalled();
+  });
+
+  it("surfaces only the signed-in private account's personal Google grant", async () => {
+    routeMocks.listOAuthGrants.mockResolvedValue([
+      oauthGrant({ id: "google-personal" }),
+      oauthGrant({
+        id: "google-other-account",
+        accountEmail: "someone-else@example.test",
+      }),
+      oauthGrant({
+        id: "google-legacy-work",
+        connectionLabel: "Work",
+        connectionPurpose: "work",
+      }),
+      oauthGrant({
+        id: "salesforce",
+        provider: "salesforce",
+        accountEmail: undefined,
+      }),
+    ]);
+
+    const response = await GET(new Request("http://localhost/api/oauth"));
+
+    expect(response.status).toBe(200);
+    const body = await response.json() as {
+      grants: Array<{ id: string; manageable: boolean }>;
+    };
+    expect(body.grants.map(({ id }) => id)).toEqual([
+      "google-personal",
+      "salesforce",
+    ]);
+    expect(body.grants.every(({ manageable }) => manageable)).toBe(true);
   });
 
   it("uses the authenticated binding only for literal readable opt-in", async () => {
@@ -164,3 +217,20 @@ describe("OAuth connection metadata route", () => {
     consoleError.mockRestore();
   });
 });
+
+function oauthGrant(overrides: Record<string, unknown>) {
+  return {
+    tenantId: context.tenantId,
+    actorId: context.actorId,
+    provider: "google",
+    accountEmail: context.auth.email,
+    connectionLabel: "Personal",
+    connectionPurpose: "personal",
+    scopes: ["https://www.googleapis.com/auth/drive.readonly"],
+    status: "active",
+    authorizationGeneration: 1,
+    createdAt: "2026-09-23T00:00:00.000Z",
+    updatedAt: "2026-09-23T00:00:00.000Z",
+    ...overrides,
+  };
+}

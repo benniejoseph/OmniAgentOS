@@ -159,7 +159,12 @@ describe("governed native tool schemas", () => {
         riskLevel: 0,
         approvalRequired: false,
         operationClass: "read_only",
+        inputSchema: {
+          properties: { connectionId: { type: "string", format: "uuid" } },
+        },
       });
+      expect(getGovernedTool(id)?.inputSchema.required ?? [])
+        .not.toContain("connectionId");
     }
     for (const id of [
       "google.gmail.trash",
@@ -177,7 +182,11 @@ describe("governed native tool schemas", () => {
         approvalRequired: true,
         operationClass: "mutation",
         reversible: true,
+        inputSchema: {
+          properties: { connectionId: { type: "string", format: "uuid" } },
+        },
       });
+      expect(getGovernedTool(id)?.inputSchema.required).toContain("connectionId");
     }
     for (const id of [
       "google.drive.update",
@@ -193,7 +202,11 @@ describe("governed native tool schemas", () => {
         approvalRequired: true,
         operationClass: "mutation",
         reversible: false,
+        inputSchema: {
+          properties: { connectionId: { type: "string", format: "uuid" } },
+        },
       });
+      expect(getGovernedTool(id)?.inputSchema.required).toContain("connectionId");
     }
     expect(getGovernedTool("app.communications.deliver")).toMatchObject({
       riskLevel: 2,
@@ -218,6 +231,7 @@ describe("governed native tool schemas", () => {
     });
     expect(getGovernedTool("google.docs.update")?.inputSchema).toMatchObject({
       required: [
+        "connectionId",
         "documentId",
         "text",
         "expectedCurrentSha256",
@@ -229,7 +243,7 @@ describe("governed native tool schemas", () => {
     });
     expect(getGovernedTool("google.docs.create")?.inputSchema).toMatchObject({
       additionalProperties: false,
-      required: ["title"],
+      required: ["connectionId", "title"],
       properties: {
         bodyText: { type: "string", minLength: 1, maxLength: 100_000 },
         blocks: { type: "array", minItems: 1, maxItems: 100 },
@@ -242,14 +256,14 @@ describe("governed native tool schemas", () => {
     expect(getGovernedTool("google.docs.create")?.inputSchema)
       .not.toHaveProperty("properties.contentBase64");
     expect(getGovernedTool("google.sheets.create")?.inputSchema).toMatchObject({
-      required: ["title", "sheetName", "values"],
+      required: ["connectionId", "title", "sheetName", "values"],
       properties: {
         sheetName: { type: "string", minLength: 1, maxLength: 100 },
         values: { type: "array", minItems: 1, maxItems: 50 },
       },
     });
     expect(getGovernedTool("google.slides.create")?.inputSchema).toMatchObject({
-      required: ["title", "slides"],
+      required: ["connectionId", "title", "slides"],
       properties: {
         slides: {
           type: "array",

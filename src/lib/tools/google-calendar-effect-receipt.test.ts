@@ -16,7 +16,10 @@ vi.mock("@/lib/connectors/oauth-store", async (importOriginal) => ({
   saveOAuthGrant: oauth.saveOAuthGrant,
 }));
 
+const CALENDAR_CONNECTION_ID = "0b5f3f2e-7c1a-4d8e-9b6f-3a2c1d4e5f60";
+
 const eventInput = {
+  connectionId: CALENDAR_CONNECTION_ID,
   summary: "Governed planning session",
   description: "Created through the governed executor.",
   start: "2026-09-08T10:00:00.000Z",
@@ -33,10 +36,13 @@ describe("governed Google Calendar effect receipts", () => {
     oauth.getOAuthGrantSecrets.mockResolvedValue({
       credentialState: "active",
       grant: {
-        id: "grant-calendar",
+        id: CALENDAR_CONNECTION_ID,
         tenantId: "tenant-calendar",
         actorId: "owner-calendar",
         provider: "google",
+        accountEmail: "owner-calendar@example.test",
+        connectionLabel: "Personal",
+        connectionPurpose: "personal",
         scopes: [GOOGLE_CALENDAR_WRITE_SCOPE],
         status: "active",
         authorizationGeneration: 1,
@@ -103,6 +109,18 @@ describe("governed Google Calendar effect receipts", () => {
     });
 
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+    expect(oauth.getOAuthGrantSecrets).toHaveBeenCalledWith(
+      tenantId,
+      actorId,
+      "google",
+      { connectionId: CALENDAR_CONNECTION_ID },
+    );
+    expect(result.result).toMatchObject({
+      connectionId: CALENDAR_CONNECTION_ID,
+      accountEmail: "owner-calendar@example.test",
+      connectionLabel: "Personal",
+      connectionPurpose: "personal",
+    });
     expect(result.record).toMatchObject({
       status: "executed",
       effectReceipt: {

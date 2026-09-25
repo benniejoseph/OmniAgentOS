@@ -25,6 +25,8 @@ import { listRunWorkspaceArtifacts } from "@/lib/runs/workspace-artifacts";
 
 const tenantId = "tenant-workspace-artifact";
 const actorId = "actor-workspace-artifact";
+const connectionId = "6e2b9d4a-1c7f-4a3e-8b5d-2f9c6a1e7b3d";
+const otherConnectionId = "9a1d5c3e-7b2f-4e6a-9c4d-8e3b1f7a5c2d";
 
 describe("run Google Workspace artifact projection", () => {
   beforeEach(() => {
@@ -37,6 +39,7 @@ describe("run Google Workspace artifact projection", () => {
       executionId: "execution-google-doc",
       toolId: "google.docs.create",
       input: {
+        connectionId,
         title: "Service Cloud transformation proposal",
         blocks: [
           { type: "heading", level: 1, text: "Executive summary" },
@@ -72,6 +75,7 @@ describe("run Google Workspace artifact projection", () => {
       executionId: "execution-google-sheet",
       toolId: "google.sheets.create",
       input: {
+        connectionId,
         title: "AI rollout tracker",
         sheetName: "Plan",
         values: [["Phase", "Owner"], ["Pilot", "Bennie"]],
@@ -83,6 +87,7 @@ describe("run Google Workspace artifact projection", () => {
       executionId: "execution-google-slides",
       toolId: "google.slides.create",
       input: {
+        connectionId,
         title: "AIForce client pitch",
         slides: [
           { title: "A better service cloud", body: "AIForce + Salesforce" },
@@ -118,7 +123,7 @@ describe("run Google Workspace artifact projection", () => {
     const sibling = googleCreateRecord({
       executionId: "execution-sibling",
       toolId: "google.docs.create",
-      input: { title: "Sibling doc", bodyText: "Private" },
+      input: { connectionId, title: "Sibling doc", bodyText: "Private" },
       resourceType: "google_document",
       resourceId: "sibling-doc",
       recordActorId: "actor-sibling",
@@ -126,7 +131,7 @@ describe("run Google Workspace artifact projection", () => {
     const tampered = googleCreateRecord({
       executionId: "execution-tampered",
       toolId: "google.docs.create",
-      input: { title: "Owner doc", bodyText: "Original" },
+      input: { connectionId, title: "Owner doc", bodyText: "Original" },
       resourceType: "google_document",
       resourceId: "owner-doc",
     });
@@ -137,11 +142,24 @@ describe("run Google Workspace artifact projection", () => {
         resourceId: "attacker-doc",
       },
     };
+    const crossConnection = googleCreateRecord({
+      executionId: "execution-cross-connection",
+      toolId: "google.docs.create",
+      input: { connectionId, title: "Owner doc", bodyText: "Original" },
+      resourceType: "google_document",
+      resourceId: "other-account-doc",
+      outputConnectionId: otherConnectionId,
+    });
     mocks.listStreamEvents.mockResolvedValue([
       runToolEvent(sibling.id, sibling.toolId, 4),
       runToolEvent(tampered.id, tampered.toolId, 5),
+      runToolEvent(crossConnection.id, crossConnection.toolId, 6),
     ]);
-    mocks.getToolExecutionsByIds.mockResolvedValue([sibling, tamperedRecord]);
+    mocks.getToolExecutionsByIds.mockResolvedValue([
+      sibling,
+      tamperedRecord,
+      crossConnection,
+    ]);
 
     await expect(listRunWorkspaceArtifacts("run-tampered", {
       tenantId,
@@ -157,16 +175,20 @@ function googleCreateRecord(input: {
   resourceType: "google_document" | "google_spreadsheet" | "google_presentation";
   resourceId: string;
   recordActorId?: string;
+  outputConnectionId?: string;
 }) {
   const target = googleWorkspaceEffectTarget(
     input.toolId,
     input.input,
     input.executionId,
   );
+  const outputConnectionId =
+    input.outputConnectionId || String(input.input.connectionId);
   const resourceIdSha256 = sha256(input.resourceId);
   const providerAcknowledgement = "provider_response" as const;
   const providerAcknowledgementSha256 = canonicalJsonSha256({
     provider: "google_workspace",
+    connectionId: outputConnectionId,
     toolId: input.toolId,
     resourceType: input.resourceType,
     resourceIdSha256,
@@ -184,6 +206,9 @@ function googleCreateRecord(input: {
     providerAcknowledgementId,
     providerAcknowledgementSha256,
     observedTargetStateSha256: target.expectedTargetStateSha256,
+    connectionId: outputConnectionId,
+    connectionLabel: "Personal",
+    connectionPurpose: "personal",
     verificationState: "verified",
     verificationReasonCode: "state_matched",
   };

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   authorizeRequest: vi.fn(),
@@ -19,15 +19,36 @@ vi.mock("@/lib/connectors/oauth-providers", async (importOriginal) => ({
 
 import { GET } from "@/app/api/oauth/[provider]/authorize/route";
 
+const sessionContext = {
+  tenantId: "tenant-a",
+  actorId: "owner@example.com",
+  role: "admin" as const,
+  source: "session" as const,
+  auth: {
+    userId: "22222222-2222-4222-8222-222222222222",
+    email: "owner@example.com",
+    sessionId: "session-a",
+    tenantName: "Tenant A",
+  },
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.authorizeRequest.mockResolvedValue({
-    tenantId: "tenant-a",
-    actorId: "owner@example.com",
-  });
+  vi.stubEnv("OMNIAGENT_PRIVATE_ACCOUNT_ALLOWLIST_JSON", JSON.stringify([{
+    email: sessionContext.auth.email,
+    tenantId: sessionContext.tenantId,
+    tenantName: sessionContext.auth.tenantName,
+    tenantMode: "existing",
+    label: "Personal",
+  }]));
+  mocks.authorizeRequest.mockResolvedValue(sessionContext);
   mocks.createOAuthAuthorization.mockReturnValue(
     "https://accounts.google.com/o/oauth2/v2/auth?state=test",
   );
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 describe("Google OAuth authorization route", () => {
@@ -39,14 +60,42 @@ describe("Google OAuth authorization route", () => {
     expect(repair.status).toBe(302);
     expect(mocks.createOAuthAuthorization).toHaveBeenLastCalledWith(
       "google",
-      expect.objectContaining({ authorizationIntent: "repair" }),
+      expect.objectContaining({
+        tenantId: sessionContext.tenantId,
+        actorId: sessionContext.actorId,
+        googleConnectionPurpose: "personal",
+        googleConnectorAccount: {
+          purpose: "personal",
+          email: sessionContext.auth.email,
+          label: "Personal",
+        },
+        authorizationIntent: "repair",
+      }),
     );
 
-    await GET(
+    const ordinary = await GET(
       new Request("https://asael.example/api/oauth/google/authorize"),
       { params: Promise.resolve({ provider: "google" }) },
     );
+    expect(ordinary.status).toBe(302);
     const ordinaryIdentity = mocks.createOAuthAuthorization.mock.calls.at(-1)?.[1];
     expect(ordinaryIdentity).not.toHaveProperty("authorizationIntent");
+  });
+
+  it("refuses Google authorization without a signed-in private account", async () => {
+    mocks.authorizeRequest.mockResolvedValue({
+      ...sessionContext,
+      source: "default",
+      auth: undefined,
+    });
+
+    const response = await GET(
+      new Request("https://asael.example/api/oauth/google/authorize?intent=repair"),
+      { params: Promise.resolve({ provider: "google" }) },
+    );
+
+    expect(response.status).toBe(403);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(mocks.createOAuthAuthorization).not.toHaveBeenCalled();
   });
 });

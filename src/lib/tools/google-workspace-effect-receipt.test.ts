@@ -4,8 +4,12 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { googleWorkspaceEffectTarget } from "@/lib/connectors/google-workspace-actions";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
+
+const WORKSPACE_CONNECTION_ID = "5f0c6a8e-2b1d-4c3e-9f7a-1d2e3f4a5b6c";
+const OTHER_CONNECTION_ID = "8d4e2c1b-6a5f-4e3d-8c2b-1a0f9e8d7c6b";
 
 const access = vi.hoisted(() => ({
   getActive: vi.fn(),
@@ -24,7 +28,12 @@ describe("Google Workspace executor effect receipts", () => {
     vi.clearAllMocks();
     access.getActive.mockResolvedValue({
       accessToken: "workspace-access-token",
-      grant: { id: "grant-workspace" },
+      grant: {
+        id: WORKSPACE_CONNECTION_ID,
+        accountEmail: "owner-workspace@example.test",
+        connectionLabel: "Personal",
+        connectionPurpose: "personal",
+      },
     });
   });
 
@@ -39,7 +48,11 @@ describe("Google Workspace executor effect receipts", () => {
       .mockResolvedValueOnce(json(driveFile("new-name.txt")));
     vi.stubGlobal("fetch", fetchMock);
     const harness = await executorHarness("drive-rename");
-    const input = { fileId: "file_1", name: "new-name.txt" };
+    const input = {
+      connectionId: WORKSPACE_CONNECTION_ID,
+      fileId: "file_1",
+      name: "new-name.txt",
+    };
 
     const pending = await harness.executor.executeGovernedTool({
       toolId: "google.drive.rename",
@@ -72,8 +85,26 @@ describe("Google Workspace executor effect receipts", () => {
     expect(access.getActive).toHaveBeenCalledWith({
       tenantId: harness.tenantId,
       actorId: harness.actorId,
+      connectionId: WORKSPACE_CONNECTION_ID,
       capability: "drive.write",
     });
+    expect(executed.result).toMatchObject({
+      toolId: "google.drive.rename",
+      connectionId: WORKSPACE_CONNECTION_ID,
+      connectionLabel: "Personal",
+      connectionPurpose: "personal",
+    });
+    const boundTarget = googleWorkspaceEffectTarget(
+      "google.drive.rename",
+      input,
+      executed.record.id,
+    );
+    expect(boundTarget.targetId).not.toBe(googleWorkspaceEffectTarget(
+      "google.drive.rename",
+      { ...input, connectionId: OTHER_CONNECTION_ID },
+      executed.record.id,
+    ).targetId);
+    expect(executed.record.effectReceipt?.targetId).toBe(boundTarget.targetId);
     expect(executed.record).toMatchObject({
       status: "executed",
       effectReceipt: {
@@ -90,6 +121,7 @@ describe("Google Workspace executor effect receipts", () => {
   it("approval-gates native Docs creation and records its verified creation effect", async () => {
     const harness = await executorHarness("docs-create");
     const input = {
+      connectionId: WORKSPACE_CONNECTION_ID,
       title: "Governed research note",
       bodyText: "Only one provider-native document is created.",
     };
@@ -171,6 +203,7 @@ describe("Google Workspace executor effect receipts", () => {
     expect(access.getActive).toHaveBeenCalledWith({
       tenantId: harness.tenantId,
       actorId: harness.actorId,
+      connectionId: WORKSPACE_CONNECTION_ID,
       capability: "docs.write",
     });
     expect(fetchMock.mock.calls.filter(([request, init]) =>
@@ -179,6 +212,9 @@ describe("Google Workspace executor effect receipts", () => {
     expect(executed.result).toMatchObject({
       toolId: "google.docs.create",
       resourceId: "document_effect_1",
+      connectionId: WORKSPACE_CONNECTION_ID,
+      connectionLabel: "Personal",
+      connectionPurpose: "personal",
       editorUrl: "https://docs.google.com/document/d/document_effect_1/edit",
     });
     expect(executed.record).toMatchObject({
@@ -199,6 +235,7 @@ describe("Google Workspace executor effect receipts", () => {
     vi.setSystemTime(new Date("2026-09-19T06:00:00.000Z"));
     const harness = await executorHarness("docs-create-repair");
     const input = {
+      connectionId: WORKSPACE_CONNECTION_ID,
       title: "Governed research note",
       bodyText: "Resume this exact provider-native document.",
     };
@@ -386,7 +423,7 @@ describe("Google Workspace executor effect receipts", () => {
     const idempotencyKey = "google-workspace:gmail-trash-once";
     const request = {
       toolId: "google.gmail.trash",
-      input: { messageId: "message_1" },
+      input: { connectionId: WORKSPACE_CONNECTION_ID, messageId: "message_1" },
       dryRun: false,
       approved: true,
       context: harness.context,
@@ -443,6 +480,7 @@ describe("Google Workspace executor effect receipts", () => {
     const request = {
       toolId: "google.drive.create",
       input: {
+        connectionId: WORKSPACE_CONNECTION_ID,
         name: "private.txt",
         mimeType: "text/plain",
         contentBase64: Buffer.from("private", "utf8").toString("base64"),

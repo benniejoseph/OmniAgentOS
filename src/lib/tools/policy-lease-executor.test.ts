@@ -39,7 +39,9 @@ describe("scheduled PolicyLease governed execution", () => {
     const actorId = "owner-policy-lease";
     const principalId = "agent:scheduled-policy-lease:g1";
     const idempotencyKey = "workflow:run-lease:plan:plan-1:node:node-1:tool:calendar.create";
+    const connectionId = "3c9e1f7a-5b2d-4a6c-8e1f-7d3b5a9c2e4f";
     const input = {
+      connectionId,
       calendarId: "primary",
       summary: "Reviewed scheduled session",
       description: "Exact static input under review.",
@@ -150,6 +152,9 @@ describe("scheduled PolicyLease governed execution", () => {
     });
 
     expect(result.record.status).toBe("approval_required");
+    expect(store.openToolExecutionInput(result.record)).toMatchObject({
+      connectionId,
+    });
     expect(result.result).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
     expect(audit.claimIdempotentToolExecution).toHaveBeenCalledTimes(1);
