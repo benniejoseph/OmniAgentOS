@@ -1,10 +1,12 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../app/macos/macos_page_scaffold.dart';
 import '../../app/theme/macos_app_theme.dart';
+import '../auth/application/biometric_session_lock_controller.dart';
 import 'agent_council.dart';
 import 'agent_governance_view.dart';
 import 'agent_learning.dart';
@@ -27,7 +29,7 @@ const _agentModelPolicies = <String>[
 /// The portable [AgentsController] remains authoritative. This presenter adds
 /// dense search/filter tools, a stable selection model, and a persistent
 /// configuration/activity inspector without changing Android or web.
-class MacosAgentsView extends StatefulWidget {
+class MacosAgentsView extends ConsumerStatefulWidget {
   const MacosAgentsView({
     super.key,
     required this.controller,
@@ -40,10 +42,10 @@ class MacosAgentsView extends StatefulWidget {
   final ValueChanged<AgentProfile>? onAssignWork;
 
   @override
-  State<MacosAgentsView> createState() => _MacosAgentsViewState();
+  ConsumerState<MacosAgentsView> createState() => _MacosAgentsViewState();
 }
 
-class _MacosAgentsViewState extends State<MacosAgentsView>
+class _MacosAgentsViewState extends ConsumerState<MacosAgentsView>
     with WidgetsBindingObserver {
   static const _liveRefreshInterval = Duration(seconds: 20);
 
@@ -62,10 +64,18 @@ class _MacosAgentsViewState extends State<MacosAgentsView>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    ref.listenManual(
+      biometricSessionLockControllerProvider.select(
+        (controller) => controller.state,
+      ),
+      (_, _) => _syncLiveRefreshTimer(),
+      fireImmediately: false,
+    );
     if (widget.councilController != null) {
       _workspace = _AgentWorkspace.liveWork;
       if (widget.councilController?.projection == null &&
-          widget.councilController?.loading != true) {
+          widget.councilController?.loading != true &&
+          _protectedAccessAvailable) {
         widget.councilController?.refresh();
       }
       _syncLiveRefreshTimer();
@@ -594,14 +604,22 @@ class _MacosAgentsViewState extends State<MacosAgentsView>
     if (widget.councilController == null ||
         _workspace != _AgentWorkspace.liveWork ||
         !_pageVisible ||
-        !isVisible) {
+        !isVisible ||
+        !_protectedAccessAvailable) {
       return;
     }
     _liveRefreshTimer = Timer.periodic(_liveRefreshInterval, (_) {
       final controller = widget.councilController;
-      if (controller != null && !controller.loading) controller.refresh();
+      if (_protectedAccessAvailable &&
+          controller != null &&
+          !controller.loading) {
+        controller.refresh();
+      }
     });
   }
+
+  bool get _protectedAccessAvailable =>
+      !ref.read(biometricSessionLockControllerProvider).state.blocksInteraction;
 
   Future<void> _editAgent([AgentProfile? agent]) async {
     if (agent != null && !agent.manageable) return;

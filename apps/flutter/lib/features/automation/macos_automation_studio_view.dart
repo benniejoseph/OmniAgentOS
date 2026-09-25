@@ -8,6 +8,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../app/macos/macos_page_scaffold.dart';
 import '../../app/theme/macos_app_theme.dart';
 import '../../core/config/app_config.dart';
+import '../auth/application/biometric_session_lock_controller.dart';
 import '../auth/application/session_controller.dart';
 import 'automation_controller.dart';
 import 'automation_models.dart';
@@ -66,6 +67,10 @@ class _MacosAutomationStudioViewState
   @override
   Widget build(BuildContext context) {
     final session = ref.watch(sessionControllerProvider).value;
+    final protectedAccessAvailable = !ref
+        .watch(biometricSessionLockControllerProvider)
+        .state
+        .blocksInteraction;
     if (session == null || !session.canManage) {
       return const _AutomationAccessDenied();
     }
@@ -112,7 +117,7 @@ class _MacosAutomationStudioViewState
               switchOutCurve: Curves.easeInCubic,
               child: KeyedSubtree(
                 key: ValueKey(_section),
-                child: _sectionBody(controller),
+                child: _sectionBody(controller, protectedAccessAvailable),
               ),
             ),
           ),
@@ -121,7 +126,10 @@ class _MacosAutomationStudioViewState
     );
   }
 
-  Widget _sectionBody(AutomationController controller) => switch (_section) {
+  Widget _sectionBody(
+    AutomationController controller,
+    bool protectedAccessAvailable,
+  ) => switch (_section) {
     AutomationStudioSection.overview => _OverviewSection(
       controller: controller,
       onOpen: (section) => setState(() => _section = section),
@@ -137,6 +145,7 @@ class _MacosAutomationStudioViewState
       controller: controller,
       connections: controller.snapshot.connections,
       mcp: controller.snapshot.mcp,
+      protectedAccessAvailable: protectedAccessAvailable,
     ),
     AutomationStudioSection.plugins => _PluginsSection(
       controller: controller,
@@ -842,11 +851,13 @@ class _ConnectionsSection extends StatefulWidget {
     required this.controller,
     required this.connections,
     required this.mcp,
+    required this.protectedAccessAvailable,
   });
 
   final AutomationController controller;
   final AutomationResource<AutomationConnectionInventory> connections;
   final AutomationResource<List<AutomationMcpServer>> mcp;
+  final bool protectedAccessAvailable;
 
   @override
   State<_ConnectionsSection> createState() => _ConnectionsSectionState();
@@ -866,9 +877,17 @@ class _ConnectionsSectionState extends State<_ConnectionsSection>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed && _refreshOnResume) {
-      _refreshOnResume = false;
-      unawaited(widget.controller.refresh());
+    if (state == AppLifecycleState.resumed) _refreshAfterProtectedResume();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ConnectionsSection oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!oldWidget.protectedAccessAvailable &&
+        widget.protectedAccessAvailable) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _refreshAfterProtectedResume();
+      });
     }
   }
 
@@ -876,6 +895,16 @@ class _ConnectionsSectionState extends State<_ConnectionsSection>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  void _refreshAfterProtectedResume() {
+    if (!_refreshOnResume ||
+        !widget.protectedAccessAvailable ||
+        WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed) {
+      return;
+    }
+    _refreshOnResume = false;
+    unawaited(widget.controller.refresh());
   }
 
   @override
