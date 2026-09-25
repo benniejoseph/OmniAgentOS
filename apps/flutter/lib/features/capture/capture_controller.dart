@@ -334,6 +334,16 @@ class CaptureController extends ChangeNotifier {
 
   void lock() {
     _generation += 1;
+    // In-flight work is fenced by the generation above. Reset the public
+    // activity flags as well so the same owner-scoped controller can be
+    // rehydrated after an application lock without remaining permanently
+    // "busy" behind work from the previous unlocked generation.
+    submitting = false;
+    loadingOutbox = false;
+    syncing = false;
+    batchQueueing = false;
+    lastSubmitQueued = false;
+    _batchWork = null;
     pending = const [];
     batchItems = const [];
     receipt = null;

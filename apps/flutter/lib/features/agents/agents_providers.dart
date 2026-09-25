@@ -30,6 +30,7 @@ final agentCouncilControllerProvider =
             'agent-council',
             controller.refresh,
             classification: ReconciliationClass.freshness,
+            freshnessScope: '/agents',
           );
       ref.onDispose(unregister);
       controller.refresh();
@@ -73,6 +74,7 @@ final agentsControllerProvider = ChangeNotifierProvider<AgentsController>((
         'agents',
         () => c.ledger == null ? Future<void>.value() : c.refresh(),
         classification: ReconciliationClass.freshness,
+        freshnessScope: '/agents',
       );
   ref.onDispose(unregister);
   return c;

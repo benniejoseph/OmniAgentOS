@@ -8,6 +8,7 @@ import 'package:go_router/go_router.dart';
 import '../../core/network/api_client.dart';
 import '../../core/platform/desktop_host_bridge.dart';
 import '../../core/storage/secure_session_store.dart';
+import '../../core/sync/reconnect_coordinator.dart';
 import '../../features/ambient_voice/realtime_voice_controller.dart';
 import '../../features/auth/application/session_controller.dart';
 import '../../features/auth/presentation/login_screen.dart';
@@ -143,7 +144,15 @@ final appRouterProvider = Provider<GoRouter>((ref) {
   final session = ref.watch(sessionControllerProvider);
   final initialLocation = ref.watch(appInitialLocationProvider);
   final homePath = initialLocation;
-  return GoRouter(
+  final reconnect = ref.read(reconnectCoordinatorProvider);
+  late final GoRouter router;
+  void syncActiveFreshnessScope() {
+    reconnect.setActiveFreshnessScope(
+      router.routerDelegate.currentConfiguration.uri.path,
+    );
+  }
+
+  router = GoRouter(
     debugLogDiagnostics: kDebugMode,
     initialLocation: initialLocation,
     onEnter: (_, _, nextState, _) {
@@ -525,4 +534,11 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       ),
     ],
   );
+  syncActiveFreshnessScope();
+  router.routerDelegate.addListener(syncActiveFreshnessScope);
+  ref.onDispose(() {
+    router.routerDelegate.removeListener(syncActiveFreshnessScope);
+    router.dispose();
+  });
+  return router;
 });

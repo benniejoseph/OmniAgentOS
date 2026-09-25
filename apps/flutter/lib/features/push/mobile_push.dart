@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:cryptography/cryptography.dart';
 import 'package:dio/dio.dart';
 import 'package:firebase_core/firebase_core.dart';
@@ -19,6 +18,7 @@ import '../../core/network/api_client.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/platform/desktop_host_bridge.dart';
 import '../../core/storage/secure_session_store.dart';
+import '../../core/sync/reconnect_coordinator.dart';
 import '../../generated/native_contract.g.dart';
 import '../auth/application/session_controller.dart';
 import '../auth/domain/app_session.dart';
@@ -1262,6 +1262,19 @@ class MobilePushCoordinator extends ChangeNotifier {
     });
   }
 
+  /// Replays only durable notification receipts that were already persisted.
+  ///
+  /// Foregrounding an initialized app must not rebuild Firebase subscriptions
+  /// or register the installation again. This bounded drain is safe to call
+  /// after a genuine wake or network restoration instead.
+  Future<void> reconcilePendingReceipts() async {
+    try {
+      await _resumePendingAcknowledgements();
+    } catch (value) {
+      debugPrint('Pending push receipt drain paused: $value');
+    }
+  }
+
   Future<void> _drainPendingReceiptRequests() async {
     do {
       _receiptDrainRequested = false;
@@ -1444,6 +1457,7 @@ class _TerminalPushReceiptException implements Exception {
 }
 
 final mobilePushCoordinatorProvider = Provider<MobilePushCoordinator?>((ref) {
+  if (!ref.watch(primaryNativeRuntimeProvider)) return null;
   final session = ref.watch(sessionControllerProvider).value;
   if (session == null) return null;
   final coordinator = MobilePushCoordinator(
@@ -1451,15 +1465,16 @@ final mobilePushCoordinatorProvider = Provider<MobilePushCoordinator?>((ref) {
     ref.watch(secureSessionStoreProvider),
     session,
   );
-  final connectivitySubscription = Connectivity().onConnectivityChanged.listen((
-    states,
-  ) {
-    if (states.any((state) => state != ConnectivityResult.none)) {
-      unawaited(coordinator.initialize());
-    }
-  });
+  final unregister = ref
+      .read(reconnectCoordinatorProvider)
+      .register(
+        'push-receipts',
+        coordinator.reconcilePendingReceipts,
+        priority: -1,
+        classification: ReconciliationClass.durable,
+      );
   ref.onDispose(() {
-    unawaited(connectivitySubscription.cancel());
+    unregister();
     coordinator.dispose();
   });
   unawaited(coordinator.initialize());

@@ -20,6 +20,7 @@ final meetingsControllerProvider = ChangeNotifierProvider<MeetingsController>((
         'meetings',
         controller.refresh,
         classification: ReconciliationClass.freshness,
+        freshnessScope: '/meetings',
       );
   ref.onDispose(unregister);
   controller.refresh();

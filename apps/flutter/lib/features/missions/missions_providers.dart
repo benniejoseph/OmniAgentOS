@@ -19,6 +19,7 @@ final missionsControllerProvider = ChangeNotifierProvider<MissionsController>((
         'missions',
         controller.refresh,
         classification: ReconciliationClass.freshness,
+        freshnessScope: '/projects',
       );
   ref.onDispose(unregister);
   controller.refresh();

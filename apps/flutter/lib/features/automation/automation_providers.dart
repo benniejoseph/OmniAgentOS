@@ -33,6 +33,7 @@ final automationControllerProvider =
             'automation-studio',
             controller.refresh,
             classification: ReconciliationClass.freshness,
+            freshnessScope: '/automation',
           );
       ref.onDispose(unregister);
       unawaited(controller.refresh());

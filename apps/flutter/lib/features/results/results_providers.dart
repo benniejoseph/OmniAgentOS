@@ -19,6 +19,7 @@ final resultsControllerProvider = ChangeNotifierProvider<ResultsController>((
         'results',
         controller.refresh,
         classification: ReconciliationClass.freshness,
+        freshnessScope: '/results',
       );
   ref.onDispose(unregister);
   controller.refresh();

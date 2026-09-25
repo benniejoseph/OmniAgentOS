@@ -17,6 +17,7 @@ final todayControllerProvider = ChangeNotifierProvider<TodayController>((ref) {
         'today',
         controller.refresh,
         classification: ReconciliationClass.freshness,
+        freshnessScope: '/today',
       );
   ref.onDispose(unregister);
   controller.refresh();

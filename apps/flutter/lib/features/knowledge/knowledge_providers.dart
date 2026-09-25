@@ -30,6 +30,7 @@ final knowledgeControllerProvider = ChangeNotifierProvider<KnowledgeController>(
           'knowledge',
           c.refresh,
           classification: ReconciliationClass.freshness,
+          freshnessScope: '/knowledge',
         );
     ref.onDispose(unregister);
     c.refresh();

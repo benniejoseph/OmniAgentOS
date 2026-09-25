@@ -30,6 +30,7 @@ final talkControllerProvider = ChangeNotifierProvider<TalkController>((ref) {
         'talk-history',
         () => controller.loadRecentThreads(force: true),
         classification: ReconciliationClass.freshness,
+        freshnessScope: '/talk',
       );
   final unregisterRun = ref
       .read(reconnectCoordinatorProvider)
@@ -50,10 +51,9 @@ final talkControllerProvider = ChangeNotifierProvider<TalkController>((ref) {
         controller.reconcilePromptQueue,
         priority: 8,
         classification: ReconciliationClass.durable,
-        shouldRun: (_) =>
-            (controller.promptQueue.isNotEmpty ||
-                controller.promptQueueError != null) &&
-            !controller.promptQueueSyncing,
+        // The encrypted outbox is authoritative. The visible queue can be
+        // empty while an offline delete of its final item still needs replay.
+        shouldRun: (_) => !controller.promptQueueSyncing,
       );
   ref.onDispose(() {
     unregisterPromptQueue();

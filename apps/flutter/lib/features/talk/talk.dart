@@ -2227,6 +2227,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   void reconcileAcceptedRun() {
     final id = runId;
     if (_disposed ||
+        sending ||
         id == null ||
         _acceptedRunIsTerminal ||
         _runMonitorToken != null) {

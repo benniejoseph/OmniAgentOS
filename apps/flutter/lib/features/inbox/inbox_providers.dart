@@ -17,6 +17,7 @@ final inboxControllerProvider = ChangeNotifierProvider<InboxController>((ref) {
         'inbox',
         controller.refresh,
         classification: ReconciliationClass.freshness,
+        freshnessScope: '/inbox',
       );
   ref.onDispose(unregister);
   controller.refresh();
