@@ -149,6 +149,12 @@ const frozenDocumentSha256ByVersion = Object.freeze({
     "fixtures.json": "0a1f493aff026d2b5ffc3c445e9ec45365b471b3a3c5a0fcb065689a460a9a0f",
     "manifest.json": "f3ba0654e8fb84bde0477129283750f1a099131b1a68bf53a939a42f0dbc256a",
   }),
+  29: Object.freeze({
+    "openapi.json": "4c05b72fb2533b5d001600ee843252b65012fef9ec62d38fc586a4d84ed1cf3a",
+    "events.schema.json": "771a2b311c5a62d1af5010b1afc03228c41b282a8a84126329ae5bc8dc3276d9",
+    "fixtures.json": "843a2e85f3dd70e806ee22787c9a151cb5c5284c08a46ae49bda2b51789300eb",
+    "manifest.json": "f18dd634d6e319dae4de4b07e7bd7c161356817a9fc78b36357e64550bcc258d",
+  }),
 });
 
 const fixtures = Object.freeze({

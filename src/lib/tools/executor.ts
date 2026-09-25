@@ -3298,7 +3298,7 @@ function localComputerTaskAuthorityReviewReason(error: unknown) {
     return "This version of the Mac app cannot check what a task-authorized action would touch on screen, so this one needs your review.";
   }
   if (error.code === LOCAL_COMPUTER_TASK_AUTHORITY_REFUSED_ERROR_CODE) {
-    return "Your Mac checked what this action would touch on screen and found it is not something task authority covers.";
+    return "Your Mac could not confirm that what this action would touch on screen is covered by task authority, so this one needs your review.";
   }
   return undefined;
 }

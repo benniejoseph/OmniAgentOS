@@ -203,12 +203,13 @@ execution target.
 `local_macos` requires an authenticated compatible macOS client and a current
 device lease; visual actions additionally require both Accessibility and Screen
 Recording. Production advertises
-native contract v29 as current while deliberately retaining v28 as the only
+native contract v30 as current while deliberately retaining v29 as the only
 rollback-compatible previous contract. Earlier contracts remain immutable historical
-archives rather than members of the active compatibility pair. A v28 client keeps
-visual Computer Use, the governed command runner, and explicit model selection, but
-it cannot open v29's authenticated Ambient Voice session or speech stream through
-the generated boundary. Its assigned
+archives rather than members of the active compatibility pair, so a v28 client
+receives `upgrade_required`. A v29 client keeps visual Computer Use, the governed
+command runner, explicit model selection, and Ambient Voice, but its helper cannot
+check a task-authorized target on screen, so every press, click, key, or type that
+task authority alone would cover goes to review. Its assigned
 `computer_use` model is tenant-configurable;
 the resolver requires one configured runtime that supports both governed tools
 and vision. No hard-coded provider/model fallback may split those requirements
@@ -306,7 +307,7 @@ is non-interactive; the explicit legacy migration copies and verifies broker
 values before deleting only verified legacy sources, with conflict and unknown
 keys failing closed.
 
-For image-based clicks, the current v29 and rollback v28 contracts retain the
+For image-based clicks, the current v30 and rollback v29 contracts retain the
 v13-introduced binding between each screenshot's exact pixel dimensions,
 display provenance, snapshot revision, and `screenshot_pixel` coordinate space.
 The helper privately maps the top-left image point to current macOS global logical
@@ -386,13 +387,23 @@ before disclosure or execution. Vercel deployment
 `5155ca23f35517815966d7e356a30d0c7586d60c`, and owner-only Asael `1.22.0+34`
 is installed with the v28 generated boundary.
 
-The current Ambient Voice release is additive to that model-selection history.
+The Ambient Voice release is additive to that model-selection history.
 Native v29 retains frozen v28 and publishes the existing authenticated realtime
 transcription session and versioned speech stream as `voice.session.manage` and
 `voice.speech.stream`, both with a v29 minimum. Speech audio is not retained by
 Asael, session completion records only content-free review and confidence
 metadata, and a voice command still executes through the governed conversation
 and its visible approval boundaries.
+
+The current task-authority target-check release is additive to that voice
+history. Native v30 retains frozen v29 and adds one optional field to a claimed
+local computer command: `authority: "task"`, allowed only on `press`, `click`,
+`key`, and `type`. The server sets it when This Mac task authority alone lets
+the action run, and delivers such a command only to a v30 client. The macOS
+Runner forwards the marker unchanged, and the helper checks the real
+Accessibility target before posting any event, refusing with
+`task_authority_refused` when the target is outside what task authority covers.
+The executor turns that refusal into a fresh approval for the same action.
 
 App Builder no longer depends on browser automation. New checkpoint readiness is
 derived deterministically from lint and typecheck; preview and production readiness
@@ -725,8 +736,8 @@ fails for explicit operator resume.
 
 The queue schema, routes, and web/native clients are deployed. The native v24 and
 v25 documents remain immutable historical archives; production migration v201
-provides the durable queue boundary, while current native v29 exposes it through
-the same governed application service and v28 remains the rollback contract.
+provides the durable queue boundary, while current native v30 exposes it through
+the same governed application service and v29 remains the rollback contract.
 
 ### Adaptive-runtime management observability
 
@@ -737,7 +748,7 @@ detail exposes observed/evaluated/active/rolled-back records; child-task detail
 exposes exact immutable Skill, Plugin, MCP, and native-read pins plus the durable
 grant-validation result; trigger detail includes occurrence receipts and
 PolicyLease outcomes; notification history exposes content-free dispositions.
-The production native v29 contract maps to those same APIs. No management read
+The current native v30 contract maps to those same APIs. No management read
 grants mutation authority, digest-bound execution grants are not editable or
 revocable in place, and the native surface deliberately omits Agent retirement.
 

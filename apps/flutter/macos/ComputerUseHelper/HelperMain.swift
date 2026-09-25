@@ -293,6 +293,246 @@ enum SnapshotPixelHitPolicy {
   }
 }
 
+/// One Accessibility element on the path from what a task-authorized action
+/// would really touch up to the observed window. Only the role, subrole, and
+/// visible labels are read, and none of them leave the helper.
+struct TaskAuthorityElement: Equatable {
+  let role: String
+  let subrole: String?
+  let labels: [String]
+}
+
+enum TaskAuthorityKeyDisposition: Equatable {
+  case allow
+  // Space presses the focused control, so that control is checked like a click.
+  case checkFocusedTarget
+  case refuse
+}
+
+/// Decides whether a press, click, key, or type that runs on This Mac task
+/// authority alone may touch its real on-screen target. The user approved the
+/// task, not this control, so the helper refuses anything inside a dialog, a
+/// control it cannot name, and any target whose visible words send, buy,
+/// delete, grant, sign in, or confirm. The server then offers the refused
+/// action for the user's review.
+///
+/// The lexicon is English-only. A control named in another language is still
+/// refused inside a dialog, when it has no name, or when its role is unknown,
+/// but its words are not read.
+enum TaskAuthorityTargetPolicy {
+  static let actions: Set<String> = ["press", "click", "key", "type"]
+  // Mirrors the server's limit, which counts UTF-16 code units.
+  static let maximumTypedUnits = 500
+
+  static let textEntryRoles: Set<String> = ["AXTextField", "AXTextArea", "AXComboBox"]
+
+  private static let actionableRoles: Set<String> = [
+    "AXButton", "AXLink", "AXMenuItem", "AXMenuBarItem", "AXMenuButton",
+    "AXPopUpButton", "AXCheckBox", "AXRadioButton", "AXDisclosureTriangle",
+    "AXIncrementor", "AXSlider", "AXColorWell",
+  ]
+  private static let passiveRoles: Set<String> = [
+    "AXStaticText", "AXImage", "AXGroup", "AXRow", "AXCell", "AXColumn",
+    "AXList", "AXTable", "AXOutline", "AXGrid", "AXBrowser", "AXScrollArea",
+    "AXSplitGroup", "AXTabGroup", "AXToolbar", "AXLayoutArea", "AXLayoutItem",
+    "AXHeading", "AXScrollBar", "AXValueIndicator", "AXProgressIndicator",
+    "AXBusyIndicator", "AXLevelIndicator",
+  ]
+  private static let dialogRoles: Set<String> = ["AXSheet", "AXPopover"]
+  private static let dialogSubroles: Set<String> = [
+    "AXDialog", "AXSystemDialog", "AXFloatingWindow", "AXSystemFloatingWindow",
+    "AXApplicationDialog", "AXApplicationAlertDialog", "AXApplicationAlert",
+  ]
+  // A navigation key changes the value of these controls instead of moving.
+  private static let valueControlRoles: Set<String> = [
+    "AXSlider", "AXIncrementor", "AXRadioButton", "AXPopUpButton",
+    "AXMenuButton", "AXDateField", "AXTimeField", "AXColorWell",
+    "AXLevelIndicator",
+  ]
+  private static let lexiconWords: Set<String> = [
+    // Communicating on the user's behalf.
+    "send", "resend", "unsend", "submit", "post", "repost", "publish", "share",
+    "reply", "respond", "comment", "tweet", "retweet", "invite", "call", "dial",
+    "notify", "announce", "broadcast", "schedule",
+    // Spending, trading, or committing money.
+    "buy", "purchase", "order", "pay", "payment", "checkout", "donate", "tip",
+    "sponsor", "gift", "transfer", "withdraw", "deposit", "bid", "sell",
+    "trade", "swap", "stake", "invest", "borrow", "lend", "book", "reserve",
+    "rent", "upgrade", "renew", "redeem", "claim", "trial", "subscribe",
+    "unsubscribe",
+    // Destroying, discarding, or replacing.
+    "delete", "remove", "erase", "trash", "discard", "destroy", "wipe",
+    "empty", "clear", "reset", "revoke", "uninstall", "deactivate",
+    "disconnect", "unlink", "unpair", "forget", "purge", "drop", "kill",
+    "terminate", "abort", "cancel", "close", "archive", "overwrite",
+    "replace", "format", "restore", "revert", "rollback",
+    // Acting publicly on someone or something.
+    "follow", "unfollow", "like", "unlike", "vote", "upvote", "downvote",
+    "rate", "rsvp", "star", "unstar", "fork", "report", "block", "unblock",
+    "flag", "spam", "leave", "unmute", "join",
+    // Signing in, granting, or consenting.
+    "sign", "signin", "signup", "signout", "login", "logout", "register",
+    "enroll", "accept", "agree", "allow", "approve", "authorize", "authorise",
+    "grant", "permit", "consent", "trust", "reject", "decline", "deny",
+    "confirm", "verify", "connect", "pair", "enable", "disable", "unlock",
+    "activate",
+    // Changing the system, files, or deployed work.
+    "install", "update", "apply", "save", "merge", "deploy", "commit", "push",
+    "release", "promote", "run", "execute", "trigger", "rerun", "retry",
+    "upload", "download", "export", "import", "attach", "print", "eject",
+    "quit", "exit", "shutdown", "restart", "reboot", "record",
+    // Confirming whatever is pending.
+    "ok", "okay", "yes", "proceed", "continue", "finish", "complete", "done",
+  ]
+  // Phrases whose words are harmless alone.
+  private static let lexiconPhrases: [String] = [
+    "check out", "check in", "log in", "log on", "log out", "log off",
+    "hang up", "turn on", "turn off", "i understand", "add friend", "add card",
+    "add funds", "top up", "go live", "shut down", "opt in", "opt out",
+    "create account", "open account", "link account", "switch account",
+    "choose file", "select file", "start meeting", "end meeting",
+  ]
+
+  /// Whether a command envelope runs on task authority alone, or nil when the
+  /// marker is malformed or sits on an action the helper cannot check.
+  static func envelopeAuthority(_ envelope: [String: Any]) -> Bool? {
+    guard let marker = envelope["authority"] else {
+      return envelope.count == 4 ? false : nil
+    }
+    guard envelope.count == 5,
+          marker as? String == "task",
+          let action = envelope["action"] as? String,
+          actions.contains(action)
+    else { return nil }
+    return true
+  }
+
+  /// A press or click lands on `path[0]`, and `path` climbs through every
+  /// ancestor to the observed window, which comes last.
+  static func allowsPointer(path: [TaskAuthorityElement]) -> Bool {
+    guard let hit = path.first, path.last?.role == "AXWindow",
+          !path.contains(where: isDialog)
+    else { return false }
+    // Page and window titles name the place, not the control.
+    let contentEnd = path.firstIndex {
+      $0.role == "AXWebArea" || $0.role == "AXWindow"
+    } ?? path.endIndex
+    let content = path[..<contentEnd]
+    guard !content.isEmpty,
+          !content.contains(where: {
+            isSecure(role: $0.role, subrole: $0.subrole)
+              || $0.labels.contains(where: lexiconHit)
+          })
+    else { return false }
+    if let controlIndex = content.firstIndex(where: {
+      textEntryRoles.contains($0.role) || actionableRoles.contains($0.role)
+    }) {
+      let control = content[controlIndex]
+      if textEntryRoles.contains(control.role) { return true }
+      guard control.subrole != "AXCloseButton" else { return false }
+      return content[...controlIndex].contains {
+        $0.labels.contains(where: hasWord)
+      }
+    }
+    return passiveRoles.contains(hit.role) && hit.labels.contains(where: hasWord)
+  }
+
+  static func allowsTyping(role: String, subrole: String?, text: String) -> Bool {
+    textEntryRoles.contains(role)
+      && !isSecure(role: role, subrole: subrole)
+      && !text.isEmpty
+      && text.utf16.count <= maximumTypedUnits
+      && !text.unicodeScalars.contains {
+        $0.value < 0x20 || (0x7f...0x9f).contains($0.value)
+          || $0.value == 0x2028 || $0.value == 0x2029
+      }
+  }
+
+  static func keyDisposition(
+    name: String,
+    modifiers: [String],
+    focusedRole: String
+  ) -> TaskAuthorityKeyDisposition {
+    if !modifiers.isEmpty {
+      return (modifiers == ["shift"] && name == "tab")
+          || (modifiers == ["command"] && name == "home")
+        ? .allow
+        : .refuse
+    }
+    switch name {
+    case "tab", "escape":
+      return .allow
+    case "left", "right", "up", "down", "home", "end", "page_up", "page_down":
+      return valueControlRoles.contains(focusedRole) ? .refuse : .allow
+    case "space":
+      return focusedRole == "AXWebArea" || focusedRole == "AXScrollArea"
+          || textEntryRoles.contains(focusedRole)
+        ? .allow
+        : .checkFocusedTarget
+    default:
+      // Return and Delete commit or destroy whatever has focus.
+      return .refuse
+    }
+  }
+
+  static func lexiconHit(_ label: String) -> Bool {
+    var normalized = String.UnicodeScalarView()
+    for scalar in label.lowercased().unicodeScalars {
+      normalized.append(CharacterSet.alphanumerics.contains(scalar) ? scalar : " ")
+    }
+    let tokens = String(normalized).split(separator: " ").map(String.init)
+    if tokens.contains(where: { stems($0).contains(where: lexiconWords.contains) }) {
+      return true
+    }
+    let joined = " " + tokens.joined(separator: " ") + " "
+    return lexiconPhrases.contains { joined.contains(" \($0) ") }
+  }
+
+  /// The token plus the bases of its plural, past, and progressive forms, so a
+  /// state label such as "Following" or "Subscribed" is read as its verb.
+  private static func stems(_ token: String) -> [String] {
+    var candidates = [token]
+    func addBase(_ base: String) {
+      candidates.append(base)
+      candidates.append(base + "e")
+      if let last = base.last, base.count >= 3,
+         base.dropLast().last == last, !"aeiou".contains(last) {
+        candidates.append(String(base.dropLast()))
+      }
+    }
+    if token.count > 4, token.hasSuffix("ies") || token.hasSuffix("ied") {
+      candidates.append(String(token.dropLast(3)) + "y")
+    }
+    if token.count > 3, token.hasSuffix("es") {
+      candidates.append(String(token.dropLast(2)))
+    }
+    if token.count > 2, token.hasSuffix("s") {
+      candidates.append(String(token.dropLast()))
+    }
+    if token.count > 3, token.hasSuffix("ed") {
+      addBase(String(token.dropLast(2)))
+    }
+    if token.count > 4, token.hasSuffix("ing") {
+      addBase(String(token.dropLast(3)))
+    }
+    return candidates
+  }
+
+  private static func isDialog(_ element: TaskAuthorityElement) -> Bool {
+    dialogRoles.contains(element.role)
+      || element.subrole.map(dialogSubroles.contains) ?? false
+  }
+
+  private static func isSecure(role: String, subrole: String?) -> Bool {
+    role.localizedCaseInsensitiveContains("secure")
+      || (subrole?.localizedCaseInsensitiveContains("secure") ?? false)
+  }
+
+  private static func hasWord(_ label: String) -> Bool {
+    label.unicodeScalars.contains(where: CharacterSet.alphanumerics.contains)
+  }
+}
+
 private enum ParentVerifier {
   static let parentIdentifier = "app.omniagent.omniagent"
   private static let helperIdentifier = "app.omniagent.omniagent.computer-use-helper"
@@ -402,6 +642,15 @@ private final class ComputerUseExecutor {
     "status", "request_permissions", "observe", "list_apps", "activate_app",
     "open_url", "press", "click", "type", "key", "scroll",
   ]
+  // An action that runs on This Mac task authority alone carries
+  // `authority: "task"`. The helper then checks its real on-screen target and
+  // refuses one that task authority does not cover, before any event is posted.
+  private static let taskAuthorityRefused = "task_authority_refused"
+  // A task-authorized target is read up to its window within this bound, or
+  // the action is refused. Chromium nests page content deeply.
+  private static let maximumTaskAuthorityPathLength = 64
+  private static let taskAuthorityPathBudgetSeconds = 1.5
+  private static let maximumTaskAuthorityLabelLength = 1_000
   private static let restrictedAutomationBundleIdentifiers: Set<String> = [
     "com.apple.Terminal",
     "com.apple.systempreferences",
@@ -452,7 +701,12 @@ private final class ComputerUseExecutor {
       return response(id: "invalid", outcome: "failed", errorCode: "invalid_command")
     }
 
-    let validated: (action: String, input: [String: Any], expiration: Date)
+    let validated: (
+      action: String,
+      input: [String: Any],
+      expiration: Date,
+      taskAuthority: Bool
+    )
     do {
       validated = try validate(envelope, id: id)
     } catch HelperFailure.rejected(let code) {
@@ -466,7 +720,8 @@ private final class ComputerUseExecutor {
     do {
       let result = try await perform(
         action: validated.action,
-        input: validated.input
+        input: validated.input,
+        taskAuthority: validated.taskAuthority
       )
       output = response(id: id, outcome: "succeeded", result: result)
     } catch HelperFailure.rejected(let code) {
@@ -481,8 +736,13 @@ private final class ComputerUseExecutor {
   private func validate(
     _ envelope: [String: Any],
     id: String
-  ) throws -> (action: String, input: [String: Any], expiration: Date) {
-    guard envelope.count == 4,
+  ) throws -> (
+    action: String,
+    input: [String: Any],
+    expiration: Date,
+    taskAuthority: Bool
+  ) {
+    guard let taskAuthority = TaskAuthorityTargetPolicy.envelopeAuthority(envelope),
           isCommandId(id),
           let action = envelope["action"] as? String,
           Self.allowedActions.contains(action),
@@ -495,10 +755,14 @@ private final class ComputerUseExecutor {
           let bytes = try? JSONSerialization.data(withJSONObject: input),
           bytes.count <= Self.maximumInputBytes
     else { throw HelperFailure.rejected("invalid_command") }
-    return (action, input, expiration)
+    return (action, input, expiration, taskAuthority)
   }
 
-  private func perform(action: String, input: [String: Any]) async throws -> [String: Any] {
+  private func perform(
+    action: String,
+    input: [String: Any],
+    taskAuthority: Bool
+  ) async throws -> [String: Any] {
     switch action {
     case "status":
       return result(
@@ -523,13 +787,13 @@ private final class ComputerUseExecutor {
     case "observe":
       return try await observe(input)
     case "press":
-      return try await press(input)
+      return try await press(input, taskAuthority: taskAuthority)
     case "click":
-      return try await click(input)
+      return try await click(input, taskAuthority: taskAuthority)
     case "type":
-      return try await typeText(input)
+      return try await typeText(input, taskAuthority: taskAuthority)
     case "key":
-      return try await key(input)
+      return try await key(input, taskAuthority: taskAuthority)
     case "scroll":
       return try await scroll(input)
     default:
@@ -839,7 +1103,10 @@ private final class ComputerUseExecutor {
     }
   }
 
-  private func press(_ input: [String: Any]) async throws -> [String: Any] {
+  private func press(
+    _ input: [String: Any],
+    taskAuthority: Bool
+  ) async throws -> [String: Any] {
     guard input.keys.allSatisfy({ $0 == "elementId" || $0 == "snapshotRevision" }),
           let elementId = input["elementId"] as? String,
           let revision = input["snapshotRevision"] as? String,
@@ -852,6 +1119,11 @@ private final class ComputerUseExecutor {
       expectedElement: element,
       expectedIdentity: identity
     )
+    if taskAuthority {
+      try withBoundedAccessibilityMessaging {
+        try requireTaskAuthorityPointerTarget(element)
+      }
+    }
     let status = AXUIElementPerformAction(element, kAXPressAction as CFString)
     guard status == .success else { throw HelperFailure.rejected("press_failed") }
     return await postActionResult(
@@ -861,7 +1133,10 @@ private final class ComputerUseExecutor {
     )
   }
 
-  private func click(_ input: [String: Any]) async throws -> [String: Any] {
+  private func click(
+    _ input: [String: Any],
+    taskAuthority: Bool
+  ) async throws -> [String: Any] {
     guard AXIsProcessTrusted() else { throw HelperFailure.rejected("accessibility_denied") }
     guard let revision = input["snapshotRevision"] as? String else {
       throw HelperFailure.rejected("invalid_input")
@@ -916,6 +1191,7 @@ private final class ComputerUseExecutor {
         guard revision == snapshotRevision,
               let target = currentObservedHitTarget(at: globalPoint)
         else { throw HelperFailure.rejected("screenshot_coordinate_refused") }
+        if taskAuthority { try requireTaskAuthorityPointerTarget(target.element) }
         return target
       }
       point = globalPoint
@@ -933,6 +1209,16 @@ private final class ComputerUseExecutor {
         expectedElement: expectedElement,
         expectedIdentity: expectedIdentity
       )
+      if taskAuthority {
+        // The click lands on whatever is topmost at the element's center now,
+        // so task authority must cover that element, not only the observed one.
+        try withBoundedAccessibilityMessaging {
+          guard let target = currentObservedHitTarget(at: point) else {
+            throw HelperFailure.rejected(Self.taskAuthorityRefused)
+          }
+          try requireTaskAuthorityPointerTarget(target.element)
+        }
+      }
     }
     guard let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown,
                              mouseCursorPosition: point, mouseButton: .left),
@@ -948,7 +1234,10 @@ private final class ComputerUseExecutor {
     )
   }
 
-  private func typeText(_ input: [String: Any]) async throws -> [String: Any] {
+  private func typeText(
+    _ input: [String: Any],
+    taskAuthority: Bool
+  ) async throws -> [String: Any] {
     guard input.count == 2,
           let revision = input["snapshotRevision"] as? String,
           let text = input["text"] as? String,
@@ -962,6 +1251,15 @@ private final class ComputerUseExecutor {
       expectedIdentity: focusTarget.identity
     )
     try verifyKeyboardTarget()
+    // Task authority types only into an editable text field, never into a
+    // control that might treat the keystrokes as commands.
+    if taskAuthority {
+      guard TaskAuthorityTargetPolicy.allowsTyping(
+        role: focusTarget.identity.role,
+        subrole: focusTarget.identity.subrole,
+        text: text
+      ) else { throw HelperFailure.rejected(Self.taskAuthorityRefused) }
+    }
     let units = Array(text.utf16)
     var offset = 0
     while offset < units.count {
@@ -982,7 +1280,10 @@ private final class ComputerUseExecutor {
     )
   }
 
-  private func key(_ input: [String: Any]) async throws -> [String: Any] {
+  private func key(
+    _ input: [String: Any],
+    taskAuthority: Bool
+  ) async throws -> [String: Any] {
     guard input.keys.allSatisfy({
             $0 == "key" || $0 == "modifiers" || $0 == "snapshotRevision"
           }),
@@ -1007,6 +1308,22 @@ private final class ComputerUseExecutor {
       case "option": flags.insert(.maskAlternate)
       case "control": flags.insert(.maskControl)
       default: throw HelperFailure.rejected("invalid_input")
+      }
+    }
+    if taskAuthority {
+      switch TaskAuthorityTargetPolicy.keyDisposition(
+        name: name,
+        modifiers: modifierNames,
+        focusedRole: focusTarget.identity.role
+      ) {
+      case .allow:
+        break
+      case .checkFocusedTarget:
+        try withBoundedAccessibilityMessaging {
+          try requireTaskAuthorityPointerTarget(focusTarget.element)
+        }
+      case .refuse:
+        throw HelperFailure.rejected(Self.taskAuthorityRefused)
       }
     }
     guard let down = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: true),
@@ -1468,6 +1785,74 @@ private final class ComputerUseExecutor {
       visited += 1
     }
     return false
+  }
+
+  /// Refuses a press, click, or Space whose real target task authority does
+  /// not cover. Callers bound Accessibility messaging around this check.
+  private func requireTaskAuthorityPointerTarget(_ element: AXUIElement) throws {
+    guard let path = taskAuthorityPath(from: element),
+          TaskAuthorityTargetPolicy.allowsPointer(path: path)
+    else { throw HelperFailure.rejected(Self.taskAuthorityRefused) }
+  }
+
+  /// Reads the target and every ancestor up to the observed window, which is
+  /// included last. A path that leaves that window, loops, or does not reach
+  /// it within the bound returns nil.
+  private func taskAuthorityPath(from element: AXUIElement) -> [TaskAuthorityElement]? {
+    guard let snapshotFocusedWindow else { return nil }
+    let deadline = Date().addingTimeInterval(Self.taskAuthorityPathBudgetSeconds)
+    var path: [TaskAuthorityElement] = []
+    var cursor = element
+    while path.count < Self.maximumTaskAuthorityPathLength, Date() < deadline {
+      guard let step = taskAuthorityPathStep(cursor) else { return nil }
+      path.append(step.element)
+      if CFEqual(cursor, snapshotFocusedWindow) { return path }
+      guard let parent = step.parent, !CFEqual(parent, cursor) else { return nil }
+      cursor = parent
+    }
+    return nil
+  }
+
+  /// One Accessibility message per element, plus the text of a static text
+  /// element, which is how a web page names many buttons and links.
+  private func taskAuthorityPathStep(
+    _ element: AXUIElement
+  ) -> (element: TaskAuthorityElement, parent: AXUIElement?)? {
+    let attributes: [CFString] = [
+      kAXRoleAttribute as CFString,
+      kAXSubroleAttribute as CFString,
+      kAXTitleAttribute as CFString,
+      kAXDescriptionAttribute as CFString,
+      kAXHelpAttribute as CFString,
+      kAXParentAttribute as CFString,
+    ]
+    var copiedValues: CFArray?
+    let status = AXUIElementCopyMultipleAttributeValues(
+      element,
+      attributes as CFArray,
+      [],
+      &copiedValues
+    )
+    guard status == .success,
+          let values = copiedValues as? [Any],
+          values.count == attributes.count,
+          let role = values[0] as? String
+    else { return nil }
+    var labels = values[2...4].compactMap { $0 as? String }
+    if role == "AXStaticText",
+       let text = stringAttribute(element, kAXValueAttribute as String) {
+      labels.append(text)
+    }
+    return (
+      TaskAuthorityElement(
+        role: bounded(role, limit: 80),
+        subrole: (values[1] as? String).map { bounded($0, limit: 80) },
+        labels: labels.map {
+          bounded($0, limit: Self.maximumTaskAuthorityLabelLength)
+        }
+      ),
+      axElementValue(values[5])
+    )
   }
 
   private func frame(_ element: AXUIElement) -> CGRect? {

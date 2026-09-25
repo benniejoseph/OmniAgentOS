@@ -561,6 +561,10 @@ private final class LocalComputerController: NSObject {
     "observe", "list_apps", "activate_app", "open_url", "press", "click", "type", "key", "scroll",
     "run_command",
   ]
+  // An action that runs on This Mac task authority alone carries
+  // `authority: "task"`; the helper checks its real on-screen target and
+  // refuses one that task authority does not cover.
+  private static let taskAuthorityActions: Set<String> = ["press", "click", "key", "type"]
   private static let commandInputKeys: Set<String> = [
     "workspaceId", "executable", "arguments", "relativeDirectory", "timeoutSeconds",
   ]
@@ -846,11 +850,14 @@ private final class LocalComputerController: NSObject {
 
   private func execute(_ arguments: Any?, result: @escaping FlutterResult) {
     guard enabled, !active, let values = arguments as? [String: Any],
-          values.count == 4,
+          values.count == 4 || (
+            values.count == 5 && values["authority"] as? String == "task"
+          ),
           let id = values["id"] as? String,
           Self.isCommandId(id),
           let action = values["action"] as? String,
           Self.allowedActions.contains(action),
+          values["authority"] == nil || Self.taskAuthorityActions.contains(action),
           let input = values["input"] as? [String: Any],
           let expiresAt = values["expiresAt"] as? String,
           let expiration = Self.parseDate(expiresAt),

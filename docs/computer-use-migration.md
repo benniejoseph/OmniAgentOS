@@ -66,7 +66,7 @@ build cover web changes; the signed native canary covers installed-Mac control.
 
 ### Device courier
 
-Only an authenticated compatible macOS client (current v29 or previous v28) may publish
+Only an authenticated compatible macOS client (current v30 or previous v29) may publish
 a local-device readiness lease, claim a command, return its completion receipt,
 or stop the device. The Flutter app holds the native bearer. The helper receives
 neither that bearer nor any server, connector, model, App Group, or Keychain
@@ -191,14 +191,26 @@ The model declares the interaction purpose, so the server cannot see what a
 press, click, key, or typed text will really touch. When task authority alone
 lets one of those four run, its execution intent carries a private
 server-side marker, and the command store hands that command only to a helper
-that checks the real on-screen target. Any other claim fails with
-`task_authority_unattested`; a helper that checks and refuses reports
-`task_authority_refused`. Either way the Mac has not acted, and the executor
-offers the same action for review on a new approval record whose reason says
-why. No released helper performs that check yet, so these four actions
-currently always ask; `activate_app`, `scroll`, and named-site `open_url` still
-continue within the task. A human-approved action never carries the marker,
-and a refusal code on an action the user already reviewed stays a failure.
+that checks the real on-screen target. A client below native contract v30
+cannot, so its claim fails with `task_authority_unattested`. A v30 client
+receives the command marked `authority: "task"`, and the helper reads the
+target up to the observed window after its freshness checks and before posting
+any event. It refuses with `task_authority_refused` when the target sits in a
+dialog, sheet, or popover, is a window close button, is unnamed, has an unknown
+role, or is a secure field, or when a name on the target or its content
+ancestors contains an English word or phrase that could send, pay, delete, sign
+in, grant, confirm, or change the system. Page and window titles never count.
+Task-authorized typing must land in a plain text field, text area, or combo box
+and repeat the server's single-line limits; a key must be on the task
+allowlist, and an arrow, Home, End, or Page key is refused on a control whose
+value it would change. Space on a control is checked like a click. Either way
+the Mac has not acted, and the executor offers the same action for review on a
+new approval record whose reason says why. The word list is English-only, so a
+consequential control named in another language is caught only by the dialog,
+role, and naming checks and by the server's effect classification.
+`activate_app`, `scroll`, and named-site `open_url` still continue within the
+task. A human-approved action never carries the marker, and a refusal code on
+an action the user already reviewed stays a failure.
 The direct command runner is never covered by task authority and always requires
 a fresh approval. `open_url` accepts only allowlisted Chrome and an
 absolute HTTP(S) URL without embedded credentials, waits for at most 15 seconds,

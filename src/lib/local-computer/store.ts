@@ -18,6 +18,7 @@ import {
   LOCAL_COMPUTER_PROTOCOL_VERSION,
   LOCAL_COMPUTER_SCREENSHOT_COORDINATE_CONTRACT_VERSION,
   LOCAL_COMPUTER_TASK_AUTHORITY_ATTESTED_ACTIONS,
+  LOCAL_COMPUTER_TASK_AUTHORITY_CONTRACT_VERSION,
   LOCAL_COMPUTER_TASK_AUTHORITY_UNATTESTED_ERROR_CODE,
   localComputerActionSchema,
   localComputerClickInputSchema,
@@ -414,9 +415,12 @@ export async function claimLocalComputerCommand(context: SecurityContext) {
         : "The governed local computer command binding is invalid.",
     );
   }
-  if (taskAuthority) {
-    // Task authority alone approved this action, and no native client checks
-    // its real on-screen target yet. The Mac never receives the command; the
+  if (
+    taskAuthority &&
+    native.contractVersion < LOCAL_COMPUTER_TASK_AUTHORITY_CONTRACT_VERSION
+  ) {
+    // Task authority alone approved this action, and this client cannot check
+    // its real on-screen target. The Mac never receives the command; the
     // executor offers the same action for the user's review instead.
     await getSql()`
       UPDATE omni_local_computer_commands
@@ -452,6 +456,9 @@ export async function claimLocalComputerCommand(context: SecurityContext) {
       claimToken,
       claimGeneration: Number(row.claim_generation),
       expiresAt: dateText(row.expires_at),
+      // The helper checks the real target of a task-authorized action and
+      // refuses one that task authority does not cover.
+      ...(taskAuthority ? { authority: "task" as const } : {}),
     },
     pollAfterMs: 0,
   };

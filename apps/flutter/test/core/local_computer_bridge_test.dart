@@ -114,6 +114,46 @@ void main() {
     );
   });
 
+  test('forwards task authority only on a checked action', () async {
+    const channel = MethodChannel('test.asael.local-computer.task-authority');
+    MethodCall? received;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          received = call;
+          return {'outcome': 'failed', 'errorCode': 'task_authority_refused'};
+        });
+    final bridge = LocalComputerBridge(channel: channel, enabled: true);
+    LocalComputerCommand command(String action, String? authority) =>
+        LocalComputerCommand(
+          id: 'local_computer_command_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          action: action,
+          input: const {'elementId': 'e:aaaaaaaaaaaa:3'},
+          expiresAt: DateTime.now().toUtc().add(const Duration(minutes: 1)),
+          authority: authority,
+        );
+
+    final response = await bridge.execute(command('press', 'task'));
+
+    expect(response.errorCode, 'task_authority_refused');
+    expect((received?.arguments as Map)['authority'], 'task');
+    expect((received?.arguments as Map).keys, {
+      'id',
+      'action',
+      'input',
+      'expiresAt',
+      'authority',
+    });
+    for (final action in const ['press', 'click', 'key', 'type']) {
+      expect(command(action, 'task').toArguments()['authority'], 'task');
+    }
+    expect(command('press', null).toArguments(), isNot(contains('authority')));
+    expect(() => command('scroll', 'task'), throwsArgumentError);
+    expect(() => command('observe', 'task'), throwsArgumentError);
+    expect(() => command('press', 'approved'), throwsArgumentError);
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, null);
+  });
+
   test('accepts only bounded allowlisted web navigation input', () {
     LocalComputerCommand webCommand(Map<String, Object?> input) =>
         LocalComputerCommand(

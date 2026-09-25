@@ -173,6 +173,64 @@ void main() {
     },
   );
 
+  test(
+    'a task-authorized claim reaches the Mac with its target check',
+    () async {
+      final repository = _FakeRepository(
+        command: _claim(
+          action: 'press',
+          input: const {'elementId': 'e:aaaaaaaaaaaa:3'},
+          authority: 'task',
+        ),
+      );
+      final host = _FakeHost(
+        result: const LocalComputerCommandResult(
+          outcome: LocalComputerOutcome.failed,
+          errorCode: 'task_authority_refused',
+        ),
+      );
+      final coordinator = LocalComputerCoordinator(
+        repository: repository,
+        host: host,
+        windowContext: const LocalComputerWindowContext(
+          role: LocalComputerWindowRole.primary,
+        ),
+        authenticated: true,
+        idleRefreshInterval: const Duration(milliseconds: 1),
+        heartbeatInterval: const Duration(milliseconds: 20),
+        failureRetryInterval: const Duration(milliseconds: 1),
+      );
+      addTearDown(coordinator.dispose);
+
+      await repository.completed.future.timeout(const Duration(seconds: 2));
+
+      expect(host.executedCommands.single.authority, 'task');
+      expect(repository.acceptedCompletions.single.payload, {
+        'schemaVersion': localComputerProtocolVersion,
+        'claimToken': _claimToken,
+        'outcome': 'failed',
+        'errorCode': 'task_authority_refused',
+      });
+    },
+  );
+
+  test('a claim carries task authority only on a checked action', () {
+    for (final action in const ['press', 'click', 'key', 'type']) {
+      expect(_claim(action: action, authority: 'task').authority, 'task');
+    }
+    expect(_claim(action: 'press').authority, isNull);
+    for (final invalid in [
+      () => _claim(authority: 'task'),
+      () => _claim(action: 'scroll', authority: 'task'),
+      () => _claim(action: 'press', authority: 'approved'),
+      () => _claim(action: 'press', authority: true),
+      () =>
+          _claim(action: 'press', authority: null, includeNullAuthority: true),
+    ]) {
+      expect(invalid, throwsFormatException);
+    }
+  });
+
   test('an auxiliary engine can inspect but never claims', () async {
     final repository = _FakeRepository(command: _claim());
     final host = _FakeHost();
@@ -628,6 +686,8 @@ LocalComputerClaim _claim({
   String action = 'observe',
   Map<String, Object?> input = const {'includeScreenshot': false},
   Duration expiresAfter = const Duration(minutes: 1),
+  Object? authority,
+  bool includeNullAuthority = false,
 }) => LocalComputerClaim.fromJson({
   'schemaVersion': localComputerProtocolVersion,
   'id': _commandId,
@@ -639,6 +699,7 @@ LocalComputerClaim _claim({
   'claimToken': _claimToken,
   'claimGeneration': claimGeneration,
   'expiresAt': DateTime.now().toUtc().add(expiresAfter).toIso8601String(),
+  if (authority != null || includeNullAuthority) 'authority': authority,
 });
 
 class _FakeRepository implements LocalComputerRepository {
@@ -711,6 +772,7 @@ class _FakeHost implements LocalComputerNativeHost {
   final Completer<void>? initializeGate;
   final bool becomeNotReadyAfterExecute;
   final executedIds = <String>[];
+  final executedCommands = <LocalComputerCommand>[];
   LocalComputerStoppedHandler? stoppedHandler;
   var stopCalls = 0;
   var current = const LocalComputerStatus(
@@ -739,6 +801,7 @@ class _FakeHost implements LocalComputerNativeHost {
     LocalComputerCommand command,
   ) async {
     executedIds.add(command.id);
+    executedCommands.add(command);
     if (becomeNotReadyAfterExecute) {
       current = LocalComputerStatus(
         supported: current.supported,

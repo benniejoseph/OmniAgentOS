@@ -3,9 +3,9 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   test('retains current and previous contract compatibility', () {
-    expect(NativeContract.currentVersion, 25);
-    expect(NativeContract.previousVersion, 20);
-    expect(NativeContract.supportedVersions, [25, 20]);
+    expect(NativeContract.currentVersion, 30);
+    expect(NativeContract.previousVersion, 29);
+    expect(NativeContract.supportedVersions, [30, 29]);
     expect(
       NativePaths.workspacesTasksUpdate('project one', 'task/two'),
       '/api/projects/project%20one/tasks/task%2Ftwo',
@@ -51,6 +51,11 @@ void main() {
       isTrue,
     );
     expect(NativeContract.supportsOperation('agents.release.retire'), isFalse);
+    expect(
+      NativeContract.supportsOperation('voice.realtime.session.start'),
+      isTrue,
+    );
+    expect(NativeContract.supportsOperation('voice.speech.stream'), isTrue);
     expect(NativePaths.promptQueueList, '/api/command/prompt-queue');
     expect(
       NativePaths.promptQueueDispatch('queue/one'),
@@ -76,11 +81,26 @@ void main() {
         'api': {
           'nativeContract': {
             'id': NativeContract.id,
-            'supportedVersions': [25, 20],
+            'supportedVersions': NativeContract.supportedVersions,
           },
         },
       }),
       returnsNormally,
+    );
+    // A service that has not published this client's contract yet.
+    expect(
+      () => NativeContract.verifyBootstrap({
+        'api': {
+          'nativeContract': {
+            'id': NativeContract.id,
+            'supportedVersions': [
+              NativeContract.previousVersion,
+              NativeContract.previousVersion - 1,
+            ],
+          },
+        },
+      }),
+      throwsFormatException,
     );
     expect(
       () => NativeContract.verifyBootstrap({

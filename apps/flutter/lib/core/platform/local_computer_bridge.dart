@@ -151,8 +151,13 @@ class LocalComputerCommand {
     required this.action,
     required Map<String, Object?> input,
     required this.expiresAt,
+    this.authority,
   }) : input = Map<String, Object?>.unmodifiable(input) {
-    if (!_uuid.hasMatch(id) || !allowedActions.contains(action)) {
+    if (!_uuid.hasMatch(id) ||
+        !allowedActions.contains(action) ||
+        (authority != null &&
+            (authority != taskAuthority ||
+                !taskAuthorityActions.contains(action)))) {
       throw ArgumentError('The local Computer Use command is invalid.');
     }
     final now = DateTime.now().toUtc();
@@ -180,16 +185,24 @@ class LocalComputerCommand {
   };
   static final _uuid = RegExp(r'^local_computer_command_[a-f0-9]{48}$');
 
+  /// Marks an action that runs on This Mac task authority alone. The helper
+  /// checks its real on-screen target and refuses one that task authority
+  /// does not cover.
+  static const taskAuthority = 'task';
+  static const taskAuthorityActions = <String>{'press', 'click', 'key', 'type'};
+
   final String id;
   final String action;
   final Map<String, Object?> input;
   final DateTime expiresAt;
+  final String? authority;
 
   Map<String, Object?> toArguments() => {
     'id': id,
     'action': action,
     'input': input,
     'expiresAt': expiresAt.toUtc().toIso8601String(),
+    if (authority != null) 'authority': authority,
   };
 
   static bool _isSafeChannelValue(Object? value, [int depth = 0]) {

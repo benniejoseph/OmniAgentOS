@@ -181,6 +181,7 @@ class LocalComputerClaim {
     required this.claimToken,
     required this.claimGeneration,
     required this.expiresAt,
+    this.authority,
   }) : input = Map<String, Object?>.unmodifiable(input);
 
   factory LocalComputerClaim.fromJson(Map<String, dynamic> json) {
@@ -188,6 +189,7 @@ class LocalComputerClaim {
     final expiresAt = DateTime.tryParse(json['expiresAt']?.toString() ?? '');
     final runId = json['runId'];
     final executionId = json['executionId'];
+    final authority = json['authority'];
     if (json['schemaVersion'] != localComputerProtocolVersion ||
         json['id'] is! String ||
         !RegExp(r'^local_computer_command_[a-f0-9]{48}$')
@@ -206,7 +208,12 @@ class LocalComputerClaim {
         json['claimGeneration'] is! int ||
         (json['claimGeneration'] as int) < 1 ||
         expiresAt == null ||
-        !expiresAt.isAfter(DateTime.now().toUtc())) {
+        !expiresAt.isAfter(DateTime.now().toUtc()) ||
+        (json.containsKey('authority') &&
+            (authority != LocalComputerCommand.taskAuthority ||
+                !LocalComputerCommand.taskAuthorityActions.contains(
+                  json['action'],
+                )))) {
       throw const FormatException(
         'The local Computer Use command response is invalid.',
       );
@@ -221,6 +228,7 @@ class LocalComputerClaim {
       claimToken: json['claimToken'] as String,
       claimGeneration: json['claimGeneration'] as int,
       expiresAt: expiresAt.toUtc(),
+      authority: authority as String?,
     );
   }
 
@@ -233,6 +241,10 @@ class LocalComputerClaim {
   final String claimToken;
   final int claimGeneration;
   final DateTime expiresAt;
+
+  /// Set when the action runs on This Mac task authority alone, so the helper
+  /// checks its real on-screen target before acting.
+  final String? authority;
 }
 
 bool _safeLocalComputerOpaqueId(String value) =>
@@ -792,6 +804,7 @@ class LocalComputerCoordinator extends ChangeNotifier
           action: claim.action,
           input: claim.input,
           expiresAt: claim.expiresAt,
+          authority: claim.authority,
         ),
       );
       if (!_loopCurrent(generation)) return;

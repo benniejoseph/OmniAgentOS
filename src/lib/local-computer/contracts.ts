@@ -9,8 +9,11 @@ export const LOCAL_COMPUTER_OPEN_URL_CONTRACT_VERSION = 13 as const;
 export const LOCAL_COMPUTER_SCREENSHOT_COORDINATE_CONTRACT_VERSION = 13 as const;
 export const LOCAL_COMPUTER_COMMAND_RUNNER_CONTRACT_VERSION = 27 as const;
 // A press, click, key, or type that runs on This Mac task authority alone may
-// reach the Mac only when the helper checks its real on-screen target. Any
-// other claim fails, and the executor offers the action for review instead.
+// reach the Mac only when the helper checks its real on-screen target. From
+// this contract version the command says so with `authority: "task"`, and the
+// helper refuses a target that task authority does not cover. An older
+// client's claim fails, and the executor offers the action for review instead.
+export const LOCAL_COMPUTER_TASK_AUTHORITY_CONTRACT_VERSION = 30 as const;
 export const LOCAL_COMPUTER_TASK_AUTHORITY_ATTESTED_ACTIONS: ReadonlySet<string> =
   new Set(["press", "click", "key", "type"]);
 export const LOCAL_COMPUTER_TASK_AUTHORITY_UNATTESTED_ERROR_CODE =
@@ -350,7 +353,18 @@ export const localComputerCommandSchema = z.object({
   claimToken: z.string().min(32).max(256),
   claimGeneration: z.number().int().positive(),
   expiresAt: z.string().datetime({ offset: true }),
+  authority: z.literal("task").optional(),
 }).strict().superRefine((value, context) => {
+  if (
+    value.authority !== undefined &&
+    !LOCAL_COMPUTER_TASK_AUTHORITY_ATTESTED_ACTIONS.has(value.action)
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["authority"],
+      message: "Only a press, click, key, or type can carry task authority.",
+    });
+  }
   if (
     value.action === "open_url" &&
     !localComputerOpenUrlInputSchema.safeParse(value.input).success

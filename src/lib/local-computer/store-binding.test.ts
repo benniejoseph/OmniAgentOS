@@ -287,13 +287,43 @@ describe("local Computer Use command binding", () => {
     expect(claimed.command?.input).not.toHaveProperty("presentScreenshot");
   });
 
-  it.each([
+  const taskAuthorityChecks = [
     ["press", "local.macos.press", { elementId: "e:aaaaaaaaaaaa:3" }],
     ["click", "local.macos.click", { elementId: "e:aaaaaaaaaaaa:4" }],
     ["key", "local.macos.key", { key: "tab" }],
     ["type", "local.macos.type", { text: "XAUUSD" }],
-  ] as const)(
-    "never hands the Mac a %s that runs on task authority alone",
+  ] as const;
+
+  it.each(taskAuthorityChecks)(
+    "never hands an older Mac client a %s that runs on task authority alone",
+    async (action, toolId, fields) => {
+      for (const clientContractVersion of [13, 29]) {
+        const toolInput = { snapshotRevision: "a".repeat(64), ...fields };
+        const sql = claimSql(action, toolInput);
+        mocks.getToolExecution.mockResolvedValueOnce({
+          toolId,
+          output: localComputerTaskAuthorityIntentOutput(),
+        });
+        mocks.openToolExecutionInput.mockReturnValueOnce(toolInput);
+
+        const claimed = await claimLocalComputerCommand(
+          nativeSecurityContext(clientContractVersion),
+        );
+
+        // This client cannot check the real on-screen target, so the command
+        // fails at claim and the executor asks the user instead.
+        expect(claimed).toMatchObject({ command: null, pollAfterMs: 0 });
+        const gate = sql.mock.calls[3];
+        expect(sqlText(gate?.[0])).toContain("SET state = 'failed'");
+        expect(sqlText(gate?.[0])).toContain("AND state = 'claimed'");
+        expect(gate?.slice(1)).toContain("task_authority_unattested");
+        expect(gate?.slice(1)).toContain(`local_computer_command_${"c".repeat(48)}`);
+      }
+    },
+  );
+
+  it.each(taskAuthorityChecks)(
+    "hands a v30 Mac client a task-authorized %s marked for its target check",
     async (action, toolId, fields) => {
       const toolInput = { snapshotRevision: "a".repeat(64), ...fields };
       const sql = claimSql(action, toolInput);
@@ -303,41 +333,48 @@ describe("local Computer Use command binding", () => {
       });
       mocks.openToolExecutionInput.mockReturnValueOnce(toolInput);
 
-      const claimed = await claimLocalComputerCommand(nativeSecurityContext());
+      const claimed = await claimLocalComputerCommand(nativeSecurityContext(30));
 
-      // No helper checks the real on-screen target yet, so the command fails
-      // at claim and the executor asks the user instead.
-      expect(claimed).toMatchObject({ command: null, pollAfterMs: 0 });
-      const gate = sql.mock.calls[3];
-      expect(sqlText(gate?.[0])).toContain("SET state = 'failed'");
-      expect(sqlText(gate?.[0])).toContain("AND state = 'claimed'");
-      expect(gate?.slice(1)).toContain("task_authority_unattested");
-      expect(gate?.slice(1)).toContain(`local_computer_command_${"c".repeat(48)}`);
+      expect(claimed).toMatchObject({
+        command: { action, authority: "task" },
+        pollAfterMs: 0,
+      });
+      // The helper refuses a target that task authority does not cover, so
+      // the claim itself changes nothing more.
+      expect(sql).toHaveBeenCalledTimes(3);
     },
   );
 
   it("delivers reviewed and URL commands that carry no on-screen check", async () => {
-    const click = { snapshotRevision: "a".repeat(64), elementId: "e:aaaaaaaaaaaa:5" };
-    claimSql("click", click);
-    mocks.getToolExecution.mockResolvedValueOnce({
-      toolId: "local.macos.click",
-      output: {},
-    });
-    mocks.openToolExecutionInput.mockReturnValueOnce(click);
-    await expect(claimLocalComputerCommand(nativeSecurityContext())).resolves
-      .toMatchObject({ command: { action: "click" } });
+    for (const clientContractVersion of [13, 30]) {
+      const click = { snapshotRevision: "a".repeat(64), elementId: "e:aaaaaaaaaaaa:5" };
+      claimSql("click", click);
+      mocks.getToolExecution.mockResolvedValueOnce({
+        toolId: "local.macos.click",
+        output: {},
+      });
+      mocks.openToolExecutionInput.mockReturnValueOnce(click);
+      const reviewed = await claimLocalComputerCommand(
+        nativeSecurityContext(clientContractVersion),
+      );
+      expect(reviewed).toMatchObject({ command: { action: "click" } });
+      expect(reviewed.command).not.toHaveProperty("authority");
 
-    // The executor bounds task-authorized navigation to sites the user named;
-    // the helper has no on-screen target to check for a URL.
-    const url = { browser: "chrome", url: "https://www.tradingview.com/" };
-    claimSql("open_url", url);
-    mocks.getToolExecution.mockResolvedValueOnce({
-      toolId: "local.macos.open_url",
-      output: localComputerTaskAuthorityIntentOutput(),
-    });
-    mocks.openToolExecutionInput.mockReturnValueOnce(url);
-    await expect(claimLocalComputerCommand(nativeSecurityContext())).resolves
-      .toMatchObject({ command: { action: "open_url" } });
+      // The executor bounds task-authorized navigation to sites the user
+      // named; the helper has no on-screen target to check for a URL.
+      const url = { browser: "chrome", url: "https://www.tradingview.com/" };
+      claimSql("open_url", url);
+      mocks.getToolExecution.mockResolvedValueOnce({
+        toolId: "local.macos.open_url",
+        output: localComputerTaskAuthorityIntentOutput(),
+      });
+      mocks.openToolExecutionInput.mockReturnValueOnce(url);
+      const navigation = await claimLocalComputerCommand(
+        nativeSecurityContext(clientContractVersion),
+      );
+      expect(navigation).toMatchObject({ command: { action: "open_url" } });
+      expect(navigation.command).not.toHaveProperty("authority");
+    }
   });
 
   it("requires v13 for an exact screenshot-pixel click", async () => {
@@ -434,7 +471,7 @@ function boundExecutionScope(runId: string) {
   });
 }
 
-function nativeSecurityContext() {
+function nativeSecurityContext(clientContractVersion = 13) {
   return {
     tenantId: "tenant-binding-test",
     actorId: "actor-binding-test",
@@ -449,7 +486,7 @@ function nativeSecurityContext() {
     native: {
       deviceId: "device-v13-0001",
       platform: "macos" as const,
-      clientContractVersion: 13,
+      clientContractVersion,
     },
   };
 }

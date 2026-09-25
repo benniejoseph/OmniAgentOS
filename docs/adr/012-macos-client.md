@@ -47,16 +47,19 @@ bearer, connector content, domain object, or credential.
 
 The macOS client first enrolled on native contract v8 and advances through ADR 011's
 current/previous discovery window. The platform identifier is `macos`. Production
-now advertises native contract v29 as current and retains frozen v28 as the only
+now advertises native contract v30 as current and retains frozen v29 as the only
 supported previous version. V11 introduced the device readiness, claim, completion,
 and stop courier; v12 added exact run/execution screenshot presentation; v13 added
 governed Chrome URL delivery and snapshot-bound `screenshot_pixel` coordinates;
 v27 added the governed command-runner capability and workspace inventory; and v28
 added the read-only scope-correct Command model catalog, strict explicit-selection
 envelope, and content-free effective-model receipt. V29 adds the authenticated
-Ambient Voice realtime session and versioned speech stream. A v28 client keeps
-visual Computer Use, governed commands, and explicit selection but cannot claim the
-v29 voice capabilities.
+Ambient Voice realtime session and versioned speech stream. V30 marks a press,
+click, key, or type that runs on This Mac task authority alone with
+`authority: "task"`, and the helper checks its real on-screen target before
+acting. A v29 client keeps visual Computer Use, governed commands, explicit
+selection, and Ambient Voice, but every such task-authorized action goes to
+review; a v28 client receives `upgrade_required`.
 The ordinary file-based macOS Keychain protects native session credentials under a
 stable Asael service namespace without a shared access group. Every Keychain
 operation is bounded so an operating-system authorization stall cannot hold the

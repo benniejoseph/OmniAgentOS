@@ -71,6 +71,11 @@ task_run_suite FocusSafeSnapshotPolicyTests ASAEL_COMPUTER_USE_HELPER_TESTING \
   "$task_macos_dir/ComputerUseHelper/HelperMain.swift" \
   "$task_macos_dir/ComputerUseHelperTests/FocusSafeSnapshotPolicyTests.swift"
 
+task_run_suite TaskAuthorityPolicyTests ASAEL_COMPUTER_USE_HELPER_TESTING \
+  "${task_computer_use_frameworks[@]}" \
+  "$task_macos_dir/ComputerUseHelper/HelperMain.swift" \
+  "$task_macos_dir/ComputerUseHelperTests/TaskAuthorityPolicyTests.swift"
+
 # Release builds compile the helpers only inside the signed packaging script, so
 # type-check each production entry point here to catch breakage before release.
 echo "==> production helper entry points"

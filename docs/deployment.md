@@ -37,19 +37,26 @@ Set these through the platform secret/configuration store, never in source contr
 - `OMNIAGENT_NATIVE_MIN_ANDROID_VERSION`, `OMNIAGENT_NATIVE_MIN_IOS_VERSION`, and `OMNIAGENT_NATIVE_MIN_MACOS_VERSION`: optional stable `major.minor.patch` minimums for native compatibility telemetry. An absent or empty value defaults to `1.0.0`; a malformed configured value invalidates the policy and holds adoption unavailable. These settings do not authorize Agent enrollment.
 
 Native contract artifacts are committed immutable release inputs. Production
-advertises v29 as current and deliberately retains v28 as the one
-rollback-compatible previous version. V20-v27 remain immutable historical
-artifacts and are not advertised by current discovery. Do not retire v28 until
-the v29 rollback window closes. A published version is never regenerated in
+advertises v30 as current and deliberately retains v29 as the one
+rollback-compatible previous version. V20-v28 remain immutable historical
+artifacts and are not advertised by current discovery. Do not retire v29 until
+the v30 rollback window closes. A published version is never regenerated in
 place. Run
 `npm run check:native-contracts` before a native-contract release; the check
 fails if the generated OpenAPI, event schema, fixtures, integrity manifests,
-Dart SDK, or frozen v7-v28 document hashes drift. Removing an archived version
+Dart SDK, or frozen v7-v29 document hashes drift. Removing an archived version
 requires a separately reviewed adoption decision and is not implied by a
 Vercel deployment. V25/v20 remains the historical 2026-09-22 adaptive-runtime
 compatibility pair; v27/v26 is the historical governed local-command release
 pair; v28/v27 is the historical scoped model-selection release pair; v29/v28
-is the current native Ambient Command voice release pair.
+is the historical native Ambient Command voice release pair; v30/v29 is the
+current task-authority target-check release pair.
+
+Advertising v30/v29 stops supporting v28, so a v28 client receives
+`upgrade_required` and its native mutations are held. Deploy the v30 server
+before installing a v30 native build: a v30 client fails bootstrap against a
+server that advertises only v29/v28. The installed v29 client keeps working
+against a v30 server through the rollback window.
 
 ### Web Command durable structured-context release
 
@@ -315,12 +322,30 @@ approval is forced, for example by web voice input or an "always approve" Agent
 profile, the forced review outranks task authority.
 
 A press, click, key, or type that task authority alone would cover reaches the
-Mac only when the helper checks the real on-screen target. No released helper
-does yet, so the command store fails such a command at claim with
-`task_authority_unattested`, and the executor offers the same action as a
-fresh approval. `activate_app`, `scroll`, and named-site `open_url` still
-continue within the task. Expect these review prompts on This Mac tasks until
-the native release that adds the on-screen check.
+Mac only when the helper checks the real on-screen target. A client below
+native contract v30 cannot, so the command store fails such a command at claim
+with `task_authority_unattested`, and the executor offers the same action as a
+fresh approval. A v30 client receives the command marked `authority: "task"`,
+and its helper reads the target up to the observed window before posting any
+event. The helper refuses with `task_authority_refused`, which the executor
+also offers as a fresh approval, when:
+
+- the target sits in a dialog, sheet, or popover, or is a window close button;
+- the target is unnamed, has an unknown role, or is a secure field;
+- a name on the target or its content ancestors contains a word or phrase that
+  could send, pay, delete, sign in, grant, confirm, or change the system;
+- typing is aimed at anything other than a plain text field, text area, or
+  combo box, or exceeds the server's single-line limits;
+- a key is outside the task allowlist, or an arrow, Home, End, or Page key
+  would change a slider, stepper, pop-up, radio group, or date field.
+
+Names on the containing content count, so a click inside a section whose
+accessible name is, for example, "Continue Watching" also goes to review; page
+and window titles never refuse a target. The word list is English-only: it does not recognize a
+consequential control named in another language, where the dialog, role, and
+naming checks and the server's effect classification remain the protection.
+`activate_app`, `scroll`, and named-site `open_url` still continue within the
+task.
 
 Vercel deployment `dpl_GWtwwNMwaroDcX8ixTGe18FY2Vj5` is promoted to
 `https://asael.bennierichard.com` at exact server revision

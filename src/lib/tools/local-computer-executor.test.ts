@@ -453,7 +453,7 @@ describe("governed local Mac tools", () => {
 
   it.each([
     ["task_authority_unattested", "cannot check what a task-authorized action"],
-    ["task_authority_refused", "not something task authority covers"],
+    ["task_authority_refused", "could not confirm that what this action would touch"],
   ] as const)(
     "offers a task-authorized click the Mac turned back (%s) for review",
     async (code, reason) => {

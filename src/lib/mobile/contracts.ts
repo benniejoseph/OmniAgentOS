@@ -13,6 +13,7 @@ import { commandModelSelectionRequestSchema } from "@/lib/models/command-selecti
 import { COMMAND_REASONING_LEVELS } from "@/lib/models/reasoning-effort";
 import {
   LOCAL_COMPUTER_PROTOCOL_VERSION,
+  LOCAL_COMPUTER_TASK_AUTHORITY_CONTRACT_VERSION,
   localComputerActionSchema,
   localComputerClaimRequestSchema,
   localComputerCommandSchema,
@@ -29,10 +30,10 @@ import {
 } from "@/lib/settings/types";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 29 as const;
-// v28 remains the byte-frozen rollback bridge while v29 publishes the
-// authenticated Ambient Voice session and versioned speech-stream boundary.
-export const NATIVE_API_PREVIOUS_VERSION = 28 as const;
+export const NATIVE_API_CURRENT_VERSION = 30 as const;
+// v29 remains the byte-frozen rollback bridge while v30 marks the local
+// computer commands that run on This Mac task authority alone.
+export const NATIVE_API_PREVIOUS_VERSION = 29 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -670,6 +671,16 @@ export function nativeLocalComputerClaimResponseForClient(
   clientContractVersion: number,
 ) {
   const current = nativeLocalComputerClaimResponseSchema.parse(value);
+  if (
+    current.command?.authority !== undefined &&
+    clientContractVersion < LOCAL_COMPUTER_TASK_AUTHORITY_CONTRACT_VERSION
+  ) {
+    // Removing the marker would send the action without the target check it
+    // depends on, so an older client never receives it.
+    throw new Error(
+      "A task-authorized local computer command requires a newer native client.",
+    );
+  }
   if (clientContractVersion >= LOCAL_COMPUTER_PREVIEW_BINDING_CONTRACT_VERSION) {
     return current;
   }
@@ -1625,6 +1636,12 @@ const v29Operations: readonly NativeOperation[] = [
   ),
 ];
 
+// Contract v30 changes only the strict local computer command carried by the
+// existing courier: a command that runs on This Mac task authority alone says
+// so, and the helper checks its real target. No endpoint or capability
+// surface is added.
+const v30Operations: readonly NativeOperation[] = [...v29Operations];
+
 export const nativeContractSchemas = Object.freeze({
   JsonObject: jsonObject,
   NativeClientAttestation: nativeClientAttestationSchema,
@@ -1749,6 +1766,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 27) return v27Operations;
   if (version === 28) return v28Operations;
   if (version === 29) return v29Operations;
+  if (version === 30) return v30Operations;
   return undefined;
 }
 
@@ -1758,7 +1776,7 @@ export function nativeContractDiscovery() {
     contractId: NATIVE_API_CONTRACT_ID,
     currentVersion: NATIVE_API_CURRENT_VERSION,
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
-    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [29, 28],
+    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [30, 29],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,
       state: version === NATIVE_API_CURRENT_VERSION ? "current" as const : "previous" as const,

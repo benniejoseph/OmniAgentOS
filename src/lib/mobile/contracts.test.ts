@@ -21,8 +21,8 @@ describe("native API contracts", () => {
   it("retains exactly the current and previous rollout versions", () => {
     // Tripwire: a native contract bump must be a deliberate, reviewed change.
     // The other tests follow these constants.
-    expect(NATIVE_API_CURRENT_VERSION).toBe(29);
-    expect(NATIVE_API_PREVIOUS_VERSION).toBe(28);
+    expect(NATIVE_API_CURRENT_VERSION).toBe(30);
+    expect(NATIVE_API_PREVIOUS_VERSION).toBe(29);
     expect(NATIVE_API_SUPPORTED_VERSIONS).toEqual([
       NATIVE_API_CURRENT_VERSION,
       NATIVE_API_PREVIOUS_VERSION,
@@ -85,6 +85,9 @@ describe("native API contracts", () => {
     );
     expect(nativeOperationsForVersion(25)?.length).toBe(
       (nativeOperationsForVersion(24)?.length || 0) + 7,
+    );
+    expect(nativeOperationsForVersion(30)?.length).toBe(
+      nativeOperationsForVersion(29)?.length,
     );
     const discovery = nativeContractDiscovery();
     expect(nativeContractSchemas.NativeContractDiscovery.parse(
@@ -744,6 +747,87 @@ describe("native API contracts", () => {
       },
       pollAfterMs: 0,
     });
+  });
+
+  it("keeps v29 immutable while v30 adds only the task-authority command marker", async () => {
+    const [v29, v29Manifest, v30] = await Promise.all([
+      readFile(
+        new URL("../../../public/native-contracts/v29/openapi.json", import.meta.url),
+        "utf8",
+      ),
+      readFile(
+        new URL("../../../public/native-contracts/v29/manifest.json", import.meta.url),
+        "utf8",
+      ),
+      readFile(
+        new URL("../../../public/native-contracts/v30/openapi.json", import.meta.url),
+        "utf8",
+      ),
+    ]);
+    expect(sha256(v29)).toBe(
+      "4c05b72fb2533b5d001600ee843252b65012fef9ec62d38fc586a4d84ed1cf3a",
+    );
+    expect(sha256(v29Manifest)).toBe(
+      "f18dd634d6e319dae4de4b07e7bd7c161356817a9fc78b36357e64550bcc258d",
+    );
+    expect(nativeOperationsForVersion(30)).toEqual(nativeOperationsForVersion(29));
+    const claimedCommand = (document: string) =>
+      JSON.parse(document).components.schemas.NativeLocalComputerClaimResponse
+        .properties.command.anyOf[0];
+    const previous = claimedCommand(v29);
+    const current = claimedCommand(v30);
+    expect(previous.properties).not.toHaveProperty("authority");
+    expect(current.properties.authority).toEqual({ type: "string", const: "task" });
+    expect(current.required).toEqual(previous.required);
+    const { authority: _authority, ...unchanged } = current.properties;
+    expect(unchanged).toEqual(previous.properties);
+  });
+
+  it("sends the task-authority marker only to a v30 client on a checked action", () => {
+    const claimed = {
+      schemaVersion: 1,
+      command: {
+        schemaVersion: 1,
+        id: `local_computer_command_${"c".repeat(48)}`,
+        runId: "4f778556-e171-4af0-ae9c-c5a269276236",
+        executionId: `idem_${"a".repeat(64)}`,
+        action: "press",
+        input: { elementId: "e:aaaaaaaaaaaa:3" },
+        presentScreenshot: false,
+        claimToken: "claim-token-that-is-long-enough-123456",
+        claimGeneration: 1,
+        expiresAt: "2026-09-17T08:00:30.000Z",
+        authority: "task",
+      },
+      pollAfterMs: 0,
+    };
+
+    expect(nativeLocalComputerClaimResponseForClient(claimed, 30)).toEqual(
+      claimed,
+    );
+    // Removing the marker would send the action without its target check.
+    for (const olderClient of [29, 12, 11]) {
+      expect(() => nativeLocalComputerClaimResponseForClient(claimed, olderClient))
+        .toThrow("requires a newer native client");
+    }
+    const { authority: _authority, ...reviewed } = claimed.command;
+    expect(nativeLocalComputerClaimResponseForClient(
+      { ...claimed, command: reviewed },
+      29,
+    )).toEqual({ ...claimed, command: reviewed });
+
+    for (const command of [
+      { ...claimed.command, action: "observe", input: { includeScreenshot: true } },
+      { ...claimed.command, action: "scroll", input: { direction: "down" } },
+      { ...claimed.command, action: "activate_app", input: { name: "Safari" } },
+      { ...claimed.command, authority: "approved" },
+      { ...claimed.command, authority: true },
+    ]) {
+      expect(nativeContractSchemas.NativeLocalComputerClaimResponse.safeParse({
+        ...claimed,
+        command,
+      }).success).toBe(false);
+    }
   });
 
   it("publishes a discriminated event contract for every streamed event family", () => {
