@@ -220,7 +220,7 @@ export async function previewAssetDeleteService(caller: AppServiceCaller, input:
 export async function deleteAssetService(caller: AppServiceCaller, input: z.input<typeof deleteSchema>) {
   const value = deleteSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.assets.delete"));
-  const preview = await previewAssetDeleteService(caller, value);
+  const preview = await previewAssetDeleteService(caller, { kind: value.kind, id: value.id });
   if (!preview.data.target || preview.data.targetSha256 !== value.expectedTargetSha256) throw new Error("Asset deletion target changed after preview; review the exact target again.");
   const owner = { ...exactOwner(caller), executionScope: caller.executionScope! };
   let forgotten;

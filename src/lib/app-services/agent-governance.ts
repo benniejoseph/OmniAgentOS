@@ -130,7 +130,7 @@ export async function previewAgentGrantRevokeService(caller: AppServiceCaller, i
 export async function revokeAgentGrantService(caller: AppServiceCaller, input: z.input<typeof grantRevokeSchema>) {
   const value = grantRevokeSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.agents.grants.revoke"));
-  const preview = await previewAgentGrantRevokeService(caller, value);
+  const preview = await previewAgentGrantRevokeService(caller, { agentId: value.agentId, grantId: value.grantId });
   if (!preview.data.target || preview.data.targetSha256 !== value.expectedTargetSha256) {
     throw new Error("Agent grant revocation target changed after preview; review the exact target again.");
   }

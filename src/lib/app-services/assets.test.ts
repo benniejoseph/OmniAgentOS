@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  cancelOperationJobByDedupeKey: vi.fn(),
+  deleteCaptureAssetWithKnowledge: vi.fn(),
   enqueueCaptureAssetProcessJob: vi.fn(),
   getCaptureAsset: vi.fn(),
   getOperationJob: vi.fn(),
@@ -19,6 +21,11 @@ vi.mock("@/lib/capture/assets", () => ({
   updateCaptureAssetStatus: mocks.updateCaptureAssetStatus,
 }));
 
+vi.mock("@/lib/capture/deletion", () => ({
+  deleteCaptureAssetWithKnowledge: mocks.deleteCaptureAssetWithKnowledge,
+  deleteCaptureRecordingWithKnowledge: vi.fn(),
+}));
+
 vi.mock("@/lib/operations/background-jobs", () => ({
   enqueueCaptureAssetProcessJob: mocks.enqueueCaptureAssetProcessJob,
   enqueueKnowledgeIngestJob: vi.fn(),
@@ -26,10 +33,15 @@ vi.mock("@/lib/operations/background-jobs", () => ({
 
 vi.mock("@/lib/operations/job-queue", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/lib/operations/job-queue")>(),
+  cancelOperationJobByDedupeKey: mocks.cancelOperationJobByDedupeKey,
   getOperationJob: mocks.getOperationJob,
 }));
 
-import { indexStoredAssetService } from "@/lib/app-services/assets";
+import {
+  deleteAssetService,
+  indexStoredAssetService,
+  previewAssetDeleteService,
+} from "@/lib/app-services/assets";
 import { createAppServiceCaller } from "@/lib/app-services/contracts";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 
@@ -103,6 +115,7 @@ beforeEach(() => {
     ingestJobId: "job-a",
     extractionReceipt: undefined,
   });
+  mocks.deleteCaptureAssetWithKnowledge.mockResolvedValue({ documents: 1 });
 });
 
 describe("Capture asset application service", () => {
@@ -315,4 +328,58 @@ describe("Capture asset application service", () => {
       });
     },
   );
+
+  it("deletes exactly the asset its preview described", async () => {
+    const caller = createAppServiceCaller({
+      context,
+      executionScope,
+      idempotencyKey: "delete-request-a",
+    });
+    const preview = await previewAssetDeleteService(caller, {
+      kind: "asset",
+      id: asset.id,
+    });
+
+    const result = await deleteAssetService(caller, {
+      kind: "asset",
+      id: asset.id,
+      expectedTargetSha256: preview.data.targetSha256,
+    });
+
+    expect(mocks.deleteCaptureAssetWithKnowledge).toHaveBeenCalledWith(asset, {
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      executionScope,
+    });
+    expect(result.data).toMatchObject({
+      deleted: true,
+      forgotten: { documents: 1 },
+      target: { kind: "asset", id: asset.id, contentSha256: asset.contentSha256 },
+      targetSha256: preview.data.targetSha256,
+    });
+  });
+
+  it("refuses to delete an asset that changed after its preview", async () => {
+    const caller = createAppServiceCaller({
+      context,
+      executionScope,
+      idempotencyKey: "delete-request-b",
+    });
+    const preview = await previewAssetDeleteService(caller, {
+      kind: "asset",
+      id: asset.id,
+    });
+    mocks.getCaptureAsset.mockResolvedValue({
+      ...asset,
+      contentSha256: "b".repeat(64),
+    });
+
+    await expect(deleteAssetService(caller, {
+      kind: "asset",
+      id: asset.id,
+      expectedTargetSha256: preview.data.targetSha256,
+    })).rejects.toThrow("changed after preview");
+    expect(mocks.cancelOperationJobByDedupeKey).not.toHaveBeenCalled();
+    expect(mocks.deleteCaptureAssetWithKnowledge).not.toHaveBeenCalled();
+  });
 });

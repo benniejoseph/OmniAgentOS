@@ -98,6 +98,11 @@ describe("P7.4 Agent memory grant routes", () => {
   });
 
   it("revokes one exact grant", async () => {
+    mocks.listAgentMemoryGrants.mockResolvedValue([{
+      record: { grantId: "context:one" },
+      explanation: "Can see one exact target.",
+      manageable: true,
+    }]);
     const response = await DELETE(
       new Request(
         "http://asael.test/api/agents/agent-one/grants/context%3Aone",
@@ -112,10 +117,43 @@ describe("P7.4 Agent memory grant routes", () => {
     );
 
     expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      revoked: true,
+      target: { agentId: "agent-one", grant: { grantId: "context:one" } },
+      targetSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
     expect(mocks.revokeAgentMemoryGrant).toHaveBeenCalledWith(
       "agent-one",
       "context:one",
       expect.objectContaining({ actorId: "owner@example.test" }),
     );
+  });
+
+  it("refuses to revoke a grant that changed after the route previewed it", async () => {
+    mocks.listAgentMemoryGrants
+      .mockResolvedValueOnce([{
+        record: { grantId: "context:one", maxItems: 12 },
+        explanation: "Can see one exact target.",
+        manageable: true,
+      }])
+      .mockResolvedValueOnce([{
+        record: { grantId: "context:one", maxItems: 50 },
+        explanation: "Can see one exact target.",
+        manageable: true,
+      }]);
+
+    await expect(DELETE(
+      new Request(
+        "http://asael.test/api/agents/agent-one/grants/context%3Aone",
+        { method: "DELETE" },
+      ),
+      {
+        params: Promise.resolve({
+          id: "agent-one",
+          grantId: "context:one",
+        }),
+      },
+    )).rejects.toThrow("changed after preview");
+    expect(mocks.revokeAgentMemoryGrant).not.toHaveBeenCalled();
   });
 });
