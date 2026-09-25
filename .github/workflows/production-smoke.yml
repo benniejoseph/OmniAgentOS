@@ -12,6 +12,8 @@ on:
 
 permissions:
   contents: read
+  # The provenance gate reads the served commit's check runs.
+  checks: read
 
 jobs:
   production-smoke:
@@ -42,6 +44,17 @@ jobs:
         env:
           REQUESTED_SMOKE_REVISION: ${{ inputs.expected_revision }}
         run: node scripts/resolve-production-smoke-revision.mjs
+
+      # Production must serve a commit on main whose required CI passed, which
+      # the paired release runner enforces. A red gate means production was
+      # changed outside that runner.
+      - name: Release provenance gate
+        id: provenance
+        continue-on-error: true
+        timeout-minutes: 2
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: RELEASE_REVISION="$SMOKE_EXPECTED_REVISION" node scripts/release-provenance.mjs
 
       - name: Install
         run: npm ci --omit=dev
@@ -121,6 +134,7 @@ jobs:
       - name: Enforce production gates
         if: always()
         env:
+          PROVENANCE_OUTCOME: ${{ steps.provenance.outcome }}
           PREFLIGHT_OUTCOME: ${{ steps.preflight.outcome }}
           SECURITY_OUTCOME: ${{ steps.security.outcome }}
           TENANT_OUTCOME: ${{ steps.tenant.outcome }}
@@ -131,7 +145,7 @@ jobs:
         run: |
           set -euo pipefail
           failures=()
-          for gate in PREFLIGHT SECURITY TENANT EVALUATION RELEASE EVIDENCE UPLOAD; do
+          for gate in PROVENANCE PREFLIGHT SECURITY TENANT EVALUATION RELEASE EVIDENCE UPLOAD; do
             outcome_variable="${gate}_OUTCOME"
             outcome="${!outcome_variable}"
             if [ "$outcome" != "success" ]; then

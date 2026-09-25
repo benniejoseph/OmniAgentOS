@@ -1,19 +1,12 @@
 import { appendFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
+import { parseExactGitRevision } from "./release-provenance.mjs";
 import {
   getSmokeBaseUrl,
   smokeFetch,
 } from "./smoke-helpers.mjs";
 
-const EXACT_GIT_REVISION = /^[a-f0-9]{40}$/;
-
-export function parseExactGitRevision(value, label = "revision") {
-  const normalized = String(value || "").trim().toLowerCase();
-  if (!EXACT_GIT_REVISION.test(normalized)) {
-    throw new Error(`${label} must be an exact 40-character lowercase Git SHA.`);
-  }
-  return normalized;
-}
+export { parseExactGitRevision };
 
 /**
  * @param {{

@@ -5,6 +5,12 @@ import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import {
+  RELEASE_BRANCH,
+  RELEASE_REPOSITORY,
+  REQUIRED_RELEASE_CHECKS,
+  verifyReleaseProvenance,
+} from "./release-provenance.mjs";
 
 class ReadinessAccessError extends Error {
   constructor(status) {
@@ -47,6 +53,7 @@ const WORKER_RELEASE_ACTIVATION_FILE =
   "/tmp/asael-worker-release-activated";
 const dryRun = process.argv.includes("--dry-run");
 const configurationProbe = process.argv.includes("--configuration-probe");
+const provenanceProbe = process.argv.includes("--provenance-probe");
 const readinessProbeIndex = process.argv.indexOf("--readiness-probe");
 const gatewayReadinessProbeIndex = process.argv.indexOf(
   "--gateway-readiness-probe",
@@ -186,7 +193,14 @@ if (configurationProbe) {
   process.exit(0);
 }
 
+if (provenanceProbe) {
+  await requireCleanWorkingTree();
+  await verifyRunnerProvenance();
+  process.exit(0);
+}
+
 if (dryRun) {
+  printDryRunReleaseProvenance();
   printDryRun("npm", ["run", "verify"]);
   printDryRun(
     "npm",
@@ -247,15 +261,10 @@ const productionBaseUrl = releaseConfiguration.baseUrl;
 const openAIGateway = releaseConfiguration.openAIGateway;
 const initialOpenAIGatewayCutover =
   releaseConfiguration.initialOpenAIGatewayCutover;
-const worktreeChanges = await capture("git", [
-  "status",
-  "--porcelain",
-]);
-if (worktreeChanges) {
-  fail(
-    "Production deployment requires a clean working tree so Vercel and Fly receive the same reviewed release.",
-  );
-}
+await requireCleanWorkingTree();
+// Vercel and Fly build the checked-out tree, so prove that tree is a reviewed
+// commit on main with green CI before spending time on local verification.
+await verifyRunnerProvenance();
 await run("npm", ["run", "verify"]).catch((error) =>
   fail(`Production verification failed: ${errorMessage(error)}`),
 );
@@ -438,6 +447,36 @@ try {
 console.log(
   `Production release ${revision} passed canonical smoke and performance budgets with rollback-safe gateway token overlap.`,
 );
+
+async function requireCleanWorkingTree() {
+  const worktreeChanges = await capture("git", [
+    "status",
+    "--porcelain",
+  ]);
+  if (worktreeChanges) {
+    fail(
+      "Production deployment requires a clean working tree so Vercel and Fly receive the same reviewed release.",
+    );
+  }
+}
+
+async function verifyRunnerProvenance() {
+  const head = await capture("git", ["rev-parse", "HEAD"]);
+  if (revision !== head) {
+    fail(
+      `OMNIAGENT_RELEASE_SHA ${safeDiagnostic(revision)} does not match HEAD ${safeDiagnostic(head)}. Vercel and Fly build the checked-out tree, so the release revision must be HEAD.`,
+    );
+  }
+  const provenance = await verifyReleaseProvenance({ revision }).catch(
+    (error) => fail(`Release provenance check failed: ${errorMessage(error)}`),
+  );
+  const position = provenance.behindBy
+    ? `${provenance.behindBy} commits behind ${RELEASE_BRANCH}`
+    : `the tip of ${RELEASE_BRANCH}`;
+  console.log(
+    `Release ${revision} is ${position} on ${RELEASE_REPOSITORY} with green checks: ${provenance.checks.join(", ")}.`,
+  );
+}
 
 function validateReleaseConfiguration() {
   const singaporeTopology = configuredVercelRegions().includes("sin1");
@@ -1541,6 +1580,12 @@ function safeDiagnostic(value) {
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 160) || "unknown";
+}
+
+function printDryRunReleaseProvenance() {
+  console.log(
+    `DRY RUN verify release provenance revision=${revision} is clean HEAD on ${RELEASE_REPOSITORY} ${RELEASE_BRANCH} with green checks ${REQUIRED_RELEASE_CHECKS.join(",")}`,
+  );
 }
 
 function printDryRunReadinessWait(label, baseUrl, expectedRevision) {

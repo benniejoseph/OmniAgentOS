@@ -1005,6 +1005,26 @@ After the worker registration window, each release phase runs one successful log
 npm run deploy:production
 ```
 
+Before `npm run verify` or any platform change, the runner proves release
+provenance against GitHub rather than the local clone. `OMNIAGENT_RELEASE_SHA`,
+when set, must equal the checked-out `HEAD`. GitHub's comparison of
+`benniejoseph/OmniAgentOS` `main` with that commit must report it as identical
+or behind, so an unpushed, branch-only, or rewritten commit cannot be released.
+The latest GitHub Actions run of each required job on that exact commit
+(`quality`, `build`, `audit`, `integration`, `worker`, and `gitleaks`) must have
+succeeded. Any other job that ran on it, such as the path-filtered Native
+`flutter` and `macos-policy` jobs, must be green, skipped, or neutral. A queued,
+running, failed, or missing job stops the release, as does a check-run list
+GitHub truncates. Only GitHub Actions runs count, so another app cannot satisfy
+a required job name. The runner reads GitHub through `gh api`, so the release
+shell needs `gh auth login` or a `GH_TOKEN` with read access to the repository.
+`node scripts/deploy-production.mjs --provenance-probe` runs only the clean-tree
+and provenance checks. There is no web-only release path: the `dedicated_worker`
+release gate requires the worker heartbeat revision to equal the web revision,
+so web-only changes also use the paired runner. The scheduled `Production Smoke`
+repeats the provenance check for the served revision, and its `provenance` gate
+turns red when production serves a commit that did not come through this path.
+
 Set `BASE_URL` to the canonical production HTTPS origin and provide the smoke
 credentials, internal secret, pinned gateway URL, active token, optional
 rotation-only previous token, and `RELEASE_EVIDENCE_OUTPUT`

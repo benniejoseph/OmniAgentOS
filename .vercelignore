@@ -16,6 +16,17 @@ build
 supabase/.temp
 *.tsbuildinfo
 .DS_Store
+# Local tool state and key material are Git-ignored; keep them out of uploads.
+.claude
+.cursor
+.superpowers
+*.pem
+*.key
+*.p8
+*.p12
+*.pfx
+*.jks
+*.keystore
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

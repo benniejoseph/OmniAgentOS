@@ -4,7 +4,7 @@ import {
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
-import { readFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -36,31 +36,34 @@ describe("paired production deployment", () => {
     const commands = result.stdout
       .split("\n")
       .filter((line) => line.startsWith("DRY RUN "));
-    expect(commands[0]).toBe("DRY RUN npm run verify");
-    expect(commands[1]).toContain("npm run smoke:release");
-    expect(commands[2]).toContain(
+    expect(commands[0]).toBe(
+      "DRY RUN verify release provenance revision=test-release is clean HEAD on benniejoseph/OmniAgentOS main with green checks quality,build,audit,integration,worker,gitleaks",
+    );
+    expect(commands[1]).toBe("DRY RUN npm run verify");
+    expect(commands[2]).toContain("npm run smoke:release");
+    expect(commands[3]).toContain(
       "vercel deploy --prod --skip-domain --yes",
     );
-    expect(commands[2]).toContain(
+    expect(commands[3]).toContain(
       "--env OMNIAGENT_RELEASE_SHA=test-release",
     );
-    expect(commands[3]).toContain(
+    expect(commands[4]).toContain(
       "wait for staged web readiness at https://staged-deployment.example/api/health revision=test-release",
     );
-    expect(commands[4]).toContain(
+    expect(commands[5]).toContain(
       "stage candidate gateway overlap on Fly through secret stdin; values redacted",
     );
-    expect(commands[5]).toContain(
+    expect(commands[6]).toContain(
       "fly deploy --app omniagent-os-worker --build-arg OMNIAGENT_RELEASE_SHA=test-release --env OMNIAGENT_WORKER_BASE_URL=https://staged-deployment.example",
     );
-    expect(commands[5]).toContain(
+    expect(commands[6]).toContain(
       "--env OMNIAGENT_WORKER_CANONICAL_BASE_URL=https://asael.bennierichard.com",
     );
-    expect(commands[5]).toContain(
+    expect(commands[6]).toContain(
       "--env OMNIAGENT_WORKER_RELEASE_HOLD=true",
     );
-    expect(commands[5]).toContain("--strategy bluegreen");
-    expect(commands[6]).toContain(
+    expect(commands[6]).toContain("--strategy bluegreen");
+    expect(commands[7]).toContain(
       "wait for staged gateway active+optional-previous token readiness at /healthz revision=test-release region=iad protocol=1",
     );
     const stagedSmokeIndex = commands.findIndex((command) =>
@@ -188,7 +191,7 @@ describe("paired production deployment", () => {
       command.includes("LIVE_VERIFY_PAID_OPENAI=CONFIRMED") &&
       command.includes("npm run smoke:paid-agent"),
     );
-    expect(gatewayTokenStageIndex).toBeGreaterThan(3);
+    expect(gatewayTokenStageIndex).toBeGreaterThan(4);
     expect(stagedWorkerIndex).toBeGreaterThan(gatewayTokenStageIndex);
     expect(stagedGatewayIndex).toBeGreaterThan(stagedWorkerIndex);
     expect(stagedWorkerSettleIndex).toBeGreaterThan(stagedGatewayIndex);
@@ -219,6 +222,154 @@ describe("paired production deployment", () => {
     expect(result.stdout).not.toContain("--image registry.fly.io");
     expect(result.stdout).not.toContain("OMNIAGENT_OPENAI_GATEWAY_TOKEN=");
     expect(result.stdout).not.toContain("OPENAI_API_KEY=");
+  });
+
+  it("proves release provenance before local verification or any deploy", async () => {
+    const head = "a53a77aee2e1056f8989cc19b24b0a6a620cf084";
+    const onMain = JSON.stringify({ status: "behind", ahead_by: 0, behind_by: 2 });
+
+    await withFakeReleaseTools(async ({ environment, readLog }) => {
+      const release = {
+        ...environment,
+        ...releaseConfigurationEnvironment(),
+        FAKE_GIT_HEAD: head,
+        FAKE_GH_COMPARE: onMain,
+        FAKE_GH_CHECKS: releaseCheckRunsJson(head, {
+          "macos-policy": "success",
+          "production-smoke": "failure",
+        }),
+      };
+
+      const mislabeled = await runProcess(
+        process.execPath,
+        ["scripts/deploy-production.mjs"],
+        {
+          ...release,
+          OMNIAGENT_RELEASE_SHA: "0f1e2d3c4b5a69788796a5b4c3d2e1f0a1b2c3d4",
+        },
+      );
+      expect(mislabeled.code).toBe(1);
+      expect(mislabeled.stderr).toContain(`does not match HEAD ${head}`);
+      expect(await readLog()).toEqual([
+        "git status --porcelain",
+        "git rev-parse HEAD",
+      ]);
+
+      const offMain = await runProcess(
+        process.execPath,
+        ["scripts/deploy-production.mjs"],
+        {
+          ...release,
+          OMNIAGENT_RELEASE_SHA: head,
+          FAKE_GH_COMPARE: JSON.stringify({
+            status: "ahead",
+            ahead_by: 1,
+            behind_by: 0,
+          }),
+        },
+      );
+      expect(offMain.code).toBe(1);
+      expect(offMain.stderr).toContain(
+        "is not on benniejoseph/OmniAgentOS main",
+      );
+      expect((await readLog()).some((line) => line.startsWith("npm "))).toBe(
+        false,
+      );
+
+      const redChecks = await runProcess(
+        process.execPath,
+        ["scripts/deploy-production.mjs"],
+        {
+          ...release,
+          OMNIAGENT_RELEASE_SHA: head,
+          FAKE_GH_CHECKS: releaseCheckRunsJson(head, {
+            integration: "failure",
+          }),
+        },
+      );
+      expect(redChecks.code).toBe(1);
+      expect(redChecks.stderr).toContain("integration is failure");
+      expect((await readLog()).some((line) => line.startsWith("npm "))).toBe(
+        false,
+      );
+
+      const unauthenticated = await runProcess(
+        process.execPath,
+        ["scripts/deploy-production.mjs"],
+        {
+          ...release,
+          OMNIAGENT_RELEASE_SHA: head,
+          FAKE_GH_FAIL: "HTTP 401: Bad credentials",
+        },
+      );
+      expect(unauthenticated.code).toBe(1);
+      expect(unauthenticated.stderr).toContain(
+        "failed with exit code 4: HTTP 401: Bad credentials",
+      );
+      expect((await readLog()).some((line) => line.startsWith("npm "))).toBe(
+        false,
+      );
+
+      const proven = await runProcess(
+        process.execPath,
+        ["scripts/deploy-production.mjs"],
+        { ...release, OMNIAGENT_RELEASE_SHA: "" },
+      );
+      expect(proven.code).toBe(1);
+      expect(proven.stdout).toContain(
+        `Release ${head} is 2 commits behind main on benniejoseph/OmniAgentOS with green checks: audit, build, gitleaks, integration, macos-policy, quality, worker.`,
+      );
+      expect(proven.stderr).toContain("Production verification failed");
+      expect(await readLog()).toEqual([
+        "git rev-parse HEAD",
+        "git status --porcelain",
+        "git rev-parse HEAD",
+        `gh api --hostname github.com --method GET repos/benniejoseph/OmniAgentOS/compare/main...${head} --jq {status, ahead_by, behind_by}`,
+        `gh api --hostname github.com --method GET repos/benniejoseph/OmniAgentOS/commits/${head}/check-runs?filter=latest&per_page=100`,
+        "npm run verify",
+      ]);
+    });
+  });
+
+  it("checks provenance without deploying and refuses a dirty checkout", async () => {
+    const head = "a53a77aee2e1056f8989cc19b24b0a6a620cf084";
+    await withFakeReleaseTools(async ({ environment, readLog }) => {
+      const probeEnvironment = {
+        ...environment,
+        OMNIAGENT_RELEASE_SHA: "",
+        FAKE_GIT_HEAD: head,
+        FAKE_GH_COMPARE: JSON.stringify({
+          status: "identical",
+          ahead_by: 0,
+          behind_by: 0,
+        }),
+        FAKE_GH_CHECKS: releaseCheckRunsJson(head),
+      };
+
+      const dirty = await runProcess(
+        process.execPath,
+        ["scripts/deploy-production.mjs", "--provenance-probe"],
+        { ...probeEnvironment, FAKE_GIT_STATUS: "?? untracked.txt" },
+      );
+      expect(dirty.code).toBe(1);
+      expect(dirty.stderr).toContain("requires a clean working tree");
+      expect((await readLog()).some((line) => line.startsWith("gh "))).toBe(
+        false,
+      );
+
+      const clean = await runProcess(
+        process.execPath,
+        ["scripts/deploy-production.mjs", "--provenance-probe"],
+        probeEnvironment,
+      );
+      expect(clean.code).toBe(0);
+      expect(clean.stdout).toContain(
+        `Release ${head} is the tip of main on benniejoseph/OmniAgentOS`,
+      );
+      expect(
+        (await readLog()).filter((line) => /^(?:npm|vercel|fly) /.test(line)),
+      ).toEqual([]);
+    });
   });
 
   it("requires a complete safe gateway configuration for the Singapore topology", async () => {
@@ -940,6 +1091,116 @@ function runProcess(
     child.once("error", reject);
     child.once("exit", (code) => resolve({ code, stdout, stderr }));
   });
+}
+
+// Green required release checks for a commit, with per-job conclusion
+// overrides. A job named only in overrides is added as an extra check run.
+function releaseCheckRunsJson(
+  head: string,
+  conclusions: Record<string, string> = {},
+) {
+  const names = [
+    ...new Set([
+      "quality",
+      "build",
+      "audit",
+      "integration",
+      "worker",
+      "gitleaks",
+      ...Object.keys(conclusions),
+    ]),
+  ];
+  return JSON.stringify({
+    total_count: names.length,
+    check_runs: names.map((name, index) => ({
+      id: index + 1,
+      name,
+      head_sha: head,
+      status: "completed",
+      conclusion: conclusions[name] ?? "success",
+      app: { slug: "github-actions" },
+    })),
+  });
+}
+
+function releaseConfigurationEnvironment() {
+  return {
+    BASE_URL: "https://asael.bennierichard.com",
+    OMNIAGENT_INTERNAL_AUTH_SECRET: "internal-test-secret",
+    OPENAI_API_KEY: "",
+    RELEASE_EVIDENCE_OUTPUT: path.join(
+      tmpdir(),
+      `asael-release-evidence-provenance-${process.pid}.json`,
+    ),
+    OMNIAGENT_OPENAI_GATEWAY_URL: "https://omniagent-os-worker.fly.dev/v1",
+    OMNIAGENT_OPENAI_GATEWAY_TOKEN:
+      "gateway_token_abcdefghijklmnopqrstuvwxyz123456",
+    OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN: "",
+    OMNIAGENT_OPENAI_GATEWAY_INITIAL_CUTOVER: "",
+  };
+}
+
+// Puts logging stand-ins for git, gh, npm, vercel, and fly first on PATH. npm,
+// vercel, and fly always fail, so a test can never reach a real deployment.
+async function withFakeReleaseTools(
+  callback: (tools: {
+    environment: NodeJS.ProcessEnv;
+    readLog: () => Promise<string[]>;
+  }) => Promise<void>,
+) {
+  const directory = await mkdtemp(path.join(tmpdir(), "asael-release-tools-"));
+  const logFile = path.join(directory, "invocations.log");
+  const tools: Record<string, string> = {
+    git: [
+      'case "$1" in',
+      '  status) printf \'%s\' "$FAKE_GIT_STATUS" ;;',
+      '  rev-parse) printf \'%s\\n\' "$FAKE_GIT_HEAD" ;;',
+      "  *) exit 97 ;;",
+      "esac",
+    ].join("\n"),
+    gh: [
+      'if [ -n "$FAKE_GH_FAIL" ]; then',
+      '  printf \'%s\\n\' "$FAKE_GH_FAIL" >&2',
+      "  exit 4",
+      "fi",
+      'case "$*" in',
+      '  *"/compare/"*) printf \'%s\' "$FAKE_GH_COMPARE" ;;',
+      '  *"/check-runs"*) printf \'%s\' "$FAKE_GH_CHECKS" ;;',
+      "  *) exit 97 ;;",
+      "esac",
+    ].join("\n"),
+    npm: "exit 1",
+    vercel: "exit 1",
+    fly: "exit 1",
+  };
+  try {
+    for (const [name, body] of Object.entries(tools)) {
+      const file = path.join(directory, name);
+      await writeFile(
+        file,
+        `#!/bin/sh\nprintf '%s\\n' "${name} $*" >> "$FAKE_RELEASE_LOG"\n${body}\n`,
+      );
+      await chmod(file, 0o755);
+    }
+    await callback({
+      environment: {
+        ...process.env,
+        PATH: `${directory}${path.delimiter}${process.env.PATH ?? ""}`,
+        FAKE_RELEASE_LOG: logFile,
+        FAKE_GIT_STATUS: "",
+        FAKE_GH_FAIL: "",
+      },
+      async readLog() {
+        const lines = await readFile(logFile, "utf8")
+          .then((content) => content.split("\n").filter(Boolean))
+          .catch(() => []);
+        await rm(logFile, { force: true });
+        return lines;
+      },
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 }
 
 function readinessEnvironment({ timeoutMs }: { timeoutMs: number }) {

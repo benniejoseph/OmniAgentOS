@@ -3,7 +3,9 @@
 ## Before deployment
 
 - [ ] Use Node 24.x/npm 11.x and a lockfile-clean `npm ci`.
-- [ ] Require `CI / quality`, `CI / build`, `CI / audit`, `CI / integration`, and `CI / worker`.
+- [ ] Release only through `npm run deploy:production` from a clean checkout of the release commit. Do not run `vercel deploy --prod`, `vercel promote`, or `fly deploy` by hand. Web-only changes also use the paired runner, because the `dedicated_worker` release gate requires the worker heartbeat revision to equal the web revision.
+- [ ] Authenticate the release shell with `gh auth login` or `GH_TOKEN` for read access to `benniejoseph/OmniAgentOS`, then run `node scripts/deploy-production.mjs --provenance-probe`. It must report the commit on `main` with green `quality`, `build`, `audit`, `integration`, `worker`, and `gitleaks` jobs, and green, skipped, or neutral results for any other job that ran, such as the path-filtered Native jobs. The runner repeats this check before it verifies or deploys anything.
+- [ ] Treat a red `provenance` gate in the nightly `Production Smoke` as an unreviewed production change. Replace it with a runner release from `main`, or roll back.
 - [ ] Record the release commit, image digest, migration versions, owner, rollback decision-maker, RPO, and RTO.
 - [ ] Run `npm run db:backup` and verify that the latest isolated `npm run db:restore-drill` evidence passed.
 - [ ] Confirm `DATABASE_URL`, canonical app URL (`https://asael.bennierichard.com` exactly), OpenAI key, cron secret, internal secret, bootstrap/admin state, and report-signing key.
