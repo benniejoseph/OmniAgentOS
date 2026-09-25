@@ -331,6 +331,41 @@ describe("governed local Mac tools", () => {
     expect(executed.record.status).toBe("executed");
     expect(mocks.executeLocalComputerCommand).toHaveBeenCalledTimes(1);
   });
+
+  it("lets forced approval outrank This Mac task authority", async () => {
+    const { executeGovernedTool } = await import("@/lib/tools/executor");
+    const request = {
+      toolId: "local.macos.click",
+      input: {
+        snapshotRevision: "c".repeat(64),
+        elementId: "e1-3",
+        interactionPurpose: "navigation",
+      },
+      dryRun: false,
+      context: securityContext(),
+      executionScope: executionScope("task", "run-local-task"),
+      agentRunId: "run-local-task",
+      localComputerTaskAuthorized: true,
+    } as const;
+
+    const covered = await executeGovernedTool({
+      ...request,
+      idempotencyKey: "local-mac-click-task",
+    });
+    expect(covered.record.status).toBe("executed");
+    expect(mocks.executeLocalComputerCommand).toHaveBeenCalledOnce();
+
+    // Voice input and "always approve" agent profiles force approval. A task
+    // authorization from the same run must not skip that review.
+    const forced = await executeGovernedTool({
+      ...request,
+      forceApproval: true,
+      idempotencyKey: "local-mac-click-forced",
+    });
+    expect(forced.record.status).toBe("approval_required");
+    expect(forced.record.reason).not.toContain("task authority");
+    expect(mocks.executeLocalComputerCommand).toHaveBeenCalledOnce();
+  });
 });
 
 function securityContext() {
@@ -353,13 +388,13 @@ function securityContext() {
   };
 }
 
-function executionScope(suffix: string) {
+function executionScope(suffix: string, correlationId = `local-mac-${suffix}`) {
   return createExecutionScope({
     tenantId: "tenant-local",
     initiatingActorId: "owner-local",
     executingPrincipalType: "agent",
     executingPrincipalId: "agent:atlas",
-    correlationId: `local-mac-${suffix}`,
+    correlationId,
     purpose: "agent.run",
   });
 }

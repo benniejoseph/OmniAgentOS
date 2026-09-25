@@ -1288,6 +1288,7 @@ export async function executeGovernedTool({
   const localComputerTaskAuthorityApproval =
     localComputerTaskAuthorizationApplies({
       explicitlyAuthorized: localComputerTaskAuthorized,
+      forceApproval: effectiveForceApproval,
       toolId: tool.id,
       preparedInput,
       context,
@@ -3089,6 +3090,7 @@ function localComputerTaskKeyAuthorizationApplies(
 
 function localComputerTaskAuthorizationApplies(input: {
   explicitlyAuthorized: boolean;
+  forceApproval: boolean;
   toolId: string;
   preparedInput: Record<string, unknown>;
   context?: SecurityContext;
@@ -3096,6 +3098,10 @@ function localComputerTaskAuthorizationApplies(input: {
   agentRunId?: string;
 }) {
   const scope = input.executionScope;
+  // Forced approval (voice input, an "always approve" agent profile, or a
+  // durable approval record) outranks task authority. A task authorization
+  // widens what runs without review; it must never narrow a forced review.
+  if (input.forceApproval) return false;
   if (
     input.explicitlyAuthorized !== true ||
     !LOCAL_COMPUTER_TASK_AUTHORIZED_TOOL_IDS.has(input.toolId) ||
