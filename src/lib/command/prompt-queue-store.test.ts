@@ -697,6 +697,55 @@ describe("persistent prompt queue store fences", () => {
     expect(mocks.transaction).not.toHaveBeenCalled();
   });
 
+  it("rejects an explicit model selection whose digest changed after queueing", async () => {
+    const commandSelection = {
+      schemaVersion: 1 as const,
+      assignmentId: "assignment-atlas",
+      assignmentRevision: 4,
+      assignmentConfigurationSha256: "9".repeat(64),
+      route: "primary" as const,
+      provider: "openai" as const,
+      modelId: "gpt-test",
+    };
+    const pinned = row({
+      model_pin: {
+        ...modelPin(),
+        commandSelection,
+        commandSelectionSha256: "c".repeat(64),
+      },
+    });
+    const runtime = {
+      configured: true,
+      provider: "openai",
+      model: "gpt-test",
+      scope: "agent:atlas:standard",
+      source: "deployment_environment",
+      assignmentId: null,
+      assignmentRevision: null,
+      assignmentConfigurationSha256: null,
+    };
+
+    mocks.resolveRuntime.mockResolvedValue({
+      ...runtime,
+      commandSelectionSha256: "d".repeat(64),
+    });
+    mocks.sql.mockResolvedValueOnce([pinned]);
+
+    await expect(claimPromptQueueDispatch({
+      authority,
+      itemId: String(pinned.id),
+      expectedRevision: 0,
+      force: false,
+    })).rejects.toMatchObject({
+      code: "model_drift",
+      message: expect.stringContaining("selected model choice changed"),
+    });
+    expect(mocks.resolveRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({ commandSelection }),
+    );
+    expect(mocks.transaction).not.toHaveBeenCalled();
+  });
+
   it("consumes an exact dispatch admission once so internal headers cannot replay", async () => {
     const dispatching = row({
       state: "dispatching",

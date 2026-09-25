@@ -1256,8 +1256,11 @@ async function assertCurrentPins(
       "The configured model route changed after this prompt was queued. Edit the prompt to review and pin the current route.",
     );
   }
+  // Items queued before explicit model selections were pinned have no digest;
+  // treat that as "no selection" rather than as drift.
   if (
-    current.model.commandSelectionSha256 !== item.model.commandSelectionSha256
+    (current.model.commandSelectionSha256 ?? null) !==
+      (item.model.commandSelectionSha256 ?? null)
   ) {
     throw new PromptQueueStoreError(
       "model_drift",
