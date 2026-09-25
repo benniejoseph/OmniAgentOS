@@ -29,6 +29,8 @@ const eslintConfig = defineConfig([
     "artifacts/**",
     "apps/flutter/.dart_tool/**",
     "apps/flutter/build/**",
+    // Licensed third-party bundles synced by `npm run sync:tradingview`.
+    "public/vendor/**",
     "next-env.d.ts",
   ]),
 ]);

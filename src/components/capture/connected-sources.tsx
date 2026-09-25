@@ -117,7 +117,10 @@ export function ConnectedSources({
   const [selectedConnectionId, setSelectedConnectionId] = useState(
     () => googleGrants.find((item) => item.manageable)?.id || googleGrants[0]?.id || "",
   );
+  // A selection that disappears from the grant list falls back to the same
+  // manageable-first default used for the initial selection.
   const grant = googleGrants.find((item) => item.id === selectedConnectionId) ||
+    googleGrants.find((item) => item.manageable) ||
     googleGrants[0];
   const connected = Boolean(grant);
   const actionDisabledReason = requestReadContract !== "readable_v1"
@@ -132,13 +135,6 @@ export function ConnectedSources({
   const photoSessionRef = useRef<ClientGooglePhotosPickerSession | undefined>(undefined);
   const mountedRef = useRef(false);
   const [photoImportContinuation, setPhotoImportContinuation] = useState(false);
-
-  useEffect(() => {
-    if (grant?.id === selectedConnectionId) return;
-    setSelectedConnectionId(
-      googleGrants.find((item) => item.manageable)?.id || googleGrants[0]?.id || "",
-    );
-  }, [googleGrants, grant?.id, selectedConnectionId]);
 
   const sourceAccess = useMemo(
     () => googleSourceAccess(grant?.scopes || []),

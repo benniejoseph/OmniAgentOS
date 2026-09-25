@@ -70,7 +70,10 @@ export function AsaelLottieMascot({
   label?: string;
   decorative?: boolean;
 }) {
-  const [animationData, setAnimationData] = useState<LottieAnimationData | null>(null);
+  const [animation, setAnimation] = useState<{
+    state: AsaelMascotState;
+    data: LottieAnimationData;
+  }>();
   const [renderedState, setRenderedState] = useState<AsaelMascotState | null>(null);
   const [reducedMotion, setReducedMotion] = useState(false);
   const lottieRef = useRef<LottieRefCurrentProps | null>(null);
@@ -85,23 +88,26 @@ export function AsaelLottieMascot({
 
   useEffect(() => {
     const controller = new AbortController();
-    setRenderedState(null);
-    setAnimationData(null);
     void fetch(animationByState[state], { signal: controller.signal })
       .then((response) => {
         if (!response.ok) throw new Error("Mascot animation unavailable");
         return response.json();
       })
       .then((value: unknown) => {
-        if (!controller.signal.aborted && isLottieAnimationData(value)) {
-          setAnimationData(value as LottieAnimationData);
-        }
+        if (controller.signal.aborted) return;
+        if (!isLottieAnimationData(value)) throw new Error("Mascot animation unavailable");
+        setAnimation({ state, data: value as LottieAnimationData });
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (!controller.signal.aborted) setAnimation(undefined);
+      });
     return () => controller.abort();
   }, [state]);
 
-  const loaded = renderedState === state;
+  // Animation data is keyed by state, so a state change shows the fallback
+  // until that state's animation has loaded and rendered.
+  const animationData = animation?.state === state ? animation.data : null;
+  const loaded = animationData !== null && renderedState === state;
 
   return (
     <span

@@ -165,10 +165,6 @@ export function CommandComposerField({
   }, []);
 
   useEffect(() => {
-    if (trigger) void loadCatalog();
-  }, [loadCatalog, trigger]);
-
-  useEffect(() => {
     if (!pendingUploads.length) return;
     let active = true;
     const check = async () => {
@@ -264,11 +260,10 @@ export function CommandComposerField({
     : undefined;
   const menuOpen = Boolean(trigger);
 
+  // A closed menu keeps its last layout; the portal renders only while a
+  // trigger is active, and reopening re-measures before paint.
   useLayoutEffect(() => {
-    if (!menuOpen) {
-      setMenuLayout(undefined);
-      return;
-    }
+    if (!menuOpen) return;
 
     const positionMenu = () => {
       const anchor = composerFieldRef.current;
@@ -321,6 +316,7 @@ export function CommandComposerField({
     const next = triggerAtCaret(nextValue, caret);
     setTrigger(next);
     setActiveIndex(0);
+    if (next) void loadCatalog();
   }
 
   function replaceTrigger() {

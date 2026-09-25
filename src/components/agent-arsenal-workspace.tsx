@@ -83,8 +83,11 @@ export function AgentArsenalWorkspace({
   const [skills, setSkills] = useState<AgentSkill[]>([]);
   const [tools, setTools] = useState<ToolOption[]>([]);
   const [performance, setPerformance] = useState<AgentPerformance[]>([]);
-  const [learningStatus, setLearningStatus] = useState<AgentDailyLearningStatusV1>();
-  const [learningState, setLearningState] = useState<"loading" | "ready" | "unavailable">("loading");
+  const [learning, setLearning] = useState<{
+    agentId: string;
+    status?: AgentDailyLearningStatusV1;
+    state: "ready" | "unavailable";
+  }>();
   const [councilMap, setCouncilMap] = useState<AgentCouncilMap>();
   const [councilState, setCouncilState] = useState<"loading" | "ready" | "unavailable">("loading");
   const [state, setState] = useState<"loading" | "ready" | "unavailable">(
@@ -123,6 +126,7 @@ export function AgentArsenalWorkspace({
   const selectedPerformance = performance.find(
     (item) => item.agentId === selected.id,
   );
+  const selectedLearning = learning?.agentId === selected.id ? learning : undefined;
   const selectedIdentity = getAgentMascotIdentity(selected.id);
   const selectedIsExactMoltbook = Boolean(
     selected.custom && isExactMoltbookAgentCapabilityBoundary(selected.custom),
@@ -228,6 +232,7 @@ export function AgentArsenalWorkspace({
   }, [activeView]);
   useEffect(() => {
     if (activeView !== "roster") return;
+    const agentId = selected.id;
     let controller: AbortController | undefined;
     let timer: number | undefined;
     let disposed = false;
@@ -238,25 +243,21 @@ export function AgentArsenalWorkspace({
       controller = requestController;
       try {
         const payload = await readJson<{ learning?: AgentDailyLearningStatusV1 }>(
-          `/api/agents/${encodeURIComponent(selected.id)}/learning`,
+          `/api/agents/${encodeURIComponent(agentId)}/learning`,
           { signal: requestController.signal },
         );
         if (disposed || requestController.signal.aborted) return;
         if (!payload.learning) throw new Error("Daily learning status is missing.");
-        setLearningStatus(payload.learning);
-        setLearningState("ready");
+        setLearning({ agentId, status: payload.learning, state: "ready" });
       } catch {
         if (disposed || requestController.signal.aborted) return;
-        setLearningStatus(undefined);
-        setLearningState("unavailable");
+        setLearning({ agentId, state: "unavailable" });
       } finally {
         if (!disposed && !document.hidden && controller === requestController) {
           timer = window.setTimeout(() => void loadLearning(), 30_000);
         }
       }
     };
-    setLearningStatus(undefined);
-    setLearningState("loading");
     const onVisibilityChange = () => {
       if (timer !== undefined) window.clearTimeout(timer);
       if (document.hidden) controller?.abort();
@@ -524,8 +525,8 @@ export function AgentArsenalWorkspace({
             state={state}
           />
           <DailyLearningCard
-            status={learningStatus}
-            state={learningState}
+            status={selectedLearning?.status}
+            state={selectedLearning?.state ?? "loading"}
           />
           {selectedIsExactMoltbook ? (
             <MoltbookAgentPanel

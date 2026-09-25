@@ -23,13 +23,19 @@ export function CommandModelPicker({
   disabled?: boolean;
   onChange: (selection: CommandModelSelectionRequest | undefined) => void;
 }) {
-  const [catalog, setCatalog] = useState<CommandModelCatalog>();
-  const [state, setState] = useState<"loading" | "ready" | "error">("loading");
+  // Results are keyed by scope so a scope change shows loading immediately and
+  // a late response for a previous scope is never displayed.
+  const [loaded, setLoaded] = useState<{
+    scope: ModelAssignmentScope;
+    catalog?: CommandModelCatalog;
+    state: "ready" | "error";
+  }>();
+  const current = loaded?.scope === scope ? loaded : undefined;
+  const catalog = current?.catalog;
+  const state: "loading" | "ready" | "error" = current?.state ?? "loading";
 
   useEffect(() => {
     const controller = new AbortController();
-    setState("loading");
-    setCatalog(undefined);
     fetch(`/api/settings/models?commandScope=${encodeURIComponent(scope)}`, {
       cache: "no-store",
       signal: controller.signal,
@@ -40,8 +46,7 @@ export function CommandModelPicker({
       })
       .then((payload) => {
         if (!payload.command) throw new Error("Model choices are unavailable.");
-        setCatalog(payload.command);
-        setState("ready");
+        setLoaded({ scope, catalog: payload.command, state: "ready" });
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
@@ -49,7 +54,7 @@ export function CommandModelPicker({
           "Command model catalog failed.",
           error instanceof Error ? error.message : "Unknown error",
         );
-        setState("error");
+        setLoaded({ scope, state: "error" });
       });
     return () => controller.abort();
   }, [scope]);
