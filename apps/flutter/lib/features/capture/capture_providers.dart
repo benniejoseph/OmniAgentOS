@@ -40,7 +40,18 @@ final captureControllerProvider = ChangeNotifierProvider<CaptureController>((
   if (owner != null) unawaited(controller.initialize());
   final unregister = ref
       .read(reconnectCoordinatorProvider)
-      .register('capture-outbox', controller.syncPending, priority: 0);
+      .register(
+        'capture-outbox',
+        controller.initialize,
+        priority: 0,
+        classification: ReconciliationClass.durable,
+        shouldRun: (_) =>
+            controller.owner != null &&
+            !controller.loadingOutbox &&
+            !controller.syncing &&
+            !controller.submitting &&
+            !controller.batchQueueing,
+      );
   ref.onDispose(unregister);
   return controller;
 });

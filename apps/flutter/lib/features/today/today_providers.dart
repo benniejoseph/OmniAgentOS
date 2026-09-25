@@ -13,7 +13,11 @@ final todayControllerProvider = ChangeNotifierProvider<TodayController>((ref) {
   final controller = TodayController(ref.watch(todayRepositoryProvider));
   final unregister = ref
       .read(reconnectCoordinatorProvider)
-      .register('today', controller.refresh);
+      .register(
+        'today',
+        controller.refresh,
+        classification: ReconciliationClass.freshness,
+      );
   ref.onDispose(unregister);
   controller.refresh();
   return controller;

@@ -15,7 +15,11 @@ final missionsControllerProvider = ChangeNotifierProvider<MissionsController>((
   final controller = MissionsController(ref.watch(missionsRepositoryProvider));
   final unregister = ref
       .read(reconnectCoordinatorProvider)
-      .register('missions', controller.refresh);
+      .register(
+        'missions',
+        controller.refresh,
+        classification: ReconciliationClass.freshness,
+      );
   ref.onDispose(unregister);
   controller.refresh();
   return controller;

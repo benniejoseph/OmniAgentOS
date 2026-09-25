@@ -26,7 +26,11 @@ final knowledgeControllerProvider = ChangeNotifierProvider<KnowledgeController>(
     );
     final unregister = ref
         .read(reconnectCoordinatorProvider)
-        .register('knowledge', c.refresh);
+        .register(
+          'knowledge',
+          c.refresh,
+          classification: ReconciliationClass.freshness,
+        );
     ref.onDispose(unregister);
     c.refresh();
     return c;

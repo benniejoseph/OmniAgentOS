@@ -26,7 +26,11 @@ final agentCouncilControllerProvider =
       );
       final unregister = ref
           .read(reconnectCoordinatorProvider)
-          .register('agent-council', controller.refresh);
+          .register(
+            'agent-council',
+            controller.refresh,
+            classification: ReconciliationClass.freshness,
+          );
       ref.onDispose(unregister);
       controller.refresh();
       return controller;
@@ -68,6 +72,7 @@ final agentsControllerProvider = ChangeNotifierProvider<AgentsController>((
       .register(
         'agents',
         () => c.ledger == null ? Future<void>.value() : c.refresh(),
+        classification: ReconciliationClass.freshness,
       );
   ref.onDispose(unregister);
   return c;

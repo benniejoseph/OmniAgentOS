@@ -29,6 +29,7 @@ final talkControllerProvider = ChangeNotifierProvider<TalkController>((ref) {
       .register(
         'talk-history',
         () => controller.loadRecentThreads(force: true),
+        classification: ReconciliationClass.freshness,
       );
   final unregisterRun = ref
       .read(reconnectCoordinatorProvider)
@@ -36,6 +37,11 @@ final talkControllerProvider = ChangeNotifierProvider<TalkController>((ref) {
         'talk-accepted-run',
         () async => controller.reconcileAcceptedRun(),
         priority: 9,
+        classification: ReconciliationClass.durable,
+        shouldRun: (_) =>
+            controller.runId != null &&
+            controller.hasPendingConversationWork &&
+            !controller.monitoringAcceptedRun,
       );
   final unregisterPromptQueue = ref
       .read(reconnectCoordinatorProvider)
@@ -43,6 +49,11 @@ final talkControllerProvider = ChangeNotifierProvider<TalkController>((ref) {
         'talk-prompt-queue',
         controller.reconcilePromptQueue,
         priority: 8,
+        classification: ReconciliationClass.durable,
+        shouldRun: (_) =>
+            (controller.promptQueue.isNotEmpty ||
+                controller.promptQueueError != null) &&
+            !controller.promptQueueSyncing,
       );
   ref.onDispose(() {
     unregisterPromptQueue();

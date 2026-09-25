@@ -16,7 +16,11 @@ final meetingsControllerProvider = ChangeNotifierProvider<MeetingsController>((
   final controller = MeetingsController(ref.watch(meetingsRepositoryProvider));
   final unregister = ref
       .read(reconnectCoordinatorProvider)
-      .register('meetings', controller.refresh);
+      .register(
+        'meetings',
+        controller.refresh,
+        classification: ReconciliationClass.freshness,
+      );
   ref.onDispose(unregister);
   controller.refresh();
   return controller;

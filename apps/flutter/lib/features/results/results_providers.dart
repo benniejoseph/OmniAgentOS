@@ -15,7 +15,11 @@ final resultsControllerProvider = ChangeNotifierProvider<ResultsController>((
   final controller = ResultsController(ref.watch(resultsRepositoryProvider));
   final unregister = ref
       .read(reconnectCoordinatorProvider)
-      .register('results', controller.refresh);
+      .register(
+        'results',
+        controller.refresh,
+        classification: ReconciliationClass.freshness,
+      );
   ref.onDispose(unregister);
   controller.refresh();
   return controller;

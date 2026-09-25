@@ -29,7 +29,11 @@ final automationControllerProvider =
       );
       final unregister = ref
           .read(reconnectCoordinatorProvider)
-          .register('automation-studio', controller.refresh);
+          .register(
+            'automation-studio',
+            controller.refresh,
+            classification: ReconciliationClass.freshness,
+          );
       ref.onDispose(unregister);
       unawaited(controller.refresh());
       return controller;

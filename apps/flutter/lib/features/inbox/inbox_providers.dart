@@ -13,7 +13,11 @@ final inboxControllerProvider = ChangeNotifierProvider<InboxController>((ref) {
   final controller = InboxController(ref.watch(inboxRepositoryProvider));
   final unregister = ref
       .read(reconnectCoordinatorProvider)
-      .register('inbox', controller.refresh);
+      .register(
+        'inbox',
+        controller.refresh,
+        classification: ReconciliationClass.freshness,
+      );
   ref.onDispose(unregister);
   controller.refresh();
   return controller;
