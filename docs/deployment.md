@@ -676,6 +676,10 @@ For each rollout:
 
 1. Take and verify a restorable database backup.
 2. Run `npm run verify` and the Postgres integration job against an isolated database.
+   When `apps/flutter/**` changed, the Native workflow must also be green: it
+   runs Flutter analyze and test, the macOS helper policy suites
+   (`apps/flutter/tool/run_macos_policy_tests.sh`), and type-checks every
+   helper's production entry point.
 3. From a dedicated release job, set `MIGRATION_DATABASE_URL` to the
    migration-owner connection and run `npm run db:migrate`. Set
    `OMNIAGENT_MIGRATION_STATEMENT_TIMEOUT_MS` explicitly for large backfills and

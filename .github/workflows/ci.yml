@@ -41,6 +41,9 @@ jobs:
       - name: Strict lint
         run: npm run lint
 
+      - name: Native contract artifacts are current
+        run: npm run check:native-contracts
+
       - name: Unit tests with coverage floor
         run: npm run test:coverage
 

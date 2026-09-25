@@ -1,0 +1,83 @@
+name: Native
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/flutter/**"
+      - ".github/workflows/native.yml"
+  pull_request:
+    paths:
+      - "apps/flutter/**"
+      - ".github/workflows/native.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: "3.47.0"
+  # The tag is resolved and then verified against this framework revision, so a
+  # moved tag cannot change the toolchain silently.
+  FLUTTER_REVISION: "4cf24164269a5ebf0c16a028a00727d0e77bbb05"
+
+jobs:
+  flutter:
+    name: flutter
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: apps/flutter
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Install Flutter
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          git clone --quiet --depth 1 --branch "$FLUTTER_VERSION" \
+            https://github.com/flutter/flutter.git flutter
+          actual="$(git -C flutter rev-parse HEAD)"
+          if [ "$actual" != "$FLUTTER_REVISION" ]; then
+            echo "Flutter $FLUTTER_VERSION resolved to $actual, expected $FLUTTER_REVISION." >&2
+            exit 1
+          fi
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+
+      - name: Toolchain
+        run: flutter --version
+
+      - name: Resolve locked dependencies
+        run: flutter pub get --enforce-lockfile
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Test
+        run: flutter test
+
+  macos-policy:
+    name: macos-policy
+    # The Swift helper policy suites need the macOS SDK. Hosted macOS minutes
+    # bill at a multiple of Linux minutes, which is why this workflow is
+    # path-filtered.
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Toolchain
+        run: xcrun swiftc --version
+
+      - name: Helper policy suites
+        run: apps/flutter/tool/run_macos_policy_tests.sh
