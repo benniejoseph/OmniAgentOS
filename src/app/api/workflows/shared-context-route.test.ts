@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 const mocks = vi.hoisted(() => ({
   authorizeRequest: vi.fn(),
@@ -14,7 +17,8 @@ vi.mock("@/lib/agents/identity-store", () => ({
   AgentIdentityResolutionError: class AgentIdentityResolutionError extends Error {},
   resolveAgentIdentityForExecution: mocks.resolveAgentIdentityForExecution,
 }));
-vi.mock("@/lib/skills/store", () => ({
+vi.mock("@/lib/skills/store", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/skills/store")>()),
   getCustomAgent: vi.fn(),
   listAgentSkills: vi.fn(),
 }));
@@ -92,7 +96,8 @@ vi.mock("@/lib/workflows/shared-context", () => ({
     right: { authoritySha256?: string } | undefined,
   ) => left?.authoritySha256 === right?.authoritySha256,
 }));
-vi.mock("@/lib/workflows/store", () => ({
+vi.mock("@/lib/workflows/store", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/workflows/store")>()),
   assertWorkflowRunExecutionAuthority: vi.fn(),
   createWorkflowRun: mocks.createWorkflowRun,
   getWorkflowRunDetail: vi.fn(),
@@ -117,6 +122,17 @@ vi.mock("@/lib/workflows/public", () => ({
 vi.mock("@/lib/threads/store", () => ({ getThread: vi.fn() }));
 
 import { POST } from "@/app/api/workflows/route";
+
+// Partial mocks expose real store functions; keep them off local .omniagent data.
+let dataDirectory: string;
+beforeAll(async () => {
+  dataDirectory = await mkdtemp(path.join(tmpdir(), "omni-workflow-route-"));
+  process.env.OMNIAGENT_DATA_DIR = dataDirectory;
+});
+afterAll(async () => {
+  delete process.env.OMNIAGENT_DATA_DIR;
+  await rm(dataDirectory, { recursive: true, force: true });
+});
 
 const context = {
   tenantId: "tenant-a",

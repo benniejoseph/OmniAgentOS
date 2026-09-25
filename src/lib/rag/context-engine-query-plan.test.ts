@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
   embedTexts: vi.fn(async () => [[0.2, 0.4]]),
   planRetrievalQuery: vi.fn(),
   retrieveGraphRelationshipPaths: vi.fn(),
+  searchAuthorizedCanonicalKnowledge: vi.fn(async () => []),
   searchKnowledge: vi.fn(async () => []),
   searchMemoryGraph: vi.fn(),
   searchMemories: vi.fn(async () => []),
@@ -29,6 +30,7 @@ vi.mock("@/lib/memory/store", () => ({
 }));
 vi.mock("@/lib/rag/store", () => ({
   getCanonicalKnowledgeEvidenceByChunkIds: vi.fn(async () => []),
+  searchAuthorizedCanonicalKnowledge: mocks.searchAuthorizedCanonicalKnowledge,
   searchKnowledge: mocks.searchKnowledge,
 }));
 vi.mock("@/lib/storage/json", () => ({
@@ -266,6 +268,14 @@ describe("context-engine P4.3 query-plan integration", () => {
         purpose: "entity.read.v1",
       },
     } as never;
+    const executionScope = createExecutionScope({
+      tenantId: "tenant-a",
+      initiatingActorId: "actor-a",
+      executingPrincipalType: "user",
+      executingPrincipalId: "actor-a",
+      correlationId: "context-graph-private",
+      purpose: "agent.run",
+    });
 
     const pack = await buildContextPack("Who manages Project Orion?", {
       tenantId: "tenant-a",
@@ -275,17 +285,15 @@ describe("context-engine P4.3 query-plan integration", () => {
       persistTrace: false,
       contextCompilerV2Shadow: {
         runId: "run-graph-private",
-        executionScope: createExecutionScope({
-          tenantId: "tenant-a",
-          initiatingActorId: "actor-a",
-          executingPrincipalType: "user",
-          executingPrincipalId: "actor-a",
-          correlationId: "context-graph-private",
-          purpose: "agent.run",
-        }),
+        executionScope,
       },
     });
 
+    expect(mocks.searchAuthorizedCanonicalKnowledge).toHaveBeenCalledWith(
+      semanticRelationshipPlan().queries.join("\n"),
+      expect.objectContaining({ tenantId: "tenant-a", executionScope }),
+    );
+    expect(mocks.searchKnowledge).not.toHaveBeenCalled();
     expect(mocks.retrieveGraphRelationshipPaths).toHaveBeenCalledWith(
       "Who manages Project Orion?",
       expect.objectContaining({

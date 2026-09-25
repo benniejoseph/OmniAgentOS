@@ -39,6 +39,7 @@ vi.mock("@/lib/entities/graph-query-telemetry", () => ({
 }));
 
 vi.mock("@/lib/db/client", () => ({
+  getDatabasePoolMax: () => 1,
   withDatabaseRequestScope: <TArgs extends unknown[], TResult>(
     handler: (...args: TArgs) => TResult,
   ) => handler,

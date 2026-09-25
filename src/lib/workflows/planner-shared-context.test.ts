@@ -26,7 +26,8 @@ vi.mock("@/lib/rag/context-engine", () => ({
   }),
   buildContextPack: mocks.buildContextPack,
 }));
-vi.mock("@/lib/events/store", () => ({
+vi.mock("@/lib/events/store", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/events/store")>()),
   appendScopedDomainEvent: mocks.appendScopedDomainEvent,
 }));
 vi.mock("@/lib/capabilities/toolbox", () => ({

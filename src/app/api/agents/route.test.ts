@@ -50,7 +50,8 @@ vi.mock("@/lib/security/canonical-actor", () => ({
     routeMocks.canonicalRequestActorBindingFromSecurityContext,
 }));
 
-vi.mock("@/lib/skills/store", () => ({
+vi.mock("@/lib/skills/store", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/skills/store")>()),
   AgentSkillAssignmentError: routeMocks.AgentSkillAssignmentError,
   CustomAgentReadConflictError: routeMocks.CustomAgentReadConflictError,
   createCustomAgent: routeMocks.createCustomAgent,

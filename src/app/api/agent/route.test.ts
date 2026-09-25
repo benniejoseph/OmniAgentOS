@@ -1,4 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 const routeMocks = vi.hoisted(() => ({
   after: vi.fn(),
@@ -91,7 +94,8 @@ vi.mock("@/lib/missions/runtime", () => ({
   syncMissionExecutor: routeMocks.syncMissionExecutor,
 }));
 
-vi.mock("@/lib/events/store", () => ({
+vi.mock("@/lib/events/store", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/events/store")>()),
   appendScopedDomainEvent: routeMocks.appendScopedDomainEvent,
 }));
 
@@ -149,6 +153,18 @@ vi.mock("@/lib/memory/personal-context-consent-store", async (importOriginal) =>
 }));
 
 import { POST } from "@/app/api/agent/route";
+import { AGENT_RUN_BUDGET_LIMITS } from "@/lib/config";
+
+// Partial mocks expose real store functions; keep them off local .omniagent data.
+let dataDirectory: string;
+beforeAll(async () => {
+  dataDirectory = await mkdtemp(path.join(tmpdir(), "omni-agent-route-"));
+  process.env.OMNIAGENT_DATA_DIR = dataDirectory;
+});
+afterAll(async () => {
+  delete process.env.OMNIAGENT_DATA_DIR;
+  await rm(dataDirectory, { recursive: true, force: true });
+});
 
 const context = {
   tenantId: "tenant-a",
@@ -1421,7 +1437,7 @@ describe("agent semantic intent routing", () => {
       body: JSON.stringify({
         message: "Use an unlimited run.",
         requestId: "budget-broadening-a",
-        budgets: { agents: 6 },
+        budgets: { agents: AGENT_RUN_BUDGET_LIMITS.agents + 1 },
       }),
     }));
 

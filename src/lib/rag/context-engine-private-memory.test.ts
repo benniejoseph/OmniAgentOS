@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   getSql: vi.fn(),
   getActiveMemoriesByIds: vi.fn(async () => []),
   getCanonicalKnowledgeEvidenceByChunkIds: vi.fn(async (): Promise<unknown[]> => []),
+  searchAuthorizedCanonicalKnowledge: vi.fn(async (): Promise<unknown[]> => []),
   searchKnowledge: vi.fn(async (): Promise<unknown[]> => []),
   searchMemoryGraph: vi.fn(async () => []),
   searchMemories: vi.fn(),
@@ -39,6 +40,7 @@ vi.mock("@/lib/memory/store", () => ({
 vi.mock("@/lib/rag/store", () => ({
   getCanonicalKnowledgeEvidenceByChunkIds:
     mocks.getCanonicalKnowledgeEvidenceByChunkIds,
+  searchAuthorizedCanonicalKnowledge: mocks.searchAuthorizedCanonicalKnowledge,
   searchKnowledge: mocks.searchKnowledge,
 }));
 vi.mock("@/lib/storage/json", () => ({
@@ -326,7 +328,9 @@ describe("actor-scoped context retrieval", () => {
       "foreign-knowledge",
       "Another actor deployment notes",
     );
-    mocks.searchKnowledge.mockResolvedValueOnce([
+    // The compiler re-authorizes every prefiltered chunk, so a foreign chunk
+    // that slips past the SQL prefilter must still be rejected.
+    mocks.searchAuthorizedCanonicalKnowledge.mockResolvedValueOnce([
       ownedKnowledge,
       foreignKnowledge,
     ]);
@@ -359,7 +363,16 @@ describe("actor-scoped context retrieval", () => {
       expect.any(String),
       expect.objectContaining({ accessScope: agentAccessScope() }),
     );
-    expect(mocks.searchKnowledge).toHaveBeenCalledOnce();
+    expect(mocks.searchAuthorizedCanonicalKnowledge).toHaveBeenCalledOnce();
+    expect(mocks.searchAuthorizedCanonicalKnowledge).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        tenantId: "tenant-a",
+        executionScope,
+        asOfTime: expect.any(String),
+      }),
+    );
+    expect(mocks.searchKnowledge).not.toHaveBeenCalled();
     expect(mocks.searchMemoryGraph).not.toHaveBeenCalled();
     expect(pack.memoryResults.map((result) => result.record.id)).toEqual([
       "agent-private-memory",

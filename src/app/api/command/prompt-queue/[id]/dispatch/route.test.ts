@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
   requestScopeDepth: 0,
   authorizeRequest: vi.fn(),
   claimPromptQueueDispatch: vi.fn(),
+  getPromptQueueItem: vi.fn(),
   persistReceipt: vi.fn(),
   fetchAgent: vi.fn(),
   expectedAgentUrl: "https://asael.test/api/agent",
@@ -31,6 +32,7 @@ vi.mock("@/lib/security/guard", () => ({
 
 vi.mock("@/lib/command/prompt-queue-store", () => ({
   claimPromptQueueDispatch: mocks.claimPromptQueueDispatch,
+  getPromptQueueItem: mocks.getPromptQueueItem,
 }));
 
 vi.mock("@/lib/command/prompt-queue-lifecycle", () => ({
@@ -53,6 +55,29 @@ vi.mock("@/app/api/command/prompt-queue/http", () => ({
 import { POST } from "@/app/api/command/prompt-queue/[id]/dispatch/route";
 
 const itemId = "11111111-1111-4111-8111-111111111111";
+const queuedItem = {
+  id: itemId,
+  prompt: "Return exactly queue scope released.",
+  mode: "execute",
+  strategy: "direct",
+  agent: { logicalAgentId: "atlas" },
+  target: {
+    threadId: null,
+    missionId: null,
+    projectId: null,
+    executionTarget: "asael",
+  },
+  model: {
+    providerId: "openai",
+    modelId: "gpt-test",
+    tier: "fast",
+    commandSelection: null,
+    commandSelectionSha256: null,
+  },
+  context: null,
+  state: "queued",
+  lifecycleRevision: 6,
+};
 const upstreamSse = [
   "event: run",
   'data: {"type":"run","runId":"run-one","threadId":"thread-one"}',
@@ -73,21 +98,9 @@ beforeEach(() => {
     role: "admin",
     source: "session",
   });
+  mocks.getPromptQueueItem.mockResolvedValue(queuedItem);
   mocks.claimPromptQueueDispatch.mockResolvedValue({
-    item: {
-      id: itemId,
-      prompt: "Return exactly queue scope released.",
-      mode: "execute",
-      strategy: "direct",
-      agent: { logicalAgentId: "atlas" },
-      target: {
-        threadId: null,
-        missionId: null,
-        projectId: null,
-        executionTarget: "asael",
-      },
-      lifecycleRevision: 7,
-    },
+    item: { ...queuedItem, state: "dispatching", lifecycleRevision: 7 },
     dispatchToken: "private-dispatch-token",
   });
   mocks.persistReceipt.mockResolvedValue({ status: "applied" });
@@ -138,6 +151,18 @@ describe("prompt queue dispatch forwarding", () => {
     expect(response.headers.get("content-encoding")).toBeNull();
     expect(response.headers.get("content-length")).toBeNull();
     await expect(response.text()).resolves.toBe(upstreamSse);
+    const ownerScope = expect.objectContaining({
+      tenantId: "tenant-one",
+      ownerActorId: "actor:owner-one",
+    });
+    expect(mocks.getPromptQueueItem).toHaveBeenCalledWith(itemId, ownerScope);
+    expect(mocks.claimPromptQueueDispatch).toHaveBeenCalledWith({
+      itemId,
+      expectedRevision: 6,
+      force: false,
+      contextPin: null,
+      authority: ownerScope,
+    });
     expect(mocks.fetchAgent).toHaveBeenCalledOnce();
     expect(mocks.persistReceipt).not.toHaveBeenCalled();
     expect(mocks.requestScopeDepth).toBe(0);
@@ -290,6 +315,7 @@ describe("prompt queue dispatch forwarding", () => {
     );
 
     expect(response.status).toBe(503);
+    expect(mocks.getPromptQueueItem).not.toHaveBeenCalled();
     expect(mocks.claimPromptQueueDispatch).not.toHaveBeenCalled();
     expect(mocks.fetchAgent).not.toHaveBeenCalled();
   });
@@ -311,6 +337,7 @@ describe("prompt queue dispatch forwarding", () => {
       message: "The queued command must be dispatched through this Asael deployment.",
     });
     expect(mocks.authorizeRequest).toHaveBeenCalledOnce();
+    expect(mocks.getPromptQueueItem).not.toHaveBeenCalled();
     expect(mocks.claimPromptQueueDispatch).not.toHaveBeenCalled();
     expect(mocks.fetchAgent).not.toHaveBeenCalled();
   });

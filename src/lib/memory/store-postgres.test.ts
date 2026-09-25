@@ -47,6 +47,16 @@ function createSql(transactionScoped = false) {
       }];
     }
     if (
+      query.includes("FROM omni_memories memory") &&
+      query.includes("memory.id <> ALL(")
+    ) {
+      return mocks.returnedMemoryRows.map((row) => ({
+        memory_record: row,
+        vector_score: 0,
+        lexical_score: 0,
+      }));
+    }
+    if (
       (query.includes("SELECT *") || query.includes("SELECT memory.*")) &&
       query.includes("FROM omni_memories")
     ) {
@@ -327,13 +337,16 @@ describe("Postgres memory recall", () => {
     const lexicalQuery = mocks.queries.find((query) =>
       query.includes("AS lexical_score"),
     );
-    expect(lexicalQuery).toContain("FROM (\n      SELECT memory.*");
+    expect(lexicalQuery).toMatch(
+      /FROM \(\s*SELECT to_jsonb\(memory\) - ARRAY\[\s*'embedding', 'embedding_vector'\s*\]::text\[\] AS memory_record/,
+    );
     expect(lexicalQuery).toContain(") ranked");
-    expect(lexicalQuery).toContain("CASE ranked.tier");
+    expect(lexicalQuery).toContain("CASE ranked.rank_tier");
+    expect(lexicalQuery).toContain("WHERE memory.tenant_id = ?");
     expect(lexicalQuery).toContain("lifecycle.archived_at IS NULL");
     expect(lexicalQuery).toContain("WHEN 'commitment' THEN 1.15");
     expect(lexicalQuery).toContain(
-      "memory.retention_expires_at IS NULL OR memory.retention_expires_at > NOW()",
+      "memory.retention_expires_at IS NULL OR memory.retention_expires_at > ?::timestamptz",
     );
     expect(lexicalQuery).not.toContain("ORDER BY (lexical_score *");
   });
@@ -585,10 +598,20 @@ describe("Postgres memory recall", () => {
     });
 
     expect(mocks.events.slice(0, 2)).toEqual(["scope", "query"]);
-    expect(results[0]).toMatchObject({
-      record: { id: "private-local-memory" },
-      reasons: expect.arrayContaining(["semantic match"]),
-    });
+    // Local multilingual similarity is scored by the context engine's learned
+    // reranker; the store only returns bounded candidates read under scope.
+    const candidateQuery = mocks.queries.find((queryText) =>
+      queryText.includes("memory.id <> ALL(")
+    );
+    expect(candidateQuery).toMatch(
+      /SELECT to_jsonb\(memory\) - ARRAY\[\s*'embedding', 'embedding_vector'\s*\]::text\[\] AS memory_record/,
+    );
+    expect(candidateQuery).toContain("WHERE memory.tenant_id = ?");
+    expect(candidateQuery).toContain("lifecycle.archived_at IS NULL");
+    expect(candidateQuery).toMatch(/LIMIT \?\s*$/);
+    expect(results.map((result) => result.record.id)).toEqual([
+      "private-local-memory",
+    ]);
     expect(mocks.queries.some((queryText) =>
       queryText.includes("embedding_vector <=>")
     )).toBe(false);
