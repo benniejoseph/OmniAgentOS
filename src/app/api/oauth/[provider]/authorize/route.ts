@@ -2,8 +2,11 @@ import {
   createOAuthAuthorization,
   googleConnectorAccountPolicyForIdentity,
   type GoogleConnectionPurpose,
+  type GoogleConnectorAccountPolicy,
   isOAuthProvider,
   normalizeOAuthReturnTo,
+  oauthConfigured,
+  oauthProviders,
 } from "@/lib/connectors/oauth-providers";
 import { getOAuthGrantSecrets } from "@/lib/connectors/oauth-store";
 import { withDatabaseRequestScope } from "@/lib/db/client";
@@ -17,6 +20,12 @@ async function GETHandler(request: Request, context: { params: Promise<{ provide
   if (!isOAuthProvider(provider)) return Response.json({ error: "Unsupported OAuth provider." }, { status: 404 });
   let security;
   try { security = await authorizeRequest({ request, action: provider === "salesforce" ? "manage.connector" : "write.memory", resourceType: "oauth_grant", metadata: { provider } }); } catch (error) { return forbiddenResponse(error); }
+  if (!oauthConfigured(provider)) {
+    return Response.json(
+      { error: `${oauthProviders[provider].label} OAuth is not configured.` },
+      { status: 503, headers: { "cache-control": "private, no-store" } },
+    );
+  }
   const requestUrl = new URL(request.url);
   const returnTo = normalizeOAuthReturnTo(requestUrl.searchParams.get("returnTo"));
   const authorizationIntent = requestUrl.searchParams.get("intent") === "repair"
@@ -52,10 +61,18 @@ async function GETHandler(request: Request, context: { params: Promise<{ provide
         { status: 403, headers: { "cache-control": "private, no-store" } },
       );
     }
-    const googleConnectorAccount = googleConnectorAccountPolicyForIdentity({
-      email: security.auth.email,
-      tenantId: security.tenantId,
-    });
+    let googleConnectorAccount: GoogleConnectorAccountPolicy;
+    try {
+      googleConnectorAccount = googleConnectorAccountPolicyForIdentity({
+        email: security.auth.email,
+        tenantId: security.tenantId,
+      });
+    } catch {
+      return Response.json(
+        { error: "This Asael account is not permitted to connect Google." },
+        { status: 403, headers: { "cache-control": "private, no-store" } },
+      );
+    }
     if (requestedConnectionId) {
       const existing = await getOAuthGrantSecrets(
         security.tenantId,
@@ -83,5 +100,16 @@ async function GETHandler(request: Request, context: { params: Promise<{ provide
       ...(authorizationIntent ? { authorizationIntent } : {}),
     }), 302);
   }
-  catch (error) { return Response.json({ error: error instanceof Error ? error.message : "OAuth authorization failed." }, { status: 503 }); }
+  catch (error) {
+    // This page is opened by top-level navigation, so never echo a database,
+    // sealing, or provider failure into the browser.
+    console.error(
+      "OAuth authorization failed.",
+      error instanceof Error ? error.name : "UnknownError",
+    );
+    return Response.json(
+      { error: "OAuth authorization is temporarily unavailable." },
+      { status: 503, headers: { "cache-control": "private, no-store" } },
+    );
+  }
 }

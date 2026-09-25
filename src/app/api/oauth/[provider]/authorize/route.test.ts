@@ -34,6 +34,8 @@ const sessionContext = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.stubEnv("GOOGLE_OAUTH_CLIENT_ID", "test-client-id");
+  vi.stubEnv("GOOGLE_OAUTH_CLIENT_SECRET", "test-client-secret");
   vi.stubEnv("OMNIAGENT_PRIVATE_ACCOUNT_ALLOWLIST_JSON", JSON.stringify([{
     email: sessionContext.auth.email,
     tenantId: sessionContext.tenantId,
@@ -97,5 +99,59 @@ describe("Google OAuth authorization route", () => {
     expect(response.status).toBe(403);
     expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(mocks.createOAuthAuthorization).not.toHaveBeenCalled();
+  });
+
+  it("refuses a signed-in account that is outside the private account policy", async () => {
+    mocks.authorizeRequest.mockResolvedValue({
+      ...sessionContext,
+      tenantId: "tenant-b",
+    });
+
+    const response = await GET(
+      new Request("https://asael.example/api/oauth/google/authorize"),
+      { params: Promise.resolve({ provider: "google" }) },
+    );
+
+    expect(response.status).toBe(403);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(mocks.createOAuthAuthorization).not.toHaveBeenCalled();
+  });
+
+  it("reports missing OAuth configuration before starting authorization", async () => {
+    vi.stubEnv("GOOGLE_OAUTH_CLIENT_SECRET", "");
+
+    const response = await GET(
+      new Request("https://asael.example/api/oauth/google/authorize"),
+      { params: Promise.resolve({ provider: "google" }) },
+    );
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    await expect(response.json()).resolves.toEqual({
+      error: "Google OAuth is not configured.",
+    });
+    expect(mocks.createOAuthAuthorization).not.toHaveBeenCalled();
+  });
+
+  it("never echoes an internal failure into the browser", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mocks.createOAuthAuthorization.mockImplementation(() => {
+      throw new Error("connect ECONNREFUSED 10.0.0.5:5432 (asael_owner)");
+    });
+
+    const response = await GET(
+      new Request("https://asael.example/api/oauth/google/authorize"),
+      { params: Promise.resolve({ provider: "google" }) },
+    );
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    const body = await response.text();
+    expect(body).not.toContain("ECONNREFUSED");
+    expect(JSON.parse(body)).toEqual({
+      error: "OAuth authorization is temporarily unavailable.",
+    });
+    expect(consoleError).toHaveBeenCalledWith("OAuth authorization failed.", "Error");
+    consoleError.mockRestore();
   });
 });
