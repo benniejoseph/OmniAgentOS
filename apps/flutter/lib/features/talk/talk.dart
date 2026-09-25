@@ -27,10 +27,12 @@ import 'talk_history.dart';
 import 'talk_history_view.dart';
 import 'talk_model_selection.dart';
 import 'talk_rich_message.dart';
+import 'talk_voice_input.dart';
 
 export 'talk_history.dart';
 export 'talk_command_context.dart';
 export 'talk_model_selection.dart';
+export 'talk_voice_input.dart';
 
 typedef Json = Map<String, dynamic>;
 
@@ -937,6 +939,22 @@ abstract interface class TalkCommandContextRepository {
   });
 }
 
+/// Sends a reviewed Ambient Voice command on its voice conversation. A
+/// repository without it sends voice as an unmarked command, which the server
+/// still holds for approval while the voice session is open.
+abstract interface class TalkVoiceCommandRepository {
+  Stream<SseEvent> sendVoiceCommand({
+    required String message,
+    required TalkVoiceInput voiceInput,
+    List<TalkCommandContextReference> contextReferences = const [],
+    String mode = 'orchestrate',
+    String strategy = 'auto',
+    TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
+    String? agentId,
+    TalkCommandModelSelection? modelSelection,
+  });
+}
+
 abstract interface class TalkCommandModelSelectionRepository {
   Future<TalkCommandModelCatalog> loadCommandModelCatalog({
     required String commandScope,
@@ -1007,6 +1025,11 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   TalkCommandModelSelectionRepository? get _commandModelRepository =>
       repository is TalkCommandModelSelectionRepository
       ? repository as TalkCommandModelSelectionRepository
+      : null;
+
+  TalkVoiceCommandRepository? get _voiceCommandRepository =>
+      repository is TalkVoiceCommandRepository
+      ? repository as TalkVoiceCommandRepository
       : null;
 
   Future<TalkCommandContextCatalog> loadCommandContextCatalog() async {
@@ -1148,6 +1171,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     _retryAssignedAgent = null;
     _retryContextReferences = const [];
     _retryModelSelection = null;
+    _retryVoiceInput = null;
     status = null;
     canceling = false;
   }
@@ -1168,9 +1192,13 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     _retryAssignedAgent = null;
     _retryContextReferences = const [];
     _retryModelSelection = null;
+    _retryVoiceInput = null;
     status = null;
   }
 
+  /// Sends one command. [voiceInput] declares a reviewed Ambient Voice command;
+  /// a command queued behind an active run travels without it, so the server
+  /// decides from the voice session it still holds open.
   Future<void> send(
     String input, {
     String mode = 'orchestrate',
@@ -1178,6 +1206,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
     List<TalkCommandContextReference> contextReferences = const [],
     TalkCommandModelSelection? modelSelection,
+    TalkVoiceInput? voiceInput,
   }) async {
     final text = input.trim();
     if (_disposed || text.isEmpty) return;
@@ -1205,6 +1234,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       assignedAgent: targetAgent,
       contextReferences: contextReferences,
       modelSelection: modelSelection,
+      voiceInput: voiceInput,
     );
   }
 
@@ -1641,6 +1671,9 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   TalkAssignedAgent? _retryAssignedAgent;
   List<TalkCommandContextReference> _retryContextReferences = const [];
   TalkCommandModelSelection? _retryModelSelection;
+  // A retried voice command keeps its declaration: the first attempt may
+  // already have consumed the voice session on the server.
+  TalkVoiceInput? _retryVoiceInput;
 
   bool get canRetry => !sending && _retryInput != null;
   bool get _acceptedRunIsTerminal =>
@@ -1654,6 +1687,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     _retryAssignedAgent = null;
     _retryContextReferences = const [];
     _retryModelSelection = null;
+    _retryVoiceInput = null;
   }
 
   void _abandonAcceptedRun() {
@@ -1709,6 +1743,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       assignedAgent: _retryAssignedAgent,
       contextReferences: _retryContextReferences,
       modelSelection: _retryModelSelection,
+      voiceInput: _retryVoiceInput,
       replaceFailedResponse: true,
     );
   }
@@ -1741,6 +1776,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     TalkAssignedAgent? assignedAgent,
     List<TalkCommandContextReference> contextReferences = const [],
     TalkCommandModelSelection? modelSelection,
+    TalkVoiceInput? voiceInput,
     TalkQueuedPrompt? queuedPrompt,
     bool queuedForce = true,
     bool replaceFailedResponse = false,
@@ -1791,10 +1827,22 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
 
     try {
       final queueRepository = _promptQueueRepository;
+      final voiceRepository = _voiceCommandRepository;
       final events = queuedPrompt != null && queueRepository != null
           ? queueRepository.dispatchPromptQueueItem(
               queuedPrompt,
               force: queuedForce,
+            )
+          : voiceInput != null && voiceRepository != null
+          ? voiceRepository.sendVoiceCommand(
+              message: text,
+              voiceInput: voiceInput,
+              contextReferences: contextReferences,
+              mode: mode,
+              strategy: strategy,
+              executionTarget: executionTarget,
+              agentId: assignedAgent?.id,
+              modelSelection: modelSelection,
             )
           : contextReferences.isNotEmpty
           ? (_commandContextRepository ??
@@ -2146,6 +2194,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
         _retryAssignedAgent = assignedAgent;
         _retryContextReferences = List.unmodifiable(contextReferences);
         _retryModelSelection = modelSelection;
+        _retryVoiceInput = voiceInput;
         _recordActivity(
           key: 'run',
           title: 'Main agent',
@@ -3598,7 +3647,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     }
   }
 
-  void submit() {
+  void submit({TalkVoiceInput? voiceInput}) {
     if (voiceDraftBusy) return;
     final value = input.text.trim();
     if (value.isEmpty) return;
@@ -3624,6 +3673,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       executionTarget: executionTarget,
       contextReferences: List.unmodifiable(commandReferences),
       modelSelection: exactModelSelection,
+      voiceInput: voiceInput,
     );
     setState(() {
       commandReferences.removeWhere(
@@ -4105,6 +4155,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       }
     }
     final realtime = realtimeVoice;
+    TalkVoiceInput? voiceInput;
     if (realtime != null) {
       try {
         if (realtime.transcript != text ||
@@ -4112,6 +4163,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
           realtime.editTranscript(text);
         }
         realtime.attestReview(true);
+        voiceInput = TalkVoiceInput.fromReviewedDraft(realtime.reviewDraft);
         await realtime.finish(AmbientVoiceOutcome.sent);
       } catch (error) {
         if (!mounted) return;
@@ -4125,7 +4177,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       ambientSubmittedText = text;
       recordingError = null;
     });
-    submit();
+    submit(voiceInput: voiceInput);
   }
 
   void _scheduleAmbientSpeech(AmbientVoicePhase phase) {

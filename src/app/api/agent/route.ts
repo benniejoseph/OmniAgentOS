@@ -158,6 +158,8 @@ import {
   createWorkflowPersonalContextBinding,
   WORKFLOW_PERSONAL_CONTEXT_METADATA_KEY,
 } from "@/lib/workflows/personal-context";
+import { resolveVoiceCommandGate, type VoiceCommandGate } from "@/lib/voice/command-gate";
+import { voiceCommandInputSchema } from "@/lib/voice/command-input";
 import { listWorkspaceTemplates } from "@/lib/workspace-templates/store";
 import { personalWorkspaceId } from "@/lib/workspaces/contracts";
 
@@ -172,20 +174,6 @@ export const POST = withRuntimeModelRequestCache(
 const chatMessageSchema = z.object({
   role: z.enum(["user", "assistant"]),
   content: z.string().min(1).max(AGENT_MAX_MESSAGE_CHARS),
-}).strict();
-
-const voiceInputSchema = z.object({
-  schemaVersion: z.literal(1),
-  source: z.literal("realtime_voice"),
-  sessionId: z.string().uuid(),
-  conversationId: z.string().uuid(),
-  provider: z.literal("openai"),
-  confidenceBand: z.enum(["high", "low", "unavailable", "edited"]),
-  confidenceMean: z.number().min(0).max(1).optional(),
-  confidenceMinimum: z.number().min(0).max(1).optional(),
-  confidenceSampleCount: z.number().int().min(0).max(10_000),
-  reviewMethod: z.enum(["send_button", "explicit_checkbox"]),
-  reviewAttested: z.literal(true),
 }).strict();
 
 const requestSchema = z.object({
@@ -207,7 +195,7 @@ const requestSchema = z.object({
   contextReferences: commandContextReferencesSchema.optional(),
   modelSelection: commandModelSelectionRequestSchema.optional(),
   budgets: runBudgetCountersV1Schema.partial().optional(),
-  voiceInput: voiceInputSchema.optional(),
+  voiceInput: voiceCommandInputSchema.optional(),
 }).strict()
   .refine((value) => Boolean(value.message || value.messages?.length), {
     message: "A message is required.",
@@ -744,6 +732,43 @@ async function POSTHandler(request: Request) {
     );
   }
 
+  // Voice policy is server-derived: a declared review and an unmarked command
+  // on a conversation with an unconsumed realtime session both force approval.
+  // A resume only continues a pinned read-only canary run, so it keeps the
+  // policy that run started with.
+  let voiceGate: VoiceCommandGate;
+  try {
+    voiceGate = parsed.data.resumeRunId
+      ? { state: "none" }
+      : await resolveVoiceCommandGate({
+          tenantId: context.tenantId,
+          actorId: context.actorId,
+          threadId: parsed.data.threadId,
+          declaredSessionId: parsed.data.voiceInput?.sessionId,
+        });
+  } catch (error) {
+    console.error(
+      "Voice command history was unavailable.",
+      String(
+        redactSensitive(
+          error instanceof Error ? error.message : "Unknown voice history error.",
+        ),
+      ).slice(0, 1_000),
+    );
+    return Response.json(
+      {
+        error: "Agent temporarily unavailable",
+        message: "Voice command safety checks are unavailable. Please try again shortly.",
+      },
+      {
+        status: 503,
+        headers: { "Retry-After": "30", "cache-control": "private, no-store" },
+      },
+    );
+  }
+  const voiceOrigin = voiceGate.state === "none" ? undefined : voiceGate.state;
+  const voiceCommand = voiceOrigin !== undefined;
+
   let localComputerWorkspaces:
     | readonly Readonly<{ id: string; name: string }>[]
     | undefined;
@@ -1168,7 +1193,7 @@ async function POSTHandler(request: Request) {
         let loopV2ContextTextEnrollment;
         try {
           loopV2CanaryEnrollment = queuedDispatch || parsed.data.budgets || parsed.data.contextScope || commandContext ||
-              parsed.data.voiceInput || computerUseTarget
+              voiceCommand || computerUseTarget
             ? undefined
             :
             await resolveLoopV2ReadOnlyCanaryEnrollment({
@@ -1191,7 +1216,7 @@ async function POSTHandler(request: Request) {
             !queuedDispatch &&
             !commandContext &&
             !parsed.data.budgets &&
-            !parsed.data.voiceInput &&
+            !voiceCommand &&
             !computerUseTarget
           ) {
             if (parsed.data.contextScope) {
@@ -1334,6 +1359,33 @@ async function POSTHandler(request: Request) {
                 confidenceSampleCount: voiceInput.confidenceSampleCount,
                 reviewMethod: voiceInput.reviewMethod,
                 reviewAttested: true,
+                sessionEvidence: voiceGate.state === "declared"
+                  ? voiceGate.sessionEvidence
+                  : "not_found",
+                forceApprovalAboveRisk: 0,
+              },
+            });
+          } else if (voiceGate.state === "inferred") {
+            if (await stopBeforeMutationIfCanceled()) return;
+            await appendScopedDomainEvent({
+              streamId: `thread:${thread.id}`,
+              type: "voice.command_inferred",
+              executionScope: executionScopeFromSecurityContext(context, {
+                ...agentPrincipalExecution,
+                projectId: threadProjectId,
+                correlationId: requestId,
+                causationId: userTurn.id,
+                purpose: "voice.command.infer",
+              }),
+              payload: {
+                schemaVersion: 1,
+                threadId: thread.id,
+                voiceSessionIds: [...voiceGate.sessionIds],
+                inference: voiceGate.inference,
+                transcriptSha256: createHash("sha256")
+                  .update(safeMessage, "utf8")
+                  .digest("hex"),
+                transcriptCharacters: safeMessage.length,
                 forceApprovalAboveRisk: 0,
               },
             });
@@ -1504,6 +1556,9 @@ async function POSTHandler(request: Request) {
             const workflowMode = savedProcedure?.schemaVersion === 2
               ? savedProcedure.mode
               : mode;
+            const workflowRequiresApproval = voiceCommand ||
+              decision.requiresApproval ||
+              customAgent?.approvalPolicy === "always";
             const { createWorkflowRun } = await import("@/lib/workflows/store");
             const workflowExecutionScope = executionScopeFromSecurityContext(
               context,
@@ -1551,7 +1606,7 @@ async function POSTHandler(request: Request) {
               },
               goal: executionMessage,
               mode: workflowMode,
-              requireApproval: Boolean(parsed.data.voiceInput) || decision.requiresApproval || customAgent?.approvalPolicy === "always",
+              requireApproval: workflowRequiresApproval,
               budgetLimits: workflowBudgetLimits,
               metadata: {
                 source: "atomic_supervisor",
@@ -1635,7 +1690,7 @@ async function POSTHandler(request: Request) {
               context.tenantId,
               durableSpecialists.length,
             );
-            const acknowledgement = decision.requiresApproval || customAgent?.approvalPolicy === "always"
+            const acknowledgement = workflowRequiresApproval
               ? "I moved this into a durable workflow. It will preserve progress and pause before consequential external actions."
               : "I moved this into a durable workflow so it can continue in the background and preserve progress.";
             await appendThreadTurn({
@@ -1819,6 +1874,7 @@ async function POSTHandler(request: Request) {
                     ? LOCAL_COMPUTER_MAX_TOOL_STEPS
                     : AGENT_MAX_TOOL_STEPS,
                 voiceInput: parsed.data.voiceInput,
+                voiceOrigin,
                 commandContext: commandContext ? {
                   schemaVersion: commandContext.schemaVersion,
                   content: commandContext.contextBlock,

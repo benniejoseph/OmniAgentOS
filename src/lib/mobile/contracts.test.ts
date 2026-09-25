@@ -125,6 +125,46 @@ describe("native API contracts", () => {
     }).success).toBe(false);
   });
 
+  it("admits reviewed voice input only when it is bound to the command conversation", () => {
+    const conversationId = "0b8e2f9a-3c4d-4e5f-8a6b-7c8d9e0f1a2b";
+    const voiceInput = {
+      schemaVersion: 1,
+      source: "realtime_voice",
+      sessionId: "5f0c9a1e-2b3d-4c4e-9f5a-6b7c8d9e0f10",
+      conversationId,
+      provider: "openai",
+      confidenceBand: "high",
+      confidenceMean: 0.94,
+      confidenceMinimum: 0.81,
+      confidenceSampleCount: 12,
+      reviewMethod: "send_button",
+      reviewAttested: true,
+    };
+    const request = {
+      message: "Move the review to Friday.",
+      requestId: "native-voice-a",
+      threadId: conversationId,
+      voiceInput,
+    };
+    expect(nativeConversationRequestSchema.safeParse(request).success).toBe(true);
+    expect(nativeConversationRequestSchema.safeParse({
+      ...request,
+      threadId: "9d8c7b6a-5f4e-4d3c-8b2a-1f0e9d8c7b6a",
+    }).success).toBe(false);
+    expect(nativeConversationRequestSchema.safeParse({
+      ...request,
+      threadId: undefined,
+    }).success).toBe(false);
+    expect(nativeConversationRequestSchema.safeParse({
+      ...request,
+      voiceInput: { ...voiceInput, reviewAttested: false },
+    }).success).toBe(false);
+    expect(nativeConversationRequestSchema.safeParse({
+      ...request,
+      voiceInput: { ...voiceInput, transcript: "Move the review to Friday." },
+    }).success).toBe(false);
+  });
+
   it("admits only a bounded exact Agent identity in the native conversation envelope", () => {
     const request = {
       message: "Read the Moltbook home feed.",

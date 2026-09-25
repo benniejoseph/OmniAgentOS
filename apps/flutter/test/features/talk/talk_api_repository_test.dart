@@ -1,6 +1,7 @@
 import 'package:asael/core/network/api_client.dart';
 import 'package:asael/core/network/api_exception.dart';
 import 'package:asael/core/storage/secure_session_store.dart';
+import 'package:asael/features/ambient_voice/realtime_voice_controller.dart';
 import 'package:asael/features/talk/talk.dart';
 import 'package:asael/features/talk/talk_api_repository.dart';
 import 'package:dio/dio.dart';
@@ -94,6 +95,40 @@ void main() {
       expect(history.threadReads, 0);
     },
   );
+
+  test('pins a reviewed voice command to its voice conversation with its declaration', () async {
+    final api = _AcceptedRunDisconnectingApiClient();
+    final repository = ApiTalkRepository(
+      api,
+      history: _RecoveryHistoryRepository(),
+    );
+    const conversationId = '0b8f6c3e-9d2a-4f1b-8e7c-5a4d3c2b1a09';
+    final voiceInput = TalkVoiceInput.fromReviewedDraft(
+      const AmbientVoiceDraft(
+        text: 'Email the team the launch summary',
+        sessionId: '8f0c2c64-4b1e-4c47-9a53-3f4e2b7f9d10',
+        conversationId: conversationId,
+        confidenceBand: AmbientVoiceConfidenceBand.edited,
+        confidenceSampleCount: 0,
+        reviewRequired: true,
+        reviewAttested: true,
+        turnCount: 1,
+        reconnectCount: 0,
+      ),
+    )!;
+
+    await repository
+        .sendVoiceCommand(
+          message: 'Email the team the launch summary',
+          voiceInput: voiceInput,
+        )
+        .toList();
+
+    expect(api.sendCount, 1);
+    expect(api.lastData?['threadId'], conversationId);
+    expect(api.lastData?['voiceInput'], voiceInput.toRequestJson());
+    expect((api.lastData?['voiceInput'] as Map)['confidenceBand'], 'edited');
+  });
 
   test('rejects an invalid assigned Agent before network I/O', () async {
     final api = _DisconnectingStreamApiClient();
@@ -598,6 +633,7 @@ class _AcceptedRunDisconnectingApiClient extends ApiClient {
     : super(Dio(), Dio(), SecureSessionStore(const FlutterSecureStorage()));
 
   int sendCount = 0;
+  Map<String, dynamic>? lastData;
 
   @override
   Future<ResponseBody> postStream(
@@ -607,6 +643,7 @@ class _AcceptedRunDisconnectingApiClient extends ApiClient {
     Duration? receiveTimeout,
   }) async {
     sendCount += 1;
+    lastData = data;
     return ResponseBody.fromString(
       'event: run\ndata: {"type":"run","runId":"run-accepted-exact","threadId":"thread-accepted"}\n\n',
       200,

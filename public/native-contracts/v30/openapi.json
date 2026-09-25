@@ -18095,6 +18095,80 @@
             "minLength": 1,
             "maxLength": 200,
             "pattern": "^[A-Za-z0-9._:-]+$"
+          },
+          "voiceInput": {
+            "type": "object",
+            "properties": {
+              "schemaVersion": {
+                "type": "number",
+                "const": 1
+              },
+              "source": {
+                "type": "string",
+                "const": "realtime_voice"
+              },
+              "sessionId": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              "conversationId": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              "provider": {
+                "type": "string",
+                "const": "openai"
+              },
+              "confidenceBand": {
+                "type": "string",
+                "enum": [
+                  "high",
+                  "low",
+                  "unavailable",
+                  "edited"
+                ]
+              },
+              "confidenceMean": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "confidenceMinimum": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "confidenceSampleCount": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 10000
+              },
+              "reviewMethod": {
+                "type": "string",
+                "enum": [
+                  "send_button",
+                  "explicit_checkbox"
+                ]
+              },
+              "reviewAttested": {
+                "type": "boolean",
+                "const": true
+              }
+            },
+            "required": [
+              "schemaVersion",
+              "source",
+              "sessionId",
+              "conversationId",
+              "provider",
+              "confidenceBand",
+              "confidenceSampleCount",
+              "reviewMethod",
+              "reviewAttested"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [

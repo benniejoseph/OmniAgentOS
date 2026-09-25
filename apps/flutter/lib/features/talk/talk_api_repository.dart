@@ -13,6 +13,7 @@ class ApiTalkRepository
     implements
         TalkRepository,
         TalkCommandContextRepository,
+        TalkVoiceCommandRepository,
         TalkCommandModelSelectionRepository,
         TalkHistoryRepository,
         TalkArtifactRepository,
@@ -526,6 +527,29 @@ class ApiTalkRepository
     modelSelection: modelSelection,
   );
 
+  @override
+  Stream<SseEvent> sendVoiceCommand({
+    required String message,
+    required TalkVoiceInput voiceInput,
+    List<TalkCommandContextReference> contextReferences = const [],
+    String mode = 'orchestrate',
+    String strategy = 'auto',
+    TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
+    String? agentId,
+    TalkCommandModelSelection? modelSelection,
+  }) => _sendAgent(
+    message: message,
+    // The server accepts the declaration only on its own voice conversation.
+    threadId: voiceInput.conversationId,
+    mode: mode,
+    strategy: strategy,
+    executionTarget: executionTarget,
+    agentId: agentId,
+    contextReferences: contextReferences,
+    modelSelection: modelSelection,
+    voiceInput: voiceInput,
+  );
+
   Stream<SseEvent> _sendAgent({
     required String message,
     required List<TalkCommandContextReference> contextReferences,
@@ -535,6 +559,7 @@ class ApiTalkRepository
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
     String? agentId,
     TalkCommandModelSelection? modelSelection,
+    TalkVoiceInput? voiceInput,
   }) async* {
     final selectedAgents = contextReferences
         .where((item) => item.kind == 'agent')
@@ -582,6 +607,7 @@ class ApiTalkRepository
             ],
           if (modelSelection != null)
             'modelSelection': modelSelection.toRequestJson(),
+          if (voiceInput != null) 'voiceInput': voiceInput.toRequestJson(),
           'computerUseTarget': ?executionTarget.apiValue,
           'requestId': 'flutter-${DateTime.now().microsecondsSinceEpoch}',
         },

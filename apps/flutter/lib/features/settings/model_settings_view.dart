@@ -834,7 +834,7 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
                           ),
                           SizedBox(height: 2),
                           Text(
-                            'Talk to Asael from a compact window. Live audio is not stored by Asael, and “Use this Mac” keeps Command’s normal review and approval safeguards.',
+                            'Talk to Asael from a compact window. Live audio is not stored by Asael, and a voice command waits for your approval before any action beyond reading, even with “Use this Mac”.',
                           ),
                         ],
                       ),

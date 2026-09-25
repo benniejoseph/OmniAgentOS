@@ -169,6 +169,38 @@ describe("Conversation progress projection", () => {
     expect(serialized).not.toContain("private.example");
   });
 
+  it("shows an inferred voice gate without its session or transcript evidence", () => {
+    const sessionId = "5f0c9a1e-2b3d-4c4e-9f5a-6b7c8d9e0f10";
+    const projection = buildConversationProgressV1({
+      run,
+      events: [
+        event("voice-inferred", 1, "voice.command_inferred", {
+          threadId: run.threadId,
+          voiceSessionIds: [sessionId],
+          inference: "pending_voice_session",
+          transcriptSha256: "b".repeat(64),
+          forceApprovalAboveRisk: 0,
+        }, {
+          streamId: `thread:${run.threadId}`,
+          correlationId: "request-one",
+        }),
+      ],
+      correlationId: "request-one",
+      agentIdentity: readyIdentity,
+    });
+
+    expect(projection.items).toEqual([
+      expect.objectContaining({
+        category: "voice",
+        title: "Voice command gated",
+        summary: "An open voice session on this conversation was not declared; risk-bearing steps need approval.",
+      }),
+    ]);
+    const serialized = JSON.stringify(projection);
+    expect(serialized).not.toContain(sessionId);
+    expect(serialized).not.toContain("b".repeat(64));
+  });
+
   it("rejects unrelated, cross-tenant, and sibling-actor events", () => {
     const projection = buildConversationProgressV1({
       run,

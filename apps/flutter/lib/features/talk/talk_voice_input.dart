@@ -1,0 +1,73 @@
+import 'package:flutter/foundation.dart';
+
+import '../ambient_voice/realtime_voice_controller.dart';
+
+final _voiceUuidPattern = RegExp(
+  r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
+  caseSensitive: false,
+);
+
+/// The reviewed realtime voice declaration one Ambient Voice command carries.
+///
+/// It exists only after the visible Send action attested the transcript, and
+/// the command it rides on is pinned to the voice conversation. The server
+/// never trusts it alone: an unmarked command that arrives while a voice
+/// session is still open on the conversation is held for approval too.
+@immutable
+class TalkVoiceInput {
+  const TalkVoiceInput._({
+    required this.sessionId,
+    required this.conversationId,
+    required this.confidenceBand,
+    required this.confidenceSampleCount,
+    this.confidenceMean,
+    this.confidenceMinimum,
+  });
+
+  final String sessionId;
+  final String conversationId;
+  final AmbientVoiceConfidenceBand confidenceBand;
+  final double? confidenceMean;
+  final double? confidenceMinimum;
+  final int confidenceSampleCount;
+
+  /// Returns null unless the draft names the minted session and conversation
+  /// and its transcript review was attested.
+  static TalkVoiceInput? fromReviewedDraft(AmbientVoiceDraft draft) {
+    final sessionId = draft.sessionId;
+    final conversationId = draft.conversationId;
+    if (!draft.reviewAttested ||
+        sessionId == null ||
+        conversationId == null ||
+        !_voiceUuidPattern.hasMatch(sessionId) ||
+        !_voiceUuidPattern.hasMatch(conversationId)) {
+      return null;
+    }
+    return TalkVoiceInput._(
+      sessionId: sessionId,
+      conversationId: conversationId,
+      confidenceBand: draft.confidenceBand,
+      confidenceMean: _unitInterval(draft.confidenceMean),
+      confidenceMinimum: _unitInterval(draft.confidenceMinimum),
+      confidenceSampleCount: draft.confidenceSampleCount.clamp(0, 10000),
+    );
+  }
+
+  Map<String, Object?> toRequestJson() => {
+    'schemaVersion': 1,
+    'source': 'realtime_voice',
+    'sessionId': sessionId,
+    'conversationId': conversationId,
+    'provider': 'openai',
+    'confidenceBand': confidenceBand.name,
+    'confidenceMean': ?confidenceMean,
+    'confidenceMinimum': ?confidenceMinimum,
+    'confidenceSampleCount': confidenceSampleCount,
+    // The Ambient Voice Send button is the attestation; there is no checkbox.
+    'reviewMethod': 'send_button',
+    'reviewAttested': true,
+  };
+}
+
+double? _unitInterval(double? value) =>
+    value == null || !value.isFinite ? null : value.clamp(0.0, 1.0);

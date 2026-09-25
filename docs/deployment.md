@@ -50,7 +50,8 @@ Vercel deployment. V25/v20 remains the historical 2026-09-22 adaptive-runtime
 compatibility pair; v27/v26 is the historical governed local-command release
 pair; v28/v27 is the historical scoped model-selection release pair; v29/v28
 is the historical native Ambient Command voice release pair; v30/v29 is the
-current task-authority target-check release pair.
+current task-authority target-check and reviewed voice declaration release
+pair.
 
 Advertising v30/v29 stops supporting v28, so a v28 client receives
 `upgrade_required` and its native mutations are held. Deploy the v30 server
@@ -963,6 +964,27 @@ voice-originated tool above risk zero is forced through the existing durable
 governed approval path, whose client projection shows redacted exact input,
 risk, reversibility, and quorum. Spoken confirmation never approves an action;
 only the authenticated visible Approve/Reject decision route can do so.
+
+The server decides which commands are voice-originated. The web client and a
+native v30 client declare a reviewed Ambient Voice command with `voiceInput`
+on its own voice conversation, and `/api/agent` records
+`voice.command_reviewed` with whether it minted that session there. An unmarked
+command runs under the same policy while the same tenant and actor hold a
+realtime session on the conversation that started or reconnected within the
+last 30 minutes, was not canceled or failed, and has not yet been named by a
+reviewed or inferred command; the route records `voice.command_inferred` for
+those sessions. So a v29 client, a queued prompt, or a modified client cannot
+skip forced approval by leaving the declaration out. A full 500-event session
+history page counts as voice (`voice_history_truncated`), and a failed history
+read returns `503` with `Retry-After: 30` instead of running the command
+without the policy. A voice command never takes the recent-runs canary or
+model-text shortcuts, forced approval outranks This Mac task authority, and a
+durable workflow it starts pauses before consequential actions. A resume keeps
+the policy its run started with. Known limits: composer dictation stays a typed
+draft; a typed command on a conversation with a pending voice session costs one
+extra approval; a queued prompt is gated only if it dispatches inside the
+window; and a `messages`-only request records no inferred event, so its session
+stays pending until the window closes. No migration or Fly change is needed.
 
 P9.14 adds governed Gmail delivery in the web tier and migration 124 in
 Supabase; it requires no Fly image change. Existing Google grants must reconnect

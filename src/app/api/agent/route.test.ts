@@ -99,6 +99,30 @@ vi.mock("@/lib/events/store", async (importOriginal) => ({
   appendScopedDomainEvent: routeMocks.appendScopedDomainEvent,
 }));
 
+vi.mock("@/lib/voice/command-gate", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/voice/command-gate")>();
+  return {
+    ...actual,
+    resolveVoiceCommandGate: vi.fn(actual.resolveVoiceCommandGate),
+  };
+});
+
+vi.mock("@/lib/workflows/store", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/workflows/store")>();
+  return { ...actual, createWorkflowRun: vi.fn(actual.createWorkflowRun) };
+});
+
+vi.mock("@/lib/subagents/scheduler", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/subagents/scheduler")>();
+  return {
+    ...actual,
+    prepareDurableSpecialistDelegation: vi.fn(
+      actual.prepareDurableSpecialistDelegation,
+    ),
+    scheduleDurableSpecialistDrain: vi.fn(actual.scheduleDurableSpecialistDrain),
+  };
+});
+
 vi.mock("@/lib/threads/store", () => ({
   appendThreadTurn: routeMocks.appendThreadTurn,
   createThread: routeMocks.createThread,
@@ -154,6 +178,13 @@ vi.mock("@/lib/memory/personal-context-consent-store", async (importOriginal) =>
 
 import { POST } from "@/app/api/agent/route";
 import { AGENT_RUN_BUDGET_LIMITS } from "@/lib/config";
+import { appendDomainEvent } from "@/lib/events/store";
+import {
+  prepareDurableSpecialistDelegation,
+  scheduleDurableSpecialistDrain,
+} from "@/lib/subagents/scheduler";
+import { resolveVoiceCommandGate } from "@/lib/voice/command-gate";
+import { createWorkflowRun } from "@/lib/workflows/store";
 
 // Partial mocks expose real store functions; keep them off local .omniagent data.
 let dataDirectory: string;
@@ -181,6 +212,8 @@ const context = {
 
 beforeEach(() => {
   vi.stubEnv("OMNIAGENT_INTERNAL_AUTH_SECRET", "agent-route-context-lock-test-secret");
+  vi.mocked(resolveVoiceCommandGate).mockClear();
+  vi.mocked(createWorkflowRun).mockClear();
   routeMocks.after.mockReset();
   routeMocks.appendScopedDomainEvent.mockReset().mockResolvedValue(undefined);
   routeMocks.appendThreadTurn.mockReset()
@@ -312,6 +345,57 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllEnvs();
 });
+
+/** Records realtime voice lifecycle events the way the voice session route does. */
+async function seedRealtimeVoiceSession(input: {
+  threadId: string;
+  sessionId: string;
+  outcome?: "sent" | "canceled";
+}) {
+  for (const type of [
+    "voice.realtime_started",
+    ...(input.outcome ? [`voice.realtime_${input.outcome}`] : []),
+  ]) {
+    await appendDomainEvent({
+      streamId: `voice:route-test:${input.sessionId}`,
+      type,
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      correlationId: `voice:${input.sessionId}`,
+      payload: { schemaVersion: 1, conversationId: input.threadId },
+    });
+  }
+}
+
+function durableWorkflowIntent() {
+  return {
+    decision: {
+      route: "durable_workflow",
+      score: 1,
+      reasons: ["The request needs durable orchestration."],
+      requiresApproval: false,
+      primaryAgentId: "atlas",
+      specialistIds: [],
+      ambiguity: { state: "none" },
+    },
+    capabilitySearchQuery: "coordinate durable specialist work",
+    receipt: {
+      schemaVersion: 1,
+      policyVersion: "semantic-intent-policy-v2",
+      source: "deterministic_fallback",
+      intent: "execute",
+      executionShape: "multi_step",
+      confidence: 1,
+      entityCount: 0,
+      unresolvedEntityCount: 0,
+      capabilityQuery: "coordinate durable specialist work",
+      matchedCapabilityIds: [],
+      route: "durable_workflow",
+      requiresApproval: false,
+      clarificationAdvisory: false,
+    },
+  };
+}
 
 function authorizeCanonicalQueueRequest() {
   const queueContext = {
@@ -694,33 +778,7 @@ describe("agent semantic intent routing", () => {
       },
     };
     routeMocks.authorizeRequest.mockResolvedValue(mobileContext);
-    routeMocks.resolveSemanticIntent.mockResolvedValue({
-      decision: {
-        route: "durable_workflow",
-        score: 1,
-        reasons: ["The request needs durable orchestration."],
-        requiresApproval: false,
-        primaryAgentId: "atlas",
-        specialistIds: [],
-        ambiguity: { state: "none" },
-      },
-      capabilitySearchQuery: "coordinate durable specialist work",
-      receipt: {
-        schemaVersion: 1,
-        policyVersion: "semantic-intent-policy-v2",
-        source: "deterministic_fallback",
-        intent: "execute",
-        executionShape: "multi_step",
-        confidence: 1,
-        entityCount: 0,
-        unresolvedEntityCount: 0,
-        capabilityQuery: "coordinate durable specialist work",
-        matchedCapabilityIds: [],
-        route: "durable_workflow",
-        requiresApproval: false,
-        clarificationAdvisory: false,
-      },
-    });
+    routeMocks.resolveSemanticIntent.mockResolvedValue(durableWorkflowIntent());
     const requestAbort = new AbortController();
     requestAbort.abort("test transport closed");
 
@@ -907,6 +965,11 @@ describe("agent semantic intent routing", () => {
   it("binds a reviewed voice command to its owned conversation and governed runner", async () => {
     const voiceThreadId = "22222222-2222-4222-8222-222222222222";
     const voiceSessionId = "33333333-3333-4333-8333-333333333333";
+    await seedRealtimeVoiceSession({
+      threadId: voiceThreadId,
+      sessionId: voiceSessionId,
+      outcome: "sent",
+    });
     routeMocks.getThread.mockResolvedValue({
       id: voiceThreadId,
       tenantId: context.tenantId,
@@ -955,15 +1018,224 @@ describe("agent semantic intent routing", () => {
           confidenceBand: "low",
           reviewMethod: "explicit_checkbox",
           reviewAttested: true,
+          sessionEvidence: "minted",
           forceApprovalAboveRisk: 0,
           transcriptSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
         }),
       }),
     );
     expect(routeMocks.runAgent).toHaveBeenCalledWith(
-      expect.objectContaining({ voiceInput }),
+      expect.objectContaining({ voiceInput, voiceOrigin: "declared" }),
       expect.any(AbortSignal),
     );
+  });
+
+  it("forces voice approval on an unmarked command from an unconsumed voice session", async () => {
+    const voiceThreadId = "55555555-5555-4555-8555-555555555555";
+    const voiceSessionId = "66666666-6666-4666-8666-666666666666";
+    await seedRealtimeVoiceSession({
+      threadId: voiceThreadId,
+      sessionId: voiceSessionId,
+      outcome: "sent",
+    });
+    routeMocks.getThread.mockResolvedValue({
+      id: voiceThreadId,
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+    });
+    routeMocks.runAgent.mockImplementation(async function* () {
+      yield { type: "run", runId: "run-voice-inferred", threadId: voiceThreadId };
+      yield { type: "done", response: "The draft is waiting for approval." };
+    });
+
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        message: "Send the draft to the team.",
+        threadId: voiceThreadId,
+        requestId: "voice-unmarked-a",
+        strategy: "direct",
+      }),
+    }));
+
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(routeMocks.resolveLoopV2ReadOnlyCanaryEnrollment).not.toHaveBeenCalled();
+    expect(routeMocks.resolveLoopV2ModelTextEnrollment).not.toHaveBeenCalled();
+    expect(routeMocks.appendScopedDomainEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        streamId: `thread:${voiceThreadId}`,
+        type: "voice.command_inferred",
+        executionScope: expect.objectContaining({
+          tenantId: context.tenantId,
+          initiatingActorId: context.actorId,
+          correlationId: "voice-unmarked-a",
+          causationId: "turn-user",
+        }),
+        payload: expect.objectContaining({
+          threadId: voiceThreadId,
+          voiceSessionIds: [voiceSessionId],
+          inference: "pending_voice_session",
+          forceApprovalAboveRisk: 0,
+          transcriptSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        }),
+      }),
+    );
+    const runRequest = routeMocks.runAgent.mock.calls[0][0];
+    expect(runRequest.voiceOrigin).toBe("inferred");
+    expect(runRequest.voiceInput).toBeUndefined();
+  });
+
+  it("forces voice approval on an unmarked This Mac command from a voice session", async () => {
+    const voiceThreadId = "77777777-7777-4777-8777-777777777777";
+    await seedRealtimeVoiceSession({
+      threadId: voiceThreadId,
+      sessionId: "88888888-8888-4888-8888-888888888888",
+    });
+    routeMocks.getThread.mockResolvedValue({
+      id: voiceThreadId,
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+    });
+    routeMocks.runAgent.mockImplementation(async function* () {
+      yield { type: "run", runId: "run-voice-mac", threadId: voiceThreadId };
+      yield { type: "done", response: "The click is waiting for approval." };
+    });
+
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        message: "Click Send in Mail.",
+        threadId: voiceThreadId,
+        requestId: "voice-unmarked-mac-a",
+        computerUseTarget: "local_macos",
+      }),
+    }));
+
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(routeMocks.runAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        computerUseTarget: "local_macos",
+        voiceOrigin: "inferred",
+      }),
+      expect.any(AbortSignal),
+    );
+  });
+
+  it("keeps a durable workflow approval-gated for an unmarked voice command", async () => {
+    const voiceThreadId = "12121212-1212-4212-8212-121212121212";
+    await seedRealtimeVoiceSession({
+      threadId: voiceThreadId,
+      sessionId: "34343434-3434-4434-8434-343434343434",
+      outcome: "sent",
+    });
+    routeMocks.getThread.mockResolvedValue({
+      id: voiceThreadId,
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+    });
+    routeMocks.resolveSemanticIntent.mockResolvedValue(durableWorkflowIntent());
+    routeMocks.createMission.mockResolvedValue({
+      id: "mission-voice-workflow",
+      title: "Coordinate the launch",
+      objective: "Coordinate the launch across the team.",
+      priority: "high",
+      status: "queued",
+    });
+    vi.mocked(prepareDurableSpecialistDelegation).mockResolvedValueOnce([]);
+    vi.mocked(scheduleDurableSpecialistDrain).mockReturnValueOnce(undefined);
+    vi.mocked(createWorkflowRun).mockImplementationOnce(async (input) => ({
+      run: {
+        id: "workflow-voice-a",
+        goal: input.goal,
+        input: { metadata: input.metadata },
+      },
+    }) as never);
+
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        message: "Coordinate the launch across the team.",
+        threadId: voiceThreadId,
+        requestId: "voice-unmarked-workflow-a",
+      }),
+    }));
+
+    expect(response.status).toBe(200);
+    const stream = await response.text();
+    expect(stream).toContain("event: delegated");
+    expect(stream).toContain("pause before consequential external actions");
+    expect(createWorkflowRun).toHaveBeenCalledWith(
+      expect.objectContaining({ requireApproval: true }),
+    );
+    expect(routeMocks.appendScopedDomainEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "voice.command_inferred" }),
+    );
+    expect(routeMocks.runAgent).not.toHaveBeenCalled();
+  });
+
+  it("leaves typed commands alone once the voice session was canceled", async () => {
+    const voiceThreadId = "99999999-9999-4999-8999-999999999999";
+    await seedRealtimeVoiceSession({
+      threadId: voiceThreadId,
+      sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      outcome: "canceled",
+    });
+    routeMocks.getThread.mockResolvedValue({
+      id: voiceThreadId,
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+    });
+    routeMocks.runAgent.mockImplementation(async function* () {
+      yield { type: "run", runId: "run-typed", threadId: voiceThreadId };
+      yield { type: "done", response: "Done." };
+    });
+
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        message: "Summarize this thread.",
+        threadId: voiceThreadId,
+        requestId: "typed-after-cancel-a",
+        strategy: "direct",
+      }),
+    }));
+
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(routeMocks.resolveLoopV2ReadOnlyCanaryEnrollment).toHaveBeenCalled();
+    expect(routeMocks.appendScopedDomainEvent).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "voice.command_inferred" }),
+    );
+    expect(routeMocks.runAgent.mock.calls[0][0].voiceOrigin).toBeUndefined();
+  });
+
+  it("fails closed before any mutation when voice history is unavailable", async () => {
+    vi.mocked(resolveVoiceCommandGate).mockRejectedValueOnce(
+      new Error("event store unavailable"),
+    );
+
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        message: "Send the draft to the team.",
+        threadId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        requestId: "voice-history-down-a",
+        strategy: "direct",
+      }),
+    }));
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("retry-after")).toBe("30");
+    expect(routeMocks.startLocalComputerSession).not.toHaveBeenCalled();
+    expect(routeMocks.appendThreadTurn).not.toHaveBeenCalled();
+    expect(routeMocks.runAgent).not.toHaveBeenCalled();
   });
 
   it("rejects voice metadata bound to another conversation", async () => {
@@ -1710,6 +1982,56 @@ describe("agent Loop v2 canary routing", () => {
       expect.any(AbortSignal),
     );
     expect(routeMocks.runAgent).not.toHaveBeenCalled();
+  });
+
+  it("keeps a resume on its pinned read-only canary while a voice session is pending", async () => {
+    const enrollment = { enginePin: { engineVersionId: "loop-v2-test" } };
+    const voiceThreadId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    await seedRealtimeVoiceSession({
+      threadId: voiceThreadId,
+      sessionId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      outcome: "sent",
+    });
+    routeMocks.getThread.mockResolvedValue({
+      id: voiceThreadId,
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      mode: "orchestrate",
+    });
+    routeMocks.resolveLoopV2ReadOnlyCanaryEnrollment.mockResolvedValue(
+      enrollment,
+    );
+    routeMocks.runLoopV2ReadOnlyCanary.mockImplementation(async function* () {
+      yield {
+        type: "run",
+        runId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+        threadId: voiceThreadId,
+      };
+      yield { type: "done", response: "Here are your recent runs." };
+    });
+
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        message: "yes",
+        threadId: voiceThreadId,
+        resumeRunId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+        requestId: "loop-v2-voice-resume-a",
+        strategy: "auto",
+      }),
+    }));
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("event: done");
+    expect(resolveVoiceCommandGate).not.toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: voiceThreadId }),
+    );
+    expect(routeMocks.runLoopV2ReadOnlyCanary).toHaveBeenCalled();
+    expect(routeMocks.runAgent).not.toHaveBeenCalled();
+    expect(routeMocks.appendScopedDomainEvent).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "voice.command_inferred" }),
+    );
   });
 
   it("routes an explicit confirmation back to the exact paused run", async () => {

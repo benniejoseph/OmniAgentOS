@@ -1,7 +1,7 @@
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
 beforeAll(async () => {
   process.env.OMNIAGENT_DATA_DIR = await mkdtemp(path.join(tmpdir(), "omni-events-"));
@@ -218,6 +218,86 @@ describe("event store (file mode)", () => {
     expect(events.every((event) =>
       event.tenantId === "tenant-trace" && event.actorId === "actor-one"
     )).toBe(true);
+  });
+
+  it("reads recent actor events only inside the tenant, actor, types, window, and payload match", async () => {
+    const store = await import("@/lib/events/store");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-09-25T10:00:00.000Z"));
+      await store.appendDomainEvent({
+        streamId: "voice:old",
+        type: "voice.realtime_started",
+        tenantId: "tenant-recent",
+        actorId: "actor-one",
+        payload: { conversationId: "thread-one" },
+      });
+      vi.setSystemTime(new Date("2026-09-25T10:40:00.000Z"));
+      const started = await store.appendDomainEvent({
+        streamId: "voice:new",
+        type: "voice.realtime_started",
+        tenantId: "tenant-recent",
+        actorId: "actor-one",
+        payload: { conversationId: "thread-one" },
+      });
+      const sent = await store.appendDomainEvent({
+        streamId: "voice:new",
+        type: "voice.realtime_sent",
+        tenantId: "tenant-recent",
+        actorId: "actor-one",
+        payload: { conversationId: "thread-one" },
+      });
+      for (const input of [
+        { type: "voice.realtime_started", tenantId: "tenant-recent", actorId: "actor-one", conversationId: "thread-two" },
+        { type: "voice.realtime_started", tenantId: "tenant-recent", actorId: "actor-two", conversationId: "thread-one" },
+        { type: "voice.realtime_started", tenantId: "tenant-other", actorId: "actor-one", conversationId: "thread-one" },
+        { type: "voice.speech_streamed", tenantId: "tenant-recent", actorId: "actor-one", conversationId: "thread-one" },
+      ]) {
+        await store.appendDomainEvent({
+          streamId: "voice:noise",
+          type: input.type,
+          tenantId: input.tenantId,
+          actorId: input.actorId,
+          payload: { conversationId: input.conversationId },
+        });
+      }
+
+      const events = await store.listRecentActorEvents({
+        tenantId: "tenant-recent",
+        actorId: "actor-one",
+        types: ["voice.realtime_started", "voice.realtime_sent"],
+        since: new Date("2026-09-25T10:10:00.000Z"),
+        payloadMatch: { key: "conversationId", value: "thread-one" },
+      });
+      expect(events.map((event) => event.id)).toEqual([sent.id, started.id]);
+
+      const unmatched = await store.listRecentActorEvents({
+        tenantId: "tenant-recent",
+        actorId: "actor-one",
+        types: ["voice.realtime_started"],
+        since: new Date("2026-09-25T09:00:00.000Z"),
+        limit: 2,
+      });
+      expect(unmatched).toHaveLength(2);
+      expect(unmatched.every((event) =>
+        event.tenantId === "tenant-recent" && event.actorId === "actor-one"
+      )).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+    await expect(store.listRecentActorEvents({
+      tenantId: "tenant-recent",
+      actorId: "actor-one",
+      types: ["voice.realtime_started"],
+      since: new Date(),
+      payloadMatch: { key: "conversationId') OR true --", value: "x" },
+    })).rejects.toThrow("invalid payload match");
+    await expect(store.listRecentActorEvents({
+      tenantId: "tenant-recent",
+      actorId: "actor-one",
+      types: [],
+      since: new Date(),
+    })).rejects.toThrow("one to sixteen event types");
   });
 
   it("filters recent events by type", async () => {

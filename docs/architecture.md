@@ -404,6 +404,13 @@ Runner forwards the marker unchanged, and the helper checks the real
 Accessibility target before posting any event, refusing with
 `task_authority_refused` when the target is outside what task authority covers.
 The executor turns that refusal into a fresh approval for the same action.
+V30 also adds an optional strict `voiceInput` declaration to the Command
+request, which the native Ambient Voice client sends from its visible Send
+action on the voice conversation. The declaration is evidence, not authority:
+`/api/agent` reads the actor's recent realtime session events for the
+conversation and runs an unmarked command under the voice policy too while an
+unconsumed session is still open, so every voice-originated tool above risk
+zero requires approval whatever the client sent.
 
 App Builder no longer depends on browser automation. New checkpoint readiness is
 derived deterministically from lint and typecheck; preview and production readiness

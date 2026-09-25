@@ -830,6 +830,61 @@ describe("agent memory scope", () => {
     );
   });
 
+  it("forces approval on risk-bearing tools for a server-inferred voice command", async () => {
+    const scopedRequest = request("session");
+    scopedRequest.voiceOrigin = "inferred";
+    scopedRequest.agentProfile!.toolIds = [
+      "google.gmail.search",
+      "google.gmail.trash",
+    ];
+    scopedRequest.agentProfile!.approvalPolicy = "risk_based";
+    scopedRequest.agentProfile!.autonomy = "governed";
+    mocks.loadProgressiveAgentTools.mockResolvedValue({
+      definitions: [
+        localToolDefinition("google.gmail.search"),
+        {
+          ...localToolDefinition("google.gmail.trash"),
+          riskLevel: 2,
+          operationClass: "mutation",
+          reversible: false,
+        },
+      ],
+    });
+    mocks.executeGovernedTool.mockImplementation(async ({ toolId }) => ({
+      record: localExecutionRecord(toolId, `execution-${toolId}`),
+      result: { ok: true },
+    }));
+    let modelTurn = 0;
+    mocks.streamResponseTurn.mockImplementation(async (modelRequest) => {
+      modelTurn += 1;
+      if (modelTurn === 1) {
+        return openAITurn({
+          calls: [
+            { callId: "call-search", name: "google.gmail.search" },
+            { callId: "call-trash", name: "google.gmail.trash" },
+          ],
+        });
+      }
+      await modelRequest.onDelta("Done.");
+      return openAITurn({ text: "Done." });
+    });
+
+    await collectRequest(scopedRequest);
+
+    expect(mocks.executeGovernedTool).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolId: "google.gmail.search",
+        forceApproval: false,
+      }),
+    );
+    expect(mocks.executeGovernedTool).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolId: "google.gmail.trash",
+        forceApproval: true,
+      }),
+    );
+  });
+
   it("carries direct OpenAI local evidence through one immediate app list without persisting it", async () => {
     const scopedRequest = request("session");
     scopedRequest.computerUseTarget = "local_macos";

@@ -445,6 +445,78 @@ export async function listCorrelatedEvents(
     .slice(0, limit);
 }
 
+/**
+ * Reads one actor's recent events of a few exact types, optionally narrowed to
+ * one exact top-level payload value. This is a bounded policy read inside the
+ * tenant and initiating-actor boundary, not a search endpoint.
+ */
+export async function listRecentActorEvents(options: {
+  tenantId: string;
+  actorId: string;
+  types: readonly string[];
+  since: Date;
+  payloadMatch?: Readonly<{ key: string; value: string }>;
+  limit?: number;
+}): Promise<DomainEvent[]> {
+  const actorId = options.actorId.trim();
+  if (!actorId || actorId.length > 320) {
+    throw new Error("Actor id must be between 1 and 320 characters.");
+  }
+  const types = [...new Set(options.types.map((type) => type.trim()))];
+  if (
+    !types.length ||
+    types.length > 16 ||
+    types.some((type) => !type || type.length > 120)
+  ) {
+    throw new Error("Recent actor event reads require one to sixteen event types.");
+  }
+  const since = options.since.getTime();
+  if (!Number.isFinite(since)) {
+    throw new Error("Recent actor event reads require a valid start time.");
+  }
+  const payloadMatch = options.payloadMatch;
+  if (
+    payloadMatch &&
+    (!/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(payloadMatch.key) ||
+      !payloadMatch.value ||
+      payloadMatch.value.length > 240)
+  ) {
+    throw new Error("Recent actor event reads received an invalid payload match.");
+  }
+  const tenantId = normalizeTenantId(options.tenantId);
+  const limit = Math.min(Math.max(options.limit || 100, 1), 500);
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT * FROM omni_events
+      WHERE tenant_id = ${tenantId}
+        AND actor_id = ${actorId}
+        AND type = ANY(${types}::text[])
+        AND at >= ${new Date(since).toISOString()}::timestamptz
+        AND (
+          ${payloadMatch?.key || null}::text IS NULL
+          OR payload ->> ${payloadMatch?.key || null}::text = ${payloadMatch?.value || null}
+        )
+      ORDER BY seq DESC
+      LIMIT ${limit}
+    `;
+    return rows.map(eventFromRow);
+  }
+
+  const ledger = await readLedger();
+  return ledger.events
+    .filter((event) =>
+      event.tenantId === tenantId &&
+      event.actorId === actorId &&
+      types.includes(event.type) &&
+      Date.parse(event.at) >= since &&
+      (!payloadMatch || event.payload?.[payloadMatch.key] === payloadMatch.value)
+    )
+    .sort((left, right) => right.seq - left.seq)
+    .slice(0, limit);
+}
+
 export async function listRecentEvents(
   options: {
     tenantId: string;

@@ -211,6 +211,9 @@ role, and naming checks and by the server's effect classification.
 `activate_app`, `scroll`, and named-site `open_url` still continue within the
 task. A human-approved action never carries the marker, and a refusal code on
 an action the user already reviewed stays a failure.
+A voice-originated command, whether the client declared it or the server
+inferred it from an open voice session, never runs on task authority: every
+action above risk zero enters per-action approval.
 The direct command runner is never covered by task authority and always requires
 a fresh approval. `open_url` accepts only allowlisted Chrome and an
 absolute HTTP(S) URL without embedded credentials, waits for at most 15 seconds,

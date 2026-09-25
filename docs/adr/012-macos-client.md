@@ -59,7 +59,10 @@ click, key, or type that runs on This Mac task authority alone with
 `authority: "task"`, and the helper checks its real on-screen target before
 acting. A v29 client keeps visual Computer Use, governed commands, explicit
 selection, and Ambient Voice, but every such task-authorized action goes to
-review; a v28 client receives `upgrade_required`.
+review; a v28 client receives `upgrade_required`. V30 Ambient Voice also
+declares its reviewed command with `voiceInput`. A v29 client sends voice
+unmarked, and the server still holds it for approval while its voice session
+is open.
 The ordinary file-based macOS Keychain protects native session credentials under a
 stable Asael service namespace without a shared access group. Every Keychain
 operation is bounded so an operating-system authorization stall cannot hold the

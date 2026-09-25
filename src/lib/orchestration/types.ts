@@ -17,6 +17,7 @@ import type {
   CommandModelSelectionRequest,
   ModelReasoningEffort,
 } from "@/lib/models/command-selection";
+import type { VoiceCommandInput } from "@/lib/voice/command-input";
 
 export type ChatRole = "user" | "assistant";
 
@@ -261,19 +262,13 @@ export type AgentRunRequest = {
    * Content-free metadata for a visibly reviewed realtime voice command.
    * Its presence only narrows authority by forcing risk-bearing approvals.
    */
-  voiceInput?: {
-    schemaVersion: 1;
-    source: "realtime_voice";
-    sessionId: string;
-    conversationId: string;
-    provider: "openai";
-    confidenceBand: "high" | "low" | "unavailable" | "edited";
-    confidenceMean?: number;
-    confidenceMinimum?: number;
-    confidenceSampleCount: number;
-    reviewMethod: "send_button" | "explicit_checkbox";
-    reviewAttested: true;
-  };
+  voiceInput?: VoiceCommandInput;
+  /**
+   * Server-derived voice origin: a declared review, or an unmarked command
+   * that arrived while a realtime voice session on its conversation was still
+   * unconsumed. Like `voiceInput`, it only narrows authority.
+   */
+  voiceOrigin?: "declared" | "inferred";
   threadId?: string;
   mode?: AgentMode;
   tenantId?: string;

@@ -28,11 +28,13 @@ import {
   MODEL_ASSIGNMENT_SCOPES,
   MODEL_PROVIDERS,
 } from "@/lib/settings/types";
+import { voiceCommandInputSchema } from "@/lib/voice/command-input";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
 export const NATIVE_API_CURRENT_VERSION = 30 as const;
 // v29 remains the byte-frozen rollback bridge while v30 marks the local
-// computer commands that run on This Mac task authority alone.
+// computer commands that run on This Mac task authority alone and lets native
+// commands declare their reviewed realtime voice input.
 export const NATIVE_API_PREVIOUS_VERSION = 29 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
@@ -568,7 +570,15 @@ export const nativeConversationRequestSchema = z.object({
   computerUseTarget: z.literal("local_macos").optional(),
   modelSelection: commandModelSelectionRequestSchema.optional(),
   requestId: z.string().min(1).max(200).regex(/^[A-Za-z0-9._:-]+$/),
-}).strict();
+  /** v30: the reviewed realtime voice declaration for this command. */
+  voiceInput: voiceCommandInputSchema.optional(),
+}).strict().refine(
+  (value) => !value.voiceInput || value.threadId === value.voiceInput.conversationId,
+  {
+    message: "The voice review must be bound to its conversation.",
+    path: ["voiceInput", "conversationId"],
+  },
+);
 
 const nativeModelCatalogEntrySchema = z.object({
   id: opaqueId,

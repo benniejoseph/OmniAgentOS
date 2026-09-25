@@ -1328,7 +1328,7 @@ export async function* runAgent(
       readOnly: false,
       forceApproval: false,
     };
-    if (request.voiceInput) {
+    if (request.voiceInput || request.voiceOrigin) {
       agentToolPolicy = {
         ...agentToolPolicy,
         forceApprovalAboveRisk: 0,
