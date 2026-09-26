@@ -98,6 +98,19 @@ export async function consolidateRunMemory({
       tenantId: scopedTenantId,
       limit: 2_000,
     });
+    // The run recorded its memory decision when it started. A queued job
+    // cannot form memory for a run that withheld it or never recorded one.
+    const decisions = events.filter((event) => event.type === "run.harness");
+    if (
+      !decisions.length ||
+      decisions.some((event) => event.payload.memoryFormation !== "durable")
+    ) {
+      return {
+        summary: "The run's memory decision withholds durable memory formation.",
+        saved: [],
+        skipped: true,
+      };
+    }
     const executionIds = [...new Set(events.flatMap((event) => {
       if (event.type !== "run.tool") return [];
       const executionId = event.payload.executionId;

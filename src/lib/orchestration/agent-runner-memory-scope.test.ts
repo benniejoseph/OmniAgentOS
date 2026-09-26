@@ -8,6 +8,8 @@ import {
   runAgent,
 } from "@/lib/orchestration/agent-runner";
 import type { AgentEvent, AgentRunRequest } from "@/lib/orchestration/types";
+import type { ModelToolCall, ModelToolTurnResult } from "@/lib/models/types";
+import type { AgentRunContinuation } from "@/lib/runs/types";
 import { DEFAULT_CUSTOM_AGENT_PERSONA } from "@/lib/agents/persona";
 import { AUTHORIZED_CONTEXT_RETRIEVAL_SOURCES } from "@/lib/rag/context-engine";
 import { createExecutionScope } from "@/lib/security/execution-scope";
@@ -42,9 +44,12 @@ const mocks = vi.hoisted(() => ({
   executeGovernedTool: vi.fn(),
   failAgentRun: vi.fn(),
   findAgentRunWaitingForToolApproval: vi.fn(),
+  generateModelToolTurn: vi.fn(),
   getAgentRunExecutionScope: vi.fn(),
   getAgentRunIdentityPin: vi.fn(),
   getToolExecutionScopeBinding: vi.fn(),
+  markAgentRunResuming: vi.fn(),
+  selectAgentModel: vi.fn(),
   syncMissionExecutorSafely: vi.fn(),
   updateRunContextCount: vi.fn(),
 }));
@@ -93,13 +98,13 @@ vi.mock("@/lib/openai/client", () => ({
   streamResponseTurn: mocks.streamResponseTurn,
 }));
 
+vi.mock("@/lib/models/gateway", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/models/gateway")>()),
+  generateModelToolTurn: mocks.generateModelToolTurn,
+}));
+
 vi.mock("@/lib/openai/model-router", () => ({
-  selectAgentModel: () => ({
-    model: "gpt-test",
-    provider: "openai",
-    tier: "fast",
-    reason: "Test route",
-  }),
+  selectAgentModel: mocks.selectAgentModel,
 }));
 
 vi.mock("@/lib/tools/executor", async (importOriginal) => ({
@@ -169,7 +174,7 @@ vi.mock("@/lib/runs/store", () => ({
   getAgentRunExecutionScope: mocks.getAgentRunExecutionScope,
   getAgentRunIdentityPin: mocks.getAgentRunIdentityPin,
   listAgentRunSummaries: vi.fn(),
-  markAgentRunResuming: vi.fn(),
+  markAgentRunResuming: mocks.markAgentRunResuming,
   markAgentRunWaitingForApproval: mocks.markAgentRunWaitingForApproval,
   updateRunContextCount: mocks.updateRunContextCount,
 }));
@@ -205,6 +210,14 @@ describe("agent memory scope", () => {
     mocks.getActiveAgentAdaptationGuidance.mockResolvedValue([]);
     mocks.loadProgressiveAgentTools.mockResolvedValue({ definitions: [] });
     mocks.markAgentRunWaitingForApproval.mockResolvedValue({ parked: true });
+    mocks.markAgentRunResuming.mockResolvedValue(true);
+    mocks.selectAgentModel.mockReturnValue({
+      model: "gpt-test",
+      provider: "openai",
+      tier: "fast",
+      reason: "Test route",
+    });
+    mocks.generateModelToolTurn.mockReset();
     mocks.recordRuntimeEventSafely.mockResolvedValue(undefined);
     mocks.executeGovernedTool.mockReset();
     mocks.failAgentRun.mockResolvedValue({ id: "run-memory-scope" });
@@ -323,6 +336,7 @@ describe("agent memory scope", () => {
     expect(mocks.enqueueMemoryConsolidationJob).not.toHaveBeenCalled();
     expect(events).toContainEqual(expect.objectContaining({
       type: "harness",
+      memoryFormation: "withheld",
       contextScope: "session",
       contextDecision: "disabled_session",
       budgetLimitsSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
@@ -588,6 +602,11 @@ describe("agent memory scope", () => {
     });
     expect(mocks.enqueueMemoryConsolidationJob).toHaveBeenCalledOnce();
     expect(events).toContainEqual(expect.objectContaining({
+      type: "harness",
+      memoryScope: "all",
+      memoryFormation: "durable",
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
       type: "memory",
       count: 0,
     }));
@@ -660,6 +679,7 @@ describe("agent memory scope", () => {
     }));
     expect(events).toContainEqual(expect.objectContaining({
       type: "harness",
+      memoryFormation: "durable",
       contextScope: "agent_private",
       contextDecision: "retrieved",
     }));
@@ -1075,6 +1095,7 @@ describe("agent memory scope", () => {
     }));
     expect(events).toContainEqual(expect.objectContaining({
       type: "harness",
+      memoryFormation: "withheld",
       contextScope: "personal",
       contextDecision: "retrieved",
       toolCount: 0,
@@ -1136,6 +1157,7 @@ describe("agent memory scope", () => {
     }));
     expect(events).toContainEqual(expect.objectContaining({
       type: "harness",
+      memoryFormation: "withheld",
       contextScope: "project",
       contextDecision: "retrieved",
       contextRationale: [
@@ -1238,6 +1260,10 @@ describe("agent memory scope", () => {
       type: "status",
       label: "private context isolated",
     }));
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "harness",
+      memoryFormation: "withheld",
+    }));
   });
 
   it("blocks private disclosure when the canary receipt cannot persist", async () => {
@@ -1320,7 +1346,313 @@ describe("agent memory scope", () => {
     );
     expect(mocks.buildContextPack).not.toHaveBeenCalled();
   });
+
+  describe.each([
+    ["OpenAI", "openai"],
+    ["provider-bound", "google"],
+  ] as const)("a %s approval resume", (_label, provider) => {
+    it.each([
+      ["a session-only agent", () => request("session")],
+      ["a project-scoped agent", () => request("project")],
+      ["a session scope on an all-memory agent", () =>
+        withContextScope(request("all"), "session")],
+      ["a current-turn scope on an all-memory agent", () =>
+        withContextScope(request("all"), "current_turn")],
+      ["a no-context scope on an all-memory agent", () =>
+        withContextScope(request("all"), "none")],
+      ["a shared project run", () => sharedContextRequest("project")],
+      ["a shared Mission run", () => sharedContextRequest("mission")],
+    ])("forms no durable memory for %s", async (_scope, build) => {
+      const continuation = await pauseForApproval(build(), provider);
+      expect(continuation.memoryFormation).toBe("withheld");
+
+      await expect(resumeAfterApproval(continuation)).resolves.toMatchObject({
+        resumed: true,
+        status: "completed",
+      });
+      expect(mocks.enqueueMemoryConsolidationJob).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["an all-memory agent", () => request("all")],
+      ["an agent-private scope", () =>
+        withContextScope(request("all"), "agent_private")],
+    ])("consolidates %s", async (_scope, build) => {
+      const continuation = await pauseForApproval(build(), provider);
+      expect(continuation.memoryFormation).toBe("durable");
+
+      await expect(resumeAfterApproval(continuation)).resolves.toMatchObject({
+        resumed: true,
+        status: "completed",
+      });
+      expect(mocks.enqueueMemoryConsolidationJob).toHaveBeenCalledOnce();
+    });
+
+    it("forms no durable memory from a continuation saved without a decision", async () => {
+      const { memoryFormation: _decision, ...legacy } = await pauseForApproval(
+        request("all"),
+        provider,
+      );
+
+      await expect(resumeAfterApproval(legacy)).resolves.toMatchObject({
+        resumed: true,
+        status: "completed",
+      });
+      expect(mocks.enqueueMemoryConsolidationJob).not.toHaveBeenCalled();
+    });
+  });
+
+  it.each([
+    ["withheld", () => sharedContextRequest("project")],
+    ["durable", () => request("all")],
+  ] as const)(
+    "keeps a %s decision when a resumed OpenAI run pauses again",
+    async (decision, build) => {
+      const continuation = await pauseForApproval(build(), "openai");
+      mocks.markAgentRunWaitingForApproval.mockClear();
+      mocks.executeGovernedTool.mockResolvedValue(approvalRequiredExecution());
+
+      await expect(resumeAfterApproval(
+        { ...continuation, maxToolSteps: 3 },
+        openAITurn({
+          callId: "call-memory-approval-again",
+          name: APPROVAL_TOOL_ID,
+        }),
+      )).resolves.toMatchObject({ resumed: true, status: "waiting_approval" });
+
+      expect(mocks.markAgentRunWaitingForApproval).toHaveBeenCalledOnce();
+      expect(
+        mocks.markAgentRunWaitingForApproval.mock.calls[0][1].continuation
+          .memoryFormation,
+      ).toBe(decision);
+    },
+  );
+
+  it.each([
+    ["withheld", () => sharedContextRequest("project")],
+    ["durable", () => request("all")],
+  ] as const)(
+    "keeps a %s decision when a queued OpenAI call needs approval",
+    async (decision, build) => {
+      const continuation = await pauseForApproval(build(), "openai", [
+        { callId: "call-memory-approval", name: APPROVAL_TOOL_ID },
+        { callId: "call-memory-queued", name: APPROVAL_TOOL_ID },
+      ]);
+      mocks.markAgentRunWaitingForApproval.mockClear();
+
+      await expect(resumeAfterApproval(continuation)).resolves.toMatchObject({
+        resumed: true,
+        status: "waiting_approval",
+      });
+
+      expect(mocks.markAgentRunWaitingForApproval).toHaveBeenCalledOnce();
+      const parked = mocks.markAgentRunWaitingForApproval.mock.calls[0][1];
+      expect(parked.message).toBe(
+        "Run paused for the next queued function call approval.",
+      );
+      expect(parked.continuation.memoryFormation).toBe(decision);
+    },
+  );
+
+  it.each([
+    ["withheld", () => sharedContextRequest("project")],
+    ["durable", () => request("all")],
+  ] as const)(
+    "keeps a %s decision when a resumed provider-bound run pauses again",
+    async (decision, build) => {
+      const continuation = await pauseForApproval(build(), "google");
+      mocks.markAgentRunWaitingForApproval.mockClear();
+      mocks.executeGovernedTool.mockResolvedValue(approvalRequiredExecution());
+
+      await expect(resumeAfterApproval(
+        { ...continuation, maxToolSteps: 3 },
+        providerTurn({
+          toolCalls: [{
+            callId: "call-memory-approval-again",
+            name: APPROVAL_TOOL_ID,
+            argumentsJson: "{}",
+          }],
+        }),
+      )).resolves.toMatchObject({ resumed: true, status: "waiting_approval" });
+
+      expect(mocks.markAgentRunWaitingForApproval).toHaveBeenCalledOnce();
+      expect(
+        mocks.markAgentRunWaitingForApproval.mock.calls[0][1].continuation
+          .memoryFormation,
+      ).toBe(decision);
+    },
+  );
 });
+
+const APPROVAL_TOOL_ID = "google.gmail.trash";
+const APPROVAL_EXECUTION_ID = "execution-memory-approval";
+
+function withContextScope(
+  agentRequest: AgentRunRequest,
+  contextScope: NonNullable<AgentRunRequest["contextScope"]>,
+) {
+  agentRequest.contextScope = contextScope;
+  return agentRequest;
+}
+
+function sharedContextRequest(contextScope: "project" | "mission") {
+  const scopedRequest = request("all");
+  scopedRequest.actorId = privateOwnerContext.actorId;
+  scopedRequest.contextScope = contextScope;
+  scopedRequest.executionScope = createExecutionScope({
+    tenantId: privateOwnerContext.tenantId,
+    initiatingActorId: privateOwnerContext.actorId,
+    executingPrincipalType: "agent",
+    executingPrincipalId: "paid-test-agent",
+    workspaceId: "workspace:team-a",
+    projectId: "project:launch",
+    ...(contextScope === "mission" ? { missionId: "legacy-project-a" } : {}),
+    correlationId: "project-context-request",
+    purpose: "agent.run",
+  });
+  scopedRequest.promptSharedMemoryAccess = sharedProjectAccess();
+  return scopedRequest;
+}
+
+function approvalRequiredExecution() {
+  return {
+    record: {
+      ...localExecutionRecord(APPROVAL_TOOL_ID, APPROVAL_EXECUTION_ID),
+      riskLevel: 2 as const,
+      status: "approval_required" as const,
+      approvalRequired: true,
+    },
+  };
+}
+
+/** Runs one request until its first governed tool call parks for approval. */
+async function pauseForApproval(
+  agentRequest: AgentRunRequest,
+  provider: "openai" | "google",
+  calls: readonly { callId: string; name: string }[] = [
+    { callId: "call-memory-approval", name: APPROVAL_TOOL_ID },
+  ],
+): Promise<AgentRunContinuation> {
+  agentRequest.agentProfile!.toolIds = [APPROVAL_TOOL_ID];
+  agentRequest.agentProfile!.approvalPolicy = "risk_based";
+  agentRequest.agentProfile!.autonomy = "governed";
+  mocks.loadProgressiveAgentTools.mockResolvedValue({
+    definitions: [{
+      ...localToolDefinition(APPROVAL_TOOL_ID),
+      riskLevel: 2,
+      approvalRequired: true,
+      operationClass: "mutation",
+      reversible: false,
+    }],
+  });
+  mocks.executeGovernedTool.mockResolvedValue(approvalRequiredExecution());
+  if (provider === "google") {
+    mocks.selectAgentModel.mockReturnValue({
+      model: "gemini-test",
+      provider: "google",
+      tier: "fast",
+      reason: "Test route",
+    });
+    mocks.generateModelToolTurn.mockResolvedValue(providerTurn({
+      toolCalls: calls.map((call) => ({ ...call, argumentsJson: "{}" })),
+    }));
+  } else {
+    mocks.streamResponseTurn.mockResolvedValue(openAITurn({ calls }));
+  }
+
+  const events = await collectRequest(agentRequest);
+
+  expect(events).toContainEqual(expect.objectContaining({
+    type: "waiting_approval",
+    executionId: APPROVAL_EXECUTION_ID,
+  }));
+  expect(Boolean(
+    mocks.markAgentRunWaitingForApproval.mock.calls[0]?.[1]?.continuation
+      ?.providerToolState,
+  )).toBe(provider === "google");
+  return mocks.markAgentRunWaitingForApproval.mock.calls[0][1].continuation;
+}
+
+/** Resumes a parked run after its tool executed, with the next model turn. */
+async function resumeAfterApproval(
+  continuation: AgentRunContinuation,
+  nextTurn?: ReturnType<typeof openAITurn> | ModelToolTurnResult,
+) {
+  const governedCall = mocks.executeGovernedTool.mock.calls[0]?.[0];
+  mocks.enqueueMemoryConsolidationJob.mockClear();
+  mocks.findAgentRunWaitingForToolApproval.mockResolvedValue({
+    id: "run-memory-scope",
+    tenantId: "paid-test-tenant",
+    ownerActorId: continuation.context.actorId,
+    agentId: "paid-test-agent",
+    mode: "orchestrate",
+    status: "waiting_approval",
+    prompt: "hello",
+    messages: [{ role: "user", content: "hello" }],
+    memoryContextCount: 0,
+    startedAt: "2026-09-26T00:00:00.000Z",
+    continuation,
+  });
+  mocks.getAgentRunExecutionScope.mockResolvedValue(
+    continuation.executionScope,
+  );
+  mocks.getToolExecutionScopeBinding.mockResolvedValue(
+    governedCall?.executionScope
+      ? { executionScope: governedCall.executionScope }
+      : undefined,
+  );
+  if (continuation.providerToolState) {
+    mocks.generateModelToolTurn.mockResolvedValue(
+      nextTurn || providerTurn({ text: "Done." }),
+    );
+  } else {
+    mocks.streamResponseTurn.mockImplementation(async (modelRequest) => {
+      if (nextTurn) return nextTurn;
+      await modelRequest.onDelta("Done.");
+      return openAITurn({ text: "Done." });
+    });
+  }
+  return resumeAgentRunAfterToolApproval({
+    executionId: APPROVAL_EXECUTION_ID,
+    tenantId: "paid-test-tenant",
+    toolExecution: {
+      record: {
+        ...localExecutionRecord(APPROVAL_TOOL_ID, APPROVAL_EXECUTION_ID),
+        tenantId: "paid-test-tenant",
+        riskLevel: 2,
+        approvalRequired: true,
+      },
+      result: { ok: true },
+    },
+  });
+}
+
+function providerTurn(input: {
+  text?: string;
+  toolCalls?: ModelToolCall[];
+}): ModelToolTurnResult {
+  return {
+    text: input.text || "",
+    toolCalls: input.toolCalls || [],
+    continuation: { provider: "google", state: [] },
+    provider: "google",
+    model: "gemini-test",
+    usage: {
+      inputTokens: 5,
+      outputTokens: 2,
+      cachedInputTokens: 0,
+      totalTokens: 7,
+    },
+    latencyMs: 1,
+    costKnown: false,
+    attempts: [{
+      provider: "google",
+      model: "gemini-test",
+      status: "completed",
+      latencyMs: 1,
+    }],
+  };
+}
 
 function lockedSelection(evidenceIds: string[]): NonNullable<AgentRunRequest["contextSelection"]> {
   return {

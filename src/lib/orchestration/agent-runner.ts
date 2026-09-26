@@ -710,6 +710,14 @@ export async function* runAgent(
         ? request.promptPersonalMemoryAccess?.actorBinding.readableOwnerActorIds
         : undefined;
   const isolatedMemoryContext = Boolean(databaseMemoryAccessScope);
+  // Decided once from the request's scope. An approval pause carries it, so a
+  // resumed run can never form memory the original request withheld.
+  const memoryFormation: "durable" | "withheld" = durableMemoryEnabled &&
+      !promptMemoryAccessScope &&
+      !sharedPromptMemoryAccessScope &&
+      !personalPromptMemoryAccessScope
+    ? "durable"
+    : "withheld";
   let pendingDeltaText = "";
   let lastDeltaFlush = Date.now();
   let deltaWriteChain: Promise<void> = Promise.resolve();
@@ -1528,6 +1536,7 @@ export async function* runAgent(
       model: providerConfigured ? modelRoute.model : "fallback",
       tier: modelRoute.tier,
       memoryScope: request.agentProfile?.memoryScope || "all",
+      memoryFormation,
       contextScope: request.contextScope,
       contextDecision,
       contextMode: durableMemoryEnabled
@@ -2039,6 +2048,7 @@ export async function* runAgent(
             },
             toolPolicy: agentToolPolicy,
             memoryScope: request.agentProfile?.memoryScope || "all",
+            memoryFormation,
             citationSources,
             providerToolState: waiting.providerState,
             createdAt: new Date().toISOString(),
@@ -2496,6 +2506,7 @@ export async function* runAgent(
               },
               toolPolicy: agentToolPolicy,
               memoryScope: request.agentProfile?.memoryScope || "all",
+              memoryFormation,
               citationSources,
               createdAt: new Date().toISOString(),
             };
@@ -2681,10 +2692,7 @@ export async function* runAgent(
       runId: run.id,
       response,
     });
-    const consolidation = durableMemoryEnabled &&
-        !promptMemoryAccessScope &&
-        !sharedPromptMemoryAccessScope &&
-        !personalPromptMemoryAccessScope
+    const consolidation = memoryFormation === "durable"
       ? enqueueMemoryConsolidationSafely({
           runId: run.id,
           tenantId: request.tenantId,
@@ -4149,6 +4157,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
             context: continuation.context,
             toolPolicy: continuation.toolPolicy,
             memoryScope: continuation.memoryScope,
+            memoryFormation: continuation.memoryFormation,
             citationSources,
             createdAt: new Date().toISOString(),
           },
@@ -4486,6 +4495,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
               context: continuation.context,
               toolPolicy: continuation.toolPolicy,
               memoryScope: continuation.memoryScope,
+              memoryFormation: continuation.memoryFormation,
               citationSources,
               createdAt: new Date().toISOString(),
             },
@@ -4575,16 +4585,18 @@ async function resumeAgentRunAfterToolApprovalInScope({
       runId: run.id,
       response,
     });
-    const consolidation = continuation.memoryScope === "session"
-      ? Promise.resolve()
-      : enqueueMemoryConsolidationSafely({
+    // A continuation saved before the run carried its memory decision resumes
+    // with formation withheld.
+    const consolidation = continuation.memoryFormation === "durable"
+      ? enqueueMemoryConsolidationSafely({
           runId: run.id,
           tenantId: continuation.context.tenantId,
           actorId: continuation.context.actorId,
           mode: run.mode,
           prompt: run.prompt,
           response,
-        });
+        })
+      : Promise.resolve();
     await syncMissionExecutorSafely({
       executorType: "agent_run",
       executorId: run.id,
@@ -5027,6 +5039,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
       context: continuation.context,
       toolPolicy: continuation.toolPolicy,
       memoryScope: continuation.memoryScope,
+      memoryFormation: continuation.memoryFormation,
       citationSources,
       providerToolState: waiting.providerState,
       commandModelSelection: continuation.commandModelSelection,
@@ -5381,16 +5394,18 @@ async function resumeProviderBoundAgentRunAfterApproval({
       runId: run.id,
       response,
     });
-    const consolidation = continuation.memoryScope === "session"
-      ? Promise.resolve()
-      : enqueueMemoryConsolidationSafely({
+    // A continuation saved before the run carried its memory decision resumes
+    // with formation withheld.
+    const consolidation = continuation.memoryFormation === "durable"
+      ? enqueueMemoryConsolidationSafely({
           runId: run.id,
           tenantId: continuation.context.tenantId,
           actorId: continuation.context.actorId,
           mode: run.mode,
           prompt: run.prompt,
           response,
-        });
+        })
+      : Promise.resolve();
     await syncMissionExecutorSafely({
       executorType: "agent_run",
       executorId: run.id,

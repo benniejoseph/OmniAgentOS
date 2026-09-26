@@ -1884,7 +1884,14 @@ async function POSTHandler(request: Request) {
         let directExecutorId = "";
         let directTerminal = false;
         let directMissionAttachment: Promise<{ error?: unknown }> | undefined;
+        let directMemoryFormation: "durable" | "withheld" | undefined;
         for await (const event of directEvents) {
+          if (event.type === "harness") {
+            directMemoryFormation = directMemoryFormation !== "withheld" &&
+                event.memoryFormation === "durable"
+              ? "durable"
+              : "withheld";
+          }
           if (event.type === "run") {
             if (!directExecutorId) directExecutorId = event.runId;
             if (!directMissionAttachment && mission && missionTask) {
@@ -1912,10 +1919,13 @@ async function POSTHandler(request: Request) {
             // can never replace a durable success/wait/cancel with run_failed.
             const projectedEvents = await enqueueEvent(event);
             if (!projectedEvents.includes(event)) continue;
+            // The run's own memory decision also governs its inference
+            // candidate, so a scoped or session-only run saves none.
             if (
               event.type === "done" &&
               directExecutorId &&
-              !loopV2Enrollment
+              !loopV2Enrollment &&
+              directMemoryFormation === "durable"
             ) {
               await formAssistantInferenceCandidate({
                 context,

@@ -85,6 +85,12 @@ export type AgentHarnessEvent = {
   model: string;
   tier: "fast" | "reasoning";
   memoryScope: "session" | "project" | "all";
+  /**
+   * Whether this run may form durable memory, decided once when it starts.
+   * Completion, approval resumes, and the memory worker all follow it; an
+   * event without it withholds formation.
+   */
+  memoryFormation?: "durable" | "withheld";
   contextScope?: ContextScopeId;
   contextDecision:
     | "disabled_session"

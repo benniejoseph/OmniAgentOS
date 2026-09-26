@@ -162,6 +162,7 @@ function toTrajectoryEvent(event: DomainEvent): TrajectoryEvent {
   } else if (event.type === "run.harness") {
     copy(receipt, payload, [
       "version", "mode", "provider", "model", "tier", "memoryScope",
+      "memoryFormation",
       "contextDecision", "contextMode", "contextCount", "contextTraceId",
       "liveWeb", "toolCount", "approvalToolCount", "toolboxSha256",
       "instructionsSha256", "maxToolSteps", "maxToolCallsPerTurn",

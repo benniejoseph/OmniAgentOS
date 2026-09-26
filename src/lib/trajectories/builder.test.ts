@@ -99,6 +99,24 @@ describe("run trajectory", () => {
     expect(verifyRunTrajectory(trajectory, run).valid).toBe(true);
   });
 
+  it("exports the run's memory decision on its harness receipt", () => {
+    const trajectory = buildRunTrajectory(run, [
+      event(1, "run.harness", {
+        version: 1,
+        mode: "execute",
+        memoryScope: "all",
+        memoryFormation: "withheld",
+        contextDecision: "disabled_session",
+      }),
+    ]);
+
+    expect(trajectory.events[0].receipt).toMatchObject({
+      memoryScope: "all",
+      memoryFormation: "withheld",
+    });
+    expect(verifyRunTrajectory(trajectory, run).valid).toBe(true);
+  });
+
   it("detects a modified response receipt", () => {
     const trajectory = buildRunTrajectory(run, []);
     trajectory.response!.sha256 = "0".repeat(64);

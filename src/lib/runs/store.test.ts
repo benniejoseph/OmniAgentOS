@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { listStreamEvents } from "@/lib/events/store";
+import type { AgentHarnessEvent } from "@/lib/orchestration/types";
 import {
   createRunBudgetState,
   DEFAULT_AGENT_RUN_BUDGET_LIMITS,
@@ -72,6 +73,26 @@ describe("agent run approval continuations (file mode)", () => {
       limits: { tokens: DEFAULT_AGENT_RUN_BUDGET_LIMITS.tokens },
       used: { tokens: 18_284 },
     });
+  });
+
+  it("carries only a recognized durable-memory decision across approval pauses", async () => {
+    const store = await import("@/lib/runs/store");
+
+    expect(store.parseAgentRunContinuation({
+      ...continuationFor("exec-memory-durable"),
+      memoryFormation: "durable",
+    })?.memoryFormation).toBe("durable");
+    expect(store.parseAgentRunContinuation({
+      ...continuationFor("exec-memory-withheld"),
+      memoryFormation: "withheld",
+    })?.memoryFormation).toBe("withheld");
+    expect(store.parseAgentRunContinuation(
+      continuationFor("exec-memory-legacy"),
+    )?.memoryFormation).toBeUndefined();
+    expect(store.parseAgentRunContinuation({
+      ...continuationFor("exec-memory-unknown"),
+      memoryFormation: "all",
+    })?.memoryFormation).toBeUndefined();
   });
 
   it("retains only a closed Computer Use target across approval pauses", async () => {
@@ -449,6 +470,57 @@ describe("agent run approval continuations (file mode)", () => {
     });
     expect(event.payload).not.toHaveProperty("response");
     expect(event.payload.responseSha256).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("records the run's durable-memory decision on its harness event", async () => {
+    const store = await import("@/lib/runs/store");
+    const run = await store.createAgentRun({
+      tenantId: "run-memory-decision",
+      mode: "orchestrate",
+      prompt: "record the memory decision",
+      messages: [{ role: "user", content: "record the memory decision" }],
+    });
+    const harness: AgentHarnessEvent = {
+      type: "harness",
+      version: 1,
+      mode: "orchestrate",
+      provider: "openai",
+      model: "test-model",
+      tier: "fast",
+      memoryScope: "all",
+      memoryFormation: "withheld",
+      contextScope: "session",
+      contextDecision: "disabled_session",
+      contextMode: "session",
+      contextCount: 0,
+      contextEvidenceIds: [],
+      contextRationale: [],
+      liveWeb: false,
+      toolCount: 0,
+      toolIds: [],
+      approvalToolCount: 0,
+      skillIds: [],
+      toolboxSha256: "a".repeat(64),
+      instructionsSha256: "b".repeat(64),
+      maxToolSteps: 6,
+      maxToolCallsPerTurn: 4,
+      maxToolResultChars: 4_000,
+      maxOutputTokens: 1_024,
+      budgetLimits: DEFAULT_AGENT_RUN_BUDGET_LIMITS,
+      approvalPolicy: "read_only",
+      autonomy: "assist",
+    };
+    await store.appendRunEvent(run.id, harness, {
+      tenantId: "run-memory-decision",
+    });
+
+    const [event] = await listStreamEvents(`run:${run.id}`, {
+      tenantId: "run-memory-decision",
+    });
+    expect(event).toMatchObject({
+      type: "run.harness",
+      payload: { memoryScope: "all", memoryFormation: "withheld" },
+    });
   });
 
   it("binds exactly one immutable agent identity to a run", async () => {

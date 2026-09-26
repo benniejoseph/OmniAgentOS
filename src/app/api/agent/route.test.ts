@@ -13,6 +13,7 @@ const routeMocks = vi.hoisted(() => ({
   createThread: vi.fn(),
   createMission: vi.fn(),
   ensureMissionTask: vi.fn(),
+  formAssistantInferenceCandidate: vi.fn(),
   getAgentPerformance: vi.fn(),
   getOwnedProject: vi.fn(),
   getMission: vi.fn(),
@@ -164,6 +165,11 @@ vi.mock("@/lib/memory/shared-context", async (importOriginal) => ({
     routeMocks.requestSharedMemoryAccessFromSecurityContext,
 }));
 
+vi.mock("@/lib/memory/evidence-formation", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/memory/evidence-formation")>()),
+  formAssistantInferenceCandidate: routeMocks.formAssistantInferenceCandidate,
+}));
+
 vi.mock("@/lib/memory/personal-context-access", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/memory/personal-context-access")>()),
   personalContextMemoryAccessFromSecurityContext:
@@ -230,6 +236,8 @@ beforeEach(() => {
     tenantId: context.tenantId,
     actorId: context.actorId,
   });
+  routeMocks.formAssistantInferenceCandidate.mockReset()
+    .mockResolvedValue(undefined);
   routeMocks.getAgentPerformance.mockReset().mockResolvedValue([]);
   routeMocks.ensureMissionTask.mockReset().mockResolvedValue({
     id: "mission-task-a",
@@ -2165,4 +2173,57 @@ describe("agent Loop v2 canary routing", () => {
     expect(runRequest.runId).toBe(runRequest.executionScope.correlationId);
     expect(routeMocks.runAgent).not.toHaveBeenCalled();
   });
+});
+
+describe("agent direct-run memory formation", () => {
+  it.each([
+    ["decided on durable memory", ["durable"], true],
+    ["withheld durable memory", ["withheld"], false],
+    ["recorded no decision", [], false],
+    ["recorded a decision without a formation value", [undefined], false],
+    ["withheld durable memory after deciding on it", ["durable", "withheld"], false],
+    ["decided on durable memory after withholding it", ["withheld", "durable"], false],
+  ] as const)(
+    "saves an inference candidate only when the run %s",
+    async (_label, decisions, formsCandidate) => {
+      routeMocks.runAgent.mockImplementation(async function* () {
+        for (const memoryFormation of decisions) {
+          yield {
+            type: "harness",
+            version: 1,
+            memoryScope: "all",
+            ...(memoryFormation ? { memoryFormation } : {}),
+          };
+        }
+        yield { type: "run", runId: "run-memory-decision", threadId: "thread-a" };
+        yield { type: "done", response: "Direct result." };
+      });
+
+      const response = await POST(new Request("http://asael.test/api/agent", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          message: "Summarize the requested context.",
+          requestId: "direct-memory-decision-a",
+          strategy: "direct",
+          agentId: "atlas",
+        }),
+      }));
+
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain('"type":"done"');
+      if (formsCandidate) {
+        expect(routeMocks.formAssistantInferenceCandidate).toHaveBeenCalledOnce();
+        expect(routeMocks.formAssistantInferenceCandidate).toHaveBeenCalledWith(
+          expect.objectContaining({
+            requestId: "direct-memory-decision-a",
+            runId: "run-memory-decision",
+            response: "Direct result.",
+          }),
+        );
+      } else {
+        expect(routeMocks.formAssistantInferenceCandidate).not.toHaveBeenCalled();
+      }
+    },
+  );
 });

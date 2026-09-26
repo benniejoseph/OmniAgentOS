@@ -113,7 +113,7 @@ Key properties:
 - Gated calls create `approval_required` records and persist a run continuation. Approval executes the real call and resumes the same run with its saved conversation and outputs.
 - The loop re-sends instructions and the complete canonical conversation array on every turn. It does not use OpenAI `previous_response_id` or Gemini `previous_interaction_id`, so provider application-state retention stays disabled. Repeated prefixes are still optimized without surrendering transcript ownership: OpenAI receives a content-free HMAC cache bucket scoped to the tenant actor and run, Anthropic Messages uses the ephemeral automatic cache, Gemini Interactions uses its stateless implicit cache, and supported Bedrock Converse models receive a checkpoint after stable tool/system content. Provider continuation state is accepted only by the provider that created it; canonical native-role replay remains the recovery source of truth.
 - Step budget (`OMNIAGENT_AGENT_MAX_TOOL_STEPS`), per-turn call cap, and output truncation bound cost.
-- Each run emits one `run.harness` receipt with the effective context decision, model route, tool/skill set, approval mode, execution budgets, and contract hashes.
+- Each run emits one `run.harness` receipt with the effective context decision, durable-memory decision, model route, tool/skill set, approval mode, execution budgets, and contract hashes.
 - Text deltas stream to the client immediately but persist to the run ledger in batches.
 
 P9.1 inserts a transport-neutral application-service boundary between product
@@ -1899,6 +1899,21 @@ approval-held, dry-run, cross-actor, and unverified executions form no success
 episode. Migration v83 quarantines legacy active response-derived memories as
 `candidate`, removes their graph and brief projections, and schedules graph
 rebuilding.
+
+A direct run decides once whether it may form durable memory and records that
+decision as `memoryFormation` on its `run.harness` event. The run is `durable`
+only when its effective memory mode is `all` (from its context scope, or from
+the Agent's memory scope when no context scope was sent) and it carries no
+explicit-selection, shared Project/Workspace/Mission, or Personal prompt
+access. Session, current-turn, and no-context scopes, and unscoped runs of
+session- or project-memory Agents, are `withheld`.
+Every approval continuation carries the decision, including a resumed run that
+pauses again, and a resume enqueues consolidation only for `durable`. A
+continuation saved before the field existed resumes `withheld`. The background
+worker re-reads the run's harness events and forms nothing unless every recorded
+decision is `durable`, so a job queued for a withheld or undecided run skips.
+The direct route saves an assistant inference candidate only for a `durable`
+run.
 
 P3.5 adds a rebuildable conversation projection without widening memory
 authority. Immutable owner-scoped turns derive deterministic turn, episode,

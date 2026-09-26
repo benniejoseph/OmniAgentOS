@@ -109,8 +109,14 @@ export type AgentRunContinuation = {
     /** Force approval only when tool risk is greater than this threshold. */
     forceApprovalAboveRisk?: number;
   };
-  /** Preserves the owner's memory boundary across approval resumes. */
+  /** The agent profile's configured memory scope, retained for replay. */
   memoryScope?: "session" | "project" | "all";
+  /**
+   * The run's durable-memory decision, carried across approval pauses. Only
+   * `"durable"` lets a resumed run consolidate; a continuation saved without
+   * it resumes with formation withheld.
+   */
+  memoryFormation?: "durable" | "withheld";
   /** Captured, validated source metadata needed to ground the resumed answer. */
   citationSources?: GroundingReport["sources"];
   /** Present for provider-neutral Gemini, Anthropic, Bedrock, and gateway tool turns. */

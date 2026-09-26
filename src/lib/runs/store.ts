@@ -1065,6 +1065,7 @@ function domainEventPayload(event: AgentEvent): Record<string, unknown> {
         model: event.model,
         tier: event.tier,
         memoryScope: event.memoryScope,
+        memoryFormation: event.memoryFormation,
         contextScope: event.contextScope,
         contextDecision: event.contextDecision,
         contextMode: event.contextMode,
@@ -2611,6 +2612,11 @@ export function parseAgentRunContinuation(
       candidate.memoryScope === "all"
         ? candidate.memoryScope
         : "all",
+    memoryFormation:
+      candidate.memoryFormation === "durable" ||
+      candidate.memoryFormation === "withheld"
+        ? candidate.memoryFormation
+        : undefined,
     citationSources: parseCitationSources(candidate.citationSources),
     providerToolState: parseProviderToolState(candidate.providerToolState),
     createdAt: typeof candidate.createdAt === "string" ? candidate.createdAt : new Date().toISOString(),
