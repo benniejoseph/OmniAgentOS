@@ -61,6 +61,9 @@ type SyncCursor = {
 const GMAIL_ITEM_PAGE_SIZE = 5;
 const GMAIL_HISTORY_RECORD_PAGE_SIZE = 10;
 const GMAIL_PENDING_ITEM_LIMIT = 5_000;
+// Anyone can land mail in spam, and trash is mail the owner discarded, so
+// knowledge holds neither.
+const GMAIL_EXCLUDED_LABEL_IDS = new Set(["SPAM", "TRASH"]);
 const CALENDAR_ITEM_PAGE_SIZE = 10;
 const DRIVE_ITEM_PAGE_SIZE = 3;
 const GOOGLE_DRIVE_REVISION_MARKER_KEY = "googleDriveProviderRevision";
@@ -72,6 +75,8 @@ type SyncItem = {
   title: string;
   content: string;
   deleted?: boolean;
+  /** Present at the provider but never ingested, such as Gmail spam. */
+  excluded?: boolean;
   providerRevisionId?: string;
   sourceCreatedAt?: string;
   sourceUpdatedAt?: string;
@@ -299,6 +304,21 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
         for (const item of observation.value.items) {
           const sourceNamespace = googleConnectionSourceNamespace(secrets.grant);
           const idempotencyKey = `${sourceNamespace.idempotencyPrefix}:${item.kind}:${item.id}`;
+          if (item.excluded) {
+            // Retirement is a heavy transaction, and most excluded items were
+            // never indexed; one indexed earlier, before a move to trash for
+            // example, is retired.
+            if (await getKnowledgeDocumentByIdempotencyKey(idempotencyKey, {
+              tenantId: input.tenantId,
+            })) {
+              await deleteKnowledgeDocumentByIdempotencyKey(idempotencyKey, {
+                tenantId: input.tenantId,
+                executionScope: sourceExecutionScope,
+              });
+              sourceRemoved += 1;
+            }
+            continue;
+          }
           if (item.deleted) {
             if (item.kind === "calendar") {
               const existingDocument = await getKnowledgeDocumentByIdempotencyKey(
@@ -664,11 +684,19 @@ async function googleMail(
     const response = await providerJson(url.toString(), headers, signal, [404]);
     if (response.status === 404) return googleMail(headers, {}, signal);
     const payload = response.body;
-    addedIds = googleProviderIds(array(payload.history).flatMap((entry) =>
-      array(record(entry).messagesAdded).map((added) =>
+    addedIds = googleProviderIds(array(payload.history).flatMap((entry) => [
+      ...array(record(entry).messagesAdded).map((added) =>
         String(record(record(added).message).id || "")
-      )
-    ));
+      ),
+      // A message moved into or out of spam or trash is fetched again, and
+      // its current labels decide whether it is indexed or retired.
+      ...[
+        ...array(record(entry).labelsAdded),
+        ...array(record(entry).labelsRemoved),
+      ]
+        .filter((change) => hasExcludedGmailLabel(record(change).labelIds))
+        .map((change) => String(record(record(change).message).id || "")),
+    ]));
     deletedIds = googleProviderIds(array(payload.history).flatMap((entry) =>
       array(record(entry).messagesDeleted).map((deleted) =>
         String(record(record(deleted).message).id || "")
@@ -759,8 +787,11 @@ async function gmailItems(
       signal,
       [404],
     );
-    return response.status === 404
-      ? { id, kind: "mail", title: "Removed email", content: "", deleted: true }
+    if (response.status === 404) {
+      return { id, kind: "mail", title: "Removed email", content: "", deleted: true };
+    }
+    return hasExcludedGmailLabel(response.body.labelIds)
+      ? { id, kind: "mail", title: "Excluded email", content: "", excluded: true }
       : googleMessage(response.body);
   }));
   return [
@@ -854,16 +885,21 @@ async function googleDrive(
   const url = new URL("https://www.googleapis.com/drive/v3/files");
   url.searchParams.set("pageSize", String(DRIVE_ITEM_PAGE_SIZE));
   url.searchParams.set("orderBy", "modifiedTime,name");
-  url.searchParams.set("fields", "nextPageToken,files(id,name,mimeType,createdTime,modifiedTime,version,headRevisionId,webViewLink,description,trashed,size,fileExtension)");
+  url.searchParams.set("fields", "nextPageToken,files(id,name,mimeType,createdTime,modifiedTime,version,headRevisionId,webViewLink,description,trashed,size,fileExtension,ownedByMe)");
   url.searchParams.set("q", `trashed = false and modifiedTime > '${windowStart}' and modifiedTime <= '${windowEnd}'`);
   if (cursor.drivePageToken) {
     url.searchParams.set("pageToken", cursor.drivePageToken);
   }
   const payload = (await providerJson(url.toString(), headers, signal)).body;
-  const files = array(payload.files).map(record);
-  if (files.length > DRIVE_ITEM_PAGE_SIZE) {
+  const listedFiles = array(payload.files).map(record);
+  if (listedFiles.length > DRIVE_ITEM_PAGE_SIZE) {
     throw new Error("Google Drive page exceeds the requested item limit.");
   }
+  // Anyone can share a file with the account, so knowledge reads only files
+  // the account owns, and a shared file is never downloaded or parsed. The
+  // query does not filter by owner because Drive documents owner queries only
+  // by email address.
+  const files = listedFiles.filter((file) => file.ownedByMe === true);
   const items = await Promise.all(files.map(async (file): Promise<SyncItem> => {
     const id = String(file.id || "");
     const mimeType = String(file.mimeType || "");
@@ -1306,6 +1342,12 @@ function parseCursor(value?: string): SyncCursor { if (!value) return {}; try { 
 function record(value: unknown): Record<string, unknown> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
 function array(value: unknown): unknown[] { return Array.isArray(value) ? value : []; }
 function unique(values: string[]) { return [...new Set(values)]; }
+
+function hasExcludedGmailLabel(labelIds: unknown) {
+  return array(labelIds).some((labelId) =>
+    typeof labelId === "string" && GMAIL_EXCLUDED_LABEL_IDS.has(labelId)
+  );
+}
 
 function googleCursorIds(value: unknown) {
   if (value === undefined) return [];

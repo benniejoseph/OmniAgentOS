@@ -704,6 +704,12 @@ not requested. Google login accepts only an exact active allowlist entry. Each
 signed-in account sees one Google Workspace connection verified against its own
 email; Personal and Work are separate tenants rather than side-by-side grants.
 
+Background sync indexes only what the account holds. Drive knowledge reads
+files the account owns. A file shared with the account, or one in a shared
+drive, is left out; to include one, make a copy in My Drive. Gmail knowledge
+skips Spam and Trash, and a message moved into either is retired from
+knowledge. Items indexed before this rule are not removed by it.
+
 ## Capture document extraction
 
 Uploaded and synced files are extracted inside the Vercel functions, never on

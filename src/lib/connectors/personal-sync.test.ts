@@ -85,7 +85,7 @@ describe("personal OAuth synchronization", () => {
       if (url.endsWith("/profile")) return json({ historyId: "h2" });
       if (url.includes("/messages/m1")) return json({ id: "m1", threadId: "thread-1", historyId: "h1", internalDate: "1787695200000", snippet: "Decision made", payload: { headers: [{ name: "Subject", value: "Project decision" }, { name: "From", value: "a@example.com" }, { name: "To", value: "owner@example.com" }] } });
       if (url.includes("calendar")) return json({ nextSyncToken: "c2", items: [{ id: "e1", etag: "event-v1", created: "2026-08-25T10:00:00Z", updated: "2026-08-26T09:00:00Z", summary: "Planning", status: "confirmed", start: { dateTime: "2026-08-26T10:00:00Z" }, end: { dateTime: "2026-08-26T11:00:00Z" } }, { id: "e0", status: "cancelled" }] });
-      if (url.includes("/drive/v3/files")) return json({ files: [{ id: "d1", name: "Project brief.pdf", mimeType: "application/pdf", createdTime: "2026-08-24T10:00:00Z", modifiedTime: "2026-08-25T10:00:00Z", version: "7", webViewLink: "https://drive.google.com/file/d1" }] });
+      if (url.includes("/drive/v3/files")) return json({ files: [{ id: "d1", name: "Project brief.pdf", mimeType: "application/pdf", createdTime: "2026-08-24T10:00:00Z", modifiedTime: "2026-08-25T10:00:00Z", version: "7", webViewLink: "https://drive.google.com/file/d1", ownedByMe: true }] });
       throw new Error(`Unexpected URL ${url}`);
     });
     const result = await syncPersonalProvider({ tenantId: "personal", actorId: "owner", provider: "google" });
@@ -266,7 +266,7 @@ describe("personal OAuth synchronization", () => {
       if (url.includes("/messages?")) return json({ messages: [] });
       if (url.endsWith("/profile")) return json({ historyId: "h4" });
       if (url.includes("calendar")) return json({ nextSyncToken: "c4", items: [] });
-      if (url.includes("/drive/v3/files?")) return json({ files: [{ id: "d404", name: "Moved brief", mimeType: "application/vnd.google-apps.document", createdTime: "2026-08-25T10:00:00Z", modifiedTime: "2026-08-26T10:00:00Z", version: "3" }] });
+      if (url.includes("/drive/v3/files?")) return json({ files: [{ id: "d404", name: "Moved brief", mimeType: "application/vnd.google-apps.document", createdTime: "2026-08-25T10:00:00Z", modifiedTime: "2026-08-26T10:00:00Z", version: "3", ownedByMe: true }] });
       if (url.includes("/drive/v3/files/d404/export")) return new Response("missing", { status: 404 });
       throw new Error(`Unexpected URL ${url}`);
     });
@@ -313,6 +313,7 @@ describe("personal OAuth synchronization", () => {
             modifiedTime: "2026-08-26T10:00:00Z",
             version: "2",
             size: "0",
+            ownedByMe: true,
           }],
         });
       }
@@ -374,6 +375,7 @@ describe("personal OAuth synchronization", () => {
             modifiedTime: "2026-08-26T10:00:00Z",
             version: "4",
             size: "0",
+            ownedByMe: true,
           }],
         });
       }
@@ -788,6 +790,156 @@ describe("personal OAuth synchronization", () => {
     }));
   });
 
+  it("reads only Drive files the account owns", async () => {
+    const requestedUrls: string[] = [];
+    mocks.fetch.mockImplementation(async (input: string | URL | Request) => {
+      const url = String(input);
+      requestedUrls.push(url);
+      if (url.includes("/drive/v3/files?")) {
+        const listed = {
+          mimeType: "application/vnd.google-apps.document",
+          createdTime: "2026-08-25T10:00:00Z",
+          modifiedTime: "2026-08-26T10:00:00Z",
+          version: "1",
+        };
+        return json({
+          files: [
+            { ...listed, id: "drive-owned", name: "Owned notes", ownedByMe: true },
+            { ...listed, id: "drive-shared", name: "Shared notes", ownedByMe: false },
+            { ...listed, id: "drive-unmarked", name: "Unmarked.txt", mimeType: "text/plain", size: "12" },
+          ],
+        });
+      }
+      if (url.includes("/drive/v3/files/drive-owned/export")) {
+        return new Response("Owned content");
+      }
+      throw new Error(`Unexpected URL ${url}`);
+    });
+
+    const result = await syncPersonalProvider({
+      tenantId: "personal",
+      actorId: "owner",
+      provider: "google",
+      sources: ["drive"],
+    });
+
+    const listUrl = new URL(
+      requestedUrls.find((url) => url.includes("/drive/v3/files?"))!,
+    );
+    // Without the field every file reads as unowned and Drive knowledge stops.
+    expect(listUrl.searchParams.get("fields")).toMatch(/[(,]ownedByMe[,)]/);
+    // A shared file is never exported, downloaded, or parsed.
+    expect(requestedUrls.filter((url) =>
+      url.includes("drive-shared") || url.includes("drive-unmarked")
+    )).toEqual([]);
+    expect(mocks.ingest).toHaveBeenCalledTimes(1);
+    expect(mocks.ingest).toHaveBeenCalledWith(expect.objectContaining({
+      idempotencyKey: "oauth:google:drive:drive-owned",
+    }));
+    expect(mocks.remove).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ imported: 1, removed: 0 });
+  });
+
+  it("never indexes Gmail spam or trash", async () => {
+    mocks.getSecrets.mockResolvedValue(
+      googleSecrets({ gmailHistoryId: "history-start" }),
+    );
+    const labels: Record<string, string> = {
+      "mail-spam": "SPAM",
+      "mail-trash": "TRASH",
+      "mail-inbox": "INBOX",
+    };
+    mocks.fetch.mockImplementation(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("/history?")) {
+        return json({
+          historyId: "history-next",
+          history: [{
+            messagesAdded: Object.entries(labels).map(([id, label]) => ({
+              message: { id, labelIds: [label] },
+            })),
+          }],
+        });
+      }
+      const id = url.match(/\/messages\/([a-z-]+)\?/)?.[1];
+      if (id && labels[id]) return json(gmailMessage(id, [labels[id]]));
+      throw new Error(`Unexpected URL ${url}`);
+    });
+
+    const result = await syncPersonalProvider({
+      tenantId: "personal",
+      actorId: "owner",
+      provider: "google",
+      sources: ["mail"],
+    });
+
+    expect(mocks.ingest).toHaveBeenCalledTimes(1);
+    expect(mocks.ingest).toHaveBeenCalledWith(expect.objectContaining({
+      idempotencyKey: "oauth:google:mail:mail-inbox",
+    }));
+    expect(mocks.mapInbound).toHaveBeenCalledTimes(1);
+    expect(mocks.mapInbound).toHaveBeenCalledWith(
+      expect.objectContaining({ providerMessageId: "mail-inbox" }),
+      expect.anything(),
+    );
+    // Neither was indexed, so there is nothing to retire.
+    expect(mocks.remove).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ imported: 1, removed: 0 });
+  });
+
+  it("re-reads Gmail messages moved into or out of spam or trash", async () => {
+    mocks.getSecrets.mockResolvedValue(
+      googleSecrets({ gmailHistoryId: "history-start" }),
+    );
+    mocks.getDocument.mockImplementation(async (idempotencyKey: string) =>
+      idempotencyKey === "oauth:google:mail:mail-trashed"
+        ? { id: "document-trashed" }
+        : undefined
+    );
+    const requestedUrls: string[] = [];
+    mocks.fetch.mockImplementation(async (input: string | URL | Request) => {
+      const url = String(input);
+      requestedUrls.push(url);
+      if (url.includes("/history?")) {
+        return json({
+          historyId: "history-next",
+          history: [
+            { labelsAdded: [{ message: { id: "mail-trashed" }, labelIds: ["TRASH"] }] },
+            { labelsRemoved: [{ message: { id: "mail-rescued" }, labelIds: ["SPAM"] }] },
+            { labelsAdded: [{ message: { id: "mail-starred" }, labelIds: ["STARRED"] }] },
+          ],
+        });
+      }
+      if (url.includes("/messages/mail-trashed?")) {
+        return json(gmailMessage("mail-trashed", ["TRASH"]));
+      }
+      if (url.includes("/messages/mail-rescued?")) {
+        return json(gmailMessage("mail-rescued", ["INBOX"]));
+      }
+      throw new Error(`Unexpected URL ${url}`);
+    });
+
+    const result = await syncPersonalProvider({
+      tenantId: "personal",
+      actorId: "owner",
+      provider: "google",
+      sources: ["mail"],
+    });
+
+    // Other label changes leave the indexed copy as it is.
+    expect(requestedUrls.some((url) => url.includes("mail-starred"))).toBe(false);
+    expect(mocks.remove).toHaveBeenCalledTimes(1);
+    expect(mocks.remove).toHaveBeenCalledWith(
+      "oauth:google:mail:mail-trashed",
+      expect.objectContaining({ tenantId: "personal" }),
+    );
+    expect(mocks.ingest).toHaveBeenCalledTimes(1);
+    expect(mocks.ingest).toHaveBeenCalledWith(expect.objectContaining({
+      idempotencyKey: "oauth:google:mail:mail-rescued",
+    }));
+    expect(result).toMatchObject({ imported: 1, removed: 1 });
+  });
+
   it("releases an interrupted lease without converting progress into an auth error", async () => {
     const abortController = new AbortController();
     mocks.fetch.mockImplementation(async (input: string | URL | Request) => {
@@ -825,3 +977,39 @@ describe("personal OAuth synchronization", () => {
 });
 
 function json(value: unknown, status = 200) { return new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } }); }
+
+function googleSecrets(syncCursor: Record<string, unknown>) {
+  return {
+    grant: {
+      id: "google-grant",
+      tenantId: "personal",
+      actorId: "owner",
+      provider: "google",
+      ...GOOGLE_PERSONAL_CONNECTION,
+      status: "active",
+      authorizationGeneration: 1,
+      expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+      scopes: GOOGLE_SYNC_SCOPES,
+    },
+    tokens: { access_token: "access" },
+    credentialState: "active",
+    syncCursor: JSON.stringify(syncCursor),
+  };
+}
+
+function gmailMessage(id: string, labelIds: string[]) {
+  return {
+    id,
+    threadId: `thread-${id}`,
+    historyId: "history-next",
+    internalDate: "1787695200000",
+    labelIds,
+    snippet: `Snippet for ${id}`,
+    payload: {
+      headers: [
+        { name: "Subject", value: `Subject for ${id}` },
+        { name: "From", value: "sender@example.com" },
+      ],
+    },
+  };
+}
