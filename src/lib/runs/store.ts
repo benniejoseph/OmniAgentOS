@@ -2137,8 +2137,20 @@ async function setRunStatus(
       }
       return changed;
     }
+    let pendingExecutionId: string | undefined;
     const changed = await getSql().transaction(
       async (sql: ReturnType<typeof getSql>) => {
+        if (status === "canceled") {
+          const pending = await sql`
+            SELECT continuation #>> '{pendingToolCall,executionId}' AS execution_id
+            FROM omni_agent_runs
+            WHERE id = ${runId} AND tenant_id = ${tenantId}
+            FOR UPDATE
+          `;
+          pendingExecutionId = typeof pending[0]?.execution_id === "string"
+            ? pending[0].execution_id
+            : undefined;
+        }
         const rows = await sql`
           UPDATE omni_agent_runs
           SET status = ${status}, response = ${safeResponse || null},
@@ -2177,6 +2189,14 @@ async function setRunStatus(
         executionScope,
         options.runContractEnvelope,
       );
+      if (status === "canceled") {
+        await withdrawCanceledRunApprovalsSafely({
+          runId,
+          tenantId,
+          legacyExecutionId: pendingExecutionId,
+          executionScope,
+        });
+      }
     }
     return changed;
   }
@@ -2186,11 +2206,13 @@ async function setRunStatus(
   }
 
   let changed = false;
+  let pendingExecutionId: string | undefined;
   await updateFileRun(runId, (run) => {
     if (["completed", "failed", "canceled"].includes(run.status)) {
       return;
     }
     changed = true;
+    pendingExecutionId = run.continuation?.pendingToolCall?.executionId;
     run.status = status;
     run.response = safeResponse;
     run.grounding = values.grounding;
@@ -2204,8 +2226,42 @@ async function setRunStatus(
       executionScope: options.executionScope,
       runContractEnvelope: options.runContractEnvelope,
     });
+    if (status === "canceled") {
+      await withdrawCanceledRunApprovalsSafely({
+        runId,
+        tenantId: options.tenantId,
+        legacyExecutionId: pendingExecutionId,
+        executionScope: options.executionScope,
+      });
+    }
   }
   return changed;
+}
+
+/**
+ * Withdraws a canceled run's pending approvals after the cancel commits. The
+ * approval claim checks the run again, so a failure here is logged and the
+ * cancel still stands.
+ */
+async function withdrawCanceledRunApprovalsSafely(input: {
+  runId: string;
+  tenantId?: string;
+  legacyExecutionId?: string;
+  executionScope?: ExecutionScope;
+}) {
+  try {
+    const { withdrawAgentRunPendingToolExecutions } = await import(
+      "@/lib/tools/audit-store"
+    );
+    await withdrawAgentRunPendingToolExecutions(input);
+  } catch (error) {
+    console.warn(
+      "Canceled run approvals could not be withdrawn.",
+      String(redactSensitive(
+        error instanceof Error ? error.message : "Unknown withdrawal error.",
+      )).slice(0, 1_000),
+    );
+  }
 }
 
 async function appendRunEventInTransaction(input: {

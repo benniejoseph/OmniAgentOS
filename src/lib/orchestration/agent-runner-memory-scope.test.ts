@@ -20,6 +20,7 @@ import { MAX_ASSIGNED_SKILLS } from "@/lib/skills/limits";
 import { builtInSkills } from "@/lib/skills/catalog";
 import { getGovernedTool } from "@/lib/tools/registry";
 import { DEFAULT_AGENT_RUN_BUDGET_LIMITS } from "@/lib/runs/budgets";
+import { AgentRunTerminatedError } from "@/lib/runs/cancellation";
 
 const mocks = vi.hoisted(() => ({
   appendContextCompilerV2CanaryEvent: vi.fn(),
@@ -31,8 +32,10 @@ const mocks = vi.hoisted(() => ({
   appendRunEvent: vi.fn(),
   bindAgentRunExecutionScope: vi.fn(),
   buildContextPack: vi.fn(),
+  cancelAgentRun: vi.fn(),
   completeAgentRun: vi.fn(),
   createAgentRun: vi.fn(),
+  createAgentRunCancellationWatch: vi.fn(),
   enqueueMemoryConsolidationJob: vi.fn(),
   getActiveAgentAdaptationGuidance: vi.fn(),
   loadProgressiveAgentTools: vi.fn(),
@@ -49,6 +52,7 @@ const mocks = vi.hoisted(() => ({
   getAgentRunIdentityPin: vi.fn(),
   getToolExecutionScopeBinding: vi.fn(),
   markAgentRunResuming: vi.fn(),
+  readAgentRunStatus: vi.fn(),
   selectAgentModel: vi.fn(),
   syncMissionExecutorSafely: vi.fn(),
   updateRunContextCount: vi.fn(),
@@ -163,7 +167,7 @@ vi.mock("@/lib/runs/store", () => ({
   appendRunContractEventSafely: mocks.appendRunContractEventSafely,
   appendRunEvent: mocks.appendRunEvent,
   bindAgentRunExecutionScope: mocks.bindAgentRunExecutionScope,
-  cancelAgentRun: vi.fn(),
+  cancelAgentRun: mocks.cancelAgentRun,
   completeAgentRun: mocks.completeAgentRun,
   createAgentRun: mocks.createAgentRun,
   createQueuedAgentRun: mocks.createAgentRun,
@@ -177,6 +181,16 @@ vi.mock("@/lib/runs/store", () => ({
   markAgentRunResuming: mocks.markAgentRunResuming,
   markAgentRunWaitingForApproval: mocks.markAgentRunWaitingForApproval,
   updateRunContextCount: mocks.updateRunContextCount,
+}));
+
+vi.mock("@/lib/runs/cancellation", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/runs/cancellation")>()),
+  createAgentRunCancellationWatch: mocks.createAgentRunCancellationWatch,
+}));
+
+vi.mock("@/lib/runs/active-run-fence", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/runs/active-run-fence")>()),
+  readAgentRunStatus: mocks.readAgentRunStatus,
 }));
 
 vi.mock("@/lib/web-search/search", () => ({
@@ -204,7 +218,12 @@ describe("agent memory scope", () => {
     mocks.appendAgentRunIdentityPin.mockResolvedValue(undefined);
     mocks.appendRunContractEventSafely.mockResolvedValue(undefined);
     mocks.bindAgentRunExecutionScope.mockResolvedValue({ id: "run-memory-scope" });
+    mocks.cancelAgentRun.mockResolvedValue(true);
     mocks.completeAgentRun.mockResolvedValue({ id: "run-memory-scope" });
+    mocks.createAgentRunCancellationWatch.mockImplementation(
+      () => cancellationWatchStub(),
+    );
+    mocks.readAgentRunStatus.mockResolvedValue("running");
     mocks.updateRunContextCount.mockResolvedValue(undefined);
     mocks.enqueueMemoryConsolidationJob.mockResolvedValue(null);
     mocks.getActiveAgentAdaptationGuidance.mockResolvedValue([]);
@@ -1482,6 +1501,206 @@ describe("agent memory scope", () => {
       ).toBe(decision);
     },
   );
+
+  describe("run cancellation", () => {
+    const STOPPED_RESUME = {
+      resumed: false,
+      reason: "The run was canceled or finalized before the resumed work finished.",
+    };
+
+    it("stops without finalizing once another request cancels the run mid-tool", async () => {
+      const watch = cancellationWatchStub();
+      mocks.createAgentRunCancellationWatch.mockReturnValue(watch);
+      const scopedRequest = request("session");
+      scopedRequest.agentProfile!.toolIds = ["knowledge.search"];
+      mocks.loadProgressiveAgentTools.mockResolvedValue({
+        definitions: [localToolDefinition("knowledge.search")],
+      });
+      mocks.executeGovernedTool.mockImplementation(async () => {
+        watch.cancel();
+        return {
+          record: localExecutionRecord(
+            "knowledge.search",
+            "execution-knowledge-search",
+          ),
+          result: { results: [] },
+        };
+      });
+      mocks.streamResponseTurn.mockImplementation(async (modelRequest) => {
+        if (mocks.streamResponseTurn.mock.calls.length === 1) {
+          return openAITurn({
+            callId: "call-knowledge-search",
+            name: "knowledge.search",
+          });
+        }
+        await modelRequest.onDelta("Done.");
+        return openAITurn({ text: "Done." });
+      });
+
+      const events = await collectRequest(scopedRequest);
+
+      expect(events.at(-1)).toEqual({
+        type: "canceled",
+        message: "Agent run stopped because it was canceled.",
+      });
+      expect(mocks.streamResponseTurn).toHaveBeenCalledOnce();
+      expect(
+        mocks.executeGovernedTool.mock.calls[0][0].abortSignal.aborted,
+      ).toBe(true);
+      expect(mocks.completeAgentRun).not.toHaveBeenCalled();
+      expect(mocks.failAgentRun).not.toHaveBeenCalled();
+      expect(mocks.cancelAgentRun).not.toHaveBeenCalled();
+      expect(watch.watch).toHaveBeenCalledWith({
+        runId: "run-memory-scope",
+        tenantId: "paid-test-tenant",
+      });
+      expect(watch.stop).toHaveBeenCalledOnce();
+    });
+
+    it("stops watching when the caller abandons the stream", async () => {
+      const watch = cancellationWatchStub();
+      mocks.createAgentRunCancellationWatch.mockReturnValue(watch);
+      const stream = runAgent(request("session"));
+
+      await stream.next();
+      await stream.return(undefined);
+
+      expect(watch.stop).toHaveBeenCalledOnce();
+    });
+
+    it.each(["openai", "google"] as const)(
+      "stops a %s run quietly when a cancel beats its approval pause",
+      async (provider) => {
+        const agentRequest = request("session");
+        armApprovalPause(agentRequest, provider);
+        mocks.markAgentRunWaitingForApproval.mockResolvedValue({ parked: false });
+        mocks.readAgentRunStatus.mockResolvedValue("canceled");
+
+        const events = await collectRequest(agentRequest);
+
+        expect(events.at(-1)).toEqual({
+          type: "canceled",
+          message: "Agent run stopped because it was canceled.",
+        });
+        expect(events.map((event) => event.type)).not.toContain(
+          "waiting_approval",
+        );
+        expect(mocks.readAgentRunStatus).toHaveBeenCalledWith({
+          runId: "run-memory-scope",
+          tenantId: "paid-test-tenant",
+        });
+        expect(mocks.failAgentRun).not.toHaveBeenCalled();
+        expect(mocks.completeAgentRun).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      ["completed", "completed"],
+      ["failed", "failed"],
+      ["deleted", undefined],
+    ] as const)(
+      "stops quietly when the run was %s before its approval pause",
+      async (_label, runStatus) => {
+        const agentRequest = request("session");
+        armApprovalPause(agentRequest, "openai");
+        mocks.markAgentRunWaitingForApproval.mockResolvedValue({ parked: false });
+        mocks.readAgentRunStatus.mockResolvedValue(runStatus);
+
+        const events = await collectRequest(agentRequest);
+
+        expect(events.at(-1)).toEqual({
+          type: "error",
+          message: "Agent run stopped because it is no longer active.",
+        });
+        expect(mocks.failAgentRun).not.toHaveBeenCalled();
+        expect(mocks.completeAgentRun).not.toHaveBeenCalled();
+      },
+    );
+
+    it("fails a run whose approval pause is refused while it is still active", async () => {
+      const agentRequest = request("session");
+      armApprovalPause(agentRequest, "openai");
+      mocks.markAgentRunWaitingForApproval.mockResolvedValue({ parked: false });
+      mocks.readAgentRunStatus.mockResolvedValue("waiting_clarification");
+      const message =
+        "Agent run run-memory-scope could not pause for approval while waiting_clarification.";
+
+      const events = await collectRequest(agentRequest);
+
+      expect(events.at(-1)).toEqual({ type: "error", message });
+      expect(mocks.failAgentRun).toHaveBeenCalledWith(
+        "run-memory-scope",
+        message,
+        expect.objectContaining({ tenantId: "paid-test-tenant" }),
+      );
+    });
+
+    it("stops a resumed OpenAI run that is canceled while its next tool runs", async () => {
+      const continuation = await pauseForApproval(request("session"), "openai");
+      const watch = cancellationWatchStub();
+      mocks.createAgentRunCancellationWatch.mockReturnValue(watch);
+      mocks.streamResponseTurn.mockClear();
+      mocks.executeGovernedTool.mockImplementation(async () => {
+        watch.cancel();
+        return {
+          record: localExecutionRecord(APPROVAL_TOOL_ID, "execution-after-resume"),
+          result: { ok: true },
+        };
+      });
+
+      await expect(resumeAfterApproval(
+        { ...continuation, maxToolSteps: 3 },
+        openAITurn({ callId: "call-after-resume", name: APPROVAL_TOOL_ID }),
+      )).resolves.toEqual(STOPPED_RESUME);
+
+      expect(mocks.streamResponseTurn).toHaveBeenCalledOnce();
+      expect(mocks.failAgentRun).not.toHaveBeenCalled();
+      expect(mocks.completeAgentRun).not.toHaveBeenCalled();
+      expect(watch.watch).toHaveBeenCalledWith({
+        runId: "run-memory-scope",
+        tenantId: "paid-test-tenant",
+      });
+      expect(watch.stop).toHaveBeenCalledOnce();
+    });
+
+    it("stops a resumed OpenAI run whose model turn is aborted by a cancel", async () => {
+      const continuation = await pauseForApproval(request("session"), "openai");
+      const watch = cancellationWatchStub();
+      mocks.createAgentRunCancellationWatch.mockReturnValue(watch);
+      mocks.streamResponseTurn.mockClear();
+      mocks.streamResponseTurn.mockImplementationOnce(async (modelRequest) => {
+        watch.cancel();
+        modelRequest.abortSignal?.throwIfAborted();
+        return openAITurn({ text: "Done." });
+      });
+
+      await expect(resumeAfterApproval(continuation)).resolves.toEqual(
+        STOPPED_RESUME,
+      );
+
+      expect(mocks.failAgentRun).not.toHaveBeenCalled();
+      expect(mocks.completeAgentRun).not.toHaveBeenCalled();
+    });
+
+    it("stops a resumed provider-bound run whose model turn is aborted by a cancel", async () => {
+      const continuation = await pauseForApproval(request("session"), "google");
+      const watch = cancellationWatchStub();
+      mocks.createAgentRunCancellationWatch.mockReturnValue(watch);
+      mocks.generateModelToolTurn.mockImplementationOnce(async (modelRequest) => {
+        watch.cancel();
+        modelRequest.abortSignal?.throwIfAborted();
+        return providerTurn({ text: "Done." });
+      });
+
+      await expect(resumeAfterApproval(continuation)).resolves.toEqual(
+        STOPPED_RESUME,
+      );
+
+      expect(mocks.failAgentRun).not.toHaveBeenCalled();
+      expect(mocks.completeAgentRun).not.toHaveBeenCalled();
+      expect(watch.stop).toHaveBeenCalledOnce();
+    });
+  });
 });
 
 const APPROVAL_TOOL_ID = "google.gmail.trash";
@@ -1533,6 +1752,29 @@ async function pauseForApproval(
     { callId: "call-memory-approval", name: APPROVAL_TOOL_ID },
   ],
 ): Promise<AgentRunContinuation> {
+  armApprovalPause(agentRequest, provider, calls);
+
+  const events = await collectRequest(agentRequest);
+
+  expect(events).toContainEqual(expect.objectContaining({
+    type: "waiting_approval",
+    executionId: APPROVAL_EXECUTION_ID,
+  }));
+  expect(Boolean(
+    mocks.markAgentRunWaitingForApproval.mock.calls[0]?.[1]?.continuation
+      ?.providerToolState,
+  )).toBe(provider === "google");
+  return mocks.markAgentRunWaitingForApproval.mock.calls[0][1].continuation;
+}
+
+/** Makes the request's first governed tool call require an approval. */
+function armApprovalPause(
+  agentRequest: AgentRunRequest,
+  provider: "openai" | "google",
+  calls: readonly { callId: string; name: string }[] = [
+    { callId: "call-memory-approval", name: APPROVAL_TOOL_ID },
+  ],
+) {
   agentRequest.agentProfile!.toolIds = [APPROVAL_TOOL_ID];
   agentRequest.agentProfile!.approvalPolicy = "risk_based";
   agentRequest.agentProfile!.autonomy = "governed";
@@ -1559,18 +1801,6 @@ async function pauseForApproval(
   } else {
     mocks.streamResponseTurn.mockResolvedValue(openAITurn({ calls }));
   }
-
-  const events = await collectRequest(agentRequest);
-
-  expect(events).toContainEqual(expect.objectContaining({
-    type: "waiting_approval",
-    executionId: APPROVAL_EXECUTION_ID,
-  }));
-  expect(Boolean(
-    mocks.markAgentRunWaitingForApproval.mock.calls[0]?.[1]?.continuation
-      ?.providerToolState,
-  )).toBe(provider === "google");
-  return mocks.markAgentRunWaitingForApproval.mock.calls[0][1].continuation;
 }
 
 /** Resumes a parked run after its tool executed, with the next model turn. */
@@ -1625,6 +1855,21 @@ async function resumeAfterApproval(
       result: { ok: true },
     },
   });
+}
+
+/** A cancellation watch the test cancels by hand. It never polls. */
+function cancellationWatchStub() {
+  const controller = new AbortController();
+  return {
+    signal: controller.signal,
+    watch: vi.fn(),
+    stop: vi.fn(),
+    cancel() {
+      controller.abort(
+        new AgentRunTerminatedError("run-memory-scope", "canceled"),
+      );
+    },
+  };
 }
 
 function providerTurn(input: {

@@ -14,6 +14,10 @@ import {
 } from "@/lib/security/policy-lease-store";
 import { recordApprovalDecisionCheckpointShadow } from "@/lib/runs/approval-checkpoint-shadow";
 import {
+  assertAgentRunAcceptsToolEffect,
+  readAgentRunStatus,
+} from "@/lib/runs/active-run-fence";
+import {
   assertExecutionScopeTenant,
   createExecutionScope,
   deriveExecutionScope,
@@ -75,6 +79,11 @@ export type ToolExecutionMutationOptions = {
   idempotencyKey?: string;
   /** Consumed in the same transaction as a newly inserted effect claim. */
   policyLeaseClaim?: ScheduledPolicyLeaseClaim;
+  /**
+   * The agent run this write acts for. The write is refused, in the same
+   * transaction, once that run is canceled, finished, or deleted.
+   */
+  activeAgentRun?: { runId: string };
 };
 
 type ToolExecutionMutationOperation =
@@ -82,7 +91,8 @@ type ToolExecutionMutationOperation =
   | "claimed"
   | "reclaimed"
   | "completed"
-  | "recovered";
+  | "recovered"
+  | "withdrawn";
 
 export type ToolApprovalClaimResult = {
   outcome: "not_found" | "conflict" | "pending" | "claimed";
@@ -102,6 +112,9 @@ const WORKFLOW_EFFECT_BINDING_OUTPUT_KEY =
 const OPERATION_CLASS_OUTPUT_KEY = "__operationClass";
 const LOCAL_COMPUTER_TASK_AUTHORITY_OUTPUT_KEY =
   "__localComputerTaskAuthority";
+const AGENT_RUN_BINDING_OUTPUT_KEY = "__agentRunId";
+const CANCELED_RUN_WITHDRAWAL_REASON =
+  "Withdrawn: the agent run was canceled before this action was approved.";
 
 export function createToolExecutionRecord(
   input: Omit<ToolExecutionRecord, "id" | "createdAt">,
@@ -129,6 +142,13 @@ export async function saveToolExecution(
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     await getSql().transaction(async (sql: SqlClient) => {
+      if (options.activeAgentRun) {
+        await assertAgentRunAcceptsToolEffect({
+          runId: options.activeAgentRun.runId,
+          tenantId: normalizeTenantId(record.tenantId),
+          sql,
+        });
+      }
       await writeToolExecutionDb(sql, record);
       await appendToolExecutionMutationEvent({
         record,
@@ -141,7 +161,13 @@ export async function saveToolExecution(
     return record;
   }
 
-  await updateJsonFile<ToolExecutionLedger>(getToolLedgerFile(), { records: [] }, (ledger) => {
+  await updateJsonFile<ToolExecutionLedger>(getToolLedgerFile(), { records: [] }, async (ledger) => {
+    if (options.activeAgentRun) {
+      await assertAgentRunAcceptsToolEffect({
+        runId: options.activeAgentRun.runId,
+        tenantId: normalizeTenantId(record.tenantId),
+      });
+    }
     const existing = ledger.records.find((item) => item.id === record.id);
     const nextRecord = preserveImmutableEffectReceipt(
       existing,
@@ -182,6 +208,13 @@ export async function claimIdempotentToolExecution(
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     return getSql().transaction(async (sql: SqlClient) => {
+      if (options.activeAgentRun) {
+        await assertAgentRunAcceptsToolEffect({
+          runId: options.activeAgentRun.runId,
+          tenantId,
+          sql,
+        });
+      }
       const inserted = await sql`
         INSERT INTO omni_tool_executions (
           id, tool_id, tool_name, risk_level, status, dry_run,
@@ -282,7 +315,13 @@ export async function claimIdempotentToolExecution(
   await updateJsonFile<ToolExecutionLedger>(
     getToolLedgerFile(),
     { records: [] },
-    (ledger) => {
+    async (ledger) => {
+      if (options.activeAgentRun) {
+        await assertAgentRunAcceptsToolEffect({
+          runId: options.activeAgentRun.runId,
+          tenantId,
+        });
+      }
       const existing = ledger.records.find((item) => item.id === record.id);
       if (existing) {
         if (normalizeTenantId(existing.tenantId) !== tenantId) {
@@ -349,7 +388,22 @@ export async function approveAndClaimToolExecution(input: {
       if (!rows[0]) {
         return { outcome: "not_found" as const };
       }
-      const result = applyApprovalClaim(recordFromRow(rows[0]), input);
+      const current = recordFromRow(rows[0]);
+      const withdrawn = await withdrawalForCanceledAgentRun(
+        current,
+        tenantId,
+        sql,
+      );
+      if (withdrawn) {
+        await writeToolExecutionDb(sql, withdrawn);
+        await appendToolExecutionMutationEvent({
+          record: withdrawn,
+          operation: "withdrawn",
+          sql,
+        });
+        return { outcome: "conflict" as const, record: withdrawn };
+      }
+      const result = applyApprovalClaim(current, input);
       if (result.record && (result.outcome === "pending" || result.outcome === "claimed")) {
         await writeToolExecutionDb(sql, result.record);
         await appendToolApprovalDecisionEvent({
@@ -374,7 +428,8 @@ export async function approveAndClaimToolExecution(input: {
   }
 
   let result: ToolApprovalClaimResult = { outcome: "not_found" };
-  await updateJsonFile<ToolExecutionLedger>(getToolLedgerFile(), { records: [] }, (ledger) => {
+  let withdrawn: ToolExecutionRecord | undefined;
+  await updateJsonFile<ToolExecutionLedger>(getToolLedgerFile(), { records: [] }, async (ledger) => {
     const record = ledger.records.find(
       (item) => item.id === input.id && normalizeTenantId(item.tenantId) === tenantId,
     );
@@ -382,12 +437,24 @@ export async function approveAndClaimToolExecution(input: {
       result = { outcome: "not_found" };
       return ledger;
     }
+    withdrawn = await withdrawalForCanceledAgentRun(record, tenantId);
+    if (withdrawn) {
+      result = { outcome: "conflict", record: withdrawn };
+      return replaceLedgerRecord(ledger, withdrawn);
+    }
     result = applyApprovalClaim(record, input);
     if (!result.record || (result.outcome !== "pending" && result.outcome !== "claimed")) {
       return ledger;
     }
     return replaceLedgerRecord(ledger, result.record);
   });
+  if (withdrawn) {
+    await appendToolExecutionMutationEvent({
+      record: withdrawn,
+      operation: "withdrawn",
+    });
+    return result;
+  }
   if (
     mutation &&
     result.record &&
@@ -511,6 +578,82 @@ export async function rejectPendingToolExecution(input: {
   return result;
 }
 
+/**
+ * Withdraws the pending approvals of a canceled agent run, so approving one
+ * later cannot start its action. It matches approvals bound to the run and,
+ * for approvals recorded before that binding existed, the run's own pending
+ * execution. The sealed input is dropped; the stored input is left as it was.
+ */
+export async function withdrawAgentRunPendingToolExecutions(input: {
+  runId: string;
+  tenantId?: string;
+  legacyExecutionId?: string;
+  executionScope?: ExecutionScope;
+}): Promise<ToolExecutionRecord[]> {
+  const tenantId = normalizeTenantId(input.tenantId);
+  const legacyExecutionId = input.legacyExecutionId?.trim() || null;
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    return getSql().transaction(async (sql: SqlClient) => {
+      const rows = await sql`
+        UPDATE omni_tool_executions
+        SET
+          status = 'rejected',
+          approval_decision = 'rejected',
+          approval_reason = ${CANCELED_RUN_WITHDRAWAL_REASON},
+          reason = ${CANCELED_RUN_WITHDRAWAL_REASON},
+          output = NULL,
+          completed_at = NOW()
+        WHERE status = 'approval_required'
+          AND COALESCE(tenant_id, 'default') = ${tenantId}
+          AND (
+            output->>'__agentRunId' = ${input.runId}
+            OR id = ${legacyExecutionId}
+          )
+        RETURNING *
+      `;
+      const withdrawn = rows.map(recordFromRow);
+      for (const record of withdrawn) {
+        await appendToolExecutionMutationEvent({
+          record,
+          operation: "withdrawn",
+          executionScope: input.executionScope,
+          sql,
+        });
+      }
+      return withdrawn;
+    }) as Promise<ToolExecutionRecord[]>;
+  }
+
+  const now = new Date().toISOString();
+  const withdrawn: ToolExecutionRecord[] = [];
+  await updateJsonFile<ToolExecutionLedger>(getToolLedgerFile(), { records: [] }, (ledger) => {
+    const records = ledger.records.map((record) => {
+      if (
+        record.status !== "approval_required" ||
+        normalizeTenantId(record.tenantId) !== tenantId ||
+        (boundAgentRunId(record) !== input.runId && record.id !== legacyExecutionId)
+      ) {
+        return record;
+      }
+      const next = withdrawnToolExecutionRecord(record, now);
+      withdrawn.push(next);
+      return next;
+    });
+    return withdrawn.length > 0
+      ? { records: trimToolExecutionRecords(records) }
+      : ledger;
+  });
+  for (const record of withdrawn) {
+    await appendToolExecutionMutationEvent({
+      record,
+      operation: "withdrawn",
+      executionScope: input.executionScope,
+    });
+  }
+  return withdrawn;
+}
+
 export async function completeClaimedToolExecution(
   record: ToolExecutionRecord,
   claimToken: string,
@@ -631,6 +774,8 @@ export function sealToolExecutionInput(
     approvalMaterialBindingSha256?: string;
     workflowEffectBindingSha256?: string;
     operationClass?: "read_only" | "mutation";
+    /** The agent run whose cancellation withdraws this pending approval. */
+    agentRunId?: string;
   } = {},
 ) {
   const approvalMaterialBinding = options.approvalMaterialBindingSha256;
@@ -656,6 +801,9 @@ export function sealToolExecutionInput(
       : {}),
     ...(workflowEffectBinding
       ? { [WORKFLOW_EFFECT_BINDING_OUTPUT_KEY]: workflowEffectBinding }
+      : {}),
+    ...(options.agentRunId
+      ? { [AGENT_RUN_BINDING_OUTPUT_KEY]: options.agentRunId }
       : {}),
   };
 }
@@ -1570,6 +1718,7 @@ export function publicToolExecution(record: ToolExecutionRecord) {
     delete publicOutput[WORKFLOW_EFFECT_BINDING_OUTPUT_KEY];
     delete publicOutput[EFFECT_INTENT_V2_OUTPUT_KEY];
     delete publicOutput[LOCAL_COMPUTER_TASK_AUTHORITY_OUTPUT_KEY];
+    delete publicOutput[AGENT_RUN_BINDING_OUTPUT_KEY];
     delete publicOutput.__idempotencyKeyHash;
     delete publicOutput.__effectIdempotencyKeySha256;
     delete publicOutput.__effectInputSha256;
@@ -2240,6 +2389,51 @@ async function readToolLedger() {
 
 function getToolLedgerFile() {
   return getDataPath("tools.json");
+}
+
+function boundAgentRunId(record: ToolExecutionRecord) {
+  const value = parseObject(record.output)[AGENT_RUN_BINDING_OUTPUT_KEY];
+  return typeof value === "string" && value ? value : undefined;
+}
+
+/**
+ * The withdrawn form of a pending approval whose agent run was canceled.
+ * Nothing is returned while the run can still resume, after it completed or
+ * failed (a council delegate's approval stays valid then), or when the
+ * approver cannot read the run.
+ */
+async function withdrawalForCanceledAgentRun(
+  record: ToolExecutionRecord,
+  tenantId: string,
+  sql?: SqlClient,
+): Promise<ToolExecutionRecord | undefined> {
+  const runId = boundAgentRunId(record);
+  if (!runId || record.status !== "approval_required") {
+    return undefined;
+  }
+  const runStatus = await readAgentRunStatus({
+    runId,
+    tenantId,
+    ...(sql ? { sql } : {}),
+  });
+  return runStatus === "canceled"
+    ? withdrawnToolExecutionRecord(record, new Date().toISOString())
+    : undefined;
+}
+
+function withdrawnToolExecutionRecord(
+  record: ToolExecutionRecord,
+  now: string,
+): ToolExecutionRecord {
+  return {
+    ...record,
+    status: "rejected",
+    approvalDecision: "rejected",
+    approvalReason: CANCELED_RUN_WITHDRAWAL_REASON,
+    reason: CANCELED_RUN_WITHDRAWAL_REASON,
+    output: undefined,
+    completedAt: now,
+  };
 }
 
 function applyApprovalClaim(

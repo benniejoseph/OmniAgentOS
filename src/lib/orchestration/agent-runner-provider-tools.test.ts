@@ -7,6 +7,7 @@ import {
   dynamicDelegationMaxToolSteps,
 } from "@/lib/delegation/runtime-policy";
 import type { AgentEvent } from "@/lib/orchestration/types";
+import { AgentRunTerminatedError } from "@/lib/runs/cancellation";
 import type {
   ModelToolCall,
   ModelToolTurnRequest,
@@ -1134,6 +1135,51 @@ describe("non-OpenAI governed provider tool loop", () => {
       tier: "reasoning",
       error: failure,
     });
+  });
+
+  it("starts no further provider turn once the run is canceled", async () => {
+    const stop = new AbortController();
+    const generateTurn = vi.fn(async () => turn({
+      toolCalls: [{
+        callId: "call-read-a",
+        name: "read_a",
+        argumentsJson: "{}",
+      }],
+    }));
+    const executeTool = vi.fn(async (request: { toolId: string }) => {
+      stop.abort(new AgentRunTerminatedError("run-canceled-mid-loop", "canceled"));
+      return {
+        record: executionRecord(request.toolId, "executed"),
+        result: { source: request.toolId },
+      };
+    });
+
+    await expect(collect(runNonOpenAIProviderToolLoop({
+      provider: "google",
+      tier: "reasoning",
+      instructions: "Read the source, then answer.",
+      prompt: "Inspect the source.",
+      tools: [modelTool("read_a")],
+      toolbox: {
+        byFunctionName: new Map([
+          ["read_a", { definition: toolDefinition("read.a"), functionName: "read_a" }],
+        ]),
+      },
+      securityContext: {
+        tenantId: "default",
+        actorId: "owner",
+        role: "admin",
+        source: "default",
+      },
+      runId: "run-canceled-mid-loop",
+      maxToolSteps: 3,
+      abortSignal: stop.signal,
+      generateTurn,
+      executeTool: executeTool as never,
+    }))).rejects.toBeInstanceOf(AgentRunTerminatedError);
+
+    expect(generateTurn).toHaveBeenCalledTimes(1);
+    expect(executeTool).toHaveBeenCalledTimes(1);
   });
 });
 

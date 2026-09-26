@@ -114,6 +114,7 @@ import {
   type MoltbookAutonomyMutationToolId,
 } from "@/lib/moltbook/autonomy-store";
 import { recordRuntimeEventSafely } from "@/lib/observability/store";
+import { AgentRunNotActiveError } from "@/lib/runs/active-run-fence";
 import { redactSensitive } from "@/lib/security/context";
 import {
   PolicyLeaseStoreError,
@@ -541,6 +542,9 @@ export async function executeGovernedTool({
     existingRecord,
     executionClaimToken,
   );
+  if (!dryRun && !executionClaimToken) {
+    abortSignal?.throwIfAborted();
+  }
   try {
     assertToolInputSize(input);
   } catch (error) {
@@ -1412,11 +1416,15 @@ export async function executeGovernedTool({
     }
     return record;
   };
-  const persistRecord = async (record: ToolExecutionRecord) => {
+  const persistRecord = async (
+    record: ToolExecutionRecord,
+    persistOptions: { activeAgentRun?: { runId: string } } = {},
+  ) => {
     if (!activeExecutionClaimToken) {
       const saved = await saveToolExecution(record, {
         executionScope: scopedRequest.executionScope,
         idempotencyKey,
+        ...persistOptions,
       });
       return bindPersistedRecord(saved);
     }
@@ -1504,6 +1512,7 @@ export async function executeGovernedTool({
                   canonicalJsonSha256(effectBinding),
               }
             : {}),
+          ...(agentRunId ? { agentRunId } : {}),
         },
       ),
     };
@@ -1512,7 +1521,10 @@ export async function executeGovernedTool({
       toolInput: preparedInput,
       scopedRequest,
     });
-    const saved = await persistRecord(record);
+    const saved = await persistRecord(
+      record,
+      agentRunId ? { activeAgentRun: { runId: agentRunId } } : {},
+    );
     await recordRuntimeEventSafely({
       level: "warn",
       category: "workflow",
@@ -1609,8 +1621,12 @@ export async function executeGovernedTool({
         ...(boundPolicyLeaseApproval && policyLeaseClaim
           ? { policyLeaseClaim }
           : {}),
+        ...(agentRunId ? { activeAgentRun: { runId: agentRunId } } : {}),
       });
     } catch (error) {
+      if (error instanceof AgentRunNotActiveError) {
+        throw error;
+      }
       if (boundPolicyLeaseApproval && error instanceof PolicyLeaseStoreError) {
         return executeGovernedTool({
           toolId,
@@ -1824,6 +1840,7 @@ export async function executeGovernedTool({
     executionRecord = await saveToolExecution(intent, {
       executionScope: scopedRequest.executionScope,
       idempotencyKey: intent.id,
+      ...(agentRunId ? { activeAgentRun: { runId: agentRunId } } : {}),
     });
     activeExecutionClaimToken = claimToken;
     await bindToolScopeIfPresent({

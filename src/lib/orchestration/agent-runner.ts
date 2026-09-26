@@ -154,6 +154,16 @@ import {
   updateRunContextCount,
 } from "@/lib/runs/store";
 import {
+  AgentRunNotActiveError,
+  isTerminalAgentRunStatus,
+  readAgentRunStatus,
+} from "@/lib/runs/active-run-fence";
+import {
+  AgentRunTerminatedError,
+  createAgentRunCancellationWatch,
+  type AgentRunCancellationWatch,
+} from "@/lib/runs/cancellation";
+import {
   buildInitialShadowRunContract,
   resolveShadowRunContract,
   type ShadowRunContractSnapshot,
@@ -356,6 +366,19 @@ export async function* runAgent(
   request: AgentRunRequest,
   abortSignal?: AbortSignal,
 ): AsyncGenerator<AgentEvent> {
+  const cancellation = createAgentRunCancellationWatch();
+  try {
+    yield* runAgentUntilStopped(request, abortSignal, cancellation);
+  } finally {
+    cancellation.stop();
+  }
+}
+
+async function* runAgentUntilStopped(
+  request: AgentRunRequest,
+  abortSignal: AbortSignal | undefined,
+  cancellation: AgentRunCancellationWatch,
+): AsyncGenerator<AgentEvent> {
   const requestedRunId = request.runId?.trim();
   if (requestedRunId && request.preclaimedRunId) {
     throw new Error("A new root run cannot reuse a preclaimed durable run.");
@@ -526,9 +549,12 @@ export async function* runAgent(
       Date.now() - Date.parse(runBudgetState.startedAt),
     ),
   ));
-  const runAbortSignal = abortSignal
-    ? AbortSignal.any([abortSignal, budgetWallSignal])
-    : budgetWallSignal;
+  // A cancel recorded by another request or worker aborts this signal too.
+  const runAbortSignal = AbortSignal.any([
+    ...(abortSignal ? [abortSignal] : []),
+    budgetWallSignal,
+    cancellation.signal,
+  ]);
 
   function reserveBudget(reservation: Partial<RunBudgetCountersV1>) {
     runBudgetState = reserveRunBudget(runBudgetState, reservation);
@@ -553,6 +579,7 @@ export async function* runAgent(
   // clamps streaming to ~1 delta per write round-trip.
   const runId = run.id;
   const runTenantId = normalizeTenantId(run.tenantId || request.tenantId);
+  cancellation.watch({ runId, tenantId: runTenantId });
   const executionScope = request.executionScope || createExecutionScope({
     tenantId: runTenantId,
     initiatingActorId: request.actorId?.trim() || null,
@@ -2061,11 +2088,14 @@ export async function* runAgent(
             message:
               "Run paused. Approval will resume this same provider-bound agent turn after the tool executes.",
           } as const;
-          await markAgentRunWaitingForApproval(run.id, {
+          const parked = await markAgentRunWaitingForApproval(run.id, {
             response,
             continuation,
             message: waitingEvent.message,
           });
+          if (!parked.parked) {
+            throw await approvalParkingRefusal(run.id, runTenantId);
+          }
           yield waitingEvent;
           await syncMissionExecutorSafely({
             executorType: "agent_run",
@@ -2090,6 +2120,7 @@ export async function* runAgent(
       // Tool loop: stream a turn; if the model called tools, execute them
       // through the governed executor and continue with the outputs.
       for (;;) {
+        runAbortSignal.throwIfAborted();
         const durableTurnInput = conversationItems ?? initialConversationItems;
         const turnInput: ResponseTurnInput = openAITurnInputWithComputerObservations(
           durableTurnInput,
@@ -2517,11 +2548,14 @@ export async function* runAgent(
               toolId: definition.id,
               message: "Run paused. Approval will resume this same agent run after the tool executes.",
             } as const;
-            await markAgentRunWaitingForApproval(run.id, {
+            const parked = await markAgentRunWaitingForApproval(run.id, {
               response,
               continuation,
               message: waitingEvent.message,
             });
+            if (!parked.parked) {
+              throw await approvalParkingRefusal(run.id, runTenantId);
+            }
             yield waitingEvent;
             return;
           }
@@ -2713,6 +2747,15 @@ export async function* runAgent(
         runContractEnvelope: shadowRunContract?.envelope,
       });
       yield await emit({ type: "status", label: "Canceled", detail: message });
+      return;
+    }
+    if (
+      cancellation.signal.aborted ||
+      error instanceof AgentRunNotActiveError
+    ) {
+      // Whoever canceled or finalized the run already recorded its outcome.
+      await flushDeltas().catch(() => undefined);
+      yield stoppedAgentRunEvent(error, cancellation.signal);
       return;
     }
     const failure = budgetWallSignal.aborted
@@ -2910,6 +2953,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   });
 
   for (;;) {
+    input.abortSignal?.throwIfAborted();
     const toolsEnabled = toolSteps < maxToolSteps;
     const modelAttempt = modelAttemptOffset + turns + 1;
     const modelBudget = await input.beforeModelTurn?.({
@@ -3630,23 +3674,34 @@ export function resumeAgentRunAfterToolApproval(input: {
     input.toolExecution.record.tenantId ||
     process.env.OMNIAGENT_DEFAULT_TENANT ||
     "default";
-  return runWithDatabaseTenantScope(tenantId, () =>
-    resumeAgentRunAfterToolApprovalInScope({ ...input, tenantId }),
-  );
+  return runWithDatabaseTenantScope(tenantId, async () => {
+    const cancellation = createAgentRunCancellationWatch();
+    try {
+      return await resumeAgentRunAfterToolApprovalInScope({
+        ...input,
+        tenantId,
+        cancellation,
+      });
+    } finally {
+      cancellation.stop();
+    }
+  });
 }
 
 async function resumeAgentRunAfterToolApprovalInScope({
   executionId,
   toolExecution,
   tenantId,
-  abortSignal,
+  abortSignal: externalAbortSignal,
   resumeFence,
+  cancellation,
 }: {
   executionId: string;
   toolExecution: ApprovedAgentToolExecution;
   tenantId?: string;
   abortSignal?: AbortSignal;
   resumeFence?: AgentRunResumeFence;
+  cancellation: AgentRunCancellationWatch;
 }) {
   const run = await findAgentRunWaitingForToolApproval(executionId, { tenantId });
   const continuation = run?.continuation;
@@ -3654,6 +3709,12 @@ async function resumeAgentRunAfterToolApprovalInScope({
   if (!run || !continuation || run.status !== expectedStatus) {
     return { resumed: false, reason: "No waiting agent run continuation found." };
   }
+  // The inline resume after an approval has no request to abort it, so a
+  // cancel recorded while it runs stops it through this signal.
+  cancellation.watch({ runId: run.id, tenantId: normalizeTenantId(tenantId) });
+  const abortSignal = externalAbortSignal
+    ? AbortSignal.any([externalAbortSignal, cancellation.signal])
+    : cancellation.signal;
   const maxToolSteps = resolveMaxToolSteps(
     continuation.maxToolSteps,
     Math.max(AGENT_MAX_TOOL_STEPS, LOCAL_COMPUTER_MAX_TOOL_STEPS),
@@ -4203,6 +4264,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
     conversationItems = [...conversationItems, ...carriedOutputs];
 
     for (;;) {
+      resumeAbortSignal.throwIfAborted();
       const turnInput: ResponseTurnInput = openAITurnInputWithComputerObservations(
         conversationItems,
         pendingComputerObservations,
@@ -4609,6 +4671,13 @@ async function resumeAgentRunAfterToolApprovalInScope({
     await consolidation;
     return { resumed: true, status: "completed" };
   } catch (error) {
+    if (isAgentRunStop(error, abortSignal)) {
+      await flushDeltas().catch(() => undefined);
+      return {
+        resumed: false,
+        reason: "The run was canceled or finalized before the resumed work finished.",
+      };
+    }
     if (
       !resumeWallBudget.wallSignal.aborted &&
       resumeFence &&
@@ -4668,7 +4737,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
   executionId: string;
   toolExecution: ApprovedAgentToolExecution;
   tenantId?: string;
-  abortSignal?: AbortSignal;
+  abortSignal: AbortSignal;
   executionScope?: ExecutionScope;
   resumeFence?: AgentRunResumeFence;
   resumeSecurityContext: SecurityContext;
@@ -5418,6 +5487,13 @@ async function resumeProviderBoundAgentRunAfterApproval({
     await consolidation;
     return { resumed: true, status: "completed" };
   } catch (error) {
+    if (isAgentRunStop(error, abortSignal)) {
+      await flushDeltas().catch(() => undefined);
+      return {
+        resumed: false,
+        reason: "The run was canceled or finalized before the resumed work finished.",
+      };
+    }
     if (
       !resumeWallBudget.wallSignal.aborted &&
       resumeFence &&
@@ -6458,6 +6534,46 @@ function handleCheckpointPersistenceFailure(
     throw error;
   }
   logRunContractShadowFailure(phase, error);
+}
+
+/**
+ * Explains why an approval pause could not park the run. A canceled, finished,
+ * or deleted run stops quietly; any other state is a real failure.
+ */
+async function approvalParkingRefusal(runId: string, tenantId: string) {
+  const runStatus = await readAgentRunStatus({ runId, tenantId }).catch(
+    () => undefined,
+  );
+  if (runStatus === undefined || isTerminalAgentRunStatus(runStatus)) {
+    return new AgentRunNotActiveError(runId, runStatus ?? "missing");
+  }
+  return new Error(
+    `Agent run ${runId} could not pause for approval while ${runStatus}.`,
+  );
+}
+
+function stoppedAgentRunEvent(
+  error: unknown,
+  cancellationSignal: AbortSignal,
+): AgentEvent {
+  if (
+    cancellationSignal.aborted ||
+    (error instanceof AgentRunNotActiveError && error.runStatus === "canceled")
+  ) {
+    return {
+      type: "canceled",
+      message: "Agent run stopped because it was canceled.",
+    };
+  }
+  return {
+    type: "error",
+    message: "Agent run stopped because it is no longer active.",
+  };
+}
+
+function isAgentRunStop(error: unknown, stopSignal: AbortSignal) {
+  return error instanceof AgentRunNotActiveError ||
+    stopSignal.reason instanceof AgentRunTerminatedError;
 }
 
 function isCheckpointResumeTransportInterruption(error: unknown) {

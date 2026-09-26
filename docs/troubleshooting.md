@@ -50,6 +50,14 @@ For internal calls, the secret and identity headers must be sent together. Never
 - Compare the interval with queue lease duration; too many replicas or a short interval can increase contention.
 - On Fly, inspect machine health and restart count. The container health probe uses only the public health endpoint and never sends the internal secret.
 
+## A canceled run keeps going, or its approval returns 409
+
+- The process executing a run notices a cancel on its next status check, about every two seconds. A model turn or tool call already under way receives the abort signal. A tool that ignores the signal finishes, but no further turn or tool call starts.
+- `Agent run <id> is canceled, so the action was not started.` (code `agent_run_not_active`): the run was canceled, finished, or deleted before the tool effect was recorded. Nothing was claimed or executed.
+- `409 Tool approval record is not pending.` with `status: "rejected"` and the reason `Withdrawn: the agent run was canceled before this action was approved.`: the approval belonged to a canceled run. Start a new run to perform the action.
+- The log line `Canceled run approvals could not be withdrawn.`: the cancel stands, but the run's approvals stayed pending. An approval bound to the run is still withdrawn instead of executed when someone who can read the run approves it. Reject the run's other pending approvals by hand.
+- Approvals recorded before the run binding existed carry no run ID. Canceling their run withdraws only the approval its continuation waits on, and approving any other one still executes it.
+
 ## Memory forget or the deletion scrub fails
 
 - `Database schema is behind (pending versions: 207)`: run migration v207 before serving the release. See [deployment.md](deployment.md#memory-forget-lineage-closure-v207).

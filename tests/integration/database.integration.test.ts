@@ -23,10 +23,13 @@ import {
   enqueueOperationJob,
   failOperationJob,
 } from "@/lib/operations/job-queue";
+import { cancelAgentRun, createAgentRun } from "@/lib/runs/store";
 import { sweepExpiredSensitiveData } from "@/lib/security/retention";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { approvalMaterialBindingSha256 } from "@/lib/tools/approval-binding";
 import {
+  approveAndClaimToolExecution,
+  claimIdempotentToolExecution,
   completeClaimedToolExecution,
   createToolExecutionRecord,
   getToolExecution,
@@ -2944,6 +2947,291 @@ databaseDescribe("Postgres schema integration", () => {
       }
     },
   );
+
+  test("fences tool effects to active agent runs and withdraws a canceled run's approvals", async () => {
+    const tenantId = "run_fence_tenant";
+    const otherTenantId = "run_fence_other_tenant";
+    const actorId = "run_fence_actor";
+    const withdrawnReason =
+      "Withdrawn: the agent run was canceled before this action was approved.";
+    const inTenant = <T,>(operation: () => Promise<T>, tenant = tenantId) =>
+      runWithDatabaseTenantScope(tenant, operation);
+    const startRun = (id: string, tenant = tenantId) =>
+      inTenant(() => createAgentRun({
+        id,
+        tenantId: tenant,
+        actorId,
+        mode: "orchestrate",
+        prompt: "Fence integration",
+        messages: [{ role: "user", content: "Fence integration" }],
+      }), tenant);
+    // A direct status write stands in for a cancel or finish recorded elsewhere.
+    const writeRunStatus = (id: string, status: string) => admin`
+      UPDATE omni_agent_runs SET status = ${status}
+      WHERE tenant_id = ${tenantId} AND id = ${id}
+    `;
+    const toolInput = { url: "https://example.com/run-fence", method: "POST" };
+    const pendingRecord = (id: string, runId?: string) => {
+      const base = {
+        ...createToolExecutionRecord({
+          tenantId,
+          actorId,
+          toolId: "http.request",
+          toolName: "HTTP request",
+          riskLevel: 2,
+          status: "approval_required",
+          dryRun: false,
+          approvalRequired: true,
+          input: toolInput,
+        }),
+        id,
+      };
+      return {
+        ...base,
+        output: sealToolExecutionInput(
+          toolInput,
+          base,
+          "run-fence-contract",
+          runId ? { agentRunId: runId } : {},
+        ),
+      };
+    };
+    const claimRecord = (id: string) => ({
+      ...createToolExecutionRecord({
+        tenantId,
+        actorId,
+        toolId: "http.request",
+        toolName: "HTTP request",
+        riskLevel: 2,
+        status: "executing",
+        dryRun: false,
+        approvalRequired: false,
+        input: toolInput,
+        output: {
+          __executionClaim: {
+            token: `${id}-token`,
+            claimedAt: new Date().toISOString(),
+          },
+        },
+      }),
+      id,
+    });
+    const approve = (id: string) => inTenant(() => approveAndClaimToolExecution({
+      id,
+      tenantId,
+      approvedBy: actorId,
+      approvedRole: "admin",
+      claimToken: `${id}-approval-token`,
+      mutation: {
+        executionScope: createExecutionScope({
+          tenantId,
+          initiatingActorId: actorId,
+          executingPrincipalType: "user",
+          executingPrincipalId: actorId,
+          correlationId: `correlation:${id}-approval`,
+          purpose: "tool.approval.decide",
+        }),
+        idempotencyKey: `${id}-approval`,
+      },
+    }));
+    const withdrawnEvents = (ids: string[]) => admin`
+      SELECT stream_id
+      FROM omni_events
+      WHERE tenant_id = ${tenantId}
+        AND stream_id = ANY(${ids.map((id) => `tool_execution:${id}`)})
+        AND type = 'tool.execution.upserted'
+        AND payload->>'operation' = 'withdrawn'
+      ORDER BY stream_id
+    `;
+
+    // The claiming transaction refuses a finished, canceled, deleted, or
+    // foreign run before it writes anything.
+    await startRun("run-fence-db-active");
+    for (const status of ["completed", "failed", "canceled"]) {
+      await startRun(`run-fence-db-${status}`);
+      await writeRunStatus(`run-fence-db-${status}`, status);
+    }
+    await startRun("run-fence-db-foreign", otherTenantId);
+    for (const [runId, runStatus] of [
+      ["run-fence-db-completed", "completed"],
+      ["run-fence-db-failed", "failed"],
+      ["run-fence-db-canceled", "canceled"],
+      ["run-fence-db-deleted", "missing"],
+      ["run-fence-db-foreign", "missing"],
+    ] as const) {
+      await expect(inTenant(() => saveToolExecution(
+        pendingRecord(`fence-save-${runId}`, runId),
+        { activeAgentRun: { runId } },
+      ))).rejects.toMatchObject({ code: "agent_run_not_active", runId, runStatus });
+      await expect(inTenant(() => claimIdempotentToolExecution(
+        claimRecord(`fence-claim-${runId}`),
+        { idempotencyKey: `${runId}:call-1`, activeAgentRun: { runId } },
+      ))).rejects.toMatchObject({ code: "agent_run_not_active", runId, runStatus });
+    }
+    expect(await admin`
+      SELECT id FROM omni_tool_executions WHERE tenant_id = ${tenantId}
+    `).toEqual([]);
+    await expect(inTenant(() => saveToolExecution(
+      pendingRecord("fence-save-active", "run-fence-db-active"),
+      { activeAgentRun: { runId: "run-fence-db-active" } },
+    ))).resolves.toMatchObject({ status: "approval_required" });
+    await expect(inTenant(() => claimIdempotentToolExecution(
+      claimRecord("fence-claim-active"),
+      {
+        idempotencyKey: "run-fence-db-active:call-1",
+        activeAgentRun: { runId: "run-fence-db-active" },
+      },
+    ))).resolves.toMatchObject({ outcome: "claimed" });
+
+    // Canceling withdraws the run's bound and legacy pending approvals, keeps
+    // their stored input, and leaves every other record alone.
+    await startRun("run-fence-db-cancel");
+    await startRun("run-fence-db-sibling");
+    const bound = await inTenant(() => saveToolExecution(
+      pendingRecord("withdraw-db-bound", "run-fence-db-cancel"),
+    ));
+    const legacy = await inTenant(() => saveToolExecution(
+      pendingRecord("withdraw-db-legacy"),
+    ));
+    const claimed = await inTenant(() => saveToolExecution(
+      pendingRecord("withdraw-db-claimed", "run-fence-db-cancel"),
+    ));
+    await expect(approve(claimed.id)).resolves.toMatchObject({ outcome: "claimed" });
+    const sibling = await inTenant(() => saveToolExecution(
+      pendingRecord("withdraw-db-sibling", "run-fence-db-sibling"),
+    ));
+    const unbound = await inTenant(() => saveToolExecution(
+      pendingRecord("withdraw-db-unbound"),
+    ));
+    const foreign = await inTenant(() => saveToolExecution({
+      ...pendingRecord("withdraw-db-foreign", "run-fence-db-cancel"),
+      tenantId: otherTenantId,
+    }), otherTenantId);
+    await admin`
+      UPDATE omni_agent_runs
+      SET status = 'waiting_approval',
+        continuation = jsonb_build_object(
+          'pendingToolCall',
+          jsonb_build_object('executionId', ${legacy.id}::text)
+        )
+      WHERE tenant_id = ${tenantId} AND id = 'run-fence-db-cancel'
+    `;
+    const withdrawnIds = [bound.id, legacy.id].sort();
+    const storedInputs = () => admin`
+      SELECT id, input
+      FROM omni_tool_executions
+      WHERE tenant_id = ${tenantId} AND id = ANY(${withdrawnIds})
+      ORDER BY id
+    `;
+    const inputsBefore = await storedInputs();
+
+    await expect(inTenant(() => cancelAgentRun(
+      "run-fence-db-cancel",
+      "Stop this run.",
+      { tenantId },
+    ))).resolves.toBe(true);
+
+    expect(await admin`
+      SELECT id, status, approval_decision, approval_reason, reason, output,
+        completed_at IS NOT NULL AS completed
+      FROM omni_tool_executions
+      WHERE tenant_id = ${tenantId} AND id = ANY(${withdrawnIds})
+      ORDER BY id
+    `).toEqual(withdrawnIds.map((id) => ({
+      id,
+      status: "rejected",
+      approval_decision: "rejected",
+      approval_reason: withdrawnReason,
+      reason: withdrawnReason,
+      output: null,
+      completed: true,
+    })));
+    expect(await storedInputs()).toEqual(inputsBefore);
+    expect(await withdrawnEvents(withdrawnIds)).toEqual(
+      withdrawnIds.map((id) => ({ stream_id: `tool_execution:${id}` })),
+    );
+    expect(await admin`
+      SELECT id, status
+      FROM omni_tool_executions
+      WHERE tenant_id = ${tenantId}
+        AND id = ANY(${[claimed.id, sibling.id, unbound.id]})
+      ORDER BY id
+    `).toEqual([
+      { id: claimed.id, status: "executing" },
+      { id: sibling.id, status: "approval_required" },
+      { id: unbound.id, status: "approval_required" },
+    ]);
+    expect(await admin`
+      SELECT status
+      FROM omni_tool_executions
+      WHERE tenant_id = ${otherTenantId} AND id = ${foreign.id}
+    `).toEqual([{ status: "approval_required" }]);
+    await expect(approve(bound.id)).resolves.toMatchObject({ outcome: "conflict" });
+
+    // A cancel that lands while the run's approved action executes leaves
+    // that action's claim alone.
+    await startRun("run-fence-db-cancel-resuming");
+    await admin`
+      UPDATE omni_agent_runs
+      SET status = 'resuming',
+        continuation = jsonb_build_object(
+          'pendingToolCall',
+          jsonb_build_object('executionId', ${claimed.id}::text)
+        )
+      WHERE tenant_id = ${tenantId} AND id = 'run-fence-db-cancel-resuming'
+    `;
+    await expect(inTenant(() => cancelAgentRun(
+      "run-fence-db-cancel-resuming",
+      "Stop this run.",
+      { tenantId },
+    ))).resolves.toBe(true);
+    expect(await admin`
+      SELECT status, output->'__executionClaim'->>'token' AS claim_token
+      FROM omni_tool_executions
+      WHERE tenant_id = ${tenantId} AND id = ${claimed.id}
+    `).toEqual([
+      { status: "executing", claim_token: `${claimed.id}-approval-token` },
+    ]);
+
+    // Approving an action of a run that was canceled without withdrawing it
+    // withdraws the action instead, while a finished run's approval still
+    // claims, as a council delegate's does after its parent completes.
+    await startRun("run-fence-db-approve-canceled");
+    await startRun("run-fence-db-approve-completed");
+    const orphaned = await inTenant(() => saveToolExecution(
+      pendingRecord("approve-db-canceled", "run-fence-db-approve-canceled"),
+    ));
+    const delegated = await inTenant(() => saveToolExecution(
+      pendingRecord("approve-db-completed", "run-fence-db-approve-completed"),
+    ));
+    await writeRunStatus("run-fence-db-approve-canceled", "canceled");
+    await writeRunStatus("run-fence-db-approve-completed", "completed");
+
+    const refused = await approve(orphaned.id);
+
+    expect(refused).toMatchObject({
+      outcome: "conflict",
+      record: {
+        id: orphaned.id,
+        status: "rejected",
+        approvalDecision: "rejected",
+        reason: withdrawnReason,
+      },
+    });
+    expect(refused.record?.output).toBeUndefined();
+    expect(await admin`
+      SELECT status, output
+      FROM omni_tool_executions
+      WHERE tenant_id = ${tenantId} AND id = ${orphaned.id}
+    `).toEqual([{ status: "rejected", output: null }]);
+    expect(await withdrawnEvents([orphaned.id])).toEqual([
+      { stream_id: `tool_execution:${orphaned.id}` },
+    ]);
+    await expect(approve(delegated.id)).resolves.toMatchObject({
+      outcome: "claimed",
+      record: { status: "executing" },
+    });
+  });
 });
 
 async function dropDatabaseRole(
