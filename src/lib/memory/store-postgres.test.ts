@@ -5,6 +5,10 @@ const mocks = vi.hoisted(() => ({
   events: [] as string[],
   returnedMemoryRows: [] as Array<Record<string, unknown>>,
   returnedReviewRows: [] as Array<Record<string, unknown>>,
+  deletionManifestRows: [] as Array<Record<string, unknown>>,
+  visibleDescendantRows: [] as Array<Record<string, unknown>>,
+  coveringReceiptRows: [] as Array<Record<string, unknown>>,
+  queryParams: [] as unknown[][],
 }));
 
 function createSql(transactionScoped = false) {
@@ -14,7 +18,20 @@ function createSql(transactionScoped = false) {
   ) => {
     const query = strings.join("?");
     mocks.queries.push(query);
+    mocks.queryParams.push(params);
     mocks.events.push("query");
+    if (query.includes("FROM omni_memory_deletion_manifest_v1(")) {
+      return mocks.deletionManifestRows;
+    }
+    if (query.includes("SELECT id, title, type") && query.includes("FROM omni_memories")) {
+      return mocks.visibleDescendantRows;
+    }
+    if (
+      query.includes("FROM omni_memory_deletion_receipts") &&
+      query.includes("blocked_memory_ids @>")
+    ) {
+      return mocks.coveringReceiptRows;
+    }
     if (query.includes("INSERT INTO omni_memories")) {
       return ((params[0] || []) as Array<Record<string, unknown>>).map(
         (row) => ({ ...row, _inserted: true }),
@@ -112,12 +129,18 @@ import {
   listMemories,
   previewMemoryDeletion,
   correctMemory,
+  forgetMemoryWithReceipt,
   resolveMemoryReconciliationReview,
   saveMemory,
   searchMemories,
   shareAgentPrivateMemory,
 } from "@/lib/memory/store";
 import { appendScopedDomainEvent } from "@/lib/events/store";
+import {
+  buildMemoryDeletionReceiptV1,
+  memoryDeletionManifestSha256,
+  type MemoryDeletionReceiptV1,
+} from "@/lib/memory/deletion-receipt";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import {
   LOCAL_MULTILINGUAL_EMBEDDING_SPACE,
@@ -153,6 +176,67 @@ function executionScope(purposeId: string) {
     purpose: `test.${purposeId}`,
   });
 }
+
+function deletionReceiptRow(receipt: MemoryDeletionReceiptV1) {
+  return {
+    schema_version: receipt.schemaVersion,
+    contract_kind: receipt.contractKind,
+    id: receipt.id,
+    tenant_id: receipt.tenantId,
+    memory_id: receipt.memoryId,
+    attribution_kind: receipt.attributionKind,
+    initiating_actor_id: receipt.initiatingActorId,
+    executing_principal_type: receipt.executingPrincipalType,
+    executing_principal_id: receipt.executingPrincipalId,
+    correlation_id: receipt.correlationId,
+    causation_id: receipt.causationId,
+    purpose: receipt.purpose,
+    execution_scope: receipt.executionScope,
+    execution_scope_sha256: receipt.executionScopeSha256,
+    receipt_sha256: receipt.receiptSha256,
+    delete_reason: receipt.deleteReason,
+    descendant_memory_ids: receipt.descendantMemoryIds,
+    retrieval_trace_ids: receipt.retrievalTraceIds,
+    graph_node_ids: receipt.graphNodeIds,
+    graph_edge_ids: receipt.graphEdgeIds,
+    descendant_memory_count: receipt.descendantMemoryCount,
+    retrieval_trace_count: receipt.retrievalTraceCount,
+    graph_node_count: receipt.graphNodeCount,
+    graph_edge_count: receipt.graphEdgeCount,
+    descendant_manifest_sha256: receipt.descendantManifestSha256,
+    forgotten_at: receipt.forgottenAt,
+    created_at: receipt.createdAt,
+  };
+}
+
+function coveringReceipt() {
+  return buildMemoryDeletionReceiptV1({
+    tenantId: "tenant-a",
+    memoryId: "private-memory-a",
+    executionScope: executionScope(MEMORY_PURPOSE_IDS.forget),
+    descendantMemoryIds: ["private-child-b"],
+    retrievalTraceIds: [],
+    graphNodeIds: [],
+    graphEdgeIds: [],
+    forgottenAt: "2026-09-06T01:00:00.000Z",
+  });
+}
+
+const forgottenChildRow = {
+  id: "private-child-b",
+  tenant_id: "tenant-a",
+  type: "fact",
+  title: "[forgotten]",
+  content: "",
+  tags: [],
+  source: "[forgotten]",
+  evidence_refs: [],
+  claim_status: "forgotten",
+  asserted_by: "user",
+  forgotten_at: "2026-09-06T01:00:00.000Z",
+  created_at: "2026-09-06T00:00:00.000Z",
+  updated_at: "2026-09-06T01:00:00.000Z",
+};
 
 function agentAccessScope(purposeId: string, agentId = "agent:atlas") {
   return {
@@ -207,6 +291,10 @@ describe("Postgres memory recall", () => {
     mocks.events.length = 0;
     mocks.returnedMemoryRows.length = 0;
     mocks.returnedReviewRows.length = 0;
+    mocks.deletionManifestRows.length = 0;
+    mocks.visibleDescendantRows.length = 0;
+    mocks.coveringReceiptRows.length = 0;
+    mocks.queryParams.length = 0;
   });
 
   it("projects the durable catalogue without transferring raw source chunks", async () => {
@@ -617,7 +705,7 @@ describe("Postgres memory recall", () => {
     )).toBe(false);
   });
 
-  it("uses indexed trace lineage for governed deletion previews", async () => {
+  it("previews the database lineage closure, including descendants the caller cannot read", async () => {
     mocks.returnedMemoryRows.push({
       id: "private-memory-a",
       tenant_id: "tenant-a",
@@ -631,19 +719,132 @@ describe("Postgres memory recall", () => {
       created_at: "2026-09-06T00:00:00.000Z",
       updated_at: "2026-09-06T00:00:00.000Z",
     });
-
-    await expect(previewMemoryDeletion("private-memory-a", {
-      tenantId: "tenant-a",
-      accessScope: accessScope(MEMORY_PURPOSE_IDS.forget),
-    })).resolves.toMatchObject({
-      memory: { id: "private-memory-a" },
+    mocks.deletionManifestRows.push({
+      descendant_memory_ids: ["agent-copy-c", "private-child-b"],
+      retrieval_trace_ids: ["trace-a"],
+      graph_node_ids: ["node-a"],
+      graph_edge_ids: [],
+    });
+    mocks.visibleDescendantRows.push({
+      id: "private-child-b",
+      title: "Visible child",
+      type: "fact",
     });
 
-    const traceQuery = mocks.queries.find((query) =>
-      query.includes("FROM omni_retrieval_traces trace"),
+    const preview = await previewMemoryDeletion("private-memory-a", {
+      tenantId: "tenant-a",
+      accessScope: accessScope(MEMORY_PURPOSE_IDS.forget),
+    });
+
+    expect(preview).toMatchObject({
+      state: "ready",
+      memory: { id: "private-memory-a" },
+      descendantMemories: [
+        { id: "agent-copy-c", title: "[restricted descendant]", type: "knowledge" },
+        { id: "private-child-b", title: "Visible child", type: "fact" },
+      ],
+      impact: {
+        descendantMemoryCount: 2,
+        retrievalTraceCount: 1,
+        graphNodeCount: 1,
+        graphEdgeCount: 0,
+      },
+      expectedReceiptManifestSha256: memoryDeletionManifestSha256({
+        tenantId: "tenant-a",
+        memoryId: "private-memory-a",
+        descendantMemoryIds: ["agent-copy-c", "private-child-b"],
+        retrievalTraceIds: ["trace-a"],
+        graphNodeIds: ["node-a"],
+        graphEdgeIds: [],
+      }),
+    });
+    const manifestCall = mocks.queries.findIndex((query) =>
+      query.includes("FROM omni_memory_deletion_manifest_v1(")
     );
-    expect(traceQuery).toContain("trace.memory_ids &&");
-    expect(traceQuery).not.toContain("jsonb_array_elements");
+    expect(mocks.queryParams[manifestCall]).toEqual(["tenant-a", "private-memory-a"]);
+    // The closure is never recomputed under the caller's row visibility.
+    expect(mocks.queries.some((query) => query.includes("WITH RECURSIVE"))).toBe(false);
+    const traceLock = mocks.queries.find((query) =>
+      query.includes("FROM omni_retrieval_traces")
+    );
+    expect(traceLock).toContain("id = ANY(");
+    expect(traceLock).toContain("FOR SHARE");
+  });
+
+  it("previews a descendant forgotten with its ancestor as already deleted", async () => {
+    mocks.returnedMemoryRows.push(forgottenChildRow);
+    mocks.coveringReceiptRows.push(deletionReceiptRow(coveringReceipt()));
+
+    const preview = await previewMemoryDeletion("private-child-b", {
+      tenantId: "tenant-a",
+      accessScope: accessScope(MEMORY_PURPOSE_IDS.forget),
+    });
+
+    expect(preview).toMatchObject({
+      state: "already_deleted",
+      memory: { id: "private-child-b" },
+      descendantMemories: [],
+      expectedReceiptManifestSha256: memoryDeletionManifestSha256({
+        tenantId: "tenant-a",
+        memoryId: "private-child-b",
+        descendantMemoryIds: [],
+        retrievalTraceIds: [],
+        graphNodeIds: [],
+        graphEdgeIds: [],
+      }),
+    });
+    expect(mocks.queries.some((query) =>
+      query.includes("FROM omni_memory_deletion_manifest_v1(")
+    )).toBe(false);
+  });
+
+  it("reports a descendant forgotten with its ancestor under the covering receipt", async () => {
+    mocks.returnedMemoryRows.push(forgottenChildRow);
+    const covering = coveringReceipt();
+    mocks.coveringReceiptRows.push(deletionReceiptRow(covering));
+    const emptyManifest = memoryDeletionManifestSha256({
+      tenantId: "tenant-a",
+      memoryId: "private-child-b",
+      descendantMemoryIds: [],
+      retrievalTraceIds: [],
+      graphNodeIds: [],
+      graphEdgeIds: [],
+    });
+
+    await expect(forgetMemoryWithReceipt("private-child-b", {
+      tenantId: "tenant-a",
+      executionScope: executionScope(MEMORY_PURPOSE_IDS.forget),
+      accessScope: accessScope(MEMORY_PURPOSE_IDS.forget),
+      expectedDescendantManifestSha256: emptyManifest,
+    })).resolves.toMatchObject({
+      memory: { id: "private-child-b", claimStatus: "forgotten" },
+      receipt: { id: covering.id, memoryId: "private-memory-a" },
+      deletionGuarantee: "scope_bound_receipt",
+      deletionDisposition: "already_deleted",
+    });
+    await expect(forgetMemoryWithReceipt("private-child-b", {
+      tenantId: "tenant-a",
+      executionScope: executionScope(MEMORY_PURPOSE_IDS.forget),
+      accessScope: accessScope(MEMORY_PURPOSE_IDS.forget),
+      expectedDescendantManifestSha256: covering.descendantManifestSha256!,
+    })).rejects.toThrow("Memory deletion impact changed.");
+    expect(mocks.queries.some((query) =>
+      query.includes("INSERT INTO omni_memory_deletion_receipts")
+    )).toBe(false);
+  });
+
+  it("refuses a forgotten memory that no receipt covers", async () => {
+    mocks.returnedMemoryRows.push(forgottenChildRow);
+
+    await expect(previewMemoryDeletion("private-child-b", {
+      tenantId: "tenant-a",
+      accessScope: accessScope(MEMORY_PURPOSE_IDS.forget),
+    })).rejects.toThrow("Forgotten memory is missing its immutable deletion receipt.");
+    await expect(forgetMemoryWithReceipt("private-child-b", {
+      tenantId: "tenant-a",
+      executionScope: executionScope(MEMORY_PURPOSE_IDS.forget),
+      accessScope: accessScope(MEMORY_PURPOSE_IDS.forget),
+    })).rejects.toThrow("Forgotten memory is missing its immutable deletion receipt.");
   });
 
   it("commits correction state and scoped events through one transaction client", async () => {

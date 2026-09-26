@@ -852,10 +852,20 @@ async function runAllTenantScheduledWork({
       await processPendingTemporalRelationProjections({ limit: 1 });
   }
   if (runMaintenance && Date.now() < deadlineAt) {
-    memoryDeletionScrubs = await processPendingMemoryDeletionScrubs({
-      receiptLimit: Math.min(maintenanceTenantLimit, 10),
-      memoryLimit: 100,
-    });
+    // A failed scrub must not hold back tenant maintenance; its receipts stay
+    // leasable for the next tick.
+    try {
+      memoryDeletionScrubs = await processPendingMemoryDeletionScrubs({
+        receiptLimit: Math.min(maintenanceTenantLimit, 10),
+        memoryLimit: 100,
+      });
+    } catch (error) {
+      console.error(JSON.stringify({
+        level: "error",
+        msg: "memory_deletion_scrub_failed",
+        error: safeTenantMaintenanceError(error),
+      }));
+    }
   }
   if (runMaintenance && Date.now() < deadlineAt) {
     page = await listMaintenanceTenantIds({

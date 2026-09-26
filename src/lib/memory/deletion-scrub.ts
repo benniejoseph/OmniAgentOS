@@ -42,7 +42,9 @@ export type MemoryDeletionScrubResult = {
 /**
  * Physically scrubs descendants already hidden by an immutable deletion
  * receipt. The receipt itself is the durable work manifest, so a crash leaves
- * the remaining rows discoverable on the next maintenance tick.
+ * the remaining rows discoverable on the next maintenance tick. A forget now
+ * scrubs its descendants itself; this finishes receipts written before that,
+ * stamping each shell with its receipt's exact time as the barrier requires.
  */
 export async function processPendingMemoryDeletionScrubs({
   receiptLimit = DEFAULT_RECEIPT_LIMIT,
@@ -109,7 +111,13 @@ export async function processPendingMemoryDeletionScrubs({
 
           const scrubbedRows = hasVectorColumn
             ? await transaction`
-                WITH candidates AS (
+                WITH receipt AS (
+                  SELECT deletion_receipt.forgotten_at
+                  FROM omni_memory_deletion_receipts deletion_receipt
+                  WHERE deletion_receipt.tenant_id = ${receipt.tenantId}
+                    AND deletion_receipt.id = ${receipt.id}
+                ),
+                candidates AS (
                   SELECT memory.ctid
                   FROM omni_memories memory
                   WHERE memory.tenant_id = ${receipt.tenantId}
@@ -142,14 +150,20 @@ export async function processPendingMemoryDeletionScrubs({
                     supersedes_id = NULL,
                     contradiction_of_id = NULL,
                     claim_status = 'forgotten',
-                    forgotten_at = COALESCE(memory.forgotten_at, ${receipt.forgottenAt}),
-                    updated_at = ${receipt.forgottenAt}
-                FROM candidates
+                    forgotten_at = receipt.forgotten_at,
+                    updated_at = receipt.forgotten_at
+                FROM candidates, receipt
                 WHERE memory.ctid = candidates.ctid
                 RETURNING memory.id
               `
             : await transaction`
-                WITH candidates AS (
+                WITH receipt AS (
+                  SELECT deletion_receipt.forgotten_at
+                  FROM omni_memory_deletion_receipts deletion_receipt
+                  WHERE deletion_receipt.tenant_id = ${receipt.tenantId}
+                    AND deletion_receipt.id = ${receipt.id}
+                ),
+                candidates AS (
                   SELECT memory.ctid
                   FROM omni_memories memory
                   WHERE memory.tenant_id = ${receipt.tenantId}
@@ -180,9 +194,9 @@ export async function processPendingMemoryDeletionScrubs({
                     supersedes_id = NULL,
                     contradiction_of_id = NULL,
                     claim_status = 'forgotten',
-                    forgotten_at = COALESCE(memory.forgotten_at, ${receipt.forgottenAt}),
-                    updated_at = ${receipt.forgottenAt}
-                FROM candidates
+                    forgotten_at = receipt.forgotten_at,
+                    updated_at = receipt.forgotten_at
+                FROM candidates, receipt
                 WHERE memory.ctid = candidates.ctid
                 RETURNING memory.id
               `;

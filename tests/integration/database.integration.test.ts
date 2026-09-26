@@ -52,6 +52,13 @@ const databaseDescribe = databaseUrl && resetAllowed ? describe : describe.skip;
 const rlsRole = "omniagent_integration_rls";
 const runtimeRole = "omniagent_integration_runtime";
 const maintenanceRole = "omniagent_integration_maintenance";
+const lineageRuntimeRole = "omniagent_integration_lineage_runtime";
+const lineageMaintenanceRole = "omniagent_integration_lineage_maintenance";
+// Serving roles verify rather than migrate the schema only in production, and
+// production refuses a connection that disables TLS.
+const databaseTlsDisabled = Boolean(
+  databaseUrl && new URL(databaseUrl).searchParams.get("sslmode") === "disable",
+);
 const actorRlsRepairTables = [
   "omni_a2a_peer_rollouts",
   "omni_a2a_task_mappings",
@@ -83,6 +90,8 @@ databaseDescribe("Postgres schema integration", () => {
     await dropDatabaseRole(admin, rlsRole);
     await dropDatabaseRole(admin, runtimeRole);
     await dropDatabaseRole(admin, maintenanceRole);
+    await dropDatabaseRole(admin, lineageRuntimeRole);
+    await dropDatabaseRole(admin, lineageMaintenanceRole);
     await admin`DROP SCHEMA IF EXISTS public CASCADE`;
     await admin`CREATE SCHEMA public`;
     await admin`
@@ -108,6 +117,8 @@ databaseDescribe("Postgres schema integration", () => {
     await dropDatabaseRole(admin, rlsRole);
     await dropDatabaseRole(admin, runtimeRole);
     await dropDatabaseRole(admin, maintenanceRole);
+    await dropDatabaseRole(admin, lineageRuntimeRole);
+    await dropDatabaseRole(admin, lineageMaintenanceRole);
     await admin.end();
   });
 
@@ -2554,6 +2565,385 @@ databaseDescribe("Postgres schema integration", () => {
       vi.resetModules();
     }
   });
+
+  test.skipIf(databaseTlsDisabled)(
+    "forgets a shared agent copy and everything derived from it across visibilities",
+    async () => {
+      const tenantId = "tenant_forget_lineage";
+      const userId = "00000000-0000-4000-8000-000000000081";
+      const actorId = `actor:${userId}`;
+      await admin`
+        INSERT INTO omni_auth_tenants (id, name, slug)
+        VALUES (${tenantId}, 'Forget lineage', 'forget-lineage')
+      `;
+      await admin`
+        INSERT INTO omni_auth_users (id, email, password_hash)
+        VALUES (${userId}, 'forget-lineage@example.test', 'test-only')
+      `;
+      await admin`
+        INSERT INTO omni_auth_memberships (id, tenant_id, user_id, role)
+        VALUES ('membership:forget-lineage', ${tenantId}, ${userId}, 'admin')
+      `;
+      await admin.unsafe(`
+        CREATE ROLE ${lineageRuntimeRole}
+        LOGIN PASSWORD 'integration-only'
+        NOSUPERUSER NOBYPASSRLS
+      `);
+      await admin.unsafe(`
+        CREATE ROLE ${lineageMaintenanceRole}
+        LOGIN PASSWORD 'integration-only'
+        NOSUPERUSER BYPASSRLS
+      `);
+      for (const role of [lineageRuntimeRole, lineageMaintenanceRole]) {
+        await admin.unsafe(`GRANT USAGE ON SCHEMA public TO ${role}`);
+        await admin.unsafe(
+          `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${role}`,
+        );
+        await admin.unsafe(
+          `GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO ${role}`,
+        );
+        // Migrations grant the production serving roles their functions,
+        // including the lineage closure, because those roles exist before the
+        // schema. These roles are created after it.
+        await admin.unsafe(
+          `GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO ${role}`,
+        );
+      }
+
+      vi.stubEnv("DATABASE_URL", databaseUrlForRole(databaseUrl!, lineageRuntimeRole));
+      vi.stubEnv(
+        "OMNIAGENT_MAINTENANCE_DATABASE_URL",
+        databaseUrlForRole(databaseUrl!, lineageMaintenanceRole),
+      );
+      vi.stubEnv("NODE_ENV", "production");
+      vi.resetModules();
+      const client = await import("@/lib/db/client");
+      try {
+        const store = await import("@/lib/memory/store");
+        const { processPendingMemoryDeletionScrubs } = await import(
+          "@/lib/memory/deletion-scrub"
+        );
+        const binding = await import("@/lib/memory/access-binding");
+        const { databaseMemoryAccessScopeFromExecutionScope } = await import(
+          "@/lib/db/memory-access-scope"
+        );
+        const asActor = <T,>(operation: () => Promise<T>) =>
+          client.runWithDatabaseActorScope(tenantId, [actorId], operation);
+        const userScope = createExecutionScope({
+          tenantId,
+          initiatingActorId: actorId,
+          executingPrincipalType: "user",
+          executingPrincipalId: actorId,
+          correlationId: "correlation:forget-lineage",
+          purpose: "memory.forget",
+        });
+        const agentScope = createExecutionScope({
+          tenantId,
+          initiatingActorId: actorId,
+          executingPrincipalType: "agent",
+          executingPrincipalId: "agent-alpha",
+          correlationId: "correlation:forget-lineage:agent",
+          purpose: "memory.share",
+        });
+        const userForgetScope = databaseMemoryAccessScopeFromExecutionScope(
+          userScope,
+          {
+            purposeId: binding.MEMORY_PURPOSE_IDS.forget,
+            auditPurpose: "integration forget",
+          },
+        );
+        const memoryRow = async (id: string) => {
+          const [row] = await admin`
+            SELECT claim_status, title, content, evidence_refs
+            FROM omni_memories
+            WHERE tenant_id = ${tenantId} AND id = ${id}
+          `;
+          return row;
+        };
+        const shell = {
+          claim_status: "forgotten",
+          title: "[forgotten]",
+          content: "",
+          evidence_refs: [],
+        };
+
+        // An agent shares its private memory, which copies it to the target
+        // agent. Only the target agent's scope can read the copy.
+        await asActor(() => store.saveMemories([{
+          id: "lineage-source",
+          tenantId,
+          type: "episode",
+          tier: "episodic",
+          title: "Agent source",
+          content: "agent-alpha private content",
+          scope: "user",
+          source: "effect-receipt",
+          claimStatus: "active",
+          assertedBy: "system",
+          accessBinding: binding.buildAgentPrivateMemoryAccessBindingV1({
+            tenantId,
+            ownerActorId: actorId,
+            ownerAgentId: "agent-alpha",
+            originPurpose: "memory.verified_effect",
+          }),
+          databaseAccessScope: databaseMemoryAccessScopeFromExecutionScope(
+            agentScope,
+            {
+              purposeId: binding.MEMORY_PURPOSE_IDS.formation,
+              auditPurpose: "integration share",
+            },
+          ),
+          executionScope: agentScope,
+        }]));
+        const shared = await asActor(() => store.shareAgentPrivateMemory({
+          tenantId,
+          sourceMemoryId: "lineage-source",
+          targetAgentId: "agent-beta",
+          idempotencyKey: "forget-lineage:share",
+          sharedAt: new Date().toISOString(),
+          executionScope: agentScope,
+        }));
+        const copyId = shared.memory.id;
+        await admin`
+          INSERT INTO omni_memories (id, tenant_id, type, title, content, scope, source)
+          VALUES (
+            'lineage-keep', ${tenantId}, 'fact', 'Kept', 'unrelated content',
+            'workspace', 'manual'
+          )
+        `;
+        // Literal JSON: a string bound to a jsonb parameter is encoded again.
+        await admin.unsafe(`
+          INSERT INTO omni_retrieval_traces (id, tenant_id, query, results)
+          VALUES (
+            'lineage-trace', '${tenantId}', 'copy query',
+            '[{"kind":"memory","id":"${copyId}"}]'::jsonb
+          )
+        `);
+        // A trace recorded before memory_ids was materialized cites the copy
+        // only in its results.
+        await admin.begin(async (transaction) => {
+          await transaction`SET LOCAL session_replication_role = replica`;
+          await transaction.unsafe(`
+            INSERT INTO omni_retrieval_traces (id, tenant_id, query, results, memory_ids)
+            VALUES (
+              'lineage-trace-historical', '${tenantId}', 'historical query',
+              '[{"kind":"memory","id":"${copyId}"}]'::jsonb, '{}'::text[]
+            )
+          `);
+        });
+        await admin`
+          INSERT INTO omni_memory_graph_nodes (id, tenant_id, kind, label, slug, memory_ids)
+          VALUES
+            ('lineage-node-copy', ${tenantId}, 'fact', 'Copy', 'lineage-node-copy',
+              ARRAY[${copyId}]::text[]),
+            ('lineage-node-keep', ${tenantId}, 'fact', 'Kept', 'lineage-node-keep',
+              ARRAY['lineage-keep']::text[])
+        `;
+        await admin`
+          INSERT INTO omni_memory_graph_nodes (id, tenant_id, kind, label, slug, trace_ids)
+          VALUES (
+            'lineage-node-trace', ${tenantId}, 'fact', 'Trace', 'lineage-node-trace',
+            ARRAY['lineage-trace']::text[]
+          )
+        `;
+        await admin`
+          INSERT INTO omni_memory_graph_edges (
+            id, tenant_id, source_node_id, target_node_id, relation
+          ) VALUES (
+            'lineage-edge', ${tenantId}, 'lineage-node-copy', 'lineage-node-keep',
+            'related_to'
+          )
+        `;
+
+        // Agents cannot forget; the owner forgets under a validated scope.
+        await expect(asActor(() => store.forgetMemoryWithReceipt("lineage-source", {
+          tenantId,
+          executionScope: agentScope,
+          accessScope: databaseMemoryAccessScopeFromExecutionScope(agentScope, {
+            purposeId: binding.MEMORY_PURPOSE_IDS.forget,
+            auditPurpose: "integration forget",
+          }),
+        }))).resolves.toBeNull();
+        const preview = await asActor(() => store.previewMemoryDeletion("lineage-source", {
+          tenantId,
+          accessScope: userForgetScope,
+        }));
+        expect(preview).toMatchObject({
+          state: "ready",
+          descendantMemories: [{ id: copyId }],
+          impact: {
+            descendantMemoryCount: 1,
+            retrievalTraceCount: 2,
+            graphNodeCount: 2,
+            graphEdgeCount: 1,
+          },
+        });
+        const forgotten = await asActor(() => store.forgetMemoryWithReceipt("lineage-source", {
+          tenantId,
+          executionScope: userScope,
+          accessScope: userForgetScope,
+          expectedDescendantManifestSha256: preview?.expectedReceiptManifestSha256,
+        }));
+        expect(forgotten).toMatchObject({
+          deletionDisposition: "committed",
+          receipt: { memoryId: "lineage-source", descendantMemoryIds: [copyId] },
+        });
+        const [receipt] = await admin`
+          SELECT descendant_memory_ids, retrieval_trace_ids, graph_node_ids, graph_edge_ids
+          FROM omni_memory_deletion_receipts
+          WHERE tenant_id = ${tenantId} AND memory_id = 'lineage-source'
+        `;
+        expect(receipt).toEqual({
+          descendant_memory_ids: [copyId],
+          retrieval_trace_ids: ["lineage-trace", "lineage-trace-historical"],
+          graph_node_ids: ["lineage-node-copy", "lineage-node-trace"],
+          graph_edge_ids: ["lineage-edge"],
+        });
+        expect(await memoryRow("lineage-source")).toEqual(shell);
+        expect(await memoryRow(copyId)).toEqual(shell);
+        expect(await memoryRow("lineage-keep")).toMatchObject({
+          claim_status: "active",
+          content: "unrelated content",
+        });
+        expect(await admin`
+          SELECT grant_id FROM omni_agent_memory_grants WHERE tenant_id = ${tenantId}
+        `).toEqual([]);
+        expect(await admin`
+          SELECT id FROM omni_retrieval_traces WHERE tenant_id = ${tenantId}
+        `).toEqual([]);
+        expect(await admin`
+          SELECT id FROM omni_memory_graph_nodes WHERE tenant_id = ${tenantId}
+        `).toEqual([{ id: "lineage-node-keep" }]);
+        expect(await admin`
+          SELECT id FROM omni_memory_graph_edges WHERE tenant_id = ${tenantId}
+        `).toEqual([]);
+
+        // A legacy read cannot see a private memory that cites a legacy root,
+        // yet forgetting the root still lists and scrubs it.
+        const userBinding = binding.buildUserPrivateMemoryAccessBindingV1({
+          tenantId,
+          ownerActorId: actorId,
+          originPurpose: "app.memory.write",
+        });
+        await admin`
+          INSERT INTO omni_memories (id, tenant_id, type, title, content, scope, source)
+          VALUES (
+            'lineage-legacy-root', ${tenantId}, 'fact', 'Legacy root',
+            'legacy root content', 'workspace', 'legacy'
+          )
+        `;
+        await admin`
+          INSERT INTO omni_memories (
+            id, tenant_id, type, title, content, scope, source, evidence_refs,
+            access_contract_version, access_state, owner_actor_id, owner_agent_id,
+            workspace_id, project_id, mission_id, visibility, sensitivity,
+            origin_purpose, allowed_purpose_ids, access_scope_sha256, access_bound_at
+          ) VALUES (
+            'lineage-private-copy', ${tenantId}, 'fact', 'Private copy',
+            'private copy of the legacy root', 'user', 'manual',
+            ARRAY['memory:lineage-legacy-root'],
+            1, 'scope_bound', ${actorId}, NULL, NULL, NULL, NULL, 'user_private',
+            ${userBinding.sensitivity}, ${userBinding.originPurpose},
+            ${[...userBinding.allowedPurposeIds]}, ${userBinding.accessScopeSha256},
+            ${userBinding.accessBoundAt}
+          )
+        `;
+        const legacyPreview = await asActor(() =>
+          store.previewMemoryDeletion("lineage-legacy-root", { tenantId }));
+        expect(legacyPreview?.descendantMemories).toEqual([{
+          id: "lineage-private-copy",
+          title: "[restricted descendant]",
+          type: "knowledge",
+        }]);
+        const legacyForgotten = await asActor(() =>
+          store.forgetMemoryWithReceipt("lineage-legacy-root", {
+            tenantId,
+            executionScope: userScope,
+          }));
+        expect(legacyForgotten?.receipt?.descendantMemoryIds).toEqual([
+          "lineage-private-copy",
+        ]);
+        expect(await memoryRow("lineage-private-copy")).toEqual(shell);
+
+        // A receipt written before forget scrubbed its descendants leaves them
+        // to the worker, which stamps each shell with the receipt's exact time.
+        await admin`
+          INSERT INTO omni_memories (id, tenant_id, type, title, content, scope, source)
+          VALUES (
+            'lineage-legacy-forgotten', ${tenantId}, 'fact', 'Legacy forgotten',
+            'legacy forgotten content', 'workspace', 'legacy'
+          )
+        `;
+        await admin`
+          INSERT INTO omni_memories (
+            id, tenant_id, type, title, content, scope, source, evidence_refs
+          ) VALUES (
+            'lineage-legacy-copy', ${tenantId}, 'fact', 'Legacy copy',
+            'legacy copy content', 'workspace', 'legacy',
+            ARRAY['memory:lineage-legacy-forgotten']
+          )
+        `;
+        await admin.begin(async (transaction) => {
+          await transaction`SET LOCAL session_replication_role = replica`;
+          // The time is made in SQL with microseconds, which a bound timestamp
+          // would lose and some clocks, PGlite's among them, never produce.
+          await transaction`
+            UPDATE omni_memories
+            SET title = '[forgotten]', content = '', tags = '{}'::text[],
+              source = '[forgotten]', embedding = NULL, evidence_refs = '{}'::text[],
+              supersedes_id = NULL, contradiction_of_id = NULL,
+              claim_status = 'forgotten',
+              forgotten_at = date_trunc('second', NOW()) - INTERVAL '2 days'
+                + INTERVAL '123456 microseconds',
+              updated_at = NOW() - INTERVAL '2 days'
+            WHERE tenant_id = ${tenantId} AND id = 'lineage-legacy-forgotten'
+          `;
+          await transaction`
+            INSERT INTO omni_memory_deletion_receipts (
+              id, schema_version, contract_kind, tenant_id, memory_id,
+              attribution_kind, delete_reason,
+              descendant_memory_ids, retrieval_trace_ids, graph_node_ids,
+              graph_edge_ids, descendant_memory_count, retrieval_trace_count,
+              graph_node_count, graph_edge_count, forgotten_at, created_at
+            )
+            SELECT
+              'legacy:' || md5(${tenantId} || ':lineage-legacy-forgotten'), 1,
+              'memory_deletion', ${tenantId}, 'lineage-legacy-forgotten',
+              'legacy_unattributed', 'legacy_unattributed',
+              ARRAY['lineage-legacy-copy']::text[], '{}'::text[], '{}'::text[],
+              '{}'::text[], 1, 0, 0, 0,
+              memory.forgotten_at, memory.forgotten_at
+            FROM omni_memories memory
+            WHERE memory.tenant_id = ${tenantId}
+              AND memory.id = 'lineage-legacy-forgotten'
+          `;
+        });
+        const [legacyReceipt] = await admin`
+          SELECT id
+          FROM omni_memory_deletion_receipts
+          WHERE tenant_id = ${tenantId} AND memory_id = 'lineage-legacy-forgotten'
+        `;
+        const scrubbed = await processPendingMemoryDeletionScrubs();
+        expect(scrubbed.completedReceiptIds).toContain(legacyReceipt.id);
+        expect(await memoryRow("lineage-legacy-copy")).toEqual(shell);
+        expect(await admin`
+          SELECT memory.forgotten_at = receipt.forgotten_at AS exact
+          FROM omni_memories memory
+          JOIN omni_memory_deletion_receipts receipt
+            ON receipt.tenant_id = memory.tenant_id
+          WHERE memory.tenant_id = ${tenantId}
+            AND memory.id = 'lineage-legacy-copy'
+            AND receipt.id = ${legacyReceipt.id}
+        `).toEqual([{ exact: true }]);
+        const repeated = await processPendingMemoryDeletionScrubs();
+        expect(repeated.completedReceiptIds).not.toContain(legacyReceipt.id);
+      } finally {
+        await client.closeDatabaseClient();
+        vi.unstubAllEnvs();
+        vi.resetModules();
+      }
+    },
+  );
 });
 
 async function dropDatabaseRole(

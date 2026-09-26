@@ -908,6 +908,30 @@ idempotent metadata-only completion event, and reports overdue work against a
 24-hour default SLA. Portable export and all served memory reads exclude the
 permanently barriered rows.
 
+Migration v207 computes a forget's impact once, in the database, over every
+visibility. `omni_memory_deletion_manifest_v1` is a tenant-bound definer that
+returns only identifiers. It follows supersession, contradiction, and
+`memory:` evidence from the forgotten memory. It collects the retrieval traces
+that name any memory in that closure, either in `memory_ids` or among their
+recorded results, and the graph nodes and edges that reference those memories
+or traces. The store builds its preview and receipt from this closure, so a
+descendant the caller cannot read still belongs to the receipt; the preview
+shows it only by ID, titled `[restricted descendant]`. Examples are an agent's
+shared copy or another owner's derived memory. The receipt's validator checks
+the manifest against the same function and changes nothing. An `AFTER INSERT`
+trigger then deletes the listed trace and graph rows, turns every descendant
+into a forgotten shell stamped with the receipt's time, and deletes each agent
+memory grant whose source or target the receipt blocks. The barrier accepts a
+descendant's shell under its ancestor's receipt, so a descendant forgotten this
+way previews and forgets as `already_deleted` under that receipt. An owner's
+validated user forget scope reaches their agents' private memories, which it
+may only write back as shells; agents still cannot forget. A private memory may
+cite a private memory of the same owner that the current scope cannot read,
+such as the source of an agent share. Every other unreadable reference is still
+rejected. The maintenance scrub finishes receipts written before v207 and takes
+each shell's time from the receipt row in SQL, because a bound JavaScript
+timestamp would lose its microseconds.
+
 Migration v43 begins the P3.1 memory-access foundation without changing a
 served read or write. Existing and rollback-created memories remain explicit
 version-0 `legacy_unattributed` rows; owner, agent, workspace, project,

@@ -36,6 +36,7 @@ import {
   ensurePromptQueueContextPinsV1,
   ensurePromptQueueRuntimeV1,
 } from "@/lib/db/prompt-queue-schema";
+import { ensureMemoryForgetLineageClosureV1 } from "@/lib/db/memory-forget-lineage-schema";
 import { ensureAgentDailyLearningV1 } from "@/lib/db/agent-learning-schema";
 import { ensureGoogleMultiAccountConnectionsV1 } from "@/lib/db/google-multi-account-schema";
 import { ensureDeclarativePluginsV1 } from "@/lib/db/plugin-schema";
@@ -1782,6 +1783,10 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[205],
       up: ensurePromptQueueContextPinsV1,
+    },
+    {
+      ...databaseSchemaMigrations[206],
+      up: ensureMemoryForgetLineageClosureV1,
     },
   ];
 }

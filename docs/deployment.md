@@ -59,6 +59,79 @@ before installing a v30 native build: a v30 client fails bootstrap against a
 server that advertises only v29/v28. The installed v29 client keeps working
 against a v30 server through the rollback window.
 
+### Memory forget lineage closure (v207)
+
+Migration `20260926090000_memory_forget_lineage_closure.sql` installs schema
+v207 (`memory_forget_lineage_closure_v1`) after v206. Apply it before deploying
+the code that needs it. Production verification refuses to serve while a
+registered version is pending, so until the migration runs every
+database-backed request fails with `Database schema is behind (pending
+versions: 207)`.
+
+Forget now takes its impact from one closure that the database computes over
+every visibility. `omni_memory_deletion_manifest_v1(tenant, memory)` is a
+tenant-bound `SECURITY DEFINER` function that returns identifiers only. A
+forget scrubs every descendant in that closure, including agent copies and
+other owners' derived memories that the caller cannot read. It deletes the
+retrieval traces and graph rows derived from those memories and revokes every
+agent memory grant that touches one of them. Traces now also match on the
+results they recorded, not only on `memory_ids`, so a forget scans the recorded
+results of each of the tenant's traces. The migration grants `EXECUTE` on the
+manifest function to `omni_runtime` and `omni_maintenance` if those roles exist
+when it runs. Grant it to any other serving role:
+
+```sql
+GRANT EXECUTE ON FUNCTION public.omni_memory_deletion_manifest_v1(TEXT, TEXT)
+TO <serving_role>;
+```
+
+Behavior that changes with this release:
+
+- A deletion preview lists a descendant the caller cannot read by its ID,
+  titled `[restricted descendant]`, without its content.
+- Previewing or forgetting a memory that an earlier forget already covered
+  returns `already_deleted` under the covering receipt instead of failing.
+- An owner's validated user forget scope can forget their agents' private
+  memories. Agents still cannot forget.
+- Sharing an agent's private memory with another agent works: the copy may
+  cite a private source of the same owner that the receiving scope cannot
+  read. Before this release every share failed with `23503`, so no agent
+  memory grants exist from earlier releases.
+- The maintenance scrub finishes receipts written before v207 and stamps each
+  shell with its receipt's exact time. A scrub failure is logged as
+  `memory_deletion_scrub_failed` and no longer stops the rest of the
+  maintenance tick; its receipts are retried on the next tick.
+
+Still open: content digests derived from forgotten memories (MEM-16) are not
+scrubbed. Briefs, entities, and runs are still invalidated only where the
+caller's row policies reach (MEM-2b). A version-1 private memory that cites a
+legacy memory or another owner's memory it cannot read is still rejected with
+`23503`.
+
+Receipts written before v207 list only the descendants their caller could read
+at the time. After migrating, run this read-only query as the maintenance role.
+It returns memories that cite a forgotten memory without having been forgotten;
+have each row's owner forget it, since that forget now reaches the row:
+
+```sql
+SELECT receipt.tenant_id, receipt.id AS receipt_id, memory.id AS memory_id
+FROM omni_memory_deletion_receipts receipt
+JOIN omni_memories memory
+  ON memory.tenant_id = receipt.tenant_id
+WHERE memory.claim_status IS DISTINCT FROM 'forgotten'
+  AND NOT memory.id = ANY(receipt.blocked_memory_ids)
+  AND (
+    memory.supersedes_id = ANY(receipt.blocked_memory_ids)
+    OR memory.contradiction_of_id = ANY(receipt.blocked_memory_ids)
+    OR EXISTS (
+      SELECT 1
+      FROM unnest(memory.evidence_refs) evidence_ref
+      WHERE evidence_ref LIKE 'memory:%'
+        AND substring(evidence_ref FROM 8) = ANY(receipt.blocked_memory_ids)
+    )
+  );
+```
+
 ### Web Command durable structured-context release
 
 Web Command defaults a new conversation to `session` scope. Attached Agents,
@@ -778,8 +851,9 @@ Keep migrations backward-compatible for at least one application rollback. If a 
 
 ### Installed adaptive-runtime migration chain
 
-The adaptive-runtime migrations below are registered in `schema-migrations.json`
-and installed in production. Each migration takes the schema advisory lock,
+The adaptive-runtime migrations below are registered in `schema-migrations.json`.
+Versions 196-206 are installed in production; v207 is pending its first
+release. Each migration takes the schema advisory lock,
 checks the exact immediately preceding version/name/checksum, installs or extends
 forced actor RLS, verifies its privilege/trigger boundary, and writes its own
 marker in the same transaction.
@@ -797,6 +871,7 @@ marker in the same transaction.
 | 204 | `google_multi_account_connections_v1` | `8c7ae456bdbcc92f00adb2f24728cf03dc2b082cae7880e0f87ce71d15314cd8` | actor-owned Google account connection separation and scope-safe identity binding |
 | 205 | `governed_local_command_runner_v1` | `a9c301b4ef3030962b2ae9f69b8df9c2cb2914e90b0d9c8a3c6032f91691015a` | exact command workspace grants, approval/courier binding, and metadata-only execution receipts |
 | 206 | `prompt_queue_context_pins_v1` | `5de8d38921e0d4d0f7e79bcfe4745f780ce973b009c874a519d09bfd8f3ff777` | sealed exact Command references plus content-free digests/counts for reviewed and queued work |
+| 207 | `memory_forget_lineage_closure_v1` | `980dfe0af300eac5072cf0bf6b5f80b6a4e5335f444f0046732e7291f3f26c36` | forget lineage closure over every visibility, applied through the receipt with trace, graph, descendant, and agent-grant removal |
 
 Version 196 requires the exact predecessor marker v195
 `moltbook_autonomy_privilege_repair_v1` with checksum

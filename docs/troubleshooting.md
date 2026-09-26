@@ -50,6 +50,14 @@ For internal calls, the secret and identity headers must be sent together. Never
 - Compare the interval with queue lease duration; too many replicas or a short interval can increase contention.
 - On Fly, inspect machine health and restart count. The container health probe uses only the public health endpoint and never sends the internal secret.
 
+## Memory forget or the deletion scrub fails
+
+- `Database schema is behind (pending versions: 207)`: run migration v207 before serving the release. See [deployment.md](deployment.md#memory-forget-lineage-closure-v207).
+- `permission denied for function omni_memory_deletion_manifest_v1`: the serving role did not exist when the migration ran, or has another name. Grant it `EXECUTE` as the deployment note shows.
+- `42501 Memory deletion manifests are tenant-scoped`: the session's `omni.tenant_id` is not the memory's tenant. Served requests set it; a manual call must set it too.
+- `409` from `DELETE /api/memory/:id` after a preview: the lineage changed after the review, for example because another actor derived a memory, trace, or graph row from it. Preview again and submit the new digest.
+- The tick logs `memory_deletion_scrub_failed`: the physical scrub failed and the rest of maintenance continued. Its receipts stay leasable, so the next tick retries them.
+
 ## Capture file extraction fails
 
 Files are parsed by the contained document parser described in the [security model](architecture.md#security-model). The API response, or for background processing the asset's failed extraction receipt, carries the code:

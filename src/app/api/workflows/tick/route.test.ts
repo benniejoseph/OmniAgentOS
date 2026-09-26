@@ -708,6 +708,34 @@ describe("dedicated worker heartbeat timing", () => {
     ]);
   });
 
+  it("runs tenant maintenance when the deletion scrub fails", async () => {
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      routeMocks.processPendingMemoryDeletionScrubs.mockRejectedValue(
+        new Error("Memory write intersects a permanent deletion barrier"),
+      );
+      routeMocks.listMaintenanceTenantIds.mockResolvedValue(["tenant-a"]);
+
+      const response = await POST(workerRequest({
+        startup: false,
+        lane: "maintenance",
+      }));
+
+      expect(response.status).toBe(200);
+      expect(routeMocks.listMaintenanceTenantIds).toHaveBeenCalled();
+      expect(routeMocks.recoverInterruptedLoopV2Runs).toHaveBeenCalledWith(
+        expect.objectContaining({ tenantId: "tenant-a" }),
+      );
+      expect(errorLog).toHaveBeenCalledWith(JSON.stringify({
+        level: "error",
+        msg: "memory_deletion_scrub_failed",
+        error: "Memory write intersects a permanent deletion barrier",
+      }));
+    } finally {
+      errorLog.mockRestore();
+    }
+  });
+
   it("continues to later tenants when one maintenance tenant fails", async () => {
     routeMocks.listMaintenanceTenantIds.mockResolvedValue([
       "tenant-poisoned",

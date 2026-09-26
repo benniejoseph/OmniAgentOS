@@ -2201,6 +2201,11 @@ describe("ordered database schema versions", () => {
       name: "prompt_queue_context_pins_v1",
       checksum: "5de8d38921e0d4d0f7e79bcfe4745f780ce973b009c874a519d09bfd8f3ff777",
     });
+    expect(databaseSchemaMigrations.find((migration) => migration.version === 207)).toEqual({
+      version: 207,
+      name: "memory_forget_lineage_closure_v1",
+      checksum: "980dfe0af300eac5072cf0bf6b5f80b6a4e5335f444f0046732e7291f3f26c36",
+    });
     expect(databaseSchemaMigrations.find((migration) => migration.version === 139)).toEqual({
       version: 139,
       name: "salesforce_guarded_writes_v1",

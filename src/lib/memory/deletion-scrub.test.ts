@@ -119,6 +119,13 @@ describe("memory deletion physical scrub", () => {
       hasMore: false,
     });
     expect(queries.some((query) => query.includes("embedding_vector = NULL"))).toBe(true);
+    // The barrier requires each shell to carry its receipt's exact time, which
+    // a JavaScript timestamp would truncate to milliseconds.
+    const scrubQuery = queries.find((query) => query.includes("UPDATE omni_memories memory"));
+    expect(scrubQuery).toContain("WITH receipt AS (");
+    expect(scrubQuery).toContain("forgotten_at = receipt.forgotten_at,");
+    expect(scrubQuery).toContain("updated_at = receipt.forgotten_at");
+    expect(scrubQuery).toContain("FROM candidates, receipt");
     expect(mocks.runWithDatabaseSystemScope).toHaveBeenCalledWith(
       expect.stringMatching(/immutable deletion receipts/i),
       expect.any(Function),
