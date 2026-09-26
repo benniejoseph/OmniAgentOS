@@ -704,6 +704,25 @@ not requested. Google login accepts only an exact active allowlist entry. Each
 signed-in account sees one Google Workspace connection verified against its own
 email; Personal and Work are separate tenants rather than side-by-side grants.
 
+## Capture document extraction
+
+Uploaded and synced files are extracted inside the Vercel functions, never on
+the Fly machine, which only calls the web routes. Each function parses
+documents in contained worker threads (see the security model in
+[architecture.md](architecture.md#security-model)), so one hostile file costs
+at most one parse's time and memory limits.
+
+pdf.js needs the `@napi-rs/canvas` native binding even to read text, and it
+loads that binding in a way file tracing cannot follow. The parser therefore
+imports the package by name, and `next.config.ts` keeps it in
+`serverExternalPackages`, so the function trace ships the package and the
+platform binary the lockfile selects (`@napi-rs/canvas-linux-x64-gnu` on
+Vercel). Without the external entry the build fails; if a deployment still
+lacks the binding, every PDF returns 503 `extraction_unavailable` while other
+formats keep working. The direct dependency is pinned to the exact version
+`pdf-parse` requires, so upgrade the two together and keep a single copy of the
+roughly 25 MB binding in each function.
+
 ## Schema and migration rollout
 
 Production request traffic verifies the schema and fails closed when a migration

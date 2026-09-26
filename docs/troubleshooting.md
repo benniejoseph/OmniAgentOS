@@ -50,6 +50,19 @@ For internal calls, the secret and identity headers must be sent together. Never
 - Compare the interval with queue lease duration; too many replicas or a short interval can increase contention.
 - On Fly, inspect machine health and restart count. The container health probe uses only the public health endpoint and never sends the internal secret.
 
+## Capture file extraction fails
+
+Files are parsed by the contained document parser described in the [security model](architecture.md#security-model). The API response, or for background processing the asset's failed extraction receipt, carries the code:
+
+- `413 archive_too_large`: a DOCX, spreadsheet, presentation, OpenDocument, or EPUB file expands past 12 MB or holds more than 1,000 entries. The file is the problem; export a smaller document.
+- `413 extraction_resource_limit`: the parse reached its time, heap, or process-memory limit. The log line `Document parser stopped at a resource limit.` names which one (`timeout`, `heap`, or `rss`). Do not raise a limit for one file; the limits bound what a hostile file can cost.
+- `503 extraction_unavailable` with `PDF extraction is temporarily unavailable.` while other formats still work: the deployment lacks the `@napi-rs/canvas` native binding pdf.js needs. See [deployment.md](deployment.md#capture-document-extraction).
+- `503 extraction_unavailable` for every format, logged as `Document parser worker could not start.`: the function could not start a worker thread.
+- `503 ocr_not_configured`: a scanned PDF or an image needs OCR and no vision runtime is configured.
+- `400 extraction_failed`: the parser rejected the file. `Document parser could not read this document.` logs only the error name: `PasswordException` is an encrypted PDF and `InvalidPDFException` or `FormatError` a damaged one, while a `ReferenceError` or `TypeError` points at the deployment or a parser defect rather than the file.
+
+Background processing (`capture.asset.process`) makes three attempts with backoff and records the failed extraction receipt only after the last one, so even a deterministic 413 appears only after the third attempt.
+
 ## Connector discovery or execution is blocked
 
 - Use an HTTPS hostname with public DNS; private, loopback, link-local, metadata, embedded-credential, and unsafe redirect targets are rejected.

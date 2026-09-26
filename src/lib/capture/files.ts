@@ -6,6 +6,12 @@ import {
   type CaptureExtractionDraftUnit,
   type CaptureStructuredExtraction,
 } from "@/lib/capture/extraction";
+import { parseDocumentContained, type DocumentParseResult } from "@/lib/capture/document-parse";
+import {
+  boundedUnitText,
+  DocumentParseError,
+  groupSpreadsheetRows,
+} from "@/lib/capture/document-parse.worker";
 import {
   CAPTURE_VIDEO_TYPES,
   transcribeCaptureMedia,
@@ -29,17 +35,10 @@ const imageExtensions = new Set(["png", "jpg", "jpeg", "webp"]);
 const audioExtensions = new Set(["mp3", "m4a", "wav", "ogg"]);
 const videoExtensions = new Set(["mp4", "webm"]);
 const archiveDocumentExtensions = new Set(["xlsx", "xlsm", "pptx", "ppsx", "odt", "ods", "odp", "epub"]);
+const markupExtensions = new Set(["html", "htm", "xml"]);
 const supportedExtensions = new Set([...textExtensions, ...personalDataExtensions, ...imageExtensions, ...audioExtensions, ...videoExtensions, ...archiveDocumentExtensions, "pdf", "docx"]);
 const legacyOfficeExtensions = new Set(["doc", "xls", "ppt"]);
 const MAX_EXTRACTED_CHARACTERS = 900_000;
-const MAX_ARCHIVE_UNCOMPRESSED_BYTES = 12 * 1024 * 1024;
-
-type ArchiveEntry = {
-  name: string;
-  dir: boolean;
-  _data?: { uncompressedSize?: number };
-  async(type: "string"): Promise<string>;
-};
 
 export class CaptureFileError extends Error {
   constructor(
@@ -72,8 +71,7 @@ export async function extractCaptureFile(file: File, usageScope?: AiUsageScope) 
   let extraction: CaptureStructuredExtraction;
   try {
     if (extension === "pdf") extraction = await extractPdf(bytes, usageScope);
-    else if (extension === "docx") extraction = textExtraction(await extractDocxText(bytes), extension, "document");
-    else if (archiveDocumentExtensions.has(extension)) extraction = await extractArchiveDocument(bytes, extension);
+    else if (extension === "docx" || archiveDocumentExtensions.has(extension)) extraction = await extractContainedDocument(bytes, extension);
     else if (imageExtensions.has(extension)) extraction = await extractImage(bytes, extension, usageScope);
     else if (audioExtensions.has(extension) || videoExtensions.has(extension)) extraction = await extractMedia(file, extension, usageScope);
     else if (extension === "eml") extraction = extractEmail(bytes, extension);
@@ -83,19 +81,23 @@ export async function extractCaptureFile(file: File, usageScope?: AiUsageScope) 
     else if (extension === "ipynb") extraction = textExtraction(extractNotebookText(bytes), extension, "document");
     else {
       if (bytes.includes(0)) throw new CaptureFileError("The selected text file appears to be binary.", 415, "binary_text", extension);
-      let content = new TextDecoder("utf-8", { fatal: true }).decode(bytes).trim();
-      if (extension === "html" || extension === "htm" || extension === "xml") content = stripMarkup(content);
-      if (extension === "srt" || extension === "vtt") {
-        extraction = extractTimedTranscript(content, extension)
-          || textExtraction(content, extension, "video");
+      if (markupExtensions.has(extension)) {
+        extraction = await extractContainedDocument(bytes, extension);
       } else {
-        extraction = extension === "csv" || extension === "tsv"
-          ? extractDelimitedText(content, extension)
-          : textExtraction(content, extension, "document");
+        const content = new TextDecoder("utf-8", { fatal: true }).decode(bytes).trim();
+        if (extension === "srt" || extension === "vtt") {
+          extraction = extractTimedTranscript(content, extension)
+            || textExtraction(content, extension, "video");
+        } else {
+          extraction = extension === "csv" || extension === "tsv"
+            ? extractDelimitedText(content, extension)
+            : textExtraction(content, extension, "document");
+        }
       }
     }
   } catch (error) {
     if (error instanceof CaptureFileError) throw error;
+    if (error instanceof DocumentParseError) throw new CaptureFileError(error.message, error.status, error.code, extension);
     throw new CaptureFileError(`Could not extract readable text from this ${extension.toUpperCase()} file.`, 400, "extraction_failed", extension);
   }
   const content = renderCaptureExtractionUnits(extraction.units).trim();
@@ -172,69 +174,66 @@ function extractCalendarText(bytes: Uint8Array) {
 }
 
 async function extractPdf(bytes: Uint8Array, usageScope?: AiUsageScope) {
-  const { PDFParse } = await import("pdf-parse");
-  const parser = new PDFParse({ data: bytes.slice() });
-  try {
-    const result = await parser.getText({ first: 100, parseHyperlinks: false });
-    if (result.text.trim()) {
-      const warnings = new Set<string>();
-      if (result.total > result.pages.length) warnings.add("pdf_page_limit");
-      const units = result.pages.flatMap((page) => {
-        const bounded = boundedUnitText(page.text, warnings, "pdf_page_truncated");
-        return bounded ? [{
-          label: `Page ${page.num}`,
-          content: bounded,
-          locator: {
-            kind: "page" as const,
-            pageNumber: page.num,
-            pageCount: result.total || null,
-          },
-        }] : [];
-      });
-      if (units.length < result.pages.length) warnings.add("pdf_empty_pages");
-      return finalizeCaptureExtraction({
-        sourceKind: "document",
-        format: "pdf",
-        state: warnings.size ? "partial" : "completed",
-        warningCodes: [...warnings],
-        units,
-      });
-    }
-    if (!await imageOcrConfigured(usageScope)) {
-      throw new CaptureFileError("This PDF appears to be scanned and OCR is not configured.", 503, "ocr_not_configured", "pdf");
-    }
-    const pages = await parser.getScreenshot({ first: 10, desiredWidth: 1600, imageDataUrl: true, imageBuffer: false });
-    const warnings = new Set<string>(["pdf_scanned_ocr"]);
-    if (result.total > pages.pages.length) warnings.add("pdf_ocr_page_limit");
-    const units: CaptureExtractionDraftUnit[] = [];
-    for (const page of pages.pages) {
-      if (!page.dataUrl) continue;
-      const text = boundedUnitText(
-        await extractImageTextOrThrow([page.dataUrl], usageScope, "pdf"),
-        warnings,
-        "pdf_page_truncated",
-      );
-      if (!text) continue;
-      units.push({
-        label: `Page ${page.pageNumber}`,
-        content: text,
-        locator: {
-          kind: "page",
-          pageNumber: page.pageNumber,
-          pageCount: result.total || null,
-        },
-      });
-    }
-    return finalizeCaptureExtraction({
-      sourceKind: "document",
-      format: "pdf",
-      state: warnings.size > 1 ? "partial" : "completed",
-      warningCodes: [...warnings],
-      units,
-    });
-  } finally {
-    await parser.destroy().catch(() => undefined);
+  const parsed = await parseDocumentContained({ format: "pdf", bytes });
+  if (parsed.kind === "units") return finalizeParsedUnits(parsed, "pdf");
+  if (parsed.kind !== "pdf_scanned") throw new Error("The document parser returned an unexpected PDF result.");
+  if (!await imageOcrConfigured(usageScope)) {
+    throw new CaptureFileError("This PDF appears to be scanned and OCR is not configured.", 503, "ocr_not_configured", "pdf");
   }
+  // Pages are rendered only once OCR is known to be available, so a second
+  // contained parse is the price of not rendering scans that cannot be read.
+  const rendered = await parseDocumentContained({ format: "pdf", bytes, renderScannedPdfPages: true });
+  if (rendered.kind !== "pdf_scanned") throw new Error("The document parser returned an unexpected PDF result.");
+  const warnings = new Set<string>(["pdf_scanned_ocr"]);
+  if (parsed.pageCount > rendered.pages.length) warnings.add("pdf_ocr_page_limit");
+  const units: CaptureExtractionDraftUnit[] = [];
+  for (const page of rendered.pages) {
+    if (!page.dataUrl) continue;
+    const text = boundedUnitText(
+      await extractImageTextOrThrow([page.dataUrl], usageScope, "pdf"),
+      warnings,
+      "pdf_page_truncated",
+    );
+    if (!text) continue;
+    units.push({
+      label: `Page ${page.pageNumber}`,
+      content: text,
+      locator: {
+        kind: "page",
+        pageNumber: page.pageNumber,
+        pageCount: parsed.pageCount || null,
+      },
+    });
+  }
+  return finalizeCaptureExtraction({
+    sourceKind: "document",
+    format: "pdf",
+    state: warnings.size > 1 ? "partial" : "completed",
+    warningCodes: [...warnings],
+    units,
+  });
+}
+
+async function extractContainedDocument(bytes: Uint8Array, format: string) {
+  const parsed = await parseDocumentContained({ format, bytes });
+  if (parsed.kind === "text") return textExtraction(parsed.content, format, "document");
+  if (parsed.kind !== "units") throw new Error("The document parser returned an unexpected result.");
+  return finalizeParsedUnits(parsed, format);
+}
+
+function finalizeParsedUnits(parsed: Extract<DocumentParseResult, { kind: "units" }>, format: string) {
+  return finalizeCaptureExtraction({
+    sourceKind: parsed.sourceKind,
+    format,
+    state: parsed.state,
+    warningCodes: parsed.warningCodes,
+    units: parsed.units.map((unit): CaptureExtractionDraftUnit => {
+      const { locator } = unit;
+      if (locator.kind !== "sheet_range") return { ...unit, locator };
+      const { sheetKey, ...range } = locator;
+      return { ...unit, locator: { ...range, sheetKeySha256: sourceContractSha256(sheetKey) } };
+    }),
+  });
 }
 
 async function extractImage(bytes: Uint8Array, extension: string, usageScope?: AiUsageScope) {
@@ -268,146 +267,6 @@ async function extractImage(bytes: Uint8Array, extension: string, usageScope?: A
         imageHeight: dimensions.height,
       },
     }],
-  });
-}
-
-async function extractDocxText(bytes: Uint8Array) {
-  const mammoth = await import("mammoth");
-  const result = await mammoth.extractRawText({ buffer: Buffer.from(bytes) });
-  return result.value;
-}
-
-async function extractArchiveDocument(bytes: Uint8Array, extension: string) {
-  const JSZip = (await import("jszip")).default;
-  const archive = await JSZip.loadAsync(bytes);
-  const files = Object.values(archive.files).filter((entry) => !entry.dir) as unknown as ArchiveEntry[];
-  if (files.length > 1_000) throw new CaptureFileError("This document archive contains too many files to process safely.", 413, "archive_too_large", extension);
-  const declaredBytes = files.reduce((sum, entry) => {
-    return sum + Number(entry._data?.uncompressedSize || 0);
-  }, 0);
-  if (declaredBytes > MAX_ARCHIVE_UNCOMPRESSED_BYTES) throw new CaptureFileError("The expanded document exceeds the 12 MB extraction safety limit.", 413, "archive_too_large", extension);
-
-  if (extension === "xlsx" || extension === "xlsm") return extractSpreadsheetArchive(files, extension);
-  if (extension === "pptx" || extension === "ppsx") return extractPresentationArchive(files, extension);
-  if (extension === "epub") return extractEpubArchive(files, extension);
-  return extractOpenDocumentArchive(files, extension);
-}
-
-async function extractSpreadsheetArchive(files: ArchiveEntry[], format: string) {
-  const sharedEntry = files.find((entry) => entry.name === "xl/sharedStrings.xml");
-  const sharedStrings = sharedEntry ? xmlTextRuns(await sharedEntry.async("string"), "t") : [];
-  const sheets = naturalSort(files.filter((entry) => /^xl\/worksheets\/sheet\d+\.xml$/i.test(entry.name)));
-  const units: CaptureExtractionDraftUnit[] = [];
-  const warnings = new Set<string>();
-  for (const [index, sheet] of sheets.entries()) {
-    const xml = await sheet.async("string");
-    const rows = [...xml.matchAll(/<row\b([^>]*)>([\s\S]*?)<\/row>/gi)].flatMap((row, rowIndex) => {
-      const rowNumber = Number(row[1].match(/\br=["'](\d+)["']/i)?.[1] || rowIndex + 1);
-      const cells = [...row[2].matchAll(/<c\b([^>]*)>([\s\S]*?)<\/c>/gi)].map((cell) => {
-        const attributes = cell[1];
-        const body = cell[2];
-        const raw = body.match(/<v>([\s\S]*?)<\/v>/i)?.[1] || xmlTextRuns(body, "t").join(" ");
-        const value = /\bt=["']s["']/i.test(attributes) ? sharedStrings[Number(raw)] || raw : raw;
-        const reference = attributes.match(/\br=["']([A-Z]+)\d+["']/i)?.[1];
-        return { value: decodeXml(value).trim(), column: reference ? spreadsheetColumnNumber(reference) : 0 };
-      });
-      const content = cells.map((cell) => cell.value).join("\t").trim();
-      return content ? [{ rowNumber, content, columnCount: Math.max(cells.length, ...cells.map((cell) => cell.column)) }] : [];
-    });
-    if (!rows.length) continue;
-    const sheetRowCount = Math.max(...rows.map((row) => row.rowNumber));
-    const sheetColumnCount = Math.max(1, ...rows.map((row) => row.columnCount));
-    const groups = groupSpreadsheetRows(rows);
-    for (const [groupIndex, group] of groups.entries()) {
-      const content = boundedUnitText(
-        `Sheet ${index + 1}\n${group.map((row) => row.content).join("\n")}`,
-        warnings,
-        "spreadsheet_range_truncated",
-      );
-      units.push({
-        label: `Sheet ${index + 1}, range ${groupIndex + 1}`,
-        content,
-        locator: {
-          kind: "sheet_range",
-          sheetKeySha256: sourceContractSha256(sheet.name),
-          startRow: group[0].rowNumber,
-          endRowExclusive: group[group.length - 1].rowNumber + 1,
-          startColumn: 1,
-          endColumnExclusive: sheetColumnCount + 1,
-          sheetRowCount,
-          sheetColumnCount,
-        },
-      });
-    }
-  }
-  return finalizeCaptureExtraction({
-    sourceKind: "spreadsheet",
-    format,
-    state: warnings.size ? "partial" : "completed",
-    warningCodes: [...warnings],
-    units,
-  });
-}
-
-async function extractPresentationArchive(files: ArchiveEntry[], format: string) {
-  const slides = naturalSort(files.filter((entry) => /^ppt\/slides\/slide\d+\.xml$/i.test(entry.name)));
-  const units: CaptureExtractionDraftUnit[] = [];
-  const warnings = new Set<string>();
-  for (const [index, slide] of slides.entries()) {
-    const text = xmlTextRuns(await slide.async("string"), "t").join("\n").trim();
-    if (text) units.push({
-      label: `Slide ${index + 1}`,
-      content: boundedUnitText(`Slide ${index + 1}\n${text}`, warnings, "slide_text_truncated"),
-      locator: {
-        kind: "slide",
-        slideNumber: index + 1,
-        slideCount: slides.length,
-        elementKeySha256: null,
-      },
-    });
-  }
-  return finalizeCaptureExtraction({
-    sourceKind: "presentation",
-    format,
-    state: warnings.size ? "partial" : "completed",
-    warningCodes: [...warnings],
-    units,
-  });
-}
-
-async function extractOpenDocumentArchive(files: ArchiveEntry[], format: string) {
-  const content = files.find((entry) => entry.name === "content.xml");
-  if (!content) throw new Error("OpenDocument content is missing.");
-  const xml = await content.async("string");
-  if (format === "ods") return extractOpenDocumentSheets(xml, format);
-  if (format === "odp") return extractOpenDocumentSlides(xml, format);
-  return textExtraction(stripMarkup(xml), format, "document");
-}
-
-async function extractEpubArchive(files: ArchiveEntry[], format: string) {
-  const pages = naturalSort(files.filter((entry) => /\.(?:xhtml|html|htm)$/i.test(entry.name))).slice(0, 300);
-  const units: CaptureExtractionDraftUnit[] = [];
-  const warnings = new Set<string>();
-  const totalPages = files.filter((entry) => /\.(?:xhtml|html|htm)$/i.test(entry.name)).length;
-  if (totalPages > pages.length) warnings.add("epub_page_limit");
-  for (const page of pages) {
-    const text = stripMarkup(await page.async("string"));
-    if (text) units.push({
-      label: `Page ${units.length + 1}`,
-      content: boundedUnitText(text, warnings, "epub_page_truncated"),
-      locator: {
-        kind: "page",
-        pageNumber: units.length + 1,
-        pageCount: totalPages || null,
-      },
-    });
-  }
-  return finalizeCaptureExtraction({
-    sourceKind: "document",
-    format,
-    state: warnings.size ? "partial" : "completed",
-    warningCodes: [...warnings],
-    units,
   });
 }
 
@@ -750,93 +609,6 @@ function extractDelimitedText(content: string, format: string) {
   });
 }
 
-function extractOpenDocumentSheets(xml: string, format: string) {
-  const tables = [...xml.matchAll(/<table:table\b[^>]*>([\s\S]*?)<\/table:table>/gi)];
-  const units: CaptureExtractionDraftUnit[] = [];
-  for (const [tableIndex, table] of tables.entries()) {
-    const rows = [...table[1].matchAll(/<table:table-row\b[^>]*>([\s\S]*?)<\/table:table-row>/gi)].flatMap((row, rowIndex) => {
-      const cells = [...row[1].matchAll(/<table:table-cell\b[^>]*>([\s\S]*?)<\/table:table-cell>/gi)]
-        .map((cell) => stripMarkup(cell[1]));
-      const content = cells.join("\t").trim();
-      return content ? [{ rowNumber: rowIndex + 1, content, columnCount: Math.max(1, cells.length) }] : [];
-    });
-    if (!rows.length) continue;
-    const columnCount = Math.max(1, ...rows.map((row) => row.columnCount));
-    for (const [groupIndex, group] of groupSpreadsheetRows(rows).entries()) {
-      units.push({
-        label: `Sheet ${tableIndex + 1}, range ${groupIndex + 1}`,
-        content: `Sheet ${tableIndex + 1}\n${group.map((row) => row.content).join("\n")}`,
-        locator: {
-          kind: "sheet_range",
-          sheetKeySha256: sourceContractSha256(`ods-sheet-${tableIndex + 1}`),
-          startRow: group[0].rowNumber,
-          endRowExclusive: group[group.length - 1].rowNumber + 1,
-          startColumn: 1,
-          endColumnExclusive: columnCount + 1,
-          sheetRowCount: rows.length,
-          sheetColumnCount: columnCount,
-        },
-      });
-    }
-  }
-  return finalizeCaptureExtraction({ sourceKind: "spreadsheet", format, units });
-}
-
-function extractOpenDocumentSlides(xml: string, format: string) {
-  const slides = [...xml.matchAll(/<draw:page\b[^>]*>([\s\S]*?)<\/draw:page>/gi)];
-  return finalizeCaptureExtraction({
-    sourceKind: "presentation",
-    format,
-    units: slides.flatMap((slide, index) => {
-      const content = stripMarkup(slide[1]);
-      return content ? [{
-        label: `Slide ${index + 1}`,
-        content: `Slide ${index + 1}\n${content}`,
-        locator: {
-          kind: "slide" as const,
-          slideNumber: index + 1,
-          slideCount: slides.length,
-          elementKeySha256: null,
-        },
-      }] : [];
-    }),
-  });
-}
-
-function groupSpreadsheetRows<T extends { rowNumber: number; content: string }>(rows: T[]) {
-  const groups: T[][] = [];
-  let current: T[] = [];
-  let characters = 0;
-  for (const row of rows) {
-    if (current.length && (current.length >= 50 || characters + row.content.length + 1 > 20_000)) {
-      groups.push(current);
-      current = [];
-      characters = 0;
-    }
-    current.push(row);
-    characters += row.content.length + 1;
-  }
-  if (current.length) groups.push(current);
-  return groups;
-}
-
-function spreadsheetColumnNumber(value: string) {
-  return value.toUpperCase().split("").reduce((result, character) => (
-    result * 26 + character.charCodeAt(0) - 64
-  ), 0);
-}
-
-function boundedUnitText(
-  value: string,
-  warnings: Set<string>,
-  warningCode: string,
-) {
-  const normalized = value.trim();
-  if (normalized.length <= 24_000) return normalized;
-  warnings.add(warningCode);
-  return normalized.slice(0, 24_000);
-}
-
 function imageDimensions(bytes: Uint8Array, extension: string) {
   if (extension === "png" && bytes.length >= 24 && Buffer.from(bytes.slice(1, 4)).toString("ascii") === "PNG") {
     return { width: readUint32(bytes, 16), height: readUint32(bytes, 20) };
@@ -876,34 +648,6 @@ function readUint32(bytes: Uint8Array, offset: number) {
     (bytes[offset + 2] << 8) +
     bytes[offset + 3]
   );
-}
-
-function stripMarkup(value: string) {
-  return decodeXml(value
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/(?:p|div|li|h[1-6]|text:p|table:table-row)>/gi, "\n")
-    .replace(/<[^>]+>/g, " "))
-    .replace(/[ \t]+/g, " ")
-    .replace(/ *\n */g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-
-function xmlTextRuns(value: string, tag: string) {
-  const pattern = new RegExp(`<(?:[\\w.-]+:)?${tag}\\b[^>]*>([\\s\\S]*?)<\\/(?:[\\w.-]+:)?${tag}>`, "gi");
-  return [...value.matchAll(pattern)].map((match) => decodeXml(match[1].replace(/<[^>]+>/g, "")).trim()).filter(Boolean);
-}
-
-function decodeXml(value: string) {
-  return value.replace(/&#x([0-9a-f]+);/gi, (_match, code) => String.fromCodePoint(Number.parseInt(code, 16)))
-    .replace(/&#(\d+);/g, (_match, code) => String.fromCodePoint(Number(code)))
-    .replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&quot;/gi, '"').replace(/&apos;/gi, "'");
-}
-
-function naturalSort<T extends { name: string }>(values: T[]) {
-  return values.sort((left, right) => left.name.localeCompare(right.name, undefined, { numeric: true }));
 }
 
 function resolveExtension(file: File) {

@@ -9,6 +9,9 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: __dirname,
   },
+  // Native binding pdf.js needs for DOMMatrix; left external so file tracing
+  // ships the package and its platform binary with the document parser worker.
+  serverExternalPackages: ["@napi-rs/canvas"],
   outputFileTracingIncludes: {
     "/api/media/video/clip": ["node_modules/ffmpeg-static/ffmpeg"],
     "/api/agent": ["node_modules/ffmpeg-static/ffmpeg"],

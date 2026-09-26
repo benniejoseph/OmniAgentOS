@@ -196,7 +196,7 @@ Connector API records never contain credential plaintext or sealed payloads. App
 - `403`: authenticated identity lacks the required action/role.
 - `404`: resource is absent or intentionally hidden across tenant boundaries.
 - `409`: state transition conflict.
-- `413`: request body exceeds the configured limit.
+- `413`: request body exceeds the configured limit, or an uploaded document exceeds an extraction safety limit (`archive_too_large`, `extraction_resource_limit`).
 - `429`: a shared Postgres-backed safety limit was reached (single-process fallback is used only outside durable deployments).
 - `503`: production storage, cron, or a required dependency is unavailable.
 
