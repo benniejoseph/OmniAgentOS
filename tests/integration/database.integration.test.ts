@@ -19,9 +19,13 @@ import {
 import { saveMemories } from "@/lib/memory/store";
 import { createKnowledgeDocument } from "@/lib/rag/store";
 import {
+  cancelOperationJobByDedupeKey,
   completeOperationJob,
   enqueueOperationJob,
   failOperationJob,
+  getAgentResumeJobDedupeKey,
+  leaseOperationJobByDedupeKey,
+  leaseOperationJobs,
 } from "@/lib/operations/job-queue";
 import { cancelAgentRun, createAgentRun } from "@/lib/runs/store";
 import { sweepExpiredSensitiveData } from "@/lib/security/retention";
@@ -3231,6 +3235,212 @@ databaseDescribe("Postgres schema integration", () => {
       outcome: "claimed",
       record: { status: "executing" },
     });
+  });
+
+  test("leases a job by dedupe key only while no live lease holds it", async () => {
+    const tenantId = "dedupe_lease_tenant";
+    const otherTenantId = "dedupe_lease_other";
+    const inTenant = <T,>(operation: () => Promise<T>, tenant = tenantId) =>
+      runWithDatabaseTenantScope(tenant, operation);
+    const leaseByKey = (
+      dedupeKey: string,
+      options: {
+        tenant?: string;
+        type?: "agent.resume" | "workflow.tick";
+        owner?: string;
+      } = {},
+    ) => {
+      const tenant = options.tenant ?? tenantId;
+      return inTenant(() => leaseOperationJobByDedupeKey(dedupeKey, {
+        tenantId: tenant,
+        type: options.type ?? "agent.resume",
+        owner: options.owner,
+        leaseSeconds: 60,
+      }), tenant);
+    };
+    const enqueue = (
+      dedupeKey: string,
+      options: { tenant?: string; runAt?: string; maxAttempts?: number } = {},
+    ) => {
+      const tenant = options.tenant ?? tenantId;
+      return inTenant(() => enqueueOperationJob({
+        tenantId: tenant,
+        type: "agent.resume",
+        dedupeKey,
+        payload: {},
+        runAt: options.runAt,
+        maxAttempts: options.maxAttempts,
+      }), tenant);
+    };
+    const jobRow = async (id: string) => {
+      const [row] = await admin`
+        SELECT status, attempt, lease_owner, last_error, completed_at
+        FROM omni_operation_jobs
+        WHERE id = ${id}
+      `;
+      return row;
+    };
+
+    // A job deferred into the future is claimed at once, and the same key in
+    // another tenant is a different job.
+    const pendingKey = getAgentResumeJobDedupeKey("dedupe-lease-db");
+    const future = new Date(Date.now() + 600_000).toISOString();
+    const pending = await enqueue(pendingKey, { runAt: future });
+    const foreign = await enqueue(pendingKey, {
+      tenant: otherTenantId,
+      runAt: future,
+    });
+    expect(await inTenant(() => leaseOperationJobs({
+      tenantId,
+      type: "agent.resume",
+    }))).toEqual([]);
+
+    await expect(leaseByKey(pendingKey, { owner: "request:approval" }))
+      .resolves.toMatchObject({
+        outcome: "leased",
+        job: {
+          id: pending.id,
+          tenantId,
+          status: "running",
+          attempt: 1,
+          leaseOwner: "request:approval",
+        },
+      });
+    expect(await admin`
+      SELECT lease_expires_at > NOW() + INTERVAL '50 seconds' AS long_enough,
+        lease_expires_at <= NOW() + INTERVAL '60 seconds' AS bounded
+      FROM omni_operation_jobs
+      WHERE id = ${pending.id}
+    `).toEqual([{ long_enough: true, bounded: true }]);
+    expect(await jobRow(foreign.id)).toMatchObject({
+      status: "queued",
+      attempt: 0,
+      lease_owner: null,
+    });
+    await expect(leaseByKey(pendingKey, { owner: "request:second" }))
+      .resolves.toEqual({ outcome: "busy" });
+    await expect(leaseByKey(pendingKey, { type: "workflow.tick" }))
+      .resolves.toEqual({ outcome: "absent" });
+    await expect(leaseByKey(pendingKey, {
+      tenant: otherTenantId,
+      owner: "request:foreign",
+    })).resolves.toMatchObject({
+      outcome: "leased",
+      job: { id: foreign.id, tenantId: otherTenantId },
+    });
+    expect(await jobRow(pending.id)).toMatchObject({
+      status: "running",
+      attempt: 1,
+      lease_owner: "request:approval",
+    });
+
+    // A legacy row that stored its key without a tenant prefix is still
+    // another tenant's job.
+    await admin`
+      INSERT INTO omni_operation_jobs (
+        id, tenant_id, type, status, payload, dedupe_key, attempt, max_attempts
+      )
+      VALUES (
+        'dedupe-lease-legacy', ${otherTenantId}, 'agent.resume', 'queued',
+        '{}'::jsonb, 'dedupe-lease-legacy-key', 0, 3
+      )
+    `;
+    await expect(leaseByKey("dedupe-lease-legacy-key", { tenant: "default" }))
+      .resolves.toEqual({ outcome: "absent" });
+    expect(await jobRow("dedupe-lease-legacy")).toMatchObject({
+      status: "queued",
+      attempt: 0,
+    });
+
+    // A failed job is leased again with its error cleared.
+    const failedKey = "dedupe-lease-failed";
+    const failed = await enqueue(failedKey, { maxAttempts: 1 });
+    const [failedLease] = await inTenant(() => leaseOperationJobs({
+      tenantId,
+      type: "agent.resume",
+      dedupeKey: failedKey,
+    }));
+    await inTenant(() => failOperationJob(
+      failed.id,
+      "boom",
+      failedLease.leaseOwner,
+      tenantId,
+    ));
+    expect(await jobRow(failed.id)).toMatchObject({
+      status: "failed",
+      last_error: "boom",
+    });
+    await expect(leaseByKey(failedKey, { owner: "request:failed" }))
+      .resolves.toMatchObject({
+        outcome: "leased",
+        job: { id: failed.id, status: "running", attempt: 2 },
+      });
+    expect(await jobRow(failed.id)).toMatchObject({
+      status: "running",
+      attempt: 2,
+      lease_owner: "request:failed",
+      last_error: null,
+      completed_at: null,
+    });
+
+    // A running job is taken over only once its lease has lapsed.
+    const expiredKey = "dedupe-lease-expired";
+    const expired = await enqueue(expiredKey);
+    await inTenant(() => leaseOperationJobs({
+      tenantId,
+      type: "agent.resume",
+      dedupeKey: expiredKey,
+      owner: "worker:dead",
+      leaseSeconds: 10,
+    }));
+    await expect(leaseByKey(expiredKey)).resolves.toEqual({ outcome: "busy" });
+    await admin`
+      UPDATE omni_operation_jobs
+      SET lease_expires_at = NOW() - INTERVAL '1 second'
+      WHERE id = ${expired.id}
+    `;
+    await expect(leaseByKey(expiredKey, { owner: "request:expired" }))
+      .resolves.toMatchObject({
+        outcome: "leased",
+        job: { id: expired.id, attempt: 2, leaseOwner: "request:expired" },
+      });
+    await admin`
+      UPDATE omni_operation_jobs
+      SET lease_expires_at = NULL
+      WHERE id = ${expired.id}
+    `;
+    await expect(leaseByKey(expiredKey, { owner: "request:unleased" }))
+      .resolves.toMatchObject({
+        outcome: "leased",
+        job: { id: expired.id, attempt: 3, leaseOwner: "request:unleased" },
+      });
+
+    // Finished, canceled, and unknown jobs are absent, and so is a waiting
+    // job of another type.
+    await inTenant(() => completeOperationJob(
+      pending.id,
+      "request:approval",
+      tenantId,
+    ));
+    await expect(leaseByKey(pendingKey)).resolves.toEqual({ outcome: "absent" });
+    const canceledKey = "dedupe-lease-canceled";
+    const canceled = await enqueue(canceledKey);
+    await expect(leaseByKey(canceledKey, { type: "workflow.tick" }))
+      .resolves.toEqual({ outcome: "absent" });
+    expect(await jobRow(canceled.id)).toMatchObject({
+      status: "queued",
+      attempt: 0,
+      lease_owner: null,
+    });
+    await inTenant(() => cancelOperationJobByDedupeKey(
+      canceledKey,
+      "gone",
+      { tenantId },
+    ));
+    await expect(leaseByKey(canceledKey)).resolves.toEqual({ outcome: "absent" });
+    expect(await jobRow(canceled.id)).toMatchObject({ status: "canceled" });
+    await expect(leaseByKey("dedupe-lease-never-enqueued"))
+      .resolves.toEqual({ outcome: "absent" });
   });
 });
 

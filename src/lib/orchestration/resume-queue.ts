@@ -8,9 +8,12 @@ import {
   completeOperationJob,
   deferOperationJob,
   failOperationJob,
+  getAgentResumeJobDedupeKey,
   heartbeatOperationJob,
+  leaseOperationJobByDedupeKey,
   leaseOperationJobs,
   listRunnableAgentResumeTenantIds,
+  wakeOperationJobByDedupeKey,
   type OperationJobRecord,
 } from "@/lib/operations/job-queue";
 import {
@@ -42,6 +45,23 @@ type AgentResumeJobResult = {
   executionId?: string;
   message?: string;
 };
+
+type ApprovedToolExecution = Parameters<
+  typeof resumeAgentRunAfterToolApproval
+>[0]["toolExecution"];
+
+export type ApprovalRequestResumeResult =
+  | { status: "leased"; result: AgentResumeJobResult }
+  | { status: "unqueued"; resumed: boolean }
+  | { status: "busy" };
+
+// Every approval decision wakes its resume job, so this poll is only a
+// backstop for decisions that land while a worker holds the job's lease or
+// that are recorded elsewhere, such as an approval expiring.
+export const PENDING_APPROVAL_RESUME_POLL_SECONDS = 300;
+const UNRESOLVED_TOOL_RESUME_POLL_SECONDS = 30;
+const APPROVAL_REQUEST_LEASE_ATTEMPTS = 20;
+const APPROVAL_REQUEST_LEASE_RETRY_MS = 250;
 
 export type AgentResumeQueueResult = {
   requested: number;
@@ -144,8 +164,81 @@ function boundedDispatchTenantIds(tenantIds: readonly string[], limit: number) {
     .slice(0, limit);
 }
 
+/**
+ * Resumes a run from the request that approved its pending tool call, so the
+ * run can use that request's in-memory result, such as a This Mac screenshot
+ * that is never persisted. The resume runs under the run's resume job lease;
+ * without it the durable queue would lease the job while this resume is live,
+ * see the run already resuming, and fail it as interrupted.
+ *
+ * - "leased": this request held the lease and processed the job.
+ * - "busy": another owner holds a live lease and continues the run without
+ *   the in-memory result.
+ * - "unqueued": the run has no live resume job, as legacy runs don't, so it
+ *   resumed directly.
+ */
+export async function resumeAgentRunInApprovalRequest({
+  executionId,
+  tenantId,
+  toolExecution,
+  leaseRetry = {},
+}: {
+  executionId: string;
+  tenantId: string;
+  toolExecution: ApprovedToolExecution;
+  leaseRetry?: { attempts?: number; delayMs?: number };
+}): Promise<ApprovalRequestResumeResult> {
+  const attempts = Math.max(
+    1,
+    Math.round(leaseRetry.attempts ?? APPROVAL_REQUEST_LEASE_ATTEMPTS),
+  );
+  const delayMs = Math.max(
+    0,
+    leaseRetry.delayMs ?? APPROVAL_REQUEST_LEASE_RETRY_MS,
+  );
+  return runWithDatabaseTenantScope(tenantId, async () => {
+    for (let attempt = 1; ; attempt += 1) {
+      const lease = await leaseOperationJobByDedupeKey(
+        getAgentResumeJobDedupeKey(executionId),
+        {
+          tenantId,
+          type: "agent.resume",
+          leaseSeconds: OPERATION_QUEUE_LEASE_SECONDS,
+        },
+      );
+      if (lease.outcome === "leased") {
+        return {
+          status: "leased",
+          result: await processAgentResumeJob(lease.job, {
+            approvedToolExecution: toolExecution,
+          }),
+        };
+      }
+      if (lease.outcome === "absent") {
+        const outcome = await resumeAgentRunAfterToolApproval({
+          executionId,
+          toolExecution,
+          tenantId,
+        });
+        return { status: "unqueued", resumed: outcome.resumed };
+      }
+      if (attempt >= attempts) {
+        return { status: "busy" };
+      }
+      // A worker usually holds the lease only while it defers the job.
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  });
+}
+
+type ProcessAgentResumeJobOptions = {
+  /** The approving request's own result for the job's tool execution. */
+  approvedToolExecution?: ApprovedToolExecution;
+};
+
 async function processAgentResumeJob(
   job: OperationJobRecord,
+  options: ProcessAgentResumeJobOptions = {},
 ): Promise<AgentResumeJobResult> {
   const agentRunId = String(job.payload.agentRunId || "");
   const executionId = String(job.payload.executionId || "");
@@ -163,13 +256,14 @@ async function processAgentResumeJob(
     );
   }
   return runWithDatabaseActorScope(job.tenantId, [actorId], () =>
-    processAgentResumeJobInActorScope(job, base)
+    processAgentResumeJobInActorScope(job, base, options)
   );
 }
 
 async function processAgentResumeJobInActorScope(
   job: OperationJobRecord,
   base: Pick<AgentResumeJobResult, "job" | "agentRunId" | "executionId">,
+  options: ProcessAgentResumeJobOptions,
 ): Promise<AgentResumeJobResult> {
   const agentRunId = base.agentRunId || "";
   const executionId = base.executionId || "";
@@ -233,10 +327,13 @@ async function processAgentResumeJobInActorScope(
         base,
       );
     }
-    if (["approval_required", "executing"].includes(toolExecution.status)) {
+    if (toolExecution.status === "approval_required") {
+      return deferPendingApprovalResumeJob(job, base);
+    }
+    if (toolExecution.status === "executing") {
       return deferResumeJob(
         job,
-        "Waiting for the tool approval decision to finish.",
+        "Waiting for the approved tool execution to finish.",
         base,
       );
     }
@@ -405,11 +502,14 @@ async function processAgentResumeJobInActorScope(
       outcome = await resumeAgentRunAfterToolApproval({
         executionId,
         tenantId: job.tenantId,
-        toolExecution: {
-          record: toolExecution,
-          result: toolExecution.output,
-          computerObservation: undefined,
-        },
+        toolExecution:
+          options.approvedToolExecution?.record.id === executionId
+            ? options.approvedToolExecution
+            : {
+                record: toolExecution,
+                result: toolExecution.output,
+                computerObservation: undefined,
+              },
         abortSignal: controller.signal,
         resumeFence,
       });
@@ -497,10 +597,11 @@ async function deferResumeJob(
   job: OperationJobRecord,
   message: string,
   base: Pick<AgentResumeJobResult, "agentRunId" | "executionId">,
+  delaySeconds = UNRESOLVED_TOOL_RESUME_POLL_SECONDS,
 ): Promise<AgentResumeJobResult> {
   const deferred = await deferOperationJob(job.id, job.leaseOwner || "", {
     tenantId: job.tenantId,
-    delaySeconds: 30,
+    delaySeconds,
     reason: message,
   });
   return {
@@ -509,6 +610,45 @@ async function deferResumeJob(
     status: deferred ? "deferred" : "stale",
     message,
   };
+}
+
+async function deferPendingApprovalResumeJob(
+  job: OperationJobRecord,
+  base: Pick<AgentResumeJobResult, "agentRunId" | "executionId">,
+): Promise<AgentResumeJobResult> {
+  const deferred = await deferResumeJob(
+    job,
+    "Waiting for the tool approval decision.",
+    base,
+    PENDING_APPROVAL_RESUME_POLL_SECONDS,
+  );
+  if (deferred.status !== "deferred" || !base.executionId) {
+    return deferred;
+  }
+  // A decision that landed while this job was leased found nothing to wake.
+  // Wake it now rather than waiting out the poll; if this fails, the poll
+  // still picks the decision up.
+  try {
+    const current = await getToolExecution(base.executionId, {
+      tenantId: job.tenantId,
+    });
+    if (current && current.status !== "approval_required") {
+      const [woken] = await wakeOperationJobByDedupeKey(
+        getAgentResumeJobDedupeKey(base.executionId),
+        { tenantId: job.tenantId },
+      );
+      if (woken) {
+        return {
+          ...deferred,
+          job: woken,
+          message: "The tool approval was decided while the job was leased; the job was woken.",
+        };
+      }
+    }
+  } catch {
+    console.warn("Agent resume approval re-check failed; the poll will pick up the decision.");
+  }
+  return deferred;
 }
 
 async function failResumeJob(

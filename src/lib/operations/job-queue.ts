@@ -259,6 +259,11 @@ type LeaseOperationJobInput = {
   owner?: string;
 };
 
+export type OperationJobDedupeLease =
+  | { outcome: "leased"; job: OperationJobRecord }
+  | { outcome: "busy" }
+  | { outcome: "absent" };
+
 export async function enqueueOperationJob(
   input: EnqueueOperationJobInput,
   options: { sql?: ReturnType<typeof getSql> } = {},
@@ -599,6 +604,110 @@ export async function leaseOperationJobs(input: LeaseOperationJobInput = {}) {
     return trimJobLedger(ledger);
   });
   return leased;
+}
+
+/**
+ * Leases the job with this dedupe key for a caller that must run it now, such
+ * as the request that just resolved what the job was waiting for. Unlike
+ * leaseOperationJobs it ignores run_at, so a job deferred into the future is
+ * claimed too. A queued or failed job, or a running job whose lease expired,
+ * is leased; a job another owner holds under a live lease is "busy"; a job
+ * that finished, was canceled, or never existed is "absent".
+ */
+export async function leaseOperationJobByDedupeKey(
+  dedupeKey: string,
+  input: {
+    tenantId?: string;
+    type: OperationJobType;
+    leaseSeconds?: number;
+    owner?: string;
+  },
+): Promise<OperationJobDedupeLease> {
+  const tenantId = normalizeTenantId(input.tenantId);
+  const leaseSeconds = Math.min(Math.max(input.leaseSeconds || OPERATION_QUEUE_LEASE_SECONDS, 10), 3600);
+  const owner = input.owner || `worker:${randomUUID()}`;
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const storedKey = storageDedupeKey(tenantId, dedupeKey);
+    const rows = await getSql()`
+      UPDATE omni_operation_jobs
+      SET status = 'running',
+          attempt = attempt + 1,
+          locked_at = NOW(),
+          lease_owner = ${owner},
+          lease_expires_at = NOW() + (${leaseSeconds}::int * INTERVAL '1 second'),
+          last_error = NULL,
+          completed_at = NULL,
+          updated_at = NOW()
+      WHERE tenant_id = ${tenantId}
+        AND dedupe_key = ${storedKey}
+        AND type = ${input.type}
+        AND (
+          status IN ('queued', 'failed')
+          OR (
+            status = 'running'
+            AND (lease_expires_at IS NULL OR lease_expires_at <= NOW())
+          )
+        )
+      RETURNING *
+    `;
+    if (rows[0]) {
+      return { outcome: "leased", job: operationJobFromRow(rows[0]) };
+    }
+    // The job either belongs to a live lease or is gone. A job that changed
+    // state between the two statements still exists, so retrying can claim it.
+    const live = await getSql()`
+      SELECT id
+      FROM omni_operation_jobs
+      WHERE tenant_id = ${tenantId}
+        AND dedupe_key = ${storedKey}
+        AND type = ${input.type}
+        AND status IN ('queued', 'failed', 'running')
+      LIMIT 1
+    `;
+    return live[0] ? { outcome: "busy" } : { outcome: "absent" };
+  }
+
+  let result: OperationJobDedupeLease = { outcome: "absent" };
+  await mutateJobLedger((ledger) => {
+    const nowMs = Date.now();
+    const index = ledger.jobs.findIndex((job) =>
+      jobTenantId(job) === tenantId &&
+      job.dedupeKey === dedupeKey &&
+      job.type === input.type &&
+      ["queued", "failed", "running"].includes(job.status)
+    );
+    if (index < 0) {
+      return ledger;
+    }
+    const job = ledger.jobs[index];
+    if (
+      job.status === "running" &&
+      job.leaseExpiresAt &&
+      Date.parse(job.leaseExpiresAt) > nowMs
+    ) {
+      result = { outcome: "busy" };
+      return ledger;
+    }
+    const now = new Date(nowMs).toISOString();
+    const leasedJob: OperationJobRecord = {
+      ...job,
+      tenantId,
+      status: "running",
+      attempt: job.attempt + 1,
+      lockedAt: now,
+      leaseOwner: owner,
+      leaseExpiresAt: new Date(nowMs + leaseSeconds * 1000).toISOString(),
+      lastError: undefined,
+      completedAt: undefined,
+      updatedAt: now,
+    };
+    ledger.jobs[index] = leasedJob;
+    result = { outcome: "leased", job: leasedJob };
+    return ledger;
+  });
+  return result;
 }
 
 export async function heartbeatOperationJob(

@@ -16,10 +16,8 @@ import {
   getAgentResumeJobDedupeKey,
   wakeOperationJobByDedupeKey,
 } from "@/lib/operations/job-queue";
-import {
-  rejectAgentRunApproval,
-  resumeAgentRunAfterToolApproval,
-} from "@/lib/orchestration/agent-runner";
+import { rejectAgentRunApproval } from "@/lib/orchestration/agent-runner";
+import { resumeAgentRunInApprovalRequest } from "@/lib/orchestration/resume-queue";
 import {
   persistToolAfterCheckpointShadow,
   persistToolBeforeCheckpointShadow,
@@ -708,7 +706,9 @@ async function POSTHandler(
     const executionId = claim.record.id;
     after(async () => {
       try {
-        await resumeAgentRunAfterToolApproval({
+        // The observation exists only in this request, so the resume runs
+        // here, under the resume job's lease, and settles the job itself.
+        await resumeAgentRunInApprovalRequest({
           executionId,
           toolExecution: result,
           tenantId,
@@ -717,7 +717,6 @@ async function POSTHandler(
         console.warn(
           "Ephemeral local observation resume failed; the durable queue will reconcile the run without raw observation data.",
         );
-      } finally {
         await wakeOperationJobByDedupeKey(
           getAgentResumeJobDedupeKey(executionId),
           { tenantId },

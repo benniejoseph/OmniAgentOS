@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  after: vi.fn(),
   authorizeRequest: vi.fn(),
   approveAndClaimToolExecution: vi.fn(),
   executeGovernedTool: vi.fn(),
@@ -15,7 +16,18 @@ const mocks = vi.hoisted(() => ({
   publicToolExecution: vi.fn(),
   reclaimStaleGoogleWorkspaceCreateToolExecutionClaim: vi.fn(),
   reclaimStaleReadOnlyToolExecutionClaim: vi.fn(),
+  resumeAgentRunInApprovalRequest: vi.fn(),
   wakeOperationJobByDedupeKey: vi.fn(),
+}));
+
+vi.mock("next/server", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("next/server")>()),
+  after: mocks.after,
+}));
+
+vi.mock("@/lib/orchestration/resume-queue", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/orchestration/resume-queue")>()),
+  resumeAgentRunInApprovalRequest: mocks.resumeAgentRunInApprovalRequest,
 }));
 
 vi.mock("@/lib/db/client", async (importOriginal) => ({
@@ -94,6 +106,10 @@ const pendingRecord = {
 };
 
 beforeEach(() => {
+  mocks.after.mockReset();
+  mocks.resumeAgentRunInApprovalRequest.mockReset().mockResolvedValue({
+    status: "leased",
+  });
   mocks.authorizeRequest.mockReset().mockResolvedValue({
     tenantId: "tenant-a",
     actorId: "requester-a",
@@ -396,6 +412,128 @@ describe("tool approval detail route", () => {
       record: { status: "executed", approvalRequired: true },
       continuation: { scheduled: true },
     });
+  });
+});
+
+describe("This Mac approval continuation", () => {
+  const observation = {
+    schemaVersion: 1 as const,
+    source: "local_macos" as const,
+    trust: "untrusted_data" as const,
+    executionId: pendingRecord.id,
+    operation: "screenshot",
+    snapshotRevision: "rev-1",
+  };
+
+  function approveThisMacAction() {
+    mocks.approveAndClaimToolExecution.mockImplementation(async () => ({
+      outcome: "claimed",
+      record: {
+        ...pendingRecord,
+        status: "executing",
+        approvalDecision: "approved",
+        approvedBy: "requester-a",
+      },
+    }));
+    mocks.openToolExecutionInput.mockReturnValue(pendingRecord.input);
+    mocks.findAgentRunWaitingForToolApproval.mockResolvedValue({
+      id: "run-this-mac",
+      status: "waiting_approval",
+      continuation: {
+        context: {
+          tenantId: "tenant-a",
+          actorId: "requester-a",
+          role: "operator",
+        },
+      },
+    });
+    const result = {
+      record: { ...pendingRecord, status: "executed" },
+      result: { ok: true },
+      computerObservation: observation,
+    };
+    mocks.executeGovernedTool.mockResolvedValue(result);
+    return result;
+  }
+
+  async function postApproval() {
+    return POST(new Request(
+      `http://asael.test/api/approvals/${pendingRecord.id}`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "approval-this-mac",
+        },
+        body: JSON.stringify({ kind: "tool", decision: "approve" }),
+      },
+    ), routeContext());
+  }
+
+  it("resumes with the observation under the resume job's lease after responding", async () => {
+    const result = approveThisMacAction();
+
+    const response = await postApproval();
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      continuation: { scheduled: true, resumeJobs: 0 },
+    });
+    expect(mocks.resumeAgentRunInApprovalRequest).not.toHaveBeenCalled();
+    expect(mocks.after).toHaveBeenCalledTimes(1);
+
+    await mocks.after.mock.calls[0][0]();
+
+    expect(mocks.resumeAgentRunInApprovalRequest).toHaveBeenCalledWith({
+      executionId: pendingRecord.id,
+      toolExecution: result,
+      tenantId: "tenant-a",
+    });
+    expect(mocks.wakeOperationJobByDedupeKey).not.toHaveBeenCalled();
+  });
+
+  it("hands the run to the durable queue when the in-request resume throws", async () => {
+    approveThisMacAction();
+    mocks.resumeAgentRunInApprovalRequest.mockRejectedValue(
+      new Error("resume failed"),
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    try {
+      const response = await postApproval();
+      expect(response.status).toBe(200);
+      await mocks.after.mock.calls[0][0]();
+    } finally {
+      warn.mockRestore();
+    }
+
+    expect(mocks.wakeOperationJobByDedupeKey).toHaveBeenCalledTimes(1);
+    expect(mocks.wakeOperationJobByDedupeKey).toHaveBeenCalledWith(
+      `agent-resume:${pendingRecord.id}`,
+      { tenantId: "tenant-a" },
+    );
+  });
+
+  it("wakes the resume job at once when the action returned no observation", async () => {
+    const result = approveThisMacAction();
+    mocks.executeGovernedTool.mockResolvedValue({
+      ...result,
+      computerObservation: undefined,
+    });
+    mocks.wakeOperationJobByDedupeKey.mockResolvedValue([{ id: "job-1" }]);
+
+    const response = await postApproval();
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      continuation: { scheduled: true, resumeJobs: 1 },
+    });
+    expect(mocks.after).not.toHaveBeenCalled();
+    expect(mocks.resumeAgentRunInApprovalRequest).not.toHaveBeenCalled();
+    expect(mocks.wakeOperationJobByDedupeKey).toHaveBeenCalledWith(
+      `agent-resume:${pendingRecord.id}`,
+      { tenantId: "tenant-a" },
+    );
   });
 });
 

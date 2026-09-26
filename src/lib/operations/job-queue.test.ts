@@ -491,6 +491,182 @@ describe("operation job queue (file mode)", () => {
     expect(Date.parse(woken.runAt)).toBeLessThanOrEqual(Date.now());
   });
 
+  it("leases a job by dedupe key for an in-request owner, whatever its schedule", async () => {
+    const queue = await import("@/lib/operations/job-queue");
+    const tenantId = "tenant-dedupe-lease";
+    const dedupeKey = queue.getAgentResumeJobDedupeKey("execution-dedupe-lease");
+    const job = await queue.enqueueOperationJob({
+      tenantId,
+      type: "agent.resume",
+      dedupeKey,
+      payload: { agentRunId: "run-dedupe-lease" },
+      runAt: new Date(Date.now() + 600_000).toISOString(),
+    });
+    expect(
+      await queue.leaseOperationJobs({ tenantId, type: "agent.resume" }),
+    ).toEqual([]);
+
+    const before = Date.now();
+    const lease = await queue.leaseOperationJobByDedupeKey(dedupeKey, {
+      tenantId,
+      type: "agent.resume",
+      owner: "request:approval",
+      leaseSeconds: 60,
+    });
+    expect(lease).toMatchObject({
+      outcome: "leased",
+      job: {
+        id: job.id,
+        tenantId,
+        status: "running",
+        attempt: 1,
+        leaseOwner: "request:approval",
+      },
+    });
+    const leasedJob = lease.outcome === "leased" ? lease.job : undefined;
+    expect(Date.parse(leasedJob?.leaseExpiresAt || "")).toBeGreaterThanOrEqual(
+      before + 60_000,
+    );
+    await expect(
+      queue.leaseOperationJobByDedupeKey(dedupeKey, {
+        tenantId,
+        type: "agent.resume",
+        owner: "request:second",
+      }),
+    ).resolves.toEqual({ outcome: "busy" });
+    expect(
+      await queue.heartbeatOperationJob(job.id, "request:approval", { tenantId }),
+    ).toMatchObject({ id: job.id, leaseOwner: "request:approval" });
+    await expect(
+      queue.leaseOperationJobByDedupeKey(dedupeKey, {
+        tenantId: "tenant-dedupe-lease-other",
+        type: "agent.resume",
+      }),
+    ).resolves.toEqual({ outcome: "absent" });
+    await expect(
+      queue.leaseOperationJobByDedupeKey(dedupeKey, {
+        tenantId,
+        type: "workflow.tick",
+      }),
+    ).resolves.toEqual({ outcome: "absent" });
+
+    expect(
+      await queue.completeOperationJob(job.id, "request:approval", tenantId),
+    ).toMatchObject({ status: "completed" });
+    await expect(
+      queue.leaseOperationJobByDedupeKey(dedupeKey, {
+        tenantId,
+        type: "agent.resume",
+      }),
+    ).resolves.toEqual({ outcome: "absent" });
+    await expect(
+      queue.leaseOperationJobByDedupeKey("agent.resume:never-enqueued", {
+        tenantId,
+        type: "agent.resume",
+      }),
+    ).resolves.toEqual({ outcome: "absent" });
+  });
+
+  it("leases failed and lease-expired jobs by dedupe key but not canceled ones", async () => {
+    const queue = await import("@/lib/operations/job-queue");
+    const tenantId = "tenant-dedupe-recover";
+    const failedKey = "dedupe-recover-failed";
+    const failedJob = await queue.enqueueOperationJob({
+      tenantId,
+      type: "agent.resume",
+      dedupeKey: failedKey,
+      payload: {},
+      maxAttempts: 1,
+    });
+    const [firstLease] = await queue.leaseOperationJobs({
+      tenantId,
+      type: "agent.resume",
+      dedupeKey: failedKey,
+    });
+    expect(
+      await queue.failOperationJob(
+        failedJob.id,
+        "boom",
+        firstLease.leaseOwner,
+        tenantId,
+      ),
+    ).toMatchObject({ status: "failed", attempt: 1 });
+    await expect(
+      queue.leaseOperationJobByDedupeKey(failedKey, {
+        tenantId,
+        type: "agent.resume",
+        owner: "request:failed",
+      }),
+    ).resolves.toMatchObject({
+      outcome: "leased",
+      job: {
+        id: failedJob.id,
+        status: "running",
+        attempt: 2,
+        leaseOwner: "request:failed",
+        lastError: undefined,
+        completedAt: undefined,
+      },
+    });
+
+    const expiredKey = "dedupe-recover-expired";
+    const expiredJob = await queue.enqueueOperationJob({
+      tenantId,
+      type: "agent.resume",
+      dedupeKey: expiredKey,
+      payload: {},
+    });
+    await queue.leaseOperationJobs({
+      tenantId,
+      type: "agent.resume",
+      dedupeKey: expiredKey,
+      owner: "worker:dead",
+      leaseSeconds: 10,
+    });
+    await expect(
+      queue.leaseOperationJobByDedupeKey(expiredKey, {
+        tenantId,
+        type: "agent.resume",
+      }),
+    ).resolves.toEqual({ outcome: "busy" });
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(Date.now() + 11_000);
+      await expect(
+        queue.leaseOperationJobByDedupeKey(expiredKey, {
+          tenantId,
+          type: "agent.resume",
+          owner: "request:expired",
+        }),
+      ).resolves.toMatchObject({
+        outcome: "leased",
+        job: {
+          id: expiredJob.id,
+          status: "running",
+          attempt: 2,
+          leaseOwner: "request:expired",
+        },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const canceledKey = "dedupe-recover-canceled";
+    await queue.enqueueOperationJob({
+      tenantId,
+      type: "agent.resume",
+      dedupeKey: canceledKey,
+      payload: {},
+    });
+    await queue.cancelOperationJobByDedupeKey(canceledKey, "gone", { tenantId });
+    await expect(
+      queue.leaseOperationJobByDedupeKey(canceledKey, {
+        tenantId,
+        type: "agent.resume",
+      }),
+    ).resolves.toEqual({ outcome: "absent" });
+  });
+
   it("partitions dedupe keys and leases by tenant", async () => {
     const queue = await import("@/lib/operations/job-queue");
     const tenantA = await queue.enqueueOperationJob({

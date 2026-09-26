@@ -58,6 +58,12 @@ For internal calls, the secret and identity headers must be sent together. Never
 - The log line `Canceled run approvals could not be withdrawn.`: the cancel stands, but the run's approvals stayed pending. An approval bound to the run is still withdrawn instead of executed when someone who can read the run approves it. Reject the run's other pending approvals by hand.
 - Approvals recorded before the run binding existed carry no run ID. Canceling their run withdraws only the approval its continuation waits on, and approving any other one still executes it.
 
+## An approved run fails as interrupted, or resumes late
+
+- `Approved run resume was interrupted; side effects were not replayed.`: the process resuming the run stopped before it finished, and its resume-job lease (two minutes) lapsed. A worker then fails the run rather than replay its effects. When an approved This Mac step returned an observation, the approving request does the resume, so look for that request hitting the approvals route's 300-second limit or crashing. Start a new run to continue.
+- `Ephemeral local observation resume failed; the durable queue will reconcile the run without raw observation data.`: the approving request could not resume the run with its This Mac observation. The worker resumes it from the stored result instead, so the model does not see that step's screenshot.
+- A run still `waiting_approval` after its approval was decided: the decision wakes the run's resume job at once. If that wake was lost, the job's backstop re-check finds the decision within five minutes.
+
 ## Memory forget or the deletion scrub fails
 
 - `Database schema is behind (pending versions: 207)`: run migration v207 before serving the release. See [deployment.md](deployment.md#memory-forget-lineage-closure-v207).
