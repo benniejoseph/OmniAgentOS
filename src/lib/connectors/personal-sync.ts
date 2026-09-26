@@ -56,6 +56,10 @@ type SyncCursor = {
   drivePageToken?: string;
   driveWindowStart?: string;
   driveWindowEnd?: string;
+  /** Drive's change position, read before a listing window's first page. */
+  driveChangesFence?: string;
+  driveChangesStartPageToken?: string;
+  driveChangesPageToken?: string;
 };
 
 const GMAIL_ITEM_PAGE_SIZE = 5;
@@ -66,6 +70,8 @@ const GMAIL_PENDING_ITEM_LIMIT = 5_000;
 const GMAIL_EXCLUDED_LABEL_IDS = new Set(["SPAM", "TRASH"]);
 const CALENDAR_ITEM_PAGE_SIZE = 10;
 const DRIVE_ITEM_PAGE_SIZE = 3;
+const GOOGLE_DRIVE_FILE_FIELDS =
+  "id,name,mimeType,createdTime,modifiedTime,version,headRevisionId,webViewLink,description,trashed,size,fileExtension,ownedByMe";
 const GOOGLE_DRIVE_REVISION_MARKER_KEY = "googleDriveProviderRevision";
 const GOOGLE_DRIVE_REVISION_MARKER_VERSION = 1;
 const GOOGLE_DRIVE_REUSE_MAX_CHUNKS = 128;
@@ -75,7 +81,11 @@ type SyncItem = {
   title: string;
   content: string;
   deleted?: boolean;
-  /** Present at the provider but never ingested, such as Gmail spam. */
+  /**
+   * Never ingested, and retired if this account indexed it: Gmail spam or
+   * trash, or a Drive file that was trashed, deleted, or is no longer the
+   * account's own.
+   */
   excluded?: boolean;
   providerRevisionId?: string;
   sourceCreatedAt?: string;
@@ -100,6 +110,7 @@ type GoogleSourceObservation = Readonly<{
   items: SyncItem[];
   cursor: Partial<SyncCursor>;
 }>;
+type GoogleSourcePage = Pick<GoogleSourceObservation, "items" | "cursor">;
 type GoogleSourceObservationSettlement = Readonly<
   | {
       source: PersonalSourceId;
@@ -878,14 +889,28 @@ async function googleDrive(
   cursor: SyncCursor,
   signal?: AbortSignal,
   identity?: GoogleDriveSyncIdentity,
-) {
+): Promise<GoogleSourcePage> {
+  const changesPageToken = cursor.driveChangesPageToken ||
+    cursor.driveChangesStartPageToken;
+  if (changesPageToken) {
+    return googleDriveChanges(headers, changesPageToken, signal, identity);
+  }
+  // A listing never shows a file leaving the account, so each window starts
+  // by reading Drive's change position, and the change feed takes over from
+  // that position once the window ends. The position is read before the
+  // window's end is fixed, so every later change reaches the feed. A window
+  // already in progress without a position ends as before, and the next
+  // window reads one.
+  const fence = cursor.drivePageToken
+    ? cursor.driveChangesFence
+    : await googleDriveStartPageToken(headers, signal);
   const windowStart = cursor.driveWindowStart || cursor.driveModifiedAfter ||
     new Date(Date.now() - 30 * 86_400_000).toISOString();
   const windowEnd = cursor.driveWindowEnd || new Date().toISOString();
   const url = new URL("https://www.googleapis.com/drive/v3/files");
   url.searchParams.set("pageSize", String(DRIVE_ITEM_PAGE_SIZE));
   url.searchParams.set("orderBy", "modifiedTime,name");
-  url.searchParams.set("fields", "nextPageToken,files(id,name,mimeType,createdTime,modifiedTime,version,headRevisionId,webViewLink,description,trashed,size,fileExtension,ownedByMe)");
+  url.searchParams.set("fields", `nextPageToken,files(${GOOGLE_DRIVE_FILE_FIELDS})`);
   url.searchParams.set("q", `trashed = false and modifiedTime > '${windowStart}' and modifiedTime <= '${windowEnd}'`);
   if (cursor.drivePageToken) {
     url.searchParams.set("pageToken", cursor.drivePageToken);
@@ -900,85 +925,9 @@ async function googleDrive(
   // query does not filter by owner because Drive documents owner queries only
   // by email address.
   const files = listedFiles.filter((file) => file.ownedByMe === true);
-  const items = await Promise.all(files.map(async (file): Promise<SyncItem> => {
-    const id = String(file.id || "");
-    const mimeType = String(file.mimeType || "");
-    const providerRevisionId = String(
-      file.headRevisionId || file.version || file.modifiedTime || id,
-    );
-    const revisionMarker = googleDriveRevisionMarker(
-      file,
-      providerRevisionId,
-    );
-    const exportMime = mimeType === "application/vnd.google-apps.document"
-      ? "text/plain"
-      : mimeType === "application/vnd.google-apps.spreadsheet"
-        ? "text/csv"
-        : undefined;
-    const download = downloadableDriveFile(
-      mimeType,
-      String(file.fileExtension || ""),
-      Number(file.size || 0),
-    );
-    const reusableContent = id && identity && (exportMime || download)
-      ? await reconstructCurrentGoogleDriveDocument({
-          tenantId: identity.tenantId,
-          actorId: identity.actorId,
-          idempotencyKey: `${identity.idempotencyPrefix}:drive:${id}`,
-          revisionMarker,
-          signal,
-        })
-      : undefined;
-    let extracted = "";
-    if (id && !reusableContent && exportMime) {
-      const exportUrl = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}/export?mimeType=${encodeURIComponent(exportMime)}`;
-      try {
-        extracted = (await providerText(exportUrl, headers, signal)).slice(0, 100_000);
-      } catch {
-        // A file can disappear or deny export after it was listed. Preserve
-        // its useful metadata and let the next sync reconcile it.
-      }
-    }
-    if (id && !reusableContent && !extracted) {
-      if (download) {
-        try {
-          const bytes = await providerBytes(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?alt=media`, headers, signal, 5 * 1024 * 1024);
-          const parsed = await extractCaptureFile(
-            new File([bytes], `${String(file.name || "drive-file")}.${download.extension}`, { type: download.mimeType }),
-            identity ? {
-              tenantId: identity.tenantId,
-              actorId: identity.actorId,
-              sourceStreamId: `connector-sync:${identity.provider}:${identity.actorId}`,
-              operation: "ocr",
-              purpose: "connector.google.drive.extract",
-              credentialSource: "deployment_environment",
-            } : undefined,
-          );
-          extracted = parsed.content.slice(0, 100_000);
-        } catch {
-          // Metadata remains useful when a Drive binary cannot be extracted.
-        }
-      }
-    }
-    const sourceCreatedAt = optionalCanonicalProviderTimestamp(file.createdTime);
-    const sourceUpdatedAt = canonicalProviderTimestamp(
-      file.modifiedTime,
-      "Drive modifiedTime",
-    );
-    return {
-      id,
-      kind: "drive",
-      title: String(file.name || "Google Drive file"),
-      providerRevisionId,
-      sourceCreatedAt,
-      sourceUpdatedAt,
-      capturedAt: sourceUpdatedAt,
-      metadata: {
-        [GOOGLE_DRIVE_REVISION_MARKER_KEY]: revisionMarker,
-      },
-      content: reusableContent || googleDriveDocumentContent(file, extracted),
-    };
-  }));
+  const items = await Promise.all(files.map((file) =>
+    googleDriveItem(file, headers, signal, identity)
+  ));
   const nextPageToken = optionalProviderString(payload.nextPageToken);
   return {
     items: items.filter((item) => item.id),
@@ -988,13 +937,206 @@ async function googleDrive(
           drivePageToken: nextPageToken,
           driveWindowStart: windowStart,
           driveWindowEnd: windowEnd,
+          driveChangesFence: fence,
+          // A listing that replaces a rejected change position must not
+          // leave that position behind for the next page to read.
+          driveChangesStartPageToken: undefined,
+          driveChangesPageToken: undefined,
+        }
+      : fence
+        ? {
+            driveModifiedAfter: undefined,
+            drivePageToken: undefined,
+            driveWindowStart: undefined,
+            driveWindowEnd: undefined,
+            driveChangesFence: undefined,
+            driveChangesStartPageToken: fence,
+            driveChangesPageToken: undefined,
+          }
+        : {
+            driveModifiedAfter: windowEnd,
+            drivePageToken: undefined,
+            driveWindowStart: undefined,
+            driveWindowEnd: undefined,
+          },
+  };
+}
+
+async function googleDriveStartPageToken(
+  headers: Record<string, string>,
+  signal?: AbortSignal,
+) {
+  const token = optionalProviderString((await providerJson(
+    "https://www.googleapis.com/drive/v3/changes/startPageToken",
+    headers,
+    signal,
+  )).body.startPageToken);
+  if (!token) throw new Error("Google Drive returned no change position.");
+  return token;
+}
+
+async function googleDriveChanges(
+  headers: Record<string, string>,
+  pageToken: string,
+  signal?: AbortSignal,
+  identity?: GoogleDriveSyncIdentity,
+): Promise<GoogleSourcePage> {
+  const url = new URL("https://www.googleapis.com/drive/v3/changes");
+  url.searchParams.set("pageToken", pageToken);
+  url.searchParams.set("pageSize", String(DRIVE_ITEM_PAGE_SIZE));
+  url.searchParams.set("spaces", "drive");
+  url.searchParams.set("includeRemoved", "true");
+  url.searchParams.set("fields", `nextPageToken,newStartPageToken,changes(changeType,fileId,removed,file(${GOOGLE_DRIVE_FILE_FIELDS}))`);
+  const response = await providerJson(url.toString(), headers, signal, [400, 410]);
+  if (response.status === 400 || response.status === 410) {
+    // Drive does not document how it rejects a change position. One it no
+    // longer accepts starts a fresh listing, as Gmail and Calendar recover,
+    // and any other bad request still fails the sync.
+    if (response.status === 400 && !rejectsDrivePageToken(response.body)) {
+      throw new Error("Connected source returned 400.");
+    }
+    return googleDrive(headers, {}, signal, identity);
+  }
+  const payload = response.body;
+  const changes = array(payload.changes).map(record);
+  if (changes.length > DRIVE_ITEM_PAGE_SIZE) {
+    throw new Error("Google Drive change page exceeds the requested item limit.");
+  }
+  // A page without a position cannot advance the cursor, so it is rejected
+  // before any of its files is exported or extracted.
+  const nextPageToken = optionalProviderString(payload.nextPageToken);
+  const newStartPageToken = optionalProviderString(payload.newStartPageToken);
+  if (!nextPageToken && !newStartPageToken) {
+    throw new Error("Google Drive returned no change position.");
+  }
+  // A page can report one file more than once, and its last change is the
+  // file's current state.
+  const latest = new Map<string, Record<string, unknown>>();
+  for (const change of changes) {
+    const fileId = String(change.fileId || "");
+    if (change.changeType === "drive" || !fileId) continue;
+    latest.set(fileId, change);
+  }
+  const items = await Promise.all([...latest].map(
+    ([fileId, change]): SyncItem | Promise<SyncItem> => {
+      const file = record(change.file);
+      // Drive reports a deleted file, and one no longer shared with the
+      // account, as removed. A trashed file, and one given to another owner,
+      // leave knowledge as well.
+      return change.removed === true || file.trashed === true ||
+          file.ownedByMe !== true
+        ? {
+            id: fileId,
+            kind: "drive",
+            title: "Removed Drive file",
+            content: "",
+            excluded: true,
+          }
+        : googleDriveItem({ ...file, id: fileId }, headers, signal, identity);
+    },
+  ));
+  return {
+    items,
+    cursor: nextPageToken
+      ? {
+          driveChangesPageToken: nextPageToken,
+          driveChangesStartPageToken: undefined,
         }
       : {
-          driveModifiedAfter: windowEnd,
-          drivePageToken: undefined,
-          driveWindowStart: undefined,
-          driveWindowEnd: undefined,
+          driveChangesPageToken: undefined,
+          driveChangesStartPageToken: newStartPageToken,
         },
+  };
+}
+
+function rejectsDrivePageToken(body: Record<string, unknown>) {
+  return array(record(body.error).errors).some((error) =>
+    record(error).location === "pageToken"
+  );
+}
+
+async function googleDriveItem(
+  file: Record<string, unknown>,
+  headers: Record<string, string>,
+  signal?: AbortSignal,
+  identity?: GoogleDriveSyncIdentity,
+): Promise<SyncItem> {
+  const id = String(file.id || "");
+  const mimeType = String(file.mimeType || "");
+  const providerRevisionId = String(
+    file.headRevisionId || file.version || file.modifiedTime || id,
+  );
+  const revisionMarker = googleDriveRevisionMarker(
+    file,
+    providerRevisionId,
+  );
+  const exportMime = mimeType === "application/vnd.google-apps.document"
+    ? "text/plain"
+    : mimeType === "application/vnd.google-apps.spreadsheet"
+      ? "text/csv"
+      : undefined;
+  const download = downloadableDriveFile(
+    mimeType,
+    String(file.fileExtension || ""),
+    Number(file.size || 0),
+  );
+  const reusableContent = id && identity && (exportMime || download)
+    ? await reconstructCurrentGoogleDriveDocument({
+        tenantId: identity.tenantId,
+        actorId: identity.actorId,
+        idempotencyKey: `${identity.idempotencyPrefix}:drive:${id}`,
+        revisionMarker,
+        signal,
+      })
+    : undefined;
+  let extracted = "";
+  if (id && !reusableContent && exportMime) {
+    const exportUrl = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}/export?mimeType=${encodeURIComponent(exportMime)}`;
+    try {
+      extracted = (await providerText(exportUrl, headers, signal)).slice(0, 100_000);
+    } catch {
+      // A file can disappear or deny export after it was listed. Preserve
+      // its useful metadata and let the next sync reconcile it.
+    }
+  }
+  if (id && !reusableContent && !extracted) {
+    if (download) {
+      try {
+        const bytes = await providerBytes(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?alt=media`, headers, signal, 5 * 1024 * 1024);
+        const parsed = await extractCaptureFile(
+          new File([bytes], `${String(file.name || "drive-file")}.${download.extension}`, { type: download.mimeType }),
+          identity ? {
+            tenantId: identity.tenantId,
+            actorId: identity.actorId,
+            sourceStreamId: `connector-sync:${identity.provider}:${identity.actorId}`,
+            operation: "ocr",
+            purpose: "connector.google.drive.extract",
+            credentialSource: "deployment_environment",
+          } : undefined,
+        );
+        extracted = parsed.content.slice(0, 100_000);
+      } catch {
+        // Metadata remains useful when a Drive binary cannot be extracted.
+      }
+    }
+  }
+  const sourceCreatedAt = optionalCanonicalProviderTimestamp(file.createdTime);
+  const sourceUpdatedAt = canonicalProviderTimestamp(
+    file.modifiedTime,
+    "Drive modifiedTime",
+  );
+  return {
+    id,
+    kind: "drive",
+    title: String(file.name || "Google Drive file"),
+    providerRevisionId,
+    sourceCreatedAt,
+    sourceUpdatedAt,
+    capturedAt: sourceUpdatedAt,
+    metadata: {
+      [GOOGLE_DRIVE_REVISION_MARKER_KEY]: revisionMarker,
+    },
+    content: reusableContent || googleDriveDocumentContent(file, extracted),
   };
 }
 
@@ -1483,8 +1625,12 @@ function googleSourceBackfillState(
     if (cursor.calendarPageToken) return "in_progress";
     return cursor.calendar ? "complete" : "unknown";
   }
-  if (cursor.drivePageToken) return "in_progress";
-  return cursor.driveModifiedAfter ? "complete" : "unknown";
+  if (cursor.drivePageToken || cursor.driveChangesPageToken) {
+    return "in_progress";
+  }
+  return cursor.driveModifiedAfter || cursor.driveChangesStartPageToken
+    ? "complete"
+    : "unknown";
 }
 
 function personalSourceFailureCode(

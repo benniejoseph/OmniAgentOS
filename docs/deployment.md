@@ -706,9 +706,16 @@ email; Personal and Work are separate tenants rather than side-by-side grants.
 
 Background sync indexes only what the account holds. Drive knowledge reads
 files the account owns. A file shared with the account, or one in a shared
-drive, is left out; to include one, make a copy in My Drive. Gmail knowledge
-skips Spam and Trash, and a message moved into either is retired from
-knowledge. Items indexed before this rule are not removed by it.
+drive, is left out; to include one, make a copy in My Drive. After one listing
+of recently modified files, Drive sync follows Drive's change feed: a file that
+is trashed, deleted, no longer shared with the account, or given to another
+owner is retired from that account's knowledge, and a restored file is indexed
+again. If Drive rejects the saved change position, the next sync lists the
+last 30 days of modified files again and then resumes the feed. Gmail
+knowledge skips Spam and Trash, and a message moved into either is retired from
+knowledge. A Drive file that left the account before the change feed began, or
+while a rejected position was being replaced, and a message moved into Spam or
+Trash before this rule, stays indexed.
 
 ## Capture document extraction
 

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  claimLease: vi.fn(), getSecrets: vi.fn(), saveGrant: vi.fn(), updateState: vi.fn(), refresh: vi.fn(), ingest: vi.fn(), remove: vi.fn(), getDocument: vi.fn(), projectCalendar: vi.fn(), cancelCalendar: vi.fn(), mapInbound: vi.fn(), observeDrive: vi.fn(), observeCanonicalDrive: vi.fn(), fetch: vi.fn(),
+  claimLease: vi.fn(), getSecrets: vi.fn(), saveGrant: vi.fn(), updateState: vi.fn(), refresh: vi.fn(), ingest: vi.fn(), remove: vi.fn(), getDocument: vi.fn(), projectCalendar: vi.fn(), cancelCalendar: vi.fn(), mapInbound: vi.fn(), observeDrive: vi.fn(), observeCanonicalDrive: vi.fn(), fetch: vi.fn(), driveFence: vi.fn(),
 }));
 vi.mock("@/lib/connectors/oauth-store", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/lib/connectors/oauth-store")>(),
@@ -39,11 +39,31 @@ const GOOGLE_PERSONAL_CONNECTION = {
   connectionLabel: "Personal",
   connectionPurpose: "personal",
 } as const;
+const DRIVE_CHANGE_POSITION_URL =
+  "https://www.googleapis.com/drive/v3/changes/startPageToken";
+const DRIVE_CHANGES_URL = "https://www.googleapis.com/drive/v3/changes?";
+const DRIVE_FILE = {
+  mimeType: "application/vnd.google-apps.document",
+  createdTime: "2026-09-20T10:00:00Z",
+  modifiedTime: "2026-09-25T10:00:00Z",
+  version: "2",
+  trashed: false,
+  ownedByMe: true,
+};
 
 describe("personal OAuth synchronization", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.stubGlobal("fetch", mocks.fetch);
+    // Every Drive listing window starts by reading the change position, so it
+    // is answered apart from each test's provider routes.
+    vi.stubGlobal("fetch", (input: string | URL | Request, init?: RequestInit) =>
+      String(input) === DRIVE_CHANGE_POSITION_URL
+        ? mocks.driveFence(input, init)
+        : mocks.fetch(input, init)
+    );
+    mocks.driveFence.mockImplementation(async () =>
+      json({ startPageToken: "drive-fence-1" })
+    );
     mocks.getSecrets.mockResolvedValue({
       grant: {
         id: "google-grant",
@@ -352,8 +372,11 @@ describe("personal OAuth synchronization", () => {
     const finalCursor = JSON.parse(
       mocks.updateState.mock.calls.at(-1)?.[0].cursor,
     ) as Record<string, unknown>;
-    expect(finalCursor).toMatchObject({ calendar: "calendar-partial" });
-    expect(finalCursor.driveModifiedAfter).toEqual(expect.any(String));
+    expect(finalCursor).toMatchObject({
+      calendar: "calendar-partial",
+      driveChangesStartPageToken: "drive-fence-1",
+    });
+    expect(finalCursor).not.toHaveProperty("driveModifiedAfter");
     expect(finalCursor).not.toHaveProperty("gmailHistoryId");
   });
 
@@ -411,6 +434,8 @@ describe("personal OAuth synchronization", () => {
     });
     expect(finalCursor).not.toHaveProperty("driveModifiedAfter");
     expect(finalCursor).not.toHaveProperty("drivePageToken");
+    expect(finalCursor).not.toHaveProperty("driveChangesFence");
+    expect(finalCursor).not.toHaveProperty("driveChangesStartPageToken");
   });
 
   it("persists independent continuation tokens after one bounded page", async () => {
@@ -443,6 +468,8 @@ describe("personal OAuth synchronization", () => {
       gmailBackfillHistoryId: "gmail-fence",
       calendarPageToken: "calendar-page-2",
       drivePageToken: "drive-page-2",
+      // The window's later pages share the position read before its first.
+      driveChangesFence: "drive-fence-1",
     });
     expect(finalCursor.calendarTimeMin).toEqual(expect.any(String));
     expect(finalCursor.calendarTimeMax).toEqual(expect.any(String));
@@ -699,6 +726,7 @@ describe("personal OAuth synchronization", () => {
     });
     expect(requestedUrls.some((url) => url.includes("calendar"))).toBe(false);
     expect(requestedUrls.some((url) => url.includes("/drive/"))).toBe(false);
+    expect(mocks.driveFence).not.toHaveBeenCalled();
     expect(mocks.observeCanonicalDrive).not.toHaveBeenCalled();
     expect(mocks.observeDrive).not.toHaveBeenCalled();
   });
@@ -840,6 +868,628 @@ describe("personal OAuth synchronization", () => {
     expect(result).toMatchObject({ imported: 1, removed: 0 });
   });
 
+  it("reads Drive's change position before it fixes a listing window's end", async () => {
+    const startedAt = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"], now: startedAt });
+    try {
+      mocks.driveFence.mockImplementation(async () => {
+        vi.setSystemTime(startedAt + 5_000);
+        return json({ startPageToken: "drive-fence-1" });
+      });
+      const requestedUrls: string[] = [];
+      mocks.fetch.mockImplementation(async (input: string | URL | Request) => {
+        const url = String(input);
+        requestedUrls.push(url);
+        if (url.includes("/drive/v3/files?")) return json({ files: [] });
+        throw new Error(`Unexpected URL ${url}`);
+      });
+
+      const result = await syncPersonalProvider({
+        tenantId: "personal",
+        actorId: "owner",
+        provider: "google",
+        sources: ["drive"],
+      });
+
+      const listUrl = new URL(
+        requestedUrls.find((url) => url.includes("/drive/v3/files?"))!,
+      );
+      // Every change after the position is in the feed, so a window ending
+      // before the position was read would lose the changes in between.
+      expect(listUrl.searchParams.get("q")).toContain(
+        `modifiedTime <= '${new Date(startedAt + 5_000).toISOString()}'`,
+      );
+      expect(mocks.driveFence).toHaveBeenCalledTimes(1);
+      expect(mocks.driveFence.mock.invocationCallOrder[0]).toBeLessThan(
+        mocks.fetch.mock.invocationCallOrder[0],
+      );
+      expect(savedCursor()).toEqual({
+        driveChangesStartPageToken: "drive-fence-1",
+      });
+      expect(result).toMatchObject({
+        status: "healthy",
+        sources: [{
+          source: "drive",
+          status: "healthy",
+          backfillState: "complete",
+        }],
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("carries one change position across a multi-page Drive listing", async () => {
+    mocks.fetch.mockImplementation(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/drive/v3/files") {
+        return url.searchParams.get("pageToken") === "drive-page-2"
+          ? json({ files: [] })
+          : json({ files: [], nextPageToken: "drive-page-2" });
+      }
+      throw new Error(`Unexpected URL ${url}`);
+    });
+
+    await syncPersonalProvider({
+      tenantId: "personal",
+      actorId: "owner",
+      provider: "google",
+      sources: ["drive"],
+    });
+    const firstPage = savedCursor();
+    expect(firstPage).toMatchObject({
+      drivePageToken: "drive-page-2",
+      driveChangesFence: "drive-fence-1",
+    });
+    expect(firstPage).not.toHaveProperty("driveChangesStartPageToken");
+
+    mocks.getSecrets.mockResolvedValue(googleSecrets(firstPage));
+    mocks.driveFence.mockImplementation(async () =>
+      json({ startPageToken: "drive-fence-later" })
+    );
+    await syncPersonalProvider({
+      tenantId: "personal",
+      actorId: "owner",
+      provider: "google",
+      sources: ["drive"],
+    });
+
+    // A position read on a later page would skip changes made during the
+    // window's earlier pages.
+    expect(mocks.driveFence).toHaveBeenCalledTimes(1);
+    expect(savedCursor()).toEqual({
+      driveChangesStartPageToken: "drive-fence-1",
+    });
+  });
+
+  it("finishes a Drive listing window begun without a change position", async () => {
+    mocks.getSecrets.mockResolvedValue(googleSecrets({
+      drivePageToken: "drive-page-2",
+      driveWindowStart: "2026-09-20T00:00:00.000Z",
+      driveWindowEnd: "2026-09-25T00:00:00.000Z",
+    }));
+    const requestedUrls: string[] = [];
+    mocks.fetch.mockImplementation(async (input: string | URL | Request) => {
+      const url = String(input);
+      requestedUrls.push(url);
+      if (url.includes("/drive/v3/files?")) return json({ files: [] });
+      throw new Error(`Unexpected URL ${url}`);
+    });
+
+    await expect(syncPersonalProvider({
+      tenantId: "personal",
+      actorId: "owner",
+      provider: "google",
+      sources: ["drive"],
+    })).resolves.toMatchObject({
+      sources: [{ source: "drive", status: "healthy" }],
+    });
+    // A position read now would postdate changes made during the window.
+    expect(mocks.driveFence).not.toHaveBeenCalled();
+    const finished = savedCursor();
+    expect(finished).toEqual({
+      driveModifiedAfter: "2026-09-25T00:00:00.000Z",
+    });
+
+    mocks.getSecrets.mockResolvedValue(googleSecrets(finished));
+    await syncPersonalProvider({
+      tenantId: "personal",
+      actorId: "owner",
+      provider: "google",
+      sources: ["drive"],
+    });
+
+    expect(mocks.driveFence).toHaveBeenCalledTimes(1);
+    expect(new URL(requestedUrls.at(-1)!).searchParams.get("q")).toContain(
+      "modifiedTime > '2026-09-25T00:00:00.000Z'",
+    );
+    expect(savedCursor()).toEqual({
+      driveChangesStartPageToken: "drive-fence-1",
+    });
+  });
+
+  it("retires an indexed Drive file that was trashed, deleted, unshared, or given away", async () => {
+    mocks.getSecrets.mockResolvedValue(
+      googleSecrets({ driveChangesStartPageToken: "drive-changes-1" }),
+    );
+    mocks.getDocument.mockImplementation(async (idempotencyKey: string) => ({
+      id: `document for ${idempotencyKey}`,
+    }));
+    const requestedUrls: string[] = [];
+    mocks.fetch.mockImplementation(async (input: string | URL | Request) => {
+      const url = String(input);
+      requestedUrls.push(url);
+      if (url.startsWith(DRIVE_CHANGES_URL)) {
+        return json({
+          newStartPageToken: "drive-changes-2",
+          changes: [
+            {
+              changeType: "file",
+              fileId: "drive-trashed",
+              removed: false,
+              file: { ...DRIVE_FILE, id: "drive-trashed", name: "Trashed", trashed: true },
+            },
+            { changeType: "file", fileId: "drive-removed", removed: true },
+            {
+              changeType: "file",
+              fileId: "drive-given-away",
+              removed: false,
+              file: { ...DRIVE_FILE, id: "drive-given-away", name: "Given away", ownedByMe: false },
+            },
+          ],
+        });
+      }
+      throw new Error(`Unexpected URL ${url}`);
+    });
+
+    const result = await syncPersonalProvider({
+      tenantId: "personal",
+      actorId: "owner",
+      provider: "google",
+      sources: ["drive"],
+    });
+
+    const changesUrl = new URL(requestedUrls[0]);
+    expect(changesUrl.searchParams.get("pageToken")).toBe("drive-changes-1");
+    expect(changesUrl.searchParams.get("pageSize")).toBe("3");
+    expect(changesUrl.searchParams.get("includeRemoved")).toBe("true");
+    // Other spaces, such as the app data folder, are not the account's files.
+    expect(changesUrl.searchParams.get("spaces")).toBe("drive");
+    const fields = changesUrl.searchParams.get("fields") || "";
+    expect(fields).toMatch(/changes\([^)]*\bremoved\b/);
+    expect(fields).toMatch(/file\([^)]*\btrashed\b/);
+    expect(fields).toMatch(/file\([^)]*\bownedByMe\b/);
+    expect(fields).toMatch(/\bnewStartPageToken\b/);
+    // A file that left is never exported, downloaded, or parsed.
+    expect(requestedUrls).toHaveLength(1);
+    expect(mocks.driveFence).not.toHaveBeenCalled();
+    expect(mocks.ingest).not.toHaveBeenCalled();
+    for (const fileId of ["drive-trashed", "drive-removed", "drive-given-away"]) {
+      expect(mocks.remove).toHaveBeenCalledWith(
+        `oauth:google:drive:${fileId}`,
+        {
+          tenantId: "personal",
+          executionScope: expect.objectContaining({
+            initiatingActorId: "owner",
+            executingPrincipalId: "connector.google.personal_sync",
+          }),
+        },
+      );
+    }
+    expect(mocks.remove).toHaveBeenCalledTimes(3);
+    expect(result).toMatchObject({
+      status: "healthy",
+      imported: 0,
+      removed: 3,
+      sources: [{ source: "drive", status: "healthy", backfillState: "complete" }],
+    });
+    expect(savedCursor()).toEqual({
+      driveChangesStartPageToken: "drive-changes-2",
+    });
+  });
+
+  it("retires only departed Drive files that were indexed", async () => {
+    mocks.getSecrets.mockResolvedValue(
+      googleSecrets({ driveChangesStartPageToken: "drive-changes-1" }),
+    );
+    mocks.getDocument.mockImplementation(async (idempotencyKey: string) =>
+      idempotencyKey === "oauth:google:drive:drive-unmarked"
+        ? { id: "document-unmarked" }
+        : undefined
+    );
+    mocks.fetch.mockImplementation(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.startsWith(DRIVE_CHANGES_URL)) {
+        return json({
+          newStartPageToken: "drive-changes-2",
+          changes: [
+            {
+              changeType: "file",
+              fileId: "drive-shared-in",
+              removed: false,
+              file: { ...DRIVE_FILE, id: "drive-shared-in", name: "Shared", ownedByMe: false },
+            },
+            {
+              changeType: "file",
+              fileId: "drive-unmarked",
+              removed: false,
+              file: { ...DRIVE_FILE, id: "drive-unmarked", name: "Unmarked", ownedByMe: undefined },
+            },
+          ],
+        });
+      }
+      throw new Error(`Unexpected URL ${url}`);
+    });
+
+    const result = await syncPersonalProvider({
+      tenantId: "personal",
+      actorId: "owner",
+      provider: "google",
+      sources: ["drive"],
+    });
+
+    // A file shared with the account was never indexed, so nothing is
+    // retired for it, and a file whose owner is not reported has left.
+    expect(mocks.remove).toHaveBeenCalledTimes(1);
+    expect(mocks.remove).toHaveBeenCalledWith(
+      "oauth:google:drive:drive-unmarked",
+      expect.objectContaining({ tenantId: "personal" }),
+    );
+    expect(mocks.ingest).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ status: "healthy", imported: 0, removed: 1 });
+  });
+
+  it("retires a Drive file reported removed even when the change carries its last state", async () => {
+    mocks.getSecrets.mockResolvedValue(
+      googleSecrets({ driveChangesStartPageToken: "drive-changes-1" }),
+    );
+    mocks.getDocument.mockResolvedValue({ id: "document-removed" });
+    const requestedUrls: string[] = [];
+    mocks.fetch.mockImplementation(async (input: string | URL | Request) => {
+      const url = String(input);
+      requestedUrls.push(url);
+      if (url.startsWith(DRIVE_CHANGES_URL)) {
+        return json({
+          newStartPageToken: "drive-changes-2",
+          changes: [{
+            changeType: "file",
+            fileId: "drive-removed",
+            removed: true,
+            file: { ...DRIVE_FILE, id: "drive-removed", name: "Last state" },
+          }],
+        });
+      }
+      throw new Error(`Unexpected URL ${url}`);
+    });
+
+    const result = await syncPersonalProvider({
+      tenantId: "personal",
+      actorId: "owner",
+      provider: "google",
+      sources: ["drive"],
+    });
+
+    // Removal means the account can no longer read the file, whatever the
+    // rest of the change says.
+    expect(requestedUrls).toHaveLength(1);
+    expect(mocks.ingest).not.toHaveBeenCalled();
+    expect(mocks.remove).toHaveBeenCalledWith(
+      "oauth:google:drive:drive-removed",
+      expect.objectContaining({ tenantId: "personal" }),
+    );
+    expect(result).toMatchObject({ imported: 0, removed: 1 });
+  });
+
+  it("indexes a Drive file's latest change and resumes the change feed page by page", async () => {
+    mocks.getSecrets.mockResolvedValue(
+      googleSecrets({ driveChangesStartPageToken: "drive-changes-1" }),
+    );
+    mocks.getDocument.mockResolvedValue({ id: "document-restored" });
+    const requestedUrls: string[] = [];
+    mocks.fetch.mockImplementation(async (input: string | URL | Request) => {
+      const url = String(input);
+      requestedUrls.push(url);
+      if (url.startsWith(DRIVE_CHANGES_URL)) {
+        return new URL(url).searchParams.get("pageToken") === "drive-changes-page-2"
+          ? json({ newStartPageToken: "drive-changes-2", changes: [] })
+          : json({
+              nextPageToken: "drive-changes-page-2",
+              changes: [
+                {
+                  changeType: "file",
+                  fileId: "drive-restored",
+                  removed: false,
+                  file: { ...DRIVE_FILE, id: "drive-restored", name: "Restored", trashed: true },
+                },
+                { changeType: "drive", driveId: "shared-drive-1", removed: false },
+                {
+                  changeType: "file",
+                  fileId: "drive-restored",
+                  removed: false,
+                  file: { ...DRIVE_FILE, id: "drive-restored", name: "Restored" },
+                },
+              ],
+            });
+      }
+      if (url.includes("/drive/v3/files/drive-restored/export")) {
+        return new Response("Restored notes");
+      }
+      throw new Error(`Unexpected URL ${url}`);
+    });
+
+    await expect(syncPersonalProvider({
+      tenantId: "personal",
+      actorId: "owner",
+      provider: "google",
+      sources: ["drive"],
+    })).resolves.toMatchObject({
+      status: "partial",
+      imported: 1,
+      removed: 0,
+      sources: [{ source: "drive", status: "syncing", backfillState: "in_progress" }],
+    });
+    // The file was restored after it was trashed, so it stays.
+    expect(mocks.remove).not.toHaveBeenCalled();
+    expect(mocks.ingest).toHaveBeenCalledTimes(1);
+    expect(mocks.ingest).toHaveBeenCalledWith(expect.objectContaining({
+      idempotencyKey: "oauth:google:drive:drive-restored",
+      content: expect.stringContaining("Restored notes"),
+    }));
+    const firstPage = savedCursor();
+    expect(firstPage).toEqual({ driveChangesPageToken: "drive-changes-page-2" });
+
+    mocks.getSecrets.mockResolvedValue(googleSecrets(firstPage));
+    await expect(syncPersonalProvider({
+      tenantId: "personal",
+      actorId: "owner",
+      provider: "google",
+      sources: ["drive"],
+    })).resolves.toMatchObject({
+      status: "healthy",
+      sources: [{ source: "drive", status: "healthy", backfillState: "complete" }],
+    });
+    expect(new URL(requestedUrls.at(-1)!).searchParams.get("pageToken")).toBe(
+      "drive-changes-page-2",
+    );
+    expect(savedCursor()).toEqual({
+      driveChangesStartPageToken: "drive-changes-2",
+    });
+  });
+
+  it.each([
+    ["no next change position", { changes: [] }],
+    ["a changed file without a next change position", {
+      changes: [{
+        changeType: "file",
+        fileId: "drive-edited",
+        removed: false,
+        file: { ...DRIVE_FILE, id: "drive-edited", name: "Edited" },
+      }],
+    }],
+    ["more changes than requested", {
+      newStartPageToken: "drive-changes-2",
+      changes: ["a", "b", "c", "d"].map((suffix) => ({
+        changeType: "file",
+        fileId: `drive-removed-${suffix}`,
+        removed: true,
+      })),
+    }],
+  ])("keeps the Drive change position when Google returns %s", async (_case, page) => {
+    mocks.getSecrets.mockResolvedValue(
+      googleSecrets({ driveChangesStartPageToken: "drive-changes-1" }),
+    );
+    mocks.getDocument.mockResolvedValue({ id: "knowledge-indexed" });
+    const requestedUrls: string[] = [];
+    mocks.fetch.mockImplementation(async (input: string | URL | Request) => {
+      const url = String(input);
+      requestedUrls.push(url);
+      if (url.startsWith(DRIVE_CHANGES_URL)) return json(page);
+      if (url.includes("/drive/v3/files/drive-edited/export")) {
+        return new Response("Edited notes");
+      }
+      throw new Error(`Unexpected URL ${url}`);
+    });
+
+    await expect(syncPersonalProvider({
+      tenantId: "personal",
+      actorId: "owner",
+      provider: "google",
+      sources: ["drive"],
+    })).resolves.toMatchObject({
+      status: "error",
+      sources: [{ source: "drive", status: "error" }],
+    });
+    // The page is rejected before any of its files is exported, downloaded,
+    // or extracted, so a page that cannot advance costs no provider work.
+    expect(requestedUrls).toHaveLength(1);
+    expect(mocks.ingest).not.toHaveBeenCalled();
+    expect(mocks.remove).not.toHaveBeenCalled();
+    expect(savedCursor()).toEqual({
+      driveChangesStartPageToken: "drive-changes-1",
+    });
+  });
+
+  it("keeps the Drive change position when a file on the page fails to retire", async () => {
+    mocks.getSecrets.mockResolvedValue(
+      googleSecrets({ driveChangesStartPageToken: "drive-changes-1" }),
+    );
+    mocks.getDocument.mockResolvedValue({ id: "knowledge-indexed" });
+    mocks.remove.mockImplementation(async (idempotencyKey: string) => {
+      if (idempotencyKey === "oauth:google:drive:drive-fails") {
+        throw new Error("Injected retirement failure.");
+      }
+      return "removed";
+    });
+    mocks.fetch.mockImplementation(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.startsWith(DRIVE_CHANGES_URL)) {
+        return json({
+          newStartPageToken: "drive-changes-2",
+          changes: [
+            { changeType: "file", fileId: "drive-retired", removed: true },
+            { changeType: "file", fileId: "drive-fails", removed: true },
+          ],
+        });
+      }
+      throw new Error(`Unexpected URL ${url}`);
+    });
+
+    await expect(syncPersonalProvider({
+      tenantId: "personal",
+      actorId: "owner",
+      provider: "google",
+      sources: ["drive"],
+    })).resolves.toMatchObject({
+      status: "error",
+      sources: [{ source: "drive", status: "error" }],
+    });
+    // The page is read again, and retiring the first file again is harmless.
+    expect(savedCursor()).toEqual({
+      driveChangesStartPageToken: "drive-changes-1",
+    });
+  });
+
+  it.each([
+    ["an error", () => json({ error: { code: 503, message: "Backend Error" } }, 503)],
+    ["no position", () => json({})],
+  ])("does not list Drive when reading its change position returns %s", async (_case, response) => {
+    mocks.driveFence.mockImplementation(async () => response());
+    const requestedUrls: string[] = [];
+    mocks.fetch.mockImplementation(async (input: string | URL | Request) => {
+      const url = String(input);
+      requestedUrls.push(url);
+      if (url.includes("/drive/v3/files?")) return json({ files: [] });
+      throw new Error(`Unexpected URL ${url}`);
+    });
+
+    await expect(syncPersonalProvider({
+      tenantId: "personal",
+      actorId: "owner",
+      provider: "google",
+      sources: ["drive"],
+    })).resolves.toMatchObject({
+      status: "error",
+      sources: [{ source: "drive", status: "error" }],
+    });
+    // A window listed without a position could never hand over to the feed,
+    // so it waits for the next sync to read one.
+    expect(requestedUrls).toEqual([]);
+    expect(savedCursor()).toEqual({});
+  });
+
+  it.each([
+    ["rejects the position as an invalid page token", 400, {
+      error: {
+        code: 400,
+        message: "Invalid Value",
+        errors: [{
+          domain: "global",
+          reason: "invalid",
+          message: "Invalid Value",
+          locationType: "parameter",
+          location: "pageToken",
+        }],
+      },
+    }],
+    ["reports the position gone", 410, {
+      error: { code: 410, message: "Gone" },
+    }],
+  ])("starts a fresh Drive listing when Google %s", async (_case, providerStatus, body) => {
+    mocks.getSecrets.mockResolvedValue(
+      googleSecrets({ driveChangesStartPageToken: "drive-changes-stale" }),
+    );
+    const requestedUrls: string[] = [];
+    mocks.fetch.mockImplementation(async (input: string | URL | Request) => {
+      const url = String(input);
+      requestedUrls.push(url);
+      if (url.startsWith(DRIVE_CHANGES_URL)) return json(body, providerStatus);
+      if (url.includes("/drive/v3/files?")) {
+        return new URL(url).searchParams.get("pageToken") === "drive-page-2"
+          ? json({ files: [] })
+          : json({ files: [], nextPageToken: "drive-page-2" });
+      }
+      throw new Error(`Unexpected URL ${url}`);
+    });
+
+    await expect(syncPersonalProvider({
+      tenantId: "personal",
+      actorId: "owner",
+      provider: "google",
+      sources: ["drive"],
+    })).resolves.toMatchObject({
+      sources: [{ source: "drive", status: "syncing", backfillState: "in_progress" }],
+    });
+    expect(mocks.driveFence).toHaveBeenCalledTimes(1);
+    const firstPage = savedCursor();
+    expect(firstPage).toMatchObject({
+      drivePageToken: "drive-page-2",
+      driveChangesFence: "drive-fence-1",
+    });
+    // The rejected position would otherwise be read again on the next page.
+    expect(firstPage).not.toHaveProperty("driveChangesStartPageToken");
+    expect(firstPage).not.toHaveProperty("driveChangesPageToken");
+
+    mocks.getSecrets.mockResolvedValue(googleSecrets(firstPage));
+    requestedUrls.length = 0;
+    await syncPersonalProvider({
+      tenantId: "personal",
+      actorId: "owner",
+      provider: "google",
+      sources: ["drive"],
+    });
+
+    expect(requestedUrls).toHaveLength(1);
+    expect(new URL(requestedUrls[0]).searchParams.get("pageToken")).toBe(
+      "drive-page-2",
+    );
+    expect(savedCursor()).toEqual({
+      driveChangesStartPageToken: "drive-fence-1",
+    });
+  });
+
+  it("fails the Drive source on any other bad change request", async () => {
+    mocks.getSecrets.mockResolvedValue(
+      googleSecrets({ driveChangesStartPageToken: "drive-changes-1" }),
+    );
+    const requestedUrls: string[] = [];
+    mocks.fetch.mockImplementation(async (input: string | URL | Request) => {
+      const url = String(input);
+      requestedUrls.push(url);
+      if (url.startsWith(DRIVE_CHANGES_URL)) {
+        return json({
+          error: {
+            code: 400,
+            message: "Invalid field selection",
+            errors: [{
+              domain: "global",
+              reason: "invalidParameter",
+              locationType: "parameter",
+              location: "fields",
+            }],
+          },
+        }, 400);
+      }
+      throw new Error(`Unexpected URL ${url}`);
+    });
+
+    await expect(syncPersonalProvider({
+      tenantId: "personal",
+      actorId: "owner",
+      provider: "google",
+      sources: ["drive"],
+    })).resolves.toMatchObject({
+      status: "error",
+      sources: [{ source: "drive", status: "error" }],
+    });
+    // A request Drive rejects for another reason would be rejected again
+    // after every fresh listing, so it is not mistaken for a stale position.
+    expect(requestedUrls).toHaveLength(1);
+    expect(mocks.driveFence).not.toHaveBeenCalled();
+    expect(savedCursor()).toEqual({
+      driveChangesStartPageToken: "drive-changes-1",
+    });
+  });
+
   it("never indexes Gmail spam or trash", async () => {
     mocks.getSecrets.mockResolvedValue(
       googleSecrets({ gmailHistoryId: "history-start" }),
@@ -977,6 +1627,12 @@ describe("personal OAuth synchronization", () => {
 });
 
 function json(value: unknown, status = 200) { return new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } }); }
+
+function savedCursor() {
+  return JSON.parse(
+    mocks.updateState.mock.calls.at(-1)?.[0].cursor,
+  ) as Record<string, unknown>;
+}
 
 function googleSecrets(syncCursor: Record<string, unknown>) {
   return {
