@@ -27,11 +27,15 @@ import {
   leaseOperationJobByDedupeKey,
   leaseOperationJobs,
 } from "@/lib/operations/job-queue";
+import { runEventCursor } from "@/lib/runs/event-cursor";
 import {
   AgentRunAlreadyExistsError,
+  appendRunEvent,
   cancelAgentRun,
   createAgentRun,
   getAgentRun,
+  listAgentRunEventsAfter,
+  markAgentRunResuming,
 } from "@/lib/runs/store";
 import { sweepExpiredSensitiveData } from "@/lib/security/retention";
 import {
@@ -3547,6 +3551,94 @@ databaseDescribe("Postgres schema integration", () => {
       SELECT count(*)::int AS count FROM omni_agent_runs WHERE id = ${runId}
     `;
     expect(runCount.count).toBe(1);
+  });
+
+  test("positions each run event on its stream and lists a run's events after one", async () => {
+    const tenantId = "run_event_tail_tenant";
+    const otherTenantId = "run_event_tail_other";
+    const inTenant = <T,>(operation: () => Promise<T>, tenant = tenantId) =>
+      runWithDatabaseTenantScope(tenant, operation);
+    const newRun = () => inTenant(() => createAgentRun({
+      tenantId,
+      actorId: "run-event-tail-owner",
+      mode: "orchestrate",
+      prompt: "Summarize my week",
+      messages: [{ role: "user", content: "Summarize my week" }],
+      agentId: "atlas",
+    }));
+    const run = await newRun();
+    const sibling = await newRun();
+    const append = (runId: string, label: string) =>
+      inTenant(() => appendRunEvent(runId, { type: "status", label }, { tenantId }));
+
+    const planning = { type: "status" as const, label: "Planning" };
+    const first = await inTenant(() => appendRunEvent(run.id, planning, { tenantId }));
+    await append(sibling.id, "Sibling step");
+    const second = await append(run.id, "Checking sources");
+    const delta = await inTenant(() =>
+      appendRunEvent(run.id, { type: "delta", text: "Partial" }, { tenantId }));
+    const third = await append(run.id, "Drafting");
+
+    expect(first.seq).toEqual(expect.any(Number));
+    expect(second.seq).toBeGreaterThan(first.seq!);
+    expect(third.seq).toBeGreaterThan(second.seq!);
+    expect(runEventCursor(planning)).toBe(first.seq);
+    expect(delta.seq).toBeUndefined();
+    // Each record shares its domain event's id, which carries its position.
+    const positions = await admin`
+      SELECT event.id, event.seq
+      FROM omni_events event
+      JOIN omni_agent_events record ON record.id = event.id
+      WHERE event.stream_id = ${`run:${run.id}`}
+      ORDER BY event.seq ASC
+    `;
+    expect(positions.map((row) => [row.id, Number(row.seq)])).toEqual(
+      [first, second, third].map((record) => [record.id, record.seq]),
+    );
+
+    const list = (
+      options: { afterSeq?: number; limit?: number } = {},
+      tenant = tenantId,
+    ) => inTenant(
+      () => listAgentRunEventsAfter(run.id, { tenantId: tenant, ...options }),
+      tenant,
+    );
+    const listed = await list();
+    expect(listed).toEqual([first, second, third]);
+    expect(listed[1]).toMatchObject({
+      tenantId,
+      runId: run.id,
+      type: "status",
+      payload: { type: "status", label: "Checking sources" },
+    });
+    await expect(list({ afterSeq: first.seq })).resolves.toEqual([second, third]);
+    await expect(list({ afterSeq: first.seq, limit: 1 })).resolves.toEqual([second]);
+    await expect(list({ afterSeq: third.seq })).resolves.toEqual([]);
+    // The tenant predicate holds even where row security is not in force.
+    await expect(list({}, otherTenantId)).resolves.toEqual([]);
+
+    // A step recorded inside a run transition is positioned the same way.
+    await admin`
+      UPDATE omni_agent_runs
+      SET status = 'waiting_approval', continuation = '{}'::jsonb
+      WHERE tenant_id = ${tenantId} AND id = ${run.id}
+    `;
+    await expect(inTenant(() => markAgentRunResuming(run.id, { tenantId })))
+      .resolves.toBe(true);
+    const resumed = await list({ afterSeq: third.seq });
+    expect(resumed).toEqual([{
+      id: expect.any(String),
+      tenantId,
+      runId: run.id,
+      type: "status",
+      payload: expect.objectContaining({
+        type: "status",
+        label: "resuming after approval",
+      }),
+      createdAt: expect.any(String),
+      seq: expect.any(Number),
+    }]);
+    expect(resumed[0].seq).toBeGreaterThan(third.seq!);
   });
 });
 

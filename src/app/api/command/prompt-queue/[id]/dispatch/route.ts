@@ -16,6 +16,7 @@ import {
 import { getAppBaseUrl } from "@/lib/config";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { privateNoStoreCacheControl } from "@/lib/http/response";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import {
   promptQueueAuthority,
@@ -128,7 +129,10 @@ function forwardAgentResponse(response: Response, itemId: string) {
     responseHeaders.delete(name);
   }
   responseHeaders.set("x-asael-prompt-queue-item", itemId);
-  responseHeaders.set("cache-control", "private, no-store");
+  responseHeaders.set(
+    "cache-control",
+    privateNoStoreCacheControl(responseHeaders),
+  );
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,

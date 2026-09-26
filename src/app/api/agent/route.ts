@@ -41,7 +41,7 @@ import {
   checkSharedRateLimit,
   RateLimitStoreUnavailableError,
 } from "@/lib/http/rate-limit";
-import { encodeSse, sseResponse } from "@/lib/http/sse";
+import { encodeSse, sseResponse, startSseHeartbeat } from "@/lib/http/sse";
 import {
   createMission,
   ensureMissionTask,
@@ -100,6 +100,11 @@ import {
   agentRequestUserTurnId,
   durableWorkflowAcknowledgement,
 } from "@/lib/runs/request-admission";
+import { runEventCursor, withRunEventCursor } from "@/lib/runs/event-cursor";
+import {
+  agentRunTailResponse,
+  parseRunEventCursor,
+} from "@/lib/runs/event-tail";
 import {
   narrowRunBudgetLimits,
   runBudgetCountersV1Schema,
@@ -798,17 +803,17 @@ async function POSTHandler(request: Request) {
       );
     }
     if (admission.state === "in_progress") {
-      return Response.json(
-        {
-          error: "Agent request in progress",
-          code: "agent_request_in_progress",
-          runId: admission.runId,
-          status: admission.status,
-          message:
-            "This request is still running. Follow it in Activity instead of sending it again.",
-        },
-        { status: 409, headers: { "cache-control": "private, no-store" } },
-      );
+      // The first attempt's run is still going. Follow it from its event log
+      // (after the last event this client saw, if it says) instead of running
+      // the instruction again.
+      return agentRunTailResponse({
+        runId: admission.runId,
+        tenantId: context.tenantId,
+        threadId: admission.threadId,
+        afterSeq: parseRunEventCursor(request),
+        signal: request.signal,
+        headers: { "X-Asael-Run-Id": admission.runId },
+      });
     }
     if (admission.state === "replay") {
       return replayedAgentRequestResponse(admission.events);
@@ -1185,25 +1190,46 @@ async function POSTHandler(request: Request) {
   let threadProjectId = parsed.data.projectId;
   const agentAbortController = new AbortController();
   let transportCanceled = false;
-  if (request.signal.aborted) {
+  // A disconnect before the run exists stops the request before it creates
+  // anything. Once the run exists it outlives this connection: the client
+  // detaches, can follow it again from /api/runs/:id/stream, and only an
+  // explicit cancel stops it.
+  let runStarted = false;
+  let stopHeartbeat = () => {};
+  const detachTransport = (reason: unknown) => {
     transportCanceled = true;
-    agentAbortController.abort(request.signal.reason);
+    stopHeartbeat();
+    if (!runStarted && !agentAbortController.signal.aborted) {
+      agentAbortController.abort(reason);
+    }
+  };
+  if (request.signal.aborted) {
+    detachTransport(request.signal.reason);
   } else {
     request.signal.addEventListener(
       "abort",
-      () => {
-        transportCanceled = true;
-        agentAbortController.abort(request.signal.reason);
-      },
+      () => detachTransport(request.signal.reason),
       { once: true },
     );
   }
+  let settleExecution!: () => void;
+  const execution = new Promise<void>((resolve) => {
+    settleExecution = resolve;
+  });
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       let queueReceiptFailureEmitted = false;
-      const enqueueTransportEvent = (event: AgentEvent) => {
+      const write = (chunk: string) => {
         if (transportCanceled) return;
-        controller.enqueue(encoder.encode(encodeSse(event)));
+        try {
+          controller.enqueue(encoder.encode(chunk));
+        } catch (error) {
+          detachTransport(error);
+        }
+      };
+      stopHeartbeat = startSseHeartbeat(write);
+      const enqueueTransportEvent = (event: AgentEvent) => {
+        write(encodeSse(event, { id: runEventCursor(event) }));
       };
       const enqueueEvent = async (event: AgentEvent) => {
         const events = queuedLifecycle
@@ -2032,8 +2058,11 @@ async function POSTHandler(request: Request) {
                 (error) => ({ error }),
               );
             }
+            runStarted = true;
             await enqueueEvent(
-              mission ? { ...event, missionId: mission.id } : event,
+              mission
+                ? withRunEventCursor(event, { ...event, missionId: mission.id })
+                : event,
             );
             continue;
           }
@@ -2188,18 +2217,26 @@ async function POSTHandler(request: Request) {
             }
           }
         }
-        if (!transportCanceled) controller.close();
+        stopHeartbeat();
+        if (!transportCanceled) {
+          try {
+            controller.close();
+          } catch {
+            // The transport went away after the last write.
+          }
+        }
+        settleExecution();
       }
     },
     cancel(reason) {
-      transportCanceled = true;
-      if (!agentAbortController.signal.aborted) {
-        agentAbortController.abort(reason);
-      }
+      detachTransport(reason);
     },
   });
 
-  return sseResponse(stream);
+  // A detached run keeps executing after its response closes, so the
+  // function stays alive until the run settles.
+  after(() => execution);
+  return sseResponse(stream, { "X-Asael-Run-Id": directRootRunId });
 }
 
 function missionTitle(message: string) {

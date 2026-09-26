@@ -289,6 +289,24 @@ describe("agent request admission (file mode)", () => {
     });
   });
 
+  it("names the thread of a run still in progress so a retry can follow it", async () => {
+    const admission = await import("@/lib/runs/request-admission");
+    const runs = await import("@/lib/runs/store");
+    const requestId = "admit-live-thread";
+    const runId = admission.agentRequestRunId(TENANT_ID, "actor-a", requestId);
+    await admit(requestId, "a".repeat(64));
+    vi.mocked(runs.getAgentRun).mockResolvedValueOnce(
+      storedRun(runId, { threadId: "thread-live" }),
+    );
+
+    await expect(admit(requestId, "a".repeat(64))).resolves.toEqual({
+      state: "in_progress",
+      runId,
+      status: "running",
+      threadId: "thread-live",
+    });
+  });
+
   it("never replays a run another actor owns", async () => {
     const admission = await import("@/lib/runs/request-admission");
     const runs = await import("@/lib/runs/store");

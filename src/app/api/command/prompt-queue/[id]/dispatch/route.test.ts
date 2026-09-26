@@ -146,7 +146,9 @@ describe("prompt queue dispatch forwarding", () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get("x-asael-prompt-queue-item")).toBe(itemId);
-    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-store, no-transform",
+    );
     expect(response.headers.get("connection")).toBeNull();
     expect(response.headers.get("content-encoding")).toBeNull();
     expect(response.headers.get("content-length")).toBeNull();

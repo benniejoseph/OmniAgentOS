@@ -69,6 +69,7 @@ import {
   runCheckpointResumeClaimTokenSha256,
   type RunCheckpointResumeClaim,
 } from "@/lib/runs/checkpoint-resume-claim";
+import { recordRunEventCursor } from "@/lib/runs/event-cursor";
 import type { AgentRunContinuation, AgentRunEventRecord, AgentRunFeedback, AgentRunRecord, RunLedger, RunStatus } from "@/lib/runs/types";
 import { getDataPath } from "@/lib/storage/paths";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
@@ -737,7 +738,10 @@ export async function appendRunEvent(
       redactedEvent.usageReceiptRecorded
     ),
   );
+  // The domain event shares the record's id, so a tail can read the record
+  // back in stream order by joining on it.
   const domainEvent = {
+    id: record.id,
     streamId: `run:${runId}`,
     type: `run.${event.type}`,
     payload: {
@@ -758,7 +762,7 @@ export async function appendRunEvent(
     if (options.executionScope) {
       assertExecutionScopeTenant(options.executionScope, tenantId);
     }
-    await getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+    const persistedSeq = await getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
       if (redactedEvent.type === "harness" && redactedEvent.contextTraceId) {
         await lockActiveRetrievalTrace(
           sql,
@@ -821,7 +825,10 @@ export async function appendRunEvent(
         INSERT INTO omni_agent_events (id, tenant_id, run_id, type, payload, created_at)
         VALUES (${record.id}, ${tenantId}, ${record.runId}, ${record.type}, ${record.payload}::jsonb, ${record.createdAt})
       `;
-    });
+      return persistedDomainEvent.seq;
+    }) as number | undefined;
+    record.seq = persistedSeq;
+    recordRunEventCursor(event, persistedSeq);
     await appendLegacyRunTerminalReceiptSafely(
       runId,
       redactedEvent,
@@ -848,6 +855,7 @@ export async function appendRunEvent(
     ...domainEvent,
     tenantId: options.tenantId,
   });
+  record.seq = persistedDomainEvent?.seq;
   await updateRunLedger((ledger) => {
     const runTenantId = normalizeTenantId(
       ledger.runs.find((run) => run.id === runId)?.tenantId,
@@ -862,6 +870,7 @@ export async function appendRunEvent(
     ledger.events.push(record);
     return ledger;
   });
+  recordRunEventCursor(event, record.seq);
   if (
     persistedDomainEvent &&
     redactedEvent.type === "model" &&
@@ -1887,6 +1896,82 @@ export async function getAgentRun(runId: string, options: { tenantId?: string } 
   return ledger.runs.find((run) => run.id === runId && (!options.tenantId || normalizeTenantId(run.tenantId) === normalizeTenantId(options.tenantId)));
 }
 
+const RUN_EVENT_PAGE_DEFAULT = 200;
+const RUN_EVENT_PAGE_MAX = 500;
+
+/**
+ * Lists a run's persisted events after a stream position, oldest first, for
+ * a client resuming a dropped event stream. Positions come from the run's
+ * `run:<id>` domain stream, which shares ids with the event records; records
+ * written before that pairing have no position and are not listed.
+ */
+export async function listAgentRunEventsAfter(
+  runId: string,
+  options: { tenantId: string; afterSeq?: number; limit?: number },
+): Promise<AgentRunEventRecord[]> {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const afterSeq = Number.isSafeInteger(options.afterSeq) &&
+      (options.afterSeq as number) > 0
+    ? options.afterSeq as number
+    : 0;
+  const limit = Math.min(
+    Math.max(Math.trunc(options.limit || RUN_EVENT_PAGE_DEFAULT), 1),
+    RUN_EVENT_PAGE_MAX,
+  );
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT record.id, record.tenant_id, record.run_id, record.type,
+             record.payload, record.created_at, event.seq
+      FROM omni_events event
+      JOIN omni_agent_events record
+        ON record.id = event.id
+       AND record.tenant_id = event.tenant_id
+      WHERE event.tenant_id = ${tenantId}
+        AND event.stream_id = ${`run:${runId}`}
+        AND event.seq > ${afterSeq}
+        AND record.run_id = ${runId}
+      ORDER BY event.seq ASC
+      LIMIT ${limit}
+    `;
+    return rows.flatMap((row: Record<string, unknown>) => {
+      const seq = Number(row.seq);
+      const payload = row.payload;
+      if (
+        !Number.isSafeInteger(seq) ||
+        !payload ||
+        typeof payload !== "object" ||
+        typeof (payload as { type?: unknown }).type !== "string"
+      ) {
+        return [];
+      }
+      return [{
+        id: String(row.id),
+        tenantId: String(row.tenant_id),
+        runId: String(row.run_id),
+        type: String(row.type),
+        payload,
+        createdAt: row.created_at instanceof Date
+          ? row.created_at.toISOString()
+          : String(row.created_at),
+        seq,
+      }];
+    });
+  }
+
+  const ledger = await readRunLedger();
+  return ledger.events
+    .filter((event) =>
+      event.runId === runId &&
+      normalizeTenantId(event.tenantId) === tenantId &&
+      typeof event.seq === "number" &&
+      event.seq > afterSeq
+    )
+    .sort((left, right) => (left.seq as number) - (right.seq as number))
+    .slice(0, limit);
+}
+
 export async function findAgentRunWaitingForToolApproval(
   executionId: string,
   options: { tenantId?: string } = {},
@@ -2292,6 +2377,7 @@ async function appendRunEventInTransaction(input: {
   event: AgentEvent;
 }) {
   await appendDomainEvent({
+    id: input.record.id,
     streamId: `run:${input.record.runId}`,
     type: `run.${input.event.type}`,
     tenantId: input.tenantId,

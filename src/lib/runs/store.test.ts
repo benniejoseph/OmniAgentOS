@@ -918,3 +918,68 @@ describe("agent run approval continuations (file mode)", () => {
     });
   });
 });
+
+describe("agent run event positions (file mode)", () => {
+  it("gives each persisted event its run stream position and lists a run's events after one", async () => {
+    const store = await import("@/lib/runs/store");
+    const { runEventCursor } = await import("@/lib/runs/event-cursor");
+    const create = (prompt: string) => store.createAgentRun({
+      mode: "orchestrate",
+      prompt,
+      messages: [{ role: "user", content: prompt }],
+    });
+    const run = await create("follow this run");
+    const other = await create("a different run");
+    const planning = { type: "status", label: "Planning" } as const;
+    const delta = { type: "delta", text: "partial" } as const;
+
+    const first = await store.appendRunEvent(run.id, planning);
+    await store.appendRunEvent(other.id, { type: "status", label: "Elsewhere" });
+    const transient = await store.appendRunEvent(run.id, delta);
+    const second = await store.appendRunEvent(run.id, {
+      type: "status",
+      label: "Acting",
+    });
+    const third = await store.appendRunEvent(run.id, {
+      type: "status",
+      label: "Checking",
+    });
+
+    // The record and its domain event are one event at one position.
+    const stream = await listStreamEvents(`run:${run.id}`);
+    expect(stream.map((event) => [event.id, event.seq])).toEqual(
+      [first, second, third].map((record) => [record.id, record.seq]),
+    );
+    expect(first.seq).toBeGreaterThan(0);
+    expect(second.seq).toBeGreaterThan(first.seq!);
+    expect(runEventCursor(planning)).toBe(first.seq);
+    expect(transient.seq).toBeUndefined();
+    expect(runEventCursor(delta)).toBeUndefined();
+
+    await expect(
+      store.listAgentRunEventsAfter(run.id, { tenantId: "default" }),
+    ).resolves.toEqual([first, second, third]);
+    await expect(
+      store.listAgentRunEventsAfter(run.id, {
+        tenantId: "default",
+        afterSeq: first.seq,
+      }),
+    ).resolves.toEqual([second, third]);
+    await expect(
+      store.listAgentRunEventsAfter(run.id, {
+        tenantId: "default",
+        afterSeq: first.seq,
+        limit: 1,
+      }),
+    ).resolves.toEqual([second]);
+    await expect(
+      store.listAgentRunEventsAfter(run.id, {
+        tenantId: "default",
+        afterSeq: third.seq,
+      }),
+    ).resolves.toEqual([]);
+    await expect(
+      store.listAgentRunEventsAfter(run.id, { tenantId: "tenant-elsewhere" }),
+    ).resolves.toEqual([]);
+  });
+});

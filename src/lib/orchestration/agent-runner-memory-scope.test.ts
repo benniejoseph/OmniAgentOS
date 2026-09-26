@@ -12,6 +12,10 @@ import type { ModelToolCall, ModelToolTurnResult } from "@/lib/models/types";
 import type { AgentRunContinuation } from "@/lib/runs/types";
 import { DEFAULT_CUSTOM_AGENT_PERSONA } from "@/lib/agents/persona";
 import { AUTHORIZED_CONTEXT_RETRIEVAL_SOURCES } from "@/lib/rag/context-engine";
+import {
+  publicGroundingReport,
+  type GroundingReport,
+} from "@/lib/rag/citations";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
 import { sourceContractSha256 } from "@/lib/sources/contracts";
@@ -1501,6 +1505,18 @@ describe("agent memory scope", () => {
       ).toBe(decision);
     },
   );
+
+  it("streams the public grounding projection and keeps claim evidence on the run", async () => {
+    const events = await collectRun("session");
+
+    const stored = mocks.completeAgentRun.mock.calls[0]?.[2] as GroundingReport;
+    expect(stored.claimEvidence).toHaveProperty("claimEvidenceMap");
+    const done = events.find((event) => event.type === "done");
+    expect(done).toMatchObject({ type: "done", response: "ASAEL_LIVE_OK" });
+    const streamed = (done as { grounding?: GroundingReport }).grounding;
+    expect(streamed).toEqual(publicGroundingReport(stored));
+    expect(streamed?.claimEvidence).not.toHaveProperty("claimEvidenceMap");
+  });
 
   describe("run cancellation", () => {
     const STOPPED_RESUME = {

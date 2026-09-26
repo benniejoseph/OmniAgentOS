@@ -159,6 +159,11 @@ export type AgentRunEventRecord = {
   type: string;
   payload: unknown;
   createdAt: string;
+  /**
+   * Position of this event in the run's `run:<id>` domain stream. SSE uses it
+   * as the event id so a dropped client can resume after the last one it saw.
+   */
+  seq?: number;
 };
 
 export type RunLedger = {

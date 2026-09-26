@@ -48,7 +48,9 @@ import {
   permissionMessage,
   useWorkspaceSession,
 } from "@/components/app-shell/session-context";
+import { followAgentRunStream } from "@/lib/client/agent-run-follow";
 import { startVisibleRefresh } from "@/lib/client/visible-refresh";
+import { readSseEvents, type SseCursor } from "@/lib/http/sse-reader";
 import {
   PrivateMediaPreview,
   type PrivateMediaReadiness,
@@ -590,6 +592,8 @@ export function AgentRunsWorkspace({
   const agentRequestGoalRef = useRef<string>("");
   const directRunStatusRef = useRef("");
   const currentRunIdRef = useRef("");
+  // The run a send started, named by the response before its first event.
+  const streamRunIdRef = useRef("");
   const detailsDialogRef = useRef<HTMLElement | null>(null);
   const detailsReturnFocusRef = useRef<HTMLElement | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
@@ -1248,7 +1252,10 @@ export function AgentRunsWorkspace({
 
   async function stopAgent() {
     const controller = abortControllerRef.current;
-    const runId = activeAgentRunId;
+    // The run keeps going when its stream closes, so Stop cancels it by id,
+    // including a send whose run has not reached the screen yet.
+    const runId = activeAgentRunId ||
+      (controller ? currentRunIdRef.current || streamRunIdRef.current : "");
     if (!controller && !runId) return;
     setRunAnnouncement("Stopping the agent run.");
     agentRequestIdRef.current = "";
@@ -1257,11 +1264,9 @@ export function AgentRunsWorkspace({
       return;
     }
     try {
-      await readJson(`/api/runs/${encodeURIComponent(runId)}`, {
-        method: "DELETE",
-      });
+      const canceled = await cancelAgentRun(runId);
       void refreshEvidence();
-      setRunAnnouncement("Agent run canceled.");
+      setRunAnnouncement(canceled ? "Agent run canceled." : "Agent run stopped.");
     } catch (cancelError) {
       setError(
         cancelError instanceof Error
@@ -2313,6 +2318,7 @@ export function AgentRunsWorkspace({
     if (!resumeRunId) setContextUseReceipt(undefined);
     setActiveAgentRunId(resumeRunId || "");
     currentRunIdRef.current = resumeRunId || "";
+    streamRunIdRef.current = "";
     clearSelectedActivity();
     setRunFeedback(undefined);
     setStreamEvents([{ type: "status", label: "Starting", detail: "Opening the durable conversation." }]);
@@ -2384,19 +2390,11 @@ export function AgentRunsWorkspace({
             "The interrupted attempt of this message was different, so this one was not sent. Send it again to start it as a new message.",
           );
         }
-        if (body.code === "agent_request_in_progress") {
-          const inProgressRunId = stringValue(body.runId, "");
-          if (inProgressRunId) {
-            currentRunIdRef.current = inProgressRunId;
-            completedRunId = inProgressRunId;
-            setActiveAgentRunId(inProgressRunId);
-            setSelectedActivityRunId(inProgressRunId);
-          }
-        }
         throw new Error(stringValue(body.message || body.error, `/api/agent returned ${response.status}`));
       }
+      streamRunIdRef.current = response.headers.get("x-asael-run-id") || "";
 
-      await readSse(response.body, (event) => {
+      const handleStreamEvent = (event: StreamEvent) => {
         if (event.type === "run" && event.runId) {
           currentRunIdRef.current = event.runId;
           completedRunId = event.runId;
@@ -2491,7 +2489,39 @@ export function AgentRunsWorkspace({
           setClarificationRunId("");
           setRunAnnouncement(event.message || "Agent run stopped.");
         }
-      });
+      };
+      const cursor: SseCursor = { lastEventId: "" };
+      let streamFailure: unknown;
+      try {
+        await readSseEvents<StreamEvent>(response.body, handleStreamEvent, cursor);
+      } catch (readError) {
+        if (controller.signal.aborted) throw readError;
+        streamFailure = readError;
+      }
+      // The run outlives this connection. When the stream drops before the
+      // run settles, follow the run's event log from the last event seen here
+      // instead of reporting a failure the run did not have.
+      const followRunId = completedRunId || streamRunIdRef.current;
+      if (!terminalEvent && !controller.signal.aborted && followRunId) {
+        setStreamEvents((current) => [
+          ...current.slice(-199),
+          {
+            type: "status",
+            label: "Reconnecting",
+            detail: "The connection dropped. Following the run from where it left off.",
+          },
+        ]);
+        setRunAnnouncement("The connection dropped. Reconnecting to the run.");
+        await followAgentRunStream<StreamEvent>({
+          runId: followRunId,
+          cursor,
+          signal: controller.signal,
+          onEvent: handleStreamEvent,
+          isSettled: () => terminalEvent !== undefined,
+        });
+      } else if (streamFailure !== undefined) {
+        throw streamFailure;
+      }
       if (!terminalEvent) {
         throw new Error(
           "The agent stream ended before a final status was received. Check Activity before retrying.",
@@ -6172,42 +6202,20 @@ function WorkflowOutcomePill({ status }: { status: unknown }) {
   );
 }
 
-async function readSse(stream: ReadableStream<Uint8Array>, onEvent: (event: StreamEvent) => void) {
-  const reader = stream.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
+// A send's run may not be stored yet when Stop is pressed, so a missing run
+// is asked for once more. A run still missing never started, and closing the
+// send already stopped it. Resolves true when a run was canceled.
+async function cancelAgentRun(runId: string) {
+  const path = `/api/runs/${encodeURIComponent(runId)}`;
+  for (let attempt = 0; ; attempt += 1) {
+    const response = await fetch(path, { method: "DELETE" });
+    if (response.ok) return true;
+    if (response.status !== 404) {
+      const record = asRecord(await response.json().catch(() => ({})));
+      throw new Error(stringValue(record.message || record.error, `${path} returned ${response.status}`));
     }
-    buffer += decoder.decode(value, { stream: true });
-    const events = buffer.replaceAll("\r\n", "\n").split("\n\n");
-    buffer = events.pop() || "";
-    for (const event of events) {
-      emitSseEvent(event, onEvent);
-    }
-  }
-
-  buffer += decoder.decode();
-  for (const event of buffer.replaceAll("\r\n", "\n").split("\n\n")) {
-    emitSseEvent(event, onEvent);
-  }
-}
-
-function emitSseEvent(
-  block: string,
-  onEvent: (event: StreamEvent) => void,
-) {
-  const payload = block
-    .split("\n")
-    .filter((line) => line.startsWith("data:"))
-    .map((line) => line.slice(5).trimStart())
-    .join("\n")
-    .trim();
-  if (payload) {
-    onEvent(JSON.parse(payload) as StreamEvent);
+    if (attempt > 0) return false;
+    await new Promise((resolve) => window.setTimeout(resolve, 2_000));
   }
 }
 

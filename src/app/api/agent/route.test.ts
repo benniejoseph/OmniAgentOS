@@ -202,6 +202,8 @@ import {
   prepareDurableSpecialistDelegation,
   scheduleDurableSpecialistDrain,
 } from "@/lib/subagents/scheduler";
+import type { AgentEvent } from "@/lib/orchestration/types";
+import { recordRunEventCursor } from "@/lib/runs/event-cursor";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { resolveVoiceCommandGate } from "@/lib/voice/command-gate";
 import { SAVED_PROCEDURE_V1_TAG } from "@/lib/workflows/saved-procedures";
@@ -649,20 +651,24 @@ describe("agent prompt queue lifecycle", () => {
     }
   });
 
-  it("aborts the Agent on stream cancellation and records run_canceled without writing to the closed transport", async () => {
+  it("keeps a started run going after its stream is canceled and records the real outcome", async () => {
     authorizeCanonicalQueueRequest();
     let agentSignal: AbortSignal | undefined;
+    let releaseRun!: () => void;
+    const runReleased = new Promise<void>((resolve) => {
+      releaseRun = resolve;
+    });
     routeMocks.runAgent.mockImplementation(async function* (
       _input: unknown,
       signal: AbortSignal,
     ) {
       agentSignal = signal;
-      yield { type: "run", runId: "run-canceled", threadId: "thread-a" };
-      await new Promise<void>((resolve) => {
-        if (signal.aborted) resolve();
-        else signal.addEventListener("abort", () => resolve(), { once: true });
-      });
+      yield { type: "run", runId: "run-detached", threadId: "thread-a" };
+      await runReleased;
+      yield { type: "status", label: "Working without a listener" };
+      yield { type: "done", response: "Finished after the disconnect." };
     });
+    const requestAbort = new AbortController();
 
     const response = await POST(new Request("http://asael.test/api/agent", {
       method: "POST",
@@ -678,6 +684,7 @@ describe("agent prompt queue lifecycle", () => {
         strategy: "direct",
         agentId: "atlas",
       }),
+      signal: requestAbort.signal,
     }));
     const reader = response.body?.getReader();
     expect(reader).toBeDefined();
@@ -689,20 +696,88 @@ describe("agent prompt queue lifecycle", () => {
       body += decoder.decode(chunk.value, { stream: true });
     }
 
+    requestAbort.abort("test transport disconnected");
     await reader!.cancel("test transport disconnected");
-    await vi.waitFor(() => {
-      expect(routeMocks.recordPromptQueueDispatchProgress).toHaveBeenCalledWith(
+    // The platform keeps the function alive until the detached run settles.
+    const execution = routeMocks.after.mock.calls.at(-1)?.[0] as () => Promise<void>;
+    let settled = false;
+    const keptAlive = execution().then(() => {
+      settled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(settled).toBe(false);
+    releaseRun();
+    await keptAlive;
+
+    expect(agentSignal?.aborted).toBe(false);
+    expect(routeMocks.recordPromptQueueDispatchProgress).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        runId: "run-detached",
+        terminal: "completed",
+      }),
+    );
+    expect(routeMocks.recordPromptQueueDispatchProgress).not.toHaveBeenCalledWith(
+      expect.objectContaining({ failureCode: "run_canceled" }),
+    );
+  });
+
+  it("keeps a started run going when a write to its transport fails", async () => {
+    authorizeCanonicalQueueRequest();
+    const enqueue = ReadableStreamDefaultController.prototype.enqueue;
+    const failedWrite = vi.spyOn(ReadableStreamDefaultController.prototype, "enqueue")
+      .mockImplementation(function (
+        this: ReadableStreamDefaultController,
+        chunk?: unknown,
+      ) {
+        if (new TextDecoder().decode(chunk as Uint8Array).includes("Transport lost here")) {
+          throw new TypeError("Invalid state: the transport is gone.");
+        }
+        return enqueue.call(this, chunk);
+      });
+    let agentSignal: AbortSignal | undefined;
+    routeMocks.runAgent.mockImplementation(async function* (
+      _input: unknown,
+      signal: AbortSignal,
+    ) {
+      agentSignal = signal;
+      yield { type: "run", runId: "run-write-failed", threadId: "thread-a" };
+      yield { type: "status", label: "Transport lost here" };
+      yield { type: "status", label: "Still working" };
+      yield { type: "done", response: "Finished after the write failed." };
+    });
+
+    try {
+      await POST(new Request("http://asael.test/api/agent", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-asael-prompt-queue-item":
+            "11111111-1111-4111-8111-111111111111",
+          "x-asael-prompt-queue-token": "private-dispatch-token",
+        },
+        body: JSON.stringify({
+          message: "Inspect the queued context.",
+          requestId: "prompt-queue-write-failed-a",
+          strategy: "direct",
+          agentId: "atlas",
+        }),
+      }));
+      await (routeMocks.after.mock.calls.at(-1)?.[0] as () => Promise<void>)();
+
+      expect(agentSignal?.aborted).toBe(false);
+      expect(routeMocks.recordPromptQueueDispatchProgress).toHaveBeenLastCalledWith(
         expect.objectContaining({
-          runId: "run-canceled",
-          terminal: "failed",
-          failureCode: "run_canceled",
+          runId: "run-write-failed",
+          terminal: "completed",
         }),
       );
-    });
-    expect(agentSignal?.aborted).toBe(true);
-    expect(routeMocks.recordPromptQueueDispatchProgress).not.toHaveBeenCalledWith(
-      expect.objectContaining({ failureCode: "run_failed" }),
-    );
+      // Nothing is written once the transport is gone.
+      const written = failedWrite.mock.calls.map(([chunk]) =>
+        new TextDecoder().decode(chunk as Uint8Array));
+      expect(written.at(-1)).toContain("Transport lost here");
+    } finally {
+      failedWrite.mockRestore();
+    }
   });
 
   it("stops before clarification or workflow mutations when the stream is canceled during planning", async () => {
@@ -763,7 +838,13 @@ describe("agent prompt queue lifecycle", () => {
       new Error("mission projection unavailable"),
     );
     routeMocks.runAgent.mockImplementation(async function* () {
-      yield { type: "run", runId: "run-mission-done", threadId: "thread-a" };
+      const runEvent: AgentEvent = {
+        type: "run",
+        runId: "run-mission-done",
+        threadId: "thread-a",
+      };
+      recordRunEventCursor(runEvent, 77);
+      yield runEvent;
       yield { type: "done", response: "Durable Agent success." };
     });
 
@@ -786,6 +867,10 @@ describe("agent prompt queue lifecycle", () => {
       }));
 
       const body = await response.text();
+      // The mission-decorated run event keeps its stream position.
+      expect(body).toMatch(
+        /id: 77\nevent: run\ndata: [^\n]*"missionId":"11111111-1111-4111-8111-111111111111"/,
+      );
       expect(body).toContain('"type":"done"');
       expect(body).toContain("Durable Agent success.");
       expect(routeMocks.recordPromptQueueDispatchProgress).toHaveBeenCalledTimes(2);
@@ -804,6 +889,83 @@ describe("agent prompt queue lifecycle", () => {
       );
     } finally {
       logged.mockRestore();
+    }
+  });
+});
+
+describe("agent run transport", () => {
+  it("names the run it starts and marks each persisted event's stream position", async () => {
+    routeMocks.runAgent.mockImplementation(async function* () {
+      const runEvent: AgentEvent = {
+        type: "run",
+        runId: "run-positioned",
+        threadId: "thread-a",
+      };
+      const status: AgentEvent = { type: "status", label: "Planning" };
+      recordRunEventCursor(runEvent, 40);
+      recordRunEventCursor(status, 41);
+      yield runEvent;
+      yield status;
+      yield { type: "delta", text: "Partial" };
+      yield { type: "done", response: "Positioned." };
+    });
+
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        message: "Inspect the requested context.",
+        requestId: "positioned-events-a",
+        strategy: "direct",
+      }),
+    }));
+
+    const body = await response.text();
+    expect(response.headers.get("x-asael-run-id")).toEqual(expect.any(String));
+    expect(response.headers.get("x-asael-run-id")).toBe(
+      routeMocks.runAgent.mock.calls[0]?.[0].runId,
+    );
+    expect(body).toContain('id: 40\nevent: run\ndata: {"type":"run","runId":"run-positioned"');
+    expect(body).toContain('id: 41\nevent: status\ndata: {"type":"status","label":"Planning"}');
+    expect(body).toContain('\n\nevent: delta\ndata: {"type":"delta","text":"Partial"}');
+    expect(body).toContain('\n\nevent: done\ndata: {"type":"done","response":"Positioned."}');
+    expect(body.match(/^id: /gm)).toHaveLength(2);
+  });
+
+  it("keeps a quiet run's connection alive until the run settles", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    let releaseRun!: () => void;
+    const runReleased = new Promise<void>((resolve) => {
+      releaseRun = resolve;
+    });
+    routeMocks.runAgent.mockImplementation(async function* () {
+      yield { type: "run", runId: "run-quiet", threadId: "thread-a" };
+      await runReleased;
+      yield { type: "done", response: "Done after a long think." };
+    });
+
+    try {
+      const response = await POST(new Request("http://asael.test/api/agent", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          message: "Inspect the requested context.",
+          requestId: "quiet-run-a",
+          strategy: "direct",
+        }),
+      }));
+      const text = response.text();
+      await vi.waitFor(() => expect(routeMocks.runAgent).toHaveBeenCalledTimes(1));
+      vi.advanceTimersByTime(15_000 * 2);
+      releaseRun();
+      const body = await text;
+
+      expect(body.match(/^: keep-alive$/gm)).toHaveLength(2);
+      expect(body.indexOf(": keep-alive")).toBeGreaterThan(body.indexOf('"type":"run"'));
+      expect(body.trimEnd().endsWith('"response":"Done after a long think."}')).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
     }
   });
 });
@@ -2332,11 +2494,16 @@ describe("agent request replay protection", () => {
     });
   }
 
-  function send(body: Record<string, unknown>, headers: Record<string, string> = {}) {
+  function send(
+    body: Record<string, unknown>,
+    headers: Record<string, string> = {},
+    signal?: AbortSignal,
+  ) {
     return POST(new Request("http://asael.test/api/agent", {
       method: "POST",
       headers: { "content-type": "application/json", ...headers },
       body: JSON.stringify(body),
+      signal,
     }));
   }
 
@@ -2358,6 +2525,7 @@ describe("agent request replay protection", () => {
 
     const first = await send(body);
     expect(first.status).toBe(200);
+    expect(first.headers.get("x-asael-run-id")).toBe(runId);
     expect(await first.text()).toContain('"type":"done"');
     expect(routeMocks.createThread).toHaveBeenCalledWith(expect.objectContaining({
       id: agentRequestThreadId(context.tenantId, context.actorId, requestId),
@@ -2411,21 +2579,82 @@ describe("agent request replay protection", () => {
     expect(routeMocks.runAgent).toHaveBeenCalledTimes(1);
   });
 
-  it("reports a request whose run is still going instead of starting it again", async () => {
+  it("follows a request whose run is still going instead of starting it again", async () => {
     await persistRequestBindings();
     const requestId = "replay-running-a";
-    runAgentRecording();
+    const runId = agentRequestRunId(context.tenantId, context.actorId, requestId);
+    let seenEvent: { seq?: number } | undefined;
+    runAgentRecording(async (id) => {
+      const store = await import("@/lib/runs/store");
+      seenEvent = await store.appendRunEvent(
+        id,
+        { type: "status", label: "Reading the calendar" },
+        { tenantId: context.tenantId },
+      );
+      await store.appendRunEvent(
+        id,
+        { type: "status", label: "Drafting the summary" },
+        { tenantId: context.tenantId },
+      );
+    });
     const body = { message: "Summarize my week.", requestId, strategy: "direct" };
     await (await send(body)).text();
 
-    const retry = await send(body);
-    expect(retry.status).toBe(409);
-    await expect(retry.json()).resolves.toMatchObject({
-      code: "agent_request_in_progress",
-      runId: agentRequestRunId(context.tenantId, context.actorId, requestId),
-      status: "running",
+    // The retry names the last event it saw and picks up after it.
+    const retry = await send(body, { "last-event-id": String(seenEvent?.seq) });
+    expect(retry.status).toBe(200);
+    expect(retry.headers.get("content-type")).toBe("text/event-stream; charset=utf-8");
+    expect(retry.headers.get("x-asael-run-id")).toBe(runId);
+    const reader = retry.body!.getReader();
+    const decoder = new TextDecoder();
+    let stream = "";
+    while (!stream.includes("Drafting the summary")) {
+      const chunk = await reader.read();
+      expect(chunk.done).toBe(false);
+      stream += decoder.decode(chunk.value, { stream: true });
+    }
+    // The header names the thread the first attempt's run belongs to.
+    const threadId = routeMocks.runAgent.mock.calls[0][0].threadId;
+    expect(threadId).toEqual(expect.any(String));
+    expect(stream).toContain(`"type":"run","runId":"${runId}","threadId":"${threadId}"`);
+    expect(stream).not.toContain("Reading the calendar");
+
+    const store = await import("@/lib/runs/store");
+    await store.completeAgentRun(runId, "Finished while followed.", undefined, {
+      tenantId: context.tenantId,
     });
+    for (;;) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      stream += decoder.decode(chunk.value, { stream: true });
+    }
+    expect(stream).toContain('"type":"done","response":"Finished while followed."');
     expect(routeMocks.runAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops following a request's run once the retry disconnects", async () => {
+    await persistRequestBindings();
+    const body = {
+      message: "Summarize my week.",
+      requestId: "replay-running-disconnect-a",
+      strategy: "direct",
+    };
+    runAgentRecording();
+    await (await send(body)).text();
+
+    const disconnect = new AbortController();
+    const retry = await send(body, {}, disconnect.signal);
+    const reader = retry.body!.getReader();
+    await expect(reader.read()).resolves.toMatchObject({ done: false });
+    disconnect.abort();
+
+    // The run is still going, so a tail that missed the disconnect would keep
+    // polling it well past this.
+    const next = await Promise.race([
+      reader.read(),
+      new Promise((resolve) => setTimeout(() => resolve("still following"), 2_000)),
+    ]);
+    expect(next).toEqual({ done: true, value: undefined });
   });
 
   it.each([

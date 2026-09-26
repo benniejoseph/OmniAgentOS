@@ -5,9 +5,9 @@ import {
   type DomainEvent,
 } from "@/lib/events/store";
 import type { AgentEvent } from "@/lib/orchestration/types";
+import { agentRunOutcomeEvent } from "@/lib/runs/public";
 import { getAgentRun } from "@/lib/runs/store";
 import type { AgentRunRecord } from "@/lib/runs/types";
-import { redactSensitive } from "@/lib/security/context";
 import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
@@ -33,17 +33,18 @@ const REPLAYED_COMPLETION_DETAIL =
   "This request already ran, so its recorded outcome was returned instead of running it again.";
 const REPLAYED_CANCELLATION =
   "This request stopped before it finished, so it was not run again. Send it again to start over.";
-const REPLAYED_APPROVAL =
-  "Run paused. Approval will resume this same agent run after the tool executes.";
-const REPLAYED_CLARIFICATION =
-  "Name or identify the exact item you want changed before I continue.";
 const REPLAYED_WORKFLOW_REASON =
   "Replayed the workflow this request already started.";
 
 export type AgentRequestAdmission =
   | Readonly<{ state: "new" }>
   | Readonly<{ state: "reused" }>
-  | Readonly<{ state: "in_progress"; runId: string; status: string }>
+  | Readonly<{
+    state: "in_progress";
+    runId: string;
+    status: string;
+    threadId?: string;
+  }>
   | Readonly<{ state: "replay"; events: readonly AgentEvent[] }>;
 
 /**
@@ -217,71 +218,27 @@ function replayRun(run: AgentRunRecord): AgentRequestAdmission {
     runId: run.id,
     ...(run.threadId ? { threadId: run.threadId } : {}),
   };
-  if (run.status === "completed") {
+  const outcome = agentRunOutcomeEvent(run, {
+    canceledMessage: REPLAYED_CANCELLATION,
+  });
+  if (!outcome) {
     return {
-      state: "replay",
-      events: [
-        started,
-        { type: "status", label: "Replayed", detail: REPLAYED_COMPLETION_DETAIL },
-        {
-          type: "done",
-          response: run.response || "",
-          ...(run.grounding ? { grounding: run.grounding } : {}),
-        },
-      ],
+      state: "in_progress",
+      runId: run.id,
+      status: run.status,
+      ...(run.threadId ? { threadId: run.threadId } : {}),
     };
   }
-  if (run.status === "failed") {
-    return {
-      state: "replay",
-      events: [
-        started,
-        {
-          type: "error",
-          message: String(
-            redactSensitive(run.error || "Agent run failed."),
-          ).slice(0, 1_000),
-        },
-      ],
-    };
-  }
-  if (run.status === "canceled") {
-    return {
-      state: "replay",
-      events: [started, { type: "canceled", message: REPLAYED_CANCELLATION }],
-    };
-  }
-  const pendingToolCall = run.continuation?.pendingToolCall;
-  if (run.status === "waiting_approval" && pendingToolCall) {
-    return {
-      state: "replay",
-      events: [
-        started,
-        {
-          type: "waiting_approval",
-          executionId: pendingToolCall.executionId,
-          toolId: pendingToolCall.toolId,
-          message: REPLAYED_APPROVAL,
-        },
-      ],
-    };
-  }
-  if (run.status === "waiting_clarification" && run.threadId) {
-    return {
-      state: "replay",
-      events: [
-        started,
-        {
-          type: "clarification",
-          threadId: run.threadId,
-          runId: run.id,
-          message: run.response || REPLAYED_CLARIFICATION,
-          reasonCode: "ambiguous_read_target",
-        },
-      ],
-    };
-  }
-  return { state: "in_progress", runId: run.id, status: run.status };
+  return {
+    state: "replay",
+    events: outcome.type === "done"
+      ? [
+          started,
+          { type: "status", label: "Replayed", detail: REPLAYED_COMPLETION_DETAIL },
+          outcome,
+        ]
+      : [started, outcome],
+  };
 }
 
 async function replayWorkflow(

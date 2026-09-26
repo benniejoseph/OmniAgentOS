@@ -196,6 +196,7 @@ import {
   councilVerifierBoundaryId,
   persistCouncilCheckpointShadow,
 } from "@/lib/runs/council-checkpoint-shadow";
+import { withRunEventCursor } from "@/lib/runs/event-cursor";
 import {
   persistToolAfterCheckpointShadow,
   persistToolBeforeCheckpointShadow,
@@ -820,10 +821,10 @@ async function* runAgentUntilStopped(
       }
     }
     if (event.type === "done" && event.grounding && safeEvent.type === "done") {
-      return {
+      return withRunEventCursor(safeEvent, {
         ...safeEvent,
         grounding: publicGroundingReport(event.grounding),
-      } as unknown as AgentEvent;
+      } as unknown as AgentEvent);
     }
     return safeEvent;
   }
@@ -2736,7 +2737,13 @@ async function* runAgentUntilStopped(
           response,
         })
       : Promise.resolve();
-    yield { type: "done", response, grounding };
+    // Clients get the public grounding projection, as on every other path;
+    // the raw claim evidence stays on the stored run.
+    yield {
+      type: "done",
+      response,
+      grounding: publicGroundingReport(grounding),
+    } as unknown as AgentEvent;
     await consolidation;
   } catch (error) {
     if (abortSignal?.aborted) {
