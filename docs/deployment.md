@@ -599,10 +599,16 @@ signing directory and identity together as rollback evidence.
 `apps/flutter/tool/build_macos_private_release.sh` auto-discovers that private
 keychain, signs nested code before the application, verifies the result strictly,
 creates `build/distribution/macos/Asael-<version>-macOS.dmg`, and prints its
-SHA-256. The local self-signed mode is owner-Mac-only: it changes no system trust,
-cannot be notarized, and omits Hardened Runtime because the certificate has no Apple
-Team Identifier. It also uses `LocalRelease.entitlements`, which deliberately omits
-`com.apple.security.app-sandbox`; the owner-only main application is not sandboxed.
+SHA-256. The local self-signed mode is owner-Mac-only: it changes no system trust
+and cannot be notarized. Every signing mode, including this one, signs every process
+with the Hardened Runtime. The self-signed certificate has no Apple Team Identifier,
+and neither do the host's own Flutter and plugin frameworks, so library validation
+would refuse to load them. `LocalRelease.entitlements` therefore gives the host alone
+`com.apple.security.cs.disable-library-validation`, plus
+`com.apple.security.device.audio-input`, without which the Hardened Runtime denies
+the microphone. The helpers and the Share Extension keep library validation.
+`LocalRelease.entitlements` deliberately omits `com.apple.security.app-sandbox`; the
+owner-only main application is not sandboxed.
 The Apple-issued Release path still uses the sandboxed `Release.entitlements` file.
 After a private signing update, the first launch may briefly show the securing state
 while macOS reauthorizes existing ordinary-Keychain items; every credential operation
@@ -618,6 +624,25 @@ operator explicitly reruns with
 TCC state; it prints the required post-install sequence to fully quit Asael, reset
 only `Accessibility` and `ScreenCapture` for bundle ID
 `app.omniagent.omniagent`, relaunch, and choose **Grant macOS access**.
+
+The packager then runs `apps/flutter/tool/lib/macos_hardened_runtime_guard.sh` on
+every architecture slice of the code it signed, and stops before creating the DMG
+if any slice:
+
+- lacks the Hardened Runtime;
+- carries `get-task-allow` or a debugger, dyld-environment, JIT, unsigned-memory,
+  or page-protection exception;
+- disables library validation, unless it is the owner-only host;
+- differs from its entitlement file (the host and the Share Extension), or carries
+  any entitlement at all (the helpers and all other nested code).
+
+Credential broker v2 is the one exception. Its manifest pins the CDHash of a
+signature the owner-only installer made without the Hardened Runtime, so the broker
+keeps that signature until broker v3 replaces it. Adding the Hardened Runtime
+changes every other CDHash but not the designated requirement, so neither the
+rotation check above nor existing TCC grants change. After installing the first
+hardened package, confirm voice capture, the Share Extension, and both This Mac
+helpers.
 
 The same packager compiles `AsaelComputerUseHelper.app` for every architecture in
 the host, embeds it under `Contents/Helpers`, signs it separately with the host's
@@ -711,11 +736,12 @@ Use canary are not yet claimed. This private owner-only package has no Apple Tea
 Identifier, notarization, APNs entitlement, or provider-delivered APNs receipt.
 
 Distribution to another Mac sets `ASAEL_MACOS_SIGNING_IDENTITY` and
-`ASAEL_MACOS_NOTARY_PROFILE`, which enables Hardened Runtime and makes Developer ID
-signing, notarization, stapling, and verification mandatory. The Firebase Apple
-configuration is bundled and matches the registered compatibility bundle ID. APNs
-still requires an Apple signing identity, Push Notifications capability, and the
-corresponding provider key; configuration alone is not treated as a delivery receipt.
+`ASAEL_MACOS_NOTARY_PROFILE`, which adds Apple's secure timestamp and makes
+Developer ID signing, notarization, stapling, and verification mandatory. The
+Firebase Apple configuration is bundled and matches the registered compatibility
+bundle ID. APNs still requires an Apple signing identity, Push Notifications
+capability, and the corresponding provider key; configuration alone is not treated
+as a delivery receipt.
 
 Android release builds fail closed when a production signing identity is not
 available. On the release Mac, `apps/flutter/tool/build_android_release.sh`
@@ -822,7 +848,8 @@ For each rollout:
 1. Take and verify a restorable database backup.
 2. Run `npm run verify` and the Postgres integration job against an isolated database.
    When `apps/flutter/**` changed, the Native workflow must also be green: it
-   runs Flutter analyze and test, the macOS helper policy suites
+   runs Flutter analyze and test, the macOS helper policy suites and the
+   packager's hardened runtime guard test
    (`apps/flutter/tool/run_macos_policy_tests.sh`), and type-checks every
    helper's production entry point.
 3. From a dedicated release job, set `MIGRATION_DATABASE_URL` to the

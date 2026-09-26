@@ -91,6 +91,23 @@ Background processing (`capture.asset.process`) makes three attempts with backof
 
 Synthetic smoke requests carry correlation IDs and are marked SLO-excluded. Search those IDs in observability when diagnosing a gate.
 
+## macOS packaging stops at the hardened runtime guard
+
+`build_macos_private_release.sh` checks every architecture slice it signed before creating the DMG. A slice of a universal binary is named with its architecture in parentheses.
+
+- `… is not signed with the hardened runtime.`: the signing arguments lost `--options runtime`, or something changed the code after the packager signed it. Keep `--options runtime` in the base `task_codesign_args` for every signing mode.
+- `… carries com.apple.security.get-task-allow, which defeats the hardened runtime.` (or a debugger, dyld-environment, JIT, unsigned-memory, or page-protection key): remove the key from the entitlement file or build setting that added it. No Asael process may carry one, even if its entitlement file lists it.
+- `… disables library validation, which only the owner-only host may do.`: only the self-signed host signed with `LocalRelease.entitlements` may carry `com.apple.security.cs.disable-library-validation`. An Apple-signed host, a helper, or the Share Extension must not.
+- `… is signed with unexpected entitlements.`: the host or the Share Extension does not match its entitlement file exactly, or other nested code carries entitlements at all. Compare the output of `codesign -d --entitlements - <path>` with the file.
+- `Cannot read the code signature of …`: the path is unsigned or no longer exists.
+
+`apps/flutter/tool/test/macos_hardened_runtime_guard_test.sh` exercises these checks on ad-hoc signed copies of a system executable.
+
+After installing a hardened owner-only build:
+
+- If Asael quits at launch and the crash report says `mapped file has no Team ID and is not a platform binary`, the host lost `com.apple.security.cs.disable-library-validation`.
+- If voice never prompts for the microphone and records nothing, the host lost `com.apple.security.device.audio-input`. The Hardened Runtime denies the microphone without that entitlement.
+
 ## Web presentation regression
 
 Run the focused component or contract test for the changed surface, followed by

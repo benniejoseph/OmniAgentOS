@@ -49,11 +49,13 @@ The production packager requires `Release.entitlements` plus a matching embedded
 production profile and fails closed if either authorization is missing.
 
 For a private DMG, run `tool/build_macos_private_release.sh`. With no signing
-environment it packages the local Xcode-signed build for this Mac. Distribution
-to another Mac requires `ASAEL_MACOS_SIGNING_IDENTITY` and the Keychain profile
-name in `ASAEL_MACOS_NOTARY_PROFILE`; the script signs, notarizes, staples,
-verifies, and prints the DMG SHA-256. Signing credentials never belong in the
-repository.
+environment it signs with the owner-only private identity and fails if that
+identity is not installed. Every signing mode uses the Hardened Runtime, and the
+script refuses to create the DMG if any process it signed lacks it or carries an
+unexpected entitlement. Distribution to another Mac requires
+`ASAEL_MACOS_SIGNING_IDENTITY` and the Keychain profile name in
+`ASAEL_MACOS_NOTARY_PROFILE`; the script signs, notarizes, staples, verifies, and
+prints the DMG SHA-256. Signing credentials never belong in the repository.
 
 ## Compatibility identifiers
 

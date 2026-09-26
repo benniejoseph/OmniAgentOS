@@ -78,19 +78,25 @@ The Apple-issued Release path remains App Sandbox enabled with outbound network,
 App Group, user-selected read-only files, and microphone entitlements. The private
 owner-Mac `LocalRelease.entitlements` path is different: because the self-signed
 identity has no Apple Team Identifier, the current private package intentionally
-omits `com.apple.security.app-sandbox` and Hardened Runtime and retains only its App
-Group entitlement. Earlier statements that this private build remained sandboxed
-were incorrect. TCC still protects microphone, Screen Recording, and Accessibility,
-but the owner-only host must not be treated as sandbox-confined.
+omits `com.apple.security.app-sandbox`. Its host still runs with the Hardened
+Runtime and holds only its App Group, microphone, and library-validation exception
+entitlements. It needs the exception because its own Flutter and plugin frameworks
+carry no Team Identifier either, so library validation would refuse to load them.
+Earlier statements that this private build remained sandboxed were incorrect. TCC
+still protects microphone, Screen Recording, and Accessibility, but the owner-only
+host must not be treated as sandbox-confined.
 
 Ordinary product operation does not request Accessibility or Screen Recording. Those
 permissions belong only to the explicitly enabled local Computer Use path, are
 requested at point of use, and remain visible and revocable in macOS System Settings.
 The separate helpers are also not App Sandbox boundaries in the owner-only package;
 their narrower authority comes from small reviewed executables, stable separate
-signatures, verified signed parents, stripped environments, child-only pipes, lack
-of credentials or network/server interfaces, TCC for the visual helper, and closed
-per-helper operation contracts.
+signatures, the Hardened Runtime with library validation, verified signed parents,
+stripped environments, child-only pipes, lack of credentials or network/server
+interfaces, TCC for the visual helper, and closed per-helper operation contracts.
+Credential broker v2 predates the Hardened Runtime in the owner-only package: its
+manifest freezes a signature made without it, so it remains open to same-user dyld
+injection until broker v3 replaces it.
 
 Quick Entry uses Command-Shift-Space through a registered system hot key that does
 not require Accessibility permission. Its native-to-Flutter route contains only an
@@ -149,10 +155,13 @@ Development builds run from Flutter/Xcode. The owner's Mac may use the dedicated
 user-only self-signed Asael identity stored in a private keychain. That identity
 does not alter system trust, grant Apple distribution authority, or authorize
 installation elsewhere. Because a self-signed identity has no Apple Team Identifier,
-the local packager omits Hardened Runtime so nested Flutter libraries remain loadable;
-the main owner-only application is not sandboxed. The packager compiles and embeds
-both execution helpers under `Contents/Helpers`, signs nested code and each helper
-before the host, and verifies the result strictly.
+the local packager keeps nested Flutter libraries loadable by granting only the host
+a library-validation exception under the Hardened Runtime; the main owner-only
+application is not sandboxed. The packager compiles and embeds both execution
+helpers under `Contents/Helpers`, signs nested code and each helper before the host,
+and verifies the result strictly. Before it creates the DMG, it also confirms that
+every architecture slice it signed carries the Hardened Runtime and exactly its
+intended entitlements.
 
 Distribution to another Mac uses the existing bundle identity, Hardened Runtime, an
 Apple Development or Developer ID signature as appropriate, notarization, and a

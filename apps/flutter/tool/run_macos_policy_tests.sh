@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Runs the standalone macOS helper policy suites and type-checks every helper's
-# production entry point. Each suite is compiled together with its helper using
-# the helper's testing flag, which drops the production @main. The suites
-# assert with precondition and exit, so they are built unoptimized to keep
-# every check live.
+# Runs the standalone macOS helper policy suites and the release packager's
+# hardened runtime guard test, and type-checks every helper's production entry
+# point. Each suite is compiled together with its helper using the helper's
+# testing flag, which drops the production @main. The suites assert with
+# precondition and exit, so they are built unoptimized to keep every check live.
 
 task_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 task_macos_dir="$(cd "$task_script_dir/../macos" && pwd)"
@@ -75,6 +75,11 @@ task_run_suite TaskAuthorityPolicyTests ASAEL_COMPUTER_USE_HELPER_TESTING \
   "${task_computer_use_frameworks[@]}" \
   "$task_macos_dir/ComputerUseHelper/HelperMain.swift" \
   "$task_macos_dir/ComputerUseHelperTests/TaskAuthorityPolicyTests.swift"
+
+# The guard test signs throwaway copies of a system executable ad hoc, so it
+# needs codesign and lipo but no signing identity.
+echo "==> MacosHardenedRuntimeGuardTests"
+"$task_script_dir/test/macos_hardened_runtime_guard_test.sh"
 
 # Release builds compile the helpers only inside the signed packaging script, so
 # type-check each production entry point here to catch breakage before release.

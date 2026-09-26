@@ -4,6 +4,7 @@ set -euo pipefail
 task_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 task_flutter_dir="$(cd "$task_script_dir/.." && pwd)"
 source "$task_script_dir/lib/macos_signing_rotation_guard.sh"
+source "$task_script_dir/lib/macos_hardened_runtime_guard.sh"
 task_xcode_path="$(xcode-select -p 2>/dev/null || true)"
 task_developer_signing_identity="${ASAEL_MACOS_SIGNING_IDENTITY:-}"
 task_notary_profile="${ASAEL_MACOS_NOTARY_PROFILE:-}"
@@ -19,9 +20,10 @@ task_credential_broker_manifest="$task_credential_broker_dir/manifest.json"
 task_signing_identity="$task_developer_signing_identity"
 task_signing_mode="developer"
 task_main_entitlements="$task_flutter_dir/macos/Runner/Release.entitlements"
+task_host_library_validation="required"
+task_share_extension_entitlements="$task_flutter_dir/macos/ShareExtension/ShareExtension.entitlements"
 task_installed_app="/Applications/Asael.app"
 task_signing_rotation_acknowledgement="${ASAEL_MACOS_ACKNOWLEDGE_SIGNING_ROTATION:-}"
-task_codesign_keychain_args=()
 task_local_signing_lock_token=""
 task_stage_dir=""
 task_version_line="$(awk '/^version:/ { print $2; exit }' "$task_flutter_dir/pubspec.yaml")"
@@ -107,7 +109,6 @@ if [[ -z "$task_developer_signing_identity" ]]; then
     task_signing_identity="$task_local_signing_identity"
     task_signing_mode="local"
     unlock_local_signing_keychain
-    task_codesign_keychain_args=(--keychain "$task_local_signing_keychain")
   elif [[ -e "$task_local_signing_keychain" || -e "$task_local_signing_password_file" ]]; then
     echo "The private macOS signing keychain is incomplete. Repair it before packaging." >&2
     exit 1
@@ -121,9 +122,13 @@ if [[ "$task_signing_mode" != "developer" ]]; then
   # profile, so macOS cannot assign a default Keychain access group to a
   # sandboxed process. Keep Apple-signed releases on Release.entitlements,
   # while the owner-Mac package uses the ordinary file-based login Keychain.
-  # TCC still protects microphone and other private resources, and the Share
-  # Extension retains its own sandboxed entitlement profile.
+  # The host still runs with the hardened runtime. Its own Flutter and plugin
+  # frameworks carry no Team Identifier either, so library validation would
+  # refuse to load them: only the host takes that exception, and the helpers
+  # and the sandboxed Share Extension keep library validation. The hardened
+  # runtime also denies the microphone unless the host is entitled to it.
   task_main_entitlements="$task_flutter_dir/macos/Runner/LocalRelease.entitlements"
+  task_host_library_validation="disabled"
 fi
 
 if [[ -z "$task_xcode_path" || "$task_xcode_path" == *"CommandLineTools"* ]]; then
@@ -323,13 +328,31 @@ else
 fi
 chmod 0755 "$task_command_helper_executable"
 
+# Nested code the packager signs itself, deepest first: frameworks, bundles,
+# XPC services, app extensions, and loose dynamic libraries.
+list_nested_code() {
+  find "$task_staged_app/Contents" -depth \
+    \( \
+      -type d \( -name '*.framework' -o -name '*.bundle' -o -name '*.xpc' -o -name '*.appex' \) \
+      -o -type f -name '*.dylib' \
+    \) \
+    -print0
+}
+
 if [[ -n "$task_signing_identity" ]]; then
+  # Every signing mode uses the hardened runtime, so same-user code cannot
+  # attach a debugger to, inject dyld libraries into, or run unsigned code in
+  # the processes signed here. Apple's timestamp service countersigns only
+  # Apple-issued identities, so only a developer release requests a timestamp.
   task_codesign_args=(
     --force
     --sign "$task_signing_identity"
+    --options runtime
   )
-  if [[ "$task_signing_mode" == "developer" ]]; then
-    task_codesign_args+=(--options runtime --timestamp)
+  if [[ "$task_signing_mode" == "local" ]]; then
+    task_codesign_args+=(--keychain "$task_local_signing_keychain")
+  elif [[ "$task_signing_mode" == "developer" ]]; then
+    task_codesign_args+=(--timestamp)
   fi
 
   while IFS= read -r -d '' task_nested_code; do
@@ -339,40 +362,28 @@ if [[ -n "$task_signing_identity" ]]; then
     fi
     if [[ "$task_nested_code" == *.appex ]]; then
       codesign_with_active_identity \
-        "${task_codesign_keychain_args[@]}" \
         "${task_codesign_args[@]}" \
-        --entitlements "$task_flutter_dir/macos/ShareExtension/ShareExtension.entitlements" \
+        --entitlements "$task_share_extension_entitlements" \
         "$task_nested_code"
     else
       codesign_with_active_identity \
-        "${task_codesign_keychain_args[@]}" \
         "${task_codesign_args[@]}" \
         "$task_nested_code"
     fi
-  done < <(
-    find "$task_staged_app/Contents" -depth \
-      \( \
-        -type d \( -name '*.framework' -o -name '*.bundle' -o -name '*.xpc' -o -name '*.appex' \) \
-        -o -type f -name '*.dylib' \
-      \) \
-      -print0
-  )
+  done < <(list_nested_code)
 
   codesign_with_active_identity \
-    "${task_codesign_keychain_args[@]}" \
     "${task_codesign_args[@]}" \
     --identifier "app.omniagent.omniagent.computer-use-helper" \
     "$task_helper_app"
 
   codesign_with_active_identity \
-    "${task_codesign_keychain_args[@]}" \
     "${task_codesign_args[@]}" \
     --identifier "app.omniagent.omniagent.command-runner-helper" \
     "$task_command_helper_app"
   codesign --verify --strict --verbose=2 "$task_command_helper_app"
 
   codesign_with_active_identity \
-    "${task_codesign_keychain_args[@]}" \
     "${task_codesign_args[@]}" \
     --entitlements "$task_main_entitlements" \
     "$task_staged_app"
@@ -450,6 +461,24 @@ if [[ "$task_host_requirement" != "$task_expected_broker_requirement" ]]; then
 fi
 
 codesign --verify --deep --strict --verbose=2 "$task_staged_app"
+
+# Stop before packaging if any Asael process lost the hardened runtime or
+# gained an entitlement. The Share Extension and host must match their
+# entitlement files exactly, the helpers and all other nested code carry none,
+# and only the owner-only host may disable library validation. The credential
+# broker is pinned by CDHash above instead of checked here: its manifest
+# freezes the v2 signature, which the owner-only installer made without the
+# hardened runtime, until broker v3 replaces it.
+while IFS= read -r -d '' task_nested_code; do
+  if [[ "$task_nested_code" == *.appex ]]; then
+    asael_verify_macos_hardened_runtime "$task_nested_code" "$task_share_extension_entitlements"
+  else
+    asael_verify_macos_hardened_runtime "$task_nested_code"
+  fi
+done < <(list_nested_code)
+asael_verify_macos_hardened_runtime "$task_helper_app"
+asael_verify_macos_hardened_runtime "$task_command_helper_app"
+asael_verify_macos_hardened_runtime "$task_staged_app" "$task_main_entitlements" "$task_host_library_validation"
 
 rm -f "$task_dmg"
 if command -v diskutil >/dev/null 2>&1 && diskutil help image create from >/dev/null 2>&1; then
