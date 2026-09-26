@@ -66,6 +66,12 @@ export async function resolveVoiceCommandGate(input: {
   actorId: string;
   threadId?: string;
   declaredSessionId?: string;
+  /**
+   * The command's own requestId. A retry of the same request must see the
+   * sessions its first attempt saw, so that attempt's consumption is ignored;
+   * ignoring it can only keep a session pending, never skip approval.
+   */
+  requestId?: string;
   now?: Date;
 }): Promise<VoiceCommandGate> {
   const threadId = input.threadId?.trim();
@@ -113,6 +119,7 @@ export async function resolveVoiceCommandGate(input: {
 
   const consumedThrough = new Map<string, number>();
   for (const event of consumption) {
+    if (input.requestId && event.correlationId === input.requestId) continue;
     for (const sessionId of consumedVoiceSessionIds(event)) {
       consumedThrough.set(
         sessionId,

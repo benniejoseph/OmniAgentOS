@@ -3,7 +3,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   ensureDatabaseSchema: vi.fn(async () => undefined),
   getSql: vi.fn(),
-  appendScopedDomainEvent: vi.fn(async () => ({ id: "event" })),
+  appendScopedDomainEvent: vi.fn(
+    async (_event: { id: string; payload: Record<string, unknown> }) => ({
+      id: "event",
+    }),
+  ),
   getToolExecution: vi.fn(),
   openToolExecutionInput: vi.fn(),
 }));
@@ -36,7 +40,9 @@ vi.mock("@/lib/tools/audit-store", async (importOriginal) => {
 import {
   claimLocalComputerCommand,
   executeLocalComputerCommand,
+  startLocalComputerSession,
 } from "@/lib/local-computer/store";
+import type { SecurityContext } from "@/lib/security/types";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { localComputerTaskAuthorityIntentOutput } from "@/lib/tools/audit-store";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
@@ -44,6 +50,61 @@ import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 describe("local Computer Use command binding", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("records a retried request's session restart as its own start", async () => {
+    vi.useFakeTimers({ now: new Date("2026-09-27T08:00:00.000Z") });
+    try {
+      // The event store keeps an id bound to the first payload it recorded.
+      const recorded = new Map<string, string>();
+      mocks.appendScopedDomainEvent.mockImplementation(async (event) => {
+        const payload = JSON.stringify(event.payload);
+        if (recorded.has(event.id) && recorded.get(event.id) !== payload) {
+          throw new Error("Domain event id is already bound to a different event.");
+        }
+        recorded.set(event.id, payload);
+        return { id: event.id };
+      });
+      mocks.getSql.mockReturnValue(
+        vi.fn(async (strings: TemplateStringsArray) =>
+          strings.join("").includes("INSERT INTO omni_local_computer_sessions")
+            ? [{ id: "local_computer_session_row" }]
+            : [{ command_runner: null }],
+        ),
+      );
+      const context: SecurityContext = {
+        tenantId: "tenant-session-retry",
+        actorId: "actor-session-retry",
+        role: "operator",
+        source: "mobile",
+        auth: {
+          userId: "user-session-retry",
+          email: "operator@example.test",
+          sessionId: "session-retry",
+          tenantName: "Example",
+        },
+        native: {
+          deviceId: "device-session-retry",
+          platform: "macos",
+          appVersion: "1.6.0",
+          buildNumber: 7,
+          clientContractVersion: 13,
+          clientAttestedAt: "2026-09-27T07:59:00.000Z",
+        },
+      };
+
+      const first = await startLocalComputerSession(context, "run-retried-request");
+      vi.advanceTimersByTime(5_000);
+      const retried = await startLocalComputerSession(context, "run-retried-request");
+
+      expect(retried.id).toBe(first.id);
+      expect(Date.parse(retried.expiresAt)).toBe(Date.parse(first.expiresAt) + 5_000);
+      expect(mocks.appendScopedDomainEvent).toHaveBeenCalledTimes(2);
+      expect(recorded.size).toBe(2);
+    } finally {
+      vi.useRealTimers();
+      mocks.appendScopedDomainEvent.mockImplementation(async () => ({ id: "event" }));
+    }
   });
 
   it("rejects an execution-id conflict bound to another exact session", async () => {

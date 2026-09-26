@@ -120,9 +120,12 @@ export async function createAgentRun(input: {
     startedAt: now,
   };
 
+  // A request-derived id reaches this insert again only when a retry or a
+  // concurrent duplicate of one request races the original; neither may
+  // overwrite or re-execute the run it already started.
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    await getSql()`
+    const inserted = await getSql()`
       INSERT INTO omni_agent_runs (
         id, tenant_id, owner_actor_id, thread_id, mode, status, prompt, messages, model, agent_id, specialist_ids, memory_context_count, started_at
       )
@@ -130,14 +133,23 @@ export async function createAgentRun(input: {
         ${run.id}, ${run.tenantId}, ${run.ownerActorId}, ${run.threadId || null}, ${run.mode}, ${run.status}, ${run.prompt}, ${run.messages}::jsonb,
         ${run.model || null}, ${run.agentId}, ${run.specialistIds}, ${run.memoryContextCount}, ${run.startedAt}
       )
+      ON CONFLICT (id) DO NOTHING
+      RETURNING id
     `;
+    if (!inserted[0]) throw new AgentRunAlreadyExistsError();
     return run;
   }
 
+  let duplicate = false;
   await updateRunLedger((ledger) => {
+    if (ledger.runs.some((existing) => existing.id === run.id)) {
+      duplicate = true;
+      return ledger;
+    }
     ledger.runs.unshift(run);
     return ledger;
   });
+  if (duplicate) throw new AgentRunAlreadyExistsError();
   return run;
 }
 
@@ -222,6 +234,14 @@ export class AgentRunExecutionScopeBindingError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "AgentRunExecutionScopeBindingError";
+  }
+}
+
+/** A run with this id already exists; the request that minted it owns it. */
+export class AgentRunAlreadyExistsError extends Error {
+  constructor() {
+    super("This request is already running. Check Activity for its progress.");
+    this.name = "AgentRunAlreadyExistsError";
   }
 }
 

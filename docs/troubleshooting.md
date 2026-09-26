@@ -64,6 +64,14 @@ For internal calls, the secret and identity headers must be sent together. Never
 - `Ephemeral local observation resume failed; the durable queue will reconcile the run without raw observation data.`: the approving request could not resume the run with its This Mac observation. The worker resumes it from the stored result instead, so the model does not see that step's screenshot.
 - A run still `waiting_approval` after its approval was decided: the decision wakes the run's resume job at once. If that wake was lost, the job's backstop re-check finds the decision within five minutes.
 
+## A retried command returns 409 or 503, or replays instead of running
+
+- `409` with `code: "request_id_reused"`: this account already used the `requestId` or `Idempotency-Key` for a different request body: another message, Agent, strategy, history, context selection, or budget. Nothing ran. The Command workspace starts a new ID when the message changes; an API client must send a new ID for new work.
+- `409` with `code: "agent_request_in_progress"` and a `runId`: the first attempt's run is still running or resuming. Follow that run in Activity. A run left `running` by a crashed process keeps this answer until stale-run repair fails it, which happens on the first maintenance pass after the run is seven minutes old. The retry then replays that failure.
+- `503` with `Request replay protection is unavailable.` and `Retry-After: 30`: the request's binding could not be read or written, usually because the event store is unavailable. Nothing ran. Retry after the delay with the same ID.
+- A retry streams `canceled` with `This request stopped before it finished, so it was not run again.`: the first attempt was canceled. A dropped connection currently cancels a direct run, too. Send the message again; the workspace uses a new ID after a cancellation.
+- A retry streams a `Replayed` status and the earlier answer: the first attempt finished, so its recorded outcome was returned instead of running the work again. To run it again on purpose, send it with a new ID.
+
 ## Memory forget or the deletion scrub fails
 
 - `Database schema is behind (pending versions: 207)`: run migration v207 before serving the release. See [deployment.md](deployment.md#memory-forget-lineage-closure-v207).

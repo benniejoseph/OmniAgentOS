@@ -209,7 +209,9 @@ export async function startLocalComputerSession(
     }),
     type: "local_computer.session.started",
     streamId: `local-computer-session:${id}`,
-    eventId: `local_computer_event_${digest([id, "started"]).slice(0, 48)}`,
+    // A retried request restarts the same session with a new expiry, so each
+    // start is its own event rather than a conflicting rewrite of the first.
+    eventId: `local_computer_event_${digest([id, "started", expiresAt]).slice(0, 48)}`,
     payload: {
       schemaVersion: LOCAL_COMPUTER_PROTOCOL_VERSION,
       sessionId: id,

@@ -92,6 +92,15 @@ import {
 import { runAgent } from "@/lib/orchestration/agent-runner";
 import type { AgentEvent } from "@/lib/orchestration/types";
 import {
+  admitAgentRequest,
+  agentRequestDelegatedTurnId,
+  agentRequestFingerprint,
+  agentRequestRunId,
+  agentRequestThreadId,
+  agentRequestUserTurnId,
+  durableWorkflowAcknowledgement,
+} from "@/lib/runs/request-admission";
+import {
   narrowRunBudgetLimits,
   runBudgetCountersV1Schema,
 } from "@/lib/runs/budgets";
@@ -122,6 +131,7 @@ import { redactSensitive } from "@/lib/security/context";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
+import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import {
   getCustomAgent,
   isAgentSkillRuntimeActive,
@@ -301,15 +311,16 @@ async function POSTHandler(request: Request) {
       );
     }
   }
-  let requestId: string;
+  let clientRequestId: string | undefined;
   try {
-    requestId = resolveRequestId(request, parsed.data.requestId);
+    clientRequestId = resolveClientRequestId(request, parsed.data.requestId);
   } catch (error) {
     return Response.json(
       { error: error instanceof Error ? error.message : "Invalid request id." },
       { status: 400 },
     );
   }
+  const requestId = clientRequestId || randomUUID();
 
   let context;
   try {
@@ -326,7 +337,6 @@ async function POSTHandler(request: Request) {
   } catch (error) {
     return forbiddenResponse(error);
   }
-  const directRootRunId = parsed.data.resumeRunId || randomUUID();
   const requestActorBinding =
     canonicalRequestActorBindingFromSecurityContext(context);
   const queuedItemId = request.headers
@@ -472,6 +482,19 @@ async function POSTHandler(request: Request) {
       });
     }
   }
+  // A client-identified direct request is replay-protected: its run, new
+  // thread, and user turn take ids derived from the requestId, so a retry
+  // finds what its first attempt started instead of running it again.
+  // Resumes continue an existing run, and queued dispatches carry the prompt
+  // queue's own lifecycle binding.
+  const replayProtectedRequest = Boolean(
+    clientRequestId && !parsed.data.resumeRunId && !queuedLifecycle,
+  );
+  const directRootRunId = parsed.data.resumeRunId || (
+    replayProtectedRequest
+      ? agentRequestRunId(context.tenantId, context.actorId, requestId)
+      : randomUUID()
+  );
   const effectiveContextReferences = queuedDispatch?.context?.references ||
     parsed.data.contextReferences || [];
   const effectiveModelSelection = queuedDispatch?.model.commandSelection ||
@@ -730,6 +753,68 @@ async function POSTHandler(request: Request) {
     );
   }
 
+  if (replayProtectedRequest) {
+    let admission;
+    try {
+      admission = await admitAgentRequest({
+        context,
+        requestId,
+        requestFingerprintSha256: agentRequestFingerprint(
+          context.tenantId,
+          context.actorId,
+          requestId,
+          parsed.data,
+        ),
+      });
+    } catch (error) {
+      console.error(
+        "Agent request admission was unavailable.",
+        String(
+          redactSensitive(
+            error instanceof Error ? error.message : "Unknown admission error.",
+          ),
+        ).slice(0, 1_000),
+      );
+      return Response.json(
+        {
+          error: "Agent temporarily unavailable",
+          message: "Request replay protection is unavailable. Please try again shortly.",
+        },
+        {
+          status: 503,
+          headers: { "Retry-After": "30", "cache-control": "private, no-store" },
+        },
+      );
+    }
+    if (admission.state === "reused") {
+      return Response.json(
+        {
+          error: "request_id_reused",
+          code: "request_id_reused",
+          message:
+            "requestId was already used for a different instruction. Submit this work with a new requestId.",
+        },
+        { status: 409, headers: { "cache-control": "private, no-store" } },
+      );
+    }
+    if (admission.state === "in_progress") {
+      return Response.json(
+        {
+          error: "Agent request in progress",
+          code: "agent_request_in_progress",
+          runId: admission.runId,
+          status: admission.status,
+          message:
+            "This request is still running. Follow it in Activity instead of sending it again.",
+        },
+        { status: 409, headers: { "cache-control": "private, no-store" } },
+      );
+    }
+    if (admission.state === "replay") {
+      return replayedAgentRequestResponse(admission.events);
+    }
+  }
+
   // Voice policy is server-derived: a declared review and an unmarked command
   // on a conversation with an unconsumed realtime session both force approval.
   // A resume only continues a pinned read-only canary run, so it keeps the
@@ -743,6 +828,7 @@ async function POSTHandler(request: Request) {
           actorId: context.actorId,
           threadId: parsed.data.threadId,
           declaredSessionId: parsed.data.voiceInput?.sessionId,
+          requestId,
         });
   } catch (error) {
     console.error(
@@ -849,28 +935,30 @@ async function POSTHandler(request: Request) {
       causationId: requestId,
       purpose: "command.context.pin",
     });
+    const pinPayload = {
+      schemaVersion: commandContext.schemaVersion,
+      receiptKind: "command_context_pin",
+      referenceCount: commandContext.pins.length,
+      kindCounts: commandContext.kindCounts,
+      selectionSha256: commandContext.selectionSha256,
+      contextBlockSha256: commandContext.contextBlockSha256,
+      receiptSha256: commandContext.receiptSha256,
+      pins: commandContext.pins,
+      toolGrantCount: 0,
+      delegationCount: 0,
+    };
     try {
       await appendScopedDomainEvent({
         id: commandContextPinEventId(
           context.tenantId,
           context.actorId,
           requestId,
+          pinPayload,
         ),
         streamId: `command:${requestId}`,
         type: "command.context.pinned",
         executionScope: pinExecutionScope,
-        payload: {
-          schemaVersion: commandContext.schemaVersion,
-          receiptKind: "command_context_pin",
-          referenceCount: commandContext.pins.length,
-          kindCounts: commandContext.kindCounts,
-          selectionSha256: commandContext.selectionSha256,
-          contextBlockSha256: commandContext.contextBlockSha256,
-          receiptSha256: commandContext.receiptSha256,
-          pins: commandContext.pins,
-          toolGrantCount: 0,
-          delegationCount: 0,
-        },
+        payload: pinPayload,
       });
     } catch (error) {
       console.error(
@@ -996,53 +1084,55 @@ async function POSTHandler(request: Request) {
     }
   });
 
+  const semanticPayload = {
+    schemaVersion: semanticResolution.receipt.schemaVersion,
+    policyVersion: semanticResolution.receipt.policyVersion,
+    source: semanticResolution.receipt.source,
+    intent: semanticResolution.receipt.intent,
+    executionShape: semanticResolution.receipt.executionShape,
+    confidence: semanticResolution.receipt.confidence,
+    entityCount: semanticResolution.receipt.entityCount,
+    unresolvedEntityCount:
+      semanticResolution.receipt.unresolvedEntityCount,
+    capabilityQuerySha256: semanticResolution.capabilitySearchQuery
+      ? createHash("sha256")
+          .update(semanticResolution.capabilitySearchQuery)
+          .digest("hex")
+      : null,
+    matchedCapabilityIds:
+      semanticResolution.receipt.matchedCapabilityIds,
+    selectedAgentCardSha256s:
+      semanticResolution.receipt.selectedAgentCardSha256s || [],
+    agentSelectionSha256:
+      semanticResolution.receipt.agentSelectionSha256 || null,
+    agentDiscoveryReceiptSha256s:
+      semanticResolution.receipt.agentDiscoveryReceiptSha256s || [],
+    semanticRoute: semanticResolution.receipt.route,
+    appliedRoute: preliminaryDecision.route,
+    requiresApproval: preliminaryDecision.requiresApproval,
+    clarificationAdvisory:
+      semanticResolution.receipt.clarificationAdvisory,
+    model: semanticResolution.receipt.model || null,
+    fallbackReasonCode:
+      semanticResolution.receipt.fallbackReasonCode || null,
+    selectedTargetIds: computerUseTarget
+      ? [`computer:${computerUseTarget}`]
+      : [],
+    selectedToolIds: [],
+    effectCount: 0,
+  };
   try {
     await appendScopedDomainEvent({
       id: semanticIntentEventId(
         context.tenantId,
         context.actorId,
         requestId,
+        semanticPayload,
       ),
       streamId: `intent:${requestId}`,
       type: "intent.semantic_resolved",
       executionScope: semanticExecutionScope,
-      payload: {
-        schemaVersion: semanticResolution.receipt.schemaVersion,
-        policyVersion: semanticResolution.receipt.policyVersion,
-        source: semanticResolution.receipt.source,
-        intent: semanticResolution.receipt.intent,
-        executionShape: semanticResolution.receipt.executionShape,
-        confidence: semanticResolution.receipt.confidence,
-        entityCount: semanticResolution.receipt.entityCount,
-        unresolvedEntityCount:
-          semanticResolution.receipt.unresolvedEntityCount,
-        capabilityQuerySha256: semanticResolution.capabilitySearchQuery
-          ? createHash("sha256")
-              .update(semanticResolution.capabilitySearchQuery)
-              .digest("hex")
-          : null,
-        matchedCapabilityIds:
-          semanticResolution.receipt.matchedCapabilityIds,
-        selectedAgentCardSha256s:
-          semanticResolution.receipt.selectedAgentCardSha256s || [],
-        agentSelectionSha256:
-          semanticResolution.receipt.agentSelectionSha256 || null,
-        agentDiscoveryReceiptSha256s:
-          semanticResolution.receipt.agentDiscoveryReceiptSha256s || [],
-        semanticRoute: semanticResolution.receipt.route,
-        appliedRoute: preliminaryDecision.route,
-        requiresApproval: preliminaryDecision.requiresApproval,
-        clarificationAdvisory:
-          semanticResolution.receipt.clarificationAdvisory,
-        model: semanticResolution.receipt.model || null,
-        fallbackReasonCode:
-          semanticResolution.receipt.fallbackReasonCode || null,
-        selectedTargetIds: computerUseTarget
-          ? [`computer:${computerUseTarget}`]
-          : [],
-        selectedToolIds: [],
-        effectCount: 0,
-      },
+      payload: semanticPayload,
     });
   } catch (error) {
     console.error(
@@ -1316,6 +1406,15 @@ async function POSTHandler(request: Request) {
           if (!thread) {
             if (await stopBeforeMutationIfCanceled()) return;
             thread = await createThread({
+              ...(replayProtectedRequest
+                ? {
+                    id: agentRequestThreadId(
+                      context.tenantId,
+                      context.actorId,
+                      requestId,
+                    ),
+                  }
+                : {}),
               tenantId: context.tenantId,
               actorId: context.actorId,
               projectId: parsed.data.projectId,
@@ -1326,7 +1425,22 @@ async function POSTHandler(request: Request) {
           }
           threadProjectId = thread.projectId;
           if (await stopBeforeMutationIfCanceled()) return;
-          const userTurn = await appendThreadTurn({ tenantId: context.tenantId, threadId: thread.id, role: "user", content: safeMessage });
+          const userTurn = await appendThreadTurn({
+            ...(replayProtectedRequest
+              ? {
+                  id: agentRequestUserTurnId(
+                    context.tenantId,
+                    context.actorId,
+                    thread.id,
+                    requestId,
+                  ),
+                }
+              : {}),
+            tenantId: context.tenantId,
+            threadId: thread.id,
+            role: "user",
+            content: safeMessage,
+          });
           if (parsed.data.voiceInput) {
             if (await stopBeforeMutationIfCanceled()) return;
             const voiceInput = parsed.data.voiceInput;
@@ -1686,10 +1800,22 @@ async function POSTHandler(request: Request) {
               context.tenantId,
               durableSpecialists.length,
             );
-            const acknowledgement = workflowRequiresApproval
-              ? "I moved this into a durable workflow. It will preserve progress and pause before consequential external actions."
-              : "I moved this into a durable workflow so it can continue in the background and preserve progress.";
+            // The stored workflow decides, so a retry that finds it records
+            // and replays the same acknowledgement.
+            const acknowledgement = durableWorkflowAcknowledgement(
+              detail.run.approvalRequired,
+            );
             await appendThreadTurn({
+              ...(replayProtectedRequest
+                ? {
+                    id: agentRequestDelegatedTurnId(
+                      context.tenantId,
+                      context.actorId,
+                      thread.id,
+                      requestId,
+                    ),
+                  }
+                : {}),
               tenantId: context.tenantId,
               threadId: thread.id,
               role: "assistant",
@@ -2085,13 +2211,17 @@ function normalizeTaskQuery(value: string) {
   return value.replace(/\s+/g, " ").trim();
 }
 
+// Both receipts are keyed by their payload as well as the request: a retry
+// that re-resolves the same request records a differing decision as its own
+// receipt instead of failing on the first attempt's.
 function semanticIntentEventId(
   tenantId: string,
   actorId: string,
   requestId: string,
+  payload: Record<string, unknown>,
 ) {
   return `intent-semantic:${createHash("sha256")
-    .update(`${tenantId}\u0000${actorId}\u0000${requestId}`)
+    .update(`${tenantId}\u0000${actorId}\u0000${requestId}\u0000${canonicalJsonSha256(payload)}`)
     .digest("hex")}`;
 }
 
@@ -2099,9 +2229,10 @@ function commandContextPinEventId(
   tenantId: string,
   actorId: string,
   requestId: string,
+  payload: Record<string, unknown>,
 ) {
   return `command-context:${createHash("sha256")
-    .update(`${tenantId}\u0000${actorId}\u0000${requestId}`)
+    .update(`${tenantId}\u0000${actorId}\u0000${requestId}\u0000${canonicalJsonSha256(payload)}`)
     .digest("hex")}`;
 }
 
@@ -2143,7 +2274,7 @@ function sameSavedProcedure(
   return parseWorkflowProcedureSnapshot(stored)?.snapshotSha256 === expected.snapshotSha256;
 }
 
-function resolveRequestId(request: Request, bodyRequestId?: string) {
+function resolveClientRequestId(request: Request, bodyRequestId?: string) {
   const headerRequestId = request.headers.get("idempotency-key")?.trim();
   if (headerRequestId && (headerRequestId.length > 200 || !/^[a-zA-Z0-9._:-]+$/.test(headerRequestId))) {
     throw new Error("Idempotency-Key must be 200 characters or fewer and use letters, numbers, dot, underscore, colon, or hyphen.");
@@ -2151,7 +2282,20 @@ function resolveRequestId(request: Request, bodyRequestId?: string) {
   if (bodyRequestId && headerRequestId && bodyRequestId !== headerRequestId) {
     throw new Error("requestId and Idempotency-Key must match when both are provided.");
   }
-  return bodyRequestId || headerRequestId || randomUUID();
+  return bodyRequestId || headerRequestId || undefined;
+}
+
+/** Streams the recorded outcome of a request that already ran. */
+function replayedAgentRequestResponse(events: readonly AgentEvent[]) {
+  const encoder = new TextEncoder();
+  return sseResponse(new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const event of events) {
+        controller.enqueue(encoder.encode(encodeSse(event)));
+      }
+      controller.close();
+    },
+  }));
 }
 
 function assertMissionAcceptsWork(mission: Mission) {

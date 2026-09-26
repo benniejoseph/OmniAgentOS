@@ -671,6 +671,39 @@ describe("agent run approval continuations (file mode)", () => {
     })).rejects.toThrow(/authenticated owner binding/i);
   });
 
+  it("never lets a second request-derived create overwrite the run it names", async () => {
+    const store = await import("@/lib/runs/store");
+    const tenantId = "request-derived-run";
+    const runId = "3b241101-e2bb-8255-8caf-4136c566a962";
+    await store.createAgentRun({
+      id: runId,
+      tenantId,
+      actorId: "owner@example.test",
+      mode: "orchestrate",
+      prompt: "send the weekly update",
+      messages: [{ role: "user", content: "send the weekly update" }],
+      agentId: "atlas",
+    });
+    await store.completeAgentRun(runId, "Sent.", undefined, { tenantId });
+
+    await expect(store.createAgentRun({
+      id: runId,
+      tenantId,
+      actorId: "owner@example.test",
+      mode: "orchestrate",
+      prompt: "send the weekly update",
+      messages: [{ role: "user", content: "send the weekly update" }],
+      agentId: "atlas",
+    })).rejects.toBeInstanceOf(store.AgentRunAlreadyExistsError);
+    await expect(store.getAgentRun(runId, { tenantId })).resolves.toMatchObject({
+      id: runId,
+      status: "completed",
+      response: "Sent.",
+    });
+    const runs = await store.listAgentRuns(50, { tenantId });
+    expect(runs.filter((run) => run.id === runId)).toHaveLength(1);
+  });
+
   it("binds one metadata-only Loop v2 context authority to a run", async () => {
     const store = await import("@/lib/runs/store");
     const { buildLoopV2ContextBindingV1 } = await import(

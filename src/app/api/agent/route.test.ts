@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -113,6 +114,16 @@ vi.mock("@/lib/workflows/store", async (importOriginal) => {
   return { ...actual, createWorkflowRun: vi.fn(actual.createWorkflowRun) };
 });
 
+vi.mock("@/lib/command/context-reference-runtime", async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import("@/lib/command/context-reference-runtime")
+  >();
+  return {
+    ...actual,
+    resolveCommandContextReferences: vi.fn(actual.resolveCommandContextReferences),
+  };
+});
+
 vi.mock("@/lib/subagents/scheduler", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/subagents/scheduler")>();
   return {
@@ -183,6 +194,7 @@ vi.mock("@/lib/memory/personal-context-consent-store", async (importOriginal) =>
 }));
 
 import { POST } from "@/app/api/agent/route";
+import { resolveCommandContextReferences } from "@/lib/command/context-reference-runtime";
 import { AGENT_RUN_BUDGET_LIMITS } from "@/lib/config";
 import { appendDomainEvent } from "@/lib/events/store";
 import { forgetMemory, saveMemory } from "@/lib/memory/store";
@@ -190,9 +202,18 @@ import {
   prepareDurableSpecialistDelegation,
   scheduleDurableSpecialistDrain,
 } from "@/lib/subagents/scheduler";
+import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { resolveVoiceCommandGate } from "@/lib/voice/command-gate";
 import { SAVED_PROCEDURE_V1_TAG } from "@/lib/workflows/saved-procedures";
 import { createWorkflowRun } from "@/lib/workflows/store";
+import {
+  AGENT_REQUEST_BINDING_EVENT_TYPE,
+  agentRequestDelegatedTurnId,
+  agentRequestRunId,
+  agentRequestThreadId,
+  agentRequestUserTurnId,
+  durableWorkflowAcknowledgement,
+} from "@/lib/runs/request-admission";
 
 // Partial mocks expose real store functions; keep them off local .omniagent data.
 let dataDirectory: string;
@@ -441,6 +462,12 @@ describe("agent intent clarification", () => {
     expect(routeMocks.runAgent).not.toHaveBeenCalled();
     expect(routeMocks.listThreadTurns).not.toHaveBeenCalled();
     expect(routeMocks.appendThreadTurn).toHaveBeenNthCalledWith(1, {
+      id: agentRequestUserTurnId(
+        context.tenantId,
+        context.actorId,
+        "thread-a",
+        "clarify-delete-a",
+      ),
       tenantId: context.tenantId,
       threadId: "thread-a",
       role: "user",
@@ -569,6 +596,14 @@ describe("agent prompt queue lifecycle", () => {
     );
     expect(JSON.stringify(routeMocks.runAgent.mock.calls[0]?.[0])).not.toContain(
       "private-dispatch-token",
+    );
+    // The queue's own dispatch binding owns a queued run, so its requestId is
+    // not bound or replayed as a direct request.
+    expect(routeMocks.appendScopedDomainEvent).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: AGENT_REQUEST_BINDING_EVENT_TYPE }),
+    );
+    expect(routeMocks.runAgent.mock.calls[0]?.[0].runId).not.toBe(
+      agentRequestRunId(context.tenantId, context.auth.email, "prompt-queue-request-a"),
     );
   });
 
@@ -888,8 +923,8 @@ describe("agent semantic intent routing", () => {
     );
     expect(routeMocks.resolveLoopV2ReadOnlyCanaryEnrollment).not.toHaveBeenCalled();
     expect(routeMocks.resolveLoopV2ModelTextEnrollment).not.toHaveBeenCalled();
-    expect(runRequest.runId).toMatch(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    expect(runRequest.runId).toBe(
+      agentRequestRunId(context.tenantId, context.actorId, "local-mac-request-a"),
     );
     expect(routeMocks.runAgent).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1162,6 +1197,7 @@ describe("agent semantic intent routing", () => {
         id: "workflow-voice-a",
         goal: input.goal,
         input: { metadata: input.metadata },
+        approvalRequired: input.requireApproval ?? true,
       },
     }) as never);
 
@@ -1357,8 +1393,12 @@ describe("agent semantic intent routing", () => {
       }),
     });
     const runRequest = routeMocks.runAgent.mock.calls[0][0];
-    expect(runRequest.runId).toMatch(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    expect(runRequest.runId).toBe(
+      agentRequestRunId(
+        personalContext.tenantId,
+        personalContext.actorId,
+        "personal-context-a",
+      ),
     );
     expect(routeMocks.personalContextMemoryAccessFromSecurityContext)
       .toHaveBeenCalledWith(personalContext, {
@@ -1883,8 +1923,8 @@ describe("agent Loop v2 canary routing", () => {
       requestUsesMessageField: true,
     }));
     const runRequest = routeMocks.runLoopV2ReadOnlyCanary.mock.calls[0][0];
-    expect(runRequest.runId).toMatch(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    expect(runRequest.runId).toBe(
+      agentRequestRunId(context.tenantId, context.actorId, "loop-v2-list-runs-a"),
     );
     expect(routeMocks.runLoopV2ReadOnlyCanary).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -2172,6 +2212,11 @@ describe("agent Loop v2 canary routing", () => {
     );
     expect(runRequest.runId).toBe(runRequest.executionScope.correlationId);
     expect(routeMocks.runAgent).not.toHaveBeenCalled();
+    // A resume continues its own run, so its requestId is not bound as a new
+    // request.
+    expect(routeMocks.appendScopedDomainEvent).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: AGENT_REQUEST_BINDING_EVENT_TYPE }),
+    );
   });
 });
 
@@ -2226,4 +2271,400 @@ describe("agent direct-run memory formation", () => {
       }
     },
   );
+});
+
+describe("agent request replay protection", () => {
+  const replayContinuation = (executionId: string) => ({
+    conversationItems: [{ role: "user", content: "Send the launch note." }],
+    instructions: "test",
+    response: "partial",
+    toolSteps: 1,
+    outputsBeforeApproval: [],
+    pendingToolCall: {
+      callId: "call_1",
+      toolId: "computer.local",
+      toolName: "This Mac",
+      riskLevel: 2,
+      executionId,
+    },
+    context: {
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      role: "operator" as const,
+    },
+    createdAt: new Date().toISOString(),
+  });
+
+  /** Persists request bindings for real while other receipts stay mocked. */
+  async function persistRequestBindings() {
+    const events = await vi.importActual<typeof import("@/lib/events/store")>(
+      "@/lib/events/store",
+    );
+    routeMocks.appendScopedDomainEvent.mockImplementation(async (input) =>
+      input.type === AGENT_REQUEST_BINDING_EVENT_TYPE
+        ? events.appendScopedDomainEvent(input)
+        : undefined);
+  }
+
+  /** The runner records its run under the route's id, then settles it. */
+  function runAgentRecording(
+    settle: (runId: string) => Promise<unknown> = async () => undefined,
+  ) {
+    routeMocks.runAgent.mockImplementation(async function* (request: {
+      runId: string;
+      tenantId: string;
+      actorId: string;
+      threadId?: string;
+    }) {
+      const store = await import("@/lib/runs/store");
+      const run = await store.createAgentRun({
+        id: request.runId,
+        tenantId: request.tenantId,
+        actorId: request.actorId,
+        threadId: request.threadId,
+        mode: "orchestrate",
+        prompt: "replay test",
+        messages: [{ role: "user", content: "replay test" }],
+      });
+      await settle(run.id);
+      yield { type: "run", runId: run.id, threadId: request.threadId };
+      yield { type: "done", response: "First attempt answer." };
+    });
+  }
+
+  function send(body: Record<string, unknown>, headers: Record<string, string> = {}) {
+    return POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json", ...headers },
+      body: JSON.stringify(body),
+    }));
+  }
+
+  it("replays a completed request instead of running it again", async () => {
+    await persistRequestBindings();
+    const requestId = "replay-completed-a";
+    const runId = agentRequestRunId(context.tenantId, context.actorId, requestId);
+    runAgentRecording(async (id) => {
+      const store = await import("@/lib/runs/store");
+      await store.completeAgentRun(id, "Recorded answer.", undefined, {
+        tenantId: context.tenantId,
+      });
+    });
+    const body = {
+      message: "Summarize my week.",
+      requestId,
+      strategy: "direct",
+    };
+
+    const first = await send(body);
+    expect(first.status).toBe(200);
+    expect(await first.text()).toContain('"type":"done"');
+    expect(routeMocks.createThread).toHaveBeenCalledWith(expect.objectContaining({
+      id: agentRequestThreadId(context.tenantId, context.actorId, requestId),
+    }));
+    expect(routeMocks.runAgent.mock.calls[0][0].runId).toBe(runId);
+
+    // The client learns the new thread from the first attempt's run event and
+    // names it on the retry; that is still the same instruction.
+    for (const retry of [
+      body,
+      {
+        ...body,
+        threadId: agentRequestThreadId(context.tenantId, context.actorId, requestId),
+      },
+    ]) {
+      const replayed = await send(retry);
+      expect(replayed.status).toBe(200);
+      expect(replayed.headers.get("content-type")).toContain("text/event-stream");
+      const stream = await replayed.text();
+      expect(stream).toContain(`"runId":"${runId}"`);
+      expect(stream).toContain('"label":"Replayed"');
+      expect(stream).toContain('"response":"Recorded answer."');
+    }
+    expect(routeMocks.runAgent).toHaveBeenCalledTimes(1);
+    expect(routeMocks.resolveSemanticIntent).toHaveBeenCalledTimes(1);
+    expect(routeMocks.createThread).toHaveBeenCalledTimes(1);
+    expect(routeMocks.appendThreadTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a requestId reused for a different instruction", async () => {
+    await persistRequestBindings();
+    const requestId = "replay-reused-a";
+    runAgentRecording();
+    const first = await send({
+      message: "Summarize my week.",
+      requestId,
+      strategy: "direct",
+    });
+    await first.text();
+
+    for (const changed of [
+      { message: "Delete my calendar.", requestId, strategy: "direct" },
+      { message: "Summarize my week.", requestId, strategy: "direct", agentId: "nova" },
+    ]) {
+      const reused = await send(changed);
+      expect(reused.status).toBe(409);
+      await expect(reused.json()).resolves.toMatchObject({
+        code: "request_id_reused",
+      });
+    }
+    expect(routeMocks.runAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a request whose run is still going instead of starting it again", async () => {
+    await persistRequestBindings();
+    const requestId = "replay-running-a";
+    runAgentRecording();
+    const body = { message: "Summarize my week.", requestId, strategy: "direct" };
+    await (await send(body)).text();
+
+    const retry = await send(body);
+    expect(retry.status).toBe(409);
+    await expect(retry.json()).resolves.toMatchObject({
+      code: "agent_request_in_progress",
+      runId: agentRequestRunId(context.tenantId, context.actorId, requestId),
+      status: "running",
+    });
+    expect(routeMocks.runAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    [
+      "paused for approval",
+      async (runId: string) => {
+        const store = await import("@/lib/runs/store");
+        await store.markAgentRunWaitingForApproval(runId, {
+          response: "partial",
+          continuation: replayContinuation("exec-replay-approval"),
+        });
+      },
+      ['"type":"waiting_approval"', '"executionId":"exec-replay-approval"'],
+    ],
+    [
+      "stopped",
+      async (runId: string) => {
+        const store = await import("@/lib/runs/store");
+        await store.cancelAgentRun(runId, "Canceled by the operator.", {
+          tenantId: context.tenantId,
+        });
+      },
+      ['"type":"canceled"', "was not run again"],
+    ],
+    [
+      "failed",
+      async (runId: string) => {
+        const store = await import("@/lib/runs/store");
+        await store.failAgentRun(runId, "The provider was unavailable.", {
+          tenantId: context.tenantId,
+        });
+      },
+      ['"type":"error"', "The provider was unavailable."],
+    ],
+  ] as const)("replays a request whose run %s", async (label, settle, expected) => {
+    await persistRequestBindings();
+    const requestId = `replay-${label.replaceAll(" ", "-")}-a`;
+    runAgentRecording(settle);
+    const body = { message: "Send the launch note.", requestId, strategy: "direct" };
+    await (await send(body)).text();
+
+    const replayed = await send(body);
+    expect(replayed.status).toBe(200);
+    const stream = await replayed.text();
+    for (const fragment of expected) expect(stream).toContain(fragment);
+    expect(stream).not.toContain('"type":"done"');
+    expect(routeMocks.runAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it("replays the durable workflow a request already started", async () => {
+    await persistRequestBindings();
+    const requestId = "replay-durable-a";
+    routeMocks.resolveSemanticIntent.mockResolvedValue(durableWorkflowIntent());
+    routeMocks.createMission.mockResolvedValue({
+      id: "mission-replay-durable",
+      title: "Coordinate the launch",
+      objective: "Coordinate the launch across the team.",
+      priority: "high",
+      status: "queued",
+    });
+    vi.mocked(prepareDurableSpecialistDelegation).mockResolvedValueOnce([]);
+    vi.mocked(scheduleDurableSpecialistDrain).mockReturnValueOnce(undefined);
+    const body = {
+      message: "Coordinate the launch across the team.",
+      requestId,
+      strategy: "durable",
+    };
+
+    const first = await send(body);
+    expect(first.status).toBe(200);
+    const firstStream = await first.text();
+    expect(firstStream).toContain("event: delegated");
+    expect(routeMocks.appendThreadTurn).toHaveBeenCalledWith(expect.objectContaining({
+      id: agentRequestDelegatedTurnId(
+        context.tenantId,
+        context.actorId,
+        "thread-a",
+        requestId,
+      ),
+      role: "assistant",
+    }));
+    const createdWorkflow = await vi.mocked(createWorkflowRun).mock.results[0]?.value;
+
+    const replayed = await send(body);
+    expect(replayed.status).toBe(200);
+    const stream = await replayed.text();
+    expect(stream).toContain("event: delegated");
+    expect(stream).toContain(`"workflowId":"${createdWorkflow.run.id}"`);
+    expect(stream).toContain('"threadId":"thread-a"');
+    expect(stream).toContain("Replayed the workflow this request already started.");
+    expect(createWorkflowRun).toHaveBeenCalledTimes(1);
+    expect(routeMocks.createMission).toHaveBeenCalledTimes(1);
+    expect(routeMocks.resolveSemanticIntent).toHaveBeenCalledTimes(1);
+  });
+
+  it("derives identities from an Idempotency-Key and leaves server-identified requests alone", async () => {
+    await persistRequestBindings();
+    runAgentRecording();
+    await (await send(
+      { message: "Summarize my week.", strategy: "direct" },
+      { "Idempotency-Key": "replay-header-a" },
+    )).text();
+    expect(routeMocks.runAgent.mock.calls[0][0].runId).toBe(
+      agentRequestRunId(context.tenantId, context.actorId, "replay-header-a"),
+    );
+    expect(routeMocks.appendScopedDomainEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: AGENT_REQUEST_BINDING_EVENT_TYPE }),
+    );
+
+    routeMocks.appendScopedDomainEvent.mockClear();
+    routeMocks.createThread.mockClear();
+    routeMocks.appendThreadTurn.mockClear();
+    await (await send({ message: "Summarize my week.", strategy: "direct" })).text();
+    expect(routeMocks.runAgent.mock.calls[1][0].runId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    expect(routeMocks.appendScopedDomainEvent).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: AGENT_REQUEST_BINDING_EVENT_TYPE }),
+    );
+    expect(routeMocks.createThread.mock.calls[0][0]).not.toHaveProperty("id");
+    expect(routeMocks.appendThreadTurn.mock.calls[0][0]).not.toHaveProperty("id");
+  });
+
+  it("fails closed when the request binding cannot be recorded", async () => {
+    routeMocks.appendScopedDomainEvent.mockImplementation(async (input) => {
+      if (input.type === AGENT_REQUEST_BINDING_EVENT_TYPE) {
+        throw new Error("event store offline");
+      }
+    });
+    runAgentRecording();
+
+    const response = await send({
+      message: "Summarize my week.",
+      requestId: "replay-outage-a",
+      strategy: "direct",
+    });
+    expect(response.status).toBe(503);
+    expect(response.headers.get("retry-after")).toBe("30");
+    expect(routeMocks.runAgent).not.toHaveBeenCalled();
+    expect(routeMocks.createThread).not.toHaveBeenCalled();
+    expect(routeMocks.resolveSemanticIntent).not.toHaveBeenCalled();
+  });
+
+  it("lets the voice gate recognize the request's own earlier consumption", async () => {
+    runAgentRecording();
+    await (await send({
+      message: "Summarize my week.",
+      requestId: "replay-voice-a",
+      strategy: "direct",
+    })).text();
+    expect(resolveVoiceCommandGate).toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: "replay-voice-a" }),
+    );
+  });
+
+  it("keys the semantic receipt by its decision", async () => {
+    runAgentRecording();
+    await (await send({
+      message: "Summarize my week.",
+      requestId: "replay-semantic-a",
+      strategy: "direct",
+    })).text();
+    const receipt = routeMocks.appendScopedDomainEvent.mock.calls
+      .map(([input]) => input)
+      .find((input) => input.type === "intent.semantic_resolved");
+    expect(receipt).toBeDefined();
+    expect(receipt.id).toBe(`intent-semantic:${createHash("sha256")
+      .update(
+        `${context.tenantId}\u0000${context.actorId}\u0000replay-semantic-a\u0000${canonicalJsonSha256(receipt.payload)}`,
+      )
+      .digest("hex")}`);
+  });
+
+  it("keys the context pin receipt by its pins", async () => {
+    runAgentRecording();
+    vi.mocked(resolveCommandContextReferences).mockResolvedValueOnce({
+      schemaVersion: 1,
+      selectionSha256: "a".repeat(64),
+      contextBlockSha256: "b".repeat(64),
+      receiptSha256: "c".repeat(64),
+      contextBlock: "Pinned skill: weekly summary.",
+      pins: [{ kind: "skill", id: "skill-weekly", pinSha256: "d".repeat(64) }],
+      kindCounts: { skill: 1 },
+    });
+    await (await send({
+      message: "Summarize my week.",
+      requestId: "replay-pin-a",
+      strategy: "direct",
+      contextReferences: [{ kind: "skill", id: "skill-weekly" }],
+    })).text();
+    const receipt = routeMocks.appendScopedDomainEvent.mock.calls
+      .map(([input]) => input)
+      .find((input) => input.type === "command.context.pinned");
+    expect(receipt).toBeDefined();
+    expect(receipt.payload).toMatchObject({ receiptSha256: "c".repeat(64) });
+    expect(receipt.id).toBe(`command-context:${createHash("sha256")
+      .update(
+        `${context.tenantId}\u0000${context.actorId}\u0000replay-pin-a\u0000${canonicalJsonSha256(receipt.payload)}`,
+      )
+      .digest("hex")}`);
+  });
+
+  it("acknowledges the approval decision the stored workflow kept", async () => {
+    await persistRequestBindings();
+    routeMocks.resolveSemanticIntent.mockResolvedValue(durableWorkflowIntent());
+    routeMocks.createMission.mockResolvedValue({
+      id: "mission-replay-ack",
+      title: "Coordinate the launch",
+      objective: "Coordinate the launch across the team.",
+      priority: "high",
+      status: "queued",
+    });
+    vi.mocked(prepareDurableSpecialistDelegation).mockResolvedValueOnce([]);
+    vi.mocked(scheduleDurableSpecialistDrain).mockReturnValueOnce(undefined);
+    // A concurrent first attempt already created the workflow under the other
+    // approval decision.
+    vi.mocked(createWorkflowRun).mockImplementationOnce(async (input) => {
+      const actual = await vi.importActual<typeof import("@/lib/workflows/store")>(
+        "@/lib/workflows/store",
+      );
+      return actual.createWorkflowRun({
+        ...input,
+        requireApproval: !input.requireApproval,
+      });
+    });
+
+    const stream = await (await send({
+      message: "Coordinate the launch across the team.",
+      requestId: "replay-durable-ack",
+      strategy: "durable",
+    })).text();
+    const computed = vi.mocked(createWorkflowRun).mock.calls[0][0].requireApproval;
+    const stored = await vi.mocked(createWorkflowRun).mock.results[0]?.value;
+    expect(stored.run.approvalRequired).toBe(!computed);
+    const acknowledgement = durableWorkflowAcknowledgement(stored.run.approvalRequired);
+    expect(stream).toContain(JSON.stringify(acknowledgement).slice(1, -1));
+    expect(routeMocks.appendThreadTurn).toHaveBeenCalledWith(expect.objectContaining({
+      role: "assistant",
+      content: acknowledgement,
+    }));
+  });
 });

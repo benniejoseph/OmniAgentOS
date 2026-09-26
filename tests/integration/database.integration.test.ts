@@ -27,8 +27,19 @@ import {
   leaseOperationJobByDedupeKey,
   leaseOperationJobs,
 } from "@/lib/operations/job-queue";
-import { cancelAgentRun, createAgentRun } from "@/lib/runs/store";
+import {
+  AgentRunAlreadyExistsError,
+  cancelAgentRun,
+  createAgentRun,
+  getAgentRun,
+} from "@/lib/runs/store";
 import { sweepExpiredSensitiveData } from "@/lib/security/retention";
+import {
+  appendThreadTurn,
+  createThread,
+  getThread,
+  listThreadTurns,
+} from "@/lib/threads/store";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { approvalMaterialBindingSha256 } from "@/lib/tools/approval-binding";
 import {
@@ -3441,6 +3452,101 @@ databaseDescribe("Postgres schema integration", () => {
     expect(await jobRow(canceled.id)).toMatchObject({ status: "canceled" });
     await expect(leaseByKey("dedupe-lease-never-enqueued"))
       .resolves.toEqual({ outcome: "absent" });
+  });
+
+  test("keeps request-derived run, thread, and turn identities single-use", async () => {
+    const tenantId = "request_identity_tenant";
+    const otherTenantId = "request_identity_other";
+    const inTenant = <T,>(operation: () => Promise<T>, tenant = tenantId) =>
+      runWithDatabaseTenantScope(tenant, operation);
+    const threadId = "6d2f9a41-7c3b-8e15-a9d4-2b8c6e0f1a73";
+    const turnId = "8a1c5e27-4f90-8b36-9c7e-5d3a1f2b6c84";
+    const runId = "2e7b4c19-9a35-8d62-b1f8-4c6a2e9d7b05";
+    const newThread = (overrides: { tenantId?: string; actorId?: string } = {}) =>
+      createThread({
+        id: threadId,
+        tenantId: overrides.tenantId ?? tenantId,
+        actorId: overrides.actorId ?? "request-identity-owner",
+        title: "Plan my week",
+        mode: "orchestrate",
+      });
+
+    const thread = await inTenant(() => newThread());
+    expect(thread.id).toBe(threadId);
+    await expect(inTenant(() => newThread())).resolves.toMatchObject({
+      id: threadId,
+      actorId: "request-identity-owner",
+      createdAt: thread.createdAt,
+    });
+    await expect(inTenant(() => newThread({ actorId: "request-identity-other" })))
+      .rejects.toThrow("Thread identity is already bound to a different conversation.");
+    // The id is global, so another tenant can neither reuse nor see it.
+    await expect(inTenant(
+      () => newThread({ tenantId: otherTenantId }),
+      otherTenantId,
+    )).rejects.toThrow("Thread identity is already bound to a different conversation.");
+    await expect(inTenant(() => getThread(threadId, { tenantId })))
+      .resolves.toMatchObject({ actorId: "request-identity-owner" });
+    const [threadCount] = await admin`
+      SELECT count(*)::int AS count FROM omni_threads WHERE id = ${threadId}
+    `;
+    expect(threadCount.count).toBe(1);
+
+    const appendTurn = (
+      content: string,
+      options: { tenant?: string; threadId?: string } = {},
+    ) => inTenant(() => appendThreadTurn({
+      id: turnId,
+      tenantId: options.tenant ?? tenantId,
+      threadId: options.threadId ?? threadId,
+      role: "user",
+      content,
+    }), options.tenant ?? tenantId);
+    const turn = await appendTurn("Plan my week");
+    expect(turn.id).toBe(turnId);
+    await expect(appendTurn("Plan my week")).resolves.toMatchObject({
+      id: turnId,
+      content: "Plan my week",
+      createdAt: turn.createdAt,
+    });
+    await expect(appendTurn("Plan my month"))
+      .rejects.toThrow("Thread turn identity is already bound to a different message.");
+    const foreignThread = await inTenant(() => createThread({
+      tenantId: otherTenantId,
+      actorId: "request-identity-owner",
+      title: "Other tenant",
+      mode: "orchestrate",
+    }), otherTenantId);
+    await expect(appendTurn("Plan my week", {
+      tenant: otherTenantId,
+      threadId: foreignThread.id,
+    })).rejects.toThrow("Thread turn identity is already bound to a different message.");
+    await expect(inTenant(() => listThreadTurns(threadId, { tenantId })))
+      .resolves.toMatchObject([{ id: turnId, content: "Plan my week" }]);
+    await expect(inTenant(
+      () => listThreadTurns(foreignThread.id, { tenantId: otherTenantId }),
+      otherTenantId,
+    )).resolves.toEqual([]);
+
+    const newRun = () => inTenant(() => createAgentRun({
+      id: runId,
+      tenantId,
+      actorId: "request-identity-owner",
+      threadId,
+      mode: "orchestrate",
+      prompt: "Plan my week",
+      messages: [{ role: "user", content: "Plan my week" }],
+      agentId: "atlas",
+    }));
+    await newRun();
+    await inTenant(() => cancelAgentRun(runId, undefined, { tenantId }));
+    await expect(newRun()).rejects.toBeInstanceOf(AgentRunAlreadyExistsError);
+    await expect(inTenant(() => getAgentRun(runId, { tenantId })))
+      .resolves.toMatchObject({ id: runId, status: "canceled" });
+    const [runCount] = await admin`
+      SELECT count(*)::int AS count FROM omni_agent_runs WHERE id = ${runId}
+    `;
+    expect(runCount.count).toBe(1);
   });
 });
 

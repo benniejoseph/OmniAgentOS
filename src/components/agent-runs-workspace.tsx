@@ -587,6 +587,7 @@ export function AgentRunsWorkspace({
   const responseSpeechControllerRef = useRef<AbortController | null>(null);
   const responseSpeechPlayerRef = useRef<StreamingPcmPlayer | null>(null);
   const agentRequestIdRef = useRef<string>("");
+  const agentRequestGoalRef = useRef<string>("");
   const directRunStatusRef = useRef("");
   const currentRunIdRef = useRef("");
   const detailsDialogRef = useRef<HTMLElement | null>(null);
@@ -1250,6 +1251,7 @@ export function AgentRunsWorkspace({
     const runId = activeAgentRunId;
     if (!controller && !runId) return;
     setRunAnnouncement("Stopping the agent run.");
+    agentRequestIdRef.current = "";
     controller?.abort();
     if (!runId) {
       return;
@@ -2323,7 +2325,13 @@ export function AgentRunsWorkspace({
     }
     setActiveTab("execute");
     setRunAnnouncement("Agent run started.");
-    const requestId = agentRequestIdRef.current || crypto.randomUUID();
+    // Sending the same message again after an interrupted attempt keeps its
+    // requestId, so the server returns that attempt's outcome instead of
+    // running it twice. An edited message is a new request.
+    const requestId = agentRequestIdRef.current &&
+        agentRequestGoalRef.current === submittedGoal
+      ? agentRequestIdRef.current
+      : crypto.randomUUID();
     const submittedAgentId = queueItem?.agent.logicalAgentId || preferredAgentId;
     let completedResponse = "";
     let streamedResponse = "";
@@ -2331,12 +2339,13 @@ export function AgentRunsWorkspace({
     let pendingVoiceApproval: VoiceApprovalEvidence | undefined;
     let waitingApprovalEvent: Extract<StreamEvent, { type: "waiting_approval" }> | undefined;
     agentRequestIdRef.current = requestId;
+    agentRequestGoalRef.current = submittedGoal;
     setTurns((current) => [
       ...current,
       { id: `pending-user-${Date.now()}`, role: "user", content: submittedGoal, createdAt: new Date().toISOString() },
     ]);
 
-    let terminalEvent: "done" | "delegated" | "clarification" | "waiting_approval" | "error" | undefined;
+    let terminalEvent: "done" | "delegated" | "clarification" | "waiting_approval" | "error" | "canceled" | undefined;
     try {
       const response = await fetch(queueItem
         ? `/api/command/prompt-queue/${encodeURIComponent(queueItem.id)}/dispatch`
@@ -2368,8 +2377,23 @@ export function AgentRunsWorkspace({
       });
 
       if (!response.ok || !response.body) {
-        const body = await response.json().catch(() => ({}));
-        throw new Error(stringValue(asRecord(body).message || asRecord(body).error, `/api/agent returned ${response.status}`));
+        const body = asRecord(await response.json().catch(() => ({})));
+        if (body.code === "request_id_reused") {
+          agentRequestIdRef.current = "";
+          throw new Error(
+            "The interrupted attempt of this message was different, so this one was not sent. Send it again to start it as a new message.",
+          );
+        }
+        if (body.code === "agent_request_in_progress") {
+          const inProgressRunId = stringValue(body.runId, "");
+          if (inProgressRunId) {
+            currentRunIdRef.current = inProgressRunId;
+            completedRunId = inProgressRunId;
+            setActiveAgentRunId(inProgressRunId);
+            setSelectedActivityRunId(inProgressRunId);
+          }
+        }
+        throw new Error(stringValue(body.message || body.error, `/api/agent returned ${response.status}`));
       }
 
       await readSse(response.body, (event) => {
@@ -2461,6 +2485,12 @@ export function AgentRunsWorkspace({
           setError(event.message || "Agent run failed.");
           setRunAnnouncement("Agent run failed.");
         }
+        if (event.type === "canceled") {
+          terminalEvent = "canceled";
+          agentRequestIdRef.current = "";
+          setClarificationRunId("");
+          setRunAnnouncement(event.message || "Agent run stopped.");
+        }
       });
       if (!terminalEvent) {
         throw new Error(
@@ -2482,6 +2512,7 @@ export function AgentRunsWorkspace({
       }
     } catch (agentError) {
       if (controller.signal.aborted) {
+        agentRequestIdRef.current = "";
         setStreamEvents((current) => [
           ...current.slice(-199),
           { type: "status", label: "Canceled", detail: "The operator stopped this run." },

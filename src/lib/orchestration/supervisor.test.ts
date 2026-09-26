@@ -136,6 +136,9 @@ describe("supervisor routing", () => {
     expect(analyzeAgentRequestAmbiguity("Explain how to delete the old project")).toEqual({ state: "none" });
     expect(analyzeAgentRequestAmbiguity('Delete the project named "Old Portfolio"')).toEqual({ state: "none" });
     expect(analyzeAgentRequestAmbiguity('Please delete the old project and say "okay"')).toMatchObject({ state: "detected" });
+    // Request-derived run and thread ids are version-8 UUIDs.
+    expect(analyzeAgentRequestAmbiguity("Cancel that run 3b241101-e2bb-8255-8caf-4136c566a962")).toEqual({ state: "none" });
+    expect(analyzeAgentRequestAmbiguity("Cancel that run")).toMatchObject({ state: "detected" });
   });
 
   it("selects research, builder, and critic specialists from task intent", () => {

@@ -290,7 +290,7 @@ function hasExplicitTargetReference(message: string) {
   if (!action || action.index === undefined) return false;
   const target = message.slice(action.index + action[0].length, action.index + action[0].length + 240);
   return /https?:\/\/\S+/i.test(target) ||
-    /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/i.test(target) ||
+    /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/i.test(target) ||
     /\b(?:project|repository|repo|file|folder|record|row|issue|ticket|deployment|release|branch|environment|workflow|job|automation|message|email|event|meeting|document|page|contact):[a-z0-9][a-z0-9._-]*\b/i.test(target) ||
     /^\s*(?:(?:the\s+)?(?:project|repository|repo|file|folder|record|row|issue|ticket|deployment|release|branch|environment|workflow|job|automation|message|email|event|meeting|document|page|contact)\s+(?:(?:named|called)\s+)?)?(?:"[^"]{1,160}"|'[^']{1,160}'|“[^”]{1,160}”)/i.test(target) ||
     /\B#[1-9][0-9]*\b/.test(target);

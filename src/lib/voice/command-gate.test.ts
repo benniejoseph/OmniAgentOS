@@ -34,6 +34,7 @@ async function seedCommand(
   type: "voice.command_reviewed" | "voice.command_inferred",
   threadId: string,
   sessionIds: string[],
+  correlationId: string = randomUUID(),
 ) {
   const { appendDomainEvent } = await import("@/lib/events/store");
   return appendDomainEvent({
@@ -41,7 +42,7 @@ async function seedCommand(
     type,
     tenantId,
     actorId,
-    correlationId: randomUUID(),
+    correlationId,
     payload: type === "voice.command_reviewed"
       ? { schemaVersion: 1, threadId, voiceSessionId: sessionIds[0] }
       : { schemaVersion: 1, threadId, voiceSessionIds: sessionIds },
@@ -51,6 +52,7 @@ async function seedCommand(
 async function gateFor(threadId: string | undefined, options: {
   declaredSessionId?: string;
   actorId?: string;
+  requestId?: string;
   now?: Date;
 } = {}) {
   const { resolveVoiceCommandGate } = await import("@/lib/voice/command-gate");
@@ -59,6 +61,7 @@ async function gateFor(threadId: string | undefined, options: {
     actorId: options.actorId ?? actorId,
     threadId,
     declaredSessionId: options.declaredSessionId,
+    requestId: options.requestId,
     now: options.now,
   });
 }
@@ -114,6 +117,24 @@ describe("voice command gate", () => {
       state: "inferred",
       sessionIds: [unconsumed],
     });
+  });
+
+  it("keeps a session pending for a retry of the request that consumed it", async () => {
+    const threadId = randomUUID();
+    const sessionId = randomUUID();
+    const requestId = randomUUID();
+    await seedLifecycle({ type: "voice.realtime_started", sessionId, threadId });
+    await seedCommand("voice.command_inferred", threadId, [sessionId], requestId);
+
+    // The retry is gated exactly like its first attempt.
+    await expect(gateFor(threadId, { requestId })).resolves.toEqual({
+      state: "inferred",
+      sessionIds: [sessionId],
+      inference: "pending_voice_session",
+    });
+    // Any other command sees the session consumed.
+    await expect(gateFor(threadId, { requestId: randomUUID() })).resolves.toEqual({ state: "none" });
+    await expect(gateFor(threadId)).resolves.toEqual({ state: "none" });
   });
 
   it("re-arms a consumed session when it reconnects", async () => {

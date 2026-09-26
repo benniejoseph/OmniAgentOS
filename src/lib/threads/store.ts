@@ -17,6 +17,12 @@ import {
 import type { ThreadLedger, ThreadRecord, ThreadTurnRecord } from "@/lib/threads/types";
 
 export async function createThread(input: {
+  /**
+   * Trusted server-derived identity. Creating it again returns the existing
+   * conversation when it has the same owner and project, so a retried
+   * request does not open a second thread.
+   */
+  id?: string;
   tenantId?: string;
   actorId: string;
   projectId?: string;
@@ -25,7 +31,7 @@ export async function createThread(input: {
 }) {
   const now = new Date().toISOString();
   const thread: ThreadRecord = {
-    id: randomUUID(),
+    id: input.id || randomUUID(),
     tenantId: normalizeTenantId(input.tenantId),
     actorId: safeText(input.actorId, 200),
     projectId: optionalIdentifier(input.projectId),
@@ -36,12 +42,41 @@ export async function createThread(input: {
   };
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    await getSql()`INSERT INTO omni_threads (id, tenant_id, actor_id, project_id, title, mode, created_at, updated_at)
-      VALUES (${thread.id}, ${thread.tenantId}, ${thread.actorId}, ${thread.projectId || null}, ${thread.title}, ${thread.mode}, ${now}, ${now})`;
-    return thread;
+    if (!input.id) {
+      await getSql()`INSERT INTO omni_threads (id, tenant_id, actor_id, project_id, title, mode, created_at, updated_at)
+        VALUES (${thread.id}, ${thread.tenantId}, ${thread.actorId}, ${thread.projectId || null}, ${thread.title}, ${thread.mode}, ${now}, ${now})`;
+      return thread;
+    }
+    const inserted = await getSql()`INSERT INTO omni_threads (id, tenant_id, actor_id, project_id, title, mode, created_at, updated_at)
+      VALUES (${thread.id}, ${thread.tenantId}, ${thread.actorId}, ${thread.projectId || null}, ${thread.title}, ${thread.mode}, ${now}, ${now})
+      ON CONFLICT (id) DO NOTHING
+      RETURNING id`;
+    if (inserted[0]) return thread;
+    return sameThreadOwner(
+      await getThread(thread.id, { tenantId: thread.tenantId }),
+      thread,
+    );
   }
-  await updateLedger((ledger) => ({ ...ledger, threads: [thread, ...ledger.threads] }));
-  return thread;
+  let existing: ThreadRecord | undefined;
+  await updateLedger((ledger) => {
+    existing = input.id
+      ? ledger.threads.find((candidate) => candidate.id === thread.id)
+      : undefined;
+    return existing ? ledger : { ...ledger, threads: [thread, ...ledger.threads] };
+  });
+  return existing ? sameThreadOwner(existing, thread) : thread;
+}
+
+function sameThreadOwner(existing: ThreadRecord | null, requested: ThreadRecord) {
+  if (
+    !existing ||
+    existing.tenantId !== requested.tenantId ||
+    existing.actorId !== requested.actorId ||
+    existing.projectId !== requested.projectId
+  ) {
+    throw new Error("Thread identity is already bound to a different conversation.");
+  }
+  return existing;
 }
 
 export async function getThread(id: string, options: { tenantId?: string } = {}) {
@@ -150,6 +185,12 @@ export async function listThreads(
 }
 
 export async function appendThreadTurn(input: {
+  /**
+   * Trusted server-derived identity. Appending it again returns the stored
+   * turn when it carries the same message, so a retried request records its
+   * message once.
+   */
+  id?: string;
   tenantId?: string;
   threadId: string;
   role: ChatRole;
@@ -159,37 +200,55 @@ export async function appendThreadTurn(input: {
   const tenantId = normalizeTenantId(input.tenantId);
   const content = safeText(input.content, 40_000);
   const createdAt = new Date().toISOString();
-  const turn: ThreadTurnRecord = { id: randomUUID(), tenantId, threadId: input.threadId, role: input.role, content, runId: input.runId, createdAt };
+  const turn: ThreadTurnRecord = { id: input.id || randomUUID(), tenantId, threadId: input.threadId, role: input.role, content, runId: input.runId, createdAt };
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+    const result = await getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
       const parents = await sql`
         SELECT * FROM omni_threads
         WHERE id = ${turn.threadId} AND tenant_id = ${tenantId}
         FOR UPDATE
       `;
       const parent = parents[0] ? threadFromRow(parents[0]) : null;
-      if (!parent) return [];
+      if (!parent) return { found: false };
       const inserted = await sql`INSERT INTO omni_thread_turns (id, tenant_id, thread_id, role, content, run_id, created_at)
         SELECT ${turn.id}, ${tenantId}, ${turn.threadId}, ${turn.role}, ${turn.content}, ${turn.runId || null}, ${createdAt}
-        WHERE EXISTS (SELECT 1 FROM omni_threads WHERE id = ${turn.threadId} AND tenant_id = ${tenantId}) RETURNING id`;
-      if (inserted[0]) await sql`UPDATE omni_threads SET updated_at = ${createdAt} WHERE id = ${turn.threadId} AND tenant_id = ${tenantId}`;
-      if (inserted[0]) {
-        await rebuildConversationSummaryHierarchySql(sql, {
-          ...parent,
-          updatedAt: createdAt,
-        }, createdAt);
+        WHERE EXISTS (SELECT 1 FROM omni_threads WHERE id = ${turn.threadId} AND tenant_id = ${tenantId})
+        ON CONFLICT (id) DO NOTHING
+        RETURNING id`;
+      if (!inserted[0]) {
+        const existing = await sql`
+          SELECT * FROM omni_thread_turns
+          WHERE id = ${turn.id} AND tenant_id = ${tenantId}
+          LIMIT 1
+        `;
+        return {
+          found: true,
+          existing: existing[0] ? turnFromRow(existing[0]) : null,
+        };
       }
-      return inserted;
-    }) as Record<string, unknown>[];
-    if (!rows[0]) throw new Error("Thread not found.");
-    return turn;
+      await sql`UPDATE omni_threads SET updated_at = ${createdAt} WHERE id = ${turn.threadId} AND tenant_id = ${tenantId}`;
+      await rebuildConversationSummaryHierarchySql(sql, {
+        ...parent,
+        updatedAt: createdAt,
+      }, createdAt);
+      return { found: true };
+    }) as { found: boolean; existing?: ThreadTurnRecord | null };
+    if (!result.found) throw new Error("Thread not found.");
+    return result.existing === undefined
+      ? turn
+      : sameThreadTurn(result.existing, turn);
   }
   let found = false;
+  let existing: ThreadTurnRecord | undefined;
   await updateLedger((ledger) => {
     const thread = ledger.threads.find((candidate) => candidate.id === turn.threadId && candidate.tenantId === tenantId);
     if (!thread) return ledger;
     found = true;
+    existing = input.id
+      ? ledger.turns.find((candidate) => candidate.id === turn.id)
+      : undefined;
+    if (existing) return ledger;
     thread.updatedAt = createdAt;
     ledger.threads.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     ledger.turns.push(turn);
@@ -197,7 +256,20 @@ export async function appendThreadTurn(input: {
     return ledger;
   });
   if (!found) throw new Error("Thread not found.");
-  return turn;
+  return existing ? sameThreadTurn(existing, turn) : turn;
+}
+
+function sameThreadTurn(existing: ThreadTurnRecord | null, requested: ThreadTurnRecord) {
+  if (
+    !existing ||
+    existing.tenantId !== requested.tenantId ||
+    existing.threadId !== requested.threadId ||
+    existing.role !== requested.role ||
+    existing.content !== requested.content
+  ) {
+    throw new Error("Thread turn identity is already bound to a different message.");
+  }
+  return existing;
 }
 
 export async function listThreadTurns(threadId: string, options: { tenantId?: string; limit?: number } = {}) {
