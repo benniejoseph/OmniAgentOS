@@ -693,6 +693,12 @@ Schedule admission remains limited to the reviewed procedures described above,
 and every mutation occurrence still requires its own exact single-use
 `PolicyLeaseV1`.
 
+Every fast worker pass evaluates due schedules for all tenants in database time,
+ahead of its dispatch snapshot. An occurrence runs normally for 15 minutes after
+it comes due. After that its missed-run policy applies, and each missed
+evaluation is logged and counted in the tick audit; `docs/deployment.md`
+describes the lane budget and alerts.
+
 ### Durable notification dispositions
 
 The notification decision pipeline converts server-owned approval, Meeting,

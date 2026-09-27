@@ -5,6 +5,8 @@ const routeMocks = vi.hoisted(() => ({
   processAllTenantAgentResumeQueues: vi.fn(),
   processAllTenantDurableSpecialistQueues: vi.fn(),
   processAllTenantWorkflowQueues: vi.fn(),
+  processDueWorkflowSchedules: vi.fn(),
+  processDueWorkflowSchedulesForTenant: vi.fn(),
   processPendingMemoryDeletionScrubs: vi.fn(),
   processPendingMemoryGraphRebuilds: vi.fn(),
   processPendingTemporalRelationProjections: vi.fn(),
@@ -108,10 +110,16 @@ vi.mock("@/lib/memory/maintenance-store", async (importOriginal) => ({
   runTenantMemoryMaintenance: routeMocks.runTenantMemoryMaintenance,
 }));
 
-vi.mock("@/lib/operations/job-queue", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/lib/operations/job-queue")>()),
-  listMaintenanceTenantIds: routeMocks.listMaintenanceTenantIds,
-}));
+vi.mock("@/lib/operations/job-queue", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/operations/job-queue")>();
+  return {
+    ...actual,
+    listMaintenanceTenantIds: routeMocks.listMaintenanceTenantIds,
+    listRunnableOperationDispatchTenants: vi.fn(
+      actual.listRunnableOperationDispatchTenants,
+    ),
+  };
+});
 
 vi.mock("@/lib/tools/audit-store", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/tools/audit-store")>()),
@@ -178,6 +186,12 @@ vi.mock("@/lib/workflows/queue", async (importOriginal) => ({
   processAllTenantWorkflowQueues: routeMocks.processAllTenantWorkflowQueues,
 }));
 
+vi.mock("@/lib/workflows/triggers", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/workflows/triggers")>()),
+  processDueWorkflowSchedules: routeMocks.processDueWorkflowSchedules,
+  processDueWorkflowSchedulesForTenant: routeMocks.processDueWorkflowSchedulesForTenant,
+}));
+
 vi.mock("@/lib/operations/worker-heartbeat", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/operations/worker-heartbeat")>()),
   recordWorkerHeartbeat: routeMocks.recordWorkerHeartbeat,
@@ -189,6 +203,8 @@ vi.mock("@/lib/a2a/maintenance", () => ({
 }));
 
 import { POST } from "@/app/api/workflows/tick/route";
+import { listRunnableOperationDispatchTenants } from "@/lib/operations/job-queue";
+import { emptyWorkflowScheduleTotals } from "@/lib/workflows/triggers";
 
 const emptyWorkflowQueue = {
   requested: 0,
@@ -230,6 +246,12 @@ beforeEach(() => {
   routeMocks.processAllTenantWorkflowQueues
     .mockReset()
     .mockResolvedValue(emptyWorkflowQueue);
+  routeMocks.processDueWorkflowSchedules
+    .mockReset()
+    .mockResolvedValue(emptyWorkflowScheduleTotals());
+  routeMocks.processDueWorkflowSchedulesForTenant
+    .mockReset()
+    .mockResolvedValue(emptyWorkflowScheduleTotals());
   routeMocks.scrubExpiredLocalComputerObservations
     .mockReset()
     .mockResolvedValue({ scrubbed: 0, moreAvailable: false });
@@ -350,6 +372,190 @@ describe("dedicated worker heartbeat timing", () => {
     expect(routeMocks.scrubExpiredLocalComputerObservations).toHaveBeenCalledWith({
       limit: 100,
     });
+  });
+
+  it("runs every tenant's due schedules ahead of the dispatch snapshot on each fast pass", async () => {
+    routeMocks.processDueWorkflowSchedules.mockResolvedValue({
+      ownerActors: 3,
+      ownerFailures: 1,
+      shadowEvaluated: 2,
+      occurrencesClaimed: 3,
+      occurrencesEnqueued: 4,
+      occurrencesSkipped: 5,
+      occurrencesMissed: 6,
+      occurrencesFailed: 7,
+      occurrencesReconciled: 8,
+    });
+
+    const before = Date.now();
+    const response = await POST(workerRequest({ startup: false, timeBudgetMs: 60_000 }));
+    const after = Date.now();
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      workflowSchedules: { ownerActors: 3, occurrencesEnqueued: 4, occurrencesMissed: 6 },
+      idle: false,
+      // Every count except the owner failure, which changed nothing.
+      activityCount: 35,
+    });
+    expect(routeMocks.processDueWorkflowSchedules).toHaveBeenCalledOnce();
+    const [input] = routeMocks.processDueWorkflowSchedules.mock.calls[0];
+    expect(input).toEqual({
+      systemActorId: "dedicated-worker",
+      correlationId: "correlation-test",
+      limit: 20,
+      deadlineAt: expect.any(Number),
+    });
+    // Half of the pass's budget, so dispatch keeps the rest.
+    expect(input.deadlineAt).toBeGreaterThanOrEqual(before + 30_000);
+    expect(input.deadlineAt).toBeLessThanOrEqual(after + 30_000);
+    // The run a schedule queues must be in the snapshot this pass dispatches.
+    expect(routeMocks.processDueWorkflowSchedules.mock.invocationCallOrder[0])
+      .toBeLessThan(
+        vi.mocked(listRunnableOperationDispatchTenants).mock.invocationCallOrder.at(-1)!,
+      );
+    expect(routeMocks.recordSecurityAudit).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({
+        scheduleShadowOccurrencesEvaluated: 2,
+        scheduleOccurrencesClaimed: 3,
+        scheduleOccurrencesEnqueued: 4,
+        scheduleOccurrencesSkipped: 5,
+        scheduleOccurrencesMissed: 6,
+        scheduleOccurrencesFailed: 7,
+        scheduleOccurrencesReconciled: 8,
+        scheduleOwnerFailures: 1,
+        schedulePassFailures: 0,
+      }),
+    }));
+  });
+
+  it("adds tenant maintenance's schedule work to the fast pass's and stops it at the pass deadline", async () => {
+    routeMocks.listMaintenanceTenantIds.mockResolvedValue(["tenant-a"]);
+    routeMocks.processDueWorkflowSchedules.mockResolvedValue({
+      ...emptyWorkflowScheduleTotals(),
+      ownerActors: 1,
+      occurrencesClaimed: 1,
+      occurrencesMissed: 3,
+    });
+    routeMocks.processDueWorkflowSchedulesForTenant.mockResolvedValue({
+      ...emptyWorkflowScheduleTotals(),
+      ownerActors: 1,
+      ownerFailures: 1,
+      occurrencesMissed: 2,
+      occurrencesReconciled: 4,
+    });
+
+    const before = Date.now();
+    const response = await POST(workerRequest({
+      startup: false,
+      lane: "all",
+      timeBudgetMs: 60_000,
+    }));
+    const after = Date.now();
+
+    expect(response.status).toBe(200);
+    expect(routeMocks.processDueWorkflowSchedulesForTenant).toHaveBeenCalledOnce();
+    const [input] = routeMocks.processDueWorkflowSchedulesForTenant.mock.calls[0];
+    expect(input).toEqual({
+      tenantId: "tenant-a",
+      systemActorId: "dedicated-worker",
+      correlationId: "correlation-test",
+      limit: 10,
+      deadlineAt: expect.any(Number),
+    });
+    expect(input.deadlineAt).toBeGreaterThanOrEqual(before + 60_000);
+    expect(input.deadlineAt).toBeLessThanOrEqual(after + 60_000);
+    expect(routeMocks.recordSecurityAudit).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({
+        scheduleOccurrencesClaimed: 1,
+        scheduleOccurrencesMissed: 5,
+        scheduleOccurrencesReconciled: 4,
+        scheduleOwnerFailures: 1,
+      }),
+    }));
+  });
+
+  it("leaves due schedules to the fast pass", async () => {
+    for (const lane of ["background", "maintenance"] as const) {
+      const response = await POST(workerRequest({ startup: false, lane }));
+      expect(response.status).toBe(200);
+    }
+    expect(routeMocks.processDueWorkflowSchedules).not.toHaveBeenCalled();
+
+    const response = await POST(workerRequest({ startup: false, lane: "all" }));
+    expect(response.status).toBe(200);
+    expect(routeMocks.processDueWorkflowSchedules).toHaveBeenCalledOnce();
+  });
+
+  it("reports a failed schedule pass and still dispatches queued work", async () => {
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    routeMocks.processDueWorkflowSchedules.mockRejectedValue(
+      new Error("schedule discovery failed password=hunter2-secret"),
+    );
+    routeMocks.processAllTenantWorkflowQueues.mockResolvedValue({
+      ...emptyWorkflowQueue,
+      leased: 1,
+      completed: 1,
+    });
+    try {
+      const response = await POST(workerRequest({ startup: false }));
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body).toMatchObject({
+        workflowSchedules: emptyWorkflowScheduleTotals(),
+        idle: false,
+        activityCount: 2,
+      });
+      expect(body.workflowSchedulesError).toContain("schedule discovery failed");
+      expect(JSON.stringify(body)).not.toContain("hunter2-secret");
+      expect(routeMocks.processAllTenantWorkflowQueues).toHaveBeenCalledOnce();
+      expect(routeMocks.recordSecurityAudit).toHaveBeenCalledWith(expect.objectContaining({
+        metadata: expect.objectContaining({
+          schedulePassFailures: 1,
+          scheduleOwnerFailures: 0,
+        }),
+      }));
+      expect(errorLog).toHaveBeenCalledWith(JSON.stringify({
+        level: "error",
+        msg: "workflow_schedules_failed",
+        error: body.workflowSchedulesError,
+      }));
+      expect(errorLog.mock.calls.flat().join(" ")).not.toContain("hunter2-secret");
+    } finally {
+      errorLog.mockRestore();
+    }
+  });
+
+  it("stays idle when the only schedule work failed, so the fast lane backs off", async () => {
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      routeMocks.processDueWorkflowSchedules.mockResolvedValueOnce({
+        ...emptyWorkflowScheduleTotals(),
+        ownerActors: 1,
+        ownerFailures: 1,
+      });
+      const ownerFailed = await POST(workerRequest({ startup: false }));
+      await expect(ownerFailed.json()).resolves.toMatchObject({
+        workflowSchedules: { ownerActors: 1, ownerFailures: 1 },
+        idle: true,
+        activityCount: 0,
+      });
+
+      routeMocks.processDueWorkflowSchedules.mockRejectedValueOnce(
+        new Error("schedule discovery failed"),
+      );
+      const passFailed = await POST(workerRequest({ startup: false }));
+      const body = await passFailed.json();
+      expect(body).toMatchObject({ idle: true, activityCount: 0 });
+      expect(body.workflowSchedulesError).toContain("schedule discovery failed");
+
+      expect(routeMocks.processDueWorkflowSchedules).toHaveBeenCalledTimes(2);
+      expect(routeMocks.recordSecurityAudit).not.toHaveBeenCalled();
+      expect(routeMocks.recordRuntimeEventSafely).not.toHaveBeenCalled();
+    } finally {
+      errorLog.mockRestore();
+    }
   });
 
   it("persists startup registration before responding without beginning scheduled work", async () => {

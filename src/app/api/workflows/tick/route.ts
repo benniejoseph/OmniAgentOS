@@ -49,7 +49,9 @@ import {
   processWorkflowQueue,
 } from "@/lib/workflows/queue";
 import {
+  emptyWorkflowScheduleTotals,
   processActorWorkflowSchedules,
+  processDueWorkflowSchedules,
   processDueWorkflowSchedulesForTenant,
 } from "@/lib/workflows/triggers";
 import { processDueDailyBriefs } from "@/lib/today/briefs";
@@ -542,6 +544,8 @@ async function POSTHandler(request: Request) {
         workflowCompleted: queue.completed,
         scheduleOccurrencesEnqueued:
           workflowSchedules?.occurrencesEnqueued || 0,
+        scheduleOccurrencesMissed:
+          workflowSchedules?.occurrencesMissed || 0,
         sloEnabled: Boolean(parsed.data.slo),
         sloHealthy: slo?.healthy,
         sloBreaches: slo?.breaches.length || 0,
@@ -607,6 +611,13 @@ async function POSTHandler(request: Request) {
 function summarizeScheduledOutcome(
   scheduled: Awaited<ReturnType<typeof runAllTenantScheduledWork>>,
 ) {
+  // Schedules run on the fast pass and again in each tenant's maintenance.
+  const scheduleTotal = (key: keyof typeof scheduled.workflowSchedules) =>
+    scheduled.workflowSchedules[key] +
+    scheduled.maintenance.reduce(
+      (total, item) => total + item.workflowSchedules[key],
+      0,
+    );
   const counts = {
     localComputerObservationsScrubbed:
       scheduled.localComputerObservationScrub?.scrubbed || 0,
@@ -687,19 +698,24 @@ function summarizeScheduledOutcome(
       (total, item) => total + item.adaptationProposalsCreated,
       0,
     ),
-    scheduleOccurrencesEnqueued: scheduled.maintenance.reduce(
-      (total, item) => total + item.workflowSchedules.occurrencesEnqueued,
-      0,
-    ),
-    scheduleOccurrencesFailed: scheduled.maintenance.reduce(
-      (total, item) => total + item.workflowSchedules.occurrencesFailed,
-      0,
-    ),
+    scheduleShadowOccurrencesEvaluated: scheduleTotal("shadowEvaluated"),
+    scheduleOccurrencesClaimed: scheduleTotal("occurrencesClaimed"),
+    scheduleOccurrencesEnqueued: scheduleTotal("occurrencesEnqueued"),
+    scheduleOccurrencesSkipped: scheduleTotal("occurrencesSkipped"),
+    scheduleOccurrencesMissed: scheduleTotal("occurrencesMissed"),
+    scheduleOccurrencesFailed: scheduleTotal("occurrencesFailed"),
+    scheduleOccurrencesReconciled: scheduleTotal("occurrencesReconciled"),
+    scheduleOwnerFailures: scheduleTotal("ownerFailures"),
+    schedulePassFailures: scheduled.workflowSchedulesError ? 1 : 0,
   };
-  const activityCount = Object.values(counts).reduce(
-    (total, value) => total + value,
-    0,
-  );
+  // A failed schedule owner or pass changed nothing and is retried on the next
+  // pass. Counting it as activity would hold the fast lane at its busy cadence
+  // for as long as the failure lasts, so it is logged and reported only with
+  // other work.
+  const activityCount =
+    Object.values(counts).reduce((total, value) => total + value, 0) -
+    counts.scheduleOwnerFailures -
+    counts.schedulePassFailures;
   return {
     counts,
     activityCount,
@@ -751,6 +767,30 @@ async function runAllTenantScheduledWork({
   const runFast = lane === "fast" || lane === "all";
   const runBackground = lane === "background" || lane === "all";
   const runMaintenance = lane === "maintenance" || lane === "all";
+  // Every fast pass runs due schedules for every tenant, so an occurrence is
+  // queued within seconds of its due time instead of waiting for its tenant's
+  // turn at maintenance. It runs ahead of the dispatch snapshot so the
+  // workflow run it queues can start in this same pass, and it stops starting
+  // owners at half the budget so dispatch keeps the rest.
+  let workflowSchedules = emptyWorkflowScheduleTotals();
+  let workflowSchedulesError: string | undefined;
+  if (runFast) {
+    try {
+      workflowSchedules = await processDueWorkflowSchedules({
+        systemActorId: actorId,
+        correlationId,
+        limit: 20,
+        deadlineAt: Date.now() + Math.floor(boundedBudgetMs / 2),
+      });
+    } catch (error) {
+      workflowSchedulesError = safeTenantMaintenanceError(error);
+      console.error(JSON.stringify({
+        level: "error",
+        msg: "workflow_schedules_failed",
+        error: workflowSchedulesError,
+      }));
+    }
+  }
   const dispatchTenants = runFast || runBackground
     ? await listRunnableOperationDispatchTenants({
         workflowLimit: runFast ? queueLimit : 0,
@@ -955,6 +995,8 @@ async function runAllTenantScheduledWork({
     memoryGraphRebuilds,
     temporalRelationProjections,
     memoryDeletionScrubs,
+    workflowSchedules,
+    workflowSchedulesError,
     maintenanceTenantIds,
     nextTenantCursor,
     maintenance,
@@ -1059,7 +1101,7 @@ async function runTenantMaintenance({
     adaptationProposalsProcessed: 0,
     adaptationProposalsCreated: 0,
     externalDelegationsTerminated: 0,
-    workflowSchedules: emptyWorkflowScheduleSummary(),
+    workflowSchedules: emptyWorkflowScheduleTotals(),
     loopV2Recovery: emptyLoopV2RecoverySummary(),
   };
   if (Date.now() < deadlineAt) {
@@ -1082,6 +1124,7 @@ async function runTenantMaintenance({
       systemActorId: actorId,
       correlationId,
       limit: 10,
+      deadlineAt,
     });
   }
   if (Date.now() < deadlineAt) {
@@ -1230,7 +1273,7 @@ function failedTenantMaintenance(
     adaptationProposalsProcessed: 0,
     adaptationProposalsCreated: 0,
     externalDelegationsTerminated: 0,
-    workflowSchedules: emptyWorkflowScheduleSummary(),
+    workflowSchedules: emptyWorkflowScheduleTotals(),
     maintenanceError,
     loopV2Recovery: emptyLoopV2RecoverySummary(),
   };
@@ -1296,20 +1339,6 @@ function emptyLoopV2RecoverySummary(): Awaited<
     failedClosed: 0,
     deferred: 0,
     results: [],
-  };
-}
-
-function emptyWorkflowScheduleSummary(): Awaited<
-  ReturnType<typeof processDueWorkflowSchedulesForTenant>
-> {
-  return {
-    ownerActors: 0,
-    shadowEvaluated: 0,
-    occurrencesClaimed: 0,
-    occurrencesEnqueued: 0,
-    occurrencesSkipped: 0,
-    occurrencesFailed: 0,
-    occurrencesReconciled: 0,
   };
 }
 

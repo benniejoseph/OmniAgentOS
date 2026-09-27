@@ -150,7 +150,11 @@ const signatureMaxAgeMs = 5 * 60 * 1000;
 // timestamp, key, and body exactly one way.
 const signedTimestampPattern = /^\d{1,16}$/;
 const signedDeliveryKeyPattern = /^[A-Za-z0-9_:-]{1,200}$/;
-const scheduleDueGraceMs = 60_000;
+// An occurrence still runs as due for this long past its due time. The
+// dedicated worker's fast lane checks every tenant's schedules every 5-30 s,
+// so the window spans many passes and also absorbs a worker restart or a short
+// release hold. Later than this, the schedule's missed-run policy decides.
+const scheduleDueGraceMs = 15 * 60_000;
 const scheduleEvaluationLimit = 10_000;
 const scheduleRruleSchema = z.object({
   freq: z.enum(["DAILY", "WEEKLY", "MONTHLY"]),
@@ -1236,35 +1240,173 @@ export async function claimDueWorkflowScheduleShadows(input: {
   });
 }
 
+export type WorkflowScheduleProcessingTotals = {
+  ownerActors: number;
+  ownerFailures: number;
+  shadowEvaluated: number;
+  occurrencesClaimed: number;
+  occurrencesEnqueued: number;
+  occurrencesSkipped: number;
+  occurrencesMissed: number;
+  occurrencesFailed: number;
+  occurrencesReconciled: number;
+};
+
+export function emptyWorkflowScheduleTotals(): WorkflowScheduleProcessingTotals {
+  return {
+    ownerActors: 0,
+    ownerFailures: 0,
+    shadowEvaluated: 0,
+    occurrencesClaimed: 0,
+    occurrencesEnqueued: 0,
+    occurrencesSkipped: 0,
+    occurrencesMissed: 0,
+    occurrencesFailed: 0,
+    occurrencesReconciled: 0,
+  };
+}
+
+type DueWorkflowScheduleOwner = Readonly<{ tenantId: string; actorId: string }>;
+
+// Due times are judged against the database clock, so a drifting app-server
+// clock cannot make an occurrence late or early.
+async function readWorkflowScheduleClock() {
+  const [row] = await getSql()`SELECT clock_timestamp() AS now`;
+  return new Date(row.now as Date | string).toISOString();
+}
+
+/**
+ * Lists the owners whose schedules have work in every tenant, oldest due work
+ * first, with the database time the listing used. Work is a due trigger cursor
+ * or an occurrence still waiting to enter the workflow queue.
+ */
+export async function listDueWorkflowScheduleOwners(input: { limit?: number } = {}) {
+  if (!hasDatabaseUrl()) {
+    throw new Error("Scheduled workflow processing requires durable database storage.");
+  }
+  const limit = Math.min(Math.max(input.limit || 20, 1), 100);
+  return runWithDatabaseSystemScope(
+    "Discover due scheduled workflow owners across tenants.",
+    async () => {
+      await ensureDatabaseSchema();
+      const now = await readWorkflowScheduleClock();
+      const rows = await getSql()`
+        WITH work AS (
+          SELECT
+            tenant_id,
+            owner_actor_id,
+            LEAST(next_due_at, shadow_next_due_at) AS due_at
+          FROM omni_workflow_triggers
+          WHERE trigger_kind = 'schedule'
+            AND owner_actor_id IS NOT NULL
+            AND status = 'active'
+            AND circuit_state = 'closed'
+            AND (
+              (next_due_at IS NOT NULL AND next_due_at <= ${now})
+              OR (shadow_next_due_at IS NOT NULL AND shadow_next_due_at <= ${now})
+            )
+          UNION ALL
+          SELECT tenant_id, owner_actor_id, scheduled_for AS due_at
+          FROM omni_workflow_schedule_occurrences
+          WHERE status = 'claimed'
+        )
+        SELECT tenant_id, owner_actor_id, MIN(due_at) AS due_at
+        FROM work
+        GROUP BY tenant_id, owner_actor_id
+        ORDER BY
+          MIN(due_at) ASC,
+          tenant_id COLLATE "C" ASC,
+          owner_actor_id COLLATE "C" ASC
+        LIMIT ${limit}
+      `;
+      return {
+        now,
+        owners: rows.map((row: Record<string, unknown>): DueWorkflowScheduleOwner => ({
+          tenantId: normalizeTenantId(String(row.tenant_id)),
+          actorId: requiredActorId(String(row.owner_actor_id)),
+        })),
+      };
+    },
+  );
+}
+
+/**
+ * Runs due schedules for every tenant, oldest due owner first. It stops
+ * starting owners at `deadlineAt`; one owner's failure is logged and counted,
+ * and the rest still run.
+ */
+export async function processDueWorkflowSchedules(input: {
+  systemActorId: string;
+  correlationId: string;
+  limit?: number;
+  deadlineAt?: number;
+}) {
+  if (!hasDatabaseUrl()) return emptyWorkflowScheduleTotals();
+  const limit = Math.min(Math.max(input.limit || 20, 1), 100);
+  const { now, owners } = await listDueWorkflowScheduleOwners({ limit });
+  return processWorkflowScheduleOwners({ ...input, owners, now, limit });
+}
+
+async function processWorkflowScheduleOwners(input: {
+  owners: readonly DueWorkflowScheduleOwner[];
+  systemActorId: string;
+  correlationId: string;
+  now: string;
+  limit: number;
+  deadlineAt?: number;
+}) {
+  const totals = emptyWorkflowScheduleTotals();
+  for (const owner of input.owners) {
+    if (input.deadlineAt !== undefined && Date.now() >= input.deadlineAt) break;
+    totals.ownerActors += 1;
+    try {
+      const result = await runWithDatabaseTenantScope(owner.tenantId, () =>
+        processActorWorkflowSchedules({
+          tenantId: owner.tenantId,
+          actorId: owner.actorId,
+          systemActorId: input.systemActorId,
+          correlationId: input.correlationId,
+          now: input.now,
+          limit: input.limit,
+        }),
+      );
+      for (const [key, count] of Object.entries(result) as [keyof typeof result, number][]) {
+        totals[key] += count;
+      }
+    } catch (error) {
+      totals.ownerFailures += 1;
+      console.error(JSON.stringify({
+        level: "error",
+        event: "workflow_schedule.owner_failed",
+        tenantId: owner.tenantId,
+        error: String(redactSensitive(
+          error instanceof Error ? error.message : "Scheduled workflow processing failed.",
+        )).slice(0, 500),
+      }));
+    }
+  }
+  return totals;
+}
+
 export async function processDueWorkflowSchedulesForTenant(input: {
   tenantId: string;
   systemActorId: string;
   correlationId: string;
   now?: string;
   limit?: number;
+  deadlineAt?: number;
 }) {
-  if (!hasDatabaseUrl()) {
-    return {
-      ownerActors: 0,
-      shadowEvaluated: 0,
-      occurrencesClaimed: 0,
-      occurrencesEnqueued: 0,
-      occurrencesSkipped: 0,
-      occurrencesFailed: 0,
-      occurrencesReconciled: 0,
-    };
-  }
+  if (!hasDatabaseUrl()) return emptyWorkflowScheduleTotals();
   const tenantId = normalizeTenantId(input.tenantId);
-  const now = new Date(requireTimestamp(
-    input.now || new Date().toISOString(),
-    "schedule processing time",
-  )).toISOString();
   const limit = Math.min(Math.max(input.limit || 20, 1), 100);
-  const ownerRows = await runWithDatabaseSystemScope(
+  const { now, ownerRows } = await runWithDatabaseSystemScope(
     `Discover due scheduled workflow owners for tenant ${tenantId}.`,
     async () => {
       await ensureDatabaseSchema();
-      return getSql()`
+      const now = input.now
+        ? new Date(requireTimestamp(input.now, "schedule processing time")).toISOString()
+        : await readWorkflowScheduleClock();
+      const ownerRows = await getSql()`
         SELECT DISTINCT trigger.owner_actor_id COLLATE "C" AS owner_actor_id
         FROM omni_workflow_triggers trigger
         WHERE trigger.tenant_id = ${tenantId}
@@ -1290,35 +1432,20 @@ export async function processDueWorkflowSchedulesForTenant(input: {
         ORDER BY trigger.owner_actor_id COLLATE "C"
         LIMIT ${limit}
       `;
+      return { now, ownerRows };
     },
   );
-  const totals = {
-    ownerActors: ownerRows.length,
-    shadowEvaluated: 0,
-    occurrencesClaimed: 0,
-    occurrencesEnqueued: 0,
-    occurrencesSkipped: 0,
-    occurrencesFailed: 0,
-    occurrencesReconciled: 0,
-  };
-  for (const row of ownerRows) {
-    const actorId = requiredActorId(String(row.owner_actor_id));
-    const result = await processActorWorkflowSchedules({
+  return processWorkflowScheduleOwners({
+    owners: ownerRows.map((row: Record<string, unknown>) => ({
       tenantId,
-      actorId,
-      systemActorId: input.systemActorId,
-      correlationId: input.correlationId,
-      now,
-      limit,
-    });
-    totals.shadowEvaluated += result.shadowEvaluated;
-    totals.occurrencesClaimed += result.occurrencesClaimed;
-    totals.occurrencesEnqueued += result.occurrencesEnqueued;
-    totals.occurrencesSkipped += result.occurrencesSkipped;
-    totals.occurrencesFailed += result.occurrencesFailed;
-    totals.occurrencesReconciled += result.occurrencesReconciled;
-  }
-  return totals;
+      actorId: requiredActorId(String(row.owner_actor_id)),
+    })),
+    systemActorId: input.systemActorId,
+    correlationId: input.correlationId,
+    now,
+    limit,
+    deadlineAt: input.deadlineAt,
+  });
 }
 
 export async function processActorWorkflowSchedules(input: {
@@ -1334,10 +1461,9 @@ export async function processActorWorkflowSchedules(input: {
   }
   const tenantId = normalizeTenantId(input.tenantId);
   const actorId = requiredActorId(input.actorId);
-  const now = new Date(requireTimestamp(
-    input.now || new Date().toISOString(),
-    "schedule processing time",
-  )).toISOString();
+  const now = input.now
+    ? new Date(requireTimestamp(input.now, "schedule processing time")).toISOString()
+    : await runWithDatabaseActorScope(tenantId, [actorId], readWorkflowScheduleClock);
   const limit = Math.min(Math.max(input.limit || 20, 1), 100);
   const schedulerScope = createExecutionScope({
     tenantId,
@@ -1373,6 +1499,23 @@ export async function processActorWorkflowSchedules(input: {
     actorId,
     limit,
   });
+  // A missed occurrence follows the schedule's missed-run policy, and when
+  // that policy skips it nothing else would ever show that it came and went.
+  const missed = claimed.filter((item) =>
+    item.outcome === "missed_skipped" || item.outcome === "missed_run_once"
+  );
+  for (const occurrence of missed) {
+    console.warn(JSON.stringify({
+      level: "warn",
+      event: "workflow_schedule.occurrence_missed",
+      tenantId,
+      triggerId: occurrence.triggerId,
+      scheduledFor: occurrence.scheduledFor,
+      evaluatedThrough: occurrence.evaluatedThrough,
+      outcome: occurrence.outcome,
+      occurrencesConsumed: occurrence.occurrencesConsumed,
+    }));
+  }
   const processed: WorkflowScheduleOccurrenceRecord[] = [];
   for (const occurrence of pending) {
     processed.push(await executeClaimedWorkflowScheduleOccurrence(
@@ -1384,6 +1527,7 @@ export async function processActorWorkflowSchedules(input: {
     shadowEvaluated: shadow.length,
     occurrencesClaimed: claimed.filter((item) => item.status === "claimed").length,
     occurrencesSkipped: claimed.filter((item) => item.status === "skipped").length,
+    occurrencesMissed: missed.length,
     occurrencesEnqueued: processed.filter((item) => item.status === "enqueued").length,
     occurrencesFailed: processed.filter((item) => item.status === "failed").length,
     occurrencesReconciled: reconciled.length,

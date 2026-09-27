@@ -249,6 +249,40 @@ describe("Automation Studio contracts", () => {
     expect(markup).not.toContain("never-render-this");
   });
 
+  it("says when the missed-run setting skipped or stood in for a run", () => {
+    const copyFor = (fields: Record<string, unknown>) => renderToStaticMarkup(
+      createElement(ScheduleOutcomeHistory, {
+        id: "history-missed",
+        load: {
+          status: "ready",
+          data: {
+            occurrences: [{
+              id: "occurrence-missed",
+              scheduledFor: "2026-09-22T09:00:00.000Z",
+              authoritySha256: "a".repeat(64),
+              ...fields,
+            }],
+            receipts: [],
+            policyLeases: { outcomes: [] },
+          },
+        },
+      }),
+    ).replaceAll("&#x27;", "'");
+
+    expect(copyFor({ status: "skipped", outcome: "missed_skipped", occurrencesConsumed: 1 }))
+      .toContain("<p>This run came due while Asael was offline or the schedule was paused, so it was skipped, as the schedule's missed-run setting asks.</p>");
+    expect(copyFor({ status: "skipped", outcome: "missed_skipped", occurrencesConsumed: 3 }))
+      .toContain("<p>3 runs came due while Asael was offline or the schedule was paused, so they were skipped, as the schedule's missed-run setting asks.</p>");
+    expect(copyFor({ status: "skipped", outcome: "exhausted", occurrencesConsumed: 0 }))
+      .toContain("<p>This schedule had already reached its last run, so nothing started.</p>");
+    expect(copyFor({ status: "enqueued", outcome: "missed_run_once", occurrencesConsumed: 3 }))
+      .toContain("<p>The reviewed occurrence entered the workflow queue. It stands in for the 3 runs that came due while Asael was offline or the schedule was paused.</p>");
+    expect(copyFor({ status: "completed", outcome: "missed_run_once", occurrencesConsumed: 1 }))
+      .toContain("<p>The scheduled workflow completed under its reviewed bindings. This run was late: it came due while Asael was offline or the schedule was paused.</p>");
+    expect(copyFor({ status: "enqueued", outcome: "due", occurrencesConsumed: 1 }))
+      .toContain("<p>The reviewed occurrence entered the workflow queue.</p>");
+  });
+
   it("renders schedule history loading, error, and empty states", () => {
     const loading = renderToStaticMarkup(createElement(ScheduleOutcomeHistory, {
       id: "history-loading",

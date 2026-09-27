@@ -227,6 +227,60 @@ describe("scheduled workflow trigger foundation", () => {
     });
   });
 
+  it("runs an occurrence as due for 15 minutes before the missed-run policy applies", async () => {
+    const triggers = await import("@/lib/workflows/triggers");
+    for (const missedPolicy of ["skip", "run_once"] as const) {
+      const created = await triggers.createWorkflowTrigger(scheduleInput({
+        id: `schedule-grace-${missedPolicy === "skip" ? "skip" : "once"}`,
+        startsAt: "2026-09-20T09:00:00.000Z",
+        missedPolicy,
+      }));
+      const evaluate = (now: string) => triggers.evaluateWorkflowScheduleShadow({
+        config: created.schedule!.config,
+        currentNextDueAt: "2026-09-20T09:00:00.000Z",
+        occurrenceCount: 0,
+        now,
+      });
+      const due = {
+        scheduledFor: "2026-09-20T09:00:00.000Z",
+        outcome: "due",
+        wouldCreateRun: true,
+        occurrencesConsumed: 1,
+        nextDueAt: "2026-09-21T09:00:00.000Z",
+      };
+
+      // Five minutes late was already a missed run under the old one-minute grace.
+      expect(evaluate("2026-09-20T09:05:00.000Z")).toMatchObject(due);
+      expect(evaluate("2026-09-20T09:15:00.000Z")).toMatchObject(due);
+      expect(evaluate("2026-09-20T09:15:00.001Z")).toMatchObject({
+        ...due,
+        outcome: missedPolicy === "skip" ? "missed_skipped" : "missed_run_once",
+        wouldCreateRun: missedPolicy === "run_once",
+      });
+    }
+  });
+
+  it("finds due schedules across tenants only in durable storage", async () => {
+    const triggers = await import("@/lib/workflows/triggers");
+    await expect(triggers.processDueWorkflowSchedules({
+      systemActorId: "dedicated-worker",
+      correlationId: "schedule-without-database",
+    })).resolves.toEqual({
+      ownerActors: 0,
+      ownerFailures: 0,
+      shadowEvaluated: 0,
+      occurrencesClaimed: 0,
+      occurrencesEnqueued: 0,
+      occurrencesSkipped: 0,
+      occurrencesMissed: 0,
+      occurrencesFailed: 0,
+      occurrencesReconciled: 0,
+    });
+    await expect(triggers.listDueWorkflowScheduleOwners()).rejects.toThrow(
+      "Scheduled workflow processing requires durable database storage.",
+    );
+  });
+
   it("fails closed on unsupported recurrence or a cross-actor identity pin", async () => {
     const triggers = await import("@/lib/workflows/triggers");
     const unsupported = scheduleInput({

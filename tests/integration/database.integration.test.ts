@@ -1,6 +1,10 @@
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import {
+  buildAgentRunIdentityPinV1,
+  buildBuiltInAgentIdentityV1,
+} from "@/lib/agents/identity-contracts";
+import {
   databaseSchemaMigrations,
   ensureDatabaseSchema,
   getSql,
@@ -65,6 +69,13 @@ import {
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { toolInputSha256 } from "@/lib/tools/execution-scope";
 import { createWorkflowRun } from "@/lib/workflows/store";
+import {
+  createWorkflowTrigger,
+  listDueWorkflowScheduleOwners,
+  processActorWorkflowSchedules,
+  processDueWorkflowSchedules,
+  processDueWorkflowSchedulesForTenant,
+} from "@/lib/workflows/triggers";
 
 const databaseUrl = process.env.DATABASE_URL;
 const resetAllowed = process.env.OMNIAGENT_INTEGRATION_DATABASE_RESET === "true";
@@ -3640,6 +3651,350 @@ databaseDescribe("Postgres schema integration", () => {
     }]);
     expect(resumed[0].seq).toBeGreaterThan(third.seq!);
   });
+
+  test("lists the owners with due schedules across tenants in database time", async () => {
+    const tenantA = "schedule_due_a";
+    const tenantB = "schedule_due_b";
+    const userId = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+    const actorFor = (n: number) => `actor:${userId(n)}`;
+    for (let n = 93; n <= 101; n += 1) {
+      await admin`
+        INSERT INTO omni_auth_users (id, email, password_hash)
+        VALUES (${userId(n)}, ${`schedule-due-${n}@example.test`}, 'test-only')
+      `;
+    }
+    const create = (tenantId: string, n: number, key: string) =>
+      runWithDatabaseTenantScope(tenantId, () => createWorkflowTrigger(
+        scheduleTriggerInput({ tenantId, actorId: actorFor(n), key }),
+      ));
+    const [{ base }] = await admin`
+      SELECT date_trunc('second', clock_timestamp()) AS base
+    `;
+    // Cursors are offsets from one database instant. A cursor left alone stays
+    // at the schedule's first run, years ahead.
+    const due = (triggerId: string, next: string, shadow = "1 day") => admin`
+      UPDATE omni_workflow_triggers
+      SET next_due_at = ${base}::timestamptz + ${next}::interval,
+          shadow_next_due_at = ${base}::timestamptz + ${shadow}::interval
+      WHERE id = ${triggerId}
+    `;
+    const occurrence = (
+      triggerId: string,
+      occurrenceId: string,
+      occurrenceStatus: "claimed" | "enqueued",
+      offset: string,
+    ) => admin`
+      INSERT INTO omni_workflow_schedule_occurrences (
+        id, tenant_id, owner_actor_id, trigger_id, occurrence_kind, status,
+        scheduled_for, evaluated_through, outcome, occurrences_consumed,
+        occurrence_count, configuration_sha256, agent_identity_pin_sha256,
+        policy_pin_sha256, procedure_snapshot_sha256, reviewed_snapshot_sha256,
+        occurrence_budget_sha256, authority_sha256, workflow_run_id, queue_job_id
+      )
+      SELECT
+        ${occurrenceId}::text, tenant_id, owner_actor_id, id, 'scheduled',
+        ${occurrenceStatus}::text,
+        ${base}::timestamptz + ${offset}::interval,
+        ${base}::timestamptz + ${offset}::interval,
+        'due', 1, 1, schedule_config_sha256, agent_identity_pin_sha256,
+        policy_pin_sha256, procedure_snapshot_sha256, reviewed_snapshot_sha256,
+        occurrence_budget_sha256, repeat('a', 64),
+        ${occurrenceStatus === "enqueued" ? `workflow-run:${occurrenceId}` : null}::text,
+        ${occurrenceStatus === "enqueued" ? `job:${occurrenceId}` : null}::text
+      FROM omni_workflow_triggers
+      WHERE id = ${triggerId}
+    `;
+
+    const earliest = await create(tenantA, 93, "schedule-due-earliest");
+    const later = await create(tenantA, 93, "schedule-due-later");
+    const shadowDue = await create(tenantB, 94, "schedule-due-shadow");
+    const waiting = await create(tenantA, 95, "schedule-due-waiting");
+    const hourLate = await create(tenantA, 96, "schedule-due-hour");
+    const paused = await create(tenantA, 97, "schedule-due-paused");
+    const circuitOpen = await create(tenantA, 98, "schedule-due-open");
+    const early = await create(tenantA, 99, "schedule-due-early");
+    const enqueued = await create(tenantA, 100, "schedule-due-enqueued");
+    const shadowEarly = await create(tenantA, 101, "schedule-due-shadow-early");
+    await due(earliest.id, "-2 hours");
+    await due(later.id, "-10 minutes");
+    await due(shadowDue.id, "1 day", "-2 hours");
+    await occurrence(waiting.id, "schedule-due-waiting-run", "claimed", "-1 hour");
+    await due(hourLate.id, "-1 hour");
+    // Each of these would be listed but for the one condition it breaks.
+    await due(paused.id, "-3 hours");
+    await admin`UPDATE omni_workflow_triggers SET status = 'paused' WHERE id = ${paused.id}`;
+    await due(circuitOpen.id, "-3 hours");
+    await admin`
+      UPDATE omni_workflow_triggers
+      SET circuit_state = 'open', circuit_opened_at = ${base}::timestamptz
+      WHERE id = ${circuitOpen.id}
+    `;
+    await due(early.id, "10 minutes");
+    await occurrence(enqueued.id, "schedule-due-enqueued-run", "enqueued", "-3 hours");
+    await due(shadowEarly.id, "1 day", "10 minutes");
+
+    vi.useFakeTimers({ toFake: ["Date"], shouldAdvanceTime: true });
+    try {
+      // An application clock an hour ahead would find the early schedules due.
+      vi.setSystemTime(Date.now() + 60 * 60_000);
+      const listed = await listDueWorkflowScheduleOwners();
+      // Oldest due work first; equal due times fall back to tenant, then owner.
+      expect(listed.owners).toEqual([
+        { tenantId: tenantA, actorId: actorFor(93) },
+        { tenantId: tenantB, actorId: actorFor(94) },
+        { tenantId: tenantA, actorId: actorFor(95) },
+        { tenantId: tenantA, actorId: actorFor(96) },
+      ]);
+      expect(Date.parse(listed.now)).toBeGreaterThanOrEqual(base.getTime());
+      expect(Date.parse(listed.now)).toBeLessThan(Date.now() - 30 * 60_000);
+      await expect(listDueWorkflowScheduleOwners({ limit: 2 })).resolves
+        .toMatchObject({ owners: listed.owners.slice(0, 2) });
+    } finally {
+      vi.useRealTimers();
+      // Later passes list every tenant's due work, so leave none behind.
+      await admin`
+        UPDATE omni_workflow_triggers
+        SET status = 'paused'
+        WHERE tenant_id IN (${tenantA}, ${tenantB}) AND trigger_kind = 'schedule'
+      `;
+      await admin`
+        UPDATE omni_workflow_schedule_occurrences
+        SET status = 'skipped'
+        WHERE tenant_id = ${tenantA} AND status = 'claimed'
+      `;
+    }
+  });
+
+  test("runs due schedules for every tenant in database time and isolates a failing owner", async () => {
+    const tenantA = "schedule_run_a";
+    const tenantB = "schedule_run_b";
+    const actorA = "actor:00000000-0000-4000-8000-000000000102";
+    const actorB = "actor:00000000-0000-4000-8000-000000000103";
+    const actorA2 = "actor:00000000-0000-4000-8000-000000000104";
+    for (const [tenantId, slug] of [[tenantA, "schedule-run-a"], [tenantB, "schedule-run-b"]]) {
+      await admin`
+        INSERT INTO omni_auth_tenants (id, name, slug)
+        VALUES (${tenantId}, 'Scheduled runs', ${slug})
+      `;
+    }
+    for (const [tenantId, actorId, slug] of [
+      [tenantA, actorA, "schedule-run-a"],
+      [tenantA, actorA2, "schedule-run-a2"],
+      [tenantB, actorB, "schedule-run-b"],
+    ]) {
+      const userId = actorId.slice("actor:".length);
+      await admin`
+        INSERT INTO omni_auth_users (id, email, password_hash)
+        VALUES (${userId}, ${`${slug}@example.test`}, 'test-only')
+      `;
+      await admin`
+        INSERT INTO omni_auth_memberships (id, tenant_id, user_id, role)
+        VALUES (${`membership:${slug}`}, ${tenantId}, ${userId}, 'admin')
+      `;
+    }
+    const create = (
+      tenantId: string,
+      actorId: string,
+      key: string,
+      missedPolicy?: "skip" | "run_once",
+    ) => runWithDatabaseTenantScope(tenantId, () => createWorkflowTrigger(
+      scheduleTriggerInput({ tenantId, actorId, key, missedPolicy }),
+    ));
+    const late = await create(tenantA, actorA, "schedule-run-late");
+    const skipped = await create(tenantA, actorA2, "schedule-run-skipped");
+    const once = await create(tenantA, actorA, "schedule-run-once", "run_once");
+    const early = await create(tenantA, actorA, "schedule-run-early");
+    const valid = await create(tenantB, actorB, "schedule-run-valid");
+    const brokenId = "schedule-run-broken";
+    const [{ base }] = await admin`
+      SELECT date_trunc('second', clock_timestamp()) AS base
+    `;
+    const at = (offsetMs: number) => new Date(base.getTime() + offsetMs).toISOString();
+    const day = 24 * 60 * 60_000;
+    const due = (triggerId: string, next: string, shadow = "1 day") => admin`
+      UPDATE omni_workflow_triggers
+      SET next_due_at = ${base}::timestamptz + ${next}::interval,
+          shadow_next_due_at = ${base}::timestamptz + ${shadow}::interval
+      WHERE id = ${triggerId}
+    `;
+    // Five minutes late is inside the grace; two days late is missed.
+    await due(late.id, "-5 minutes", "-5 minutes");
+    await due(skipped.id, "-2 days");
+    await due(once.id, "-2 days");
+    await due(early.id, "10 minutes");
+    // A copy of the other tenant's schedule whose configuration no longer
+    // matches its digest cannot load, and it is the oldest due work.
+    await admin`
+      INSERT INTO omni_workflow_triggers
+      SELECT (jsonb_populate_record(original, jsonb_build_object(
+        'id', ${brokenId}::text,
+        'schedule_config', jsonb_set(original.schedule_config, '{maxOccurrences}', '41'),
+        'next_due_at', ${base}::timestamptz - interval '3 days',
+        'shadow_next_due_at', NULL
+      ))).*
+      FROM omni_workflow_triggers original
+      WHERE original.id = ${valid.id}
+    `;
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const logged = (spy: typeof warn, event: string) => spy.mock.calls.flatMap(([line]) => {
+      try {
+        const entry = JSON.parse(String(line));
+        return entry.event === event ? [entry] : [];
+      } catch {
+        return [];
+      }
+    });
+    vi.useFakeTimers({ toFake: ["Date"], shouldAdvanceTime: true });
+    try {
+      // An application clock an hour ahead would find the late run missed and
+      // the early one due.
+      vi.setSystemTime(Date.now() + 60 * 60_000);
+      const pass = (deadlineAt?: number) => processDueWorkflowSchedules({
+        systemActorId: "integration-worker",
+        correlationId: "correlation:schedule-run",
+        deadlineAt,
+      });
+      const totals = await pass();
+      expect(totals).toEqual({
+        ownerActors: 3,
+        ownerFailures: 1,
+        shadowEvaluated: 1,
+        occurrencesClaimed: 2,
+        occurrencesEnqueued: 0,
+        occurrencesSkipped: 1,
+        occurrencesMissed: 2,
+        occurrencesFailed: 2,
+        occurrencesReconciled: 0,
+      });
+
+      const occurrences = await admin`
+        SELECT trigger_id, status, outcome, failure_code, scheduled_for, evaluated_through
+        FROM omni_workflow_schedule_occurrences
+        WHERE tenant_id IN (${tenantA}, ${tenantB})
+      `;
+      expect(occurrences).toHaveLength(3);
+      // Neither procedure exists, so each claimed run fails its review.
+      expect(Object.fromEntries(occurrences.map((row) => [row.trigger_id, {
+        status: row.status,
+        outcome: row.outcome,
+        failureCode: row.failure_code,
+        scheduledFor: new Date(row.scheduled_for).toISOString(),
+      }]))).toEqual({
+        [late.id]: {
+          status: "failed",
+          outcome: "due",
+          failureCode: "procedure_changed",
+          scheduledFor: at(-5 * 60_000),
+        },
+        [skipped.id]: {
+          status: "skipped",
+          outcome: "missed_skipped",
+          failureCode: null,
+          scheduledFor: at(-2 * day),
+        },
+        [once.id]: {
+          status: "failed",
+          outcome: "missed_run_once",
+          failureCode: "procedure_changed",
+          scheduledFor: at(-2 * day),
+        },
+      });
+      for (const row of occurrences) {
+        const evaluatedThrough = new Date(row.evaluated_through).getTime();
+        expect(evaluatedThrough).toBeGreaterThanOrEqual(base.getTime());
+        expect(evaluatedThrough).toBeLessThan(Date.now() - 30 * 60_000);
+      }
+      const cursors = await admin`
+        SELECT id, next_due_at
+        FROM omni_workflow_triggers
+        WHERE tenant_id IN (${tenantA}, ${tenantB})
+      `;
+      // The failing owner's claim rolled back, so its cursor did not move.
+      expect(Object.fromEntries(cursors.map((row) => [
+        row.id,
+        new Date(row.next_due_at).toISOString(),
+      ]))).toEqual({
+        [late.id]: scheduleStartsAt,
+        [skipped.id]: scheduleStartsAt,
+        [once.id]: scheduleStartsAt,
+        [early.id]: at(10 * 60_000),
+        [valid.id]: scheduleStartsAt,
+        [brokenId]: at(-3 * day),
+      });
+
+      const missed = logged(warn, "workflow_schedule.occurrence_missed");
+      expect(missed).toHaveLength(2);
+      expect(missed).toEqual(expect.arrayContaining([
+        {
+          level: "warn",
+          event: "workflow_schedule.occurrence_missed",
+          tenantId: tenantA,
+          triggerId: skipped.id,
+          scheduledFor: at(-2 * day),
+          evaluatedThrough: expect.any(String),
+          outcome: "missed_skipped",
+          occurrencesConsumed: 1,
+        },
+        {
+          level: "warn",
+          event: "workflow_schedule.occurrence_missed",
+          tenantId: tenantA,
+          triggerId: once.id,
+          scheduledFor: at(-2 * day),
+          evaluatedThrough: expect.any(String),
+          outcome: "missed_run_once",
+          occurrencesConsumed: 1,
+        },
+      ]));
+      expect(JSON.stringify(missed)).not.toContain("actor:");
+      expect(logged(error, "workflow_schedule.owner_failed")).toEqual([{
+        level: "error",
+        event: "workflow_schedule.owner_failed",
+        tenantId: tenantB,
+        error: "Scheduled workflow configuration digest is invalid.",
+      }]);
+
+      // Tenant maintenance and a single owner's pass read the same database
+      // clock, so neither finds the early run due. A pass that has reached its
+      // deadline starts no owner, even with the broken schedule still due.
+      const zeros = Object.fromEntries(Object.keys(totals).map((key) => [key, 0]));
+      const tenantPass = (tenantId: string, deadlineAt?: number) =>
+        processDueWorkflowSchedulesForTenant({
+          tenantId,
+          systemActorId: "integration-worker",
+          correlationId: "correlation:schedule-run",
+          deadlineAt,
+        });
+      await expect(tenantPass(tenantA)).resolves.toEqual(zeros);
+      await expect(runWithDatabaseTenantScope(tenantA, () => processActorWorkflowSchedules({
+        tenantId: tenantA,
+        actorId: actorA,
+        systemActorId: "integration-worker",
+        correlationId: "correlation:schedule-run",
+      }))).resolves.toEqual({
+        shadowEvaluated: 0,
+        occurrencesClaimed: 0,
+        occurrencesSkipped: 0,
+        occurrencesMissed: 0,
+        occurrencesEnqueued: 0,
+        occurrencesFailed: 0,
+        occurrencesReconciled: 0,
+      });
+      await expect(tenantPass(tenantB, Date.now())).resolves.toEqual(zeros);
+      await expect(pass(Date.now())).resolves.toEqual(zeros);
+    } finally {
+      vi.useRealTimers();
+      warn.mockRestore();
+      error.mockRestore();
+      await admin`
+        UPDATE omni_workflow_triggers
+        SET status = 'paused'
+        WHERE tenant_id IN (${tenantA}, ${tenantB}) AND trigger_kind = 'schedule'
+      `;
+    }
+  });
 });
 
 async function dropDatabaseRole(
@@ -3683,4 +4038,66 @@ function databaseUrlForRole(databaseUrl: string, roleName: string) {
   url.username = roleName;
   url.password = "integration-only";
   return url.toString();
+}
+
+// Far enough ahead that no test run reaches a schedule's first occurrence.
+const scheduleStartsAt = `${new Date().getUTCFullYear() + 2}-01-01T00:00:00.000Z`;
+
+function scheduleTriggerInput(input: {
+  tenantId: string;
+  actorId: string;
+  key: string;
+  missedPolicy?: "skip" | "run_once";
+}) {
+  return {
+    tenantId: input.tenantId,
+    triggerKind: "schedule" as const,
+    name: `Schedule ${input.key}`,
+    source: "saved-procedure",
+    workflowMode: "orchestrate" as const,
+    executionScope: createExecutionScope({
+      tenantId: input.tenantId,
+      initiatingActorId: input.actorId,
+      executingPrincipalType: "user",
+      executingPrincipalId: input.actorId,
+      correlationId: `correlation:${input.key}`,
+      purpose: "workflow.schedule.create",
+    }),
+    idempotencyKey: input.key,
+    schedule: {
+      timezone: "UTC",
+      rrule: "FREQ=DAILY;INTERVAL=1;BYHOUR=0;BYMINUTE=0",
+      startsAt: scheduleStartsAt,
+      maxOccurrences: 40,
+      missedPolicy: input.missedPolicy || "skip",
+      procedurePin: {
+        schemaVersion: 1 as const,
+        procedureId: "procedure:integration-review",
+        snapshotSha256: "1".repeat(64),
+        reviewedSnapshotSha256: "2".repeat(64),
+        reviewedAt: "2026-09-01T00:00:00.000Z",
+      },
+      agentIdentityPin: buildAgentRunIdentityPinV1({
+        runId: `schedule-review-${input.key}`,
+        identity: buildBuiltInAgentIdentityV1({
+          agentId: "atlas",
+          tenantId: input.tenantId,
+          controllerActorId: input.actorId,
+        }),
+      }),
+      occurrenceBudget: {
+        modelTurns: 4,
+        tokens: 24_000,
+        costMicrousd: 600_000,
+        wallTimeMs: 180_000,
+        toolCalls: 20,
+        browserActions: 0,
+        agents: 0,
+        fanOut: 0,
+        retries: 1,
+        replans: 1,
+      },
+      failureLimit: 3,
+    },
+  };
 }

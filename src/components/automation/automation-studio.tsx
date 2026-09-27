@@ -698,7 +698,7 @@ export function ScheduleOutcomeHistory({
                 <span className={styles.badge} data-tone={statusTone(status)}>{plainStatus(status)}</span>
                 <time>{scheduleDate(textAt(occurrence, ["scheduledFor"], ""), timezone)}</time>
               </div>
-              {failure ? <p><strong>Why it stopped:</strong> {plainFailure(failure)}</p> : <p>{occurrenceOutcomeCopy(status)}</p>}
+              {failure ? <p><strong>Why it stopped:</strong> {plainFailure(failure)}</p> : <p>{occurrenceOutcomeCopy(status, textAt(occurrence, ["outcome"], ""), numberAt(occurrence, "occurrencesConsumed"))}</p>}
               <dl>
                 <div><dt>Authority binding</dt><dd>{textAt(occurrence, ["authoritySha256"], "Unavailable")}</dd></div>
                 {receipt ? <div><dt>State receipt</dt><dd>{textAt(receipt, ["stateSha256"], "Unavailable")}</dd></div> : null}
@@ -1778,7 +1778,23 @@ function plainFailure(code: string) {
   } as Record<string, string>)[code] || code.replaceAll("_", " ");
 }
 
-function occurrenceOutcomeCopy(status: string) {
+function occurrenceOutcomeCopy(status: string, outcome: string, occurrencesConsumed: number) {
+  // A missed run follows the schedule's missed-run setting. Say so, or a skip
+  // reads like duplicate work the scheduler held back.
+  if (outcome === "missed_skipped") {
+    return occurrencesConsumed > 1
+      ? `${occurrencesConsumed} runs came due while Asael was offline or the schedule was paused, so they were skipped, as the schedule's missed-run setting asks.`
+      : "This run came due while Asael was offline or the schedule was paused, so it was skipped, as the schedule's missed-run setting asks.";
+  }
+  if (outcome === "exhausted") return "This schedule had already reached its last run, so nothing started.";
+  const copy = occurrenceStatusCopy(status);
+  if (outcome !== "missed_run_once") return copy;
+  return occurrencesConsumed > 1
+    ? `${copy} It stands in for the ${occurrencesConsumed} runs that came due while Asael was offline or the schedule was paused.`
+    : `${copy} This run was late: it came due while Asael was offline or the schedule was paused.`;
+}
+
+function occurrenceStatusCopy(status: string) {
   if (status === "completed") return "The scheduled workflow completed under its reviewed bindings.";
   if (status === "enqueued") return "The reviewed occurrence entered the workflow queue.";
   if (status === "claimed") return "The scheduler claimed this occurrence and is checking its pins.";

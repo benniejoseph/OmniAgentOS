@@ -50,6 +50,16 @@ For internal calls, the secret and identity headers must be sent together. Never
 - Compare the interval with queue lease duration; too many replicas or a short interval can increase contention.
 - On Fly, inspect machine health and restart count. The container health probe uses only the public health endpoint and never sends the internal secret.
 
+## A scheduled workflow did not run, or ran late
+
+- Start with the schedule's history in Automation Studio. `…so it was skipped, as the schedule's missed-run setting asks.` means the occurrence came due more than 15 minutes before the scheduler reached it, usually because the worker was down, a release held it, or the schedule was paused. With the default `skip` setting, a missed occurrence is recorded and never runs. With `run_once`, only the latest missed occurrence runs, in place of the rest. Resuming a paused schedule applies the same setting to the occurrences it missed while paused.
+- The log line `workflow_schedule.occurrence_missed` records each of those decisions with the tenant, trigger, `scheduledFor`, `outcome` (`missed_skipped` or `missed_run_once`), and `occurrencesConsumed`. Warnings outside a known outage, release hold, or pause mean fast passes stopped reaching the schedule; check the worker section above.
+- Tick audit metadata counts each pass's schedule work: `scheduleOccurrencesClaimed`, `scheduleOccurrencesEnqueued`, `scheduleOccurrencesSkipped`, `scheduleOccurrencesMissed`, `scheduleOccurrencesFailed`, `scheduleOccurrencesReconciled`, `scheduleShadowOccurrencesEvaluated`, `scheduleOwnerFailures`, and `schedulePassFailures`. A pass whose only schedule result was a failure is idle and writes no audit row, so look for that failure in the logs.
+- `workflow_schedule.owner_failed` with a `tenantId`: one owner's schedules threw. The other owners still ran, and this owner is retried on every pass until the cause is fixed.
+- `workflow_schedules_failed`: the fast pass could not list due schedules, usually because the database was unavailable. Queued work was still dispatched, and each tenant's maintenance pass still runs its schedules.
+- An occurrence that failed with `procedure_changed`, `agent_identity_changed`, `agent_policy_changed`, `occurrence_budget_changed`, or `mutation_policy_changed`: something the schedule pinned at review has changed, so the occurrence failed closed instead of running under different authority.
+- A schedule paused with `Scheduled read-only canary circuit opened after repeated failures.`: its failure limit of consecutive failed occurrences was reached. Fix the cause, then resume it, which closes the circuit.
+
 ## A canceled run keeps going, or its approval returns 409
 
 - The process executing a run notices a cancel on its next status check, about every two seconds. A model turn or tool call already under way receives the abort signal. A tool that ignores the signal finishes, but no further turn or tool call starts.
