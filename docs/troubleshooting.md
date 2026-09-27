@@ -109,6 +109,11 @@ For internal calls, the secret and identity headers must be sent together. Never
 - `Claude ended the response with stop reason <reason>.`: the reply ended with a stop reason other than `end_turn`, `tool_use`, `max_tokens`, `model_context_window_exceeded` or `refusal`, and it is not used. Anthropic sends `pause_turn` only for its server tools and `stop_sequence` only for stop sequences; these requests send neither.
 - `Gemini ended the interaction with status <status>.`: the interaction ended in a status other than `completed`, `requires_action`, `failed`, `incomplete` or `budget_exceeded`.
 
+## Gemini output tokens look higher, or a Gemini key fails as an authentication error
+
+- Gemini reports thinking tokens in `total_thought_tokens`, apart from `total_output_tokens`, and bills them as output. Usage adds them to the output tokens, so usage receipts and the cost estimated from `GEMINI_MODEL_PRICING_JSON` include thinking. Receipts recorded before this change left it out.
+- Google answers a rejected API key with 400 `INVALID_ARGUMENT` and the reason `API_KEY_INVALID`. That failure is recorded as `authentication`, not `invalid_request`. Neither is retried.
+
 ## A workflow plan step starts over, or its plan was built without the model
 
 - A plan step with `step.reset` (reason `interrupted`), `step.interrupted`, and the run error `Workflow execution was interrupted and safely requeued.`: the queue pass ran out of time, or its worker lost the run's lease, while the model was planning. No plan was saved, and the step plans again on a later pass. Each attempt uses a model call from the run's budget, so a run interrupted this way again and again ends with `workflow.budget_exhausted`.

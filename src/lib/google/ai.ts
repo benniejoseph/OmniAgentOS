@@ -35,7 +35,7 @@ type InteractionResponse = {
   model?: string;
   status?: string;
   steps?: InteractionStep[];
-  usage?: { total_input_tokens?: number; total_output_tokens?: number; total_cached_tokens?: number; total_tokens?: number };
+  usage?: { total_input_tokens?: number; total_output_tokens?: number; total_thought_tokens?: number; total_cached_tokens?: number; total_tokens?: number };
   error?: { message?: string };
 };
 
@@ -785,11 +785,22 @@ async function readJsonResponse(response: Response) {
       String(
         nested?.message || body.message || `Google API returned ${response.status}.`,
       ).slice(0, 1_000),
-    ) as Error & { status: number };
+    ) as Error & { status: number; reason?: string };
     error.status = response.status;
+    const reason = googleErrorReason(nested?.details);
+    if (reason) error.reason = reason;
     throw error;
   }
   return body;
+}
+
+/** The ErrorInfo reason in a Google API error, such as API_KEY_INVALID. */
+function googleErrorReason(details: unknown) {
+  if (!Array.isArray(details)) return undefined;
+  const reason = details.find((detail) =>
+    typeof (detail as { reason?: unknown } | null)?.reason === "string"
+  )?.reason;
+  return reason ? String(reason).slice(0, 80) : undefined;
 }
 
 function classifyGeminiImageFailure(
@@ -976,7 +987,10 @@ function speechEncoding(mimeType: string) {
 
 function normalizeGeminiUsage(raw?: InteractionResponse["usage"]): ModelUsage {
   const inputTokens = finiteToken(raw?.total_input_tokens);
-  const outputTokens = finiteToken(raw?.total_output_tokens);
+  // Thinking tokens are billed as output tokens, but the Interactions API
+  // reports them apart from total_output_tokens.
+  const outputTokens = finiteToken(raw?.total_output_tokens) +
+    finiteToken(raw?.total_thought_tokens);
   return { inputTokens, outputTokens, cachedInputTokens: finiteToken(raw?.total_cached_tokens), totalTokens: finiteToken(raw?.total_tokens) || inputTokens + outputTokens };
 }
 

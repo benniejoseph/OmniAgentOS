@@ -37,6 +37,134 @@ describe("Google AI provider", () => {
     });
   });
 
+  it("counts thinking tokens as output tokens and prices them", async () => {
+    process.env.GEMINI_API_KEY = "test-key";
+    process.env.GEMINI_MODEL_PRICING_JSON = JSON.stringify({
+      "gemini-test": { input: 0.3, output: 2.5 },
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      id: "interaction-thinking",
+      model: "gemini-test",
+      status: "completed",
+      steps: [{ type: "model_output", content: [{ type: "text", text: "Answer" }] }],
+      usage: {
+        total_input_tokens: 7,
+        total_output_tokens: 20,
+        total_thought_tokens: 22,
+        total_tokens: 49,
+      },
+    }), { status: 200, headers: { "content-type": "application/json" } })));
+
+    await expect(generateGeminiText({
+      prompt: "Think first",
+      model: "gemini-test",
+    })).resolves.toMatchObject({
+      usage: { inputTokens: 7, outputTokens: 42, cachedInputTokens: 0, totalTokens: 49 },
+      estimatedCostUsd: 0.000107,
+    });
+  });
+
+  it("bills the thinking in a tool turn cut off at the token limit", async () => {
+    process.env.GEMINI_API_KEY = "test-key";
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      id: "interaction-incomplete",
+      model: "gemini-test",
+      status: "incomplete",
+      steps: [],
+      usage: {
+        total_input_tokens: 5,
+        total_output_tokens: 0,
+        total_thought_tokens: 18_000,
+        total_tokens: 18_005,
+      },
+    }), { status: 200, headers: { "content-type": "application/json" } })));
+
+    const error = await generateGeminiToolTurn({
+      prompt: "Plan the trip",
+      model: "gemini-test",
+      tools: [{
+        type: "function",
+        name: "flight_search",
+        description: "Search flights",
+        parameters: { type: "object" },
+      }],
+    }).catch((caught: unknown) => caught);
+
+    expect(getModelProviderResponseReceipt(error)?.usage).toEqual({
+      inputTokens: 5,
+      outputTokens: 18_000,
+      cachedInputTokens: 0,
+      totalTokens: 18_005,
+    });
+  });
+
+  const invalidKeyInfo = {
+    "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+    reason: "API_KEY_INVALID",
+    domain: "googleapis.com",
+    metadata: { service: "generativelanguage.googleapis.com" },
+  };
+  const localizedMessage = {
+    "@type": "type.googleapis.com/google.rpc.LocalizedMessage",
+    locale: "en-US",
+    message: "API key not valid. Please pass a valid API key.",
+  };
+
+  async function rejectedGeminiError(error: Record<string, unknown>) {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error,
+    }), { status: 400, headers: { "content-type": "application/json" } })));
+    return generateGeminiText({
+      prompt: "Hello",
+      model: "gemini-test",
+      apiKey: "rejected-key",
+    }).catch((caught: unknown) => caught);
+  }
+
+  it.each([
+    ["before", [invalidKeyInfo, localizedMessage]],
+    ["after", [localizedMessage, invalidKeyInfo]],
+  ])("reports a rejected API key as an authentication failure with the reason %s other details", async (_order, details) => {
+    const error = await rejectedGeminiError({
+      code: 400,
+      message: "API key not valid. Please pass a valid API key.",
+      status: "INVALID_ARGUMENT",
+      details,
+    });
+
+    expect(googleModelAdapter.classifyError(error)).toMatchObject({
+      name: "ModelProviderError",
+      message: "API key not valid. Please pass a valid API key.",
+      provider: "google",
+      kind: "authentication",
+      retryable: false,
+      status: 400,
+    });
+  });
+
+  it.each([
+    ["no details", undefined],
+    ["details without a reason", [{
+      "@type": "type.googleapis.com/google.rpc.BadRequest",
+      fieldViolations: [{ field: "model", description: "Unknown model." }],
+    }]],
+    ["another reason", [{ ...invalidKeyInfo, reason: "FIELD_INVALID" }]],
+  ])("reports another invalid argument with %s as an invalid request", async (_label, details) => {
+    const error = await rejectedGeminiError({
+      code: 400,
+      message: "Request contains an invalid argument.",
+      status: "INVALID_ARGUMENT",
+      ...(details ? { details } : {}),
+    });
+
+    expect(googleModelAdapter.classifyError(error)).toMatchObject({
+      message: "Request contains an invalid argument.",
+      kind: "invalid_request",
+      retryable: false,
+      status: 400,
+    });
+  });
+
   it("sends source images for non-destructive image editing", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       id: "image-edit-1",

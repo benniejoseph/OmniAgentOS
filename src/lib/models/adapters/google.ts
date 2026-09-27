@@ -2,6 +2,10 @@ import { GEMINI_FAST_MODEL, hasGeminiKey } from "@/lib/config";
 import { generateGeminiText, generateGeminiToolTurn } from "@/lib/google/ai";
 import { classifyProviderError } from "@/lib/models/adapters/openai";
 import type { ModelProviderAdapter } from "@/lib/models/types";
+import {
+  ModelProviderError,
+  preserveModelProviderResponseReceipt,
+} from "@/lib/models/types";
 import { getModelRuntimeApiKey } from "@/lib/models/runtime-context";
 
 export const googleModelAdapter: ModelProviderAdapter = {
@@ -65,6 +69,25 @@ export const googleModelAdapter: ModelProviderAdapter = {
     };
   },
   classifyError(error) {
+    // Google rejects an invalid API key with 400 INVALID_ARGUMENT, not 401,
+    // and names the cause in the error's reason.
+    const failure = error as {
+      reason?: unknown;
+      message?: unknown;
+      status?: unknown;
+    } | undefined;
+    if (failure?.reason === "API_KEY_INVALID") {
+      return preserveModelProviderResponseReceipt(
+        error,
+        new ModelProviderError(
+          String(failure.message || "The Gemini API key is not valid.").slice(0, 1_000),
+          "google",
+          "authentication",
+          false,
+          Number(failure.status) || undefined,
+        ),
+      );
+    }
     return classifyProviderError("google", error);
   },
 };
