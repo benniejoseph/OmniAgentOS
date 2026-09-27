@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { anthropicModelAdapter } from "@/lib/models/adapters/anthropic";
-import type { ModelTarget, ModelToolTurnRequest } from "@/lib/models/types";
+import type {
+  ModelStructuredRequest,
+  ModelTarget,
+  ModelToolTurnRequest,
+} from "@/lib/models/types";
+import { getModelProviderResponseReceipt } from "@/lib/models/types";
 
 const target: ModelTarget = {
   provider: "anthropic",
@@ -270,3 +275,318 @@ describe("Anthropic model adapter tool turns", () => {
     expect(JSON.stringify(result.continuation.state)).not.toContain("Ready");
   });
 });
+
+describe("Anthropic model adapter structured output", () => {
+  const schema = {
+    type: "object",
+    properties: { title: { type: "string", minLength: 1, maxLength: 80 } },
+    required: ["title"],
+    additionalProperties: false,
+  };
+  const request: ModelStructuredRequest = {
+    name: "trip_plan",
+    schema,
+    instructions: "Plan the trip.",
+    input: "Lisbon in May.",
+  };
+  const resultTool = {
+    name: "trip_plan",
+    description: "Return the requested result using this schema.",
+    input_schema: schema,
+  };
+  const askedInstructions =
+    "Plan the trip.\n\nReturn the result by calling the trip_plan tool once.";
+
+  afterEach(() => {
+    delete process.env.ANTHROPIC_API_KEY;
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it.each([
+    "claude-haiku-4-5",
+    "claude-haiku-4-5-20251001",
+    "claude-sonnet-4-5-20250929",
+    "claude-opus-4-1",
+    "claude-3-7-sonnet-20250219",
+    "claude-sonnet-5",
+    "claude-sonnet-5-20260115",
+    "claude-opus-5",
+    " Claude-Sonnet-5 ",
+  ])("forces the result tool on %s", async (model) => {
+    const fetchMock = stubAnswers(toolAnswer());
+
+    const result = await anthropicModelAdapter.generateStructured!(
+      request,
+      structuredTarget(model),
+    );
+
+    expect(result.text).toBe("{\"title\":\"Lisbon\"}");
+    const [body] = sentBodies(fetchMock);
+    expect(body.tool_choice).toEqual({ type: "tool", name: "trip_plan" });
+    expect(body.tools).toEqual([resultTool]);
+    expect(body.system).toBe("Plan the trip.");
+  });
+
+  it.each([
+    "claude-opus-5-5",
+    "claude-fable-5-1",
+    "claude-mythos-5-1",
+    "claude-opus-5-5-20260301",
+    "claude-sonnet-5-5",
+    "claude-sonnet-4-5-1",
+    "claude-opus-6",
+  ])("asks %s for the result tool without forcing it", async (model) => {
+    const fetchMock = stubAnswers(toolAnswer());
+
+    const result = await anthropicModelAdapter.generateStructured!(
+      request,
+      structuredTarget(model),
+    );
+
+    expect(result.text).toBe("{\"title\":\"Lisbon\"}");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [body] = sentBodies(fetchMock);
+    expect(body.tool_choice).toEqual({
+      type: "auto",
+      disable_parallel_tool_use: true,
+    });
+    expect(body.tools).toEqual([resultTool]);
+    expect(body.system).toBe(askedInstructions);
+    expect(body.messages).toEqual([{ role: "user", content: "Lisbon in May." }]);
+  });
+
+  it("gives a model that answered in text one repair turn and bills both calls", async () => {
+    const thinking = { type: "thinking", thinking: "", signature: "sig-1" };
+    const reply = { type: "text", text: "Lisbon suits a spring trip." };
+    const fetchMock = stubAnswers(
+      answer([thinking, reply], "end_turn", {
+        input_tokens: 10,
+        output_tokens: 4,
+        cache_creation_input_tokens: 5,
+        cache_read_input_tokens: 6,
+      }),
+      toolAnswer({ input_tokens: 30, output_tokens: 8 }),
+    );
+    vi.spyOn(Date, "now")
+      .mockReturnValueOnce(1_000)
+      .mockReturnValueOnce(1_200)
+      .mockReturnValueOnce(2_000)
+      .mockReturnValueOnce(2_500);
+
+    const result = await anthropicModelAdapter.generateStructured!(
+      request,
+      structuredTarget("claude-opus-5-5"),
+    );
+
+    expect(result.text).toBe("{\"title\":\"Lisbon\"}");
+    expect(result.usage).toEqual({
+      inputTokens: 51,
+      outputTokens: 12,
+      cachedInputTokens: 6,
+      totalTokens: 63,
+    });
+    expect(result.latencyMs).toBe(700);
+    expect(result.providerRequestId).toBe("msg_tool_use");
+    const [, repair] = sentBodies(fetchMock);
+    expect(repair.tool_choice).toEqual({
+      type: "auto",
+      disable_parallel_tool_use: true,
+    });
+    expect(repair.tools).toEqual([resultTool]);
+    expect(repair.system).toBe(askedInstructions);
+    expect(repair.messages).toEqual([
+      { role: "user", content: "Lisbon in May." },
+      { role: "assistant", content: [thinking, reply] },
+      {
+        role: "user",
+        content: "Call the trip_plan tool now with the complete result.",
+      },
+    ]);
+  });
+
+  it("fails after one repair turn and reports the usage of both calls", async () => {
+    const fetchMock = stubAnswers(textAnswer(), textAnswer());
+
+    const error = await anthropicModelAdapter.generateStructured!(
+      request,
+      structuredTarget("claude-fable-5-1"),
+    ).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({
+      message: "Claude returned no structured tool result.",
+      provider: "anthropic",
+      kind: "invalid_request",
+      retryable: false,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(getModelProviderResponseReceipt(error)?.usage).toEqual({
+      inputTokens: 20,
+      outputTokens: 8,
+      cachedInputTokens: 0,
+      totalTokens: 28,
+    });
+  });
+
+  it("reports the usage of both calls when the repair turn is refused", async () => {
+    stubAnswers(textAnswer(), answer([], "refusal"));
+
+    const error = await anthropicModelAdapter.generateStructured!(
+      request,
+      structuredTarget("claude-opus-5-5"),
+    ).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({ message: "Claude refused the request.", kind: "safety" });
+    expect(getModelProviderResponseReceipt(error)?.usage).toEqual({
+      inputTokens: 20,
+      outputTokens: 8,
+      cachedInputTokens: 0,
+      totalTokens: 28,
+    });
+  });
+
+  it("keeps the first call's usage when the repair request fails", async () => {
+    stubAnswers(
+      textAnswer(),
+      new Response(JSON.stringify({ error: { message: "Overloaded." } }), {
+        status: 529,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    const error = await anthropicModelAdapter.generateStructured!(
+      request,
+      structuredTarget("claude-opus-5-5"),
+    ).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({ message: "Overloaded.", status: 529 });
+    expect(getModelProviderResponseReceipt(error)).toMatchObject({
+      usage: { inputTokens: 10, outputTokens: 4, totalTokens: 14 },
+      providerRequestId: "msg_end_turn",
+    });
+  });
+
+  it("keeps the first call's usage when the repair request cannot be sent", async () => {
+    const fetchMock = stubAnswers(textAnswer());
+    fetchMock.mockRejectedValueOnce(new TypeError("fetch failed"));
+
+    const error = await anthropicModelAdapter.generateStructured!(
+      request,
+      structuredTarget("claude-opus-5-5"),
+    ).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({ message: "fetch failed" });
+    expect(getModelProviderResponseReceipt(error)?.usage).toEqual({
+      inputTokens: 10,
+      outputTokens: 4,
+      cachedInputTokens: 0,
+      totalTokens: 14,
+    });
+  });
+
+  it.each([
+    ["an answer cut off by the token limit", "max_tokens", [{ type: "text", text: "{\"title\":" }]],
+    [
+      "a turn that ended without text",
+      "end_turn",
+      [{ type: "thinking", thinking: "", signature: "sig-1" }],
+    ],
+  ])("does not repair %s", async (_label, stopReason, content) => {
+    const fetchMock = stubAnswers(answer(content, stopReason));
+
+    await expect(anthropicModelAdapter.generateStructured!(
+      request,
+      structuredTarget("claude-opus-5-5"),
+    )).rejects.toMatchObject({ message: "Claude returned no structured tool result." });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("cuts a long result name to the 64 characters Anthropic accepts", async () => {
+    const name = "x".repeat(70);
+    const fetchMock = stubAnswers(answer([{
+      type: "tool_use",
+      id: "toolu_1",
+      name: name.slice(0, 64),
+      input: { title: "Lisbon" },
+    }], "tool_use"));
+
+    const result = await anthropicModelAdapter.generateStructured!(
+      { ...request, name },
+      structuredTarget("claude-sonnet-5"),
+    );
+
+    expect(result.text).toBe("{\"title\":\"Lisbon\"}");
+    const [body] = sentBodies(fetchMock);
+    expect(body.tools[0].name).toBe(name.slice(0, 64));
+    expect(body.tool_choice).toEqual({ type: "tool", name: name.slice(0, 64) });
+  });
+
+  it.each([
+    ["a call to another tool", { name: "web_search", input: { title: "Lisbon" } }],
+    ["a call whose input is not an object", { name: "trip_plan", input: "Lisbon" }],
+  ])("does not take %s as the result", async (_label, call) => {
+    stubAnswers(answer([{ type: "tool_use", id: "toolu_1", ...call }], "tool_use"));
+
+    await expect(anthropicModelAdapter.generateStructured!(
+      request,
+      structuredTarget("claude-sonnet-5"),
+    )).rejects.toMatchObject({ message: "Claude returned no structured tool result." });
+  });
+
+  it("does not repair a model that was forced to call the tool", async () => {
+    const fetchMock = stubAnswers(textAnswer());
+
+    await expect(anthropicModelAdapter.generateStructured!(
+      request,
+      structuredTarget("claude-sonnet-5"),
+    )).rejects.toMatchObject({ message: "Claude returned no structured tool result." });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+function structuredTarget(model: string): ModelTarget {
+  return {
+    provider: "anthropic",
+    model,
+    tier: "reasoning",
+    features: ["text", "json_schema"],
+  };
+}
+
+function answer(
+  content: unknown[],
+  stopReason: string,
+  usage: Record<string, number> = { input_tokens: 10, output_tokens: 4 },
+) {
+  return new Response(JSON.stringify({
+    id: `msg_${stopReason}`,
+    content,
+    stop_reason: stopReason,
+    usage,
+  }), { status: 200, headers: { "content-type": "application/json" } });
+}
+
+function toolAnswer(usage?: Record<string, number>) {
+  return answer([{
+    type: "tool_use",
+    id: "toolu_1",
+    name: "trip_plan",
+    input: { title: "Lisbon" },
+  }], "tool_use", usage);
+}
+
+function textAnswer() {
+  return answer([{ type: "text", text: "Lisbon suits a spring trip." }], "end_turn");
+}
+
+function stubAnswers(...responses: Response[]) {
+  process.env.ANTHROPIC_API_KEY = "test-key";
+  const fetchMock = vi.fn();
+  for (const response of responses) fetchMock.mockResolvedValueOnce(response);
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+function sentBodies(fetchMock: ReturnType<typeof vi.fn>) {
+  return fetchMock.mock.calls.map((call) => JSON.parse(String(call[1]?.body)));
+}

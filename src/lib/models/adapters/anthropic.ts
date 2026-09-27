@@ -4,6 +4,7 @@ import {
   hasAnthropicKey,
 } from "@/lib/config";
 import { classifyProviderError } from "@/lib/models/adapters/openai";
+import { anthropicModelCapabilities } from "@/lib/models/anthropic-capabilities";
 import { estimateProviderCost } from "@/lib/models/pricing";
 import type {
   ModelProviderAdapter,
@@ -76,25 +77,45 @@ export const anthropicModelAdapter: ModelProviderAdapter = {
     return modelResult(result.body, target, result.latencyMs, text);
   },
   async generateStructured(request, target) {
-    const result = await callAnthropic(request, target, {
-      tools: [{
-        name: request.name.slice(0, 64),
-        description: "Return the requested result using this schema.",
-        input_schema: request.schema,
-      }],
-      tool_choice: { type: "tool", name: request.name.slice(0, 64) },
-    });
-    const toolUse = anthropicContent(result.body).find((item) =>
-      item.type === "tool_use" && item.name === request.name.slice(0, 64)
-    );
-    if (!toolUse || !toolUse.input || typeof toolUse.input !== "object") {
-      throw anthropicResponseFailure(
-        new ModelProviderError("Claude returned no structured tool result.", "anthropic", "invalid_request", false),
-        result,
-        target,
-      );
+    const name = request.name.slice(0, 64);
+    const tools = [{
+      name,
+      description: "Return the requested result using this schema.",
+      input_schema: request.schema,
+    }];
+    if (anthropicModelCapabilities(target.model).forcedToolChoice) {
+      const result = await callAnthropic(request, target, {
+        tools,
+        tool_choice: { type: "tool", name },
+      });
+      return structuredToolResult(result, target, name);
     }
-    return modelResult(result.body, target, result.latencyMs, JSON.stringify(toolUse.input));
+    // This model rejects a forced tool call, so the instructions ask for the
+    // call and an answer given in text instead gets one repair turn.
+    const asked = {
+      ...request,
+      instructions: `${request.instructions}\n\nReturn the result by calling the ${name} tool once.`,
+    };
+    const choice = {
+      tools,
+      tool_choice: { type: "auto", disable_parallel_tool_use: true },
+    };
+    const first = await callAnthropic(asked, target, choice);
+    const answeredInText = first.body.stop_reason === "end_turn" &&
+      anthropicContent(first.body).some((item) => item.type === "text");
+    if (!answeredInText) return structuredToolResult(first, target, name);
+    const repaired = await callAnthropic(asked, target, {
+      ...choice,
+      messages: [
+        { role: "user", content: request.input },
+        { role: "assistant", content: anthropicContent(first.body) },
+        {
+          role: "user",
+          content: `Call the ${name} tool now with the complete result.`,
+        },
+      ],
+    }, first);
+    return structuredToolResult(repaired, target, name);
   },
   async generateToolTurn(request, target) {
     const conversation = modelConversationForToolTurn({
@@ -167,37 +188,53 @@ export const anthropicModelAdapter: ModelProviderAdapter = {
   },
 };
 
+type AnthropicCall = {
+  body: AnthropicResponse;
+  latencyMs: number;
+};
+
+/**
+ * Send one Messages request. A call that follows `earlier` in the same
+ * generation returns, and fails with, the usage and latency of both calls.
+ */
 async function callAnthropic(
   request: ModelTextRequest | ModelStructuredRequest,
   target: ModelTarget,
   extra: Record<string, unknown> = {},
-) {
+  earlier?: AnthropicCall,
+): Promise<AnthropicCall> {
   const apiKey = getModelRuntimeApiKey(request, "anthropic") || process.env.ANTHROPIC_API_KEY?.trim();
   if (!apiKey) throw new ModelProviderError("Anthropic is not configured.", "anthropic", "authentication", false);
   const startedAt = Date.now();
-  const response = await fetch(MESSAGES_URL, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: target.model,
-      max_tokens: Math.min(Math.max(request.maxOutputTokens || 2_000, 64), 16_000),
-      ...(request.instructions ? { system: request.instructions } : {}),
-      messages: [{ role: "user", content: request.input }],
-      ...extra,
-    }),
-    signal: request.abortSignal,
-  });
+  let response: Response;
+  try {
+    response = await fetch(MESSAGES_URL, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: target.model,
+        max_tokens: Math.min(Math.max(request.maxOutputTokens || 2_000, 64), 16_000),
+        ...(request.instructions ? { system: request.instructions } : {}),
+        messages: [{ role: "user", content: request.input }],
+        ...extra,
+      }),
+      signal: request.abortSignal,
+    });
+  } catch (error) {
+    throw earlier ? anthropicResponseFailure(error, earlier, target) : error;
+  }
   const body = await response.json().catch(() => ({})) as AnthropicResponse;
   if (!response.ok) {
     const error = new Error(body.error?.message || `Anthropic returned ${response.status}.`) as Error & { status: number };
     error.status = response.status;
-    throw error;
+    throw earlier ? anthropicResponseFailure(error, earlier, target) : error;
   }
-  const result = { body, latencyMs: Date.now() - startedAt };
+  const latest = { body, latencyMs: Date.now() - startedAt };
+  const result = earlier ? combinedCalls(earlier, latest) : latest;
   if (body.stop_reason === "refusal") {
     throw anthropicResponseFailure(
       new ModelProviderError("Claude refused the request.", "anthropic", "safety", false),
@@ -336,9 +373,55 @@ function anthropicContent(body: AnthropicResponse) {
   return Array.isArray(body.content) ? body.content : [];
 }
 
+function structuredToolInput(body: AnthropicResponse, name: string) {
+  const toolUse = anthropicContent(body).find((item) =>
+    item.type === "tool_use" && item.name === name
+  );
+  return toolUse?.input && typeof toolUse.input === "object"
+    ? toolUse.input
+    : undefined;
+}
+
+function structuredToolResult(
+  result: AnthropicCall,
+  target: ModelTarget,
+  name: string,
+) {
+  const input = structuredToolInput(result.body, name);
+  if (!input) {
+    throw anthropicResponseFailure(
+      new ModelProviderError("Claude returned no structured tool result.", "anthropic", "invalid_request", false),
+      result,
+      target,
+    );
+  }
+  return modelResult(result.body, target, result.latencyMs, JSON.stringify(input));
+}
+
+/** The later call's response, with the usage and latency of both calls. */
+function combinedCalls(
+  earlier: AnthropicCall,
+  later: AnthropicCall,
+): AnthropicCall {
+  const total = (key: keyof NonNullable<AnthropicResponse["usage"]>) =>
+    finite(earlier.body.usage?.[key]) + finite(later.body.usage?.[key]);
+  return {
+    body: {
+      ...later.body,
+      usage: {
+        input_tokens: total("input_tokens"),
+        output_tokens: total("output_tokens"),
+        cache_creation_input_tokens: total("cache_creation_input_tokens"),
+        cache_read_input_tokens: total("cache_read_input_tokens"),
+      },
+    },
+    latencyMs: earlier.latencyMs + later.latencyMs,
+  };
+}
+
 function anthropicResponseFailure(
-  error: Error,
-  result: { body: AnthropicResponse; latencyMs: number },
+  error: unknown,
+  result: AnthropicCall,
   target: ModelTarget,
 ) {
   const usage = anthropicUsage(result.body.usage);
