@@ -609,6 +609,32 @@ export async function getWorkflowRunStatus(
     : null;
 }
 
+/** Reads one run without its steps and events. */
+export async function getWorkflowRun(
+  runId: string,
+  options: { tenantId?: string } = {},
+): Promise<WorkflowRunRecord | null> {
+  const tenantId = normalizeTenantId(options.tenantId);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT *
+      FROM omni_workflow_runs
+      WHERE id = ${runId}
+        AND tenant_id = ${tenantId}
+      LIMIT 1
+    `;
+    return rows[0] ? workflowRunFromRow(rows[0]) : null;
+  }
+
+  const ledger = await readWorkflowLedger();
+  return ledger.runs.find(
+    (run) =>
+      run.id === runId &&
+      normalizeTenantId(run.tenantId) === tenantId,
+  ) || null;
+}
+
 export async function getWorkflowRunDetail(runId: string, options: { tenantId?: string } = {}): Promise<WorkflowRunDetail | null> {
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
@@ -1896,6 +1922,63 @@ export async function appendWorkflowEvent(
     );
   }
   return record as WorkflowEventRecord;
+}
+
+/**
+ * Records the specialist tasks a queued run still waits on when that set
+ * differs from the last one recorded. Returns undefined when it did not,
+ * including for a run outside the tenant.
+ */
+export async function recordWorkflowSpecialistsPending(
+  runId: string,
+  taskIds: readonly string[],
+  options: { tenantId?: string } = {},
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const type = "workflow.specialists.pending";
+  let runFound: boolean;
+  let recorded: unknown;
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT (
+        SELECT events.payload -> 'taskIds'
+        FROM omni_workflow_events events
+        WHERE events.tenant_id = runs.tenant_id
+          AND events.workflow_run_id = runs.id
+          AND events.type = ${type}
+        ORDER BY events.created_at DESC
+        LIMIT 1
+      ) AS task_ids
+      FROM omni_workflow_runs runs
+      WHERE runs.id = ${runId}
+        AND runs.tenant_id = ${tenantId}
+    `;
+    runFound = rows.length > 0;
+    recorded = rows[0]?.task_ids;
+  } else {
+    const ledger = await readWorkflowLedger();
+    runFound = ledger.runs.some(
+      (run) =>
+        run.id === runId &&
+        normalizeTenantId(run.tenantId) === tenantId,
+    );
+    recorded = ledger.events.findLast(
+      (event) =>
+        event.workflowRunId === runId &&
+        normalizeTenantId(event.tenantId) === tenantId &&
+        event.type === type,
+    )?.payload.taskIds;
+  }
+  if (
+    !runFound ||
+    (Array.isArray(recorded) &&
+      recorded.length === taskIds.length &&
+      taskIds.every((taskId) => recorded.includes(taskId)))
+  ) {
+    return undefined;
+  }
+  return appendWorkflowEvent(runId, type, { taskIds: [...taskIds] });
 }
 
 async function appendWorkflowDomainEvent(

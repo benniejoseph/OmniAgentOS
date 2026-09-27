@@ -33,6 +33,8 @@ import {
   leaseOperationJobs,
   listActiveWorkflowTickRunIds,
   listRunnableOperationDispatchTenants,
+  repairExpiredOperationJobs,
+  wakeOperationJobByDedupeKey,
 } from "@/lib/operations/job-queue";
 import { runEventCursor } from "@/lib/runs/event-cursor";
 import {
@@ -71,7 +73,13 @@ import {
 } from "@/lib/tools/effect-intent-v2";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { toolInputSha256 } from "@/lib/tools/execution-scope";
-import { createWorkflowRun, listRunnableWorkflowRuns } from "@/lib/workflows/store";
+import {
+  appendWorkflowEvent,
+  createWorkflowRun,
+  getWorkflowRun,
+  listRunnableWorkflowRuns,
+  recordWorkflowSpecialistsPending,
+} from "@/lib/workflows/store";
 import {
   createWorkflowTrigger,
   listDueWorkflowScheduleOwners,
@@ -4312,6 +4320,147 @@ databaseDescribe("Postgres schema integration", () => {
         run_at_kept: false,
         run_at_later: true,
       },
+    ]);
+  });
+
+  test("backs a waiting tick off with fresh attempts, wakes it, and records pending specialists only on change", async () => {
+    const tenant = "tenant-db-specialist-wait";
+    const otherTenant = "tenant-db-specialist-wait-other";
+    const inTenant = <T,>(operation: () => Promise<T>, scope = tenant) =>
+      runWithDatabaseTenantScope(scope, operation);
+    const pause = () => new Promise((resolve) => setTimeout(resolve, 5));
+    const dedupeKey = "workflow:db-specialist-wait";
+    await inTenant(() => enqueueOperationJob({
+      tenantId: tenant,
+      type: "workflow.tick",
+      dedupeKey,
+      payload: { workflowRunId: "db-specialist-wait", reason: "queue_bootstrap" },
+    }));
+    const lease = () => inTenant(() => leaseOperationJobs({
+      tenantId: tenant,
+      type: "workflow.tick",
+      dedupeKey,
+    }));
+    const [first] = await lease();
+    // Its lease runs out, and the tick is delivered again.
+    await admin`
+      UPDATE omni_operation_jobs
+      SET lease_expires_at = NOW() - INTERVAL '1 second'
+      WHERE id = ${first.id}
+    `;
+    await inTenant(() => repairExpiredOperationJobs({ tenantId: tenant }));
+    const [second] = await lease();
+    expect(second).toMatchObject({ id: first.id, attempt: 2 });
+
+    const reason = "Waiting for durable specialist tasks to finish.";
+    const deferred = await inTenant(() => deferOperationJob(
+      second.id,
+      second.leaseOwner || "",
+      {
+        tenantId: tenant,
+        delaySeconds: 15,
+        resetAttempts: true,
+        payload: { specialistWaits: 1 },
+        reason,
+      },
+    ));
+
+    expect(deferred).toMatchObject({
+      status: "queued",
+      attempt: 0,
+      lastError: reason,
+      payload: {
+        workflowRunId: "db-specialist-wait",
+        reason: "queue_bootstrap",
+        specialistWaits: 1,
+      },
+    });
+    const [waiting] = await admin`
+      SELECT run_at > NOW() + INTERVAL '14 seconds' AS later
+      FROM omni_operation_jobs
+      WHERE id = ${first.id}
+    `;
+    expect(waiting.later).toBe(true);
+
+    await inTenant(() => wakeOperationJobByDedupeKey(dedupeKey, { tenantId: tenant }));
+    const [woken] = await admin`
+      SELECT status, attempt, run_at <= NOW() AS due, payload->>'specialistWaits' AS waits
+      FROM omni_operation_jobs
+      WHERE id = ${first.id}
+    `;
+    expect(woken).toEqual({ status: "queued", attempt: 0, due: true, waits: "1" });
+
+    // A plain defer still gives back only the attempt it took.
+    await lease();
+    await admin`
+      UPDATE omni_operation_jobs
+      SET lease_expires_at = NOW() - INTERVAL '1 second'
+      WHERE id = ${first.id}
+    `;
+    await inTenant(() => repairExpiredOperationJobs({ tenantId: tenant }));
+    const [again] = await lease();
+    expect(again).toMatchObject({ id: first.id, attempt: 2 });
+    await expect(inTenant(() => deferOperationJob(again.id, again.leaseOwner || "", {
+      tenantId: tenant,
+      delaySeconds: 1,
+    }))).resolves.toMatchObject({
+      status: "queued",
+      attempt: 1,
+      payload: { workflowRunId: "db-specialist-wait", specialistWaits: 1 },
+    });
+
+    const { run } = await inTenant(() => createWorkflowRun({
+      tenantId: tenant,
+      goal: "Compare the flight options.",
+    }));
+    const { run: sibling } = await inTenant(() => createWorkflowRun({
+      tenantId: tenant,
+      goal: "Compare the hotel options.",
+    }));
+    const { run: foreign } = await inTenant(() => createWorkflowRun({
+      tenantId: otherTenant,
+      goal: "Renew the passport.",
+    }), otherTenant);
+    await expect(
+      inTenant(() => getWorkflowRun(foreign.id, { tenantId: tenant })),
+    ).resolves.toBeNull();
+    await expect(
+      inTenant(() => getWorkflowRun(run.id, { tenantId: tenant })),
+    ).resolves.toMatchObject({ id: run.id, tenantId: tenant, status: "queued" });
+
+    const record = async (runId: string, taskIds: string[]) => {
+      const recorded = await inTenant(() => recordWorkflowSpecialistsPending(
+        runId,
+        taskIds,
+        { tenantId: tenant },
+      ));
+      // Distinct creation times, so the latest record is the last one written.
+      await pause();
+      return recorded;
+    };
+    expect(await record(run.id, ["task-a", "task-b"])).toBeDefined();
+    await inTenant(() => appendWorkflowEvent(run.id, "workflow.queue.enqueued", {
+      reason: "workflow_queued",
+    }));
+    await pause();
+    expect(await record(run.id, ["task-b", "task-a"])).toBeUndefined();
+    expect(await record(run.id, ["task-b"])).toBeDefined();
+    expect(await record(run.id, ["task-a"])).toBeDefined();
+    expect(await record(run.id, ["task-a"])).toBeUndefined();
+    expect(await record(sibling.id, ["task-a"])).toBeDefined();
+    expect(await record(foreign.id, ["task-c"])).toBeUndefined();
+
+    expect(await admin`
+      SELECT workflow_run_id AS run_id, payload->'taskIds' AS task_ids
+      FROM omni_workflow_events
+      WHERE type = 'workflow.specialists.pending'
+        AND workflow_run_id IN (${run.id}, ${sibling.id}, ${foreign.id})
+      ORDER BY created_at, id
+    `).toEqual([
+      { run_id: run.id, task_ids: ["task-a", "task-b"] },
+      { run_id: run.id, task_ids: ["task-b"] },
+      { run_id: run.id, task_ids: ["task-a"] },
+      { run_id: sibling.id, task_ids: ["task-a"] },
     ]);
   });
 });

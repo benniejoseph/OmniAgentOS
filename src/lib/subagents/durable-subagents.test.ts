@@ -259,6 +259,7 @@ describe("durable specialist delegation", () => {
     const queue = await import("@/lib/operations/job-queue");
     const workflows = await import("@/lib/workflows/store");
     const workflowRunner = await import("@/lib/workflows/runner");
+    const workflowQueue = await import("@/lib/workflows/queue");
     const owner = { tenantId: "personal-worker", actorId: "bennie" };
     const mission = await missions.createMission({
       ...owner,
@@ -324,6 +325,33 @@ describe("durable specialist delegation", () => {
     });
     expect(gated.run.status).toBe("queued");
     expect(gated.steps.every((step) => step.attempt === 0)).toBe(true);
+    const pendingEvents = async () =>
+      (await workflows.getWorkflowRunDetail(workflow.run.id, {
+        tenantId: owner.tenantId,
+      }))!.events.filter((event) => event.type === "workflow.specialists.pending");
+    // Another look at the same pending specialists records nothing new.
+    await workflowRunner.tickWorkflowRun(workflow.run.id, {
+      tenantId: owner.tenantId,
+    });
+    expect(await pendingEvents()).toHaveLength(1);
+    const workflowTick = async () =>
+      (await queue.listOperationJobs(20, {
+        tenantId: owner.tenantId,
+        type: "workflow.tick",
+      })).find((job) => job.payload.workflowRunId === workflow.run.id);
+    // The queue sends the parent's tick back to wait rather than running it.
+    await expect(workflowQueue.processWorkflowQueue({
+      tenantId: owner.tenantId,
+      limit: 1,
+    })).resolves.toMatchObject({ leased: 1, waiting: 1, completed: 0 });
+    const waitingTick = await workflowTick();
+    expect(waitingTick).toMatchObject({
+      status: "queued",
+      attempt: 0,
+      payload: { specialistWaits: 1 },
+    });
+    expect(Date.parse(waitingTick!.runAt)).toBeGreaterThan(Date.now());
+    expect(await pendingEvents()).toHaveLength(1);
     await expect(
       missions.transitionMissionTask(mainTask.id, "running", owner),
     ).rejects.toThrow(/dependencies must succeed/i);
@@ -338,6 +366,14 @@ describe("durable specialist delegation", () => {
       failed: 0,
       jobs: [expect.objectContaining({ message: undefined })],
     });
+    // The specialist's finish wakes the parent's tick.
+    const wokenTick = await workflowTick();
+    expect(wokenTick).toMatchObject({
+      status: "queued",
+      priority: 20,
+      payload: { reason: "specialist_dependencies_ready" },
+    });
+    expect(Date.parse(wokenTick!.runAt)).toBeLessThanOrEqual(Date.now());
 
     const specialistRun = await runs.getAgentRun(specialists[0].runId, {
       tenantId: owner.tenantId,
@@ -366,9 +402,13 @@ describe("durable specialist delegation", () => {
       subagentContext.inspectWorkflowSpecialistDependencies(readyWorkflow!),
     ).resolves.toMatchObject({ state: "ready" });
 
-    const preflight = await workflowRunner.tickWorkflowRun(workflow.run.id, {
+    const delivered = await workflowQueue.processWorkflowQueue({
       tenantId: owner.tenantId,
+      limit: 1,
+      bootstrapQueuedRuns: false,
     });
+    expect(delivered).toMatchObject({ leased: 1, completed: 1, waiting: 0 });
+    const preflight = delivered.jobs[0].detail!;
     expect(preflight.run.status).toBe("queued");
     expect(preflight.steps.find((step) => step.stepKey === "preflight"))
       .toMatchObject({ status: "completed", attempt: 1 });

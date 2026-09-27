@@ -15,17 +15,21 @@ import {
   leaseOperationJobs,
   listActiveWorkflowTickRunIds,
   listRunnableWorkflowTenantIds,
+  wakeOperationJobByDedupeKey,
   type OperationJobRecord,
 } from "@/lib/operations/job-queue";
 import { redactSensitive } from "@/lib/security/context";
+import { inspectWorkflowSpecialistDependencies } from "@/lib/subagents/context";
 import { tickWorkflowRun } from "@/lib/workflows/runner";
 import {
   appendWorkflowEvent,
   failWorkflowRunForQueueExhaustion,
+  getWorkflowRun,
   getWorkflowRunExecutionAuthority,
   getWorkflowRunDetail,
   listRunnableWorkflowRuns,
   reclaimWorkflowRunForQueueDelivery,
+  recordWorkflowSpecialistsPending,
   transitionWorkflowRunWithEvents,
   updateWorkflowStep,
 } from "@/lib/workflows/store";
@@ -52,7 +56,8 @@ type ProcessWorkflowQueueInput = {
 type WorkflowQueueJobResult = {
   job: OperationJobRecord;
   workflowRunId?: string;
-  status: "completed" | "failed" | "stale";
+  /** A waiting tick found its run still waiting on specialists and ran nothing. */
+  status: "completed" | "failed" | "stale" | "waiting";
   detail?: WorkflowRunDetail;
   error?: string;
   requeued?: OperationJobRecord;
@@ -64,6 +69,8 @@ export type WorkflowQueueResult = {
   completed: number;
   failed: number;
   stale: number;
+  /** Leased ticks that went back to the queue because their run still waits on specialists. */
+  waiting: number;
   requeued: number;
   jobs: WorkflowQueueJobResult[];
 };
@@ -81,17 +88,27 @@ export type AllTenantWorkflowQueueResult = WorkflowQueueResult & {
 const workflowJobPriority = 10;
 const workflowJobMaxAttempts = 5;
 const runnableWorkflowStatuses = new Set(["queued"]);
+/** A tick whose run waits on specialists waits this long, doubling to the cap. */
+const specialistWaitBaseSeconds = 15;
+const specialistWaitMaxSeconds = 300;
 
 export async function enqueueWorkflowRunTick(
   workflowRunId: string,
   reason = "workflow_queued",
   priority = workflowJobPriority,
   tenantId?: string,
+  options: {
+    /**
+     * Runs a tick that is waiting out a delay now. An enqueue alone keeps
+     * a queued tick's run_at.
+     */
+    wake?: boolean;
+  } = {},
 ) {
   const detail = await getWorkflowRunDetail(workflowRunId, { tenantId });
   const authorizedRetries = detail?.run.input.budgetLimits?.retries ??
     workflowJobMaxAttempts - 1;
-  const job = await enqueueOperationJob({
+  let job = await enqueueOperationJob({
     tenantId,
     type: "workflow.tick",
     dedupeKey: getWorkflowJobDedupeKey(workflowRunId),
@@ -102,6 +119,13 @@ export async function enqueueWorkflowRunTick(
     priority,
     maxAttempts: Math.min(workflowJobMaxAttempts, 1 + authorizedRetries),
   });
+  if (options.wake) {
+    const [woken] = await wakeOperationJobByDedupeKey(
+      getWorkflowJobDedupeKey(workflowRunId),
+      { tenantId: job.tenantId },
+    );
+    job = woken || job;
+  }
   await appendWorkflowEvent(workflowRunId, "workflow.queue.enqueued", {
     jobId: job.id,
     reason,
@@ -227,6 +251,7 @@ export async function processAllTenantWorkflowQueues(
             completed: 0,
             failed: 0,
             stale: 0,
+            waiting: 0,
             requeued: 0,
             jobs: [],
           },
@@ -234,13 +259,15 @@ export async function processAllTenantWorkflowQueues(
         });
         continue;
       }
-      if (result.leased > 0) {
+      if (result.leased > result.waiting) {
         tickRan = true;
       }
       tenantResults.push({ tenantId, result });
       jobs.push(...result.jobs);
-      remaining -= result.leased;
-      if (result.leased > 0 && result.requeued > 0) {
+      // A tick that went back to wait on specialists ran nothing, so it takes
+      // none of the pass's limit and its tenant keeps its turn.
+      remaining -= result.leased - result.waiting;
+      if (result.leased > 0 && (result.requeued > 0 || result.waiting > 0)) {
         nextActive.push(tenantId);
       }
     }
@@ -256,6 +283,7 @@ export async function processAllTenantWorkflowQueues(
     completed: jobs.filter((result) => result.status === "completed").length,
     failed: jobs.filter((result) => result.status === "failed").length,
     stale: jobs.filter((result) => result.status === "stale").length,
+    waiting: jobs.filter((result) => result.status === "waiting").length,
     requeued: jobs.filter((result) => result.requeued).length,
     jobs,
     tenantIds,
@@ -327,10 +355,15 @@ async function processWorkflowQueueInScope(
       continue;
     }
     const keepQueuePlace = earlierTickRan;
-    earlierTickRan = true;
 
     let leaseLost = false;
     try {
+      const waiting = await deferWhileSpecialistsWork(job, workflowRunId);
+      if (waiting) {
+        results.push(waiting);
+        continue;
+      }
+      earlierTickRan = true;
       if (job.attempt > 1) {
         const budgetDetail = await getWorkflowRunDetail(workflowRunId, {
           tenantId: job.tenantId,
@@ -611,9 +644,89 @@ async function processWorkflowQueueInScope(
     completed: results.filter((result) => result.status === "completed").length,
     failed: results.filter((result) => result.status === "failed").length,
     stale: results.filter((result) => result.status === "stale").length,
+    waiting: results.filter((result) => result.status === "waiting").length,
     requeued: results.filter((result) => result.requeued).length,
     jobs: results,
   };
+}
+
+/**
+ * Sends a leased tick back to the queue while its run waits on durable
+ * specialist tasks. A wait runs none of the run's work, so the tick's attempts
+ * start over and it writes no queue events. It waits 15 seconds, doubling to
+ * five minutes; the specialist worker wakes it when the last task finishes.
+ * Returns undefined when the tick should run.
+ */
+async function deferWhileSpecialistsWork(
+  job: OperationJobRecord,
+  workflowRunId: string,
+): Promise<WorkflowQueueJobResult | undefined> {
+  const run = await getWorkflowRun(workflowRunId, { tenantId: job.tenantId });
+  if (run?.status !== "queued") {
+    return undefined;
+  }
+  const gate = await inspectWorkflowSpecialistDependencies({ run });
+  if (gate.state !== "pending") {
+    return undefined;
+  }
+  if (
+    run.input.executionAuthorityRequired &&
+    !(await getWorkflowRunExecutionAuthority(workflowRunId, {
+      tenantId: job.tenantId,
+    }))
+  ) {
+    // The runner fails the tick for its missing authority.
+    return undefined;
+  }
+  await recordWorkflowSpecialistsPending(workflowRunId, gate.pendingTaskIds, {
+    tenantId: job.tenantId,
+  }).catch(() => undefined);
+  const waits = specialistWaitCount(job.payload.specialistWaits);
+  const deferred = await deferOperationJob(job.id, job.leaseOwner || "", {
+    tenantId: job.tenantId,
+    delaySeconds: Math.min(
+      specialistWaitMaxSeconds,
+      specialistWaitBaseSeconds * 2 ** waits,
+    ),
+    resetAttempts: true,
+    payload: { specialistWaits: waits + 1 },
+    reason: "Waiting for durable specialist tasks to finish.",
+  });
+  if (!deferred) {
+    return {
+      job,
+      workflowRunId,
+      status: "stale",
+      error: "Workflow queue lease was stale before the tick could wait for specialists.",
+    };
+  }
+  try {
+    // A task that finished while this tick was leased found nothing to wake.
+    // Wake the tick now rather than waiting out its delay; if this fails, the
+    // delay still brings the tick back.
+    const current = await inspectWorkflowSpecialistDependencies({ run });
+    if (current.state !== "pending") {
+      const [woken] = await wakeOperationJobByDedupeKey(
+        getWorkflowJobDedupeKey(workflowRunId),
+        { tenantId: job.tenantId },
+      );
+      if (woken) {
+        return { job: woken, workflowRunId, status: "waiting", requeued: woken };
+      }
+    }
+  } catch (error) {
+    console.warn(
+      "Workflow specialist re-check failed; the tick's delay will pick up the change.",
+      error instanceof Error ? error.message : error,
+    );
+  }
+  return { job: deferred, workflowRunId, status: "waiting" };
+}
+
+function specialistWaitCount(value: unknown) {
+  return typeof value === "number" && Number.isInteger(value) && value > 0
+    ? value
+    : 0;
 }
 
 export function scheduleWorkflowQueueDrain(

@@ -657,6 +657,7 @@ async function finalizeTerminalRun(
             : "specialist_dependency_failed",
           20,
           job.tenantId,
+          { wake: true },
         );
       }
     }

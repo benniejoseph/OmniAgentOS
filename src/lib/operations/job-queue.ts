@@ -1020,7 +1020,9 @@ export async function failOperationJob(
 /**
  * Returns a leased job to the queue without consuming an attempt. With
  * keepRunAt the job keeps its run_at, and so its place in the queue, for a
- * job that lost its turn rather than one that should wait delaySeconds.
+ * job that lost its turn rather than one that should wait delaySeconds. With
+ * resetAttempts the job's attempts start over, for a job that found its work
+ * not ready yet. A payload patch is merged into the job's payload.
  */
 export async function deferOperationJob(
   jobId: string,
@@ -1029,11 +1031,15 @@ export async function deferOperationJob(
     tenantId: requestedTenantId,
     delaySeconds = 30,
     keepRunAt = false,
+    resetAttempts = false,
+    payload: payloadPatch = {},
     reason = "Job deferred without consuming an attempt.",
   }: {
     tenantId?: string;
     delaySeconds?: number;
     keepRunAt?: boolean;
+    resetAttempts?: boolean;
+    payload?: Record<string, unknown>;
     reason?: string;
   } = {},
 ) {
@@ -1047,8 +1053,13 @@ export async function deferOperationJob(
     const rows = await getSql()`
       UPDATE omni_operation_jobs
       SET status = 'queued',
-          attempt = GREATEST(attempt - 1, 0),
+          attempt = CASE WHEN ${resetAttempts} THEN 0 ELSE GREATEST(attempt - 1, 0) END,
           run_at = CASE WHEN ${keepRunAt} THEN run_at ELSE ${runAt}::timestamptz END,
+          payload = CASE
+            WHEN jsonb_typeof(payload) = 'object'
+            THEN payload || ${payloadPatch}::jsonb
+            ELSE payload
+          END,
           locked_at = NULL,
           lease_owner = NULL,
           lease_expires_at = NULL,
@@ -1081,8 +1092,9 @@ export async function deferOperationJob(
       saved = {
         ...job,
         status: "queued",
-        attempt: Math.max(job.attempt - 1, 0),
+        attempt: resetAttempts ? 0 : Math.max(job.attempt - 1, 0),
         runAt: keepRunAt ? job.runAt : runAt,
+        payload: { ...job.payload, ...payloadPatch },
         lockedAt: undefined,
         leaseOwner: undefined,
         leaseExpiresAt: undefined,

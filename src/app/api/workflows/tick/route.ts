@@ -625,6 +625,7 @@ function summarizeScheduledOutcome(
     workflowCompleted: scheduled.queue?.completed || 0,
     workflowFailed: scheduled.queue?.failed || 0,
     workflowRequeued: scheduled.queue?.requeued || 0,
+    workflowWaiting: scheduled.queue?.waiting || 0,
     agentResumesLeased: scheduled.agentResumes?.leased || 0,
     agentResumesCompleted: scheduled.agentResumes?.completed || 0,
     agentResumesDeferred: scheduled.agentResumes?.deferred || 0,
@@ -711,11 +712,15 @@ function summarizeScheduledOutcome(
   // A failed schedule owner or pass changed nothing and is retried on the next
   // pass. Counting it as activity would hold the fast lane at its busy cadence
   // for as long as the failure lasts, so it is logged and reported only with
-  // other work.
+  // other work. So is a tick whose run still waits on specialists: it was
+  // leased and went back to the queue without running, and counts in both
+  // workflowLeased and workflowWaiting. One woken because they finished also
+  // counts in workflowRequeued, which stays activity.
   const activityCount =
     Object.values(counts).reduce((total, value) => total + value, 0) -
     counts.scheduleOwnerFailures -
-    counts.schedulePassFailures;
+    counts.schedulePassFailures -
+    2 * counts.workflowWaiting;
   return {
     counts,
     activityCount,
@@ -827,6 +832,7 @@ async function runAllTenantScheduledWork({
           completed: 0,
           failed: 0,
           stale: 0,
+          waiting: 0,
           requeued: 0,
           jobs: [],
           tenantIds: [],

@@ -98,6 +98,7 @@ import {
   getWorkflowRunExecutionAuthority,
   getWorkflowRunDetail,
   listRunnableWorkflowRuns,
+  recordWorkflowSpecialistsPending,
   transitionWorkflowRunWithEvents,
   updateWorkflowStep,
   updateWorkflowStepForRunFence,
@@ -160,9 +161,11 @@ export async function tickWorkflowRun(
   if (detail.run.status === "queued") {
     const specialistGate = await inspectWorkflowSpecialistDependencies(detail);
     if (specialistGate.state === "pending") {
-      await appendWorkflowEvent(detail.run.id, "workflow.specialists.pending", {
-        taskIds: specialistGate.pendingTaskIds,
-      });
+      await recordWorkflowSpecialistsPending(
+        detail.run.id,
+        specialistGate.pendingTaskIds,
+        { tenantId: detail.run.tenantId },
+      );
       return detail;
     }
     if (specialistGate.state === "failed") {

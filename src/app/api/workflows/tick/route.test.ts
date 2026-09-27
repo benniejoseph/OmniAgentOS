@@ -212,6 +212,7 @@ const emptyWorkflowQueue = {
   completed: 0,
   failed: 0,
   stale: 0,
+  waiting: 0,
   requeued: 0,
   jobs: [],
   tenantIds: [],
@@ -556,6 +557,34 @@ describe("dedicated worker heartbeat timing", () => {
     } finally {
       errorLog.mockRestore();
     }
+  });
+
+  it("stays idle when every leased tick went back to wait on specialists", async () => {
+    routeMocks.processAllTenantWorkflowQueues.mockResolvedValueOnce({
+      ...emptyWorkflowQueue,
+      leased: 2,
+      waiting: 2,
+    });
+    const waited = await POST(workerRequest({ startup: false }));
+    await expect(waited.json()).resolves.toMatchObject({
+      idle: true,
+      activityCount: 0,
+    });
+    expect(routeMocks.recordSecurityAudit).not.toHaveBeenCalled();
+    expect(routeMocks.recordRuntimeEventSafely).not.toHaveBeenCalled();
+
+    // A tick woken because its specialists finished has work to run.
+    routeMocks.processAllTenantWorkflowQueues.mockResolvedValueOnce({
+      ...emptyWorkflowQueue,
+      leased: 1,
+      waiting: 1,
+      requeued: 1,
+    });
+    const woken = await POST(workerRequest({ startup: false }));
+    await expect(woken.json()).resolves.toMatchObject({
+      idle: false,
+      activityCount: 1,
+    });
   });
 
   it("persists startup registration before responding without beginning scheduled work", async () => {

@@ -9,7 +9,7 @@ const MAX_SPECIALIST_CONTEXT_CHARS = 12_000;
 const MAX_SPECIALIST_RESULT_CHARS = 6_000;
 
 export async function inspectWorkflowSpecialistDependencies(
-  detail: WorkflowRunDetail,
+  detail: Pick<WorkflowRunDetail, "run">,
 ): Promise<SpecialistDependencyGate> {
   const metadata = detail.run.input.metadata;
   const taskIds = specialistTaskIds(metadata);
