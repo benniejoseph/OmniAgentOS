@@ -6,6 +6,7 @@ import {
   generateGeminiToolTurn,
   generateGeminiVideo,
 } from "@/lib/google/ai";
+import { getModelProviderResponseReceipt } from "@/lib/models/types";
 
 describe("Google AI provider", () => {
   afterEach(() => {
@@ -328,5 +329,166 @@ describe("Google AI provider", () => {
       call_id: "call-1",
       name: "memory_search",
     });
+  });
+});
+
+describe("Gemini interactions that do not finish", () => {
+  afterEach(() => {
+    delete process.env.GEMINI_API_KEY;
+    vi.unstubAllGlobals();
+  });
+
+  const tools = [{
+    type: "function" as const,
+    name: "flight_search",
+    description: "Search flights",
+    parameters: { type: "object" },
+  }];
+  const flightCall = {
+    type: "function_call",
+    id: "call-1",
+    name: "flight_search",
+    arguments: { from: "LIS" },
+  };
+  const incomplete =
+    "Gemini returned an incomplete response, usually because it reached the response token limit. Narrow the request or split it into smaller steps.";
+
+  function answer(
+    status: string | undefined,
+    steps: unknown[],
+    extra: Record<string, unknown> = {},
+  ) {
+    process.env.GEMINI_API_KEY = "test-key";
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      id: "interaction-cut",
+      model: "gemini-test",
+      ...(status === undefined ? {} : { status }),
+      steps,
+      usage: { total_input_tokens: 30, total_output_tokens: 2000, total_tokens: 2030 },
+      ...extra,
+    }), { status: 200, headers: { "content-type": "application/json" } })));
+  }
+
+  function toolTurn() {
+    return generateGeminiToolTurn({
+      prompt: "Find a flight.",
+      model: "gemini-test",
+      tools,
+    });
+  }
+
+  it.each(["incomplete", "budget_exceeded"])(
+    "does not return a function call from an interaction that ended %s",
+    async (status) => {
+      answer(status, [flightCall]);
+
+      const error = await toolTurn().catch((caught: unknown) => caught);
+
+      expect(error).toMatchObject({ message: incomplete });
+      expect(getModelProviderResponseReceipt(error)).toMatchObject({
+        usage: { inputTokens: 30, outputTokens: 2000, totalTokens: 2030 },
+        providerRequestId: "interaction-cut",
+      });
+    },
+  );
+
+  it("does not return text from an incomplete interaction", async () => {
+    answer("incomplete", [{
+      type: "model_output",
+      content: [{ type: "text", text: "The first half of" }],
+    }]);
+
+    await expect(generateGeminiText({
+      prompt: "Summarize the trip.",
+      model: "gemini-test",
+    })).rejects.toMatchObject({ message: incomplete });
+  });
+
+  it.each(["cancelled", "in_progress", "queued"])(
+    "fails an interaction that ended %s",
+    async (status) => {
+      answer(status, [flightCall]);
+
+      await expect(toolTurn()).rejects.toMatchObject({
+        message: `Gemini ended the interaction with status ${status}.`,
+      });
+    },
+  );
+
+  it("keeps a long status out of the error message", async () => {
+    answer("x".repeat(100), [flightCall]);
+
+    await expect(toolTurn()).rejects.toMatchObject({
+      message: `Gemini ended the interaction with status ${"x".repeat(40)}.`,
+    });
+  });
+
+  it("reports a failed interaction's own error", async () => {
+    answer("failed", [], { error: { message: "The model is overloaded." } });
+
+    await expect(generateGeminiText({
+      prompt: "Summarize the trip.",
+      model: "gemini-test",
+    })).rejects.toMatchObject({ message: "The model is overloaded." });
+  });
+
+  it.each(["requires_action", "completed", undefined])(
+    "returns the function calls of an interaction with status %s",
+    async (status) => {
+      answer(status, [flightCall]);
+
+      await expect(toolTurn()).resolves.toMatchObject({
+        toolCalls: [{
+          callId: "call-1",
+          name: "flight_search",
+          argumentsJson: JSON.stringify({ from: "LIS" }),
+        }],
+      });
+    },
+  );
+});
+
+describe("Gemini reply size", () => {
+  afterEach(() => {
+    delete process.env.GEMINI_API_KEY;
+    vi.unstubAllGlobals();
+  });
+
+  function stubCompleted() {
+    process.env.GEMINI_API_KEY = "test-key";
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      id: "interaction-1",
+      model: "gemini-test",
+      status: "completed",
+      steps: [{ type: "model_output", content: [{ type: "text", text: "Done." }] }],
+      usage: { total_input_tokens: 3, total_output_tokens: 2, total_tokens: 5 },
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    return () => JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))
+      .generation_config.max_output_tokens;
+  }
+
+  it.each([
+    [undefined, 18_000],
+    [3_000, 19_000],
+    [10, 16_064],
+    [50_000, 24_000],
+  ])("leaves room to think on top of an answer budget of %s tokens", async (answerTokens, maxTokens) => {
+    const textLimit = stubCompleted();
+    await generateGeminiText({
+      prompt: "Summarize the trip.",
+      model: "gemini-3.5-flash-lite",
+      ...(answerTokens === undefined ? {} : { maxOutputTokens: answerTokens }),
+    });
+    expect(textLimit()).toBe(maxTokens);
+
+    const toolLimit = stubCompleted();
+    await generateGeminiToolTurn({
+      prompt: "Summarize the trip.",
+      model: "gemini-3.5-flash-lite",
+      tools: [],
+      ...(answerTokens === undefined ? {} : { maxOutputTokens: answerTokens }),
+    });
+    expect(toolLimit()).toBe(maxTokens);
   });
 });

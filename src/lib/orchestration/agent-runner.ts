@@ -2977,6 +2977,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
       allowedProviders: [activeProvider],
       allowCrossProviderFallback: false,
       maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
+      reasoningEffort: AGENT_REASONING_EFFORT,
       maxAttempts: modelBudget?.maxAttempts,
       abortSignal: input.abortSignal,
       tools: toolsEnabled ? input.tools : [],

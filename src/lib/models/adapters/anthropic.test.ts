@@ -484,15 +484,26 @@ describe("Anthropic model adapter structured output", () => {
     });
   });
 
-  it.each([
-    ["an answer cut off by the token limit", "max_tokens", [{ type: "text", text: "{\"title\":" }]],
-    [
-      "a turn that ended without text",
-      "end_turn",
+  it("does not repair an answer cut off by the token limit", async () => {
+    const fetchMock = stubAnswers(
+      answer([{ type: "text", text: "{\"title\":" }], "max_tokens"),
+    );
+
+    await expect(anthropicModelAdapter.generateStructured!(
+      request,
+      structuredTarget("claude-opus-5-5"),
+    )).rejects.toMatchObject({
+      message:
+        "Claude reached the response token limit. Narrow the request or split it into smaller steps.",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not repair a turn that ended without text", async () => {
+    const fetchMock = stubAnswers(answer(
       [{ type: "thinking", thinking: "", signature: "sig-1" }],
-    ],
-  ])("does not repair %s", async (_label, stopReason, content) => {
-    const fetchMock = stubAnswers(answer(content, stopReason));
+      "end_turn",
+    ));
 
     await expect(anthropicModelAdapter.generateStructured!(
       request,
@@ -541,6 +552,238 @@ describe("Anthropic model adapter structured output", () => {
       structuredTarget("claude-sonnet-5"),
     )).rejects.toMatchObject({ message: "Claude returned no structured tool result." });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Anthropic replies that are not used", () => {
+  const tools: ModelToolTurnRequest["tools"] = [{
+    type: "function",
+    name: "flight_search",
+    description: "Search flights",
+    parameters: { type: "object" },
+  }];
+  const flightCall = {
+    type: "tool_use",
+    id: "toolu_1",
+    name: "flight_search",
+    input: { from: "LIS" },
+  };
+  const tokenLimit = {
+    provider: "anthropic",
+    kind: "unknown",
+    retryable: false,
+    message:
+      "Claude reached the response token limit. Narrow the request or split it into smaller steps.",
+  };
+
+  afterEach(() => {
+    delete process.env.ANTHROPIC_API_KEY;
+    vi.unstubAllGlobals();
+  });
+
+  function toolTurn() {
+    return anthropicModelAdapter.generateToolTurn!({
+      input: "Find a flight.",
+      preferredProvider: "anthropic",
+      tools,
+    }, target);
+  }
+
+  it("does not return a tool call cut off at the token limit", async () => {
+    stubAnswers(answer([
+      { type: "text", text: "Searching." },
+      { type: "tool_use", id: "toolu_cut", name: "flight_search", input: {} },
+    ], "max_tokens", { input_tokens: 40, output_tokens: 2000 }));
+
+    const error = await toolTurn().catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject(tokenLimit);
+    expect(getModelProviderResponseReceipt(error)).toMatchObject({
+      usage: { inputTokens: 40, outputTokens: 2000, totalTokens: 2040 },
+      providerRequestId: "msg_max_tokens",
+    });
+  });
+
+  it("does not return text cut off at the token limit", async () => {
+    stubAnswers(answer([{ type: "text", text: "The first half of" }], "max_tokens"));
+
+    await expect(anthropicModelAdapter.generateText(
+      { input: "Summarize the trip." },
+      target,
+    )).rejects.toMatchObject(tokenLimit);
+  });
+
+  it("fails a reply that filled the context window", async () => {
+    stubAnswers(answer(
+      [{ type: "text", text: "The first half of" }],
+      "model_context_window_exceeded",
+    ));
+
+    await expect(toolTurn()).rejects.toMatchObject({
+      provider: "anthropic",
+      kind: "invalid_request",
+      retryable: false,
+      message:
+        "Claude reached the end of its context window. Narrow the request or split it into smaller steps.",
+    });
+  });
+
+  it.each([
+    ["no id", { type: "tool_use", name: "flight_search", input: {} }],
+    ["no name", { type: "tool_use", id: "toolu_2", input: {} }],
+    ["no input", { type: "tool_use", id: "toolu_2", name: "flight_search" }],
+    ["a null input", { type: "tool_use", id: "toolu_2", name: "flight_search", input: null }],
+    ["a list input", { type: "tool_use", id: "toolu_2", name: "flight_search", input: ["LIS"] }],
+    ["a text input", { type: "tool_use", id: "toolu_2", name: "flight_search", input: "LIS" }],
+  ])("does not run the calls of a turn with a tool call that has %s", async (_label, call) => {
+    stubAnswers(answer(
+      [flightCall, call],
+      "tool_use",
+      { input_tokens: 40, output_tokens: 20 },
+    ));
+
+    const error = await toolTurn().catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({
+      provider: "anthropic",
+      kind: "invalid_request",
+      retryable: false,
+      message: "Claude returned a tool call without an id, a name, or an input object.",
+    });
+    expect(getModelProviderResponseReceipt(error)).toMatchObject({
+      usage: { inputTokens: 40, outputTokens: 20 },
+      providerRequestId: "msg_tool_use",
+    });
+  });
+
+  it("passes a tool call's input through unchanged", async () => {
+    stubAnswers(answer([flightCall], "tool_use"));
+
+    await expect(toolTurn()).resolves.toMatchObject({
+      toolCalls: [{
+        callId: "toolu_1",
+        name: "flight_search",
+        argumentsJson: JSON.stringify({ from: "LIS" }),
+      }],
+    });
+  });
+
+  it.each(["pause_turn", "stop_sequence", "compaction"])(
+    "does not use a reply that stopped with %s",
+    async (stopReason) => {
+      stubAnswers(answer([flightCall], stopReason, { input_tokens: 40, output_tokens: 20 }));
+
+      const error = await toolTurn().catch((caught: unknown) => caught);
+
+      expect(error).toMatchObject({
+        provider: "anthropic",
+        kind: "unknown",
+        retryable: false,
+        message: `Claude ended the response with stop reason ${stopReason}.`,
+      });
+      expect(getModelProviderResponseReceipt(error)).toMatchObject({
+        usage: { inputTokens: 40, outputTokens: 20 },
+      });
+    },
+  );
+
+  it("names at most 40 characters of a stop reason it does not know", async () => {
+    stubAnswers(answer([{ type: "text", text: "Done." }], `${"x".repeat(40)}-and-more`));
+
+    await expect(anthropicModelAdapter.generateText(
+      { input: "Summarize the trip." },
+      target,
+    )).rejects.toThrow(`Claude ended the response with stop reason ${"x".repeat(40)}.`);
+  });
+
+  it("uses a reply that ended its turn or asked for a tool", async () => {
+    stubAnswers(
+      answer([{ type: "text", text: "Lisbon." }], "end_turn"),
+      answer([flightCall], "tool_use"),
+    );
+
+    await expect(anthropicModelAdapter.generateText(
+      { input: "Where?" },
+      target,
+    )).resolves.toMatchObject({ text: "Lisbon." });
+    await expect(toolTurn()).resolves.toMatchObject({
+      toolCalls: [{ callId: "toolu_1" }],
+    });
+  });
+});
+
+describe("Claude effort and reply size", () => {
+  afterEach(() => {
+    delete process.env.ANTHROPIC_API_KEY;
+    vi.unstubAllGlobals();
+  });
+
+  it.each([
+    ["claude-opus-5-5", "high", 2_000, "high", 18_000],
+    ["claude-opus-5-5", "medium", 2_000, "medium", 10_000],
+    ["claude-opus-5-5", "low", 2_000, "low", 6_000],
+    ["claude-sonnet-5", "xhigh", 2_000, "xhigh", 21_333],
+    ["claude-fable-5-1", "max", 2_000, "max", 21_333],
+    ["claude-opus-5-5", "high", 8_000, "high", 21_333],
+    ["claude-mythos-5-1", "medium", 4_000, "medium", 12_000],
+    ["claude-opus-5-5", "minimal", 2_000, "low", 6_000],
+    ["claude-opus-5-5", undefined, 2_000, "low", 6_000],
+    ["claude-mythos-preview", "xhigh", 2_000, "low", 6_000],
+    ["claude-mythos-preview", "max", 2_000, "max", 21_333],
+    ["claude-opus-4-8", "xhigh", 2_000, "xhigh", 2_000],
+    ["claude-sonnet-4-6", "max", 3_000, "max", 3_000],
+    ["claude-opus-4-5", "max", 2_000, "low", 2_000],
+  ] as const)(
+    "sends %s, asked for %s effort, an effort it accepts and room to think",
+    async (model, requested, answerTokens, effort, maxTokens) => {
+      const fetchMock = stubAnswers(answer([{ type: "text", text: "Lisbon." }], "end_turn"));
+
+      await anthropicModelAdapter.generateText({
+        input: "Where?",
+        maxOutputTokens: answerTokens,
+        ...(requested ? { reasoningEffort: requested } : {}),
+      }, structuredTarget(model));
+
+      expect(sentBodies(fetchMock)[0]).toMatchObject({
+        model,
+        max_tokens: maxTokens,
+        output_config: { effort },
+      });
+    },
+  );
+
+  it.each(["claude-sonnet-4-5", "claude-haiku-4-5", "claude-test"])(
+    "sends %s no effort and only the answer budget",
+    async (model) => {
+      const fetchMock = stubAnswers(answer([{ type: "text", text: "Lisbon." }], "end_turn"));
+
+      await anthropicModelAdapter.generateText({
+        input: "Where?",
+        maxOutputTokens: 3_000,
+        reasoningEffort: "high",
+      }, structuredTarget(model));
+
+      const [body] = sentBodies(fetchMock);
+      expect(body.max_tokens).toBe(3_000);
+      expect(body).not.toHaveProperty("output_config");
+    },
+  );
+
+  it("sends the effort and reply size on agent tool turns", async () => {
+    const fetchMock = stubAnswers(answer([{ type: "text", text: "Lisbon." }], "end_turn"));
+
+    await anthropicModelAdapter.generateToolTurn!({
+      input: "Where?",
+      preferredProvider: "anthropic",
+      tools: [],
+      maxOutputTokens: 2_000,
+      reasoningEffort: "medium",
+    }, structuredTarget("claude-opus-5-5"));
+
+    expect(sentBodies(fetchMock)[0]).toMatchObject({
+      max_tokens: 10_000,
+      output_config: { effort: "medium" },
+    });
   });
 });
 

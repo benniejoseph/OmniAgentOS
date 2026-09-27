@@ -7,6 +7,7 @@ import {
   dynamicDelegationMaxToolSteps,
 } from "@/lib/delegation/runtime-policy";
 import type { AgentEvent } from "@/lib/orchestration/types";
+import { AGENT_REASONING_EFFORT } from "@/lib/config";
 import { AgentRunTerminatedError } from "@/lib/runs/cancellation";
 import type {
   ModelToolCall,
@@ -1180,6 +1181,54 @@ describe("non-OpenAI governed provider tool loop", () => {
 
     expect(generateTurn).toHaveBeenCalledTimes(1);
     expect(executeTool).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks every provider turn for the agent reasoning effort before a Command selection binds it", async () => {
+    const generateTurn = vi.fn(async (request: ModelToolTurnRequest) =>
+      request.toolResults
+        ? turn({ text: "Read complete." })
+        : turn({
+            toolCalls: [{ callId: "call-read", name: "read_a", argumentsJson: "{}" }],
+          })
+    );
+    const bindModelRequest = vi.fn((request: ModelToolTurnRequest) => ({
+      ...request,
+      reasoningEffort: "high" as const,
+    }));
+    const executeTool = vi.fn(async (request: { toolId: string }) => ({
+      record: executionRecord(request.toolId, "executed"),
+      result: { source: request.toolId },
+    }));
+
+    await collect(runNonOpenAIProviderToolLoop({
+      provider: "google",
+      tier: "reasoning",
+      instructions: "Read the source, then answer.",
+      prompt: "Inspect the source.",
+      tools: [modelTool("read_a")],
+      toolbox: {
+        byFunctionName: new Map([
+          ["read_a", { definition: toolDefinition("read.a"), functionName: "read_a" }],
+        ]),
+      },
+      securityContext: {
+        tenantId: "default",
+        actorId: "owner",
+        role: "admin",
+        source: "default",
+      },
+      runId: "run-reasoning-effort",
+      maxToolSteps: 2,
+      bindModelRequest,
+      generateTurn,
+      executeTool: executeTool as never,
+    }));
+
+    expect(AGENT_REASONING_EFFORT).toBeTruthy();
+    expect(bindModelRequest.mock.calls.map(([request]) => request.reasoningEffort))
+      .toEqual([AGENT_REASONING_EFFORT, AGENT_REASONING_EFFORT]);
+    expect(generateTurn.mock.calls.map(([request]) => request.reasoningEffort))
+      .toEqual(["high", "high"]);
   });
 });
 

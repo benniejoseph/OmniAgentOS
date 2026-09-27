@@ -4,8 +4,12 @@ import {
   hasAnthropicKey,
 } from "@/lib/config";
 import { classifyProviderError } from "@/lib/models/adapters/openai";
-import { anthropicModelCapabilities } from "@/lib/models/anthropic-capabilities";
+import {
+  anthropicModelCapabilities,
+  claudeMaxTokens,
+} from "@/lib/models/anthropic-capabilities";
 import { estimateProviderCost } from "@/lib/models/pricing";
+import { resolveModelReasoningEffort } from "@/lib/models/reasoning-effort";
 import type {
   ModelProviderAdapter,
   ModelStructuredRequest,
@@ -142,16 +146,26 @@ export const anthropicModelAdapter: ModelProviderAdapter = {
       .map((item) => item.text || "")
       .join("")
       .trim();
-    const toolCalls = content.flatMap((item) => {
-      if (item.type !== "tool_use" || !item.id || !item.name) return [];
-      return [{
-        callId: item.id,
-        name: item.name,
-        argumentsJson: JSON.stringify(
-          item.input && typeof item.input === "object" ? item.input : {},
+    const toolUses = content.filter((item) => item.type === "tool_use");
+    // A call is never run with arguments Claude did not send, and a call
+    // dropped here would stay open in the saved turn.
+    if (toolUses.some((item) => !item.id || !item.name || !isInputObject(item.input))) {
+      throw anthropicResponseFailure(
+        new ModelProviderError(
+          "Claude returned a tool call without an id, a name, or an input object.",
+          "anthropic",
+          "invalid_request",
+          false,
         ),
-      }];
-    });
+        result,
+        target,
+      );
+    }
+    const toolCalls = toolUses.map((item) => ({
+      callId: item.id!,
+      name: item.name!,
+      argumentsJson: JSON.stringify(item.input),
+    }));
     if (!text && !toolCalls.length) {
       throw anthropicResponseFailure(
         new ModelProviderError(
@@ -205,6 +219,12 @@ async function callAnthropic(
 ): Promise<AnthropicCall> {
   const apiKey = getModelRuntimeApiKey(request, "anthropic") || process.env.ANTHROPIC_API_KEY?.trim();
   if (!apiKey) throw new ModelProviderError("Anthropic is not configured.", "anthropic", "authentication", false);
+  const effort = resolveModelReasoningEffort(
+    "anthropic",
+    target.model,
+    request.reasoningEffort,
+  );
+  const answerTokens = Math.min(Math.max(request.maxOutputTokens || 2_000, 64), 16_000);
   const startedAt = Date.now();
   let response: Response;
   try {
@@ -217,9 +237,10 @@ async function callAnthropic(
       },
       body: JSON.stringify({
         model: target.model,
-        max_tokens: Math.min(Math.max(request.maxOutputTokens || 2_000, 64), 16_000),
+        max_tokens: claudeMaxTokens(target.model, answerTokens, effort),
         ...(request.instructions ? { system: request.instructions } : {}),
         messages: [{ role: "user", content: request.input }],
+        ...(effort ? { output_config: { effort } } : {}),
         ...extra,
       }),
       signal: request.abortSignal,
@@ -235,14 +256,47 @@ async function callAnthropic(
   }
   const latest = { body, latencyMs: Date.now() - startedAt };
   const result = earlier ? combinedCalls(earlier, latest) : latest;
-  if (body.stop_reason === "refusal") {
-    throw anthropicResponseFailure(
-      new ModelProviderError("Claude refused the request.", "anthropic", "safety", false),
-      result,
-      target,
+  const stopped = unfinishedResponseError(body.stop_reason);
+  if (stopped) throw anthropicResponseFailure(stopped, result, target);
+  return result;
+}
+
+/**
+ * The error for a response that must not be used. A reply cut off at the
+ * token limit may end inside a tool call, whose input is then incomplete.
+ * Any stop reason other than end_turn or tool_use is not used either:
+ * pause_turn comes only from server tools, and stop_sequence only from stop
+ * sequences, and these requests send neither.
+ */
+function unfinishedResponseError(stopReason: string | undefined) {
+  if (stopReason === "refusal") {
+    return new ModelProviderError("Claude refused the request.", "anthropic", "safety", false);
+  }
+  if (stopReason === "max_tokens") {
+    return new ModelProviderError(
+      "Claude reached the response token limit. Narrow the request or split it into smaller steps.",
+      "anthropic",
+      "unknown",
+      false,
     );
   }
-  return result;
+  if (stopReason === "model_context_window_exceeded") {
+    return new ModelProviderError(
+      "Claude reached the end of its context window. Narrow the request or split it into smaller steps.",
+      "anthropic",
+      "invalid_request",
+      false,
+    );
+  }
+  if (stopReason && stopReason !== "end_turn" && stopReason !== "tool_use") {
+    return new ModelProviderError(
+      `Claude ended the response with stop reason ${stopReason.slice(0, 40)}.`,
+      "anthropic",
+      "unknown",
+      false,
+    );
+  }
+  return undefined;
 }
 
 function anthropicToolMessages(
@@ -367,6 +421,10 @@ function modelResult(body: AnthropicResponse, target: ModelTarget, latencyMs: nu
     ...pricing,
     ...(body.id ? { providerRequestId: body.id } : {}),
   };
+}
+
+function isInputObject(value: unknown) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function anthropicContent(body: AnthropicResponse) {

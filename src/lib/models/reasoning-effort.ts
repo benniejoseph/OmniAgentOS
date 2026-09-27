@@ -1,3 +1,4 @@
+import { anthropicModelCapabilities } from "@/lib/models/anthropic-capabilities";
 import type { ModelReasoningEffort } from "@/lib/models/types";
 import type { SettingsModelProvider } from "@/lib/settings/types";
 
@@ -48,6 +49,9 @@ export function modelReasoningEfforts(
   provider: SettingsModelProvider,
   modelId: string,
 ): readonly ModelReasoningEffort[] {
+  if (provider === "anthropic") {
+    return anthropicModelCapabilities(modelId).efforts;
+  }
   if (provider !== "openai") return [];
   const normalized = modelId.trim().toLowerCase();
 

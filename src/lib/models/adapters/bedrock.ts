@@ -17,6 +17,10 @@ import {
   preserveModelProviderResponseReceipt,
 } from "@/lib/models/types";
 import { estimateProviderCost } from "@/lib/models/pricing";
+import {
+  claudeMaxTokens,
+  claudeModelInBedrockId,
+} from "@/lib/models/anthropic-capabilities";
 import { supportsBedrockPromptCache } from "@/lib/models/prompt-cache";
 import type { ModelUsage } from "@/lib/openai/model-router";
 import {
@@ -248,12 +252,7 @@ async function callBedrockConverse(input: {
         }
       : {}),
     inferenceConfig: {
-      maxTokens: boundedInteger(
-        input.request.maxOutputTokens,
-        DEFAULT_MAX_OUTPUT_TOKENS,
-        1,
-        MAX_OUTPUT_TOKENS,
-      ),
+      maxTokens: bedrockMaxTokens(modelId, input.request.maxOutputTokens),
     },
   };
   let body: string;
@@ -441,6 +440,21 @@ function deploymentModel(tier: ModelTarget["tier"]) {
     return reasoning || shared || fast;
   }
   return fast || shared || reasoning;
+}
+
+/**
+ * A Claude model that thinks by default spends maxTokens on thinking too. No
+ * effort is sent, so it gets room to think at its default effort.
+ */
+function bedrockMaxTokens(modelId: string, requested: number | undefined) {
+  const answerTokens = boundedInteger(
+    requested,
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    1,
+    MAX_OUTPUT_TOKENS,
+  );
+  const claude = claudeModelInBedrockId(modelId);
+  return claude ? claudeMaxTokens(claude, answerTokens) : answerTokens;
 }
 
 function normalizeModelId(value: string) {
@@ -1039,6 +1053,15 @@ function normalizeToolUse(value: Record<string, unknown>): BedrockToolUse {
 }
 
 function rejectUnsafeStopReason(value: unknown) {
+  // A reply cut off at the token limit may end inside a tool call's input.
+  if (value === "max_tokens") {
+    throw new ModelProviderError(
+      "Amazon Bedrock reached the response token limit. Narrow the request or split it into smaller steps.",
+      PROVIDER,
+      "unknown",
+      false,
+    );
+  }
   if (value === "guardrail_intervened" || value === "content_filtered") {
     throw new ModelProviderError(
       "Amazon Bedrock blocked the request for safety.",

@@ -109,20 +109,14 @@ export async function generateGeminiText(input: {
       model,
       input: input.prompt,
       ...(input.instructions ? { system_instruction: input.instructions } : {}),
-      generation_config: { max_output_tokens: Math.min(Math.max(input.maxOutputTokens || 2_000, 64), 8_000) },
+      generation_config: { max_output_tokens: geminiMaxOutputTokens(input.maxOutputTokens) },
       store: false,
     }),
     signal: input.abortSignal,
   });
   const body = await readInteractionResponse(response);
-  if (body.status === "failed") {
-    throw geminiResponseFailure(
-      new Error(body.error?.message || "Gemini interaction failed."),
-      body,
-      model,
-      startedAt,
-    );
-  }
+  const unfinished = unfinishedInteractionError(body);
+  if (unfinished) throw geminiResponseFailure(unfinished, body, model, startedAt);
   const text = interactionContents(body).filter((item) => item.type === "text").map((item) => item.text || "").join("").trim();
   if (!text) {
     throw geminiResponseFailure(
@@ -216,24 +210,15 @@ export async function generateGeminiToolTurn(input: {
         parameters: tool.parameters,
       })),
       generation_config: {
-        max_output_tokens: Math.min(
-          Math.max(input.maxOutputTokens || 2_000, 64),
-          8_000,
-        ),
+        max_output_tokens: geminiMaxOutputTokens(input.maxOutputTokens),
       },
       store: false,
     }),
     signal: input.abortSignal,
   });
   const body = await readInteractionResponse(response);
-  if (body.status === "failed") {
-    throw geminiResponseFailure(
-      new Error(body.error?.message || "Gemini interaction failed."),
-      body,
-      model,
-      startedAt,
-    );
-  }
+  const unfinished = unfinishedInteractionError(body);
+  if (unfinished) throw geminiResponseFailure(unfinished, body, model, startedAt);
   const steps = Array.isArray(body.steps) ? body.steps : [];
   const text = interactionContents(body)
     .filter((item) => item.type === "text")
@@ -732,6 +717,42 @@ function interactionContents(body: InteractionResponse) {
 
 async function readInteractionResponse(response: Response) {
   return await readJsonResponse(response) as InteractionResponse;
+}
+
+// Thinking tokens count toward max_output_tokens, and Gemini models think by
+// default, so the limit leaves room to think on top of the answer. Google
+// gives no figure for how much each thinking level uses.
+const GEMINI_THINKING_TOKENS = 16_000;
+
+function geminiMaxOutputTokens(answerTokens: number | undefined) {
+  return Math.min(Math.max(answerTokens || 2_000, 64), 8_000) +
+    GEMINI_THINKING_TOKENS;
+}
+
+/**
+ * The error for a text or tool interaction that did not finish. A turn that
+ * calls functions ends in requires_action; one cut off at the token limit ends
+ * in incomplete and may hold a partial call.
+ */
+function unfinishedInteractionError(body: InteractionResponse) {
+  if (body.status === "failed") {
+    return new Error(body.error?.message || "Gemini interaction failed.");
+  }
+  if (body.status === "incomplete" || body.status === "budget_exceeded") {
+    return new Error(
+      "Gemini returned an incomplete response, usually because it reached the response token limit. Narrow the request or split it into smaller steps.",
+    );
+  }
+  if (
+    body.status &&
+    body.status !== "completed" &&
+    body.status !== "requires_action"
+  ) {
+    return new Error(
+      `Gemini ended the interaction with status ${body.status.slice(0, 40)}.`,
+    );
+  }
+  return undefined;
 }
 
 function geminiResponseFailure(
