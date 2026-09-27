@@ -97,10 +97,19 @@ type BuildWorkflowPlanInput = {
     directive: WorkflowReplanDirectiveV1;
   };
   abortSignal?: AbortSignal;
+  /** Epoch ms at which the caller's abortSignal stops this work. */
+  deadlineAt?: number;
   modelMaxAttempts?: number;
   usageAttribution?: Pick<AiUsageScope, "actorId" | "executionScope" | "correlationId" | "causationId">;
   executionScope?: ExecutionScope;
 };
+
+/** The planner falls back to a deterministic plan after a model error. */
+const MODEL_ERROR_FALLBACK = "fallback-after-model-error";
+/** Time a fallback plan needs to be saved before the caller's deadline. */
+const PLANNER_DEADLINE_MARGIN_MS = 2_000;
+/** The model always gets this long before the planner calls it too slow. */
+const MIN_PLANNER_MODEL_WINDOW_MS = 30_000;
 
 type WorkflowPlanLedger = {
   plans: WorkflowPlanRecord[];
@@ -211,7 +220,8 @@ export async function buildDynamicWorkflowPlan(input: BuildWorkflowPlanInput) {
 
   if (input.workflowRunId && input.reuseExisting !== false && !contextSelection) {
     const existing = await getWorkflowPlanForRun(input.workflowRunId, { tenantId });
-    if (existing) {
+    // A plan the model failed to write is a stopgap; plan again with the model.
+    if (existing && existing.model !== MODEL_ERROR_FALLBACK) {
       if (!workflowPlanContextBoundariesEqual(
         existing.contextBoundary,
         input.contextBoundary,
@@ -348,6 +358,7 @@ export async function buildDynamicWorkflowPlan(input: BuildWorkflowPlanInput) {
       input.replan ? workflowSubtreeReplanInstructions(input.replan) : undefined,
     ].filter(Boolean).join("\n\n") || undefined,
     abortSignal: input.abortSignal,
+    deadlineAt: input.deadlineAt,
     sourceStreamId: input.workflowRunId
       ? `workflow:${input.workflowRunId}`
       : `workflow-plan:${planId}`,
@@ -398,6 +409,8 @@ export async function buildDynamicWorkflowPlan(input: BuildWorkflowPlanInput) {
     updatedAt: new Date().toISOString(),
   };
 
+  // A stopped caller has given up on this plan, so it is never admitted.
+  input.abortSignal?.throwIfAborted();
   return saveWorkflowPlan(
     record,
     input.executionScope || input.usageAttribution?.executionScope,
@@ -665,6 +678,7 @@ async function generatePlan({
   requiredAcceptanceCriteria,
   agentInstructions,
   abortSignal,
+  deadlineAt,
   sourceStreamId,
   usageAttribution,
   modelMaxAttempts,
@@ -682,6 +696,7 @@ async function generatePlan({
   requiredAcceptanceCriteria: readonly string[];
   agentInstructions?: string;
   abortSignal?: AbortSignal;
+  deadlineAt?: number;
   sourceStreamId: string;
   usageAttribution?: BuildWorkflowPlanInput["usageAttribution"];
   modelMaxAttempts?: number;
@@ -746,7 +761,10 @@ async function generatePlan({
 
   try {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(new Error("Workflow planner timed out.")), WORKFLOW_PLANNER_TIMEOUT_MS);
+    const timer = setTimeout(
+      () => controller.abort(new Error("Workflow planner timed out.")),
+      plannerTimeoutMs(deadlineAt),
+    );
     const generated = await generateModelStructured(
       runtimeModel.bind({
         name: "dynamic_workflow_plan",
@@ -803,7 +821,8 @@ async function generatePlan({
       ),
     };
   } catch (error) {
-    if (commandModel) throw error;
+    // A stopped caller is not a model failure; the step runs again later.
+    if (commandModel || abortSignal?.aborted) throw error;
     const fallback = deterministicPlan({
       goal,
       mode,
@@ -815,7 +834,7 @@ async function generatePlan({
     });
     return {
       planner: "deterministic",
-      model: "fallback-after-model-error",
+      model: MODEL_ERROR_FALLBACK,
       plan: {
         ...fallback,
         risks: [
@@ -825,6 +844,22 @@ async function generatePlan({
       },
     };
   }
+}
+
+/**
+ * Ends the model call early enough to save a fallback before the caller's
+ * deadline, but never cuts it below the minimum window: with less runway the
+ * caller stops the call instead and the plan step runs again.
+ */
+function plannerTimeoutMs(deadlineAt: number | undefined) {
+  if (deadlineAt === undefined) return WORKFLOW_PLANNER_TIMEOUT_MS;
+  return Math.min(
+    WORKFLOW_PLANNER_TIMEOUT_MS,
+    Math.max(
+      MIN_PLANNER_MODEL_WINDOW_MS,
+      deadlineAt - Date.now() - PLANNER_DEADLINE_MARGIN_MS,
+    ),
+  );
 }
 
 function effectivePlannerActorId(

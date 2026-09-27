@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   appendWorkflowEvent: vi.fn(),
   revokeApprovalGrantsForPlan: vi.fn(),
   buildContextPack: vi.fn(),
+  buildDynamicWorkflowPlan: vi.fn(),
   generateModelStructured: vi.fn(),
   getWorkflowRunDetail: vi.fn(),
   getWorkflowRunExecutionAuthority: vi.fn(),
@@ -103,6 +104,10 @@ vi.mock("@/lib/workflows/personal-context", async (importOriginal) => {
       mocks.resolveWorkflowPersonalContextAccess,
   };
 });
+vi.mock("@/lib/workflows/planner", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/workflows/planner")>()),
+  buildDynamicWorkflowPlan: mocks.buildDynamicWorkflowPlan,
+}));
 vi.mock("@/lib/workflows/store", () => ({
   approveWorkflowRun: vi.fn(),
   appendWorkflowEvent: mocks.appendWorkflowEvent,
@@ -664,6 +669,26 @@ describe("workflow runner bounded replan", () => {
     expect(stopped.events.some((event) =>
       event.type === "workflow.replan_triggered"
     )).toBe(false);
+  });
+});
+
+describe("workflow runner deadline", () => {
+  it("gives the planner the tick's deadline", async () => {
+    for (const step of detail.steps.slice(2)) {
+      Object.assign(step, { status: "pending", attempt: 0, output: undefined });
+    }
+    detail.run.currentStep = "plan";
+    mocks.buildDynamicWorkflowPlan.mockRejectedValueOnce(
+      new Error("The planner stopped for this test."),
+    );
+    const deadlineAt = Date.now() + 40_000;
+
+    await tickWorkflowRun(detail.run.id, { tenantId: "tenant-1", deadlineAt });
+
+    expect(mocks.buildDynamicWorkflowPlan).toHaveBeenCalledTimes(1);
+    expect(mocks.buildDynamicWorkflowPlan).toHaveBeenCalledWith(
+      expect.objectContaining({ workflowRunId: detail.run.id, deadlineAt }),
+    );
   });
 });
 

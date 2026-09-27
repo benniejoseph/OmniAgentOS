@@ -36,6 +36,8 @@ type ProcessWorkflowQueueInput = {
   bootstrapQueuedRuns?: boolean;
   tenantId?: string;
   abortSignal?: AbortSignal;
+  /** Epoch ms at which abortSignal fires, so model steps can end before it. */
+  deadlineAt?: number;
 };
 
 type WorkflowQueueJobResult = {
@@ -149,12 +151,12 @@ export async function processAllTenantWorkflowQueues(
   } = {},
 ): Promise<AllTenantWorkflowQueueResult> {
   const limit = Math.min(Math.max(input.limit || WORKFLOW_DRAIN_LIMIT, 1), 10);
-  const deadlineSignal = AbortSignal.timeout(
-    Math.min(
-      Math.max(Math.round(input.timeBudgetMs || 240_000), 1_000),
-      240_000,
-    ),
+  const timeBudgetMs = Math.min(
+    Math.max(Math.round(input.timeBudgetMs || 240_000), 1_000),
+    240_000,
   );
+  const deadlineAt = Date.now() + timeBudgetMs;
+  const deadlineSignal = AbortSignal.timeout(timeBudgetMs);
   const tenantIds = input.tenantIds
     ? boundedDispatchTenantIds(input.tenantIds, limit)
     : await listRunnableWorkflowTenantIds(limit);
@@ -177,6 +179,7 @@ export async function processAllTenantWorkflowQueues(
         limit: 1,
         bootstrapQueuedRuns: true,
         abortSignal: deadlineSignal,
+        deadlineAt,
       });
       tenantResults.push({ tenantId, result });
       jobs.push(...result.jobs);
@@ -456,6 +459,7 @@ async function processWorkflowQueueInScope(
         detail = await tickWorkflowRun(workflowRunId, {
           tenantId: job.tenantId,
           abortSignal: executionSignal,
+          deadlineAt: input.deadlineAt,
         });
       } finally {
         clearInterval(heartbeatTimer);

@@ -132,7 +132,12 @@ export class WorkflowSignalConflictError extends Error {
 
 export async function tickWorkflowRun(
   runId: string,
-  options: { tenantId?: string; abortSignal?: AbortSignal } = {},
+  options: {
+    tenantId?: string;
+    abortSignal?: AbortSignal;
+    /** Epoch ms at which abortSignal stops this tick. */
+    deadlineAt?: number;
+  } = {},
 ) {
   throwIfAborted(options.abortSignal);
   const detail = await getWorkflowRunDetail(runId, { tenantId: options.tenantId });
@@ -286,6 +291,7 @@ export async function tickWorkflowRun(
       freshDetail,
       options.abortSignal,
       runBudget,
+      options.deadlineAt,
     );
     runBudget.snapshot();
     throwIfAborted(options.abortSignal);
@@ -1031,6 +1037,7 @@ async function executeStep(
   detail: WorkflowRunDetail,
   abortSignal?: AbortSignal,
   budget?: WorkflowBudgetSession,
+  deadlineAt?: number,
 ) {
   throwIfAborted(abortSignal);
   const runBudget = budget || createWorkflowBudgetSession(detail);
@@ -1188,7 +1195,7 @@ async function executeStep(
   }
 
   if (stepKey === "plan") {
-    return buildPlan(detail, abortSignal, runBudget);
+    return buildPlan(detail, abortSignal, runBudget, deadlineAt);
   }
 
   if (stepKey === "approval_gate") {
@@ -1461,6 +1468,7 @@ async function buildPlan(
   detail: WorkflowRunDetail,
   abortSignal: AbortSignal | undefined,
   budget: WorkflowBudgetSession,
+  deadlineAt: number | undefined,
 ) {
   const profile = workflowAgentProfile(detail);
   const runtimeSkills = assignedSkillsWithinRuntimeLimit(profile?.skills || []);
@@ -1611,6 +1619,7 @@ async function buildPlan(
         : {}),
       reuseExisting: !replanEvent,
       abortSignal: workflowRunBudgetAbortSignal(budget, abortSignal),
+      deadlineAt,
       modelMaxAttempts: modelBudget.maxAttempts,
     });
   const outcomeContractBinding = buildWorkflowOutcomeContractBindingV1({

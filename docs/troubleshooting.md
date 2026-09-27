@@ -76,6 +76,12 @@ For internal calls, the secret and identity headers must be sent together. Never
 - A retry that returns the failure instead of running: This Mac tools never run again, because the Mac keys each command by its execution ID and would hand back the old command. A replay that carries a schedule's policy lease, a dry run, a call with an effect receipt, and a replay under another role than the one the execution was bound to never run again either.
 - A workflow node whose pass was stopped while its tool call ran goes back to pending instead of failing the workflow.
 
+## A workflow plan step starts over, or its plan was built without the model
+
+- A plan step with `step.reset` (reason `interrupted`), `step.interrupted`, and the run error `Workflow execution was interrupted and safely requeued.`: the queue pass ran out of time, or its worker lost the run's lease, while the model was planning. No plan was saved, and the step plans again on a later pass. Each attempt uses a model call from the run's budget, so a run interrupted this way again and again ends with `workflow.budget_exhausted`.
+- A plan whose `model` is `fallback-after-model-error`, with the risk `Model planner fallback used: <error>`: the model call failed or ran past its timeout, so the run continued on a deterministic plan. The timeout is `OMNIAGENT_WORKFLOW_PLANNER_TIMEOUT_MS` (45 seconds by default). Inside a queue pass it is shortened so the fallback is saved two seconds before the pass's deadline, but never below 30 seconds.
+- The next time that run is planned (a retried plan step, `POST /api/workflows/plan`, or the `workflows.plan` tool), the model is asked again instead of reusing the fallback. A plan built while no planner model was configured (`model: "fallback"`) is still reused.
+
 ## An approved run fails as interrupted, or resumes late
 
 - `Approved run resume was interrupted; side effects were not replayed.`: the process resuming the run stopped before it finished, and its resume-job lease (two minutes) lapsed. A worker then fails the run rather than replay its effects. When an approved This Mac step returned an observation, the approving request does the resume, so look for that request hitting the approvals route's 300-second limit or crashing. Start a new run to continue.
