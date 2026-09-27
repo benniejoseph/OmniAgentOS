@@ -868,6 +868,239 @@ describe("tool approval claims (file mode)", () => {
       store.getToolExecution(pending.id, { tenantId: pending.tenantId }),
     ).resolves.toMatchObject({ id: pending.id, status: "approval_required" });
   });
+
+  it("claims a failed execution again only when its failure changed nothing", async () => {
+    const store = await import("@/lib/tools/audit-store");
+    const createdAt = "2026-09-01T00:00:00.000Z";
+    const failed = (
+      id: string,
+      overrides: Partial<ToolExecutionRecord> = {},
+    ): ToolExecutionRecord => ({
+      id,
+      tenantId: "tenant-a",
+      actorId: "requester",
+      toolId: "memory.write",
+      toolName: "Write memory",
+      riskLevel: 1,
+      status: "failed",
+      dryRun: false,
+      approvalRequired: false,
+      input: { title: "Standup", content: "Standup moved to 10am." },
+      output: { error: "This operation was aborted", interrupted: "before_start" },
+      reason: "The tool call was interrupted before it started.",
+      createdAt,
+      completedAt: createdAt,
+      ...overrides,
+    });
+    const search = {
+      toolId: "memory.search",
+      toolName: "Search memory",
+      riskLevel: 0,
+      input: { query: "standup", limit: 5 },
+      output: { error: "Search index unavailable." },
+      reason: "Search index unavailable.",
+    } satisfies Partial<ToolExecutionRecord>;
+    const claimOutput = (id: string) => ({
+      __executionClaim: {
+        token: `${id}-retry`,
+        claimedAt: new Date().toISOString(),
+      },
+    });
+    const claimOf = (
+      record: ToolExecutionRecord,
+      overrides: Partial<ToolExecutionRecord> = {},
+    ): ToolExecutionRecord => ({
+      ...record,
+      status: "executing",
+      output: claimOutput(record.id),
+      reason: "Claimed for a retry.",
+      approvalDecision: undefined,
+      approvals: undefined,
+      approvedBy: undefined,
+      approvedAt: undefined,
+      approvalReason: undefined,
+      createdAt: new Date().toISOString(),
+      completedAt: undefined,
+      effectReceipt: undefined,
+      ...overrides,
+    });
+    const asWrite = { retryFailed: { operationClass: "mutation" as const } };
+    const asRead = { retryFailed: { operationClass: "read_only" as const } };
+    const interruptedWrite = failed("retry-interrupted-write");
+    // The first attempt's decision does not carry over to the retry.
+    const failedRead = failed("retry-failed-read", {
+      ...search,
+      approvalDecision: "approved",
+      approvals: [{ by: "admin-a", role: "admin", at: createdAt }],
+      approvedBy: "requester",
+      approvedAt: createdAt,
+      approvalReason: "Approved for the first attempt.",
+    });
+    const refusals = [
+      {
+        name: "without a retry request",
+        record: failed("refuse-unrequested", search),
+        options: {},
+      },
+      {
+        name: "for a write that failed on its own error",
+        record: failed("refuse-write-error", {
+          output: { error: "Memory quota exceeded." },
+        }),
+      },
+      {
+        name: "for a proposal without a claim",
+        record: failed("refuse-unclaimed"),
+        proposal: { output: {} },
+      },
+      {
+        name: "for a record that did not fail",
+        record: failed("refuse-executed", {
+          ...search,
+          status: "executed",
+          output: { ok: true },
+        }),
+        options: asRead,
+      },
+      {
+        name: "for a proposal that does not execute",
+        record: failed("refuse-proposal-status"),
+        proposal: { status: "approval_required" as const },
+      },
+      {
+        name: "for a dry-run record",
+        record: failed("refuse-dry-record", { dryRun: true }),
+        proposal: { dryRun: false },
+      },
+      {
+        name: "for a dry-run proposal",
+        record: failed("refuse-dry-proposal"),
+        proposal: { dryRun: true },
+      },
+      {
+        name: "for another actor",
+        record: failed("refuse-actor"),
+        proposal: { actorId: "sibling" },
+      },
+      {
+        name: "for another tool",
+        record: failed("refuse-tool"),
+        proposal: { toolId: "memory.search" },
+      },
+      {
+        name: "for a renamed tool",
+        record: failed("refuse-tool-name"),
+        proposal: { toolName: "Save memory" },
+      },
+      {
+        name: "for another risk level",
+        record: failed("refuse-risk"),
+        proposal: { riskLevel: 2 },
+      },
+      {
+        name: "for another approval requirement",
+        record: failed("refuse-approval"),
+        proposal: { approvalRequired: true },
+      },
+      {
+        name: "for other input",
+        record: failed("refuse-input"),
+        proposal: {
+          input: { title: "Standup", content: "Standup moved to 11am." },
+        },
+      },
+      {
+        name: "for a record with an effect receipt",
+        record: failed("refuse-receipt", {
+          // Only the receipt's presence matters to the claim.
+          effectReceipt: { effectReceiptId: "receipt-refuse" } as never,
+        }),
+      },
+      {
+        name: "for a record with a durable effect intent",
+        record: failed("refuse-intent", {
+          output: { interrupted: "before_start", __effectIntentV2: {} },
+        }),
+      },
+      {
+        name: "for a record bound to a memory effect",
+        record: failed("refuse-effect-record", {
+          output: { interrupted: "before_start", __effectTargetId: "memory_effect_refuse" },
+        }),
+      },
+      {
+        name: "for a proposal bound to a memory effect",
+        record: failed("refuse-effect-proposal"),
+        proposal: {
+          output: {
+            ...claimOutput("refuse-effect-proposal"),
+            __effectTargetId: "memory_effect_refuse",
+          },
+        },
+      },
+    ] satisfies Array<{
+      name: string;
+      record: ToolExecutionRecord;
+      proposal?: Partial<ToolExecutionRecord>;
+      options?: Parameters<typeof store.claimIdempotentToolExecution>[1];
+    }>;
+    await writeJsonFile(getDataPath("tools.json"), {
+      records: [
+        interruptedWrite,
+        failedRead,
+        ...refusals.map(({ record }) => record),
+      ],
+    });
+
+    for (const [record, options] of [
+      [interruptedWrite, asWrite],
+      [failedRead, asRead],
+    ] as const) {
+      const claim = await store.claimIdempotentToolExecution(
+        claimOf(record),
+        { ...options, idempotencyKey: `${record.id}:retry` },
+      );
+      expect(claim).toMatchObject({
+        outcome: "claimed",
+        record: {
+          id: record.id,
+          status: "executing",
+          createdAt,
+          output: { __executionClaim: { token: `${record.id}-retry` } },
+          reason: "Claimed for a retry.",
+        },
+      });
+      for (const field of [
+        "completedAt",
+        "approvalDecision",
+        "approvals",
+        "approvedBy",
+        "approvedAt",
+        "approvalReason",
+      ] as const) {
+        expect(claim.record[field], field).toBeUndefined();
+      }
+      expect(claim.record.output).not.toHaveProperty("interrupted");
+      await expect(
+        store.getToolExecution(record.id, { tenantId: "tenant-a" }),
+      ).resolves.toEqual(claim.record);
+      const events = await listStreamEvents(`tool_execution:${record.id}`, {
+        tenantId: "tenant-a",
+        actorId: "requester",
+      });
+      expect(events.map((event) => event.payload.operation)).toEqual(["reclaimed"]);
+    }
+
+    for (const refusal of refusals) {
+      const { record } = refusal;
+      const proposal = "proposal" in refusal ? refusal.proposal : {};
+      const options = "options" in refusal ? refusal.options : asWrite;
+      await expect(
+        store.claimIdempotentToolExecution(claimOf(record, proposal), options),
+        refusal.name,
+      ).resolves.toEqual({ outcome: "existing", record });
+    }
+  });
 });
 
 function pendingRecord(id: string, riskLevel: 2 | 3): ToolExecutionRecord {

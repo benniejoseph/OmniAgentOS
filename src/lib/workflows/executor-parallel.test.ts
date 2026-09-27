@@ -37,7 +37,10 @@ vi.mock("@/lib/workflows/store", () => ({
   getWorkflowRunExecutionAuthority: mocks.getWorkflowRunExecutionAuthority,
 }));
 
-import { executeDynamicWorkflowPlan } from "@/lib/workflows/executor";
+import {
+  executeDynamicWorkflowPlan,
+  listWorkflowPlanNodeExecutionsForRun,
+} from "@/lib/workflows/executor";
 import { withWorkflowNodeContract } from "@/lib/workflows/node-contract";
 import {
   applyWorkflowSubtreeReplan,
@@ -333,6 +336,39 @@ describe("workflow parallel DAG scheduling", () => {
       ],
     });
     expect(callCount).toBe(5);
+  });
+
+  it("returns a node that failed because its pass was stopped to pending", async () => {
+    const pass = new AbortController();
+    mocks.executeGovernedTool.mockImplementation(async ({ toolId }) => {
+      pass.abort();
+      return {
+        record: {
+          id: "read-execution-interrupted",
+          toolId,
+          status: "failed",
+          dryRun: false,
+          approvalRequired: false,
+          riskLevel: 0,
+          reason: "This operation was aborted",
+        },
+        result: null,
+      };
+    });
+    const detail = workflowDetail("workflow-interrupted-node", [
+      toolNode("read-a", "runs.list"),
+    ]);
+
+    const error = await executeDynamicWorkflowPlan(detail, { abortSignal: pass.signal })
+      .then(() => undefined, (reason: unknown) => reason);
+    expect(pass.signal.aborted).toBe(true);
+    expect(error).toBe(pass.signal.reason);
+
+    const [record] = await listWorkflowPlanNodeExecutionsForRun(detail.run.id);
+    expect(record).toMatchObject({ nodeId: "read-a", status: "pending" });
+    const events = mocks.appendWorkflowEvent.mock.calls.map(([, event]) => event);
+    expect(events).toContain("workflow.plan_node.interrupted");
+    expect(events).not.toContain("workflow.plan_node.completed");
   });
 });
 

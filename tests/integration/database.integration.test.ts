@@ -3995,6 +3995,146 @@ databaseDescribe("Postgres schema integration", () => {
       `;
     }
   });
+
+  test("claims a failed tool execution again only when its failure changed nothing", async () => {
+    const tenantId = "retry_failed_tenant";
+    const actorId = "retry_failed_actor";
+    const createdAt = "2026-09-01T00:00:00.000Z";
+    const inTenant = <T,>(operation: () => Promise<T>) =>
+      runWithDatabaseTenantScope(tenantId, operation);
+    const failedRead = (id: string) => ({
+      ...createToolExecutionRecord({
+        tenantId,
+        actorId,
+        toolId: "memory.search",
+        toolName: "Search memory",
+        riskLevel: 0,
+        status: "failed",
+        dryRun: false,
+        approvalRequired: false,
+        input: { query: "standup", limit: 5 },
+        output: { error: "Search index unavailable." },
+        reason: "Search index unavailable.",
+        completedAt: createdAt,
+      }),
+      id,
+      createdAt,
+    });
+    const failedWrite = (id: string, output: Record<string, unknown>) => ({
+      ...createToolExecutionRecord({
+        tenantId,
+        actorId,
+        toolId: "memory.write",
+        toolName: "Write memory",
+        riskLevel: 1,
+        status: "failed",
+        dryRun: false,
+        approvalRequired: false,
+        input: { title: "Standup", content: "Standup moved to 10am." },
+        output,
+        reason: "The tool call failed.",
+        completedAt: createdAt,
+      }),
+      id,
+      createdAt,
+    });
+    const claimOf = (record: ReturnType<typeof failedRead>) => ({
+      ...record,
+      status: "executing" as const,
+      output: {
+        __executionClaim: {
+          token: `${record.id}-retry`,
+          claimedAt: new Date().toISOString(),
+        },
+      },
+      reason: "Claimed for a retry.",
+      createdAt: new Date().toISOString(),
+      completedAt: undefined,
+    });
+    const asRead = { retryFailed: { operationClass: "read_only" as const } };
+    const asWrite = { retryFailed: { operationClass: "mutation" as const } };
+    const read = failedRead("retry-db-read");
+    const write = failedWrite("retry-db-write", {
+      error: "This operation was aborted",
+      interrupted: "before_start",
+    });
+    const unrequested = failedRead("retry-db-unrequested");
+    const writeError = failedWrite("retry-db-write-error", {
+      error: "Memory quota exceeded.",
+    });
+    const leased = failedRead("retry-db-leased");
+    for (const record of [read, write, unrequested, writeError, leased]) {
+      await inTenant(() => saveToolExecution(record));
+    }
+    const row = (id: string) => admin`
+      SELECT
+        status,
+        completed_at IS NULL AS open,
+        output #>> '{__executionClaim,token}' AS token,
+        created_at = ${createdAt}::timestamptz AS created_at_kept
+      FROM omni_tool_executions
+      WHERE tenant_id = ${tenantId} AND id = ${id}
+    `;
+    const operations = async (id: string) => (await admin`
+      SELECT payload->>'operation' AS operation
+      FROM omni_events
+      WHERE tenant_id = ${tenantId}
+        AND stream_id = ${`tool_execution:${id}`}
+        AND type = 'tool.execution.upserted'
+      ORDER BY payload->>'operation'
+    `).map((event) => event.operation);
+
+    // A read, and a write interrupted before its tool started, are claimed
+    // again at the same row under the lock.
+    for (const [record, options] of [[read, asRead], [write, asWrite]] as const) {
+      await expect(inTenant(() => claimIdempotentToolExecution(
+        claimOf(record),
+        { ...options, idempotencyKey: `${record.id}:retry` },
+      ))).resolves.toMatchObject({
+        outcome: "claimed",
+        record: { id: record.id, status: "executing", createdAt },
+      });
+      expect(await row(record.id)).toEqual([{
+        status: "executing",
+        open: true,
+        token: `${record.id}-retry`,
+        created_at_kept: true,
+      }]);
+      expect(await operations(record.id)).toEqual(["reclaimed", "saved"]);
+    }
+
+    // No retry was asked for, a write failed on its own error, or a policy
+    // lease rides the claim: the failure stands.
+    const scope = createExecutionScope({
+      tenantId,
+      initiatingActorId: actorId,
+      executingPrincipalType: "agent",
+      executingPrincipalId: "atlas",
+      correlationId: "correlation:retry-db-leased",
+      purpose: "tool.execution.claim",
+    });
+    for (const [record, options] of [
+      [unrequested, {}],
+      [writeError, asWrite],
+      // The claim refuses before it would read the lease.
+      [leased, { ...asRead, executionScope: scope, policyLeaseClaim: {} as never }],
+    ] as const) {
+      await expect(inTenant(() => claimIdempotentToolExecution(
+        claimOf(record),
+        options,
+      ))).resolves.toMatchObject({
+        outcome: "existing",
+        record: { id: record.id, status: "failed" },
+      });
+      expect(await row(record.id)).toEqual([{
+        status: "failed",
+        open: false,
+        token: null,
+        created_at_kept: true,
+      }]);
+      expect(await operations(record.id)).toEqual(["saved"]);
+    }
+  });
 });
 
 async function dropDatabaseRole(

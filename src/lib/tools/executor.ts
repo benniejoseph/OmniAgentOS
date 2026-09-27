@@ -1080,6 +1080,9 @@ export async function executeGovernedTool({
   // Idempotent retries must resolve their existing receipt before consulting
   // (and consuming) the earned-autonomy budget. This keeps transport retries
   // from spending additional authority or producing a new approval decision.
+  // The one exception is a failure that proves the tool changed nothing: that
+  // replay runs the call again under a fresh policy decision and claim.
+  let retryFailedExecution = false;
   if (
     !dryRun &&
     idempotencyKey &&
@@ -1094,8 +1097,9 @@ export async function executeGovernedTool({
       { tenantId: context?.tenantId },
     );
     if (existing) {
+      let existingScope: ResolvedToolExecutionScope;
       try {
-        await assertExistingScopedToolReceipt({
+        existingScope = await assertExistingScopedToolReceipt({
           record: existing,
           tool,
           toolInput: preparedInput,
@@ -1215,14 +1219,23 @@ export async function executeGovernedTool({
       ) {
         throw new EffectReceiptFinalizationError();
       }
-      return {
+      retryFailedExecution = !policyLeaseClaim && isRetryableFailedToolExecution({
         record,
-        result: record.status === "executed"
-          ? isMoltbookToolId(tool.id)
-            ? publicToolExecution(record).output
-            : record.output
-          : null,
-      };
+        tool,
+        preparedInput,
+        scope: existingScope,
+        context,
+      });
+      if (!retryFailedExecution) {
+        return {
+          record,
+          result: record.status === "executed"
+            ? isMoltbookToolId(tool.id)
+              ? publicToolExecution(record).output
+              : record.output
+            : null,
+        };
+      }
     }
   }
 
@@ -1620,7 +1633,13 @@ export async function executeGovernedTool({
         idempotencyKey,
         ...(boundPolicyLeaseApproval && policyLeaseClaim
           ? { policyLeaseClaim }
-          : {}),
+          : retryFailedExecution
+            ? {
+                retryFailed: {
+                  operationClass: governedToolOperationClass(tool, preparedInput),
+                },
+              }
+            : {}),
         ...(agentRunId ? { activeAgentRun: { runId: agentRunId } } : {}),
       });
     } catch (error) {
@@ -1850,6 +1869,10 @@ export async function executeGovernedTool({
     });
   }
 
+  // What an abort interrupted: whether the tool had started, and whether a
+  // durable effect intent already awaits reconciliation.
+  let toolStarted = false;
+  let effectIntentOpen = false;
   try {
     if (dryRun) {
       const preview = dryRunTool(tool, preparedInput);
@@ -1871,6 +1894,7 @@ export async function executeGovernedTool({
       executionId: executionRecord?.id,
       idempotencyKey,
     });
+    effectIntentOpen = Boolean(effectContext);
     if (effectContext && executionRecord) {
       try {
         assertPreparedEffectIntent(executionRecord, effectContext);
@@ -1914,6 +1938,7 @@ export async function executeGovernedTool({
         });
         if (!persistedIntent) throw new ExecutionClaimLostError();
         executionRecord = persistedIntent;
+        effectIntentOpen = true;
       } catch (error) {
         throw new EffectReceiptFinalizationError({ cause: error });
       }
@@ -1930,6 +1955,8 @@ export async function executeGovernedTool({
         executionScope: scopedRequest.executionScope,
       });
     }
+    abortSignal?.throwIfAborted();
+    toolStarted = true;
     let result: unknown;
     try {
       result = await runTool(
@@ -2027,6 +2054,31 @@ export async function executeGovernedTool({
     const message = String(
       redactSensitive(error instanceof Error ? error.message : "Tool execution failed."),
     );
+    if (abortSignal?.aborted) {
+      // An abort is not a tool failure: it earns no trust outcome, connector
+      // failure, or review. A call that never started, or a read, ends failed
+      // with its interruption so a replay runs it again. A claim that may have
+      // changed something stays open for reconciliation or stale recovery.
+      const interrupted = toolStarted ? "in_flight" : "before_start";
+      const claimStaysOpen = Boolean(activeExecutionClaimToken) && (
+        Boolean(existingRecord) ||
+        effectIntentOpen ||
+        (toolStarted &&
+          governedToolOperationClass(tool, preparedInput) !== "read_only")
+      );
+      if (!claimStaysOpen) {
+        await persistRecord(createRecord({
+          ...baseRecord,
+          status: "failed" as const,
+          output: { error: message, interrupted },
+          reason: interrupted === "before_start"
+            ? "The tool call was interrupted before it started."
+            : "The tool call was interrupted while it was running.",
+          completedAt: new Date().toISOString(),
+        }));
+      }
+      abortSignal.throwIfAborted();
+    }
     if (tool.category === "mcp" || tool.category === "openapi") {
       await recordRuntimeEventSafely({
         level: "error",
@@ -2219,7 +2271,7 @@ async function assertExistingScopedToolReceipt(input: {
   mcpSessionScope?: McpSessionScope;
   effectBinding?: GovernedToolEffectBinding;
   idempotencyKey?: string;
-}) {
+}): Promise<ResolvedToolExecutionScope> {
   if (input.record.toolId !== input.tool.id) {
     throw new ToolExecutionScopeBindingError(
       "Idempotent tool execution belongs to a different governed tool.",
@@ -2255,7 +2307,7 @@ async function assertExistingScopedToolReceipt(input: {
         "Provider effect intent does not match its reviewed execution binding.",
       );
     }
-    if (input.record.status === "executing" && !hasEffectReceipt) return;
+    if (input.record.status === "executing" && !hasEffectReceipt) return resolved;
     if (
       input.record.status === "executed" &&
       input.record.effectReceipt?.schemaVersion === 2 &&
@@ -2263,7 +2315,7 @@ async function assertExistingScopedToolReceipt(input: {
       input.record.effectReceipt.inputSha256 === intent.inputSha256 &&
       input.record.effectReceipt.targetId === intent.targetId &&
       input.record.effectReceipt.expectedTargetStateSha256 === intent.expectedTargetStateSha256
-    ) return;
+    ) return resolved;
     throw new Error("Provider effect is not in a reconcilable state.");
   }
   if (!input.effectBinding) {
@@ -2272,7 +2324,7 @@ async function assertExistingScopedToolReceipt(input: {
         "A tool execution carries an effect receipt without a supported effect binding.",
       );
     }
-    return;
+    return resolved;
   }
   if (input.record.status === "executed" && !input.record.dryRun) {
     assertCompletedMemoryWriteEffectReceipt({
@@ -2281,7 +2333,7 @@ async function assertExistingScopedToolReceipt(input: {
       executionScope: resolved.executionScope,
       idempotencyKey: input.idempotencyKey,
     });
-    return;
+    return resolved;
   }
   const effectContext = prepareMemoryWriteEffectContext({
     tool: input.tool,
@@ -2296,15 +2348,43 @@ async function assertExistingScopedToolReceipt(input: {
   }
   if (input.record.status === "executing" && !input.record.dryRun) {
     assertPreparedEffectIntent(input.record, effectContext);
-  } else if (hasEffectReceipt) {
+    return resolved;
+  }
+  if (hasEffectReceipt) {
     throw new Error(
       "Only a completed live workflow memory effect may carry a receipt.",
     );
-  } else {
-    throw new Error(
-      "A governed memory effect intent cannot become terminal without its receipt.",
-    );
   }
+  throw new Error(
+    "A governed memory effect intent cannot become terminal without its receipt.",
+  );
+}
+
+/**
+ * Whether a replay may run a failed execution again instead of returning it.
+ * Only a failure that proves the tool changed nothing qualifies: a read, or a
+ * call interrupted before its tool started. This Mac keys each command by its
+ * execution ID and hands back the old command, so its tools never qualify.
+ */
+function isRetryableFailedToolExecution(input: {
+  record: ToolExecutionRecord;
+  tool: ToolDefinition;
+  preparedInput: Record<string, unknown>;
+  scope: ResolvedToolExecutionScope;
+  context?: SecurityContext;
+}) {
+  if (
+    input.record.status !== "failed" ||
+    input.record.dryRun ||
+    input.record.effectReceipt !== undefined ||
+    localComputerActionForTool(input.tool.id) ||
+    (input.scope.binding &&
+      input.scope.binding.requesterRole !== input.context?.role)
+  ) {
+    return false;
+  }
+  return governedToolOperationClass(input.tool, input.preparedInput) === "read_only" ||
+    asObjectRecord(input.record.output).interrupted === "before_start";
 }
 
 function assertCompletedMemoryWriteEffectReceipt(input: {

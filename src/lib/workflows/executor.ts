@@ -365,6 +365,9 @@ export async function executeDynamicWorkflowPlan(
         budget,
         executionAuthority,
       });
+      // A node that failed because this pass was stopped did not fail: it is
+      // interrupted and runs again on the next pass.
+      if (result.status === "failed") throwIfAborted(options.abortSignal);
       finalizedEffectReceipt = result.toolExecutions.some(
         (toolExecution) => toolExecution.effectReceiptFinalized === true,
       );

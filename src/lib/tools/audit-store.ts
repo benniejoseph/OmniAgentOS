@@ -84,6 +84,12 @@ export type ToolExecutionMutationOptions = {
    * transaction, once that run is canceled, finished, or deleted.
    */
   activeAgentRun?: { runId: string };
+  /**
+   * Lets this claim take over a failed execution at its idempotency key when
+   * the failure proves the tool changed nothing: a read, or a call
+   * interrupted before its tool started. The row is re-checked under its lock.
+   */
+  retryFailed?: { operationClass: "read_only" | "mutation" };
 };
 
 type ToolExecutionMutationOperation =
@@ -288,7 +294,14 @@ export async function claimIdempotentToolExecution(
         );
       }
       const existing = recordFromRow(rows[0]);
-      const reclaimed = reclaimStaleEffectExecutionRecord(existing, record);
+      const reclaimed = reclaimStaleEffectExecutionRecord(existing, record) ??
+        (options.retryFailed && !options.policyLeaseClaim
+          ? reclaimRetryableFailedExecutionRecord(
+              existing,
+              record,
+              options.retryFailed,
+            )
+          : undefined);
       if (reclaimed) {
         await writeToolExecutionDb(sql, reclaimed);
         await appendToolExecutionMutationEvent({
@@ -329,7 +342,14 @@ export async function claimIdempotentToolExecution(
             "Idempotent tool execution key collided with another tenant.",
           );
         }
-        const reclaimed = reclaimStaleEffectExecutionRecord(existing, record);
+        const reclaimed = reclaimStaleEffectExecutionRecord(existing, record) ??
+          (options.retryFailed && !options.policyLeaseClaim
+            ? reclaimRetryableFailedExecutionRecord(
+                existing,
+                record,
+                options.retryFailed,
+              )
+            : undefined);
         if (reclaimed) {
           result = { outcome: "claimed", record: reclaimed };
           operation = "reclaimed";
@@ -2614,18 +2634,67 @@ function effectExecutionIntentBindingFrom(
   return binding as EffectExecutionIntentBinding;
 }
 
-function isEffectBoundExecutionIntent(record: ToolExecutionRecord) {
+function hasEffectIntentOutput(record: ToolExecutionRecord) {
   const output = parseObject(record.output);
-  return record.status === "executing" &&
-    !record.dryRun &&
-    (Object.hasOwn(output, EFFECT_INTENT_V2_OUTPUT_KEY) ||
-      (record.toolId === "memory.write" && [
+  return Object.hasOwn(output, EFFECT_INTENT_V2_OUTPUT_KEY) ||
+    (record.toolId === "memory.write" && [
       "__effectIdempotencyKeySha256",
       "__effectInputSha256",
       "__effectPlanSha256",
       "__effectTargetId",
       "__effectToolContractSha256",
-      ].some((key) => Object.hasOwn(output, key))));
+    ].some((key) => Object.hasOwn(output, key)));
+}
+
+function isEffectBoundExecutionIntent(record: ToolExecutionRecord) {
+  return record.status === "executing" &&
+    !record.dryRun &&
+    hasEffectIntentOutput(record);
+}
+
+/**
+ * A failed execution may be claimed again only when its failure proves the
+ * tool changed nothing: it is a read, or it was interrupted before its tool
+ * started. Its immutable identity is kept; the claim brings a fresh intent.
+ */
+function reclaimRetryableFailedExecutionRecord(
+  existing: ToolExecutionRecord,
+  proposed: ToolExecutionRecord,
+  retry: NonNullable<ToolExecutionMutationOptions["retryFailed"]>,
+) {
+  if (
+    !executionClaimFrom(proposed) ||
+    existing.status !== "failed" ||
+    proposed.status !== "executing" ||
+    existing.dryRun ||
+    proposed.dryRun ||
+    normalizeTenantId(existing.tenantId) !== normalizeTenantId(proposed.tenantId) ||
+    existing.actorId !== proposed.actorId ||
+    existing.toolId !== proposed.toolId ||
+    existing.toolName !== proposed.toolName ||
+    existing.riskLevel !== proposed.riskLevel ||
+    existing.approvalRequired !== proposed.approvalRequired ||
+    toolInputSha256(existing.input) !== toolInputSha256(proposed.input) ||
+    existing.effectReceipt !== undefined ||
+    hasEffectIntentOutput(existing) ||
+    hasEffectIntentOutput(proposed) ||
+    (retry.operationClass !== "read_only" &&
+      parseObject(existing.output).interrupted !== "before_start")
+  ) {
+    return undefined;
+  }
+  return {
+    ...existing,
+    status: "executing" as const,
+    output: proposed.output,
+    reason: proposed.reason,
+    approvalDecision: proposed.approvalDecision,
+    approvals: proposed.approvals,
+    approvedBy: proposed.approvedBy,
+    approvedAt: proposed.approvedAt,
+    approvalReason: proposed.approvalReason,
+    completedAt: undefined,
+  } satisfies ToolExecutionRecord;
 }
 
 function reclaimStaleEffectExecutionRecord(
