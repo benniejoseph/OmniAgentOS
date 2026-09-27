@@ -13,9 +13,11 @@ import {
   failOperationJob,
   heartbeatOperationJob,
   leaseOperationJobs,
+  listActiveWorkflowTickRunIds,
   listRunnableWorkflowTenantIds,
   type OperationJobRecord,
 } from "@/lib/operations/job-queue";
+import { redactSensitive } from "@/lib/security/context";
 import { tickWorkflowRun } from "@/lib/workflows/runner";
 import {
   appendWorkflowEvent,
@@ -38,6 +40,13 @@ type ProcessWorkflowQueueInput = {
   abortSignal?: AbortSignal;
   /** Epoch ms at which abortSignal fires, so model steps can end before it. */
   deadlineAt?: number;
+  /**
+   * Set when an earlier tick in the same pass already ran. A tick the
+   * deadline then cuts short did not have the whole budget, so it keeps its
+   * place in the queue; a tick that had the whole budget waits a second
+   * instead, so one slow run cannot hold the head of the queue.
+   */
+  keepQueuePlaceOnDeadline?: boolean;
 };
 
 type WorkflowQueueJobResult = {
@@ -61,7 +70,12 @@ export type WorkflowQueueResult = {
 
 export type AllTenantWorkflowQueueResult = WorkflowQueueResult & {
   tenantIds: string[];
-  tenantResults: Array<{ tenantId: string; result: WorkflowQueueResult }>;
+  tenantResults: Array<{
+    tenantId: string;
+    result: WorkflowQueueResult;
+    /** Why this tenant's queue failed; the pass went on to other tenants. */
+    error?: string;
+  }>;
 };
 
 const workflowJobPriority = 10;
@@ -116,8 +130,17 @@ export async function cancelWorkflowRunTick(
   return jobs;
 }
 
+/**
+ * Enqueues a tick for each queued run that has none waiting or running. A run
+ * whose tick waits out a backoff or runs under a lease already has its
+ * delivery; enqueueing it again would reset that tick's retries or clear its
+ * last error.
+ */
 export async function enqueueRunnableWorkflowRuns(limit = 50, options: { tenantId?: string } = {}) {
-  const runnable = await listRunnableWorkflowRuns(limit, options);
+  const runnable = await listRunnableWorkflowRuns(limit, {
+    ...options,
+    excludeIds: await listActiveWorkflowTickRunIds(options),
+  });
   const jobs = [];
   for (const run of runnable) {
     jobs.push(await enqueueWorkflowRunTick(
@@ -164,6 +187,7 @@ export async function processAllTenantWorkflowQueues(
   const jobs: WorkflowQueueJobResult[] = [];
   let remaining = limit;
   let activeTenantIds = tenantIds;
+  let tickRan = false;
 
   while (remaining > 0 && activeTenantIds.length) {
     if (deadlineSignal.aborted) {
@@ -174,13 +198,45 @@ export async function processAllTenantWorkflowQueues(
       if (remaining <= 0 || deadlineSignal.aborted) {
         break;
       }
-      const result = await processWorkflowQueue({
-        tenantId,
-        limit: 1,
-        bootstrapQueuedRuns: true,
-        abortSignal: deadlineSignal,
-        deadlineAt,
-      });
+      let result: WorkflowQueueResult;
+      try {
+        result = await processWorkflowQueue({
+          tenantId,
+          limit: 1,
+          bootstrapQueuedRuns: true,
+          abortSignal: deadlineSignal,
+          deadlineAt,
+          keepQueuePlaceOnDeadline: tickRan,
+        });
+      } catch (error) {
+        // One tenant's failure must not end the pass for the others.
+        const message = String(redactSensitive(
+          error instanceof Error ? error.message : "Workflow queue failed.",
+        )).slice(0, 500);
+        console.error(JSON.stringify({
+          level: "error",
+          msg: "workflow_queue_tenant_failed",
+          tenantId,
+          error: message,
+        }));
+        tenantResults.push({
+          tenantId,
+          result: {
+            requested: 1,
+            leased: 0,
+            completed: 0,
+            failed: 0,
+            stale: 0,
+            requeued: 0,
+            jobs: [],
+          },
+          error: message,
+        });
+        continue;
+      }
+      if (result.leased > 0) {
+        tickRan = true;
+      }
       tenantResults.push({ tenantId, result });
       jobs.push(...result.jobs);
       remaining -= result.leased;
@@ -237,15 +293,17 @@ async function processWorkflowQueueInScope(
     tenantId: input.tenantId,
   });
   const results: WorkflowQueueJobResult[] = [];
+  let earlierTickRan = input.keepQueuePlaceOnDeadline === true;
 
   for (const job of jobs) {
     if (input.abortSignal?.aborted) {
+      // It never started, so it keeps its place in the queue.
       const deferred = await deferOperationJob(
         job.id,
         job.leaseOwner || "",
         {
           tenantId: job.tenantId,
-          delaySeconds: 1,
+          keepRunAt: true,
           reason: "Workflow queue tick reached its execution deadline.",
         },
       );
@@ -268,6 +326,8 @@ async function processWorkflowQueueInScope(
       });
       continue;
     }
+    const keepQueuePlace = earlierTickRan;
+    earlierTickRan = true;
 
     let leaseLost = false;
     try {
@@ -510,6 +570,7 @@ async function processWorkflowQueueInScope(
           {
             tenantId: job.tenantId,
             delaySeconds: 1,
+            keepRunAt: keepQueuePlace,
             reason: "Workflow queue tick reached its execution deadline.",
           },
         );

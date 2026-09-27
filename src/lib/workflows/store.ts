@@ -520,12 +520,17 @@ export async function listWorkflowRunsByStatus(
     .slice(0, boundedLimit);
 }
 
+/**
+ * Queued runs, oldest first. excludeIds drops runs before the limit applies,
+ * so a caller skipping runs it already handles still finds the rest.
+ */
 export async function listRunnableWorkflowRuns(
   limit = 50,
-  options: { tenantId?: string } = {},
+  options: { tenantId?: string; excludeIds?: ReadonlySet<string> } = {},
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
   const boundedLimit = Math.min(Math.max(limit, 1), 500);
+  const excludeIds = options.excludeIds || new Set<string>();
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
@@ -536,6 +541,7 @@ export async function listRunnableWorkflowRuns(
       FROM omni_workflow_runs
       WHERE tenant_id = ${tenantId}
         AND status = 'queued'
+        AND id <> ALL(${[...excludeIds]}::text[])
       ORDER BY created_at ASC
       LIMIT ${boundedLimit}
     `;
@@ -547,7 +553,8 @@ export async function listRunnableWorkflowRuns(
     .filter(
       (run) =>
         normalizeTenantId(run.tenantId) === tenantId &&
-        run.status === "queued",
+        run.status === "queued" &&
+        !excludeIds.has(run.id),
     )
     .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
     .slice(0, boundedLimit);

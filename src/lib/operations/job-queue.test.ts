@@ -723,4 +723,49 @@ describe("operation job queue (file mode)", () => {
       status: "completed",
     });
   });
+
+  it("ranks each tenant for dispatch by the job it would lease next", async () => {
+    const queue = await import("@/lib/operations/job-queue");
+    // Long before the other tests' jobs, so only these are due.
+    const now = Date.parse("2026-01-05T00:00:00.000Z");
+    const ago = (seconds: number) => new Date(now - seconds * 1_000).toISOString();
+    const tick = (tenantId: string, dedupeKey: string, priority: number, runAt: string) =>
+      queue.enqueueOperationJob({
+        tenantId,
+        type: "workflow.tick",
+        dedupeKey,
+        payload: { workflowRunId: dedupeKey },
+        priority,
+        runAt,
+      });
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      // Fifteen minutes of waiting lift this job above a newer, more urgent one.
+      vi.setSystemTime(now - 15 * 60_000);
+      await tick("tenant-dispatch-aged", "dispatch-aged-old", 10, ago(900));
+      vi.setSystemTime(now);
+      await tick("tenant-dispatch-aged", "dispatch-aged-urgent", 20, ago(5));
+      // A newer, more urgent job leases before this tenant's older one.
+      await tick("tenant-dispatch-urgent", "dispatch-urgent-old", 10, ago(300));
+      await tick("tenant-dispatch-urgent", "dispatch-urgent-new", 20, ago(1));
+      await tick("tenant-dispatch-steady", "dispatch-steady", 10, ago(120));
+      // At equal priority the earlier run_at leases first, whatever the enqueue order.
+      await tick("tenant-dispatch-waiting", "dispatch-waiting-old", 10, ago(180));
+      await tick("tenant-dispatch-waiting", "dispatch-waiting-new", 10, ago(30));
+
+      const snapshot = await queue.listRunnableOperationDispatchTenants({
+        workflowLimit: 25,
+      });
+
+      expect(snapshot.workflowTenantIds.filter((id) => id.startsWith("tenant-dispatch-")))
+        .toEqual([
+          "tenant-dispatch-aged",
+          "tenant-dispatch-waiting",
+          "tenant-dispatch-steady",
+          "tenant-dispatch-urgent",
+        ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

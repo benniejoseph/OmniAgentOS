@@ -50,6 +50,12 @@ For internal calls, the secret and identity headers must be sent together. Never
 - Compare the interval with queue lease duration; too many replicas or a short interval can increase contention.
 - On Fly, inspect machine health and restart count. The container health probe uses only the public health endpoint and never sends the internal secret.
 
+## A queued workflow run waits, or one tenant's workflows stop
+
+- `workflow_queue_tenant_failed` with a `tenantId`: that tenant's workflow queue threw during a fast pass, usually on a database error. The logged error is redacted, and the same text is in that tenant's `tenantResults` entry of the tick response. The other tenants' ticks still ran, and the failed tenant is tried again on the next pass.
+- A queued run with no tick waiting or running gets a new tick on the next fast pass. A run whose tick is waiting out a retry backoff is left alone until the backoff ends; its tick keeps its attempt count and last error.
+- A tick that the pass's deadline stopped before it started, or cut short after another tick in the same pass had run, keeps its place in the queue. A tick that had the pass to itself and still did not finish becomes due one second later, behind the work already waiting. If one run's tick does that on every pass, its step takes longer than the pass budget: check the planner, executor, and verifier timeouts in `docs/deployment.md`.
+
 ## A scheduled workflow did not run, or ran late
 
 - Start with the schedule's history in Automation Studio. `…so it was skipped, as the schedule's missed-run setting asks.` means the occurrence came due more than 15 minutes before the scheduler reached it, usually because the worker was down, a release held it, or the schedule was paused. With the default `skip` setting, a missed occurrence is recorded and never runs. With `run_once`, only the latest missed occurrence runs, in place of the rest. Resuming a paused schedule applies the same setting to the occurrences it missed while paused.

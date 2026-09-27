@@ -25,11 +25,14 @@ import { createKnowledgeDocument } from "@/lib/rag/store";
 import {
   cancelOperationJobByDedupeKey,
   completeOperationJob,
+  deferOperationJob,
   enqueueOperationJob,
   failOperationJob,
   getAgentResumeJobDedupeKey,
   leaseOperationJobByDedupeKey,
   leaseOperationJobs,
+  listActiveWorkflowTickRunIds,
+  listRunnableOperationDispatchTenants,
 } from "@/lib/operations/job-queue";
 import { runEventCursor } from "@/lib/runs/event-cursor";
 import {
@@ -68,7 +71,7 @@ import {
 } from "@/lib/tools/effect-intent-v2";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { toolInputSha256 } from "@/lib/tools/execution-scope";
-import { createWorkflowRun } from "@/lib/workflows/store";
+import { createWorkflowRun, listRunnableWorkflowRuns } from "@/lib/workflows/store";
 import {
   createWorkflowTrigger,
   listDueWorkflowScheduleOwners,
@@ -4134,6 +4137,182 @@ databaseDescribe("Postgres schema integration", () => {
       }]);
       expect(await operations(record.id)).toEqual(["saved"]);
     }
+  });
+
+  test("ranks each tenant for dispatch by its next job and counts only queued runs without a tick", async () => {
+    const inTenant = <T,>(operation: () => Promise<T>, tenant: string) =>
+      runWithDatabaseTenantScope(tenant, operation);
+    // Ten days back, ahead of the other tests' work.
+    const [{ base }] = await admin`SELECT NOW() - INTERVAL '10 days' AS base`;
+    const ago = (seconds: number) =>
+      new Date(new Date(base).getTime() - seconds * 1_000).toISOString();
+    const future = new Date(Date.now() + 3_600_000).toISOString();
+    const job = (
+      tenant: string,
+      dedupeKey: string,
+      options: {
+        type?: "workflow.tick" | "agent.resume";
+        priority?: number;
+        runAt?: string;
+        workflowRunId?: string;
+      } = {},
+    ) => inTenant(() => enqueueOperationJob({
+      tenantId: tenant,
+      type: options.type ?? "workflow.tick",
+      dedupeKey,
+      payload: { workflowRunId: options.workflowRunId ?? dedupeKey },
+      priority: options.priority ?? 10,
+      runAt: options.runAt,
+    }), tenant);
+    const queuedRun = async (tenant: string, updatedSecondsAgo: number) => {
+      const { run } = await inTenant(() => createWorkflowRun({
+        tenantId: tenant,
+        goal: "Sort this week's receipts.",
+      }), tenant);
+      await admin`
+        UPDATE omni_workflow_runs
+        SET updated_at = ${ago(updatedSecondsAgo)}::timestamptz
+        WHERE id = ${run.id}
+      `;
+      return run;
+    };
+    const tickFor = (tenant: string, runId: string, runAt?: string) =>
+      job(tenant, `workflow:${runId}`, { workflowRunId: runId, runAt });
+
+    const aged = "dispatch_db_aged";
+    const urgent = "dispatch_db_urgent";
+    const steady = "dispatch_db_steady";
+    const waiting = "dispatch_db_waiting";
+    // Fifteen minutes of waiting lift this job above a newer, more urgent one.
+    const agedOld = await job(aged, "dispatch-db-aged-old", { runAt: ago(900) });
+    await admin`
+      UPDATE omni_operation_jobs
+      SET created_at = NOW() - INTERVAL '15 minutes'
+      WHERE id = ${agedOld.id}
+    `;
+    await job(aged, "dispatch-db-aged-urgent", { priority: 20, runAt: ago(5) });
+    // A newer, more urgent job leases before this tenant's older one.
+    await job(urgent, "dispatch-db-urgent-old", { runAt: ago(300) });
+    await job(urgent, "dispatch-db-urgent-new", { priority: 20, runAt: ago(1) });
+    await job(steady, "dispatch-db-steady", { runAt: ago(120) });
+    // At equal priority the earlier run_at leases first, even over an
+    // earlier-created job.
+    await job(waiting, "dispatch-db-waiting-new", { runAt: ago(30) });
+    await job(waiting, "dispatch-db-waiting-old", { runAt: ago(180) });
+
+    const live = "dispatch_db_live";
+    const backoff = "dispatch_db_backoff";
+    const done = "dispatch_db_done";
+    const none = "dispatch_db_none";
+    const decoy = "dispatch_db_decoy";
+    // A run whose tick runs under a live lease, or waits out a backoff,
+    // already has its delivery, however long it has been queued.
+    const liveRun = await queuedRun(live, 400);
+    await tickFor(live, liveRun.id);
+    expect(await inTenant(() => leaseOperationJobs({
+      tenantId: live,
+      type: "workflow.tick",
+    }), live)).toHaveLength(1);
+    const backoffRun = await queuedRun(backoff, 400);
+    await tickFor(backoff, backoffRun.id, future);
+    // A run whose tick finished, or that never had one, waits for the
+    // bootstrap from its oldest update.
+    const doneRun = await queuedRun(done, 100);
+    await tickFor(done, doneRun.id);
+    const [doneLease] = await inTenant(() => leaseOperationJobs({
+      tenantId: done,
+      type: "workflow.tick",
+    }), done);
+    await inTenant(
+      () => completeOperationJob(doneLease.id, doneLease.leaseOwner, done),
+      done,
+    );
+    const noneRun = await queuedRun(none, 150);
+    const laterNoneRun = await queuedRun(none, 50);
+    // Jobs that name the run without being a tick of it in its tenant.
+    await tickFor(decoy, noneRun.id, future);
+    await job(none, "dispatch-db-none-resume", {
+      type: "agent.resume",
+      workflowRunId: noneRun.id,
+      runAt: future,
+    });
+    await job(none, "dispatch-db-none-other-run", { runAt: future });
+
+    const mine = new Set([aged, urgent, steady, waiting, live, backoff, done, none, decoy]);
+    const snapshot = await listRunnableOperationDispatchTenants({ workflowLimit: 25 });
+
+    expect(snapshot.workflowTenantIds.filter((id) => mine.has(id))).toEqual([
+      aged,
+      waiting,
+      none,
+      steady,
+      done,
+      urgent,
+    ]);
+    const activeTicks = (tenant: string) =>
+      inTenant(() => listActiveWorkflowTickRunIds({ tenantId: tenant }), tenant);
+    expect(await activeTicks(live)).toEqual(new Set([liveRun.id]));
+    expect(await activeTicks(backoff)).toEqual(new Set([backoffRun.id]));
+    expect(await activeTicks(done)).toEqual(new Set());
+    expect(await activeTicks(none)).toEqual(new Set(["dispatch-db-none-other-run"]));
+    // The bootstrap's exclusion applies before its limit.
+    const runnable = (limit: number, excludeIds?: ReadonlySet<string>) =>
+      inTenant(() => listRunnableWorkflowRuns(limit, { tenantId: none, excludeIds }), none);
+    expect((await runnable(50)).map((run) => run.id)).toEqual([noneRun.id, laterNoneRun.id]);
+    expect((await runnable(1, new Set([noneRun.id]))).map((run) => run.id))
+      .toEqual([laterNoneRun.id]);
+
+    // A tick deferred at the deadline keeps its run_at only when asked.
+    const deferTenant = "dispatch_db_defer";
+    const deferRunAt = ago(60);
+    await job(deferTenant, "dispatch-db-defer-kept", { runAt: deferRunAt });
+    await job(deferTenant, "dispatch-db-defer-moved", { runAt: deferRunAt });
+    const leased = new Map((await inTenant(() => leaseOperationJobs({
+      tenantId: deferTenant,
+      type: "workflow.tick",
+      limit: 2,
+    }), deferTenant)).map((leasedJob) => [
+      String(leasedJob.payload.workflowRunId),
+      leasedJob,
+    ]));
+    const kept = leased.get("dispatch-db-defer-kept")!;
+    const moved = leased.get("dispatch-db-defer-moved")!;
+    await inTenant(() => deferOperationJob(kept.id, kept.leaseOwner!, {
+      tenantId: deferTenant,
+      keepRunAt: true,
+      reason: "The deadline passed before the tick started.",
+    }), deferTenant);
+    await inTenant(() => deferOperationJob(moved.id, moved.leaseOwner!, {
+      tenantId: deferTenant,
+      delaySeconds: 1,
+      reason: "The deadline cut the tick short.",
+    }), deferTenant);
+    expect(await admin`
+      SELECT
+        payload->>'workflowRunId' AS key,
+        status,
+        attempt,
+        run_at = ${deferRunAt}::timestamptz AS run_at_kept,
+        run_at > NOW() AS run_at_later
+      FROM omni_operation_jobs
+      WHERE tenant_id = ${deferTenant}
+      ORDER BY key
+    `).toEqual([
+      {
+        key: "dispatch-db-defer-kept",
+        status: "queued",
+        attempt: 0,
+        run_at_kept: true,
+        run_at_later: false,
+      },
+      {
+        key: "dispatch-db-defer-moved",
+        status: "queued",
+        attempt: 0,
+        run_at_kept: false,
+        run_at_later: true,
+      },
+    ]);
   });
 });
 

@@ -1017,16 +1017,23 @@ export async function failOperationJob(
   return saved;
 }
 
+/**
+ * Returns a leased job to the queue without consuming an attempt. With
+ * keepRunAt the job keeps its run_at, and so its place in the queue, for a
+ * job that lost its turn rather than one that should wait delaySeconds.
+ */
 export async function deferOperationJob(
   jobId: string,
   leaseOwner: string,
   {
     tenantId: requestedTenantId,
     delaySeconds = 30,
+    keepRunAt = false,
     reason = "Job deferred without consuming an attempt.",
   }: {
     tenantId?: string;
     delaySeconds?: number;
+    keepRunAt?: boolean;
     reason?: string;
   } = {},
 ) {
@@ -1041,7 +1048,7 @@ export async function deferOperationJob(
       UPDATE omni_operation_jobs
       SET status = 'queued',
           attempt = GREATEST(attempt - 1, 0),
-          run_at = ${runAt},
+          run_at = CASE WHEN ${keepRunAt} THEN run_at ELSE ${runAt}::timestamptz END,
           locked_at = NULL,
           lease_owner = NULL,
           lease_expires_at = NULL,
@@ -1075,7 +1082,7 @@ export async function deferOperationJob(
         ...job,
         status: "queued",
         attempt: Math.max(job.attempt - 1, 0),
-        runAt,
+        runAt: keepRunAt ? job.runAt : runAt,
         lockedAt: undefined,
         leaseOwner: undefined,
         leaseExpiresAt: undefined,
@@ -1380,6 +1387,38 @@ export async function listOperationJobs(
     .slice(0, limit);
 }
 
+/**
+ * IDs of the workflow runs with a tick waiting or running, whatever its
+ * run_at or lease, so the queue enqueues ticks only for runs without one.
+ */
+export async function listActiveWorkflowTickRunIds(
+  options: { tenantId?: string } = {},
+): Promise<Set<string>> {
+  const tenantId = normalizeTenantId(options.tenantId);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT DISTINCT payload->>'workflowRunId' AS workflow_run_id
+      FROM omni_operation_jobs
+      WHERE tenant_id = ${tenantId}
+        AND type = 'workflow.tick'
+        AND status IN ('queued', 'running')
+        AND payload->>'workflowRunId' IS NOT NULL
+    `;
+    return new Set(rows.map((row) => String(row.workflow_run_id)));
+  }
+
+  const ledger = await readJobLedger();
+  return new Set(ledger.jobs.flatMap((job) =>
+    jobTenantId(job) === tenantId &&
+      job.type === "workflow.tick" &&
+      (job.status === "queued" || job.status === "running") &&
+      typeof job.payload.workflowRunId === "string"
+      ? [job.payload.workflowRunId]
+      : []
+  ));
+}
+
 /** Metadata-only queue view used by recovery inspection and reconciliation. */
 export async function listOperationJobRecoveryRows(
   limit = 100,
@@ -1611,40 +1650,66 @@ export async function listRunnableOperationDispatchTenants(
     return runWithDatabaseSystemScope(
       "Build one bounded tenant dispatch snapshot for runnable operation lanes.",
       async () => {
+        // A lane ranks each tenant by the job it would lease next for that
+        // tenant, in lease order, so a tenant is not ranked by an old job
+        // while a newer job with a higher priority is the one that runs.
         const rows = await getSql()`
           WITH operation_candidates AS MATERIALIZED (
-            SELECT
-              tenant_id,
-              CASE
-                WHEN type = 'workflow.tick' THEN 'workflow'
-                WHEN type = 'agent.resume' THEN 'agent_resume'
-                WHEN type = 'agent.execute' THEN 'agent_execute'
-                ELSE 'background'
-              END AS lane,
-              MIN(
+            SELECT DISTINCT ON (tenant_id, lane) tenant_id, lane, runnable_at
+            FROM (
+              SELECT
+                tenant_id,
+                CASE
+                  WHEN type = 'workflow.tick' THEN 'workflow'
+                  WHEN type = 'agent.resume' THEN 'agent_resume'
+                  WHEN type = 'agent.execute' THEN 'agent_execute'
+                  ELSE 'background'
+                END AS lane,
                 CASE
                   WHEN status = 'queued' THEN run_at
                   ELSE lease_expires_at
-                END
-              ) AS runnable_at
-            FROM omni_operation_jobs
-            WHERE type = ANY(${activeJobTypes}::text[])
-              AND (
-                (status = 'queued' AND run_at <= NOW())
-                OR (status = 'running' AND lease_expires_at <= NOW())
-              )
-            GROUP BY 1, 2
+                END AS runnable_at,
+                priority + LEAST(
+                  ${OPERATION_PRIORITY_AGING_CAP},
+                  FLOOR(EXTRACT(EPOCH FROM (NOW() - created_at)) / 60)
+                ) AS lease_priority,
+                created_at
+              FROM omni_operation_jobs
+              WHERE type = ANY(${activeJobTypes}::text[])
+                AND (
+                  (status = 'queued' AND run_at <= NOW())
+                  OR (status = 'running' AND lease_expires_at <= NOW())
+                )
+            ) runnable
+            ORDER BY
+              tenant_id,
+              lane,
+              lease_priority DESC,
+              runnable_at ASC,
+              created_at ASC
           ),
+          -- A queued run counts only while it has no tick waiting or
+          -- running; the queue's bootstrap enqueues its tick. A run whose
+          -- tick waits out a backoff or runs under a live lease is not
+          -- runnable, however long it has been queued.
           workflow_candidates AS (
             SELECT tenant_id, runnable_at
             FROM operation_candidates
             WHERE lane = 'workflow'
             UNION ALL
-            SELECT tenant_id, MIN(updated_at) AS runnable_at
-            FROM omni_workflow_runs
+            SELECT runs.tenant_id, MIN(runs.updated_at) AS runnable_at
+            FROM omni_workflow_runs runs
             WHERE ${limits.workflow} > 0
-              AND status = 'queued'
-            GROUP BY tenant_id
+              AND runs.status = 'queued'
+              AND NOT EXISTS (
+                SELECT 1
+                FROM omni_operation_jobs jobs
+                WHERE jobs.tenant_id = runs.tenant_id
+                  AND jobs.type = 'workflow.tick'
+                  AND jobs.status IN ('queued', 'running')
+                  AND jobs.payload->>'workflowRunId' = runs.id
+              )
+            GROUP BY runs.tenant_id
           ),
           lane_candidates AS (
             SELECT lane, tenant_id, runnable_at
@@ -1702,7 +1767,7 @@ export async function listRunnableOperationDispatchTenants(
     BACKGROUND_OPERATION_JOB_TYPES,
   );
   const ledger = await readJobLedger();
-  const candidates: Record<keyof typeof limits, Map<string, number>> = {
+  const candidates: Record<keyof typeof limits, Map<string, DispatchCandidate>> = {
     workflow: new Map(),
     agent_resume: new Map(),
     agent_execute: new Map(),
@@ -1722,9 +1787,14 @@ export async function listRunnableOperationDispatchTenants(
             : undefined;
     if (!lane || limits[lane] === 0) continue;
     const tenantId = jobTenantId(job);
+    const candidate = {
+      runnableAt,
+      priority: operationJobEffectivePriority(job, now),
+      createdAt: Date.parse(job.createdAt),
+    };
     const previous = candidates[lane].get(tenantId);
-    if (previous === undefined || runnableAt < previous) {
-      candidates[lane].set(tenantId, runnableAt);
+    if (!previous || leasesBefore(candidate, previous)) {
+      candidates[lane].set(tenantId, candidate);
     }
   }
 
@@ -1768,12 +1838,30 @@ function runnableOperationJobTime(job: OperationJobRecord, now: number) {
   return undefined;
 }
 
+type DispatchCandidate = {
+  runnableAt: number;
+  priority: number;
+  createdAt: number;
+};
+
+/** Lease order: aged priority first, then run_at, then creation. */
+function leasesBefore(left: DispatchCandidate, right: DispatchCandidate) {
+  return (
+    right.priority - left.priority ||
+    left.runnableAt - right.runnableAt ||
+    left.createdAt - right.createdAt
+  ) < 0;
+}
+
 function sortedDispatchTenantIds(
-  candidates: Map<string, number>,
+  candidates: Map<string, DispatchCandidate>,
   limit: number,
 ) {
   return [...candidates]
-    .sort((left, right) => left[1] - right[1] || left[0].localeCompare(right[0]))
+    .sort((left, right) =>
+      left[1].runnableAt - right[1].runnableAt ||
+      left[0].localeCompare(right[0])
+    )
     .slice(0, limit)
     .map(([tenantId]) => tenantId);
 }
