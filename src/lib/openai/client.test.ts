@@ -208,3 +208,109 @@ function restoreEnvironment(name: string, value: string | undefined) {
     process.env[name] = value;
   }
 }
+
+describe("OpenAI tool turn settings", () => {
+  const tool = {
+    type: "function" as const,
+    name: "flight_search",
+    description: "Search flights",
+    parameters: { type: "object" },
+    strict: false as const,
+  };
+
+  function completedTurn() {
+    process.env.OPENAI_API_KEY = "test-key";
+    delete process.env.OMNIAGENT_OPENAI_GATEWAY_URL;
+    delete process.env.OMNIAGENT_OPENAI_GATEWAY_TOKEN;
+    openAiMocks.createResponse.mockReturnValue({
+      async *[Symbol.asyncIterator]() {
+        yield {
+          type: "response.completed",
+          response: {
+            id: "response-1",
+            usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 },
+          },
+        };
+      },
+    });
+  }
+
+  async function sentTurn(
+    settings: { toolChoice?: "auto" | "none"; parallelToolCalls?: boolean },
+    tools: readonly (typeof tool)[] | undefined,
+  ) {
+    completedTurn();
+    const { streamResponseTurn } = await import("@/lib/openai/client");
+    await streamResponseTurn({
+      input: "Where?",
+      onDelta: () => undefined,
+      model: "gpt-5",
+      ...(tools ? { tools: [...tools] } : {}),
+      ...settings,
+    });
+    return openAiMocks.createResponse.mock.calls[0]?.[0] as Record<string, unknown>;
+  }
+
+  it("asks for no call and at most one call", async () => {
+    const body = await sentTurn(
+      { toolChoice: "none", parallelToolCalls: false },
+      [tool],
+    );
+
+    expect(body).toMatchObject({
+      tools: [tool],
+      tool_choice: "none",
+      parallel_tool_calls: false,
+    });
+  });
+
+  it("asks for no call on its own", async () => {
+    const body = await sentTurn({ toolChoice: "none" }, [tool]);
+
+    expect(body.tool_choice).toBe("none");
+    expect(body).not.toHaveProperty("parallel_tool_calls");
+  });
+
+  it("asks for at most one call on its own", async () => {
+    const body = await sentTurn({ parallelToolCalls: false }, [tool]);
+
+    expect(body.parallel_tool_calls).toBe(false);
+    expect(body).not.toHaveProperty("tool_choice");
+  });
+
+  it.each([
+    ["the default", {}, [tool]],
+    ["calls allowed", { toolChoice: "auto", parallelToolCalls: true }, [tool]],
+    ["an empty tool list", { toolChoice: "none", parallelToolCalls: false }, []],
+    ["no tool list", { toolChoice: "none", parallelToolCalls: false }, undefined],
+  ] as const)("sends neither setting for %s", async (_label, settings, tools) => {
+    const body = await sentTurn(settings, tools);
+
+    expect(body).not.toHaveProperty("tool_choice");
+    expect(body).not.toHaveProperty("parallel_tool_calls");
+  });
+
+  it("passes both settings from a gateway tool turn", async () => {
+    completedTurn();
+    const { openAIModelAdapter } = await import("@/lib/models/adapters/openai");
+
+    await openAIModelAdapter.generateToolTurn!({
+      input: "Where?",
+      preferredProvider: "openai",
+      tools: [{
+        type: "function",
+        name: "flight_search",
+        description: "Search flights",
+        parameters: { type: "object" },
+      }],
+      toolChoice: "none",
+      parallelToolCalls: false,
+    }, { provider: "openai", model: "gpt-5", tier: "fast", features: ["tools"] });
+
+    expect(openAiMocks.createResponse.mock.calls[0]?.[0]).toMatchObject({
+      tools: [tool],
+      tool_choice: "none",
+      parallel_tool_calls: false,
+    });
+  });
+});

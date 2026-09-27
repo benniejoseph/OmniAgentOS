@@ -163,7 +163,13 @@ export function createBedrockModelAdapter(
         toolResults: request.toolResults,
       });
       const durableMessages = bedrockToolMessages(request, conversation, false);
-      const messages = bedrockToolMessages(request, conversation, true);
+      const sentMessages = bedrockToolMessages(request, conversation, true);
+      // Converse has no tool choice that forbids a call, and it rejects tool
+      // calls and results in the messages without toolConfig. So the tools
+      // stay declared, and only the request asks for an answer in text.
+      const messages = request.toolChoice === "none" && request.tools.length
+        ? withTextAnswerRequest(sentMessages)
+        : sentMessages;
       const result = await callBedrockConverse({
         request,
         target,
@@ -803,6 +809,18 @@ function bedrockToolMessages(
   }));
   messages.push({ role: "user", content });
   return messages;
+}
+
+const TEXT_ANSWER_REQUEST =
+  "Answer now in text, without calling a tool, from the information you already have.";
+
+/** The messages with a request for a text answer at the end of the last user turn. */
+function withTextAnswerRequest(messages: BedrockMessage[]): BedrockMessage[] {
+  const last = messages.at(-1);
+  const request = { text: TEXT_ANSWER_REQUEST };
+  return last?.role === "user"
+    ? [...messages.slice(0, -1), { ...last, content: [...last.content, request] }]
+    : [...messages, { role: "user", content: [request] }];
 }
 
 export function bedrockMessagesFromConversation(

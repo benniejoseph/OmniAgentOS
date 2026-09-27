@@ -93,6 +93,18 @@ export type ModelToolContinuation = {
 export type ModelToolTurnRequest = ModelTextRequest & {
   preferredProvider: ProviderId;
   tools: readonly ModelToolDefinition[];
+  /**
+   * "none" keeps the tools declared, so the tool calls and results already in
+   * the conversation stay valid, but asks for a reply without a tool call.
+   * Bedrock has no such setting, so its request asks in text. Omitted means
+   * the model may call a tool.
+   */
+  toolChoice?: "auto" | "none";
+  /**
+   * false asks for at most one tool call in the reply, where the provider can
+   * limit it. The caller still skips any call over its own limit.
+   */
+  parallelToolCalls?: boolean;
   /** Native roles and typed observations for the first or replayed turn. */
   conversation?: readonly ModelConversationItem[];
   continuation?: ModelToolContinuation;

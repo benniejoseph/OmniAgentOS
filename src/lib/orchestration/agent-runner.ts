@@ -2142,7 +2142,9 @@ async function* runAgentUntilStopped(
           (apiKey) => streamResponseTurn({
             instructions,
             input: turnInput,
-            tools: toolSteps < maxToolSteps ? toolbox.openAITools : undefined,
+            tools: toolbox.openAITools,
+            ...(toolSteps < maxToolSteps ? {} : { toolChoice: "none" as const }),
+            ...(maxToolCallsPerTurn === 1 ? { parallelToolCalls: false } : {}),
             abortSignal: runAbortSignal,
             reasoningEffort:
               runtimeModel.reasoningEffort || AGENT_REASONING_EFFORT,
@@ -2269,6 +2271,13 @@ async function* runAgentUntilStopped(
 
         if (!turn.functionCalls.length) {
           break;
+        }
+        if (toolSteps >= maxToolSteps) {
+          // tool_choice "none" forbids a call on this turn, so a call breaks
+          // the provider contract and is never run.
+          throw new Error(
+            "openai returned tool calls after the governed tool-step budget was exhausted.",
+          );
         }
 
         // Build the next conversation array: prior items + model's function call
@@ -2959,6 +2968,10 @@ export async function* runNonOpenAIProviderToolLoop(input: {
     ...(waitingApproval ? { waitingApproval } : {}),
   });
 
+  const maxToolCallsPerTurn = toolCallsPerTurnForComputerUse(
+    input.computerUseTarget,
+  );
+  let finalToolCallsRefused = false;
   for (;;) {
     input.abortSignal?.throwIfAborted();
     const toolsEnabled = toolSteps < maxToolSteps;
@@ -2980,7 +2993,11 @@ export async function* runNonOpenAIProviderToolLoop(input: {
       reasoningEffort: AGENT_REASONING_EFFORT,
       maxAttempts: modelBudget?.maxAttempts,
       abortSignal: input.abortSignal,
-      tools: toolsEnabled ? input.tools : [],
+      // The final turn keeps the tools declared, because the conversation
+      // holds their calls and results, and asks for no call instead.
+      tools: input.tools,
+      ...(toolsEnabled ? {} : { toolChoice: "none" as const }),
+      ...(maxToolCallsPerTurn === 1 ? { parallelToolCalls: false } : {}),
       continuation,
       toolResults,
       usageScope: {
@@ -3081,15 +3098,28 @@ export async function* runNonOpenAIProviderToolLoop(input: {
     }
     if (!turn.toolCalls.length) break;
     if (!toolsEnabled) {
-      throw new Error(
-        `${activeProvider} returned tool calls after the governed tool-step budget was exhausted.`,
-      );
+      // Bedrock can only ask in text for no call, so a model may still make
+      // one. Such calls are never run: the model is told so and asked once
+      // more for its answer.
+      if (finalToolCallsRefused) {
+        throw new Error(
+          `${activeProvider} returned tool calls after the governed tool-step budget was exhausted.`,
+        );
+      }
+      finalToolCallsRefused = true;
+      toolResults = turn.toolCalls.map((call) => providerToolResult(call, {
+        error: "Tool step budget reached; call not run. Answer in text from the results you already have.",
+      }, true));
+      yield {
+        type: "status",
+        label: "tool calls refused",
+        detail:
+          `${turn.toolCalls.length} tool call(s) after the tool step budget were not run; asking the model again for its final answer.`,
+      };
+      continue;
     }
 
     toolSteps += 1;
-    const maxToolCallsPerTurn = toolCallsPerTurnForComputerUse(
-      input.computerUseTarget,
-    );
     const callsThisTurn = turn.toolCalls.slice(0, maxToolCallsPerTurn);
     if (
       latestLocalObservation &&
@@ -4294,7 +4324,9 @@ async function resumeAgentRunAfterToolApprovalInScope({
           (apiKey) => streamResponseTurn({
             instructions: continuation.instructions,
             input: turnInput,
-            tools: toolSteps < maxToolSteps ? toolbox.openAITools : undefined,
+            tools: toolbox.openAITools,
+            ...(toolSteps < maxToolSteps ? {} : { toolChoice: "none" as const }),
+            ...(maxToolCallsPerTurn === 1 ? { parallelToolCalls: false } : {}),
             abortSignal: resumeAbortSignal,
             reasoningEffort:
               resumeRuntimeModel.reasoningEffort || AGENT_REASONING_EFFORT,
@@ -4411,6 +4443,13 @@ async function resumeAgentRunAfterToolApprovalInScope({
 
       if (!turn.functionCalls.length) {
         break;
+      }
+      if (toolSteps >= maxToolSteps) {
+        // tool_choice "none" forbids a call on this turn, so a call breaks
+        // the provider contract and is never run.
+        throw new Error(
+          "openai returned tool calls after the governed tool-step budget was exhausted.",
+        );
       }
 
       conversationItems = [

@@ -92,6 +92,7 @@ describe("non-OpenAI governed provider tool loop", () => {
       turnIndex += 1;
       if (turnIndex === 1) {
         expect(request.tools).toHaveLength(2);
+        expect(request.toolChoice).toBeUndefined();
         return turn({
           toolCalls: [{
             callId: "call-unknown",
@@ -120,7 +121,12 @@ describe("non-OpenAI governed provider tool loop", () => {
           }],
         });
       }
-      expect(request.tools).toEqual([]);
+      // The final turn keeps every tool declared and asks for no call.
+      expect(request.tools).toEqual([
+        modelTool("knowledge_search"),
+        modelTool("memory_search"),
+      ]);
+      expect(request.toolChoice).toBe("none");
       return turn({ text: "Both governed reads completed after repair." });
     });
     const executeTool = vi.fn(async (request: { toolId: string }) => ({
@@ -182,11 +188,13 @@ describe("non-OpenAI governed provider tool loop", () => {
     ).toHaveLength(4);
   });
 
-  it("still fails closed when a provider requests a fourth tool round", async () => {
+  it("refuses a fourth tool round once, then fails closed", async () => {
     let turnIndex = 0;
+    const requests: ModelToolTurnRequest[] = [];
     const generateTurn = vi.fn(async (request: ModelToolTurnRequest) => {
       turnIndex += 1;
-      if (turnIndex === 4) expect(request.tools).toEqual([]);
+      requests.push(request);
+      if (turnIndex > 5) throw new Error("The loop asked for a sixth turn.");
       return turn({
         toolCalls: [{
           callId: `call-${turnIndex}`,
@@ -230,6 +238,167 @@ describe("non-OpenAI governed provider tool loop", () => {
       "google returned tool calls after the governed tool-step budget was exhausted.",
     );
     expect(executeTool).toHaveBeenCalledTimes(3);
+    expect(requests.map((request) => request.toolChoice)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      "none",
+      "none",
+    ]);
+    expect(requests.map((request) => request.tools)).toEqual(
+      requests.map(() => [modelTool("knowledge_search")]),
+    );
+    // The refused call is answered, so the fifth turn is valid.
+    expect(requests[4].toolResults).toEqual([{
+      callId: "call-4",
+      name: "knowledge_search",
+      output: JSON.stringify({
+        provenance: "tool_result",
+        trust: "untrusted_data",
+        data: {
+          error: "Tool step budget reached; call not run. Answer in text from the results you already have.",
+        },
+      }),
+      isError: true,
+    }]);
+  });
+
+  it("asks once more for the answer when the final turn still calls a tool", async () => {
+    const refusedTurnContinuation = {
+      provider: "google" as const,
+      state: [{ turn: 2 }],
+    };
+    const generateTurn = vi.fn(async (request: ModelToolTurnRequest) => {
+      // The third turn follows the turn whose calls were refused.
+      expect(request.continuation).toBe(refusedTurnContinuation);
+      return turn({ text: "Final answer." });
+    });
+    generateTurn
+      .mockImplementationOnce(async () => turn({
+        toolCalls: [{ callId: "call-read", name: "read_a", argumentsJson: "{}" }],
+      }))
+      .mockImplementationOnce(async () => ({
+        ...turn({
+          text: "One more read first. ",
+          toolCalls: [
+            { callId: "call-extra-1", name: "read_a", argumentsJson: "{}" },
+            { callId: "call-extra-2", name: "read_a", argumentsJson: "{}" },
+          ],
+        }),
+        continuation: refusedTurnContinuation,
+      }));
+    const executeTool = vi.fn(async (request: { toolId: string }) => ({
+      record: executionRecord(request.toolId, "executed"),
+      result: { source: request.toolId },
+    }));
+
+    const collected = await collect(runNonOpenAIProviderToolLoop({
+      provider: "google",
+      tier: "fast",
+      instructions: "Read once, then answer.",
+      prompt: "Inspect the source.",
+      tools: [modelTool("read_a")],
+      toolbox: {
+        byFunctionName: new Map([
+          ["read_a", { definition: toolDefinition("read.a"), functionName: "read_a" }],
+        ]),
+      },
+      securityContext: {
+        tenantId: "default",
+        actorId: "owner",
+        role: "admin",
+        source: "default",
+      },
+      runId: "run-final-turn-refusal",
+      maxToolSteps: 1,
+      generateTurn,
+      executeTool: executeTool as never,
+    }));
+
+    expect(executeTool).toHaveBeenCalledOnce();
+    expect(collected.result).toMatchObject({
+      text: "One more read first. Final answer.",
+      turns: 3,
+      toolSteps: 1,
+    });
+    const requests = generateTurn.mock.calls.map(([request]) => request);
+    expect(requests.map((request) => request.toolChoice)).toEqual([
+      undefined,
+      "none",
+      "none",
+    ]);
+    expect(requests.map((request) => request.parallelToolCalls)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+    ]);
+    expect(requests[2].toolResults?.map((result) => [
+      result.callId,
+      result.isError,
+      JSON.parse(result.output).data.error,
+    ])).toEqual([
+      ["call-extra-1", true, "Tool step budget reached; call not run. Answer in text from the results you already have."],
+      ["call-extra-2", true, "Tool step budget reached; call not run. Answer in text from the results you already have."],
+    ]);
+    const statuses = collected.events.filter((event) => event.type === "status");
+    expect(statuses).toContainEqual({
+      type: "status",
+      label: "tool calls refused",
+      detail:
+        "2 tool call(s) after the tool step budget were not run; asking the model again for its final answer.",
+    });
+    // Only the first turn's call ran: its start and its result.
+    expect(
+      collected.events.flatMap((event) =>
+        event.type === "tool" ? [event.status] : []
+      ),
+    ).toEqual(["running", "executed"]);
+  });
+
+  it("asks a This Mac run for one tool call per turn", async () => {
+    const generateTurn = vi.fn(async (request: ModelToolTurnRequest) =>
+      request.toolResults
+        ? turn({ text: "Observed." })
+        : turn({
+            toolCalls: [{ callId: "call-observe", name: "local_observe", argumentsJson: "{}" }],
+          })
+    );
+
+    await collect(runNonOpenAIProviderToolLoop({
+      provider: "google",
+      tier: "fast",
+      instructions: "Observe this Mac.",
+      prompt: "Look.",
+      tools: [modelTool("local_observe")],
+      toolbox: {
+        byFunctionName: new Map([["local_observe", {
+          definition: toolDefinition("local.macos.observe"),
+          functionName: "local_observe",
+        }]]),
+      },
+      securityContext: {
+        tenantId: "tenant-local",
+        actorId: "owner-local",
+        role: "admin",
+        source: "default",
+      },
+      runId: "run-local-one-call",
+      maxToolSteps: 1,
+      computerUseTarget: "local_macos",
+      generateTurn,
+      executeTool: vi.fn(async () => ({
+        record: executionRecord("local.macos.observe", "executed"),
+        result: { observed: true },
+      })) as never,
+    }));
+
+    expect(generateTurn.mock.calls.map(([request]) => [
+      request.toolChoice,
+      request.parallelToolCalls,
+    ])).toEqual([
+      [undefined, false],
+      ["none", false],
+    ]);
   });
 
   it("executes safe calls through governance and aggregates every model turn", async () => {
@@ -1015,7 +1184,8 @@ describe("non-OpenAI governed provider tool loop", () => {
 
   it("keeps the six-step fallback when a legacy loop has no persisted cap", async () => {
     const generateTurn = vi.fn(async (request: ModelToolTurnRequest) => {
-      expect(request.tools).toEqual([]);
+      expect(request.tools).toEqual([modelTool("memory_search")]);
+      expect(request.toolChoice).toBe("none");
       return turn({ text: "Final answer only." });
     });
     const executeTool = vi.fn();

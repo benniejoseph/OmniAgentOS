@@ -999,6 +999,10 @@ describe("agent memory scope", () => {
       response: "Done.",
     }));
     expect(mocks.streamResponseTurn).toHaveBeenCalledTimes(3);
+    // This Mac runs one action at a time, so every turn asks for one call.
+    expect(mocks.streamResponseTurn.mock.calls.map(
+      ([modelRequest]) => modelRequest.parallelToolCalls,
+    )).toEqual([false, false, false]);
     expect(mocks.executeGovernedTool).toHaveBeenCalledTimes(2);
     const durableWrites = JSON.stringify({
       events: mocks.appendRunEvent.mock.calls,
@@ -1516,6 +1520,135 @@ describe("agent memory scope", () => {
     const streamed = (done as { grounding?: GroundingReport }).grounding;
     expect(streamed).toEqual(publicGroundingReport(stored));
     expect(streamed?.claimEvidence).not.toHaveProperty("claimEvidenceMap");
+  });
+
+  describe("the final turn after the tool budget", () => {
+    const REFUSED =
+      "openai returned tool calls after the governed tool-step budget was exhausted.";
+
+    function searchRequest() {
+      const scopedRequest = request("session");
+      scopedRequest.agentProfile!.toolIds = ["knowledge.search"];
+      scopedRequest.maxToolSteps = 1;
+      mocks.loadProgressiveAgentTools.mockResolvedValue({
+        definitions: [localToolDefinition("knowledge.search")],
+      });
+      mocks.executeGovernedTool.mockResolvedValue({
+        record: localExecutionRecord(
+          "knowledge.search",
+          "execution-knowledge-search",
+        ),
+        result: { results: [] },
+      });
+      return scopedRequest;
+    }
+
+    it("keeps the tools declared on a direct OpenAI run and asks for no call", async () => {
+      let modelTurn = 0;
+      mocks.streamResponseTurn.mockImplementation(async (modelRequest) => {
+        modelTurn += 1;
+        if (modelTurn === 1) {
+          return openAITurn({
+            callId: "call-knowledge-search",
+            name: "knowledge.search",
+          });
+        }
+        await modelRequest.onDelta("Done.");
+        return openAITurn({ text: "Done." });
+      });
+
+      const events = await collectRequest(searchRequest());
+
+      expect(events).toContainEqual(expect.objectContaining({
+        type: "done",
+        response: "Done.",
+      }));
+      const [first, final] = mocks.streamResponseTurn.mock.calls.map(
+        ([modelRequest]) => modelRequest,
+      );
+      expect(first.tools).toHaveLength(1);
+      expect(final.tools).toEqual(first.tools);
+      expect([first.toolChoice, final.toolChoice]).toEqual([undefined, "none"]);
+      expect([first.parallelToolCalls, final.parallelToolCalls])
+        .toEqual([undefined, undefined]);
+    });
+
+    it("fails a direct OpenAI run whose final turn still calls a tool", async () => {
+      let modelTurn = 0;
+      mocks.streamResponseTurn.mockImplementation(async () => {
+        modelTurn += 1;
+        return openAITurn({
+          callId: `call-search-${modelTurn}`,
+          name: "knowledge.search",
+        });
+      });
+
+      const events = await collectRequest(searchRequest());
+
+      expect(events.at(-1)).toEqual({ type: "error", message: REFUSED });
+      expect(mocks.streamResponseTurn).toHaveBeenCalledTimes(2);
+      expect(mocks.executeGovernedTool).toHaveBeenCalledOnce();
+    });
+
+    it("keeps the tools declared on a resumed OpenAI run's final turn", async () => {
+      const continuation = await pauseForApproval(request("session"), "openai");
+      const parkedTools = mocks.streamResponseTurn.mock.calls[0][0].tools;
+      mocks.streamResponseTurn.mockClear();
+
+      await expect(resumeAfterApproval({ ...continuation, maxToolSteps: 1 }))
+        .resolves.toMatchObject({ resumed: true, status: "completed" });
+
+      expect(mocks.streamResponseTurn).toHaveBeenCalledOnce();
+      const resumed = mocks.streamResponseTurn.mock.calls[0][0];
+      expect(parkedTools).toHaveLength(1);
+      expect(resumed.tools).toEqual(parkedTools);
+      expect(resumed.toolChoice).toBe("none");
+      expect(resumed.parallelToolCalls).toBeUndefined();
+    });
+
+    it("asks a resumed This Mac run for one tool call per turn", async () => {
+      const continuation = await pauseForApproval(request("session"), "openai");
+      mocks.streamResponseTurn.mockClear();
+
+      await expect(resumeAfterApproval({
+        ...continuation,
+        computerUseTarget: "local_macos",
+      })).resolves.toMatchObject({ resumed: true, status: "completed" });
+
+      expect(mocks.streamResponseTurn.mock.calls.map(
+        ([modelRequest]) => modelRequest.parallelToolCalls,
+      )).toEqual([false]);
+    });
+
+    it("lets a resumed OpenAI run call a tool while steps remain", async () => {
+      const continuation = await pauseForApproval(request("session"), "openai");
+      mocks.streamResponseTurn.mockClear();
+
+      await expect(resumeAfterApproval({ ...continuation, maxToolSteps: 2 }))
+        .resolves.toMatchObject({ resumed: true, status: "completed" });
+
+      expect(mocks.streamResponseTurn.mock.calls[0][0].toolChoice)
+        .toBeUndefined();
+    });
+
+    it("fails a resumed OpenAI run whose final turn still calls a tool", async () => {
+      const continuation = await pauseForApproval(request("session"), "openai");
+      const executedBefore = mocks.executeGovernedTool.mock.calls.length;
+      mocks.streamResponseTurn.mockClear();
+
+      await expect(resumeAfterApproval(
+        { ...continuation, maxToolSteps: 1 },
+        openAITurn({ callId: "call-after-budget", name: APPROVAL_TOOL_ID }),
+      )).resolves.toMatchObject({ resumed: true, status: "failed" });
+
+      expect(mocks.streamResponseTurn).toHaveBeenCalledOnce();
+      expect(mocks.executeGovernedTool).toHaveBeenCalledTimes(executedBefore);
+      expect(mocks.failAgentRun).toHaveBeenCalledWith(
+        "run-memory-scope",
+        REFUSED,
+        expect.any(Object),
+      );
+    });
   });
 
   describe("run cancellation", () => {

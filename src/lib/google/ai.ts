@@ -137,6 +137,8 @@ export async function generateGeminiToolTurn(input: {
   model: string;
   maxOutputTokens?: number;
   tools: readonly ModelToolDefinition[];
+  /** "none" keeps the tools declared but asks for a reply without a call. */
+  toolChoice?: "auto" | "none";
   continuation?: ModelToolContinuation;
   toolResults?: readonly ModelToolResult[];
   abortSignal?: AbortSignal;
@@ -211,6 +213,9 @@ export async function generateGeminiToolTurn(input: {
       })),
       generation_config: {
         max_output_tokens: geminiMaxOutputTokens(input.maxOutputTokens),
+        ...(input.tools.length && input.toolChoice === "none"
+          ? { tool_choice: "none" }
+          : {}),
       },
       store: false,
     }),

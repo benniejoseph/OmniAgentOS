@@ -6,6 +6,7 @@ import {
   generateGeminiToolTurn,
   generateGeminiVideo,
 } from "@/lib/google/ai";
+import { googleModelAdapter } from "@/lib/models/adapters/google";
 import { getModelProviderResponseReceipt } from "@/lib/models/types";
 
 describe("Google AI provider", () => {
@@ -490,5 +491,82 @@ describe("Gemini reply size", () => {
       ...(answerTokens === undefined ? {} : { maxOutputTokens: answerTokens }),
     });
     expect(toolLimit()).toBe(maxTokens);
+  });
+});
+
+describe("Gemini tool choice on tool turns", () => {
+  const flightTool = {
+    type: "function" as const,
+    name: "flight_search",
+    description: "Search flights",
+    parameters: { type: "object" },
+  };
+
+  afterEach(() => {
+    delete process.env.GEMINI_API_KEY;
+    vi.unstubAllGlobals();
+  });
+
+  function stubCompleted() {
+    process.env.GEMINI_API_KEY = "test-key";
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      id: "interaction-1",
+      model: "gemini-test",
+      status: "completed",
+      steps: [{ type: "model_output", content: [{ type: "text", text: "Lisbon." }] }],
+      usage: { total_input_tokens: 3, total_output_tokens: 2, total_tokens: 5 },
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    return () => JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+  }
+
+  it("asks for no call and keeps the tools declared", async () => {
+    const sent = stubCompleted();
+    await generateGeminiToolTurn({
+      prompt: "Where?",
+      model: "gemini-test",
+      tools: [flightTool],
+      toolChoice: "none",
+    });
+
+    const body = sent();
+    expect(body.generation_config).toEqual({
+      max_output_tokens: 18_000,
+      tool_choice: "none",
+    });
+    expect(body.tools).toEqual([{
+      type: "function",
+      name: "flight_search",
+      description: "Search flights",
+      parameters: { type: "object" },
+    }]);
+  });
+
+  it.each([
+    ["the default", {}, [flightTool]],
+    ["calls allowed", { toolChoice: "auto" }, [flightTool]],
+    ["a turn without tools", { toolChoice: "none" }, []],
+  ] as const)("sends no tool_choice for %s", async (_label, settings, tools) => {
+    const sent = stubCompleted();
+    await generateGeminiToolTurn({
+      prompt: "Where?",
+      model: "gemini-test",
+      tools,
+      ...settings,
+    });
+
+    expect(sent().generation_config).toEqual({ max_output_tokens: 18_000 });
+  });
+
+  it("gets the tool choice from the model adapter", async () => {
+    const sent = stubCompleted();
+    await googleModelAdapter.generateToolTurn!({
+      input: "Where?",
+      preferredProvider: "google",
+      tools: [flightTool],
+      toolChoice: "none",
+    }, { provider: "google", model: "gemini-test", tier: "fast", features: ["text", "tools"] });
+
+    expect(sent().generation_config.tool_choice).toBe("none");
   });
 });

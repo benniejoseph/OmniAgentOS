@@ -787,6 +787,72 @@ describe("Claude effort and reply size", () => {
   });
 });
 
+describe("Claude tool choice on tool turns", () => {
+  const flightTool = {
+    type: "function" as const,
+    name: "flight_search",
+    description: "Search flights",
+    parameters: { type: "object" },
+  };
+
+  afterEach(() => {
+    delete process.env.ANTHROPIC_API_KEY;
+    vi.unstubAllGlobals();
+  });
+
+  async function sentToolTurn(
+    settings: Pick<ModelToolTurnRequest, "toolChoice" | "parallelToolCalls">,
+    tools: ModelToolTurnRequest["tools"] = [flightTool],
+  ) {
+    const fetchMock = stubAnswers(answer([{ type: "text", text: "Lisbon." }], "end_turn"));
+    await anthropicModelAdapter.generateToolTurn!({
+      input: "Where?",
+      preferredProvider: "anthropic",
+      tools,
+      ...settings,
+    }, structuredTarget("claude-opus-5-5"));
+    return sentBodies(fetchMock)[0];
+  }
+
+  it.each([
+    ["no call", { toolChoice: "none" }, { type: "none" }],
+    [
+      "no call when also limited to one",
+      { toolChoice: "none", parallelToolCalls: false },
+      { type: "none" },
+    ],
+    [
+      "at most one call",
+      { parallelToolCalls: false },
+      { type: "auto", disable_parallel_tool_use: true },
+    ],
+    [
+      "at most one call when calls are allowed",
+      { toolChoice: "auto", parallelToolCalls: false },
+      { type: "auto", disable_parallel_tool_use: true },
+    ],
+  ] as const)("asks for %s and keeps the tools", async (_label, settings, toolChoice) => {
+    const body = await sentToolTurn(settings);
+
+    expect(body.tool_choice).toEqual(toolChoice);
+    expect(body.tools).toEqual([{
+      name: "flight_search",
+      description: "Search flights",
+      input_schema: { type: "object" },
+    }]);
+  });
+
+  it.each([
+    ["the default", {}, [flightTool]],
+    ["calls allowed", { toolChoice: "auto", parallelToolCalls: true }, [flightTool]],
+    ["a turn without tools", { toolChoice: "none", parallelToolCalls: false }, []],
+  ] as const)("sends no tool_choice for %s", async (_label, settings, tools) => {
+    const body = await sentToolTurn(settings, tools);
+
+    expect(body).not.toHaveProperty("tool_choice");
+  });
+});
+
 function structuredTarget(model: string): ModelTarget {
   return {
     provider: "anthropic",

@@ -115,7 +115,13 @@ describe("Amazon Bedrock prompt caching", () => {
     const request = bindModelRuntime<ModelToolTurnRequest>({
       input: "Continue.",
       preferredProvider: "aws_bedrock",
-      tools: [],
+      // Converse rejects tool calls and results without the tools declared.
+      tools: [{
+        type: "function",
+        name: "local_macos_click",
+        description: "Click an element on This Mac",
+        parameters: { type: "object" },
+      }],
       continuation: {
         provider: "aws_bedrock",
         state: [{
@@ -166,6 +172,15 @@ describe("Amazon Bedrock prompt caching", () => {
 
     const result = await adapter.generateToolTurn!(request, target);
     const body = JSON.parse(String(fetchImplementation.mock.calls[0]?.[1]?.body));
+    expect(body.toolConfig).toEqual({
+      tools: [{
+        toolSpec: {
+          name: "local_macos_click",
+          description: "Click an element on This Mac",
+          inputSchema: { json: { type: "object" } },
+        },
+      }],
+    });
     expect(body.messages.at(-1).content[0].toolResult.content).toEqual([
       { text: "{\"clicked\":true}" },
       expect.objectContaining({
@@ -295,6 +310,154 @@ describe("Amazon Bedrock tool results", () => {
     const unanswered = JSON.parse(String(fetchImplementation.mock.calls[1][1]?.body));
     expect(unanswered.messages).toHaveLength(4);
     expect(unanswered.messages.at(-1)).toEqual(replied.at(-1));
+  });
+});
+
+describe("Amazon Bedrock turns that ask for no tool call", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const target: ModelTarget = {
+    provider: "aws_bedrock",
+    model: "amazon.nova-lite-v1:0",
+    tier: "fast",
+    features: ["text", "tools"],
+  };
+  const flightTool = {
+    type: "function" as const,
+    name: "flight_search",
+    description: "Search flights",
+    parameters: { type: "object" },
+  };
+  const textAnswerRequest = {
+    text: "Answer now in text, without calling a tool, from the information you already have.",
+  };
+  const prompt = { role: "user", content: [{ text: "Find a flight to Lisbon." }] };
+  const flightResult = {
+    toolResult: {
+      toolUseId: "tooluse_a",
+      content: [{ text: "TAP at 9:00." }],
+      status: "success",
+    },
+  };
+
+  function stubbedTurns() {
+    const fetchImplementation = vi.fn().mockImplementation(async () => new Response(
+      JSON.stringify({
+        output: {
+          message: { role: "assistant", content: [{ text: "Take TAP at 9:00." }] },
+        },
+        stopReason: "end_turn",
+        usage: { inputTokens: 12, outputTokens: 4, totalTokens: 16 },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    ));
+    const adapter = createBedrockModelAdapter({ fetchImplementation });
+    const turn = (
+      request: Omit<ModelToolTurnRequest, "input" | "preferredProvider">,
+    ) =>
+      adapter.generateToolTurn!(bindModelRuntime<ModelToolTurnRequest>({
+        input: "Find a flight to Lisbon.",
+        preferredProvider: "aws_bedrock",
+        ...request,
+      }, {
+        targets: [target],
+        credentials: {
+          aws_bedrock: {
+            kind: "aws_bedrock",
+            accessKeyId: "AKIATESTACCESSKEY",
+            secretAccessKey: "bedrock-test-secret-access-key-123456",
+            region: "us-east-1",
+          },
+        },
+      }), target);
+    const sent = () =>
+      JSON.parse(String(fetchImplementation.mock.calls[0]?.[1]?.body));
+    return { turn, sent };
+  }
+
+  it("keeps the tools declared and asks for text after the tool results", async () => {
+    const { turn, sent } = stubbedTurns();
+    const result = await turn({
+      tools: [flightTool],
+      toolChoice: "none",
+      continuation: {
+        provider: "aws_bedrock",
+        state: [prompt, {
+          role: "assistant",
+          content: [{
+            toolUse: { toolUseId: "tooluse_a", name: "flight_search", input: {} },
+          }],
+        }],
+      },
+      toolResults: [{
+        callId: "tooluse_a",
+        name: "flight_search",
+        output: "TAP at 9:00.",
+      }],
+    });
+
+    const body = sent();
+    expect(body.toolConfig).toEqual({
+      tools: [{
+        toolSpec: {
+          name: "flight_search",
+          description: "Search flights",
+          inputSchema: { json: { type: "object" } },
+        },
+      }],
+    });
+    expect(body.messages.at(-1)).toEqual({
+      role: "user",
+      content: [flightResult, textAnswerRequest],
+    });
+    // Only the request asks: the saved turn holds the results alone.
+    expect(result.continuation.state.at(-2)).toEqual({
+      role: "user",
+      content: [flightResult],
+    });
+    expect(JSON.stringify(result.continuation)).not.toContain(
+      textAnswerRequest.text,
+    );
+  });
+
+  it("asks at the end of the prompt on a first turn", async () => {
+    const { turn, sent } = stubbedTurns();
+    const result = await turn({ tools: [flightTool], toolChoice: "none" });
+
+    expect(sent().messages).toEqual([{
+      role: "user",
+      content: [...prompt.content, textAnswerRequest],
+    }]);
+    expect(result.continuation.state[0]).toEqual(prompt);
+  });
+
+  it("asks in a new user message after a turn that ended in text", async () => {
+    const { turn, sent } = stubbedTurns();
+    const state = [prompt, { role: "assistant", content: [{ text: "Which date?" }] }];
+    await turn({
+      tools: [flightTool],
+      toolChoice: "none",
+      continuation: { provider: "aws_bedrock", state },
+      toolResults: [],
+    });
+
+    expect(sent().messages).toEqual([
+      ...state,
+      { role: "user", content: [textAnswerRequest] },
+    ]);
+  });
+
+  it.each([
+    ["calls are allowed", {}, [flightTool]],
+    ["calls are allowed explicitly", { toolChoice: "auto" }, [flightTool]],
+    ["no tools are declared", { toolChoice: "none" }, []],
+  ] as const)("does not ask for text when %s", async (_label, settings, tools) => {
+    const { turn, sent } = stubbedTurns();
+    await turn({ tools, ...settings });
+
+    const body = sent();
+    expect(body.messages).toEqual([prompt]);
+    expect("toolConfig" in body).toBe(tools.length > 0);
   });
 });
 

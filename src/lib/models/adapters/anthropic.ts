@@ -131,6 +131,7 @@ export const anthropicModelAdapter: ModelProviderAdapter = {
     });
     const durableMessages = anthropicToolMessages(request, conversation, false);
     const messages = anthropicToolMessages(request, conversation, true);
+    const toolChoice = anthropicToolChoice(request);
     const result = await callAnthropic(request, target, {
       messages,
       cache_control: { type: "ephemeral" },
@@ -139,6 +140,7 @@ export const anthropicModelAdapter: ModelProviderAdapter = {
         description: tool.description,
         input_schema: tool.parameters,
       })),
+      ...(toolChoice ? { tool_choice: toolChoice } : {}),
     });
     const content = anthropicContent(result.body);
     const text = content
@@ -295,6 +297,19 @@ function unfinishedResponseError(stopReason: string | undefined) {
       "unknown",
       false,
     );
+  }
+  return undefined;
+}
+
+/**
+ * The tool_choice for a tool turn, or undefined for Claude's default. A
+ * request without tools sends none, because tool_choice needs tools.
+ */
+function anthropicToolChoice(request: ModelToolTurnRequest) {
+  if (!request.tools.length) return undefined;
+  if (request.toolChoice === "none") return { type: "none" };
+  if (request.parallelToolCalls === false) {
+    return { type: "auto", disable_parallel_tool_use: true };
   }
   return undefined;
 }

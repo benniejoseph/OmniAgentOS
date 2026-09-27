@@ -45,6 +45,7 @@ export const googleModelAdapter: ModelProviderAdapter = {
       model: target.model,
       maxOutputTokens: request.maxOutputTokens,
       tools: request.tools,
+      toolChoice: request.toolChoice,
       continuation: request.continuation,
       toolResults: request.toolResults,
       abortSignal: request.abortSignal,

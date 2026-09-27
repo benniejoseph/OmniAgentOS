@@ -292,6 +292,8 @@ export async function streamResponseTurn({
   instructions,
   input,
   tools,
+  toolChoice,
+  parallelToolCalls,
   onDelta,
   abortSignal,
   reasoningEffort,
@@ -306,6 +308,10 @@ export async function streamResponseTurn({
   instructions?: string;
   input: ResponseTurnInput;
   tools?: ResponseFunctionTool[];
+  /** "none" keeps the tools declared but asks for a reply without a call. */
+  toolChoice?: "auto" | "none";
+  /** false asks for at most one tool call in the reply. */
+  parallelToolCalls?: boolean;
   onDelta: (text: string) => void | Promise<void>;
   abortSignal?: AbortSignal;
   reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -373,6 +379,12 @@ export async function streamResponseTurn({
       ...(instructions ? { instructions } : {}),
       input: openAIResponseInput(input) as never,
       ...(tools && tools.length ? { tools: tools as never } : {}),
+      ...(tools?.length && toolChoice === "none"
+        ? { tool_choice: "none" as const }
+        : {}),
+      ...(tools?.length && parallelToolCalls === false
+        ? { parallel_tool_calls: false }
+        : {}),
       ...(effectiveReasoningEffort
         ? { reasoning: { effort: effectiveReasoningEffort } }
         : {}),
