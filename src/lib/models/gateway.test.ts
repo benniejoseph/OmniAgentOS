@@ -193,6 +193,28 @@ describe("model gateway", () => {
     expect(disclosed.toolResults[0].output).toHaveLength(8_000);
   });
 
+  it("passes every tool result to the adapter, including skipped calls", async () => {
+    anthropic.configured.mockReturnValue(true);
+    anthropic.generateToolTurn.mockResolvedValue(toolTurnResult("anthropic"));
+    const toolResults = Array.from({ length: 6 }, (_, index) => ({
+      callId: `toolu_${index + 1}`,
+      name: "safe_tool",
+      output: index < 5
+        ? `result ${index + 1}`
+        : "{\"error\":\"Per-turn tool call limit reached; call skipped.\"}",
+      ...(index < 5 ? {} : { isError: true }),
+    }));
+
+    await generateModelToolTurn({
+      input: "use six tools",
+      preferredProvider: "anthropic",
+      tools: [],
+      toolResults,
+    });
+
+    expect(anthropic.generateToolTurn.mock.calls[0][0].toolResults).toEqual(toolResults);
+  });
+
   it("discloses local computer images only to targets advertising vision", async () => {
     google.configured.mockReturnValue(true);
     google.generateToolTurn.mockResolvedValue(toolTurnResult("google"));

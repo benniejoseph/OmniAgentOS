@@ -21,6 +21,7 @@ import { supportsBedrockPromptCache } from "@/lib/models/prompt-cache";
 import type { ModelUsage } from "@/lib/openai/model-router";
 import {
   appendModelTurnToConversation,
+  assertToolResultsAnswerCalls,
   modelConversationForToolTurn,
   renderUntrustedObservation,
   type ModelConversationItem,
@@ -151,6 +152,7 @@ export function createBedrockModelAdapter(
     },
     async generateToolTurn(request, target) {
       const conversation = modelConversationForToolTurn({
+        provider: PROVIDER,
         prompt: request.input,
         conversation: request.conversation,
         continuationConversation: request.continuation?.conversation,
@@ -757,54 +759,34 @@ function bedrockToolMessages(
   const messages = request.continuation?.state.length
     ? normalizeContinuation(request.continuation.state)
     : bedrockMessagesFromConversation(conversation);
-  if (
-    !request.continuation?.state.length ||
-    !request.toolResults?.length
-  ) return messages;
+  if (!request.continuation?.state.length) return messages;
 
-  const pendingTools = new Map<string, string>();
-  for (const message of messages) {
-    if (message.role !== "assistant") continue;
-    for (const block of message.content) {
-      if ("toolUse" in block) {
-        pendingTools.set(block.toolUse.toolUseId, block.toolUse.name);
-      }
-    }
-  }
-  const seenResults = new Set<string>();
-  const content = request.toolResults.map((result) => {
-    const callId = result.callId.trim();
-    const name = result.name.trim();
-    if (
-      !TOOL_USE_ID_PATTERN.test(callId) ||
-      seenResults.has(callId) ||
-      pendingTools.get(callId) !== name
-    ) {
-      throw new ModelProviderError(
-        "Amazon Bedrock received an unmatched or duplicate tool result.",
-        PROVIDER,
-        "invalid_request",
-        false,
-      );
-    }
-    seenResults.add(callId);
-    return {
-      toolResult: {
-        toolUseId: callId,
-        content: [
-          { text: result.output },
-          ...(includeComputerObservation && result.computerObservation
-            ? [{
-                text: renderModelComputerObservation(
-                  result.computerObservation,
-                ),
-              }]
-            : []),
-        ],
-        status: result.isError ? "error" as const : "success" as const,
-      },
-    };
-  });
+  // Results answer the tool calls that end the continuation, which it has
+  // already validated. Only an assistant message holds tool calls.
+  const calls = (messages.at(-1)?.content || []).flatMap((block) =>
+    "toolUse" in block
+      ? [{ callId: block.toolUse.toolUseId, name: block.toolUse.name }]
+      : []);
+  const results = request.toolResults || [];
+  assertToolResultsAnswerCalls(calls, results, PROVIDER);
+  if (!results.length) return messages;
+
+  const content = results.map((result) => ({
+    toolResult: {
+      toolUseId: result.callId,
+      content: [
+        { text: result.output },
+        ...(includeComputerObservation && result.computerObservation
+          ? [{
+              text: renderModelComputerObservation(
+                result.computerObservation,
+              ),
+            }]
+          : []),
+      ],
+      status: result.isError ? "error" as const : "success" as const,
+    },
+  }));
   messages.push({ role: "user", content });
   return messages;
 }

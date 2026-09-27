@@ -91,17 +91,22 @@ export const openAIModelAdapter: ModelProviderAdapter = {
       );
     }
     const conversation = modelConversationForToolTurn({
+      provider: "openai",
       prompt: request.input,
       conversation: request.conversation,
       continuationConversation: request.continuation?.conversation,
       toolResults: request.toolResults,
     });
-    const prior = request.continuation?.state.length
+    const nativeState = request.continuation?.state.length
       ? request.continuation.state as ConversationItem[]
-      : openAIConversationItems(conversation);
+      : undefined;
+    const prior = nativeState ?? openAIConversationItems(conversation);
+    // A conversation rebuilt from the canonical transcript already holds the
+    // results; only provider state needs them appended.
+    const toolResults = nativeState ? request.toolResults || [] : [];
     const durableInput: ConversationItem[] = [
       ...prior,
-      ...(request.toolResults || []).map((result) => ({
+      ...toolResults.map((result) => ({
         type: "function_call_output" as const,
         call_id: result.callId,
         output: result.output,
@@ -109,7 +114,7 @@ export const openAIModelAdapter: ModelProviderAdapter = {
     ];
     const input: ConversationItem[] = [
       ...prior,
-      ...(request.toolResults || []).map((result) =>
+      ...toolResults.map((result) =>
         result.computerObservation
           ? {
               type: "ephemeral_computer_function_output" as const,

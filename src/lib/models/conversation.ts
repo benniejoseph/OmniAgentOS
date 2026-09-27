@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ModelProviderError, type ProviderId } from "@/lib/models/types";
 
 export const MODEL_CONVERSATION_SCHEMA_VERSION = 1 as const;
 export const MODEL_CONVERSATION_MAX_ITEMS = 128;
@@ -75,20 +76,30 @@ export function parseModelConversation(value: unknown) {
 }
 
 export function modelConversationForToolTurn(input: {
+  provider: ProviderId;
   prompt: string;
   conversation?: readonly ModelConversationItem[];
   continuationConversation?: readonly ModelConversationItem[];
   toolResults?: readonly ConversationToolResult[];
 }) {
-  const initial = input.continuationConversation?.length
+  const continued = input.continuationConversation?.length
     ? parseModelConversation(input.continuationConversation)
-    : input.conversation?.length
+    : undefined;
+  if (continued) {
+    assertToolResultsAnswerCalls(
+      lastTurnToolCalls(continued),
+      input.toolResults || [],
+      input.provider,
+    );
+  }
+  const initial = continued
+    ?? (input.conversation?.length
       ? parseModelConversation(input.conversation)
       : parseModelConversation([{
           type: "message",
           role: "user",
           content: input.prompt,
-        }]);
+        }]));
   if (!input.toolResults?.length) return initial;
   return parseModelConversation([
     ...initial,
@@ -100,6 +111,60 @@ export function modelConversationForToolTurn(input: {
       ...(result.isError ? { isError: true } : {}),
     })),
   ]);
+}
+
+/** The tool calls that end a conversation: those of the model's last turn. */
+function lastTurnToolCalls(
+  conversation: readonly ModelConversationItem[],
+) {
+  const calls: Extract<ModelConversationItem, { type: "tool_call" }>[] = [];
+  for (let index = conversation.length - 1; index >= 0; index -= 1) {
+    const item = conversation[index];
+    if (item.type !== "tool_call") break;
+    calls.unshift(item);
+  }
+  return calls;
+}
+
+/**
+ * Every tool call of the model's last turn needs exactly one result. Providers
+ * reject a call left without one, and a result that answers no open call could
+ * stand in for a result that was lost, so fail before sending the request.
+ */
+export function assertToolResultsAnswerCalls(
+  calls: readonly Readonly<{ callId: string; name: string }>[],
+  results: readonly Readonly<{ callId: string; name: string }>[],
+  provider: ProviderId,
+) {
+  const open = new Map(calls.map((call) => [call.callId, call.name]));
+  for (const result of results) {
+    const name = open.get(result.callId);
+    if (name === undefined) {
+      throw new ModelProviderError(
+        "A tool result answers no open tool call from the model's last turn.",
+        provider,
+        "invalid_request",
+        false,
+      );
+    }
+    if (name !== result.name) {
+      throw new ModelProviderError(
+        "A tool result names a different tool than the call it answers.",
+        provider,
+        "invalid_request",
+        false,
+      );
+    }
+    open.delete(result.callId);
+  }
+  if (open.size) {
+    throw new ModelProviderError(
+      `${open.size} tool call(s) from the model's last turn have no result.`,
+      provider,
+      "invalid_request",
+      false,
+    );
+  }
 }
 
 export function appendModelTurnToConversation(

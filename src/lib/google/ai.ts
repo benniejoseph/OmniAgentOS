@@ -157,6 +157,7 @@ export async function generateGeminiToolTurn(input: {
   const model = input.model.trim();
   if (!model) throw new Error("The Gemini model route is invalid.");
   const conversation = modelConversationForToolTurn({
+    provider: "google",
     prompt: input.prompt,
     conversation: input.conversation,
     continuationConversation: input.continuation?.conversation,

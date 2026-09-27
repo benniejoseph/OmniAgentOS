@@ -83,6 +83,11 @@ For internal calls, the secret and identity headers must be sent together. Never
 - A retry that returns the failure instead of running: This Mac tools never run again, because the Mac keys each command by its execution ID and would hand back the old command. A replay that carries a schedule's policy lease, a dry run, a call with an effect receipt, and a replay under another role than the one the execution was bound to never run again either.
 - A workflow node whose pass was stopped while its tool call ran goes back to pending instead of failing the workflow.
 
+## A model turn fails because a tool call has no result
+
+- A run that fails with `1 tool call(s) from the model's last turn have no result.` (or another count), `A tool result answers no open tool call from the model's last turn.`, or `A tool result names a different tool than the call it answers.`: before it sends a turn, the gateway checks the tool results against the calls that ended the model's last turn, and each call needs exactly one result. The error has kind `invalid_request`, so nothing is sent, the gateway does not retry, and no other provider is tried. A result was lost, repeated, or renamed on its way back from the tools; the provider did not fail.
+- A turn in which the model called more than five tools: the calls past the per-turn cap do not run, and each gets the result `Per-turn tool call limit reached; call skipped.` The cap is one call per turn when the run drives This Mac.
+
 ## A workflow plan step starts over, or its plan was built without the model
 
 - A plan step with `step.reset` (reason `interrupted`), `step.interrupted`, and the run error `Workflow execution was interrupted and safely requeued.`: the queue pass ran out of time, or its worker lost the run's lease, while the model was planning. No plan was saved, and the step plans again on a later pass. Each attempt uses a model call from the run's budget, so a run interrupted this way again and again ends with `workflow.budget_exhausted`.

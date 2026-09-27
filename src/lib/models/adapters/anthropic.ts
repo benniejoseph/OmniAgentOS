@@ -98,6 +98,7 @@ export const anthropicModelAdapter: ModelProviderAdapter = {
   },
   async generateToolTurn(request, target) {
     const conversation = modelConversationForToolTurn({
+      provider: "anthropic",
       prompt: request.input,
       conversation: request.conversation,
       continuationConversation: request.continuation?.conversation,

@@ -29,7 +29,6 @@ const MAX_TOOL_DESCRIPTION_CHARS = 1_000;
 const MAX_TOOL_SCHEMA_BYTES = 16 * 1024;
 const MAX_TOOL_SCHEMA_TOTAL_BYTES = 64 * 1024;
 const MAX_TOOL_RESULT_CHARS = 8_000;
-const MAX_TOOL_RESULTS_PER_TURN = 5;
 
 export async function generateModelText(request: ModelTextRequest): Promise<ModelGenerationResult> {
   return executeGateway(request, "text", (adapter, target) =>
@@ -477,7 +476,7 @@ function sanitizeToolResults(
   results: readonly ModelToolResult[] | undefined,
   includeImages = true,
 ) {
-  return (results || []).slice(0, MAX_TOOL_RESULTS_PER_TURN).map((result) => {
+  return (results || []).map((result) => {
     const computerObservation = sanitizeModelComputerObservation(
       result.computerObservation,
       { includeImage: includeImages },
