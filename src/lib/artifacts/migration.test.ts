@@ -20,10 +20,6 @@ const migration = fs.readFileSync(
   ),
   "utf8",
 );
-const databaseClient = fs.readFileSync(
-  path.join(process.cwd(), "src/lib/db/client.ts"),
-  "utf8",
-);
 
 describe("generated artifact persistence migration", () => {
   it("appends exact ordered migration v189", () => {
@@ -67,24 +63,22 @@ describe("generated artifact persistence migration", () => {
   });
 
   it("binds structured specs, exact bytes, lineage, Google refs, and lifecycle", () => {
-    for (const sql of [migration, databaseClient]) {
-      expect(sql).toContain("spec_snapshot JSONB NOT NULL");
-      expect(sql).toContain("spec_sha256 TEXT NOT NULL");
-      expect(sql).toContain("content_sha256 TEXT");
-      expect(sql).toContain("byte_count BIGINT");
-      expect(sql).toContain("content_bytes BYTEA");
-      expect(sql).toContain("lineage_refs TEXT[]");
-      expect(sql).toContain("evidence_refs TEXT[]");
-      expect(sql).toContain("google_resource_ref JSONB");
-      expect(sql).toContain(
-        "render_status IN ('queued', 'rendering', 'ready', 'failed')",
-      );
-      expect(sql).toContain(
-        "source_kind IN ('capture_asset', 'capture_segment', 'generated_artifact')",
-      );
-      expect(sql).toContain(
-        "(capture_asset|capture_segment|generated_artifact)",
-      );
-    }
+    expect(migration).toContain("spec_snapshot JSONB NOT NULL");
+    expect(migration).toContain("spec_sha256 TEXT NOT NULL");
+    expect(migration).toContain("content_sha256 TEXT");
+    expect(migration).toContain("byte_count BIGINT");
+    expect(migration).toContain("content_bytes BYTEA");
+    expect(migration).toContain("lineage_refs TEXT[]");
+    expect(migration).toContain("evidence_refs TEXT[]");
+    expect(migration).toContain("google_resource_ref JSONB");
+    expect(migration).toContain(
+      "render_status IN ('queued', 'rendering', 'ready', 'failed')",
+    );
+    expect(migration).toContain(
+      "source_kind IN ('capture_asset', 'capture_segment', 'generated_artifact')",
+    );
+    expect(migration).toContain(
+      "(capture_asset|capture_segment|generated_artifact)",
+    );
   });
 });

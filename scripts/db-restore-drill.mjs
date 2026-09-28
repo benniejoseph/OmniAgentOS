@@ -6,13 +6,13 @@ import { access, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
 
-const schemaMigrations = JSON.parse(
+const schemaMigrationManifest = JSON.parse(
   await readFile(new URL("../schema-migrations.json", import.meta.url), "utf8"),
 );
 if (
-  !Array.isArray(schemaMigrations) ||
-  !Number.isSafeInteger(schemaMigrations.at(-1)?.version) ||
-  !schemaMigrations.every(
+  !Array.isArray(schemaMigrationManifest) ||
+  !Number.isSafeInteger(schemaMigrationManifest.at(-1)?.version) ||
+  !schemaMigrationManifest.every(
     (migration, index) =>
       Number.isSafeInteger(migration.version) &&
       migration.version === index + 1 &&
@@ -22,6 +22,11 @@ if (
 ) {
   fail("schema-migrations.json is invalid.");
 }
+// Backup manifests record the omni_schema_version fields only; a manifest
+// entry's `file` only says where the migration's SQL lives.
+const schemaMigrations = schemaMigrationManifest.map(
+  ({ version, name, checksum }) => ({ version, name, checksum }),
+);
 
 const backupInput = path.resolve(process.env.OMNIAGENT_BACKUP_INPUT || "");
 const restoreUrl = process.env.RESTORE_DATABASE_URL?.trim();

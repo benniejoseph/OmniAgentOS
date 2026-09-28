@@ -3,44 +3,26 @@ import { resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { ensureMoltbookAutonomyV1 } from "@/lib/moltbook/autonomy-schema";
-
 const migrationPath = resolve(
   process.cwd(),
   "supabase/migrations/20260921170000_moltbook_autonomy.sql",
 );
 const migration = readFileSync(migrationPath, "utf8");
-const databaseClient = readFileSync(resolve(
-  process.cwd(),
-  "src/lib/db/client.ts",
-), "utf8");
 const manifest = JSON.parse(readFileSync(resolve(
   process.cwd(),
   "schema-migrations.json",
-), "utf8")) as Array<{ version: number; name: string; checksum: string }>;
+), "utf8")) as Array<{ version: number; name: string; checksum: string; file?: string }>;
 
 describe("Moltbook autonomy v194 migration", () => {
-  it("registers exactly after v193 in both migration paths", async () => {
+  it("registers exactly after v193 and runs from the migration file", () => {
     expect(manifest.find((entry) => entry.version === 194)).toEqual({
       version: 194,
       name: "moltbook_autonomy_v1",
       checksum: "66a868eed1a0fef0eb61d8f69d0d2351605edf39711c007d5c58f1febb5cafef",
+      file: "20260921170000_moltbook_autonomy.sql",
     });
     expect(migration).toContain("latest_version IS DISTINCT FROM 193");
     expect(migration).toContain("194,\n  'moltbook_autonomy_v1',\n  '66a868eed1a0fef0eb61d8f69d0d2351605edf39711c007d5c58f1febb5cafef'");
-    expect(databaseClient).toContain("...databaseSchemaMigrations[193]");
-    expect(databaseClient).toContain("up: ensureMoltbookAutonomyV1");
-
-    const statements: string[] = [];
-    await ensureMoltbookAutonomyV1({
-      query: async (text) => {
-        statements.push(text);
-        return [];
-      },
-    });
-    expect(statements).toHaveLength(1);
-    expect(statements[0]).toContain("CREATE TABLE omni_moltbook_autonomy_enrollments");
-    expect(statements[0]).not.toContain("INSERT INTO public.omni_schema_version");
   });
 
   it("accepts only the original nine tools or the exact thirteen-tool v2 boundary", () => {

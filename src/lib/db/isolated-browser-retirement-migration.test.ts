@@ -8,10 +8,6 @@ const migrationPath = path.join(
   "supabase/migrations/20260917170000_p13_3_retire_isolated_browser.sql",
 );
 const migration = fs.readFileSync(migrationPath, "utf8");
-const schemaRunner = fs.readFileSync(
-  path.join(process.cwd(), "src/lib/db/client.ts"),
-  "utf8",
-);
 
 describe("isolated browser runtime retirement migration", () => {
   it("revokes active browser authority without deleting audit history", () => {
@@ -46,17 +42,6 @@ describe("isolated browser runtime retirement migration", () => {
     expect(migration).toContain(
       "Isolated browser maintenance mutation authority is still granted",
     );
-    const retirementRunner = schemaRunner.slice(
-      schemaRunner.indexOf("async function ensureIsolatedBrowserRuntimeRetirementV1"),
-      schemaRunner.indexOf("async function ensureActorRlsPolicyRepairV1"),
-    );
-    expect(retirementRunner).toContain(
-      "ON omni_browser_profiles FROM omni_runtime",
-    );
-    expect(retirementRunner).toContain(
-      "ON omni_browser_takeovers FROM omni_maintenance",
-    );
-    expect(retirementRunner).toContain("has_any_column_privilege(");
   });
 
   it("disables known browser connectors and scrubs sealed credentials", () => {

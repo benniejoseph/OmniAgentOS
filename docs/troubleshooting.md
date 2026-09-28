@@ -14,10 +14,16 @@ If `/api/health` returns 503, inspect server logs for TLS, credentials, extensio
 
 ## Schema startup fails
 
-- Inspect `omni_schema_version` and compare it with the versions in `databaseSchemaMigrations`.
+- Inspect `omni_schema_version` and compare it with the versions in `schema-migrations.json`.
 - Ensure only one application identity owns migrations and that it can create/alter tables, functions, policies, and indexes.
 - The advisory lock serializes migrations; a long wait can mean another deployment is migrating or a transaction is stuck.
 - Restore into an isolated database before repairing a failed migration. Do not delete version rows to force a rerun without reviewing the idempotency of that migration.
+- `Database role omni_runtime does not exist, and the migration role cannot create it`: the migrations grant to `omni_backup`, `omni_maintenance`, and `omni_runtime` by name, and the runner creates a missing one as a role that cannot log in. Create the role yourself (`CREATE ROLE omni_runtime NOLOGIN;` is enough), or migrate as a role with `CREATEROLE`.
+- `… records database migrations … together, but only … of them is pending, and the file cannot run in part`: `omni_schema_version` holds some, but not all, of the versions one file writes, which the runner never does on its own. Find out how the rows got there; if the schema cannot be reconciled with the file, restore the pre-rollout backup into an isolated database.
+- `… declares migration ledger rows […], but schema-migrations.json expects […]`: the file and its manifest entries come from different releases. The runner stopped before running the file, and the migration transaction rolled back.
+- `… wrote migration ledger rows […]`: the file ran but recorded different rows, and the migration transaction rolled back.
+- `… statement N (…) failed: …`: statement N of that file, counting its own `BEGIN`, failed with the error that follows, and the migration transaction rolled back.
+- `… controls the transaction`, `… changes session state`, `… cannot run inside the migration transaction`, or `… must begin with a plain BEGIN and end with a plain COMMIT, or have neither`: the file breaks one of the rules in [deployment.md](deployment.md#schema-and-migration-rollout). The runner stopped before running it, and the migration transaction rolled back.
 
 If pgvector is unavailable, set `OMNIAGENT_LOG_PGVECTOR_FAILURES=true` temporarily. The app can use JSON embeddings, but vector-index status remains not ready until the extension, columns, dimensions, and HNSW indexes match.
 
@@ -146,7 +152,7 @@ For internal calls, the secret and identity headers must be sent together. Never
 ## Memory forget or the deletion scrub fails
 
 - `Database schema is behind (pending versions: 207)`: run migration v207 before serving the release. See [deployment.md](deployment.md#memory-forget-lineage-closure-v207).
-- `permission denied for function omni_memory_deletion_manifest_v1`: the serving role did not exist when the migration ran, or has another name. Grant it `EXECUTE` as the deployment note shows.
+- `permission denied for function omni_memory_deletion_manifest_v1`: the serving role has another name, or v207 was applied outside `npm run db:migrate` before the role existed. Grant it `EXECUTE` as the deployment note shows.
 - `42501 Memory deletion manifests are tenant-scoped`: the session's `omni.tenant_id` is not the memory's tenant. Served requests set it; a manual call must set it too.
 - `409` from `DELETE /api/memory/:id` after a preview: the lineage changed after the review, for example because another actor derived a memory, trace, or graph row from it. Preview again and submit the new digest.
 - The tick logs `memory_deletion_scrub_failed`: the physical scrub failed and the rest of maintenance continued. Its receipts stay leasable, so the next tick retries them.

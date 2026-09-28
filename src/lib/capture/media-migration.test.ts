@@ -47,7 +47,6 @@ describe("P10.7 resumable media migration", () => {
     expect(migration).toContain("version = 134");
     expect(migration).toContain("135,");
     expect(migration).toContain("resumable_capture_media_v1");
-    expect(databaseClient).toContain("ensureResumableCaptureMediaV1");
     expect(databaseClient).toContain('"omni_capture_media_heads"');
     expect(databaseClient).toContain('"omni_capture_media_revisions"');
   });

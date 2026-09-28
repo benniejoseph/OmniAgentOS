@@ -11,7 +11,6 @@ const memoryPolicyPath = path.join(
   process.cwd(),
   "supabase/migrations/20260905234500_memory_access_scope_initplan_policies.sql",
 );
-const bootstrapPath = path.join(process.cwd(), "src/lib/db/client.ts");
 const retentionPath = path.join(process.cwd(), "src/lib/security/retention.ts");
 
 describe("knowledge cognition candidate migration", () => {
@@ -90,10 +89,9 @@ describe("knowledge cognition candidate migration", () => {
   });
 
   it("uses a bounded definer seam because ordinary memory scope cannot serve lifecycle cleanup", async () => {
-    const [migration, memoryPolicy, bootstrap, retention] = await Promise.all([
+    const [migration, memoryPolicy, retention] = await Promise.all([
       readFile(migrationPath, "utf8"),
       readFile(memoryPolicyPath, "utf8"),
-      readFile(bootstrapPath, "utf8"),
       readFile(retentionPath, "utf8"),
     ]);
 
@@ -103,8 +101,8 @@ describe("knowledge cognition candidate migration", () => {
     expect(memoryPolicy).toContain(
       "access_contract_version = 0\n          AND (SELECT omni_current_memory_access_scope_v1()) IS NULL",
     );
-    expect(bootstrap).toContain(
-      "omni_retire_knowledge_cognition_memories_v1",
+    expect(migration).toContain(
+      "CREATE OR REPLACE FUNCTION\n  public.omni_retire_knowledge_cognition_memories_v1(",
     );
     expect(migration).toContain("SECURITY DEFINER");
     expect(migration).toContain("REVOKE ALL ON FUNCTION");

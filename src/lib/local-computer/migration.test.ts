@@ -14,11 +14,7 @@ const openUrlActionMigrationUrl = new URL(
   "../../../supabase/migrations/20260917193000_p13_3_local_computer_open_url_action.sql",
   import.meta.url,
 );
-const developmentSchemaUrl = new URL(
-  "../db/local-computer-schema.ts",
-  import.meta.url,
-);
-const databaseClientUrl = new URL("../db/client.ts", import.meta.url);
+const manifestUrl = new URL("../../../schema-migrations.json", import.meta.url);
 
 const COMMAND_ACTIONS = [
   "observe",
@@ -32,9 +28,9 @@ const COMMAND_ACTIONS = [
   "open_url",
 ];
 
-function commandRowCheck(source: string, startAt = 0) {
+function commandRowCheck(source: string) {
   const marker = "omni_local_computer_commands_row_check CHECK (COALESCE(";
-  const start = source.indexOf(marker, startAt);
+  const start = source.indexOf(marker);
   expect(start).toBeGreaterThanOrEqual(0);
   const bodyStart = start + marker.length;
   const end = source.indexOf(", FALSE))", bodyStart);
@@ -95,26 +91,17 @@ describe("local Computer Use migration", () => {
   });
 
   it("adds only open_url to the validated command action boundary", async () => {
-    const [runtimeMigration, migration, developmentSchema] = await Promise.all([
+    const [runtimeMigration, migration] = await Promise.all([
       readFile(migrationUrl, "utf8"),
       readFile(openUrlActionMigrationUrl, "utf8"),
-      readFile(developmentSchemaUrl, "utf8"),
     ]);
 
     const originalCheck = commandRowCheck(runtimeMigration);
     const repairedCheck = commandRowCheck(migration);
-    const developmentRepairStart = developmentSchema.indexOf(
-      "export async function ensureLocalComputerOpenUrlActionV1",
-    );
-    const developmentCheck = commandRowCheck(
-      developmentSchema,
-      developmentRepairStart,
-    );
 
     expect(commandActions(originalCheck)).toEqual(COMMAND_ACTIONS.slice(0, -1));
     expect(commandActions(repairedCheck)).toEqual(COMMAND_ACTIONS);
     expect(repairedCheck.replace(", 'open_url'", "")).toBe(originalCheck);
-    expect(developmentCheck).toBe(repairedCheck);
     expect(migration).toContain(
       "ADD CONSTRAINT omni_local_computer_commands_row_check CHECK",
     );
@@ -125,10 +112,11 @@ describe("local Computer Use migration", () => {
   });
 
   it("orders the open_url repair directly after the retirement boundary", async () => {
-    const [migration, databaseClient] = await Promise.all([
+    const [migration, manifestText] = await Promise.all([
       readFile(openUrlActionMigrationUrl, "utf8"),
-      readFile(databaseClientUrl, "utf8"),
+      readFile(manifestUrl, "utf8"),
     ]);
+    const manifest = JSON.parse(manifestText) as Array<{ version: number; file?: string }>;
 
     expect(migration).toContain("latest_version IS DISTINCT FROM 181");
     expect(migration).toContain("version = 181");
@@ -143,8 +131,8 @@ describe("local Computer Use migration", () => {
       "'46a2975c9099d954bc7f7ff6aa537076f14f8dce274e53f33826a38471d1f5e4'",
     );
     expect(migration.trimEnd()).toMatch(/COMMIT;$/);
-    expect(databaseClient).toContain(
-      "...databaseSchemaMigrations[181],\n      up: ensureLocalComputerOpenUrlActionV1",
+    expect(manifest.find((entry) => entry.version === 182)?.file).toBe(
+      "20260917193000_p13_3_local_computer_open_url_action.sql",
     );
   });
 });

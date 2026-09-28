@@ -92,7 +92,7 @@ Without `DATABASE_URL`, data lives in `.omniagent/` JSON files locally. Hosted p
 DATABASE_URL=postgres://...
 ```
 
-The schema, pgvector columns, and HNSW indexes are created automatically on first use.
+The schema, pgvector columns, and HNSW indexes are created automatically on first use. Migrating also creates any of the `omni_backup`, `omni_maintenance`, and `omni_runtime` roles the database lacks, as roles that cannot log in, so connect as a role with `CREATEROLE` the first time (a local superuser has it) or create those roles yourself.
 
 ## 7. Verify your setup
 

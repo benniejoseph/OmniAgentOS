@@ -1,40 +1,29 @@
-import { describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
 
-import {
-  ensureMarketDeterministicBacktestsV1,
-  type MarketBacktestSchemaSqlClient,
-} from "@/lib/db/market-backtest-schema";
+import { describe, expect, it } from "vitest";
+
+const migration = fs.readFileSync(
+  path.join(
+    process.cwd(),
+    "supabase/migrations/20260916120000_market_deterministic_backtests.sql",
+  ),
+  "utf8",
+);
 
 describe("market deterministic backtest schema", () => {
-  it("creates an actor-private append-only result and typed event boundary", async () => {
-    const queries: string[] = [];
-    const tagged: string[] = [];
-    const client = Object.assign(
-      vi.fn(async (strings: TemplateStringsArray) => {
-        tagged.push(strings.join("?"));
-        return [];
-      }),
-      {
-        query: vi.fn(async (text: string) => {
-          queries.push(text);
-          return [];
-        }),
-      },
-    ) as unknown as MarketBacktestSchemaSqlClient;
-
-    await ensureMarketDeterministicBacktestsV1(client);
-
-    const schema = queries.join("\n");
-    const checks = tagged.join("\n");
-    expect(schema).toContain("CREATE TABLE omni_market_backtests");
-    expect(schema).toContain("CREATE TABLE omni_market_backtest_events");
-    expect(schema).toContain("market.backtest.completed");
-    expect(schema).toContain("FORCE ROW LEVEL SECURITY");
-    expect(checks).toContain("GRANT SELECT, INSERT");
-    expect(checks).toContain("GRANT SELECT ON ALL TABLES IN SCHEMA public");
-    expect(checks).toContain("Backup role table coverage is incomplete");
-    expect(checks).not.toContain("GRANT UPDATE");
-    expect(checks).not.toContain("GRANT DELETE");
-    expect(checks).toContain("Market backtest isolation boundary is invalid");
+  it("creates an actor-private append-only result and typed event boundary", () => {
+    expect(migration).toContain("CREATE TABLE public.omni_market_backtests");
+    expect(migration).toContain("CREATE TABLE public.omni_market_backtest_events");
+    expect(migration).toContain("market.backtest.completed");
+    expect(migration).toContain("FORCE ROW LEVEL SECURITY");
+    expect(migration).toContain(
+      "GRANT SELECT, INSERT ON public.omni_market_backtests TO omni_runtime",
+    );
+    expect(migration).toContain("GRANT SELECT ON ALL TABLES IN SCHEMA public");
+    expect(migration).toContain("Backup role table coverage is incomplete");
+    expect(migration).not.toContain("GRANT UPDATE");
+    expect(migration).not.toContain("GRANT DELETE");
+    expect(migration).toContain("Market backtest isolation boundary is invalid");
   });
 });

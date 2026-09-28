@@ -117,9 +117,12 @@ const actorRlsRepairTables = [
   "omni_browser_profile_bindings",
   "omni_browser_takeovers",
 ] as const;
+// The roles the migrations grant to by name.
+const migrationGranteeRoles = ["omni_backup", "omni_maintenance", "omni_runtime"];
 
 databaseDescribe("Postgres schema integration", () => {
   let admin: ReturnType<typeof postgres>;
+  let granteeRolesBeforeBootstrap: string[] = [];
 
   beforeAll(async () => {
     admin = postgres(databaseUrl!, {
@@ -130,6 +133,13 @@ databaseDescribe("Postgres schema integration", () => {
       max: 1,
       prepare: false,
     });
+    // Roles belong to the whole cluster, so the reset below leaves them alone.
+    granteeRolesBeforeBootstrap = (
+      await admin`
+        SELECT rolname FROM pg_roles
+        WHERE rolname = ANY(${migrationGranteeRoles}::text[])
+      `
+    ).map((role) => String(role.rolname));
 
     await dropDatabaseRole(admin, rlsRole);
     await dropDatabaseRole(admin, runtimeRole);
@@ -196,8 +206,31 @@ databaseDescribe("Postgres schema integration", () => {
       FROM omni_jsonb_migration_fixture
       WHERE id = 'double-encoded'
     `;
+    const granteeRoles = await admin`
+      SELECT rolname, rolcanlogin, rolsuper, rolbypassrls
+      FROM pg_roles
+      WHERE rolname = ANY(${migrationGranteeRoles}::text[])
+      ORDER BY rolname
+    `;
 
     expect(markers).toEqual(databaseSchemaMigrations);
+    // The runner creates the roles a database lacks as placeholders that
+    // cannot log in, so every database carries the same grants.
+    expect(granteeRoles.map((role) => role.rolname)).toEqual(migrationGranteeRoles);
+    expect(
+      granteeRoles.filter(
+        (role) => !granteeRolesBeforeBootstrap.includes(role.rolname),
+      ),
+    ).toEqual(
+      migrationGranteeRoles
+        .filter((role) => !granteeRolesBeforeBootstrap.includes(role))
+        .map((rolname) => ({
+          rolname,
+          rolcanlogin: false,
+          rolsuper: false,
+          rolbypassrls: false,
+        })),
+    );
     expect(Number(tables.count)).toBeGreaterThan(20);
     expect(rebuildQueueColumns).toEqual([
       { column_name: "generation" },
@@ -217,6 +250,41 @@ databaseDescribe("Postgres schema integration", () => {
       });
     } else {
       expect(vectorStatus.dimensions).toBeGreaterThan(0);
+    }
+  });
+
+  test("refuses to run part of a migration file that records two versions", async () => {
+    const [recorded] = await admin`
+      SELECT version, name, checksum, applied_at
+      FROM omni_schema_version
+      WHERE version = 118
+    `;
+    await admin`DELETE FROM omni_schema_version WHERE version = 118`;
+    vi.resetModules();
+    try {
+      const client = await import("@/lib/db/client");
+      try {
+        await expect(client.ensureDatabaseSchema()).rejects.toThrow(
+          "20260907011100_p8_6_a2a.sql records database migrations 117 (a2a_peer_rollouts_v1), 118 (a2a_task_mappings_v1) together, but only 118 of them is pending, and the file cannot run in part.",
+        );
+      } finally {
+        await client.closeDatabaseClient();
+      }
+      const [ledger] = await admin`
+        SELECT count(*)::int AS rows
+        FROM omni_schema_version
+        WHERE version = 118
+      `;
+      expect(ledger).toEqual({ rows: 0 });
+    } finally {
+      await admin`
+        INSERT INTO omni_schema_version (version, name, checksum, applied_at)
+        VALUES (
+          ${recorded.version}, ${recorded.name}, ${recorded.checksum},
+          ${recorded.applied_at}
+        )
+      `;
+      vi.resetModules();
     }
   });
 
@@ -647,18 +715,47 @@ databaseDescribe("Postgres schema integration", () => {
     }
   });
 
-  test("keeps the execution-principal registry empty, owner-only, and actor-governed", async () => {
+  test("keeps a tenant-wide policy from widening any actor policy", async () => {
+    // Permissive policies combine with OR, so a tenant-wide permissive policy
+    // beside a permissive actor policy would admit every actor in the tenant.
+    const tables = await admin`
+      SELECT table_name,
+        bool_or(NOT permissive AND actor_scoped) AS actor_restricted,
+        bool_or(permissive AND NOT actor_scoped) AS other_permissive
+      FROM (
+        SELECT relation.relname AS table_name,
+          policy.polpermissive AS permissive,
+          strpos(
+            concat_ws(
+              ' ',
+              pg_get_expr(policy.polqual, policy.polrelid),
+              pg_get_expr(policy.polwithcheck, policy.polrelid)
+            ),
+            'actor_scope'
+          ) > 0 AS actor_scoped
+        FROM pg_policy policy
+        JOIN pg_class relation ON relation.oid = policy.polrelid
+        WHERE relation.relnamespace = 'public'::regnamespace
+      ) policies
+      GROUP BY table_name
+      HAVING bool_or(actor_scoped)
+      ORDER BY table_name
+    `;
+
+    expect(tables.length).toBeGreaterThan(100);
+    expect(
+      tables
+        .filter((table) => table.other_permissive && !table.actor_restricted)
+        .map((table) => table.table_name),
+    ).toEqual([]);
+  });
+
+  test("keeps the execution-principal registry empty, narrowly granted, and actor-governed", async () => {
     const [surface] = await admin`
       SELECT
         (SELECT count(*)::int FROM omni_tenant_execution_principals) AS rows,
         (SELECT count(*)::int FROM pg_policy
          WHERE polrelid = 'omni_tenant_execution_principals'::regclass) AS policies,
-        NOT EXISTS (
-          SELECT 1 FROM information_schema.table_privileges
-          WHERE table_schema = 'public'
-            AND table_name = 'omni_tenant_execution_principals'
-            AND grantee <> current_user
-        ) AS owner_only,
         NOT EXISTS (
           SELECT 1 FROM pg_constraint
           WHERE conrelid = 'omni_tenant_execution_principals'::regclass
@@ -690,9 +787,13 @@ databaseDescribe("Postgres schema integration", () => {
     expect(surface).toEqual({
       rows: 0,
       policies: 4,
-      owner_only: true,
       activation_hold_removed: true,
     });
+    expect(await tableGrants(admin, ["omni_tenant_execution_principals"])).toEqual([
+      "omni_tenant_execution_principals: omni_backup SELECT",
+      "omni_tenant_execution_principals: omni_maintenance INSERT, SELECT",
+      "omni_tenant_execution_principals: omni_runtime INSERT, SELECT",
+    ]);
     const actorExpression =
       "(omni_system_scope_enabled() OR omni_actor_scope_v1_allows(tenant_id, controller_actor_id))";
     expect(policies).toEqual([
@@ -853,7 +954,7 @@ databaseDescribe("Postgres schema integration", () => {
     });
   });
 
-  test("keeps workspace membership explicit, empty, owner-only, and lifecycle-governed", async () => {
+  test("keeps workspace membership explicit, empty, read-only to the app, and lifecycle-governed", async () => {
     const [surface] = await admin`
       SELECT
         (SELECT count(*)::int FROM omni_tenant_workspaces) AS workspaces,
@@ -864,15 +965,6 @@ databaseDescribe("Postgres schema integration", () => {
            'omni_tenant_workspaces'::regclass,
            'omni_tenant_workspace_memberships'::regclass
          )) AS policies,
-        NOT EXISTS (
-          SELECT 1 FROM information_schema.table_privileges
-          WHERE table_schema = 'public'
-            AND table_name IN (
-              'omni_tenant_workspaces',
-              'omni_tenant_workspace_memberships'
-            )
-            AND grantee <> current_user
-        ) AS owner_only,
         NOT EXISTS (
           SELECT 1 FROM pg_constraint
           WHERE (conrelid, conname) IN (
@@ -931,9 +1023,21 @@ databaseDescribe("Postgres schema integration", () => {
       workspaces: 0,
       memberships: 0,
       policies: 4,
-      owner_only: true,
       activation_holds_removed: true,
     });
+    expect(
+      await tableGrants(admin, [
+        "omni_tenant_workspaces",
+        "omni_tenant_workspace_memberships",
+      ]),
+    ).toEqual([
+      "omni_tenant_workspace_memberships: omni_backup SELECT",
+      "omni_tenant_workspace_memberships: omni_maintenance SELECT",
+      "omni_tenant_workspace_memberships: omni_runtime SELECT",
+      "omni_tenant_workspaces: omni_backup SELECT",
+      "omni_tenant_workspaces: omni_maintenance SELECT",
+      "omni_tenant_workspaces: omni_runtime SELECT",
+    ]);
     expect(triggers).toEqual([
       {
         table_name: "omni_tenant_workspace_memberships",
@@ -1154,12 +1258,6 @@ databaseDescribe("Postgres schema integration", () => {
          WHERE polrelid = 'omni_tenant_memory_access_grants'::regclass)
           AS policies,
         NOT EXISTS (
-          SELECT 1 FROM information_schema.table_privileges
-          WHERE table_schema = 'public'
-            AND table_name = 'omni_tenant_memory_access_grants'
-            AND grantee <> current_user
-        ) AS owner_only,
-        NOT EXISTS (
           SELECT 1 FROM pg_constraint
           WHERE conrelid = 'omni_tenant_memory_access_grants'::regclass
             AND conname = 'omni_memory_access_grant_activation_hold_check'
@@ -1199,10 +1297,14 @@ databaseDescribe("Postgres schema integration", () => {
     expect(surface).toEqual({
       rows: 0,
       policies: 2,
-      owner_only: true,
       activation_hold_removed: true,
       binding_validated: true,
     });
+    expect(await tableGrants(admin, ["omni_tenant_memory_access_grants"])).toEqual([
+      "omni_tenant_memory_access_grants: omni_backup SELECT",
+      "omni_tenant_memory_access_grants: omni_maintenance INSERT, SELECT",
+      "omni_tenant_memory_access_grants: omni_runtime INSERT, SELECT",
+    ]);
     expect(triggers).toEqual([
       {
         trigger_name: "omni_memory_access_grant_lifecycle_protect",
@@ -1355,7 +1457,7 @@ databaseDescribe("Postgres schema integration", () => {
     ).rejects.toMatchObject({ code: "23514" });
   });
 
-  test("keeps operation policies empty, owner-only, and unable to waive gates", async () => {
+  test("keeps operation policies empty, owner-written, and unable to waive gates", async () => {
     const [surface] = await admin`
       SELECT
         (SELECT count(*)::int FROM omni_tenant_memory_operation_policies)
@@ -1363,12 +1465,6 @@ databaseDescribe("Postgres schema integration", () => {
         (SELECT count(*)::int FROM pg_policy
          WHERE polrelid = 'omni_tenant_memory_operation_policies'::regclass)
           AS policies,
-        NOT EXISTS (
-          SELECT 1 FROM information_schema.table_privileges
-          WHERE table_schema = 'public'
-            AND table_name = 'omni_tenant_memory_operation_policies'
-            AND grantee <> current_user
-        ) AS owner_only,
         EXISTS (
           SELECT 1 FROM pg_constraint
           WHERE conrelid = 'omni_tenant_memory_operation_policies'::regclass
@@ -1392,10 +1488,12 @@ databaseDescribe("Postgres schema integration", () => {
     expect(surface).toEqual({
       rows: 0,
       policies: 2,
-      owner_only: true,
       activation_held: true,
       unsafe_policy_accepted: false,
     });
+    expect(await tableGrants(admin, ["omni_tenant_memory_operation_policies"])).toEqual([
+      "omni_tenant_memory_operation_policies: omni_backup SELECT",
+    ]);
   });
 
   test("re-verifies the exact dormant informed-notice authority boundary", async () => {
@@ -1415,18 +1513,7 @@ databaseDescribe("Postgres schema integration", () => {
         (SELECT count(*)::int
          FROM omni_tenant_actor_memory_notice_receipts) AS notice_receipts,
         (SELECT count(*)::int
-         FROM omni_tenant_actor_memory_purpose_consents) AS purpose_consents,
-        NOT EXISTS (
-          SELECT 1
-          FROM information_schema.table_privileges
-          WHERE table_schema = 'public'
-            AND table_name IN (
-              'omni_memory_informed_notice_contracts',
-              'omni_tenant_actor_memory_notice_receipts',
-              'omni_tenant_actor_memory_purpose_consents'
-            )
-            AND grantee <> current_user
-        ) AS owner_only
+         FROM omni_tenant_actor_memory_purpose_consents) AS purpose_consents
     `;
 
     expect(surface).toEqual({
@@ -1434,8 +1521,18 @@ databaseDescribe("Postgres schema integration", () => {
       notice_contracts: 0,
       notice_receipts: 0,
       purpose_consents: 0,
-      owner_only: true,
     });
+    expect(
+      await tableGrants(admin, [
+        "omni_memory_informed_notice_contracts",
+        "omni_tenant_actor_memory_notice_receipts",
+        "omni_tenant_actor_memory_purpose_consents",
+      ]),
+    ).toEqual([
+      "omni_memory_informed_notice_contracts: omni_backup SELECT",
+      "omni_tenant_actor_memory_notice_receipts: omni_backup SELECT",
+      "omni_tenant_actor_memory_purpose_consents: omni_backup SELECT",
+    ]);
   });
 
   test("keeps informed-notice governance and anchor-review evidence held", async () => {
@@ -1468,16 +1565,6 @@ databaseDescribe("Postgres schema integration", () => {
            'omni_memory_informed_notice_approval_contracts'::regclass,
            'omni_memory_informed_notice_review_attestations'::regclass
          )) AS policies,
-        NOT EXISTS (
-          SELECT 1 FROM information_schema.table_privileges
-          WHERE table_schema = 'public'
-            AND table_name IN (
-              'omni_memory_informed_notice_approval_batches',
-              'omni_memory_informed_notice_approval_contracts',
-              'omni_memory_informed_notice_review_attestations'
-            )
-            AND grantee <> current_user
-        ) AS owner_only,
         (
           SELECT count(*) = 3 FROM pg_constraint
           WHERE conname IN (
@@ -1513,6 +1600,17 @@ databaseDescribe("Postgres schema integration", () => {
         ) AS data_right_notice_accepted
     `;
 
+    expect(
+      await tableGrants(admin, [
+        "omni_memory_informed_notice_approval_batches",
+        "omni_memory_informed_notice_approval_contracts",
+        "omni_memory_informed_notice_review_attestations",
+      ]),
+    ).toEqual([
+      "omni_memory_informed_notice_approval_batches: omni_backup SELECT",
+      "omni_memory_informed_notice_approval_contracts: omni_backup SELECT",
+      "omni_memory_informed_notice_review_attestations: omni_backup SELECT",
+    ]);
     expect(surface).toEqual({
       migration_recorded: true,
       anchor_migration_recorded: true,
@@ -1520,7 +1618,6 @@ databaseDescribe("Postgres schema integration", () => {
       contracts: 0,
       attestations: 0,
       policies: 3,
-      owner_only: true,
       persistence_held: true,
       anchor_columns: 4,
       standing_notice_valid: true,
@@ -1528,7 +1625,7 @@ databaseDescribe("Postgres schema integration", () => {
     });
   });
 
-  test("keeps one-time memory data-right requests empty, owner-only, and inactive", async () => {
+  test("keeps one-time memory data-right requests empty, owner-written, and inactive", async () => {
     const [surface] = await admin`
       SELECT
         (SELECT count(*)::int FROM omni_tenant_memory_data_right_requests)
@@ -1536,12 +1633,6 @@ databaseDescribe("Postgres schema integration", () => {
         (SELECT count(*)::int FROM pg_policy
          WHERE polrelid = 'omni_tenant_memory_data_right_requests'::regclass)
           AS policies,
-        NOT EXISTS (
-          SELECT 1 FROM information_schema.table_privileges
-          WHERE table_schema = 'public'
-            AND table_name = 'omni_tenant_memory_data_right_requests'
-            AND grantee <> current_user
-        ) AS owner_only,
         EXISTS (
           SELECT 1 FROM pg_constraint
           WHERE conrelid = 'omni_tenant_memory_data_right_requests'::regclass
@@ -1589,11 +1680,13 @@ databaseDescribe("Postgres schema integration", () => {
     expect(surface).toEqual({
       rows: 0,
       policies: 2,
-      owner_only: true,
       activation_held: true,
       valid_held_request: true,
       mismatched_confirmation_accepted: false,
     });
+    expect(await tableGrants(admin, ["omni_tenant_memory_data_right_requests"])).toEqual([
+      "omni_tenant_memory_data_right_requests: omni_backup SELECT",
+    ]);
     await expect(admin`
       INSERT INTO omni_tenant_memory_data_right_requests (
         tenant_id, request_id, request_generation, purpose_id,
@@ -2437,6 +2530,13 @@ databaseDescribe("Postgres schema integration", () => {
         { id: "integration-tenant-a" },
         { id: "integration-tenant-b" },
       ]);
+      // Functions and triggers that check for system scope accept the
+      // maintenance role as well as the schema owner.
+      const [maintenanceScope] = await client.runWithDatabaseSystemScope(
+        "integration system-scope check",
+        () => client.getSql()`SELECT omni_system_scope_enabled() AS enabled`,
+      );
+      expect(maintenanceScope).toEqual({ enabled: true });
 
       const spoofedRows = await client.runWithDatabaseTenantScope(
         "tenant_a",
@@ -2455,6 +2555,18 @@ databaseDescribe("Postgres schema integration", () => {
           ),
       );
       expect(spoofedRows).toEqual([]);
+      const spoofedScope = await client.runWithDatabaseTenantScope(
+        "tenant_a",
+        () =>
+          client.getSql().transaction(
+            async (sql: ReturnType<typeof client.getSql>) => {
+              await sql`SELECT set_config('omni.system_scope', 'true', true)`;
+              await sql`SELECT set_config('omni.system_reason', 'spoofed', true)`;
+              return sql`SELECT omni_system_scope_enabled() AS enabled`;
+            },
+          ),
+      );
+      expect(spoofedScope).toEqual([{ enabled: false }]);
       await client.closeDatabaseClient();
     } finally {
       vi.unstubAllEnvs();
@@ -4480,6 +4592,28 @@ async function dropDatabaseRole(
     await client.unsafe(`DROP OWNED BY ${roleName}`);
     await client.unsafe(`DROP ROLE ${roleName}`);
   }
+}
+
+// Table privileges held by roles other than the one that ran the migrations,
+// as "table: grantee privileges" lines. The migrations grant to the deployment
+// roles by name, and the runner creates any that are missing, so every
+// database carries these grants.
+async function tableGrants(
+  client: ReturnType<typeof postgres>,
+  tables: readonly string[],
+) {
+  const rows = await client`
+    SELECT table_name, grantee,
+      string_agg(privilege_type, ', ' ORDER BY privilege_type) AS privileges
+    FROM information_schema.table_privileges
+    WHERE table_schema = 'public'
+      AND table_name = ANY(${[...tables]}::text[])
+      AND grantee <> current_user
+    GROUP BY table_name, grantee
+  `;
+  return rows
+    .map((row) => `${row.table_name}: ${row.grantee} ${row.privileges}`)
+    .sort();
 }
 
 async function withTimeout<T>(operation: Promise<T>, timeoutMs: number) {

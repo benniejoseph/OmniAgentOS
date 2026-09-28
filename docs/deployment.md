@@ -77,8 +77,8 @@ retrieval traces and graph rows derived from those memories and revokes every
 agent memory grant that touches one of them. Traces now also match on the
 results they recorded, not only on `memory_ids`, so a forget scans the recorded
 results of each of the tenant's traces. The migration grants `EXECUTE` on the
-manifest function to `omni_runtime` and `omni_maintenance` if those roles exist
-when it runs. Grant it to any other serving role:
+manifest function to `omni_runtime` and `omni_maintenance`. Grant it to any
+other serving role:
 
 ```sql
 GRANT EXECUTE ON FUNCTION public.omni_memory_deletion_manifest_v1(TEXT, TEXT)
@@ -838,10 +838,32 @@ roughly 25 MB binding in each function.
 ## Schema and migration rollout
 
 Production request traffic verifies the schema and fails closed when a migration
-is missing; it never runs DDL. Ordered migrations are recorded in
-`omni_schema_version` and execute in one transaction under a Postgres advisory
-lock. The path also upgrades the legacy timestamp-only marker. Migrations are
-idempotent, but there is no automatic down-migration.
+is missing; it never runs DDL. `schema-migrations.json` lists every version in
+order. A version with a `file` is defined only by that file in
+`supabase/migrations`; the versions without one, all older than v117, run as
+TypeScript steps in `src/lib/db/client.ts`. `npm run db:migrate` applies every
+pending version in one transaction under a Postgres advisory lock, then installs
+pgvector in a second transaction when it can. The path also upgrades the legacy
+timestamp-only marker. Versions already recorded in `omni_schema_version` are
+skipped, so rerunning the job is safe, but there is no automatic down-migration.
+
+Each file runs inside that transaction. The runner removes the file's own
+`BEGIN` and `COMMIT` and refuses any other transaction control, any statement
+that changes session state (`SET` without `LOCAL`, `SET LOCAL ROLE`, `RESET`,
+`DISCARD`), and any statement that cannot run in a transaction (`VACUUM`,
+`CONCURRENTLY`). Afterwards it puts back its own settings and any setting the
+file names in `SET LOCAL` or `set_config`. The `omni_schema_version` rows a file
+declares, and the rows it writes, must match its manifest entries exactly. A
+file that records several versions runs only whole: if only some of them are
+pending, the runner stops and the transaction rolls back.
+
+The migrations grant to `omni_backup`, `omni_maintenance`, and `omni_runtime` by
+name. When versions are pending and one of these roles is missing, the runner
+first creates it as a placeholder that cannot log in (`NOLOGIN NOSUPERUSER
+NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS`), so every database carries
+the same grants. To use a placeholder later, give it a login and the attributes
+its URL needs under
+[Required production configuration](#required-production-configuration).
 
 For each rollout:
 
@@ -863,7 +885,8 @@ For each rollout:
 7. Run production smoke against the exact canary revision.
 
 The migration role needs permission to create/alter application tables,
-policies, functions, indexes, and the `vector` extension. The serving runtime
+policies, functions, indexes, and the `vector` extension, and `CREATEROLE` when
+one of the grantee roles above is missing. The serving runtime
 role must not own the schema, be a superuser, or have `BYPASSRLS`. If extension
 creation is denied, the app continues with JSON embeddings; treat that as a
 capacity/performance warning and install pgvector out of band.

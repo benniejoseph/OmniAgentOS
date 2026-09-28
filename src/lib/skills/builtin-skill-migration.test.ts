@@ -2,14 +2,8 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
-import {
-  BUILTIN_SKILL_ASSIGNMENT_LIMIT_V2,
-  BUILTIN_SKILL_CATALOG_V2_IDS,
-  BUILTIN_SKILL_CATALOG_V2_SCHEMA_SQL,
-  ensureBuiltinSkillCatalogV2,
-} from "@/lib/db/builtin-skill-catalog-schema";
 import { BUILT_IN_SKILL_IDS } from "@/lib/skills/catalog";
 import { MAX_ASSIGNED_SKILLS } from "@/lib/skills/limits";
 
@@ -26,7 +20,7 @@ const standaloneMigration = fs.readFileSync(
 );
 const migrationManifest = JSON.parse(
   fs.readFileSync(path.join(process.cwd(), "schema-migrations.json"), "utf8"),
-) as Array<{ version: number; name: string; checksum: string }>;
+) as Array<{ version: number; name: string; checksum: string; file?: string }>;
 
 function extractPinnedCatalogs(sql: string) {
   return [...sql.matchAll(
@@ -40,20 +34,13 @@ function extractPinnedCatalogs(sql: string) {
 
 describe("built-in Skill catalog v2 migration", () => {
   it("keeps the released v2 allowlist immutable", () => {
-    expect(BUILTIN_SKILL_CATALOG_V2_IDS).toEqual(
-      BUILT_IN_SKILL_IDS.slice(0, 18),
-    );
-    expect(BUILTIN_SKILL_CATALOG_V2_IDS).toHaveLength(18);
+    const releasedCatalog = BUILT_IN_SKILL_IDS.slice(0, 18);
+    expect(releasedCatalog).toHaveLength(18);
 
-    for (const sql of [
-      BUILTIN_SKILL_CATALOG_V2_SCHEMA_SQL,
-      standaloneMigration,
-    ]) {
-      const pinnedCatalogs = extractPinnedCatalogs(sql);
-      expect(pinnedCatalogs).toHaveLength(2);
-      for (const pinnedCatalog of pinnedCatalogs) {
-        expect(pinnedCatalog).toEqual(BUILTIN_SKILL_CATALOG_V2_IDS);
-      }
+    const pinnedCatalogs = extractPinnedCatalogs(standaloneMigration);
+    expect(pinnedCatalogs).toHaveLength(2);
+    for (const pinnedCatalog of pinnedCatalogs) {
+      expect(pinnedCatalog).toEqual(releasedCatalog);
     }
   });
 
@@ -65,6 +52,7 @@ describe("built-in Skill catalog v2 migration", () => {
       version: 187,
       name: migrationName,
       checksum: migrationChecksum,
+      file: "20260919120000_builtin_skill_catalog_v2.sql",
     });
     expect(standaloneMigration).toContain("latest_version IS DISTINCT FROM 186");
     expect(standaloneMigration).toContain("version = 186");
@@ -76,81 +64,55 @@ describe("built-in Skill catalog v2 migration", () => {
       "VALUES (\n  187,\n  'builtin_skill_catalog_v2'",
     );
     expect(standaloneMigration.trimEnd()).toMatch(/COMMIT;$/);
-    expect(standaloneMigration).toContain(
-      BUILTIN_SKILL_CATALOG_V2_SCHEMA_SQL.trim(),
-    );
   });
 
   it("fails closed for existing assignments above the shared eight-Skill limit", () => {
-    expect(BUILTIN_SKILL_ASSIGNMENT_LIMIT_V2).toBe(MAX_ASSIGNED_SKILLS);
     expect(MAX_ASSIGNED_SKILLS).toBe(8);
-    for (const sql of [
-      BUILTIN_SKILL_CATALOG_V2_SCHEMA_SQL,
-      standaloneMigration,
-    ]) {
-      expect(sql.match(/cardinality\((?:agent|NEW)\.skill_ids\) > 8/g)).toHaveLength(4);
-      expect(sql).not.toMatch(/cardinality\((?:agent|NEW)\.skill_ids\) > 30/);
-      expect(sql).toContain(
-        "Existing custom Agent Skill references are invalid for the built-in catalog or eight-Skill limit",
-      );
-      expect(sql).not.toMatch(/UPDATE\s+(?:public\.)?omni_custom_agents\s+SET\s+skill_ids/i);
-    }
+    expect(standaloneMigration.match(/cardinality\((?:agent|NEW)\.skill_ids\) > 8/g)).toHaveLength(4);
+    expect(standaloneMigration).not.toMatch(/cardinality\((?:agent|NEW)\.skill_ids\) > 30/);
+    expect(standaloneMigration).toContain(
+      "Existing custom Agent Skill references are invalid for the built-in catalog or eight-Skill limit",
+    );
+    expect(standaloneMigration).not.toMatch(/UPDATE\s+(?:public\.)?omni_custom_agents\s+SET\s+skill_ids/i);
   });
 
   it("rebuilds and exactly verifies both reference functions and triggers", () => {
-    for (const sql of [
-      BUILTIN_SKILL_CATALOG_V2_SCHEMA_SQL,
-      standaloneMigration,
-    ]) {
-      expect(sql).toContain(
-        "CREATE OR REPLACE FUNCTION public.omni_validate_custom_agent_skill_references()",
-      );
-      expect(sql).toContain(
-        "CREATE OR REPLACE FUNCTION public.omni_protect_custom_skill_reference_identity()",
-      );
-      expect(sql).toContain("procedure.prosrc = expected_validator_body");
-      expect(sql).toContain("procedure.prosrc = expected_protector_body");
-      expect(sql).toContain(
-        "DROP TRIGGER omni_custom_agents_validate_skill_references",
-      );
-      expect(sql).toContain(
-        "DROP TRIGGER omni_custom_skills_protect_reference_identity",
-      );
-      expect(sql).toContain("trigger_record.tgtype = 23");
-      expect(sql).toContain("trigger_record.tgtype = 31");
-      expect(sql).toContain("trigger_record.tgtype = 34");
-      expect(sql).toContain("FOR KEY SHARE OF custom_skill");
-      expect(sql).toContain("agent.tenant_id COLLATE \"C\"");
-      expect(sql).toContain("agent.actor_id COLLATE \"C\"");
-    }
+    expect(standaloneMigration).toContain(
+      "CREATE OR REPLACE FUNCTION public.omni_validate_custom_agent_skill_references()",
+    );
+    expect(standaloneMigration).toContain(
+      "CREATE OR REPLACE FUNCTION public.omni_protect_custom_skill_reference_identity()",
+    );
+    expect(standaloneMigration).toContain("procedure.prosrc = expected_validator_body");
+    expect(standaloneMigration).toContain("procedure.prosrc = expected_protector_body");
+    expect(standaloneMigration).toContain(
+      "DROP TRIGGER omni_custom_agents_validate_skill_references",
+    );
+    expect(standaloneMigration).toContain(
+      "DROP TRIGGER omni_custom_skills_protect_reference_identity",
+    );
+    expect(standaloneMigration).toContain("trigger_record.tgtype = 23");
+    expect(standaloneMigration).toContain("trigger_record.tgtype = 31");
+    expect(standaloneMigration).toContain("trigger_record.tgtype = 34");
+    expect(standaloneMigration).toContain("FOR KEY SHARE OF custom_skill");
+    expect(standaloneMigration).toContain("agent.tenant_id COLLATE \"C\"");
+    expect(standaloneMigration).toContain("agent.actor_id COLLATE \"C\"");
   });
 
   it("preserves schema ownership, forced RLS, and serving grant boundaries", () => {
-    for (const sql of [
-      BUILTIN_SKILL_CATALOG_V2_SCHEMA_SQL,
-      standaloneMigration,
-    ]) {
-      expect(sql).toContain(
-        "Built-in Skill catalog migration requires the schema owner",
-      );
-      expect(sql).toContain("LOCK TABLE omni_custom_agents, omni_custom_skills");
-      expect(sql).toContain("NOT relation.relrowsecurity");
-      expect(sql).toContain("NOT relation.relforcerowsecurity");
-      expect(sql).toContain("policy.polname = 'omni_tenant_isolation'");
-      expect(sql).toContain("'omni_tenant_visible(tenant_id)'");
-      expect(sql).toContain("privilege.grantee <> procedure.proowner");
-      expect(sql).toContain("REVOKE TRIGGER ON TABLE omni_custom_agents");
-      expect(sql).toContain(
-        "REVOKE TRIGGER, TRUNCATE ON TABLE omni_custom_skills",
-      );
-      expect(sql).not.toMatch(/GRANT\s+(?:TRIGGER|TRUNCATE|EXECUTE)/i);
-    }
-  });
-
-  it("runs the immutable schema snapshot through one migration query", async () => {
-    const query = vi.fn().mockResolvedValue([]);
-    await ensureBuiltinSkillCatalogV2({ query });
-    expect(query).toHaveBeenCalledOnce();
-    expect(query).toHaveBeenCalledWith(BUILTIN_SKILL_CATALOG_V2_SCHEMA_SQL);
+    expect(standaloneMigration).toContain(
+      "Built-in Skill catalog migration requires the schema owner",
+    );
+    expect(standaloneMigration).toContain("LOCK TABLE omni_custom_agents, omni_custom_skills");
+    expect(standaloneMigration).toContain("NOT relation.relrowsecurity");
+    expect(standaloneMigration).toContain("NOT relation.relforcerowsecurity");
+    expect(standaloneMigration).toContain("policy.polname = 'omni_tenant_isolation'");
+    expect(standaloneMigration).toContain("'omni_tenant_visible(tenant_id)'");
+    expect(standaloneMigration).toContain("privilege.grantee <> procedure.proowner");
+    expect(standaloneMigration).toContain("REVOKE TRIGGER ON TABLE omni_custom_agents");
+    expect(standaloneMigration).toContain(
+      "REVOKE TRIGGER, TRUNCATE ON TABLE omni_custom_skills",
+    );
+    expect(standaloneMigration).not.toMatch(/GRANT\s+(?:TRIGGER|TRUNCATE|EXECUTE)/i);
   });
 });

@@ -15,10 +15,15 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import postgres from "postgres";
 
-const schemaMigrations = JSON.parse(
+const schemaMigrationManifest = JSON.parse(
   await readFile(new URL("../schema-migrations.json", import.meta.url), "utf8"),
 );
-assertSchemaMigrationManifest(schemaMigrations);
+assertSchemaMigrationManifest(schemaMigrationManifest);
+// omni_schema_version records these three fields; a manifest entry's `file`
+// only says where the migration's SQL lives.
+const schemaMigrations = schemaMigrationManifest.map(
+  ({ version, name, checksum }) => ({ version, name, checksum }),
+);
 
 const databaseUrl = process.env.DATABASE_URL?.trim();
 if (!databaseUrl) {

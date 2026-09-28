@@ -2,9 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { describe, expect, it, vi } from "vitest";
-
-import { ensureMemoryForgetLineageClosureV1 } from "./memory-forget-lineage-schema";
+import { describe, expect, it } from "vitest";
 
 const migrationPath = path.join(
   process.cwd(),
@@ -130,23 +128,5 @@ describe("memory forget lineage closure migration v207", () => {
     expect(owner).toContain("ARRAY['memory.forget.v1']::TEXT[]");
     expect(source).toContain("ALTER POLICY omni_memory_access_scope_holdback ON public.omni_memories");
     expect(source).toContain("ALTER POLICY omni_memory_deletion_barrier ON public.omni_memories");
-  });
-
-  it("applies the migration body at runtime without the ledger or transaction wrapper", async () => {
-    const query = vi.fn(async (text: string) => {
-      void text;
-      return [] as Record<string, unknown>[];
-    });
-
-    await ensureMemoryForgetLineageClosureV1({ query });
-
-    expect(query).toHaveBeenCalledTimes(1);
-    const body = query.mock.calls[0]?.[0] ?? "";
-    expect(body.startsWith("-- Forget computes one lineage closure over every visibility.")).toBe(true);
-    expect(body.endsWith("$verify$;")).toBe(true);
-    expect(body).not.toContain("INSERT INTO public.omni_schema_version");
-    expect(body).not.toContain("pg_advisory_xact_lock(271828182)");
-    expect(body).not.toContain("COMMIT;");
-    expect(body).toContain("CREATE TRIGGER omni_memory_deletion_receipts_apply");
   });
 });

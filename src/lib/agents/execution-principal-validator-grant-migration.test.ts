@@ -7,14 +7,10 @@ const migration = readFileSync(join(
   process.cwd(),
   "supabase/migrations/20260921153000_execution_principal_row_validator_grant.sql",
 ), "utf8");
-const runtimeRepair = readFileSync(join(
-  process.cwd(),
-  "src/lib/agents/identity-schema.ts",
-), "utf8");
 const manifest = JSON.parse(readFileSync(
   join(process.cwd(), "schema-migrations.json"),
   "utf8",
-)) as Array<{ version: number; name: string; checksum: string }>;
+)) as Array<{ version: number; name: string; checksum: string; file?: string }>;
 
 describe("execution principal row validator grant v1", () => {
   it("pins the private-trigger repair predecessor", () => {
@@ -28,16 +24,14 @@ describe("execution principal row validator grant v1", () => {
   });
 
   it("grants only the immutable row validator to writer roles", () => {
-    for (const source of [migration, runtimeRepair]) {
-      expect(source).toContain("omni_execution_principal_row_is_valid(");
-      expect(source).toContain("TO omni_runtime");
-      expect(source).toContain("TO omni_maintenance");
-      expect(source).toContain("procedure.provolatile = 'i'");
-      expect(source).toContain("NOT procedure.prosecdef");
-      expect(source).not.toContain(
-        "GRANT SELECT ON omni_auth_user_actor_identifiers",
-      );
-    }
+    expect(migration).toContain("omni_execution_principal_row_is_valid(");
+    expect(migration).toContain("TO omni_runtime");
+    expect(migration).toContain("TO omni_maintenance");
+    expect(migration).toContain("procedure.provolatile = 'i'");
+    expect(migration).toContain("NOT procedure.prosecdef");
+    expect(migration).not.toContain(
+      "GRANT SELECT ON omni_auth_user_actor_identifiers",
+    );
   });
 
   it("publishes the ordered schema marker", () => {
@@ -46,6 +40,7 @@ describe("execution principal row validator grant v1", () => {
       name: "execution_principal_row_validator_grant_v1",
       checksum:
         "9b787d1cfa1d6ae007cf8594f43c00045bab640b1f596e91d330923acc3bf2f7",
+      file: "20260921153000_execution_principal_row_validator_grant.sql",
     });
   });
 });

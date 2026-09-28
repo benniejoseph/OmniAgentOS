@@ -4,8 +4,6 @@ import { resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { ensureMoltbookAutonomyPrivilegeRepairV1 } from "@/lib/moltbook/autonomy-privilege-schema";
-
 const migrationName = "moltbook_autonomy_privilege_repair_v1";
 const migrationChecksum = createHash("sha256")
   .update(migrationName)
@@ -14,17 +12,13 @@ const migration = readFileSync(resolve(
   process.cwd(),
   "supabase/migrations/20260921200000_moltbook_autonomy_privilege_repair.sql",
 ), "utf8");
-const databaseClient = readFileSync(resolve(
-  process.cwd(),
-  "src/lib/db/client.ts",
-), "utf8");
 const manifest = JSON.parse(readFileSync(resolve(
   process.cwd(),
   "schema-migrations.json",
-), "utf8")) as Array<{ version: number; name: string; checksum: string }>;
+), "utf8")) as Array<{ version: number; name: string; checksum: string; file?: string }>;
 
 describe("Moltbook autonomy privilege repair v195", () => {
-  it("registers exactly after immutable v194 in both migration paths", async () => {
+  it("registers exactly after immutable v194 and runs from the migration file", () => {
     expect(migrationChecksum).toBe(
       "c02b2ca195cbb00c206320eb2074fed7981c282c356f1d4320c6c1ac866adf94",
     );
@@ -33,6 +27,7 @@ describe("Moltbook autonomy privilege repair v195", () => {
       version: 195,
       name: migrationName,
       checksum: migrationChecksum,
+      file: "20260921200000_moltbook_autonomy_privilege_repair.sql",
     });
     expect(manifest[index - 1]?.version).toBe(194);
     expect(migration).toContain("latest_version IS DISTINCT FROM 194");
@@ -40,19 +35,6 @@ describe("Moltbook autonomy privilege repair v195", () => {
     expect(migration).toContain(
       "66a868eed1a0fef0eb61d8f69d0d2351605edf39711c007d5c58f1febb5cafef",
     );
-    expect(databaseClient).toContain("...databaseSchemaMigrations[194]");
-    expect(databaseClient).toContain("up: ensureMoltbookAutonomyPrivilegeRepairV1");
-
-    const statements: string[] = [];
-    await ensureMoltbookAutonomyPrivilegeRepairV1({
-      query: async (text) => {
-        statements.push(text);
-        return [];
-      },
-    });
-    expect(statements).toHaveLength(1);
-    expect(statements[0]).toContain("omni_resolve_moltbook_owner_membership_v1");
-    expect(statements[0]).not.toContain("INSERT INTO public.omni_schema_version");
   });
 
   it("isolates both private-table validators behind their exact triggers", () => {

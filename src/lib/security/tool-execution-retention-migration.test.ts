@@ -30,31 +30,26 @@ describe("tool execution retention redaction v2 migration", () => {
     expect(migration).toContain("Governed tool execution identity is immutable");
   });
 
-  it("keeps the embedded v1 and v2 redaction predicates null-safe and syntactically closed", async () => {
-    const source = await readFile(
-      new URL("../db/client.ts", import.meta.url),
-      "utf8",
-    );
+  it("keeps the embedded v1 and file-backed v2 redaction predicates null-safe and syntactically closed", async () => {
+    const [source, v2] = await Promise.all([
+      readFile(new URL("../db/client.ts", import.meta.url), "utf8"),
+      readFile(
+        new URL(
+          "../../../supabase/migrations/20260915210000_tool_execution_retention_redaction_v2.sql",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    ]);
     const v1Start = source.indexOf(
       "async function ensureToolExecutionRetentionRedactionV1",
     );
-    const v2Start = source.indexOf(
-      "async function ensureToolExecutionRetentionRedactionV2",
-      v1Start,
-    );
-    const v2End = source.indexOf(
-      "async function ensureActorScopedEventCorrelationIndex",
-      v2Start,
-    );
+    const v1End = source.indexOf("\nasync function ", v1Start + 1);
 
     expect(v1Start).toBeGreaterThan(0);
-    expect(v2Start).toBeGreaterThan(v1Start);
-    expect(v2End).toBeGreaterThan(v2Start);
+    expect(v1End).toBeGreaterThan(v1Start);
 
-    for (const migration of [
-      source.slice(v1Start, v2Start),
-      source.slice(v2Start, v2End),
-    ]) {
+    for (const migration of [source.slice(v1Start, v1End), v2]) {
       expect(
         migration.match(/is_expired_approval_redaction := COALESCE\(\(/g),
       ).toHaveLength(1);

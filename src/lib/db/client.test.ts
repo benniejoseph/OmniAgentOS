@@ -4,6 +4,7 @@ import {
   databaseSchemaMigrations,
   enterDatabaseActorContext,
   enterDatabaseTenantContext,
+  ensureMigrationGranteeRoles,
   getDatabaseActorContext,
   getDatabaseAcquireTimeoutMs,
   getDatabaseIdleTransactionTimeoutMs,
@@ -2626,5 +2627,49 @@ describe("ordered database schema versions", () => {
       vi.unstubAllEnvs();
       vi.resetModules();
     }
+  });
+});
+
+describe("migration grantee roles", () => {
+  const fakeTransaction = (present: string[], run: (text: string) => void = () => undefined) => {
+    const statements: string[] = [];
+    const tx = Object.assign(async () => present.map((rolname) => ({ rolname })), {
+      unsafe: async (text: string) => {
+        statements.push(text);
+        run(text);
+        return [];
+      },
+    });
+    return {
+      tx: tx as unknown as Parameters<typeof ensureMigrationGranteeRoles>[0],
+      statements,
+    };
+  };
+
+  it("creates only the missing roles, as placeholders that cannot log in", async () => {
+    const { tx, statements } = fakeTransaction(["omni_maintenance"]);
+
+    await ensureMigrationGranteeRoles(tx);
+
+    expect(statements).toEqual([
+      "CREATE ROLE omni_backup NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS",
+      "CREATE ROLE omni_runtime NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS",
+    ]);
+  });
+
+  it("says how to proceed when the migration role cannot create a missing role", async () => {
+    const failure = new Error("permission denied to create role");
+    const { tx, statements } = fakeTransaction(["omni_backup", "omni_maintenance"], () => {
+      throw failure;
+    });
+
+    const error = await ensureMigrationGranteeRoles(tx).catch((caught: unknown) => caught);
+
+    expect(statements).toHaveLength(1);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(
+      "Database role omni_runtime does not exist, and the migration role cannot create it. The migrations grant to omni_backup, omni_maintenance, omni_runtime; create omni_runtime first, or migrate as a role with CREATEROLE.",
+    );
+    expect((error as Error).cause).toBe(failure);
   });
 });

@@ -3,9 +3,6 @@ import { resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { ensureDelegationExecutionRuntimeV1 } from "@/lib/db/delegation-execution-schema";
-import { ensureDelegationExecutionRlsCompositionRepairV1 } from "@/lib/db/delegation-execution-rls-schema";
-
 const migrationPath = resolve(
   process.cwd(),
   "supabase/migrations/20260922120000_delegation_execution_runtime.sql",
@@ -22,32 +19,20 @@ const databaseClient = readFileSync(resolve(
 const manifest = JSON.parse(readFileSync(resolve(
   process.cwd(),
   "schema-migrations.json",
-), "utf8")) as Array<{ version: number; name: string; checksum: string }>;
+), "utf8")) as Array<{ version: number; name: string; checksum: string; file?: string }>;
 
 describe("Delegation execution runtime v196 migration", () => {
-  it("registers exactly after v195 in both migration paths", async () => {
+  it("registers exactly after v195 and runs from the migration file", () => {
     expect(manifest.find((entry) => entry.version === 196)).toEqual({
       version: 196,
       name: "delegation_execution_runtime_v1",
       checksum: "0113edbdab2a99f32d4e318c8407a5b66fb8fd7bcbbf839d4d199ded0d2ad6ac",
+      file: "20260922120000_delegation_execution_runtime.sql",
     });
     expect(migration).toContain("latest_version IS DISTINCT FROM 195");
     expect(migration).toContain(
       "196,\n  'delegation_execution_runtime_v1',\n  '0113edbdab2a99f32d4e318c8407a5b66fb8fd7bcbbf839d4d199ded0d2ad6ac'",
     );
-    expect(databaseClient).toContain("...databaseSchemaMigrations[195]");
-    expect(databaseClient).toContain("up: ensureDelegationExecutionRuntimeV1");
-
-    const statements: string[] = [];
-    await ensureDelegationExecutionRuntimeV1({
-      query: async (text) => {
-        statements.push(text);
-        return [];
-      },
-    });
-    expect(statements).toHaveLength(1);
-    expect(statements[0]).toContain("CREATE TABLE public.omni_delegation_executions");
-    expect(statements[0]).not.toContain("INSERT INTO public.omni_schema_version");
   });
 
   it("keeps identity immutable and lifecycle changes narrow", () => {
@@ -80,11 +65,12 @@ describe("Delegation execution runtime v196 migration", () => {
     );
   });
 
-  it("repairs policy composition without weakening actor isolation", async () => {
+  it("repairs policy composition without weakening actor isolation", () => {
     expect(manifest.find((entry) => entry.version === 202)).toEqual({
       version: 202,
       name: "delegation_execution_rls_composition_repair_v1",
       checksum: "3d6b28bd2fdb00cc57360506baea3ef120a4ae13e0050be57ba6d266310a3d63",
+      file: "20260923110000_delegation_execution_rls_composition_repair.sql",
     });
     expect(rlsRepairMigration).toContain("latest_version IS DISTINCT FROM 201");
     expect(rlsRepairMigration).toContain("AS PERMISSIVE FOR ALL TO PUBLIC");
@@ -93,20 +79,6 @@ describe("Delegation execution runtime v196 migration", () => {
     expect(rlsRepairMigration).toContain("SELECT count(*)");
     expect(databaseClient).toContain('"omni_delegation_budget_ledgers"');
     expect(databaseClient).toContain('"omni_delegation_executions"');
-    expect(databaseClient).toContain("...databaseSchemaMigrations[201]");
-    expect(databaseClient).toContain(
-      "up: ensureDelegationExecutionRlsCompositionRepairV1",
-    );
-
-    const statements: string[] = [];
-    await ensureDelegationExecutionRlsCompositionRepairV1({
-      query: async (text) => {
-        statements.push(text);
-        return [];
-      },
-    });
-    expect(statements).toHaveLength(1);
-    expect(statements[0]).toContain("CREATE POLICY omni_tenant_isolation");
-    expect(statements[0]).not.toContain("INSERT INTO public.omni_schema_version");
+    expect(rlsRepairMigration).toContain("CREATE POLICY omni_tenant_isolation");
   });
 });

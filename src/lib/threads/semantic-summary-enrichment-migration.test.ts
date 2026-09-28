@@ -21,6 +21,7 @@ describe("conversation summary enrichment migration", () => {
       version: number;
       name: string;
       checksum: string;
+      file?: string;
     }>;
 
     expect(manifest.find((entry) => entry.version === 156)).toEqual({
@@ -28,6 +29,7 @@ describe("conversation summary enrichment migration", () => {
       name: "conversation_summary_enrichments_v1",
       checksum:
         "83e7878f29b3ea25df0ecb40bd94521a3e84af93f5eae6a34ad03bd4b9071a37",
+      file: "20260911110000_conversation_summary_enrichments.sql",
     });
     expect(migration).toContain("latest_version IS DISTINCT FROM 155");
     expect(migration).toContain(
@@ -72,7 +74,7 @@ describe("conversation summary enrichment migration", () => {
       "omni_conversation_summary_enrichments_actor_scope",
     );
     expect(migration).toContain(
-      "omni_conversation_summary_events_actor_scope",
+      "CREATE POLICY omni_conversation_summary_events_actor_scope",
     );
     expect(migration).toContain(
       "left(stream_id, 21) <> 'conversation-summary:'",
@@ -92,15 +94,6 @@ describe("conversation summary enrichment migration", () => {
 
     expect(bootstrap).toContain(
       '"omni_conversation_summary_enrichments"',
-    );
-    expect(bootstrap).toContain(
-      "up: ensureConversationSummaryEnrichmentsV1",
-    );
-    expect(bootstrap).toContain(
-      "async function ensureConversationSummaryEnrichmentsV1",
-    );
-    expect(bootstrap).toContain(
-      "CREATE POLICY omni_conversation_summary_events_actor_scope",
     );
   });
 });

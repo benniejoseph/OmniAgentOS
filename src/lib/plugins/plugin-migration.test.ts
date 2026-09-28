@@ -9,7 +9,7 @@ const migrationPath = path.join(
 const migration = fs.readFileSync(migrationPath, "utf8");
 const manifest = JSON.parse(
   fs.readFileSync(path.join(process.cwd(), "schema-migrations.json"), "utf8"),
-) as Array<{ version: number; name: string; checksum: string }>;
+) as Array<{ version: number; name: string; checksum: string; file?: string }>;
 
 describe("declarative Plugin v1 migration", () => {
   it("is ordered after v185 and registered as v186", () => {
@@ -20,6 +20,7 @@ describe("declarative Plugin v1 migration", () => {
       version: 186,
       name: "declarative_plugins_v1",
       checksum: "0cb2bc195736819e3fd5c3a6ab44a8c48ca3dcc55b63d097a69aaf9824b06825",
+      file: "20260918150000_declarative_plugins.sql",
     });
     expect(manifest[index - 1]?.version).toBe(185);
   });

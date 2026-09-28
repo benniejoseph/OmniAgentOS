@@ -1,64 +1,41 @@
-import { describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
 
-import {
-  ensureAppBuilderDeploymentUrlConstraintRepairV1,
-  ensureAppBuilderRepositoryGitPreviewV1,
-  ensureAppBuilderRepositoryWorkspacesV1,
-  type AppBuilderRepositorySchemaSqlClient,
-} from "@/lib/db/app-builder-repository-schema";
+import { describe, expect, it } from "vitest";
 
-describe("App Builder repository schema module", () => {
-  it("keeps the deployment URL repair bounded to the literal Vercel host", async () => {
-    const sql = sqlRecorder();
+const readMigration = (file: string) =>
+  fs.readFileSync(path.join(process.cwd(), "supabase/migrations", file), "utf8");
 
-    await ensureAppBuilderDeploymentUrlConstraintRepairV1(sql.client);
+describe("App Builder repository schema migrations", () => {
+  it("keeps the deployment URL repair bounded to the literal Vercel host", () => {
+    const migration = readMigration(
+      "20260915173000_app_builder_deployment_url_constraint_repair.sql",
+    );
 
-    expect(sql.queries.join("\n")).toContain("[.]vercel[.]app");
-    expect(sql.queries.join("\n")).toContain(
+    expect(migration).toContain("[.]vercel[.]app");
+    expect(migration).toContain(
       "App Builder deployment URL constraint repair is invalid",
     );
   });
 
-  it("preserves repository workspace capacity and exact event kinds", async () => {
-    const sql = sqlRecorder();
+  it("preserves repository workspace capacity and exact event kinds", () => {
+    const migration = readMigration(
+      "20260915190000_app_builder_repository_workspaces.sql",
+    );
 
-    await ensureAppBuilderRepositoryWorkspacesV1(sql.client);
-
-    const query = sql.queries.join("\n");
-    expect(query).toContain("file_count BETWEEN 1 AND 10000");
-    expect(query).toContain("app_builder.repository.checked_out");
-    expect(query).toContain("app_builder.release.production_healthy");
+    expect(migration).toContain("file_count BETWEEN 1 AND 10000");
+    expect(migration).toContain("app_builder.repository.checked_out");
+    expect(migration).toContain("app_builder.release.production_healthy");
   });
 
-  it("preserves exact Git preview constraints and postflight", async () => {
-    const sql = sqlRecorder();
-
-    await ensureAppBuilderRepositoryGitPreviewV1(sql.client);
-
-    expect(sql.queries.join("\n")).toContain(
-      "file_count BETWEEN 1 AND 10000",
+  it("preserves exact Git preview constraints and postflight", () => {
+    const migration = readMigration(
+      "20260916093000_app_builder_repository_git_previews.sql",
     );
-    expect(sql.tagged.join("\n")).toContain(
+
+    expect(migration).toContain("file_count BETWEEN 1 AND 10000");
+    expect(migration).toContain(
       "App Builder repository Git preview capacity is invalid",
     );
-    expect(sql.client.query).toHaveBeenCalledTimes(1);
   });
 });
-
-function sqlRecorder() {
-  const queries: string[] = [];
-  const tagged: string[] = [];
-  const client = Object.assign(
-    vi.fn(async (strings: TemplateStringsArray) => {
-      tagged.push(strings.join("?"));
-      return [];
-    }),
-    {
-      query: vi.fn(async (text: string) => {
-        queries.push(text);
-        return [];
-      }),
-    },
-  ) as unknown as AppBuilderRepositorySchemaSqlClient;
-  return { client, queries, tagged };
-}
