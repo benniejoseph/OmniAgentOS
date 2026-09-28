@@ -1248,5 +1248,12 @@
     "checksum": "514f00004c8726a2c762f6069728b20d4816a92731c72c125bf39cbca9a0371f",
     "file": "20260928090000_schema_catalog_convergence.sql",
     "sha256": "514f00004c8726a2c762f6069728b20d4816a92731c72c125bf39cbca9a0371f"
+  },
+  {
+    "version": 209,
+    "name": "mobile_refresh_rotation_retry_v1",
+    "checksum": "e78561b7a9b0c38fd91376d9f8fb094e3b629d5e5b94b3a48592a9b89855531f",
+    "file": "20260928100000_mobile_refresh_rotation_retry.sql",
+    "sha256": "e78561b7a9b0c38fd91376d9f8fb094e3b629d5e5b94b3a48592a9b89855531f"
   }
 ]

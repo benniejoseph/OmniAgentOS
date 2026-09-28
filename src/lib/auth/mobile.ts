@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import { createOpaqueToken, hashSessionToken } from "@/lib/auth/crypto";
 import { privateAccountPolicyForIdentity } from "@/lib/auth/private-account-policy";
 import {
@@ -39,12 +39,18 @@ import type { SecurityContext } from "@/lib/security/types";
 const accessTtlMs = boundedTtl("OMNIAGENT_MOBILE_ACCESS_TTL_SECONDS", 15 * 60, 60, 60 * 60) * 1000;
 const refreshTtlMs = boundedTtl("OMNIAGENT_MOBILE_REFRESH_TTL_DAYS", 30, 1, 90) * 24 * 60 * 60 * 1000;
 const wipeChallengeTtlMs = 10 * 60 * 1000;
+// For this long after a rotation, the refresh token it replaced gets the same
+// pair again instead of revoking the family, so a retry after a lost response
+// or a second engine still holding that token is not taken for theft. The
+// database path applies the same 60 seconds in SQL.
+const refreshRetryWindowMs = 60 * 1000;
 type MobileSqlTransaction = {
   (strings: TemplateStringsArray, ...params: unknown[]): Promise<Record<string, unknown>[]>;
 };
+type RotatedTokens = { accessToken: string; refreshToken: string };
 type RefreshRotationResult =
   | { error: "invalid_refresh_token" | "refresh_token_reuse" }
-  | { session: MobileSessionRecord };
+  | { session: MobileSessionRecord; retry?: RotatedTokens };
 
 export class MobileRefreshError extends Error {
   constructor(
@@ -99,8 +105,8 @@ export async function rotateMobileRefreshToken(
 ) {
   const refreshHash = hashSessionToken(refreshToken);
   const now = new Date();
-  const nextAccessToken = createOpaqueToken();
-  const nextRefreshToken = createOpaqueToken();
+  const rotationKey = createOpaqueToken();
+  const next = rotatedTokens(rotationKey, refreshToken);
   const nextAccessExpiresAt = new Date(now.getTime() + accessTtlMs).toISOString();
 
   if (hasDatabaseUrl()) {
@@ -111,6 +117,9 @@ export async function rotateMobileRefreshToken(
         const rows = await sql`
           SELECT
             session.*,
+            session.refresh_rotated_at
+              BETWEEN NOW() - INTERVAL '60 seconds'
+              AND NOW() + INTERVAL '60 seconds' AS refresh_retry_window_open,
             auth_user.email AS auth_user_email,
             auth_user.status AS auth_user_status,
             membership.status AS membership_status,
@@ -136,7 +145,10 @@ export async function rotateMobileRefreshToken(
         const row = rows[0];
         if (!row) return { error: "invalid_refresh_token" as const };
         const session = mobileSessionFromRow(row);
-        if (session.consumedRefreshTokenHashes.includes(refreshHash)) {
+        const retry = row.refresh_retry_window_open === true
+          ? refreshRetryTokens(session, String(row.refresh_rotation_key), refreshToken, deviceId, client)
+          : undefined;
+        if (session.consumedRefreshTokenHashes.includes(refreshHash) && !retry) {
           await sql`
             UPDATE omni_mobile_sessions
             SET revoked_at = COALESCE(revoked_at, NOW()),
@@ -178,14 +190,17 @@ export async function rotateMobileRefreshToken(
         ) {
           return { error: "invalid_refresh_token" as const };
         }
+        if (retry) return { session, retry };
         const consumed = [...session.consumedRefreshTokenHashes, refreshHash];
         const updatedRows = client
           ? await sql`
               UPDATE omni_mobile_sessions
-              SET access_token_hash = ${hashSessionToken(nextAccessToken)},
-                  refresh_token_hash = ${hashSessionToken(nextRefreshToken)},
+              SET access_token_hash = ${hashSessionToken(next.accessToken)},
+                  refresh_token_hash = ${hashSessionToken(next.refreshToken)},
                   consumed_refresh_token_hashes = ${consumed}::jsonb,
                   access_expires_at = ${nextAccessExpiresAt},
+                  refresh_rotated_at = NOW(),
+                  refresh_rotation_key = ${rotationKey},
                   app_version = ${client.appVersion},
                   app_build_number = ${client.buildNumber},
                   client_contract_version = ${client.clientContractVersion},
@@ -199,10 +214,12 @@ export async function rotateMobileRefreshToken(
             `
           : await sql`
               UPDATE omni_mobile_sessions
-              SET access_token_hash = ${hashSessionToken(nextAccessToken)},
-                  refresh_token_hash = ${hashSessionToken(nextRefreshToken)},
+              SET access_token_hash = ${hashSessionToken(next.accessToken)},
+                  refresh_token_hash = ${hashSessionToken(next.refreshToken)},
                   consumed_refresh_token_hashes = ${consumed}::jsonb,
                   access_expires_at = ${nextAccessExpiresAt},
+                  refresh_rotated_at = NOW(),
+                  refresh_rotation_key = ${rotationKey},
                   app_build_number = NULL,
                   client_contract_version = 0,
                   last_seen_at = NOW(),
@@ -219,11 +236,12 @@ export async function rotateMobileRefreshToken(
       }) as Promise<RefreshRotationResult>,
     );
     if ("error" in result) throw new MobileRefreshError(result.error);
+    const issued = result.retry ?? next;
     return {
       tokens: tokenPair(
-        nextAccessToken,
-        nextRefreshToken,
-        nextAccessExpiresAt,
+        issued.accessToken,
+        issued.refreshToken,
+        result.session.accessExpiresAt,
         result.session.refreshExpiresAt,
       ),
       session: result.session,
@@ -237,7 +255,11 @@ export async function rotateMobileRefreshToken(
   const activeMembership = candidate
     ? await hasActiveMobileMembership(candidate)
     : false;
-  let outcome: { session?: MobileSessionRecord; error?: MobileRefreshError["code"] } = {};
+  let outcome: {
+    session?: MobileSessionRecord;
+    retry?: RotatedTokens;
+    error?: MobileRefreshError["code"];
+  } = {};
   await mutateMobileLedger((ledger) => {
     const session = ledger.sessions.find((item) =>
       item.refreshTokenHash === refreshHash || item.consumedRefreshTokenHashes.includes(refreshHash));
@@ -245,7 +267,11 @@ export async function rotateMobileRefreshToken(
       outcome = { error: "invalid_refresh_token" };
       return ledger;
     }
-    if (session.consumedRefreshTokenHashes.includes(refreshHash)) {
+    const retry = session.refreshRotation &&
+      Math.abs(now.getTime() - Date.parse(session.refreshRotation.rotatedAt)) <= refreshRetryWindowMs
+      ? refreshRetryTokens(session, session.refreshRotation.key, refreshToken, deviceId, client)
+      : undefined;
+    if (session.consumedRefreshTokenHashes.includes(refreshHash) && !retry) {
       outcome = { error: "refresh_token_reuse" };
       return { ...ledger, sessions: ledger.sessions.map((item) => item.id === session.id ? { ...item, revokedAt: item.revokedAt || now.toISOString(), revocationReason: "refresh_reuse", updatedAt: now.toISOString() } : item) };
     }
@@ -262,12 +288,17 @@ export async function rotateMobileRefreshToken(
       outcome = { error: "invalid_refresh_token" };
       return ledger;
     }
+    if (retry) {
+      outcome = { session, retry };
+      return ledger;
+    }
     const rotated = {
       ...session,
-      accessTokenHash: hashSessionToken(nextAccessToken),
-      refreshTokenHash: hashSessionToken(nextRefreshToken),
+      accessTokenHash: hashSessionToken(next.accessToken),
+      refreshTokenHash: hashSessionToken(next.refreshToken),
       consumedRefreshTokenHashes: [...session.consumedRefreshTokenHashes, refreshHash],
       accessExpiresAt: nextAccessExpiresAt,
+      refreshRotation: { rotatedAt: now.toISOString(), key: rotationKey },
       device: client
         ? { ...session.device, ...client }
         : legacyMobileDevice(session.device),
@@ -279,15 +310,53 @@ export async function rotateMobileRefreshToken(
     return { ...ledger, sessions: ledger.sessions.map((item) => item.id === session.id ? rotated : item) };
   });
   if (outcome.error || !outcome.session) throw new MobileRefreshError(outcome.error || "invalid_refresh_token");
+  const issued = outcome.retry ?? next;
   return {
     tokens: tokenPair(
-      nextAccessToken,
-      nextRefreshToken,
-      nextAccessExpiresAt,
+      issued.accessToken,
+      issued.refreshToken,
+      outcome.session.accessExpiresAt,
       outcome.session.refreshExpiresAt,
     ),
     session: outcome.session,
   };
+}
+
+// The pair that replaces a refresh token is derived from that token and a key
+// kept until the next rotation, so the same pair can be issued again while
+// the database holds neither token.
+function rotatedTokens(rotationKey: string, refreshToken: string): RotatedTokens {
+  const derive = (purpose: "access" | "refresh") =>
+    createHmac("sha256", Buffer.from(rotationKey, "base64url"))
+      .update(`asael-mobile-rotation:v1:${purpose}:${refreshToken}`)
+      .digest("base64url");
+  return { accessToken: derive("access"), refreshToken: derive("refresh") };
+}
+
+// The pair to issue again, when the presented refresh token is the one the
+// session's current pair replaced and the request comes from the session's
+// device. Anything else that presents a replaced token is reuse.
+function refreshRetryTokens(
+  session: MobileSessionRecord,
+  rotationKey: string,
+  refreshToken: string,
+  deviceId: string,
+  client: NativeClientAttestation | undefined,
+) {
+  if (
+    session.device.id !== deviceId ||
+    (client && client.platform !== session.device.platform)
+  ) {
+    return undefined;
+  }
+  const tokens = rotatedTokens(rotationKey, refreshToken);
+  // Only the token the current pair replaced derives that pair. A pair rotated
+  // without this key, for example by a rolled-back release, is not the derived
+  // one, so it cannot be issued again either.
+  return hashSessionToken(tokens.accessToken) === session.accessTokenHash &&
+    hashSessionToken(tokens.refreshToken) === session.refreshTokenHash
+    ? tokens
+    : undefined;
 }
 
 export async function recordMobileSessionSeen(

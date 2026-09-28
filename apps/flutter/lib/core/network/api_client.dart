@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../auth/native_client_info.dart';
@@ -12,16 +13,40 @@ import '../storage/secure_session_store.dart';
 import '../../generated/native_contract.g.dart';
 import 'api_exception.dart';
 
-final apiClientProvider = Provider<ApiClient>((ref) {
-  final store = ref.watch(secureSessionStoreProvider);
-  final dio = Dio(_baseOptions());
-  final refreshDio = Dio(_baseOptions());
+typedef NativeSessionRefresh = Future<void> Function({
+  String? rejectedAccessToken,
+});
+
+final apiClientProvider = Provider<ApiClient>(
+  (ref) => createApiClient(ref.watch(secureSessionStoreProvider)),
+);
+
+/// Builds the client whose requests and [ApiClient.ensureRefreshed] share this
+/// engine's one refresh of the native session.
+@visibleForTesting
+ApiClient createApiClient(
+  SecureSessionStore store, {
+  Dio? dio,
+  Dio? refreshDio,
+}) {
+  final client = dio ?? Dio(_baseOptions());
+  final refreshClient = refreshDio ?? Dio(_baseOptions());
   final projectionStore = EncryptedOfflineProjectionStore(
     store.readOrCreateOfflineProjectionSecret,
   );
   Future<void>? refreshInFlight;
 
-  Future<void> refreshSession() async {
+  Future<void> refreshSession(String? rejectedAccessToken) async {
+    // Another engine, such as a second macOS window, may have rotated the pair
+    // since this one cached it. The token that rotation replaced is reuse to
+    // the service once its retry window closes.
+    await store.reloadCredentials();
+    final accessToken = await store.readToken();
+    if (accessToken != null &&
+        accessToken != rejectedAccessToken &&
+        !await store.accessTokenNeedsRefresh()) {
+      return;
+    }
     final refreshToken = await store.readRefreshToken();
     if (refreshToken == null || refreshToken.isEmpty) {
       throw StateError('No native refresh credential is available.');
@@ -30,7 +55,7 @@ final apiClientProvider = Provider<ApiClient>((ref) {
     Response<Object?> response;
     try {
       try {
-        response = await refreshDio.post<Object?>(
+        response = await refreshClient.post<Object?>(
           NativePaths.authRefresh,
           data: {
             'refreshToken': refreshToken,
@@ -40,25 +65,28 @@ final apiClientProvider = Provider<ApiClient>((ref) {
         );
       } on DioException catch (error) {
         if (error.response?.statusCode != 400) rethrow;
-        response = await refreshDio.post<Object?>(
+        response = await refreshClient.post<Object?>(
           NativePaths.authRefresh,
           data: {'refreshToken': refreshToken, 'deviceId': deviceId},
         );
       }
       await _persistNativeTokens(store, response.data);
     } on DioException catch (error) {
-      if (error.response?.statusCode == 401) {
-        final wiped = await _clearAndAcknowledgeRemoteWipe(refreshDio, store);
-        if (!wiped) await store.clear();
+      if (error.response?.statusCode != 401 ||
+          await _clearAndAcknowledgeRemoteWipe(refreshClient, store) ||
+          await store.clearUnlessReplaced(refreshToken)) {
+        rethrow;
       }
-      rethrow;
+      // Another engine stored a pair while this one was refused, so whoever
+      // is waiting for the refresh continues with that pair.
+      await store.reloadCredentials();
     }
   }
 
-  Future<void> ensureRefreshed() async {
+  Future<void> ensureRefreshed({String? rejectedAccessToken}) async {
     final existing = refreshInFlight;
     if (existing != null) return existing;
-    final created = refreshSession();
+    final created = refreshSession(rejectedAccessToken);
     refreshInFlight = created;
     try {
       await created;
@@ -67,7 +95,7 @@ final apiClientProvider = Provider<ApiClient>((ref) {
     }
   }
 
-  dio.interceptors.add(
+  client.interceptors.add(
     InterceptorsWrapper(
       onRequest: (options, handler) async {
         options.headers.addAll(NativeClientInfo.attestationHeaders());
@@ -93,7 +121,9 @@ final apiClientProvider = Provider<ApiClient>((ref) {
           return;
         }
         try {
-          await ensureRefreshed();
+          await ensureRefreshed(
+            rejectedAccessToken: _bearerToken(request.headers['Authorization']),
+          );
           final token = await store.readToken();
           if (token == null) {
             handler.next(error);
@@ -101,15 +131,21 @@ final apiClientProvider = Provider<ApiClient>((ref) {
           }
           request.headers['Authorization'] = 'Bearer $token';
           request.extra['asaelNativeRefreshRetried'] = true;
-          handler.resolve(await dio.fetch<Object?>(request));
+          handler.resolve(await client.fetch<Object?>(request));
         } catch (_) {
           handler.next(error);
         }
       },
     ),
   );
-  return ApiClient(dio, refreshDio, store, projectionStore);
-});
+  return ApiClient(
+    client,
+    refreshClient,
+    store,
+    projectionStore,
+    ensureRefreshed,
+  );
+}
 
 BaseOptions _baseOptions() => BaseOptions(
   baseUrl: AppConfig.apiBaseUrl,
@@ -117,6 +153,11 @@ BaseOptions _baseOptions() => BaseOptions(
   receiveTimeout: const Duration(seconds: 30),
   headers: const {'Accept': 'application/json'},
 );
+
+String? _bearerToken(Object? header) =>
+    header is String && header.startsWith('Bearer ')
+    ? header.substring('Bearer '.length)
+    : null;
 
 bool _isCredentialRoute(String value) {
   final path = Uri.tryParse(value)?.path ?? value;
@@ -155,14 +196,32 @@ class ApiClient {
     this._rawDio,
     this._store, [
     this._projectionStore,
+    this._refreshSession,
   ]);
   final Dio _dio;
   final Dio _rawDio;
   final SecureSessionStore _store;
   final OfflineProjectionStore? _projectionStore;
+  final NativeSessionRefresh? _refreshSession;
 
   Future<bool> clearAndAcknowledgeRemoteWipe() =>
       _clearAndAcknowledgeRemoteWipe(_rawDio, _store);
+
+  /// Joins or starts the refresh a request that gets a 401 waits for, so the
+  /// session is rotated in one place per engine. [rejectedAccessToken] is the
+  /// token the service refused; a different stored token that is still fresh
+  /// was rotated by another engine and is used without a refresh.
+  Future<void> ensureRefreshed({String? rejectedAccessToken}) async {
+    final refreshSession = _refreshSession;
+    if (refreshSession == null) {
+      throw StateError('This client cannot refresh the native session.');
+    }
+    try {
+      await refreshSession(rejectedAccessToken: rejectedAccessToken);
+    } on DioException catch (error) {
+      throw ApiException.fromDio(error);
+    }
+  }
 
   Future<void> seedOfflineProjection(
     String path,

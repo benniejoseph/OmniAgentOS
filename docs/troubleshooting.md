@@ -33,6 +33,8 @@ If `/api/health` returns 503, inspect server logs for TLS, credentials, extensio
 - `… failed: Constraint … of … is not the expected one`, from migration 208: a CHECK of that name has a different definition than the files give it, for example two CHECKs under each other's names. The migration rolled back. Compare `pg_get_constraintdef` for the table's CHECKs with the definitions in `20260928090000_schema_catalog_convergence.sql`.
 - `… failed: omni_mobile_push_registrations still has a constraint the files do not create`: the table has both `omni_mobile_push_registrations_check` and the old runner's `omni_mobile_push_registrations_check1`, so migration 208 could not rename one to the other. Review the second one before dropping it, then run the job again.
 - `Schema catalog convergence predecessor is invalid`: migration 208 was run outside `npm run db:migrate` on a database whose latest recorded version is not v207 `memory_forget_lineage_closure_v1` with its release checksum.
+- `… failed: omni_mobile_sessions has a refresh rotation column this migration does not add`, from migration 209: the table already had `refresh_rotated_at` or `refresh_rotation_key`, but not as a nullable `timestamptz` or `text` column without a default. The migration rolled back. Find out where the column came from before you change or drop it, then run the job again.
+- `Mobile refresh rotation retry predecessor is invalid`: migration 209 was run outside `npm run db:migrate` on a database whose latest recorded version is not v208 `schema_catalog_convergence_v1` with its release checksum.
 
 If pgvector is unavailable, set `OMNIAGENT_LOG_PGVECTOR_FAILURES=true` temporarily. The app can use JSON embeddings, but vector-index status remains not ready until the extension, columns, dimensions, and HNSW indexes match. The migration fills a row's vector only when its JSON embedding is an array of numbers at least as long as the column; any other embedding stays JSON-only.
 
@@ -55,6 +57,8 @@ error text and credential material are not persisted in the health record.
 401 means no valid browser session or internal secret was supplied. 403 means the identity is valid but its role lacks the requested action. Confirm tenant membership and role instead of weakening the route policy.
 
 For internal calls, the secret and identity headers must be sent together. Never enable unsigned identity headers in production.
+
+A native app that signs out after a refresh answered 401 with `refresh_token_reuse` presented a refresh token that had already been replaced, and the server revoked that session (`revocation_reason = 'refresh_reuse'` in `omni_mobile_sessions`). Within 60 seconds of a rotation, the same device and platform presenting the replaced token get the same pair again instead, which covers a retry after a lost response and a second app engine, such as another macOS window, that still held the old token. The old token still revokes the session after those 60 seconds, from another device, or after a rotation made by a release without migration 209. `invalid_refresh_token` means the token is unknown, expired, revoked, or belongs to another device, or the account's membership changed.
 
 ## Worker is running but jobs do not advance
 

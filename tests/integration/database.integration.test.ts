@@ -8,6 +8,7 @@ import {
   buildAgentRunIdentityPinV1,
   buildBuiltInAgentIdentityV1,
 } from "@/lib/agents/identity-contracts";
+import type { MobileIdentity } from "@/lib/auth/mobile-types";
 import { VECTOR_INDEX_DIMENSIONS } from "@/lib/config";
 import {
   databaseSchemaMigrations,
@@ -5398,6 +5399,257 @@ databaseDescribe("Postgres schema integration", () => {
     }
     expect(await schemaCatalogSnapshot(admin)).toEqual(catalog);
   });
+
+  test("gives a mobile refresh token replaced in the last 60 seconds the pair that replaced it, and revokes on any other replaced token", async () => {
+    await withPrivateMobileAccount("tenant_refresh_retry", async ({ signIn }) => {
+      const mobile = await import("@/lib/auth/mobile");
+      const sessionRow = async (sessionId: string) => {
+        const [row] = await admin`
+          SELECT * FROM omni_mobile_sessions WHERE id = ${sessionId}
+        `;
+        return row;
+      };
+      const reissued = async (
+        refreshToken: string,
+        deviceId: string,
+        client?: typeof androidClient,
+      ) => (await mobile.rotateMobileRefreshToken(refreshToken, deviceId, client)).tokens;
+      const refused = (refreshToken: string, deviceId: string) =>
+        mobile.rotateMobileRefreshToken(refreshToken, deviceId, androidClient).then(
+          () => "rotated",
+          (error: { code?: string }) => error.code,
+        );
+
+      const first = await signIn("android-refresh-retry-1");
+      const firstId = first.identity.session.id;
+      expect(await sessionRow(firstId)).toMatchObject({
+        refresh_rotated_at: null,
+        refresh_rotation_key: null,
+      });
+      const rotated = await mobile.rotateMobileRefreshToken(
+        first.tokens.refreshToken,
+        "android-refresh-retry-1",
+      );
+      const afterRotation = await sessionRow(firstId);
+      expect(afterRotation.refresh_rotated_at).not.toBeNull();
+      expect(afterRotation.refresh_rotation_key).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      // Without and with the attestation, and neither writes to the session.
+      await expect(reissued(first.tokens.refreshToken, "android-refresh-retry-1"))
+        .resolves.toEqual(rotated.tokens);
+      await expect(
+        reissued(first.tokens.refreshToken, "android-refresh-retry-1", androidClient),
+      ).resolves.toEqual(rotated.tokens);
+      expect(await sessionRow(firstId)).toEqual(afterRotation);
+      await expect(
+        mobile.getMobileIdentityFromRequest(bearerRequest(rotated.tokens.accessToken)),
+      ).resolves.toMatchObject({ session: { id: firstId } });
+
+      const next = await mobile.rotateMobileRefreshToken(
+        rotated.tokens.refreshToken,
+        "android-refresh-retry-1",
+        androidClient,
+      );
+      expect((await sessionRow(firstId)).refresh_rotation_key)
+        .not.toBe(afterRotation.refresh_rotation_key);
+      await expect(
+        reissued(rotated.tokens.refreshToken, "android-refresh-retry-1", androidClient),
+      ).resolves.toEqual(next.tokens);
+      // The 60 seconds are measured on the database clock, either side of the
+      // rotation, so a retry that started before the rotation committed gets
+      // the pair too.
+      await admin`
+        UPDATE omni_mobile_sessions
+        SET refresh_rotated_at = NOW() + INTERVAL '59 seconds'
+        WHERE id = ${firstId}
+      `;
+      await expect(
+        reissued(rotated.tokens.refreshToken, "android-refresh-retry-1", androidClient),
+      ).resolves.toEqual(next.tokens);
+      await admin`
+        UPDATE omni_mobile_sessions
+        SET refresh_rotated_at = NOW() - INTERVAL '59 seconds'
+        WHERE id = ${firstId}
+      `;
+      await expect(
+        reissued(rotated.tokens.refreshToken, "android-refresh-retry-1", androidClient),
+      ).resolves.toEqual(next.tokens);
+      await admin`
+        UPDATE omni_mobile_sessions
+        SET refresh_rotated_at = NOW() + INTERVAL '61 seconds'
+        WHERE id = ${firstId}
+      `;
+      await expect(refused(rotated.tokens.refreshToken, "android-refresh-retry-1"))
+        .resolves.toBe("refresh_token_reuse");
+      await expect(refused(next.tokens.refreshToken, "android-refresh-retry-1"))
+        .resolves.toBe("invalid_refresh_token");
+      expect(await sessionRow(firstId)).toMatchObject({ revocation_reason: "refresh_reuse" });
+
+      const second = await signIn("android-refresh-retry-2");
+      const secondRotated = await mobile.rotateMobileRefreshToken(
+        second.tokens.refreshToken,
+        "android-refresh-retry-2",
+        androidClient,
+      );
+      await admin`
+        UPDATE omni_mobile_sessions
+        SET refresh_rotated_at = NOW() - INTERVAL '61 seconds'
+        WHERE id = ${second.identity.session.id}
+      `;
+      await expect(refused(second.tokens.refreshToken, "android-refresh-retry-2"))
+        .resolves.toBe("refresh_token_reuse");
+      await expect(refused(secondRotated.tokens.refreshToken, "android-refresh-retry-2"))
+        .resolves.toBe("invalid_refresh_token");
+
+      // A signed-out session stays signed out, and keeps its reason.
+      const third = await signIn("android-refresh-retry-3");
+      await mobile.rotateMobileRefreshToken(
+        third.tokens.refreshToken,
+        "android-refresh-retry-3",
+        androidClient,
+      );
+      await mobile.revokeMobileSession(third.identity);
+      await expect(refused(third.tokens.refreshToken, "android-refresh-retry-3"))
+        .resolves.toBe("invalid_refresh_token");
+      expect(await sessionRow(third.identity.session.id))
+        .toMatchObject({ revocation_reason: "logout" });
+
+      const fourth = await signIn("android-refresh-retry-4");
+      await mobile.rotateMobileRefreshToken(
+        fourth.tokens.refreshToken,
+        "android-refresh-retry-4",
+        androidClient,
+      );
+      await admin`
+        UPDATE omni_auth_memberships
+        SET status = 'suspended'
+        WHERE user_id = ${fourth.identity.user.id}
+      `;
+      await expect(refused(fourth.tokens.refreshToken, "android-refresh-retry-4"))
+        .resolves.toBe("invalid_refresh_token");
+      expect(await sessionRow(fourth.identity.session.id))
+        .toMatchObject({ revocation_reason: "membership_changed" });
+    });
+  });
+
+  test("keeps a refresh rotation key only beside its rotation time, as a 43-character base64url key", async () => {
+    const [constraint] = await admin`
+      SELECT convalidated AS validated
+      FROM pg_constraint
+      WHERE conrelid = 'public.omni_mobile_sessions'::regclass
+        AND conname = 'omni_mobile_sessions_refresh_rotation_check'
+    `;
+    // Added without scanning the table, whose rows all lacked a key then.
+    expect(constraint).toEqual({ validated: false });
+    const [session] = await admin`
+      SELECT id FROM omni_mobile_sessions
+      WHERE refresh_rotation_key IS NOT NULL
+      ORDER BY created_at
+      LIMIT 1
+    `;
+    expect(session).toBeDefined();
+    const setRotation = (rotatedAt: string, key: string) =>
+      admin.unsafe(`
+        UPDATE public.omni_mobile_sessions
+        SET refresh_rotated_at = ${rotatedAt}, refresh_rotation_key = ${key}
+        WHERE id = '${String(session.id)}'
+      `);
+
+    for (const [rotatedAt, key] of [
+      ["NOW()", "NULL"],
+      ["NULL", "repeat('a', 43)"],
+      ["NOW()", "repeat('a', 42)"],
+      ["NOW()", "repeat('a', 44)"],
+      ["NOW()", "repeat('a', 42) || '='"],
+      ["NOW()", "repeat('a', 42) || '+'"],
+    ]) {
+      await expect(setRotation(rotatedAt, key)).rejects.toMatchObject({ code: "23514" });
+    }
+    await setRotation("NOW()", "repeat('-_', 21) || 'Z'");
+    await setRotation("NULL", "NULL");
+  });
+
+  test("refuses to migrate over a refresh rotation column that exists with another type, default or nullability", async () => {
+    const alter = "ALTER TABLE public.omni_mobile_sessions ALTER COLUMN";
+    const variants = [
+      {
+        change: [`${alter} refresh_rotated_at TYPE TIMESTAMP`],
+        restore: [`${alter} refresh_rotated_at TYPE TIMESTAMPTZ`],
+      },
+      {
+        change: [`${alter} refresh_rotation_key TYPE VARCHAR(43)`],
+        restore: [`${alter} refresh_rotation_key TYPE TEXT`],
+      },
+      {
+        change: [`${alter} refresh_rotated_at SET DEFAULT NOW()`],
+        restore: [`${alter} refresh_rotated_at DROP DEFAULT`],
+      },
+      {
+        change: [
+          `UPDATE public.omni_mobile_sessions
+           SET refresh_rotated_at = COALESCE(refresh_rotated_at, NOW()),
+             refresh_rotation_key = COALESCE(refresh_rotation_key, repeat('a', 43))`,
+          `${alter} refresh_rotation_key SET NOT NULL`,
+        ],
+        restore: [`${alter} refresh_rotation_key DROP NOT NULL`],
+      },
+    ];
+    const rotations = () => admin`
+      SELECT id, refresh_rotated_at, refresh_rotation_key
+      FROM omni_mobile_sessions
+      ORDER BY id
+    `;
+    const fileCatalog = await schemaCatalogSnapshot(admin);
+    const recorded = await rotations();
+    expect(recorded.some((row) => row.refresh_rotation_key !== null)).toBe(true);
+    // Each variant puts the values back from this copy, to the microsecond.
+    await admin`
+      CREATE TEMPORARY TABLE mobile_refresh_rotation_backup AS
+      SELECT id, refresh_rotated_at, refresh_rotation_key
+      FROM omni_mobile_sessions
+    `;
+
+    try {
+      await withMigrationsPendingFrom(admin, refreshRotationRetryVersion, async () => {
+        // The file adds the CHECK again once the columns are the ones it adds.
+        await admin`
+          ALTER TABLE public.omni_mobile_sessions
+          DROP CONSTRAINT omni_mobile_sessions_refresh_rotation_check
+        `;
+        for (const variant of variants) {
+          for (const statement of variant.change) {
+            await admin.unsafe(statement);
+          }
+          await expect(migrateWithFreshClient()).rejects.toMatchObject({
+            message: expect.stringContaining(
+              "omni_mobile_sessions has a refresh rotation column this migration does not add",
+            ),
+            cause: { cause: { code: "55000" } },
+          });
+          for (const statement of variant.restore) {
+            await admin.unsafe(statement);
+          }
+          await admin`
+            UPDATE omni_mobile_sessions session
+            SET refresh_rotated_at = backup.refresh_rotated_at,
+              refresh_rotation_key = backup.refresh_rotation_key
+            FROM mobile_refresh_rotation_backup backup
+            WHERE backup.id = session.id
+          `;
+        }
+        await migrateWithFreshClient();
+      });
+    } finally {
+      await admin`DROP TABLE IF EXISTS mobile_refresh_rotation_backup`;
+    }
+    expect(await admin`
+      SELECT version, name, checksum
+      FROM omni_schema_version
+      WHERE version IS NOT NULL
+      ORDER BY version ASC
+    `).toEqual(databaseSchemaMigrations);
+    expect(await rotations()).toEqual(recorded);
+    expect(await schemaCatalogSnapshot(admin)).toEqual(fileCatalog);
+  });
 });
 
 async function dropDatabaseRole(
@@ -5455,6 +5707,15 @@ function migrationLockLogLines(calls: readonly unknown[][]) {
 }
 
 const schemaConvergenceVersion = 208;
+const refreshRotationRetryVersion = 209;
+
+// A native client that attests an Android build.
+const androidClient = {
+  platform: "android",
+  appVersion: "1.0.0",
+  buildNumber: 1,
+  clientContractVersion: 1,
+} as const;
 
 // A database the old runner migrated, before every version ran from its SQL
 // file, gave these tables a permissive tenant-wide policy beside their actor
@@ -5704,15 +5965,25 @@ async function withSchemaConvergencePending<T>(
   client: ReturnType<typeof postgres>,
   operation: () => Promise<T>,
 ) {
+  return withMigrationsPendingFrom(client, schemaConvergenceVersion, operation);
+}
+
+// Runs the operation with the given migration and every later one pending,
+// then puts back any ledger row the operation did not record again.
+async function withMigrationsPendingFrom<T>(
+  client: ReturnType<typeof postgres>,
+  version: number,
+  operation: () => Promise<T>,
+) {
   const recorded = await client`
     SELECT version, name, checksum, applied_at
     FROM omni_schema_version
-    WHERE version >= ${schemaConvergenceVersion}
+    WHERE version >= ${version}
   `;
-  expect(recorded.map((row) => row.version)).toContain(schemaConvergenceVersion);
+  expect(recorded.map((row) => row.version)).toContain(version);
   await client`
     DELETE FROM omni_schema_version
-    WHERE version >= ${schemaConvergenceVersion}
+    WHERE version >= ${version}
   `;
   try {
     return await operation();
@@ -5728,6 +5999,72 @@ async function withSchemaConvergencePending<T>(
       `;
     }
   }
+}
+
+// Runs the operation with one private account admitted, whose devices sign
+// in with a password.
+async function withPrivateMobileAccount<T>(
+  tenantId: string,
+  operation: (account: {
+    signIn: (deviceId: string) => Promise<{
+      tokens: { accessToken: string; refreshToken: string };
+      identity: MobileIdentity;
+    }>;
+  }) => Promise<T>,
+) {
+  const email = `${tenantId.replaceAll("_", "-")}@example.com`;
+  const password = "an integration mobile password";
+  const previous = {
+    OMNIAGENT_PRIVATE_ACCOUNT_ALLOWLIST_JSON:
+      process.env.OMNIAGENT_PRIVATE_ACCOUNT_ALLOWLIST_JSON,
+    OMNIAGENT_DATA_DIR: process.env.OMNIAGENT_DATA_DIR,
+  };
+  const dataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "omni-mobile-integration-"));
+  process.env.OMNIAGENT_PRIVATE_ACCOUNT_ALLOWLIST_JSON = JSON.stringify([
+    {
+      email,
+      tenantId,
+      tenantName: "Mobile Integration",
+      tenantMode: "new",
+      label: "Mobile integration",
+      role: "operator",
+    },
+  ]);
+  process.env.OMNIAGENT_DATA_DIR = dataDirectory;
+  try {
+    const auth = await import("@/lib/auth/store");
+    const mobile = await import("@/lib/auth/mobile");
+    await auth.createUserWithMembership({
+      email,
+      password,
+      role: "operator",
+      tenantId,
+      tenantName: "Mobile Integration",
+    });
+    return await operation({
+      signIn: async (deviceId) => {
+        const signedIn = await mobile.authenticateMobilePassword({
+          email,
+          password,
+          device: { id: deviceId, name: "Integration Android", platform: "android" },
+        });
+        expect(signedIn).not.toBeNull();
+        return signedIn!;
+      },
+    });
+  } finally {
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    fs.rmSync(dataDirectory, { recursive: true, force: true });
+  }
+}
+
+function bearerRequest(accessToken: string) {
+  return new Request("https://example.test/api/projects", {
+    headers: { authorization: `Bearer ${accessToken}` },
+  });
 }
 
 // Runs the pending migrations the way a new server process does.

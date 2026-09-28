@@ -227,6 +227,41 @@ WHERE namespace.nspname = 'public'
 ORDER BY 1, 2;
 ```
 
+### Mobile refresh retry window (v209)
+
+Migration `20260928100000_mobile_refresh_rotation_retry.sql` installs schema
+v209 (`mobile_refresh_rotation_retry_v1`) after v208. Apply it before deploying
+the code that needs it: until it runs, every database-backed request fails with
+`Database schema is behind (pending versions: 209)`. A release older than v209
+still serves against a v209 database.
+
+v209 adds two nullable columns to `omni_mobile_sessions`, `refresh_rotated_at`
+and `refresh_rotation_key`, with no default, so the table is not rewritten. The
+`NOT VALID` check `omni_mobile_sessions_refresh_rotation_check` requires both
+columns or neither, and a 43-character base64url key. Every existing row has
+both NULL, so leaving the check unvalidated skips no row.
+
+Each rotation now records when it happened and a new key. The pair it issues
+is derived from the refresh token it replaced and that key. For 60 seconds, the
+replaced token gets the same pair again, with no write, when it comes from the
+session's device and platform. The membership, revocation, device, and expiry
+checks still apply to that retry. Before v209, presenting the replaced token
+revoked the session family (`refresh_reuse`), even when it was the client's own
+retry after a lost response, or a second macOS window that had not yet read the
+new pair. After the 60 seconds it is reuse, as before.
+
+- **Rollback.** A release older than v209 rotates without writing these
+  columns, so they keep what the last v209 rotation wrote. The pair the older
+  release issues is not the derived one, so the token it replaced is reuse even
+  within the 60 seconds.
+- **Stored secret.** The key stays in the row until the next rotation. Someone
+  who can read the table and also holds the refresh token the current pair
+  replaced can derive that pair until then. The table still holds neither token.
+- **Existing columns.** If either column already exists with another type,
+  nullability, or default, v209 stops with `55000` and the whole migration
+  rolls back. See
+  [troubleshooting.md](troubleshooting.md#schema-startup-fails).
+
 ### Web Command durable structured-context release
 
 Web Command defaults a new conversation to `session` scope. Attached Agents,
@@ -1059,8 +1094,8 @@ Keep migrations backward-compatible for at least one application rollback. If a 
 ### Installed adaptive-runtime migration chain
 
 The adaptive-runtime migrations below are registered in `schema-migrations.json`.
-Versions 196-206 are installed in production; v207 and v208 are pending their
-first release. Each migration takes the schema advisory lock,
+Versions 196-206 are installed in production; v207, v208, and v209 are pending
+their first release. Each migration takes the schema advisory lock,
 checks the exact immediately preceding version/name/checksum, installs or extends
 forced actor RLS, verifies its privilege/trigger boundary, and writes its own
 marker in the same transaction.
@@ -1080,6 +1115,7 @@ marker in the same transaction.
 | 206 | `prompt_queue_context_pins_v1` | `5de8d38921e0d4d0f7e79bcfe4745f780ce973b009c874a519d09bfd8f3ff777` | sealed exact Command references plus content-free digests/counts for reviewed and queued work |
 | 207 | `memory_forget_lineage_closure_v1` | `980dfe0af300eac5072cf0bf6b5f80b6a4e5335f444f0046732e7291f3f26c36` | forget lineage closure over every visibility, applied through the receipt with trace, graph, descendant, and agent-grant removal |
 | 208 | `schema_catalog_convergence_v1` | `514f00004c8726a2c762f6069728b20d4816a92731c72c125bf39cbca9a0371f` | actor policies alone on 38 tables, 43 missing CHECKs added `NOT VALID` and 8 renamed, and system scope for the `BYPASSRLS` maintenance role, on databases the old runner migrated |
+| 209 | `mobile_refresh_rotation_retry_v1` | `e78561b7a9b0c38fd91376d9f8fb094e3b629d5e5b94b3a48592a9b89855531f` | nullable rotation time and key on mobile sessions, so the refresh token a rotation replaced gets the same pair again for 60 seconds |
 
 Version 196 requires the exact predecessor marker v195
 `moltbook_autonomy_privilege_repair_v1` with checksum

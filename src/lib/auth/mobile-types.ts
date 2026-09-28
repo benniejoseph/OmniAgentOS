@@ -42,6 +42,8 @@ export type MobileSessionRecord = {
   wipeChallengeHash?: string;
   wipeChallengeExpiresAt?: string;
   replacedBySessionId?: string;
+  // The local ledger's copy of refresh_rotated_at and refresh_rotation_key.
+  refreshRotation?: { rotatedAt: string; key: string };
 };
 
 export type MobileIdentity = {

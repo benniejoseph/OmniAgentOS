@@ -128,6 +128,25 @@ class SecureSessionStore {
     return (await _readCredentialSnapshot()).refreshToken;
   }
 
+  /// Reads the stored pair again instead of this engine's cached copy, so a
+  /// refresh starts from a pair another engine may have stored since.
+  Future<void> reloadCredentials() async {
+    await _requireBiometricRelease();
+    final inFlight = _credentialLoad;
+    if (inFlight != null) await inFlight;
+    _credentialSnapshot = null;
+    await _readCredentialSnapshot();
+  }
+
+  /// Clears the session unless the store now holds a refresh token other than
+  /// [refreshToken], which another engine stored after this one read it.
+  Future<bool> clearUnlessReplaced(String refreshToken) async {
+    final stored = await _read(_refreshTokenKey);
+    if (stored != null && stored != refreshToken) return false;
+    await clear();
+    return true;
+  }
+
   Future<bool> hasStoredCredentials() async {
     final values = await Future.wait<String?>([
       _read(_tokenKey),

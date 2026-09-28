@@ -1,7 +1,10 @@
+import { createHmac } from "node:crypto";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+
+import type { MobileAuthLedger } from "@/lib/auth/mobile-types";
 
 beforeAll(async () => {
   process.env.OMNIAGENT_DATA_DIR = await mkdtemp(path.join(tmpdir(), "omni-mobile-auth-"));
@@ -14,6 +17,7 @@ beforeAll(async () => {
   process.env.OMNIAGENT_PRIVATE_ACCOUNT_ALLOWLIST_JSON = JSON.stringify([
     { email: "mobile@example.com", tenantId: "mobile-tenant", tenantName: "Mobile Tenant", tenantMode: "new", label: "Mobile", role: "operator" },
     { email: "membership-change@example.com", tenantId: "membership-change-tenant", tenantName: "Membership Change Tenant", tenantMode: "new", label: "Membership change", role: "operator" },
+    { email: "retry-membership@example.com", tenantId: "retry-membership-tenant", tenantName: "Retry Membership Tenant", tenantMode: "new", label: "Retry membership", role: "operator" },
   ]);
 });
 
@@ -82,9 +86,11 @@ describe("native mobile authentication", () => {
 
     const rotated = await mobile.rotateMobileRefreshToken(signedIn!.tokens.refreshToken, "ios-device-0001");
     expect(rotated.tokens.refreshToken).not.toBe(signedIn!.tokens.refreshToken);
+    const next = await mobile.rotateMobileRefreshToken(rotated.tokens.refreshToken, "ios-device-0001");
+    // Two rotations ago, so it is not a retry.
     await expect(mobile.rotateMobileRefreshToken(signedIn!.tokens.refreshToken, "ios-device-0001"))
       .rejects.toMatchObject({ code: "refresh_token_reuse" });
-    await expect(mobile.rotateMobileRefreshToken(rotated.tokens.refreshToken, "ios-device-0001"))
+    await expect(mobile.rotateMobileRefreshToken(next.tokens.refreshToken, "ios-device-0001"))
       .rejects.toMatchObject({ code: "invalid_refresh_token" });
   });
 
@@ -295,3 +301,226 @@ describe("native mobile authentication", () => {
     });
   });
 });
+
+describe("a refresh token that was just replaced", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("gets the pair that replaced it again, with or without the native attestation", async () => {
+    const mobile = await import("@/lib/auth/mobile");
+    const signedIn = await signInDevice("retry-same-pair");
+    const rotated = await mobile.rotateMobileRefreshToken(signedIn.tokens.refreshToken, "retry-same-pair");
+
+    await expect(mobile.rotateMobileRefreshToken(signedIn.tokens.refreshToken, "retry-same-pair"))
+      .resolves.toMatchObject({ tokens: rotated.tokens });
+    await expect(mobile.rotateMobileRefreshToken(
+      signedIn.tokens.refreshToken,
+      "retry-same-pair",
+      iosClient,
+    )).resolves.toMatchObject({ tokens: rotated.tokens });
+    await expect(mobile.getMobileIdentityFromRequest(bearer(rotated.tokens.accessToken)))
+      .resolves.toMatchObject({ session: { id: signedIn.identity.session.id } });
+
+    // Once the next rotation replaces that pair, only its own predecessor is a retry.
+    const next = await mobile.rotateMobileRefreshToken(rotated.tokens.refreshToken, "retry-same-pair");
+    expect(next.tokens.accessToken).not.toBe(rotated.tokens.accessToken);
+    expect(next.tokens.refreshToken).not.toBe(rotated.tokens.refreshToken);
+    await expect(mobile.rotateMobileRefreshToken(rotated.tokens.refreshToken, "retry-same-pair"))
+      .resolves.toMatchObject({ tokens: next.tokens });
+    await expect(mobile.getMobileIdentityFromRequest(bearer(rotated.tokens.accessToken)))
+      .resolves.toBeNull();
+    await expect(mobile.rotateMobileRefreshToken(signedIn.tokens.refreshToken, "retry-same-pair"))
+      .rejects.toMatchObject({ code: "refresh_token_reuse" });
+    await expect(mobile.rotateMobileRefreshToken(next.tokens.refreshToken, "retry-same-pair"))
+      .rejects.toMatchObject({ code: "invalid_refresh_token" });
+  });
+
+  it("derives the pair from itself and a key the ledger keeps, so the ledger holds neither token", async () => {
+    const mobile = await import("@/lib/auth/mobile");
+    const signedIn = await signInDevice("retry-derivation");
+    const rotated = await mobile.rotateMobileRefreshToken(signedIn.tokens.refreshToken, "retry-derivation");
+    const persisted = await readFile(mobileLedgerFile(), "utf8");
+    const session = (JSON.parse(persisted) as MobileAuthLedger).sessions
+      .find((item) => item.id === signedIn.identity.session.id);
+    const key = session?.refreshRotation?.key ?? "";
+    const derive = (purpose: string) =>
+      createHmac("sha256", Buffer.from(key, "base64url"))
+        .update(`asael-mobile-rotation:v1:${purpose}:${signedIn.tokens.refreshToken}`)
+        .digest("base64url");
+
+    expect(key).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(rotated.tokens).toMatchObject({
+      accessToken: derive("access"),
+      refreshToken: derive("refresh"),
+    });
+    expect(rotated.tokens.accessToken).not.toBe(rotated.tokens.refreshToken);
+    for (const token of [
+      signedIn.tokens.refreshToken,
+      rotated.tokens.accessToken,
+      rotated.tokens.refreshToken,
+    ]) {
+      expect(persisted).not.toContain(token);
+    }
+  });
+
+  it("is reuse when it comes back more than 60 seconds from its rotation", async () => {
+    const mobile = await import("@/lib/auth/mobile");
+    for (const [deviceId, offsetMs] of [
+      ["retry-late", 61_000],
+      // A clock that moved back is outside the window too.
+      ["retry-clock-back", -61_000],
+    ] as const) {
+      const signedIn = await signInDevice(deviceId);
+      vi.useFakeTimers({ toFake: ["Date"] });
+      const rotatedAt = Date.now();
+      const rotated = await mobile.rotateMobileRefreshToken(signedIn.tokens.refreshToken, deviceId);
+      for (const withinMs of [59_000, 60_000]) {
+        vi.setSystemTime(rotatedAt + Math.sign(offsetMs) * withinMs);
+        await expect(mobile.rotateMobileRefreshToken(signedIn.tokens.refreshToken, deviceId))
+          .resolves.toMatchObject({ tokens: rotated.tokens });
+      }
+
+      vi.setSystemTime(rotatedAt + offsetMs);
+      await expect(mobile.rotateMobileRefreshToken(signedIn.tokens.refreshToken, deviceId))
+        .rejects.toMatchObject({ code: "refresh_token_reuse" });
+      vi.useRealTimers();
+      await expect(mobile.rotateMobileRefreshToken(rotated.tokens.refreshToken, deviceId))
+        .rejects.toMatchObject({ code: "invalid_refresh_token" });
+      await expect(deviceState(signedIn)).resolves.toMatchObject({
+        state: "revoked",
+        revocationReason: "refresh_reuse",
+      });
+    }
+  });
+
+  it("is reuse from another device or another platform", async () => {
+    const mobile = await import("@/lib/auth/mobile");
+    for (const [deviceId, retryDeviceId, retryClient] of [
+      ["retry-other-device", "retry-someone-else", undefined],
+      ["retry-other-platform", "retry-other-platform", { ...iosClient, platform: "android" }],
+    ] as const) {
+      const signedIn = await signInDevice(deviceId);
+      const rotated = await mobile.rotateMobileRefreshToken(signedIn.tokens.refreshToken, deviceId);
+
+      await expect(mobile.rotateMobileRefreshToken(signedIn.tokens.refreshToken, retryDeviceId, retryClient))
+        .rejects.toMatchObject({ code: "refresh_token_reuse" });
+      await expect(mobile.rotateMobileRefreshToken(rotated.tokens.refreshToken, deviceId))
+        .rejects.toMatchObject({ code: "invalid_refresh_token" });
+      await expect(deviceState(signedIn)).resolves.toMatchObject({
+        revocationReason: "refresh_reuse",
+      });
+    }
+  });
+
+  it("is reuse once the pair is not the one derived from it", async () => {
+    const mobile = await import("@/lib/auth/mobile");
+    // A release without the rotation key replaces both hashes; each one alone
+    // is enough to refuse the retry.
+    for (const [deviceId, field] of [
+      ["retry-replaced-access", "accessTokenHash"],
+      ["retry-replaced-refresh", "refreshTokenHash"],
+    ] as const) {
+      const signedIn = await signInDevice(deviceId);
+      await mobile.rotateMobileRefreshToken(signedIn.tokens.refreshToken, deviceId);
+      const ledger = JSON.parse(await readFile(mobileLedgerFile(), "utf8")) as MobileAuthLedger;
+      await writeFile(mobileLedgerFile(), JSON.stringify({
+        ...ledger,
+        sessions: ledger.sessions.map((item) => item.id === signedIn.identity.session.id
+          ? { ...item, [field]: "0".repeat(64) }
+          : item),
+      }), "utf8");
+
+      await expect(mobile.rotateMobileRefreshToken(signedIn.tokens.refreshToken, deviceId))
+        .rejects.toMatchObject({ code: "refresh_token_reuse" });
+    }
+  });
+
+  it("is refused without reissuing the pair after logout or a membership change", async () => {
+    const auth = await import("@/lib/auth/store");
+    const mobile = await import("@/lib/auth/mobile");
+    const signedIn = await signInDevice("retry-after-logout");
+    await mobile.rotateMobileRefreshToken(signedIn.tokens.refreshToken, "retry-after-logout");
+    await mobile.revokeMobileSession(signedIn.identity);
+
+    await expect(mobile.rotateMobileRefreshToken(signedIn.tokens.refreshToken, "retry-after-logout"))
+      .rejects.toMatchObject({ code: "invalid_refresh_token" });
+    await expect(deviceState(signedIn)).resolves.toMatchObject({
+      state: "revoked",
+      revocationReason: "logout",
+    });
+
+    await auth.createUserWithMembership({
+      email: "retry-membership@example.com",
+      password: "a secure retry membership password",
+      role: "operator",
+      tenantId: "retry-membership-tenant",
+      tenantName: "Retry Membership Tenant",
+    });
+    const member = await signInDevice(
+      "retry-membership-device",
+      "retry-membership@example.com",
+      "a secure retry membership password",
+    );
+    await mobile.rotateMobileRefreshToken(member.tokens.refreshToken, "retry-membership-device");
+    const authFile = path.join(process.env.OMNIAGENT_DATA_DIR!, "auth.json");
+    const authLedger = JSON.parse(await readFile(authFile, "utf8")) as {
+      memberships: Array<{ userId: string; tenantId: string; status: string }>;
+    };
+    authLedger.memberships = authLedger.memberships.map((membership) =>
+      membership.userId === member.identity.user.id
+        ? { ...membership, status: "disabled" }
+        : membership);
+    await writeFile(authFile, `${JSON.stringify(authLedger, null, 2)}\n`, "utf8");
+
+    await expect(mobile.rotateMobileRefreshToken(member.tokens.refreshToken, "retry-membership-device"))
+      .rejects.toMatchObject({ code: "invalid_refresh_token" });
+    await expect(deviceState(member)).resolves.toMatchObject({
+      state: "revoked",
+      revocationReason: "membership_changed",
+    });
+  });
+});
+
+const iosClient = {
+  platform: "ios",
+  appVersion: "1.0.0",
+  buildNumber: 1,
+  clientContractVersion: 1,
+} as const;
+
+function bearer(accessToken: string) {
+  return new Request("https://example.test/api/projects", {
+    headers: { authorization: `Bearer ${accessToken}` },
+  });
+}
+
+function mobileLedgerFile() {
+  return path.join(process.env.OMNIAGENT_DATA_DIR!, "mobile-auth.json");
+}
+
+async function signInDevice(
+  deviceId: string,
+  email = "mobile@example.com",
+  password = "a secure mobile password",
+) {
+  const mobile = await import("@/lib/auth/mobile");
+  const signedIn = await mobile.authenticateMobilePassword({
+    email,
+    password,
+    device: { id: deviceId, name: "Retry iPhone", platform: "ios" },
+  });
+  expect(signedIn).not.toBeNull();
+  return signedIn!;
+}
+
+// Reads the session's state from the stored ledger, which still lists it
+// after the session itself can no longer authenticate.
+async function deviceState(signedIn: Awaited<ReturnType<typeof signInDevice>>) {
+  const ledger = JSON.parse(await readFile(mobileLedgerFile(), "utf8")) as MobileAuthLedger;
+  const session = ledger.sessions.find((item) => item.id === signedIn.identity.session.id);
+  return {
+    state: session?.revokedAt ? "revoked" : "active",
+    revocationReason: session?.revocationReason,
+  };
+}

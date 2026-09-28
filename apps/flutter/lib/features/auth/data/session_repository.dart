@@ -31,18 +31,22 @@ class SessionRepository {
         if (error.statusCode != 401) rethrow;
       }
     }
-    if (refreshToken == null) {
+    // The 401 above may have cleared a pair the service rejected.
+    if (await _store.readRefreshToken() == null) {
       await _store.clear();
       return null;
     }
 
     try {
-      final deviceId = await _store.readOrCreateDeviceId();
-      final rotated = await _refreshWithRollbackFallback(
-        refreshToken: refreshToken,
-        deviceId: deviceId,
-      );
-      await _persistTokens(rotated);
+      // The client's own refresh, so a request refreshing at the same time
+      // cannot rotate the pair under this one.
+      await _api.ensureRefreshed(rejectedAccessToken: accessToken);
+    } on ApiException catch (error) {
+      // A rejected refresh has already cleared the pair it presented.
+      if (error.statusCode != 401) rethrow;
+      return null;
+    }
+    try {
       return await _bindOfflineProjectionOwner(
         AppSession.fromJson(await _api.getJson(NativePaths.bootstrapGet)),
       );
@@ -192,28 +196,6 @@ class SessionRepository {
           'password': password,
           'device': NativeClientInfo.legacyDevice(deviceId),
         },
-      );
-    }
-  }
-
-  Future<Map<String, dynamic>> _refreshWithRollbackFallback({
-    required String refreshToken,
-    required String deviceId,
-  }) async {
-    try {
-      return await _api.postJson(
-        NativePaths.authRefresh,
-        data: {
-          'refreshToken': refreshToken,
-          'deviceId': deviceId,
-          'client': NativeClientInfo.attestation(),
-        },
-      );
-    } on ApiException catch (error) {
-      if (error.statusCode != 400) rethrow;
-      return _api.postJson(
-        NativePaths.authRefresh,
-        data: {'refreshToken': refreshToken, 'deviceId': deviceId},
       );
     }
   }
