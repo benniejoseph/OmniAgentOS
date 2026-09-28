@@ -1,0 +1,348 @@
+{
+  "provider": "anthropic",
+  "model": "claude-sonnet-5",
+  "note": "Scenarios with a recordedAt date were recorded from the live API by npm run test:provider-contract:record. Scenarios whose recordedAt is null are hand-written from the provider's API reference; the truncated and rate_limit scenarios cannot be recorded on demand.",
+  "scenarios": {
+    "text": {
+      "recordedAt": null,
+      "exchanges": [
+        {
+          "request": {
+            "method": "POST",
+            "url": "https://api.anthropic.com/v1/messages"
+          },
+          "response": {
+            "status": 200,
+            "headers": {
+              "content-type": "application/json",
+              "request-id": "req_011CContractText00000001"
+            },
+            "json": {
+              "id": "msg_011CContractText00000001",
+              "type": "message",
+              "role": "assistant",
+              "model": "claude-sonnet-5",
+              "content": [
+                {
+                  "type": "thinking",
+                  "thinking": "",
+                  "signature": "contract-fixture-text-thinking-signature"
+                },
+                {
+                  "type": "text",
+                  "text": "ready"
+                }
+              ],
+              "stop_reason": "end_turn",
+              "stop_sequence": null,
+              "usage": {
+                "input_tokens": 23,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "cache_creation": {
+                  "ephemeral_5m_input_tokens": 0,
+                  "ephemeral_1h_input_tokens": 0
+                },
+                "output_tokens": 38,
+                "service_tier": "standard"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "tool_round_trip": {
+      "recordedAt": null,
+      "exchanges": [
+        {
+          "request": {
+            "method": "POST",
+            "url": "https://api.anthropic.com/v1/messages"
+          },
+          "response": {
+            "status": 200,
+            "headers": {
+              "content-type": "application/json",
+              "request-id": "req_011CContractTool00000001"
+            },
+            "json": {
+              "id": "msg_011CContractTool00000001",
+              "type": "message",
+              "role": "assistant",
+              "model": "claude-sonnet-5",
+              "content": [
+                {
+                  "type": "thinking",
+                  "thinking": "",
+                  "signature": "contract-fixture-tool-thinking-signature"
+                },
+                {
+                  "type": "tool_use",
+                  "id": "toolu_011CContractParis0000001",
+                  "name": "get_weather",
+                  "input": {
+                    "city": "Paris"
+                  }
+                }
+              ],
+              "stop_reason": "tool_use",
+              "stop_sequence": null,
+              "usage": {
+                "input_tokens": 618,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "cache_creation": {
+                  "ephemeral_5m_input_tokens": 0,
+                  "ephemeral_1h_input_tokens": 0
+                },
+                "output_tokens": 71,
+                "service_tier": "standard"
+              }
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "POST",
+            "url": "https://api.anthropic.com/v1/messages"
+          },
+          "response": {
+            "status": 200,
+            "headers": {
+              "content-type": "application/json",
+              "request-id": "req_011CContractTool00000002"
+            },
+            "json": {
+              "id": "msg_011CContractTool00000002",
+              "type": "message",
+              "role": "assistant",
+              "model": "claude-sonnet-5",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "It is sunny in Paris right now, at 21 °C."
+                }
+              ],
+              "stop_reason": "end_turn",
+              "stop_sequence": null,
+              "usage": {
+                "input_tokens": 731,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "cache_creation": {
+                  "ephemeral_5m_input_tokens": 0,
+                  "ephemeral_1h_input_tokens": 0
+                },
+                "output_tokens": 24,
+                "service_tier": "standard"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "single_call": {
+      "recordedAt": null,
+      "exchanges": [
+        {
+          "request": {
+            "method": "POST",
+            "url": "https://api.anthropic.com/v1/messages"
+          },
+          "response": {
+            "status": 200,
+            "headers": {
+              "content-type": "application/json",
+              "request-id": "req_011CContractSingle000001"
+            },
+            "json": {
+              "id": "msg_011CContractSingle000001",
+              "type": "message",
+              "role": "assistant",
+              "model": "claude-sonnet-5",
+              "content": [
+                {
+                  "type": "thinking",
+                  "thinking": "",
+                  "signature": "contract-fixture-single-thinking-signature"
+                },
+                {
+                  "type": "tool_use",
+                  "id": "toolu_011CContractSingle000001",
+                  "name": "get_weather",
+                  "input": {
+                    "city": "Paris"
+                  }
+                }
+              ],
+              "stop_reason": "tool_use",
+              "stop_sequence": null,
+              "usage": {
+                "input_tokens": 624,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "cache_creation": {
+                  "ephemeral_5m_input_tokens": 0,
+                  "ephemeral_1h_input_tokens": 0
+                },
+                "output_tokens": 69,
+                "service_tier": "standard"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "structured": {
+      "recordedAt": null,
+      "exchanges": [
+        {
+          "request": {
+            "method": "POST",
+            "url": "https://api.anthropic.com/v1/messages"
+          },
+          "response": {
+            "status": 200,
+            "headers": {
+              "content-type": "application/json",
+              "request-id": "req_011CContractPlace0000001"
+            },
+            "json": {
+              "id": "msg_011CContractPlace0000001",
+              "type": "message",
+              "role": "assistant",
+              "model": "claude-sonnet-5",
+              "content": [
+                {
+                  "type": "tool_use",
+                  "id": "toolu_011CContractPlace0000001",
+                  "name": "place",
+                  "input": {
+                    "city": "Paris",
+                    "country": "France"
+                  }
+                }
+              ],
+              "stop_reason": "tool_use",
+              "stop_sequence": null,
+              "usage": {
+                "input_tokens": 437,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "cache_creation": {
+                  "ephemeral_5m_input_tokens": 0,
+                  "ephemeral_1h_input_tokens": 0
+                },
+                "output_tokens": 41,
+                "service_tier": "standard"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "authentication": {
+      "recordedAt": null,
+      "exchanges": [
+        {
+          "request": {
+            "method": "POST",
+            "url": "https://api.anthropic.com/v1/messages"
+          },
+          "response": {
+            "status": 401,
+            "headers": {
+              "content-type": "application/json",
+              "request-id": "req_011CContractAuth00000001"
+            },
+            "json": {
+              "type": "error",
+              "error": {
+                "type": "authentication_error",
+                "message": "invalid x-api-key"
+              },
+              "request_id": "req_011CContractAuth00000001"
+            }
+          }
+        }
+      ]
+    },
+    "truncated": {
+      "recordedAt": null,
+      "exchanges": [
+        {
+          "request": {
+            "method": "POST",
+            "url": "https://api.anthropic.com/v1/messages"
+          },
+          "response": {
+            "status": 200,
+            "headers": {
+              "content-type": "application/json",
+              "request-id": "req_011CContractTruncated001"
+            },
+            "json": {
+              "id": "msg_011CContractTruncated001",
+              "type": "message",
+              "role": "assistant",
+              "model": "claude-sonnet-5",
+              "content": [
+                {
+                  "type": "thinking",
+                  "thinking": "",
+                  "signature": "contract-fixture-truncated-thinking-signature"
+                },
+                {
+                  "type": "tool_use",
+                  "id": "toolu_011CContractTruncated001",
+                  "name": "get_weather",
+                  "input": {}
+                }
+              ],
+              "stop_reason": "max_tokens",
+              "stop_sequence": null,
+              "usage": {
+                "input_tokens": 618,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "cache_creation": {
+                  "ephemeral_5m_input_tokens": 0,
+                  "ephemeral_1h_input_tokens": 0
+                },
+                "output_tokens": 6000,
+                "service_tier": "standard"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "rate_limit": {
+      "recordedAt": null,
+      "exchanges": [
+        {
+          "request": {
+            "method": "POST",
+            "url": "https://api.anthropic.com/v1/messages"
+          },
+          "response": {
+            "status": 429,
+            "headers": {
+              "content-type": "application/json",
+              "request-id": "req_011CContractRate00000001",
+              "retry-after": "12"
+            },
+            "json": {
+              "type": "error",
+              "error": {
+                "type": "rate_limit_error",
+                "message": "This request would exceed your organization's rate limit of 30,000 input tokens per minute. For details, refer to: https://docs.claude.com/en/api/rate-limits."
+              },
+              "request_id": "req_011CContractRate00000001"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,60 @@
+name: Provider Contract
+
+# Sends the provider contract suite to the live Claude, OpenAI, Gemini, and
+# Bedrock APIs. Providers without credentials in the provider-contract
+# environment are skipped. The nightly run is off until the repository
+# variable PROVIDER_CONTRACT_NIGHTLY is "true"; a manual run always goes.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "41 4 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: provider-contract
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "24.13.0"
+
+jobs:
+  live-contract:
+    name: live contract
+    if: github.event_name == 'workflow_dispatch' || vars.PROVIDER_CONTRACT_NIGHTLY == 'true'
+    runs-on: ubuntu-latest
+    environment: provider-contract
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      # Credentials reach only this step. An unset model variable keeps the
+      # adapter's default model.
+      - name: Live provider contract
+        timeout-minutes: 10
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          ANTHROPIC_REASONING_MODEL: ${{ vars.ANTHROPIC_REASONING_MODEL }}
+          OPENAI_REASONING_MODEL: ${{ vars.OPENAI_REASONING_MODEL }}
+          GEMINI_REASONING_MODEL: ${{ vars.GEMINI_REASONING_MODEL }}
+          AWS_BEDROCK_REASONING_MODEL: ${{ vars.AWS_BEDROCK_REASONING_MODEL }}
+        run: npm run test:provider-contract:live

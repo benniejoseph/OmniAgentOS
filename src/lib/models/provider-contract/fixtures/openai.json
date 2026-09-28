@@ -1,0 +1,1070 @@
+{
+  "provider": "openai",
+  "model": "gpt-5",
+  "note": "Scenarios with a recordedAt date were recorded from the live API by npm run test:provider-contract:record. Scenarios whose recordedAt is null are hand-written from the provider's API reference; the truncated and rate_limit scenarios cannot be recorded on demand.",
+  "scenarios": {
+    "text": {
+      "recordedAt": null,
+      "exchanges": [
+        {
+          "request": {
+            "method": "POST",
+            "url": "https://api.openai.com/v1/responses"
+          },
+          "response": {
+            "status": 200,
+            "headers": {
+              "content-type": "text/event-stream; charset=utf-8",
+              "x-request-id": "req_contracttext0001"
+            },
+            "sse": [
+              {
+                "event": "response.created",
+                "data": {
+                  "type": "response.created",
+                  "sequence_number": 0,
+                  "response": {
+                    "id": "resp_contract_text_0001",
+                    "object": "response",
+                    "created_at": 1790467201,
+                    "status": "in_progress",
+                    "error": null,
+                    "incomplete_details": null,
+                    "model": "gpt-5-2025-08-07",
+                    "output": [],
+                    "usage": null
+                  }
+                }
+              },
+              {
+                "event": "response.in_progress",
+                "data": {
+                  "type": "response.in_progress",
+                  "sequence_number": 1,
+                  "response": {
+                    "id": "resp_contract_text_0001",
+                    "object": "response",
+                    "created_at": 1790467201,
+                    "status": "in_progress",
+                    "error": null,
+                    "incomplete_details": null,
+                    "model": "gpt-5-2025-08-07",
+                    "output": [],
+                    "usage": null
+                  }
+                }
+              },
+              {
+                "event": "response.output_item.added",
+                "data": {
+                  "type": "response.output_item.added",
+                  "sequence_number": 2,
+                  "output_index": 0,
+                  "item": {
+                    "id": "rs_contract_text_0001",
+                    "type": "reasoning",
+                    "summary": []
+                  }
+                }
+              },
+              {
+                "event": "response.output_item.done",
+                "data": {
+                  "type": "response.output_item.done",
+                  "sequence_number": 3,
+                  "output_index": 0,
+                  "item": {
+                    "id": "rs_contract_text_0001",
+                    "type": "reasoning",
+                    "summary": []
+                  }
+                }
+              },
+              {
+                "event": "response.output_item.added",
+                "data": {
+                  "type": "response.output_item.added",
+                  "sequence_number": 4,
+                  "output_index": 1,
+                  "item": {
+                    "id": "msg_contract_text_0001",
+                    "type": "message",
+                    "status": "in_progress",
+                    "content": [],
+                    "role": "assistant"
+                  }
+                }
+              },
+              {
+                "event": "response.content_part.added",
+                "data": {
+                  "type": "response.content_part.added",
+                  "sequence_number": 5,
+                  "item_id": "msg_contract_text_0001",
+                  "output_index": 1,
+                  "content_index": 0,
+                  "part": {
+                    "type": "output_text",
+                    "annotations": [],
+                    "logprobs": [],
+                    "text": ""
+                  }
+                }
+              },
+              {
+                "event": "response.output_text.delta",
+                "data": {
+                  "type": "response.output_text.delta",
+                  "sequence_number": 6,
+                  "item_id": "msg_contract_text_0001",
+                  "output_index": 1,
+                  "content_index": 0,
+                  "delta": "ready",
+                  "logprobs": []
+                }
+              },
+              {
+                "event": "response.output_text.done",
+                "data": {
+                  "type": "response.output_text.done",
+                  "sequence_number": 7,
+                  "item_id": "msg_contract_text_0001",
+                  "output_index": 1,
+                  "content_index": 0,
+                  "text": "ready",
+                  "logprobs": []
+                }
+              },
+              {
+                "event": "response.content_part.done",
+                "data": {
+                  "type": "response.content_part.done",
+                  "sequence_number": 8,
+                  "item_id": "msg_contract_text_0001",
+                  "output_index": 1,
+                  "content_index": 0,
+                  "part": {
+                    "type": "output_text",
+                    "annotations": [],
+                    "logprobs": [],
+                    "text": "ready"
+                  }
+                }
+              },
+              {
+                "event": "response.output_item.done",
+                "data": {
+                  "type": "response.output_item.done",
+                  "sequence_number": 9,
+                  "output_index": 1,
+                  "item": {
+                    "id": "msg_contract_text_0001",
+                    "type": "message",
+                    "status": "completed",
+                    "content": [
+                      {
+                        "type": "output_text",
+                        "annotations": [],
+                        "logprobs": [],
+                        "text": "ready"
+                      }
+                    ],
+                    "role": "assistant"
+                  }
+                }
+              },
+              {
+                "event": "response.completed",
+                "data": {
+                  "type": "response.completed",
+                  "sequence_number": 10,
+                  "response": {
+                    "id": "resp_contract_text_0001",
+                    "object": "response",
+                    "created_at": 1790467201,
+                    "status": "completed",
+                    "error": null,
+                    "incomplete_details": null,
+                    "model": "gpt-5-2025-08-07",
+                    "output": [
+                      {
+                        "id": "rs_contract_text_0001",
+                        "type": "reasoning",
+                        "summary": []
+                      },
+                      {
+                        "id": "msg_contract_text_0001",
+                        "type": "message",
+                        "status": "completed",
+                        "content": [
+                          {
+                            "type": "output_text",
+                            "annotations": [],
+                            "logprobs": [],
+                            "text": "ready"
+                          }
+                        ],
+                        "role": "assistant"
+                      }
+                    ],
+                    "usage": {
+                      "input_tokens": 24,
+                      "input_tokens_details": {
+                        "cached_tokens": 0
+                      },
+                      "output_tokens": 73,
+                      "output_tokens_details": {
+                        "reasoning_tokens": 64
+                      },
+                      "total_tokens": 97
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "tool_round_trip": {
+      "recordedAt": null,
+      "exchanges": [
+        {
+          "request": {
+            "method": "POST",
+            "url": "https://api.openai.com/v1/responses"
+          },
+          "response": {
+            "status": 200,
+            "headers": {
+              "content-type": "text/event-stream; charset=utf-8",
+              "x-request-id": "req_contracttool0001"
+            },
+            "sse": [
+              {
+                "event": "response.created",
+                "data": {
+                  "type": "response.created",
+                  "sequence_number": 0,
+                  "response": {
+                    "id": "resp_contract_tool_0001",
+                    "object": "response",
+                    "created_at": 1790467201,
+                    "status": "in_progress",
+                    "error": null,
+                    "incomplete_details": null,
+                    "model": "gpt-5-2025-08-07",
+                    "output": [],
+                    "usage": null
+                  }
+                }
+              },
+              {
+                "event": "response.in_progress",
+                "data": {
+                  "type": "response.in_progress",
+                  "sequence_number": 1,
+                  "response": {
+                    "id": "resp_contract_tool_0001",
+                    "object": "response",
+                    "created_at": 1790467201,
+                    "status": "in_progress",
+                    "error": null,
+                    "incomplete_details": null,
+                    "model": "gpt-5-2025-08-07",
+                    "output": [],
+                    "usage": null
+                  }
+                }
+              },
+              {
+                "event": "response.output_item.added",
+                "data": {
+                  "type": "response.output_item.added",
+                  "sequence_number": 2,
+                  "output_index": 0,
+                  "item": {
+                    "id": "rs_contract_tool_0001",
+                    "type": "reasoning",
+                    "summary": []
+                  }
+                }
+              },
+              {
+                "event": "response.output_item.done",
+                "data": {
+                  "type": "response.output_item.done",
+                  "sequence_number": 3,
+                  "output_index": 0,
+                  "item": {
+                    "id": "rs_contract_tool_0001",
+                    "type": "reasoning",
+                    "summary": []
+                  }
+                }
+              },
+              {
+                "event": "response.output_item.added",
+                "data": {
+                  "type": "response.output_item.added",
+                  "sequence_number": 4,
+                  "output_index": 1,
+                  "item": {
+                    "id": "fc_contract_paris_0001",
+                    "type": "function_call",
+                    "status": "in_progress",
+                    "arguments": "",
+                    "call_id": "call_ContractParis0001",
+                    "name": "get_weather"
+                  }
+                }
+              },
+              {
+                "event": "response.function_call_arguments.delta",
+                "data": {
+                  "type": "response.function_call_arguments.delta",
+                  "sequence_number": 5,
+                  "item_id": "fc_contract_paris_0001",
+                  "output_index": 1,
+                  "delta": "{\"city\":\"Paris\"}"
+                }
+              },
+              {
+                "event": "response.function_call_arguments.done",
+                "data": {
+                  "type": "response.function_call_arguments.done",
+                  "sequence_number": 6,
+                  "item_id": "fc_contract_paris_0001",
+                  "output_index": 1,
+                  "arguments": "{\"city\":\"Paris\"}"
+                }
+              },
+              {
+                "event": "response.output_item.done",
+                "data": {
+                  "type": "response.output_item.done",
+                  "sequence_number": 7,
+                  "output_index": 1,
+                  "item": {
+                    "id": "fc_contract_paris_0001",
+                    "type": "function_call",
+                    "status": "completed",
+                    "arguments": "{\"city\":\"Paris\"}",
+                    "call_id": "call_ContractParis0001",
+                    "name": "get_weather"
+                  }
+                }
+              },
+              {
+                "event": "response.completed",
+                "data": {
+                  "type": "response.completed",
+                  "sequence_number": 8,
+                  "response": {
+                    "id": "resp_contract_tool_0001",
+                    "object": "response",
+                    "created_at": 1790467201,
+                    "status": "completed",
+                    "error": null,
+                    "incomplete_details": null,
+                    "model": "gpt-5-2025-08-07",
+                    "output": [
+                      {
+                        "id": "rs_contract_tool_0001",
+                        "type": "reasoning",
+                        "summary": []
+                      },
+                      {
+                        "id": "fc_contract_paris_0001",
+                        "type": "function_call",
+                        "status": "completed",
+                        "arguments": "{\"city\":\"Paris\"}",
+                        "call_id": "call_ContractParis0001",
+                        "name": "get_weather"
+                      }
+                    ],
+                    "usage": {
+                      "input_tokens": 78,
+                      "input_tokens_details": {
+                        "cached_tokens": 0
+                      },
+                      "output_tokens": 87,
+                      "output_tokens_details": {
+                        "reasoning_tokens": 64
+                      },
+                      "total_tokens": 165
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "request": {
+            "method": "POST",
+            "url": "https://api.openai.com/v1/responses"
+          },
+          "response": {
+            "status": 200,
+            "headers": {
+              "content-type": "text/event-stream; charset=utf-8",
+              "x-request-id": "req_contracttool0002"
+            },
+            "sse": [
+              {
+                "event": "response.created",
+                "data": {
+                  "type": "response.created",
+                  "sequence_number": 0,
+                  "response": {
+                    "id": "resp_contract_answer_0001",
+                    "object": "response",
+                    "created_at": 1790467201,
+                    "status": "in_progress",
+                    "error": null,
+                    "incomplete_details": null,
+                    "model": "gpt-5-2025-08-07",
+                    "output": [],
+                    "usage": null
+                  }
+                }
+              },
+              {
+                "event": "response.in_progress",
+                "data": {
+                  "type": "response.in_progress",
+                  "sequence_number": 1,
+                  "response": {
+                    "id": "resp_contract_answer_0001",
+                    "object": "response",
+                    "created_at": 1790467201,
+                    "status": "in_progress",
+                    "error": null,
+                    "incomplete_details": null,
+                    "model": "gpt-5-2025-08-07",
+                    "output": [],
+                    "usage": null
+                  }
+                }
+              },
+              {
+                "event": "response.output_item.added",
+                "data": {
+                  "type": "response.output_item.added",
+                  "sequence_number": 2,
+                  "output_index": 0,
+                  "item": {
+                    "id": "rs_contract_answer_0001",
+                    "type": "reasoning",
+                    "summary": []
+                  }
+                }
+              },
+              {
+                "event": "response.output_item.done",
+                "data": {
+                  "type": "response.output_item.done",
+                  "sequence_number": 3,
+                  "output_index": 0,
+                  "item": {
+                    "id": "rs_contract_answer_0001",
+                    "type": "reasoning",
+                    "summary": []
+                  }
+                }
+              },
+              {
+                "event": "response.output_item.added",
+                "data": {
+                  "type": "response.output_item.added",
+                  "sequence_number": 4,
+                  "output_index": 1,
+                  "item": {
+                    "id": "msg_contract_answer_0001",
+                    "type": "message",
+                    "status": "in_progress",
+                    "content": [],
+                    "role": "assistant"
+                  }
+                }
+              },
+              {
+                "event": "response.content_part.added",
+                "data": {
+                  "type": "response.content_part.added",
+                  "sequence_number": 5,
+                  "item_id": "msg_contract_answer_0001",
+                  "output_index": 1,
+                  "content_index": 0,
+                  "part": {
+                    "type": "output_text",
+                    "annotations": [],
+                    "logprobs": [],
+                    "text": ""
+                  }
+                }
+              },
+              {
+                "event": "response.output_text.delta",
+                "data": {
+                  "type": "response.output_text.delta",
+                  "sequence_number": 6,
+                  "item_id": "msg_contract_answer_0001",
+                  "output_index": 1,
+                  "content_index": 0,
+                  "delta": "It is sunny in Paris",
+                  "logprobs": []
+                }
+              },
+              {
+                "event": "response.output_text.delta",
+                "data": {
+                  "type": "response.output_text.delta",
+                  "sequence_number": 7,
+                  "item_id": "msg_contract_answer_0001",
+                  "output_index": 1,
+                  "content_index": 0,
+                  "delta": " right now, at 21 °C.",
+                  "logprobs": []
+                }
+              },
+              {
+                "event": "response.output_text.done",
+                "data": {
+                  "type": "response.output_text.done",
+                  "sequence_number": 8,
+                  "item_id": "msg_contract_answer_0001",
+                  "output_index": 1,
+                  "content_index": 0,
+                  "text": "It is sunny in Paris right now, at 21 °C.",
+                  "logprobs": []
+                }
+              },
+              {
+                "event": "response.content_part.done",
+                "data": {
+                  "type": "response.content_part.done",
+                  "sequence_number": 9,
+                  "item_id": "msg_contract_answer_0001",
+                  "output_index": 1,
+                  "content_index": 0,
+                  "part": {
+                    "type": "output_text",
+                    "annotations": [],
+                    "logprobs": [],
+                    "text": "It is sunny in Paris right now, at 21 °C."
+                  }
+                }
+              },
+              {
+                "event": "response.output_item.done",
+                "data": {
+                  "type": "response.output_item.done",
+                  "sequence_number": 10,
+                  "output_index": 1,
+                  "item": {
+                    "id": "msg_contract_answer_0001",
+                    "type": "message",
+                    "status": "completed",
+                    "content": [
+                      {
+                        "type": "output_text",
+                        "annotations": [],
+                        "logprobs": [],
+                        "text": "It is sunny in Paris right now, at 21 °C."
+                      }
+                    ],
+                    "role": "assistant"
+                  }
+                }
+              },
+              {
+                "event": "response.completed",
+                "data": {
+                  "type": "response.completed",
+                  "sequence_number": 11,
+                  "response": {
+                    "id": "resp_contract_answer_0001",
+                    "object": "response",
+                    "created_at": 1790467201,
+                    "status": "completed",
+                    "error": null,
+                    "incomplete_details": null,
+                    "model": "gpt-5-2025-08-07",
+                    "output": [
+                      {
+                        "id": "rs_contract_answer_0001",
+                        "type": "reasoning",
+                        "summary": []
+                      },
+                      {
+                        "id": "msg_contract_answer_0001",
+                        "type": "message",
+                        "status": "completed",
+                        "content": [
+                          {
+                            "type": "output_text",
+                            "annotations": [],
+                            "logprobs": [],
+                            "text": "It is sunny in Paris right now, at 21 °C."
+                          }
+                        ],
+                        "role": "assistant"
+                      }
+                    ],
+                    "usage": {
+                      "input_tokens": 131,
+                      "input_tokens_details": {
+                        "cached_tokens": 0
+                      },
+                      "output_tokens": 78,
+                      "output_tokens_details": {
+                        "reasoning_tokens": 64
+                      },
+                      "total_tokens": 209
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "single_call": {
+      "recordedAt": null,
+      "exchanges": [
+        {
+          "request": {
+            "method": "POST",
+            "url": "https://api.openai.com/v1/responses"
+          },
+          "response": {
+            "status": 200,
+            "headers": {
+              "content-type": "text/event-stream; charset=utf-8",
+              "x-request-id": "req_contractsingle0001"
+            },
+            "sse": [
+              {
+                "event": "response.created",
+                "data": {
+                  "type": "response.created",
+                  "sequence_number": 0,
+                  "response": {
+                    "id": "resp_contract_single_0001",
+                    "object": "response",
+                    "created_at": 1790467201,
+                    "status": "in_progress",
+                    "error": null,
+                    "incomplete_details": null,
+                    "model": "gpt-5-2025-08-07",
+                    "output": [],
+                    "usage": null
+                  }
+                }
+              },
+              {
+                "event": "response.in_progress",
+                "data": {
+                  "type": "response.in_progress",
+                  "sequence_number": 1,
+                  "response": {
+                    "id": "resp_contract_single_0001",
+                    "object": "response",
+                    "created_at": 1790467201,
+                    "status": "in_progress",
+                    "error": null,
+                    "incomplete_details": null,
+                    "model": "gpt-5-2025-08-07",
+                    "output": [],
+                    "usage": null
+                  }
+                }
+              },
+              {
+                "event": "response.output_item.added",
+                "data": {
+                  "type": "response.output_item.added",
+                  "sequence_number": 2,
+                  "output_index": 0,
+                  "item": {
+                    "id": "rs_contract_single_0001",
+                    "type": "reasoning",
+                    "summary": []
+                  }
+                }
+              },
+              {
+                "event": "response.output_item.done",
+                "data": {
+                  "type": "response.output_item.done",
+                  "sequence_number": 3,
+                  "output_index": 0,
+                  "item": {
+                    "id": "rs_contract_single_0001",
+                    "type": "reasoning",
+                    "summary": []
+                  }
+                }
+              },
+              {
+                "event": "response.output_item.added",
+                "data": {
+                  "type": "response.output_item.added",
+                  "sequence_number": 4,
+                  "output_index": 1,
+                  "item": {
+                    "id": "fc_contract_single_0001",
+                    "type": "function_call",
+                    "status": "in_progress",
+                    "arguments": "",
+                    "call_id": "call_ContractSingle0001",
+                    "name": "get_weather"
+                  }
+                }
+              },
+              {
+                "event": "response.function_call_arguments.delta",
+                "data": {
+                  "type": "response.function_call_arguments.delta",
+                  "sequence_number": 5,
+                  "item_id": "fc_contract_single_0001",
+                  "output_index": 1,
+                  "delta": "{\"city\":\"Paris\"}"
+                }
+              },
+              {
+                "event": "response.function_call_arguments.done",
+                "data": {
+                  "type": "response.function_call_arguments.done",
+                  "sequence_number": 6,
+                  "item_id": "fc_contract_single_0001",
+                  "output_index": 1,
+                  "arguments": "{\"city\":\"Paris\"}"
+                }
+              },
+              {
+                "event": "response.output_item.done",
+                "data": {
+                  "type": "response.output_item.done",
+                  "sequence_number": 7,
+                  "output_index": 1,
+                  "item": {
+                    "id": "fc_contract_single_0001",
+                    "type": "function_call",
+                    "status": "completed",
+                    "arguments": "{\"city\":\"Paris\"}",
+                    "call_id": "call_ContractSingle0001",
+                    "name": "get_weather"
+                  }
+                }
+              },
+              {
+                "event": "response.completed",
+                "data": {
+                  "type": "response.completed",
+                  "sequence_number": 8,
+                  "response": {
+                    "id": "resp_contract_single_0001",
+                    "object": "response",
+                    "created_at": 1790467201,
+                    "status": "completed",
+                    "error": null,
+                    "incomplete_details": null,
+                    "model": "gpt-5-2025-08-07",
+                    "output": [
+                      {
+                        "id": "rs_contract_single_0001",
+                        "type": "reasoning",
+                        "summary": []
+                      },
+                      {
+                        "id": "fc_contract_single_0001",
+                        "type": "function_call",
+                        "status": "completed",
+                        "arguments": "{\"city\":\"Paris\"}",
+                        "call_id": "call_ContractSingle0001",
+                        "name": "get_weather"
+                      }
+                    ],
+                    "usage": {
+                      "input_tokens": 84,
+                      "input_tokens_details": {
+                        "cached_tokens": 0
+                      },
+                      "output_tokens": 91,
+                      "output_tokens_details": {
+                        "reasoning_tokens": 64
+                      },
+                      "total_tokens": 175
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "structured": {
+      "recordedAt": null,
+      "exchanges": [
+        {
+          "request": {
+            "method": "POST",
+            "url": "https://api.openai.com/v1/responses"
+          },
+          "response": {
+            "status": 200,
+            "headers": {
+              "content-type": "application/json; charset=utf-8",
+              "x-request-id": "req_contractstructured0001"
+            },
+            "json": {
+              "id": "resp_contract_structured_0001",
+              "object": "response",
+              "created_at": 1790467201,
+              "status": "completed",
+              "error": null,
+              "incomplete_details": null,
+              "model": "gpt-5-2025-08-07",
+              "output": [
+                {
+                  "id": "rs_contract_structured_0001",
+                  "type": "reasoning",
+                  "summary": []
+                },
+                {
+                  "id": "msg_contract_structured_0001",
+                  "type": "message",
+                  "status": "completed",
+                  "content": [
+                    {
+                      "type": "output_text",
+                      "annotations": [],
+                      "logprobs": [],
+                      "text": "{\"city\":\"Paris\",\"country\":\"France\"}"
+                    }
+                  ],
+                  "role": "assistant"
+                }
+              ],
+              "usage": {
+                "input_tokens": 61,
+                "input_tokens_details": {
+                  "cached_tokens": 0
+                },
+                "output_tokens": 83,
+                "output_tokens_details": {
+                  "reasoning_tokens": 64
+                },
+                "total_tokens": 144
+              }
+            }
+          }
+        }
+      ]
+    },
+    "authentication": {
+      "recordedAt": null,
+      "exchanges": [
+        {
+          "request": {
+            "method": "POST",
+            "url": "https://api.openai.com/v1/responses"
+          },
+          "response": {
+            "status": 401,
+            "headers": {
+              "content-type": "application/json; charset=utf-8",
+              "x-request-id": "req_contractauth0001"
+            },
+            "json": {
+              "error": {
+                "message": "Incorrect API key provided: sk-proj-********************-key. You can find your API key at https://platform.openai.com/account/api-keys.",
+                "type": "invalid_request_error",
+                "param": null,
+                "code": "invalid_api_key"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "truncated": {
+      "recordedAt": null,
+      "exchanges": [
+        {
+          "request": {
+            "method": "POST",
+            "url": "https://api.openai.com/v1/responses"
+          },
+          "response": {
+            "status": 200,
+            "headers": {
+              "content-type": "text/event-stream; charset=utf-8",
+              "x-request-id": "req_contracttruncated0001"
+            },
+            "sse": [
+              {
+                "event": "response.created",
+                "data": {
+                  "type": "response.created",
+                  "sequence_number": 0,
+                  "response": {
+                    "id": "resp_contract_truncated_0001",
+                    "object": "response",
+                    "created_at": 1790467201,
+                    "status": "in_progress",
+                    "error": null,
+                    "incomplete_details": null,
+                    "model": "gpt-5-2025-08-07",
+                    "output": [],
+                    "usage": null
+                  }
+                }
+              },
+              {
+                "event": "response.in_progress",
+                "data": {
+                  "type": "response.in_progress",
+                  "sequence_number": 1,
+                  "response": {
+                    "id": "resp_contract_truncated_0001",
+                    "object": "response",
+                    "created_at": 1790467201,
+                    "status": "in_progress",
+                    "error": null,
+                    "incomplete_details": null,
+                    "model": "gpt-5-2025-08-07",
+                    "output": [],
+                    "usage": null
+                  }
+                }
+              },
+              {
+                "event": "response.output_item.added",
+                "data": {
+                  "type": "response.output_item.added",
+                  "sequence_number": 2,
+                  "output_index": 0,
+                  "item": {
+                    "id": "rs_contract_truncated_0001",
+                    "type": "reasoning",
+                    "summary": []
+                  }
+                }
+              },
+              {
+                "event": "response.incomplete",
+                "data": {
+                  "type": "response.incomplete",
+                  "sequence_number": 3,
+                  "response": {
+                    "id": "resp_contract_truncated_0001",
+                    "object": "response",
+                    "created_at": 1790467201,
+                    "status": "incomplete",
+                    "error": null,
+                    "incomplete_details": {
+                      "reason": "max_output_tokens"
+                    },
+                    "model": "gpt-5-2025-08-07",
+                    "output": [
+                      {
+                        "id": "rs_contract_truncated_0001",
+                        "type": "reasoning",
+                        "summary": []
+                      }
+                    ],
+                    "usage": {
+                      "input_tokens": 78,
+                      "input_tokens_details": {
+                        "cached_tokens": 0
+                      },
+                      "output_tokens": 2000,
+                      "output_tokens_details": {
+                        "reasoning_tokens": 2000
+                      },
+                      "total_tokens": 2078
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "rate_limit": {
+      "recordedAt": null,
+      "exchanges": [
+        {
+          "request": {
+            "method": "POST",
+            "url": "https://api.openai.com/v1/responses"
+          },
+          "response": {
+            "status": 429,
+            "headers": {
+              "content-type": "application/json; charset=utf-8",
+              "x-request-id": "req_contractratelimit0001"
+            },
+            "json": {
+              "error": {
+                "message": "Rate limit reached for gpt-5 on tokens per min (TPM): Limit 30000, Used 29800, Requested 1200. Please try again in 2s. Visit https://platform.openai.com/account/rate-limits to learn more.",
+                "type": "tokens",
+                "param": null,
+                "code": "rate_limit_exceeded"
+              }
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "POST",
+            "url": "https://api.openai.com/v1/responses"
+          },
+          "response": {
+            "status": 429,
+            "headers": {
+              "content-type": "application/json; charset=utf-8",
+              "x-request-id": "req_contractratelimit0001"
+            },
+            "json": {
+              "error": {
+                "message": "Rate limit reached for gpt-5 on tokens per min (TPM): Limit 30000, Used 29800, Requested 1200. Please try again in 2s. Visit https://platform.openai.com/account/rate-limits to learn more.",
+                "type": "tokens",
+                "param": null,
+                "code": "rate_limit_exceeded"
+              }
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "POST",
+            "url": "https://api.openai.com/v1/responses"
+          },
+          "response": {
+            "status": 429,
+            "headers": {
+              "content-type": "application/json; charset=utf-8",
+              "x-request-id": "req_contractratelimit0001"
+            },
+            "json": {
+              "error": {
+                "message": "Rate limit reached for gpt-5 on tokens per min (TPM): Limit 30000, Used 29800, Requested 1200. Please try again in 2s. Visit https://platform.openai.com/account/rate-limits to learn more.",
+                "type": "tokens",
+                "param": null,
+                "code": "rate_limit_exceeded"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

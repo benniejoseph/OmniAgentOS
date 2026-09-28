@@ -1,0 +1,264 @@
+{
+  "provider": "google",
+  "model": "gemini-3.5-flash-lite",
+  "note": "Scenarios with a recordedAt date were recorded from the live API by npm run test:provider-contract:record. Scenarios whose recordedAt is null are hand-written from the provider's API reference; the truncated and rate_limit scenarios cannot be recorded on demand.",
+  "scenarios": {
+    "text": {
+      "recordedAt": null,
+      "exchanges": [
+        {
+          "request": {
+            "method": "POST",
+            "url": "https://generativelanguage.googleapis.com/v1beta/interactions"
+          },
+          "response": {
+            "status": 200,
+            "headers": {
+              "content-type": "application/json; charset=UTF-8"
+            },
+            "json": {
+              "id": "v1_ContractText0001",
+              "object": "interaction",
+              "model": "gemini-3.5-flash-lite",
+              "status": "completed",
+              "steps": [
+                {
+                  "type": "thought",
+                  "signature": "contract-fixture-text-thought-signature"
+                },
+                {
+                  "type": "model_output",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "ready"
+                    }
+                  ]
+                }
+              ],
+              "usage": {
+                "total_input_tokens": 14,
+                "total_cached_tokens": 0,
+                "total_output_tokens": 1,
+                "total_thought_tokens": 41,
+                "total_tokens": 56
+              }
+            }
+          }
+        }
+      ]
+    },
+    "tool_round_trip": {
+      "recordedAt": null,
+      "exchanges": [
+        {
+          "request": {
+            "method": "POST",
+            "url": "https://generativelanguage.googleapis.com/v1beta/interactions"
+          },
+          "response": {
+            "status": 200,
+            "headers": {
+              "content-type": "application/json; charset=UTF-8"
+            },
+            "json": {
+              "id": "v1_ContractTool0001",
+              "object": "interaction",
+              "model": "gemini-3.5-flash-lite",
+              "status": "requires_action",
+              "steps": [
+                {
+                  "type": "thought",
+                  "signature": "contract-fixture-tool-thought-signature"
+                },
+                {
+                  "type": "function_call",
+                  "id": "contract-call-paris",
+                  "name": "get_weather",
+                  "arguments": {
+                    "city": "Paris"
+                  }
+                }
+              ],
+              "usage": {
+                "total_input_tokens": 61,
+                "total_cached_tokens": 0,
+                "total_output_tokens": 12,
+                "total_thought_tokens": 48,
+                "total_tokens": 121
+              }
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "POST",
+            "url": "https://generativelanguage.googleapis.com/v1beta/interactions"
+          },
+          "response": {
+            "status": 200,
+            "headers": {
+              "content-type": "application/json; charset=UTF-8"
+            },
+            "json": {
+              "id": "v1_ContractTool0002",
+              "object": "interaction",
+              "model": "gemini-3.5-flash-lite",
+              "status": "completed",
+              "steps": [
+                {
+                  "type": "thought",
+                  "signature": "contract-fixture-answer-thought-signature"
+                },
+                {
+                  "type": "model_output",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "It is sunny in Paris right now, at 21 °C."
+                    }
+                  ]
+                }
+              ],
+              "usage": {
+                "total_input_tokens": 142,
+                "total_cached_tokens": 0,
+                "total_output_tokens": 14,
+                "total_thought_tokens": 30,
+                "total_tokens": 186
+              }
+            }
+          }
+        }
+      ]
+    },
+    "authentication": {
+      "recordedAt": null,
+      "exchanges": [
+        {
+          "request": {
+            "method": "POST",
+            "url": "https://generativelanguage.googleapis.com/v1beta/interactions"
+          },
+          "response": {
+            "status": 400,
+            "headers": {
+              "content-type": "application/json; charset=UTF-8"
+            },
+            "json": {
+              "error": {
+                "code": 400,
+                "message": "API key not valid. Please pass a valid API key.",
+                "status": "INVALID_ARGUMENT",
+                "details": [
+                  {
+                    "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                    "reason": "API_KEY_INVALID",
+                    "domain": "googleapis.com",
+                    "metadata": {
+                      "service": "generativelanguage.googleapis.com"
+                    }
+                  },
+                  {
+                    "@type": "type.googleapis.com/google.rpc.LocalizedMessage",
+                    "locale": "en-US",
+                    "message": "API key not valid. Please pass a valid API key."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "truncated": {
+      "recordedAt": null,
+      "exchanges": [
+        {
+          "request": {
+            "method": "POST",
+            "url": "https://generativelanguage.googleapis.com/v1beta/interactions"
+          },
+          "response": {
+            "status": 200,
+            "headers": {
+              "content-type": "application/json; charset=UTF-8"
+            },
+            "json": {
+              "id": "v1_ContractTruncated01",
+              "object": "interaction",
+              "model": "gemini-3.5-flash-lite",
+              "status": "incomplete",
+              "steps": [
+                {
+                  "type": "thought",
+                  "signature": "contract-fixture-truncated-thought-signature"
+                }
+              ],
+              "usage": {
+                "total_input_tokens": 61,
+                "total_cached_tokens": 0,
+                "total_output_tokens": 0,
+                "total_thought_tokens": 18000,
+                "total_tokens": 18061
+              }
+            }
+          }
+        }
+      ]
+    },
+    "rate_limit": {
+      "recordedAt": null,
+      "exchanges": [
+        {
+          "request": {
+            "method": "POST",
+            "url": "https://generativelanguage.googleapis.com/v1beta/interactions"
+          },
+          "response": {
+            "status": 429,
+            "headers": {
+              "content-type": "application/json; charset=UTF-8"
+            },
+            "json": {
+              "error": {
+                "code": 429,
+                "message": "You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits.",
+                "status": "RESOURCE_EXHAUSTED",
+                "details": [
+                  {
+                    "@type": "type.googleapis.com/google.rpc.QuotaFailure",
+                    "violations": [
+                      {
+                        "quotaMetric": "generativelanguage.googleapis.com/generate_content_paid_tier_input_token_count",
+                        "quotaId": "GenerateContentPaidTierInputTokensPerModelPerMinute",
+                        "quotaDimensions": {
+                          "location": "global",
+                          "model": "gemini-3.5-flash-lite"
+                        },
+                        "quotaValue": "4000000"
+                      }
+                    ]
+                  },
+                  {
+                    "@type": "type.googleapis.com/google.rpc.Help",
+                    "links": [
+                      {
+                        "description": "Learn more about Gemini API quotas",
+                        "url": "https://ai.google.dev/gemini-api/docs/rate-limits"
+                      }
+                    ]
+                  },
+                  {
+                    "@type": "type.googleapis.com/google.rpc.RetryInfo",
+                    "retryDelay": "41s"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

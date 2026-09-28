@@ -1405,6 +1405,25 @@ npm run test:production-smoke
 
 Never place smoke credentials in command history on shared systems; prefer a secret-injecting runner.
 
+## Provider contract
+
+The provider contract suite sends the Claude, OpenAI, Gemini, and Bedrock adapters' requests through the model gateway and checks both sides of each exchange. On the request side it checks the tools declared, the no-call and one-call settings, the tool call and result ids, and the verbatim replay of Claude's and Gemini's thinking. On the reply side it checks what the adapter makes of each reply: text, tool calls, structured output, token usage, estimated cost, request id, and the kind and retryability of each failure. The recorded responses are in `src/lib/models/provider-contract/fixtures/<provider>.json`.
+
+- `npm run test:provider-contract` replays the fixtures without network access. It is part of the unit suite, so CI runs it on every pull request and push to `main`. A request that does not match its fixture fails the test, and so does a recorded response that is never requested.
+- `npm run test:provider-contract:live` sends the same requests to the live APIs: about six small requests per provider, one of them with an invalid key. It reads `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, and `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, optional `AWS_SESSION_TOKEN`, and `AWS_REGION` (default `us-east-1`). It tests each adapter's reasoning model, which `ANTHROPIC_REASONING_MODEL`, `OPENAI_REASONING_MODEL`, `GEMINI_REASONING_MODEL`, and `AWS_BEDROCK_REASONING_MODEL` override. A provider without credentials is skipped, and the run fails if no provider has any.
+- `npm run test:provider-contract:record` runs live as well, and writes each scenario that passes into its provider's fixture with the day's date as `recordedAt`. Other scenarios are kept. Review the fixture diff before committing it.
+
+A reply cut off at the token limit and a rate limit cannot be produced on demand, so the `truncated` and `rate_limit` scenarios run only from the fixtures, and recording keeps them. The current fixtures are hand-written from each provider's API reference (`recordedAt: null`). Live mode has not been run yet, so record the fixtures once live credentials are in place.
+
+A provider may report a dated snapshot of the requested model, such as `gpt-5-2025-08-07` for `gpt-5`. Claude and Gemini price a reply by the model id it reports, so a snapshot id missing from `ANTHROPIC_MODEL_PRICING_JSON` or `GEMINI_MODEL_PRICING_JSON` leaves that reply's cost unknown. The suite accepts a snapshot id. In live mode it checks the cost only when the reply reports the requested id.
+
+The `Provider Contract` workflow runs the live suite on manual dispatch, and nightly once the repository variable `PROVIDER_CONTRACT_NIGHTLY` is `true`. It runs in the `provider-contract` environment, and only its test step receives the credentials. Configure in that environment:
+
+- secrets `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `AWS_ACCESS_KEY_ID`, and `AWS_SECRET_ACCESS_KEY`, and optionally `AWS_SESSION_TOKEN`;
+- optional variables `AWS_REGION`, `ANTHROPIC_REASONING_MODEL`, `OPENAI_REASONING_MODEL`, `GEMINI_REASONING_MODEL`, and `AWS_BEDROCK_REASONING_MODEL`.
+
+Use keys with a low spend limit.
+
 ## Backup, restore, and rollback
 
 Define an owner, RPO, RTO, retention period, and restore-test cadence before launch.

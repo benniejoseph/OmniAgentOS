@@ -114,6 +114,15 @@ For internal calls, the secret and identity headers must be sent together. Never
 - Gemini reports thinking tokens in `total_thought_tokens`, apart from `total_output_tokens`, and bills them as output. Usage adds them to the output tokens, so usage receipts and the cost estimated from `GEMINI_MODEL_PRICING_JSON` include thinking. Receipts recorded before this change left it out.
 - Google answers a rejected API key with 400 `INVALID_ARGUMENT` and the reason `API_KEY_INVALID`. That failure is recorded as `authentication`, not `invalid_request`. Neither is retried.
 
+## The provider contract suite fails
+
+- `<provider>/<scenario>: request N was POST <url>, but the fixture expected POST <url>`, or `request N (POST <url>) has no recorded response`: the adapter sent a request that the fixture does not have, such as a new endpoint or an extra turn. The adapter got a 400 `contract_fixture_mismatch` response instead, and the test reports the mismatch rather than the error that response caused. If the adapter changed on purpose, record the scenario again with `npm run test:provider-contract:record` and review the diff.
+- `N recorded responses were never requested`: the adapter stopped before the fixture's last exchange. For example, it made fewer retries after a rate limit, or skipped a turn it used to take.
+- `There is no <provider> fixture` or `The <provider> fixture has no <scenario> scenario`: restore the fixture from Git, or record it.
+- The `truncated` and `rate_limit` scenarios cannot be recorded, so edit their exchanges in the fixture by hand, from the provider's API reference.
+- A live run fails where the fixtures pass: the provider's API or the model's behavior has changed. Fix the adapter, then record the scenarios and review the diff before committing it. A live usage total that differs from input plus output tokens means the provider reported a token class that the adapter does not count.
+- A live run skips each provider that has no credentials, and fails `has live credentials for at least one provider` when none has any.
+
 ## A workflow plan step starts over, or its plan was built without the model
 
 - A plan step with `step.reset` (reason `interrupted`), `step.interrupted`, and the run error `Workflow execution was interrupted and safely requeued.`: the queue pass ran out of time, or its worker lost the run's lease, while the model was planning. No plan was saved, and the step plans again on a later pass. Each attempt uses a model call from the run's budget, so a run interrupted this way again and again ends with `workflow.budget_exhausted`.

@@ -1,0 +1,212 @@
+{
+  "provider": "aws_bedrock",
+  "model": "amazon.nova-lite-v1:0",
+  "region": "us-east-1",
+  "note": "Scenarios with a recordedAt date were recorded from the live API by npm run test:provider-contract:record. Scenarios whose recordedAt is null are hand-written from the provider's API reference; the truncated and rate_limit scenarios cannot be recorded on demand.",
+  "scenarios": {
+    "text": {
+      "recordedAt": null,
+      "exchanges": [
+        {
+          "request": {
+            "method": "POST",
+            "url": "https://bedrock-runtime.us-east-1.amazonaws.com/model/amazon.nova-lite-v1%3A0/converse"
+          },
+          "response": {
+            "status": 200,
+            "headers": {
+              "content-type": "application/json",
+              "x-amzn-requestid": "00000000-0000-4000-8000-000000000001"
+            },
+            "json": {
+              "output": {
+                "message": {
+                  "role": "assistant",
+                  "content": [
+                    {
+                      "text": "ready"
+                    }
+                  ]
+                }
+              },
+              "stopReason": "end_turn",
+              "usage": {
+                "inputTokens": 17,
+                "outputTokens": 2,
+                "totalTokens": 19
+              },
+              "metrics": {
+                "latencyMs": 312
+              }
+            }
+          }
+        }
+      ]
+    },
+    "tool_round_trip": {
+      "recordedAt": null,
+      "exchanges": [
+        {
+          "request": {
+            "method": "POST",
+            "url": "https://bedrock-runtime.us-east-1.amazonaws.com/model/amazon.nova-lite-v1%3A0/converse"
+          },
+          "response": {
+            "status": 200,
+            "headers": {
+              "content-type": "application/json",
+              "x-amzn-requestid": "00000000-0000-4000-8000-000000000002"
+            },
+            "json": {
+              "output": {
+                "message": {
+                  "role": "assistant",
+                  "content": [
+                    {
+                      "text": "I will look up the weather in Paris."
+                    },
+                    {
+                      "toolUse": {
+                        "toolUseId": "tooluse_ContractParis01",
+                        "name": "get_weather",
+                        "input": {
+                          "city": "Paris"
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              "stopReason": "tool_use",
+              "usage": {
+                "inputTokens": 412,
+                "outputTokens": 38,
+                "totalTokens": 450
+              },
+              "metrics": {
+                "latencyMs": 604
+              }
+            }
+          }
+        },
+        {
+          "request": {
+            "method": "POST",
+            "url": "https://bedrock-runtime.us-east-1.amazonaws.com/model/amazon.nova-lite-v1%3A0/converse"
+          },
+          "response": {
+            "status": 200,
+            "headers": {
+              "content-type": "application/json",
+              "x-amzn-requestid": "00000000-0000-4000-8000-000000000003"
+            },
+            "json": {
+              "output": {
+                "message": {
+                  "role": "assistant",
+                  "content": [
+                    {
+                      "text": "It is sunny in Paris right now, at 21 °C."
+                    }
+                  ]
+                }
+              },
+              "stopReason": "end_turn",
+              "usage": {
+                "inputTokens": 486,
+                "outputTokens": 16,
+                "totalTokens": 502
+              },
+              "metrics": {
+                "latencyMs": 398
+              }
+            }
+          }
+        }
+      ]
+    },
+    "authentication": {
+      "recordedAt": null,
+      "exchanges": [
+        {
+          "request": {
+            "method": "POST",
+            "url": "https://bedrock-runtime.us-east-1.amazonaws.com/model/amazon.nova-lite-v1%3A0/converse"
+          },
+          "response": {
+            "status": 403,
+            "headers": {
+              "content-type": "application/json",
+              "x-amzn-requestid": "00000000-0000-4000-8000-000000000004",
+              "x-amzn-errortype": "UnrecognizedClientException:http://internal.amazon.com/coral/com.amazon.coral.service/"
+            },
+            "json": {
+              "message": "The security token included in the request is invalid."
+            }
+          }
+        }
+      ]
+    },
+    "truncated": {
+      "recordedAt": null,
+      "exchanges": [
+        {
+          "request": {
+            "method": "POST",
+            "url": "https://bedrock-runtime.us-east-1.amazonaws.com/model/amazon.nova-lite-v1%3A0/converse"
+          },
+          "response": {
+            "status": 200,
+            "headers": {
+              "content-type": "application/json",
+              "x-amzn-requestid": "00000000-0000-4000-8000-000000000005"
+            },
+            "json": {
+              "output": {
+                "message": {
+                  "role": "assistant",
+                  "content": [
+                    {
+                      "text": "I will look up the weather in Paris and"
+                    }
+                  ]
+                }
+              },
+              "stopReason": "max_tokens",
+              "usage": {
+                "inputTokens": 412,
+                "outputTokens": 2000,
+                "totalTokens": 2412
+              },
+              "metrics": {
+                "latencyMs": 9120
+              }
+            }
+          }
+        }
+      ]
+    },
+    "rate_limit": {
+      "recordedAt": null,
+      "exchanges": [
+        {
+          "request": {
+            "method": "POST",
+            "url": "https://bedrock-runtime.us-east-1.amazonaws.com/model/amazon.nova-lite-v1%3A0/converse"
+          },
+          "response": {
+            "status": 429,
+            "headers": {
+              "content-type": "application/json",
+              "x-amzn-requestid": "00000000-0000-4000-8000-000000000006",
+              "x-amzn-errortype": "ThrottlingException:http://internal.amazon.com/coral/com.amazon.bedrock/"
+            },
+            "json": {
+              "message": "Too many requests, please wait before trying again."
+            }
+          }
+        }
+      ]
+    }
+  }
+}
