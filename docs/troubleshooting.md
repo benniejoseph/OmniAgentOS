@@ -16,7 +16,9 @@ If `/api/health` returns 503, inspect server logs for TLS, credentials, extensio
 
 - Inspect `omni_schema_version` and compare it with the versions in `schema-migrations.json`.
 - Ensure only one application identity owns migrations and that it can create/alter tables, functions, policies, and indexes.
-- The advisory lock serializes migrations; a long wait can mean another deployment is migrating or a transaction is stuck.
+- The advisory lock serializes migrations; a long wait can mean another deployment is migrating or a transaction is stuck. A job waits for the lock for up to `OMNIAGENT_MIGRATION_STATEMENT_TIMEOUT_MS`.
+- `database_migration_lock_retry` log lines: a migration statement waited longer than `OMNIAGENT_MIGRATION_LOCK_TIMEOUT_MS` for a table lock, or was chosen to break a deadlock, so its transaction rolled back and ran again. A few are normal while the database is busy.
+- `… could not get the locks it needed in 5 attempts: …`, after a `database_migration_lock_retries_exhausted` line: every attempt waited too long for a lock, and nothing from that step was recorded. Look in `pg_stat_activity` for old transactions (oldest `xact_start` first), often a session that is `idle in transaction`, end or wait for them, then run the job again. When the step was the pgvector one (`Vector schema maintenance` or `Vector backfill of …`), the job still succeeds: the vector batches already filled stay, and the next run fills the rest.
 - Restore into an isolated database before repairing a failed migration. Do not delete version rows to force a rerun without reviewing the idempotency of that migration.
 - `Database role omni_runtime does not exist, and the migration role cannot create it`: the migrations grant to `omni_backup`, `omni_maintenance`, and `omni_runtime` by name, and the runner creates a missing one as a role that cannot log in. Create the role yourself (`CREATE ROLE omni_runtime NOLOGIN;` is enough), or migrate as a role with `CREATEROLE`.
 - `… records database migrations … together, but only … of them is pending, and the file cannot run in part`: `omni_schema_version` holds some, but not all, of the versions one file writes, which the runner never does on its own. Find out how the rows got there; if the schema cannot be reconciled with the file, restore the pre-rollout backup into an isolated database.
@@ -28,7 +30,7 @@ If `/api/health` returns 503, inspect server logs for TLS, credentials, extensio
 - `Database migration N checksum does not match this release`: the database recorded a different checksum for version N. From v208 on, a version's checksum is the digest of its file, so the file changed after this database ran it. Deploy the release whose file the database ran, and make the change in a new migration.
 - `… names … without its sha256`, `… has more than one sha256 in schema-migrations.json`, `… must use the sha256 of … as its checksum`, or `… is a TypeScript step, but every migration from 208 on is a SQL file`: the manifest breaks one of the rules in [deployment.md](deployment.md#schema-and-migration-rollout). Nothing ran.
 
-If pgvector is unavailable, set `OMNIAGENT_LOG_PGVECTOR_FAILURES=true` temporarily. The app can use JSON embeddings, but vector-index status remains not ready until the extension, columns, dimensions, and HNSW indexes match.
+If pgvector is unavailable, set `OMNIAGENT_LOG_PGVECTOR_FAILURES=true` temporarily. The app can use JSON embeddings, but vector-index status remains not ready until the extension, columns, dimensions, and HNSW indexes match. The migration fills a row's vector only when its JSON embedding is an array of numbers at least as long as the column; any other embedding stays JSON-only.
 
 If system diagnostics reports OpenAI as degraded with
 `failureKind=authentication`, the environment contains a key but the

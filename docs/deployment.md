@@ -842,10 +842,34 @@ is missing; it never runs DDL. `schema-migrations.json` lists every version in
 order. A version with a `file` is defined only by that file in
 `supabase/migrations`; the versions without one, all older than v117, run as
 TypeScript steps in `src/lib/db/client.ts`. `npm run db:migrate` applies every
-pending version in one transaction under a Postgres advisory lock, then installs
-pgvector in a second transaction when it can. The path also upgrades the legacy
-timestamp-only marker. Versions already recorded in `omni_schema_version` are
-skipped, so rerunning the job is safe, but there is no automatic down-migration.
+pending version in one transaction under a Postgres advisory lock, then runs the
+optional pgvector step. The path also upgrades the legacy timestamp-only marker.
+Versions already recorded in `omni_schema_version` are skipped, so rerunning the
+job is safe, but there is no automatic down-migration.
+
+Every migration transaction waits for the advisory lock with no lock timeout, so
+a second runner waits for the first to finish. Only then does it set
+`lock_timeout` to `OMNIAGENT_MIGRATION_LOCK_TIMEOUT_MS` (5 s by default, clamped
+to 1-30 s). While a statement waits for a table lock, every later query on that
+table queues behind it, so a migration statement may not wait long for one. A
+transaction that reaches the lock timeout, or is chosen to break a deadlock,
+rolls back and runs again from its version check: up to five attempts, waiting
+1, 2, 4 and 8 seconds between them. Each retry logs a
+`database_migration_lock_retry` JSON line; after the fifth attempt the job logs
+`database_migration_lock_retries_exhausted` and fails. Any other error fails the
+job at once. `OMNIAGENT_MIGRATION_STATEMENT_TIMEOUT_MS` bounds each statement,
+including the wait for the advisory lock (10 minutes by default, clamped to 30 s
+to 1 hour).
+
+The pgvector step runs under the same lock and settings. One transaction creates
+the extension, and each vector column and HNSW index that is missing; an index
+that exists is left alone, because `CREATE INDEX IF NOT EXISTS` locks the table
+against writes before it checks. The step then fills the vector columns from the
+JSON embeddings in batches of 500 rows in id order, each batch its own
+transaction, so a lock timeout repeats one batch and never undoes the batches
+before it. A batch skips rows another session has locked, which a later run
+fills, and embeddings shorter than the column or holding an element that is not
+a number, which stay JSON-only.
 
 Each file runs inside that transaction. The runner removes the file's own
 `BEGIN` and `COMMIT` and refuses any other transaction control, any statement
@@ -878,6 +902,21 @@ To add a migration:
 3. Replace the zeros in the file with that digest, and add the manifest entry
    with the digest as both `checksum` and `sha256`.
 
+A migration holds every lock it takes until the whole run commits, and the lock
+timeout bounds only the wait for one. Keep those locks short:
+
+- The runner cannot run `CREATE INDEX CONCURRENTLY`. Build an index on a large
+  table out of band with `CREATE INDEX CONCURRENTLY`, and have the migration
+  create it only when `pg_indexes` lacks it, since `CREATE INDEX IF NOT EXISTS`
+  locks the table against writes before it checks.
+- Add a foreign key or `CHECK` to a filled table as `NOT VALID`, and run
+  `VALIDATE CONSTRAINT` in a later release. Validation does not block reads or
+  writes, but in the same run it would scan the table under the lock the
+  `ADD CONSTRAINT` took.
+- Fill a large table in batches, each its own transaction, as the pgvector step
+  does, not with one `UPDATE` in a migration file.
+- Remove or rewrite data in stages, as described below.
+
 The migrations grant to `omni_backup`, `omni_maintenance`, and `omni_runtime` by
 name. When versions are pending and one of these roles is missing, the runner
 first creates it as a placeholder that cannot log in (`NOLOGIN NOSUPERUSER
@@ -898,7 +937,9 @@ For each rollout:
 3. From a dedicated release job, set `MIGRATION_DATABASE_URL` to the
    migration-owner connection and run `npm run db:migrate`. Set
    `OMNIAGENT_MIGRATION_STATEMENT_TIMEOUT_MS` explicitly for large backfills and
-   retain the JSON job logs.
+   retain the JSON job logs. A few `database_migration_lock_retry` lines are
+   normal on a busy database. If the job gives up, find the session holding the
+   lock ([troubleshooting.md](troubleshooting.md)) before running it again.
 4. Deploy the serving canary with a separate non-owner, non-superuser runtime
    `DATABASE_URL`, then trigger `/api/health`.
 5. Inspect `omni_schema_version`, pgvector status, forced RLS, and worker logs.
@@ -918,7 +959,7 @@ system-scope work. The backup wrapper verifies the backup role and database
 identity (or, before the identity migration exists, an exact configured
 host/port/database match).
 
-Keep migrations backward-compatible for at least one application rollback. If a future migration removes or rewrites data, use a staged expand/backfill/contract release rather than relying on a code rollback.
+Keep migrations backward-compatible for at least one application rollback. If a future migration removes or rewrites data, use a staged expand/backfill/contract release rather than relying on a code rollback: add the new shape and write both, fill it in batches, and drop the old shape only once no deployed release reads it.
 
 ### Installed adaptive-runtime migration chain
 

@@ -8,6 +8,10 @@ import {
 } from "@/lib/observability/request-timing";
 import { enforcePrivateNoStore } from "@/lib/http/response";
 import { applySqlMigrationFile, readSqlMigrationFile } from "@/lib/db/sql-migration-files";
+import {
+  beginMigrationTransaction,
+  runWithMigrationLockRetry,
+} from "@/lib/db/migration-transaction";
 import schemaMigrationManifest from "../../../schema-migrations.json";
 
 // ---------------------------------------------------------------------------
@@ -1267,21 +1271,13 @@ export async function migrateDatabaseSchema(
   if (!schemaMigrationReady) {
     const pg = getRawPg();
     schemaMigrationReady = (async () => {
-      await pg.begin(async (tx) => {
-        await setMigrationDatabaseRole(tx);
-        const configuredTimeout = Number(
-          process.env.OMNIAGENT_MIGRATION_STATEMENT_TIMEOUT_MS,
-        );
-        const statementTimeoutMs = Number.isFinite(configuredTimeout)
-          ? Math.min(Math.max(configuredTimeout, 30_000), 3_600_000)
-          : 600_000;
-        await tx`SELECT set_config('statement_timeout', ${String(statementTimeoutMs)}, true)`;
-        const sql = wrapPg(tx, true);
+      // A statement that waits too long for a table lock rolls the whole
+      // transaction back, and the run starts again from the version check.
+      await runWithMigrationLockRetry("Schema migration", () => pg.begin(async (tx) => {
         // Every version check and migration happens under one transaction-scoped
         // advisory lock, including upgrades from the legacy timestamp-only marker.
-        await tx`SELECT pg_advisory_xact_lock(271828182)`;
-        await tx`SELECT set_config('omni.system_scope', 'true', true)`;
-        await tx`SELECT set_config('omni.system_reason', 'ordered schema migration', true)`;
+        await beginMigrationTransaction(tx, "ordered schema migration");
+        const sql = wrapPg(tx, true);
         await tx`
           CREATE TABLE IF NOT EXISTS omni_schema_version (
             version INTEGER PRIMARY KEY,
@@ -1393,17 +1389,12 @@ export async function migrateDatabaseSchema(
             `;
           }
         }
-      });
+      }));
       // pgvector is optional acceleration, not a schema-version prerequisite.
       // Run it after the migration transaction so missing extension privileges
       // cannot abort and roll back otherwise-successful ordered migrations.
       try {
-        await pg.begin(async (tx) => {
-          await setMigrationDatabaseRole(tx);
-          await tx`SELECT set_config('omni.system_scope', 'true', true)`;
-          await tx`SELECT set_config('omni.system_reason', 'optional vector schema maintenance', true)`;
-          await ensureVectorSchema(wrapPg(tx, true));
-        });
+        await ensureVectorSchema(pg);
       } catch (error) {
         if (process.env.OMNIAGENT_LOG_PGVECTOR_FAILURES === "true") {
           console.info(
@@ -1485,15 +1476,6 @@ export async function ensureMigrationGranteeRoles(
       );
     }
   }
-}
-
-async function setMigrationDatabaseRole(tx: postgres.TransactionSql<Record<string, never>>) {
-  const role = process.env.MIGRATION_DATABASE_ROLE?.trim();
-  if (!role) return;
-  if (!/^[a-zA-Z_][a-zA-Z0-9_]{0,62}$/.test(role)) {
-    throw new Error("MIGRATION_DATABASE_ROLE must be a valid PostgreSQL role name.");
-  }
-  await tx.unsafe(`SET LOCAL ROLE "${role}"`);
 }
 
 async function verifyDatabaseSchema() {
@@ -50723,20 +50705,44 @@ async function ensureTenantIsolationPolicies(sql: SqlClient) {
 // pgvector schema
 // ---------------------------------------------------------------------------
 
-async function ensureVectorSchema(sql: SqlClient) {
-  await sql`CREATE EXTENSION IF NOT EXISTS vector`;
-  await ensureVectorColumn({
-    sql,
-    tableName: "omni_memories",
-    indexName: "omni_memories_embedding_vector_idx",
-  });
-  await ensureVectorColumn({
-    sql,
-    tableName: "omni_knowledge_chunks",
-    indexName: "omni_knowledge_chunks_embedding_vector_idx",
-  });
+const VECTOR_TABLES = Object.freeze([
+  { tableName: "omni_memories", indexName: "omni_memories_embedding_vector_idx" },
+  { tableName: "omni_knowledge_chunks", indexName: "omni_knowledge_chunks_embedding_vector_idx" },
+] as const);
+
+/** The most rows one vector backfill transaction fills. */
+const VECTOR_BACKFILL_BATCH_SIZE = 500;
+
+/**
+ * Adds the vector columns and their indexes in one short migration
+ * transaction, then fills the columns from the JSON embeddings a batch at a
+ * time, each batch in a migration transaction of its own, so no transaction
+ * holds its locks for the whole backfill.
+ */
+async function ensureVectorSchema(pg: postgres.Sql) {
+  const tableNames = await runWithMigrationLockRetry("Vector schema maintenance", () =>
+    pg.begin(async (tx) => {
+      await beginMigrationTransaction(tx, "optional vector schema maintenance");
+      const sql = wrapPg(tx, true);
+      await sql`CREATE EXTENSION IF NOT EXISTS vector`;
+      const ready: Array<"omni_memories" | "omni_knowledge_chunks"> = [];
+      for (const table of VECTOR_TABLES) {
+        if (await ensureVectorColumn({ sql, ...table })) {
+          ready.push(table.tableName);
+        }
+      }
+      return ready;
+    }),
+  );
+  for (const tableName of tableNames) {
+    await backfillVectorColumn(pg, tableName);
+  }
 }
 
+/**
+ * Adds the vector column and its index when they are missing. Returns false,
+ * leaving the table alone, when the column has other dimensions.
+ */
 async function ensureVectorColumn({
   sql,
   tableName,
@@ -50756,18 +50762,26 @@ async function ensureVectorColumn({
           "Leaving production vector data unchanged and using JSON embedding fallback.",
       );
     }
-    return;
+    return false;
   }
-
-  await backfillVectorColumn(sql, tableName);
 
   if (VECTOR_INDEX_DIMENSIONS <= PGVECTOR_HNSW_MAX_DIMENSIONS) {
-    await sql.query(`
-      CREATE INDEX IF NOT EXISTS ${indexName}
-      ON ${tableName}
-      USING hnsw (embedding_vector vector_cosine_ops)
-    `);
+    // CREATE INDEX locks the table against writes even when the index
+    // exists, so it runs only when the catalog lacks the index. The backfill
+    // runs later, so a new index is built over an empty column.
+    const [index] = await sql.query(
+      "SELECT 1 FROM pg_indexes WHERE schemaname = current_schema() AND indexname = $1",
+      [indexName],
+    );
+    if (!index) {
+      await sql.query(`
+        CREATE INDEX IF NOT EXISTS ${indexName}
+        ON ${tableName}
+        USING hnsw (embedding_vector vector_cosine_ops)
+      `);
+    }
   }
+  return true;
 }
 
 async function getVectorColumnDimensions(
@@ -50794,26 +50808,70 @@ async function getVectorColumnDimensions(
     : Number(rows[0].dimensions);
 }
 
+/**
+ * Fills a vector column from the JSON embeddings in id order, a batch per
+ * migration transaction, each batch starting after the last id of the one
+ * before. It skips rows another session has locked, since whoever writes an
+ * embedding writes its vector too, and embeddings shorter than the column or
+ * with an element that is not a number, which cannot become a vector. A later
+ * run fills a locked row this run skipped.
+ */
 async function backfillVectorColumn(
-  sql: SqlClient,
+  pg: postgres.Sql,
   tableName: "omni_memories" | "omni_knowledge_chunks",
 ) {
-  await sql.query(`
-    UPDATE ${tableName}
-    SET embedding_vector = (
-      '[' || (
-        SELECT string_agg(item.value::text, ',' ORDER BY item.ordinality)
-        FROM jsonb_array_elements_text(embedding) WITH ORDINALITY AS item(value, ordinality)
-        WHERE item.ordinality <= ${VECTOR_INDEX_DIMENSIONS}
-      ) || ']'
-    )::vector
-    WHERE embedding_vector IS NULL
-      AND CASE
-        WHEN jsonb_typeof(embedding) = 'array'
-        THEN jsonb_array_length(embedding) >= ${VECTOR_INDEX_DIMENSIONS}
-        ELSE false
-      END
-  `);
+  const fillBatch = `
+    WITH batch AS (
+      SELECT id, embedding
+      FROM ${tableName}
+      WHERE ($1::text IS NULL OR id > $1::text)
+        AND embedding_vector IS NULL
+        AND CASE
+          WHEN jsonb_typeof(embedding) = 'array'
+          THEN jsonb_array_length(embedding) >= ${VECTOR_INDEX_DIMENSIONS}
+            AND NOT EXISTS (
+              SELECT 1
+              FROM jsonb_array_elements(embedding) WITH ORDINALITY AS item(value, ordinality)
+              WHERE item.ordinality <= ${VECTOR_INDEX_DIMENSIONS}
+                AND jsonb_typeof(item.value) <> 'number'
+            )
+          ELSE false
+        END
+      ORDER BY id
+      LIMIT ${VECTOR_BACKFILL_BATCH_SIZE}
+      FOR UPDATE SKIP LOCKED
+    ), filled AS (
+      UPDATE ${tableName} target
+      SET embedding_vector = (
+        '[' || (
+          SELECT string_agg(item.value::text, ',' ORDER BY item.ordinality)
+          FROM jsonb_array_elements_text(batch.embedding) WITH ORDINALITY AS item(value, ordinality)
+          WHERE item.ordinality <= ${VECTOR_INDEX_DIMENSIONS}
+        ) || ']'
+      )::vector
+      FROM batch
+      WHERE target.id = batch.id
+      RETURNING target.id
+    )
+    SELECT count(*)::int AS rows, max(batch.id) AS last_id FROM batch
+  `;
+  let after: string | null = null;
+  for (;;) {
+    const cursor: string | null = after;
+    const batch: { rows: number; lastId: string } = await runWithMigrationLockRetry(
+      `Vector backfill of ${tableName}`,
+      () =>
+        pg.begin(async (tx) => {
+          await beginMigrationTransaction(tx, "optional vector schema maintenance");
+          const [row] = await tx.unsafe(fillBatch, [cursor]);
+          return { rows: Number(row?.rows ?? 0), lastId: String(row?.last_id ?? "") };
+        }),
+    );
+    if (batch.rows < VECTOR_BACKFILL_BATCH_SIZE) {
+      return;
+    }
+    after = batch.lastId;
+  }
 }
 
 function normalizeTenantId(value?: string) {

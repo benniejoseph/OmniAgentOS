@@ -25,7 +25,11 @@ Production request traffic never runs DDL. Keep workers, cron, and user traffic
 stopped while a dedicated release job runs `npm run db:migrate` with
 `MIGRATION_DATABASE_URL` and an explicit
 `OMNIAGENT_MIGRATION_STATEMENT_TIMEOUT_MS`. Retain the job's JSON logs before
-serving traffic. Migrations run under a transaction-scoped advisory lock:
+serving traffic. A migration statement waits at most
+`OMNIAGENT_MIGRATION_LOCK_TIMEOUT_MS` (5 s by default) for a table lock; its
+transaction then rolls back and runs again, up to five attempts, and each retry
+logs `database_migration_lock_retry`. Migrations run under a transaction-scoped
+advisory lock:
 
 1. `baseline_tables` reconciles existing tables and indexes.
 2. `tenant_owned_operational_data` adds tenant ownership to legacy operational

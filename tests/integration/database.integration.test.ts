@@ -8,6 +8,7 @@ import {
   buildAgentRunIdentityPinV1,
   buildBuiltInAgentIdentityV1,
 } from "@/lib/agents/identity-contracts";
+import { VECTOR_INDEX_DIMENSIONS } from "@/lib/config";
 import {
   databaseSchemaMigrations,
   ensureDatabaseSchema,
@@ -4648,6 +4649,414 @@ databaseDescribe("Postgres schema integration", () => {
       { run_id: sibling.id, task_ids: ["task-a"] },
     ]);
   });
+
+  test("runs a migration again from the version check when a statement cannot get its lock", async () => {
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(process.cwd(), "schema-migrations.json"), "utf8"),
+    ) as unknown[];
+    const version = databaseSchemaMigrations.at(-1)!.version + 1;
+    const name = "migration_lock_probe_v1";
+    const file = "20990101000000_migration_lock_probe.sql";
+    const placeholder = "0".repeat(64);
+    const template = [
+      "BEGIN;",
+      "",
+      "SELECT pg_advisory_xact_lock(271828182);",
+      "",
+      "CREATE TABLE migration_lock_probe_target (id INTEGER PRIMARY KEY);",
+      "",
+      "CREATE VIEW migration_lock_probe_view AS",
+      "  SELECT id FROM migration_lock_probe_target;",
+      "",
+      "INSERT INTO omni_schema_version (version, name, checksum, applied_at)",
+      `VALUES (${version}, '${name}', '${placeholder}', clock_timestamp());`,
+      "",
+      "COMMIT;",
+      "",
+    ].join("\n");
+    const checksum = sqlMigrationFileDigest(template, []);
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "omniagent-migration-lock-"));
+    fs.mkdirSync(path.join(root, "supabase", "migrations"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, "supabase", "migrations", file),
+      template.replace(placeholder, checksum),
+    );
+    vi.stubEnv("OMNIAGENT_MIGRATION_LOCK_TIMEOUT_MS", "7000");
+    vi.stubEnv("OMNIAGENT_MIGRATION_STATEMENT_TIMEOUT_MS", "45000");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.resetModules();
+    vi.doMock("../../schema-migrations.json", () => ({
+      default: [...manifest, { version, name, checksum, file, sha256: checksum }],
+    }));
+    try {
+      await admin`CREATE SEQUENCE migration_lock_probe_view_seq`;
+      await admin`CREATE SEQUENCE migration_lock_probe_extension_seq`;
+      await admin`
+        CREATE TABLE migration_lock_probe_ddl (
+          seq BIGSERIAL PRIMARY KEY,
+          tag TEXT NOT NULL,
+          probe BOOLEAN NOT NULL,
+          lock_timeout TEXT NOT NULL,
+          statement_timeout TEXT NOT NULL,
+          reason TEXT
+        )
+      `;
+      // The first CREATE VIEW and the first CREATE EXTENSION fail as if
+      // another session held a lock they needed. Every DDL command that runs
+      // is recorded with the settings it ran under; the IFs are nested so
+      // each sequence counts only its own command.
+      await admin.unsafe(`
+        CREATE FUNCTION migration_lock_probe_ddl_start() RETURNS event_trigger
+        LANGUAGE plpgsql AS $$
+        BEGIN
+          IF tg_tag = 'CREATE VIEW' THEN
+            IF nextval('migration_lock_probe_view_seq') = 1 THEN
+              RAISE EXCEPTION 'simulated lock wait on %', tg_tag
+                USING ERRCODE = 'lock_not_available';
+            END IF;
+          ELSIF tg_tag = 'CREATE EXTENSION' THEN
+            IF nextval('migration_lock_probe_extension_seq') = 1 THEN
+              RAISE EXCEPTION 'simulated lock wait on %', tg_tag
+                USING ERRCODE = 'lock_not_available';
+            END IF;
+          END IF;
+          INSERT INTO migration_lock_probe_ddl (
+            tag, probe, lock_timeout, statement_timeout, reason
+          )
+          VALUES (
+            tg_tag,
+            strpos(current_query(), 'migration_lock_probe_') > 0,
+            current_setting('lock_timeout'),
+            current_setting('statement_timeout'),
+            current_setting('omni.system_reason', true)
+          );
+        END
+        $$
+      `);
+      await admin`
+        CREATE EVENT TRIGGER migration_lock_probe
+        ON ddl_command_start
+        EXECUTE FUNCTION migration_lock_probe_ddl_start()
+      `;
+
+      const client = await import("@/lib/db/client");
+      const cwd = vi.spyOn(process, "cwd").mockReturnValue(root);
+      try {
+        await client.ensureDatabaseSchema();
+      } finally {
+        cwd.mockRestore();
+        await client.closeDatabaseClient();
+      }
+
+      expect(await admin`
+        SELECT version, name, checksum
+        FROM omni_schema_version
+        WHERE version IS NOT NULL
+        ORDER BY version ASC
+      `).toEqual([...databaseSchemaMigrations, { version, name, checksum }]);
+      const [probe] = await admin`
+        SELECT to_regclass('migration_lock_probe_view')::text AS view
+      `;
+      expect(probe).toEqual({ view: "migration_lock_probe_view" });
+      const ddl = (await admin`
+        SELECT tag, probe, lock_timeout, statement_timeout, reason
+        FROM migration_lock_probe_ddl
+        ORDER BY seq
+      `).map((row) => ({
+        tag: String(row.tag),
+        probe: Boolean(row.probe),
+        settings: `${row.lock_timeout} ${row.statement_timeout} ${row.reason}`,
+      }));
+      const schemaDdl = ddl.filter((row) => row.tag !== "CREATE EXTENSION");
+      // The attempt that lost the lock race rolled back, so the file's
+      // commands appear once, from the attempt that committed.
+      expect(schemaDdl.filter((row) => row.probe).map((row) => row.tag)).toEqual([
+        "CREATE TABLE",
+        "CREATE VIEW",
+      ]);
+      // The lock timeout is in place from the first command on.
+      expect(ddl[0]).toEqual({
+        tag: "CREATE TABLE",
+        probe: false,
+        settings: "7s 45s ordered schema migration",
+      });
+      expect([...new Set(schemaDdl.map((row) => row.settings))]).toEqual([
+        "7s 45s ordered schema migration",
+      ]);
+      expect(ddl.filter((row) => row.tag === "CREATE EXTENSION")).toEqual(
+        requirePgvector
+          ? [
+              {
+                tag: "CREATE EXTENSION",
+                probe: false,
+                settings: "7s 45s optional vector schema maintenance",
+              },
+            ]
+          : [],
+      );
+      expect(migrationLockLogLines(warn.mock.calls)).toEqual([
+        {
+          level: "warn",
+          event: "database_migration_lock_retry",
+          step: "Schema migration",
+          attempt: 1,
+          attempts: 5,
+          retryInMs: 1_000,
+          sqlstate: "55P03",
+          error: `Database migration ${version} (${name}) failed: ${file} statement 4 (CREATE VIEW migration_lock_probe_view AS) failed: simulated lock wait on CREATE VIEW`,
+        },
+        {
+          level: "warn",
+          event: "database_migration_lock_retry",
+          step: "Vector schema maintenance",
+          attempt: 1,
+          attempts: 5,
+          retryInMs: 1_000,
+          sqlstate: "55P03",
+          error: "simulated lock wait on CREATE EXTENSION",
+        },
+      ]);
+    } finally {
+      warn.mockRestore();
+      vi.doUnmock("../../schema-migrations.json");
+      vi.resetModules();
+      vi.unstubAllEnvs();
+      await admin`DROP EVENT TRIGGER IF EXISTS migration_lock_probe`;
+      await admin`DROP FUNCTION IF EXISTS migration_lock_probe_ddl_start()`;
+      await admin`DROP VIEW IF EXISTS migration_lock_probe_view`;
+      await admin`DROP TABLE IF EXISTS migration_lock_probe_target`;
+      await admin`DROP TABLE IF EXISTS migration_lock_probe_ddl`;
+      await admin`DROP SEQUENCE IF EXISTS migration_lock_probe_view_seq`;
+      await admin`DROP SEQUENCE IF EXISTS migration_lock_probe_extension_seq`;
+      await admin`DELETE FROM omni_schema_version WHERE version = ${version}`;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test.skipIf(!requirePgvector)(
+    "fills vector columns a keyset batch per transaction and runs a batch again after a lock timeout",
+    async () => {
+      const tenant = "tenant-vector-backfill";
+      const documentId = "vector-backfill-document";
+      const memoryId = "vector-backfill-memory";
+      const [pending] = await admin`
+        SELECT count(*)::int AS rows
+        FROM omni_knowledge_chunks
+        WHERE embedding_vector IS NULL
+          AND embedding IS NOT NULL
+      `;
+      // No other chunk waits for a vector, so every batch below is this test's.
+      expect(pending).toEqual({ rows: 0 });
+      vi.stubEnv("OMNIAGENT_MIGRATION_LOCK_TIMEOUT_MS", "7000");
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      vi.resetModules();
+      try {
+        await admin`
+          INSERT INTO omni_knowledge_documents (id, tenant_id, title, source, content_hash)
+          VALUES (
+            ${documentId}, ${tenant}, 'Vector backfill', 'integration-test', 'vector-backfill'
+          )
+        `;
+        // 501 chunks with whole embeddings, stored last id first so that only
+        // the backfill's id order puts the first 500 ids in the first batch,
+        // then one with an element that is not a number and one that is too
+        // short, neither of which can become a vector.
+        await admin`
+          INSERT INTO omni_knowledge_chunks (
+            id, tenant_id, document_id, chunk_index, title, content, source, embedding
+          )
+          SELECT
+            'vector-backfill-chunk-' || lpad(g::text, 4, '0'),
+            ${tenant}::text,
+            ${documentId}::text,
+            g,
+            'Chunk',
+            'Chunk ' || g,
+            'integration-test',
+            (
+              SELECT jsonb_agg(((g * 7 + d) % 97) / 97.0 ORDER BY d)
+              FROM generate_series(1, ${VECTOR_INDEX_DIMENSIONS}::int) d
+            )
+          FROM generate_series(500, 0, -1) g
+        `;
+        await admin`
+          INSERT INTO omni_knowledge_chunks (
+            id, tenant_id, document_id, chunk_index, title, content, source, embedding
+          )
+          VALUES
+            (
+              'vector-backfill-chunk-malformed', ${tenant}, ${documentId}, 501,
+              'Chunk', 'Malformed', 'integration-test',
+              (
+                SELECT jsonb_agg(
+                  CASE WHEN d = 2 THEN to_jsonb('x'::text) ELSE to_jsonb(d / 97.0) END
+                  ORDER BY d
+                )
+                FROM generate_series(1, ${VECTOR_INDEX_DIMENSIONS}::int) d
+              )
+            ),
+            (
+              'vector-backfill-chunk-short', ${tenant}, ${documentId}, 502,
+              'Chunk', 'Short', 'integration-test', '[0.25, 0.5, 0.75]'::jsonb
+            )
+        `;
+        await admin`
+          INSERT INTO omni_memories (id, tenant_id, type, title, content, scope, source, embedding)
+          SELECT
+            ${memoryId}::text, ${tenant}::text, 'fact', 'Vector backfill',
+            'A memory waiting for its vector.',
+            'tenant', 'integration-test',
+            (
+              SELECT jsonb_agg(d / 97.0 ORDER BY d)
+              FROM generate_series(1, ${VECTOR_INDEX_DIMENSIONS}::int) d
+            )
+        `;
+        await admin`
+          CREATE TABLE vector_backfill_visits (
+            seq BIGSERIAL PRIMARY KEY,
+            id TEXT NOT NULL,
+            txid TEXT NOT NULL,
+            lock_timeout TEXT NOT NULL,
+            reason TEXT
+          )
+        `;
+        await admin`CREATE SEQUENCE vector_backfill_visit_seq`;
+        // The 250th chunk the backfill updates fails as if another session
+        // held its lock. Chunk 0137 never keeps its vector, so a backfill that
+        // chose chunks by the missing vector alone, or went on from the first
+        // id of a batch, would update it again.
+        await admin.unsafe(`
+          CREATE FUNCTION vector_backfill_visit() RETURNS trigger
+          LANGUAGE plpgsql AS $$
+          BEGIN
+            IF nextval('vector_backfill_visit_seq') = 250 THEN
+              RAISE EXCEPTION 'simulated lock wait in the vector backfill'
+                USING ERRCODE = 'lock_not_available';
+            END IF;
+            INSERT INTO vector_backfill_visits (id, txid, lock_timeout, reason)
+            VALUES (
+              NEW.id,
+              txid_current()::text,
+              current_setting('lock_timeout'),
+              current_setting('omni.system_reason', true)
+            );
+            IF NEW.id = 'vector-backfill-chunk-0137' THEN
+              NEW.embedding_vector := NULL;
+            END IF;
+            RETURN NEW;
+          END
+          $$
+        `);
+        await admin`
+          CREATE TRIGGER vector_backfill_visit
+          BEFORE UPDATE ON omni_knowledge_chunks
+          FOR EACH ROW
+          WHEN (NEW.id LIKE 'vector-backfill-chunk-%')
+          EXECUTE FUNCTION vector_backfill_visit()
+        `;
+
+        const client = await import("@/lib/db/client");
+        try {
+          await client.ensureDatabaseSchema();
+        } finally {
+          await client.closeDatabaseClient();
+        }
+
+        expect(await admin`
+          SELECT id
+          FROM omni_knowledge_chunks
+          WHERE document_id = ${documentId}
+            AND embedding_vector IS NULL
+          ORDER BY id
+        `).toEqual([
+          { id: "vector-backfill-chunk-0137" },
+          { id: "vector-backfill-chunk-malformed" },
+          { id: "vector-backfill-chunk-short" },
+        ]);
+        const [memory] = await admin`
+          SELECT embedding_vector::real[] = ARRAY(
+            SELECT item.value::real
+            FROM jsonb_array_elements_text(embedding) WITH ORDINALITY AS item(value, ordinality)
+            ORDER BY item.ordinality
+          ) AS filled
+          FROM omni_memories
+          WHERE id = ${memoryId}
+        `;
+        expect(memory).toEqual({ filled: true });
+        const [filled] = await admin`
+          SELECT count(*)::int AS rows
+          FROM omni_knowledge_chunks chunk
+          WHERE chunk.document_id = ${documentId}
+            AND CASE
+              WHEN chunk.embedding_vector IS NULL THEN false
+              ELSE chunk.embedding_vector::real[] = ARRAY(
+                SELECT item.value::real
+                FROM jsonb_array_elements_text(chunk.embedding)
+                  WITH ORDINALITY AS item(value, ordinality)
+                ORDER BY item.ordinality
+              )
+            END
+        `;
+        expect(filled).toEqual({ rows: 500 });
+        const visits = await admin`
+          SELECT id, txid, lock_timeout, reason
+          FROM vector_backfill_visits
+          ORDER BY seq
+        `;
+        // Each chunk was updated once, by the attempt that committed; the
+        // attempt that lost the lock race rolled back its 249 updates.
+        expect(visits.map((visit) => String(visit.id)).sort()).toEqual(
+          Array.from(
+            { length: 501 },
+            (_, index) => `vector-backfill-chunk-${String(index).padStart(4, "0")}`,
+          ),
+        );
+        // A batch of 500 chunks, then one of the chunk after them, each in a
+        // transaction of its own.
+        const batches = new Map<string, string[]>();
+        for (const visit of visits) {
+          batches.set(String(visit.txid), [
+            ...(batches.get(String(visit.txid)) ?? []),
+            String(visit.id),
+          ]);
+        }
+        expect(
+          [...batches.values()].map((ids) => {
+            const sorted = [...ids].sort();
+            return [ids.length, sorted[0], sorted.at(-1)];
+          }),
+        ).toEqual([
+          [500, "vector-backfill-chunk-0000", "vector-backfill-chunk-0499"],
+          [1, "vector-backfill-chunk-0500", "vector-backfill-chunk-0500"],
+        ]);
+        expect([
+          ...new Set(visits.map((visit) => `${visit.lock_timeout} ${visit.reason}`)),
+        ]).toEqual(["7s optional vector schema maintenance"]);
+        expect(migrationLockLogLines(warn.mock.calls)).toEqual([
+          {
+            level: "warn",
+            event: "database_migration_lock_retry",
+            step: "Vector backfill of omni_knowledge_chunks",
+            attempt: 1,
+            attempts: 5,
+            retryInMs: 1_000,
+            sqlstate: "55P03",
+            error: "simulated lock wait in the vector backfill",
+          },
+        ]);
+      } finally {
+        warn.mockRestore();
+        vi.resetModules();
+        vi.unstubAllEnvs();
+        await admin`DROP TRIGGER IF EXISTS vector_backfill_visit ON omni_knowledge_chunks`;
+        await admin`DROP FUNCTION IF EXISTS vector_backfill_visit()`;
+        await admin`DROP TABLE IF EXISTS vector_backfill_visits`;
+        await admin`DROP SEQUENCE IF EXISTS vector_backfill_visit_seq`;
+        // Memory rows are never deleted, so the memory stays.
+        await admin`DELETE FROM omni_knowledge_documents WHERE id = ${documentId}`;
+      }
+    },
+  );
 });
 
 async function dropDatabaseRole(
@@ -4687,6 +5096,21 @@ async function tableGrants(
   return rows
     .map((row) => `${row.table_name}: ${row.grantee} ${row.privileges}`)
     .sort();
+}
+
+// The migration lock retry lines a console.warn spy received, parsed.
+function migrationLockLogLines(calls: readonly unknown[][]) {
+  return calls.flatMap(([line]) => {
+    try {
+      const parsed = JSON.parse(String(line)) as { event?: unknown };
+      return typeof parsed.event === "string" &&
+        parsed.event.startsWith("database_migration_lock")
+        ? [parsed]
+        : [];
+    } catch {
+      return [];
+    }
+  });
 }
 
 async function withTimeout<T>(operation: Promise<T>, timeoutMs: number) {
