@@ -30,6 +30,8 @@ describe("conversation summary enrichment migration", () => {
       checksum:
         "83e7878f29b3ea25df0ecb40bd94521a3e84af93f5eae6a34ad03bd4b9071a37",
       file: "20260911110000_conversation_summary_enrichments.sql",
+      sha256:
+        "107297f10a31d83099901cbebcf025260a26c2f20a052b3e7b1f01fb0f07c7b2",
     });
     expect(migration).toContain("latest_version IS DISTINCT FROM 155");
     expect(migration).toContain(

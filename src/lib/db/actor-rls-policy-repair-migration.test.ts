@@ -61,6 +61,8 @@ describe("actor RLS policy composition repair", () => {
       checksum:
         "06e06bfc319278f8e676d14c30bfc34f60cdda305ff48b0c4f4944a01e53ba97",
       file: "20260918120000_actor_rls_policy_composition_repair.sql",
+      sha256:
+        "d307299f854fe5282ca3f5976eee654e9ac2ff9d942f2e87fa7d2ea39bebf4b9",
     });
     expect(compositionRepair).toContain("latest_version IS DISTINCT FROM 182");
     expect(compositionRepair).toContain("version = 182");

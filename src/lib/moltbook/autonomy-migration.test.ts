@@ -20,6 +20,7 @@ describe("Moltbook autonomy v194 migration", () => {
       name: "moltbook_autonomy_v1",
       checksum: "66a868eed1a0fef0eb61d8f69d0d2351605edf39711c007d5c58f1febb5cafef",
       file: "20260921170000_moltbook_autonomy.sql",
+      sha256: "941331bad23e05ce951c86ed17d06e5c4656b300476d31581ee2986beb5d2e1f",
     });
     expect(migration).toContain("latest_version IS DISTINCT FROM 193");
     expect(migration).toContain("194,\n  'moltbook_autonomy_v1',\n  '66a868eed1a0fef0eb61d8f69d0d2351605edf39711c007d5c58f1febb5cafef'");

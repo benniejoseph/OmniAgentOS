@@ -1,7 +1,9 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { getSchemaMigrationSteps } from "@/lib/db/client";
 import {
@@ -10,11 +12,13 @@ import {
   parseSqlMigrationFile,
   readSqlMigrationFile,
   splitSqlStatements,
+  sqlMigrationFileDigest,
   sqlMigrationFilePath,
+  type SqlMigrationFileEntry,
   type SqlMigrationLedgerRow,
 } from "@/lib/db/sql-migration-files";
 
-type ManifestEntry = SqlMigrationLedgerRow & { file?: string };
+type ManifestEntry = SqlMigrationLedgerRow & { file?: string; sha256?: string };
 
 const migrationsDirectory = path.join(process.cwd(), "supabase", "migrations");
 const manifest = JSON.parse(
@@ -30,6 +34,12 @@ const byVersion = (left: SqlMigrationLedgerRow, right: SqlMigrationLedgerRow) =>
 const mappedFiles = [
   ...new Set(manifest.flatMap((entry) => (entry.file ? [entry.file] : []))),
 ];
+const fileEntry = (file: string): SqlMigrationFileEntry => {
+  const entries = manifest.filter((entry) => entry.file === file);
+  return { file, sha256: String(entries[0]?.sha256), migrations: entries.map(ledgerRow) };
+};
+const sha256 = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
+const ZEROS = "0".repeat(64);
 // Files the runner never executes. The backup-role grants predate the ledger,
 // and market_deterministic_backtests_v1 now repairs that role's table grants.
 const UNVERSIONED_FILES = ["20260905093000_backup_role_public_table_grants.sql"];
@@ -240,9 +250,95 @@ INSERT INTO omni_schema_version VALUES (303, 'third_v1', '${"d".repeat(64)}');`,
     const file = "20260926090000_memory_forget_lineage_closure.sql";
 
     expect(sqlMigrationFilePath(file)).toBe(path.join(migrationsDirectory, file));
-    expect((await readSqlMigrationFile(file)).ledger).toEqual(
+    expect((await readSqlMigrationFile(fileEntry(file))).ledger).toEqual(
       manifest.filter((entry) => entry.file === file).map(ledgerRow),
     );
+  });
+});
+
+describe("SQL migration file digests", () => {
+  const checksum = "c".repeat(64);
+
+  it("hashes the file with each of its own checksums replaced by zeros", () => {
+    const text = `-- café
+INSERT INTO omni_schema_version VALUES (300, 'example_v1', '${checksum}');
+SELECT 1 FROM omni_schema_version WHERE checksum = '${checksum}';
+SELECT '${"d".repeat(64)}';
+`;
+
+    expect(sqlMigrationFileDigest(text, [checksum])).toBe(
+      sha256(`-- café
+INSERT INTO omni_schema_version VALUES (300, 'example_v1', '${ZEROS}');
+SELECT 1 FROM omni_schema_version WHERE checksum = '${ZEROS}';
+SELECT '${"d".repeat(64)}';
+`),
+    );
+    expect(sqlMigrationFileDigest(text, [])).toBe(sha256(text));
+  });
+
+  it("lets a file record its own digest as its checksum", () => {
+    const sealed = `INSERT INTO omni_schema_version VALUES (300, 'example_v1', '${ZEROS}');`;
+    const digest = sha256(sealed);
+
+    expect(sqlMigrationFileDigest(sealed.replace(ZEROS, digest), [digest])).toBe(digest);
+  });
+
+  it.each(["", "C".repeat(64), "c".repeat(63), "c".repeat(65), `${checksum} `])(
+    "refuses the checksum %j",
+    (invalid) => {
+      expect(() => sqlMigrationFileDigest(`SELECT '${checksum}';`, [invalid])).toThrow(
+        `Migration checksum ${JSON.stringify(invalid)} is not a SHA-256 digest.`,
+      );
+    },
+  );
+
+  describe("when the runner reads a file", () => {
+    const file = "20260926090000_memory_forget_lineage_closure.sql";
+    const original = fs.readFileSync(path.join(migrationsDirectory, file), "utf8");
+    const [{ checksum: recorded }] = fileEntry(file).migrations;
+    let root = "";
+    const write = (content: string | Buffer) =>
+      fs.writeFileSync(path.join(root, "supabase", "migrations", file), content);
+
+    beforeEach(() => {
+      root = fs.mkdtempSync(path.join(os.tmpdir(), "omniagent-sql-migration-"));
+      fs.mkdirSync(path.join(root, "supabase", "migrations"), { recursive: true });
+      vi.spyOn(process, "cwd").mockReturnValue(root);
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    it("reads a copy that matches the manifest sha256", async () => {
+      write(original);
+
+      expect((await readSqlMigrationFile(fileEntry(file))).ledger).toEqual(
+        fileEntry(file).migrations,
+      );
+    });
+
+    it.each([
+      ["an added statement", original.replace(/COMMIT;\s*$/, "DROP TABLE public.memories;\nCOMMIT;\n")],
+      ["an added byte order mark", `\ufeff${original}`],
+      ["a changed checksum", original.replaceAll(recorded, "e".repeat(64))],
+    ])("refuses a file with %s", async (_, changed) => {
+      expect(changed).not.toBe(original);
+      write(changed);
+
+      await expect(readSqlMigrationFile(fileEntry(file))).rejects.toThrow(
+        `${file} has sha256 ${sha256(changed.replaceAll(recorded, ZEROS))}, but schema-migrations.json expects ${fileEntry(file).sha256}. A migration file must not change once a database may have run it; make the change in a new migration.`,
+      );
+    });
+
+    it("refuses a file that is not UTF-8", async () => {
+      write(Buffer.concat([Buffer.from(original), Buffer.from([0xff])]));
+
+      await expect(readSqlMigrationFile(fileEntry(file))).rejects.toThrow(
+        `${file} is not valid UTF-8.`,
+      );
+    });
   });
 });
 
@@ -376,12 +472,24 @@ describe("schema-migrations.json and supabase/migrations", () => {
     expect(fileBacked).toEqual([...fileBacked].sort());
   });
 
-  it("parses every mapped file into exactly the rows the manifest assigns it", () => {
+  it("locks every mapped file to the sha256 the manifest records", () => {
     for (const file of mappedFiles) {
-      const migration = parseSqlMigrationFile(
-        file,
+      const entries = manifest.filter((entry) => entry.file === file);
+      const digest = sqlMigrationFileDigest(
         fs.readFileSync(path.join(migrationsDirectory, file), "utf8"),
+        entries.map((entry) => entry.checksum),
       );
+
+      expect({ file, sha256: entries.map((entry) => entry.sha256) }).toEqual({
+        file,
+        sha256: entries.map(() => digest),
+      });
+    }
+  });
+
+  it("reads every mapped file into exactly the rows the manifest assigns it", async () => {
+    for (const file of mappedFiles) {
+      const migration = await readSqlMigrationFile(fileEntry(file));
 
       expect({ file, ledger: [...migration.ledger].sort(byVersion) }).toEqual({
         file,
@@ -399,7 +507,11 @@ describe("schema migration steps", () => {
     version,
     name: `example_${version}_v1`,
     checksum: String(version % 10).repeat(64),
-    ...(file ? { file } : {}),
+    ...(file ? { file, sha256: sha256(file) } : {}),
+  });
+  const sealed = (version: number, file: string): ManifestEntry => ({
+    ...entry(version, file),
+    checksum: sha256(file),
   });
 
   it("gives every manifest version exactly one step, in order", () => {
@@ -413,6 +525,7 @@ describe("schema migration steps", () => {
       expect(step.migrations).toEqual(
         manifest.filter((migration) => migration.file === step.file).map(ledgerRow),
       );
+      expect(step.sha256).toBe(fileEntry(step.file).sha256);
     }
     expect(
       steps
@@ -437,6 +550,21 @@ describe("schema migration steps", () => {
       ["sql", [2, 3]],
       ["sql", [4]],
     ]);
+    expect(steps.flatMap((step) => (step.kind === "sql" ? [step.sha256] : []))).toEqual([
+      sha256("a.sql"),
+      sha256("b.sql"),
+    ]);
+  });
+
+  it("keeps the recorded checksums before 208 and uses each file's sha256 from 208 on", () => {
+    const steps = getSchemaMigrationSteps(
+      [entry(206), entry(207, "a.sql"), sealed(208, "b.sql"), sealed(209, "b.sql")],
+      typescriptSteps(206),
+    );
+
+    expect(
+      steps.map((step) => step.migrations.map((migration) => migration.checksum)),
+    ).toEqual([["6".repeat(64)], ["7".repeat(64)], [sha256("b.sql"), sha256("b.sql")]]);
   });
 
   it.each([
@@ -455,6 +583,31 @@ describe("schema migration steps", () => {
       [entry(1)],
       typescriptSteps(1, 2, 3),
       "TypeScript migration steps 2, 3 are not in schema-migrations.json.",
+    ],
+    [
+      [{ ...entry(1, "a.sql"), sha256: undefined }],
+      typescriptSteps(),
+      "Database migration 1 names a.sql without its sha256.",
+    ],
+    [
+      [entry(1, "a.sql"), { ...entry(2, "a.sql"), sha256: sha256("b.sql") }],
+      typescriptSteps(),
+      "a.sql has more than one sha256 in schema-migrations.json.",
+    ],
+    [
+      [entry(208, "a.sql")],
+      typescriptSteps(),
+      "Database migration 208 must use the sha256 of a.sql as its checksum.",
+    ],
+    [
+      [sealed(208, "a.sql"), { ...sealed(209, "a.sql"), checksum: "9".repeat(64) }],
+      typescriptSteps(),
+      "Database migration 209 must use the sha256 of a.sql as its checksum.",
+    ],
+    [
+      [entry(208)],
+      typescriptSteps(208),
+      "Database migration 208 is a TypeScript step, but every migration from 208 on is a SQL file.",
     ],
   ])("rejects an inconsistent manifest (%#)", (entries, steps, message) => {
     expect(() => getSchemaMigrationSteps(entries, steps)).toThrow(message);

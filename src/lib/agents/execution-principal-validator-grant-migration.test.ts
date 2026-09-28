@@ -41,6 +41,8 @@ describe("execution principal row validator grant v1", () => {
       checksum:
         "9b787d1cfa1d6ae007cf8594f43c00045bab640b1f596e91d330923acc3bf2f7",
       file: "20260921153000_execution_principal_row_validator_grant.sql",
+      sha256:
+        "7fc4e4174c32d0d3e4f10d617c2367702f74722a97658a09108d88554c5ff8db",
     });
   });
 });

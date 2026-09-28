@@ -22,6 +22,8 @@ describe("semantic decision shadow migration", () => {
       checksum:
         "142047c12f42ba8135d7bfd95edde467ebcedf4d42f5c69937b4fe797a865223",
       file: "20260918130000_semantic_decision_shadow_pilot.sql",
+      sha256:
+        "ac40b41dac1a63eeffb78c0eb377f80786dbc9afd424c9b6efec4fcb13a27a86",
     });
     expect(standaloneMigration).toContain("latest_version IS DISTINCT FROM 183");
     expect(standaloneMigration).toContain("version = 183");

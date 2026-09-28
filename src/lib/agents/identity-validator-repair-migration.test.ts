@@ -45,6 +45,8 @@ describe("agent identity validator privilege repair v1", () => {
       checksum:
         "225d62212d28a5c6186d0e62d402a61e0283bfd34695f1f8aa25b2e1132593f2",
       file: "20260921143000_agent_identity_validator_privilege_repair.sql",
+      sha256:
+        "6aa30efd077e11073ff4ae92aa7873101718cf725cc3a091132937de0586e0bc",
     });
   });
 });

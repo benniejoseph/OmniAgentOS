@@ -47,6 +47,8 @@ describe("agent private trigger privilege repair v1", () => {
       checksum:
         "a8beaa32d24c97ad6763801982c474414ab93a046f98d91fc3df30bb9e172fab",
       file: "20260921150000_agent_private_trigger_privilege_repair.sql",
+      sha256:
+        "d6753b11d1742f9b02172979cef23cf8f8d1547f9635e5bca3d44f760188a573",
     });
   });
 });

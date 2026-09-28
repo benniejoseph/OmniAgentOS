@@ -24,6 +24,9 @@ If `/api/health` returns 503, inspect server logs for TLS, credentials, extensio
 - `… wrote migration ledger rows […]`: the file ran but recorded different rows, and the migration transaction rolled back.
 - `… statement N (…) failed: …`: statement N of that file, counting its own `BEGIN`, failed with the error that follows, and the migration transaction rolled back.
 - `… controls the transaction`, `… changes session state`, `… cannot run inside the migration transaction`, or `… must begin with a plain BEGIN and end with a plain COMMIT, or have neither`: the file breaks one of the rules in [deployment.md](deployment.md#schema-and-migration-rollout). The runner stopped before running it, and the migration transaction rolled back.
+- `… has sha256 …, but schema-migrations.json expects …` or `… is not valid UTF-8`: the file is not the one this release recorded. It was edited, or its line endings or encoding changed on the way to this checkout. The runner stopped before running it. Restore the file from the release; make any change in a new migration.
+- `Database migration N checksum does not match this release`: the database recorded a different checksum for version N. From v208 on, a version's checksum is the digest of its file, so the file changed after this database ran it. Deploy the release whose file the database ran, and make the change in a new migration.
+- `… names … without its sha256`, `… has more than one sha256 in schema-migrations.json`, `… must use the sha256 of … as its checksum`, or `… is a TypeScript step, but every migration from 208 on is a SQL file`: the manifest breaks one of the rules in [deployment.md](deployment.md#schema-and-migration-rollout). Nothing ran.
 
 If pgvector is unavailable, set `OMNIAGENT_LOG_PGVECTOR_FAILURES=true` temporarily. The app can use JSON embeddings, but vector-index status remains not ready until the extension, columns, dimensions, and HNSW indexes match.
 

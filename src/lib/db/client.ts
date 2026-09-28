@@ -39,8 +39,13 @@ type SchemaMigrationRecord = Readonly<{
   checksum: string;
 }>;
 
-/** A schema-migrations.json entry; `file` names the SQL file that applies it. */
-type SchemaMigrationManifestEntry = Readonly<SchemaMigrationRecord & { file?: string }>;
+/**
+ * A schema-migrations.json entry. `file` names the SQL file that applies it,
+ * and `sha256` is that file's digest.
+ */
+type SchemaMigrationManifestEntry = Readonly<
+  SchemaMigrationRecord & { file?: string; sha256?: string }
+>;
 
 /** One unit of the ordered migration run: a TypeScript step or a SQL file. */
 export type SchemaMigrationStep = Readonly<
@@ -54,6 +59,7 @@ export type SchemaMigrationStep = Readonly<
       /** Every version the file records, in order; the file runs whole. */
       migrations: readonly SchemaMigrationRecord[];
       file: string;
+      sha256: string;
     }
 >;
 
@@ -703,6 +709,14 @@ export const databaseSchemaMigrations: readonly SchemaMigrationRecord[] =
   );
 
 /**
+ * Versions before this one keep the checksums their ledgers already record.
+ * From this version on, a migration is a SQL file whose sha256 is its
+ * checksum, so each database records the digest of the file it ran, and a
+ * later edit to the file fails schema verification wherever it ran.
+ */
+const FIRST_FILE_DIGEST_CHECKSUM_VERSION = 208;
+
+/**
  * Settings the runner relies on between migrations. Whatever a SQL file does
  * to these, or to settings it names itself, is put back after the file runs.
  */
@@ -1137,7 +1151,7 @@ const typescriptSchemaMigrations = new Map<number, SchemaMigrationUp>([
  * The ordered steps that apply schema-migrations.json. A version with a `file`
  * runs that SQL file and every other version runs its TypeScript step; no
  * version has both or neither. Versions that share a file must be adjacent,
- * because the file runs once, as a whole.
+ * because the file runs once, as a whole, and must record the same sha256.
  */
 export function getSchemaMigrationSteps(
   manifest: readonly SchemaMigrationManifestEntry[] = schemaMigrationManifest,
@@ -1157,6 +1171,11 @@ export function getSchemaMigrationSteps(
         `Database migration ${migration.version} has both a SQL file and a TypeScript step.`,
       );
     }
+    if (up && migration.version >= FIRST_FILE_DIGEST_CHECKSUM_VERSION) {
+      throw new Error(
+        `Database migration ${migration.version} is a TypeScript step, but every migration from ${FIRST_FILE_DIGEST_CHECKSUM_VERSION} on is a SQL file.`,
+      );
+    }
     if (up) {
       steps.push({ kind: "typescript", migrations: [migration], up });
       continue;
@@ -1166,8 +1185,24 @@ export function getSchemaMigrationSteps(
         `Database migration ${migration.version} has no SQL file or TypeScript step.`,
       );
     }
+    if (!entry.sha256) {
+      throw new Error(
+        `Database migration ${migration.version} names ${entry.file} without its sha256.`,
+      );
+    }
+    if (
+      migration.version >= FIRST_FILE_DIGEST_CHECKSUM_VERSION &&
+      migration.checksum !== entry.sha256
+    ) {
+      throw new Error(
+        `Database migration ${migration.version} must use the sha256 of ${entry.file} as its checksum.`,
+      );
+    }
     const previous = steps.at(-1);
     if (previous?.kind === "sql" && previous.file === entry.file) {
+      if (previous.sha256 !== entry.sha256) {
+        throw new Error(`${entry.file} has more than one sha256 in schema-migrations.json.`);
+      }
       steps[steps.length - 1] = {
         ...previous,
         migrations: [...previous.migrations, migration],
@@ -1178,7 +1213,12 @@ export function getSchemaMigrationSteps(
       throw new Error(`${entry.file} records database migrations that are not adjacent.`);
     }
     files.add(entry.file);
-    steps.push({ kind: "sql", migrations: [migration], file: entry.file });
+    steps.push({
+      kind: "sql",
+      migrations: [migration],
+      file: entry.file,
+      sha256: entry.sha256,
+    });
   }
   const known = new Set(manifest.map((entry) => entry.version));
   const unknown = [...typescriptSteps.keys()].filter((version) => !known.has(version));
@@ -1320,11 +1360,12 @@ export async function migrateDatabaseSchema(
           }
           try {
             if (step.kind === "sql") {
-              // The file writes its own omni_schema_version rows, and the
-              // runner checks them against the manifest.
+              // The file must still have its manifest sha256. It writes its
+              // own omni_schema_version rows, and the runner checks them
+              // against the manifest.
               await applySqlMigrationFile(
                 sql,
-                await readSqlMigrationFile(step.file),
+                await readSqlMigrationFile(step),
                 step.migrations,
                 MIGRATION_TRANSACTION_SETTINGS,
               );

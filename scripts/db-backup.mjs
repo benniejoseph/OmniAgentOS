@@ -20,7 +20,7 @@ const schemaMigrationManifest = JSON.parse(
 );
 assertSchemaMigrationManifest(schemaMigrationManifest);
 // omni_schema_version records these three fields; a manifest entry's `file`
-// only says where the migration's SQL lives.
+// and `sha256` only say where the migration's SQL lives and what it holds.
 const schemaMigrations = schemaMigrationManifest.map(
   ({ version, name, checksum }) => ({ version, name, checksum }),
 );

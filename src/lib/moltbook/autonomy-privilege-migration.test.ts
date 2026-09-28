@@ -28,6 +28,7 @@ describe("Moltbook autonomy privilege repair v195", () => {
       name: migrationName,
       checksum: migrationChecksum,
       file: "20260921200000_moltbook_autonomy_privilege_repair.sql",
+      sha256: "8e1a0b5cff9821b9dadccf58d90b7261830c14e4b688931f2679e6f51f2602d3",
     });
     expect(manifest[index - 1]?.version).toBe(194);
     expect(migration).toContain("latest_version IS DISTINCT FROM 194");

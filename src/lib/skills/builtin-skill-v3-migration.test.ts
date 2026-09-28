@@ -42,6 +42,7 @@ describe("built-in Skill catalog v3 migration", () => {
         name: migrationName,
         checksum: migrationChecksum,
         file: "20260919143000_builtin_skill_catalog_v3.sql",
+        sha256: "55b037d051507886857585b2dde3bf5e06724e90efb607e8a64257ec5115235c",
       });
     expect(standaloneMigration).toContain(
       "latest_version IS DISTINCT FROM 187",

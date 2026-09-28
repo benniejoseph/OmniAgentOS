@@ -93,6 +93,7 @@ describe("Moltbook v190 migration", () => {
       name: "moltbook_agent_connections_v1",
       checksum: "e0b8c00ca8f4fce6139735623366cacfa97675419a57c1666b4bf0fe4bbe8e46",
       file: "20260921120000_moltbook_agent_connections.sql",
+      sha256: "4f69f57cdcf12e2c92b2b9c742a5096dee6f39cbbd8f582e725efa2b9329ce8e",
     });
     expect(migration).toContain("190,\n  'moltbook_agent_connections_v1',\n  'e0b8c00ca8f4fce6139735623366cacfa97675419a57c1666b4bf0fe4bbe8e46'");
   });

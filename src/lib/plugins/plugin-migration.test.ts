@@ -21,6 +21,7 @@ describe("declarative Plugin v1 migration", () => {
       name: "declarative_plugins_v1",
       checksum: "0cb2bc195736819e3fd5c3a6ab44a8c48ca3dcc55b63d097a69aaf9824b06825",
       file: "20260918150000_declarative_plugins.sql",
+      sha256: "ee7379781674fd11993803bb75be5cf5f5949ec26d2166456798aa1aaefbfc80",
     });
     expect(manifest[index - 1]?.version).toBe(185);
   });

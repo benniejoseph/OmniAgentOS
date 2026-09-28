@@ -128,7 +128,8 @@
     "version": 26,
     "name": "custom_agent_and_skill_studio",
     "checksum": "b9330011742af71d64d932ad34bd55d374d7b936d2db88a7e502f50a29aec04c",
-    "file": "20260825164500_agent_skill_studio.sql"
+    "file": "20260825164500_agent_skill_studio.sql",
+    "sha256": "05b14960fbfe2244e4f921222c9929f8bd1c581aed6ce5fb6d1e986594bcfa08"
   },
   {
     "version": 27,
@@ -289,7 +290,8 @@
     "version": 58,
     "name": "memory_deletion_barrier_policy_privilege_isolation",
     "checksum": "5eb4483ee881615b4178d5ddc84949556a2ada088c8fd405e0d7b709aa67f870",
-    "file": "20260905093100_memory_deletion_barrier_policy_privilege_isolation.sql"
+    "file": "20260905093100_memory_deletion_barrier_policy_privilege_isolation.sql",
+    "sha256": "0f66b474504958b74d9b49bbb13e3c49a958a69a112c0cf15cc81190994a2ab3"
   },
   {
     "version": 59,
@@ -350,67 +352,78 @@
     "version": 70,
     "name": "run_checkpoint_fork_lineage",
     "checksum": "8bdc17f17f5c51ee1e646e3e6d9a230c5fe051e80611dd90cd8b2b35152e7115",
-    "file": "20260905204600_run_checkpoint_fork_lineage.sql"
+    "file": "20260905204600_run_checkpoint_fork_lineage.sql",
+    "sha256": "cd47cb599fb823fb5a04a7764c43af632ee83a23eadeb8b92103758e6482a75a"
   },
   {
     "version": 71,
     "name": "oauth_source_sync_fenced_leases",
     "checksum": "1d128700ad7a4b01f0ba7a4e78521a778ff7e49da52e820f87e973f30ea9ce15",
-    "file": "20260905211000_oauth_source_sync_fenced_leases.sql"
+    "file": "20260905211000_oauth_source_sync_fenced_leases.sql",
+    "sha256": "31538c214ba2755825e641fa792f0da231ccdff11fabb18ed556a4a042e9d57d"
   },
   {
     "version": 72,
     "name": "user_private_memory_access_canary",
     "checksum": "4cf4b3dc4549d5d8f05e19501f810462c2de6064a7bcc1dd27e7c97f6506f1bc",
-    "file": "20260905213500_user_private_memory_access_canary.sql"
+    "file": "20260905213500_user_private_memory_access_canary.sql",
+    "sha256": "a1b7eb1c3c06bd03d486f2fe2f85e8e67b8d594c1664da48a0d353a775893836"
   },
   {
     "version": 73,
     "name": "user_private_memory_runtime_function_grants",
     "checksum": "e48b32da855e7146ce7f3fb1448abe89efcb602f72cbe43509fd3f5ff3a8ae79",
-    "file": "20260905214100_user_private_memory_runtime_function_grants.sql"
+    "file": "20260905214100_user_private_memory_runtime_function_grants.sql",
+    "sha256": "f62874f4e8ae8ef2acb2042862051cae28c69c7835832ac0a2e8612b093a11cf"
   },
   {
     "version": 74,
     "name": "daily_brief_memory_lineage_column",
     "checksum": "b0aeed374d527136094316d0b7ba0c48cd84a243dcbbd6b17235fcc512a564aa",
-    "file": "20260905220000_daily_brief_memory_lineage_column.sql"
+    "file": "20260905220000_daily_brief_memory_lineage_column.sql",
+    "sha256": "b0b6df65793f50f732f9093e692c3bfb2f3d4be16d750edba2afdbbe3cc3b17c"
   },
   {
     "version": 75,
     "name": "memory_deletion_barrier_query_indexes",
     "checksum": "c34aac5c2035a63afc8644f4e582ffcbb146b68c1e2debf14524424ee55198ed",
-    "file": "20260905223000_memory_deletion_barrier_query_indexes.sql"
+    "file": "20260905223000_memory_deletion_barrier_query_indexes.sql",
+    "sha256": "32683ed3f6403d0b5565fc7958340ed29c6bf56ff3d679dddc2da2eac79237e1"
   },
   {
     "version": 76,
     "name": "derived_memory_read_barrier_cutover",
     "checksum": "2c9f41f2e651714203cc111b825aeaec85a335aed41ef9cd6fcead3d9afd7315",
-    "file": "20260905224500_derived_memory_read_barrier_cutover.sql"
+    "file": "20260905224500_derived_memory_read_barrier_cutover.sql",
+    "sha256": "a681b7eb955077d551defdc66c4898afe9faab08729548fc56042725dd391325"
   },
   {
     "version": 77,
     "name": "user_private_retrieval_traces",
     "checksum": "f6333159707f3796f1f9ae79f09744536c672b6142c81fddcadd348182ee5093",
-    "file": "20260905230000_user_private_retrieval_traces.sql"
+    "file": "20260905230000_user_private_retrieval_traces.sql",
+    "sha256": "3e06c92fccc65a4ab635629bed2977b4188bf1cced6d894c2023e5e5c4ff0a1c"
   },
   {
     "version": 78,
     "name": "retrieval_trace_lineage_query_cutover",
     "checksum": "294a7328f6a0d68d82496975b3827d5c53a91ac7a1215b2a829c8a64290c9ca2",
-    "file": "20260905231500_retrieval_trace_lineage_query_cutover.sql"
+    "file": "20260905231500_retrieval_trace_lineage_query_cutover.sql",
+    "sha256": "c47e905adb9badcca7bcd3c663831394897eb095de5fa41edbcc9eadea91c20f"
   },
   {
     "version": 79,
     "name": "user_private_memory_graph_projection",
     "checksum": "5d491f28e211333c21caa8c65fac6b0819c98ef833322512340b38d30b1bbdf4",
-    "file": "20260905233000_user_private_memory_graph_projection.sql"
+    "file": "20260905233000_user_private_memory_graph_projection.sql",
+    "sha256": "2372f694d5f16113b5a6a6d1ff5a588c78ac73a81788d52fad0cdfc385abd1ec"
   },
   {
     "version": 80,
     "name": "memory_access_scope_initplan_policies",
     "checksum": "bf42db947ea5b5382b3be6917cebb515d40ed260aa1365237aad62039203a290",
-    "file": "20260905234500_memory_access_scope_initplan_policies.sql"
+    "file": "20260905234500_memory_access_scope_initplan_policies.sql",
+    "sha256": "31e826b1ed966731303fcde73640a0dfe166c69d6e3fe01c71f18ed84c8f51d2"
   },
   {
     "version": 81,
@@ -596,546 +609,637 @@
     "version": 117,
     "name": "a2a_peer_rollouts_v1",
     "checksum": "a11e97b868005023fe398d66bb795bd9939ca3b19963515452a54fe849aecb67",
-    "file": "20260907011100_p8_6_a2a.sql"
+    "file": "20260907011100_p8_6_a2a.sql",
+    "sha256": "f9cc700df6ffaf547fc8ed4991122eb02de4dece0675de8cf5a63eec3eca85fe"
   },
   {
     "version": 118,
     "name": "a2a_task_mappings_v1",
     "checksum": "79e1d6eab1184b8737e08f128ae49d6c966b53d7386d36c1e94efd5974085f8c",
-    "file": "20260907011100_p8_6_a2a.sql"
+    "file": "20260907011100_p8_6_a2a.sql",
+    "sha256": "f9cc700df6ffaf547fc8ed4991122eb02de4dece0675de8cf5a63eec3eca85fe"
   },
   {
     "version": 119,
     "name": "a2a_delegation_safety_v1",
     "checksum": "fd3a418e621c8763c1d1850e287c098e69fa805f79a0ab00e399d67f4b3d76bc",
-    "file": "20260907032000_p8_7_a2a_safety.sql"
+    "file": "20260907032000_p8_7_a2a_safety.sql",
+    "sha256": "9c637e62bbfbb1fe12b1cfb57a76faa7c4d144d53cc7b53021952ed902b7eda4"
   },
   {
     "version": 120,
     "name": "trash_lifecycle_v1",
     "checksum": "49c6af6f71d05afa4f10aa2d966381f2614fe8e9037347cd247d7b56a332049c",
-    "file": "20260907090000_p9_3_trash_lifecycle.sql"
+    "file": "20260907090000_p9_3_trash_lifecycle.sql",
+    "sha256": "27f95abf8ff179c3a6dc599f58e07a948598cd1479842a1d4af937cb9cf46643"
   },
   {
     "version": 121,
     "name": "approval_grants_v1",
     "checksum": "74a51bdd87e583b6380533d34571455ba717829e390de8ef0806b2a818f37bd6",
-    "file": "20260907094000_p9_4_approval_grants.sql"
+    "file": "20260907094000_p9_4_approval_grants.sql",
+    "sha256": "e7539043f3b21baeb635af5379107deb214dd038008d9303e497ba2d83bdcaa8"
   },
   {
     "version": 122,
     "name": "browser_takeover_profiles_v1",
     "checksum": "ee32a9191756e79b13799f8e5bbf0768a962f7501194c222bb481ef9fa2e47d4",
-    "file": "20260907113000_p9_7_browser_takeover_profiles.sql"
+    "file": "20260907113000_p9_7_browser_takeover_profiles.sql",
+    "sha256": "7cab29500c8758acffd23f7218d4da9210a66048d8f6a155495fa80af2a8df8d"
   },
   {
     "version": 123,
     "name": "actor_rls_policy_repair_v1",
     "checksum": "d5dfb0fb60b28c8d8c317ae8c13d9e9000cfa408ae2124dd7d62e7af538bebcd",
-    "file": "20260907123000_p9_actor_rls_policy_repair.sql"
+    "file": "20260907123000_p9_actor_rls_policy_repair.sql",
+    "sha256": "053c7b7f95a7739b624ae9d3546d7dd5093e0d461c7ba746d6896b86bd9cd7e9"
   },
   {
     "version": 124,
     "name": "governed_communications_v1",
     "checksum": "b0199382bc9ed5a5fe99357b3deec7b0b3ed9de8921e89ed6705062b8e2b862f",
-    "file": "20260907140000_p9_14_governed_communications.sql"
+    "file": "20260907140000_p9_14_governed_communications.sql",
+    "sha256": "7834d313287392436a80f1af1793500ab6d8bfdfadc0396c5ce456453640e603"
   },
   {
     "version": 125,
     "name": "ap2_human_present_mandates_v1",
     "checksum": "f8b75e5d61a3a347649d82909e8e18e6f174079d37a5609643df768c0c9031a5",
-    "file": "20260907170000_p9_16_ap2_human_present_mandates.sql"
+    "file": "20260907170000_p9_16_ap2_human_present_mandates.sql",
+    "sha256": "59c80ba8d3d53ec92615e7f25fac1bf747cc569fade9eafe9bc709d6ce0c745e"
   },
   {
     "version": 126,
     "name": "ap2_credential_authorization_v1",
     "checksum": "58e206e5cf85d52958965d7ae06d89a1f61059ee41532970c3645b1dfff60708",
-    "file": "20260907190000_p9_17_ap2_credential_authorization.sql"
+    "file": "20260907190000_p9_17_ap2_credential_authorization.sql",
+    "sha256": "7430cb2105e2a1fd7d439cd3375af3a43cf37c6d2c1bea0ff265f001cdd65377"
   },
   {
     "version": 127,
     "name": "ap2_receipt_reconciliation_v1",
     "checksum": "b85bf6d553f897caa31d67ec907d5abf308572652dd45524da150e4ec4a60acb",
-    "file": "20260907200000_p9_18_ap2_receipt_reconciliation.sql"
+    "file": "20260907200000_p9_18_ap2_receipt_reconciliation.sql",
+    "sha256": "fae9d152fb65096d212423d428d2e191f914147e423e8d661458e083c1657cd6"
   },
   {
     "version": 128,
     "name": "canonical_work_model_v1",
     "checksum": "04e10243d48983a00192987e1a2cb0f4b7dc00a1609a13d172495e911c85c59c",
-    "file": "20260907220000_p10_1_canonical_work_model.sql"
+    "file": "20260907220000_p10_1_canonical_work_model.sql",
+    "sha256": "d86816b7e4ed5675d841aeba30e020e91c61cccfe77eedb22493244e05b03317"
   },
   {
     "version": 129,
     "name": "canonical_work_projection_repair_v1",
     "checksum": "2caff999167ba65438fbef957b194e64b9556c203028995fbb316ed7ba310bfc",
-    "file": "20260907223000_p10_1_canonical_work_projection_repair.sql"
+    "file": "20260907223000_p10_1_canonical_work_projection_repair.sql",
+    "sha256": "eb8bc52e0a49eb5ed648a78383082c23d5e63a67bfb07f46b4f2feb06ced5c86"
   },
   {
     "version": 130,
     "name": "workspace_shared_memory_v1",
     "checksum": "ef0d0f512b05dc2ca01585b1f939137dd626d9d20cdc9242b46f07110875e63e",
-    "file": "20260907233000_p10_4_workspace_shared_memory.sql"
+    "file": "20260907233000_p10_4_workspace_shared_memory.sql",
+    "sha256": "4bf94d067daa699f9eba54bb36b6532c7e30795c1ba64f1efb6ad469f9e57e82"
   },
   {
     "version": 131,
     "name": "canonical_workspace_resolver_repair_v1",
     "checksum": "6975f3e4024004198a867620cb5fde2415e031c3b76b9d8e0c7bde24c29998af",
-    "file": "20260907234500_p10_4_canonical_workspace_resolver_repair.sql"
+    "file": "20260907234500_p10_4_canonical_workspace_resolver_repair.sql",
+    "sha256": "23b83fa3c2ee9ebc90f1e31839adfe77d81bebc2d92ef4a0aad9ecb9a724512a"
   },
   {
     "version": 132,
     "name": "workspace_templates_v1",
     "checksum": "f750197534c0c4854c424130fe566c34c431481bbe561526361067baaaeb0643",
-    "file": "20260908000000_p10_5_workspace_templates.sql"
+    "file": "20260908000000_p10_5_workspace_templates.sql",
+    "sha256": "178142f1c5ecc8243b963ed8ae2edef0d7954993d6a32e8d375556f7d602d0d6"
   },
   {
     "version": 133,
     "name": "canonical_actor_scope_repair_v1",
     "checksum": "f700debf165e44134b59e46fdfc258a4fb9e51a7158adfb26760c77acff45678",
-    "file": "20260908001500_p10_5_canonical_actor_scope_repair.sql"
+    "file": "20260908001500_p10_5_canonical_actor_scope_repair.sql",
+    "sha256": "caba28fc6857dba7023a6b2e5a92e70af80cec26ecb35b23b00ed0ad6a5c4fa6"
   },
   {
     "version": 134,
     "name": "meeting_domain_v1",
     "checksum": "2dd5db3415b794678d2dcfff211e0621623e66b814b8ac166058ab2737fb3c56",
-    "file": "20260908003000_p10_6_meeting_domain.sql"
+    "file": "20260908003000_p10_6_meeting_domain.sql",
+    "sha256": "cfce6a10281de521b4984527bebdd3c4ff67ca21b9650993d4eba60591cbcdce"
   },
   {
     "version": 135,
     "name": "resumable_capture_media_v1",
     "checksum": "6504f48c638bb483fdbeb30a1a6efa72e8d97d2c7bdca4c7a266ff36fc9c7c1c",
-    "file": "20260908004500_p10_7_resumable_media_processing.sql"
+    "file": "20260908004500_p10_7_resumable_media_processing.sql",
+    "sha256": "a68af42de3f45bd93e9055d5548dc2f5274bcedcb99a73662f01b9b170959546"
   },
   {
     "version": 136,
     "name": "meeting_commitment_conversion_v1",
     "checksum": "ab838fcbc59a03d497e77b256e2d7f0e85bd5576ac4fa9980434b764fb9765be",
-    "file": "20260908010000_p10_8_meeting_commitment_conversion.sql"
+    "file": "20260908010000_p10_8_meeting_commitment_conversion.sql",
+    "sha256": "3192041c950cc19c0e46004627a04094a423d9ea6affc7fc0fc3247a98776982"
   },
   {
     "version": 137,
     "name": "customer_account_360_v1",
     "checksum": "b9612ed4eb81a1a34496d22cead72ba782facc9594085eef551584ebb97a0c07",
-    "file": "20260908013000_p10_9_customer_account_360.sql"
+    "file": "20260908013000_p10_9_customer_account_360.sql",
+    "sha256": "de324b8e44b6713c92ed43306e0ef32fbbc1fe15506b909fe8e6cfee792c8f38"
   },
   {
     "version": 138,
     "name": "salesforce_read_sync_v1",
     "checksum": "3a17a929b9db8ab125f74b34cc3937298944959836a7e893f0c35c83fabea103",
-    "file": "20260908020000_p10_10_salesforce_read_sync.sql"
+    "file": "20260908020000_p10_10_salesforce_read_sync.sql",
+    "sha256": "6fe0e6fd08eb7467330c82a99c7cb1b73e61ce7c245f0c04d0a1a32724ee0d83"
   },
   {
     "version": 139,
     "name": "salesforce_guarded_writes_v1",
     "checksum": "1abb9529ce56ff31484da98bc52de725d7c6402792dbff1b0b1706abc7c9f1e1",
-    "file": "20260908023000_p10_11_salesforce_guarded_writes.sql"
+    "file": "20260908023000_p10_11_salesforce_guarded_writes.sql",
+    "sha256": "1abb9529ce56ff31484da98bc52de725d7c6402792dbff1b0b1706abc7c9f1e1"
   },
   {
     "version": 140,
     "name": "customer_health_scoring_v1",
     "checksum": "91f12ad0fdae25496f14bf21751491470f4572bcb58c587360373dc038b063e2",
-    "file": "20260908030000_p10_12_customer_health_scoring.sql"
+    "file": "20260908030000_p10_12_customer_health_scoring.sql",
+    "sha256": "8e8412818480c1485b3d751811414c0aac672916d0a84059bb7e35f2205f1f74"
   },
   {
     "version": 141,
     "name": "customer_success_workflows_v1",
     "checksum": "6ed4f5625107af151e49cf1fe094b9637af2053f5f1c85e31f6984cc1b4e7f38",
-    "file": "20260908060000_p10_13_customer_success_workflows.sql"
+    "file": "20260908060000_p10_13_customer_success_workflows.sql",
+    "sha256": "70ac4043012f6793a6b3d97e29a58861741dbca417e1fffa563b50f141b16b39"
   },
   {
     "version": 142,
     "name": "cohesive_today_preferences_v1",
     "checksum": "c2ccb45d121194793876b68fec90c68f2d1bdfadcc889aebdd5abd9f4bd8763d",
-    "file": "20260908070000_p11_1_cohesive_today.sql"
+    "file": "20260908070000_p11_1_cohesive_today.sql",
+    "sha256": "81504d19bba2b588995a32ac2af3aa8f4ce01933fcbc6c54535e1fb7cf0af134"
   },
   {
     "version": 143,
     "name": "functional_model_assignments_v1",
     "checksum": "b2c0979801a5aed19e44b0c12ed6c457ac766868baae1d4ca27d1abddb269cae",
-    "file": "20260908080000_p11_8_functional_model_assignments.sql"
+    "file": "20260908080000_p11_8_functional_model_assignments.sql",
+    "sha256": "e10b7ebf34e31417ce92f4e357a7f3409ba1ac1ce3b22bc41ce45c2c6a5d94ba"
   },
   {
     "version": 144,
     "name": "source_coverage_projection_v1",
     "checksum": "a40a9c1c20b2732a44219a9cb3eacf1291d6f7b9e12e8dce3d70e49a70d299db",
-    "file": "20260908090000_p11_9_source_coverage_projection.sql"
+    "file": "20260908090000_p11_9_source_coverage_projection.sql",
+    "sha256": "f4c2a09818b12ebff10f33ee9f8c4047f7ce73f9e6e2d3a2150fbe5fde6c74aa"
   },
   {
     "version": 145,
     "name": "mobile_device_lifecycle_v1",
     "checksum": "18fbfb5fdf45b3e83f49c07d5d2d7c698ebb62be16d3eb160bf7fd806871fb8f",
-    "file": "20260908093000_p12_2_mobile_device_lifecycle.sql"
+    "file": "20260908093000_p12_2_mobile_device_lifecycle.sql",
+    "sha256": "d0eb37625b23bffbe5b1b28424b64846669d6ebcd00775aa03acfd3e06b21332"
   },
   {
     "version": 146,
     "name": "mobile_push_delivery_v1",
     "checksum": "f1b9d4b2c1cacd0e2ef0035665d485dbedb50b159d640a0d78b5111e02f5c959",
-    "file": "20260908123000_p12_5_mobile_push_delivery.sql"
+    "file": "20260908123000_p12_5_mobile_push_delivery.sql",
+    "sha256": "51c45345abfff2b90a6fb10d60286daa57e9f8bb9a5546ca386d0c7eb3c9edb7"
   },
   {
     "version": 147,
     "name": "loop_v2_context_text_engine_v1",
     "checksum": "abe02d5cde5e23661f1407af38a6cb7db6f9491b46e48c7313341d7b8a069760",
-    "file": "20260908143000_loop_v2_context_text_engine.sql"
+    "file": "20260908143000_loop_v2_context_text_engine.sql",
+    "sha256": "a056af8fd75befd4024d981a80e78eb3dd9cc5daba489bda5fa176a8b2190144"
   },
   {
     "version": 148,
     "name": "personal_context_consent_v1",
     "checksum": "e41c0aa8ef3d49aa2b29da415d2ca37d4d1eeef3d36fe338cb1fffa2a6a48e0d",
-    "file": "20260908153000_personal_context_consent.sql"
+    "file": "20260908153000_personal_context_consent.sql",
+    "sha256": "96ca98794a92798f32947faf0960701fff2659657335b401c179670b14bd7c0e"
   },
   {
     "version": 149,
     "name": "delegation_actor_identifier_compatibility_v1",
     "checksum": "e23652ba4ff4fb4598d3671175e36d8a4a2974af839031477033d9924bc03810",
-    "file": "20260908170000_delegation_actor_identifier_compatibility.sql"
+    "file": "20260908170000_delegation_actor_identifier_compatibility.sql",
+    "sha256": "c91b0258ce6bf3cad49fce2904d246395f3b99f8266ded2c1e49d1926439d2a3"
   },
   {
     "version": 150,
     "name": "legacy_memory_owner_enrollment_v1",
     "checksum": "d43fafd08d25aa6f3c7646828a43596a1c9301fc3b99d8fa82c077175a57cab2",
-    "file": "20260909190000_legacy_memory_owner_enrollment.sql"
+    "file": "20260909190000_legacy_memory_owner_enrollment.sql",
+    "sha256": "b3337cb2b473a843c5e3b1bb7c5fbf3d7b47c5c33d41f1b42cca2972506e031e"
   },
   {
     "version": 151,
     "name": "maintenance_system_scope_v1",
     "checksum": "6eeab2482987d833ab99862640348951d6d798d732cb91df91791ac29b098679",
-    "file": "20260909200000_maintenance_system_scope.sql"
+    "file": "20260909200000_maintenance_system_scope.sql",
+    "sha256": "7254abdc857a618f8867f6311a35574acbadd5e4382e470321c26a9134f7a616"
   },
   {
     "version": 152,
     "name": "memory_graph_scope_v2",
     "checksum": "80fb478914e814d44034b303b3bcf39e4f99c7f66f0240f114fe23e704ab29ae",
-    "file": "20260909203000_memory_graph_scope_v2.sql"
+    "file": "20260909203000_memory_graph_scope_v2.sql",
+    "sha256": "31fc9a853a9573708af4614ee9a8211072f93694709ead31c597851a896054f8"
   },
   {
     "version": 153,
     "name": "configurable_ai_model_scopes_v1",
     "checksum": "7e8e236c9c3c3d0f19dfc32c942ee6bd37aeed0da8f192057c9ecebb78412745",
-    "file": "20260909213000_configurable_ai_model_scopes.sql"
+    "file": "20260909213000_configurable_ai_model_scopes.sql",
+    "sha256": "c260818027ee06abf0352d501f1ddb4a5b8adf07714814f86d6a342e3fbb75fd"
   },
   {
     "version": 154,
     "name": "media_computer_model_scopes_v1",
     "checksum": "a8aa943ab72aed3c2d80a7d6abf46efb206b64ed476a6f674298a6e0eb1343f2",
-    "file": "20260910110000_media_computer_model_scopes.sql"
+    "file": "20260910110000_media_computer_model_scopes.sql",
+    "sha256": "ace42798af532f1036837fef266b4c26c7eff3c49cb97133f87f869183b5fb2e"
   },
   {
     "version": 155,
     "name": "knowledge_cognification_candidates_v1",
     "checksum": "c14f3308088df1ce4eb94f7208580b91bc574efe7479bf2832d2f2ba853cac1e",
-    "file": "20260910140000_knowledge_cognification_candidates.sql"
+    "file": "20260910140000_knowledge_cognification_candidates.sql",
+    "sha256": "3dbc189617c8dd1287e97afd6a6e91fcf0ab79fded35aa7949fb6b678f5b6bba"
   },
   {
     "version": 156,
     "name": "conversation_summary_enrichments_v1",
     "checksum": "83e7878f29b3ea25df0ecb40bd94521a3e84af93f5eae6a34ad03bd4b9071a37",
-    "file": "20260911110000_conversation_summary_enrichments.sql"
+    "file": "20260911110000_conversation_summary_enrichments.sql",
+    "sha256": "107297f10a31d83099901cbebcf025260a26c2f20a052b3e7b1f01fb0f07c7b2"
   },
   {
     "version": 157,
     "name": "market_research_model_scope_v1",
     "checksum": "f1c276a830957ba8409e6f776f8dce5499324a75db8b7980533bafcbd612b749",
-    "file": "20260911150000_market_research_model_scope.sql"
+    "file": "20260911150000_market_research_model_scope.sql",
+    "sha256": "f4963b78449af63fc88ecc33dafa60640159102efe80f08aae8a5ae44ca266da"
   },
   {
     "version": 158,
     "name": "market_event_history_v1",
     "checksum": "400f5ed02eba25002cb34e124aa9cd7d4930225ecdbe68887a2b08bd3d6b5d12",
-    "file": "20260911190000_market_event_history.sql"
+    "file": "20260911190000_market_event_history.sql",
+    "sha256": "244b541386ae0408df938c3617a541d37e718d5f6adcf0661b25f8bc8dc9f6db"
   },
   {
     "version": 159,
     "name": "market_event_schedule_v1",
     "checksum": "93d4dcb67ce32981d1ed5d115f9af4ff94206a19ee9ea2516bf6b1ff58eccdc5",
-    "file": "20260911210000_market_event_schedule.sql"
+    "file": "20260911210000_market_event_schedule.sql",
+    "sha256": "18578c23cff25d34ad5871e0658de40d6857564964f0ae8bf15c7735b6c35410"
   },
   {
     "version": 160,
     "name": "market_price_snapshot_v1",
     "checksum": "f4042cd8d4f0c7a34ea4119fe1af5b8932ef631a0271a907a0f797f64ef7371a",
-    "file": "20260911220000_market_price_snapshots.sql"
+    "file": "20260911220000_market_price_snapshots.sql",
+    "sha256": "4ef09d6e349ce871ce9e08e521ce814abb0faf7b2d1e33f23bd6ff910829fc68"
   },
   {
     "version": 161,
     "name": "market_official_schedule_sources_v1",
     "checksum": "b3019c65f900b44feb47ff57632d4fe13fd56b12db661f24c45ea735568a66d8",
-    "file": "20260911230000_market_official_schedule_sources.sql"
+    "file": "20260911230000_market_official_schedule_sources.sql",
+    "sha256": "b7a869e893d8cd23c551a1188aacf9e096cdbd1b6ffc3d9ce7e248f8a7aa5ab2"
   },
   {
     "version": 162,
     "name": "market_macro_observations_v1",
     "checksum": "5d34d958b2ea0f8155ec2a2a97e819c761d1cb528cec0b127030133cb65a376a",
-    "file": "20260911233000_market_macro_observations.sql"
+    "file": "20260911233000_market_macro_observations.sql",
+    "sha256": "5ddcab2b9d97d8e0c9c6b065984c990ecb6fe0e84cb86b1fe9c78484620dc4cb"
   },
   {
     "version": 163,
     "name": "market_event_replays_v1",
     "checksum": "c2ebe40a5d108a32f4ea6dc80283da69467d9e7a88564ddd51a4d8b9a85a69e3",
-    "file": "20260911234500_market_event_replays.sql"
+    "file": "20260911234500_market_event_replays.sql",
+    "sha256": "db7f1b09840cea3287f8bcefaad93918989f134490782c6fcd3034987f4d3e43"
   },
   {
     "version": 164,
     "name": "market_forward_shadow_v1",
     "checksum": "bb35c6f9f1a39d50cb1b735b338b205f56dbb70359577e746a1a6db18a466517",
-    "file": "20260912003000_market_forward_shadow.sql"
+    "file": "20260912003000_market_forward_shadow.sql",
+    "sha256": "55bba1b199cdc446e046842ba686917c959cf87b9cea7d486ef9bd12bf8940d2"
   },
   {
     "version": 165,
     "name": "market_forward_shadow_clock_skew_v1",
     "checksum": "a639af20d1842a4f106ca4975af46f6562b592932729ab03e1e38d922c2fcea6",
-    "file": "20260912010000_market_forward_shadow_clock_skew.sql"
+    "file": "20260912010000_market_forward_shadow_clock_skew.sql",
+    "sha256": "ed50233dd832e0a5240175c193236c62f8947c1a3cf37a8c471c1ad752bb97c3"
   },
   {
     "version": 166,
     "name": "market_analysis_versions_v1",
     "checksum": "ee55253b32cf5838ac8e37a5a4e969e314c82fd2190be7a397e5d2a64eb4b232",
-    "file": "20260912113000_market_analysis_versions.sql"
+    "file": "20260912113000_market_analysis_versions.sql",
+    "sha256": "a28804235fb71d09c950f9303461e4f39ce70d50220a09a15e735ec267375e01"
   },
   {
     "version": 167,
     "name": "app_builder_workspaces_v1",
     "checksum": "df930dd3d4221b175bcabcbe4670c200798568f95c91a1c04537d509a3b0133c",
-    "file": "20260914113000_app_builder_workspaces.sql"
+    "file": "20260914113000_app_builder_workspaces.sql",
+    "sha256": "89f9c9e38b6d15e6f257db69fc704bba9498b48d84b6930ea5b13171cfd8b9f1"
   },
   {
     "version": 168,
     "name": "app_builder_recovery_v1",
     "checksum": "5817c2ae6209f9344439fd536fef3551ed6adca4cafb2811810eaf9ffc6cfd82",
-    "file": "20260914160000_app_builder_recovery.sql"
+    "file": "20260914160000_app_builder_recovery.sql",
+    "sha256": "b113ed821c64eb0148bbd05da73d17e7744912cb4091f6e18e8b8df28092a699"
   },
   {
     "version": 169,
     "name": "app_builder_verification_v1",
     "checksum": "42d9291da42daf9b4513f4fe9f3221bae4336d2d20074773a96db70135d9d176",
-    "file": "20260914170000_app_builder_verification.sql"
+    "file": "20260914170000_app_builder_verification.sql",
+    "sha256": "93d0cf4241a6367a97bc2a3c4479dcb9a93c962257bec1f5a97713943ccba098"
   },
   {
     "version": 170,
     "name": "app_builder_github_delivery_v1",
     "checksum": "7d1f8e773faa0de1e8a5ac7a58ffb79a236a79504932fc757ee4cfbfbf796e7f",
-    "file": "20260915103000_app_builder_github_delivery.sql"
+    "file": "20260915103000_app_builder_github_delivery.sql",
+    "sha256": "2a654df1a1b21913fbea45fc2f34a2750809cc9fd306d3ba3d9540492f9fbc66"
   },
   {
     "version": 171,
     "name": "app_builder_preview_deployments_v1",
     "checksum": "22a1cc4db58ef6e999d0276af281a12d4876dc46964009ebd124d645327294ad",
-    "file": "20260915140000_app_builder_preview_deployments.sql"
+    "file": "20260915140000_app_builder_preview_deployments.sql",
+    "sha256": "a6c05b2d9e4686feef57395f513039fb6e30593f82946a7f552aa7030311f468"
   },
   {
     "version": 172,
     "name": "app_builder_production_releases_v1",
     "checksum": "7d4c51d2d01df3f14c2ccf263b8c2b029acaf1537db427d8b2353b4b3ea8fed0",
-    "file": "20260915170000_app_builder_production_releases.sql"
+    "file": "20260915170000_app_builder_production_releases.sql",
+    "sha256": "65277b9b07bf93d91f72cd6ca9b12ec08ce8f197229c4bc74dc10a4e3611952b"
   },
   {
     "version": 173,
     "name": "app_builder_deployment_url_constraint_repair_v1",
     "checksum": "a41d2d82ad95d8402b182f8136f9bee67133d2380f246605c803915838c7da8e",
-    "file": "20260915173000_app_builder_deployment_url_constraint_repair.sql"
+    "file": "20260915173000_app_builder_deployment_url_constraint_repair.sql",
+    "sha256": "ac7e0573dc6aa7a65dc11f0595ecec6366956ff5ba450cd908ef90907d62f35c"
   },
   {
     "version": 174,
     "name": "app_builder_repository_workspaces_v1",
     "checksum": "30f4769a6fcccd41aa457882b6be2752583d7d5920be75597e3b2121e91604d0",
-    "file": "20260915190000_app_builder_repository_workspaces.sql"
+    "file": "20260915190000_app_builder_repository_workspaces.sql",
+    "sha256": "64337584b791b9dbd3501c903ebec07fc8c517f4cc044b3522b5a5ea409c9c42"
   },
   {
     "version": 175,
     "name": "tool_execution_retention_redaction_v2",
     "checksum": "300aff0f20a6d42ce84437c5ae8c45ac0c9e7fcd0f64b5b52fd5a291bd385e57",
-    "file": "20260915210000_tool_execution_retention_redaction_v2.sql"
+    "file": "20260915210000_tool_execution_retention_redaction_v2.sql",
+    "sha256": "5be49c8bd4fcc055b92a11f4b94122efd600866d6a1d7e71b0c3f27091e93a6f"
   },
   {
     "version": 176,
     "name": "app_builder_repository_git_preview_v1",
     "checksum": "fe9e7e77a45fcbf2a17012c232859f0172d0cacac134da4373d38a60afd67e4c",
-    "file": "20260916093000_app_builder_repository_git_previews.sql"
+    "file": "20260916093000_app_builder_repository_git_previews.sql",
+    "sha256": "f4feb85ed69f474df45e4fa3ce23fe5572c5d5aba7a3639ba97953e2235511a5"
   },
   {
     "version": 177,
     "name": "market_deterministic_backtests_v1",
     "checksum": "27b2d1959799b90893282bb78e1e74724ce62aa93597691627ae9b9757d25c6a",
-    "file": "20260916120000_market_deterministic_backtests.sql"
+    "file": "20260916120000_market_deterministic_backtests.sql",
+    "sha256": "bb0228a18feae82421f821ccdbf1d60536655cad93859f39e95e2c67174c1dac"
   },
   {
     "version": 178,
     "name": "p13_1_macos_native_platform_v1",
     "checksum": "b5cca5f81cd6cef3861d541d04ad4d15468476c8e954d610255fd3c70a237262",
-    "file": "20260916143000_p13_1_macos_native_platform.sql"
+    "file": "20260916143000_p13_1_macos_native_platform.sql",
+    "sha256": "9566cb60eb4a632c9bd2ed227f081223b0793ca609a7f37c4b0104c538a9fa39"
   },
   {
     "version": 179,
     "name": "p13_3_local_computer_runtime_v1",
     "checksum": "68dcf5260d23b7f8e6eb2f14be43e8150a4ca747676b73e6ae27da6502f1fd68",
-    "file": "20260917110000_p13_3_local_computer_runtime.sql"
+    "file": "20260917110000_p13_3_local_computer_runtime.sql",
+    "sha256": "49b86c822299fa6a0c1c2092d56fcbd89841638360bc283ea2f81f06dd8b1d03"
   },
   {
     "version": 180,
     "name": "p13_3_local_computer_run_binding_v1",
     "checksum": "ff0d067e14965b75e45532f9ee534480fd237ef514c735282652d36a779000b4",
-    "file": "20260917150000_p13_3_local_computer_run_binding.sql"
+    "file": "20260917150000_p13_3_local_computer_run_binding.sql",
+    "sha256": "2e45abe3bbbaaa3a1698e33957880df60a5260a6d0c401235a74a266ad94f389"
   },
   {
     "version": 181,
     "name": "isolated_browser_runtime_retirement_v1",
     "checksum": "2d8bfc80ac843fe49ca79024022b873f5046a68822892ace7ff78d393025cf4d",
-    "file": "20260917170000_p13_3_retire_isolated_browser.sql"
+    "file": "20260917170000_p13_3_retire_isolated_browser.sql",
+    "sha256": "351883560df962e7869ab08981bf7cdab189cc6a52b985cea70a2b8846e2d350"
   },
   {
     "version": 182,
     "name": "p13_3_local_computer_open_url_action_v1",
     "checksum": "46a2975c9099d954bc7f7ff6aa537076f14f8dce274e53f33826a38471d1f5e4",
-    "file": "20260917193000_p13_3_local_computer_open_url_action.sql"
+    "file": "20260917193000_p13_3_local_computer_open_url_action.sql",
+    "sha256": "92790123798eedfdbbacef956bb2f340bde73d5f7d50e29bdacc2652c74d186b"
   },
   {
     "version": 183,
     "name": "actor_rls_policy_composition_repair_v1",
     "checksum": "06e06bfc319278f8e676d14c30bfc34f60cdda305ff48b0c4f4944a01e53ba97",
-    "file": "20260918120000_actor_rls_policy_composition_repair.sql"
+    "file": "20260918120000_actor_rls_policy_composition_repair.sql",
+    "sha256": "d307299f854fe5282ca3f5976eee654e9ac2ff9d942f2e87fa7d2ea39bebf4b9"
   },
   {
     "version": 184,
     "name": "semantic_decision_shadow_pilot_v1",
     "checksum": "142047c12f42ba8135d7bfd95edde467ebcedf4d42f5c69937b4fe797a865223",
-    "file": "20260918130000_semantic_decision_shadow_pilot.sql"
+    "file": "20260918130000_semantic_decision_shadow_pilot.sql",
+    "sha256": "ac40b41dac1a63eeffb78c0eb377f80786dbc9afd424c9b6efec4fcb13a27a86"
   },
   {
     "version": 185,
     "name": "mobile_push_receipt_canary_v1",
     "checksum": "a4840325f34b054c01c953bc8253a2123df4cc0d87369ce386ac69a6c8b11f03",
-    "file": "20260918140000_mobile_push_receipt_canary.sql"
+    "file": "20260918140000_mobile_push_receipt_canary.sql",
+    "sha256": "34357cc9507a96ba72b7454e89925b15e8cc61e115f38eeedaac6a421de883f2"
   },
   {
     "version": 186,
     "name": "declarative_plugins_v1",
     "checksum": "0cb2bc195736819e3fd5c3a6ab44a8c48ca3dcc55b63d097a69aaf9824b06825",
-    "file": "20260918150000_declarative_plugins.sql"
+    "file": "20260918150000_declarative_plugins.sql",
+    "sha256": "ee7379781674fd11993803bb75be5cf5f5949ec26d2166456798aa1aaefbfc80"
   },
   {
     "version": 187,
     "name": "builtin_skill_catalog_v2",
     "checksum": "fe690251c625bd3a55932b5a58c26509df6bc283cb24a1dd7c6373a1ce0a3a9c",
-    "file": "20260919120000_builtin_skill_catalog_v2.sql"
+    "file": "20260919120000_builtin_skill_catalog_v2.sql",
+    "sha256": "2142b762945c7737da45e3d5e20a5ca37e33f5e965f1cd37ea2d8ef73a5493f0"
   },
   {
     "version": 188,
     "name": "builtin_skill_catalog_v3",
     "checksum": "4c206314533b7812aff807d551f1b1514987582b64c21e1c17378ac0c592deb1",
-    "file": "20260919143000_builtin_skill_catalog_v3.sql"
+    "file": "20260919143000_builtin_skill_catalog_v3.sql",
+    "sha256": "55b037d051507886857585b2dde3bf5e06724e90efb607e8a64257ec5115235c"
   },
   {
     "version": 189,
     "name": "generated_artifact_persistence_v1",
     "checksum": "4065c615c77bf4baf5921d5dcd468359ed8113bc49ba5291908bdfc3b9f36ebf",
-    "file": "20260919150000_generated_artifact_persistence.sql"
+    "file": "20260919150000_generated_artifact_persistence.sql",
+    "sha256": "79f04dabae0d336eaa8d1f00b51f84858113faa183f69095a3ab6f4446e96c56"
   },
   {
     "version": 190,
     "name": "moltbook_agent_connections_v1",
     "checksum": "e0b8c00ca8f4fce6139735623366cacfa97675419a57c1666b4bf0fe4bbe8e46",
-    "file": "20260921120000_moltbook_agent_connections.sql"
+    "file": "20260921120000_moltbook_agent_connections.sql",
+    "sha256": "4f69f57cdcf12e2c92b2b9c742a5096dee6f39cbbd8f582e725efa2b9329ce8e"
   },
   {
     "version": 191,
     "name": "agent_identity_validator_privilege_repair_v1",
     "checksum": "225d62212d28a5c6186d0e62d402a61e0283bfd34695f1f8aa25b2e1132593f2",
-    "file": "20260921143000_agent_identity_validator_privilege_repair.sql"
+    "file": "20260921143000_agent_identity_validator_privilege_repair.sql",
+    "sha256": "6aa30efd077e11073ff4ae92aa7873101718cf725cc3a091132937de0586e0bc"
   },
   {
     "version": 192,
     "name": "agent_private_trigger_privilege_repair_v1",
     "checksum": "a8beaa32d24c97ad6763801982c474414ab93a046f98d91fc3df30bb9e172fab",
-    "file": "20260921150000_agent_private_trigger_privilege_repair.sql"
+    "file": "20260921150000_agent_private_trigger_privilege_repair.sql",
+    "sha256": "d6753b11d1742f9b02172979cef23cf8f8d1547f9635e5bca3d44f760188a573"
   },
   {
     "version": 193,
     "name": "execution_principal_row_validator_grant_v1",
     "checksum": "9b787d1cfa1d6ae007cf8594f43c00045bab640b1f596e91d330923acc3bf2f7",
-    "file": "20260921153000_execution_principal_row_validator_grant.sql"
+    "file": "20260921153000_execution_principal_row_validator_grant.sql",
+    "sha256": "7fc4e4174c32d0d3e4f10d617c2367702f74722a97658a09108d88554c5ff8db"
   },
   {
     "version": 194,
     "name": "moltbook_autonomy_v1",
     "checksum": "66a868eed1a0fef0eb61d8f69d0d2351605edf39711c007d5c58f1febb5cafef",
-    "file": "20260921170000_moltbook_autonomy.sql"
+    "file": "20260921170000_moltbook_autonomy.sql",
+    "sha256": "941331bad23e05ce951c86ed17d06e5c4656b300476d31581ee2986beb5d2e1f"
   },
   {
     "version": 195,
     "name": "moltbook_autonomy_privilege_repair_v1",
     "checksum": "c02b2ca195cbb00c206320eb2074fed7981c282c356f1d4320c6c1ac866adf94",
-    "file": "20260921200000_moltbook_autonomy_privilege_repair.sql"
+    "file": "20260921200000_moltbook_autonomy_privilege_repair.sql",
+    "sha256": "8e1a0b5cff9821b9dadccf58d90b7261830c14e4b688931f2679e6f51f2602d3"
   },
   {
     "version": 196,
     "name": "delegation_execution_runtime_v1",
     "checksum": "0113edbdab2a99f32d4e318c8407a5b66fb8fd7bcbbf839d4d199ded0d2ad6ac",
-    "file": "20260922120000_delegation_execution_runtime.sql"
+    "file": "20260922120000_delegation_execution_runtime.sql",
+    "sha256": "f6861fceb5598c8d560562dd223ee5adabe24e22ddb17159fe1ea0288acf6b7b"
   },
   {
     "version": 197,
     "name": "scheduled_workflow_trigger_shadow_v1",
     "checksum": "64953184d937e9b07591a8dc0aaf97fc696f00a1317ed872d8b58764eca35a16",
-    "file": "20260922130000_scheduled_workflow_trigger_shadow.sql"
+    "file": "20260922130000_scheduled_workflow_trigger_shadow.sql",
+    "sha256": "2110423968427827146611aa6976274a947471ef53195d88df3df4fbd82bb320"
   },
   {
     "version": 198,
     "name": "scheduled_workflow_read_only_canary_v1",
     "checksum": "75358f70c27be2ce0bd8f2048dd399a649d8cbd27cca9ff1a30ab5343324089f",
-    "file": "20260922143000_scheduled_workflow_read_only_canary.sql"
+    "file": "20260922143000_scheduled_workflow_read_only_canary.sql",
+    "sha256": "92f2aae2a9326030147bd26adefa8b458714bafdbf76a24820bfaf8704666930"
   },
   {
     "version": 199,
     "name": "scheduled_workflow_policy_lease_v1",
     "checksum": "56d69404165e70123c590cf1637985db06de55889e4de64e28523b92885ca093",
-    "file": "20260922160000_scheduled_workflow_policy_lease.sql"
+    "file": "20260922160000_scheduled_workflow_policy_lease.sql",
+    "sha256": "52e8068170bad28bc6c06347dccf6a83003e184fffd4a30c8f446a45c92986a7"
   },
   {
     "version": 200,
     "name": "notification_disposition_runtime_v1",
     "checksum": "99af5ab52a824c435e19e46f918755bfa549a1fecda22f9061940f9030c97c2b",
-    "file": "20260922163000_notification_disposition_runtime.sql"
+    "file": "20260922163000_notification_disposition_runtime.sql",
+    "sha256": "8ea42fd8d953604dfb012550161af45a3fb2d1c38bb13c172b8f1b2072e5f3a4"
   },
   {
     "version": 201,
     "name": "prompt_queue_runtime_v1",
     "checksum": "e9cd14ec6c526fbd0fbed097cbc8a535e92b60cfd6bae0785a0a0a6c3b584567",
-    "file": "20260922170000_prompt_queue_runtime.sql"
+    "file": "20260922170000_prompt_queue_runtime.sql",
+    "sha256": "b9978657ce14cc17ac7ca449fb6f8ee9cc5ad5e6b609ee3e7311d79dcc6c04d3"
   },
   {
     "version": 202,
     "name": "delegation_execution_rls_composition_repair_v1",
     "checksum": "3d6b28bd2fdb00cc57360506baea3ef120a4ae13e0050be57ba6d266310a3d63",
-    "file": "20260923110000_delegation_execution_rls_composition_repair.sql"
+    "file": "20260923110000_delegation_execution_rls_composition_repair.sql",
+    "sha256": "27d4b499c2d3bd6dea7fde392caec4041afd4f404a2ce8d607bbb7c4fd1b7d2f"
   },
   {
     "version": 203,
     "name": "agent_daily_learning_v1",
     "checksum": "88fa0dd240ba1920d2bb66395bb2b268dc98bd682282fbe3633d1df4b1d01f96",
-    "file": "20260923130000_agent_daily_learning.sql"
+    "file": "20260923130000_agent_daily_learning.sql",
+    "sha256": "000bf27e2c76a879f37c72d3cbb0eee31e464733b43b2686824a9977c5d02dee"
   },
   {
     "version": 204,
     "name": "google_multi_account_connections_v1",
     "checksum": "8c7ae456bdbcc92f00adb2f24728cf03dc2b082cae7880e0f87ce71d15314cd8",
-    "file": "20260923143000_google_multi_account_connections.sql"
+    "file": "20260923143000_google_multi_account_connections.sql",
+    "sha256": "26f5abe6c1d9ee2a55d021ce38955db832a814c20002caad0b730a9ecdffa007"
   },
   {
     "version": 205,
     "name": "governed_local_command_runner_v1",
     "checksum": "a9c301b4ef3030962b2ae9f69b8df9c2cb2914e90b0d9c8a3c6032f91691015a",
-    "file": "20260924110000_governed_local_command_runner.sql"
+    "file": "20260924110000_governed_local_command_runner.sql",
+    "sha256": "e1d9231688eb5b9c20698304ee4702bed232e660f150d9407e3f00c4d43596c3"
   },
   {
     "version": 206,
     "name": "prompt_queue_context_pins_v1",
     "checksum": "5de8d38921e0d4d0f7e79bcfe4745f780ce973b009c874a519d09bfd8f3ff777",
-    "file": "20260924130000_prompt_queue_context_pins.sql"
+    "file": "20260924130000_prompt_queue_context_pins.sql",
+    "sha256": "35e2c8e35877c2734795958398383298911d530b25fdaa733f0267b2e95e0699"
   },
   {
     "version": 207,
     "name": "memory_forget_lineage_closure_v1",
     "checksum": "980dfe0af300eac5072cf0bf6b5f80b6a4e5335f444f0046732e7291f3f26c36",
-    "file": "20260926090000_memory_forget_lineage_closure.sql"
+    "file": "20260926090000_memory_forget_lineage_closure.sql",
+    "sha256": "b399bfcd8f64c104433a8bd154cfef33b20394aaaa0637140d9424e6ec103a94"
   }
 ]

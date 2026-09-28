@@ -28,6 +28,7 @@ describe("Delegation execution runtime v196 migration", () => {
       name: "delegation_execution_runtime_v1",
       checksum: "0113edbdab2a99f32d4e318c8407a5b66fb8fd7bcbbf839d4d199ded0d2ad6ac",
       file: "20260922120000_delegation_execution_runtime.sql",
+      sha256: "f6861fceb5598c8d560562dd223ee5adabe24e22ddb17159fe1ea0288acf6b7b",
     });
     expect(migration).toContain("latest_version IS DISTINCT FROM 195");
     expect(migration).toContain(
@@ -71,6 +72,7 @@ describe("Delegation execution runtime v196 migration", () => {
       name: "delegation_execution_rls_composition_repair_v1",
       checksum: "3d6b28bd2fdb00cc57360506baea3ef120a4ae13e0050be57ba6d266310a3d63",
       file: "20260923110000_delegation_execution_rls_composition_repair.sql",
+      sha256: "27d4b499c2d3bd6dea7fde392caec4041afd4f404a2ce8d607bbb7c4fd1b7d2f",
     });
     expect(rlsRepairMigration).toContain("latest_version IS DISTINCT FROM 201");
     expect(rlsRepairMigration).toContain("AS PERMISSIVE FOR ALL TO PUBLIC");

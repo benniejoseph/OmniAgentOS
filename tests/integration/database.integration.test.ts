@@ -1,3 +1,7 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import {
@@ -7,12 +11,14 @@ import {
 import {
   databaseSchemaMigrations,
   ensureDatabaseSchema,
+  getSchemaMigrationSteps,
   getSql,
   getVectorStoreStatus,
   runWithDatabaseSystemScope,
   runWithDatabaseTenantScope,
   tenantPolicyTables,
 } from "@/lib/db/client";
+import { sqlMigrationFileDigest } from "@/lib/db/sql-migration-files";
 import { checkSharedRateLimit } from "@/lib/http/rate-limit";
 import { rebuildMemoryGraph } from "@/lib/memory/graph";
 import {
@@ -284,6 +290,73 @@ databaseDescribe("Postgres schema integration", () => {
           ${recorded.applied_at}
         )
       `;
+      vi.resetModules();
+    }
+  });
+
+  test("refuses to run a migration file that no longer has its manifest sha256", async () => {
+    const step = getSchemaMigrationSteps()
+      .filter((candidate) => candidate.kind === "sql")
+      .at(-1);
+    if (step?.kind !== "sql") {
+      throw new Error("schema-migrations.json names no SQL file.");
+    }
+    const versions = step.migrations.map((migration) => migration.version);
+    const original = fs.readFileSync(
+      path.join(process.cwd(), "supabase", "migrations", step.file),
+      "utf8",
+    );
+    const changed = original.replace(
+      /COMMIT;\s*$/,
+      "CREATE TABLE public.changed_migration_probe (id integer);\nCOMMIT;\n",
+    );
+    expect(changed).not.toBe(original);
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "omniagent-changed-migration-"));
+    fs.mkdirSync(path.join(root, "supabase", "migrations"), { recursive: true });
+    fs.writeFileSync(path.join(root, "supabase", "migrations", step.file), changed);
+    const recorded = await admin`
+      SELECT version, name, checksum, applied_at
+      FROM omni_schema_version
+      WHERE version = ANY(${versions}::int[])
+    `;
+    expect(recorded).toHaveLength(versions.length);
+    await admin`DELETE FROM omni_schema_version WHERE version = ANY(${versions}::int[])`;
+    vi.resetModules();
+    try {
+      const client = await import("@/lib/db/client");
+      const cwd = vi.spyOn(process, "cwd").mockReturnValue(root);
+      try {
+        await expect(client.ensureDatabaseSchema()).rejects.toThrow(
+          `Database migration${versions.length > 1 ? "s" : ""} ${step.migrations
+            .map((migration) => `${migration.version} (${migration.name})`)
+            .join(", ")} failed: ${step.file} has sha256 ${sqlMigrationFileDigest(
+            changed,
+            step.migrations.map((migration) => migration.checksum),
+          )}, but schema-migrations.json expects ${step.sha256}. A migration file must not change once a database may have run it; make the change in a new migration.`,
+        );
+      } finally {
+        cwd.mockRestore();
+        await client.closeDatabaseClient();
+      }
+      const [state] = await admin`
+        SELECT
+          to_regclass('public.changed_migration_probe')::text AS probe,
+          (
+            SELECT count(*)::int FROM omni_schema_version
+            WHERE version = ANY(${versions}::int[])
+          ) AS rows
+      `;
+      expect(state).toEqual({ probe: null, rows: 0 });
+    } finally {
+      await admin`DROP TABLE IF EXISTS public.changed_migration_probe`;
+      await admin`DELETE FROM omni_schema_version WHERE version = ANY(${versions}::int[])`;
+      for (const row of recorded) {
+        await admin`
+          INSERT INTO omni_schema_version (version, name, checksum, applied_at)
+          VALUES (${row.version}, ${row.name}, ${row.checksum}, ${row.applied_at})
+        `;
+      }
+      fs.rmSync(root, { recursive: true, force: true });
       vi.resetModules();
     }
   });

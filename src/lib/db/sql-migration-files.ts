@@ -1,5 +1,6 @@
 import "server-only";
 
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -7,6 +8,15 @@ export type SqlMigrationLedgerRow = Readonly<{
   version: number;
   name: string;
   checksum: string;
+}>;
+
+/** A migration file as schema-migrations.json records it. */
+export type SqlMigrationFileEntry = Readonly<{
+  file: string;
+  /** The file's digest; see sqlMigrationFileDigest. */
+  sha256: string;
+  /** The omni_schema_version rows the file records, in order. */
+  migrations: readonly SqlMigrationLedgerRow[];
 }>;
 
 /** One ordered migration file, parsed into statements the runner can execute. */
@@ -23,6 +33,9 @@ export type SqlMigrationFile = Readonly<{
 }>;
 
 const MIGRATION_FILE_NAME = /^\d{14}_[a-z0-9_]+\.sql$/;
+const SHA256_HEX = /^[a-f0-9]{64}$/;
+const CHECKSUM_PLACEHOLDER = "0".repeat(64);
+const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const IDENTIFIER_CHARACTER = /[A-Za-z0-9_$\u0080-\uffff]/;
 const IDENTIFIER_RUN = /[A-Za-z0-9_$\u0080-\uffff]+/y;
 const DOLLAR_QUOTE_TAG = /^\$(?:[A-Za-z_\u0080-\uffff][A-Za-z0-9_\u0080-\uffff]*)?\$/;
@@ -45,8 +58,45 @@ export function sqlMigrationFilePath(file: string) {
   return path.join(process.cwd(), "supabase", "migrations", file);
 }
 
-export async function readSqlMigrationFile(file: string) {
-  return parseSqlMigrationFile(file, await readFile(sqlMigrationFilePath(file), "utf8"));
+/**
+ * Reads a migration file for execution. The file must be UTF-8 and have the
+ * digest schema-migrations.json records, so the runner never executes a file
+ * other than the one this release recorded.
+ */
+export async function readSqlMigrationFile(entry: SqlMigrationFileEntry) {
+  const bytes = await readFile(sqlMigrationFilePath(entry.file));
+  let text: string;
+  try {
+    text = UTF8.decode(bytes);
+  } catch {
+    throw new Error(`${entry.file} is not valid UTF-8.`);
+  }
+  const sha256 = sqlMigrationFileDigest(
+    text,
+    entry.migrations.map((migration) => migration.checksum),
+  );
+  if (sha256 !== entry.sha256) {
+    throw new Error(
+      `${entry.file} has sha256 ${sha256}, but schema-migrations.json expects ${entry.sha256}. A migration file must not change once a database may have run it; make the change in a new migration.`,
+    );
+  }
+  return parseSqlMigrationFile(entry.file, text);
+}
+
+/**
+ * The SHA-256 of a migration file with each of its own ledger checksums
+ * replaced by 64 zeros. A file cannot contain its own digest, so the
+ * placeholder is what lets a version's checksum be the digest of its file.
+ */
+export function sqlMigrationFileDigest(text: string, checksums: readonly string[]) {
+  let content = text;
+  for (const checksum of checksums) {
+    if (!SHA256_HEX.test(checksum)) {
+      throw new Error(`Migration checksum ${JSON.stringify(checksum)} is not a SHA-256 digest.`);
+    }
+    content = content.replaceAll(checksum, CHECKSUM_PLACEHOLDER);
+  }
+  return createHash("sha256").update(content, "utf8").digest("hex");
 }
 
 /**

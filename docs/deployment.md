@@ -857,6 +857,27 @@ declares, and the rows it writes, must match its manifest entries exactly. A
 file that records several versions runs only whole: if only some of them are
 pending, the runner stops and the transaction rolls back.
 
+Each file-backed entry also records the file's `sha256`: the SHA-256 of the
+file with each of its own checksums (the manifest checksums of the versions it
+records) replaced by 64 zeros. The runner reads the file as strict UTF-8 and
+runs it only if that digest matches, so it never runs a file this release did
+not record, and the unit tests fail when a file and its entry disagree. The
+checksums up to v207 are values their ledgers already hold. From v208 on, every
+migration is a SQL file whose checksum is its `sha256`, so each database
+records the digest of the file it ran. If a file and its entry change after a
+database ran it, that database fails verification with `checksum does not match
+this release`. Never change a migration file once any database may have run
+it; make the change in a new migration. Git never converts the line endings of
+these files (`.gitattributes`), because the digest covers their exact bytes.
+
+To add a migration:
+
+1. Write `supabase/migrations/<timestamp>_<name>.sql`, with 64 zeros as the
+   checksum in its `omni_schema_version` insert.
+2. Run `shasum -a 256 supabase/migrations/<timestamp>_<name>.sql`.
+3. Replace the zeros in the file with that digest, and add the manifest entry
+   with the digest as both `checksum` and `sha256`.
+
 The migrations grant to `omni_backup`, `omni_maintenance`, and `omni_runtime` by
 name. When versions are pending and one of these roles is missing, the runner
 first creates it as a placeholder that cannot log in (`NOLOGIN NOSUPERUSER

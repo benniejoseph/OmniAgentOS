@@ -23,7 +23,8 @@ if (
   fail("schema-migrations.json is invalid.");
 }
 // Backup manifests record the omni_schema_version fields only; a manifest
-// entry's `file` only says where the migration's SQL lives.
+// entry's `file` and `sha256` only say where the migration's SQL lives and
+// what it holds.
 const schemaMigrations = schemaMigrationManifest.map(
   ({ version, name, checksum }) => ({ version, name, checksum }),
 );
