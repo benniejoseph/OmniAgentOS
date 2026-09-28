@@ -26,19 +26,8 @@ type IsolationPolicyEvidence = {
   command: string;
 };
 
+/** Tables whose one permissive policy is `<table>_actor`. */
 const ACTOR_POLICY_TABLES = new Set([
-  "omni_a2a_peer_rollouts",
-  "omni_a2a_task_mappings",
-  "omni_a2a_exchanges",
-  "omni_a2a_safety_reservations",
-  "omni_a2a_tool_call_claims",
-  "omni_trash_items",
-  "omni_trash_effect_receipts",
-  "omni_approval_grants",
-  "omni_approval_grant_claims",
-  "omni_browser_profiles",
-  "omni_browser_profile_bindings",
-  "omni_browser_takeovers",
   "omni_mobile_push_registrations",
   "omni_mobile_push_deliveries",
   "omni_person_contact_policies",
@@ -58,9 +47,83 @@ const ACTOR_POLICY_TABLES = new Set([
   "omni_ap2_reconciliation_jobs",
 ]);
 
+/** Tables whose one permissive policy is `<table>_actor_scope`. */
+const ACTOR_SCOPE_POLICY_TABLES = new Set([
+  "omni_personal_context_consents",
+  "omni_app_builder_sessions",
+  "omni_app_builder_checkpoints",
+  "omni_app_builder_verifications",
+  "omni_app_builder_repository_bindings",
+  "omni_app_builder_deliveries",
+  "omni_app_builder_deployments",
+  "omni_app_builder_releases",
+  "omni_app_builder_events",
+  "omni_market_macro_events",
+  "omni_market_macro_event_events",
+  "omni_market_macro_event_schedules",
+  "omni_market_macro_event_schedule_events",
+  "omni_market_macro_observations",
+  "omni_market_macro_observation_events",
+  "omni_market_price_snapshots",
+  "omni_market_price_snapshot_events",
+  "omni_market_event_replays",
+  "omni_market_event_replay_events",
+  "omni_market_backtests",
+  "omni_market_backtest_events",
+]);
+
+/**
+ * Tables whose permissive omni_tenant_isolation policy admits the tenant's
+ * rows, each with the restrictive policy that narrows them to the actor's own.
+ */
+const RESTRICTIVE_ACTOR_POLICIES = new Map<string, string>([
+  ...[
+    "omni_a2a_exchanges",
+    "omni_a2a_peer_rollouts",
+    "omni_a2a_safety_reservations",
+    "omni_a2a_task_mappings",
+    "omni_a2a_tool_call_claims",
+    "omni_agent_adaptations",
+    "omni_agent_definition_versions",
+    "omni_agent_learning_cycles",
+    "omni_agent_learning_observations",
+    "omni_agent_principal_policies",
+    "omni_agent_release_channels",
+    "omni_agent_release_evaluations",
+    "omni_approval_grant_claims",
+    "omni_approval_grants",
+    "omni_browser_profile_bindings",
+    "omni_browser_profiles",
+    "omni_browser_takeovers",
+    "omni_delegation_budget_ledgers",
+    "omni_delegation_executions",
+    "omni_delegation_tasks",
+    "omni_generated_artifact_mutations",
+    "omni_generated_artifact_versions",
+    "omni_generated_artifacts",
+    "omni_mobile_push_delivery_receipts",
+    "omni_moltbook_activities",
+    "omni_moltbook_connections",
+    "omni_moltbook_effect_receipts",
+    "omni_plugin_install_previews",
+    "omni_plugin_installations",
+    "omni_plugin_mutation_receipts",
+    "omni_policy_lease_consumptions",
+    "omni_policy_leases",
+    "omni_prompt_queue_items",
+    "omni_trash_effect_receipts",
+    "omni_trash_items",
+    "omni_workflow_schedule_occurrence_receipts",
+    "omni_workflow_schedule_occurrences",
+    "omni_workflow_schedule_shadow_events",
+  ].map((tableName): [string, string] => [tableName, `${tableName}_actor`]),
+  ["omni_tenant_memory_access_grants", "omni_memory_access_grant_actor"],
+  ["omni_workflow_triggers", "omni_workflow_triggers_schedule_actor"],
+]);
+
 export function expectedTenantIsolationPolicyName(tableName: string) {
-  if (tableName === "omni_personal_context_consents") {
-    return "omni_personal_context_consents_actor_scope";
+  if (ACTOR_SCOPE_POLICY_TABLES.has(tableName)) {
+    return `${tableName}_actor_scope`;
   }
   if (ACTOR_POLICY_TABLES.has(tableName)) {
     return `${tableName}_actor`;
@@ -68,17 +131,32 @@ export function expectedTenantIsolationPolicyName(tableName: string) {
   return "omni_tenant_isolation";
 }
 
+/**
+ * The expected policy must be the table's only permissive policy, and it must
+ * cover every command. Permissive policies combine with OR, so a second one
+ * would admit rows the expected policy refuses.
+ */
 export function hasExpectedTenantIsolationPolicy(
   tableName: string,
   policies: IsolationPolicyEvidence[],
 ) {
-  const expectedPolicyName = expectedTenantIsolationPolicyName(tableName);
-  return policies.some((policy) =>
-    policy.tableName === tableName
-    && policy.policyName === expectedPolicyName
-    && policy.permissive
-    && policy.command === "*"
-  );
+  const tablePolicies = policies.filter((policy) => policy.tableName === tableName);
+  const [permissive, ...otherPermissive] = tablePolicies.filter((policy) => policy.permissive);
+  if (
+    !permissive
+    || otherPermissive.length
+    || permissive.policyName !== expectedTenantIsolationPolicyName(tableName)
+    || permissive.command !== "*"
+  ) {
+    return false;
+  }
+  // The table's one permissive policy is omni_tenant_isolation, so a policy
+  // with the restrictive policy's name is restrictive.
+  const restrictivePolicyName = RESTRICTIVE_ACTOR_POLICIES.get(tableName);
+  return !restrictivePolicyName
+    || tablePolicies.some((policy) =>
+      policy.policyName === restrictivePolicyName && policy.command === "*"
+    );
 }
 
 type LatestTenantIsolationEval = {
@@ -354,7 +432,7 @@ function buildRecommendations({
     recommendations.push("Run database schema migration during deployment startup and verify all tenant tables include tenant_id.");
   }
   if (rlsDisabled.length || forceRlsDisabled.length || missingPolicies.length) {
-    recommendations.push("Re-run ensureDatabaseSchema to enable forced RLS and recreate omni_tenant_isolation policies.");
+    recommendations.push("Apply every pending database migration, which forces RLS and gives each table its expected policies.");
   }
   if (!latestEval) {
     recommendations.push("Run the security.tenant_isolation evaluation as a production release gate.");

@@ -29,6 +29,10 @@ If `/api/health` returns 503, inspect server logs for TLS, credentials, extensio
 - `… has sha256 …, but schema-migrations.json expects …` or `… is not valid UTF-8`: the file is not the one this release recorded. It was edited, or its line endings or encoding changed on the way to this checkout. The runner stopped before running it. Restore the file from the release; make any change in a new migration.
 - `Database migration N checksum does not match this release`: the database recorded a different checksum for version N. From v208 on, a version's checksum is the digest of its file, so the file changed after this database ran it. Deploy the release whose file the database ran, and make the change in a new migration.
 - `… names … without its sha256`, `… has more than one sha256 in schema-migrations.json`, `… must use the sha256 of … as its checksum`, or `… is a TypeScript step, but every migration from 208 on is a SQL file`: the manifest breaks one of the rules in [deployment.md](deployment.md#schema-and-migration-rollout). Nothing ran.
+- `… failed: The policies of … are not its actor policy alone`, from migration 208: after it dropped the table's `omni_tenant_isolation` policy, the table still had another policy, its actor policy differed from the one the migration files create (permissive, every command, `PUBLIC`, the same expression), or its row security was not forced. The migration rolled back, so nothing changed. List the table's rows in `pg_policies` and compare them with the files; find out how each difference got there before you change it by hand, then run the job again.
+- `… failed: Constraint … of … is not the expected one`, from migration 208: a CHECK of that name has a different definition than the files give it, for example two CHECKs under each other's names. The migration rolled back. Compare `pg_get_constraintdef` for the table's CHECKs with the definitions in `20260928090000_schema_catalog_convergence.sql`.
+- `… failed: omni_mobile_push_registrations still has a constraint the files do not create`: the table has both `omni_mobile_push_registrations_check` and the old runner's `omni_mobile_push_registrations_check1`, so migration 208 could not rename one to the other. Review the second one before dropping it, then run the job again.
+- `Schema catalog convergence predecessor is invalid`: migration 208 was run outside `npm run db:migrate` on a database whose latest recorded version is not v207 `memory_forget_lineage_closure_v1` with its release checksum.
 
 If pgvector is unavailable, set `OMNIAGENT_LOG_PGVECTOR_FAILURES=true` temporarily. The app can use JSON embeddings, but vector-index status remains not ready until the extension, columns, dimensions, and HNSW indexes match. The migration fills a row's vector only when its JSON embedding is an array of numbers at least as long as the column; any other embedding stays JSON-only.
 
@@ -182,6 +186,13 @@ Background processing (`capture.asset.process`) makes three attempts with backof
 - Platform secrets remain blocked even if a connector attempts to reference them. Keep the explicit allowlist narrow.
 - Re-import or rediscover only after reviewing vendor schema/tool changes and their risk levels.
 - A successful import does not bypass approvals for side effects.
+
+## The tenant isolation report fails a table
+
+`/api/security/isolation-report` lists a table under `missingPolicies` when the table's policies do not match its contract: an actor or actor-scope table has a permissive policy besides its actor policy; any other table's only permissive policy is not `omni_tenant_isolation`, or it lacks the restrictive actor policy that narrows it; or the permissive policy does not cover every command. The release gate's database tenant isolation check fails with it.
+
+- A database the old runner migrated fails 38 actor tables until migration 208 runs, because each also has a permissive `omni_tenant_isolation` policy that admits every actor's rows. Apply every pending migration; [deployment.md](deployment.md#schema-catalog-convergence-v208) has a query that lists these tables.
+- Otherwise, list the table's rows in `pg_policies`. A second permissive policy widens the table, because permissive policies combine with OR. Find out where it came from before you drop it.
 
 ## Production smoke fails
 

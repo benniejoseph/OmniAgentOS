@@ -53,6 +53,7 @@ import {
   listAgentRunEventsAfter,
   markAgentRunResuming,
 } from "@/lib/runs/store";
+import { getTenantIsolationReport } from "@/lib/security/isolation-report";
 import { sweepExpiredSensitiveData } from "@/lib/security/retention";
 import {
   appendThreadTurn,
@@ -105,6 +106,7 @@ const runtimeRole = "omniagent_integration_runtime";
 const maintenanceRole = "omniagent_integration_maintenance";
 const lineageRuntimeRole = "omniagent_integration_lineage_runtime";
 const lineageMaintenanceRole = "omniagent_integration_lineage_maintenance";
+const scopeProbeRole = "omniagent_integration_scope_probe";
 // Serving roles verify rather than migrate the schema only in production, and
 // production refuses a connection that disables TLS.
 const databaseTlsDisabled = Boolean(
@@ -153,6 +155,7 @@ databaseDescribe("Postgres schema integration", () => {
     await dropDatabaseRole(admin, maintenanceRole);
     await dropDatabaseRole(admin, lineageRuntimeRole);
     await dropDatabaseRole(admin, lineageMaintenanceRole);
+    await dropDatabaseRole(admin, scopeProbeRole);
     await admin`DROP SCHEMA IF EXISTS public CASCADE`;
     await admin`CREATE SCHEMA public`;
     await admin`
@@ -180,6 +183,7 @@ databaseDescribe("Postgres schema integration", () => {
     await dropDatabaseRole(admin, maintenanceRole);
     await dropDatabaseRole(admin, lineageRuntimeRole);
     await dropDatabaseRole(admin, lineageMaintenanceRole);
+    await dropDatabaseRole(admin, scopeProbeRole);
     await admin.end();
   });
 
@@ -5057,6 +5061,343 @@ databaseDescribe("Postgres schema integration", () => {
       }
     },
   );
+  test("changes nothing on a database the migration files built", async () => {
+    const fileCatalog = await schemaCatalogSnapshot(admin);
+
+    const ddl = await withSchemaConvergencePending(admin, () =>
+      convergenceDdlDuring(admin, migrateWithFreshClient),
+    );
+
+    expect(await schemaCatalogSnapshot(admin)).toEqual(fileCatalog);
+    // Replacing the system scope function locks no table.
+    expect(ddl).toEqual([
+      { statement: "function", tag: "CREATE FUNCTION", commands: 1 },
+    ]);
+    expect(await admin`
+      SELECT version, name, checksum
+      FROM omni_schema_version
+      WHERE version IS NOT NULL
+      ORDER BY version ASC
+    `).toEqual(databaseSchemaMigrations);
+  });
+
+  test("refuses to converge a table that matches neither the old runner's catalog nor the files'", async () => {
+    const table = "public.omni_ap2_payment_receipts";
+    const policy = "omni_ap2_payment_receipts_actor";
+    const expression =
+      "omni_system_scope_enabled() OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)";
+    const recreatePolicy = (definition: string) => [
+      `DROP POLICY ${policy} ON ${table}`,
+      `CREATE POLICY ${policy} ON ${table} ${definition}`,
+    ];
+    const actorPolicy = recreatePolicy(
+      `FOR ALL USING (${expression}) WITH CHECK (${expression})`,
+    );
+    const policyError =
+      "The policies of omni_ap2_payment_receipts are not its actor policy alone";
+    const revisions = "public.omni_salesforce_record_revisions";
+    const swapRevisionChecks = [
+      `ALTER TABLE ${revisions} RENAME CONSTRAINT omni_salesforce_record_revisions_check2 TO omni_salesforce_record_revisions_swap`,
+      `ALTER TABLE ${revisions} RENAME CONSTRAINT omni_salesforce_record_revisions_check3 TO omni_salesforce_record_revisions_check2`,
+      `ALTER TABLE ${revisions} RENAME CONSTRAINT omni_salesforce_record_revisions_swap TO omni_salesforce_record_revisions_check3`,
+    ];
+    const variants = [
+      {
+        change: [`ALTER TABLE ${table} NO FORCE ROW LEVEL SECURITY`],
+        restore: [`ALTER TABLE ${table} FORCE ROW LEVEL SECURITY`],
+        error: policyError,
+      },
+      {
+        change: [`ALTER TABLE ${table} DISABLE ROW LEVEL SECURITY`],
+        restore: [`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY`],
+        error: policyError,
+      },
+      {
+        change: [
+          `ALTER POLICY ${policy} ON ${table} RENAME TO omni_ap2_payment_receipts_owner`,
+        ],
+        restore: [
+          `ALTER POLICY omni_ap2_payment_receipts_owner ON ${table} RENAME TO ${policy}`,
+        ],
+        error: policyError,
+      },
+      {
+        change: recreatePolicy(
+          `AS RESTRICTIVE FOR ALL USING (${expression}) WITH CHECK (${expression})`,
+        ),
+        restore: actorPolicy,
+        error: policyError,
+      },
+      {
+        change: recreatePolicy(
+          `FOR UPDATE USING (${expression}) WITH CHECK (${expression})`,
+        ),
+        restore: actorPolicy,
+        error: policyError,
+      },
+      {
+        change: recreatePolicy(
+          `FOR ALL TO omni_runtime USING (${expression}) WITH CHECK (${expression})`,
+        ),
+        restore: actorPolicy,
+        error: policyError,
+      },
+      {
+        change: [
+          `ALTER POLICY ${policy} ON ${table} USING (omni_system_scope_enabled())`,
+        ],
+        restore: [`ALTER POLICY ${policy} ON ${table} USING (${expression})`],
+        error: policyError,
+      },
+      {
+        change: [
+          `ALTER POLICY ${policy} ON ${table} WITH CHECK (omni_system_scope_enabled())`,
+        ],
+        restore: [`ALTER POLICY ${policy} ON ${table} WITH CHECK (${expression})`],
+        error: policyError,
+      },
+      // A second permissive policy would admit rows the actor policy refuses.
+      {
+        change: [
+          `CREATE POLICY omni_ap2_payment_receipts_reader ON ${table} FOR SELECT USING (true)`,
+        ],
+        restore: [`DROP POLICY omni_ap2_payment_receipts_reader ON ${table}`],
+        error: policyError,
+      },
+      {
+        change: [
+          "ALTER TABLE public.omni_model_assignments DROP CONSTRAINT omni_model_assignments_revision_check",
+          "ALTER TABLE public.omni_model_assignments ADD CONSTRAINT omni_model_assignments_revision_check CHECK (assignment_revision >= 0)",
+        ],
+        restore: [
+          "ALTER TABLE public.omni_model_assignments DROP CONSTRAINT omni_model_assignments_revision_check",
+          "ALTER TABLE public.omni_model_assignments ADD CONSTRAINT omni_model_assignments_revision_check CHECK (assignment_revision > 0)",
+        ],
+        error:
+          "Constraint omni_model_assignments_revision_check of omni_model_assignments is not the expected one",
+      },
+      // Two CHECKs under each other's names.
+      {
+        change: swapRevisionChecks,
+        restore: swapRevisionChecks,
+        error:
+          "Constraint omni_salesforce_record_revisions_check2 of omni_salesforce_record_revisions is not the expected one",
+      },
+      // With both names present, the old one is not renamed.
+      {
+        change: [
+          "ALTER TABLE public.omni_mobile_push_registrations ADD CONSTRAINT omni_mobile_push_registrations_check1 CHECK ((state = 'revoked') = (revoked_at IS NOT NULL))",
+        ],
+        restore: [
+          "ALTER TABLE public.omni_mobile_push_registrations DROP CONSTRAINT omni_mobile_push_registrations_check1",
+        ],
+        error:
+          "omni_mobile_push_registrations still has a constraint the files do not create",
+      },
+    ];
+    const fileCatalog = await schemaCatalogSnapshot(admin);
+
+    await withSchemaConvergencePending(admin, async () => {
+      for (const variant of variants) {
+        for (const statement of variant.change) {
+          await admin.unsafe(statement);
+        }
+        const changed = await schemaCatalogSnapshot(admin);
+        // The runner wraps the file runner's error, which wraps the database's.
+        await expect(migrateWithFreshClient()).rejects.toMatchObject({
+          message: expect.stringContaining(variant.error),
+          cause: { cause: { code: "55000" } },
+        });
+        expect(await schemaCatalogSnapshot(admin)).toEqual(changed);
+        for (const statement of variant.restore) {
+          await admin.unsafe(statement);
+        }
+      }
+      const [ledger] = await admin`
+        SELECT count(*)::int AS rows
+        FROM omni_schema_version
+        WHERE version >= ${schemaConvergenceVersion}
+      `;
+      expect(ledger).toEqual({ rows: 0 });
+    });
+    expect(await schemaCatalogSnapshot(admin)).toEqual(fileCatalog);
+  });
+
+  test("adds a CHECK the database lacks under both its old runner name and its file name", async () => {
+    const tableName = "omni_salesforce_record_heads";
+    const missingChecks = [
+      { tableName, constraintName: "omni_salesforce_record_heads_check1" },
+      { tableName, constraintName: "omni_salesforce_record_heads_check2" },
+    ];
+    const fileCatalog = await schemaCatalogSnapshot(admin);
+
+    await withSchemaConvergencePending(admin, async () => {
+      for (const { constraintName } of missingChecks) {
+        await admin.unsafe(
+          `ALTER TABLE public.${tableName} DROP CONSTRAINT ${constraintName}`,
+        );
+      }
+
+      const ddl = await convergenceDdlDuring(admin, migrateWithFreshClient);
+
+      expect(ddl).toEqual([
+        { statement: "constraints", tag: "ALTER TABLE", commands: 2 },
+        { statement: "function", tag: "CREATE FUNCTION", commands: 1 },
+      ]);
+      expect(await schemaCatalogSnapshot(admin)).toEqual(
+        withUnvalidatedChecks(fileCatalog, missingChecks),
+      );
+      for (const { constraintName } of missingChecks) {
+        await admin.unsafe(
+          `ALTER TABLE public.${tableName} VALIDATE CONSTRAINT ${constraintName}`,
+        );
+      }
+    });
+    expect(await schemaCatalogSnapshot(admin)).toEqual(fileCatalog);
+  });
+
+  test("brings a database the old runner built to the catalog the migration files build", async () => {
+    const tenantId = "tenant_schema_convergence";
+    const isolationReport = () =>
+      runWithDatabaseTenantScope(tenantId, () => getTenantIsolationReport(tenantId));
+    const missingChecks = Object.entries(oldRunnerMissingChecks).flatMap(
+      ([tableName, constraintNames]) =>
+        constraintNames.map((constraintName) => ({ tableName, constraintName })),
+    );
+    const fileCatalog = await schemaCatalogSnapshot(admin);
+    await admin.unsafe(
+      `CREATE ROLE ${scopeProbeRole} NOLOGIN NOSUPERUSER BYPASSRLS`,
+    );
+    await admin.unsafe(`GRANT USAGE ON SCHEMA public TO ${scopeProbeRole}`);
+    expect(await systemScopeEnabledFor(admin, scopeProbeRole)).toBe(true);
+    expect((await isolationReport()).summary).toMatchObject({
+      failingTables: 0,
+      missingPolicies: [],
+    });
+
+    await withSchemaConvergencePending(admin, async () => {
+      for (const tableName of oldRunnerTenantWidePolicyTables) {
+        await admin.unsafe(`
+          CREATE POLICY omni_tenant_isolation ON public.${tableName} FOR ALL
+          USING (omni_tenant_visible(tenant_id))
+          WITH CHECK (omni_tenant_visible(tenant_id))
+        `);
+      }
+      for (const { tableName, constraintName } of missingChecks) {
+        await admin.unsafe(
+          `ALTER TABLE public.${tableName} DROP CONSTRAINT ${constraintName}`,
+        );
+      }
+      for (const [tableName, oldName, fileName] of [...oldRunnerCheckNames].reverse()) {
+        await admin.unsafe(
+          `ALTER TABLE public.${tableName} RENAME CONSTRAINT ${fileName} TO ${oldName}`,
+        );
+      }
+      await admin.unsafe(oldRunnerSystemScopeFunction);
+      const oldCatalog = await schemaCatalogSnapshot(admin);
+
+      expect(await systemScopeEnabledFor(admin, scopeProbeRole)).toBe(false);
+      const oldReport = await isolationReport();
+      expect(oldReport.status).toBe("degraded");
+      expect([...oldReport.summary.missingPolicies].sort()).toEqual(
+        oldRunnerTenantWidePolicyTables,
+      );
+
+      // A CHECK that matches neither catalog stops the migration, and what it
+      // had changed by then rolls back.
+      await admin.unsafe(`
+        ALTER TABLE public.omni_model_assignments
+        ADD CONSTRAINT omni_model_assignments_revision_check
+        CHECK (assignment_revision >= 0)
+      `);
+      await expect(migrateWithFreshClient()).rejects.toThrow(
+        "Constraint omni_model_assignments_revision_check of omni_model_assignments is not the expected one",
+      );
+      await admin.unsafe(`
+        ALTER TABLE public.omni_model_assignments
+        DROP CONSTRAINT omni_model_assignments_revision_check
+      `);
+      expect(await schemaCatalogSnapshot(admin)).toEqual(oldCatalog);
+
+      const ddl = await convergenceDdlDuring(admin, migrateWithFreshClient);
+
+      expect(await schemaCatalogSnapshot(admin)).toEqual(
+        withUnvalidatedChecks(fileCatalog, missingChecks),
+      );
+      expect(ddl).toEqual([
+        { statement: "constraints", tag: "ALTER TABLE", commands: 51 },
+        { statement: "function", tag: "CREATE FUNCTION", commands: 1 },
+        { statement: "policies", tag: "DROP POLICY", commands: 38 },
+      ]);
+      expect(await admin`
+        SELECT version, name, checksum
+        FROM omni_schema_version
+        WHERE version IS NOT NULL
+        ORDER BY version ASC
+      `).toEqual(databaseSchemaMigrations);
+      expect(await systemScopeEnabledFor(admin, scopeProbeRole)).toBe(true);
+      const report = await isolationReport();
+      expect(report.status).toBe("passing");
+      expect(report.summary.missingPolicies).toEqual([]);
+
+      // A later release validates the CHECKs this one adds.
+      for (const { tableName, constraintName } of missingChecks) {
+        await admin.unsafe(
+          `ALTER TABLE public.${tableName} VALIDATE CONSTRAINT ${constraintName}`,
+        );
+      }
+      expect(await schemaCatalogSnapshot(admin)).toEqual(fileCatalog);
+    });
+  });
+
+  test("reports each table whose tenant policy has lost the restrictive actor policy that narrows it", async () => {
+    const tenantId = "tenant_restrictive_actor_policies";
+    const restrictivePolicies = await admin`
+      SELECT relation.relname AS table_name,
+        policy.polname AS policy_name,
+        policy.polcmd::text AS command,
+        policy.polroles::text AS roles,
+        pg_get_expr(policy.polqual, policy.polrelid) AS using_expression,
+        pg_get_expr(policy.polwithcheck, policy.polrelid) AS check_expression
+      FROM pg_policy policy
+      JOIN pg_class relation ON relation.oid = policy.polrelid
+      WHERE relation.relnamespace = 'public'::regnamespace
+        AND relation.relname = ANY(${tenantPolicyTables as readonly string[]})
+        AND NOT policy.polpermissive
+        AND policy.polname ~ '_actor$'
+      ORDER BY relation.relname
+    `;
+    // Each one covers every command and role, as its restore below does.
+    expect(restrictivePolicies.map(({ command, roles }) => ({ command, roles })))
+      .toEqual(Array(40).fill({ command: "*", roles: "{0}" }));
+    const catalog = await schemaCatalogSnapshot(admin);
+    const dropped: typeof restrictivePolicies[number][] = [];
+
+    try {
+      for (const policy of restrictivePolicies) {
+        await admin.unsafe(
+          `DROP POLICY ${policy.policy_name} ON public.${policy.table_name}`,
+        );
+        dropped.push(policy);
+      }
+      const report = await runWithDatabaseTenantScope(tenantId, () =>
+        getTenantIsolationReport(tenantId),
+      );
+      expect([...report.summary.missingPolicies].sort()).toEqual(
+        restrictivePolicies.map((policy) => policy.table_name),
+      );
+    } finally {
+      for (const policy of dropped) {
+        await admin.unsafe(`
+          CREATE POLICY ${policy.policy_name} ON public.${policy.table_name}
+          AS RESTRICTIVE FOR ALL TO PUBLIC
+          USING (${policy.using_expression})
+          ${policy.check_expression === null ? "" : `WITH CHECK (${policy.check_expression})`}
+        `);
+      }
+    }
+    expect(await schemaCatalogSnapshot(admin)).toEqual(catalog);
+  });
 });
 
 async function dropDatabaseRole(
@@ -5111,6 +5452,370 @@ function migrationLockLogLines(calls: readonly unknown[][]) {
       return [];
     }
   });
+}
+
+const schemaConvergenceVersion = 208;
+
+// A database the old runner migrated, before every version ran from its SQL
+// file, gave these tables a permissive tenant-wide policy beside their actor
+// policy.
+const oldRunnerTenantWidePolicyTables = [
+  "omni_ap2_credential_claims",
+  "omni_ap2_credential_grants",
+  "omni_ap2_mandate_authorizations",
+  "omni_ap2_mandate_reviews",
+  "omni_ap2_payment_receipts",
+  "omni_ap2_payment_transactions",
+  "omni_ap2_reconciliation_jobs",
+  "omni_ap2_reconciliation_observations",
+  "omni_ap2_signing_credentials",
+  "omni_app_builder_checkpoints",
+  "omni_app_builder_deliveries",
+  "omni_app_builder_deployments",
+  "omni_app_builder_events",
+  "omni_app_builder_releases",
+  "omni_app_builder_repository_bindings",
+  "omni_app_builder_sessions",
+  "omni_app_builder_verifications",
+  "omni_communication_intents",
+  "omni_conversation_links",
+  "omni_delivery_receipts",
+  "omni_inbound_communications",
+  "omni_market_backtest_events",
+  "omni_market_backtests",
+  "omni_market_event_replay_events",
+  "omni_market_event_replays",
+  "omni_market_macro_event_events",
+  "omni_market_macro_event_schedule_events",
+  "omni_market_macro_event_schedules",
+  "omni_market_macro_events",
+  "omni_market_macro_observation_events",
+  "omni_market_macro_observations",
+  "omni_market_price_snapshot_events",
+  "omni_market_price_snapshots",
+  "omni_message_drafts",
+  "omni_mobile_push_deliveries",
+  "omni_mobile_push_registrations",
+  "omni_person_contact_policies",
+  "omni_personal_context_consents",
+];
+
+// The CHECK constraints the files create that the old runner left out.
+const oldRunnerMissingChecks: Record<string, string[]> = {
+  omni_mobile_push_deliveries: [
+    "omni_mobile_push_deliveries_attempt_check",
+    "omni_mobile_push_deliveries_cause_id_check",
+    "omni_mobile_push_deliveries_check",
+    "omni_mobile_push_deliveries_deep_link_check",
+    "omni_mobile_push_deliveries_id_check",
+    "omni_mobile_push_deliveries_max_attempts_check",
+    "omni_mobile_push_deliveries_notification_id_check",
+    "omni_mobile_push_deliveries_owner_actor_id_check",
+    "omni_mobile_push_deliveries_parent_id_check",
+    "omni_mobile_push_deliveries_provider_message_id_sha256_check",
+  ],
+  omni_mobile_push_registrations: [
+    "omni_mobile_push_registrations_credential_version_check",
+    "omni_mobile_push_registrations_device_id_check",
+    "omni_mobile_push_registrations_id_check",
+    "omni_mobile_push_registrations_lifecycle_revision_check",
+    "omni_mobile_push_registrations_owner_actor_id_check",
+  ],
+  omni_model_assignments: ["omni_model_assignments_revision_check"],
+  omni_salesforce_connections: [
+    "omni_salesforce_connections_check2",
+    "omni_salesforce_connections_check3",
+    "omni_salesforce_connections_instance_origin_check",
+    "omni_salesforce_connections_object_scope_check",
+    "omni_salesforce_connections_object_scope_check1",
+    "omni_salesforce_connections_sync_cursor_check1",
+    "omni_salesforce_connections_sync_error_check",
+    "omni_salesforce_connections_sync_lease_owner_id_check",
+  ],
+  omni_salesforce_reconciliation_findings: [
+    "omni_salesforce_reconciliation_finding_remote_revision_id_check",
+    "omni_salesforce_reconciliation_findings_local_revision_id_check",
+    "omni_salesforce_reconciliation_findings_object_type_check",
+  ],
+  omni_salesforce_record_heads: [
+    "omni_salesforce_record_heads_account_external_id_check",
+    "omni_salesforce_record_heads_check1",
+    "omni_salesforce_record_heads_check3",
+    "omni_salesforce_record_heads_organization_id_sha256_check",
+    "omni_salesforce_record_heads_projection_error_code_check",
+  ],
+  omni_salesforce_record_revisions: [
+    "omni_salesforce_record_revisions_account_external_id_check",
+    "omni_salesforce_record_revisions_check1",
+    "omni_salesforce_record_revisions_check2",
+    "omni_salesforce_record_revisions_check3",
+    "omni_salesforce_record_revisions_check4",
+    "omni_salesforce_record_revisions_fields_sha256_check",
+    "omni_salesforce_record_revisions_organization_id_sha256_check",
+    "omni_salesforce_record_revisions_replay_id_sha256_check",
+  ],
+  omni_salesforce_webhook_events: [
+    "omni_salesforce_webhook_events_external_id_check",
+    "omni_salesforce_webhook_events_object_type_check",
+    "omni_salesforce_webhook_events_organization_id_sha256_check",
+  ],
+};
+
+// The CHECK constraints the old runner named differently, as [table, the old
+// runner's name, the files' name], in the order the migration renames them.
+const oldRunnerCheckNames = [
+  [
+    "omni_mobile_push_deliveries",
+    "omni_mobile_push_deliveries_check4",
+    "omni_mobile_push_deliveries_check5",
+  ],
+  [
+    "omni_mobile_push_deliveries",
+    "omni_mobile_push_deliveries_check3",
+    "omni_mobile_push_deliveries_check4",
+  ],
+  [
+    "omni_mobile_push_deliveries",
+    "omni_mobile_push_deliveries_check2",
+    "omni_mobile_push_deliveries_check3",
+  ],
+  [
+    "omni_mobile_push_deliveries",
+    "omni_mobile_push_deliveries_check1",
+    "omni_mobile_push_deliveries_check2",
+  ],
+  [
+    "omni_mobile_push_deliveries",
+    "omni_mobile_push_deliveries_check",
+    "omni_mobile_push_deliveries_check1",
+  ],
+  [
+    "omni_mobile_push_registrations",
+    "omni_mobile_push_registrations_check1",
+    "omni_mobile_push_registrations_check",
+  ],
+  [
+    "omni_salesforce_connections",
+    "omni_salesforce_connections_object_scope_check",
+    "omni_salesforce_connections_object_scope_check2",
+  ],
+  [
+    "omni_salesforce_record_heads",
+    "omni_salesforce_record_heads_check1",
+    "omni_salesforce_record_heads_check2",
+  ],
+] as const;
+
+// The old runner's system scope function, which admits the schema owner
+// alone.
+const oldRunnerSystemScopeFunction = `
+  CREATE OR REPLACE FUNCTION public.omni_system_scope_enabled()
+  RETURNS BOOLEAN
+  LANGUAGE SQL
+  STABLE
+  AS $$
+    SELECT COALESCE(current_setting('omni.system_scope', true), '') = 'true'
+      AND NULLIF(current_setting('omni.system_reason', true), '') IS NOT NULL
+      AND current_user = (
+        SELECT pg_get_userbyid(relowner)
+        FROM pg_class
+        WHERE oid = 'omni_schema_version'::regclass
+      )
+  $$
+`;
+
+// Row security, policies and constraints of every table in the public schema,
+// and the system scope function, as the catalogs describe them.
+async function schemaCatalogSnapshot(client: ReturnType<typeof postgres>) {
+  const tables = await client`
+    SELECT relname AS table_name,
+      relrowsecurity AS row_security,
+      relforcerowsecurity AS forced_row_security
+    FROM pg_class
+    WHERE relnamespace = 'public'::regnamespace
+      AND relkind IN ('r', 'p')
+    ORDER BY relname
+  `;
+  const policies = await client`
+    SELECT relation.relname AS table_name,
+      policy.polname AS policy_name,
+      policy.polpermissive AS permissive,
+      policy.polcmd::text AS command,
+      policy.polroles::text AS roles,
+      pg_get_expr(policy.polqual, policy.polrelid) AS using_expression,
+      pg_get_expr(policy.polwithcheck, policy.polrelid) AS check_expression
+    FROM pg_policy policy
+    JOIN pg_class relation ON relation.oid = policy.polrelid
+    WHERE relation.relnamespace = 'public'::regnamespace
+    ORDER BY relation.relname, policy.polname
+  `;
+  const constraints = await client`
+    SELECT relation.relname AS table_name,
+      table_constraint.conname AS constraint_name,
+      table_constraint.contype::text AS type,
+      pg_get_constraintdef(table_constraint.oid) AS definition,
+      table_constraint.convalidated AS validated
+    FROM pg_constraint table_constraint
+    JOIN pg_class relation ON relation.oid = table_constraint.conrelid
+    WHERE relation.relnamespace = 'public'::regnamespace
+    ORDER BY relation.relname, table_constraint.conname
+  `;
+  const [systemScope] = await client`
+    SELECT pg_get_functiondef(oid) AS definition,
+      pg_get_userbyid(proowner) AS owner,
+      proacl::text AS acl
+    FROM pg_proc
+    WHERE oid = 'public.omni_system_scope_enabled()'::regprocedure
+  `;
+  return {
+    tables: [...tables],
+    policies: [...policies],
+    constraints: [...constraints],
+    systemScope: { ...systemScope },
+  };
+}
+
+// The catalog with the given CHECK constraints added NOT VALID.
+function withUnvalidatedChecks(
+  catalog: Awaited<ReturnType<typeof schemaCatalogSnapshot>>,
+  checks: { tableName: string; constraintName: string }[],
+) {
+  const unvalidated = new Set(
+    checks.map(({ tableName, constraintName }) => `${tableName}.${constraintName}`),
+  );
+  return {
+    ...catalog,
+    constraints: catalog.constraints.map((constraint) =>
+      unvalidated.has(`${constraint.table_name}.${constraint.constraint_name}`)
+        ? {
+            ...constraint,
+            definition: `${constraint.definition} NOT VALID`,
+            validated: false,
+          }
+        : constraint,
+    ),
+  };
+}
+
+// Runs the operation with the schema catalog convergence migration and every
+// later one pending, then puts back any ledger row the operation did not
+// record again.
+async function withSchemaConvergencePending<T>(
+  client: ReturnType<typeof postgres>,
+  operation: () => Promise<T>,
+) {
+  const recorded = await client`
+    SELECT version, name, checksum, applied_at
+    FROM omni_schema_version
+    WHERE version >= ${schemaConvergenceVersion}
+  `;
+  expect(recorded.map((row) => row.version)).toContain(schemaConvergenceVersion);
+  await client`
+    DELETE FROM omni_schema_version
+    WHERE version >= ${schemaConvergenceVersion}
+  `;
+  try {
+    return await operation();
+  } finally {
+    for (const row of recorded) {
+      await client`
+        INSERT INTO omni_schema_version (version, name, checksum, applied_at)
+        SELECT ${row.version}::int, ${row.name}::text, ${row.checksum}::text,
+          ${row.applied_at}::timestamptz
+        WHERE NOT EXISTS (
+          SELECT 1 FROM omni_schema_version WHERE version = ${row.version}::int
+        )
+      `;
+    }
+  }
+}
+
+// Runs the pending migrations the way a new server process does.
+async function migrateWithFreshClient() {
+  vi.resetModules();
+  const client = await import("@/lib/db/client");
+  try {
+    await client.ensureDatabaseSchema();
+  } finally {
+    await client.closeDatabaseClient();
+    vi.resetModules();
+  }
+}
+
+// Runs the operation while an event trigger records each DDL command, and
+// counts the commands each statement of the schema catalog convergence
+// migration ran. A command a DO block runs reports the whole block as its
+// query.
+async function convergenceDdlDuring(
+  client: ReturnType<typeof postgres>,
+  operation: () => Promise<void>,
+) {
+  await client`
+    CREATE TABLE schema_convergence_ddl (
+      tag TEXT NOT NULL,
+      statement TEXT NOT NULL
+    )
+  `;
+  await client.unsafe(`
+    CREATE FUNCTION schema_convergence_ddl_start() RETURNS event_trigger
+    LANGUAGE plpgsql AS $$
+    BEGIN
+      INSERT INTO schema_convergence_ddl (tag, statement)
+      VALUES (
+        tg_tag,
+        CASE
+          WHEN strpos(current_query(), '$policies$') > 0 THEN 'policies'
+          WHEN strpos(current_query(), '$constraints$') > 0 THEN 'constraints'
+          WHEN strpos(
+            current_query(),
+            'FUNCTION public.omni_system_scope_enabled()'
+          ) > 0 THEN 'function'
+          ELSE 'other'
+        END
+      );
+    END
+    $$
+  `);
+  await client`
+    CREATE EVENT TRIGGER schema_convergence_ddl
+    ON ddl_command_start
+    EXECUTE FUNCTION schema_convergence_ddl_start()
+  `;
+  try {
+    await operation();
+    const rows = await client`
+      SELECT statement, tag, count(*)::int AS commands
+      FROM schema_convergence_ddl
+      WHERE statement <> 'other'
+      GROUP BY statement, tag
+      ORDER BY statement, tag
+    `;
+    return rows.map((row) => ({
+      statement: String(row.statement),
+      tag: String(row.tag),
+      commands: Number(row.commands),
+    }));
+  } finally {
+    await client`DROP EVENT TRIGGER IF EXISTS schema_convergence_ddl`;
+    await client`DROP FUNCTION IF EXISTS schema_convergence_ddl_start()`;
+    await client`DROP TABLE IF EXISTS schema_convergence_ddl`;
+  }
+}
+
+// Whether omni_system_scope_enabled() lets the role raise system scope.
+async function systemScopeEnabledFor(
+  client: ReturnType<typeof postgres>,
+  roleName: string,
+) {
+  const [scope] = await client.begin(async (transaction) => {
+    await transaction`SELECT set_config('omni.system_scope', 'true', true)`;
+    await transaction`
+      SELECT set_config('omni.system_reason', 'integration scope check', true)
+    `;
+    await transaction.unsafe(`SET LOCAL ROLE ${roleName}`);
+    return transaction`SELECT omni_system_scope_enabled() AS enabled`;
+  });
+  return Boolean(scope.enabled);
 }
 
 async function withTimeout<T>(operation: Promise<T>, timeoutMs: number) {

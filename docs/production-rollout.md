@@ -8,6 +8,7 @@
 - [ ] Treat a red `provenance` gate in the nightly `Production Smoke` as an unreviewed production change. Replace it with a runner release from `main`, or roll back.
 - [ ] Record the release commit, image digest, migration versions, owner, rollback decision-maker, RPO, and RTO.
 - [ ] Run `npm run db:backup` and verify that the latest isolated `npm run db:restore-drill` evidence passed.
+- [ ] Before migrating to v208, run its read-only policy query from [deployment.md](deployment.md#schema-catalog-convergence-v208) and keep the output with the release record. On a database the old runner migrated, it lists the 38 tables whose tenant policy v208 drops.
 - [ ] Confirm `DATABASE_URL`, canonical app URL (`https://asael.bennierichard.com` exactly), OpenAI key, cron secret, internal secret, bootstrap/admin state, and report-signing key.
 - [ ] Confirm `vercel.json` selects `sin1`, Vercel pins `OMNIAGENT_OPENAI_GATEWAY_URL` to `https://omniagent-os-worker.fly.dev/v1`, Fly pins `OMNIAGENT_OPENAI_UPSTREAM_HOST` to `us.api.openai.com`, both platforms have the active sensitive token, and `OPENAI_API_KEY` is present on Vercel plus the temporary release shell but never Fly.
 - [ ] Load the non-exportable active gateway token from the owner's password manager with the silent-prompt procedure in `docs/deployment.md`. If rotating, also load the distinct token embedded in the currently promoted Vercel release as `OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN`; otherwise ensure that variable is unset. Confirm all shell values will be unset after the release.
@@ -70,6 +71,7 @@ row counts.
 - [ ] Deploy one web canary before scaling workers.
 - [ ] Run `npm run db:migrate` from the dedicated release job, then confirm `/api/health` returns `healthy` at the expected release revision and inspect `omni_schema_version`. The public migration endpoint is intentionally disabled.
 - [ ] Confirm pgvector dimensions/indexes and forced tenant RLS.
+- [ ] Confirm the v208 policy query now returns no rows, and `/api/security/isolation-report` lists no `missingPolicies`.
 - [ ] Build/deploy one worker with `--build-arg OMNIAGENT_RELEASE_SHA=<release-commit>`; verify its startup revision exactly matches the web canary, then confirm successful ticks and no queue/auth errors.
 - [ ] Before any paid evaluation, verify the bounded Fly `/healthz` gate reports service `asael-openai-egress`, region `iad`, the exact release revision, and protocol `1`; then verify both configured gateway tokens reach the authorization boundary without an OpenAI request. Evidence and logs must contain only match/configuration booleans.
 - [ ] Confirm Fly used blue/green replacement and did not remove the serving gateway until the candidate passed `/healthz`; after Vercel promotion, confirm the worker switched to canonical via revision-gated `SIGHUP` without a second Fly deployment.

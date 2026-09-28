@@ -132,6 +132,101 @@ WHERE memory.claim_status IS DISTINCT FROM 'forgotten'
   );
 ```
 
+### Schema catalog convergence (v208)
+
+Migration `20260928090000_schema_catalog_convergence.sql` installs schema v208
+(`schema_catalog_convergence_v1`) after v207. It is the first version whose
+checksum is the digest of its file. Apply it before deploying the code that
+needs it: until it runs, every database-backed request fails with `Database
+schema is behind (pending versions: 208)`. A release older than v208 still
+serves against a v208 database.
+
+A database that was migrated before every version ran from its SQL file can
+differ from what the files build in three ways. v208 brings it to the files'
+catalog:
+
+- On 38 actor-owned tables, a permissive `omni_tenant_isolation` policy sat
+  beside the actor policy. The tables are the 17 AP2, communication, mobile
+  push, and contact-policy tables with a `<table>_actor` policy, the 20 app
+  builder and market tables with a `<table>_actor_scope` policy, and
+  `omni_personal_context_consents`. Permissive policies combine with OR, so
+  every actor of a tenant could read and change the other actors' rows. v208
+  drops the tenant policy, and each table keeps its actor policy alone.
+- Eight tables (mobile push deliveries and registrations, model assignments,
+  and five Salesforce tables) lacked 43 of their CHECK constraints, and 8 others
+  had different names. v208 renames the 8 and adds the 43 `NOT VALID`. Each one
+  binds every new and changed row at once, without scanning the table under its
+  lock. An update to a row written before v208 that breaks one of them now fails
+  with `23514`. Rows nobody changes are not checked until a later release
+  validates the constraints.
+- `omni_system_scope_enabled()` admitted only the schema owner. The
+  maintenance role is a `BYPASSRLS` non-owner, so system-scope work that the
+  database checks failed with `55000`; legacy memory owner enrollment
+  (`/api/memory/ownership`) is one example. v208 restores the definition from
+  `maintenance_system_scope_v1`, which also admits a `BYPASSRLS` role that is not
+  a superuser. Replacing the function keeps its owner and grants.
+
+Each step changes only what differs, so on a database the files built v208
+takes no table lock and changes no table. After its changes it compares the
+policies of the 38 tables, and the definitions of the 51 constraints it renamed,
+added, or found, with what the files create. Any difference stops it with
+`55000`: the whole migration rolls back, and the job fails naming the table or
+constraint. See [troubleshooting.md](troubleshooting.md#schema-startup-fails).
+
+The tenant isolation report (`/api/security/isolation-report`, and the release
+gate's database tenant isolation check) now checks each table's policy
+contract, not only that a policy of the expected name exists:
+
+- each actor and actor-scope table has its actor policy as its only
+  permissive policy;
+- every other tracked table has `omni_tenant_isolation` as its only permissive
+  policy, and on 40 of them it must be narrowed by a restrictive actor policy;
+- the permissive policy covers every command.
+
+Before this release the report expected a permissive actor policy on the 12
+A2A, Trash, approval, and browser tables that v183 gave a restrictive one, and
+the tenant policy on the 20 app builder and market tables. It failed those
+tables even where their policies were right, and it passed the 38 tables above
+while the tenant policy widened them. On a database the old runner built, the
+report now fails those 38 tables until v208 runs.
+
+Before and after migrating, this read-only query lists the tables where a
+permissive tenant policy widens an actor policy. After v208 it returns no rows:
+
+```sql
+SELECT relation.relname AS table_name
+FROM pg_policy policy
+JOIN pg_class relation ON relation.oid = policy.polrelid
+JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+WHERE namespace.nspname = 'public'
+  AND policy.polname = 'omni_tenant_isolation'
+  AND policy.polpermissive
+  AND EXISTS (
+    SELECT 1
+    FROM pg_policy actor
+    WHERE actor.polrelid = policy.polrelid
+      AND actor.polpermissive
+      AND actor.polname IN (
+        relation.relname || '_actor',
+        relation.relname || '_actor_scope'
+      )
+  )
+ORDER BY 1;
+```
+
+This one lists the constraints still waiting for validation:
+
+```sql
+SELECT relation.relname AS table_name, check_constraint.conname AS constraint_name
+FROM pg_constraint check_constraint
+JOIN pg_class relation ON relation.oid = check_constraint.conrelid
+JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+WHERE namespace.nspname = 'public'
+  AND check_constraint.contype = 'c'
+  AND NOT check_constraint.convalidated
+ORDER BY 1, 2;
+```
+
 ### Web Command durable structured-context release
 
 Web Command defaults a new conversation to `session` scope. Attached Agents,
@@ -964,8 +1059,8 @@ Keep migrations backward-compatible for at least one application rollback. If a 
 ### Installed adaptive-runtime migration chain
 
 The adaptive-runtime migrations below are registered in `schema-migrations.json`.
-Versions 196-206 are installed in production; v207 is pending its first
-release. Each migration takes the schema advisory lock,
+Versions 196-206 are installed in production; v207 and v208 are pending their
+first release. Each migration takes the schema advisory lock,
 checks the exact immediately preceding version/name/checksum, installs or extends
 forced actor RLS, verifies its privilege/trigger boundary, and writes its own
 marker in the same transaction.
@@ -984,6 +1079,7 @@ marker in the same transaction.
 | 205 | `governed_local_command_runner_v1` | `a9c301b4ef3030962b2ae9f69b8df9c2cb2914e90b0d9c8a3c6032f91691015a` | exact command workspace grants, approval/courier binding, and metadata-only execution receipts |
 | 206 | `prompt_queue_context_pins_v1` | `5de8d38921e0d4d0f7e79bcfe4745f780ce973b009c874a519d09bfd8f3ff777` | sealed exact Command references plus content-free digests/counts for reviewed and queued work |
 | 207 | `memory_forget_lineage_closure_v1` | `980dfe0af300eac5072cf0bf6b5f80b6a4e5335f444f0046732e7291f3f26c36` | forget lineage closure over every visibility, applied through the receipt with trace, graph, descendant, and agent-grant removal |
+| 208 | `schema_catalog_convergence_v1` | `514f00004c8726a2c762f6069728b20d4816a92731c72c125bf39cbca9a0371f` | actor policies alone on 38 tables, 43 missing CHECKs added `NOT VALID` and 8 renamed, and system scope for the `BYPASSRLS` maintenance role, on databases the old runner migrated |
 
 Version 196 requires the exact predecessor marker v195
 `moltbook_autonomy_privilege_repair_v1` with checksum

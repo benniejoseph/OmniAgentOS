@@ -1241,5 +1241,12 @@
     "checksum": "980dfe0af300eac5072cf0bf6b5f80b6a4e5335f444f0046732e7291f3f26c36",
     "file": "20260926090000_memory_forget_lineage_closure.sql",
     "sha256": "b399bfcd8f64c104433a8bd154cfef33b20394aaaa0637140d9424e6ec103a94"
+  },
+  {
+    "version": 208,
+    "name": "schema_catalog_convergence_v1",
+    "checksum": "514f00004c8726a2c762f6069728b20d4816a92731c72c125bf39cbca9a0371f",
+    "file": "20260928090000_schema_catalog_convergence.sql",
+    "sha256": "514f00004c8726a2c762f6069728b20d4816a92731c72c125bf39cbca9a0371f"
   }
 ]
