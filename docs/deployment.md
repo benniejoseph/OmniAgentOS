@@ -989,11 +989,15 @@ the enabled APIs. Its production redirect URIs are
 `https://asael.bennierichard.com/api/auth/google/callback` and
 `https://asael.bennierichard.com/api/oauth/google/callback`. Enable Gmail,
 Calendar, Drive, Docs, Sheets, Slides, and Photos Picker APIs. The OAuth consent
-configuration must declare the scopes requested by
-`GOOGLE_WORKSPACE_OAUTH_SCOPES` in
-`src/lib/connectors/google-workspace-capabilities.ts`: OpenID/email,
-`gmail.modify`, `calendar.events`, `calendar.calendarlist.readonly`, `drive`,
-and `photospicker.mediaitems.readonly`.
+configuration must declare every scope in
+`src/lib/connectors/google-workspace-capabilities.ts`. A new connection asks
+only for `GOOGLE_WORKSPACE_OAUTH_SCOPES`: OpenID/email, `gmail.readonly`,
+`calendar.events.readonly`, `calendar.calendarlist.readonly`, `drive.readonly`,
+and `photospicker.mediaitems.readonly`. A service's write scope
+(`gmail.modify`, `calendar.events`, or `drive`) is asked for only when the owner
+chooses Allow changes for that service on an existing connection; Google adds
+it to what the account already granted. Connections made before this keep the
+scopes they granted.
 
 Keep the audience External and In production for this private application.
 An unverified sensitive/restricted-scope warning is expected for a private app;

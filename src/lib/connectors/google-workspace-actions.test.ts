@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { GOOGLE_WORKSPACE_OAUTH_SCOPES } from "@/lib/connectors/google-workspace-capabilities";
+import {
+  GOOGLE_WORKSPACE_WRITE_ACCESS,
+  googleWorkspaceAuthorizationScopes,
+} from "@/lib/connectors/google-workspace-capabilities";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
 const access = vi.hoisted(() => ({
@@ -36,7 +39,11 @@ const googleGrant = {
   accountEmail: "workspace.owner@example.test",
   connectionLabel: "Personal",
   connectionPurpose: "personal",
-  scopes: [...GOOGLE_WORKSPACE_OAUTH_SCOPES],
+  // A connection whose owner has allowed changes to every service.
+  scopes: [...new Set([
+    ...googleWorkspaceAuthorizationScopes(),
+    ...GOOGLE_WORKSPACE_WRITE_ACCESS.flatMap(googleWorkspaceAuthorizationScopes),
+  ])],
   status: "active",
   authorizationGeneration: 1,
   createdAt: "2026-09-11T06:00:00.000Z",

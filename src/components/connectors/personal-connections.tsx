@@ -18,7 +18,10 @@ import {
 import { clsx } from "clsx";
 import { useMemo, useState } from "react";
 
-import { googleWorkspaceCapabilitiesForScopes } from "@/lib/connectors/google-workspace-capabilities";
+import {
+  googleWorkspaceCapabilitiesForScopes,
+  type GoogleWorkspaceWriteAccess,
+} from "@/lib/connectors/google-workspace-capabilities";
 
 const INTEGRATION_STATUS_CHANGED_EVENT = "asael:integration-status-changed";
 type GoogleConnectionPurpose = "personal" | "work";
@@ -421,6 +424,26 @@ function GoogleAccountCard({
                     {connected && permission.granted ? <Check size={13} className="text-primary" aria-hidden="true" /> : null}
                   </p>
                   <p className="mt-0.5 text-xs leading-5 text-muted">{permission.detail}</p>
+                  {grant && provider?.configured && permission.granted &&
+                    permission.writeAccess && !permission.writeGranted ? (
+                    <a
+                      href={googleAuthorizeUrl(
+                        provider.authorizeUrl || "/api/oauth/google/authorize",
+                        account.purpose,
+                        grant.id,
+                        false,
+                        permission.writeAccess,
+                      )}
+                      aria-label={`Allow ${permission.label} changes`}
+                      aria-disabled={Boolean(actionDisabledReason)}
+                      className={clsx(
+                        "mt-1 inline-flex min-h-8 items-center text-xs font-semibold text-primary underline-offset-2 hover:underline",
+                        actionDisabledReason && "pointer-events-none opacity-60",
+                      )}
+                    >
+                      Allow changes
+                    </a>
+                  ) : null}
                 </div>
               </div>
             );
@@ -436,10 +459,12 @@ function googleAuthorizeUrl(
   purpose: GoogleConnectionPurpose,
   connectionId?: string,
   repair = false,
+  writeAccess?: GoogleWorkspaceWriteAccess,
 ) {
   const params = new URLSearchParams({ account: purpose });
   if (connectionId) params.set("connectionId", connectionId);
   if (repair) params.set("intent", "repair");
+  if (writeAccess) params.set("access", writeAccess);
   return `${baseUrl}${baseUrl.includes("?") ? "&" : "?"}${params.toString()}`;
 }
 
@@ -527,24 +552,32 @@ function googlePermissionViews(scopes: readonly string[]) {
           : gmailRead ? "Read messages only." : gmailSend ? "Send messages only." : "Not granted.",
       icon: Mail,
       granted: gmailRead || gmailSend,
+      writeAccess: "gmail",
+      writeGranted: gmailModify && gmailTrash,
     },
     {
       label: "Calendar",
       detail: calendarWrite ? "View and manage events." : calendarRead ? "View events only." : "Not granted.",
       icon: CalendarDays,
       granted: calendarRead,
+      writeAccess: "calendar",
+      writeGranted: calendarWrite,
     },
     {
       label: "Drive",
       detail: driveRead && driveWrite ? "View and change accessible files." : driveRead ? "View files only." : "Not granted.",
       icon: HardDrive,
       granted: driveRead,
+      writeAccess: "drive",
+      writeGranted: driveWrite,
     },
     {
       label: "Photos",
       detail: photosPicked ? "Import only photos you explicitly choose." : "Not granted.",
       icon: Images,
       granted: photosPicked,
+      writeAccess: undefined,
+      writeGranted: false,
     },
   ] as const;
 }

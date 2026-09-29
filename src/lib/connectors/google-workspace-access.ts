@@ -6,6 +6,8 @@ import {
 } from "@/lib/connectors/oauth-store";
 import { refreshOAuthAccess } from "@/lib/connectors/oauth-providers";
 import {
+  googleWorkspaceWriteAccessFor,
+  googleWorkspaceWriteAccessName,
   hasGoogleWorkspaceCapability,
   type GoogleWorkspaceCapability,
 } from "@/lib/connectors/google-workspace-capabilities";
@@ -36,8 +38,11 @@ export async function getActiveGoogleWorkspaceAccess(input: {
     );
   }
   if (!hasGoogleWorkspaceCapability(secrets.grant.scopes, input.capability)) {
+    const writeAccess = googleWorkspaceWriteAccessFor(input.capability);
     throw new OAuthCredentialError(
-      "The Google connection does not grant the required capability.",
+      writeAccess
+        ? `The Google connection is not yet allowed to make ${googleWorkspaceWriteAccessName(writeAccess)} changes. The owner can allow them from Connections.`
+        : "The Google connection does not grant the required capability.",
       "capability_not_granted",
     );
   }

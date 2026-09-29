@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   authorizeRequest: vi.fn(),
   createOAuthAuthorization: vi.fn(),
+  getOAuthGrantSecrets: vi.fn(),
 }));
 
 vi.mock("@/lib/db/client", () => ({
@@ -15,6 +16,10 @@ vi.mock("@/lib/security/guard", () => ({
 vi.mock("@/lib/connectors/oauth-providers", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/lib/connectors/oauth-providers")>(),
   createOAuthAuthorization: mocks.createOAuthAuthorization,
+}));
+vi.mock("@/lib/connectors/oauth-store", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/connectors/oauth-store")>(),
+  getOAuthGrantSecrets: mocks.getOAuthGrantSecrets,
 }));
 
 import { GET } from "@/app/api/oauth/[provider]/authorize/route";
@@ -82,6 +87,54 @@ describe("Google OAuth authorization route", () => {
     expect(ordinary.status).toBe(302);
     const ordinaryIdentity = mocks.createOAuthAuthorization.mock.calls.at(-1)?.[1];
     expect(ordinaryIdentity).not.toHaveProperty("authorizationIntent");
+    expect(ordinaryIdentity).not.toHaveProperty("googleWriteAccess");
+  });
+
+  it("asks to allow one service's changes only on the owner's existing connection", async () => {
+    const connectionId = "33333333-3333-4333-8333-333333333333";
+    const url = `https://asael.example/api/oauth/google/authorize?account=personal&connectionId=${connectionId}&access=gmail`;
+    mocks.getOAuthGrantSecrets.mockResolvedValue({ grant: { id: connectionId } });
+
+    const allowed = await GET(new Request(url), { params: Promise.resolve({ provider: "google" }) });
+    expect(allowed.status).toBe(302);
+    expect(mocks.getOAuthGrantSecrets).toHaveBeenCalledWith(
+      sessionContext.tenantId,
+      sessionContext.actorId,
+      "google",
+      { connectionId, connectionPurpose: "personal" },
+    );
+    expect(mocks.createOAuthAuthorization).toHaveBeenCalledWith(
+      "google",
+      expect.objectContaining({ connectionId, googleWriteAccess: "gmail" }),
+    );
+    expect(mocks.createOAuthAuthorization.mock.calls[0]?.[1]).not.toHaveProperty("authorizationIntent");
+
+    mocks.getOAuthGrantSecrets.mockResolvedValue(undefined);
+    const missing = await GET(new Request(url), { params: Promise.resolve({ provider: "google" }) });
+    expect(missing.status).toBe(404);
+    expect(mocks.createOAuthAuthorization).toHaveBeenCalledOnce();
+  });
+
+  it("refuses to ask for changes to an unlisted service or without a connection", async () => {
+    const connection = "connectionId=33333333-3333-4333-8333-333333333333";
+    for (const query of [
+      "access=gmail",
+      `access=photos&${connection}`,
+      `access=Gmail&${connection}`,
+      `access=&${connection}`,
+    ]) {
+      const response = await GET(
+        new Request(`https://asael.example/api/oauth/google/authorize?${query}`),
+        { params: Promise.resolve({ provider: "google" }) },
+      );
+      expect(response.status, query).toBe(400);
+      expect(response.headers.get("cache-control")).toBe("private, no-store");
+      await expect(response.json()).resolves.toEqual({
+        error: "Changes can be allowed only for a listed Google service on an existing connection.",
+      });
+    }
+    expect(mocks.getOAuthGrantSecrets).not.toHaveBeenCalled();
+    expect(mocks.createOAuthAuthorization).not.toHaveBeenCalled();
   });
 
   it("refuses Google authorization without a signed-in private account", async () => {

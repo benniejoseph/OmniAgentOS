@@ -5,7 +5,11 @@ import {
   privateAccountPolicyForIdentity,
 } from "@/lib/auth/private-account-policy";
 import { openJsonPayload, sealJsonPayload } from "@/lib/security/sealed-payload";
-import { GOOGLE_WORKSPACE_OAUTH_SCOPES } from "@/lib/connectors/google-workspace-capabilities";
+import {
+  GOOGLE_WORKSPACE_OAUTH_SCOPES,
+  googleWorkspaceAuthorizationScopes,
+  type GoogleWorkspaceWriteAccess,
+} from "@/lib/connectors/google-workspace-capabilities";
 
 export {
   GOOGLE_GMAIL_SEND_SCOPE,
@@ -127,6 +131,7 @@ export function createOAuthAuthorization(
     googleConnectionPurpose?: GoogleConnectionPurpose;
     googleConnectorAccount?: GoogleConnectorAccountPolicy;
     connectionId?: string;
+    googleWriteAccess?: GoogleWorkspaceWriteAccess;
   },
 ) {
   const config = oauthProviders[provider];
@@ -160,16 +165,21 @@ export function createOAuthAuthorization(
     `oauth:${provider}`,
   );
   const redirectUri = `${getAppBaseUrl()}/api/oauth/${provider}/callback`;
+  const scopes = provider === "google"
+    ? googleWorkspaceAuthorizationScopes(identity.googleWriteAccess)
+    : config.scopes;
   const url = new URL(config.authorizeUrl);
   url.searchParams.set("client_id", clientId); url.searchParams.set("redirect_uri", redirectUri);
-  url.searchParams.set("response_type", "code"); url.searchParams.set("scope", config.scopes.join(" "));
+  url.searchParams.set("response_type", "code"); url.searchParams.set("scope", scopes.join(" "));
   url.searchParams.set("state", Buffer.from(JSON.stringify(state)).toString("base64url"));
   url.searchParams.set("code_challenge", challenge); url.searchParams.set("code_challenge_method", "S256");
   if (provider === "google") {
     url.searchParams.set("access_type", "offline");
     url.searchParams.set("include_granted_scopes", "true");
     url.searchParams.set("login_hint", googleAccount!.email);
-    if (identity.authorizationIntent === "repair") {
+    // Allowing changes asks for consent so that Google issues a refresh token
+    // for the combined grant.
+    if (identity.authorizationIntent === "repair" || identity.googleWriteAccess) {
       url.searchParams.set("prompt", "consent");
     } else {
       url.searchParams.set("prompt", "select_account");

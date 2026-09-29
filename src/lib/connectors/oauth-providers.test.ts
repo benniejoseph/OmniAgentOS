@@ -35,11 +35,17 @@ describe("OAuth provider authorization", () => {
     const url = new URL(createOAuthAuthorization("google", { tenantId: "tenant-a", actorId: "user-a" }));
     expect(url.origin).toBe("https://accounts.google.com");
     expect(url.searchParams.get("code_challenge_method")).toBe("S256");
-    expect(url.searchParams.get("scope")).toContain("openid");
-    expect(url.searchParams.get("scope")).toContain("email");
-    expect(url.searchParams.get("scope")).toContain("gmail.modify");
-    expect(url.searchParams.get("scope")).toContain("calendar.calendarlist.readonly");
-    expect(url.searchParams.get("scope")).toContain("/auth/drive");
+    // A new connection asks to sign in and to read, never to change anything.
+    expect(url.searchParams.get("scope")?.split(" ")).toEqual([
+      "openid",
+      "email",
+      "https://www.googleapis.com/auth/gmail.readonly",
+      "https://www.googleapis.com/auth/calendar.events.readonly",
+      "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+      "https://www.googleapis.com/auth/drive.readonly",
+      "https://www.googleapis.com/auth/photospicker.mediaitems.readonly",
+    ]);
+    expect(url.searchParams.get("include_granted_scopes")).toBe("true");
     // A normal connect asks Google for account selection, never forced consent.
     expect(url.searchParams.get("prompt")).toBe("select_account");
     expect(url.searchParams.get("login_hint")).toBe("owner@example.com");
@@ -72,6 +78,30 @@ describe("OAuth provider authorization", () => {
       authorizationIntent: "repair",
     }));
     expect(url.searchParams.get("prompt")).toBe("consent");
+  });
+
+  it("asks for one service's write scope, with consent, to allow its changes", () => {
+    process.env.GOOGLE_OAUTH_CLIENT_ID = "client-id";
+    process.env.GOOGLE_OAUTH_CLIENT_SECRET = "client-secret";
+    process.env.OMNIAGENT_OWNER_EMAIL = "owner@example.com";
+    for (const [googleWriteAccess, scope] of [
+      ["gmail", "https://www.googleapis.com/auth/gmail.modify"],
+      ["calendar", "https://www.googleapis.com/auth/calendar.events"],
+      ["drive", "https://www.googleapis.com/auth/drive"],
+    ] as const) {
+      const url = new URL(createOAuthAuthorization("google", {
+        tenantId: "tenant-a",
+        actorId: "user-a",
+        connectionId: "33333333-3333-4333-8333-333333333333",
+        googleWriteAccess,
+      }));
+      expect(url.searchParams.get("scope"), googleWriteAccess).toBe(`openid email ${scope}`);
+      expect(url.searchParams.get("include_granted_scopes")).toBe("true");
+      expect(url.searchParams.get("access_type")).toBe("offline");
+      expect(url.searchParams.get("prompt")).toBe("consent");
+      expect(openOAuthState("google", url.searchParams.get("state") || ""))
+        .toMatchObject({ connectionId: "33333333-3333-4333-8333-333333333333" });
+    }
   });
 
   it("creates a read-only Salesforce authorization bound to Account 360", () => {

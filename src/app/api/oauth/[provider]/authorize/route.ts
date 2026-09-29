@@ -8,6 +8,7 @@ import {
   oauthConfigured,
   oauthProviders,
 } from "@/lib/connectors/oauth-providers";
+import { isGoogleWorkspaceWriteAccess } from "@/lib/connectors/google-workspace-capabilities";
 import { getOAuthGrantSecrets } from "@/lib/connectors/oauth-store";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -41,6 +42,21 @@ async function GETHandler(request: Request, context: { params: Promise<{ provide
   }
   const googleConnectionPurpose: GoogleConnectionPurpose = "personal";
   const requestedConnectionId = requestUrl.searchParams.get("connectionId") || undefined;
+  // Allowing changes adds one service's write scope to a connection that
+  // already exists, so a new connection only ever asks to read.
+  const requestedWriteAccess = provider === "google"
+    ? requestUrl.searchParams.get("access")
+    : null;
+  if (
+    requestedWriteAccess !== null &&
+    (!isGoogleWorkspaceWriteAccess(requestedWriteAccess) || !requestedConnectionId)
+  ) {
+    return Response.json(
+      { error: "Changes can be allowed only for a listed Google service on an existing connection." },
+      { status: 400, headers: { "cache-control": "private, no-store" } },
+    );
+  }
+  const googleWriteAccess = requestedWriteAccess ?? undefined;
   try {
     if (provider === "salesforce") {
       const access = await resolveSalesforceRequestAccess(security, {
@@ -98,6 +114,7 @@ async function GETHandler(request: Request, context: { params: Promise<{ provide
       googleConnectorAccount,
       ...(requestedConnectionId ? { connectionId: requestedConnectionId } : {}),
       ...(authorizationIntent ? { authorizationIntent } : {}),
+      ...(googleWriteAccess ? { googleWriteAccess } : {}),
     }), 302);
   }
   catch (error) {

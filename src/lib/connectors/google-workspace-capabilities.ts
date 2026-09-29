@@ -24,18 +24,81 @@ export const GOOGLE_PHOTOS_PICKER_SCOPE =
 /**
  * The scopes requested for a new private-owner Google connection. Identity
  * scopes let the callback prove the account before any provider credential is
- * persisted. Workspace scopes intentionally match the capabilities Asael
- * exposes instead of relying on narrower historical read-only grants.
+ * persisted. The Workspace scopes only read: a service's write scope is asked
+ * for later, once the owner allows changes to that service.
  */
 export const GOOGLE_WORKSPACE_OAUTH_SCOPES = Object.freeze([
   GOOGLE_OPENID_SCOPE,
   GOOGLE_EMAIL_SCOPE,
-  GOOGLE_GMAIL_MODIFY_SCOPE,
-  GOOGLE_CALENDAR_EVENTS_SCOPE,
+  GOOGLE_GMAIL_READ_SCOPE,
+  GOOGLE_CALENDAR_EVENTS_READ_SCOPE,
   GOOGLE_CALENDAR_LIST_READ_SCOPE,
-  GOOGLE_DRIVE_SCOPE,
+  GOOGLE_DRIVE_READ_SCOPE,
   GOOGLE_PHOTOS_PICKER_SCOPE,
 ] as const);
+
+export const GOOGLE_WORKSPACE_WRITE_ACCESS = Object.freeze([
+  "gmail",
+  "calendar",
+  "drive",
+] as const);
+
+export type GoogleWorkspaceWriteAccess =
+  (typeof GOOGLE_WORKSPACE_WRITE_ACCESS)[number];
+
+const writeAccessScopes: Readonly<Record<GoogleWorkspaceWriteAccess, string>> =
+  Object.freeze({
+    gmail: GOOGLE_GMAIL_MODIFY_SCOPE,
+    calendar: GOOGLE_CALENDAR_EVENTS_SCOPE,
+    drive: GOOGLE_DRIVE_SCOPE,
+  });
+
+const writeAccessNames: Readonly<Record<GoogleWorkspaceWriteAccess, string>> =
+  Object.freeze({
+    gmail: "Gmail",
+    calendar: "Google Calendar",
+    drive: "Google Drive",
+  });
+
+export function isGoogleWorkspaceWriteAccess(
+  value: unknown,
+): value is GoogleWorkspaceWriteAccess {
+  return (GOOGLE_WORKSPACE_WRITE_ACCESS as readonly unknown[]).includes(value);
+}
+
+/**
+ * The scopes one Google authorization asks for. Allowing changes to a service
+ * asks only for the identity and that service's write scope; Google adds them
+ * to what the account already granted (include_granted_scopes).
+ */
+export function googleWorkspaceAuthorizationScopes(
+  writeAccess?: GoogleWorkspaceWriteAccess,
+): readonly string[] {
+  return writeAccess
+    ? [GOOGLE_OPENID_SCOPE, GOOGLE_EMAIL_SCOPE, writeAccessScopes[writeAccess]]
+    : GOOGLE_WORKSPACE_OAUTH_SCOPES;
+}
+
+/**
+ * The service whose write access grants a capability that a new connection
+ * does not have, or undefined when a reconnect is what would grant it.
+ */
+export function googleWorkspaceWriteAccessFor(
+  capability: GoogleWorkspaceCapability,
+): GoogleWorkspaceWriteAccess | undefined {
+  if (hasGoogleWorkspaceCapability(GOOGLE_WORKSPACE_OAUTH_SCOPES, capability)) {
+    return undefined;
+  }
+  return GOOGLE_WORKSPACE_WRITE_ACCESS.find((access) =>
+    hasGoogleWorkspaceCapability([writeAccessScopes[access]], capability)
+  );
+}
+
+export function googleWorkspaceWriteAccessName(
+  access: GoogleWorkspaceWriteAccess,
+) {
+  return writeAccessNames[access];
+}
 
 export const GOOGLE_WORKSPACE_CAPABILITY_IDS = Object.freeze([
   "identity.email",

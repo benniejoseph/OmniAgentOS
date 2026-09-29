@@ -17,7 +17,11 @@ vi.mock("@/lib/connectors/oauth-providers", async (importOriginal) => ({
 }));
 
 import { getActiveGoogleWorkspaceAccess } from "@/lib/connectors/google-workspace-access";
-import { GOOGLE_GMAIL_MODIFY_SCOPE } from "@/lib/connectors/google-workspace-capabilities";
+import {
+  GOOGLE_CALENDAR_EVENTS_READ_SCOPE,
+  GOOGLE_GMAIL_MODIFY_SCOPE,
+  GOOGLE_GMAIL_READ_SCOPE,
+} from "@/lib/connectors/google-workspace-capabilities";
 
 const grant = {
   id: "grant-google",
@@ -113,7 +117,39 @@ describe("active Google Workspace access", () => {
       tenantId: "tenant-a",
       actorId: "actor-a",
       capability: "drive.write",
-    })).rejects.toMatchObject({ code: "capability_not_granted" });
+    })).rejects.toMatchObject({
+      code: "capability_not_granted",
+      message: "The Google connection is not yet allowed to make Google Drive changes. The owner can allow them from Connections.",
+    });
+    expect(mocks.refreshOAuthAccess).not.toHaveBeenCalled();
+  });
+
+  it("tells the owner where to allow a change a read-only connection cannot make", async () => {
+    for (const [scopes, capability, message] of [
+      [
+        [GOOGLE_GMAIL_READ_SCOPE],
+        "gmail.send",
+        "The Google connection is not yet allowed to make Gmail changes. The owner can allow them from Connections.",
+      ],
+      [
+        [GOOGLE_CALENDAR_EVENTS_READ_SCOPE],
+        "calendar.events.write",
+        "The Google connection is not yet allowed to make Google Calendar changes. The owner can allow them from Connections.",
+      ],
+      // Reading is part of every new connection, so reconnecting restores it.
+      [[], "gmail.read", "The Google connection does not grant the required capability."],
+    ] as const) {
+      mocks.getOAuthGrantSecrets.mockResolvedValue({
+        grant: { ...grant, scopes: [...scopes] },
+        tokens: { access_token: "active-token" },
+        credentialState: "active",
+      });
+      await expect(getActiveGoogleWorkspaceAccess({
+        tenantId: "tenant-a",
+        actorId: "actor-a",
+        capability,
+      }), capability).rejects.toMatchObject({ code: "capability_not_granted", message });
+    }
     expect(mocks.refreshOAuthAccess).not.toHaveBeenCalled();
   });
 });

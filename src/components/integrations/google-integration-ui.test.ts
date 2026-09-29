@@ -79,4 +79,22 @@ describe("Google integration UI consistency", () => {
     expect(connectedSources).toContain('addReturnTo(provider?.authorizeUrl || "/api/oauth/google/authorize")');
     expect(connectedSources).toContain('<a href={repairUrl} className="action-button">Manage access</a>');
   });
+
+  it("asks for a service's write scope only when the owner allows its changes", () => {
+    expect(personalConnections).toContain('if (writeAccess) params.set("access", writeAccess);');
+    expect(personalConnections).toMatch(
+      /permission\.granted &&\s*permission\.writeAccess && !permission\.writeGranted \? \(/,
+    );
+    expect(personalConnections).toMatch(
+      /googleAuthorizeUrl\(\s*provider\.authorizeUrl \|\| "\/api\/oauth\/google\/authorize",\s*account\.purpose,\s*grant\.id,\s*false,\s*permission\.writeAccess,\s*\)/,
+    );
+    expect(personalConnections).toContain("Allow changes");
+    for (const [access, granted] of [
+      ["gmail", "gmailModify && gmailTrash"],
+      ["calendar", "calendarWrite"],
+      ["drive", "driveWrite"],
+    ]) {
+      expect(personalConnections).toContain(`writeAccess: "${access}",\n      writeGranted: ${granted},`);
+    }
+  });
 });
