@@ -1000,24 +1000,27 @@ async function POSTHandler(request: Request) {
       });
     }
   }
-  // Only active playbooks of published workspace templates can pick a
-  // deterministic procedure: they are versioned, owner-bound, and published
-  // through an approval-required tool. Procedure memories are not a routing
-  // source, because any member or governed tool call can write workspace
-  // memory; they run only through an explicitly reviewed schedule.
+  // Only active playbooks of workspace templates the requester published can
+  // pick a deterministic procedure: they are versioned, owner-bound, and
+  // published through an approval-required tool. Procedure memories are not a
+  // routing source, because any member or governed tool call can write
+  // workspace memory; they run only through an explicitly reviewed schedule.
   let savedProcedures: readonly SavedProcedure[] = [];
   if (!deterministicIntentInvariant) {
     try {
       const actorBinding = canonicalRequestActorBindingFromSecurityContext(context);
-      const workspaceTemplates = hasDatabaseUrl() && actorBinding
-        ? await listWorkspaceTemplates({
-            tenantId: context.tenantId,
-            workspaceId: promptSharedMemoryAccess?.authority.workspaceId ||
-              personalWorkspaceId(actorBinding.canonicalActorId),
-            canonicalActorId: actorBinding.canonicalActorId,
-          }, { activeOnly: true, limit: 100 })
-        : [];
-      savedProcedures = savedProceduresFromWorkspaceTemplates(workspaceTemplates);
+      if (hasDatabaseUrl() && actorBinding) {
+        const workspaceTemplates = await listWorkspaceTemplates({
+          tenantId: context.tenantId,
+          workspaceId: promptSharedMemoryAccess?.authority.workspaceId ||
+            personalWorkspaceId(actorBinding.canonicalActorId),
+          canonicalActorId: actorBinding.canonicalActorId,
+        }, { activeOnly: true, limit: 100 });
+        savedProcedures = savedProceduresFromWorkspaceTemplates(
+          workspaceTemplates,
+          actorBinding,
+        );
+      }
     } catch (error) {
       console.error(
         "Saved procedure catalog unavailable.",

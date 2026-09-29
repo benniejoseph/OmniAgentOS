@@ -198,11 +198,18 @@ export function parseWorkflowProcedureSnapshot(
   return freezeSnapshot(parsed.data);
 }
 
+/**
+ * The playbooks a Command request may start. Aliases are namespaced by
+ * template owner: another member's template in a shared workspace can be
+ * instantiated but never steers this actor's request.
+ */
 export function savedProceduresFromWorkspaceTemplates(
   templates: readonly WorkspaceTemplateVersion[],
+  requester: Readonly<{ canonicalActorId: string }>,
 ): readonly SavedProcedure[] {
   return Object.freeze(templates.flatMap((template) => {
     if (!template.playbook) return [];
+    if (template.ownerActorId !== requester.canonicalActorId) return [];
     const playbook = template.playbook;
     return [Object.freeze({
       id: template.templateId,

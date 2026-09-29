@@ -650,7 +650,9 @@ secrets, or private reasoning.
 
 A Command request can skip model planning and run a deterministic procedure,
 which binds exact tools, inputs, and acceptance criteria. Only the active
-playbook of a published workspace template can be chosen this way. Templates
+playbook of a workspace template the requester published can be chosen this
+way: aliases are namespaced by template owner, so another member's template in
+a shared workspace can be instantiated but never steers the request. Templates
 are versioned, owner-bound, and published through the approval-required
 `app.workspace_templates.publish` tool. Procedures saved as workspace memory
 never route Command, because any member or governed tool call can write that
@@ -664,6 +666,13 @@ closed invocation grammar:
 A request that only mentions an alias stays on the bounded agent loop, for
 example "why did my weekly digest fail?" or "run my weekly digest and email
 Sam".
+
+An alias must keep at least three characters after normalization and must not
+read, with or without that wrapper, as a reply a conversation already uses
+("yes", "stop", "continue", "please continue", "run now", and the rest of the
+list in `src/lib/orchestration/procedure-aliases.ts`). Publishing one returns
+`400`. A version stored before the rule still loads, and Command skips its
+reserved aliases.
 
 Publishing a playbook whose alias another active template in the workspace
 already uses returns `409`. A leftover collision routes to clarification

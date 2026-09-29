@@ -7,6 +7,11 @@ import {
   type ConversationSummaryRecord,
 } from "@/lib/threads/summaries";
 import type { ThreadTurnRecord } from "@/lib/threads/types";
+import {
+  isUsableProcedureAlias,
+  normalizeProcedurePhrase,
+  procedureInvocationPhrases,
+} from "@/lib/orchestration/procedure-aliases";
 
 export type SupervisorRoute = "direct" | "durable_workflow" | "clarify";
 export type SupervisorAgentId =
@@ -162,9 +167,11 @@ export function resolveKnownProcedure(
     const requiredToolIds = [...new Set(
       procedure.requiredToolIds.map(boundedProcedureId),
     )].sort();
+    // An alias stored before the reserved replies were refused stays on
+    // the procedure but never routes Command.
     const aliases = [...new Set(procedure.aliases
       .map(normalizeProcedurePhrase)
-      .filter(Boolean))]
+      .filter(isUsableProcedureAlias))]
       .sort((left, right) => right.length - left.length);
     const matchedAlias = aliases.find((alias) => invocations.has(alias));
     return matchedAlias
@@ -190,46 +197,6 @@ export function resolveKnownProcedure(
     procedure: matches[0].procedure,
     matchedAlias: matches[0].matchedAlias,
   });
-}
-
-function normalizeProcedurePhrase(value: string) {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-}
-
-// A saved procedure starts only when the whole request invokes it by alias,
-// optionally wrapped as [can/could/would you] [please] [run/start/...]
-// [my/the/our] <alias> [now] [please]. A request that only mentions an alias,
-// such as "why did my weekly digest fail?", "don't run my weekly digest", or
-// "run my weekly digest and email Sam", stays on the bounded agent loop instead
-// of starting static tool bindings that ignore the rest of the request.
-const PROCEDURE_INVOCATION_LEADING_SLOTS: readonly (readonly string[])[] = [
-  ["can you", "could you", "would you"],
-  ["please"],
-  ["run", "start", "execute", "launch", "trigger", "kick off"],
-  ["my", "the", "our"],
-];
-const PROCEDURE_INVOCATION_TRAILING_SLOTS: readonly (readonly string[])[] = [
-  ["please"],
-  ["now"],
-];
-
-function procedureInvocationPhrases(normalizedMessage: string): ReadonlySet<string> {
-  let forms = [normalizedMessage];
-  for (const slot of PROCEDURE_INVOCATION_TRAILING_SLOTS) {
-    forms = forms.flatMap((form) => [
-      form,
-      ...slot.flatMap((phrase) =>
-        form.endsWith(` ${phrase}`) ? [form.slice(0, -phrase.length - 1)] : []),
-    ]);
-  }
-  for (const slot of PROCEDURE_INVOCATION_LEADING_SLOTS) {
-    forms = forms.flatMap((form) => [
-      form,
-      ...slot.flatMap((phrase) =>
-        form.startsWith(`${phrase} `) ? [form.slice(phrase.length + 1)] : []),
-    ]);
-  }
-  return new Set(forms);
 }
 
 function boundedProcedureId(value: string) {

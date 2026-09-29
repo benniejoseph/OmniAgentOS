@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
+import { isUsableProcedureAlias } from "@/lib/orchestration/procedure-aliases";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
 export const WORKSPACE_TEMPLATE_SCHEMA_VERSION = 1 as const;
@@ -106,13 +107,26 @@ export const workspaceTemplatePlaybookSchema = z.object({
   }
 });
 
+// Checked when a version is published, not when a stored one is read, so a
+// version published before the rule still loads; Command skips its reserved
+// aliases instead.
 export const workspaceTemplateDefinitionInputSchema = z.object({
   templateId: templateIdSchema.optional(),
   name: z.string().trim().min(1).max(120),
   description: z.string().trim().max(1_000).default(""),
   project: workspaceTemplateProjectSchema,
   playbook: workspaceTemplatePlaybookSchema.nullable().default(null),
-}).strict();
+}).strict().superRefine((definition, context) => {
+  definition.playbook?.aliases.forEach((alias, index) => {
+    if (!isUsableProcedureAlias(alias)) {
+      context.addIssue({
+        code: "custom",
+        path: ["playbook", "aliases", index],
+        message: "A playbook alias must be at least three characters and must not read as a reply such as \"yes\", \"stop\", or \"continue\".",
+      });
+    }
+  });
+});
 
 const workspaceTemplateVersionBodySchema = z.object({
   schemaVersion: z.literal(WORKSPACE_TEMPLATE_SCHEMA_VERSION),

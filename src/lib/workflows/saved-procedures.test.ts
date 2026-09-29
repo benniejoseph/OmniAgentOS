@@ -158,7 +158,10 @@ describe("saved procedure contracts", () => {
         },
       },
     });
-    const [procedure] = procedures.savedProceduresFromWorkspaceTemplates([template]);
+    const [procedure] = procedures.savedProceduresFromWorkspaceTemplates(
+      [template],
+      { canonicalActorId: template.ownerActorId },
+    );
     const snapshot = procedures.buildWorkflowProcedureSnapshot(procedure, "run release");
 
     expect(snapshot).toMatchObject({
