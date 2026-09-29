@@ -13,6 +13,12 @@ const HTTP_METHODS = ["get", "post", "put", "patch", "delete", "head", "options"
 const SAFE_METHODS = new Set<OpenApiHttpMethod>(["GET", "HEAD", "OPTIONS"]);
 const MAX_IMPORTED_OPERATIONS = 250;
 export const MAX_OPENAPI_SPEC_BYTES = 2_000_000;
+/**
+ * How much one import may do, in approximate characters of JSON. Each use of
+ * a shared schema is copied into the operation that uses it, so without a
+ * limit a small spec whose references fan out expands without bound.
+ */
+export const MAX_OPENAPI_IMPORT_BUDGET = 8_000_000;
 
 type JsonRecord = Record<string, unknown>;
 
@@ -55,12 +61,18 @@ export function importOpenApiSpec({
   }
 
   const document = parseOpenApiSpec(specText);
+  const budget = new ImportBudget(document);
   const baseUrl = normalizeBaseUrl(
-    baseUrlOverride || connector.baseUrl || firstServerUrl(document, connector.specUrl),
+    baseUrlOverride || connector.baseUrl || firstServerUrl(document, budget, connector.specUrl),
     connector.specUrl,
   );
   const info = parseObject(document.info) || {};
-  const operations = extractOperations({ connector: { ...connector, baseUrl }, document });
+  budget.copy(info);
+  const operations = extractOperations({
+    connector: { ...connector, baseUrl },
+    document,
+    budget,
+  });
 
   if (!operations.length) {
     throw new Error("OpenAPI spec did not contain importable operations.");
@@ -98,12 +110,101 @@ function parseOpenApiSpec(specText: string) {
   return parsed;
 }
 
+/**
+ * What one import may still do. Following a `$ref`, reading a list entry,
+ * and copying a value into an imported operation each cost something, so a
+ * spec whose references fan out is refused rather than expanded.
+ */
+class ImportBudget {
+  private remaining = MAX_OPENAPI_IMPORT_BUDGET;
+  private readonly sizes = new WeakMap<object, number>();
+
+  constructor(document: JsonRecord) {
+    // One walk over the whole spec notes each value's size, and refuses a
+    // value that contains itself, which YAML anchors can build.
+    approximateJsonSize(document, this.sizes);
+  }
+
+  spend(amount: number) {
+    this.remaining -= amount;
+    if (this.remaining < 0) {
+      throw new Error(
+        "OpenAPI spec expands past the importer limit once its references are followed and copied into each operation.",
+      );
+    }
+  }
+
+  copy(value: unknown) {
+    this.spend(approximateJsonSize(value, this.sizes));
+  }
+}
+
+type SizeFrame = { value: object; entries: [string, unknown][]; next: number; size: number };
+
+/**
+ * The approximate length of a value's JSON text, found without building it.
+ * Each object's size is kept in `sizes`, so a value that YAML anchors share
+ * is walked once however often it is copied.
+ */
+function approximateJsonSize(value: unknown, sizes: WeakMap<object, number>): number {
+  if (value === undefined) {
+    return 0;
+  }
+  if (typeof value === "string") {
+    return value.length + 2;
+  }
+  if (!value || typeof value !== "object") {
+    return String(value).length;
+  }
+  const known = sizes.get(value);
+  if (known !== undefined) {
+    return known;
+  }
+
+  // Walk with an explicit stack, so a deeply nested value cannot overflow it.
+  const onPath = new WeakSet<object>([value]);
+  const stack: SizeFrame[] = [{ value, entries: Object.entries(value), next: 0, size: 2 }];
+  while (stack.length) {
+    const frame = stack[stack.length - 1];
+    if (frame.next === frame.entries.length) {
+      stack.pop();
+      onPath.delete(frame.value);
+      sizes.set(frame.value, frame.size);
+      if (stack.length) {
+        stack[stack.length - 1].size += frame.size;
+      }
+      continue;
+    }
+
+    const [key, child] = frame.entries[frame.next];
+    frame.next += 1;
+    frame.size += Array.isArray(frame.value) ? 1 : key.length + 4;
+    if (!child || typeof child !== "object") {
+      frame.size += approximateJsonSize(child, sizes);
+      continue;
+    }
+    if (onPath.has(child)) {
+      throw new Error("OpenAPI spec contains a value that refers to itself.");
+    }
+    const childSize = sizes.get(child);
+    if (childSize !== undefined) {
+      frame.size += childSize;
+      continue;
+    }
+    onPath.add(child);
+    stack.push({ value: child, entries: Object.entries(child), next: 0, size: 2 });
+  }
+  return sizes.get(value) ?? 0;
+}
+
 function extractOperations({
   connector,
   document,
+  budget,
 }: {
   connector: OpenApiConnectorRecord;
   document: JsonRecord;
+  budget: ImportBudget;
 }) {
   const paths = document.paths as JsonRecord;
   const operations: OpenApiOperationRecord[] = [];
@@ -112,16 +213,16 @@ function extractOperations({
 
   for (const [path, rawPathItem] of Object.entries(paths)) {
     assertSafeOpenApiOperationPath(path);
-    const pathItem = resolveReference(rawPathItem, document);
+    const pathItem = resolveReference(rawPathItem, document, budget);
     if (!isRecord(pathItem)) {
       continue;
     }
 
-    const pathParameters = readParameterList(pathItem.parameters, document);
+    const pathParameters = readParameterList(pathItem.parameters, document, budget);
 
     for (const method of HTTP_METHODS) {
       const rawOperation = pathItem[method];
-      const operation = resolveReference(rawOperation, document);
+      const operation = resolveReference(rawOperation, document, budget);
       if (!isRecord(operation)) {
         continue;
       }
@@ -134,11 +235,11 @@ function extractOperations({
       const riskLevel = inferOpenApiRiskLevel(normalizedMethod, operation, connector.defaultRiskLevel);
       const parameters = [
         ...pathParameters,
-        ...readParameterList(operation.parameters, document),
+        ...readParameterList(operation.parameters, document, budget),
       ];
-      const requestBody = readRequestBody(operation.requestBody, document);
+      const requestBody = readRequestBody(operation.requestBody, document, budget);
 
-      operations.push({
+      const imported: OpenApiOperationRecord = {
         id: createOpenApiToolId(connector.id, operationId),
         connectorId: connector.id,
         connectorName: connector.name,
@@ -147,15 +248,18 @@ function extractOperations({
         path,
         summary: readString(operation.summary),
         description: readString(operation.description),
-        inputSchema: createInputSchema({ parameters, requestBody, document }),
+        inputSchema: createInputSchema({ parameters, requestBody, document, budget }),
         requestContentType: requestBody?.contentType,
-        responseContentTypes: readResponseContentTypes(operation.responses, document),
+        responseContentTypes: readResponseContentTypes(operation.responses, document, budget),
         riskLevel,
         approvalRequired: connector.approvalRequired || riskLevel >= 2,
         status: "active",
         createdAt: now,
         updatedAt: now,
-      });
+      };
+      // The input schema was charged as it was built.
+      budget.copy({ ...imported, inputSchema: undefined });
+      operations.push(imported);
 
       if (operations.length >= MAX_IMPORTED_OPERATIONS) {
         return operations;
@@ -166,19 +270,20 @@ function extractOperations({
   return operations;
 }
 
-function readParameterList(value: unknown, document: JsonRecord) {
+function readParameterList(value: unknown, document: JsonRecord, budget: ImportBudget) {
   if (!Array.isArray(value)) {
     return [];
   }
 
+  budget.spend(value.length);
   return value
-    .map((parameter) => resolveReference(parameter, document))
+    .map((parameter) => resolveReference(parameter, document, budget))
     .filter(isRecord)
     .filter((parameter) => typeof parameter.name === "string" && typeof parameter.in === "string");
 }
 
-function readRequestBody(value: unknown, document: JsonRecord) {
-  const requestBody = resolveReference(value, document);
+function readRequestBody(value: unknown, document: JsonRecord, budget: ImportBudget) {
+  const requestBody = resolveReference(value, document, budget);
   if (!isRecord(requestBody) || !isRecord(requestBody.content)) {
     return undefined;
   }
@@ -188,8 +293,10 @@ function readRequestBody(value: unknown, document: JsonRecord) {
     contentTypes.find((item) => item.includes("json")) ||
     contentTypes.find((item) => item.includes("form")) ||
     contentTypes[0];
-  const mediaType = contentType ? resolveReference(requestBody.content[contentType], document) : undefined;
-  const schema = isRecord(mediaType) ? resolveJsonSchema(mediaType.schema, document) : {};
+  const mediaType = contentType
+    ? resolveReference(requestBody.content[contentType], document, budget)
+    : undefined;
+  const schema = isRecord(mediaType) ? resolveJsonSchema(mediaType.schema, document, budget) : {};
 
   return {
     contentType,
@@ -202,10 +309,12 @@ function createInputSchema({
   parameters,
   requestBody,
   document,
+  budget,
 }: {
   parameters: JsonRecord[];
   requestBody?: { contentType?: string; required: boolean; schema: Record<string, unknown> };
   document: JsonRecord;
+  budget: ImportBudget;
 }) {
   const properties: Record<string, unknown> = {};
   const required: string[] = [];
@@ -222,10 +331,13 @@ function createInputSchema({
     }
 
     const name = String(parameter.name);
-    const schema = resolveJsonSchema(parameter.schema, document);
+    const description = readString(parameter.description);
+    budget.spend(name.length + 4);
+    budget.copy(description);
+    const schema = resolveJsonSchema(parameter.schema, document, budget);
     groups[location].properties[name] = {
       ...schema,
-      description: readString(parameter.description) || readString(schema.description),
+      description: description || readString(schema.description),
     };
     if (parameter.required) {
       groups[location].required.push(name);
@@ -264,15 +376,15 @@ function createInputSchema({
   };
 }
 
-function readResponseContentTypes(value: unknown, document: JsonRecord) {
-  const responses = resolveReference(value, document);
+function readResponseContentTypes(value: unknown, document: JsonRecord, budget: ImportBudget) {
+  const responses = resolveReference(value, document, budget);
   if (!isRecord(responses)) {
     return [];
   }
 
   const contentTypes = new Set<string>();
   for (const response of Object.values(responses)) {
-    const resolvedResponse = resolveReference(response, document);
+    const resolvedResponse = resolveReference(response, document, budget);
     if (!isRecord(resolvedResponse) || !isRecord(resolvedResponse.content)) {
       continue;
     }
@@ -286,69 +398,79 @@ function readResponseContentTypes(value: unknown, document: JsonRecord) {
 function resolveJsonSchema(
   value: unknown,
   document: JsonRecord,
+  budget: ImportBudget,
   seen = new Set<string>(),
   depth = 0,
 ): Record<string, unknown> {
+  budget.spend(2);
   if (depth >= 64) {
     return {};
   }
-  const resolved = resolveReference(value, document, seen);
-  if (!isRecord(resolved)) {
-    return {};
+  // `seen` holds the references on the path to this schema, so a reference
+  // back to one of them is cut; each call removes the ones it added.
+  const added: string[] = [];
+  try {
+    const resolved = resolveReference(value, document, budget, seen, added);
+    if (!isRecord(resolved)) {
+      return {};
+    }
+
+    if (Array.isArray(resolved.allOf)) {
+      return mergeSchemas(resolved.allOf.map((item) =>
+        resolveJsonSchema(item, document, budget, seen, depth + 1)
+      ));
+    }
+
+    const schema: Record<string, unknown> = {};
+    for (const [key, rawValue] of Object.entries(resolved)) {
+      if (key === "$ref") {
+        continue;
+      }
+      budget.spend(key.length + 4);
+
+      if (key === "properties" && isRecord(rawValue)) {
+        schema.properties = Object.fromEntries(
+          Object.entries(rawValue).map(([propertyName, propertySchema]) => {
+            budget.spend(propertyName.length + 4);
+            return [
+              propertyName,
+              resolveJsonSchema(propertySchema, document, budget, seen, depth + 1),
+            ];
+          }),
+        );
+        continue;
+      }
+
+      if (key === "items") {
+        schema.items = resolveJsonSchema(rawValue, document, budget, seen, depth + 1);
+        continue;
+      }
+
+      if ((key === "oneOf" || key === "anyOf") && Array.isArray(rawValue)) {
+        schema[key] = rawValue.map((item) =>
+          resolveJsonSchema(item, document, budget, seen, depth + 1)
+        );
+        continue;
+      }
+
+      budget.copy(rawValue);
+      schema[key] = rawValue;
+    }
+
+    return schema;
+  } finally {
+    for (const ref of added) {
+      seen.delete(ref);
+    }
   }
-
-  if (Array.isArray(resolved.allOf)) {
-    return resolved.allOf.reduce<Record<string, unknown>>((merged, item) => {
-      return mergeSchemas(
-        merged,
-        resolveJsonSchema(item, document, new Set(seen), depth + 1),
-      );
-    }, {});
-  }
-
-  const schema: Record<string, unknown> = {};
-  for (const [key, rawValue] of Object.entries(resolved)) {
-    if (key === "$ref") {
-      continue;
-    }
-
-    if (key === "properties" && isRecord(rawValue)) {
-      schema.properties = Object.fromEntries(
-        Object.entries(rawValue).map(([propertyName, propertySchema]) => [
-          propertyName,
-          resolveJsonSchema(propertySchema, document, new Set(seen), depth + 1),
-        ]),
-      );
-      continue;
-    }
-
-    if (key === "items") {
-      schema.items = resolveJsonSchema(
-        rawValue,
-        document,
-        new Set(seen),
-        depth + 1,
-      );
-      continue;
-    }
-
-    if ((key === "oneOf" || key === "anyOf") && Array.isArray(rawValue)) {
-      schema[key] = rawValue.map((item) =>
-        resolveJsonSchema(item, document, new Set(seen), depth + 1)
-      );
-      continue;
-    }
-
-    schema[key] = rawValue;
-  }
-
-  return schema;
 }
 
 function resolveReference(
   value: unknown,
   document: JsonRecord,
+  budget: ImportBudget,
   seen = new Set<string>(),
+  added: string[] = [],
 ): unknown {
   let current = value;
   for (let depth = 0; depth < 64; depth += 1) {
@@ -359,7 +481,9 @@ function resolveReference(
     if (!ref.startsWith("#/") || seen.has(ref)) {
       return {};
     }
+    budget.spend(ref.length);
     seen.add(ref);
+    added.push(ref);
     current = readJsonPointer(document, ref.slice(2));
   }
   return {};
@@ -376,18 +500,34 @@ function readJsonPointer(document: JsonRecord, pointer: string) {
   }, document);
 }
 
-function mergeSchemas(left: Record<string, unknown>, right: Record<string, unknown>) {
-  const merged = { ...left, ...right };
-  if (isRecord(left.properties) || isRecord(right.properties)) {
-    merged.properties = {
-      ...(isRecord(left.properties) ? left.properties : {}),
-      ...(isRecord(right.properties) ? right.properties : {}),
-    };
+/**
+ * Merge `allOf` parts in one pass: later keys win, and `properties` and
+ * `required` are combined, without copying what was merged so far per part.
+ */
+function mergeSchemas(parts: Record<string, unknown>[]) {
+  const merged: Record<string, unknown> = {};
+  const properties: Record<string, unknown> = {};
+  const required = new Set<string>();
+  let hasProperties = false;
+  let hasRequired = false;
+  for (const part of parts) {
+    Object.assign(merged, part);
+    if (isRecord(part.properties)) {
+      hasProperties = true;
+      Object.assign(properties, part.properties);
+    }
+    if (Array.isArray(part.required)) {
+      hasRequired = true;
+      for (const name of part.required) {
+        required.add(String(name));
+      }
+    }
   }
-  if (Array.isArray(left.required) || Array.isArray(right.required)) {
-    const leftRequired = Array.isArray(left.required) ? left.required.map(String) : [];
-    const rightRequired = Array.isArray(right.required) ? right.required.map(String) : [];
-    merged.required = [...new Set([...leftRequired, ...rightRequired])];
+  if (hasProperties) {
+    merged.properties = properties;
+  }
+  if (hasRequired) {
+    merged.required = [...required];
   }
   return merged;
 }
@@ -405,9 +545,11 @@ export function inferOpenApiRiskLevel(
   return Math.max(defaultRiskLevel, methodFloor, remoteRisk) as ToolRiskLevel;
 }
 
-function firstServerUrl(document: JsonRecord, specUrl?: string) {
+function firstServerUrl(document: JsonRecord, budget: ImportBudget, specUrl?: string) {
   const servers = Array.isArray(document.servers) ? document.servers : [];
-  const firstServer = servers.map((server) => resolveReference(server, document)).find(isRecord);
+  const firstServer = servers
+    .map((server) => resolveReference(server, document, budget))
+    .find(isRecord);
   const url = firstServer && typeof firstServer.url === "string" ? firstServer.url : "";
   return normalizeBaseUrl(url, specUrl);
 }
