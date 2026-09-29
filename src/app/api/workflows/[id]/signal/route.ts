@@ -12,6 +12,7 @@ import {
 import { publicWorkflowRunDetail } from "@/lib/workflows/public";
 
 export const runtime = "nodejs";
+export const maxDuration = 30;
 export const POST = withDatabaseRequestScope(POSTHandler);
 
 const signalSchema = z.object({
@@ -74,7 +75,9 @@ async function POSTHandler(
         undefined,
         securityContext.tenantId,
       );
-      scheduleWorkflowQueueDrain(undefined, securityContext.tenantId);
+      scheduleWorkflowQueueDrain(undefined, securityContext.tenantId, {
+        routeMaxDurationSeconds: maxDuration,
+      });
     }
 
     return Response.json({

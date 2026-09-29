@@ -794,7 +794,7 @@ async function POSTHandler(request: Request) {
           )
         : undefined;
       if (queueJob) {
-        scheduleWorkflowQueueDrain(undefined, context.tenantId);
+        scheduleWorkflowQueueDrain(undefined, context.tenantId, { routeMaxDurationSeconds: maxDuration });
       }
       return Response.json({
         ...publicWorkflowRunDetail(existing),
@@ -855,7 +855,7 @@ async function POSTHandler(request: Request) {
             undefined,
             context.tenantId,
           );
-          scheduleWorkflowQueueDrain(undefined, context.tenantId);
+          scheduleWorkflowQueueDrain(undefined, context.tenantId, { routeMaxDurationSeconds: maxDuration });
           return Response.json({
             ...publicWorkflowRunDetail(detail),
             queueJob,
@@ -896,7 +896,7 @@ async function POSTHandler(request: Request) {
       undefined,
       context.tenantId,
     );
-    scheduleWorkflowQueueDrain(undefined, context.tenantId);
+    scheduleWorkflowQueueDrain(undefined, context.tenantId, { routeMaxDurationSeconds: maxDuration });
     return Response.json(
       { ...publicWorkflowRunDetail(detail), queueJob },
       { status: 201 },

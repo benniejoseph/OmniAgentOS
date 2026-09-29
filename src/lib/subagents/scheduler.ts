@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { after } from "next/server";
 import { attachMissionExecutor } from "@/lib/missions/runtime";
+import { requestWorkDeadline } from "@/lib/observability/request-timing";
 import { ensureMissionTask } from "@/lib/missions/store";
 import type { AgentMode } from "@/lib/orchestration/types";
 import {
@@ -179,20 +180,25 @@ export async function bindDurableSpecialistsToWorkflow(
 export function scheduleDurableSpecialistDrain(
   tenantId: string,
   limit = 2,
+  options: { routeMaxDurationSeconds?: number } = {},
 ) {
+  // after() runs only within the route's limit, counted from the request's start.
+  const deadlineAt = requestWorkDeadline(options.routeMaxDurationSeconds);
   after(async () => {
     try {
-      const [{ processDurableSpecialistQueue }, { processWorkflowQueue }] =
-        await Promise.all([
-          import("@/lib/subagents/worker"),
-          import("@/lib/workflows/queue"),
-        ]);
-      await processDurableSpecialistQueue({ tenantId, limit });
-      await processWorkflowQueue({
-        tenantId,
-        limit: 1,
-        bootstrapQueuedRuns: false,
-      });
+      const [
+        { DURABLE_SPECIALIST_BUDGET_MS, processDurableSpecialistQueue },
+        { drainWorkflowQueue },
+      ] = await Promise.all([
+        import("@/lib/subagents/worker"),
+        import("@/lib/workflows/queue"),
+      ]);
+      // A specialist the deadline cuts short fails, so one starts here only
+      // when its whole budget fits; otherwise the worker runs it.
+      if (deadlineAt - Date.now() >= DURABLE_SPECIALIST_BUDGET_MS) {
+        await processDurableSpecialistQueue({ tenantId, limit, deadline: deadlineAt });
+      }
+      await drainWorkflowQueue({ tenantId, limit: 1, deadlineAt });
     } catch (error) {
       console.warn(
         "Durable specialist queue drain failed.",

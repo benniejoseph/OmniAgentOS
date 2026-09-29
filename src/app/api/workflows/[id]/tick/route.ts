@@ -1,6 +1,7 @@
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { getOperationJobStats } from "@/lib/operations/job-queue";
+import { requestWorkDeadline } from "@/lib/observability/request-timing";
 import { processWorkflowQueue } from "@/lib/workflows/queue";
 import { publicWorkflowRunDetail } from "@/lib/workflows/public";
 import { getWorkflowRunDetail } from "@/lib/workflows/store";
@@ -22,11 +23,17 @@ async function POSTHandler(
       resourceType: "workflow",
       resourceId: id,
     });
+    // Stop the tick before the platform ends the request, so it goes back
+    // to the queue instead of stranding on its lease.
+    const deadlineAt = requestWorkDeadline(maxDuration);
     const queue = await processWorkflowQueue({
       workflowRunId: id,
       limit: 1,
       bootstrapQueuedRuns: false,
       tenantId: securityContext.tenantId,
+      abortSignal: AbortSignal.timeout(Math.max(1, deadlineAt - Date.now())),
+      deadlineAt,
+      keepQueuePlaceOnDeadline: true,
     });
     const detail = await getWorkflowRunDetail(id, {
       tenantId: securityContext.tenantId,

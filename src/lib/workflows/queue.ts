@@ -18,6 +18,7 @@ import {
   wakeOperationJobByDedupeKey,
   type OperationJobRecord,
 } from "@/lib/operations/job-queue";
+import { requestWorkDeadline } from "@/lib/observability/request-timing";
 import { redactSensitive } from "@/lib/security/context";
 import { inspectWorkflowSpecialistDependencies } from "@/lib/subagents/context";
 import { tickWorkflowRun } from "@/lib/workflows/runner";
@@ -91,6 +92,8 @@ const runnableWorkflowStatuses = new Set(["queued"]);
 /** A tick whose run waits on specialists waits this long, doubling to the cap. */
 const specialistWaitBaseSeconds = 15;
 const specialistWaitMaxSeconds = 300;
+/** A drain after a response leaves its ticks to the worker with less time than this. */
+const minDrainRunwayMs = 5_000;
 
 export async function enqueueWorkflowRunTick(
   workflowRunId: string,
@@ -732,23 +735,56 @@ function specialistWaitCount(value: unknown) {
 export function scheduleWorkflowQueueDrain(
   limit = WORKFLOW_DRAIN_LIMIT,
   tenantId?: string,
+  options: { routeMaxDurationSeconds?: number } = {},
 ) {
   const scopedTenantId =
     tenantId ||
     getDatabaseTenantContext() ||
     process.env.OMNIAGENT_DEFAULT_TENANT ||
     "default";
+  // after() runs only within the route's limit, counted from the request's start.
+  const deadlineAt = requestWorkDeadline(options.routeMaxDurationSeconds);
   after(async () => {
     try {
-      await processWorkflowQueue({
-        limit,
-        bootstrapQueuedRuns: false,
-        tenantId: scopedTenantId,
-      });
+      await drainWorkflowQueue({ tenantId: scopedTenantId, limit, deadlineAt });
     } catch (error) {
       console.warn("Workflow queue drain failed.", error instanceof Error ? error.message : error);
     }
   });
+}
+
+/**
+ * Runs up to `limit` queued ticks one at a time, starting each only while at
+ * least five seconds are left before `deadlineAt`. A tick the deadline cuts
+ * short goes back to the queue without spending a retry, and ticks not yet
+ * leased stay queued for the worker instead of stranding on a lease when the
+ * platform stops the function.
+ */
+export async function drainWorkflowQueue(input: {
+  tenantId: string;
+  limit: number;
+  deadlineAt: number;
+}) {
+  const limit = Math.min(Math.max(input.limit || WORKFLOW_DRAIN_LIMIT, 1), 10);
+  const abortSignal = AbortSignal.timeout(Math.max(1, input.deadlineAt - Date.now()));
+  for (let drained = 0; drained < limit; drained += 1) {
+    if (abortSignal.aborted || input.deadlineAt - Date.now() < minDrainRunwayMs) {
+      return;
+    }
+    const result = await processWorkflowQueue({
+      tenantId: input.tenantId,
+      limit: 1,
+      bootstrapQueuedRuns: false,
+      abortSignal,
+      deadlineAt: input.deadlineAt,
+      // No drain after a response has a worker's whole budget, so a tick it
+      // cuts short keeps its place in the queue.
+      keepQueuePlaceOnDeadline: true,
+    });
+    if (!result.leased) {
+      return;
+    }
+  }
 }
 
 export function getWorkflowJobDedupeKey(workflowRunId: string) {

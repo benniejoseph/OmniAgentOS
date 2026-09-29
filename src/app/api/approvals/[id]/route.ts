@@ -233,7 +233,9 @@ async function POSTHandler(
           undefined,
           securityContext.tenantId,
         );
-        scheduleWorkflowQueueDrain(undefined, securityContext.tenantId);
+        scheduleWorkflowQueueDrain(undefined, securityContext.tenantId, {
+          routeMaxDurationSeconds: maxDuration,
+        });
         return Response.json({ ...detail, queueJob });
       }
       const canceledJobs = await cancelWorkflowRunTick(

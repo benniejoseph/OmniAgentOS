@@ -12,6 +12,7 @@ import {
 } from "@/lib/http/rate-limit";
 
 export const runtime = "nodejs";
+export const maxDuration = 30;
 export const POST = withDatabaseRequestScope(POSTHandler);
 
 async function POSTHandler(
@@ -72,7 +73,9 @@ async function POSTHandler(
     });
 
     if (result.workflow) {
-      scheduleWorkflowQueueDrain(undefined, result.trigger.tenantId);
+      scheduleWorkflowQueueDrain(undefined, result.trigger.tenantId, {
+        routeMaxDurationSeconds: maxDuration,
+      });
     }
 
     const status = result.event.status === "enqueued" || result.event.status === "accepted"

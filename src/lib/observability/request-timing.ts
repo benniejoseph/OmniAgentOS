@@ -27,6 +27,23 @@ export type RequestTimingSnapshot = {
 };
 
 const requestTiming = new AsyncLocalStorage<RequestTimingState>();
+/** Time kept back from a route's limit to hand unfinished work back to its queue. */
+const REQUEST_WORK_DEADLINE_MARGIN_MS = 10_000;
+
+/**
+ * Epoch ms by which work this request starts, after() callbacks included,
+ * must end. The platform counts a route's maximum duration from the start of
+ * the request, so this does too. A route that names no limit is held to 30
+ * seconds, the shortest limit of the routes that start such work.
+ */
+export function requestWorkDeadline(routeMaxDurationSeconds = 30) {
+  const state = requestTiming.getStore();
+  const elapsedMs = state ? Math.max(0, performance.now() - state.startedAt) : 0;
+  return Math.floor(
+    Date.now() - elapsedMs + routeMaxDurationSeconds * 1_000 -
+      REQUEST_WORK_DEADLINE_MARGIN_MS,
+  );
+}
 
 export function runWithRequestTiming<T>(
   operation: () => T | Promise<T>,

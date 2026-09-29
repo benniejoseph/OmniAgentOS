@@ -1845,6 +1845,7 @@ async function POSTHandler(request: Request) {
             scheduleDurableSpecialistDrain(
               context.tenantId,
               durableSpecialists.length,
+              { routeMaxDurationSeconds: maxDuration },
             );
             // The stored workflow decides, so a retry that finds it records
             // and replays the same acknowledgement.

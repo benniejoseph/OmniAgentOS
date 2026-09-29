@@ -13,6 +13,8 @@ import {
 } from "../../_shared";
 
 export const runtime = "nodejs";
+// The task's workflow drains after the response within this limit.
+export const maxDuration = 30;
 export const POST = withDatabaseRequestScope(POSTHandler);
 
 const startTaskSchema = missionTaskStartServiceInputSchema.omit({

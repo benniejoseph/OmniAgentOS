@@ -65,6 +65,9 @@ const specialistJobSchema = z.object({
   preparedAt: z.string().datetime(),
 }).passthrough();
 
+/** How long a durable specialist may run; one cut short by a deadline fails. */
+export const DURABLE_SPECIALIST_BUDGET_MS = 240_000;
+
 type SpecialistJobResult = {
   job: OperationJobRecord;
   runId?: string;
@@ -259,8 +262,8 @@ async function processSpecialistJob(
 
   const controller = new AbortController();
   const executionDeadline = Math.min(
-    deadline ?? Date.now() + 240_000,
-    Date.now() + 240_000,
+    deadline ?? Date.now() + DURABLE_SPECIALIST_BUDGET_MS,
+    Date.now() + DURABLE_SPECIALIST_BUDGET_MS,
   );
   const deadlineTimer = setTimeout(
     () => controller.abort(new Error("Durable specialist execution exceeded its worker deadline.")),

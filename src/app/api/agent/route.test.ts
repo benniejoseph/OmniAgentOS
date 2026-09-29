@@ -2815,6 +2815,12 @@ describe("agent request replay protection", () => {
     expect(first.status).toBe(200);
     const firstStream = await first.text();
     expect(firstStream).toContain("event: delegated");
+    // Specialists drain after the response within the route's own limit.
+    expect(scheduleDurableSpecialistDrain).toHaveBeenCalledWith(
+      context.tenantId,
+      expect.any(Number),
+      { routeMaxDurationSeconds: 300 },
+    );
     expect(routeMocks.appendThreadTurn).toHaveBeenCalledWith(expect.objectContaining({
       id: agentRequestDelegatedTurnId(
         context.tenantId,
