@@ -2,6 +2,10 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
 import { resolveAgentIdentityForExecution } from "@/lib/agents/identity-store";
+import {
+  AgentSkillChangedSinceReleaseError,
+  selectReleasedAgentSkills,
+} from "@/lib/agents/release-skills";
 import { AGENT_RUNS_PER_MINUTE } from "@/lib/config";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
@@ -230,15 +234,22 @@ async function resolveAgentProfile(
   if (agent.status === "paused") {
     return { error: "Resume the source run's custom agent before forking this checkpoint.", status: 409 as const };
   }
-  const skills = (await listAgentSkills(owner)).filter(
-    (skill) => agent.skillIds.includes(skill.id) && isAgentSkillRuntimeActive(skill),
-  );
+  const availableSkills = await listAgentSkills(owner);
   const identity = await resolveAgentIdentityForExecution({
     ...owner,
     agentId,
     customAgent: agent,
-    customSkills: skills,
+    customSkills: availableSkills.filter(
+      (skill) => agent.skillIds.includes(skill.id) && isAgentSkillRuntimeActive(skill),
+    ),
   });
+  let skills;
+  try {
+    skills = selectReleasedAgentSkills(identity, availableSkills);
+  } catch (error) {
+    if (!(error instanceof AgentSkillChangedSinceReleaseError)) throw error;
+    return { error: error.message, status: 409 as const };
+  }
   return {
     profile: {
       name: identity.definition.name,

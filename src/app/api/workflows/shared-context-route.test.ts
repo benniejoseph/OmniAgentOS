@@ -122,6 +122,9 @@ vi.mock("@/lib/workflows/public", () => ({
 vi.mock("@/lib/threads/store", () => ({ getThread: vi.fn() }));
 
 import { POST } from "@/app/api/workflows/route";
+import { buildAgentSkillPinV1 } from "@/lib/agents/identity-contracts";
+import { getCustomAgent, listAgentSkills } from "@/lib/skills/store";
+import type { AgentSkill, CustomAgentDefinition } from "@/lib/skills/types";
 
 // Partial mocks expose real store functions; keep them off local .omniagent data.
 let dataDirectory: string;
@@ -302,6 +305,64 @@ describe("workflow start shared context", () => {
     expect(created.metadata.contextSelection).toBeUndefined();
   });
 
+  it("gives an Agent-private workflow only the Skills its Agent's release pins, and refuses one once a pinned Skill has changed", async () => {
+    const pinned = agentSkill("skill-pinned", ["web.search"]);
+    const drafted = agentSkill("skill-drafted", ["gmail.send"]);
+    vi.mocked(getCustomAgent).mockResolvedValue({
+      id: "agent-custom",
+      status: "ready",
+      skillIds: [pinned.id, drafted.id],
+    } as CustomAgentDefinition);
+    vi.mocked(listAgentSkills).mockResolvedValue([pinned, drafted]);
+    mocks.resolveAgentIdentityForExecution.mockResolvedValue({
+      definition: {
+        logicalAgentId: "agent-custom",
+        name: "Launch lead",
+        role: "Launch lead",
+        description: "Leads the launch.",
+        instructions: "Lead the launch with care.",
+        persona: {},
+        modelPolicy: "auto",
+        declaredSkills: [buildAgentSkillPinV1(pinned)],
+      },
+      principal: {
+        principalId: "agent:agent-custom:principal",
+        autonomy: "governed",
+        approvalPolicy: "risk_based",
+        memoryScope: "all",
+        toolGrantIds: [],
+        contextGrantIds: [],
+        capabilityGrantIds: [],
+      },
+    });
+    const start = () => POST(workflowRequest({
+      contextScope: "agent_private",
+      agentId: "agent-custom",
+    }));
+
+    expect((await start()).status).toBe(201);
+    expect(mocks.createWorkflowRun.mock.calls[0]?.[0].metadata.agentProfile.skills).toEqual([{
+      id: pinned.id,
+      name: pinned.name,
+      description: pinned.description,
+      instructions: pinned.instructions,
+      toolIds: ["web.search"],
+    }]);
+
+    mocks.createWorkflowRun.mockClear();
+    vi.mocked(listAgentSkills).mockResolvedValue([
+      { ...pinned, version: 2, toolIds: ["web.search", "gmail.send"] },
+      drafted,
+    ]);
+    const stale = await start();
+    expect(stale.status).toBe(409);
+    await expect(stale.json()).resolves.toEqual({
+      error: "Agent release out of date",
+      message: expect.stringMatching(/changed after the Agent was released/),
+    });
+    expect(mocks.createWorkflowRun).not.toHaveBeenCalled();
+  });
+
   it("replaces caller metadata with an active personal-context binding", async () => {
     const response = await POST(workflowRequest({
       contextScope: "personal",
@@ -324,6 +385,26 @@ describe("workflow start shared context", () => {
     expect(created.metadata.contextSelection).toBeUndefined();
   });
 });
+
+function agentSkill(id: string, toolIds: string[]): AgentSkill {
+  return {
+    id,
+    tenantId: context.tenantId,
+    actorId: context.actorId,
+    slug: id,
+    name: `Skill ${id}`,
+    description: `Describes ${id}.`,
+    instructions: `Follow ${id}.`,
+    category: "research",
+    status: "active",
+    version: 1,
+    toolIds,
+    tags: [],
+    knowledgeTags: [],
+    createdAt: "2026-09-29T00:00:00.000Z",
+    updatedAt: "2026-09-29T00:00:00.000Z",
+  };
+}
 
 function workflowRequest(
   metadata: Record<string, unknown>,

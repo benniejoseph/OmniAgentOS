@@ -194,10 +194,13 @@ vi.mock("@/lib/memory/personal-context-consent-store", async (importOriginal) =>
 }));
 
 import { POST } from "@/app/api/agent/route";
+import { buildAgentSkillPinV1 } from "@/lib/agents/identity-contracts";
 import { resolveCommandContextReferences } from "@/lib/command/context-reference-runtime";
 import { AGENT_RUN_BUDGET_LIMITS } from "@/lib/config";
 import { appendDomainEvent } from "@/lib/events/store";
 import { forgetMemory, saveMemory } from "@/lib/memory/store";
+import { customAgentInputSchema, skillInputSchema } from "@/lib/skills/schema";
+import { createAgentSkill, createCustomAgent, updateAgentSkill } from "@/lib/skills/store";
 import {
   prepareDurableSpecialistDelegation,
   scheduleDurableSpecialistDrain,
@@ -2433,6 +2436,91 @@ describe("agent direct-run memory formation", () => {
       }
     },
   );
+});
+
+describe("agent custom Skill release pins", () => {
+  it("gives a run only the Skills its Agent's release pins, and refuses one once a pinned Skill has changed", async () => {
+    const owner = { tenantId: context.tenantId, actorId: context.actorId };
+    const released = await createAgentSkill(skillInputSchema.parse({
+      name: "Launch research",
+      description: "Researches the launch.",
+      instructions: "Research the launch plan carefully.",
+      category: "research",
+      toolIds: ["web.search"],
+    }), owner);
+    const drafted = await createAgentSkill(skillInputSchema.parse({
+      name: "Launch outreach",
+      description: "Emails the launch list.",
+      instructions: "Email everyone on the launch list.",
+      category: "automation",
+      toolIds: ["gmail.send"],
+    }), owner);
+    const agent = await createCustomAgent(customAgentInputSchema.parse({
+      name: "Launch lead",
+      role: "Launch lead",
+      description: "Leads the launch.",
+      instructions: "Lead the launch with care and rigor.",
+      skillIds: [released.id, drafted.id],
+    }), owner);
+    routeMocks.resolveAgentIdentityForExecution.mockResolvedValue({
+      definition: {
+        logicalAgentId: agent.id,
+        definitionVersionId: `definition:${agent.id}:v1`,
+        name: agent.name,
+        role: agent.role,
+        description: agent.description,
+        instructions: agent.instructions,
+        persona: agent.persona,
+        modelPolicy: agent.modelPolicy,
+        declaredSkills: [buildAgentSkillPinV1(released)],
+      },
+      principal: {
+        principalId: `agent:${agent.id}:principal`,
+        principalVersionId: `agent:${agent.id}:principal:g1`,
+        autonomy: "governed",
+        approvalPolicy: "risk_based",
+        memoryScope: "all",
+        toolGrantIds: [],
+        contextGrantIds: [],
+        capabilityGrantIds: [],
+      },
+    });
+    routeMocks.runAgent.mockImplementation(async function* () {
+      yield { type: "run", runId: "run-release-pins", threadId: "thread-a" };
+      yield { type: "done", response: "Planned." };
+    });
+    const post = (requestId: string) => POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        message: "Plan the launch.",
+        requestId,
+        strategy: "direct",
+        agentId: agent.id,
+      }),
+    }));
+
+    const response = await post("release-pins-a");
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(routeMocks.runAgent.mock.calls[0][0].agentProfile.skills).toEqual([{
+      id: released.id,
+      name: released.name,
+      description: released.description,
+      instructions: released.instructions,
+      toolIds: ["web.search"],
+    }]);
+
+    await updateAgentSkill(released.id, { toolIds: ["web.search", "gmail.send"] }, owner);
+    routeMocks.runAgent.mockClear();
+    const stale = await post("release-pins-b");
+    expect(stale.status).toBe(409);
+    await expect(stale.json()).resolves.toEqual({
+      error: "Agent release out of date",
+      message: expect.stringMatching(/changed after the Agent was released/),
+    });
+    expect(routeMocks.runAgent).not.toHaveBeenCalled();
+  });
 });
 
 describe("agent request replay protection", () => {

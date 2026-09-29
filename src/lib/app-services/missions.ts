@@ -2,6 +2,10 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { resolveAgentIdentityForExecution } from "@/lib/agents/identity-store";
 import {
+  AgentSkillChangedSinceReleaseError,
+  selectReleasedAgentSkills,
+} from "@/lib/agents/release-skills";
+import {
   authorizeAppServiceCall,
   completeAppServiceCall,
   type AppServiceCaller,
@@ -345,6 +349,13 @@ export async function startMissionTaskService(
       "The assigned Agent is paused or its execution authority is inactive.",
     );
   }
+  let selectedSkills;
+  try {
+    selectedSkills = selectReleasedAgentSkills(agentIdentity, skills);
+  } catch (error) {
+    if (!(error instanceof AgentSkillChangedSinceReleaseError)) throw error;
+    throw new MissionTransitionError(error.message);
+  }
 
   const workflowIdempotencyKey = `mission-task:${task.id}:${caller.idempotencyKey!}`;
   const workflowRunId = deterministicWorkflowRunId(
@@ -376,9 +387,6 @@ export async function startMissionTaskService(
     });
   }
 
-  const selectedSkills = skills.filter((skill) =>
-    agentIdentity.definition.declaredSkills.some((pin) => pin.skillId === skill.id)
-  );
   const agentProfile = {
     name: agentIdentity.definition.name,
     role: agentIdentity.definition.role,

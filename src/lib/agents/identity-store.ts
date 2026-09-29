@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import {
+  AgentIdentityResolutionError,
   buildBuiltInAgentIdentityV1,
   buildCustomAgentDefinitionV1,
   buildCustomAgentIdentityV1,
@@ -29,14 +30,7 @@ export const AGENT_IDENTITY_EVENT_TYPES = Object.freeze({
   principalRevoked: "agent.principal.revoked",
 } as const);
 
-export class AgentIdentityResolutionError extends Error {
-  readonly code = "agent_identity_unavailable";
-
-  constructor(message = "The exact agent identity could not be resolved.") {
-    super(message);
-    this.name = "AgentIdentityResolutionError";
-  }
-}
+export { AgentIdentityResolutionError };
 
 export async function resolveAgentIdentityForExecution(input: {
   tenantId: string;

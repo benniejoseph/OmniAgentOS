@@ -5,6 +5,10 @@ import {
   AgentIdentityResolutionError,
   resolveAgentIdentityForExecution,
 } from "@/lib/agents/identity-store";
+import {
+  AgentSkillChangedSinceReleaseError,
+  selectReleasedAgentSkills,
+} from "@/lib/agents/release-skills";
 import { createAppServiceCaller } from "@/lib/app-services/contracts";
 import { listWorkflowsService } from "@/lib/app-services/workflows";
 import { commandContextReferencesSchema } from "@/lib/command/composer-context-contract";
@@ -491,6 +495,15 @@ async function POSTHandler(request: Request) {
           agentId: requestedAgentId,
         });
       } catch (error) {
+        if (error instanceof AgentSkillChangedSinceReleaseError) {
+          return Response.json({
+            error: "Agent release out of date",
+            message: error.message,
+          }, {
+            status: 409,
+            headers: { "cache-control": "private, no-store" },
+          });
+        }
         if (!(error instanceof AgentIdentityResolutionError)) throw error;
         return Response.json({
           error: "Agent-private context unavailable",
@@ -911,12 +924,10 @@ async function resolveWorkflowAgentSelection(input: {
       "The assigned custom Agent is unavailable for workflow execution.",
     );
   }
-  const skills = (await listAgentSkills({
+  const skills = selectReleasedAgentSkills(identity, await listAgentSkills({
     tenantId: input.tenantId,
     actorId: input.actorId,
-  })).filter((skill) =>
-    customAgent.skillIds.includes(skill.id) && skill.status === "active"
-  );
+  }));
   return Object.freeze({
     identity,
     profile: Object.freeze({

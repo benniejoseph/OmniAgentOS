@@ -29,7 +29,8 @@ vi.mock("@/lib/missions/runtime", () => ({
 vi.mock("@/lib/agents/identity-store", () => ({
   resolveAgentIdentityForExecution: mocks.resolveAgentIdentityForExecution,
 }));
-vi.mock("@/lib/skills/store", () => ({
+vi.mock("@/lib/skills/store", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/skills/store")>()),
   listAgentSkills: mocks.listAgentSkills,
 }));
 vi.mock("@/lib/workflows/queue", () => ({
@@ -95,6 +96,7 @@ vi.mock("@/lib/workspaces/read-model", () => ({
   }))),
 }));
 
+import { buildAgentSkillPinV1 } from "@/lib/agents/identity-contracts";
 import { createAppServiceCaller } from "@/lib/app-services/contracts";
 import {
   commentOnMissionTaskService,
@@ -145,6 +147,30 @@ const task = {
   updatedAt: "2026-09-07T00:00:00.000Z",
 };
 
+const agentIdentity = {
+  definition: {
+    logicalAgentId: "atlas",
+    name: "Atlas",
+    role: "Orchestrator",
+    description: "Plans and executes governed work.",
+    instructions: "Complete the assigned work.",
+    persona: {},
+    modelPolicy: "auto",
+    declaredSkills: [] as Array<ReturnType<typeof buildAgentSkillPinV1>>,
+    status: "ready",
+  },
+  principal: {
+    principalId: "agent:atlas:1",
+    state: "active",
+    autonomy: "governed",
+    approvalPolicy: "risk_based",
+    memoryScope: "project",
+    toolGrantIds: [],
+    contextGrantIds: [],
+    capabilityGrantIds: [],
+  },
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.listMissions.mockResolvedValue([mission]);
@@ -160,29 +186,7 @@ beforeEach(() => {
     createdAt: "2026-09-07T00:00:00.000Z",
     updatedAt: "2026-09-07T00:00:00.000Z",
   });
-  mocks.resolveAgentIdentityForExecution.mockResolvedValue({
-    definition: {
-      logicalAgentId: "atlas",
-      name: "Atlas",
-      role: "Orchestrator",
-      description: "Plans and executes governed work.",
-      instructions: "Complete the assigned work.",
-      persona: {},
-      modelPolicy: "auto",
-      declaredSkills: [],
-      status: "ready",
-    },
-    principal: {
-      principalId: "agent:atlas:1",
-      state: "active",
-      autonomy: "governed",
-      approvalPolicy: "risk_based",
-      memoryScope: "project",
-      toolGrantIds: [],
-      contextGrantIds: [],
-      capabilityGrantIds: [],
-    },
-  });
+  mocks.resolveAgentIdentityForExecution.mockResolvedValue(agentIdentity);
   mocks.attachMissionExecutor.mockResolvedValue({
     id: "attempt-a",
     executorType: "workflow_run",
@@ -319,4 +323,71 @@ describe("P9.1 mission application service", () => {
     });
     expect(result.receipt.operation).toBe("mission.task.start");
   });
+
+  it("gives the workflow only the Skills its Agent's release pins, and claims nothing once one has changed", async () => {
+    const { MissionTransitionError } = await import("@/lib/missions/store");
+    const pinned = agentSkill("skill-pinned", ["web.search"]);
+    const drafted = agentSkill("skill-drafted", ["gmail.send"]);
+    mocks.assertMissionTaskReadyForExecution.mockResolvedValue({
+      ...task,
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      status: "pending" as const,
+      metadata: { assigneeKey: "atlas" },
+    });
+    mocks.resolveAgentIdentityForExecution.mockResolvedValue({
+      ...agentIdentity,
+      definition: { ...agentIdentity.definition, declaredSkills: [buildAgentSkillPinV1(pinned)] },
+    });
+    mocks.listAgentSkills.mockResolvedValue([pinned, drafted]);
+    const { startMissionTaskService } = await import("@/lib/app-services/missions");
+    const start = () => startMissionTaskService(createAppServiceCaller({
+      context,
+      executionScope,
+      idempotencyKey: "start-task-1",
+    }), { missionId: mission.id, taskId: task.id });
+
+    await start();
+    const metadata = mocks.createWorkflowRun.mock.calls[0]?.[0].metadata;
+    expect(metadata.agentProfile.skills).toEqual([{
+      id: pinned.id,
+      name: pinned.name,
+      description: pinned.description,
+      instructions: pinned.instructions,
+      toolIds: ["web.search"],
+    }]);
+    expect(metadata.skillIds).toEqual([pinned.id]);
+
+    mocks.attachMissionExecutor.mockClear();
+    mocks.createWorkflowRun.mockClear();
+    mocks.listAgentSkills.mockResolvedValue([
+      { ...pinned, version: 2, toolIds: ["web.search", "gmail.send"] },
+      drafted,
+    ]);
+    const stale = start();
+    await expect(stale).rejects.toBeInstanceOf(MissionTransitionError);
+    await expect(stale).rejects.toThrow(/changed after the Agent was released/);
+    expect(mocks.attachMissionExecutor).not.toHaveBeenCalled();
+    expect(mocks.createWorkflowRun).not.toHaveBeenCalled();
+  });
 });
+
+function agentSkill(id: string, toolIds: string[]) {
+  return {
+    id,
+    tenantId: context.tenantId,
+    actorId: context.actorId,
+    slug: id,
+    name: `Skill ${id}`,
+    description: `Describes ${id}.`,
+    instructions: `Follow ${id}.`,
+    category: "research" as const,
+    status: "active" as const,
+    version: 1,
+    toolIds,
+    tags: [],
+    knowledgeTags: [],
+    createdAt: "2026-09-29T00:00:00.000Z",
+    updatedAt: "2026-09-29T00:00:00.000Z",
+  };
+}

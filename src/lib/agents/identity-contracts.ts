@@ -21,6 +21,15 @@ export const BUILT_IN_AGENT_IDENTITY_EFFECTIVE_AT =
 export const BUILT_IN_AGENT_V1_EFFECTIVE_AT =
   "2026-09-07T00:00:00.000Z" as const;
 
+export class AgentIdentityResolutionError extends Error {
+  readonly code = "agent_identity_unavailable";
+
+  constructor(message = "The exact agent identity could not be resolved.") {
+    super(message);
+    this.name = "AgentIdentityResolutionError";
+  }
+}
+
 const BUILT_IN_AGENT_SKILL_IDS = Object.freeze({
   atlas: [
     "core.research",

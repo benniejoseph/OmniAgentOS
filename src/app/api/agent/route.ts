@@ -124,6 +124,10 @@ import {
   resolveAgentIdentityForExecution,
 } from "@/lib/agents/identity-store";
 import {
+  AgentSkillChangedSinceReleaseError,
+  selectReleasedAgentSkills,
+} from "@/lib/agents/release-skills";
+import {
   measureSupervisorOutcomeEvidence,
   applySupervisorStrategy,
   compileThreadContext,
@@ -891,10 +895,11 @@ async function POSTHandler(request: Request) {
   if (customAgent?.status === "paused") {
     return Response.json({ error: "Agent paused", message: "Resume this agent in the Agent Builder before assigning work." }, { status: 409 });
   }
-  const customSkills = customAgent
-    ? (await listAgentSkills({ tenantId: context.tenantId, actorId: context.actorId })).filter((skill) => customAgent.skillIds.includes(skill.id) && isAgentSkillRuntimeActive(skill))
+  const availableSkills = customAgent
+    ? await listAgentSkills({ tenantId: context.tenantId, actorId: context.actorId })
     : [];
   let requestedCustomIdentity;
+  let customSkills: typeof availableSkills = [];
   try {
     requestedCustomIdentity = customAgent
       ? await resolveAgentIdentityForExecution({
@@ -902,10 +907,22 @@ async function POSTHandler(request: Request) {
           actorId: context.actorId,
           agentId: customAgent.id,
           customAgent,
-          customSkills,
+          customSkills: availableSkills.filter((skill) => customAgent.skillIds.includes(skill.id) && isAgentSkillRuntimeActive(skill)),
         })
       : undefined;
+    customSkills = requestedCustomIdentity
+      ? selectReleasedAgentSkills(requestedCustomIdentity, availableSkills)
+      : [];
   } catch (error) {
+    if (error instanceof AgentSkillChangedSinceReleaseError) {
+      return Response.json({
+        error: "Agent release out of date",
+        message: error.message,
+      }, {
+        status: 409,
+        headers: { "cache-control": "private, no-store" },
+      });
+    }
     if (!(error instanceof AgentIdentityResolutionError)) throw error;
     return Response.json({
       error: "Agent identity unavailable",

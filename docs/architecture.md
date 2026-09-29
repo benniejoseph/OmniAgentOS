@@ -2133,6 +2133,13 @@ lock that channel and advance its revision atomically; the database trigger
 rejects a stale baseline, mismatched evaluation, authority change, or mutable
 evaluation history. The evaluated definition snapshot is the runtime source of
 truth after a transition, and existing run identity manifests stay pinned.
+Every entry point that starts an Agent's work (a direct run, a workflow, a run
+fork, and a Mission task) gives the run only the Skills the release pins, so a
+Skill added to a later draft never reaches a run or widens its tools. A pinned
+custom Skill must still match its pinned digest; one edited since the release
+refuses the run with a 409 until the Agent's latest version is evaluated and
+promoted. A pinned Skill that is disabled or deleted is left out, and a
+built-in Skill is matched by its id because it ships with the deployment.
 
 Retirement first revokes the Agent principal and then makes the release channel
 terminal; it does not delete definition or evaluation evidence. Arsenal and
