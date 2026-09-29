@@ -3,6 +3,7 @@ import type {
   ChatMessage,
   PersistedComputerUseTarget,
 } from "@/lib/orchestration/types";
+import type { DelegationReceiptProjection } from "@/lib/delegation/receipt-summary";
 import type { GroundingReport } from "@/lib/rag/citations";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
 import type {
@@ -119,6 +120,11 @@ export type AgentRunContinuation = {
   memoryFormation?: "durable" | "withheld";
   /** Captured, validated source metadata needed to ground the resumed answer. */
   citationSources?: GroundingReport["sources"];
+  /**
+   * Receipts for the delegations the run's own executions made before it
+   * paused, so the resumed answer reports them as an unpaused run would.
+   */
+  delegationReceipts?: readonly DelegationReceiptProjection[];
   /** Present for provider-neutral Gemini, Anthropic, Bedrock, and gateway tool turns. */
   providerToolState?: AgentProviderToolContinuation;
   createdAt: string;

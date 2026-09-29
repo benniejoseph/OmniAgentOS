@@ -75,6 +75,7 @@ import { getDataPath } from "@/lib/storage/paths";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { recordAiUsage } from "@/lib/usage/ledger";
 import { modelConversationSchema } from "@/lib/models/conversation";
+import { parseCarriedDelegationReceipts } from "@/lib/delegation/receipt-summary";
 import { commandModelSelectionRequestSchema } from "@/lib/models/command-selection";
 import {
   agentRunIdentityPinV1Schema,
@@ -2618,6 +2619,10 @@ function sanitizeAgentRunContinuation(value: AgentRunContinuation) {
     // Token counts are bounded execution metadata, not provider credentials.
     // Preserve the validated numeric state after the generic key redactor.
     budgetState: parsed.budgetState,
+    // Receipts hold only validated task IDs and states.
+    ...(parsed.delegationReceipts
+      ? { delegationReceipts: parsed.delegationReceipts }
+      : {}),
   };
 }
 
@@ -2799,6 +2804,12 @@ export function parseAgentRunContinuation(
         candidate.commandModelSelection,
       );
   if (commandModelSelection && !commandModelSelection.success) return undefined;
+  const delegationReceipts = candidate.delegationReceipts === undefined
+    ? undefined
+    : parseCarriedDelegationReceipts(candidate.delegationReceipts);
+  if (candidate.delegationReceipts !== undefined && !delegationReceipts) {
+    return undefined;
+  }
 
   return {
     computerUseTarget: candidate.computerUseTarget as
@@ -2853,6 +2864,7 @@ export function parseAgentRunContinuation(
         ? candidate.memoryFormation
         : undefined,
     citationSources: parseCitationSources(candidate.citationSources),
+    delegationReceipts,
     providerToolState: parseProviderToolState(candidate.providerToolState),
     createdAt: typeof candidate.createdAt === "string" ? candidate.createdAt : new Date().toISOString(),
     resumeClaimedAt:

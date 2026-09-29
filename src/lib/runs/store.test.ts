@@ -184,6 +184,64 @@ describe("agent run approval continuations (file mode)", () => {
     );
   });
 
+  it("carries the run's delegation receipts across an approval pause", async () => {
+    const store = await import("@/lib/runs/store");
+    const run = await store.createAgentRun({
+      mode: "orchestrate",
+      prompt: "carry delegation receipts",
+      messages: [{ role: "user", content: "carry delegation receipts" }],
+    });
+    // An agent ID can look like an API key to the generic redactor.
+    const receipts = [
+      {
+        executionId: "dar_scout",
+        childRunId: "run_scout",
+        delegateAgentId: "sk-research-assistant-01",
+        state: "queued",
+      },
+      {
+        executionId: "dar_memory",
+        childRunId: "run_memory",
+        delegateAgentId: "mnemosyne",
+        state: "running",
+      },
+    ] as const;
+
+    await store.markAgentRunWaitingForApproval(run.id, {
+      response: "partial",
+      continuation: {
+        ...continuationFor("exec-receipts-roundtrip"),
+        delegationReceipts: receipts,
+      },
+    });
+
+    const found = await store.findAgentRunWaitingForToolApproval(
+      "exec-receipts-roundtrip",
+    );
+    expect(found?.continuation?.delegationReceipts).toEqual(receipts);
+    expect(store.parseAgentRunContinuation(
+      continuationFor("exec-receipts-absent"),
+    )?.delegationReceipts).toBeUndefined();
+  });
+
+  it.each([
+    ["not a list", { executionId: "dar_scout" }],
+    ["a missing field", [{ executionId: "dar_scout", childRunId: "run_scout", state: "queued" }]],
+    ["an unknown state", [{
+      executionId: "dar_scout",
+      childRunId: "run_scout",
+      delegateAgentId: "scout",
+      state: "done",
+    }]],
+  ])("rejects a continuation whose delegation receipts are %s", async (_label, delegationReceipts) => {
+    const store = await import("@/lib/runs/store");
+
+    expect(store.parseAgentRunContinuation({
+      ...continuationFor("exec-receipts-damaged"),
+      delegationReceipts,
+    })).toBeUndefined();
+  });
+
   it("pauses, finds by execution id, and resumes exactly once", async () => {
     const store = await import("@/lib/runs/store");
     const run = await store.createAgentRun({

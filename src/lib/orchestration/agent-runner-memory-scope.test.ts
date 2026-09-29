@@ -1464,6 +1464,17 @@ describe("agent memory scope", () => {
       expect(mocks.enqueueMemoryConsolidationJob).toHaveBeenCalledOnce();
     });
 
+    it("forms no durable memory from an answer it can no longer commit", async () => {
+      const continuation = await pauseForApproval(request("all"), provider);
+      expect(continuation.memoryFormation).toBe("durable");
+      mocks.completeAgentRun.mockResolvedValueOnce(null);
+
+      await expect(resumeAfterApproval(continuation)).resolves.toMatchObject({
+        resumed: false,
+      });
+      expect(mocks.enqueueMemoryConsolidationJob).not.toHaveBeenCalled();
+    });
+
     it("forms no durable memory from a continuation saved without a decision", async () => {
       const { memoryFormation: _decision, ...legacy } = await pauseForApproval(
         request("all"),
@@ -1558,6 +1569,216 @@ describe("agent memory scope", () => {
       ).toBe(decision);
     },
   );
+
+  describe.each([
+    ["OpenAI", "openai"],
+    ["provider-bound", "google"],
+  ] as const)("delegation receipts in a %s run", (_label, provider) => {
+    /** Queues the model turn after the approval, ahead of the final "Done.". */
+    function queueResumedTurn(calls: readonly { callId: string; name: string }[]) {
+      if (provider === "google") {
+        mocks.generateModelToolTurn.mockResolvedValueOnce(providerTurn({
+          toolCalls: calls.map((call) => ({ ...call, argumentsJson: "{}" })),
+        }));
+      } else {
+        mocks.streamResponseTurn.mockResolvedValueOnce(openAITurn({ calls }));
+      }
+    }
+
+    const reconciledStatus = expect.objectContaining({
+      type: "status",
+      label: "Delegation receipts reconciled",
+    });
+
+    it("reports the receipts of a run that never paused", async () => {
+      const delegate = getGovernedTool(DELEGATE_TOOL_ID);
+      if (!delegate) throw new Error("Expected governed delegation fixture.");
+      const agentRequest = request("session");
+      agentRequest.agentProfile!.toolIds = [DELEGATE_TOOL_ID];
+      agentRequest.agentProfile!.approvalPolicy = "risk_based";
+      agentRequest.agentProfile!.autonomy = "governed";
+      agentRequest.budgetLimits = {
+        ...DEFAULT_AGENT_RUN_BUDGET_LIMITS,
+        agents: 7,
+        fanOut: 6,
+      };
+      mocks.loadProgressiveAgentTools.mockResolvedValue({ definitions: [delegate] });
+      mocks.executeGovernedTool.mockResolvedValue(delegationExecution(SCOUT_RECEIPT));
+      if (provider === "google") {
+        mocks.selectAgentModel.mockReturnValue({
+          model: "gemini-test",
+          provider: "google",
+          tier: "fast",
+          reason: "Test route",
+        });
+        mocks.generateModelToolTurn
+          .mockResolvedValueOnce(providerTurn({
+            toolCalls: [{ ...DELEGATE_SCOUT_CALL, argumentsJson: "{}" }],
+          }))
+          .mockResolvedValue(providerTurn({ text: "Scout finished the check." }));
+      } else {
+        mocks.streamResponseTurn
+          .mockResolvedValueOnce(openAITurn({ calls: [DELEGATE_SCOUT_CALL] }))
+          .mockResolvedValue(openAITurn({ text: "Scout finished the check." }));
+      }
+
+      const events = await collectRequest(agentRequest);
+
+      expect(events).toContainEqual(reconciledStatus);
+      expect(events.at(-1)).toMatchObject({
+        type: "done",
+        response: "- dar_scout — queued",
+      });
+      expect(completedResponse()).toBe("- dar_scout — queued");
+      expect(mocks.completeAgentRun.mock.calls.at(-1)?.[3]).toMatchObject({
+        tenantId: "paid-test-tenant",
+        executionScope: expect.objectContaining({ tenantId: "paid-test-tenant" }),
+      });
+    });
+
+    it("reports the receipts the run made before it paused", async () => {
+      mocks.executeGovernedTool.mockResolvedValueOnce(
+        delegationExecution(SCOUT_RECEIPT),
+      );
+      const continuation = await pauseDelegatingRun(provider, [
+        DELEGATE_SCOUT_CALL,
+        APPROVAL_CALL,
+      ]);
+      expect(continuation.delegationReceipts).toEqual([SCOUT_RECEIPT]);
+
+      await expect(resumeAfterApproval(continuation)).resolves.toMatchObject({
+        resumed: true,
+        status: "completed",
+      });
+
+      expect(completedResponse()).toBe("- dar_scout — queued");
+      expect(mocks.appendRunEvent).toHaveBeenCalledWith(
+        "run-memory-scope",
+        reconciledStatus,
+        expect.anything(),
+      );
+    });
+
+    it("reports a delegation the resumed run made", async () => {
+      const continuation = await pauseDelegatingRun(provider, [APPROVAL_CALL]);
+      expect(continuation).not.toHaveProperty("delegationReceipts");
+      queueResumedTurn([DELEGATE_MNEMOSYNE_CALL]);
+      mocks.executeGovernedTool.mockResolvedValueOnce(
+        delegationExecution(MNEMOSYNE_RECEIPT),
+      );
+
+      await expect(resumeAfterApproval({ ...continuation, maxToolSteps: 3 }))
+        .resolves.toMatchObject({ resumed: true, status: "completed" });
+
+      expect(completedResponse()).toBe("- dar_mnemosyne — queued");
+    });
+
+    it("reports a delegation queued behind the approved call", async () => {
+      const continuation = await pauseDelegatingRun(provider, [
+        APPROVAL_CALL,
+        DELEGATE_MNEMOSYNE_CALL,
+      ]);
+      mocks.executeGovernedTool.mockResolvedValueOnce(
+        delegationExecution(MNEMOSYNE_RECEIPT),
+      );
+
+      await expect(resumeAfterApproval(continuation)).resolves.toMatchObject({
+        resumed: true,
+        status: "completed",
+      });
+
+      expect(completedResponse()).toBe("- dar_mnemosyne — queued");
+    });
+
+    it("carries every receipt when the resumed run pauses again", async () => {
+      mocks.executeGovernedTool.mockResolvedValueOnce(
+        delegationExecution(SCOUT_RECEIPT),
+      );
+      const continuation = await pauseDelegatingRun(provider, [
+        DELEGATE_SCOUT_CALL,
+        APPROVAL_CALL,
+      ]);
+      mocks.markAgentRunWaitingForApproval.mockClear();
+      queueResumedTurn([
+        DELEGATE_MNEMOSYNE_CALL,
+        { callId: "call-memory-approval-again", name: APPROVAL_TOOL_ID },
+      ]);
+      mocks.executeGovernedTool.mockResolvedValueOnce(
+        delegationExecution(MNEMOSYNE_RECEIPT),
+      );
+
+      await expect(resumeAfterApproval({ ...continuation, maxToolSteps: 3 }))
+        .resolves.toMatchObject({ resumed: true, status: "waiting_approval" });
+
+      expect(
+        mocks.markAgentRunWaitingForApproval.mock.calls[0][1].continuation
+          .delegationReceipts,
+      ).toEqual([SCOUT_RECEIPT, MNEMOSYNE_RECEIPT]);
+    });
+
+    it("carries the receipts when a queued call needs approval", async () => {
+      mocks.executeGovernedTool.mockResolvedValueOnce(
+        delegationExecution(SCOUT_RECEIPT),
+      );
+      const continuation = await pauseDelegatingRun(provider, [
+        DELEGATE_SCOUT_CALL,
+        APPROVAL_CALL,
+        { callId: "call-memory-queued", name: APPROVAL_TOOL_ID },
+      ]);
+      mocks.markAgentRunWaitingForApproval.mockClear();
+
+      await expect(resumeAfterApproval(continuation)).resolves.toMatchObject({
+        resumed: true,
+        status: "waiting_approval",
+      });
+
+      expect(
+        mocks.markAgentRunWaitingForApproval.mock.calls[0][1].continuation
+          .delegationReceipts,
+      ).toEqual([SCOUT_RECEIPT]);
+    });
+
+    it("keeps the model's answer when the run delegated nothing", async () => {
+      const continuation = await pauseDelegatingRun(provider, [APPROVAL_CALL]);
+      const source = {
+        citationId: "web:asael-docs",
+        evidenceId: "evidence-asael-docs",
+        kind: "web",
+        title: "Asael docs",
+      } as const;
+
+      await expect(resumeAfterApproval({
+        ...continuation,
+        citationSources: [source],
+      })).resolves.toMatchObject({ resumed: true, status: "completed" });
+
+      expect(completedResponse()).toBe("Done.");
+      const [, , grounding, options] = mocks.completeAgentRun.mock.calls.at(-1) ?? [];
+      expect(grounding?.sources).toEqual([source]);
+      expect(options).toMatchObject({
+        tenantId: expect.any(String),
+        executionScope: expect.anything(),
+      });
+      expect(mocks.appendRunEvent).not.toHaveBeenCalledWith(
+        "run-memory-scope",
+        reconciledStatus,
+        expect.anything(),
+      );
+    });
+  });
+
+  it("streams no answer and forms no memory once the run is no longer active", async () => {
+    mocks.completeAgentRun.mockResolvedValueOnce(null);
+
+    const events = await collectRequest(request("all"));
+
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "status",
+      label: "Run no longer active",
+    }));
+    expect(events).not.toContainEqual(expect.objectContaining({ type: "done" }));
+    expect(mocks.enqueueMemoryConsolidationJob).not.toHaveBeenCalled();
+  });
 
   it("streams the public grounding projection and keeps claim evidence on the run", async () => {
     const events = await collectRun("session");
@@ -2531,6 +2752,25 @@ describe("agent memory scope", () => {
 
 const APPROVAL_TOOL_ID = "google.gmail.trash";
 const APPROVAL_EXECUTION_ID = "execution-memory-approval";
+const DELEGATE_TOOL_ID = "app.agents.delegate";
+const SCOUT_RECEIPT = {
+  executionId: "dar_scout",
+  childRunId: "run_scout",
+  delegateAgentId: "scout",
+  state: "queued",
+} as const;
+const MNEMOSYNE_RECEIPT = {
+  executionId: "dar_mnemosyne",
+  childRunId: "run_mnemosyne",
+  delegateAgentId: "mnemosyne",
+  state: "queued",
+} as const;
+const DELEGATE_SCOUT_CALL = { callId: "call-delegate-scout", name: DELEGATE_TOOL_ID };
+const DELEGATE_MNEMOSYNE_CALL = {
+  callId: "call-delegate-mnemosyne",
+  name: DELEGATE_TOOL_ID,
+};
+const APPROVAL_CALL = { callId: "call-memory-approval", name: APPROVAL_TOOL_ID };
 
 function withContextScope(
   agentRequest: AgentRunRequest,
@@ -2605,13 +2845,7 @@ function armApprovalPause(
   agentRequest.agentProfile!.approvalPolicy = "risk_based";
   agentRequest.agentProfile!.autonomy = "governed";
   mocks.loadProgressiveAgentTools.mockResolvedValue({
-    definitions: [{
-      ...localToolDefinition(APPROVAL_TOOL_ID),
-      riskLevel: 2,
-      approvalRequired: true,
-      operationClass: "mutation",
-      reversible: false,
-    }],
+    definitions: [approvalToolDefinition()],
   });
   mocks.executeGovernedTool.mockResolvedValue(approvalRequiredExecution());
   if (provider === "google") {
@@ -2629,12 +2863,79 @@ function armApprovalPause(
   }
 }
 
+function approvalToolDefinition(): ToolDefinition {
+  return {
+    ...localToolDefinition(APPROVAL_TOOL_ID),
+    riskLevel: 2,
+    approvalRequired: true,
+    operationClass: "mutation",
+    reversible: false,
+  };
+}
+
+/**
+ * Runs a request whose toolbox can delegate until its approval-gated call
+ * parks, with the given calls in its first model turn.
+ */
+async function pauseDelegatingRun(
+  provider: "openai" | "google",
+  calls: readonly { callId: string; name: string }[],
+): Promise<AgentRunContinuation> {
+  const delegate = getGovernedTool(DELEGATE_TOOL_ID);
+  if (!delegate) throw new Error("Expected governed delegation fixture.");
+  const agentRequest = request("session");
+  armApprovalPause(agentRequest, provider, calls);
+  agentRequest.agentProfile!.toolIds = [DELEGATE_TOOL_ID, APPROVAL_TOOL_ID];
+  agentRequest.budgetLimits = {
+    ...DEFAULT_AGENT_RUN_BUDGET_LIMITS,
+    agents: 7,
+    fanOut: 6,
+  };
+  mocks.loadProgressiveAgentTools.mockResolvedValue({
+    definitions: [delegate, approvalToolDefinition()],
+  });
+
+  const events = await collectRequest(agentRequest);
+
+  expect(events).toContainEqual(expect.objectContaining({
+    type: "waiting_approval",
+    executionId: APPROVAL_EXECUTION_ID,
+  }));
+  return mocks.markAgentRunWaitingForApproval.mock.calls[0][1].continuation;
+}
+
+/** A governed delegation whose child task is queued. */
+function delegationExecution(receipt: {
+  executionId: string;
+  childRunId: string;
+  delegateAgentId: string;
+  state: string;
+}) {
+  return {
+    record: localExecutionRecord(
+      DELEGATE_TOOL_ID,
+      `execution-${receipt.executionId}`,
+    ),
+    result: { task: receipt },
+  };
+}
+
+/** The response the run committed last. */
+function completedResponse() {
+  return mocks.completeAgentRun.mock.calls.at(-1)?.[1];
+}
+
 /** Resumes a parked run after its tool executed, with the next model turn. */
 async function resumeAfterApproval(
   continuation: AgentRunContinuation,
   nextTurn?: ReturnType<typeof openAITurn> | ModelToolTurnResult,
 ) {
-  const governedCall = mocks.executeGovernedTool.mock.calls[0]?.[0];
+  // The scope binding belongs to the call that parked the run.
+  const governedCall = (
+    mocks.executeGovernedTool.mock.calls.find(
+      ([input]) => input.toolId === APPROVAL_TOOL_ID,
+    ) ?? mocks.executeGovernedTool.mock.calls[0]
+  )?.[0];
   mocks.enqueueMemoryConsolidationJob.mockClear();
   mocks.findAgentRunWaitingForToolApproval.mockResolvedValue({
     id: "run-memory-scope",

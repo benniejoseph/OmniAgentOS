@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  collectDelegationReceipts,
+  parseCarriedDelegationReceipts,
   projectSuccessfulDelegationReceipts,
   reconcileResponseWithDelegationReceipts,
   summarizeSuccessfulDelegationReceipts,
+  type DelegationReceiptProjection,
 } from "@/lib/delegation/receipt-summary";
 import type { GovernedToolExecutionResult } from "@/lib/tools/executor";
 import type { ToolExecutionRecord, ToolExecutionStatus } from "@/lib/tools/types";
@@ -99,6 +102,51 @@ describe("delegation receipt reconciliation", () => {
     ])).toEqual([]);
   });
 
+  it("reports receipts carried across approval pauses before live ones, each task once", () => {
+    const carriedScout = receipt("dar_scout", "run_scout", "scout", "queued");
+    const carriedMemory = receipt("dar_memory", "run_memory", "mnemosyne", "running");
+    const executions = [
+      execution({ task: task("dar_scout", "run_scout_again", "meridian", "running") }),
+      execution({ task: task("dar_new", "run_new", "scout", "queued") }),
+    ];
+
+    expect(collectDelegationReceipts(executions, [carriedScout, carriedMemory])).toEqual([
+      carriedScout,
+      carriedMemory,
+      task("dar_new", "run_new", "scout", "queued"),
+    ]);
+    expect(collectDelegationReceipts(executions)).toEqual([
+      task("dar_scout", "run_scout_again", "meridian", "running"),
+      task("dar_new", "run_new", "scout", "queued"),
+    ]);
+    expect(reconcileResponseWithDelegationReceipts("Done.", [], [carriedScout])).toEqual({
+      response: "- dar_scout — queued",
+      receiptCount: 1,
+      replaced: true,
+    });
+  });
+
+  it("reads carried receipts only from a list of distinct, well-formed receipts", () => {
+    const scout = task("dar_scout", "run_scout", "scout", "queued");
+    const memory = task("dar_memory", "run_memory", "mnemosyne", "running");
+
+    expect(parseCarriedDelegationReceipts([scout, memory])).toEqual([scout, memory]);
+    expect(parseCarriedDelegationReceipts([])).toEqual([]);
+    for (const damaged of [
+      undefined,
+      scout,
+      [null],
+      [scout, scout],
+      [{ ...scout, note: "extra" }],
+      [{ executionId: "dar_scout", childRunId: "run_scout", state: "queued" }],
+      [task("dar scout", "run_scout", "scout", "queued")],
+      [task("dar_scout", "run_scout", "scout", "done")],
+      [scout, { ...memory, childRunId: 7 }],
+    ]) {
+      expect(parseCarriedDelegationReceipts(damaged)).toBeUndefined();
+    }
+  });
+
   it("rejects malformed execution envelopes without throwing", () => {
     const malformed = (
       [null, {}, { record: null }, { record: {} }] as unknown
@@ -114,6 +162,15 @@ function task(
   delegateAgentId: string,
   state: string,
 ) {
+  return { executionId, childRunId, delegateAgentId, state };
+}
+
+function receipt(
+  executionId: string,
+  childRunId: string,
+  delegateAgentId: string,
+  state: DelegationReceiptProjection["state"],
+): DelegationReceiptProjection {
   return { executionId, childRunId, delegateAgentId, state };
 }
 

@@ -100,7 +100,9 @@ import {
   dynamicDelegationRootReservation,
 } from "@/lib/delegation/runtime-policy";
 import {
+  collectDelegationReceipts,
   reconcileResponseWithDelegationReceipts,
+  type DelegationReceiptProjection,
 } from "@/lib/delegation/receipt-summary";
 import {
   buildParentDelegationBudgetAuthorityV1,
@@ -109,6 +111,7 @@ import {
 } from "@/lib/delegation/parent-budget-authority";
 import type {
   AgentEvent,
+  AgentMode,
   AgentRunRequest,
   ComputerUseTarget,
 } from "@/lib/orchestration/types";
@@ -127,6 +130,7 @@ import {
   mergeCitationSources,
   publicGroundingReport,
   type CitationSource,
+  type GroundingReport,
 } from "@/lib/rag/citations";
 import type { ContextPack } from "@/lib/rag/types";
 import {
@@ -2125,6 +2129,9 @@ async function* runAgentUntilStopped(
             memoryScope: request.agentProfile?.memoryScope || "all",
             memoryFormation,
             citationSources,
+            ...delegationReceiptsField(
+              delegationExecutionsForReceiptReconciliation,
+            ),
             providerToolState: waiting.providerState,
             createdAt: new Date().toISOString(),
           };
@@ -2600,6 +2607,9 @@ async function* runAgentUntilStopped(
               memoryScope: request.agentProfile?.memoryScope || "all",
               memoryFormation,
               citationSources,
+              ...delegationReceiptsField(
+                delegationExecutionsForReceiptReconciliation,
+              ),
               createdAt: new Date().toISOString(),
             };
             await flushDeltas();
@@ -2745,34 +2755,34 @@ async function* runAgentUntilStopped(
       }
     }
 
-    const delegationReceiptReconciliation =
-      reconcileResponseWithDelegationReceipts(
-        response,
-        delegationExecutionsForReceiptReconciliation,
-      );
-    if (delegationReceiptReconciliation.replaced) {
-      yield await emit({
-        type: "status",
-        label: "Delegation receipts reconciled",
-        detail:
-          `The final response was replaced with ${delegationReceiptReconciliation.receiptCount} server-owned delegation receipt(s).`,
-      });
-    }
-    response = delegationReceiptReconciliation.response;
-
     runBudgetState = refreshRunBudgetWallTime(runBudgetState);
-    const grounding = await buildClaimGroundingReport({
+    const finalStatusEvents: AgentEvent[] = [];
+    const finalization = await finalizeAgentRun({
       runId: run.id,
       response,
-      sources: citationSources,
-      executionScope,
+      delegationExecutions: delegationExecutionsForReceiptReconciliation,
+      recordStatus: async (event) => {
+        finalStatusEvents.push(await emit(event));
+      },
+      citationSources,
+      claimEvidenceScope: executionScope,
+      runMutationOptions: {
+        tenantId: runTenantId,
+        executionScope,
+        runContractEnvelope: shadowRunContract?.envelope,
+      },
+      threadId: request.threadId,
+      tenantId: request.tenantId,
+      memory: {
+        formation: memoryFormation,
+        actorId: request.actorId,
+        mode,
+        prompt: query,
+      },
     });
-    const completed = await completeAgentRun(run.id, response, grounding, {
-      tenantId: runTenantId,
-      executionScope,
-      runContractEnvelope: shadowRunContract?.envelope,
-    });
-    if (!completed) {
+    response = finalization.response;
+    for (const event of finalStatusEvents) yield event;
+    if (!finalization.committed) {
       yield await emit({
         type: "status",
         label: "Run no longer active",
@@ -2781,30 +2791,14 @@ async function* runAgentUntilStopped(
       });
       return;
     }
-    await appendAssistantTurnSafely({
-      threadId: request.threadId,
-      tenantId: request.tenantId,
-      runId: run.id,
-      response,
-    });
-    const consolidation = memoryFormation === "durable"
-      ? enqueueMemoryConsolidationSafely({
-          runId: run.id,
-          tenantId: request.tenantId,
-          actorId: request.actorId,
-          mode,
-          prompt: query,
-          response,
-        })
-      : Promise.resolve();
     // Clients get the public grounding projection, as on every other path;
     // the raw claim evidence stays on the stored run.
     yield {
       type: "done",
       response,
-      grounding: publicGroundingReport(grounding),
+      grounding: publicGroundingReport(finalization.grounding),
     } as unknown as AgentEvent;
-    await consolidation;
+    await finalization.consolidation;
   } catch (error) {
     if (abortSignal?.aborted) {
       const message = "Agent run canceled after the client stopped the request.";
@@ -4132,6 +4126,8 @@ async function resumeAgentRunAfterToolApprovalInScope({
     runBudgetState = reservation.state;
     return reservation.delegation;
   };
+  // Delegations this resume makes, reported after those the run carried.
+  const resumeDelegationExecutions: GovernedToolExecutionResult[] = [];
 
   const appendScopedRunEvent = async (event: AgentEvent) => {
     const record = await appendRunEvent(run.id, event, {
@@ -4494,6 +4490,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
           checkpointBeforeEffect: checkpointBeforeResumeTool,
         }),
       });
+      captureDelegationExecution(resumeDelegationExecutions, execution);
       if (toolExecutionScope) {
         await checkpointAfterResumeTool({
           record: execution.record,
@@ -4556,6 +4553,10 @@ async function resumeAgentRunAfterToolApprovalInScope({
             memoryScope: continuation.memoryScope,
             memoryFormation: continuation.memoryFormation,
             citationSources,
+            ...delegationReceiptsField(
+              resumeDelegationExecutions,
+              continuation.delegationReceipts,
+            ),
             createdAt: new Date().toISOString(),
           },
         }, { resumeFence });
@@ -4841,6 +4842,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
             checkpointBeforeEffect: checkpointBeforeResumeTool,
           }),
         });
+        captureDelegationExecution(resumeDelegationExecutions, execution);
         if (toolExecutionScope) {
           await checkpointAfterResumeTool({
             record: execution.record,
@@ -4908,6 +4910,10 @@ async function resumeAgentRunAfterToolApprovalInScope({
               memoryScope: continuation.memoryScope,
               memoryFormation: continuation.memoryFormation,
               citationSources,
+              ...delegationReceiptsField(
+                resumeDelegationExecutions,
+                continuation.delegationReceipts,
+              ),
               createdAt: new Date().toISOString(),
             },
           }, { resumeFence });
@@ -4967,47 +4973,38 @@ async function resumeAgentRunAfterToolApprovalInScope({
 
     await flushDeltas();
     runBudgetState = refreshRunBudgetWallTime(runBudgetState);
-    const grounding = await buildClaimGroundingReport({
+    const finalization = await finalizeAgentRun({
       runId: run.id,
       response,
-      sources: citationSources,
-      executionScope: claimEvidenceScopeForContinuation(
+      delegationExecutions: resumeDelegationExecutions,
+      carriedDelegationReceipts: continuation.delegationReceipts,
+      recordStatus: appendScopedRunEvent,
+      citationSources,
+      claimEvidenceScope: claimEvidenceScopeForContinuation(
         run,
         continuation,
         executionScope,
       ),
-    });
-    const completed = await completeAgentRun(
-      run.id,
-      response,
-      grounding,
       runMutationOptions,
-    );
-    if (!completed) {
+      threadId: run.threadId,
+      tenantId: continuation.context.tenantId,
+      // A continuation saved before the run carried its memory decision
+      // resumes with formation withheld.
+      memory: {
+        formation: continuation.memoryFormation,
+        actorId: continuation.context.actorId,
+        mode: run.mode,
+        prompt: run.prompt,
+      },
+    });
+    if (!finalization.committed) {
       return {
         resumed: false,
         reason:
           "The run was canceled or finalized before the resumed response could be committed.",
       };
     }
-    await appendAssistantTurnSafely({
-      threadId: run.threadId,
-      tenantId: continuation.context.tenantId,
-      runId: run.id,
-      response,
-    });
-    // A continuation saved before the run carried its memory decision resumes
-    // with formation withheld.
-    const consolidation = continuation.memoryFormation === "durable"
-      ? enqueueMemoryConsolidationSafely({
-          runId: run.id,
-          tenantId: continuation.context.tenantId,
-          actorId: continuation.context.actorId,
-          mode: run.mode,
-          prompt: run.prompt,
-          response,
-        })
-      : Promise.resolve();
+    response = finalization.response;
     await syncMissionExecutorSafely({
       executorType: "agent_run",
       executorId: run.id,
@@ -5017,7 +5014,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
         responseSha256: createHash("sha256").update(response).digest("hex"),
       },
     }, { tenantId, actorId: continuation.context.actorId });
-    await consolidation;
+    await finalization.consolidation;
     return { resumed: true, status: "completed" };
   } catch (error) {
     if (isAgentRunStop(error, abortSignal)) {
@@ -5127,6 +5124,8 @@ async function resumeProviderBoundAgentRunAfterApproval({
     runBudgetState = reservation.state;
     return reservation.delegation;
   };
+  // Delegations this resume makes, reported after those the run carried.
+  const resumeDelegationExecutions: GovernedToolExecutionResult[] = [];
   const appendScopedRunEvent = async (event: AgentEvent) => {
     const record = await appendRunEvent(run.id, event, {
       tenantId,
@@ -5485,6 +5484,10 @@ async function resumeProviderBoundAgentRunAfterApproval({
       memoryScope: continuation.memoryScope,
       memoryFormation: continuation.memoryFormation,
       citationSources,
+      ...delegationReceiptsField(
+        resumeDelegationExecutions,
+        continuation.delegationReceipts,
+      ),
       providerToolState: waiting.providerState,
       commandModelSelection: continuation.commandModelSelection,
       createdAt: new Date().toISOString(),
@@ -5592,6 +5595,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
           checkpointBeforeEffect: checkpointBeforeResumeTool,
         }),
       });
+      captureDelegationExecution(resumeDelegationExecutions, execution);
       if (toolExecutionScope) {
         await checkpointAfterResumeTool({
           record: execution.record,
@@ -5790,6 +5794,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
       citationSources,
       result.citationSources,
     );
+    resumeDelegationExecutions.push(...result.delegationExecutions);
     const fallbackUsed = result.attempts.some(
       (attempt) => attempt.status === "failed",
     );
@@ -5824,47 +5829,38 @@ async function resumeProviderBoundAgentRunAfterApproval({
     }
 
     runBudgetState = refreshRunBudgetWallTime(runBudgetState);
-    const grounding = await buildClaimGroundingReport({
+    const finalization = await finalizeAgentRun({
       runId: run.id,
       response,
-      sources: citationSources,
-      executionScope: claimEvidenceScopeForContinuation(
+      delegationExecutions: resumeDelegationExecutions,
+      carriedDelegationReceipts: continuation.delegationReceipts,
+      recordStatus: appendScopedRunEvent,
+      citationSources,
+      claimEvidenceScope: claimEvidenceScopeForContinuation(
         run,
         continuation,
         executionScope,
       ),
-    });
-    const completed = await completeAgentRun(
-      run.id,
-      response,
-      grounding,
       runMutationOptions,
-    );
-    if (!completed) {
+      threadId: run.threadId,
+      tenantId: continuation.context.tenantId,
+      // A continuation saved before the run carried its memory decision
+      // resumes with formation withheld.
+      memory: {
+        formation: continuation.memoryFormation,
+        actorId: continuation.context.actorId,
+        mode: run.mode,
+        prompt: run.prompt,
+      },
+    });
+    if (!finalization.committed) {
       return {
         resumed: false,
         reason:
           "The run was canceled or finalized before the resumed response could be committed.",
       };
     }
-    await appendAssistantTurnSafely({
-      threadId: run.threadId,
-      tenantId: continuation.context.tenantId,
-      runId: run.id,
-      response,
-    });
-    // A continuation saved before the run carried its memory decision resumes
-    // with formation withheld.
-    const consolidation = continuation.memoryFormation === "durable"
-      ? enqueueMemoryConsolidationSafely({
-          runId: run.id,
-          tenantId: continuation.context.tenantId,
-          actorId: continuation.context.actorId,
-          mode: run.mode,
-          prompt: run.prompt,
-          response,
-        })
-      : Promise.resolve();
+    response = finalization.response;
     await syncMissionExecutorSafely({
       executorType: "agent_run",
       executorId: run.id,
@@ -5874,7 +5870,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
         responseSha256: createHash("sha256").update(response).digest("hex"),
       },
     }, { tenantId, actorId: continuation.context.actorId });
-    await consolidation;
+    await finalization.consolidation;
     return { resumed: true, status: "completed" };
   } catch (error) {
     if (isAgentRunStop(error, abortSignal)) {
@@ -5926,6 +5922,96 @@ async function resumeProviderBoundAgentRunAfterApproval({
     }, { tenantId, actorId: continuation.context.actorId });
     return { resumed: true, status: "failed", error: message };
   }
+}
+
+type AgentRunFinalization =
+  | Readonly<{ committed: false; response: string }>
+  | Readonly<{
+      committed: true;
+      response: string;
+      grounding: GroundingReport;
+      consolidation: Promise<void>;
+    }>;
+
+/**
+ * Commits a run's final answer the same way on every path, fresh or resumed.
+ * Server-owned delegation receipts replace the model's account of delegated
+ * work, the answer is grounded and completed, and only a committed answer
+ * joins the thread and is offered to durable memory.
+ */
+async function finalizeAgentRun(input: {
+  runId: string;
+  response: string;
+  delegationExecutions: readonly GovernedToolExecutionResult[];
+  carriedDelegationReceipts?: readonly DelegationReceiptProjection[];
+  recordStatus: (event: AgentEvent) => Promise<unknown>;
+  citationSources: CitationSource[];
+  claimEvidenceScope: ExecutionScope;
+  runMutationOptions: Parameters<typeof completeAgentRun>[3];
+  threadId?: string;
+  tenantId?: string;
+  memory: Readonly<{
+    formation?: "durable" | "withheld";
+    actorId?: string;
+    mode: AgentMode;
+    prompt: string;
+  }>;
+}): Promise<AgentRunFinalization> {
+  const reconciliation = reconcileResponseWithDelegationReceipts(
+    input.response,
+    input.delegationExecutions,
+    input.carriedDelegationReceipts,
+  );
+  if (reconciliation.replaced) {
+    await input.recordStatus({
+      type: "status",
+      label: "Delegation receipts reconciled",
+      detail:
+        `The final response was replaced with ${reconciliation.receiptCount} server-owned delegation receipt(s).`,
+    });
+  }
+  const response = reconciliation.response;
+  const grounding = await buildClaimGroundingReport({
+    runId: input.runId,
+    response,
+    sources: input.citationSources,
+    executionScope: input.claimEvidenceScope,
+  });
+  const completed = await completeAgentRun(
+    input.runId,
+    response,
+    grounding,
+    input.runMutationOptions,
+  );
+  if (!completed) return { committed: false, response };
+  await appendAssistantTurnSafely({
+    threadId: input.threadId,
+    tenantId: input.tenantId,
+    runId: input.runId,
+    response,
+  });
+  // Only a durable decision forms memory. A continuation saved before runs
+  // carried the decision has none, so it resumes withheld.
+  const consolidation = input.memory.formation === "durable"
+    ? enqueueMemoryConsolidationSafely({
+        runId: input.runId,
+        tenantId: input.tenantId,
+        actorId: input.memory.actorId,
+        mode: input.memory.mode,
+        prompt: input.memory.prompt,
+        response,
+      })
+    : Promise.resolve();
+  return { committed: true, response, grounding, consolidation };
+}
+
+/** The continuation field carrying a run's delegation receipts, when it has any. */
+function delegationReceiptsField(
+  executions: readonly GovernedToolExecutionResult[],
+  carried?: readonly DelegationReceiptProjection[],
+) {
+  const receipts = collectDelegationReceipts(executions, carried);
+  return receipts.length ? { delegationReceipts: receipts } : {};
 }
 
 async function appendAssistantTurnSafely({

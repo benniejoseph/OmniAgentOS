@@ -3,6 +3,7 @@ import type { DelegationExecutionState } from "@/lib/delegation/execution-record
 
 const DELEGATION_TOOL_ID = "app.agents.delegate";
 const DELEGATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:@/+~-]{0,239}$/;
+const RECEIPT_KEYS = "childRunId,delegateAgentId,executionId,state";
 const DELEGATION_STATES = new Set<DelegationExecutionState>([
   "queued",
   "running",
@@ -67,6 +68,53 @@ export function projectSuccessfulDelegationReceipts(
 }
 
 /**
+ * The receipts a run holds so far: those it carried across earlier approval
+ * pauses, then those its live executions produced, each task once.
+ */
+export function collectDelegationReceipts(
+  executions: readonly GovernedToolExecutionResult[],
+  carried: readonly DelegationReceiptProjection[] = [],
+): readonly DelegationReceiptProjection[] {
+  const receipts = new Map<string, DelegationReceiptProjection>();
+  for (const receipt of [
+    ...carried,
+    ...projectSuccessfulDelegationReceipts(executions),
+  ]) {
+    if (!receipts.has(receipt.executionId)) {
+      receipts.set(receipt.executionId, receipt);
+    }
+  }
+  return Object.freeze([...receipts.values()]);
+}
+
+/**
+ * Reads the receipts a paused run projected into its server-written
+ * continuation. Anything but a list of distinct, well-formed receipts reads
+ * as undefined, so the caller rejects the continuation instead of trusting
+ * part of it.
+ */
+export function parseCarriedDelegationReceipts(
+  value: unknown,
+): readonly DelegationReceiptProjection[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const receipts: DelegationReceiptProjection[] = [];
+  const seenExecutionIds = new Set<string>();
+  for (const item of value) {
+    if (
+      !isRecord(item) ||
+      Object.keys(item).sort().join(",") !== RECEIPT_KEYS
+    ) {
+      return undefined;
+    }
+    const receipt = delegationTask({ task: item });
+    if (!receipt || seenExecutionIds.has(receipt.executionId)) return undefined;
+    seenExecutionIds.add(receipt.executionId);
+    receipts.push(Object.freeze(receipt));
+  }
+  return Object.freeze(receipts);
+}
+
+/**
  * Produces the exact user-facing reconciliation text: one task ID and its
  * initial state per line, in governed execution order, with no inferred
  * completion claim or other task detail.
@@ -80,15 +128,17 @@ export function summarizeSuccessfulDelegationReceipts(
 }
 
 /**
- * Reconciles fallible model prose against server-owned execution receipts.
+ * Reconciles fallible model prose against server-owned execution receipts,
+ * including those a resumed run carried across its approval pauses.
  * Successful dynamic delegation is asynchronous, so the receipt and its
  * initial state are the only terminal facts the parent may report here.
  */
 export function reconcileResponseWithDelegationReceipts(
   response: string,
   executions: readonly GovernedToolExecutionResult[],
+  carried: readonly DelegationReceiptProjection[] = [],
 ): DelegationReceiptReconciliation {
-  const receipts = projectSuccessfulDelegationReceipts(executions);
+  const receipts = collectDelegationReceipts(executions, carried);
   if (receipts.length === 0) {
     return Object.freeze({ response, receiptCount: 0, replaced: false });
   }
