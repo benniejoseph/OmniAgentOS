@@ -393,7 +393,7 @@ function agentInput(skillIds: string[]) {
 function jsonRequest(url: string, method: string, body: unknown) {
   return new Request(url, {
     method,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "idempotency-key": `agent-${method.toLowerCase()}-test` },
     body: JSON.stringify(body),
   });
 }

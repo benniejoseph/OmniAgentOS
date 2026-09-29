@@ -11,13 +11,14 @@ import {
 } from "@/lib/app-services/memory";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { MemoryDeletionPreviewConflictError } from "@/lib/memory/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
-export const PATCH = withDatabaseRequestScope(PATCHHandler);
-export const DELETE = withDatabaseRequestScope(DELETEHandler);
+export const PATCH = withDatabaseRequestScope(requireIdempotencyKey(PATCHHandler));
+export const DELETE = withDatabaseRequestScope(requireIdempotencyKey(DELETEHandler));
 
 const correctionSchema = memoryCorrectionServiceBodySchema;
 const privateNoStoreHeaders = { "cache-control": "private, no-store" };

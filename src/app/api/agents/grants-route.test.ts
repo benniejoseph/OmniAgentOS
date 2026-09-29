@@ -83,7 +83,7 @@ describe("P7.4 Agent memory grant routes", () => {
     const response = await POST(
       new Request("http://asael.test/api/agents/agent-one/grants", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "idempotency-key": "grant-create-one" },
         body: JSON.stringify(draft),
       }),
       { params: Promise.resolve({ id: "agent-one" }) },
@@ -106,7 +106,7 @@ describe("P7.4 Agent memory grant routes", () => {
     const response = await DELETE(
       new Request(
         "http://asael.test/api/agents/agent-one/grants/context%3Aone",
-        { method: "DELETE" },
+        { method: "DELETE", headers: { "idempotency-key": "grant-revoke-one" } },
       ),
       {
         params: Promise.resolve({
@@ -145,7 +145,7 @@ describe("P7.4 Agent memory grant routes", () => {
     await expect(DELETE(
       new Request(
         "http://asael.test/api/agents/agent-one/grants/context%3Aone",
-        { method: "DELETE" },
+        { method: "DELETE", headers: { "idempotency-key": "grant-revoke-one" } },
       ),
       {
         params: Promise.resolve({

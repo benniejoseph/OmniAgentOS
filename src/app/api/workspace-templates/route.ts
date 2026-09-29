@@ -11,6 +11,7 @@ import {
 } from "@/lib/app-services/workspace-templates";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { SharedContextAuthorityError } from "@/lib/memory/shared-context";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import {
@@ -21,7 +22,7 @@ import {
 export const runtime = "nodejs";
 export const maxDuration = 30;
 export const GET = withDatabaseRequestScope(GETHandler);
-export const POST = withDatabaseRequestScope(POSTHandler);
+export const POST = withDatabaseRequestScope(requireIdempotencyKey(POSTHandler));
 
 const privateNoStoreHeaders = { "cache-control": "private, no-store" };
 

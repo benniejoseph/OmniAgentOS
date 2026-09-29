@@ -113,6 +113,7 @@ function todayRequest(
     method: options.method,
     headers: {
       "content-type": "application/json",
+      "idempotency-key": `today-${options.method.toLowerCase()}-${pathname.replaceAll("/", "-")}`,
       "x-omni-tenant-id": owner.tenantId,
       "x-omni-user-id": owner.actorId,
       "x-omni-user-role": "admin",

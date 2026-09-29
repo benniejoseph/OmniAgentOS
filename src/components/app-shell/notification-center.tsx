@@ -205,7 +205,7 @@ export function NotificationCenter() {
     try {
       const payload = await readJson(`/api/notifications/${encodeURIComponent(item.id)}`, {
         method: "PATCH",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "idempotency-key": crypto.randomUUID() },
         body: JSON.stringify(action === "snooze" ? { action, minutes: 15 } : { action }),
       });
       const notification = payload.notification as PersonalNotification;
@@ -226,7 +226,7 @@ export function NotificationCenter() {
     try {
       await readJson("/api/notifications", {
         method: "PATCH",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "idempotency-key": crypto.randomUUID() },
         body: JSON.stringify({ action: "read_all" }),
       });
       const now = new Date().toISOString();
@@ -251,7 +251,7 @@ export function NotificationCenter() {
     try {
       const payload = await readJson("/api/today/brief", {
         method: "PATCH",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "idempotency-key": crypto.randomUUID() },
         body: JSON.stringify({
           notificationsEnabled: nextPreferences.notificationsEnabled,
           quietHoursEnabled: nextPreferences.quietHoursEnabled,

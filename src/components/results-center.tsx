@@ -285,6 +285,7 @@ export function ResultsCenter() {
     try {
       await readJson(`/api/runs/${encodeURIComponent(runId)}`, {
         method: "DELETE",
+        headers: { "idempotency-key": crypto.randomUUID() },
       });
       await load();
     } catch (cancelError) {

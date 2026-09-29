@@ -70,7 +70,7 @@ describe("memory lifecycle API", () => {
       "http://localhost/api/memory/memory-a/lifecycle",
       {
         method: "PATCH",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "idempotency-key": "lifecycle-pin" },
         body: JSON.stringify({ action: "pin" }),
       },
     ), { params: Promise.resolve({ id: "memory-a" }) });
@@ -89,7 +89,7 @@ describe("memory lifecycle API", () => {
       "http://localhost/api/memory/memory-a/lifecycle",
       {
         method: "PATCH",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "idempotency-key": "lifecycle-extra-field" },
         body: JSON.stringify({ action: "pin", memoryId: "memory-b" }),
       },
     ), { params: Promise.resolve({ id: "memory-a" }) });

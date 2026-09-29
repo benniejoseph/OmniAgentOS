@@ -3,12 +3,13 @@ import { createRequestMutationAppServiceCaller } from "@/lib/app-services/contra
 import { planProjectService } from "@/lib/app-services/projects";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { ProjectPlanningError } from "@/lib/projects/planner";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
-export const POST = withDatabaseRequestScope(POSTHandler);
+export const POST = withDatabaseRequestScope(requireIdempotencyKey(POSTHandler));
 const schema = z.object({ context: z.string().trim().max(4_000).optional() }).strict();
 
 async function POSTHandler(request: Request, route: { params: Promise<{ id: string }> }) {

@@ -4,6 +4,7 @@ import { createAppServiceCaller, createRequestMutationAppServiceCaller } from "@
 import { cancelRunService, recordRunFeedbackService, showRunServiceWithRecord } from "@/lib/app-services/runs";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { foldRunProjection } from "@/lib/events/projections";
 import { listStreamEvents } from "@/lib/events/store";
 import { listRunGeneratedArtifacts } from "@/lib/runs/generated-artifacts";
@@ -14,8 +15,8 @@ import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
-export const PATCH = withDatabaseRequestScope(PATCHHandler);
-export const DELETE = withDatabaseRequestScope(DELETEHandler);
+export const PATCH = withDatabaseRequestScope(requireIdempotencyKey(PATCHHandler));
+export const DELETE = withDatabaseRequestScope(requireIdempotencyKey(DELETEHandler));
 
 const feedbackSchema = z.object({
   verdict: z.enum(["useful", "needs_work"]),

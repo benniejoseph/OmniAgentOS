@@ -1339,7 +1339,7 @@ export function AgentRunsWorkspace({
     try {
       const feedbackResult = await readJson(`/api/runs/${encodeURIComponent(activeAgentRunId)}`, {
         method: "PATCH",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "idempotency-key": crypto.randomUUID() },
         body: JSON.stringify({
           verdict,
           correction: correction?.trim() || undefined,
@@ -2802,7 +2802,10 @@ export function AgentRunsWorkspace({
     setForgettingMemoryId(memoryId);
     setMemoryError(undefined);
     try {
-      await readJson(`/api/memory/${encodeURIComponent(memoryId)}`, { method: "DELETE" });
+      await readJson(`/api/memory/${encodeURIComponent(memoryId)}`, {
+        method: "DELETE",
+        headers: { "idempotency-key": crypto.randomUUID() },
+      });
       setConversationMemories((current) => current.filter((memory) => memory.id !== memoryId));
       setConfirmForgetMemoryId("");
       setRunAnnouncement("Memory forgotten. It will no longer influence future conversations.");
@@ -6282,12 +6285,14 @@ function WorkflowOutcomePill({ status }: { status: unknown }) {
 }
 
 // A send's run may not be stored yet when Stop is pressed, so a missing run
-// is asked for once more. A run still missing never started, and closing the
-// send already stopped it. Resolves true when a run was canceled.
+// is asked for once more, under the same key. A run still missing never
+// started, and closing the send already stopped it. Resolves true when a run
+// was canceled.
 async function cancelAgentRun(runId: string) {
   const path = `/api/runs/${encodeURIComponent(runId)}`;
+  const headers = { "idempotency-key": crypto.randomUUID() };
   for (let attempt = 0; ; attempt += 1) {
-    const response = await fetch(path, { method: "DELETE" });
+    const response = await fetch(path, { method: "DELETE", headers });
     if (response.ok) return true;
     if (response.status !== 404) {
       const record = asRecord(await response.json().catch(() => ({})));

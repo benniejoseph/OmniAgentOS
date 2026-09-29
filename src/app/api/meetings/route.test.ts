@@ -161,7 +161,7 @@ describe("meeting routes", () => {
       "http://localhost/api/meetings",
       {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "idempotency-key": "meeting-invalid" },
         body: JSON.stringify({
           ...draft(),
           declaredAccessClass: "public",

@@ -6,6 +6,7 @@ import {
 } from "@/lib/app-services/plugins";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import {
   PluginConflictError,
   PluginUnavailableError,
@@ -15,7 +16,7 @@ import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
-export const POST = withDatabaseRequestScope(POSTHandler);
+export const POST = withDatabaseRequestScope(requireIdempotencyKey(POSTHandler));
 
 const privateNoStoreHeaders = { "cache-control": "private, no-store" };
 

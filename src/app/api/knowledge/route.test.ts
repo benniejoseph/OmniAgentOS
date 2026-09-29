@@ -81,7 +81,7 @@ describe("knowledge deletion route", () => {
             initiatingActorId: "owner@example.test",
             executingPrincipalType: "user",
             executingPrincipalId: "owner@example.test",
-            correlationId: "knowledge-delete-request-1",
+            correlationId: "knowledge-delete-1",
             causationId: knowledgeDeletionTargetId(source),
             purpose: "knowledge.delete_source",
           }),

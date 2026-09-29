@@ -7,6 +7,7 @@ import {
 } from "@/lib/app-services/plugins";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import {
   PluginConflictError,
   PluginNotFoundError,
@@ -18,8 +19,8 @@ import type { SecurityContext } from "@/lib/security/types";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
-export const PATCH = withDatabaseRequestScope(PATCHHandler);
-export const DELETE = withDatabaseRequestScope(DELETEHandler);
+export const PATCH = withDatabaseRequestScope(requireIdempotencyKey(PATCHHandler));
+export const DELETE = withDatabaseRequestScope(requireIdempotencyKey(DELETEHandler));
 
 const privateNoStoreHeaders = { "cache-control": "private, no-store" };
 const patchSchema = z.object({

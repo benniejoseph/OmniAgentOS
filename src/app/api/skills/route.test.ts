@@ -219,7 +219,7 @@ describe("request-bound custom Skill routes", () => {
 function jsonRequest(url: string, method: string, body: unknown) {
   return new Request(url, {
     method,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "idempotency-key": `skill-${method.toLowerCase()}-test` },
     body: JSON.stringify(body),
   });
 }

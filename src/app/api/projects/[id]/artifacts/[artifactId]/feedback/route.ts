@@ -3,10 +3,11 @@ import { createRequestMutationAppServiceCaller } from "@/lib/app-services/contra
 import { recordProjectArtifactFeedbackService } from "@/lib/app-services/projects";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
-export const POST = withDatabaseRequestScope(POSTHandler);
+export const POST = withDatabaseRequestScope(requireIdempotencyKey(POSTHandler));
 
 const schema = z.object({
   verdict: z.enum(["useful", "needs_work"]),

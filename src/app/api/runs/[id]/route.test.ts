@@ -294,6 +294,7 @@ function feedbackRequest(runId: string, tenantId: string, actorId: string) {
     method: "PATCH",
     headers: {
       "content-type": "application/json",
+      "idempotency-key": `feedback-${runId}`,
       "x-omni-tenant-id": tenantId,
       "x-omni-user-id": actorId,
       "x-omni-user-role": "admin",

@@ -1460,7 +1460,9 @@ export function DomainConsole({
               "content-type": "application/json",
               "idempotency-key": requestKey,
             }
-          : undefined,
+          : action.method === "GET"
+            ? undefined
+            : { "idempotency-key": requestKey },
         body: sendsJson ? JSON.stringify(body || {}) : undefined,
       });
       const discoveryFailed = Boolean(readPath(result, "discoveryFailed"));

@@ -177,7 +177,7 @@ describe("customer Account 360 routes", () => {
     const response = await POSTFact(
       new Request(`http://localhost/api/customer-accounts/${accountId}/facts`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "idempotency-key": "fact-incomplete" },
         body: JSON.stringify({ factKey: "health.overall", value: { kind: "health" } }),
       }),
       { params: Promise.resolve({ id: encodeURIComponent(accountId) }) },

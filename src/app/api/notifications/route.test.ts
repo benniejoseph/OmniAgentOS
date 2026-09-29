@@ -96,7 +96,7 @@ describe("notification inbox route", () => {
           initiatingActorId: actorId,
           executingPrincipalType: "user",
           executingPrincipalId: actorId,
-          correlationId: "notification-request-1",
+          correlationId: "read-all-1",
           causationId: "notifications:read_all",
           purpose: "notification.read_all",
         }),

@@ -264,7 +264,10 @@ async function requestAdaptations(
     body
       ? {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: {
+            "content-type": "application/json",
+            "idempotency-key": crypto.randomUUID(),
+          },
           body: JSON.stringify(body),
           signal,
         }

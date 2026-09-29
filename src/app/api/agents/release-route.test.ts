@@ -153,7 +153,7 @@ describe("P7.5 Agent release route", () => {
 function post(body: unknown) {
   return POST(new Request("http://asael.test/api/agents/agent-one/release", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "idempotency-key": "release-one" },
     body: JSON.stringify(body),
   }), { params: Promise.resolve({ id: "agent-one" }) });
 }

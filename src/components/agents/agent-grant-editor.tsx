@@ -199,7 +199,10 @@ export function AgentGrantEditor({
         `/api/agents/${encodeURIComponent(agentId)}/grants`,
         {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: {
+            "content-type": "application/json",
+            "idempotency-key": crypto.randomUUID(),
+          },
           body: JSON.stringify(buildAgentGrantDraft(form)),
         },
       );
@@ -225,7 +228,7 @@ export function AgentGrantEditor({
     try {
       await requestJson(
         `/api/agents/${encodeURIComponent(agentId)}/grants/${encodeURIComponent(grant.record.grantId)}`,
-        { method: "DELETE" },
+        { method: "DELETE", headers: { "idempotency-key": crypto.randomUUID() } },
       );
       setGrants((current) => current.filter((entry) =>
         entry.record.grantId !== grant.record.grantId

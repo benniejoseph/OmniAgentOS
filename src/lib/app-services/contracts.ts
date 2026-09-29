@@ -7,6 +7,10 @@ import {
 } from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
 import {
+  isSafeRequestMethod,
+  requiredRequestIdempotencyKey,
+} from "@/lib/http/idempotency-key";
+import {
   canonicalJsonSha256,
   idempotencyKeySha256,
 } from "@/lib/tools/effect-receipt";
@@ -14,6 +18,8 @@ import {
 export const APP_SERVICE_BOUNDARY_VERSION =
   "p9.1-app-service-boundary:1" as const;
 export const APP_SERVICE_RECEIPT_SCHEMA_VERSION = 1 as const;
+// The execution scope bounds a correlation id to this length.
+const MAX_CORRELATION_ID_LENGTH = 256;
 
 export type AppServiceAccessMode = "read" | "mutation";
 
@@ -119,13 +125,14 @@ export function createRequestMutationAppServiceCaller(
     causationId?: string;
   },
 ) {
-  const idempotencyKey =
-    request.headers.get("idempotency-key")?.trim() ||
-    request.headers.get("x-idempotency-key")?.trim() ||
-    request.headers.get("x-request-id")?.trim() ||
-    `app_${crypto.randomUUID()}`;
-  const correlationId =
-    request.headers.get("x-request-id")?.trim() || idempotencyKey;
+  // A change is keyed only by the client's Idempotency-Key, and its
+  // correlation id follows that key, so ids derived from it repeat on retry.
+  const idempotencyKey = isSafeRequestMethod(request.method)
+    ? undefined
+    : requiredRequestIdempotencyKey(request);
+  const correlationId = idempotencyKey
+    ? correlationIdForIdempotencyKey(idempotencyKey)
+    : requestCorrelationId(request);
   return createAppServiceCaller({
     context,
     idempotencyKey,
@@ -204,6 +211,19 @@ export function completeAppServiceCall<T>(
       receiptSha256: canonicalJsonSha256(body),
     }),
   });
+}
+
+function correlationIdForIdempotencyKey(idempotencyKey: string) {
+  return idempotencyKey.length <= MAX_CORRELATION_ID_LENGTH
+    ? idempotencyKey
+    : `idempotency-key:${canonicalJsonSha256(idempotencyKey)}`;
+}
+
+function requestCorrelationId(request: Request) {
+  const requestId = request.headers.get("x-request-id")?.trim();
+  return requestId && requestId.length <= MAX_CORRELATION_ID_LENGTH
+    ? requestId
+    : `app_${crypto.randomUUID()}`;
 }
 
 function normalizeIdempotencyKey(value: string | undefined) {

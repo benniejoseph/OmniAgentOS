@@ -5,10 +5,11 @@ import {
 } from "@/lib/app-services/memory";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
-export const PATCH = withDatabaseRequestScope(PATCHHandler);
+export const PATCH = withDatabaseRequestScope(requireIdempotencyKey(PATCHHandler));
 
 const requestSchema = memoryLifecycleServiceInputSchema.omit({ id: true });
 const privateNoStoreHeaders = { "cache-control": "private, no-store" };

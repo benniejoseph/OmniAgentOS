@@ -167,7 +167,10 @@ describe("memory deletion route", () => {
 
   it("refuses deletion without the reviewed preview digest", async () => {
     const response = await DELETE(
-      new Request("http://localhost/api/memory/memory-a", { method: "DELETE" }),
+      new Request("http://localhost/api/memory/memory-a", {
+        method: "DELETE",
+        headers: { "idempotency-key": "forget-without-preview" },
+      }),
       { params: Promise.resolve({ id: "memory-a" }) },
     );
 
@@ -179,7 +182,10 @@ describe("memory deletion route", () => {
     const response = await DELETE(
       new Request("http://localhost/api/memory/memory-a", {
         method: "DELETE",
-        headers: { "x-asael-deletion-preview": "a".repeat(64) },
+        headers: {
+          "idempotency-key": "forget-reviewed",
+          "x-asael-deletion-preview": "a".repeat(64),
+        },
       }),
       { params: Promise.resolve({ id: "memory-a" }) },
     );
@@ -206,7 +212,10 @@ describe("memory deletion route", () => {
     const response = await DELETE(
       new Request("http://localhost/api/memory/memory-a", {
         method: "DELETE",
-        headers: { "x-asael-deletion-preview": "a".repeat(64) },
+        headers: {
+          "idempotency-key": "forget-reviewed",
+          "x-asael-deletion-preview": "a".repeat(64),
+        },
       }),
       { params: Promise.resolve({ id: "memory-a" }) },
     );
@@ -222,7 +231,10 @@ describe("memory deletion route", () => {
     const response = await DELETE(
       new Request("http://localhost/api/memory/memory-a", {
         method: "DELETE",
-        headers: { "x-asael-deletion-preview": "a".repeat(64) },
+        headers: {
+          "idempotency-key": "forget-reviewed",
+          "x-asael-deletion-preview": "a".repeat(64),
+        },
       }),
       { params: Promise.resolve({ id: "memory-a" }) },
     );
@@ -286,7 +298,7 @@ describe("memory deletion route", () => {
       "http://localhost/api/memory/memory-a",
       {
         method: "PATCH",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "idempotency-key": "memory-contradiction" },
         body: JSON.stringify({
           content: "Thursday",
           contradiction: true,

@@ -385,7 +385,7 @@ export function ConnectedSources({
           )
         : await fetch(
             `/api/knowledge?source=${encodeURIComponent(googleSourcePrefix(grant, prefix))}`,
-            { method: "DELETE" },
+            { method: "DELETE", headers: { "idempotency-key": crypto.randomUUID() } },
           );
       const payload = (await response.json().catch(() => ({}))) as {
         deleted?: { documents?: number; memories?: number };

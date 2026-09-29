@@ -3,13 +3,14 @@ import { createAppServiceCaller, createRequestMutationAppServiceCaller } from "@
 import { createProjectService, listProjectsService } from "@/lib/app-services/projects";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { listProjectSummaries } from "@/lib/projects/store";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
-export const POST = withDatabaseRequestScope(POSTHandler);
+export const POST = withDatabaseRequestScope(requireIdempotencyKey(POSTHandler));
 
 const createSchema = z.object({
   title: z.string().trim().min(1).max(180),

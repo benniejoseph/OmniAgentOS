@@ -256,7 +256,7 @@ export function ProjectsWorkspace({ initialView = "overview" }: { initialView?: 
     try {
       const payload = await readJson("/api/projects", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "idempotency-key": crypto.randomUUID() },
         body: JSON.stringify({
           title: title.trim(), objective: objective.trim(), status: "active",
           targetDate: targetDate ? new Date(`${targetDate}T23:59:00`).toISOString() : undefined,
@@ -347,7 +347,7 @@ export function ProjectsWorkspace({ initialView = "overview" }: { initialView?: 
     setPlanning(true); setPlanRationale("");
     try {
       const payload = await readJson(`/api/projects/${encodeURIComponent(selected.id)}/plan`, {
-        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({}),
+        method: "POST", headers: { "content-type": "application/json", "idempotency-key": crypto.randomUUID() }, body: JSON.stringify({}),
       });
       const rawPlan = payload.plan as { rationale?: unknown; tasks?: unknown; generatedBy?: unknown };
       const planTasks = normalizeProjectTasks(rawPlan.tasks, selected.id);
@@ -370,7 +370,7 @@ export function ProjectsWorkspace({ initialView = "overview" }: { initialView?: 
     setAddingTask(true);
     try {
       const payload = await readJson(`/api/projects/${encodeURIComponent(selected.id)}/tasks`, {
-        method: "POST", headers: { "content-type": "application/json" },
+        method: "POST", headers: { "content-type": "application/json", "idempotency-key": crypto.randomUUID() },
         body: JSON.stringify({ title: taskTitle.trim(), agentId: "atlas" }),
       });
       const task = normalizeProjectTask(payload.task, selected.id);
@@ -387,7 +387,7 @@ export function ProjectsWorkspace({ initialView = "overview" }: { initialView?: 
     setActingId(task.id);
     try {
       const payload = await readJson(`/api/projects/${encodeURIComponent(selected.id)}/tasks/${encodeURIComponent(task.id)}`, {
-        method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ status }),
+        method: "PATCH", headers: { "content-type": "application/json", "idempotency-key": crypto.randomUUID() }, body: JSON.stringify({ status }),
       });
       const updated = normalizeProjectTask(payload.task, selected.id);
       if (!updated) throw new Error("The project task returned an invalid canonical WorkItem.");
@@ -404,7 +404,7 @@ export function ProjectsWorkspace({ initialView = "overview" }: { initialView?: 
     setActingId(selected.id);
     try {
       const payload = await readJson(`/api/projects/${encodeURIComponent(selected.id)}`, {
-        method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ status }),
+        method: "PATCH", headers: { "content-type": "application/json", "idempotency-key": crypto.randomUUID() }, body: JSON.stringify({ status }),
       });
       const updated = payload.project as Project;
       setProjects((current) => current.map((project) => project.id === selected.id ? { ...project, ...updated } : project));
@@ -428,7 +428,7 @@ export function ProjectsWorkspace({ initialView = "overview" }: { initialView?: 
           ? { action, taskId }
           : { action };
       const payload = await readJson(`/api/projects/${encodeURIComponent(selected.id)}/execution`, {
-        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+        method: "POST", headers: { "content-type": "application/json", "idempotency-key": crypto.randomUUID() }, body: JSON.stringify(body),
       });
       const project = payload.project as Project | undefined;
       const tasks = payload.tasks === undefined
@@ -459,7 +459,7 @@ export function ProjectsWorkspace({ initialView = "overview" }: { initialView?: 
     try {
       const payload = await readJson(`/api/projects/${encodeURIComponent(selected.id)}/artifacts/${encodeURIComponent(selectedArtifact.id)}/feedback`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "idempotency-key": crypto.randomUUID() },
         body: JSON.stringify({ verdict, lesson: lesson.trim() }),
       });
       const artifact = payload.artifact as ProjectArtifact;

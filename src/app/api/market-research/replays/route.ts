@@ -12,12 +12,13 @@ import {
   marketEventReplaysQuerySchema,
 } from "@/lib/market-research/contracts";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
 export const maxDuration = 20;
 export const GET = withDatabaseRequestScope(GETHandler);
-export const POST = withDatabaseRequestScope(POSTHandler);
+export const POST = withDatabaseRequestScope(requireIdempotencyKey(POSTHandler));
 
 const privateNoStoreHeaders = { "cache-control": "private, no-store" };
 

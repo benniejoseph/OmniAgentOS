@@ -3,14 +3,15 @@ import { createAppServiceCaller, createRequestMutationAppServiceCaller } from "@
 import { generateTodayBriefService, showTodayBriefService, updateTodayPreferencesService } from "@/lib/app-services/today";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { TODAY_SECTION_KEYS } from "@/lib/today/sections";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 export const GET = withDatabaseRequestScope(GETHandler);
-export const POST = withDatabaseRequestScope(POSTHandler);
-export const PATCH = withDatabaseRequestScope(PATCHHandler);
+export const POST = withDatabaseRequestScope(requireIdempotencyKey(POSTHandler));
+export const PATCH = withDatabaseRequestScope(requireIdempotencyKey(PATCHHandler));
 
 const generateSchema = z.object({ force: z.boolean().optional() }).strict();
 const preferencesSchema = z.object({

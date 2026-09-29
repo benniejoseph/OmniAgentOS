@@ -30,12 +30,13 @@ import {
 } from "@/lib/app-services/app-builder";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
 export const GET = withDatabaseRequestScope(GETHandler);
-export const POST = withDatabaseRequestScope(POSTHandler);
+export const POST = withDatabaseRequestScope(requireIdempotencyKey(POSTHandler));
 
 const privateNoStoreHeaders = { "cache-control": "private, no-store" };
 const sessionIdSchema = z.string().regex(/^app_build_[a-f0-9]{48}$/);

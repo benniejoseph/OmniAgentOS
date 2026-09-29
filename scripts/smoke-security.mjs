@@ -60,9 +60,10 @@ for (const path of protectedReads) {
   checks.push(await expectStatus(path, { expected: 401, label: `anonymous ${path}` }));
 }
 
+// A keyed write, so the check reaches authentication rather than the key rule.
 const unauthWrite = await request("/api/memory", {
   method: "POST",
-  headers: { "content-type": "application/json" },
+  headers: { "content-type": "application/json", "idempotency-key": `smoke-security-${Date.now()}` },
   body: JSON.stringify({ title: "smoke", content: "unauthorized write should fail" }),
 });
 checks.push(assert(unauthWrite.status === 401, "anonymous memory write is blocked", `expected 401, got ${unauthWrite.status}`));

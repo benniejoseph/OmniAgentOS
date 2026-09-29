@@ -12,6 +12,7 @@ import {
 } from "@/lib/app-services/meetings";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { meetingFailureResponse } from "@/lib/meetings/http";
 import { MeetingNotFoundError } from "@/lib/meetings/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -19,8 +20,8 @@ import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 export const runtime = "nodejs";
 export const maxDuration = 30;
 export const GET = withDatabaseRequestScope(GETHandler);
-export const POST = withDatabaseRequestScope(POSTHandler);
-export const PATCH = withDatabaseRequestScope(PATCHHandler);
+export const POST = withDatabaseRequestScope(requireIdempotencyKey(POSTHandler));
+export const PATCH = withDatabaseRequestScope(requireIdempotencyKey(PATCHHandler));
 
 const privateNoStoreHeaders = { "cache-control": "private, no-store" };
 type RouteContext = { params: Promise<{ id: string }> };

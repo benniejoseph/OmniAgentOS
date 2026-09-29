@@ -407,6 +407,9 @@ async function rawRequest(path, options = {}) {
   if (options.body !== undefined) {
     requestHeaders.set("content-type", "application/json");
   }
+  if ((options.method || "GET") !== "GET") {
+    requestHeaders.set("idempotency-key", randomUUID());
+  }
   for (const [key, value] of Object.entries(options.extraHeaders || {})) {
     requestHeaders.set(key, value);
   }

@@ -349,7 +349,12 @@ async function requestRelease(
     `/api/agents/${encodeURIComponent(agentId)}/release`,
     {
       method: body ? "POST" : "GET",
-      headers: body ? { "content-type": "application/json" } : undefined,
+      headers: body
+        ? {
+            "content-type": "application/json",
+            "idempotency-key": crypto.randomUUID(),
+          }
+        : undefined,
       body: body ? JSON.stringify(body) : undefined,
       signal,
     },

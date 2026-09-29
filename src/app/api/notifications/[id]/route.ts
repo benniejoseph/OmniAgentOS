@@ -3,10 +3,11 @@ import { createRequestMutationAppServiceCaller } from "@/lib/app-services/contra
 import { updateNotificationService } from "@/lib/app-services/notifications";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
-export const PATCH = withDatabaseRequestScope(PATCHHandler);
+export const PATCH = withDatabaseRequestScope(requireIdempotencyKey(PATCHHandler));
 
 const updateSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("read") }).strict(),

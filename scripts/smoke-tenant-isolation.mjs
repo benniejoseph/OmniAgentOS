@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { failSmoke, getSmokeBaseUrl, smokeFetch } from "./smoke-helpers.mjs";
 
 const baseUrl = getSmokeBaseUrl();
@@ -170,6 +171,7 @@ async function jsonRequest(path, { method = "GET", tenantId = tenantA, body } = 
         "x-omni-tenant-id": tenantId,
         "x-omni-user-id": `${tenantId}:smoke`,
         "x-omni-user-role": "admin",
+        ...(method === "GET" ? {} : { "idempotency-key": randomUUID() }),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
     });

@@ -3,10 +3,11 @@ import { createRequestMutationAppServiceCaller } from "@/lib/app-services/contra
 import { createWorkItemService } from "@/lib/app-services/projects";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
-export const POST = withDatabaseRequestScope(POSTHandler);
+export const POST = withDatabaseRequestScope(requireIdempotencyKey(POSTHandler));
 const agentIds = ["atlas", "scout", "forge", "sentinel", "mnemosyne"] as const;
 const schema = z.object({ title: z.string().trim().min(1).max(240), detail: z.string().trim().max(1_000).optional(), priority: z.enum(["low", "medium", "high"]).optional(), agentId: z.enum(agentIds).optional(), dueAt: z.string().datetime().optional() }).strict();
 

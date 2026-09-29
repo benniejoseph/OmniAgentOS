@@ -129,7 +129,7 @@ describe("P7.6 Agent adaptation route", () => {
 function post(body: unknown) {
   return POST(new Request("http://asael.test/api/agents/scout/adaptations", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "idempotency-key": "adaptation-one" },
     body: JSON.stringify(body),
   }), { params: Promise.resolve({ id: "scout" }) });
 }

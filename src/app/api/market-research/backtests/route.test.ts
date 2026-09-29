@@ -116,7 +116,7 @@ describe("market backtests route", () => {
       "http://localhost/api/market-research/backtests",
       {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "idempotency-key": "backtest-malformed" },
         body: JSON.stringify({ snapshotId: "not-a-snapshot" }),
       },
     ));

@@ -176,7 +176,7 @@ describe("memory API private canary", () => {
     }));
     const response = await POST(new Request("http://localhost/api/memory", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "idempotency-key": "memory-create-one" },
       body: JSON.stringify({
         title: "Private preference",
         content: "Only I can read this.",

@@ -4,6 +4,7 @@ import {
 } from "@/lib/app-services/agent-governance";
 import { createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
 import { withDatabaseRequestScope } from "@/lib/db/client";
+import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import {
   AgentMemoryGrantConflictError,
   AgentMemoryGrantUnavailableError,
@@ -12,7 +13,7 @@ import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
-export const DELETE = withDatabaseRequestScope(DELETEHandler);
+export const DELETE = withDatabaseRequestScope(requireIdempotencyKey(DELETEHandler));
 
 const privateNoStoreHeaders = { "cache-control": "private, no-store" };
 

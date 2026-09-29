@@ -7,6 +7,7 @@ import {
   updateAgentService,
 } from "@/lib/app-services/agents";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { customAgentPatchSchema } from "@/lib/skills/schema";
 import {
@@ -17,8 +18,8 @@ import { MoltbookConnectionError } from "@/lib/moltbook/store";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
-export const PATCH = withDatabaseRequestScope(PATCHHandler);
-export const DELETE = withDatabaseRequestScope(DELETEHandler);
+export const PATCH = withDatabaseRequestScope(requireIdempotencyKey(PATCHHandler));
+export const DELETE = withDatabaseRequestScope(requireIdempotencyKey(DELETEHandler));
 
 const privateNoStoreHeaders = { "cache-control": "private, no-store" };
 

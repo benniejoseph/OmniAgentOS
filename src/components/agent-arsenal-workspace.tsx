@@ -1086,7 +1086,10 @@ function BuilderDialog({
       const base = editor.kind === "agent" ? "/api/agents" : "/api/skills";
       const request = {
         method: editor.id ? "PATCH" : "POST",
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": crypto.randomUUID(),
+        },
         body: JSON.stringify(body),
       };
       const message = `${name} ${editor.id ? "updated" : "created"}.`;

@@ -10,11 +10,12 @@ import {
   DelegationExecutionUnavailableError,
 } from "@/lib/delegation/execution-store";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const POST = withDatabaseRequestScope(POSTHandler);
+export const POST = withDatabaseRequestScope(requireIdempotencyKey(POSTHandler));
 
 const privateNoStoreHeaders = { "cache-control": "private, no-store" };
 const cancelBodySchema = agentTaskCancelServiceInputSchema.omit({ executionId: true });
@@ -24,12 +25,6 @@ async function POSTHandler(
   context: { params: Promise<{ id: string }> },
 ) {
   const { id } = await context.params;
-  if (!idempotencyKey(request)) {
-    return Response.json(
-      { error: "An Idempotency-Key header is required." },
-      { status: 400, headers: privateNoStoreHeaders },
-    );
-  }
   let body: unknown;
   try {
     body = await parseJsonBody(request);
@@ -100,10 +95,4 @@ async function POSTHandler(
       { status: 500, headers: privateNoStoreHeaders },
     );
   }
-}
-
-function idempotencyKey(request: Request) {
-  return request.headers.get("idempotency-key")?.trim() ||
-    request.headers.get("x-idempotency-key")?.trim() ||
-    request.headers.get("x-request-id")?.trim();
 }

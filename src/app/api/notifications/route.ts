@@ -3,11 +3,12 @@ import { createAppServiceCaller, createRequestMutationAppServiceCaller } from "@
 import { listNotificationsService, readAllNotificationsService } from "@/lib/app-services/notifications";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
-export const PATCH = withDatabaseRequestScope(PATCHHandler);
+export const PATCH = withDatabaseRequestScope(requireIdempotencyKey(PATCHHandler));
 
 const updateSchema = z.object({ action: z.literal("read_all") }).strict();
 

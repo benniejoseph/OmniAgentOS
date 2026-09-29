@@ -782,7 +782,10 @@ export function MemoryIntelligenceWorkspace() {
         `/api/memory/${encodeURIComponent(selectedMemory.id)}/lifecycle`,
         {
           method: "PATCH",
-          headers: { "content-type": "application/json" },
+          headers: {
+            "content-type": "application/json",
+            "idempotency-key": crypto.randomUUID(),
+          },
           body: JSON.stringify({ action }),
         },
       );
@@ -823,6 +826,7 @@ export function MemoryIntelligenceWorkspace() {
       const response = await fetch(`/api/memory/${encodeURIComponent(selectedMemory.id)}`, {
         method: "DELETE",
         headers: {
+          "idempotency-key": crypto.randomUUID(),
           "x-asael-deletion-preview": forgetPreview.expectedReceiptManifestSha256,
         },
       });
@@ -1012,7 +1016,10 @@ export function MemoryIntelligenceWorkspace() {
             try {
               const response = await fetch("/api/memory", {
                 method: "POST",
-                headers: { "content-type": "application/json" },
+                headers: {
+                  "content-type": "application/json",
+                  "idempotency-key": crypto.randomUUID(),
+                },
                 body: JSON.stringify(draft),
               });
               const body = await response.json();

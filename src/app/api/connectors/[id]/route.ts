@@ -17,6 +17,7 @@ import {
 import { createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observability/store";
 import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -24,8 +25,8 @@ import { assertPublicHttpUrl } from "@/lib/security/network";
 
 export const runtime = "nodejs";
 export const PATCH = withDatabaseRequestScope(PATCHHandler);
-export const POST = withDatabaseRequestScope(POSTHandler);
-export const DELETE = withDatabaseRequestScope(DELETEHandler);
+export const POST = withDatabaseRequestScope(requireIdempotencyKey(POSTHandler));
+export const DELETE = withDatabaseRequestScope(requireIdempotencyKey(DELETEHandler));
 
 const updateMcpConnectorSchema = z
   .object({

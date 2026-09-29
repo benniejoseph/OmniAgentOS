@@ -3,11 +3,12 @@ import { createRequestMutationAppServiceCaller } from "@/lib/app-services/contra
 import { updateWorkItemService } from "@/lib/app-services/projects";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { ProjectTransitionError } from "@/lib/projects/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
-export const PATCH = withDatabaseRequestScope(PATCHHandler);
+export const PATCH = withDatabaseRequestScope(requireIdempotencyKey(PATCHHandler));
 const agentIds = ["atlas", "scout", "forge", "sentinel", "mnemosyne"] as const;
 const schema = z.object({ title: z.string().trim().min(1).max(240).optional(), detail: z.string().trim().max(1_000).optional(), status: z.enum(["open", "doing", "done"]).optional(), priority: z.enum(["low", "medium", "high"]).optional(), agentId: z.enum(agentIds).optional(), dueAt: z.string().datetime().nullable().optional() }).strict().refine((value) => Object.keys(value).length > 0, { message: "A change is required." });
 

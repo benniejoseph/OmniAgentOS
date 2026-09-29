@@ -283,6 +283,7 @@ async function rawRequest(path, options = {}) {
   const headers = new Headers(requestHeaders);
   headers.set("accept", options.accept || "application/json");
   if (options.body !== undefined) headers.set("content-type", "application/json");
+  if ((options.method || "GET") !== "GET") headers.set("idempotency-key", randomUUID());
   for (const [key, value] of Object.entries(options.extraHeaders || {})) {
     headers.set(key, value);
   }

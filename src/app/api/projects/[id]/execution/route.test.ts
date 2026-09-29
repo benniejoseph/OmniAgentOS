@@ -73,7 +73,7 @@ describe("project execution commands", () => {
       "http://localhost/api/projects/project-a/execution",
       {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "idempotency-key": "retry-project-task" },
         body: JSON.stringify({ action: "retry", taskId }),
       },
     ), { params: Promise.resolve({ id: "project-a" }) });
@@ -90,7 +90,7 @@ describe("project execution commands", () => {
       "http://localhost/api/projects/project-a/execution",
       {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "idempotency-key": "approve-malformed-task" },
         body: JSON.stringify({ action: "approve", taskId: "project_task_bad" }),
       },
     ), { params: Promise.resolve({ id: "project-a" }) });

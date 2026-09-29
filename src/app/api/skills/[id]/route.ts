@@ -7,13 +7,14 @@ import {
   updateSkillService,
 } from "@/lib/app-services/agents";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { skillPatchSchema } from "@/lib/skills/schema";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
-export const PATCH = withDatabaseRequestScope(PATCHHandler);
-export const DELETE = withDatabaseRequestScope(DELETEHandler);
+export const PATCH = withDatabaseRequestScope(requireIdempotencyKey(PATCHHandler));
+export const DELETE = withDatabaseRequestScope(requireIdempotencyKey(DELETEHandler));
 
 async function GETHandler(request: Request, context: RouteContext<"/api/skills/[id]">) {
   const previewTrash = new URL(request.url).searchParams.get("mode") === "trash-preview";

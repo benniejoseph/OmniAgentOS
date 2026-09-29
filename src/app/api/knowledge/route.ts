@@ -10,12 +10,13 @@ import {
 } from "@/lib/app-services/knowledge";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { parseBoundedInteger } from "@/lib/http/body";
+import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { knowledgeDeletionTargetId } from "@/lib/rag/deletion-events";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
-export const DELETE = withDatabaseRequestScope(DELETEHandler);
+export const DELETE = withDatabaseRequestScope(requireIdempotencyKey(DELETEHandler));
 
 const privateNoStoreHeaders = { "cache-control": "private, no-store" };
 

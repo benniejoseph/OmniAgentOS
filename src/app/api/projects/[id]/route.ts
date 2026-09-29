@@ -3,6 +3,7 @@ import { createAppServiceCaller, createRequestMutationAppServiceCaller } from "@
 import { showProjectService, updateProjectService } from "@/lib/app-services/projects";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import {
   ProjectTransitionError,
 } from "@/lib/projects/store";
@@ -10,7 +11,7 @@ import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
-export const PATCH = withDatabaseRequestScope(PATCHHandler);
+export const PATCH = withDatabaseRequestScope(requireIdempotencyKey(PATCHHandler));
 
 const privateNoStoreHeaders = { "cache-control": "private, no-store" };
 

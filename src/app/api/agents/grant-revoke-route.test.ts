@@ -94,7 +94,7 @@ describe("Agent memory-grant revoke route", () => {
     });
     const response = await DELETE(new Request(
       "http://asael.test/api/agents/agent-one/grants/context%3Agrant-one",
-      { method: "DELETE" },
+      { method: "DELETE", headers: { "idempotency-key": "revoke-grant-two" } },
     ), context);
 
     expect(response.status).toBe(404);

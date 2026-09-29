@@ -264,7 +264,7 @@ export function TodayWorkspace({
     try {
       const payload = await readJson("/api/today", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "idempotency-key": crypto.randomUUID() },
         body: JSON.stringify({
           title: cleanTitle,
           kind,
@@ -299,7 +299,7 @@ export function TodayWorkspace({
     try {
       const payload = await readJson(`/api/today/${encodeURIComponent(item.id)}`, {
         method: "PATCH",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "idempotency-key": crypto.randomUUID() },
         body: JSON.stringify({ status: nextStatus }),
       });
       setToday((current) => ({
@@ -320,7 +320,7 @@ export function TodayWorkspace({
     try {
       const payload = await readJson("/api/today/brief", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "idempotency-key": crypto.randomUUID() },
         body: JSON.stringify({ force }),
       });
       setToday((current) => ({ ...current, brief: payload.brief as DailyBrief, briefGenerationDue: false }));
@@ -338,7 +338,7 @@ export function TodayWorkspace({
     try {
       const payload = await readJson("/api/today/brief", {
         method: "PATCH",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "idempotency-key": crypto.randomUUID() },
         body: JSON.stringify(today.preferences),
       });
       setToday((current) => ({ ...current, preferences: payload.preferences as TodayPreferences }));

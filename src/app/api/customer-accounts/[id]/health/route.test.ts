@@ -102,7 +102,7 @@ describe("customer health route", () => {
     const response = await POST(
       new Request(`http://localhost/api/customer-accounts/${accountId}/health`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "idempotency-key": "health-unbound" },
         body: JSON.stringify({ expectedAccountRevision: 3 }),
       }),
       { params: Promise.resolve({ id: encodeURIComponent(accountId) }) },
