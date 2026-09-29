@@ -101,6 +101,72 @@ describe("A2A server adapter", () => {
     expect(councilMocks.runCouncilRound).not.toHaveBeenCalled();
   });
 
+  it("marks an accepted result as untrusted output that passed structural checks", async () => {
+    taskStoreMocks.getA2ATaskMapping.mockRejectedValue(
+      new A2ATaskStoreError("not found", 404),
+    );
+    councilMocks.runCouncilRound.mockResolvedValue([contribution()]);
+    delegationMocks.getDelegationTask.mockResolvedValue(task());
+    const result = await sendInboundA2AMessageV1({
+      principal: principal(),
+      request: request(),
+    });
+
+    const artifacts = appendedPayloads().filter((payload) => payload.type === "artifact");
+    expect(artifacts).toHaveLength(1);
+    expect(artifacts[0].artifact.metadata).toMatchObject({
+      untrusted: true,
+      independentlyVerified: false,
+    });
+    expect(artifacts[0].artifact.description).not.toMatch(/verif/i);
+    expect(result.metadata?.resultDisposition).toBe("structurally_accepted");
+  });
+
+  it("appends no result artifact unless the canonical task accepted the result", async () => {
+    taskStoreMocks.getA2ATaskMapping.mockRejectedValue(
+      new A2ATaskStoreError("not found", 404),
+    );
+    const rejected = { ...task(), state: "rejected" as const };
+    delegationMocks.getDelegationTask.mockResolvedValue(rejected);
+    taskStoreMocks.readA2ATaskProjection.mockResolvedValue({
+      task: rejected,
+      history: [],
+      artifacts: [],
+      exchanges: [],
+    });
+    for (const status of ["completed", "failed"]) {
+      taskStoreMocks.appendA2AExchange.mockClear();
+      councilMocks.runCouncilRound.mockResolvedValue([{ ...contribution(), status }]);
+      const result = await sendInboundA2AMessageV1({
+        principal: principal(),
+        request: request(),
+      });
+      expect(appendedPayloads().map((payload) => payload.type), status)
+        .toEqual(["message", "status"]);
+      expect(result.status.state).toBe("TASK_STATE_REJECTED");
+      expect(result.metadata?.resultDisposition).toBe("not_accepted");
+    }
+  });
+
+  it("refuses an inbound task for Sentinel before any delegation", async () => {
+    taskStoreMocks.getA2ATaskMapping.mockRejectedValue(
+      new A2ATaskStoreError("not found", 404),
+    );
+    for (const [allowed, messageOverrides] of [
+      [["scout", "sentinel"], { metadata: { asaelAgentId: "sentinel" } }],
+      [["sentinel"], {}],
+    ] as const) {
+      await expect(sendInboundA2AMessageV1({
+        principal: { ...principal(), peer: activeRollout(allowed) },
+        request: request(messageOverrides),
+      })).rejects.toMatchObject({
+        status: 403,
+        message: "The requested Asael Agent does not take inbound A2A tasks.",
+      });
+    }
+    expect(councilMocks.runCouncilRound).not.toHaveBeenCalled();
+  });
+
   it("keeps task reads bound to the active peer rollout", async () => {
     taskStoreMocks.getA2ATaskMapping.mockResolvedValue({
       ...mapping(),
@@ -136,7 +202,17 @@ function principal(): AuthorizedA2APrincipal {
   };
 }
 
-function activeRollout() {
+function appendedPayloads() {
+  return taskStoreMocks.appendA2AExchange.mock.calls.map(
+    ([input]) => input.payload,
+  );
+}
+
+function activeRollout(
+  allowedInboundAgentIds: Parameters<
+    typeof buildA2APeerRolloutV1
+  >[0]["allowedInboundAgentIds"] = ["scout"],
+) {
   return transitionA2APeerRolloutV1({
     rollout: buildA2APeerRolloutV1({
       tenantId: "tenant:one",
@@ -150,7 +226,7 @@ function activeRollout() {
       inboundServiceApiKeyId: "key:one",
       outboundCredentialConfigured: false,
       allowedSkillIds: ["peer.identity"],
-      allowedInboundAgentIds: ["scout"],
+      allowedInboundAgentIds,
       createdAt: "2026-09-07T00:00:00.000Z",
     }),
     to: "active",

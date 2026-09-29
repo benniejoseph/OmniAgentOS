@@ -272,7 +272,7 @@ export function buildAsaelA2AAgentCardV1(input: {
         id: "asael.governed-task",
         name: "Governed task delegation",
         description:
-          "Submit bounded tasks whose effects remain subject to Asael policy, approval, idempotency, and independent verification.",
+          "Submit bounded tasks whose effects remain subject to Asael policy, approval, idempotency, and parent acceptance checks.",
         tags: ["delegation", "governed execution", "artifacts"],
         inputModes: ["text/plain", "application/json"],
         outputModes: ["text/plain", "application/json"],
@@ -281,7 +281,7 @@ export function buildAsaelA2AAgentCardV1(input: {
   return deepFreeze(a2aAgentCardV1Schema.parse({
     name: "Asael",
     description:
-      "A governed personal AI operating system with bounded delegation and independently verified task outcomes.",
+      "A governed personal AI operating system with bounded delegation and parent-checked task outcomes.",
     supportedInterfaces: [{
       url: endpoint,
       protocolBinding: "HTTP+JSON",

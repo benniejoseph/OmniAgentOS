@@ -23,6 +23,7 @@ import { runCouncilRound, type CouncilAgentId } from "@/lib/orchestration/counci
 import { createExecutionScope, type ExecutionScope } from "@/lib/security/execution-scope";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { externalA2ABudgetLimits } from "@/lib/a2a/safety";
+import { isInboundA2AAgentId } from "@/lib/a2a/rollout";
 
 const terminalStates = new Set([
   "result_accepted",
@@ -135,7 +136,7 @@ export async function sendInboundA2AMessageV1(input: {
     payload: { type: "message", message: { ...normalizedMessage, taskId: externalTaskId } },
     executionScope,
   });
-  if (contribution.status === "completed") {
+  if (task.state === "result_accepted") {
     await appendA2AExchange({
       mapping,
       direction: "outbound",
@@ -244,7 +245,7 @@ export async function projectA2ATask(
       rolloutSha256: mapping.rolloutSha256,
       negotiatedSkillId: mapping.negotiatedSkillId,
       resultDisposition: projection.task.state === "result_accepted"
-        ? "independently_verified"
+        ? "structurally_accepted"
         : "not_accepted",
     },
   });
@@ -331,7 +332,10 @@ function selectedInboundAgent(
   if (!principal.peer.allowedInboundAgentIds.includes(agentId as CouncilAgentId)) {
     throw new A2ATaskStoreError("The requested Asael Agent is outside this peer rollout.", 403);
   }
-  return agentId as CouncilAgentId;
+  if (!isInboundA2AAgentId(agentId)) {
+    throw new A2ATaskStoreError("The requested Asael Agent does not take inbound A2A tasks.", 403);
+  }
+  return agentId;
 }
 
 function inboundParentScope(input: {
@@ -424,11 +428,13 @@ function contributionArtifact(
       data,
     })}`,
     name: `${contribution.name} proposal`,
-    description: "A bounded result accepted by the canonical parent verifier.",
+    // The parent checks the result's shape and contract binding, not whether
+    // its content is true, so the result stays untrusted model output.
+    description: "A bounded result that passed the parent's structural acceptance checks.",
     parts: [{ data, mediaType: "application/json" }],
     metadata: {
-      untrusted: false,
-      independentlyVerified: true,
+      untrusted: true,
+      independentlyVerified: false,
       internalReceiptSha256: canonicalJsonSha256({
         taskId: contribution.delegation.taskId,
         lifecycleRevision: contribution.delegation.lifecycleRevision,

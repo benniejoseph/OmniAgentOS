@@ -32,6 +32,16 @@ const inboundAgentIdSchema = z.enum([
   "sentinel",
   "mnemosyne",
 ]);
+// Sentinel reviews council work and takes no delegated task of its own, so a
+// new rollout cannot route inbound work to it. A stored rollout that names it
+// still parses, and the server refuses the request.
+export const INBOUND_A2A_AGENT_IDS = ["atlas", "scout", "forge", "mnemosyne"] as const;
+
+export function isInboundA2AAgentId(
+  value: string,
+): value is typeof INBOUND_A2A_AGENT_IDS[number] {
+  return (INBOUND_A2A_AGENT_IDS as readonly string[]).includes(value);
+}
 
 export const a2aPeerRolloutV1Schema = z.object({
   schemaVersion: z.literal(1),

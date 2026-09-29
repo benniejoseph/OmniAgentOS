@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
 import { discoverExternalA2APeerV1 } from "@/lib/a2a/client";
+import { INBOUND_A2A_AGENT_IDS } from "@/lib/a2a/rollout";
 import {
   A2APeerStoreError,
   listA2APeers,
@@ -33,13 +34,7 @@ const registerSchema = z.object({
     "A2A Bearer token must be a single token without whitespace.",
   ).optional(),
   allowedSkillIds: z.array(z.string().trim().min(1).max(240)).min(1).max(64),
-  allowedInboundAgentIds: z.array(z.enum([
-    "atlas",
-    "scout",
-    "forge",
-    "sentinel",
-    "mnemosyne",
-  ])).max(5).optional(),
+  allowedInboundAgentIds: z.array(z.enum(INBOUND_A2A_AGENT_IDS)).max(5).optional(),
   maxTaskDurationMs: z.number().int().min(1_000).max(3_600_000).optional(),
   maxInputBytes: z.number().int().min(1).max(1_000_000).optional(),
   maxOutputBytes: z.number().int().min(1).max(2_000_000).optional(),

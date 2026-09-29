@@ -434,7 +434,22 @@ export async function runCouncilRound(input: {
           delegationContract.verifier.definitionVersion,
         score: accepted ? 1 : 0,
       });
-      contribution.delegation = delegationBinding(
+      // A proposal the parent rejected is not a result. It leaves the council
+      // as a failed pass, and its content goes no further.
+      const settled: CouncilContribution = accepted
+        ? contribution
+        : {
+            ...contribution,
+            status: "failed",
+            summary: `${agent.name}'s proposal did not pass parent evaluation.`,
+            findings: [],
+            risks: [],
+            recommendation: "Continue with the remaining council evidence.",
+            evidenceIds: [],
+            confidence: 0,
+            error: "The parent verifier did not accept this contribution.",
+          };
+      settled.delegation = delegationBinding(
         delegationContract,
         brokerResult,
         lifecycleTask,
@@ -442,10 +457,10 @@ export async function runCouncilRound(input: {
       await invokeCheckpointHook(input.checkpointHooks?.afterDelegation, {
         agentId,
         attempt,
-        status: contribution.status,
-        receiptSha256: contributionReceiptSha256(contribution),
+        status: settled.status,
+        receiptSha256: contributionReceiptSha256(settled),
       });
-      return contribution;
+      return settled;
     } catch (error) {
       if (modelBoundaryOpened && !modelBoundaryClosed) {
         await invokeCheckpointHook(input.checkpointHooks?.afterModel, {

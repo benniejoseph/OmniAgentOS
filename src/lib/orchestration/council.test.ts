@@ -171,6 +171,49 @@ describe("agent council", () => {
     ]);
   });
 
+  it("reports a proposal the parent rejects as a failed pass without its content", async () => {
+    mocks.generateModelStructured.mockResolvedValueOnce({
+      ...modelResult("Unchecked summary"),
+      text: JSON.stringify({
+        summary: "Unchecked summary",
+        findings: ["Unchecked finding"],
+        risks: ["Unchecked risk"],
+        recommendation: "",
+        evidenceIds: ["memory:1"],
+        confidence: 0.9,
+      }),
+    });
+    const statuses: string[] = [];
+    const contributions = await runCouncilRound({
+      goal: "Research the bounded question",
+      mode: "orchestrate",
+      primaryAgentId: "atlas",
+      specialistIds: ["scout"],
+      contextBlock: "[memory:1] Evidence",
+      delegationAuthority,
+      checkpointHooks: {
+        afterDelegation: async ({ status }) => {
+          statuses.push(status);
+        },
+      },
+    });
+
+    expect(contributions).toHaveLength(1);
+    expect(contributions[0]).toMatchObject({
+      agentId: "scout",
+      status: "failed",
+      summary: "Scout's proposal did not pass parent evaluation.",
+      findings: [],
+      risks: [],
+      evidenceIds: [],
+      confidence: 0,
+      error: "The parent verifier did not accept this contribution.",
+      delegation: { lifecycleState: "rejected" },
+    });
+    expect(formatCouncilContributions(contributions)).not.toContain("Unchecked");
+    expect(statuses).toEqual(["failed"]);
+  });
+
   it("brokers an exact governed tool and binds its receipt into the proposal", async () => {
     mocks.generateModelStructured
       .mockResolvedValueOnce({

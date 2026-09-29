@@ -11,7 +11,7 @@ import {
   assertA2AProtocolVersion,
   buildAsaelA2AAgentCardV1,
 } from "@/lib/a2a/v1-contracts";
-import { A2A_ADAPTER_RELEASE } from "@/lib/a2a/rollout";
+import { A2A_ADAPTER_RELEASE, isInboundA2AAgentId } from "@/lib/a2a/rollout";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 
 export const runtime = "nodejs";
@@ -28,9 +28,10 @@ async function GETHandler(request: Request) {
     const cards = listInternalAgentCardsV1({
       tenantId: principal.tenantId,
       controllerActorId: principal.actorId,
-    }).filter((card) => allowedAgentIds.has(
-      card.logicalAgentId as typeof principal.peer.allowedInboundAgentIds[number],
-    ));
+    }).filter((card) =>
+      isInboundA2AAgentId(card.logicalAgentId) &&
+      allowedAgentIds.has(card.logicalAgentId)
+    );
     return secureA2AResponse(Response.json(
       buildAsaelA2AAgentCardV1({
         baseUrl: process.env.NEXT_PUBLIC_APP_URL?.trim() || new URL(request.url).origin,
