@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const storeMocks = vi.hoisted(() => ({
   getProviderCredentials: vi.fn(),
@@ -9,7 +9,11 @@ const storeMocks = vi.hoisted(() => ({
 
 vi.mock("@/lib/settings/store", () => storeMocks);
 
-import { resolveRuntimeModelAssignment } from "@/lib/settings/runtime-models";
+import { getModelRuntime } from "@/lib/models/runtime-context";
+import {
+  ModelRouteUnavailableError,
+  resolveRuntimeModelAssignment,
+} from "@/lib/settings/runtime-models";
 import { resolveSpecializedRuntime } from "@/lib/settings/specialized-runtime";
 
 const digest = "a".repeat(64);
@@ -286,5 +290,238 @@ describe("functional model runtime routing", () => {
     });
     await expect(runtime.withApiKey(async (apiKey) => apiKey))
       .resolves.toBe("google-workspace-secret");
+  });
+});
+
+describe("workspace model routes that cannot be used as saved", () => {
+  const route = {
+    tenantId: "tenant-a",
+    actorId: "actor-a",
+    scope: "main_agent" as const,
+    tier: "reasoning" as const,
+    requiredFeature: "tools" as const,
+    deploymentFallback: {
+      provider: "openai" as const,
+      model: "deployment-model",
+      configured: true,
+    },
+  };
+  const usageScope = {
+    tenantId: "tenant-a",
+    actorId: "actor-a",
+    sourceStreamId: "run-a",
+    operation: "tool_turn" as const,
+    purpose: "test",
+  };
+  const NO_CONNECTION =
+    "The assigned provider does not have an enabled, validated workspace connection";
+  const NO_CREDENTIAL = "The assigned workspace credential could not be opened";
+  const RECONNECT = "Reconnect the provider in Settings, then try again.";
+  const pinnedRoutes = [
+    {
+      label: "an unreadable",
+      code: "settings_unreadable",
+      problem: "Workspace model routing could not be read",
+      remedy: "Try again when Settings is available.",
+      arrange: () => storeMocks.listModelAssignments.mockRejectedValue(
+        new Error("Settings database unavailable."),
+      ),
+    },
+    {
+      label: "a disconnected",
+      code: "connection_unavailable",
+      problem: NO_CONNECTION,
+      remedy: RECONNECT,
+      arrange: () => storeMocks.listProviderConnections.mockResolvedValue([
+        { ...openAiConnection, enabled: false },
+      ]),
+    },
+    {
+      label: "an unopenable",
+      code: "credential_unavailable",
+      problem: NO_CREDENTIAL,
+      remedy: RECONNECT,
+      arrange: () => storeMocks.getProviderCredentials.mockRejectedValue(
+        new Error("Credential could not be unsealed."),
+      ),
+    },
+    {
+      label: "a blank",
+      code: "credential_unavailable",
+      problem: NO_CREDENTIAL,
+      remedy: RECONNECT,
+      arrange: () => storeMocks.getProviderCredentials.mockResolvedValue({
+        connection: { provider: "openai" },
+        credentials: { apiKey: "  " },
+      }),
+    },
+  ] as const;
+
+  beforeEach(() => {
+    vi.stubEnv("OMNIAGENT_MODEL_ROUTE_ALLOW_DEPLOYMENT_FALLBACK", "false");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it.each(pinnedRoutes)(
+    "stops $label workspace route instead of moving it to the deployment's keys",
+    async ({ arrange, code, problem, remedy }) => {
+      arrange();
+      const message = `${problem}, so no model was called. ${remedy}`;
+
+      const runtime = await resolveRuntimeModelAssignment(route);
+
+      expect(runtime).toMatchObject({
+        scope: "main_agent",
+        source: "tenant_assignment",
+        configured: false,
+        allowCrossProviderFallback: false,
+        reason: message,
+      });
+      expect(runtime.degradation).toEqual({ outcome: "blocked", code, message });
+      expect(runtime.warnings).toEqual([message]);
+      expect(runtime.provider).toBeUndefined();
+      expect(runtime.model).toBeUndefined();
+      expect(runtime.usageReceipt).toEqual({ assignmentScope: "main_agent" });
+      const bound = runtime.bind({ input: "hello", usageScope });
+      expect(bound.usageScope).toEqual({
+        ...usageScope,
+        assignmentScope: "main_agent",
+      });
+      expect(getModelRuntime(bound)).toEqual({ targets: [], credentials: {} });
+      const operation = vi.fn(async (apiKey: string | undefined) => apiKey);
+      const refused = runtime.withProviderApiKey("openai", operation);
+      await expect(refused).rejects.toBeInstanceOf(ModelRouteUnavailableError);
+      await expect(refused).rejects.toMatchObject({
+        name: "ModelRouteUnavailableError",
+        message,
+        degradation: { outcome: "blocked", code, message },
+      });
+      expect(operation).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(pinnedRoutes)(
+    "lets the deployment put $label route on its own keys, and says so",
+    async ({ arrange, code, problem }) => {
+      vi.stubEnv("OMNIAGENT_MODEL_ROUTE_ALLOW_DEPLOYMENT_FALLBACK", "true");
+      arrange();
+      const message = `${problem}, so deployment-environment routing remains in effect.`;
+
+      const runtime = await resolveRuntimeModelAssignment(route);
+
+      expect(runtime).toMatchObject({
+        source: "deployment_environment",
+        configured: true,
+        provider: "openai",
+        model: "deployment-model",
+      });
+      expect(runtime.degradation).toEqual({
+        outcome: "deployment_environment",
+        code,
+        message,
+      });
+      expect(runtime.warnings).toEqual([message]);
+      expect(runtime.usageReceipt).toEqual({
+        credentialSource: "deployment_environment",
+      });
+      expect(getModelRuntime(runtime.bind({ input: "hello" }))).toBeUndefined();
+      await expect(runtime.withProviderApiKey(
+        "openai",
+        async (apiKey) => apiKey ?? "deployment key",
+      )).resolves.toBe("deployment key");
+    },
+  );
+
+  it("reopens deployment routing only for the exact opt-in", async () => {
+    storeMocks.listProviderConnections.mockResolvedValue([]);
+
+    for (const value of ["TRUE", "1", "yes", ""]) {
+      vi.stubEnv("OMNIAGENT_MODEL_ROUTE_ALLOW_DEPLOYMENT_FALLBACK", value);
+      const runtime = await resolveRuntimeModelAssignment(route);
+      expect(runtime.degradation?.outcome).toBe("blocked");
+    }
+  });
+
+  it.each([
+    {
+      code: "route_inactive",
+      assignment: {
+        ...baseAssignment,
+        runtimeReadiness: "configuration_only",
+        contractVersion: "legacy",
+        configurationSha256: undefined,
+        validatedAt: undefined,
+      },
+      problem: "The saved route is a legacy or unvalidated configuration",
+    },
+    {
+      code: "route_not_generative",
+      assignment: {
+        ...baseAssignment,
+        provider: "typesafe",
+        modelId: "typesafe-semantic",
+      },
+      problem:
+        "The saved route uses TypeSafe, whose semantic decisions run only through the dedicated shadow resolver and cannot replace a generative model route",
+    },
+  ])(
+    "keeps deployment routing for a $code route, which never carried workspace traffic, and marks it",
+    async ({ assignment, code, problem }) => {
+      storeMocks.listModelAssignments.mockResolvedValue([assignment]);
+      const message = `${problem}, so deployment-environment routing remains in effect.`;
+
+      const runtime = await resolveRuntimeModelAssignment(route);
+
+      expect(runtime).toMatchObject({
+        source: "deployment_environment",
+        configured: true,
+        provider: "openai",
+        model: "deployment-model",
+      });
+      expect(runtime.degradation).toEqual({
+        outcome: "deployment_environment",
+        code,
+        message,
+      });
+      expect(runtime.warnings).toEqual([message]);
+    },
+  );
+
+  it("keeps a catalog warning ahead of the reason the route stopped or moved", async () => {
+    storeMocks.listModelCatalog.mockResolvedValue([]);
+    storeMocks.listProviderConnections.mockResolvedValue([]);
+    const catalogWarning =
+      "Primary model gpt-5.2 is not in the latest workspace catalog. The saved assignment remains selected pending review.";
+    const blocked = `${NO_CONNECTION}, so no model was called. ${RECONNECT}`;
+    const moved = `${NO_CONNECTION}, so deployment-environment routing remains in effect.`;
+
+    const stopped = await resolveRuntimeModelAssignment(route);
+    vi.stubEnv("OMNIAGENT_MODEL_ROUTE_ALLOW_DEPLOYMENT_FALLBACK", "true");
+    const standIn = await resolveRuntimeModelAssignment(route);
+
+    expect(stopped.warnings).toEqual([catalogWarning, blocked]);
+    expect(stopped.reason).toBe(blocked);
+    expect(standIn.warnings).toEqual([catalogWarning, moved]);
+  });
+
+  it("marks nothing when the route works, none was saved, or no workspace asked", async () => {
+    const working = await resolveRuntimeModelAssignment(route);
+    storeMocks.listModelAssignments.mockResolvedValue([]);
+    const unsaved = await resolveRuntimeModelAssignment(route);
+    const anonymous = await resolveRuntimeModelAssignment({
+      ...route,
+      tenantId: "",
+      actorId: "",
+    });
+
+    expect(working).toMatchObject({ source: "tenant_assignment", configured: true });
+    expect(unsaved.source).toBe("deployment_environment");
+    expect(anonymous.source).toBe("deployment_environment");
+    for (const runtime of [working, unsaved, anonymous]) {
+      expect(runtime.degradation).toBeUndefined();
+    }
   });
 });

@@ -933,6 +933,37 @@ describe("agent run approval continuations (file mode)", () => {
     expect(serialized).not.toContain("Private provider");
   });
 
+  it("keeps why a model route could not be used, without its prose", async () => {
+    const store = await import("@/lib/runs/store");
+    const run = await store.createAgentRun({
+      tenantId: "run-route-degraded",
+      mode: "orchestrate",
+      prompt: "private prompt",
+      messages: [{ role: "user", content: "private prompt" }],
+    });
+    await store.appendRunEvent(run.id, {
+      type: "model_route_degraded",
+      outcome: "blocked",
+      code: "credential_unavailable",
+      message: "Private route failure detail",
+    }, { tenantId: "run-route-degraded" });
+
+    const [event] = await listStreamEvents(`run:${run.id}`, {
+      tenantId: "run-route-degraded",
+    });
+    expect(event).toMatchObject({
+      type: "run.model_route_degraded",
+      payload: {
+        schemaVersion: 1,
+        type: "model_route_degraded",
+        outcome: "blocked",
+        code: "credential_unavailable",
+        messageSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      },
+    });
+    expect(JSON.stringify(event)).not.toContain("Private route");
+  });
+
   it("persists reversible outcome feedback and returns recent correction guidance", async () => {
     const store = await import("@/lib/runs/store");
     const run = await store.createAgentRun({

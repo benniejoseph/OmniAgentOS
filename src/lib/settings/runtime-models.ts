@@ -66,10 +66,33 @@ export type DeploymentModelFallback = Readonly<{
   configured?: boolean;
 }>;
 
+/**
+ * Why a workspace route could not be used as saved. A blocked route calls no
+ * model; otherwise the deployment's own route runs in its place.
+ */
+export type ModelRouteDegradation = Readonly<{
+  outcome: "blocked" | "deployment_environment";
+  code:
+    | "settings_unreadable"
+    | "route_inactive"
+    | "route_not_generative"
+    | "connection_unavailable"
+    | "credential_unavailable";
+  message: string;
+}>;
+
+export class ModelRouteUnavailableError extends Error {
+  constructor(readonly degradation: ModelRouteDegradation) {
+    super(degradation.message);
+    this.name = "ModelRouteUnavailableError";
+  }
+}
+
 export type RuntimeModelResolution = Readonly<{
   scope: ModelAssignmentScope;
   source: "tenant_assignment" | "deployment_environment";
   configured: boolean;
+  degradation?: ModelRouteDegradation;
   assignmentId?: string;
   assignmentRevision?: number;
   assignmentConfigurationSha256?: string;
@@ -162,9 +185,11 @@ export async function resolveRuntimeModelAssignment(input: {
         "The selected model could not be revalidated against Settings. Choose again after Settings is available.",
       );
     }
-    return withWarnings(environment, [
-      "Workspace model routing could not be read, so deployment-environment routing remains in effect.",
-    ]);
+    return degradedResolution(environment, {
+      code: "settings_unreadable",
+      problem: "Workspace model routing could not be read",
+      blockedRemedy: "Try again when Settings is available.",
+    });
   }
 
   const assignment = assignments.find((item) => item.scope === input.scope);
@@ -187,9 +212,10 @@ export async function resolveRuntimeModelAssignment(input: {
         "The selected model route is no longer active. Review it in Settings and choose again.",
       );
     }
-    return withWarnings(environment, [
-      "The saved route is a legacy or unvalidated configuration, so deployment-environment routing remains in effect.",
-    ]);
+    return degradedResolution(environment, {
+      code: "route_inactive",
+      problem: "The saved route is a legacy or unvalidated configuration",
+    });
   }
   if (assignment.provider === "typesafe") {
     if (input.commandSelection) {
@@ -197,9 +223,10 @@ export async function resolveRuntimeModelAssignment(input: {
         "TypeSafe is not a generative Command model route.",
       );
     }
-    return withWarnings(environment, [
-      "TypeSafe semantic decisions run only through the dedicated shadow resolver and cannot replace a generative model route.",
-    ]);
+    return degradedResolution(environment, {
+      code: "route_not_generative",
+      problem: "The saved route uses TypeSafe, whose semantic decisions run only through the dedicated shadow resolver and cannot replace a generative model route",
+    });
   }
   const commandSelection = input.commandSelection
     ? resolveCommandModelSelection({
@@ -232,10 +259,11 @@ export async function resolveRuntimeModelAssignment(input: {
         "The selected model provider is no longer connected. Choose a different model or repair it in Settings.",
       );
     }
-    return withWarnings(environment, [
-      ...warnings,
-      "The assigned provider does not have an enabled, validated workspace connection, so deployment-environment routing remains in effect.",
-    ]);
+    return degradedResolution(environment, {
+      code: "connection_unavailable",
+      problem: "The assigned provider does not have an enabled, validated workspace connection",
+      blockedRemedy: "Reconnect the provider in Settings, then try again.",
+    }, warnings);
   }
 
   const primaryCredentials = await readProviderCredential(selectedSettingsProvider, {
@@ -249,10 +277,11 @@ export async function resolveRuntimeModelAssignment(input: {
         "The selected model credential could not be opened. Repair the provider connection in Settings.",
       );
     }
-    return withWarnings(environment, [
-      ...warnings,
-      "The assigned workspace credential could not be opened, so deployment-environment routing remains in effect.",
-    ]);
+    return degradedResolution(environment, {
+      code: "credential_unavailable",
+      problem: "The assigned workspace credential could not be opened",
+      blockedRemedy: "Reconnect the provider in Settings, then try again.",
+    }, warnings);
   }
 
   const targets: ModelTarget[] = [modelTarget(provider, selectedModelId, input.tier)];
@@ -612,6 +641,68 @@ function withWarnings(
     ...resolution,
     warnings: [...resolution.warnings, ...warnings],
     reason: [resolution.reason, ...warnings].join(" "),
+  };
+}
+
+/**
+ * A route the workspace may have pinned for its own keys or provider must not
+ * move to the deployment's keys unnoticed. One that never routed traffic, or
+ * whose provider cannot generate, keeps deployment routing; any other stops
+ * unless the deployment allows its own routing in its place.
+ */
+function degradedResolution(
+  environment: RuntimeModelResolution,
+  input: {
+    code: ModelRouteDegradation["code"];
+    problem: string;
+    /** Present when the route stops unless deployment routing is allowed. */
+    blockedRemedy?: string;
+  },
+  warnings: readonly string[] = [],
+): RuntimeModelResolution {
+  if (
+    !input.blockedRemedy ||
+    process.env.OMNIAGENT_MODEL_ROUTE_ALLOW_DEPLOYMENT_FALLBACK === "true"
+  ) {
+    const message = `${input.problem}, so deployment-environment routing remains in effect.`;
+    return {
+      ...withWarnings(environment, [...warnings, message]),
+      degradation: {
+        outcome: "deployment_environment",
+        code: input.code,
+        message,
+      },
+    };
+  }
+  const degradation: ModelRouteDegradation = {
+    outcome: "blocked",
+    code: input.code,
+    message: `${input.problem}, so no model was called. ${input.blockedRemedy}`,
+  };
+  const usageReceipt: RuntimeModelResolution["usageReceipt"] = {
+    assignmentScope: environment.scope,
+  };
+  return {
+    scope: environment.scope,
+    source: "tenant_assignment",
+    configured: false,
+    degradation,
+    allowCrossProviderFallback: false,
+    warnings: [...warnings, degradation.message],
+    reason: degradation.message,
+    usageReceipt,
+    bind<TRequest extends ModelTextRequest>(request: TRequest): TRequest {
+      // With no target, the gateway calls no provider, the deployment's included.
+      return bindModelRuntime({
+        ...request,
+        ...(request.usageScope
+          ? { usageScope: { ...request.usageScope, ...usageReceipt } }
+          : {}),
+      } as TRequest, { targets: [], credentials: {} });
+    },
+    async withProviderApiKey<TResult>(): Promise<TResult> {
+      throw new ModelRouteUnavailableError(degradation);
+    },
   };
 }
 

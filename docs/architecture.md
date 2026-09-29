@@ -2798,6 +2798,20 @@ snapshot exposes only receipts matching the assignment's current exact
 revision under `p11.8-functional-model-routing:1`; deployment-managed calls
 never claim tenant-assignment provenance.
 
+An assignment that cannot be used as saved never moves to the deployment's
+keys unnoticed. When Settings cannot be read, the assigned provider has no
+enabled connection, or its credential cannot be opened, the resolver returns a
+blocked route: it has no provider or model, binds an empty target list so the
+gateway calls no provider, and refuses to open a key. The agent run records a
+typed `model_route_degraded` event with `outcome: "blocked"` and fails with the
+reason before any model is called; an approval resume that meets a blocked
+route fails its run before claiming it. A deployment may set
+`OMNIAGENT_MODEL_ROUTE_ALLOW_DEPLOYMENT_FALLBACK=true` to run such routes on its
+own keys instead. That, a legacy or unvalidated assignment, and a TypeSafe
+assignment keep deployment-environment routing, and the run records the same
+event with `outcome: "deployment_environment"`. Callers other than agent runs
+see a blocked route as unconfigured.
+
 ## Knowledge and source coverage projection
 
 P11.9 adds the strict `p11.9-source-coverage:1` projection shared by Today,

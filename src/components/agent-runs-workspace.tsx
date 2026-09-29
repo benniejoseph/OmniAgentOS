@@ -64,6 +64,10 @@ import {
 import { CommandModelPicker } from "@/components/command/command-model-picker";
 import { AsaelLottieMascot } from "@/components/mascot/asael-lottie-mascot";
 import workspaceStyles from "@/components/agent-runs-workspace.module.css";
+import {
+  modelRouteDegradedActivity,
+  type ModelRouteDegradedEvent,
+} from "@/components/model-route-degraded";
 import { arsenalAgents } from "@/lib/agents/arsenal";
 import type { ContextScopeId } from "@/lib/rag/context-scope";
 import {
@@ -450,6 +454,7 @@ type StreamEvent =
     }
   | { type: "waiting_approval"; executionId?: string; toolId?: string; message?: string }
   | { type: "budget_exhausted"; dimension?: string; limit?: number; attempted?: number; requiresAuthorization?: true; message?: string }
+  | ModelRouteDegradedEvent
   | { type: "done"; response?: string; grounding?: GroundingReport }
   | { type: "delegated"; threadId?: string; workflowId?: string; missionId?: string; acknowledgement?: string; reason?: string }
   | { type: "clarification"; runId?: string; threadId?: string; message?: string; reasonCode?: "ambiguous_destructive_target" | "ambiguous_known_procedure" | "ambiguous_read_target" }
@@ -6456,6 +6461,9 @@ function streamEventLabel(event: StreamEvent) {
   if (event.type === "budget_exhausted") {
     return event.message || "The run stopped before exceeding its authorized budget.";
   }
+  if (event.type === "model_route_degraded") {
+    return modelRouteDegradedActivity(event).detail;
+  }
   if (event.type === "done") {
     return "Agent run completed.";
   }
@@ -6506,6 +6514,7 @@ function activityTitle(event: StreamEvent) {
   if (event.type === "tool") return event.toolName || event.toolId || "Tool activity";
   if (event.type === "waiting_approval") return "Waiting for approval";
   if (event.type === "budget_exhausted") return "Budget authorization required";
+  if (event.type === "model_route_degraded") return modelRouteDegradedActivity(event).title;
   if (event.type === "delegated") return "Moved to workflow";
   if (event.type === "clarification") return "Clarification needed";
   if (event.type === "done") return "Task complete";
@@ -6524,6 +6533,7 @@ function reasoningEffortLabel(
 
 function activityDotTone(event: StreamEvent) {
   if (event.type === "error" || event.type === "canceled" || event.type === "budget_exhausted") return "bg-danger";
+  if (event.type === "model_route_degraded") return modelRouteDegradedActivity(event).tone;
   if (event.type === "waiting_approval" || event.type === "clarification") return "bg-warning";
   if (event.type === "done" || event.type === "council_verdict") return "bg-success";
   if (event.type === "tool" && ["failed", "blocked"].includes(event.status || "")) return "bg-danger";

@@ -218,7 +218,10 @@ import type {
 import type { SecurityContext, SecurityRole } from "@/lib/security/types";
 import { redactSensitive } from "@/lib/security/context";
 import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
-import { resolveRuntimeModelAssignment } from "@/lib/settings/runtime-models";
+import {
+  ModelRouteUnavailableError,
+  resolveRuntimeModelAssignment,
+} from "@/lib/settings/runtime-models";
 import {
   continuationAuthUserBinding,
   resolveContinuationAuthAuthority,
@@ -1065,6 +1068,15 @@ async function* runAgentUntilStopped(
         ? `Specialist team: ${request.specialistIds.map(agentDisplayName).join(", ")}.`
         : "Primary specialist selected by Atlas.",
     });
+    if (runtimeModel.degradation) {
+      yield await emit({
+        type: "model_route_degraded",
+        ...runtimeModel.degradation,
+      });
+      if (runtimeModel.degradation.outcome === "blocked") {
+        throw new ModelRouteUnavailableError(runtimeModel.degradation);
+      }
+    }
     if (computerUseTarget === "local_macos") {
       yield await emit({
         type: "status",
@@ -4278,8 +4290,14 @@ async function resumeAgentRunAfterToolApprovalInScope({
   const workspaceOpenAIAvailable =
     resumeRuntimeModel.source === "tenant_assignment" &&
     resumeRuntimeModel.provider === "openai";
-  if (!workspaceOpenAIAvailable && !hasOpenAIKey()) {
-    const message = "Cannot resume the approved OpenAI continuation because its provider credential is no longer available.";
+  const resumeRouteDegradation = resumeRuntimeModel.degradation;
+  if (
+    resumeRouteDegradation?.outcome === "blocked" ||
+    (!workspaceOpenAIAvailable && !hasOpenAIKey())
+  ) {
+    const message = resumeRouteDegradation?.outcome === "blocked"
+      ? resumeRouteDegradation.message
+      : "Cannot resume the approved OpenAI continuation because its provider credential is no longer available.";
     const failed = await failAgentRun(run.id, message, runMutationOptions);
     if (!failed) {
       return { resumed: false, reason: "Checkpoint resume fence was lost." };
@@ -4305,6 +4323,12 @@ async function resumeAgentRunAfterToolApprovalInScope({
       type: "status",
       label: "resuming after approval",
       detail: `Tool approval ${executionId} resolved; continuing the same agent run.`,
+    });
+  }
+  if (resumeRouteDegradation) {
+    await appendScopedRunEvent({
+      type: "model_route_degraded",
+      ...resumeRouteDegradation,
     });
   }
   await syncMissionExecutorSafely({
@@ -5293,12 +5317,17 @@ async function resumeProviderBoundAgentRunAfterApproval({
         (!resumeComputerUseRequested || target.features.includes("vision"))
       ),
   );
+  const resumeRouteDegradation = resumeRuntimeModel.degradation;
   if (
-    (!runtimeCarriesProvider || !resumeRuntimeModel.configured) &&
-    !deploymentProviderAvailable
+    resumeRouteDegradation?.outcome === "blocked" ||
+    (
+      (!runtimeCarriesProvider || !resumeRuntimeModel.configured) &&
+      !deploymentProviderAvailable
+    )
   ) {
-    const message =
-      `Cannot resume the approved ${providerState.provider} continuation because its provider credential is no longer available.`;
+    const message = resumeRouteDegradation?.outcome === "blocked"
+      ? resumeRouteDegradation.message
+      : `Cannot resume the approved ${providerState.provider} continuation because its provider credential is no longer available.`;
     const failed = await failAgentRun(run.id, message, runMutationOptions);
     if (!failed) {
       return { resumed: false, reason: "Checkpoint resume fence was lost." };
@@ -5332,6 +5361,12 @@ async function resumeProviderBoundAgentRunAfterApproval({
       label: "resuming after approval",
       detail:
         `Tool approval ${executionId} resolved; continuing the same ${providerState.provider} agent turn.`,
+    });
+  }
+  if (resumeRouteDegradation) {
+    await appendScopedRunEvent({
+      type: "model_route_degraded",
+      ...resumeRouteDegradation,
     });
   }
   await syncMissionExecutorSafely({

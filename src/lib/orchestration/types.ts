@@ -17,6 +17,7 @@ import type {
   CommandModelSelectionRequest,
   ModelReasoningEffort,
 } from "@/lib/models/command-selection";
+import type { ModelRouteDegradation } from "@/lib/settings/runtime-models";
 import type { VoiceCommandInput } from "@/lib/voice/command-input";
 
 export type ChatRole = "user" | "assistant";
@@ -175,6 +176,12 @@ export type AgentEvent =
       type: "execution_target_retired";
       code: "computer_use_target_retired";
       target: "isolated_browser";
+      message: string;
+    }
+  | {
+      type: "model_route_degraded";
+      outcome: ModelRouteDegradation["outcome"];
+      code: ModelRouteDegradation["code"];
       message: string;
     }
   | { type: "done"; response: string; grounding?: GroundingReport }

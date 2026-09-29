@@ -30,6 +30,10 @@ import {
 } from "@/lib/runs/budgets";
 import { TENANT_DAILY_MAX_TOKENS } from "@/lib/config";
 import { AgentRunTerminatedError } from "@/lib/runs/cancellation";
+import {
+  ModelRouteUnavailableError,
+  type RuntimeModelResolution,
+} from "@/lib/settings/runtime-models";
 
 const mocks = vi.hoisted(() => ({
   appendContextCompilerV2CanaryEvent: vi.fn(),
@@ -64,6 +68,7 @@ const mocks = vi.hoisted(() => ({
   markAgentRunResuming: vi.fn(),
   planModelTurnBudget: vi.fn(),
   readAgentRunStatus: vi.fn(),
+  resolveRuntimeModelAssignment: vi.fn(),
   selectAgentModel: vi.fn(),
   syncMissionExecutorSafely: vi.fn(),
   updateRunContextCount: vi.fn(),
@@ -212,6 +217,18 @@ vi.mock("@/lib/runs/budgets", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/runs/budgets")>();
   mocks.planModelTurnBudget.mockImplementation(actual.planModelTurnBudget);
   return { ...actual, planModelTurnBudget: mocks.planModelTurnBudget };
+});
+
+vi.mock("@/lib/settings/runtime-models", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/settings/runtime-models")>();
+  mocks.resolveRuntimeModelAssignment.mockImplementation(
+    actual.resolveRuntimeModelAssignment,
+  );
+  return {
+    ...actual,
+    resolveRuntimeModelAssignment: mocks.resolveRuntimeModelAssignment,
+  };
 });
 
 vi.mock("@/lib/web-search/search", () => ({
@@ -2208,6 +2225,148 @@ describe("agent memory scope", () => {
       expect(mocks.completeAgentRun).not.toHaveBeenCalled();
       expect(watch.stop).toHaveBeenCalledOnce();
     });
+  });
+
+  describe("workspace model routes that cannot be used", () => {
+    const BLOCKED_ROUTE = {
+      outcome: "blocked",
+      code: "connection_unavailable",
+      message:
+        "The assigned provider does not have an enabled, validated workspace connection, so no model was called. Reconnect the provider in Settings, then try again.",
+    } as const;
+    const DEPLOYMENT_ROUTE = {
+      outcome: "deployment_environment",
+      code: "connection_unavailable",
+      message:
+        "The assigned provider does not have an enabled, validated workspace connection, so deployment-environment routing remains in effect.",
+    } as const;
+
+    /** A route Settings could not supply and the deployment may not replace. */
+    function blockedRoute(): RuntimeModelResolution {
+      return {
+        scope: "main_agent",
+        source: "tenant_assignment",
+        configured: false,
+        degradation: BLOCKED_ROUTE,
+        allowCrossProviderFallback: false,
+        warnings: [BLOCKED_ROUTE.message],
+        reason: BLOCKED_ROUTE.message,
+        usageReceipt: { assignmentScope: "main_agent" },
+        bind: (modelRequest) => modelRequest,
+        withProviderApiKey: async () => {
+          throw new ModelRouteUnavailableError(BLOCKED_ROUTE);
+        },
+      };
+    }
+
+    /** The resolver's own deployment route, marked as standing in for the workspace's. */
+    function degradeNextRouteToDeployment() {
+      mocks.resolveRuntimeModelAssignment.mockImplementationOnce(async (input) => {
+        const actual = await vi.importActual<
+          typeof import("@/lib/settings/runtime-models")
+        >("@/lib/settings/runtime-models");
+        return {
+          ...(await actual.resolveRuntimeModelAssignment(input)),
+          degradation: DEPLOYMENT_ROUTE,
+        };
+      });
+    }
+
+    it("stops a run before any model is called and says why", async () => {
+      mocks.resolveRuntimeModelAssignment.mockResolvedValueOnce(blockedRoute());
+
+      const events = await collectRequest(request("session"));
+
+      const degradedAt = events.findIndex((event) =>
+        event.type === "model_route_degraded"
+      );
+      expect(events[degradedAt]).toEqual({
+        type: "model_route_degraded",
+        ...BLOCKED_ROUTE,
+      });
+      expect(events.slice(degradedAt + 1)).toEqual([
+        { type: "error", message: BLOCKED_ROUTE.message },
+      ]);
+      expect(mocks.appendRunEvent).toHaveBeenCalledWith(
+        "run-memory-scope",
+        { type: "model_route_degraded", ...BLOCKED_ROUTE },
+        expect.any(Object),
+      );
+      expect(mocks.failAgentRun).toHaveBeenCalledWith(
+        "run-memory-scope",
+        BLOCKED_ROUTE.message,
+        expect.any(Object),
+      );
+      expect(mocks.streamResponseTurn).not.toHaveBeenCalled();
+      expect(mocks.generateModelToolTurn).not.toHaveBeenCalled();
+    });
+
+    it("records a route the deployment's models stood in for, and still answers", async () => {
+      degradeNextRouteToDeployment();
+
+      const events = await collectRequest(request("session"));
+
+      expect(events).toContainEqual({
+        type: "model_route_degraded",
+        ...DEPLOYMENT_ROUTE,
+      });
+      expect(events.at(-1)).toMatchObject({ type: "done" });
+      expect(mocks.streamResponseTurn).toHaveBeenCalledOnce();
+      expect(mocks.failAgentRun).not.toHaveBeenCalled();
+    });
+
+    it.each(["openai", "google"] as const)(
+      "fails a resumed %s run whose route can no longer be used, without claiming it",
+      async (provider) => {
+        const continuation = await pauseForApproval(request("session"), provider);
+        mocks.streamResponseTurn.mockClear();
+        mocks.generateModelToolTurn.mockClear();
+        mocks.markAgentRunResuming.mockClear();
+        mocks.resolveRuntimeModelAssignment.mockClear()
+          .mockResolvedValueOnce(blockedRoute());
+
+        await expect(resumeAfterApproval(continuation)).resolves.toEqual({
+          resumed: false,
+          reason: BLOCKED_ROUTE.message,
+        });
+
+        expect(mocks.resolveRuntimeModelAssignment).toHaveBeenCalledOnce();
+        expect(mocks.markAgentRunResuming).not.toHaveBeenCalled();
+        expect(mocks.failAgentRun).toHaveBeenCalledWith(
+          "run-memory-scope",
+          BLOCKED_ROUTE.message,
+          expect.any(Object),
+        );
+        expect(mocks.streamResponseTurn).not.toHaveBeenCalled();
+        expect(mocks.generateModelToolTurn).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(["openai", "google"] as const)(
+      "records a resumed %s run's stand-in route once it claims the run",
+      async (provider) => {
+        const continuation = await pauseForApproval(request("session"), provider);
+        mocks.appendRunEvent.mockClear();
+        mocks.markAgentRunResuming.mockClear();
+        mocks.resolveRuntimeModelAssignment.mockClear();
+        degradeNextRouteToDeployment();
+
+        await expect(resumeAfterApproval(continuation))
+          .resolves.toMatchObject({ resumed: true, status: "completed" });
+
+        expect(mocks.resolveRuntimeModelAssignment).toHaveBeenCalledOnce();
+        const degradedCall = mocks.appendRunEvent.mock.calls.findIndex(
+          ([, event]) => event?.type === "model_route_degraded",
+        );
+        expect(mocks.appendRunEvent.mock.calls[degradedCall]).toEqual([
+          "run-memory-scope",
+          { type: "model_route_degraded", ...DEPLOYMENT_ROUTE },
+          expect.any(Object),
+        ]);
+        expect(mocks.appendRunEvent.mock.invocationCallOrder[degradedCall])
+          .toBeGreaterThan(mocks.markAgentRunResuming.mock.invocationCallOrder[0]);
+      },
+    );
   });
 });
 

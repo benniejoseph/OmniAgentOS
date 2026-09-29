@@ -1195,6 +1195,14 @@ function domainEventPayload(event: AgentEvent): Record<string, unknown> {
         target: event.target,
         ...hashedTextFields("message", event.message),
       };
+    case "model_route_degraded":
+      return {
+        schemaVersion,
+        type: event.type,
+        outcome: event.outcome,
+        code: event.code,
+        ...hashedTextFields("message", event.message),
+      };
     case "done":
       return {
         schemaVersion,
