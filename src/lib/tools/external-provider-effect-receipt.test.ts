@@ -339,6 +339,103 @@ describe("external provider effect receipts", () => {
         verificationReasonCode: "read_unavailable",
       },
     });
+    const { listObservabilityEvents } = await import(
+      "@/lib/observability/store"
+    );
+    expect(
+      await listObservabilityEvents({
+        action: "tool.authority_decided",
+        tenantId,
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          source: "plan_grant",
+          reviewed: true,
+          bindingId: grant.grantId,
+          bindingSha256: grant.bindingSha256,
+          expiresAt: grant.expiresAt,
+          executionId: executed.record.id,
+        }),
+      }),
+    ]);
+  });
+
+  it("lets the signed-in user run their own reviewed action, and records it", async () => {
+    const tenantId = "tenant-provider";
+    const actorId = "owner-provider";
+    const executor = await import("@/lib/tools/executor");
+    const executed = await executor.executeGovernedTool({
+      toolId: providers.openApiTool.id,
+      input: { body: { name: "Ada" } },
+      dryRun: false,
+      approved: true,
+      context: { tenantId, actorId, role: "admin", source: "default" },
+      executionScope: createExecutionScope({
+        tenantId,
+        initiatingActorId: actorId,
+        executingPrincipalType: "user",
+        executingPrincipalId: actorId,
+        correlationId: "provider-direct-user",
+        purpose: "tool.execute",
+      }),
+      idempotencyKey: "provider:create-contact:direct-user",
+    });
+
+    expect(executed.record.status).toBe("executed");
+    expect(providers.callOpenApiOperation).toHaveBeenCalledTimes(1);
+    const { listObservabilityEvents } = await import(
+      "@/lib/observability/store"
+    );
+    expect(
+      await listObservabilityEvents({
+        action: "tool.authority_decided",
+        tenantId,
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        message: `${providers.openApiTool.name} was authorized by the signed-in user's own request.`,
+        metadata: expect.objectContaining({
+          source: "direct_user",
+          reviewed: true,
+          executionId: executed.record.id,
+        }),
+      }),
+    ]);
+  });
+
+  it("holds a risk-3 action for its quorum even when the signed-in user runs it", async () => {
+    const tenantId = "tenant-provider";
+    const actorId = "owner-provider";
+    const tool = providers.openApiTool as { riskLevel: number };
+    const executor = await import("@/lib/tools/executor");
+    tool.riskLevel = 3;
+    try {
+      const result = await executor.executeGovernedTool({
+        toolId: providers.openApiTool.id,
+        input: { body: { name: "Linus" } },
+        dryRun: false,
+        approved: true,
+        context: { tenantId, actorId, role: "admin", source: "default" },
+        executionScope: createExecutionScope({
+          tenantId,
+          initiatingActorId: actorId,
+          executingPrincipalType: "user",
+          executingPrincipalId: actorId,
+          correlationId: "provider-risk-three",
+          purpose: "tool.execute",
+        }),
+        idempotencyKey: "provider:create-contact:risk-three",
+      });
+
+      expect(result.record).toMatchObject({
+        status: "approval_required",
+        riskLevel: 3,
+      });
+      expect(providers.callOpenApiOperation).not.toHaveBeenCalled();
+    } finally {
+      tool.riskLevel = 2;
+    }
   });
 
   it("does not honor a workflow's bare approved flag without an exact grant claim", async () => {

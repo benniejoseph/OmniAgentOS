@@ -158,11 +158,36 @@ describe("scheduled PolicyLease governed execution", () => {
     expect(result.result).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
     expect(audit.claimIdempotentToolExecution).toHaveBeenCalledTimes(1);
+    // The lease is claimed with the record, in the same step.
+    expect(audit.claimIdempotentToolExecution).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ policyLeaseClaim }),
+    );
     expect(
       store.getToolExecutionWorkflowEffectBindingSha256(result.record),
     ).toBe(canonicalJsonSha256(effectBinding));
     expect(store.publicToolExecution(result.record).output).not.toHaveProperty(
       "__workflowEffectBindingSha256",
     );
+    const { listObservabilityEvents } = await import(
+      "@/lib/observability/store"
+    );
+    expect(
+      await listObservabilityEvents({
+        action: "tool.authority_decided",
+        tenantId,
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          source: "policy_lease",
+          reviewed: true,
+          bindingId: lease.leaseId,
+          bindingSha256: lease.leaseSha256,
+          expiresAt: lease.expiresAt,
+          executionId,
+        }),
+      }),
+    ]);
   });
 });

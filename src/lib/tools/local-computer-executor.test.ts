@@ -331,6 +331,24 @@ describe("governed local Mac tools", () => {
 
     expect(executed.record.status).toBe("executed");
     expect(mocks.executeLocalComputerCommand).toHaveBeenCalledTimes(1);
+    const { listObservabilityEvents } = await import(
+      "@/lib/observability/store"
+    );
+    expect(
+      await listObservabilityEvents({
+        action: "tool.authority_decided",
+        tenantId: "tenant-local",
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          source: "persisted_approval",
+          reviewed: true,
+          bindingId: pending.record.id,
+          executionId: pending.record.id,
+        }),
+      }),
+    ]);
   });
 
   it("lets forced approval outrank This Mac task authority", async () => {
@@ -366,6 +384,107 @@ describe("governed local Mac tools", () => {
     expect(forced.record.status).toBe("approval_required");
     expect(forced.record.reason).not.toContain("task authority");
     expect(mocks.executeLocalComputerCommand).toHaveBeenCalledOnce();
+  });
+
+  it("records the task authority that let a gated Mac action run", async () => {
+    const { executeGovernedTool } = await import("@/lib/tools/executor");
+    const { listObservabilityEvents } = await import(
+      "@/lib/observability/store"
+    );
+    const request = {
+      dryRun: false,
+      context: securityContext(),
+      executionScope: executionScope("authority", "run-local-authority"),
+      agentRunId: "run-local-authority",
+      localComputerTaskAuthority: { objective: "Open the next Finder item." },
+    } as const;
+    const click = {
+      ...request,
+      toolId: "local.macos.click",
+      input: {
+        snapshotRevision: "d".repeat(64),
+        elementId: "e1-7",
+        interactionPurpose: "navigation",
+      },
+    } as const;
+
+    // Neither a scroll, which needs no approval, nor a dry run is recorded.
+    const scrolled = await executeGovernedTool({
+      ...request,
+      toolId: "local.macos.scroll",
+      input: { snapshotRevision: "d".repeat(64), deltaX: 0, deltaY: 400 },
+      idempotencyKey: "local-mac-scroll-authority",
+    });
+    expect(scrolled.record).toMatchObject({
+      status: "executed",
+      approvalRequired: false,
+    });
+    const dryRun = await executeGovernedTool({ ...click, dryRun: true });
+    expect(dryRun.record.status).toBe("dry_run");
+    const executed = await executeGovernedTool({
+      ...click,
+      idempotencyKey: "local-mac-click-authority",
+    });
+
+    expect(executed.record.status).toBe("executed");
+    expect(
+      await listObservabilityEvents({
+        action: "tool.authority_decided",
+        tenantId: "tenant-local",
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        level: "info",
+        category: "security",
+        actorId: "owner-local",
+        resourceType: "tool",
+        resourceId: "local.macos.click",
+        correlationId: "run-local-authority",
+        message: `${executed.record.toolName} was authorized by the user's This Mac task authority.`,
+        metadata: {
+          source: "task_authority",
+          reviewed: false,
+          forcedReview: false,
+          toolName: executed.record.toolName,
+          riskLevel: 2,
+          executionId: executed.record.id,
+          agentRunId: "run-local-authority",
+        },
+      }),
+    ]);
+  });
+
+  it("never lets task authority run a record the approval store has not claimed", async () => {
+    const { executeGovernedTool } = await import("@/lib/tools/executor");
+    const request = {
+      toolId: "local.macos.click",
+      input: {
+        snapshotRevision: "8".repeat(64),
+        elementId: "e1-8",
+        interactionPurpose: "navigation",
+      },
+      dryRun: false,
+      context: securityContext(),
+      executionScope: executionScope("unclaimed", "run-local-unclaimed"),
+      agentRunId: "run-local-unclaimed",
+    } as const;
+    const pending = await executeGovernedTool({
+      ...request,
+      idempotencyKey: "local-mac-click-unclaimed",
+    });
+    expect(pending.record.status).toBe("approval_required");
+
+    const replayed = await executeGovernedTool({
+      ...request,
+      existingRecord: pending.record,
+      localComputerTaskAuthority: { objective: "Open the next Finder item." },
+    });
+
+    expect(replayed.record).toMatchObject({
+      id: pending.record.id,
+      status: "approval_required",
+    });
+    expect(mocks.executeLocalComputerCommand).not.toHaveBeenCalled();
   });
 
   it("keeps task-authorized typing to short single-line text", async () => {

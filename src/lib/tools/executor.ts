@@ -114,6 +114,13 @@ import {
   type MoltbookAutonomyMutationToolId,
 } from "@/lib/moltbook/autonomy-store";
 import { recordRuntimeEventSafely } from "@/lib/observability/store";
+import {
+  resolveToolAuthority,
+  toolAuthorityApprovalReason,
+  toolAuthorityDescription,
+  toolAuthorityEventMetadata,
+  type ToolAuthorityCandidate,
+} from "@/lib/tools/authority";
 import { AgentRunNotActiveError } from "@/lib/runs/active-run-fence";
 import { redactSensitive } from "@/lib/security/context";
 import {
@@ -1332,36 +1339,59 @@ export async function executeGovernedTool({
     executionScope: scopedRequest.executionScope,
     agentRunId,
   });
-  const localComputerTaskAuthorityApproval =
-    localComputerTaskAuthorityDecision.covered;
-  const reviewedApproval =
-    approved &&
-    durableApprovalClaim &&
-    (
-      persistedSingleApproval ||
-      directUserApproval ||
-      boundPlanGrantApproval ||
-      boundPolicyLeaseApproval
-    ) &&
-    (tool.riskLevel < 3 || hasRisk3Quorum(existingRecord));
-  const effectiveApproved =
-    reviewedApproval ||
-    moltbookStandingMandateApproval ||
-    localComputerTaskAuthorityApproval;
+  const authorityCandidates: ToolAuthorityCandidate[] = [];
+  if (persistedSingleApproval && existingRecord) {
+    authorityCandidates.push({
+      source: "persisted_approval",
+      bindingId: existingRecord.id,
+    });
+  }
+  if (directUserApproval) authorityCandidates.push({ source: "direct_user" });
+  if (boundPolicyLeaseApproval && policyLeaseClaim) {
+    authorityCandidates.push({
+      source: "policy_lease",
+      bindingId: policyLeaseClaim.lease.leaseId,
+      bindingSha256: policyLeaseClaim.lease.leaseSha256,
+      expiresAt: policyLeaseClaim.lease.expiresAt,
+    });
+  }
+  if (boundPlanGrantApproval && approvalGrantClaim) {
+    authorityCandidates.push({
+      source: "plan_grant",
+      bindingId: approvalGrantClaim.grant.grantId,
+      bindingSha256: approvalGrantClaim.grant.bindingSha256,
+      expiresAt: approvalGrantClaim.grant.expiresAt,
+    });
+  }
+  if (moltbookStandingMandateApproval && moltbookAutonomy) {
+    authorityCandidates.push({
+      source: "standing_mandate",
+      bindingId: moltbookAutonomy.authority.cycleId,
+      expiresAt: moltbookAutonomy.leaseExpiresAt,
+    });
+  }
+  if (localComputerTaskAuthorityDecision.covered) {
+    authorityCandidates.push({ source: "task_authority" });
+  }
+  const authority = resolveToolAuthority({
+    approved,
+    claimed: durableApprovalClaim,
+    forcedReview: effectiveForceApproval,
+    riskLevel: tool.riskLevel,
+    risk3Quorum: hasRisk3Quorum(existingRecord),
+    candidates: authorityCandidates,
+  });
+  const effectiveApproved = authority.approved;
+  const policyLeaseAuthority = authority.source === "policy_lease";
   // With no reviewed approval beside it, task authority alone lets this
   // action run. The Mac must then check the real on-screen target itself;
   // when it cannot, the action goes to the user for review instead.
   const localComputerTaskAuthorityOnly =
-    localComputerTaskAuthorityApproval &&
-    !reviewedApproval &&
-    !moltbookStandingMandateApproval;
-  const effectiveApprovalReason = localComputerTaskAuthorityApproval
-    ? "The initiating user explicitly authorized this bounded Computer Use task; this safe visual interaction is covered by that task authority."
-    : moltbookStandingMandateApproval
-      ? "Owner-enabled Moltbook autonomy charter authorized this bounded public action."
-      : boundPolicyLeaseApproval
-        ? `Single-use schedule PolicyLease ${policyLeaseClaim?.lease.leaseId} fenced this exact reviewed effect.`
-        : approvalReason;
+    authority.source === "task_authority";
+  const effectiveApprovalReason = toolAuthorityApprovalReason(
+    authority,
+    approvalReason,
+  );
 
   // Trust profiles remain advisory evidence. Automatic execution now requires
   // a consumed grant with an exact plan, principal, contract, target, budget,
@@ -1558,6 +1588,36 @@ export async function executeGovernedTool({
     return { record: saved, result: null };
   }
 
+  if (!dryRun && decision.approvalRequired && authority.approved) {
+    const executionId = existingRecord?.id ?? (
+      idempotencyKey
+        ? governedToolExecutionId(
+            normalizeTenantId(context?.tenantId),
+            idempotencyKey,
+          )
+        : undefined
+    );
+    await recordRuntimeEventSafely({
+      level: "info",
+      category: "security",
+      action: "tool.authority_decided",
+      tenantId: scopedRequest.executionScope?.tenantId || context?.tenantId,
+      actorId:
+        scopedRequest.executionScope?.initiatingActorId || context?.actorId,
+      resourceType: "tool",
+      resourceId: tool.id,
+      message: `${tool.name} was authorized by ${toolAuthorityDescription(authority.source)}.`,
+      metadata: {
+        ...toolAuthorityEventMetadata(authority),
+        toolName: tool.name,
+        riskLevel: tool.riskLevel,
+        ...(executionId ? { executionId } : {}),
+        ...(agentRunId ? { agentRunId } : {}),
+      },
+      correlationId: scopedRequest.executionScope?.correlationId,
+    });
+  }
+
   if (!dryRun && idempotencyKey && !executionRecord) {
     const claimToken = randomUUID();
     const intendedExecutionId = governedToolExecutionId(
@@ -1631,7 +1691,7 @@ export async function executeGovernedTool({
       claim = await claimIdempotentToolExecution(intent, {
         executionScope: scopedRequest.executionScope,
         idempotencyKey,
-        ...(boundPolicyLeaseApproval && policyLeaseClaim
+        ...(policyLeaseAuthority && policyLeaseClaim
           ? { policyLeaseClaim }
           : retryFailedExecution
             ? {
@@ -1646,7 +1706,7 @@ export async function executeGovernedTool({
       if (error instanceof AgentRunNotActiveError) {
         throw error;
       }
-      if (boundPolicyLeaseApproval && error instanceof PolicyLeaseStoreError) {
+      if (policyLeaseAuthority && error instanceof PolicyLeaseStoreError) {
         return executeGovernedTool({
           toolId,
           input,
@@ -1925,7 +1985,7 @@ export async function executeGovernedTool({
           material: providerEffectMaterial,
           executionScope: scopedRequest.executionScope,
           effectBinding,
-          policyLeaseClaim: boundPolicyLeaseApproval
+          policyLeaseClaim: policyLeaseAuthority
             ? policyLeaseClaim
             : undefined,
         });

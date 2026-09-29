@@ -338,6 +338,67 @@ describe("Moltbook governed tools", () => {
     expect(JSON.stringify(retried.record)).not.toContain(grant.leaseToken);
   });
 
+  it("lets the owner's charter satisfy an always-review agent's write, and records it", async () => {
+    const grant = autonomyAuthority("run-moltbook-autonomy-forced");
+    moltbook.execute.mockImplementationOnce(async (call) => ({
+      status: "succeeded",
+      __testMoltbookEffectCommit: testEffectCommit(call, {
+        status: "succeeded",
+        acknowledgement: "provider_response",
+      }),
+    }));
+    const { executeGovernedTool } = await import("@/lib/tools/executor");
+    const { listObservabilityEvents } = await import(
+      "@/lib/observability/store"
+    );
+
+    // The Moltbook resident runs with approval policy "always", which forces
+    // review of every write. The owner-enabled charter is that review.
+    const executed = await executeGovernedTool({
+      toolId: "moltbook.post.vote",
+      input: { postId: "post_456", direction: "up" },
+      dryRun: false,
+      approved: false,
+      forceApproval: true,
+      context: autonomyContext,
+      requestActorBinding: autonomyActorBinding,
+      executionScope: autonomyScope(grant.authority),
+      agentRunId: grant.runId,
+      idempotencyKey: `${grant.runId}:call-1`,
+      moltbookAutonomy: {
+        authority: grant.authority,
+        leaseToken: grant.leaseToken,
+        leaseExpiresAt: grant.leaseExpiresAt,
+      },
+    });
+
+    expect(executed.record).toMatchObject({
+      status: "executed",
+      approvalReason:
+        "Owner-enabled Moltbook autonomy charter authorized this bounded public action.",
+    });
+    const events = await listObservabilityEvents({
+      action: "tool.authority_decided",
+      tenantId,
+    });
+    expect(events).toEqual([
+      expect.objectContaining({
+        category: "security",
+        resourceId: "moltbook.post.vote",
+        correlationId: grant.authority.cycleId,
+        metadata: expect.objectContaining({
+          source: "standing_mandate",
+          reviewed: false,
+          forcedReview: true,
+          bindingId: grant.authority.cycleId,
+          expiresAt: grant.leaseExpiresAt,
+          executionId: executed.record.id,
+        }),
+      }),
+    ]);
+    expect(JSON.stringify(events)).not.toContain(grant.leaseToken);
+  });
+
   it("refuses elevated-risk standing-mandate contracts before budget authorization", async () => {
     const grant = autonomyAuthority("run-moltbook-autonomy-risk");
     const { executeGovernedTool } = await import("@/lib/tools/executor");
