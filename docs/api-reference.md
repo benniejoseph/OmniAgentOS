@@ -9,7 +9,7 @@ callers must not infer tenancy from them.
 
 - Browser sessions use the `__Host-asael_session` cookie in production and `asael_session` locally. Login sets `HttpOnly`, `SameSite=Lax`, `Path=/`, and `Secure` in production.
 - `GET /api/auth/session` is safe to call anonymously and reports whether auth is enabled and whether the request is authenticated. Authenticated responses include only that session's private account label and exact tenant-bound identity.
-- Internal automation sends `x-omni-internal-auth` with `OMNIAGENT_INTERNAL_AUTH_SECRET` plus explicit tenant, user, and role headers. Never accept those identity headers without the secret in production.
+- Internal automation sends explicit tenant, user, and role headers with `x-omni-internal-auth`. The dedicated worker puts a five-minute token there, signed with a key derived from `OMNIAGENT_INTERNAL_AUTH_SECRET` for those exact headers and the request's method and path, so the secret never leaves the worker. The release scripts still send the secret itself, because they also verify the release being replaced. Never accept those identity headers without a valid token or the secret in production.
 - Inbound MCP uses one-time-visible `asael_sk_...` service API keys created in Settings. Only a SHA-256 digest is stored. Existing `omni_sk_...` keys remain verifiable during the compatibility window. The verified key scope is intersected with the actor's enabled MCP export policy; neither layer can grant access by itself.
 - Vercel cron uses `Authorization: Bearer <CRON_SECRET>` with `GET /api/workflows/tick`.
 - The dedicated worker uses internal authentication with `POST /api/workflows/tick`.

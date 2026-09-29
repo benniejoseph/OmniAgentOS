@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { readFile, rename, writeFile } from "node:fs/promises";
+import { internalIdentityHeaders } from "./internal-identity-token.mjs";
 import { startOpenAIEgressGateway } from "./openai-egress-gateway.mjs";
 
 const heartbeatFile = "/tmp/omniagent-worker-heartbeat";
@@ -781,10 +782,11 @@ async function requestWorkerEndpoint(
     requestTimeoutMs,
   );
   try {
-    const response = await fetch(`${destination.baseUrl}${pathname}`, {
+    const url = new URL(`${destination.baseUrl}${pathname}`);
+    const response = await fetch(url, {
       method: "POST",
       headers: {
-        ...workerHeaders(destination.target),
+        ...workerHeaders(destination.target, url.pathname),
         ...additionalHeaders,
       },
       body: JSON.stringify(payload),
@@ -839,13 +841,16 @@ function workerTickHasActivity(body) {
     (Array.isArray(body?.maintenanceTenantIds) && body.maintenanceTenantIds.length > 0);
 }
 
-function workerHeaders(workerTarget) {
+function workerHeaders(workerTarget, pathname) {
   return {
     "content-type": "application/json",
-    "x-omni-internal-auth": internalSecret,
-    "x-omni-tenant-id": tenantId,
-    "x-omni-user-id": "dedicated-worker",
-    "x-omni-user-role": "system",
+    ...internalIdentityHeaders(internalSecret, {
+      tenantId,
+      actorId: "dedicated-worker",
+      role: "system",
+      method: "POST",
+      pathname,
+    }),
     "x-omni-worker-instance": instanceId,
     "x-omni-worker-protocol": workerProtocol,
     ...(workerTarget

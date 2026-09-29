@@ -256,6 +256,18 @@ export const COMPLEXITY_REGISTRY: readonly ComplexityEntry[] = Object.freeze((
       flags: ["OMNIAGENT_CONNECTOR_ALLOW_LEGACY_SYSTEM_SECRETS"],
     },
     {
+      id: "internal-auth-raw-secret",
+      kind: "legacy",
+      owner: "security",
+      summary:
+        "Trusted identity headers are accepted with the raw deployment secret as well as with a signed, five-minute identity token, because the release scripts also verify the release being replaced.",
+      exitMetric:
+        "The promoted release accepts identity tokens; then make every release script sign its requests, and refuse the raw secret in x-omni-internal-auth.",
+      reviewedOn: REVIEWED_ON,
+      expiresOn: EXPIRES_ON,
+      paths: ["src/lib/security/internal-auth.ts", "scripts/internal-identity-token.mjs"],
+    },
+    {
       id: "model-route-deployment-fallback",
       kind: "legacy",
       owner: "models",

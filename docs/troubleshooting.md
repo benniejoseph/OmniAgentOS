@@ -58,7 +58,7 @@ error text and credential material are not persisted in the health record.
 
 401 means no valid browser session or internal secret was supplied. 403 means the identity is valid but its role lacks the requested action. Confirm tenant membership and role instead of weakening the route policy.
 
-For internal calls, the secret and identity headers must be sent together. Never enable unsigned identity headers in production.
+For internal calls, the identity headers must come with the secret or with the worker's signed token, and the token's tenant, user, role, method and path must all match the request. A worker whose every request gets 401 is running a different secret, or an image newer than a web release that does not verify tokens yet. Never enable unsigned identity headers in production.
 
 A native app that signs out after a refresh answered 401 with `refresh_token_reuse` presented a refresh token that had already been replaced, and the server revoked that session (`revocation_reason = 'refresh_reuse'` in `omni_mobile_sessions`). Within 60 seconds of a rotation, the same device and platform presenting the replaced token get the same pair again instead, which covers a retry after a lost response and a second app engine, such as another macOS window, that still held the old token. The old token still revokes the session after those 60 seconds, from another device, or after a rotation made by a release without migration 209. `invalid_refresh_token` means the token is unknown, expired, revoked, or belongs to another device, or the account's membership changed.
 

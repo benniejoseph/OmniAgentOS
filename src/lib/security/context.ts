@@ -1,4 +1,3 @@
-import { createHash, timingSafeEqual } from "node:crypto";
 import { getSessionToken } from "@/lib/auth/session";
 import { getSessionIdentity, isAuthEnforced } from "@/lib/auth/store";
 import { getMobileIdentityFromRequest, hasBearerAuthorization } from "@/lib/auth/mobile";
@@ -7,6 +6,7 @@ import {
   enterDatabaseTenantContext,
 } from "@/lib/db/client";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
+import { carriesInternalSecret, hasInternalIdentityToken } from "@/lib/security/internal-auth";
 import type { RbacRule, SecurityContext, SecurityRole } from "@/lib/security/types";
 
 const roles: SecurityRole[] = ["viewer", "operator", "admin", "system"];
@@ -351,10 +351,10 @@ function getTrustedIdentityHeaders(request?: Request) {
 }
 
 function canTrustIdentityHeaders(request?: Request) {
-  const configuredSecret = process.env.OMNIAGENT_INTERNAL_AUTH_SECRET?.trim();
-  const providedSecret = request?.headers.get("x-omni-internal-auth")?.trim();
-
-  if (configuredSecret && providedSecret && secretsMatch(configuredSecret, providedSecret)) {
+  // The worker signs each request for its identity. The release scripts still
+  // send the raw secret, because they also verify the release being replaced;
+  // see internal-auth-raw-secret in the complexity registry.
+  if (hasInternalIdentityToken(request) || carriesInternalSecret(request, "x-omni-internal-auth")) {
     return true;
   }
 
@@ -363,12 +363,6 @@ function canTrustIdentityHeaders(request?: Request) {
     !process.env.VERCEL &&
     process.env.NODE_ENV !== "production"
   );
-}
-
-function secretsMatch(expected: string, provided: string) {
-  const expectedDigest = createHash("sha256").update(expected).digest();
-  const providedDigest = createHash("sha256").update(provided).digest();
-  return timingSafeEqual(expectedDigest, providedDigest);
 }
 
 function connectorSecretAllowlist() {

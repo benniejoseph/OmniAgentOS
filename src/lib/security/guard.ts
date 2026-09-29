@@ -6,6 +6,7 @@ import {
   securityErrorResponse,
 } from "@/lib/security/context";
 import { recordSecurityAudit } from "@/lib/security/audit-store";
+import { carriesInternalSecret } from "@/lib/security/internal-auth";
 import type { SecurityContext } from "@/lib/security/types";
 import { measureRequestStage } from "@/lib/observability/request-timing";
 import { runWithDatabaseTenantScope } from "@/lib/db/client";
@@ -372,9 +373,7 @@ function scheduleRoutineReadAudit(
 }
 
 function isVerifiedSyntheticRequest(request: Request) {
-  const expected = process.env.OMNIAGENT_INTERNAL_AUTH_SECRET?.trim();
-  const provided = request.headers.get("x-omni-synthetic-auth")?.trim();
-  return Boolean(expected && provided && expected === provided);
+  return carriesInternalSecret(request, "x-omni-synthetic-auth");
 }
 
 function isExpectedSyntheticAuthenticationDenial(

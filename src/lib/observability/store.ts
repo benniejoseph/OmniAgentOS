@@ -7,6 +7,7 @@ import {
   runWithDatabaseTenantScope,
 } from "@/lib/db/client";
 import { redactSensitive } from "@/lib/security/context";
+import { carriesInternalSecret } from "@/lib/security/internal-auth";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 
@@ -82,10 +83,7 @@ export function createRequestTelemetry(request?: Request, prefix = "obs") {
 }
 
 export function getSyntheticRequestMetadata(request?: Request): Record<string, unknown> {
-  const configuredSecret = process.env.OMNIAGENT_INTERNAL_AUTH_SECRET?.trim();
-  const providedSecret = request?.headers.get("x-omni-synthetic-auth")?.trim();
-
-  if (!configuredSecret || !providedSecret || configuredSecret !== providedSecret) {
+  if (!carriesInternalSecret(request, "x-omni-synthetic-auth")) {
     return {};
   }
 
