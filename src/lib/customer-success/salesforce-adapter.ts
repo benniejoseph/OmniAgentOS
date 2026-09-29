@@ -708,6 +708,9 @@ async function salesforceApi(
           actorId: connection.ownerActorId,
           provider: "salesforce",
           authorizationMode: "refresh",
+          connectionId: grantSecret.grant.id,
+          expectedAuthorizationGeneration:
+            grantSecret.grant.authorizationGeneration,
           tokens: {
             ...grantSecret.tokens,
             ...refreshed,

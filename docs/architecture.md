@@ -827,9 +827,12 @@ Migration v38 introduces the additive Google Drive v2 checkpoint shadow. Each
 OAuth authorization generation owns an independent encrypted-cursor stream
 with fenced leases, immutable hash-only page manifests, bounded retries, and
 dead-letter state. A token refresh keeps the generation; an explicit
-reauthorization increments it. The legacy personal-source cursor and knowledge
-projection remain the production read/write authority until the later Drive
-revision/tombstone convergence gate.
+reauthorization increments it, and so does a disconnect, so a reconnect after a
+disconnect starts new streams. A refresh saves its tokens only to the grant and
+generation it read its refresh token from, and only while that grant is active,
+so a disconnect or reconnect during a refresh wins. The legacy personal-source
+cursor and knowledge projection remain the production read/write authority
+until the later Drive revision/tombstone convergence gate.
 
 Migration v39 installs the inactive canonical source convergence foundation.
 Immutable, receipt-bound tombstones preserve delete history, while one

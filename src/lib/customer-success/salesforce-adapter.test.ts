@@ -171,7 +171,71 @@ describe("Salesforce REST read adapter", () => {
       },
     });
   });
+
+  it("saves a refreshed token only to the grant and authorization it was read from", async () => {
+    authorizeExpired();
+    mocks.saveOAuthGrant.mockResolvedValue({});
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response("{}", { status: 401 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ version: "67.0" }]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        fields: ["Id", "Name", "SystemModstamp", "IsDeleted"]
+          .map((name) => ({ name, permissionable: true })),
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        done: true,
+        totalSize: 0,
+        records: [],
+      }), { status: 200 }));
+
+    await fetchSalesforcePage({
+      connection,
+      objectType: "Account",
+      cursor: initialSalesforceSyncCursor().objects.Account,
+    });
+
+    expect(mocks.saveOAuthGrant).toHaveBeenCalledWith(expect.objectContaining({
+      provider: "salesforce",
+      authorizationMode: "refresh",
+      connectionId: "grant-a",
+      expectedAuthorizationGeneration: 4,
+    }));
+    expect(fetchMock.mock.calls[1]?.[1]?.headers).toMatchObject({
+      authorization: "Bearer refreshed-secret",
+    });
+  });
+
+  it("does not use a refreshed token for a connection disconnected during the refresh", async () => {
+    authorizeExpired();
+    mocks.saveOAuthGrant.mockRejectedValue(new Error("The connection was disconnected."));
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response("{}", { status: 401 }));
+
+    await expect(fetchSalesforcePage({
+      connection,
+      objectType: "Account",
+      cursor: initialSalesforceSyncCursor().objects.Account,
+    })).rejects.toMatchObject({
+      actionableError: { code: "authorization_expired", action: "reconnect" },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });
+
+function authorizeExpired() {
+  mocks.getOAuthGrantSecrets.mockResolvedValue({
+    grant: { id: "grant-a", authorizationGeneration: 4 },
+    tokens: {
+      access_token: "expired-secret",
+      refresh_token: "refresh-secret",
+      instance_url: connection.instanceOrigin,
+    },
+  });
+  mocks.refreshOAuthAccess.mockResolvedValue({
+    access_token: "refreshed-secret",
+    instance_url: connection.instanceOrigin,
+  });
+}
 
 describe("Salesforce guarded-write adapter", () => {
   it("creates through a unique external-ID upsert and verifies the exact linked state", async () => {

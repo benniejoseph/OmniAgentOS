@@ -53,7 +53,7 @@ describe("active Google Workspace access", () => {
 
   it("refreshes an expired access token without replacing the grant", async () => {
     mocks.getOAuthGrantSecrets.mockResolvedValue({
-      grant,
+      grant: { ...grant, authorizationGeneration: 3 },
       tokens: { access_token: "expired-token", refresh_token: "refresh-token" },
       credentialState: "refresh_required",
     });
@@ -69,8 +69,11 @@ describe("active Google Workspace access", () => {
       actorId: "actor-a",
       capability: "gmail.send",
     })).resolves.toEqual({ accessToken: "refreshed-token", grant });
+    // Only the grant the refresh token was read from, at that authorization.
     expect(mocks.saveOAuthGrant).toHaveBeenCalledWith(expect.objectContaining({
       authorizationMode: "refresh",
+      connectionId: "grant-google",
+      expectedAuthorizationGeneration: 3,
     }));
   });
 

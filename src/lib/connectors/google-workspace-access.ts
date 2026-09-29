@@ -63,6 +63,7 @@ export async function getActiveGoogleWorkspaceAccess(input: {
     accountEmail: secrets.grant.accountEmail,
     tokens: refreshed,
     authorizationMode: "refresh",
+    expectedAuthorizationGeneration: secrets.grant.authorizationGeneration,
   });
   return { accessToken: String(refreshed.access_token), grant };
 }

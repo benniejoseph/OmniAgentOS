@@ -5671,8 +5671,10 @@ databaseDescribe("Postgres schema integration", () => {
     const store = await import("@/lib/connectors/oauth-store");
     const asOwner = <T,>(operation: () => Promise<T>) =>
       runWithDatabaseActorScope(tenantId, [actorId], operation);
-    const save = (authorizationMode?: "refresh") => asOwner(() =>
-      store.saveOAuthGrant({
+    const save = (
+      refresh?: { connectionId: string; expectedAuthorizationGeneration: number },
+    ) => {
+      const grant = {
         ...owner,
         accountEmail: "oauth-backoff@example.com",
         tokens: {
@@ -5681,8 +5683,11 @@ databaseDescribe("Postgres schema integration", () => {
           scope: "https://www.googleapis.com/auth/drive",
           expires_in: 3_600,
         },
-        ...(authorizationMode ? { authorizationMode } : {}),
-      }));
+      };
+      return asOwner(() => store.saveOAuthGrant(
+        refresh ? { ...grant, authorizationMode: "refresh", ...refresh } : grant,
+      ));
+    };
     const backoff = async () => {
       const [row] = await admin`
         SELECT sync_failure_count AS failures,
@@ -5733,7 +5738,7 @@ databaseDescribe("Postgres schema integration", () => {
     const random = vi.spyOn(Math, "random").mockReturnValue(0);
 
     try {
-      await save();
+      const connected = await save();
       await finish("failed", { failures: 1, waitMs: 5 * minute });
       // Connections that failed together do not retry together.
       random.mockReturnValue(0.5);
@@ -5757,7 +5762,10 @@ databaseDescribe("Postgres schema integration", () => {
         .toBeLessThan(1_000);
 
       // A token refresh keeps the wait; reconnecting the account clears it.
-      await expect(save("refresh")).resolves.toMatchObject({ syncFailureCount: 3 });
+      await expect(save({
+        connectionId: connected.id,
+        expectedAuthorizationGeneration: connected.authorizationGeneration,
+      })).resolves.toMatchObject({ syncFailureCount: 3 });
       expect(await backoff()).toEqual(held);
       const reconnected = await save();
       expect(reconnected).not.toHaveProperty("syncFailureCount");
@@ -5774,6 +5782,109 @@ databaseDescribe("Postgres schema integration", () => {
       await finish("succeeded", { failures: 0 });
     } finally {
       random.mockRestore();
+      if (previousKeyring === undefined) {
+        delete process.env.OMNIAGENT_CREDENTIAL_KEYRING;
+      } else {
+        process.env.OMNIAGENT_CREDENTIAL_KEYRING = previousKeyring;
+      }
+    }
+  });
+
+  test("refuses to write a token refresh over a disconnected or reconnected OAuth connection", async () => {
+    const tenantId = "oauth_refresh_tenant";
+    const actorId = "oauth-refresh-owner";
+    const owner = { tenantId, actorId, provider: "google" as const };
+    const accountEmail = "oauth-refresh@example.com";
+    const store = await import("@/lib/connectors/oauth-store");
+    const asOwner = <T,>(operation: () => Promise<T>) =>
+      runWithDatabaseActorScope(tenantId, [actorId], operation);
+    const connect = (accessToken: string) => asOwner(() =>
+      store.saveOAuthGrant({
+        ...owner,
+        accountEmail,
+        tokens: {
+          access_token: accessToken,
+          refresh_token: "oauth-refresh-token",
+          scope: "https://www.googleapis.com/auth/drive",
+          expires_in: 3_600,
+        },
+      }));
+    // A refresh names the grant and authorization its refresh token came from.
+    const refresh = (
+      read: { id: string; authorizationGeneration: number },
+      accessToken: string,
+    ) => asOwner(() =>
+      store.saveOAuthGrant({
+        ...owner,
+        accountEmail,
+        tokens: { access_token: accessToken, expires_in: 3_600 },
+        authorizationMode: "refresh",
+        connectionId: read.id,
+        expectedAuthorizationGeneration: read.authorizationGeneration,
+      }));
+    const stored = async () => {
+      const [row] = await admin`
+        SELECT status, authorization_generation::int AS generation
+        FROM omni_oauth_grants
+        WHERE tenant_id = ${tenantId}
+      `;
+      return row;
+    };
+    const accessToken = async () =>
+      (await asOwner(() => store.getOAuthGrantSecrets(tenantId, actorId, "google")))
+        ?.tokens.access_token;
+    const previousKeyring = process.env.OMNIAGENT_CREDENTIAL_KEYRING;
+    process.env.OMNIAGENT_CREDENTIAL_KEYRING = JSON.stringify({
+      activeKeyId: "oauth-refresh-v1",
+      keys: { "oauth-refresh-v1": Buffer.alloc(32, 9).toString("base64url") },
+    });
+
+    try {
+      const connected = await connect("first-access-token");
+      const generation = connected.authorizationGeneration;
+      for (const mismatch of [
+        { ...connected, id: "another-connection" },
+        { ...connected, authorizationGeneration: generation + 1 },
+      ]) {
+        await expect(refresh(mismatch, "mismatched-access-token"))
+          .rejects.toMatchObject({ code: "grant_not_found" });
+      }
+      expect(await accessToken()).toBe("first-access-token");
+      await expect(refresh(connected, "refreshed-access-token")).resolves.toMatchObject({
+        id: connected.id,
+        status: "active",
+        authorizationGeneration: generation,
+      });
+      expect(await accessToken()).toBe("refreshed-access-token");
+
+      await asOwner(() => store.revokeOAuthGrant(tenantId, actorId, "google"));
+      expect(await stored()).toEqual({ status: "revoked", generation: generation + 1 });
+      await expect(refresh(connected, "late-access-token"))
+        .rejects.toMatchObject({ code: "grant_not_found" });
+      expect(await stored()).toEqual({ status: "revoked", generation: generation + 1 });
+
+      const reconnected = await connect("reconnected-access-token");
+      expect(reconnected).toMatchObject({
+        id: connected.id,
+        status: "active",
+        authorizationGeneration: generation + 1,
+      });
+      await expect(refresh(connected, "stale-access-token"))
+        .rejects.toMatchObject({ code: "grant_not_found" });
+      expect(await accessToken()).toBe("reconnected-access-token");
+      await expect(refresh(reconnected, "current-access-token")).resolves.toMatchObject({
+        authorizationGeneration: generation + 1,
+      });
+      expect(await accessToken()).toBe("current-access-token");
+
+      // Earlier releases disconnected without moving the authorization on.
+      await admin`
+        UPDATE omni_oauth_grants SET status = 'revoked' WHERE tenant_id = ${tenantId}
+      `;
+      await expect(refresh(reconnected, "resurrecting-access-token"))
+        .rejects.toMatchObject({ code: "grant_not_found" });
+      expect(await stored()).toEqual({ status: "revoked", generation: generation + 1 });
+    } finally {
       if (previousKeyring === undefined) {
         delete process.env.OMNIAGENT_CREDENTIAL_KEYRING;
       } else {

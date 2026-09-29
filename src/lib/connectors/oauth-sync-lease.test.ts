@@ -181,7 +181,7 @@ describe("OAuth source synchronization lease", () => {
     });
     const random = vi.spyOn(Math, "random").mockReturnValue(0);
     try {
-      await store.saveOAuthGrant({
+      const connected = await store.saveOAuthGrant({
         ...owner,
         accountEmail: googleAccountEmail,
         tokens,
@@ -224,6 +224,8 @@ describe("OAuth source synchronization lease", () => {
         accountEmail: googleAccountEmail,
         tokens,
         authorizationMode: "refresh",
+        connectionId: connected.id,
+        expectedAuthorizationGeneration: connected.authorizationGeneration,
       })).resolves.toMatchObject({
         syncFailureCount: 3,
         syncRetryAt: "2026-09-29T12:17:30.000Z",

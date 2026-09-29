@@ -120,19 +120,29 @@ export type OAuthGrantSelector = Readonly<{
   connectionPurpose?: GoogleConnectionPurpose;
 }>;
 
-export async function saveOAuthGrant(input: {
+export type OAuthGrantSaveInput = {
   tenantId: string;
   actorId: string;
   provider: OAuthProvider;
   tokens: Record<string, unknown>;
-  authorizationMode?: "reauthorize" | "refresh";
-  connectionId?: string;
   connectionPurpose?: GoogleConnectionPurpose;
   connectionLabel?: string;
   accountEmail?: string;
-}) {
+} & (
+  | { authorizationMode?: "reauthorize"; connectionId?: string }
+  // A refresh rewrites only the grant its refresh token was read from, at the
+  // authorization it was read under. A disconnect or reconnect in between wins.
+  | {
+    authorizationMode: "refresh";
+    connectionId: string;
+    expectedAuthorizationGeneration: number;
+  }
+);
+
+export async function saveOAuthGrant(input: OAuthGrantSaveInput) {
   const now = new Date().toISOString();
   const authorizationMode = input.authorizationMode || "reauthorize";
+  const refresh = input.authorizationMode === "refresh" ? input : undefined;
   const connectionPurpose = input.connectionPurpose || "personal";
   if (input.provider === "google" && connectionPurpose !== "personal") {
     throw new OAuthCredentialError(
@@ -212,6 +222,27 @@ export async function saveOAuthGrant(input: {
     connectionPurpose,
   };
   const sealedTokens = sealOAuthTokens(tokens, oauthGrantBinding(grantIdentity));
+  if (hasDatabaseUrl() && refresh) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      UPDATE omni_oauth_grants SET
+        account_email = COALESCE(${accountEmail || null}, account_email),
+        connection_label = ${connectionLabel},
+        scopes = ${scopes},
+        sealed_tokens = ${sealedTokens}::jsonb,
+        expires_at = ${expiresAt || null},
+        updated_at = ${now}
+      WHERE tenant_id = ${input.tenantId}
+        AND actor_id = ${input.actorId}
+        AND provider = ${input.provider}
+        AND id = ${refresh.connectionId}
+        AND status = 'active'
+        AND authorization_generation = ${refresh.expectedAuthorizationGeneration}
+      RETURNING *
+    `;
+    if (!rows.length) throw grantChangedDuringRefresh();
+    return publicGrant(rows[0]);
+  }
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
@@ -304,11 +335,34 @@ export async function saveOAuthGrant(input: {
         ? grant.id === input.connectionId
         : (grant.connectionPurpose || "personal") === connectionPurpose)
     );
+    if (refresh && !isRefreshedGrant(existing, refresh)) {
+      throw grantChangedDuringRefresh();
+    }
     const preserveSyncState = Boolean(existing && !resetAuthorization);
     saved = { id: existing?.id || id, tenantId: input.tenantId, actorId: input.actorId, provider: input.provider, accountEmail, connectionLabel, connectionPurpose, scopes, sealedTokens, sealedSyncCursor: preserveSyncState ? existing?.sealedSyncCursor : undefined, syncCursor: preserveSyncState ? existing?.syncCursor : undefined, syncStatus: preserveSyncState ? existing?.syncStatus || "idle" : "idle", syncError: preserveSyncState ? existing?.syncError : undefined, lastSyncedAt: preserveSyncState ? existing?.lastSyncedAt : undefined, syncedItems: preserveSyncState ? existing?.syncedItems || 0 : 0, sourceCoverage: preserveSyncState ? existing?.sourceCoverage || {} : {}, status: "active", authorizationGeneration: existing ? Math.max(1, Number(existing.authorizationGeneration || 1)) + (resetAuthorization ? 1 : 0) : 1, expiresAt, createdAt: existing?.createdAt || now, updatedAt: now, ...(preserveSyncState && authorizationMode === "refresh" ? { syncFailureCount: existing?.syncFailureCount, syncRetryAt: existing?.syncRetryAt } : {}), ...(preserveSyncState ? { syncLeaseOwnerId: existing?.syncLeaseOwnerId, syncLeaseExpiresAt: existing?.syncLeaseExpiresAt, syncLeaseGeneration: existing?.syncLeaseGeneration } : { syncLeaseGeneration: existing?.syncLeaseGeneration || 0 }) };
     return { grants: [saved, ...ledger.grants.filter((grant) => grant.id !== existing?.id)].slice(0, 100) };
   });
   return stripTokens(saved);
+}
+
+function isRefreshedGrant(
+  grant: Pick<OAuthGrant, "id" | "status" | "authorizationGeneration"> | undefined,
+  refresh: { connectionId: string; expectedAuthorizationGeneration: number },
+) {
+  return Boolean(
+    grant &&
+      grant.id === refresh.connectionId &&
+      grant.status === "active" &&
+      Math.max(1, Number(grant.authorizationGeneration || 1)) ===
+        refresh.expectedAuthorizationGeneration,
+  );
+}
+
+function grantChangedDuringRefresh() {
+  return new OAuthCredentialError(
+    "The connection was disconnected or reconnected while its access was being refreshed.",
+    "grant_not_found",
+  );
 }
 
 export async function listOAuthGrants(tenantId: string, actorId: string) {
@@ -424,10 +478,10 @@ export async function revokeOAuthGrant(
   const sealedTokens = sealOAuthTokens({}, oauthGrantBinding(existing.grant));
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    await getSql()`UPDATE omni_oauth_grants SET status = 'revoked', sealed_tokens = ${sealedTokens}::jsonb, sync_cursor = NULL, sync_lease_owner_id = NULL, sync_lease_expires_at = NULL, updated_at = ${now} WHERE tenant_id = ${tenantId} AND actor_id = ${actorId} AND provider = ${provider} AND id = ${existing.grant.id}`;
+    await getSql()`UPDATE omni_oauth_grants SET status = 'revoked', authorization_generation = authorization_generation + 1, sealed_tokens = ${sealedTokens}::jsonb, sync_cursor = NULL, sync_lease_owner_id = NULL, sync_lease_expires_at = NULL, updated_at = ${now} WHERE tenant_id = ${tenantId} AND actor_id = ${actorId} AND provider = ${provider} AND id = ${existing.grant.id}`;
     return;
   }
-  await updateJsonFile<{ grants: InternalGrant[] }>(filePath(), { grants: [] }, (ledger) => ({ grants: ledger.grants.map((grant) => grant.id === existing.grant.id && grant.tenantId === tenantId && grant.actorId === actorId && grant.provider === provider ? { ...grant, status: "revoked", sealedTokens, sealedSyncCursor: undefined, syncCursor: undefined, syncLeaseOwnerId: undefined, syncLeaseExpiresAt: undefined, updatedAt: now } : grant) }));
+  await updateJsonFile<{ grants: InternalGrant[] }>(filePath(), { grants: [] }, (ledger) => ({ grants: ledger.grants.map((grant) => grant.id === existing.grant.id && grant.tenantId === tenantId && grant.actorId === actorId && grant.provider === provider ? { ...grant, status: "revoked", authorizationGeneration: Math.max(1, Number(grant.authorizationGeneration || 1)) + 1, sealedTokens, sealedSyncCursor: undefined, syncCursor: undefined, syncLeaseOwnerId: undefined, syncLeaseExpiresAt: undefined, updatedAt: now } : grant) }));
 }
 
 export async function getOAuthGrantSecrets(
