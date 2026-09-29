@@ -93,15 +93,7 @@ const PRICING_ENV: Record<ContractProvider, string> = {
 };
 
 // US dollars per million tokens.
-const PRICE = { input: 1, output: 4, cachedInput: 0.1 };
-
-/** The model ids that the responses in a fixture's scenarios report. */
-function reportedModels(value: unknown): string[] {
-  if (Array.isArray(value)) return value.flatMap(reportedModels);
-  if (!value || typeof value !== "object") return [];
-  return Object.entries(value).flatMap(([key, item]) =>
-    key === "model" && typeof item === "string" ? [item] : reportedModels(item));
-}
+const PRICE = { input: 1, output: 4, cachedInput: 0.1, cacheWrite: 1.25 };
 
 const API_KEY_ENV = {
   anthropic: "ANTHROPIC_API_KEY",
@@ -436,19 +428,18 @@ function expectUsage(provider: ContractProvider, result: ModelGenerationResult) 
   expect(usage.cachedInputTokens).toBeLessThanOrEqual(usage.inputTokens);
   const target = targetFor(provider);
   // A provider may report a dated snapshot of the requested model, such as
-  // gpt-5-2025-08-07 for gpt-5. Fixture mode prices every id the fixture's
-  // responses report. Live pricing lists only the requested id, so the cost
-  // of a live reply that reports a snapshot is unknown and is not checked.
+  // gpt-5-2025-08-07 for gpt-5. Pricing lists only the requested id, and a
+  // snapshot is priced as the model it snapshots.
   expect(result.model.startsWith(target.model)).toBe(true);
-  if (!LIVE || result.model === target.model) {
-    expect(result.costKnown).toBe(true);
-    expect(result.estimatedCostUsd).toBeCloseTo(
-      ((usage.inputTokens - usage.cachedInputTokens) * PRICE.input +
-        usage.cachedInputTokens * PRICE.cachedInput +
-        usage.outputTokens * PRICE.output) / 1_000_000,
-      5,
-    );
-  }
+  const cacheWriteInputTokens = usage.cacheWriteInputTokens || 0;
+  expect(result.costKnown).toBe(true);
+  expect(result.estimatedCostUsd).toBeCloseTo(
+    ((usage.inputTokens - usage.cachedInputTokens - cacheWriteInputTokens) * PRICE.input +
+      usage.cachedInputTokens * PRICE.cachedInput +
+      cacheWriteInputTokens * PRICE.cacheWrite +
+      usage.outputTokens * PRICE.output) / 1_000_000,
+    5,
+  );
   expect(result.providerRequestId).toBeTruthy();
   expect(result.attempts).toEqual([
     expect.objectContaining({ provider, status: "completed" }),
@@ -463,14 +454,7 @@ beforeAll(async () => {
   // The OpenAI SDK reads OPENAI_BASE_URL, and an empty value keeps its default.
   vi.stubEnv("OPENAI_BASE_URL", "");
   for (const provider of PROVIDERS) {
-    const models = new Set([
-      targetFor(provider).model,
-      ...(LIVE ? [] : reportedModels(fixtures[provider]?.scenarios)),
-    ]);
-    vi.stubEnv(
-      PRICING_ENV[provider],
-      JSON.stringify(Object.fromEntries([...models].map((model) => [model, PRICE]))),
-    );
+    vi.stubEnv(PRICING_ENV[provider], JSON.stringify({ [targetFor(provider).model]: PRICE }));
   }
 });
 

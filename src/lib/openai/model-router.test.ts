@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { estimateModelCostUsd, selectAgentModel } from "@/lib/openai/model-router";
+import { selectAgentModel } from "@/lib/openai/model-router";
 
 describe("model router", () => {
   afterEach(() => {
@@ -56,10 +56,5 @@ describe("model router", () => {
       provider: "anthropic",
       tier: "reasoning",
     });
-  });
-
-  it("calculates configured token cost without hard-coded vendor pricing", () => {
-    process.env.OPENAI_MODEL_PRICING_JSON = JSON.stringify({ test: { input: 2, cachedInput: 0.5, output: 8 } });
-    expect(estimateModelCostUsd("test", { inputTokens: 1_000, cachedInputTokens: 400, outputTokens: 500, totalTokens: 1_500 })).toBe(0.0054);
   });
 });

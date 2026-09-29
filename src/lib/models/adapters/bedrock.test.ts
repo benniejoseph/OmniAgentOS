@@ -9,9 +9,15 @@ import type {
 import { getModelProviderResponseReceipt } from "@/lib/models/types";
 
 describe("Amazon Bedrock prompt caching", () => {
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+  });
 
   it("places a cache point after stable instructions and counts cache usage", async () => {
+    vi.stubEnv("BEDROCK_MODEL_PRICING_JSON", JSON.stringify({
+      "amazon.nova-lite-v1:0": { input: 1, output: 4, cachedInput: 0.25 },
+    }));
     const fetchImplementation = vi.fn().mockResolvedValue(new Response(
       JSON.stringify({
         output: {
@@ -81,7 +87,10 @@ describe("Amazon Bedrock prompt caching", () => {
       outputTokens: 5,
       cachedInputTokens: 100,
       totalTokens: 128,
+      cacheWriteInputTokens: 20,
     });
+    // Nova bills a cache write as input and a cache read at its cached price.
+    expect(result.estimatedCostUsd).toBe(0.000068);
     expect(result.continuation.provider).toBe("aws_bedrock");
     expect(JSON.stringify(result.continuation.state)).not.toContain(
       "cachePoint",

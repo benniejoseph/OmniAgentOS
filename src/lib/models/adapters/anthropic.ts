@@ -515,8 +515,9 @@ function anthropicResponseFailure(
 }
 
 function anthropicUsage(raw: AnthropicResponse["usage"]): ModelUsage {
+  const cacheWriteInputTokens = finite(raw?.cache_creation_input_tokens);
   const inputTokens = finite(raw?.input_tokens) +
-    finite(raw?.cache_creation_input_tokens) +
+    cacheWriteInputTokens +
     finite(raw?.cache_read_input_tokens);
   const outputTokens = finite(raw?.output_tokens);
   return {
@@ -524,6 +525,7 @@ function anthropicUsage(raw: AnthropicResponse["usage"]): ModelUsage {
     outputTokens,
     cachedInputTokens: finite(raw?.cache_read_input_tokens),
     totalTokens: inputTokens + outputTokens,
+    ...(cacheWriteInputTokens ? { cacheWriteInputTokens } : {}),
   };
 }
 

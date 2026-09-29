@@ -1141,9 +1141,10 @@ function bedrockResponseFailure(
 }
 
 function bedrockUsage(raw: BedrockConverseResponse["usage"]): ModelUsage {
+  const cacheWriteInputTokens = finite(raw?.cacheWriteInputTokens);
   const inputTokens = finite(raw?.inputTokens) +
     finite(raw?.cacheReadInputTokens) +
-    finite(raw?.cacheWriteInputTokens);
+    cacheWriteInputTokens;
   const outputTokens = finite(raw?.outputTokens);
   const calculatedTotal = inputTokens + outputTokens;
   return {
@@ -1151,6 +1152,7 @@ function bedrockUsage(raw: BedrockConverseResponse["usage"]): ModelUsage {
     outputTokens,
     cachedInputTokens: finite(raw?.cacheReadInputTokens),
     totalTokens: Math.max(calculatedTotal, finite(raw?.totalTokens)),
+    ...(cacheWriteInputTokens ? { cacheWriteInputTokens } : {}),
   };
 }
 

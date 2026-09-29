@@ -1633,7 +1633,7 @@ The provider contract suite sends the Claude, OpenAI, Gemini, and Bedrock adapte
 
 A reply cut off at the token limit and a rate limit cannot be produced on demand, so the `truncated` and `rate_limit` scenarios run only from the fixtures, and recording keeps them. The current fixtures are hand-written from each provider's API reference (`recordedAt: null`). Live mode has not been run yet, so record the fixtures once live credentials are in place.
 
-A provider may report a dated snapshot of the requested model, such as `gpt-5-2025-08-07` for `gpt-5`. Claude and Gemini price a reply by the model id it reports, so a snapshot id missing from `ANTHROPIC_MODEL_PRICING_JSON` or `GEMINI_MODEL_PRICING_JSON` leaves that reply's cost unknown. The suite accepts a snapshot id. In live mode it checks the cost only when the reply reports the requested id.
+A provider may report a dated snapshot of the requested model, such as `gpt-5-2025-08-07` for `gpt-5`. A snapshot that the price table does not list is priced as the model it snapshots, so the suite lists only the requested id and checks the cost of every reply, live or recorded. A snapshot that costs more or less than its model needs its own entry.
 
 The `Provider Contract` workflow runs the live suite on manual dispatch, and nightly once the repository variable `PROVIDER_CONTRACT_NIGHTLY` is `true`. It runs in the `provider-contract` environment, and only its test step receives the credentials. Configure in that environment:
 

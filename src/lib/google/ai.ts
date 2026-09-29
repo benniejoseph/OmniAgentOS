@@ -6,6 +6,7 @@ import type {
   ModelToolResult,
 } from "@/lib/models/types";
 import { attachModelProviderResponseReceipt } from "@/lib/models/types";
+import { estimateModelCostUsd } from "@/lib/models/pricing";
 import type { ModelUsage } from "@/lib/openai/model-router";
 import { recordAiUsageSafely } from "@/lib/usage/ledger";
 import type { AiUsageScope } from "@/lib/usage/types";
@@ -127,7 +128,7 @@ export async function generateGeminiText(input: {
     );
   }
   const usage = normalizeGeminiUsage(body.usage);
-  return { text, model: body.model || model, responseId: body.id, latencyMs: Date.now() - startedAt, usage, estimatedCostUsd: estimateGeminiCostUsd(body.model || model, usage) };
+  return { text, model: body.model || model, responseId: body.id, latencyMs: Date.now() - startedAt, usage, estimatedCostUsd: estimateModelCostUsd("google", body.model || model, usage) };
 }
 
 export async function generateGeminiToolTurn(input: {
@@ -270,7 +271,7 @@ export async function generateGeminiToolTurn(input: {
     responseId: body.id,
     latencyMs: Date.now() - startedAt,
     usage,
-    estimatedCostUsd: estimateGeminiCostUsd(body.model || model, usage),
+    estimatedCostUsd: estimateModelCostUsd("google", body.model || model, usage),
   };
 }
 
@@ -405,7 +406,7 @@ export async function generateGeminiImage(input: {
         attemptCount: 1,
         failedAttemptCount: 0,
         latencyMs: Date.now() - startedAt,
-        estimatedCostUsd: estimateGeminiCostUsd(model, usage),
+        estimatedCostUsd: estimateModelCostUsd("google", model, usage),
         providerRequestId: body.id,
       });
     }
@@ -422,7 +423,7 @@ export async function generateGeminiImage(input: {
     const model = responseBody?.model || requestedModel;
     const usage = normalizeGeminiUsage(responseBody?.usage);
     const estimatedCostUsd = responseBody?.usage
-      ? estimateGeminiCostUsd(model, usage)
+      ? estimateModelCostUsd("google", model, usage)
       : undefined;
     if (input.usageScope) {
       await recordAiUsageSafely({
@@ -553,7 +554,7 @@ export async function generateGeminiVideo(input: {
         attemptCount: 1,
         failedAttemptCount: 0,
         latencyMs: Date.now() - startedAt,
-        estimatedCostUsd: estimateGeminiCostUsd(model, usage),
+        estimatedCostUsd: estimateModelCostUsd("google", model, usage),
         providerRequestId: body.id,
       });
     }
@@ -580,7 +581,7 @@ export async function generateGeminiVideo(input: {
         attemptCount: 1,
         failedAttemptCount: 1,
         latencyMs: Date.now() - startedAt,
-        estimatedCostUsd: responseBody?.usage ? estimateGeminiCostUsd(model, usage) : undefined,
+        estimatedCostUsd: responseBody?.usage ? estimateModelCostUsd("google", model, usage) : undefined,
         providerRequestId: responseBody?.id,
         failureKind: failure.category,
         retryable: failure.retryable,
@@ -772,7 +773,7 @@ function geminiResponseFailure(
     ...(usage ? { usage } : {}),
     latencyMs: Date.now() - startedAt,
     model,
-    estimatedCostUsd: usage ? estimateGeminiCostUsd(model, usage) : undefined,
+    estimatedCostUsd: usage ? estimateModelCostUsd("google", model, usage) : undefined,
     providerRequestId: body.id,
   });
 }
@@ -987,25 +988,17 @@ function speechEncoding(mimeType: string) {
 
 function normalizeGeminiUsage(raw?: InteractionResponse["usage"]): ModelUsage {
   const inputTokens = finiteToken(raw?.total_input_tokens);
+  const reasoningTokens = finiteToken(raw?.total_thought_tokens);
   // Thinking tokens are billed as output tokens, but the Interactions API
   // reports them apart from total_output_tokens.
-  const outputTokens = finiteToken(raw?.total_output_tokens) +
-    finiteToken(raw?.total_thought_tokens);
-  return { inputTokens, outputTokens, cachedInputTokens: finiteToken(raw?.total_cached_tokens), totalTokens: finiteToken(raw?.total_tokens) || inputTokens + outputTokens };
-}
-
-export function estimateGeminiCostUsd(model: string, usage: ModelUsage) {
-  try {
-    const pricing = JSON.parse(process.env.GEMINI_MODEL_PRICING_JSON || "{}") as Record<string, { input?: unknown; output?: unknown; cachedInput?: unknown }>;
-    const rate = pricing[model];
-    const input = Number(rate?.input);
-    const output = Number(rate?.output);
-    const cachedInput = Number(rate?.cachedInput);
-    if (!Number.isFinite(input) || !Number.isFinite(output)) return undefined;
-    const uncached = Math.max(0, usage.inputTokens - usage.cachedInputTokens);
-    const value = (uncached * input + usage.cachedInputTokens * (Number.isFinite(cachedInput) ? cachedInput : input) + usage.outputTokens * output) / 1_000_000;
-    return Math.round(value * 1_000_000) / 1_000_000;
-  } catch { return undefined; }
+  const outputTokens = finiteToken(raw?.total_output_tokens) + reasoningTokens;
+  return {
+    inputTokens,
+    outputTokens,
+    cachedInputTokens: finiteToken(raw?.total_cached_tokens),
+    totalTokens: finiteToken(raw?.total_tokens) || inputTokens + outputTokens,
+    ...(reasoningTokens ? { reasoningTokens } : {}),
+  };
 }
 
 function finiteToken(value: unknown) {

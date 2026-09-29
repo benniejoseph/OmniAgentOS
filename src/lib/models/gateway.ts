@@ -16,6 +16,7 @@ import {
   attachModelProviderResponseReceipt,
   getModelProviderResponseReceipt,
   ModelProviderError,
+  sumModelUsage,
 } from "@/lib/models/types";
 import { recordAiUsageSafely } from "@/lib/usage/ledger";
 import {
@@ -358,16 +359,7 @@ async function executeGateway<
 }
 
 function sumAttemptUsage(attempts: readonly ModelAttemptReceipt[]) {
-  return attempts.reduce(
-    (total, attempt) => ({
-      inputTokens: total.inputTokens + (attempt.usage?.inputTokens || 0),
-      outputTokens: total.outputTokens + (attempt.usage?.outputTokens || 0),
-      cachedInputTokens:
-        total.cachedInputTokens + (attempt.usage?.cachedInputTokens || 0),
-      totalTokens: total.totalTokens + (attempt.usage?.totalTokens || 0),
-    }),
-    { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, totalTokens: 0 },
-  );
+  return sumModelUsage(attempts.map((attempt) => attempt.usage));
 }
 
 function sumKnownAttemptCost(attempts: readonly ModelAttemptReceipt[]) {

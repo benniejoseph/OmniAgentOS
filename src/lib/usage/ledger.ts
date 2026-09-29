@@ -7,6 +7,7 @@ import {
   hasDatabaseUrl,
 } from "@/lib/db/client";
 import { appendDomainEvent } from "@/lib/events/store";
+import { modelPricingProvenance } from "@/lib/models/pricing";
 import { assertExecutionScopeTenant } from "@/lib/security/execution-scope";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
@@ -527,30 +528,7 @@ function callReceiptPricingProvenance(
 }
 
 function pricingProvenance(provider: string, model: string, costKnown: boolean) {
-  if (!costKnown) return {};
-  const raw = provider === "openai"
-    ? process.env.OPENAI_MODEL_PRICING_JSON
-    : provider === "google"
-      ? process.env.GEMINI_MODEL_PRICING_JSON
-      : provider === "anthropic"
-        ? process.env.ANTHROPIC_MODEL_PRICING_JSON
-        : provider === "aws_bedrock"
-          ? process.env.BEDROCK_MODEL_PRICING_JSON
-          : process.env.LOCAL_MODEL_PRICING_JSON;
-  let selected = "configured-rate";
-  try {
-    const parsed = JSON.parse(raw || "{}") as Record<string, unknown>;
-    selected = JSON.stringify(parsed[model] || selected);
-  } catch {
-    selected = "configured-rate";
-  }
-  return {
-    pricingSource: "environment",
-    pricingVersion: createHash("sha256")
-      .update(`${provider}\n${model}\n${selected}`)
-      .digest("hex")
-      .slice(0, 16),
-  };
+  return costKnown ? modelPricingProvenance(provider, model) : {};
 }
 
 function usageRecordFromRow(row: Record<string, unknown>): AiUsageRecord {

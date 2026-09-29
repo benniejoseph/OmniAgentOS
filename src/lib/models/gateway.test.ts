@@ -15,6 +15,7 @@ vi.mock("@/lib/models/adapters/anthropic", () => ({
 }));
 
 import { generateModelStructured, generateModelText, generateModelToolTurn } from "@/lib/models/gateway";
+import { attachModelProviderResponseReceipt } from "@/lib/models/types";
 
 beforeEach(() => {
   openAI.configured.mockReturnValue(false);
@@ -119,6 +120,44 @@ describe("model gateway", () => {
     expect(generated.model).toBe("openai-backup");
     expect(generated.attempts.map((attempt) => attempt.provider)).toEqual(["openai", "openai"]);
     expect(google.generateText).not.toHaveBeenCalled();
+  });
+
+  it("adds a failed attempt's billed tokens to the call's usage", async () => {
+    openAI.configured.mockReturnValue(true);
+    openAI.targets.mockReturnValue([
+      target("openai", "openai-primary", ["text"]),
+      target("openai", "openai-backup", ["text"]),
+    ]);
+    openAI.generateText
+      .mockRejectedValueOnce(attachModelProviderResponseReceipt(
+        Object.assign(new Error("temporarily unavailable"), { status: 503 }),
+        {
+          latencyMs: 5,
+          usage: {
+            inputTokens: 5,
+            outputTokens: 3,
+            cachedInputTokens: 2,
+            totalTokens: 8,
+            cacheWriteInputTokens: 1,
+            reasoningTokens: 2,
+          },
+        },
+      ))
+      .mockResolvedValueOnce(result("openai", "openai-backup"));
+
+    const generated = await generateModelText({
+      input: "private context",
+      preferredProvider: "openai",
+    });
+
+    expect(generated.usage).toEqual({
+      inputTokens: 6,
+      outputTokens: 4,
+      cachedInputTokens: 2,
+      totalTokens: 10,
+      cacheWriteInputTokens: 1,
+      reasoningTokens: 2,
+    });
   });
 
   it("never starts a fallback outside the caller's attempt budget", async () => {

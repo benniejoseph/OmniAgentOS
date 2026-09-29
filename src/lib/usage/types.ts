@@ -23,6 +23,10 @@ export type AiUsageUnits = {
   cachedInputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
+  /** Input tokens written to the provider's prompt cache, counted in inputTokens. */
+  cacheWriteInputTokens?: number;
+  /** Output tokens the model spent reasoning, counted in outputTokens. */
+  reasoningTokens?: number;
   inputCharacters?: number;
   inputBytes?: number;
   outputBytes?: number;

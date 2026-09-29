@@ -8,7 +8,8 @@ import {
   getModelProviderResponseReceipt,
   ModelProviderError,
 } from "@/lib/models/types";
-import { estimateWebSearchCostUsd } from "@/lib/openai/model-router";
+import { estimateWebSearchCostUsd } from "@/lib/models/pricing";
+import { openAIResponseUsage } from "@/lib/openai/usage";
 import { citationIdForWebUrl } from "@/lib/rag/citations";
 import { resolveSpecializedRuntime } from "@/lib/settings/specialized-runtime";
 import { recordAiUsageSafely } from "@/lib/usage/ledger";
@@ -130,7 +131,7 @@ export async function runLiveWebSearch({
         { signal: combinedSignal },
       )
     );
-    const usage = normalizeWebUsage(response);
+    const usage = openAIResponseUsage(response.usage);
     const estimatedCostUsd = response.usage
       ? estimateWebSearchCostUsd(runtimeModel.model, usage, 1)
       : undefined;
@@ -202,26 +203,6 @@ export async function runLiveWebSearch({
     sources,
     sourceCount: sources.length,
   };
-}
-
-function normalizeWebUsage(response: unknown) {
-  const raw = response && typeof response === "object"
-    ? (response as { usage?: Record<string, unknown> }).usage
-    : undefined;
-  const details = raw?.input_tokens_details as Record<string, unknown> | undefined;
-  const inputTokens = finiteUsageUnit(raw?.input_tokens);
-  const outputTokens = finiteUsageUnit(raw?.output_tokens);
-  return {
-    inputTokens,
-    cachedInputTokens: finiteUsageUnit(details?.cached_tokens),
-    outputTokens,
-    totalTokens: finiteUsageUnit(raw?.total_tokens) || inputTokens + outputTokens,
-  };
-}
-
-function finiteUsageUnit(value: unknown) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed) : 0;
 }
 
 // Cap how much web evidence is injected into the agent prompt. The production

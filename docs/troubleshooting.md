@@ -130,8 +130,14 @@ A native app that signs out after a refresh answered 401 with `refresh_token_reu
 
 ## Gemini output tokens look higher, or a Gemini key fails as an authentication error
 
-- Gemini reports thinking tokens in `total_thought_tokens`, apart from `total_output_tokens`, and bills them as output. Usage adds them to the output tokens, so usage receipts and the cost estimated from `GEMINI_MODEL_PRICING_JSON` include thinking. Receipts recorded before this change left it out.
+- Gemini reports thinking tokens in `total_thought_tokens`, apart from `total_output_tokens`, and bills them as output. Usage adds them to the output tokens, so usage receipts and the cost estimated from `GEMINI_MODEL_PRICING_JSON` include thinking. Receipts recorded before this change left it out. Gemini and OpenAI receipts also record the thinking alone as `reasoningTokens`.
 - Google answers a rejected API key with 400 `INVALID_ARGUMENT` and the reason `API_KEY_INVALID`. That failure is recorded as `authentication`, not `invalid_request`. Neither is retried.
+
+## An estimated model cost looks wrong, or is missing
+
+- A cost is estimated only for a model listed in its provider's `*_MODEL_PRICING_JSON`. A dated snapshot, such as `claude-sonnet-4-5-20250929`, uses the price of the model it snapshots, `claude-sonnet-4-5`, unless the snapshot is listed itself. Any other id that is not listed has no cost.
+- Tokens written to a prompt cache are recorded as `cacheWriteInputTokens` and priced at `cacheWrite`. Without it, a Claude write, direct or on Bedrock, costs 1.25 times `input`, and a write on any other model costs `input`. Tokens read from the cache are priced at `cachedInput`, or `input` when it is unset. Receipts recorded before this change priced Claude cache writes as `input`.
+- Each receipt's `pricingVersion` changes when the price it used changes. It was computed differently before this change, so receipts recorded before and after it differ even at the same price.
 
 ## The provider contract suite fails
 

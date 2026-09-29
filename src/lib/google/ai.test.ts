@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  estimateGeminiCostUsd,
   generateGeminiImage,
   generateGeminiText,
   generateGeminiToolTurn,
@@ -59,13 +58,16 @@ describe("Google AI provider", () => {
       prompt: "Think first",
       model: "gemini-test",
     })).resolves.toMatchObject({
-      usage: { inputTokens: 7, outputTokens: 42, cachedInputTokens: 0, totalTokens: 49 },
+      usage: { inputTokens: 7, outputTokens: 42, cachedInputTokens: 0, totalTokens: 49, reasoningTokens: 22 },
       estimatedCostUsd: 0.000107,
     });
   });
 
   it("bills the thinking in a tool turn cut off at the token limit", async () => {
     process.env.GEMINI_API_KEY = "test-key";
+    process.env.GEMINI_MODEL_PRICING_JSON = JSON.stringify({
+      "gemini-test": { input: 0.4, output: 2.5 },
+    });
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
       id: "interaction-incomplete",
       model: "gemini-test",
@@ -90,11 +92,16 @@ describe("Google AI provider", () => {
       }],
     }).catch((caught: unknown) => caught);
 
-    expect(getModelProviderResponseReceipt(error)?.usage).toEqual({
-      inputTokens: 5,
-      outputTokens: 18_000,
-      cachedInputTokens: 0,
-      totalTokens: 18_005,
+    expect(getModelProviderResponseReceipt(error)).toMatchObject({
+      usage: {
+        inputTokens: 5,
+        outputTokens: 18_000,
+        cachedInputTokens: 0,
+        totalTokens: 18_005,
+        reasoningTokens: 18_000,
+      },
+      // 5 × 0.4 + 18,000 × 2.5 = 45,002 per million.
+      estimatedCostUsd: 0.045002,
     });
   });
 
@@ -205,12 +212,6 @@ describe("Google AI provider", () => {
     expect(body.input[0].content[0]).toEqual({ type: "video", data: "BAUG", mime_type: "video/mp4" });
     expect(body.response_format).toMatchObject({ type: "video", resolution: "360p" });
     expect(body.store).toBe(false);
-  });
-
-  it("calculates only explicitly configured Gemini pricing", () => {
-    process.env.GEMINI_MODEL_PRICING_JSON = JSON.stringify({ gemini: { input: 0.3, cachedInput: 0.03, output: 2.5 } });
-    expect(estimateGeminiCostUsd("gemini", { inputTokens: 1_000, cachedInputTokens: 200, outputTokens: 500, totalTokens: 1_500 })).toBe(0.001496);
-    expect(estimateGeminiCostUsd("unknown", { inputTokens: 1, cachedInputTokens: 0, outputTokens: 1, totalTokens: 2 })).toBeUndefined();
   });
 
   it("uses official function tools and continues statelessly with exact prior steps", async () => {

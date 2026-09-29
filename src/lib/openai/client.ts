@@ -7,11 +7,14 @@ import {
   getOpenAIGatewayConfig,
   hasOpenAIKey,
 } from "@/lib/config";
-import { estimateModelCostUsd, type ModelUsage } from "@/lib/openai/model-router";
+import { estimateModelCostUsd } from "@/lib/models/pricing";
+import type { ModelUsage } from "@/lib/openai/model-router";
+import { openAIResponseUsage } from "@/lib/openai/usage";
 import {
   attachModelProviderResponseReceipt,
   getModelProviderResponseReceipt,
   ModelProviderError,
+  sumModelUsage,
   type ModelAttemptReceipt,
   type ModelProviderResponseReceipt,
 } from "@/lib/models/types";
@@ -216,7 +219,7 @@ export async function embedTextsWithRuntime(
         attemptCount: 1,
         failedAttemptCount: 0,
         latencyMs: Date.now() - startedAt,
-        estimatedCostUsd: estimateModelCostUsd(runtimeModel.model, {
+        estimatedCostUsd: estimateModelCostUsd("openai", runtimeModel.model, {
           inputTokens,
           outputTokens: 0,
           cachedInputTokens: 0,
@@ -497,7 +500,7 @@ export async function streamResponseTurn({
         eventType === "response.incomplete") &&
       response?.usage
     ) {
-      usage = normalizeUsage(response.usage);
+      usage = openAIResponseUsage(response.usage);
       usageObserved = true;
     }
     if (eventType === "response.completed") terminalSeen = true;
@@ -568,7 +571,7 @@ export async function streamResponseTurn({
       latencyMs: Date.now() - attemptStartedAt,
       model: activeModel,
       estimatedCostUsd: usageObserved
-        ? estimateModelCostUsd(activeModel, usage)
+        ? estimateModelCostUsd("openai", activeModel, usage)
         : undefined,
       providerRequestId: responseId,
     });
@@ -637,7 +640,7 @@ export async function streamResponseTurn({
       ];
       const combinedError = billedReceipts.length
         ? attachModelProviderResponseReceipt(meteredFallbackError, {
-            usage: sumModelUsage(billedReceipts),
+            usage: sumModelUsage(billedReceipts.map((receipt) => receipt.usage)),
             latencyMs: Date.now() - startedAt,
             model: fallbackReceipt?.model || activeModel,
             estimatedCostUsd: sumKnownModelCost(billedReceipts),
@@ -649,7 +652,7 @@ export async function streamResponseTurn({
   }
 
   const calls = [...callsByItemId.values()];
-  const activeEstimatedCostUsd = estimateModelCostUsd(activeModel, usage);
+  const activeEstimatedCostUsd = estimateModelCostUsd("openai", activeModel, usage);
   const turnLatencyMs = Date.now() - startedAt;
   const completedReceipt: ModelProviderResponseReceipt = {
     usage,
@@ -671,7 +674,7 @@ export async function streamResponseTurn({
       ...(responseId ? { providerRequestId: responseId } : {}),
     },
   ];
-  const totalUsage = sumModelUsage(billedReceipts);
+  const totalUsage = sumModelUsage(billedReceipts.map((receipt) => receipt.usage));
   const estimatedCostUsd = sumKnownModelCost(billedReceipts);
   const usageReceiptRecorded = usageScope
     ? Boolean(await recordAiUsageSafely({
@@ -933,19 +936,6 @@ function attachResponseTurnAttempts(
   }
 }
 
-function sumModelUsage(receipts: readonly ModelProviderResponseReceipt[]): ModelUsage {
-  return receipts.reduce(
-    (total, receipt) => ({
-      inputTokens: total.inputTokens + (receipt.usage?.inputTokens || 0),
-      outputTokens: total.outputTokens + (receipt.usage?.outputTokens || 0),
-      cachedInputTokens:
-        total.cachedInputTokens + (receipt.usage?.cachedInputTokens || 0),
-      totalTokens: total.totalTokens + (receipt.usage?.totalTokens || 0),
-    }),
-    { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, totalTokens: 0 },
-  );
-}
-
 function sumKnownModelCost(
   receipts: readonly ModelProviderResponseReceipt[],
 ) {
@@ -961,18 +951,6 @@ function sumKnownModelCost(
       0,
     ) * 1_000_000,
   ) / 1_000_000;
-}
-
-function normalizeUsage(raw?: Record<string, unknown>): ModelUsage {
-  const details = raw?.input_tokens_details as Record<string, unknown> | undefined;
-  const inputTokens = finiteToken(raw?.input_tokens);
-  const outputTokens = finiteToken(raw?.output_tokens);
-  return {
-    inputTokens,
-    outputTokens,
-    cachedInputTokens: finiteToken(details?.cached_tokens),
-    totalTokens: finiteToken(raw?.total_tokens) || inputTokens + outputTokens,
-  };
 }
 
 function finiteToken(value: unknown) {
@@ -1077,8 +1055,8 @@ export async function createStructuredResponseWithMetrics({
       { signal: abortSignal },
     );
 
-    const usage = normalizeUsage(response.usage as unknown as Record<string, unknown> | undefined);
-    const estimatedCostUsd = estimateModelCostUsd(model, usage);
+    const usage = openAIResponseUsage(response.usage);
+    const estimatedCostUsd = estimateModelCostUsd("openai", model, usage);
     const responseFailure = classifyOpenAITerminalResponse(response);
     if (responseFailure || !response.output_text?.trim()) {
       throw attachModelProviderResponseReceipt(

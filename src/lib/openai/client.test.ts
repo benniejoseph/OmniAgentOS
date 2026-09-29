@@ -697,3 +697,95 @@ describe("OpenAI turn output replay", () => {
     ]);
   });
 });
+
+describe("OpenAI turn cost", () => {
+  const failed = (id: string, usage: Record<string, unknown>) => ({
+    type: "response.failed",
+    response: { id, error: { code: "server_error", message: "Try again." }, usage },
+  });
+
+  function respond(...streams: Array<Array<Record<string, unknown>>>) {
+    process.env.OPENAI_API_KEY = "test-key";
+    delete process.env.OMNIAGENT_OPENAI_GATEWAY_URL;
+    delete process.env.OMNIAGENT_OPENAI_GATEWAY_TOKEN;
+    vi.stubEnv("OPENAI_MODEL_PRICING_JSON", JSON.stringify({
+      "gpt-5": { input: 1, output: 4 },
+      "gpt-5-mini": { input: 0.5, cachedInput: 0.05, output: 2 },
+    }));
+    for (const events of streams) {
+      openAiMocks.createResponse.mockReturnValueOnce({
+        async *[Symbol.asyncIterator]() {
+          yield* events;
+        },
+      });
+    }
+  }
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("adds a failed attempt's tokens and cost to its fallback's", async () => {
+    respond([
+      failed("resp_failed", {
+        input_tokens: 100,
+        output_tokens: 10,
+        output_tokens_details: { reasoning_tokens: 4 },
+        total_tokens: 110,
+      }),
+    ], [{
+      type: "response.completed",
+      response: {
+        id: "resp_fallback",
+        usage: {
+          input_tokens: 200,
+          input_tokens_details: { cached_tokens: 40 },
+          output_tokens: 20,
+          total_tokens: 220,
+        },
+      },
+    }]);
+    const { streamResponseTurn } = await import("@/lib/openai/client");
+
+    const turn = await streamResponseTurn({
+      input: "Weather?",
+      onDelta: () => undefined,
+      model: "gpt-5",
+      fallbackModel: "gpt-5-mini",
+    });
+
+    expect(turn.fallbackUsed).toBe(true);
+    expect(turn.usage).toEqual({
+      inputTokens: 300,
+      outputTokens: 30,
+      cachedInputTokens: 40,
+      totalTokens: 330,
+      reasoningTokens: 4,
+    });
+    // 100 × 1 + 10 × 4 = 140 per million, then 160 × 0.5 + 40 × 0.05 + 20 × 2 = 122.
+    expect(turn.attempts.map((attempt) => attempt.estimatedCostUsd)).toEqual([0.00014, 0.000122]);
+    expect(turn.estimatedCostUsd).toBe(0.000262);
+  });
+
+  it("adds up the tokens and cost of a turn whose fallback fails too", async () => {
+    respond(
+      [failed("resp_failed", { input_tokens: 100, output_tokens: 10, total_tokens: 110 })],
+      [failed("resp_fallback_failed", { input_tokens: 200, output_tokens: 20, total_tokens: 220 })],
+    );
+    const { streamResponseTurn } = await import("@/lib/openai/client");
+
+    const error = await streamResponseTurn({
+      input: "Weather?",
+      onDelta: () => undefined,
+      model: "gpt-5",
+      fallbackModel: "gpt-5-mini",
+    }).catch((caught: unknown) => caught);
+
+    const { getModelProviderResponseReceipt } = await import("@/lib/models/types");
+    expect(getModelProviderResponseReceipt(error)).toMatchObject({
+      usage: { inputTokens: 300, outputTokens: 30, cachedInputTokens: 0, totalTokens: 330 },
+      // 140 per million, then 200 × 0.5 + 20 × 2 = 140.
+      estimatedCostUsd: 0.00028,
+    });
+  });
+});

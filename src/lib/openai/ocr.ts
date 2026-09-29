@@ -8,7 +8,8 @@ import {
   getModelProviderResponseReceipt,
   ModelProviderError,
 } from "@/lib/models/types";
-import { estimateModelCostUsd } from "@/lib/openai/model-router";
+import { estimateModelCostUsd } from "@/lib/models/pricing";
+import { openAIResponseUsage } from "@/lib/openai/usage";
 import { recordAiUsageSafely } from "@/lib/usage/ledger";
 import type { AiUsageScope } from "@/lib/usage/types";
 
@@ -36,9 +37,9 @@ export async function extractTextFromImages(images: string[], usageScope?: AiUsa
         }],
       })
     );
-    const usage = normalizeOcrUsage(response.usage as unknown);
+    const usage = openAIResponseUsage(response.usage);
     const estimatedCostUsd = response.usage
-      ? estimateModelCostUsd(runtimeModel.model, usage)
+      ? estimateModelCostUsd("openai", runtimeModel.model, usage)
       : undefined;
     const responseFailure = classifyOpenAITerminalResponse(response);
     if (responseFailure || !response.output_text?.trim()) {
@@ -117,24 +118,4 @@ async function resolveOcrRuntime(usageScope?: AiUsageScope) {
     deploymentModel: OCR_MODEL,
     deploymentConfigured: hasOpenAIKey(),
   });
-}
-
-function normalizeOcrUsage(value?: unknown) {
-  const raw = value && typeof value === "object"
-    ? value as Record<string, unknown>
-    : undefined;
-  const details = raw?.input_tokens_details as Record<string, unknown> | undefined;
-  const inputTokens = usageUnit(raw?.input_tokens);
-  const outputTokens = usageUnit(raw?.output_tokens);
-  return {
-    inputTokens,
-    cachedInputTokens: usageUnit(details?.cached_tokens),
-    outputTokens,
-    totalTokens: usageUnit(raw?.total_tokens) || inputTokens + outputTokens,
-  };
-}
-
-function usageUnit(value: unknown) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed) : 0;
 }

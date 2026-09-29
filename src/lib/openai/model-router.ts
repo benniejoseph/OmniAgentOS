@@ -25,6 +25,10 @@ export type ModelUsage = {
   outputTokens: number;
   cachedInputTokens: number;
   totalTokens: number;
+  /** Input tokens written to the provider's prompt cache, counted in inputTokens. */
+  cacheWriteInputTokens?: number;
+  /** Output tokens the model spent reasoning, counted in outputTokens. */
+  reasoningTokens?: number;
 };
 
 export function selectAgentModel(input: {
@@ -105,61 +109,4 @@ export function selectAgentModel(input: {
         tier: "fast",
         reason: "A focused request can use the lower-latency model tier.",
       };
-}
-
-export function estimateModelCostUsd(model: string, usage: ModelUsage) {
-  const pricing = parsePricing();
-  const rate = pricing[model];
-  if (!rate) return undefined;
-  return estimateTokenCostUsd(rate, usage);
-}
-
-export function estimateWebSearchCostUsd(
-  model: string,
-  usage: ModelUsage,
-  searchQueryCount: number,
-) {
-  const rate = parsePricing()[model];
-  if (!rate || rate.webSearch === undefined) return undefined;
-  return roundUsd(
-    estimateTokenCostUsd(rate, usage) +
-    Math.max(0, Math.round(searchQueryCount)) * rate.webSearch,
-  );
-}
-
-function estimateTokenCostUsd(
-  rate: { input: number; output: number; cachedInput?: number },
-  usage: ModelUsage,
-) {
-  const uncachedInput = Math.max(0, usage.inputTokens - usage.cachedInputTokens);
-  return roundUsd(
-    (uncachedInput * rate.input + usage.cachedInputTokens * (rate.cachedInput ?? rate.input) + usage.outputTokens * rate.output) / 1_000_000,
-  );
-}
-
-function parsePricing(): Record<string, { input: number; output: number; cachedInput?: number; webSearch?: number }> {
-  try {
-    const value = JSON.parse(process.env.OPENAI_MODEL_PRICING_JSON || "{}") as Record<string, unknown>;
-    return Object.fromEntries(Object.entries(value).flatMap(([model, raw]) => {
-      if (!raw || typeof raw !== "object") return [];
-      const candidate = raw as Record<string, unknown>;
-      const input = Number(candidate.input);
-      const output = Number(candidate.output);
-      const cachedInput = Number(candidate.cachedInput);
-      const webSearch = Number(candidate.webSearch);
-      if (!Number.isFinite(input) || input < 0 || !Number.isFinite(output) || output < 0) return [];
-      return [[model, {
-        input,
-        output,
-        ...(Number.isFinite(cachedInput) && cachedInput >= 0 ? { cachedInput } : {}),
-        ...(Number.isFinite(webSearch) && webSearch >= 0 ? { webSearch } : {}),
-      }]];
-    }));
-  } catch {
-    return {};
-  }
-}
-
-function roundUsd(value: number) {
-  return Math.round(value * 1_000_000) / 1_000_000;
 }

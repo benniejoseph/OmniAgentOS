@@ -17,11 +17,15 @@ const target: ModelTarget = {
 describe("Anthropic model adapter tool turns", () => {
   afterEach(() => {
     delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_MODEL_PRICING_JSON;
     vi.unstubAllGlobals();
   });
 
   it("sends Messages tools and parses text plus tool_use blocks", async () => {
     process.env.ANTHROPIC_API_KEY = "test-key";
+    process.env.ANTHROPIC_MODEL_PRICING_JSON = JSON.stringify({
+      "claude-test": { input: 3, output: 15, cachedInput: 0.3 },
+    });
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({
         model: "claude-test",
@@ -41,7 +45,7 @@ describe("Anthropic model adapter tool turns", () => {
         },
       }), { status: 200, headers: { "content-type": "application/json" } }))
       .mockResolvedValueOnce(new Response(JSON.stringify({
-        model: "claude-test",
+        model: "claude-test-20260101",
         content: [{ type: "text", text: "Ada found." }],
         usage: {
           input_tokens: 11,
@@ -91,7 +95,10 @@ describe("Anthropic model adapter tool turns", () => {
       outputTokens: 3,
       cachedInputTokens: 0,
       totalTokens: 110,
+      cacheWriteInputTokens: 100,
     });
+    // The 100 tokens written to the prompt cache cost 1.25 times the input price.
+    expect(first.estimatedCostUsd).toBe(0.000441);
     expect(firstBody.messages.map((message: { role: string }) => message.role)).toEqual([
       "user",
       "assistant",
@@ -128,6 +135,8 @@ describe("Anthropic model adapter tool turns", () => {
       cachedInputTokens: 100,
       totalTokens: 113,
     });
+    // A dated snapshot is priced as the model it snapshots.
+    expect(second.estimatedCostUsd).toBe(0.000093);
     const secondBody = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
     expect(secondBody.messages.at(-1)).toEqual({
       role: "user",
@@ -385,6 +394,7 @@ describe("Anthropic model adapter structured output", () => {
       outputTokens: 12,
       cachedInputTokens: 6,
       totalTokens: 63,
+      cacheWriteInputTokens: 5,
     });
     expect(result.latencyMs).toBe(700);
     expect(result.providerRequestId).toBe("msg_tool_use");

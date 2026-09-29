@@ -215,12 +215,16 @@ export function preserveModelProviderResponseReceipt<T extends Error>(
 function normalizeProviderResponseReceipt(
   receipt: ModelProviderResponseReceipt,
 ): ModelProviderResponseReceipt {
+  const cacheWriteInputTokens = finiteUsageNumber(receipt.usage?.cacheWriteInputTokens);
+  const reasoningTokens = finiteUsageNumber(receipt.usage?.reasoningTokens);
   const usage = receipt.usage
     ? {
         inputTokens: finiteUsageNumber(receipt.usage.inputTokens),
         outputTokens: finiteUsageNumber(receipt.usage.outputTokens),
         cachedInputTokens: finiteUsageNumber(receipt.usage.cachedInputTokens),
         totalTokens: finiteUsageNumber(receipt.usage.totalTokens),
+        ...(cacheWriteInputTokens ? { cacheWriteInputTokens } : {}),
+        ...(reasoningTokens ? { reasoningTokens } : {}),
       }
     : undefined;
   const estimatedCostUsd = Number(receipt.estimatedCostUsd);
@@ -234,6 +238,26 @@ function normalizeProviderResponseReceipt(
       ? { estimatedCostUsd }
       : {}),
     ...(providerRequestId ? { providerRequestId } : {}),
+  };
+}
+
+/** Adds up the usage of several provider calls. */
+export function sumModelUsage(usages: readonly (ModelUsage | undefined)[]): ModelUsage {
+  const total = { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, totalTokens: 0 };
+  let cacheWriteInputTokens = 0;
+  let reasoningTokens = 0;
+  for (const usage of usages) {
+    total.inputTokens += usage?.inputTokens || 0;
+    total.outputTokens += usage?.outputTokens || 0;
+    total.cachedInputTokens += usage?.cachedInputTokens || 0;
+    total.totalTokens += usage?.totalTokens || 0;
+    cacheWriteInputTokens += usage?.cacheWriteInputTokens || 0;
+    reasoningTokens += usage?.reasoningTokens || 0;
+  }
+  return {
+    ...total,
+    ...(cacheWriteInputTokens ? { cacheWriteInputTokens } : {}),
+    ...(reasoningTokens ? { reasoningTokens } : {}),
   };
 }
 
