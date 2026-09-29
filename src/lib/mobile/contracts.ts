@@ -948,8 +948,8 @@ const v7Operations = [
 
 // Contract publication must describe only authority a native bearer can
 // actually exercise. These legacy v7 declarations have no enrolled route
-// capability, so v8 stops advertising them without changing the frozen v7
-// compatibility artifact or granting any new mutation authority.
+// capability, so v8 stops advertising them without granting any new mutation
+// authority.
 const v8UnenrolledMutationOperationIds = new Set<string>([
   "agents.create",
   "agents.update",
@@ -1110,15 +1110,13 @@ const v13Operations: readonly NativeOperation[] = [
 ];
 
 // Contract v14 removes the retired remote Computer Use frame projection from
-// the source-current native surface. Frozen v10-v13 documents retain the route
-// only as historical compatibility evidence; new clients receive screenshots
+// the source-current native surface. New clients receive screenshots
 // exclusively through the private, short-lived This Mac preview channel.
 const v14Operations: readonly NativeOperation[] = v13Operations.filter(
   (operation) => operation.id !== "evidence.run.computerFrame",
 );
 
 // Contract v15 adds first-class app receipt evidence and the live push canary.
-// Frozen v14 remains byte-for-byte unchanged after its Computer Use cutover.
 const v15Operations: readonly NativeOperation[] = [
   ...v14Operations,
   operation(
@@ -1384,8 +1382,8 @@ const v22Operations: readonly NativeOperation[] = [
   ),
 ];
 
-// Contract v23 keeps v22 byte-frozen while extending only the enrolled push
-// cause vocabulary with the generic, server-derived Inbox notification target.
+// Contract v23 extends only the enrolled push cause vocabulary with the
+// generic, server-derived Inbox notification target.
 // It adds no route or action authority.
 const v23Operations: readonly NativeOperation[] = [...v22Operations];
 

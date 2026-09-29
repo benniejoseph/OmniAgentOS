@@ -38,20 +38,20 @@ Set these through the platform secret/configuration store, never in source contr
 
 Native contract artifacts are committed immutable release inputs. Production
 advertises v30 as current and deliberately retains v29 as the one
-rollback-compatible previous version. V20-v28 remain immutable historical
-artifacts and are not advertised by current discovery. Do not retire v29 until
+rollback-compatible previous version. V28 remains the one immutable archive
+and is not advertised by current discovery. Older versions are deleted: each
+new contract deletes the oldest archive, and a unit test holds
+`public/native-contracts/` to these three versions. Do not retire v29 until
 the v30 rollback window closes. A published version is never regenerated in
 place. Run
 `npm run check:native-contracts` before a native-contract release; the check
 fails if the generated OpenAPI, event schema, fixtures, integrity manifests,
-Dart SDK, or frozen v7-v29 document hashes drift. Removing an archived version
-requires a separately reviewed adoption decision and is not implied by a
-Vercel deployment. V25/v20 remains the historical 2026-09-22 adaptive-runtime
-compatibility pair; v27/v26 is the historical governed local-command release
-pair; v28/v27 is the historical scoped model-selection release pair; v29/v28
-is the historical native Ambient Command voice release pair; v30/v29 is the
-current task-authority target-check and reviewed voice declaration release
-pair.
+Dart SDK, or frozen v28-v29 document hashes drift. A Vercel deployment never
+deletes an archive; only a contract release does. V25/v20 was the 2026-09-22
+adaptive-runtime compatibility pair; v27/v26 was the governed local-command
+release pair; v28/v27 was the scoped model-selection release pair; v29/v28 was
+the native Ambient Command voice release pair; v30/v29 is the current
+task-authority target-check and reviewed voice declaration release pair.
 
 Advertising v30/v29 stops supporting v28, so a v28 client receives
 `upgrade_required` and its native mutations are held. Deploy the v30 server
