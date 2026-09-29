@@ -341,7 +341,10 @@ describe("approving an action of a stopped agent run (file mode)", () => {
 });
 
 describe("governed tool execution for a stopped agent run (file mode)", () => {
-  it("opens no approval for a canceled run", async () => {
+  it.each([
+    ["without an idempotency key", {}],
+    ["under an idempotency key", { idempotencyKey: "fence-call:list" }],
+  ])("opens no approval for a canceled run %s", async (_label, keyed) => {
     const { executeGovernedTool } = await import("@/lib/tools/executor");
     const run = await startRun();
     await writeStoredRunStatus(run.id, "canceled");
@@ -354,6 +357,7 @@ describe("governed tool execution for a stopped agent run (file mode)", () => {
       context: executorContext(),
       executionScope: executorScope(run.id),
       agentRunId: run.id,
+      ...keyed,
     })).rejects.toBeInstanceOf(AgentRunNotActiveError);
 
     expect(await recordsBoundTo(run.id)).toEqual([]);

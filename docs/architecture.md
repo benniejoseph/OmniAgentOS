@@ -110,7 +110,7 @@ Key properties:
 
 - Every tool call goes through risk policy and lands in a persistent execution record.
 - Risk 3 tools and `planned` tools are never exposed to the model.
-- Gated calls create `approval_required` records and persist a run continuation. Approval executes the real call and resumes the same run with its saved conversation and outputs.
+- Gated calls create `approval_required` records and persist a run continuation. Approval executes the real call and resumes the same run with its saved conversation and outputs. A call with an idempotency key queues its approval under that key's execution ID, stored only while the ID is free, so a retry or a concurrent duplicate gets back the one approval, its result, or its refusal instead of queueing another. A failed execution at the key gives way to the new approval only when its failure changed nothing.
 - A paused run shows its pending approval inline in the Command conversation. A role that may decide sees the approval card there; any other role sees a link to the item in the inbox. The inbox deep link `/app/approvals?id=…&kind=…&returnTo=…` opens that one item first. After a successful decision on it, the inbox returns to `returnTo`, which must be an `/app` path outside the inbox. Deciding from either place goes through the same `POST /api/approvals/:id`. It announces the change, so the navigation badge counts again without waiting for its 30-second poll.
 - Canceling a run stops its in-flight work. The process executing the run polls the run's stored status about every two seconds and aborts the run once it reads `canceled`, so the loop starts no further model turn and the executor starts no new effect. A new pending approval, idempotent claim, or effect intent is recorded only in a transaction that share-locks the run row and finds the run active, so a canceled, finished, or deleted run is refused. The cancel withdraws the run's pending approvals after it commits, and approving an action of a canceled run withdraws the action instead. A completed or failed run's pending approvals stay approvable, because a council delegate's approval can outlive its parent run.
 - A tool call its caller stops is recorded as interrupted, not as a tool failure, and does not count against the tool's trust record. A call stopped before its tool started is stored `failed` with `interrupted: "before_start"`, and one stopped while its tool ran is stored `failed` with `interrupted: "in_flight"`. A call whose effect may have happened keeps its claim `executing` instead: a mutation whose tool had started, an effect-bound call whose intent was recorded, and an approved call. A same-key replay claims a failed execution again, keeping its ID and creation time, only when the failure changed nothing: a read, or a call interrupted before it started. Current policy decides the retry again. This Mac tools, policy-lease replays, dry runs, receipted calls, effect intents, and replays under a role other than the bound requester's are never run again. A workflow node whose pass was stopped mid-call returns to pending instead of failing.
@@ -2362,7 +2362,10 @@ exact task, contract, rollout, lineage, lower ten-counter budget, hard deadline,
 untrusted tier, no-redelegation declaration, and forced mutation approval.
 
 Delegated callbacks atomically append an idempotent tool-call claim and advance
-the reservation counter before entering the existing executor. Peer task,
+the reservation counter before entering the existing executor. The executor
+call is keyed by that claim, not by the token, so a repeat under another token
+of the delegation meets the charged call's execution and is refused instead of
+running again uncharged. Peer task,
 message, artifact, and status observations renew the bounded progress lease but
 never increase authority. The maintenance worker cancels an abandoned task
 before its deadline or records canonical `expired` at the deadline, then closes

@@ -133,7 +133,10 @@ export async function executeDelegatedA2AToolV1(input: {
     forceApproval: safety.state.reservation.forceMutationApproval,
     context,
     executionScope,
-    idempotencyKey: `${envelope.tokenId}:${request.idempotencyKey}`,
+    // Keyed by the charged call rather than the token, so a repeat under
+    // another token of this delegation is refused by the charged call's
+    // execution instead of running again uncharged.
+    idempotencyKey: safety.claimId,
     abortSignal: input.abortSignal,
   });
   return boundedPublicResult(result.record, rollout.maxOutputBytes);

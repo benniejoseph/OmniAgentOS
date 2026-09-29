@@ -4,6 +4,7 @@ import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { listStreamEvents } from "@/lib/events/store";
 import { createExecutionScope } from "@/lib/security/execution-scope";
+import { governedToolExecutionId } from "@/lib/tools/execution-id";
 
 const network = vi.hoisted(() => ({
   assertPublicHttpUrl: vi.fn(),
@@ -136,6 +137,103 @@ describe("governed HTTP effect receipts", () => {
       "tool.effect_intent.recorded",
       "tool.effect_receipt.recorded",
     ]);
+  });
+
+  it("returns a keyed approval to its retries while it waits, after it runs, and once it is refused", async () => {
+    const tenantId = "tenant-http-keyed";
+    const actorId = "owner-http-keyed";
+    const scope = createExecutionScope({
+      tenantId,
+      initiatingActorId: actorId,
+      executingPrincipalType: "user",
+      executingPrincipalId: actorId,
+      correlationId: "http-keyed-request",
+      purpose: "tool.http.request",
+    });
+    const context = {
+      tenantId,
+      actorId,
+      role: "admin" as const,
+      source: "default" as const,
+    };
+    const { executeGovernedTool } = await import("@/lib/tools/executor");
+    const store = await import("@/lib/tools/audit-store");
+    const request = (idempotencyKey: string) => ({
+      toolId: "http.request",
+      input: {
+        url: "https://example.com/hooks/keyed",
+        method: "POST" as const,
+        body: JSON.stringify({ message: idempotencyKey }),
+      },
+      dryRun: false,
+      context,
+      executionScope: scope,
+      idempotencyKey,
+    });
+
+    // While it waits, a retry gets the same approval back.
+    const pending = await executeGovernedTool(request("call-approved"));
+    expect(pending.record).toMatchObject({
+      id: governedToolExecutionId(tenantId, "call-approved"),
+      status: "approval_required",
+    });
+    await expect(executeGovernedTool(request("call-approved"))).resolves.toMatchObject({
+      record: {
+        id: pending.record.id,
+        status: "approval_required",
+        createdAt: pending.record.createdAt,
+      },
+      result: null,
+    });
+
+    // Once it has run, a retry gets its receipt instead of sending it again.
+    const claimToken = "http-keyed-execution-claim";
+    const claim = await store.approveAndClaimToolExecution({
+      id: pending.record.id,
+      tenantId,
+      approvedBy: "reviewer-http-keyed",
+      approvedRole: "admin",
+      claimToken,
+    });
+    expect(claim.outcome).toBe("claimed");
+    const executed = await executeGovernedTool({
+      toolId: "http.request",
+      input: store.openToolExecutionInput(claim.record!),
+      dryRun: false,
+      approved: true,
+      context,
+      existingRecord: claim.record,
+      executionClaimToken: claimToken,
+    });
+    expect(executed.record).toMatchObject({
+      id: pending.record.id,
+      status: "executed",
+    });
+    await expect(executeGovernedTool(request("call-approved"))).resolves.toMatchObject({
+      record: {
+        id: pending.record.id,
+        status: "executed",
+        effectReceipt: executed.record.effectReceipt,
+      },
+    });
+    expect(network.fetchPublicHttpUrl).toHaveBeenCalledTimes(1);
+
+    // Once refused, a retry gets the refusal rather than a new approval.
+    const refused = await executeGovernedTool(request("call-refused"));
+    await expect(store.rejectPendingToolExecution({
+      id: refused.record.id,
+      tenantId,
+      rejectedBy: "reviewer-http-keyed",
+      reason: "Not this hook.",
+    })).resolves.toMatchObject({ outcome: "rejected" });
+    await expect(executeGovernedTool(request("call-refused"))).resolves.toMatchObject({
+      record: { id: refused.record.id, status: "rejected" },
+      result: null,
+    });
+    expect(
+      (await store.listToolExecutions(20, { tenantId }))
+        .filter((record) => record.status === "approval_required"),
+    ).toEqual([]);
   });
 
   it("leaves GET requests outside the mutation receipt path", async () => {

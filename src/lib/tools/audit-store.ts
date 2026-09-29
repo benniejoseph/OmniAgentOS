@@ -95,9 +95,10 @@ export type ToolExecutionMutationOptions = {
    */
   activeAgentRun?: { runId: string };
   /**
-   * Lets this claim take over a failed execution at its idempotency key when
-   * the failure proves the tool changed nothing: a read, or a call
-   * interrupted before its tool started. The row is re-checked under its lock.
+   * Lets this claim, or a queued approval, take over a failed execution at
+   * its idempotency key when the failure proves the tool changed nothing: a
+   * read, or a call interrupted before its tool started. The row is
+   * re-checked under its lock.
    */
   retryFailed?: { operationClass: "read_only" | "mutation" };
 };
@@ -231,31 +232,8 @@ export async function claimIdempotentToolExecution(
           sql,
         });
       }
-      const inserted = await sql`
-        INSERT INTO omni_tool_executions (
-          id, tool_id, tool_name, risk_level, status, dry_run,
-          approval_required, tenant_id, actor_id, input, output, reason,
-          approval_decision, approvals, approved_by, approved_at,
-          approval_reason, effect_receipt, created_at, completed_at
-        )
-        VALUES (
-          ${record.id}, ${record.toolId}, ${record.toolName},
-          ${record.riskLevel}, ${record.status}, ${record.dryRun},
-          ${record.approvalRequired}, ${record.tenantId || null},
-          ${record.actorId || null}, ${record.input}::jsonb,
-          ${record.output ?? null}::jsonb,
-          ${record.reason || null}, ${record.approvalDecision || null},
-          ${record.approvals || null}::jsonb,
-          ${record.approvedBy || null}, ${record.approvedAt || null},
-          ${record.approvalReason || null}, ${record.effectReceipt || null}::jsonb,
-          ${record.createdAt},
-          ${record.completedAt || null}
-        )
-        ON CONFLICT (id) DO NOTHING
-        RETURNING *
-      `;
-      if (inserted[0]) {
-        const claimedRecord = recordFromRow(inserted[0]);
+      const claimedRecord = await insertToolExecutionIfAbsent(sql, record);
+      if (claimedRecord) {
         if (options.policyLeaseClaim && options.executionScope) {
           const lease = options.policyLeaseClaim.lease;
           const principalType = options.executionScope.executingPrincipalType;
@@ -290,20 +268,7 @@ export async function claimIdempotentToolExecution(
           record: claimedRecord,
         };
       }
-      const rows = await sql`
-        SELECT *
-        FROM omni_tool_executions
-        WHERE id = ${record.id}
-          AND COALESCE(tenant_id, 'default') = ${tenantId}
-        LIMIT 1
-        FOR UPDATE
-      `;
-      if (!rows[0]) {
-        throw new Error(
-          "Idempotent tool execution key collided with another tenant.",
-        );
-      }
-      const existing = recordFromRow(rows[0]);
+      const existing = await lockIdempotentToolExecution(sql, record.id, tenantId);
       const reclaimed = reclaimStaleEffectExecutionRecord(existing, record) ??
         (options.retryFailed && !options.policyLeaseClaim
           ? reclaimRetryableFailedExecutionRecord(
@@ -379,6 +344,98 @@ export async function claimIdempotentToolExecution(
       operation,
       executionScope: options.executionScope,
       idempotencyKey: options.idempotencyKey || record.id,
+    });
+  }
+  return result!;
+}
+
+export type PendingToolApprovalSaveResult = {
+  outcome: "saved" | "existing";
+  record: ToolExecutionRecord;
+};
+
+/**
+ * Queues one approval for a request. The record goes in under its
+ * idempotency key's execution id only if nothing is stored there, so a retry
+ * or a concurrent duplicate gets the stored record back instead of a second
+ * approval. A failed execution at that id, which `retryFailed` allows and
+ * which proves its tool changed nothing, is replaced by the new request.
+ */
+export async function savePendingToolApproval(
+  record: ToolExecutionRecord,
+  options: ToolExecutionMutationOptions = {},
+): Promise<PendingToolApprovalSaveResult> {
+  if (record.status !== "approval_required" || record.effectReceipt !== undefined) {
+    throw new Error("Only a pending approval without a receipt can be queued.");
+  }
+  const tenantId = normalizeTenantId(record.tenantId);
+  const replacing = (existing: ToolExecutionRecord) =>
+    options.retryFailed &&
+    failedExecutionChangedNothing(existing, record, options.retryFailed)
+      ? record
+      : undefined;
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    return getSql().transaction(async (sql: SqlClient) => {
+      if (options.activeAgentRun) {
+        await assertAgentRunAcceptsToolEffect({
+          runId: options.activeAgentRun.runId,
+          tenantId,
+          sql,
+        });
+      }
+      let saved = await insertToolExecutionIfAbsent(sql, record);
+      if (!saved) {
+        const existing = await lockIdempotentToolExecution(sql, record.id, tenantId);
+        saved = replacing(existing);
+        if (!saved) {
+          return { outcome: "existing" as const, record: existing };
+        }
+        await writeToolExecutionDb(sql, saved);
+      }
+      await appendToolExecutionMutationEvent({
+        record: saved,
+        operation: "saved",
+        executionScope: options.executionScope,
+        idempotencyKey: options.idempotencyKey,
+        sql,
+      });
+      return { outcome: "saved" as const, record: saved };
+    }) as Promise<PendingToolApprovalSaveResult>;
+  }
+
+  let result: PendingToolApprovalSaveResult | undefined;
+  await updateJsonFile<ToolExecutionLedger>(
+    getToolLedgerFile(),
+    { records: [] },
+    async (ledger) => {
+      if (options.activeAgentRun) {
+        await assertAgentRunAcceptsToolEffect({
+          runId: options.activeAgentRun.runId,
+          tenantId,
+        });
+      }
+      const existing = ledger.records.find((item) => item.id === record.id);
+      if (existing && normalizeTenantId(existing.tenantId) !== tenantId) {
+        throw new Error(
+          "Idempotent tool execution key collided with another tenant.",
+        );
+      }
+      const saved = existing ? replacing(existing) : record;
+      if (!saved) {
+        result = { outcome: "existing", record: existing! };
+        return ledger;
+      }
+      result = { outcome: "saved", record: saved };
+      return replaceLedgerRecord(ledger, saved);
+    },
+  );
+  if (result!.outcome === "saved") {
+    await appendToolExecutionMutationEvent({
+      record: result!.record,
+      operation: "saved",
+      executionScope: options.executionScope,
+      idempotencyKey: options.idempotencyKey,
     });
   }
   return result!;
@@ -2762,9 +2819,35 @@ function isEffectBoundExecutionIntent(record: ToolExecutionRecord) {
 }
 
 /**
+ * Whether a failed execution proves its tool changed nothing, so the same
+ * request may take its place: it is a read, or it was interrupted before its
+ * tool started.
+ */
+function failedExecutionChangedNothing(
+  existing: ToolExecutionRecord,
+  proposed: ToolExecutionRecord,
+  retry: NonNullable<ToolExecutionMutationOptions["retryFailed"]>,
+) {
+  return (
+    existing.status === "failed" &&
+    !existing.dryRun &&
+    !proposed.dryRun &&
+    normalizeTenantId(existing.tenantId) === normalizeTenantId(proposed.tenantId) &&
+    existing.actorId === proposed.actorId &&
+    existing.toolId === proposed.toolId &&
+    existing.toolName === proposed.toolName &&
+    toolInputSha256(existing.input) === toolInputSha256(proposed.input) &&
+    existing.effectReceipt === undefined &&
+    !hasEffectIntentOutput(existing) &&
+    (retry.operationClass === "read_only" ||
+      parseObject(existing.output).interrupted === "before_start")
+  );
+}
+
+/**
  * A failed execution may be claimed again only when its failure proves the
- * tool changed nothing: it is a read, or it was interrupted before its tool
- * started. Its immutable identity is kept; the claim brings a fresh intent.
+ * tool changed nothing. Its immutable identity is kept; the claim brings a
+ * fresh intent.
  */
 function reclaimRetryableFailedExecutionRecord(
   existing: ToolExecutionRecord,
@@ -2773,22 +2856,11 @@ function reclaimRetryableFailedExecutionRecord(
 ) {
   if (
     !executionClaimFrom(proposed) ||
-    existing.status !== "failed" ||
     proposed.status !== "executing" ||
-    existing.dryRun ||
-    proposed.dryRun ||
-    normalizeTenantId(existing.tenantId) !== normalizeTenantId(proposed.tenantId) ||
-    existing.actorId !== proposed.actorId ||
-    existing.toolId !== proposed.toolId ||
-    existing.toolName !== proposed.toolName ||
     existing.riskLevel !== proposed.riskLevel ||
     existing.approvalRequired !== proposed.approvalRequired ||
-    toolInputSha256(existing.input) !== toolInputSha256(proposed.input) ||
-    existing.effectReceipt !== undefined ||
-    hasEffectIntentOutput(existing) ||
     hasEffectIntentOutput(proposed) ||
-    (retry.operationClass !== "read_only" &&
-      parseObject(existing.output).interrupted !== "before_start")
+    !failedExecutionChangedNothing(existing, proposed, retry)
   ) {
     return undefined;
   }
@@ -3265,6 +3337,59 @@ function trimToolExecutionRecords(records: ToolExecutionRecord[]) {
     (record) => record.status !== "approval_required" && record.status !== "executing",
   );
   return [...durable, ...terminal.slice(0, Math.max(0, 250 - durable.length))];
+}
+
+/** Inserts the record unless its id is taken, and returns it only if inserted. */
+async function insertToolExecutionIfAbsent(
+  sql: SqlClient,
+  record: ToolExecutionRecord,
+) {
+  const inserted = await sql`
+    INSERT INTO omni_tool_executions (
+      id, tool_id, tool_name, risk_level, status, dry_run,
+      approval_required, tenant_id, actor_id, input, output, reason,
+      approval_decision, approvals, approved_by, approved_at,
+      approval_reason, effect_receipt, created_at, completed_at
+    )
+    VALUES (
+      ${record.id}, ${record.toolId}, ${record.toolName},
+      ${record.riskLevel}, ${record.status}, ${record.dryRun},
+      ${record.approvalRequired}, ${record.tenantId || null},
+      ${record.actorId || null}, ${record.input}::jsonb,
+      ${record.output ?? null}::jsonb,
+      ${record.reason || null}, ${record.approvalDecision || null},
+      ${record.approvals || null}::jsonb,
+      ${record.approvedBy || null}, ${record.approvedAt || null},
+      ${record.approvalReason || null}, ${record.effectReceipt || null}::jsonb,
+      ${record.createdAt},
+      ${record.completedAt || null}
+    )
+    ON CONFLICT (id) DO NOTHING
+    RETURNING *
+  `;
+  return inserted[0] ? recordFromRow(inserted[0]) : undefined;
+}
+
+/** Locks the record already stored at an idempotent execution id. */
+async function lockIdempotentToolExecution(
+  sql: SqlClient,
+  id: string,
+  tenantId: string,
+) {
+  const rows = await sql`
+    SELECT *
+    FROM omni_tool_executions
+    WHERE id = ${id}
+      AND COALESCE(tenant_id, 'default') = ${tenantId}
+    LIMIT 1
+    FOR UPDATE
+  `;
+  if (!rows[0]) {
+    throw new Error(
+      "Idempotent tool execution key collided with another tenant.",
+    );
+  }
+  return recordFromRow(rows[0]);
 }
 
 async function writeToolExecutionDb(

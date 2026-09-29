@@ -1101,6 +1101,129 @@ describe("tool approval claims (file mode)", () => {
       ).resolves.toEqual({ outcome: "existing", record });
     }
   });
+
+  it("queues one approval per execution id and replaces only a failure that changed nothing", async () => {
+    const store = await import("@/lib/tools/audit-store");
+    const createdAt = "2026-09-01T00:00:00.000Z";
+    const request = {
+      tenantId: "tenant-a",
+      actorId: "requester",
+      toolId: "memory.write",
+      toolName: "Write memory",
+      riskLevel: 2,
+      dryRun: false,
+      approvalRequired: true,
+      input: { title: "Standup", content: "Standup moved to 10am." },
+    } satisfies Partial<ToolExecutionRecord>;
+    const approval = (
+      id: string,
+      overrides: Partial<ToolExecutionRecord> = {},
+    ): ToolExecutionRecord => ({
+      ...request,
+      id,
+      status: "approval_required",
+      reason: "Waiting for approval.",
+      createdAt: new Date().toISOString(),
+      ...overrides,
+    });
+    const failed = (
+      id: string,
+      output: Record<string, unknown>,
+    ): ToolExecutionRecord => ({
+      ...request,
+      id,
+      status: "failed",
+      output,
+      reason: "The first attempt failed.",
+      createdAt,
+      completedAt: createdAt,
+    });
+    const asWrite = { retryFailed: { operationClass: "mutation" as const } };
+    const asRead = { retryFailed: { operationClass: "read_only" as const } };
+    const operations = async (id: string) =>
+      (await listStreamEvents(`tool_execution:${id}`, {
+        tenantId: "tenant-a",
+        actorId: "requester",
+      })).map((event) => event.payload.operation);
+    const interrupted = failed("queue-after-interruption", {
+      error: "This operation was aborted",
+      interrupted: "before_start",
+    });
+    const failedRead = failed("queue-after-read", {
+      error: "Search index unavailable.",
+    });
+    const writeError = failed("keep-write-error", {
+      error: "Memory quota exceeded.",
+    });
+    const unrequested = failed("keep-unrequested", {
+      error: "This operation was aborted",
+      interrupted: "before_start",
+    });
+    const otherInput = failed("keep-other-input", {
+      error: "This operation was aborted",
+      interrupted: "before_start",
+    });
+    const foreign = { ...approval("queue-foreign"), tenantId: "tenant-b" };
+    await writeJsonFile(getDataPath("tools.json"), {
+      records: [interrupted, failedRead, writeError, unrequested, otherInput, foreign],
+    });
+
+    // A retry, or a concurrent duplicate, gets the queued approval back.
+    const queued = approval("queue-once");
+    await expect(store.savePendingToolApproval(queued)).resolves.toEqual({
+      outcome: "saved",
+      record: queued,
+    });
+    const duplicates = await Promise.all(
+      [1, 2, 3].map(() =>
+        store.savePendingToolApproval(approval(queued.id), asWrite)
+      ),
+    );
+    expect(duplicates).toEqual(
+      Array.from({ length: 3 }, () => ({ outcome: "existing", record: queued })),
+    );
+    expect(await operations(queued.id)).toEqual(["saved"]);
+
+    // A read, and a write interrupted before its tool started, give way.
+    for (const [record, options] of [
+      [interrupted, asWrite],
+      [failedRead, asRead],
+    ] as const) {
+      const retry = approval(record.id);
+      await expect(
+        store.savePendingToolApproval(retry, options),
+      ).resolves.toEqual({ outcome: "saved", record: retry });
+      await expect(
+        store.getToolExecution(record.id, { tenantId: "tenant-a" }),
+      ).resolves.toEqual(retry);
+      expect(await operations(record.id)).toEqual(["saved"]);
+    }
+
+    // Any other failure stands.
+    for (const [record, options, proposal] of [
+      [writeError, asWrite, {}],
+      [unrequested, {}, {}],
+      [otherInput, asWrite, { input: { title: "Standup", content: "Moved again." } }],
+    ] as const) {
+      await expect(
+        store.savePendingToolApproval(approval(record.id, proposal), options),
+      ).resolves.toEqual({ outcome: "existing", record });
+      expect(await operations(record.id)).toEqual([]);
+    }
+
+    await expect(store.savePendingToolApproval(approval(foreign.id), asWrite))
+      .rejects.toThrow("collided with another tenant");
+    for (const refused of [
+      approval("refuse-not-pending", { status: "executing" }),
+      approval("refuse-receipt", { effectReceipt: { effectReceiptId: "receipt" } as never }),
+    ]) {
+      await expect(store.savePendingToolApproval(refused))
+        .rejects.toThrow("Only a pending approval without a receipt can be queued.");
+      await expect(
+        store.getToolExecution(refused.id, { tenantId: "tenant-a" }),
+      ).resolves.toBeUndefined();
+    }
+  });
 });
 
 function pendingRecord(id: string, riskLevel: 2 | 3): ToolExecutionRecord {

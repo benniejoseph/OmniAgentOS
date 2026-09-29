@@ -160,7 +160,7 @@ export async function claimExternalA2AToolCall(input: {
       WHERE tenant_id = ${input.tenantId} AND claim_id = ${claimId}
       LIMIT 1
     `;
-    if (duplicate.length) return { state: current, charged: false } as const;
+    if (duplicate.length) return { state: current, charged: false, claimId } as const;
     if (current.toolCallsUsed >= current.reservation.maxToolCalls) {
       throw new A2ASafetyStoreError(
         "The external delegation tool-call budget is exhausted.",
@@ -203,8 +203,12 @@ export async function claimExternalA2AToolCall(input: {
       toolId: input.toolId,
       toolCallsUsed: state.toolCallsUsed,
     });
-    return { state, charged: true } as const;
-  }) as Promise<Readonly<{ state: A2ASafetyStateV1; charged: boolean }>>;
+    return { state, charged: true, claimId } as const;
+  }) as Promise<Readonly<{
+    state: A2ASafetyStateV1;
+    charged: boolean;
+    claimId: string;
+  }>>;
 }
 
 export async function touchExternalA2ASafety(input: {

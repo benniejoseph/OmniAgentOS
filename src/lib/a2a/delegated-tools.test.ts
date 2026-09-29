@@ -51,6 +51,7 @@ describe("delegated A2A governed tool gateway", () => {
     mocks.claimExternalA2AToolCall.mockResolvedValue({
       charged: true,
       state: { reservation: { forceMutationApproval: true } },
+      claimId: "a2a-tool-claim:remote-call-one",
     });
   });
 
@@ -83,7 +84,9 @@ describe("delegated A2A governed tool gateway", () => {
         contextGrantIds: ["context:one"],
         capabilityGrantIds: ["capability:one"],
       }),
-      idempotencyKey: "a2a-delegated-token:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:remote-call:one",
+      // The charged call's key, not the token's, so a repeat under another
+      // token of the delegation meets the charged call's execution.
+      idempotencyKey: "a2a-tool-claim:remote-call-one",
     }));
     expect(mocks.claimExternalA2AToolCall).toHaveBeenCalledWith(
       expect.objectContaining({

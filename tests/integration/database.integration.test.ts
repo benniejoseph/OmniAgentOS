@@ -85,9 +85,11 @@ import {
   listPendingToolApprovalPage,
   persistClaimedToolEffectIntentV2,
   publicToolExecution,
+  savePendingToolApproval,
   saveToolExecution,
   sealToolExecutionInput,
 } from "@/lib/tools/audit-store";
+import { AgentRunNotActiveError } from "@/lib/runs/active-run-fence";
 import {
   buildEffectIntentV2,
   finalizeEffectIntentV2,
@@ -4349,6 +4351,117 @@ databaseDescribe("Postgres schema integration", () => {
       }]);
       expect(await operations(record.id)).toEqual(["saved"]);
     }
+  });
+
+  test("queues one approval per tool execution id and replaces only a failure that changed nothing", async () => {
+    const tenantId = "pending_approval_tenant";
+    const actorId = "pending_approval_actor";
+    const createdAt = "2026-09-01T00:00:00.000Z";
+    const inTenant = <T,>(operation: () => Promise<T>, tenant = tenantId) =>
+      runWithDatabaseTenantScope(tenant, operation);
+    const request = {
+      tenantId,
+      actorId,
+      toolId: "memory.write",
+      toolName: "Write memory",
+      riskLevel: 2,
+      dryRun: false,
+      approvalRequired: true,
+      input: { title: "Standup", content: "Standup moved to 10am." },
+    } as const;
+    const approval = (id: string) => ({
+      ...createToolExecutionRecord({
+        ...request,
+        status: "approval_required",
+        reason: "Waiting for approval.",
+      }),
+      id,
+    });
+    const failed = (id: string, output: Record<string, unknown>) => ({
+      ...createToolExecutionRecord({
+        ...request,
+        status: "failed",
+        output,
+        reason: "The first attempt failed.",
+        completedAt: createdAt,
+      }),
+      id,
+      createdAt,
+    });
+    const asWrite = { retryFailed: { operationClass: "mutation" as const } };
+    const statuses = async (id: string) => (await admin`
+      SELECT status FROM omni_tool_executions
+      WHERE tenant_id = ${tenantId} AND id = ${id}
+    `).map((row) => row.status);
+    const operations = async (id: string) => (await admin`
+      SELECT payload->>'operation' AS operation
+      FROM omni_events
+      WHERE tenant_id = ${tenantId}
+        AND stream_id = ${`tool_execution:${id}`}
+        AND type = 'tool.execution.upserted'
+    `).map((event) => event.operation);
+
+    // A retry, or a concurrent duplicate, gets the queued approval back.
+    const queued = approval("pending-db-once");
+    await expect(inTenant(() => savePendingToolApproval(queued))).resolves
+      .toMatchObject({ outcome: "saved", record: { id: queued.id } });
+    const duplicates = await Promise.all([1, 2, 3].map(() =>
+      inTenant(() => savePendingToolApproval(approval(queued.id), asWrite))
+    ));
+    for (const duplicate of duplicates) {
+      expect(duplicate).toMatchObject({
+        outcome: "existing",
+        record: { id: queued.id, status: "approval_required", createdAt: queued.createdAt },
+      });
+    }
+    expect(await operations(queued.id)).toEqual(["saved"]);
+
+    // A write interrupted before its tool started gives way under the lock;
+    // a write that failed on its own error, or with no retry asked for, stands.
+    const interrupted = failed("pending-db-interrupted", {
+      error: "This operation was aborted",
+      interrupted: "before_start",
+    });
+    const writeError = failed("pending-db-write-error", {
+      error: "Memory quota exceeded.",
+    });
+    const unrequested = failed("pending-db-unrequested", {
+      error: "This operation was aborted",
+      interrupted: "before_start",
+    });
+    for (const record of [interrupted, writeError, unrequested]) {
+      await inTenant(() => saveToolExecution(record));
+    }
+    const retry = approval(interrupted.id);
+    await expect(inTenant(() => savePendingToolApproval(retry, asWrite))).resolves
+      .toMatchObject({
+        outcome: "saved",
+        record: { id: interrupted.id, status: "approval_required", createdAt: retry.createdAt },
+      });
+    expect(await statuses(interrupted.id)).toEqual(["approval_required"]);
+    expect(await operations(interrupted.id)).toEqual(["saved", "saved"]);
+    for (const [record, options] of [[writeError, asWrite], [unrequested, {}]] as const) {
+      await expect(inTenant(() => savePendingToolApproval(approval(record.id), options)))
+        .resolves.toMatchObject({
+          outcome: "existing",
+          record: { id: record.id, status: "failed" },
+        });
+      expect(await statuses(record.id)).toEqual(["failed"]);
+      expect(await operations(record.id)).toEqual(["saved"]);
+    }
+
+    // Another tenant's id, or a run that is not active, queues nothing.
+    const otherTenant = "pending_approval_other";
+    await expect(inTenant(
+      () => savePendingToolApproval({ ...approval(queued.id), tenantId: otherTenant }),
+      otherTenant,
+    )).rejects.toThrow("collided with another tenant");
+    await expect(inTenant(() => savePendingToolApproval(
+      approval("pending-db-missing-run"),
+      { activeAgentRun: { runId: "pending-db-missing-run" } },
+    ))).rejects.toBeInstanceOf(AgentRunNotActiveError);
+    expect(await statuses("pending-db-missing-run")).toEqual([]);
+    expect(await operations("pending-db-missing-run")).toEqual([]);
   });
 
   test("ranks each tenant for dispatch by its next job and counts only queued runs without a tick", async () => {

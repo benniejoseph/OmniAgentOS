@@ -153,6 +153,7 @@ import {
   reclaimStaleMemoryForgetToolExecutionClaim,
   repairFileToolEffectReceiptEvent,
   recoverStaleToolExecutionClaim,
+  savePendingToolApproval,
   saveToolExecution,
   sealToolExecutionInput,
 } from "@/lib/tools/audit-store";
@@ -1535,6 +1536,14 @@ export async function executeGovernedTool({
       status: "approval_required" as const,
       output: undefined,
     });
+    // A keyed request queues its approval under the key's execution id, so a
+    // retry finds that approval instead of queueing another.
+    const queuedId = !executionRecord && idempotencyKey
+      ? governedToolExecutionId(normalizeTenantId(context?.tenantId), idempotencyKey)
+      : undefined;
+    if (queuedId) {
+      pendingRecord.id = queuedId;
+    }
     const pendingProviderEffect = prepareProviderEffectMaterial(
       tool,
       preparedInput,
@@ -1569,10 +1578,49 @@ export async function executeGovernedTool({
       toolInput: preparedInput,
       scopedRequest,
     });
-    const saved = await persistRecord(
-      record,
-      agentRunId ? { activeAgentRun: { runId: agentRunId } } : {},
-    );
+    const activeRun = agentRunId ? { activeAgentRun: { runId: agentRunId } } : {};
+    let saved: ToolExecutionRecord;
+    if (queuedId) {
+      const queued = await savePendingToolApproval(record, {
+        executionScope: scopedRequest.executionScope,
+        idempotencyKey,
+        ...(retryFailedExecution
+          ? {
+              retryFailed: {
+                operationClass: governedToolOperationClass(tool, preparedInput),
+              },
+            }
+          : {}),
+        ...activeRun,
+      });
+      if (queued.outcome === "existing") {
+        try {
+          await assertExistingScopedToolReceipt({
+            record: queued.record,
+            tool,
+            toolInput: preparedInput,
+            requestedScope: executionScope,
+            context,
+            mcpSessionScope,
+            effectBinding,
+            idempotencyKey,
+          });
+        } catch (error) {
+          throw new EffectReceiptFinalizationError({ cause: error });
+        }
+        return {
+          record: queued.record,
+          result: queued.record.status === "executed"
+            ? isMoltbookToolId(tool.id)
+              ? publicToolExecution(queued.record).output
+              : queued.record.output
+            : null,
+        };
+      }
+      saved = await bindPersistedRecord(queued.record);
+    } else {
+      saved = await persistRecord(record, activeRun);
+    }
     await recordRuntimeEventSafely({
       level: "warn",
       category: "workflow",
@@ -2346,6 +2394,14 @@ async function assertExistingScopedToolReceipt(input: {
     ...input,
     executionClaimToken: undefined,
   });
+  // An approval still waiting, or refused, never reached its tool, so it has
+  // no intent or receipt to check.
+  if (
+    input.record.status === "approval_required" ||
+    input.record.status === "rejected"
+  ) {
+    return resolved;
+  }
   const hasEffectReceipt = input.record.effectReceipt !== undefined;
   const providerMaterial = prepareProviderEffectMaterial(
     input.tool,

@@ -124,13 +124,16 @@ describe("external A2A safety store", () => {
       now: "2026-09-07T06:00:31.000Z",
     };
 
-    await expect(claimExternalA2AToolCall(request)).resolves.toMatchObject({
+    const charged = await claimExternalA2AToolCall(request);
+    expect(charged).toMatchObject({
       charged: true,
       state: { toolCallsUsed: 1 },
+      claimId: expect.stringMatching(/^a2a-tool-claim:[0-9a-f]{64}$/),
     });
     await expect(claimExternalA2AToolCall(request)).resolves.toMatchObject({
       charged: false,
       state: { toolCallsUsed: 1 },
+      claimId: charged.claimId,
     });
     expect(mocks.appendScopedDomainEvent).toHaveBeenCalledTimes(1);
   });
