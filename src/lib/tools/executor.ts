@@ -76,7 +76,12 @@ import {
 import { callOpenApiOperation } from "@/lib/connectors/openapi-client";
 import { assertConnectorSecretBinding } from "@/lib/connectors/secret-binding";
 import { getOpenApiConnector, getOpenApiOperationById } from "@/lib/connectors/openapi-store";
-import { getMcpConnector, getMcpToolById } from "@/lib/connectors/store";
+import { McpToolContractDriftError } from "@/lib/connectors/contract-review";
+import {
+  getMcpConnector,
+  getMcpToolById,
+  holdMcpToolForReview,
+} from "@/lib/connectors/store";
 import { readResponseTextLimited } from "@/lib/http/body";
 import {
   LOCAL_COMPUTER_TASK_AUTHORITY_REFUSED_ERROR_CODE,
@@ -4606,6 +4611,35 @@ async function runTool(
       throw new Error("MCP connector or tool is not active.");
     }
 
+    let result: unknown;
+    try {
+      result = await callMcpTool({
+        connector,
+        reviewedTool: mcpTool,
+        args: parsed,
+        idempotencyKey,
+        actorRole: context?.role,
+        abortSignal,
+        sessionScope: mcpSessionScope || {
+          tenantId: normalizeTenantId(context?.tenantId),
+          actorId: context?.actorId || "tool-executor",
+          executionId: `tool:${idempotencyKey || randomUUID()}`,
+        },
+      });
+    } catch (error) {
+      if (error instanceof McpToolContractDriftError && executionScope) {
+        try {
+          await holdMcpToolForReview(
+            { connector, reviewed: mcpTool, live: error.liveTool },
+            { executionScope },
+          );
+        } catch {
+          // The call is refused either way; a hold that fails is tried
+          // again on the next call.
+        }
+      }
+      throw error;
+    }
     return {
       connector: {
         id: connector.id,
@@ -4617,19 +4651,7 @@ async function runTool(
         name: mcpTool.name,
         riskLevel: mcpTool.riskLevel,
       },
-      result: await callMcpTool({
-        connector,
-        toolName: mcpTool.name,
-        args: parsed,
-        idempotencyKey,
-        actorRole: context?.role,
-        abortSignal,
-        sessionScope: mcpSessionScope || {
-          tenantId: normalizeTenantId(context?.tenantId),
-          actorId: context?.actorId || "tool-executor",
-          executionId: `tool:${idempotencyKey || randomUUID()}`,
-        },
-      }),
+      result,
     };
   }
 

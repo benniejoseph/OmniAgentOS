@@ -10,6 +10,7 @@ import {
   buildApprovalGrantClaimV1,
   buildApprovalGrantV1,
 } from "@/lib/approval-grants/contracts";
+import { McpToolContractDriftError } from "@/lib/connectors/contract-review";
 import { listStreamEvents } from "@/lib/events/store";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 
@@ -104,6 +105,7 @@ const providers = vi.hoisted(() => {
     },
     callMcpTool: vi.fn(),
     callOpenApiOperation: vi.fn(),
+    holdMcpToolForReview: vi.fn(),
   };
 });
 
@@ -119,6 +121,7 @@ vi.mock("@/lib/connectors/store", () => ({
     id === providers.mcpConnector.id ? providers.mcpConnector : null),
   getMcpToolById: vi.fn(async (id: string) =>
     id === providers.mcpToolRecord.id ? providers.mcpToolRecord : null),
+  holdMcpToolForReview: providers.holdMcpToolForReview,
 }));
 
 vi.mock("@/lib/connectors/openapi-store", () => ({
@@ -529,5 +532,81 @@ describe("external provider effect receipts", () => {
     });
     expect(retained?.effectReceipt).toBeUndefined();
     expect(providers.callMcpTool).toHaveBeenCalledTimes(1);
+    expect(providers.holdMcpToolForReview).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["changed the tool since its review, and holds it for review", { ...providers.mcpToolRecord, inputSchema: { type: "object", required: ["title"] } }, false],
+    ["stopped listing the tool, and holds it for review", undefined, false],
+    ["changed the tool, even when the hold cannot be saved", { ...providers.mcpToolRecord, annotations: { destructiveHint: true } }, true],
+  ])("refuses an approved MCP call once its server %s", async (_drift, liveTool, holdFails) => {
+    const { executor, run } = await approvedMcpTask("mcp-provider-drift");
+    const drift = new McpToolContractDriftError({ toolLabel: '"create_task"', liveTool });
+    providers.callMcpTool.mockRejectedValueOnce(drift);
+    if (holdFails) {
+      providers.holdMcpToolForReview.mockRejectedValueOnce(new Error("connector store unavailable"));
+    }
+
+    const failure = await run().catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(executor.EffectReceiptFinalizationError);
+    expect((failure as Error).cause).toBe(drift);
+    expect(providers.callMcpTool).toHaveBeenCalledWith(
+      expect.objectContaining({ reviewedTool: providers.mcpToolRecord }),
+    );
+    expect(providers.holdMcpToolForReview).toHaveBeenCalledTimes(1);
+    expect(providers.holdMcpToolForReview).toHaveBeenCalledWith(
+      { connector: providers.mcpConnector, reviewed: providers.mcpToolRecord, live: liveTool },
+      { executionScope: expect.objectContaining({ tenantId: "tenant-provider" }) },
+    );
   });
 });
+
+/** An approved and claimed MCP task creation, with the call that runs it. */
+async function approvedMcpTask(correlationId: string) {
+  const tenantId = "tenant-provider";
+  const actorId = "owner-provider";
+  const context = {
+    tenantId,
+    actorId,
+    role: "admin" as const,
+    source: "default" as const,
+  };
+  const executionScope = createExecutionScope({
+    tenantId,
+    initiatingActorId: actorId,
+    executingPrincipalType: "user",
+    executingPrincipalId: actorId,
+    correlationId,
+    purpose: "tool.mcp.create_task",
+  });
+  const executor = await import("@/lib/tools/executor");
+  const store = await import("@/lib/tools/audit-store");
+  const pending = await executor.executeGovernedTool({
+    toolId: providers.mcpTool.id,
+    input: { title: "Reviewed task" },
+    dryRun: false,
+    context,
+    executionScope,
+  });
+  const claimToken = `${correlationId}-claim`;
+  const claim = await store.approveAndClaimToolExecution({
+    id: pending.record.id,
+    tenantId,
+    approvedBy: "provider-reviewer",
+    approvedRole: "admin",
+    claimToken,
+  });
+  return {
+    executor,
+    run: () => executor.executeGovernedTool({
+      toolId: providers.mcpTool.id,
+      input: store.openToolExecutionInput(claim.record!),
+      dryRun: false,
+      approved: true,
+      context,
+      existingRecord: claim.record,
+      executionClaimToken: claimToken,
+    }),
+  };
+}

@@ -1,5 +1,9 @@
+import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { McpConnectorRecord } from "@/lib/connectors/types";
+import { McpToolContractDriftError } from "@/lib/connectors/contract-review";
+import { createMcpToolId } from "@/lib/connectors/store";
+import type { McpConnectorRecord, McpToolRecord } from "@/lib/connectors/types";
+import { redactExactSecrets } from "@/lib/security/secret-redaction";
 
 const networkMocks = vi.hoisted(() => ({
   assertPublicHttpUrl: vi.fn(),
@@ -173,7 +177,7 @@ describe("MCP client", () => {
   it("rejects a previously stored browser-shaped tool before execution", async () => {
     await expect(callMcpTool({
       connector: connector(),
-      toolName: "browser_navigate",
+      reviewedTool: reviewedTool({ name: "browser_navigate", inputSchema: { type: "object" } }),
       args: { url: "https://example.com" },
     })).rejects.toThrow("Remote browser automation MCP is retired");
     expect(networkMocks.assertPublicHttpUrl).not.toHaveBeenCalled();
@@ -197,6 +201,13 @@ describe("MCP client", () => {
       }
       if (message.method === "initialize") {
         return initializationResponse(message.id);
+      }
+      if (message.method === "tools/list") {
+        return sseResponse({
+          jsonrpc: "2.0",
+          id: message.id,
+          result: { tools: [resolveLibrary, queryDocs] },
+        });
       }
       if (message.method === "tools/call") {
         return sseResponse({
@@ -236,7 +247,7 @@ describe("MCP client", () => {
 
     const result = await callMcpTool({
       connector: connector(),
-      toolName: "query-docs",
+      reviewedTool: reviewedTool(queryDocs),
       args: { query: "contracts" },
     });
     const serialized = JSON.stringify(result);
@@ -278,6 +289,13 @@ describe("MCP client", () => {
       if (message.method === "initialize") {
         return initializationResponse(message.id);
       }
+      if (message.method === "tools/list") {
+        return sseResponse({
+          jsonrpc: "2.0",
+          id: message.id,
+          result: { tools: [queryDocs] },
+        });
+      }
       if (message.method === "tools/call") {
         return sseResponse({
           jsonrpc: "2.0",
@@ -293,11 +311,79 @@ describe("MCP client", () => {
 
     await expect(callMcpTool({
       connector: connector(),
-      toolName: "query-docs",
+      reviewedTool: reviewedTool(queryDocs),
       args: { query: "contracts" },
     })).rejects.toThrow(
       "MCP tool reported an error: The document provider rejected this query.",
     );
+  });
+
+  it.each<[string, Tool]>([
+    ["an argument", { ...queryDocs, inputSchema: { ...queryDocs.inputSchema, required: ["query"] } }],
+    ["a behavior hint", { ...queryDocs, annotations: { readOnlyHint: false } }],
+    ["its result", { ...queryDocs, outputSchema: { type: "object", properties: { answer: { type: "string" } } } }],
+  ])("refuses a reviewed tool whose server changed %s since the review, before calling it", async (_change, listed) => {
+    const methods: string[] = [];
+    networkMocks.fetchPublicHttpUrl.mockImplementation(mcpServer([resolveLibrary, listed], methods));
+
+    const refusal = await callMcpTool({
+      connector: connector(),
+      reviewedTool: reviewedTool(queryDocs),
+      args: { query: "contracts" },
+    }).catch((error: unknown) => error);
+
+    expect(refusal).toBeInstanceOf(McpToolContractDriftError);
+    expect(refusal).toMatchObject({
+      message: expect.stringContaining('MCP tool "query-docs" changed on its server after it was reviewed'),
+      liveTool: {
+        id: reviewedTool(queryDocs).id,
+        inputSchema: listed.inputSchema,
+        annotations: listed.annotations,
+        outputSchema: listed.outputSchema,
+      },
+    });
+    expect(methods).toContain("tools/list");
+    expect(methods).not.toContain("tools/call");
+  });
+
+  it("refuses a reviewed tool its server no longer lists, before calling it", async () => {
+    const methods: string[] = [];
+    networkMocks.fetchPublicHttpUrl.mockImplementation(mcpServer([resolveLibrary], methods));
+
+    const refusal = await callMcpTool({
+      connector: connector(),
+      reviewedTool: reviewedTool(queryDocs),
+      args: { query: "contracts" },
+    }).catch((error: unknown) => error);
+
+    expect(refusal).toBeInstanceOf(McpToolContractDriftError);
+    expect(refusal).toMatchObject({
+      message: expect.stringContaining('MCP tool "query-docs" is no longer offered by its server'),
+      liveTool: undefined,
+    });
+    expect(methods).not.toContain("tools/call");
+  });
+
+  it("compares the listed tool with the connector's secret removed, as discovery stored it", async () => {
+    const withSecret: Tool = {
+      ...queryDocs,
+      name: "lookup-key",
+      inputSchema: {
+        type: "object",
+        properties: { key: { type: "string", default: "generic-mcp-test-key" } },
+      },
+    };
+    const methods: string[] = [];
+    networkMocks.fetchPublicHttpUrl.mockImplementation(mcpServer([withSecret], methods));
+    const bearer = connector({ authType: "bearer_vault" });
+
+    await callMcpTool({
+      connector: bearer,
+      reviewedTool: reviewedTool(redactExactSecrets(withSecret, ["generic-mcp-test-key"]), bearer),
+      args: { query: "contracts" },
+    });
+
+    expect(methods).toContain("tools/call");
   });
 
   it("turns a generic fetch failure into an actionable connection error", async () => {
@@ -314,11 +400,73 @@ describe("MCP client", () => {
   });
 });
 
+const resolveLibrary: Tool = {
+  name: "resolve-library-id",
+  description: "Resolve a library identifier.",
+  inputSchema: { type: "object", properties: { library: { type: "string" } } },
+};
+
+const queryDocs: Tool = {
+  name: "query-docs",
+  description: "Query documentation.",
+  inputSchema: { type: "object", properties: { query: { type: "string" } } },
+};
+
+function mcpServer(tools: Tool[], methods: string[]) {
+  return async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const method = init?.method || "GET";
+    if (method === "GET") return new Response(null, { status: 405 });
+    if (method === "DELETE") return new Response(null, { status: 204 });
+    const message = parseMcpMessage(init);
+    methods.push(message.method || method);
+    if (message.method === "notifications/initialized") {
+      return new Response(null, { status: 202 });
+    }
+    if (message.method === "initialize") {
+      return initializationResponse(message.id);
+    }
+    if (message.method === "tools/list") {
+      return sseResponse({ jsonrpc: "2.0", id: message.id, result: { tools } });
+    }
+    if (message.method === "tools/call") {
+      const listed = tools.some((tool) => tool.name === message.params?.name);
+      return sseResponse({
+        jsonrpc: "2.0",
+        id: message.id,
+        result: listed
+          ? { content: [{ type: "text", text: "Called." }] }
+          : { isError: true, content: [{ type: "text", text: "Unknown tool." }] },
+      });
+    }
+    throw new Error(`Unexpected MCP method ${message.method || method}`);
+  };
+}
+
+/** The tool as discovery stored it for review. */
+function reviewedTool(tool: Tool, target = connector()): McpToolRecord {
+  return {
+    id: createMcpToolId(target.id, tool.name),
+    tenantId: target.tenantId,
+    connectorId: target.id,
+    connectorName: target.name,
+    name: tool.name,
+    description: tool.description,
+    inputSchema: tool.inputSchema,
+    outputSchema: tool.outputSchema,
+    annotations: tool.annotations,
+    riskLevel: 2,
+    approvalRequired: true,
+    status: "active",
+    createdAt: "2026-09-01T00:00:00.000Z",
+    updatedAt: "2026-09-01T00:00:00.000Z",
+  };
+}
+
 function parseMcpMessage(init?: RequestInit) {
   return JSON.parse(String(init?.body || "{}")) as {
     id?: string | number;
     method?: string;
-    params?: { cursor?: string };
+    params?: { cursor?: string; name?: string };
   };
 }
 

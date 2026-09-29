@@ -80,6 +80,7 @@ type McpConnectorDomainEventType =
   | "connector.mcp.discovery_saved"
   | "connector.mcp.contracts_promoted"
   | "connector.mcp.tool_saved"
+  | "connector.mcp.tool_held_for_review"
   | "connector.mcp.error_recorded";
 
 const MCP_CONNECTOR_EVENT_SCHEMA_VERSION = 1 as const;
@@ -834,6 +835,52 @@ export async function saveMcpTool(
     payload: mcpToolEventMetadata(saved),
   });
   return saved;
+}
+
+/**
+ * Takes a tool out of use until it is reviewed again, after its server was
+ * found listing it differently from its review. A changed tool is held under
+ * the contract the server lists now, as discovery would hold it; a tool the
+ * server no longer lists keeps its reviewed contract until the next discovery.
+ */
+export async function holdMcpToolForReview(
+  {
+    connector,
+    reviewed,
+    live,
+  }: {
+    connector: McpConnectorRecord;
+    reviewed: McpToolRecord;
+    live?: McpToolRecord;
+  },
+  options: McpConnectorMutationOptions,
+) {
+  const executionScope = requireMcpMutationScope(
+    options.executionScope,
+    normalizeTenantId(connector.tenantId),
+  );
+  const [changed] = live
+    ? preserveReviewedMcpToolPolicy({
+        discovered: [live],
+        existing: [reviewed],
+        connector,
+      })
+    : [reviewed];
+  const held = await persistMcpTool({
+    ...changed,
+    status: "pending_review",
+    updatedAt: new Date().toISOString(),
+  });
+  await appendMcpConnectorEvent({
+    connectorId: connector.id,
+    type: "connector.mcp.tool_held_for_review",
+    executionScope,
+    payload: {
+      ...mcpToolEventMetadata(held),
+      serverListsTool: Boolean(live),
+    },
+  });
+  return held;
 }
 
 async function persistMcpTool(

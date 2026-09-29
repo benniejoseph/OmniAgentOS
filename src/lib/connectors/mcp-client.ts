@@ -1,6 +1,10 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import {
+  McpToolContractDriftError,
+  mcpToolContractFingerprint,
+} from "@/lib/connectors/contract-review";
 import { assertConnectorSecretBinding } from "@/lib/connectors/secret-binding";
 import { resolveMcpBearerCredential } from "@/lib/connectors/credential-store";
 import {
@@ -107,7 +111,7 @@ export async function discoverMcpTools(
 
 export async function callMcpTool({
   connector,
-  toolName,
+  reviewedTool,
   args,
   idempotencyKey,
   abortSignal,
@@ -116,7 +120,8 @@ export async function callMcpTool({
   includeImages = false,
 }: {
   connector: McpConnectorRecord;
-  toolName: string;
+  /** The stored tool, as it was reviewed; the call runs only while the server still lists it that way. */
+  reviewedTool: McpToolRecord;
   args: Record<string, unknown>;
   idempotencyKey?: string;
   abortSignal?: AbortSignal;
@@ -126,7 +131,7 @@ export async function callMcpTool({
   includeImages?: boolean;
 }) {
   assertSupportedMcpConnector(connector);
-  if (isRemoteBrowserMcpTool({ name: toolName })) {
+  if (isRemoteBrowserMcpTool({ name: reviewedTool.name })) {
     throw new Error(RETIRED_REMOTE_BROWSER_MCP_MESSAGE);
   }
   if (includeImages) {
@@ -143,9 +148,10 @@ export async function callMcpTool({
   });
   let receivedToolResult = false;
   try {
+    await assertToolMatchesReview(connector, reviewedTool, lease.session, deadlineAt, abortSignal);
     const result = await lease.session.client.callTool(
       {
-        name: toolName,
+        name: reviewedTool.name,
         arguments: args,
       },
       undefined,
@@ -170,12 +176,43 @@ export async function callMcpTool({
     }
     return safeResult;
   } catch (error) {
+    if (error instanceof McpToolContractDriftError) throw error;
     if (!receivedToolResult) {
       lease.invalidate();
     }
     throw sanitizedConnectorError(error, lease.session.secretValues);
   } finally {
     await lease.release();
+  }
+}
+
+/**
+ * A server can change a tool after its review. The call goes ahead only if
+ * the tool this session lists still has the reviewed contract.
+ */
+async function assertToolMatchesReview(
+  connector: McpConnectorRecord,
+  reviewedTool: McpToolRecord,
+  session: McpConnectedSession,
+  deadlineAt: number,
+  abortSignal?: AbortSignal,
+) {
+  const listed = redactExactSecrets(
+    await collectTools(session.client, deadlineAt, abortSignal),
+    session.secretValues,
+  ).find((tool) => tool.name === reviewedTool.name);
+  const liveTool = listed
+    ? toToolRecord(connector, listed, new Date().toISOString())
+    : undefined;
+  if (
+    !liveTool ||
+    mcpToolContractFingerprint(liveTool, connector) !==
+      mcpToolContractFingerprint(reviewedTool, connector)
+  ) {
+    throw new McpToolContractDriftError({
+      toolLabel: safeToolName(reviewedTool.name),
+      liveTool,
+    });
   }
 }
 

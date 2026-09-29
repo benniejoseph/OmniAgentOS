@@ -40,6 +40,8 @@ import {
   tenantConnectorSecretPrefix,
 } from "@/lib/connectors/secret-binding";
 import {
+  getMcpToolById,
+  holdMcpToolForReview,
   preserveReviewedMcpToolPolicy,
   promoteMcpContracts,
   saveMcpConnector,
@@ -47,6 +49,7 @@ import {
   saveMcpTool,
 } from "@/lib/connectors/store";
 import type { McpConnectorRecord, McpToolRecord } from "@/lib/connectors/types";
+import { listStreamEvents } from "@/lib/events/store";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 
 const originalBindings = process.env.OMNIAGENT_CONNECTOR_SECRET_BINDINGS;
@@ -521,6 +524,66 @@ describe("connector security", () => {
       expect(promotedOpenApi?.promoted).toBe(1);
       expect(promotedOpenApi?.connector.status).toBe("active");
       expect(promotedOpenApi?.operations[0]?.status).toBe("active");
+    } finally {
+      if (previousDataDirectory === undefined) {
+        delete process.env.OMNIAGENT_DATA_DIR;
+      } else {
+        process.env.OMNIAGENT_DATA_DIR = previousDataDirectory;
+      }
+      if (previousDatabaseUrl === undefined) {
+        delete process.env.DATABASE_URL;
+      } else {
+        process.env.DATABASE_URL = previousDatabaseUrl;
+      }
+      await rm(dataDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("holds a tool its server changed for review under the listed contract, and a vanished one under its reviewed contract", async () => {
+    const dataDirectory = await mkdtemp(join(tmpdir(), "omni-connector-hold-"));
+    const previousDataDirectory = process.env.OMNIAGENT_DATA_DIR;
+    const previousDatabaseUrl = process.env.DATABASE_URL;
+    process.env.OMNIAGENT_DATA_DIR = dataDirectory;
+    delete process.env.DATABASE_URL;
+
+    try {
+      const connector = await saveMcpConnector(connectorRecord(), connectorMutationOptions);
+      const reviewed = await saveMcpTool(
+        toolRecord({ riskLevel: 3, approvalRequired: true, createdAt: "2025-01-01T00:00:00.000Z" }),
+        connectorMutationOptions,
+      );
+      const vanished = await saveMcpTool(
+        toolRecord({ id: "mcp:connector-1:vanished", name: "vanished" }),
+        connectorMutationOptions,
+      );
+      const listedSchema = { type: "object", properties: { destructive: { type: "boolean" } } };
+
+      await holdMcpToolForReview(
+        { connector, reviewed, live: toolRecord({ inputSchema: listedSchema }) },
+        connectorMutationOptions,
+      );
+      await expect(holdMcpToolForReview({ connector, reviewed: vanished }, {
+        executionScope: { ...connectorMutationOptions.executionScope, tenantId: "tenant-b" },
+      })).rejects.toThrow();
+      expect(await getMcpToolById(vanished.id, { tenantId: "tenant-a" })).toMatchObject({ status: "active" });
+      await holdMcpToolForReview({ connector, reviewed: vanished }, connectorMutationOptions);
+
+      expect(await getMcpToolById(reviewed.id, { tenantId: "tenant-a" })).toMatchObject({
+        status: "pending_review",
+        inputSchema: listedSchema,
+        riskLevel: 3,
+        approvalRequired: true,
+        createdAt: reviewed.createdAt,
+      });
+      expect(await getMcpToolById(vanished.id, { tenantId: "tenant-a" })).toMatchObject({
+        status: "pending_review",
+        inputSchema: vanished.inputSchema,
+      });
+      const events = await listStreamEvents(`connector:${connector.id}`, { tenantId: "tenant-a" });
+      expect(events
+        .filter((event) => event.type === "connector.mcp.tool_held_for_review")
+        .map((event) => [event.payload.toolId, event.payload.serverListsTool]))
+        .toEqual([[reviewed.id, true], [vanished.id, false]]);
     } finally {
       if (previousDataDirectory === undefined) {
         delete process.env.OMNIAGENT_DATA_DIR;

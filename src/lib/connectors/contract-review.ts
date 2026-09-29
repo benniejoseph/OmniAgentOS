@@ -18,6 +18,22 @@ export class ConnectorContractReviewConflictError extends Error {
   }
 }
 
+/** The server lists a reviewed tool differently from its review, or not at all. */
+export class McpToolContractDriftError extends Error {
+  /** The tool as the server lists it now; absent when it no longer lists it. */
+  readonly liveTool?: McpToolRecord;
+
+  constructor(input: { toolLabel: string; liveTool?: McpToolRecord }) {
+    super(
+      input.liveTool
+        ? `MCP tool ${input.toolLabel} changed on its server after it was reviewed, so it was not called. Review the connector's tools again before using it.`
+        : `MCP tool ${input.toolLabel} is no longer offered by its server, so it was not called. Discover the connector's tools again.`,
+    );
+    this.name = "McpToolContractDriftError";
+    this.liveTool = input.liveTool;
+  }
+}
+
 export type ConnectorContractReviewSummary = {
   pendingCount: number;
   fingerprint?: string;
