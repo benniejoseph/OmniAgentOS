@@ -235,6 +235,18 @@ complete progress traces, and zero duplicate effects, false successes,
 unfenced writes, or generic failure mutations. It invokes only the governed
 `runs.list` read and grants no mutation or external-effect authority.
 
+## Transitional paths expire
+
+Every shadow, canary, legacy, versioned and retired path is registered in
+`src/lib/architecture/complexity-registry.ts` with the area that owns it, the
+measurement that lets it go, and an expiry no more than 180 days after its
+review. The registry test scans the repository and fails when a file whose
+name marks it transitional, an environment flag whose name does, an exported
+capability rollout ID, or a route that answers 410 has no entry; when an entry
+names something that no longer exists; and from an entry's expiry date. An
+expired entry is resolved by meeting its exit metric and deleting the path, or
+by reviewing it and setting a new date.
+
 ## What not to copy from a blueprint
 
 Waku optimizes for a small, local, single-user assistant. Asael is a
