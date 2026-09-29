@@ -270,8 +270,32 @@ export type ResponseFunctionCallItem = {
   arguments: string;
 };
 
+/**
+ * A reasoning item a response returned, kept as the encrypted content the API
+ * reads on the next turn. Its summary and any readable reasoning are dropped,
+ * so a run never stores the model's private reasoning.
+ */
+export type ResponseReasoningItem = {
+  type: "reasoning";
+  id: string;
+  summary: [];
+  encrypted_content: string;
+};
+
+/** An assistant message a response returned, with the phase it gave it. */
+export type ResponseOutputMessageItem = {
+  type: "message";
+  id: string;
+  role: "assistant";
+  status: "completed";
+  content: Array<{ type: "output_text"; text: string; annotations: [] }>;
+  phase?: "commentary" | "final_answer";
+};
+
 export type ConversationItem =
   | ModelConversationSeedItem
+  | ResponseReasoningItem
+  | ResponseOutputMessageItem
   | ResponseFunctionCallItem
   | { type: "function_call_output"; call_id: string; output: string }
   | {
@@ -284,9 +308,10 @@ export type ConversationItem =
 export type ResponseTurnInput = string | ConversationItem[];
 
 /**
- * Streams one model turn. Text deltas flow through onDelta; any function calls
- * the model emitted are returned alongside their raw items so the caller can
- * build a full conversation array for the next turn (ZDR-safe, no previous_response_id).
+ * Streams one model turn. Text deltas flow through onDelta. The turn's output
+ * items, its encrypted reasoning, assistant messages and function calls in
+ * output order, are returned so the caller can build a full conversation
+ * array for the next turn (ZDR-safe, no previous_response_id).
  */
 export async function streamResponseTurn({
   instructions,
@@ -329,7 +354,8 @@ export async function streamResponseTurn({
 }): Promise<{
   responseId: string;
   functionCalls: ResponseFunctionCall[];
-  functionCallItems: ResponseFunctionCallItem[];
+  /** What to send back after the turn's input, before any tool results. */
+  outputItems: ConversationItem[];
   text: string;
   model: string;
   fallbackUsed: boolean;
@@ -430,7 +456,9 @@ export async function streamResponseTurn({
 
   let responseId = "";
   let text = "";
-  const callsByItemId = new Map<string, { itemId: string; callId: string; name: string; argumentsJson: string }>();
+  const callsByItemId = new Map<string, { itemId: string; callId: string; name: string; argumentsJson: string; outputIndex: number }>();
+  // Reasoning and assistant messages as they finished, by output index.
+  const finishedItems = new Map<number, ResponseReasoningItem | ResponseOutputMessageItem>();
   let usage: ModelUsage = { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, totalTokens: 0 };
   let usageObserved = false;
   let terminalSeen = false;
@@ -505,8 +533,14 @@ export async function streamResponseTurn({
           callId: item.call_id || item.id,
           name: item.name || "",
           argumentsJson: item.arguments || "",
+          outputIndex: outputIndexOf(rawEvent),
         });
       }
+    }
+
+    if (eventType === "response.output_item.done") {
+      const item = replayableOutputItem(rawEvent.item);
+      if (item) finishedItems.set(outputIndexOf(rawEvent), item);
     }
 
     if (eventType === "response.function_call_arguments.done") {
@@ -563,6 +597,8 @@ export async function streamResponseTurn({
     usageObserved = false;
     terminalSeen = false;
     terminalFailure = undefined;
+    // Reasoning from the failed response is not the fallback model's.
+    finishedItems.clear();
     try {
       stream = await createTurnStream(activeModel);
       for await (const rawEvent of stream as AsyncIterable<Record<string, unknown>>) {
@@ -662,13 +698,7 @@ export async function streamResponseTurn({
       name: call.name,
       argumentsJson: call.argumentsJson,
     })),
-    functionCallItems: calls.map((call) => ({
-      type: "function_call" as const,
-      id: call.itemId,
-      call_id: call.callId,
-      name: call.name,
-      arguments: call.argumentsJson,
-    })),
+    outputItems: turnOutputItems(finishedItems, calls, text),
     model: activeModel,
     fallbackUsed,
     latencyMs: turnLatencyMs,
@@ -680,11 +710,108 @@ export async function streamResponseTurn({
   };
 }
 
+/** Where an item stands in a response's output. An event without one sorts last. */
+function outputIndexOf(event: Record<string, unknown>) {
+  return typeof event.output_index === "number"
+    ? event.output_index
+    : Number.MAX_SAFE_INTEGER;
+}
+
+/**
+ * What the next turn needs of a finished reasoning item or assistant message.
+ * Reasoning without encrypted content cannot be sent back when responses are
+ * not stored, so it is dropped.
+ */
+function replayableOutputItem(
+  value: unknown,
+): ResponseReasoningItem | ResponseOutputMessageItem | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const item = value as {
+    type?: unknown;
+    id?: unknown;
+    phase?: unknown;
+    encrypted_content?: unknown;
+    content?: unknown;
+  };
+  if (typeof item.id !== "string" || !item.id) return undefined;
+  if (item.type === "reasoning") {
+    return typeof item.encrypted_content === "string" && item.encrypted_content
+      ? {
+          type: "reasoning",
+          id: item.id,
+          summary: [],
+          encrypted_content: item.encrypted_content,
+        }
+      : undefined;
+  }
+  if (item.type !== "message" || !Array.isArray(item.content)) return undefined;
+  const content = item.content.flatMap((part: unknown) => {
+    const candidate = part as { type?: unknown; text?: unknown } | null;
+    return candidate?.type === "output_text" && typeof candidate.text === "string"
+      ? [{ type: "output_text" as const, text: candidate.text, annotations: [] as [] }]
+      : [];
+  });
+  if (!content.length) return undefined;
+  return {
+    type: "message",
+    id: item.id,
+    role: "assistant",
+    status: "completed",
+    content,
+    ...(item.phase === "commentary" || item.phase === "final_answer"
+      ? { phase: item.phase }
+      : {}),
+  };
+}
+
+/**
+ * The items to send back after a turn: its reasoning, assistant messages and
+ * function calls in output order. Text a stream sent without its message item
+ * goes back as a plain assistant message before the calls.
+ */
+function turnOutputItems(
+  finished: ReadonlyMap<number, ResponseReasoningItem | ResponseOutputMessageItem>,
+  calls: ReadonlyArray<{
+    itemId: string;
+    callId: string;
+    name: string;
+    argumentsJson: string;
+    outputIndex: number;
+  }>,
+  text: string,
+): ConversationItem[] {
+  const indexed: Array<{ outputIndex: number; item: ConversationItem }> = [
+    ...[...finished].map(([outputIndex, item]) => ({ outputIndex, item })),
+    ...calls.map((call) => ({
+      outputIndex: call.outputIndex,
+      item: {
+        type: "function_call" as const,
+        id: call.itemId,
+        call_id: call.callId,
+        name: call.name,
+        arguments: call.argumentsJson,
+      },
+    })),
+  ];
+  const ordered = indexed
+    .sort((a, b) => a.outputIndex - b.outputIndex)
+    .map(({ item }) => item);
+  if (!text || ordered.some((item) => item.type === "message")) return ordered;
+  const firstCall = ordered.findIndex((item) => item.type === "function_call");
+  const at = firstCall < 0 ? ordered.length : firstCall;
+  return [
+    ...ordered.slice(0, at),
+    { type: "message", role: "assistant", content: text },
+    ...ordered.slice(at),
+  ];
+}
+
 export function openAIResponseInput(input: ResponseTurnInput) {
   if (typeof input === "string") return input;
   return input.map((item) => {
     if (item.type === "message") {
-      return { role: item.role, content: item.content };
+      // A message the model returned goes back as it came, with its phase.
+      return "id" in item ? item : { role: item.role, content: item.content };
     }
     if (item.type === "observation") {
       return {
@@ -723,7 +850,23 @@ export function canonicalConversationFromOpenAIItems(
   const callNames = new Map<string, string>();
   const conversation: ModelConversationItem[] = [];
   for (const item of items) {
-    if (item.type === "message" || item.type === "observation") {
+    if (item.type === "reasoning") {
+      // Encrypted reasoning only OpenAI can read has no provider-neutral form.
+      continue;
+    } else if (item.type === "message" && "id" in item) {
+      const content = item.content.map((part) => part.text).join("");
+      const previous = conversation.at(-1);
+      if (!content) continue;
+      // One turn's messages read as one reply, as its streamed text did.
+      if (previous?.type === "message" && previous.role === "assistant") {
+        conversation[conversation.length - 1] = {
+          ...previous,
+          content: previous.content + content,
+        };
+      } else {
+        conversation.push({ type: "message", role: "assistant", content });
+      }
+    } else if (item.type === "message" || item.type === "observation") {
       conversation.push(item);
     } else if (item.type === "function_call") {
       callNames.set(item.call_id, item.name);

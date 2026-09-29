@@ -10,6 +10,7 @@ import {
 import type { AgentEvent, AgentRunRequest } from "@/lib/orchestration/types";
 import type { ModelToolCall, ModelToolTurnResult } from "@/lib/models/types";
 import type { AgentRunContinuation } from "@/lib/runs/types";
+import type { ConversationItem } from "@/lib/openai/client";
 import { DEFAULT_CUSTOM_AGENT_PERSONA } from "@/lib/agents/persona";
 import { AUTHORIZED_CONTEXT_RETRIEVAL_SOURCES } from "@/lib/rag/context-engine";
 import {
@@ -320,7 +321,7 @@ describe("agent memory scope", () => {
       return {
         responseId: "response-memory-scope",
         functionCalls: [],
-        functionCallItems: [],
+        outputItems: [],
         text: "ASAEL_LIVE_OK",
         model: "gpt-test",
         fallbackUsed: false,
@@ -1671,6 +1672,82 @@ describe("agent memory scope", () => {
     });
   });
 
+  describe("OpenAI turn output", () => {
+    /** A turn's encrypted reasoning, preamble and call, as a response returns them. */
+    function returnedItems(callId: string): ConversationItem[] {
+      return [
+        {
+          type: "reasoning",
+          id: `rs-${callId}`,
+          summary: [],
+          encrypted_content: `encrypted-${callId}`,
+        },
+        {
+          type: "message",
+          id: `msg-${callId}`,
+          role: "assistant",
+          status: "completed",
+          content: [{ type: "output_text", text: "Checking.", annotations: [] }],
+          phase: "commentary",
+        },
+        {
+          type: "function_call",
+          id: `item-${callId}`,
+          call_id: callId,
+          name: APPROVAL_TOOL_ID,
+          arguments: "{}",
+        },
+      ];
+    }
+
+    async function pauseWithItems(callId: string) {
+      const agentRequest = request("session");
+      const calls = [{ callId, name: APPROVAL_TOOL_ID }];
+      armApprovalPause(agentRequest, "openai", calls);
+      mocks.streamResponseTurn.mockResolvedValue(openAITurn({
+        calls,
+        outputItems: returnedItems(callId),
+      }));
+      await collectRequest(agentRequest);
+      return mocks.markAgentRunWaitingForApproval.mock.calls[0][1]
+        .continuation as AgentRunContinuation;
+    }
+
+    it("parks a direct run with its turn's reasoning and messages", async () => {
+      const continuation = await pauseWithItems("call-memory-approval");
+
+      expect(continuation.conversationItems.slice(-3))
+        .toEqual(returnedItems("call-memory-approval"));
+    });
+
+    it("sends a resumed run's items back and parks its next turn's", async () => {
+      const continuation = await pauseWithItems("call-memory-approval");
+      mocks.markAgentRunWaitingForApproval.mockClear();
+      mocks.streamResponseTurn.mockClear();
+      mocks.executeGovernedTool.mockResolvedValue(approvalRequiredExecution());
+
+      await expect(resumeAfterApproval(
+        { ...continuation, maxToolSteps: 3 },
+        openAITurn({
+          calls: [{ callId: "call-again", name: APPROVAL_TOOL_ID }],
+          outputItems: returnedItems("call-again"),
+        }),
+      )).resolves.toMatchObject({ resumed: true, status: "waiting_approval" });
+
+      expect(mocks.streamResponseTurn.mock.calls[0][0].input.slice(-4)).toEqual([
+        ...returnedItems("call-memory-approval"),
+        expect.objectContaining({
+          type: "function_call_output",
+          call_id: "call-memory-approval",
+        }),
+      ]);
+      expect(
+        mocks.markAgentRunWaitingForApproval.mock.calls[0][1].continuation
+          .conversationItems.slice(-3),
+      ).toEqual(returnedItems("call-again"));
+    });
+  });
+
   describe("model turn budgets", () => {
     // Every fixture turn reports 7 tokens, far below its estimate.
     const WORKSPACE_EXHAUSTED =
@@ -2457,6 +2534,8 @@ function openAITurn(input: {
   name?: string;
   calls?: readonly { callId: string; name: string }[];
   text?: string;
+  /** The items the response returned, when a test sets them. */
+  outputItems?: ConversationItem[];
 }) {
   const functionCalls = input.calls?.map((call) => ({
     ...call,
@@ -2471,13 +2550,22 @@ function openAITurn(input: {
   return {
     responseId: `response-${input.callId || "done"}`,
     functionCalls,
-    functionCallItems: functionCalls.map((call) => ({
-      type: "function_call" as const,
-      id: `item-${call.callId}`,
-      call_id: call.callId,
-      name: call.name,
-      arguments: call.argumentsJson,
-    })),
+    outputItems: input.outputItems ?? [
+      ...(input.text
+        ? [{
+            type: "message" as const,
+            role: "assistant" as const,
+            content: input.text,
+          }]
+        : []),
+      ...functionCalls.map((call) => ({
+        type: "function_call" as const,
+        id: `item-${call.callId}`,
+        call_id: call.callId,
+        name: call.name,
+        arguments: call.argumentsJson,
+      })),
+    ],
     text: input.text || "",
     model: "gpt-test",
     fallbackUsed: false,

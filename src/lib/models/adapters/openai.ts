@@ -153,14 +153,7 @@ export const openAIModelAdapter: ModelProviderAdapter = {
         provider: "openai",
         state: [
           ...durableInput,
-          ...(turn.text
-            ? [{
-                type: "message",
-                role: "assistant",
-                content: turn.text,
-              } satisfies ConversationItem]
-            : []),
-          ...turn.functionCallItems,
+          ...turn.outputItems,
         ] as Record<string, unknown>[],
         conversation: appendModelTurnToConversation(conversation, {
           text: turn.text,

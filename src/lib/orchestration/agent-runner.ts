@@ -2335,21 +2335,12 @@ async function* runAgentUntilStopped(
           ));
         }
 
-        // Build the next conversation array: prior items + model's function call
-        // items + tool outputs. This replaces previous_response_id chaining.
+        // Build the next conversation array: prior items + the turn's output
+        // items, reasoning included + tool outputs. This replaces
+        // previous_response_id chaining.
         const priorItems: ConversationItem[] =
           conversationItems ?? initialConversationItems;
-        conversationItems = [
-          ...priorItems,
-          ...(turn.text
-            ? [{
-                type: "message" as const,
-                role: "assistant" as const,
-                content: turn.text,
-              }]
-            : []),
-          ...turn.functionCallItems,
-        ];
+        conversationItems = [...priorItems, ...turn.outputItems];
 
         toolSteps += 1;
         const outputs: Array<{ type: "function_call_output"; call_id: string; output: string }> = [];
@@ -4758,17 +4749,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
         );
       }
 
-      conversationItems = [
-        ...conversationItems,
-        ...(turn.text
-          ? [{
-              type: "message" as const,
-              role: "assistant" as const,
-              content: turn.text,
-            }]
-          : []),
-        ...turn.functionCallItems,
-      ];
+      conversationItems = [...conversationItems, ...turn.outputItems];
       toolSteps += 1;
       const outputs: AgentRunContinuation["outputsBeforeApproval"] = [];
 
