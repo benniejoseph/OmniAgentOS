@@ -128,7 +128,7 @@ vi.mock("@/lib/models/gateway", async (importOriginal) => ({
   generateModelToolTurn: mocks.generateModelToolTurn,
 }));
 
-vi.mock("@/lib/openai/model-router", () => ({
+vi.mock("@/lib/models/deployment-route", () => ({
   selectAgentModel: mocks.selectAgentModel,
 }));
 

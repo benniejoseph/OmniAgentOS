@@ -22,7 +22,7 @@ import {
 import { getSql } from "@/lib/db/client";
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import { modelAssignmentScopeForAgent } from "@/lib/orchestration/computer-use-routing";
-import { selectAgentModel } from "@/lib/openai/model-router";
+import { selectAgentModel } from "@/lib/models/deployment-route";
 import { openJsonPayload, sealJsonPayload } from "@/lib/security/sealed-payload";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
 import { resolveRuntimeModelAssignment } from "@/lib/settings/runtime-models";

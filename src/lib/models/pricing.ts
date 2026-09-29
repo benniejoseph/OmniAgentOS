@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { claudeModelInBedrockId } from "@/lib/models/anthropic-capabilities";
-import type { ModelUsage } from "@/lib/openai/model-router";
-import type { ProviderId } from "@/lib/models/types";
+import type { ModelUsage, ProviderId } from "@/lib/models/types";
 
 /** US dollars per million tokens, and per query for web search. */
 export type ModelPrice = {

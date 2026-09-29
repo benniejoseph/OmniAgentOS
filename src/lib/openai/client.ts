@@ -8,7 +8,6 @@ import {
   hasOpenAIKey,
 } from "@/lib/config";
 import { estimateModelCostUsd } from "@/lib/models/pricing";
-import type { ModelUsage } from "@/lib/openai/model-router";
 import { openAIResponseUsage } from "@/lib/openai/usage";
 import {
   attachModelProviderResponseReceipt,
@@ -17,9 +16,10 @@ import {
   sumModelUsage,
   type ModelAttemptReceipt,
   type ModelProviderResponseReceipt,
+  type ModelUsage,
 } from "@/lib/models/types";
 import {
-  parseModelConversation,
+  parseGrownModelConversation,
   renderUntrustedObservation,
   type ModelConversationItem,
   type ModelConversationSeedItem,
@@ -905,7 +905,7 @@ export function canonicalConversationFromOpenAIItems(
       });
     }
   }
-  return parseModelConversation(conversation);
+  return parseGrownModelConversation(conversation);
 }
 
 function attachResponseTurnAttempts(

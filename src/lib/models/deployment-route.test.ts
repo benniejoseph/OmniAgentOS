@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { selectAgentModel } from "@/lib/openai/model-router";
+import { selectAgentModel } from "@/lib/models/deployment-route";
 
-describe("model router", () => {
+describe("deployment model route", () => {
   afterEach(() => {
     delete process.env.OPENAI_FAST_MODEL;
     delete process.env.OPENAI_REASONING_MODEL;

@@ -25,7 +25,7 @@ vi.mock("@/lib/security/sealed-payload", () => ({
 vi.mock("@/lib/agents/identity-store", () => ({
   resolveAgentIdentityForExecution: mocks.resolveIdentity,
 }));
-vi.mock("@/lib/openai/model-router", () => ({
+vi.mock("@/lib/models/deployment-route", () => ({
   selectAgentModel: mocks.selectModel,
 }));
 vi.mock("@/lib/settings/runtime-models", () => ({

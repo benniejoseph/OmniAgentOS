@@ -44,7 +44,7 @@ import {
   reserveDynamicDelegationVerifierSlice,
 } from "@/lib/delegation/runtime-policy";
 import { listStreamEvents } from "@/lib/events/store";
-import { selectAgentModel } from "@/lib/openai/model-router";
+import { selectAgentModel } from "@/lib/models/deployment-route";
 import { runAgent } from "@/lib/orchestration/agent-runner";
 import { modelAssignmentScopeForAgent } from "@/lib/orchestration/computer-use-routing";
 import { reviewCouncilResponse } from "@/lib/orchestration/council";

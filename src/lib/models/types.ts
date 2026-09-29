@@ -1,10 +1,20 @@
-import type { ModelUsage } from "@/lib/openai/model-router";
 import type { AiUsageScope } from "@/lib/usage/types";
 import type { ModelConversationItem } from "@/lib/models/conversation";
 import type { ModelComputerObservation } from "@/lib/models/computer-observation";
 
 export type ProviderId = "openai" | "google" | "anthropic" | "aws_bedrock" | "local";
 export type ModelTier = "fast" | "reasoning";
+
+export type ModelUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  totalTokens: number;
+  /** Input tokens written to the provider's prompt cache, counted in inputTokens. */
+  cacheWriteInputTokens?: number;
+  /** Output tokens the model spent reasoning, counted in outputTokens. */
+  reasoningTokens?: number;
+};
 export type ModelReasoningEffort =
   | "minimal"
   | "low"

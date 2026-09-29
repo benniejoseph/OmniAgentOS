@@ -60,6 +60,7 @@ import type {
   ModelToolResult,
   ModelToolTurnRequest,
   ModelToolTurnResult,
+  ModelUsage,
 } from "@/lib/models/types";
 import { getModelProvider, hasModelProviderFeature } from "@/lib/models/registry";
 import { syncMissionExecutorSafely } from "@/lib/missions/runtime";
@@ -71,7 +72,7 @@ import {
   type ResponseFunctionTool,
   type ResponseTurnInput,
 } from "@/lib/openai/client";
-import { selectAgentModel, type ModelUsage } from "@/lib/openai/model-router";
+import { selectAgentModel } from "@/lib/models/deployment-route";
 import { recordRuntimeEventSafely } from "@/lib/observability/store";
 import { enqueueMemoryConsolidationJob } from "@/lib/operations/background-jobs";
 import {

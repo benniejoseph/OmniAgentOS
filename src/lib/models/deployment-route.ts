@@ -8,9 +8,8 @@ import {
   hasGeminiKey,
   hasOpenAIKey,
 } from "@/lib/config";
+import type { ModelTier } from "@/lib/models/types";
 import type { AgentMode } from "@/lib/orchestration/types";
-
-export type ModelTier = "fast" | "reasoning";
 
 export type ModelRoute = {
   model: string;
@@ -20,17 +19,11 @@ export type ModelRoute = {
   reason: string;
 };
 
-export type ModelUsage = {
-  inputTokens: number;
-  outputTokens: number;
-  cachedInputTokens: number;
-  totalTokens: number;
-  /** Input tokens written to the provider's prompt cache, counted in inputTokens. */
-  cacheWriteInputTokens?: number;
-  /** Output tokens the model spent reasoning, counted in outputTokens. */
-  reasoningTokens?: number;
-};
-
+/**
+ * The deployment's route for an agent turn when no workspace model assignment
+ * applies: a model policy the agent names, else the configured providers and
+ * the request's apparent complexity.
+ */
 export function selectAgentModel(input: {
   message: string;
   mode?: AgentMode;

@@ -1,14 +1,13 @@
 import { ASAEL_PUBLIC_ORIGIN } from "@/lib/identity";
+import { deploymentModel } from "@/lib/models/default-models";
 
-export const AGENT_MODEL = process.env.OPENAI_AGENT_MODEL || "gpt-5";
-// Separate faster model for web search summarization — gpt-5 is too slow for the 60s Vercel budget.
-export const WEB_SEARCH_MODEL = process.env.OPENAI_WEB_SEARCH_MODEL || "gpt-4o-mini";
+export const AGENT_MODEL = deploymentModel("agent");
+export const WEB_SEARCH_MODEL = deploymentModel("webSearch");
 export const WEB_SEARCH_TIMEOUT_MS = normalizePositiveInteger(
   process.env.OMNIAGENT_WEB_SEARCH_TIMEOUT_MS,
   25_000,
 );
-export const EMBEDDING_MODEL =
-  process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-large";
+export const EMBEDDING_MODEL = deploymentModel("embedding");
 export const TRANSCRIPTION_PROVIDER = normalizeTranscriptionProvider(
   process.env.OMNIAGENT_TRANSCRIPTION_PROVIDER,
 );
@@ -16,19 +15,18 @@ export const TRANSCRIPTION_MODEL =
   process.env.OPENAI_TRANSCRIPTION_MODEL?.trim() || "";
 export const DIARIZATION_MODEL =
   process.env.OPENAI_DIARIZATION_MODEL?.trim() || "";
-export const SPEECH_MODEL =
-  process.env.OPENAI_SPEECH_MODEL || "gpt-4o-mini-tts";
+export const SPEECH_MODEL = deploymentModel("speech");
 export const REALTIME_TRANSCRIPTION_MODEL =
   process.env.OPENAI_REALTIME_TRANSCRIPTION_MODEL?.trim() || "";
 export const GOOGLE_TRANSCRIPTION_MODEL =
   process.env.GOOGLE_TRANSCRIPTION_MODEL?.trim() || "";
-export const OCR_MODEL = process.env.OPENAI_OCR_MODEL || "gpt-4o-mini";
-export const GEMINI_FAST_MODEL = process.env.GEMINI_FAST_MODEL || "gemini-3.5-flash-lite";
-export const GEMINI_IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-image";
-export const GEMINI_VIDEO_MODEL = process.env.GEMINI_VIDEO_MODEL || "gemini-omni-1.1-flash";
-export const COMPUTER_USE_MODEL = process.env.OPENAI_COMPUTER_USE_MODEL || "gpt-6-astra";
-export const ANTHROPIC_FAST_MODEL = process.env.ANTHROPIC_FAST_MODEL || "claude-haiku-4-5";
-export const ANTHROPIC_REASONING_MODEL = process.env.ANTHROPIC_REASONING_MODEL || "claude-sonnet-5";
+export const OCR_MODEL = deploymentModel("ocr");
+export const GEMINI_FAST_MODEL = deploymentModel("geminiFast");
+export const GEMINI_IMAGE_MODEL = deploymentModel("geminiImage");
+export const GEMINI_VIDEO_MODEL = deploymentModel("geminiVideo");
+export const COMPUTER_USE_MODEL = deploymentModel("computerUse");
+export const ANTHROPIC_FAST_MODEL = deploymentModel("anthropicFast");
+export const ANTHROPIC_REASONING_MODEL = deploymentModel("anthropicReasoning");
 export const EMBEDDING_DIMENSIONS = normalizePositiveInteger(
   process.env.OPENAI_EMBEDDING_DIMENSIONS,
   1536,

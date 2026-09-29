@@ -47,7 +47,7 @@ vi.mock("@/lib/agents/identity-store", () => ({
 vi.mock("@/lib/events/store", () => ({
   listStreamEvents: mocks.listStreamEvents,
 }));
-vi.mock("@/lib/openai/model-router", () => ({
+vi.mock("@/lib/models/deployment-route", () => ({
   selectAgentModel: mocks.selectAgentModel,
 }));
 vi.mock("@/lib/orchestration/agent-runner", () => ({

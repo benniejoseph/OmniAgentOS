@@ -1,4 +1,4 @@
-import type { ModelUsage } from "@/lib/openai/model-router";
+import type { ModelUsage } from "@/lib/models/types";
 
 /** The token usage an OpenAI Responses API reply reports, read defensively. */
 export function openAIResponseUsage(value: unknown): ModelUsage {

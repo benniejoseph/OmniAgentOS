@@ -3,7 +3,7 @@ import {
   ANTHROPIC_REASONING_MODEL,
   hasAnthropicKey,
 } from "@/lib/config";
-import { classifyProviderError } from "@/lib/models/adapters/openai";
+import { classifyProviderError } from "@/lib/models/provider-errors";
 import {
   anthropicModelCapabilities,
   claudeMaxTokens,
@@ -16,12 +16,12 @@ import type {
   ModelTarget,
   ModelTextRequest,
   ModelToolTurnRequest,
+  ModelUsage,
 } from "@/lib/models/types";
 import {
   attachModelProviderResponseReceipt,
   ModelProviderError,
 } from "@/lib/models/types";
-import type { ModelUsage } from "@/lib/openai/model-router";
 import { getModelRuntimeApiKey } from "@/lib/models/runtime-context";
 import {
   appendModelTurnToConversation,

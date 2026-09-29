@@ -10,6 +10,7 @@ import {
   OPENAI_GATEWAY_PRODUCTION_BASE_URL,
 } from "@/lib/config";
 import { ASAEL_PUBLIC_ORIGIN } from "@/lib/identity";
+import { DEFAULT_MODELS } from "@/lib/models/default-models";
 
 const gatewayToken = "a".repeat(64);
 
@@ -53,6 +54,36 @@ describe("agent execution limits", () => {
       modelTurns: 11,
       toolCalls: 30,
     });
+  });
+});
+
+describe("deployment models", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  it("names each role's model from its variable", async () => {
+    for (const { env } of Object.values(DEFAULT_MODELS)) {
+      vi.stubEnv(env, ` ${env.toLowerCase()} `);
+    }
+    const config = await import("@/lib/config");
+
+    expect({
+      agent: config.AGENT_MODEL,
+      webSearch: config.WEB_SEARCH_MODEL,
+      embedding: config.EMBEDDING_MODEL,
+      speech: config.SPEECH_MODEL,
+      ocr: config.OCR_MODEL,
+      computerUse: config.COMPUTER_USE_MODEL,
+      geminiFast: config.GEMINI_FAST_MODEL,
+      geminiImage: config.GEMINI_IMAGE_MODEL,
+      geminiVideo: config.GEMINI_VIDEO_MODEL,
+      anthropicFast: config.ANTHROPIC_FAST_MODEL,
+      anthropicReasoning: config.ANTHROPIC_REASONING_MODEL,
+    }).toEqual(Object.fromEntries(
+      Object.entries(DEFAULT_MODELS).map(([role, { env }]) => [role, env.toLowerCase()]),
+    ));
   });
 });
 

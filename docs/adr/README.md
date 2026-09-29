@@ -2,7 +2,7 @@
 
 | # | Decision | Status |
 |---|---|---|
-| [001](001-openai-only.md) | OpenAI as the only model provider | Accepted |
+| [001](001-openai-only.md) | OpenAI as the only model provider | Superseded by 014 |
 | [002](002-storage-fallback.md) | JSON file fallback storage with Postgres as the durable backend | Accepted |
 | [003](003-daily-cron.md) | Daily Vercel cron + opportunistic drains for the workflow queue | Accepted |
 | [004](004-first-party-auth.md) | First-party identity instead of an auth provider | Accepted |
@@ -15,3 +15,4 @@
 | [011](011-native-api.md) | Versioned, server-authoritative native API | Accepted |
 | [012](012-macos-client.md) | Shared Flutter macOS client with a thin native host | Accepted |
 | [013](013-governed-local-command-runner.md) | Governed local command runner for the owner Mac | Accepted |
+| [014](014-multi-provider-model-gateway.md) | Multi-provider model gateway | Accepted |

@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   appendModelTurnToConversation,
+  compactModelConversation,
   modelConversationForToolTurn,
+  parseGrownModelConversation,
   parseModelConversation,
   renderUntrustedObservation,
+  type ModelConversationItem,
 } from "@/lib/models/conversation";
 
 describe("provider-neutral model conversation", () => {
@@ -225,3 +228,239 @@ function thrown(action: () => unknown) {
   }
   throw new Error("Expected the action to throw.");
 }
+
+const COMPACTED_STEPS_HEADER =
+  "Earlier steps of this run, removed from the conversation to keep it within its item limit, oldest first:";
+
+const request = { type: "message", role: "user", content: "Plan the Lisbon trip." } as const;
+
+const opening: ModelConversationItem[] = [
+  request,
+  { type: "observation", source: "memory", content: "Ada prefers trains.", untrusted: true },
+];
+
+function legs(from: number, to: number) {
+  return Array.from({ length: to - from }, (_, index) => from + index);
+}
+
+function searchRound(leg: number): ModelConversationItem[] {
+  return [
+    { type: "tool_call", callId: `call-${leg}`, name: "search", argumentsJson: `{"leg":${leg}}` },
+    { type: "tool_result", callId: `call-${leg}`, name: "search", content: `Leg ${leg} found.` },
+  ];
+}
+
+function searchRounds(from: number, to: number) {
+  return legs(from, to).flatMap(searchRound);
+}
+
+function searchStep(leg: number) {
+  return `- search({"leg":${leg}}) returned: Leg ${leg} found.`;
+}
+
+function compactedSteps(...steps: string[]): ModelConversationItem {
+  return {
+    type: "observation",
+    source: "tool",
+    content: [COMPACTED_STEPS_HEADER, ...steps].join("\n"),
+    untrusted: true,
+  };
+}
+
+describe("model conversation compaction", () => {
+  it("lists a long run's oldest tool rounds in their place, keeping its opening and latest turn", () => {
+    const full = parseModelConversation([...opening, ...searchRounds(0, 63)]);
+    expect(full).toHaveLength(128);
+    expect(compactModelConversation(full)).toEqual(full);
+
+    const compacted = appendModelTurnToConversation(full, {
+      text: "Checking the last leg.",
+      toolCalls: [{ callId: "call-63", name: "search", argumentsJson: "{\"leg\":63}" }],
+    });
+
+    // 130 items and the list make 131; the 18 oldest rounds go, to within 96.
+    expect(compacted).toHaveLength(95);
+    expect(compacted.slice(0, 2)).toEqual(opening);
+    expect(compacted[2]).toEqual(compactedSteps(...legs(0, 18).map(searchStep)));
+    expect(compacted.slice(3, -2)).toEqual(searchRounds(18, 63));
+    expect(compacted.slice(-2)).toEqual([
+      { type: "message", role: "assistant", content: "Checking the last leg." },
+      { type: "tool_call", callId: "call-63", name: "search", argumentsJson: "{\"leg\":63}" },
+    ]);
+    // The model's open call still takes its result.
+    expect(modelConversationForToolTurn({
+      provider: "anthropic",
+      prompt: "ignored fallback",
+      continuationConversation: compacted,
+      toolResults: [{ callId: "call-63", name: "search", output: "Leg 63 found." }],
+    })).toEqual([...compacted, searchRound(63)[1]]);
+  });
+
+  it("compacts when a turn's tool results take the conversation past the limit", () => {
+    const calls: ModelConversationItem[] = [
+      { type: "tool_call", callId: "call-a", name: "lookup", argumentsJson: "{}" },
+      { type: "tool_call", callId: "call-b", name: "lookup", argumentsJson: "{}" },
+    ];
+
+    expect(modelConversationForToolTurn({
+      provider: "google",
+      prompt: "ignored fallback",
+      continuationConversation: [...opening, ...searchRounds(0, 62), ...calls],
+      toolResults: [
+        { callId: "call-a", name: "lookup", output: "Found a." },
+        { callId: "call-b", name: "lookup", output: "Found b." },
+      ],
+    })).toEqual([
+      ...opening,
+      compactedSteps(...legs(0, 18).map(searchStep)),
+      ...searchRounds(18, 62),
+      ...calls,
+      { type: "tool_result", callId: "call-a", name: "lookup", content: "Found a." },
+      { type: "tool_result", callId: "call-b", name: "lookup", content: "Found b." },
+    ]);
+  });
+
+  it("compacts to three quarters of the limit, rounded down", () => {
+    // 13 items and the list make 14; four rounds go, to within 7 of 10.
+    expect(compactModelConversation([request, ...searchRounds(0, 6)], 10)).toEqual([
+      request,
+      compactedSteps(...legs(0, 4).map(searchStep)),
+      ...searchRounds(4, 6),
+    ]);
+  });
+
+  it("adds to the list an earlier compaction left", () => {
+    const once = compactModelConversation([...opening, ...searchRounds(0, 64)]);
+    expect(once).toEqual([
+      ...opening,
+      compactedSteps(...legs(0, 18).map(searchStep)),
+      ...searchRounds(18, 64),
+    ]);
+
+    expect(compactModelConversation([...once, ...searchRounds(64, 81)])).toEqual([
+      ...opening,
+      compactedSteps(...legs(0, 35).map(searchStep)),
+      ...searchRounds(35, 81),
+    ]);
+  });
+
+  it("summarizes each step of a round in one clipped line", () => {
+    const rounds: ModelConversationItem[][] = [
+      [
+        { type: "tool_call", callId: "call-0", name: "search", argumentsJson: JSON.stringify({ query: "q".repeat(200) }) },
+        { type: "tool_result", callId: "call-0", name: "search", content: "r".repeat(240) },
+      ],
+      [
+        { type: "message", role: "assistant", content: `Comparing\n\n  the   legs ${"t".repeat(300)}` },
+        { type: "tool_call", callId: "call-1", name: "search", argumentsJson: "{\"leg\":1}" },
+        { type: "tool_result", callId: "call-1", name: "search", content: "x".repeat(8_000) },
+      ],
+      [
+        { type: "tool_call", callId: "call-a", name: "lookup", argumentsJson: "{\"id\":\"a\"}" },
+        { type: "tool_call", callId: "call-b", name: "lookup", argumentsJson: "{\"id\":\"b\"}" },
+        { type: "tool_result", callId: "call-a", name: "lookup", content: "Found a.\n" },
+        { type: "tool_result", callId: "call-b", name: "lookup", content: "Not found.", isError: true },
+        { type: "observation", source: "command_context", content: "The owner is\nin Porto.", untrusted: true },
+      ],
+      [
+        { type: "message", role: "assistant", content: "Booking the train." },
+        ...searchRound(3),
+      ],
+      searchRound(4),
+    ];
+
+    // 16 items and the list make 17; three rounds go, to within 7 of 10.
+    expect(compactModelConversation([request, ...rounds.flat()], 10)).toEqual([
+      request,
+      compactedSteps(
+        `- search({"query":"${"q".repeat(149)}…) returned: ${"r".repeat(240)}`,
+        `- The model wrote: Comparing the legs ${"t".repeat(220)}…`,
+        `- search({"leg":1}) returned: ${"x".repeat(239)}…`,
+        "- lookup({\"id\":\"a\"}) returned: Found a.",
+        "- lookup({\"id\":\"b\"}) failed: Not found.",
+        "- A command context observation: The owner is in Porto.",
+      ),
+      ...rounds[3],
+      ...rounds[4],
+    ]);
+  });
+
+  it("drops the oldest listed steps when the list outgrows its size", () => {
+    const earlier = legs(0, 125).map((note) =>
+      `- note ${String(note).padStart(3, "0")} ${"x".repeat(181)}`
+    );
+
+    const compacted = compactModelConversation([
+      request,
+      compactedSteps("- Older steps not shown: 5.", ...earlier),
+      ...searchRounds(0, 5),
+    ], 8);
+
+    expect(compacted).toEqual([
+      request,
+      compactedSteps(
+        "- Older steps not shown: 7.",
+        ...earlier.slice(2),
+        ...legs(0, 3).map(searchStep),
+      ),
+      ...searchRounds(3, 5),
+    ]);
+    // The list fills its 24,000 characters exactly.
+    const list = compacted[1];
+    expect(list.type === "observation" ? list.content.length : 0).toBe(24_000);
+  });
+
+  it("keeps every round that has a call without a result, and every round after it", () => {
+    const unanswered: ModelConversationItem[] = [
+      { type: "tool_call", callId: "call-b", name: "search", argumentsJson: "{}" },
+      { type: "tool_call", callId: "call-c", name: "search", argumentsJson: "{}" },
+      { type: "tool_result", callId: "call-b", name: "search", content: "Found b." },
+    ];
+    const later: ModelConversationItem[] = [
+      { type: "message", role: "assistant", content: "Trying again." },
+      ...searchRound(4),
+    ];
+
+    expect(compactModelConversation([request, ...searchRound(0), ...unanswered, ...later], 8))
+      .toEqual([request, compactedSteps(searchStep(0)), ...unanswered, ...later]);
+
+    const blocked = [request, ...unanswered, ...searchRounds(1, 4)];
+    expect(compactModelConversation(blocked, 8)).toEqual(blocked);
+  });
+
+  it("keeps the rounds before the last user message", () => {
+    const follow = { type: "message", role: "user", content: "Add a day in Sintra." } as const;
+
+    expect(compactModelConversation([
+      request,
+      ...searchRound(0),
+      follow,
+      ...searchRounds(1, 4),
+    ], 8)).toEqual([
+      request,
+      ...searchRound(0),
+      follow,
+      compactedSteps(searchStep(1), searchStep(2)),
+      ...searchRound(3),
+    ]);
+  });
+
+  it("leaves a conversation it cannot shorten over the limit", () => {
+    const calls = legs(0, 70).map((leg) => searchRound(leg)[0]);
+    const results = legs(0, 70).map((leg) => searchRound(leg)[1]);
+    const oneTurn = [request, ...calls, ...results];
+
+    expect(compactModelConversation(oneTurn)).toEqual(oneTurn);
+    expect(() => parseGrownModelConversation(oneTurn)).toThrow();
+    expect(() => modelConversationForToolTurn({
+      provider: "openai",
+      prompt: "ignored fallback",
+      continuationConversation: [request, ...calls],
+      toolResults: legs(0, 70).map((leg) => ({
+        callId: `call-${leg}`,
+        name: "search",
+        output: `Leg ${leg} found.`,
+      })),
+    })).toThrow();
+  });
+});

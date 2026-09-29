@@ -1,47 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { classifyProviderError } from "@/lib/models/adapters/openai";
 import {
   canonicalConversationFromOpenAIItems,
   openAIResponseInput,
+  type ConversationItem,
 } from "@/lib/openai/client";
-
-describe("model provider error classification", () => {
-  it("retries ordinary fetch and nested network failures", () => {
-    const fetchFailure = Object.assign(new TypeError("fetch failed"), {
-      cause: Object.assign(new Error("DNS lookup failed"), { code: "ENOTFOUND" }),
-    });
-    expect(classifyProviderError("openai", fetchFailure)).toMatchObject({
-      kind: "unavailable",
-      retryable: true,
-    });
-
-    expect(classifyProviderError("google", {
-      message: "request failed",
-      cause: { code: "ECONNRESET" },
-    })).toMatchObject({ kind: "unavailable", retryable: true });
-  });
-
-  it("never converts auth, invalid, or safety responses into retries", () => {
-    expect(classifyProviderError("openai", {
-      status: 401,
-      message: "fetch failed while authenticating",
-    })).toMatchObject({ kind: "authentication", retryable: false });
-    expect(classifyProviderError("openai", {
-      status: 400,
-      message: "invalid request",
-    })).toMatchObject({ kind: "invalid_request", retryable: false });
-    expect(classifyProviderError("anthropic", {
-      message: "request blocked by safety policy",
-    })).toMatchObject({ kind: "safety", retryable: false });
-  });
-
-  it("keeps unrelated type errors non-retryable", () => {
-    expect(classifyProviderError("openai", new TypeError("Invalid URL"))).toMatchObject({
-      kind: "unknown",
-      retryable: false,
-    });
-  });
-});
 
 describe("OpenAI local Computer Use observations", () => {
   it("maps one ephemeral observation to text and image input parts", () => {
@@ -104,5 +66,42 @@ describe("OpenAI local Computer Use observations", () => {
         content: "{\"clicked\":true}",
       },
     ]);
+  });
+});
+
+describe("OpenAI canonical conversation", () => {
+  it("compacts a long run's calls to the conversation's item limit", () => {
+    const calls = Array.from({ length: 70 }, (_, leg): ConversationItem[] => [
+      {
+        type: "function_call",
+        id: `fc-${leg}`,
+        call_id: `call-${leg}`,
+        name: "search",
+        arguments: `{"leg":${leg}}`,
+      },
+      { type: "function_call_output", call_id: `call-${leg}`, output: `Leg ${leg} found.` },
+    ]).flat();
+
+    const conversation = canonicalConversationFromOpenAIItems([
+      { type: "message", role: "user", content: "Plan the Lisbon trip." },
+      ...calls,
+    ]);
+
+    // 141 items and the list of steps make 142; the 23 oldest calls go.
+    expect(conversation).toHaveLength(96);
+    expect(conversation[1]).toMatchObject({
+      type: "observation",
+      source: "tool",
+      untrusted: true,
+      content: expect.stringMatching(
+        /^Earlier steps of this run[^\n]*\n- search\(\{"leg":0\}\) returned: Leg 0 found\.\n(?:.*\n){21}- search\(\{"leg":22\}\) returned: Leg 22 found\.$/,
+      ),
+    });
+    expect(conversation[2]).toEqual({
+      type: "tool_call",
+      callId: "call-23",
+      name: "search",
+      argumentsJson: "{\"leg\":23}",
+    });
   });
 });

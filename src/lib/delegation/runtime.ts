@@ -49,7 +49,7 @@ import {
   DELEGATION_EXECUTION_JOB_KIND,
   type DelegationExecutionJobPayload,
 } from "@/lib/delegation/runtime-job";
-import { selectAgentModel } from "@/lib/openai/model-router";
+import { selectAgentModel } from "@/lib/models/deployment-route";
 import { listStreamEvents } from "@/lib/events/store";
 import {
   enqueueOperationJob,

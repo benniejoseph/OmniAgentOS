@@ -1,6 +1,6 @@
 import { GEMINI_FAST_MODEL, hasGeminiKey } from "@/lib/config";
 import { generateGeminiText, generateGeminiToolTurn } from "@/lib/google/ai";
-import { classifyProviderError } from "@/lib/models/adapters/openai";
+import { classifyProviderError } from "@/lib/models/provider-errors";
 import type { ModelProviderAdapter } from "@/lib/models/types";
 import {
   ModelProviderError,

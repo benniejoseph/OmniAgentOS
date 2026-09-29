@@ -4,10 +4,10 @@ import type {
   ModelToolContinuation,
   ModelToolDefinition,
   ModelToolResult,
+  ModelUsage,
 } from "@/lib/models/types";
 import { attachModelProviderResponseReceipt } from "@/lib/models/types";
 import { estimateModelCostUsd } from "@/lib/models/pricing";
-import type { ModelUsage } from "@/lib/openai/model-router";
 import { recordAiUsageSafely } from "@/lib/usage/ledger";
 import type { AiUsageScope } from "@/lib/usage/types";
 import {

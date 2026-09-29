@@ -1,5 +1,5 @@
 import { createHash, createHmac } from "node:crypto";
-import { classifyProviderError } from "@/lib/models/adapters/openai";
+import { classifyProviderError } from "@/lib/models/provider-errors";
 import {
   getModelRuntimeCredential,
   type ModelRuntimeCredential,
@@ -10,6 +10,7 @@ import type {
   ModelTextRequest,
   ModelToolDefinition,
   ModelToolTurnRequest,
+  ModelUsage,
 } from "@/lib/models/types";
 import {
   attachModelProviderResponseReceipt,
@@ -22,7 +23,6 @@ import {
   claudeModelInBedrockId,
 } from "@/lib/models/anthropic-capabilities";
 import { supportsBedrockPromptCache } from "@/lib/models/prompt-cache";
-import type { ModelUsage } from "@/lib/openai/model-router";
 import {
   appendModelTurnToConversation,
   assertToolResultsAnswerCalls,

@@ -1,6 +1,6 @@
 # ADR 001: OpenAI as the only model provider
 
-Status: Accepted · 2026-06-10
+Status: Superseded by [ADR 014](014-multi-provider-model-gateway.md) · 2026-09-29
 
 ## Context
 
