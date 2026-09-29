@@ -17,7 +17,11 @@ export const DYNAMIC_DELEGATION_CHILD_BUDGET = Object.freeze(
     // Keep exactly one additional tool round for provider tool-call repair and
     // still reserve the last turn for the child's bounded final synthesis.
     modelTurns: 4,
-    tokens: 12_000,
+    // A turn is charged its input and the most output it may produce, and it
+    // may call tools only while one more turn after a full round of results
+    // still fits. This leaves room for the tool rounds above when results are
+    // of typical size.
+    tokens: 48_000,
     costMicrousd: 400_000,
     wallTimeMs: 90_000,
     toolCalls: 8,

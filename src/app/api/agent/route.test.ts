@@ -1095,7 +1095,7 @@ describe("agent semantic intent routing", () => {
         maxToolSteps: 12,
         budgetLimits: expect.objectContaining({
           modelTurns: 14,
-          tokens: 64_000,
+          tokens: 400_000,
           costMicrousd: 2_500_000,
           wallTimeMs: 240_000,
           toolCalls: 30,

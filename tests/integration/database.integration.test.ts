@@ -72,6 +72,7 @@ import {
   listThreadTurns,
 } from "@/lib/threads/store";
 import { createExecutionScope } from "@/lib/security/execution-scope";
+import { loadTenantAiUsageSince } from "@/lib/usage/allowance";
 import { approvalMaterialBindingSha256 } from "@/lib/tools/approval-binding";
 import {
   approveAndClaimToolExecution,
@@ -6074,6 +6075,66 @@ databaseDescribe("Postgres schema integration", () => {
         [sloRiskNine.id, 3, base + 3 * day + 250],
         [sloRiskZero.id, 0, base + 4 * day],
       ]);
+  });
+
+  test("sums a tenant's recorded AI usage from a window's start", async () => {
+    const tenantId = "ai_usage_window_tenant";
+    const since = new Date("2026-09-28T12:00:00.000Z");
+    const at = (offsetMs: number) => new Date(since.getTime() + offsetMs).toISOString();
+    const hour = 60 * 60 * 1000;
+    const rows: Array<{
+      id: string;
+      tenant: string;
+      usage: Record<string, unknown>;
+      cost: number | null;
+      recordedAt: string;
+    }> = [
+      { id: "at-start", tenant: tenantId, usage: { totalTokens: 100 }, cost: 2_000, recordedAt: at(0) },
+      {
+        id: "parts-exceed-total",
+        tenant: tenantId,
+        usage: { inputTokens: 300, outputTokens: 50, totalTokens: 200 },
+        cost: 1_500,
+        recordedAt: at(hour),
+      },
+      {
+        id: "unpriced-text-counts",
+        tenant: tenantId,
+        usage: { totalTokens: "999", inputTokens: "5" },
+        cost: null,
+        recordedAt: at(2 * hour),
+      },
+      { id: "before-start", tenant: tenantId, usage: { totalTokens: 10_000 }, cost: 99, recordedAt: at(-1) },
+      {
+        id: "other-tenant",
+        tenant: "ai_usage_window_other",
+        usage: { totalTokens: 7_777 },
+        cost: 7_777,
+        recordedAt: at(hour),
+      },
+    ];
+    for (const row of rows) {
+      await admin`
+        INSERT INTO omni_ai_usage (
+          id, tenant_id, actor_id, source_stream_id, operation, purpose,
+          status, provider, model, usage, estimated_cost_microusd, recorded_at
+        ) VALUES (
+          ${`ai-usage-window-${row.id}`}, ${row.tenant}, 'ai-usage-window-owner',
+          'run:ai-usage-window', 'tool_turn', 'agent', 'completed', 'openai',
+          'gpt-5.2', ${JSON.stringify(row.usage)}::text::jsonb, ${row.cost},
+          ${row.recordedAt}::timestamptz
+        )
+      `;
+    }
+
+    await expect(runWithDatabaseTenantScope(
+      tenantId,
+      () => loadTenantAiUsageSince({ tenantId, since }),
+    )).resolves.toEqual({ tokens: 450, costMicrousd: 3_500 });
+    await expect(runWithDatabaseTenantScope(
+      tenantId,
+      () => loadTenantAiUsageSince({ tenantId, since: new Date(since.getTime() + 3 * hour) }),
+    )).resolves.toEqual({ tokens: 0, costMicrousd: 0 });
   });
 });
 

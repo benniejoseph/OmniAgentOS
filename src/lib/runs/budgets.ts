@@ -17,7 +17,8 @@ export const RUN_BUDGET_DIMENSIONS = [
 
 export type RunBudgetDimension = (typeof RUN_BUDGET_DIMENSIONS)[number];
 
-const budgetCounterSchema = z.number().int().min(0).max(1_000_000_000_000);
+const BUDGET_COUNTER_MAX = 1_000_000_000_000;
+const budgetCounterSchema = z.number().int().min(0).max(BUDGET_COUNTER_MAX);
 
 export const runBudgetCountersV1Schema = z.object(
   Object.fromEntries(
@@ -151,6 +152,21 @@ export class RunBudgetExceededError extends Error {
   }
 }
 
+/** A turn would take the workspace's AI usage past its 24-hour limit. */
+export class TenantDailyBudgetExceededError extends RunBudgetExceededError {
+  constructor(
+    dimension: "tokens" | "costMicrousd",
+    limit: number,
+    attempted: number,
+  ) {
+    super(dimension, limit, attempted);
+    this.message =
+      `The workspace's ${budgetDimensionLabel(dimension)} budget for the `
+      + `last 24 hours is exhausted (${attempted} requested, limit ${limit}).`;
+    this.name = "TenantDailyBudgetExceededError";
+  }
+}
+
 export function zeroRunBudgetCounters(): RunBudgetCountersV1 {
   return {
     modelTurns: 0,
@@ -278,6 +294,166 @@ export function budgetPerRemainingModelTurn(
     1,
     Math.floor(remaining[dimension] / remaining.modelTurns),
   );
+}
+
+/** Input tokens one image or binary part is assumed to add to a request. */
+export const ESTIMATED_IMAGE_INPUT_TOKENS = 1_600;
+
+const IMAGE_DATA_URL = /^data:image\/[a-z0-9.+-]+;base64,/i;
+const MAX_ESTIMATED_DEPTH = 64;
+
+/**
+ * Estimate a model request's input tokens from what it sends: about four
+ * characters a token over every key and value, and a fixed allowance for each
+ * image, whose encoded size says little about what it costs.
+ */
+export function estimateModelInputTokens(value: unknown) {
+  let characters = 0;
+  let images = 0;
+  const path = new Set<object>();
+  const visit = (item: unknown, key: string | undefined, depth: number) => {
+    if (typeof item === "string") {
+      if (key === "dataBase64" || IMAGE_DATA_URL.test(item)) images += 1;
+      else characters += item.length;
+      return;
+    }
+    if (
+      typeof item === "number" ||
+      typeof item === "boolean" ||
+      typeof item === "bigint"
+    ) {
+      characters += String(item).length;
+      return;
+    }
+    if (!item || typeof item !== "object") return;
+    if (ArrayBuffer.isView(item) || item instanceof ArrayBuffer) {
+      images += 1;
+      return;
+    }
+    if (depth >= MAX_ESTIMATED_DEPTH || path.has(item)) return;
+    path.add(item);
+    if (Array.isArray(item)) {
+      for (const entry of item) visit(entry, undefined, depth + 1);
+    } else {
+      for (const [name, entry] of Object.entries(item)) {
+        characters += name.length;
+        visit(entry, name, depth + 1);
+      }
+    }
+    path.delete(item);
+  };
+  visit(value, undefined, 0);
+  return Math.ceil(characters / 4) + images * ESTIMATED_IMAGE_INPUT_TOKENS;
+}
+
+export type ModelTurnBudgetEstimate = {
+  /** The turn's estimated input and the most output it may produce. */
+  tokens: number;
+  costMicrousd: number;
+  /** The same for one more turn, after a full round of tool results. */
+  followUpTokens: number;
+  followUpCostMicrousd: number;
+};
+
+/** A workspace's AI usage over its rolling window, and the limit on it. */
+export type TenantDailyBudgetCeiling = Record<
+  "tokens" | "costMicrousd",
+  { limit: number; used: number }
+>;
+
+export type ModelTurnBudgetReservation = {
+  tokens: number;
+  costMicrousd: number;
+  retries: number;
+};
+
+/**
+ * Reserve one model turn at its estimate. A turn that may call tools is the
+ * run's last when no room would be left for one more turn after the tool
+ * results, in the run's budget or in the workspace's window: it is then asked
+ * for its answer instead.
+ */
+export function planModelTurnBudget(
+  state: RunBudgetStateV1,
+  input: {
+    estimate: ModelTurnBudgetEstimate;
+    toolsEnabled: boolean;
+    allowRetry?: boolean;
+    ceiling?: TenantDailyBudgetCeiling;
+    now?: number;
+  },
+) {
+  const now = input.now ?? Date.now();
+  const retries = input.allowRetry !== false &&
+      remainingRunBudget(state, now).retries > 0
+    ? 1
+    : 0;
+  const reserved: ModelTurnBudgetReservation = {
+    tokens: input.estimate.tokens,
+    costMicrousd: input.estimate.costMicrousd,
+    retries,
+  };
+  const next = reserveRunBudget(state, { modelTurns: 1, ...reserved }, now);
+  const ceiling = input.ceiling;
+  if (ceiling) {
+    for (const dimension of ["tokens", "costMicrousd"] as const) {
+      const attempted = ceiling[dimension].used + reserved[dimension];
+      if (attempted > ceiling[dimension].limit) {
+        throw new TenantDailyBudgetExceededError(
+          dimension,
+          ceiling[dimension].limit,
+          attempted,
+        );
+      }
+    }
+  }
+  const remaining = remainingRunBudget(next, now);
+  const room = (dimension: "tokens" | "costMicrousd") => Math.min(
+    remaining[dimension],
+    ceiling
+      ? ceiling[dimension].limit - ceiling[dimension].used - reserved[dimension]
+      : Number.POSITIVE_INFINITY,
+  );
+  const finalTurn = input.toolsEnabled && (
+    remaining.modelTurns < 1 ||
+    room("tokens") < input.estimate.followUpTokens ||
+    room("costMicrousd") < input.estimate.followUpCostMicrousd
+  );
+  return { state: next, reserved, maxAttempts: 1 + retries, finalTurn };
+}
+
+/**
+ * Replace a turn's reservation with what it spent. A measure the provider did
+ * not report keeps its reservation, and a retry the turn did not make is
+ * returned. Spending past a limit is recorded as it happened, so the next
+ * reservation fails.
+ */
+export function settleModelTurnBudget(
+  state: RunBudgetStateV1,
+  reserved: ModelTurnBudgetReservation,
+  spent: { tokens?: number; costMicrousd?: number; retries: number },
+): RunBudgetStateV1 {
+  const current = runBudgetStateV1Schema.parse(state);
+  const settle = (
+    dimension: "tokens" | "costMicrousd" | "retries",
+    actual: number | undefined,
+  ) => Math.min(
+    BUDGET_COUNTER_MAX,
+    Math.max(0, current.used[dimension] - reserved[dimension]) + (
+      actual !== undefined && Number.isFinite(actual)
+        ? Math.ceil(Math.max(0, actual))
+        : reserved[dimension]
+    ),
+  );
+  return runBudgetStateV1Schema.parse({
+    ...current,
+    used: {
+      ...current.used,
+      tokens: settle("tokens", spent.tokens),
+      costMicrousd: settle("costMicrousd", spent.costMicrousd),
+      retries: settle("retries", Math.min(reserved.retries, spent.retries)),
+    },
+  });
 }
 
 const LOCAL_COMPUTER_VISUAL_ACTION_TOOL_IDS = new Set([

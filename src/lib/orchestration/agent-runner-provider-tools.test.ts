@@ -8,6 +8,7 @@ import {
 } from "@/lib/delegation/runtime-policy";
 import type { AgentEvent } from "@/lib/orchestration/types";
 import { AGENT_REASONING_EFFORT } from "@/lib/config";
+import { estimateModelInputTokens } from "@/lib/runs/budgets";
 import { AgentRunTerminatedError } from "@/lib/runs/cancellation";
 import type {
   ModelToolCall,
@@ -261,6 +262,156 @@ describe("non-OpenAI governed provider tool loop", () => {
       }),
       isError: true,
     }]);
+  });
+
+  it("estimates each turn from what it sends and settles what it spent", async () => {
+    const first = turn({
+      toolCalls: [{ callId: "call-read", name: "read_a", argumentsJson: "{}" }],
+      inputTokens: 40,
+      outputTokens: 5,
+    });
+    const second = turn({ text: "Done.", inputTokens: 900, outputTokens: 7 });
+    const requests: ModelToolTurnRequest[] = [];
+    const generateTurn = vi.fn(async (request: ModelToolTurnRequest) => {
+      requests.push(request);
+      return requests.length === 1 ? first : second;
+    });
+    const executeTool = vi.fn(async (request: { toolId: string }) => ({
+      record: executionRecord(request.toolId, "executed"),
+      result: { excerpt: "x".repeat(2_000) },
+    }));
+    const settle = vi.fn();
+    const beforeModelTurn = vi.fn(async (_input: {
+      estimatedInputTokens: number;
+      toolsEnabled: boolean;
+    }) => ({ maxAttempts: 1, settle }));
+
+    await collect(runNonOpenAIProviderToolLoop({
+      provider: "google",
+      tier: "fast",
+      instructions: "Read once, then answer.",
+      prompt: "Inspect the source.",
+      tools: [modelTool("read_a")],
+      toolbox: {
+        byFunctionName: new Map([["read_a", {
+          definition: toolDefinition("read.a"),
+          functionName: "read_a",
+        }]]),
+      },
+      securityContext: {
+        tenantId: "default",
+        actorId: "owner",
+        role: "admin",
+        source: "default",
+      },
+      runId: "run-turn-estimates",
+      beforeModelTurn: beforeModelTurn as never,
+      generateTurn,
+      executeTool: executeTool as never,
+    }));
+
+    const estimates = beforeModelTurn.mock.calls.map(
+      ([call]) => call.estimatedInputTokens,
+    );
+    expect(estimates).toEqual([
+      estimateModelInputTokens([
+        "Read once, then answer.",
+        [modelTool("read_a")],
+        "Inspect the source.",
+        undefined,
+      ]),
+      estimateModelInputTokens([
+        "Read once, then answer.",
+        [modelTool("read_a")],
+        [],
+        requests[1].toolResults,
+      ]),
+    ]);
+    // The second turn also sends the 2,000-character read result.
+    expect(estimates[1] - estimates[0]).toBeGreaterThanOrEqual(500);
+    expect(settle.mock.calls).toEqual([[first], [second]]);
+  });
+
+  it("asks for the answer once the run's budget has no room for a tool round", async () => {
+    const requests: ModelToolTurnRequest[] = [];
+    const generateTurn = vi.fn(async (request: ModelToolTurnRequest) => {
+      requests.push(request);
+      return turn({
+        toolCalls: [{
+          callId: `call-${requests.length}`,
+          name: "read_a",
+          argumentsJson: "{}",
+        }],
+      });
+    });
+    const executeTool = vi.fn(async (request: { toolId: string }) => ({
+      record: executionRecord(request.toolId, "executed"),
+      result: { source: request.toolId },
+    }));
+    // Only the second reservation finds the budget final; the third turn
+    // must stay final anyway.
+    const beforeModelTurn = vi.fn(async (input: {
+      attempt: number;
+      toolsEnabled: boolean;
+    }) => ({ maxAttempts: 1, finalTurn: input.attempt === 2 }));
+    const events: AgentEvent[] = [];
+    const loop = runNonOpenAIProviderToolLoop({
+      provider: "google",
+      tier: "fast",
+      instructions: "Read, then answer.",
+      prompt: "Inspect the source.",
+      tools: [modelTool("read_a")],
+      toolbox: {
+        byFunctionName: new Map([["read_a", {
+          definition: toolDefinition("read.a"),
+          functionName: "read_a",
+        }]]),
+      },
+      securityContext: {
+        tenantId: "default",
+        actorId: "owner",
+        role: "admin",
+        source: "default",
+      },
+      runId: "run-budget-final",
+      beforeModelTurn: beforeModelTurn as never,
+      generateTurn,
+      executeTool: executeTool as never,
+    });
+
+    await expect((async () => {
+      for await (const event of loop) events.push(event);
+    })()).rejects.toThrow(
+      "google returned tool calls after the run's budget left no room for another tool round.",
+    );
+    expect(executeTool).toHaveBeenCalledTimes(1);
+    expect(requests.map((request) => request.toolChoice)).toEqual([
+      undefined,
+      "none",
+      "none",
+    ]);
+    expect(beforeModelTurn.mock.calls.map(([call]) => call.toolsEnabled))
+      .toEqual([true, true, false]);
+    expect(events.filter((event) =>
+      event.type === "status" && event.label === "finishing within budget"
+    )).toHaveLength(1);
+    expect(requests[2].toolResults).toEqual([{
+      callId: "call-2",
+      name: "read_a",
+      output: JSON.stringify({
+        provenance: "tool_result",
+        trust: "untrusted_data",
+        data: {
+          error: "Run budget reached; call not run. Answer in text from the results you already have.",
+        },
+      }),
+      isError: true,
+    }]);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "status",
+      label: "tool calls refused",
+      detail: "1 tool call(s) past the run's budget were not run; asking the model again for its final answer.",
+    }));
   });
 
   it("asks once more for the answer when the final turn still calls a tool", async () => {
@@ -527,8 +678,20 @@ describe("non-OpenAI governed provider tool loop", () => {
     expect(generateTurn.mock.calls.every(([request]) => request.maxAttempts === 1))
       .toBe(true);
     expect(beforeModelTurn.mock.calls.map(([call]) => call)).toEqual([
-      { attempt: 5, provider: "google", tier: "fast" },
-      { attempt: 6, provider: "google", tier: "fast" },
+      {
+        attempt: 5,
+        provider: "google",
+        tier: "fast",
+        estimatedInputTokens: expect.any(Number),
+        toolsEnabled: true,
+      },
+      {
+        attempt: 6,
+        provider: "google",
+        tier: "fast",
+        estimatedInputTokens: expect.any(Number),
+        toolsEnabled: true,
+      },
     ]);
     expect(
       collected.events

@@ -16,6 +16,8 @@ import {
   hasOpenAIKey,
   LOCAL_COMPUTER_MAX_TOOL_STEPS,
   LOCAL_COMPUTER_RUN_BUDGET_LIMITS,
+  TENANT_DAILY_MAX_COST_MICROUSD,
+  TENANT_DAILY_MAX_TOKENS,
 } from "@/lib/config";
 import { getActiveAgentAdaptationGuidance } from "@/lib/agents/adaptation-store";
 import {
@@ -42,6 +44,7 @@ import {
   ModelProviderError,
 } from "@/lib/models/types";
 import type { ModelComputerObservation } from "@/lib/models/computer-observation";
+import { estimateProviderCost } from "@/lib/models/pricing";
 import {
   createMemoryAccessContext,
   usesDurableMemory,
@@ -68,7 +71,7 @@ import {
   type ResponseFunctionTool,
   type ResponseTurnInput,
 } from "@/lib/openai/client";
-import { selectAgentModel } from "@/lib/openai/model-router";
+import { selectAgentModel, type ModelUsage } from "@/lib/openai/model-router";
 import { recordRuntimeEventSafely } from "@/lib/observability/store";
 import { enqueueMemoryConsolidationJob } from "@/lib/operations/background-jobs";
 import {
@@ -170,16 +173,22 @@ import {
 } from "@/lib/runs/contract-runtime";
 import {
   DEFAULT_AGENT_RUN_BUDGET_LIMITS,
+  ESTIMATED_IMAGE_INPUT_TOKENS,
   RunBudgetExceededError,
   budgetPerRemainingModelTurn,
   createRunBudgetState,
+  estimateModelInputTokens,
   isBrowserActionTool,
+  planModelTurnBudget,
   remainingRunBudget,
   refreshRunBudgetWallTime,
   restoreLegacyAgentRunBudgetState,
   reserveRunBudget,
+  settleModelTurnBudget,
+  type ModelTurnBudgetEstimate,
   type RunBudgetCountersV1,
   type RunBudgetStateV1,
+  type TenantDailyBudgetCeiling,
 } from "@/lib/runs/budgets";
 import {
   isExpandedCheckpointCanaryEnrollment,
@@ -224,6 +233,7 @@ import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { getToolExecutionScopeBinding } from "@/lib/tools/execution-scope";
 import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
 import { appendThreadTurn } from "@/lib/threads/store";
+import { loadTenantAiUsageSince } from "@/lib/usage/allowance";
 import { recordAiUsageSafely } from "@/lib/usage/ledger";
 import { formatLiveWebSearchContext, runLiveWebSearch, shouldUseLiveWebSearch } from "@/lib/web-search/search";
 
@@ -561,7 +571,7 @@ async function* runAgentUntilStopped(
     runBudgetState = reserveRunBudget(runBudgetState, reservation);
   }
 
-  function reserveModelTurnBudget() {
+  function reserveModelTurnBudget(): AgentModelTurnBudget {
     const reservation = reserveAgentModelTurn(runBudgetState);
     runBudgetState = reservation.state;
     return { maxAttempts: reservation.maxAttempts };
@@ -581,6 +591,13 @@ async function* runAgentUntilStopped(
   const runId = run.id;
   const runTenantId = normalizeTenantId(run.tenantId || request.tenantId);
   cancellation.watch({ runId, tenantId: runTenantId });
+  const reserveEstimatedModelTurn = createAgentTurnBudgeter({
+    tenantId: runTenantId,
+    getState: () => runBudgetState,
+    setState: (state) => {
+      runBudgetState = state;
+    },
+  });
   const executionScope = request.executionScope || createExecutionScope({
     tenantId: runTenantId,
     initiatingActorId: request.actorId?.trim() || null,
@@ -835,15 +852,19 @@ async function* runAgentUntilStopped(
     model: string;
     tier: "fast" | "reasoning";
     allowRetry?: boolean;
-  }) {
-    const modelBudget = input.allowRetry === false
-      ? reserveModelTurnWithoutRetry()
-      : reserveModelTurnBudget();
+    budget?: AgentTurnBudget;
+  }): Promise<AgentModelTurnBudget> {
+    const { budget, ...checkpoint } = input;
+    const modelBudget = budget
+      ? await reserveEstimatedModelTurn(budget, input.allowRetry)
+      : input.allowRetry === false
+        ? reserveModelTurnWithoutRetry()
+        : reserveModelTurnBudget();
     if (!shadowRunContract) return modelBudget;
     try {
       await persistModelBeforeCheckpointShadow({
         runId,
-        ...input,
+        ...checkpoint,
         recordedAt: new Date().toISOString(),
         executionScope,
         runContractEnvelope: shadowRunContract.envelope,
@@ -859,7 +880,7 @@ async function* runAgentUntilStopped(
     return modelBudget;
   }
 
-  function reserveModelTurnWithoutRetry() {
+  function reserveModelTurnWithoutRetry(): AgentModelTurnBudget {
     const reservation = reserveAgentModelTurn(runBudgetState, false);
     runBudgetState = reservation.state;
     return { maxAttempts: reservation.maxAttempts };
@@ -1935,12 +1956,27 @@ async function* runAgentUntilStopped(
           forceApproval: agentToolPolicy?.forceApproval,
           forceApprovalAboveRisk: agentToolPolicy?.forceApprovalAboveRisk,
           bindModelRequest: (turnRequest) => runtimeModel.bind(turnRequest),
-          beforeModelTurn: ({ attempt, provider, tier }) =>
+          beforeModelTurn: ({
+            attempt,
+            provider,
+            tier,
+            estimatedInputTokens,
+            toolsEnabled,
+          }) =>
             checkpointBeforeModelTurn({
               attempt,
               provider,
               model: modelRoute.model,
               tier,
+              budget: {
+                estimate: agentTurnBudgetEstimate({
+                  provider,
+                  model: modelRoute.model,
+                  inputTokens: estimatedInputTokens,
+                  computerUseTarget,
+                }),
+                toolsEnabled,
+              },
             }),
           afterModelFailure: ({ attempt, provider, tier, error, generated }) =>
             checkpointAfterFailedModelTurn({
@@ -2133,7 +2169,24 @@ async function* runAgentUntilStopped(
           provider: "openai",
           model: modelRoute.model,
           tier: modelRoute.tier,
+          budget: {
+            estimate: agentTurnBudgetEstimate({
+              provider: "openai",
+              model: modelRoute.model,
+              inputTokens: estimateModelInputTokens([
+                instructions,
+                turnInput,
+                toolbox.openAITools,
+              ]),
+              computerUseTarget,
+            }),
+            toolsEnabled: toolSteps < maxToolSteps,
+          },
         });
+        const toolsEnabled = toolSteps < maxToolSteps && !modelBudget.finalTurn;
+        if (modelBudget.finalTurn) {
+          yield await emit(finishingWithinBudgetEvent());
+        }
         const channel = createDeltaChannel();
         const turnStartedAt = Date.now();
         const usageReceiptId = request.actorId ? randomUUID() : undefined;
@@ -2143,7 +2196,7 @@ async function* runAgentUntilStopped(
             instructions,
             input: turnInput,
             tools: toolbox.openAITools,
-            ...(toolSteps < maxToolSteps ? {} : { toolChoice: "none" as const }),
+            ...(toolsEnabled ? {} : { toolChoice: "none" as const }),
             ...(maxToolCallsPerTurn === 1 ? { parallelToolCalls: false } : {}),
             abortSignal: runAbortSignal,
             reasoningEffort:
@@ -2208,6 +2261,7 @@ async function* runAgentUntilStopped(
         }
 
         const turn = await turnPromise;
+        modelBudget.settle?.(turn);
         yield await emit({
           type: "model",
           provider: "openai",
@@ -2272,12 +2326,13 @@ async function* runAgentUntilStopped(
         if (!turn.functionCalls.length) {
           break;
         }
-        if (toolSteps >= maxToolSteps) {
+        if (!toolsEnabled) {
           // tool_choice "none" forbids a call on this turn, so a call breaks
           // the provider contract and is never run.
-          throw new Error(
-            "openai returned tool calls after the governed tool-step budget was exhausted.",
-          );
+          throw new Error(toolCallsAfterFinalTurnMessage(
+            "openai",
+            modelBudget.finalTurn,
+          ));
         }
 
         // Build the next conversation array: prior items + model's function call
@@ -2806,6 +2861,24 @@ async function* runAgentUntilStopped(
   }
 }
 
+function finishingWithinBudgetEvent() {
+  return {
+    type: "status" as const,
+    label: "finishing within budget",
+    detail:
+      "The run's remaining budget has no room for another tool round, so the model is asked for its final answer.",
+  };
+}
+
+function toolCallsAfterFinalTurnMessage(
+  provider: string,
+  budgetFinal: boolean | undefined,
+) {
+  return budgetFinal
+    ? `${provider} returned tool calls after the run's budget left no room for another tool round.`
+    : `${provider} returned tool calls after the governed tool-step budget was exhausted.`;
+}
+
 type NonOpenAIProviderLoopEvent = Extract<
   AgentEvent,
   { type: "delta" | "status" | "tool" | "model" }
@@ -2890,7 +2963,15 @@ export async function* runNonOpenAIProviderToolLoop(input: {
     attempt: number;
     provider: "openai" | "google" | "anthropic" | "aws_bedrock";
     tier: "fast" | "reasoning";
-  }) => Promise<{ maxAttempts?: number } | void>;
+    /** The turn's input tokens, estimated from what it sends. */
+    estimatedInputTokens: number;
+    /** The turn may call tools unless the hook makes it the last. */
+    toolsEnabled: boolean;
+  }) => Promise<{
+    maxAttempts?: number;
+    finalTurn?: boolean;
+    settle?: (turn: ModelToolTurnResult) => void;
+  } | void>;
   afterModelFailure?: (input: {
     attempt: number;
     provider: "openai" | "google" | "anthropic" | "aws_bedrock";
@@ -2972,15 +3053,36 @@ export async function* runNonOpenAIProviderToolLoop(input: {
     input.computerUseTarget,
   );
   let finalToolCallsRefused = false;
+  // Once the budget leaves no room for another tool round, every later turn
+  // is asked for the answer too.
+  let budgetFinal = false;
   for (;;) {
     input.abortSignal?.throwIfAborted();
-    const toolsEnabled = toolSteps < maxToolSteps;
+    const stepsAllowTools = toolSteps < maxToolSteps;
     const modelAttempt = modelAttemptOffset + turns + 1;
     const modelBudget = await input.beforeModelTurn?.({
       attempt: modelAttempt,
       provider: activeProvider,
       tier: input.tier,
+      estimatedInputTokens: estimateModelInputTokens([
+        input.instructions,
+        input.tools,
+        continuation
+          ? continuation.conversation?.length
+            ? continuation.conversation
+            : continuation.state
+          : input.conversation?.length
+            ? input.conversation
+            : input.prompt,
+        toolResults,
+      ]),
+      toolsEnabled: stepsAllowTools && !budgetFinal,
     });
+    if (modelBudget?.finalTurn && !budgetFinal) {
+      budgetFinal = true;
+      yield finishingWithinBudgetEvent();
+    }
+    const toolsEnabled = stepsAllowTools && !budgetFinal;
     const turnRequest: ModelToolTurnRequest = {
       input: input.prompt,
       ...(input.conversation ? { conversation: input.conversation } : {}),
@@ -3043,6 +3145,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
     if (!turn) {
       throw new Error("The provider-bound model turn returned no result.");
     }
+    modelBudget?.settle?.(turn);
     activeProvider = turn.provider;
 
     turns += 1;
@@ -3103,18 +3206,21 @@ export async function* runNonOpenAIProviderToolLoop(input: {
       // more for its answer.
       if (finalToolCallsRefused) {
         throw new Error(
-          `${activeProvider} returned tool calls after the governed tool-step budget was exhausted.`,
+          toolCallsAfterFinalTurnMessage(activeProvider, budgetFinal),
         );
       }
       finalToolCallsRefused = true;
       toolResults = turn.toolCalls.map((call) => providerToolResult(call, {
-        error: "Tool step budget reached; call not run. Answer in text from the results you already have.",
+        error: budgetFinal
+          ? "Run budget reached; call not run. Answer in text from the results you already have."
+          : "Tool step budget reached; call not run. Answer in text from the results you already have.",
       }, true));
       yield {
         type: "status",
         label: "tool calls refused",
-        detail:
-          `${turn.toolCalls.length} tool call(s) after the tool step budget were not run; asking the model again for its final answer.`,
+        detail: budgetFinal
+          ? `${turn.toolCalls.length} tool call(s) past the run's budget were not run; asking the model again for its final answer.`
+          : `${turn.toolCalls.length} tool call(s) after the tool step budget were not run; asking the model again for its final answer.`,
       };
       continue;
     }
@@ -3504,6 +3610,175 @@ function reserveAgentModelTurn(
   };
 }
 
+type AgentTurnBudget = {
+  estimate: ModelTurnBudgetEstimate;
+  toolsEnabled: boolean;
+};
+
+type AgentModelTurnBudget = {
+  maxAttempts: number;
+  /** The turn may not call tools: the budget has no room for another round. */
+  finalTurn?: boolean;
+  /** Replace the turn's reservation with what it spent, once it completes. */
+  settle?: (turn: SpentModelTurn) => void;
+};
+
+type SpentModelTurn = {
+  usage: ModelUsage;
+  estimatedCostUsd?: number;
+  costKnown?: boolean;
+  attempts: readonly unknown[];
+};
+
+type TenantDailyBudgetWindow = {
+  usage: { tokens: number; costMicrousd: number };
+  /**
+   * The run's usage when the window was read. The window already counts what
+   * the run had spent, so only the run's usage since then is added to it.
+   */
+  baseline: { tokens: number; costMicrousd: number };
+};
+
+const TENANT_DAILY_BUDGET_WINDOW_MS = 24 * 60 * 60 * 1_000;
+
+/**
+ * A turn's budget estimate: its input as sent and the most output it may
+ * produce, and for one more turn, that input grown by this turn's output and
+ * a full round of tool results. A model without a configured price is
+ * estimated at no cost, so tokens alone bound it.
+ */
+function agentTurnBudgetEstimate(input: {
+  provider: "openai" | "google" | "anthropic" | "aws_bedrock";
+  model: string;
+  inputTokens: number;
+  computerUseTarget?: ComputerUseTarget;
+}): ModelTurnBudgetEstimate {
+  const toolRoundTokens = Math.ceil(
+    toolCallsPerTurnForComputerUse(input.computerUseTarget) *
+      MAX_TOOL_RESULT_CHARS / 4,
+  ) + (
+    input.computerUseTarget === "local_macos"
+      ? ESTIMATED_IMAGE_INPUT_TOKENS
+      : 0
+  );
+  const followUpInputTokens =
+    input.inputTokens + AGENT_MAX_OUTPUT_TOKENS + toolRoundTokens;
+  const cost = (inputTokens: number) => {
+    const priced = estimateProviderCost(input.provider, input.model, {
+      inputTokens,
+      outputTokens: AGENT_MAX_OUTPUT_TOKENS,
+      cachedInputTokens: 0,
+      totalTokens: inputTokens + AGENT_MAX_OUTPUT_TOKENS,
+    });
+    return priced.costKnown
+      ? Math.ceil(priced.estimatedCostUsd * 1_000_000)
+      : 0;
+  };
+  return {
+    tokens: input.inputTokens + AGENT_MAX_OUTPUT_TOKENS,
+    costMicrousd: cost(input.inputTokens),
+    followUpTokens: followUpInputTokens + AGENT_MAX_OUTPUT_TOKENS,
+    followUpCostMicrousd: cost(followUpInputTokens),
+  };
+}
+
+/** What a completed turn spent, from its reported usage and priced cost. */
+function spentModelTurnBudget(turn: SpentModelTurn) {
+  const tokens = Math.max(
+    turn.usage.totalTokens,
+    turn.usage.inputTokens + turn.usage.outputTokens,
+  );
+  return {
+    ...(tokens > 0 ? { tokens } : {}),
+    ...(turn.costKnown !== false && turn.estimatedCostUsd !== undefined
+      ? { costMicrousd: Math.round(turn.estimatedCostUsd * 1_000_000) }
+      : {}),
+    retries: Math.max(0, turn.attempts.length - 1),
+  };
+}
+
+/**
+ * Read the workspace's AI usage over the last 24 hours. A read that fails
+ * leaves the run to its own limits.
+ */
+async function loadTenantDailyBudgetWindow(
+  tenantId: string,
+  state: RunBudgetStateV1,
+): Promise<TenantDailyBudgetWindow | undefined> {
+  try {
+    return {
+      usage: await loadTenantAiUsageSince({
+        tenantId,
+        since: new Date(Date.now() - TENANT_DAILY_BUDGET_WINDOW_MS),
+      }),
+      baseline: {
+        tokens: state.used.tokens,
+        costMicrousd: state.used.costMicrousd,
+      },
+    };
+  } catch (error) {
+    console.warn(
+      "The workspace's AI usage for the last 24 hours could not be read; the run's own limits still apply.",
+      error instanceof Error ? error.message : "Unknown error",
+    );
+    return undefined;
+  }
+}
+
+function tenantDailyBudgetCeiling(
+  window: TenantDailyBudgetWindow | undefined,
+  state: RunBudgetStateV1,
+): TenantDailyBudgetCeiling | undefined {
+  if (!window) return undefined;
+  return {
+    tokens: {
+      limit: TENANT_DAILY_MAX_TOKENS,
+      used: window.usage.tokens +
+        Math.max(0, state.used.tokens - window.baseline.tokens),
+    },
+    costMicrousd: {
+      limit: TENANT_DAILY_MAX_COST_MICROUSD,
+      used: window.usage.costMicrousd +
+        Math.max(0, state.used.costMicrousd - window.baseline.costMicrousd),
+    },
+  };
+}
+
+/**
+ * Reserve each estimated turn against the run's budget and the workspace's
+ * 24-hour window, which is read before the first such turn, and settle it
+ * from what the turn spent.
+ */
+function createAgentTurnBudgeter(input: {
+  tenantId: string;
+  getState: () => RunBudgetStateV1;
+  setState: (state: RunBudgetStateV1) => void;
+}) {
+  let window: Promise<TenantDailyBudgetWindow | undefined> | undefined;
+  return async (
+    budget: AgentTurnBudget,
+    allowRetry?: boolean,
+  ): Promise<AgentModelTurnBudget> => {
+    window ??= loadTenantDailyBudgetWindow(input.tenantId, input.getState());
+    const ceiling = tenantDailyBudgetCeiling(await window, input.getState());
+    const plan = planModelTurnBudget(input.getState(), {
+      ...budget,
+      allowRetry,
+      ceiling,
+    });
+    input.setState(plan.state);
+    return {
+      maxAttempts: plan.maxAttempts,
+      finalTurn: plan.finalTurn,
+      settle: (turn) => input.setState(settleModelTurnBudget(
+        input.getState(),
+        plan.reserved,
+        spentModelTurnBudget(turn),
+      )),
+    };
+  };
+}
+
 function reserveAgentTools(
   state: RunBudgetStateV1,
   tools: readonly ToolDefinition[],
@@ -3846,11 +4121,18 @@ async function resumeAgentRunAfterToolApprovalInScope({
     abortSignal,
   );
   const resumeAbortSignal = resumeWallBudget.signal;
-  const reserveResumeModelTurn = (allowRetry = true) => {
+  const reserveResumeModelTurn = (allowRetry = true): AgentModelTurnBudget => {
     const reservation = reserveAgentModelTurn(runBudgetState, allowRetry);
     runBudgetState = reservation.state;
     return { maxAttempts: reservation.maxAttempts };
   };
+  const reserveEstimatedResumeModelTurn = createAgentTurnBudgeter({
+    tenantId: normalizeTenantId(tenantId),
+    getState: () => runBudgetState,
+    setState: (state) => {
+      runBudgetState = state;
+    },
+  });
   const reserveResumeTools = (tools: readonly ToolDefinition[]) => {
     const reservation = reserveAgentTools(runBudgetState, tools);
     runBudgetState = reservation.state;
@@ -3893,13 +4175,17 @@ async function resumeAgentRunAfterToolApprovalInScope({
     model: string;
     tier: "fast" | "reasoning";
     allowRetry?: boolean;
-  }) => {
-    const modelBudget = reserveResumeModelTurn(input.allowRetry);
+    budget?: AgentTurnBudget;
+  }): Promise<AgentModelTurnBudget> => {
+    const { budget, ...checkpoint } = input;
+    const modelBudget = budget
+      ? await reserveEstimatedResumeModelTurn(budget, input.allowRetry)
+      : reserveResumeModelTurn(input.allowRetry);
     if (!executionScope || !continuation.runContractEnvelope) return modelBudget;
     try {
       await persistModelBeforeCheckpointShadow({
         runId: run.id,
-        ...input,
+        ...checkpoint,
         recordedAt: new Date().toISOString(),
         executionScope,
         runContractEnvelope: continuation.runContractEnvelope,
@@ -4308,13 +4594,32 @@ async function resumeAgentRunAfterToolApprovalInScope({
         pendingComputerObservations,
       );
       pendingComputerObservations = [];
-      await checkpointBeforeResumeModelTurn({
+      const modelBudget = await checkpointBeforeResumeModelTurn({
         attempt: toolSteps + 1,
         provider: "openai",
         model: resumeModel,
         tier: resumeTier,
         allowRetry: false,
+        budget: {
+          estimate: agentTurnBudgetEstimate({
+            provider: "openai",
+            model: resumeModel,
+            inputTokens: estimateModelInputTokens([
+              continuation.instructions,
+              turnInput,
+              toolbox.openAITools,
+            ]),
+            computerUseTarget: continuation.computerUseTarget === "local_macos"
+              ? "local_macos"
+              : undefined,
+          }),
+          toolsEnabled: toolSteps < maxToolSteps,
+        },
       });
+      const toolsEnabled = toolSteps < maxToolSteps && !modelBudget.finalTurn;
+      if (modelBudget.finalTurn) {
+        await appendScopedRunEvent(finishingWithinBudgetEvent());
+      }
       const turnStartedAt = Date.now();
       const usageReceiptId = continuation.context.actorId ? randomUUID() : undefined;
       let turn: Awaited<ReturnType<typeof streamResponseTurn>>;
@@ -4325,7 +4630,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
             instructions: continuation.instructions,
             input: turnInput,
             tools: toolbox.openAITools,
-            ...(toolSteps < maxToolSteps ? {} : { toolChoice: "none" as const }),
+            ...(toolsEnabled ? {} : { toolChoice: "none" as const }),
             ...(maxToolCallsPerTurn === 1 ? { parallelToolCalls: false } : {}),
             abortSignal: resumeAbortSignal,
             reasoningEffort:
@@ -4398,6 +4703,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
         }
         throw error;
       }
+      modelBudget.settle?.(turn);
 
       await flushDeltas();
       await appendScopedRunEvent({
@@ -4444,11 +4750,11 @@ async function resumeAgentRunAfterToolApprovalInScope({
       if (!turn.functionCalls.length) {
         break;
       }
-      if (toolSteps >= maxToolSteps) {
+      if (!toolsEnabled) {
         // tool_choice "none" forbids a call on this turn, so a call breaks
         // the provider contract and is never run.
         throw new Error(
-          "openai returned tool calls after the governed tool-step budget was exhausted.",
+          toolCallsAfterFinalTurnMessage("openai", modelBudget.finalTurn),
         );
       }
 
@@ -4808,11 +5114,18 @@ async function resumeProviderBoundAgentRunAfterApproval({
     abortSignal,
   );
   const resumeAbortSignal = resumeWallBudget.signal;
-  const reserveResumeModelTurn = () => {
+  const reserveResumeModelTurn = (): AgentModelTurnBudget => {
     const reservation = reserveAgentModelTurn(runBudgetState);
     runBudgetState = reservation.state;
     return { maxAttempts: reservation.maxAttempts };
   };
+  const reserveEstimatedResumeModelTurn = createAgentTurnBudgeter({
+    tenantId: normalizeTenantId(tenantId),
+    getState: () => runBudgetState,
+    setState: (state) => {
+      runBudgetState = state;
+    },
+  });
   const reserveResumeTools = (tools: readonly ToolDefinition[]) => {
     const reservation = reserveAgentTools(runBudgetState, tools);
     runBudgetState = reservation.state;
@@ -4853,13 +5166,17 @@ async function resumeProviderBoundAgentRunAfterApproval({
     provider: string;
     model: string;
     tier: "fast" | "reasoning";
-  }) => {
-    const modelBudget = reserveResumeModelTurn();
+    budget?: AgentTurnBudget;
+  }): Promise<AgentModelTurnBudget> => {
+    const { budget, ...checkpoint } = input;
+    const modelBudget = budget
+      ? await reserveEstimatedResumeModelTurn(budget)
+      : reserveResumeModelTurn();
     if (!executionScope || !continuation.runContractEnvelope) return modelBudget;
     try {
       await persistModelBeforeCheckpointShadow({
         runId: run.id,
-        ...input,
+        ...checkpoint,
         recordedAt: new Date().toISOString(),
         executionScope,
         runContractEnvelope: continuation.runContractEnvelope,
@@ -5350,12 +5667,29 @@ async function resumeProviderBoundAgentRunAfterApproval({
       bindModelRequest: runtimeCarriesProvider && resumeRuntimeModel.configured
         ? (turnRequest) => resumeRuntimeModel.bind(turnRequest)
         : undefined,
-      beforeModelTurn: ({ attempt, provider, tier }) =>
+      beforeModelTurn: ({
+        attempt,
+        provider,
+        tier,
+        estimatedInputTokens,
+        toolsEnabled,
+      }) =>
         checkpointBeforeResumeModelTurn({
           attempt,
           provider,
           model: resumeModel,
           tier,
+          budget: {
+            estimate: agentTurnBudgetEstimate({
+              provider,
+              model: resumeModel,
+              inputTokens: estimatedInputTokens,
+              computerUseTarget: continuation.computerUseTarget === "local_macos"
+                ? "local_macos"
+                : undefined,
+            }),
+            toolsEnabled,
+          },
         }),
       afterModelFailure: async ({
         attempt,

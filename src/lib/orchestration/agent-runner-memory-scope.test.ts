@@ -23,7 +23,11 @@ import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
 import { MAX_ASSIGNED_SKILLS } from "@/lib/skills/limits";
 import { builtInSkills } from "@/lib/skills/catalog";
 import { getGovernedTool } from "@/lib/tools/registry";
-import { DEFAULT_AGENT_RUN_BUDGET_LIMITS } from "@/lib/runs/budgets";
+import {
+  DEFAULT_AGENT_RUN_BUDGET_LIMITS,
+  estimateModelInputTokens,
+} from "@/lib/runs/budgets";
+import { TENANT_DAILY_MAX_TOKENS } from "@/lib/config";
 import { AgentRunTerminatedError } from "@/lib/runs/cancellation";
 
 const mocks = vi.hoisted(() => ({
@@ -55,7 +59,9 @@ const mocks = vi.hoisted(() => ({
   getAgentRunExecutionScope: vi.fn(),
   getAgentRunIdentityPin: vi.fn(),
   getToolExecutionScopeBinding: vi.fn(),
+  loadTenantAiUsageSince: vi.fn(),
   markAgentRunResuming: vi.fn(),
+  planModelTurnBudget: vi.fn(),
   readAgentRunStatus: vi.fn(),
   selectAgentModel: vi.fn(),
   syncMissionExecutorSafely: vi.fn(),
@@ -197,6 +203,16 @@ vi.mock("@/lib/runs/active-run-fence", async (importOriginal) => ({
   readAgentRunStatus: mocks.readAgentRunStatus,
 }));
 
+vi.mock("@/lib/usage/allowance", () => ({
+  loadTenantAiUsageSince: mocks.loadTenantAiUsageSince,
+}));
+
+vi.mock("@/lib/runs/budgets", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/runs/budgets")>();
+  mocks.planModelTurnBudget.mockImplementation(actual.planModelTurnBudget);
+  return { ...actual, planModelTurnBudget: mocks.planModelTurnBudget };
+});
+
 vi.mock("@/lib/web-search/search", () => ({
   formatLiveWebSearchContext: vi.fn(),
   runLiveWebSearch: vi.fn(),
@@ -247,6 +263,10 @@ describe("agent memory scope", () => {
     mocks.findAgentRunWaitingForToolApproval.mockReset();
     mocks.getAgentRunExecutionScope.mockResolvedValue(undefined);
     mocks.getToolExecutionScopeBinding.mockResolvedValue(undefined);
+    mocks.loadTenantAiUsageSince.mockResolvedValue({
+      tokens: 0,
+      costMicrousd: 0,
+    });
     mocks.syncMissionExecutorSafely.mockResolvedValue(undefined);
     mocks.resolvePersonalContextMemoryAccess.mockImplementation(async (value) =>
       value?.databaseAccessScope
@@ -1648,6 +1668,268 @@ describe("agent memory scope", () => {
         REFUSED,
         expect.any(Object),
       );
+    });
+  });
+
+  describe("model turn budgets", () => {
+    // Every fixture turn reports 7 tokens, far below its estimate.
+    const WORKSPACE_EXHAUSTED =
+      /^The workspace's token budget for the last 24 hours is exhausted \(\d+ requested, limit \d+\)\./;
+
+    it.each(["openai", "google"] as const)(
+      "charges a %s turn what it spent, not its estimate",
+      async (provider) => {
+        const continuation = await pauseForApproval(request("session"), provider);
+
+        expect(continuation.budgetState?.used).toMatchObject({
+          modelTurns: 1,
+          tokens: 7,
+          retries: 0,
+        });
+      },
+    );
+
+    it.each(["openai", "google"] as const)(
+      "charges a %s turn its input and output when they exceed its reported total",
+      async (provider) => {
+        const agentRequest = request("session");
+        armApprovalPause(agentRequest, provider);
+        const call = { callId: "call-memory-approval", name: APPROVAL_TOOL_ID };
+        const usage = {
+          inputTokens: 40,
+          outputTokens: 10,
+          cachedInputTokens: 0,
+          totalTokens: 0,
+        };
+        if (provider === "google") {
+          mocks.generateModelToolTurn.mockResolvedValue({
+            ...providerTurn({ toolCalls: [{ ...call, argumentsJson: "{}" }] }),
+            usage,
+          });
+        } else {
+          mocks.streamResponseTurn.mockResolvedValue({
+            ...openAITurn({ calls: [call] }),
+            usage,
+          });
+        }
+
+        await collectRequest(agentRequest);
+
+        const parked = mocks.markAgentRunWaitingForApproval.mock.calls[0][1]
+          .continuation as AgentRunContinuation;
+        expect(parked.budgetState?.used.tokens).toBe(50);
+      },
+    );
+
+    it("reserves a turn's input and most output, and the next turn's after a full round of tool results", async () => {
+      const events = await collectRequest(request("session"));
+
+      expect(events).toContainEqual(expect.objectContaining({ type: "done" }));
+      const [modelRequest] = mocks.streamResponseTurn.mock.calls[0];
+      const inputTokens = estimateModelInputTokens([
+        modelRequest.instructions,
+        modelRequest.input,
+        modelRequest.tools,
+      ]);
+      // The most output is mocked to 128 tokens; five results of 8,000
+      // characters are 10,000 tokens.
+      expect(mocks.planModelTurnBudget.mock.calls[0]?.[1].estimate).toMatchObject({
+        tokens: inputTokens + 128,
+        followUpTokens: inputTokens + 128 + 10_000 + 128,
+      });
+    });
+
+    it.each(["openai", "google"] as const)(
+      "charges a resumed %s turn what it spent",
+      async (provider) => {
+        const continuation = await pauseForApproval(request("session"), provider);
+        mocks.markAgentRunWaitingForApproval.mockClear();
+        const call = { callId: "call-second-approval", name: APPROVAL_TOOL_ID };
+
+        await expect(resumeAfterApproval(
+          { ...continuation, maxToolSteps: 3 },
+          provider === "openai"
+            ? openAITurn({ calls: [call] })
+            : providerTurn({ toolCalls: [{ ...call, argumentsJson: "{}" }] }),
+        )).resolves.toMatchObject({ resumed: true, status: "waiting_approval" });
+
+        const parked = mocks.markAgentRunWaitingForApproval.mock.calls[0][1]
+          .continuation as AgentRunContinuation;
+        expect(parked.budgetState?.used).toMatchObject({
+          modelTurns: 2,
+          tokens: 14,
+          retries: 0,
+        });
+      },
+    );
+
+    it("asks a direct OpenAI run for its answer when no turn would follow its tools", async () => {
+      const scopedRequest = request("session");
+      scopedRequest.agentProfile!.toolIds = ["knowledge.search"];
+      scopedRequest.budgetLimits = {
+        ...DEFAULT_AGENT_RUN_BUDGET_LIMITS,
+        modelTurns: 1,
+      };
+      mocks.loadProgressiveAgentTools.mockResolvedValue({
+        definitions: [localToolDefinition("knowledge.search")],
+      });
+      mocks.streamResponseTurn.mockImplementation(async (modelRequest) => {
+        await modelRequest.onDelta("Answered within budget.");
+        return openAITurn({ text: "Answered within budget." });
+      });
+
+      const events = await collectRequest(scopedRequest);
+
+      expect(mocks.streamResponseTurn).toHaveBeenCalledOnce();
+      const [modelRequest] = mocks.streamResponseTurn.mock.calls[0];
+      expect(modelRequest.tools).toHaveLength(1);
+      expect(modelRequest.toolChoice).toBe("none");
+      expect(events).toContainEqual(expect.objectContaining({
+        type: "status",
+        label: "finishing within budget",
+      }));
+      expect(events).toContainEqual(expect.objectContaining({
+        type: "done",
+        response: "Answered within budget.",
+      }));
+    });
+
+    it("asks a resumed OpenAI run for its answer when no turn would follow its tools", async () => {
+      const continuation = await pauseForApproval(request("session"), "openai");
+      mocks.streamResponseTurn.mockClear();
+      mocks.appendRunEvent.mockClear();
+      const budgetState = continuation.budgetState!;
+
+      await expect(resumeAfterApproval({
+        ...continuation,
+        maxToolSteps: 3,
+        budgetState: {
+          ...budgetState,
+          limits: {
+            ...budgetState.limits,
+            modelTurns: budgetState.used.modelTurns + 1,
+          },
+        },
+      })).resolves.toMatchObject({ resumed: true, status: "completed" });
+
+      expect(mocks.streamResponseTurn).toHaveBeenCalledOnce();
+      expect(mocks.streamResponseTurn.mock.calls[0][0].toolChoice).toBe("none");
+      expect(mocks.appendRunEvent.mock.calls.map(([, event]) => event))
+        .toContainEqual(expect.objectContaining({
+          type: "status",
+          label: "finishing within budget",
+        }));
+    });
+
+    it("stops a run before its first turn once the workspace's daily tokens are spent", async () => {
+      mocks.loadTenantAiUsageSince.mockResolvedValue({
+        tokens: TENANT_DAILY_MAX_TOKENS,
+        costMicrousd: 0,
+      });
+      const before = Date.now();
+
+      const events = await collectRequest(request("session"));
+
+      expect(mocks.streamResponseTurn).not.toHaveBeenCalled();
+      expect(mocks.loadTenantAiUsageSince).toHaveBeenCalledOnce();
+      const [{ tenantId, since }] = mocks.loadTenantAiUsageSince.mock.calls[0];
+      expect(tenantId).toBe("paid-test-tenant");
+      expect(before - since.getTime()).toBeGreaterThanOrEqual(24 * 60 * 60 * 1_000 - 5_000);
+      expect(before - since.getTime()).toBeLessThanOrEqual(24 * 60 * 60 * 1_000);
+      expect(events).toContainEqual(expect.objectContaining({
+        type: "budget_exhausted",
+        dimension: "tokens",
+        limit: TENANT_DAILY_MAX_TOKENS,
+        message: expect.stringMatching(WORKSPACE_EXHAUSTED),
+      }));
+      expect(events.at(-1)).toEqual({
+        type: "error",
+        message: expect.stringMatching(WORKSPACE_EXHAUSTED),
+      });
+    });
+
+    it("stops a resumed run once the workspace's daily tokens are spent", async () => {
+      const continuation = await pauseForApproval(request("session"), "google");
+      mocks.generateModelToolTurn.mockClear();
+      mocks.loadTenantAiUsageSince.mockResolvedValue({
+        tokens: TENANT_DAILY_MAX_TOKENS,
+        costMicrousd: 0,
+      });
+
+      await expect(resumeAfterApproval(continuation))
+        .resolves.toMatchObject({ resumed: true, status: "failed" });
+
+      expect(mocks.generateModelToolTurn).not.toHaveBeenCalled();
+      expect(mocks.failAgentRun).toHaveBeenCalledWith(
+        "run-memory-scope",
+        expect.stringMatching(WORKSPACE_EXHAUSTED),
+        expect.any(Object),
+      );
+    });
+
+    it("keeps to the run's own limits when the workspace's usage cannot be read", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      mocks.loadTenantAiUsageSince.mockRejectedValue(new Error("ledger offline"));
+
+      try {
+        const events = await collectRequest(request("session"));
+
+        expect(events).toContainEqual(expect.objectContaining({
+          type: "done",
+          response: "ASAEL_LIVE_OK",
+        }));
+        expect(warn).toHaveBeenCalledWith(
+          "The workspace's AI usage for the last 24 hours could not be read; the run's own limits still apply.",
+          "ledger offline",
+        );
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it("adds what a run spends after the window was read to the workspace's usage", async () => {
+      mocks.loadTenantAiUsageSince.mockResolvedValue({ tokens: 1_000, costMicrousd: 0 });
+      const scopedRequest = request("session");
+      scopedRequest.agentProfile!.toolIds = ["knowledge.search"];
+      mocks.loadProgressiveAgentTools.mockResolvedValue({
+        definitions: [localToolDefinition("knowledge.search")],
+      });
+      mocks.executeGovernedTool.mockResolvedValue({
+        record: localExecutionRecord("knowledge.search", "execution-knowledge-search"),
+        result: { results: [] },
+      });
+      mocks.streamResponseTurn.mockImplementation(async (modelRequest) => {
+        if (mocks.streamResponseTurn.mock.calls.length === 1) {
+          return openAITurn({ callId: "call-knowledge-search", name: "knowledge.search" });
+        }
+        await modelRequest.onDelta("Done.");
+        return openAITurn({ text: "Done." });
+      });
+
+      const events = await collectRequest(scopedRequest);
+
+      expect(events).toContainEqual(expect.objectContaining({ type: "done", response: "Done." }));
+      expect(mocks.loadTenantAiUsageSince).toHaveBeenCalledOnce();
+      expect(mocks.planModelTurnBudget.mock.calls.map(([, plan]) => plan.ceiling?.tokens))
+        .toEqual([
+          { limit: TENANT_DAILY_MAX_TOKENS, used: 1_000 },
+          { limit: TENANT_DAILY_MAX_TOKENS, used: 1_007 },
+        ]);
+    });
+
+    it("does not add a resumed run's earlier usage to the window that already counts it", async () => {
+      const continuation = await pauseForApproval(request("session"), "openai");
+      expect(continuation.budgetState?.used.tokens).toBe(7);
+      mocks.loadTenantAiUsageSince.mockResolvedValue({ tokens: 1_000, costMicrousd: 0 });
+      mocks.planModelTurnBudget.mockClear();
+
+      await expect(resumeAfterApproval({ ...continuation, maxToolSteps: 3 }))
+        .resolves.toMatchObject({ resumed: true, status: "completed" });
+
+      expect(mocks.planModelTurnBudget.mock.calls[0]?.[1].ceiling?.tokens).toEqual({
+        limit: TENANT_DAILY_MAX_TOKENS,
+        used: 1_000,
+      });
     });
   });
 

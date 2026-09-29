@@ -281,9 +281,11 @@ export const AGENT_MAX_OUTPUT_TOKENS = normalizePositiveInteger(
   process.env.OMNIAGENT_AGENT_MAX_OUTPUT_TOKENS,
   2_000,
 );
+// Every turn is charged the tokens it used, and each turn sends the whole
+// conversation again, so a run's total grows with each tool round.
 export const AGENT_MAX_TOTAL_TOKENS = normalizePositiveInteger(
   process.env.OMNIAGENT_AGENT_MAX_TOTAL_TOKENS,
-  64_000,
+  400_000,
 );
 export const AGENT_MAX_COST_MICROUSD = normalizePositiveInteger(
   process.env.OMNIAGENT_AGENT_MAX_COST_MICROUSD,
@@ -314,6 +316,17 @@ export const AGENT_MAX_RETRIES = normalizePositiveInteger(
 export const AGENT_MAX_REPLANS = normalizePositiveInteger(
   process.env.OMNIAGENT_AGENT_MAX_REPLANS,
   1,
+);
+
+// An agent turn also must fit the workspace's AI usage over the last 24
+// hours, as the usage ledger records it.
+export const TENANT_DAILY_MAX_TOKENS = normalizePositiveInteger(
+  process.env.OMNIAGENT_TENANT_DAILY_MAX_TOKENS,
+  5_000_000,
+);
+export const TENANT_DAILY_MAX_COST_MICROUSD = normalizePositiveInteger(
+  process.env.OMNIAGENT_TENANT_DAILY_MAX_COST_MICROUSD,
+  25_000_000,
 );
 
 export const AGENT_RUN_BUDGET_LIMITS = Object.freeze({
