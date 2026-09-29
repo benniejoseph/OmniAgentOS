@@ -650,10 +650,10 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
     expectedRevision: integer(0, Number.MAX_SAFE_INTEGER),
     reason: text(1, 500),
   }, ["executionId", "expectedRevision"]), { riskLevel: 2, approvalRequired: true, reversible: false }),
-  mutationTool("app.agents.create", "Create custom agent", "Create one custom agent with bounded skills, tools, memory, model, and approval policy.", requiredObjectSchema(agentProperties(), ["name", "role", "description", "instructions"]), { reversible: true }),
+  mutationTool("app.agents.create", "Create custom agent", "Create one custom agent with bounded skills, tools, memory, model, and approval policy.", requiredObjectSchema(agentProperties(), ["name", "role", "description", "instructions"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
   mutationTool("app.agents.update", "Update custom agent", "Update one exact custom agent.", requiredObjectSchema({
     id: opaqueId("Exact custom-agent ID."), change: objectSchema(agentProperties()),
-  }, ["id", "change"]), { reversible: true }),
+  }, ["id", "change"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
   readTool("app.agents.delete.preview", "Preview custom-agent trash", "Preview moving one exact custom Agent to reversible trash, including the immutable-identity compensation limitation.", requiredObjectSchema({ id: opaqueId("Exact custom-agent ID.") }, ["id"])),
   mutationTool("app.agents.delete", "Move custom agent to trash", "Move one exact custom Agent to retained trash only while its complete expiring preview still matches.", requiredObjectSchema({
     id: opaqueId("Exact custom-agent ID."), preview: trashPreviewContract("custom_agent"),
@@ -698,10 +698,10 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   }, ["agentId", "adaptationId", "action"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
   readTool("app.skills.list", "List skills", "List built-in and custom skills readable by the current actor.", objectSchema({})),
   readTool("app.skills.show", "Show skill", "Read one exact built-in or custom skill.", requiredObjectSchema({ id: opaqueId("Exact skill ID.") }, ["id"])),
-  mutationTool("app.skills.create", "Create skill", "Create one custom skill with bounded instructions and tool assignments.", requiredObjectSchema(skillProperties(), ["name", "description", "instructions", "category"]), { reversible: true }),
+  mutationTool("app.skills.create", "Create skill", "Create one custom skill with bounded instructions and tool assignments.", requiredObjectSchema(skillProperties(), ["name", "description", "instructions", "category"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
   mutationTool("app.skills.update", "Update skill", "Update one exact custom skill.", requiredObjectSchema({
     id: opaqueId("Exact custom-skill ID."), change: objectSchema(skillProperties()),
-  }, ["id", "change"]), { reversible: true }),
+  }, ["id", "change"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
   readTool("app.skills.delete.preview", "Preview skill trash", "Preview moving one exact custom Skill and its current Agent assignments to reversible trash.", requiredObjectSchema({ id: opaqueId("Exact custom-skill ID.") }, ["id"])),
   mutationTool("app.skills.delete", "Move skill to trash", "Move one exact custom Skill to retained trash only while its complete expiring preview still matches.", requiredObjectSchema({
     id: opaqueId("Exact custom-skill ID."), preview: trashPreviewContract("agent_skill"),

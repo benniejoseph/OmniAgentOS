@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { getGovernedTool } from "@/lib/tools/registry";
+import { evaluateToolPolicy } from "@/lib/tools/policy";
+import { getGovernedTool, getGovernedTools } from "@/lib/tools/registry";
 import { MAIN_AGENT_EXCLUDED_APP_OPERATIONS } from "@/lib/app-services/registry";
 
 describe("governed native tool schemas", () => {
@@ -347,6 +348,21 @@ describe("governed native tool schemas", () => {
     });
   });
 
+  it("holds every change to an agent's or skill's definition for approval", () => {
+    const authorityFields = ["toolIds", "autonomy", "approvalPolicy", "memoryScope"];
+    const authorityChanges = getGovernedTools()
+      .filter((tool) => tool.operationClass === "mutation" && schemaAcceptsAny(tool.inputSchema, authorityFields))
+      .map((tool) => tool.id);
+    const definitionChanges = ["app.agents.create", "app.agents.update", "app.skills.create", "app.skills.update"];
+
+    expect(authorityChanges).toEqual(expect.arrayContaining(definitionChanges));
+    for (const id of new Set([...authorityChanges, ...definitionChanges])) {
+      const tool = getGovernedTool(id)!;
+      expect({ id, riskLevel: tool.riskLevel, approvalRequired: tool.approvalRequired }).toEqual({ id, riskLevel: 2, approvalRequired: true });
+      expect({ id, ...evaluateToolPolicy({ tool }) }).toMatchObject({ id, allowed: false, approvalRequired: true });
+    }
+  });
+
   it("keeps connector trust changes and deletion approval-gated", () => {
     for (const id of [
       "app.connectors.register",
@@ -451,3 +467,10 @@ describe("governed native tool schemas", () => {
     );
   });
 });
+
+function schemaAcceptsAny(schema: unknown, fields: readonly string[]): boolean {
+  if (!schema || typeof schema !== "object") return false;
+  const properties = (schema as { properties?: unknown }).properties;
+  if (properties && typeof properties === "object" && Object.keys(properties).some((key) => fields.includes(key))) return true;
+  return Object.values(schema).some((value) => schemaAcceptsAny(value, fields));
+}

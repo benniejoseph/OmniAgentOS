@@ -474,7 +474,10 @@ dual-write the split records in the same transaction as the compatibility row.
 Behavior-only changes create a definition version without rotating the
 principal; authority changes rotate only the principal policy generation.
 Definition text and Skill metadata remain untrusted configuration and never
-grant tools, context, capability, budget, or approval authority.
+grant tools, context, capability, budget, or approval authority. A run that
+creates or edits a custom Agent or Skill through its tools waits for the
+actor's approval, and the approval card shows the exact requested change; the
+Agents and Skills pages still save directly.
 
 Before direct, Loop v2, resumed, or checkpoint-fork execution, the server
 resolves the exact active definition and principal and writes one immutable,
