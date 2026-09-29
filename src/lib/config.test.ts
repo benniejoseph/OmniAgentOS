@@ -33,6 +33,15 @@ describe("agent execution limits", () => {
     });
   });
 
+  it("asks the agent loop for low reasoning effort unless configured otherwise", async () => {
+    vi.stubEnv("OMNIAGENT_AGENT_REASONING_EFFORT", "");
+    expect((await import("@/lib/config")).AGENT_REASONING_EFFORT).toBe("low");
+
+    vi.resetModules();
+    vi.stubEnv("OMNIAGENT_AGENT_REASONING_EFFORT", " Medium ");
+    expect((await import("@/lib/config")).AGENT_REASONING_EFFORT).toBe("medium");
+  });
+
   it("configures model turns independently without widening tool authority", async () => {
     vi.resetModules();
     vi.stubEnv("OMNIAGENT_AGENT_MAX_MODEL_TURNS", "11");

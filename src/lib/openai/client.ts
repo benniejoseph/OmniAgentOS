@@ -25,7 +25,10 @@ import {
   renderModelComputerObservation,
   type ModelComputerObservation,
 } from "@/lib/models/computer-observation";
-import { resolveModelReasoningEffort } from "@/lib/models/reasoning-effort";
+import {
+  openAIMaxOutputTokens,
+  resolveModelReasoningEffort,
+} from "@/lib/models/reasoning-effort";
 import { promptCacheKeyForScope } from "@/lib/models/prompt-cache";
 import { recordAiUsageSafely } from "@/lib/usage/ledger";
 import type { AiUsageScope } from "@/lib/usage/types";
@@ -414,7 +417,14 @@ export async function streamResponseTurn({
       ...(effectiveReasoningEffort
         ? { reasoning: { effort: effectiveReasoningEffort } }
         : {}),
-      ...(maxOutputTokens ? { max_output_tokens: maxOutputTokens } : {}),
+      ...(maxOutputTokens
+        ? {
+            max_output_tokens: openAIMaxOutputTokens(
+              maxOutputTokens,
+              effectiveReasoningEffort,
+            ),
+          }
+        : {}),
       stream: true,
       store: false,
       ...(scopedPromptCacheKey
@@ -1055,7 +1065,12 @@ export async function createStructuredResponseWithMetrics({
           ? { reasoning: { effort: effectiveReasoningEffort } }
           : {}),
         ...(maxOutputTokens
-          ? { max_output_tokens: Math.min(Math.max(maxOutputTokens, 64), 16_000) }
+          ? {
+              max_output_tokens: openAIMaxOutputTokens(
+                Math.min(Math.max(maxOutputTokens, 64), 16_000),
+                effectiveReasoningEffort,
+              ),
+            }
           : {}),
         store: false,
       },

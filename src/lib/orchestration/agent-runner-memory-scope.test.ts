@@ -8,7 +8,11 @@ import {
   runAgent,
 } from "@/lib/orchestration/agent-runner";
 import type { AgentEvent, AgentRunRequest } from "@/lib/orchestration/types";
-import type { ModelToolCall, ModelToolTurnResult } from "@/lib/models/types";
+import {
+  ModelProviderError,
+  type ModelToolCall,
+  type ModelToolTurnResult,
+} from "@/lib/models/types";
 import type { AgentRunContinuation } from "@/lib/runs/types";
 import type { ConversationItem } from "@/lib/openai/client";
 import { DEFAULT_CUSTOM_AGENT_PERSONA } from "@/lib/agents/persona";
@@ -54,6 +58,7 @@ const mocks = vi.hoisted(() => ({
   loadProgressiveAgentTools: vi.fn(),
   markAgentRunWaitingForApproval: vi.fn(),
   recordRuntimeEventSafely: vi.fn(),
+  recordAiUsageSafely: vi.fn(),
   resolvePersonalContextMemoryAccess: vi.fn(),
   runCouncilRound: vi.fn(),
   streamResponseTurn: vi.fn(),
@@ -230,6 +235,12 @@ vi.mock("@/lib/settings/runtime-models", async (importOriginal) => {
     resolveRuntimeModelAssignment: mocks.resolveRuntimeModelAssignment,
   };
 });
+
+// Usage records are inspected here, never written.
+vi.mock("@/lib/usage/ledger", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/usage/ledger")>(),
+  recordAiUsageSafely: mocks.recordAiUsageSafely,
+}));
 
 vi.mock("@/lib/web-search/search", () => ({
   formatLiveWebSearchContext: vi.fn(),
@@ -2365,6 +2376,154 @@ describe("agent memory scope", () => {
         ]);
         expect(mocks.appendRunEvent.mock.invocationCallOrder[degradedCall])
           .toBeGreaterThan(mocks.markAgentRunResuming.mock.invocationCallOrder[0]);
+      },
+    );
+  });
+
+  describe("model usage attribution", () => {
+    const WORKSPACE_RECEIPT = {
+      assignmentScope: "main_agent",
+      assignmentId: "assignment-main-agent",
+      assignmentRevision: 3,
+      assignmentConfigurationSha256: "a".repeat(64),
+      credentialSource: "tenant_vault",
+    } as const;
+
+    /** A saved Settings route to `provider`, paid for with the workspace's key. */
+    function workspaceRoute(provider: "openai" | "google"): RuntimeModelResolution {
+      return {
+        scope: "main_agent",
+        source: "tenant_assignment",
+        configured: true,
+        assignmentId: WORKSPACE_RECEIPT.assignmentId,
+        assignmentRevision: WORKSPACE_RECEIPT.assignmentRevision,
+        assignmentConfigurationSha256:
+          WORKSPACE_RECEIPT.assignmentConfigurationSha256,
+        provider,
+        model: provider === "openai" ? "gpt-test" : "gemini-test",
+        allowCrossProviderFallback: false,
+        warnings: [],
+        reason: `Workspace main agent routing selected ${provider}.`,
+        usageReceipt: WORKSPACE_RECEIPT,
+        bind: (modelRequest) => modelRequest,
+        withProviderApiKey: async (requested, operation) =>
+          operation(requested === provider ? "workspace-key" : undefined),
+      };
+    }
+
+    /** The request of the first model turn since the mocks were cleared. */
+    function firstTurnRequest(provider: "openai" | "google") {
+      return provider === "openai"
+        ? mocks.streamResponseTurn.mock.calls[0]?.[0]
+        : mocks.generateModelToolTurn.mock.calls[0]?.[0];
+    }
+
+    it.each(["openai", "google"] as const)(
+      "attributes a %s turn to the Settings assignment that routed it",
+      async (provider) => {
+        mocks.resolveRuntimeModelAssignment.mockResolvedValueOnce(
+          workspaceRoute(provider),
+        );
+        mocks.generateModelToolTurn.mockResolvedValue(providerTurn({ text: "Done." }));
+
+        const events = await collectRequest(request("session"));
+
+        expect(events.at(-1)).toMatchObject({ type: "done" });
+        expect(firstTurnRequest(provider)?.usageScope)
+          .toMatchObject(WORKSPACE_RECEIPT);
+      },
+    );
+
+    /** Makes the next `provider` turn fail at the provider. */
+    function failNextTurn(provider: "openai" | "google") {
+      const error = new ModelProviderError(
+        "The provider is unavailable.",
+        provider,
+        "unavailable",
+        false,
+        503,
+      );
+      if (provider === "openai") mocks.streamResponseTurn.mockRejectedValueOnce(error);
+      else mocks.generateModelToolTurn.mockRejectedValueOnce(error);
+    }
+
+    it.each(["openai", "google"] as const)(
+      "records a failed %s turn against the Settings assignment that routed it",
+      async (provider) => {
+        mocks.resolveRuntimeModelAssignment.mockResolvedValueOnce(
+          workspaceRoute(provider),
+        );
+        failNextTurn(provider);
+
+        await collectRequest(request("session"));
+
+        expect(mocks.recordAiUsageSafely).toHaveBeenCalledWith(
+          expect.objectContaining({ status: "failed", ...WORKSPACE_RECEIPT }),
+        );
+      },
+    );
+
+    it.each(["openai", "google"] as const)(
+      "attributes a resumed %s turn to the assignment while the workspace still routes to it",
+      async (provider) => {
+        const continuation = await pauseForApproval(request("session"), provider);
+        mocks.streamResponseTurn.mockClear();
+        mocks.generateModelToolTurn.mockClear();
+        mocks.resolveRuntimeModelAssignment.mockClear()
+          .mockResolvedValueOnce(workspaceRoute(provider));
+
+        await expect(resumeAfterApproval(continuation))
+          .resolves.toMatchObject({ resumed: true, status: "completed" });
+
+        expect(firstTurnRequest(provider)?.usageScope)
+          .toMatchObject(WORKSPACE_RECEIPT);
+      },
+    );
+
+    it.each([
+      ["openai", "google"],
+      ["google", "openai"],
+    ] as const)(
+      "attributes a resumed %s turn to the deployment's key once the workspace routes to %s",
+      async (provider, workspaceProvider) => {
+        const continuation = await pauseForApproval(request("session"), provider);
+        mocks.streamResponseTurn.mockClear();
+        mocks.generateModelToolTurn.mockClear();
+        mocks.resolveRuntimeModelAssignment.mockClear()
+          .mockResolvedValueOnce(workspaceRoute(workspaceProvider));
+
+        await expect(resumeAfterApproval(continuation))
+          .resolves.toMatchObject({ resumed: true, status: "completed" });
+
+        const usageScope = firstTurnRequest(provider)?.usageScope;
+        expect(usageScope).toMatchObject({
+          credentialSource: "deployment_environment",
+        });
+        expect(usageScope).not.toHaveProperty("assignmentId");
+        expect(usageScope).not.toHaveProperty("assignmentScope");
+      },
+    );
+
+    it.each([
+      ["openai", "google"],
+      ["google", "openai"],
+    ] as const)(
+      "records a failed resumed %s turn against the deployment's key once the workspace routes to %s",
+      async (provider, workspaceProvider) => {
+        const continuation = await pauseForApproval(request("session"), provider);
+        mocks.recordAiUsageSafely.mockClear();
+        mocks.resolveRuntimeModelAssignment.mockClear()
+          .mockResolvedValueOnce(workspaceRoute(workspaceProvider));
+        failNextTurn(provider);
+
+        await resumeAfterApproval(continuation);
+
+        const failed = mocks.recordAiUsageSafely.mock.calls
+          .map(([record]) => record)
+          .find((record) => record?.status === "failed");
+        expect(failed).toMatchObject({ credentialSource: "deployment_environment" });
+        expect(failed).not.toHaveProperty("assignmentId");
+        expect(failed).not.toHaveProperty("assignmentScope");
       },
     );
   });

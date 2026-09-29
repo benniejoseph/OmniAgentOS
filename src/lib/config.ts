@@ -272,11 +272,13 @@ export const AGENT_RUNS_PER_MINUTE = normalizePositiveInteger(
   process.env.OMNIAGENT_AGENT_RUNS_PER_MINUTE,
   10,
 );
-// gpt-5 streams output relatively slowly (~1 delta/sec here), so a long research
-// answer can exceed even the 300s Vercel Pro budget. Use minimal reasoning and a
-// bounded output so runs finish — and persist — within the function window.
+// A direct run executes inside its request, which the agent route lets last
+// 300 seconds, and every turn re-sends the conversation. So the loop asks for
+// low effort, the lowest level every current reasoning model accepts (gpt-5
+// alone also accepts minimal), and a bounded answer. Command's Thinking menu
+// asks for more on one run; reasoning gets room on top of the answer.
 export const AGENT_REASONING_EFFORT: "minimal" | "low" | "medium" | "high" =
-  normalizeReasoningEffort(process.env.OMNIAGENT_AGENT_REASONING_EFFORT, "minimal");
+  normalizeReasoningEffort(process.env.OMNIAGENT_AGENT_REASONING_EFFORT, "low");
 export const AGENT_MAX_OUTPUT_TOKENS = normalizePositiveInteger(
   process.env.OMNIAGENT_AGENT_MAX_OUTPUT_TOKENS,
   2_000,

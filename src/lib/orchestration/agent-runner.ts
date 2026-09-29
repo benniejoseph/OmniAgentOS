@@ -221,6 +221,7 @@ import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-ac
 import {
   ModelRouteUnavailableError,
   resolveRuntimeModelAssignment,
+  type RuntimeModelResolution,
 } from "@/lib/settings/runtime-models";
 import {
   continuationAuthUserBinding,
@@ -239,6 +240,9 @@ import { appendThreadTurn } from "@/lib/threads/store";
 import { loadTenantAiUsageSince } from "@/lib/usage/allowance";
 import { recordAiUsageSafely } from "@/lib/usage/ledger";
 import { formatLiveWebSearchContext, runLiveWebSearch, shouldUseLiveWebSearch } from "@/lib/web-search/search";
+
+/** The Settings assignment and credential a usage record attributes a call to. */
+type ModelUsageReceipt = RuntimeModelResolution["usageReceipt"];
 
 const MAX_TOOL_RESULT_CHARS = 8_000;
 const MAX_TOOL_CALLS_PER_TURN = 5;
@@ -1960,10 +1964,7 @@ async function* runAgentUntilStopped(
           executionScope,
           runId: run.id,
           computerUseTarget,
-          assignmentId: runtimeModel.assignmentId,
-          credentialSource: runtimeModel.source === "tenant_assignment"
-            ? "tenant_vault"
-            : "deployment_environment",
+          usageReceipt: runtimeModel.usageReceipt,
           abortSignal: runAbortSignal,
           forceApproval: agentToolPolicy?.forceApproval,
           forceApprovalAboveRisk: agentToolPolicy?.forceApprovalAboveRisk,
@@ -2043,10 +2044,7 @@ async function* runAgentUntilStopped(
             executionScope,
             provider: modelRoute.provider,
             model: modelRoute.model,
-            assignmentId: runtimeModel.assignmentId,
-            credentialSource: runtimeModel.source === "tenant_assignment"
-              ? "tenant_vault"
-              : "deployment_environment",
+            usageReceipt: runtimeModel.usageReceipt,
             error,
             requireProviderEvidence: true,
           });
@@ -2230,10 +2228,7 @@ async function* runAgentUntilStopped(
                 correlationId: executionScope.correlationId,
                 causationId: executionScope.causationId || undefined,
                 executionScope,
-                assignmentId: runtimeModel.assignmentId,
-                credentialSource: runtimeModel.source === "tenant_assignment"
-                  ? "tenant_vault" as const
-                  : "deployment_environment" as const,
+                ...runtimeModel.usageReceipt,
               },
               usageRecordId: usageReceiptId,
             } : {}),
@@ -2247,10 +2242,7 @@ async function* runAgentUntilStopped(
             executionScope,
             provider: "openai",
             model: modelRoute.model,
-            assignmentId: runtimeModel.assignmentId,
-            credentialSource: runtimeModel.source === "tenant_assignment"
-              ? "tenant_vault"
-              : "deployment_environment",
+            usageReceipt: runtimeModel.usageReceipt,
             usageRecordId: usageReceiptId,
             error,
             latencyMs,
@@ -2948,8 +2940,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   executionScope?: ExecutionScope;
   runId: string;
   computerUseTarget?: ComputerUseTarget;
-  assignmentId?: string;
-  credentialSource?: "tenant_vault" | "deployment_environment";
+  usageReceipt?: ModelUsageReceipt;
   abortSignal?: AbortSignal;
   forceApproval?: boolean;
   forceApprovalAboveRisk?: number;
@@ -3116,8 +3107,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
         correlationId: input.executionScope?.correlationId || input.runId,
         causationId: input.executionScope?.causationId || undefined,
         executionScope: input.executionScope,
-        assignmentId: input.assignmentId,
-        credentialSource: input.credentialSource,
+        ...input.usageReceipt,
       },
     };
     let turn: ModelToolTurnResult | undefined;
@@ -4290,6 +4280,12 @@ async function resumeAgentRunAfterToolApprovalInScope({
   const workspaceOpenAIAvailable =
     resumeRuntimeModel.source === "tenant_assignment" &&
     resumeRuntimeModel.provider === "openai";
+  // Usage is attributed to the credential that pays for it: the workspace's
+  // assignment, or the deployment's key when the workspace no longer routes
+  // to OpenAI.
+  const resumeUsageReceipt: ModelUsageReceipt = workspaceOpenAIAvailable
+    ? resumeRuntimeModel.usageReceipt
+    : { credentialSource: "deployment_environment" };
   const resumeRouteDegradation = resumeRuntimeModel.degradation;
   if (
     resumeRouteDegradation?.outcome === "blocked" ||
@@ -4662,10 +4658,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
               correlationId: executionScope?.correlationId || run.id,
               causationId: executionScope?.causationId || undefined,
               executionScope,
-              assignmentId: resumeRuntimeModel.assignmentId,
-              credentialSource: resumeRuntimeModel.source === "tenant_assignment"
-                ? "tenant_vault"
-                : "deployment_environment",
+              ...resumeUsageReceipt,
             },
             usageRecordId: usageReceiptId,
             onDelta: (text) => {
@@ -4686,10 +4679,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
           executionScope,
           provider: "openai",
           model: resumeModel,
-          assignmentId: resumeRuntimeModel.assignmentId,
-          credentialSource: resumeRuntimeModel.source === "tenant_assignment"
-            ? "tenant_vault"
-            : "deployment_environment",
+          usageReceipt: resumeUsageReceipt,
           usageRecordId: usageReceiptId,
           error,
           latencyMs,
@@ -5344,6 +5334,10 @@ async function resumeProviderBoundAgentRunAfterApproval({
     runtimeCarriesProvider && resumeRuntimeModel.source === "tenant_assignment"
       ? "tenant_vault" as const
       : "deployment_environment" as const;
+  const resumeUsageReceipt: ModelUsageReceipt =
+    resumeCredentialSource === "tenant_vault"
+      ? resumeRuntimeModel.usageReceipt
+      : { credentialSource: "deployment_environment" };
 
   const claimed = resumeFence ? true : await markAgentRunResuming(run.id, {
     tenantId,
@@ -5668,8 +5662,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
       computerUseTarget: continuation.computerUseTarget === "local_macos"
         ? "local_macos"
         : undefined,
-      assignmentId: resumeRuntimeModel.assignmentId,
-      credentialSource: resumeCredentialSource,
+      usageReceipt: resumeUsageReceipt,
       abortSignal: resumeAbortSignal,
       forceApproval: continuation.toolPolicy?.forceApproval,
       forceApprovalAboveRisk:
@@ -5785,8 +5778,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
         executionScope,
         provider: providerState.provider,
         model: resumeModel,
-        assignmentId: resumeRuntimeModel.assignmentId,
-        credentialSource: resumeCredentialSource,
+        usageReceipt: resumeUsageReceipt,
         error,
         requireProviderEvidence: true,
       });
@@ -6538,8 +6530,7 @@ async function recordAgentModelFailure(input: {
   executionScope?: ExecutionScope;
   provider: "openai" | "google" | "anthropic" | "aws_bedrock";
   model: string;
-  assignmentId?: string;
-  credentialSource: "tenant_vault" | "deployment_environment";
+  usageReceipt: ModelUsageReceipt;
   usageRecordId?: string;
   error: unknown;
   latencyMs?: number;
@@ -6626,8 +6617,7 @@ async function recordAgentModelFailure(input: {
     ),
     estimatedCostUsd,
     providerRequestId: responseReceipt?.providerRequestId,
-    assignmentId: input.assignmentId,
-    credentialSource: input.credentialSource,
+    ...input.usageReceipt,
     correlationId: input.executionScope?.correlationId || input.runId,
     causationId: input.executionScope?.causationId || undefined,
     executionScope: input.executionScope,

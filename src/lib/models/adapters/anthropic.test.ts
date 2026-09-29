@@ -728,11 +728,11 @@ describe("Claude effort and reply size", () => {
     ["claude-mythos-5-1", "medium", 4_000, "medium", 12_000],
     ["claude-opus-5-5", "minimal", 2_000, "low", 6_000],
     ["claude-opus-5-5", undefined, 2_000, "low", 6_000],
-    ["claude-mythos-preview", "xhigh", 2_000, "low", 6_000],
+    ["claude-mythos-preview", "xhigh", 2_000, "high", 18_000],
     ["claude-mythos-preview", "max", 2_000, "max", 21_333],
     ["claude-opus-4-8", "xhigh", 2_000, "xhigh", 2_000],
     ["claude-sonnet-4-6", "max", 3_000, "max", 3_000],
-    ["claude-opus-4-5", "max", 2_000, "low", 2_000],
+    ["claude-opus-4-5", "max", 2_000, "high", 2_000],
   ] as const)(
     "sends %s, asked for %s effort, an effort it accepts and room to think",
     async (model, requested, answerTokens, effort, maxTokens) => {

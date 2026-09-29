@@ -315,6 +315,83 @@ describe("OpenAI tool turn settings", () => {
   });
 });
 
+describe("OpenAI reasoning effort and output room", () => {
+  it.each([
+    ["gpt-5", "minimal", 2_000, "minimal", 2_000],
+    ["gpt-5", "low", 2_000, "low", 6_000],
+    ["gpt-5", "xhigh", 2_000, "high", 18_000],
+    ["gpt-5.1", "minimal", 2_000, "low", 6_000],
+    ["gpt-5.5", "minimal", 2_000, "low", 6_000],
+    ["gpt-5.5", "max", 2_000, "xhigh", 27_000],
+    ["gpt-5.6-sol", "max", 2_000, "max", 27_000],
+    ["gpt-5.2", "medium", 3_000, "medium", 11_000],
+    ["gpt-5-mini", undefined, 2_000, "minimal", 2_000],
+    ["gpt-4o-mini", "high", 2_000, undefined, 2_000],
+  ] as const)(
+    "sends %s asked for %s effort an effort it accepts and room to reason",
+    async (model, requested, answerTokens, effort, maxOutputTokens) => {
+      process.env.OPENAI_API_KEY = "test-key";
+      delete process.env.OMNIAGENT_OPENAI_GATEWAY_URL;
+      delete process.env.OMNIAGENT_OPENAI_GATEWAY_TOKEN;
+      openAiMocks.createResponse.mockReturnValue({
+        async *[Symbol.asyncIterator]() {
+          yield {
+            type: "response.completed",
+            response: {
+              id: "response-1",
+              usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 },
+            },
+          };
+        },
+      });
+      const { streamResponseTurn } = await import("@/lib/openai/client");
+
+      await streamResponseTurn({
+        input: "Plan the trip",
+        onDelta: () => undefined,
+        model,
+        ...(requested ? { reasoningEffort: requested } : {}),
+        maxOutputTokens: answerTokens,
+      });
+
+      const body = openAiMocks.createResponse.mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(body.max_output_tokens).toBe(maxOutputTokens);
+      if (effort) {
+        expect(body.reasoning).toEqual({ effort });
+      } else {
+        expect(body).not.toHaveProperty("reasoning");
+      }
+    },
+  );
+
+  it("gives a structured answer room to reason past its own limit", async () => {
+    process.env.OPENAI_API_KEY = "test-key";
+    delete process.env.OMNIAGENT_OPENAI_GATEWAY_URL;
+    delete process.env.OMNIAGENT_OPENAI_GATEWAY_TOKEN;
+    openAiMocks.createResponse.mockResolvedValue({
+      id: "response-1",
+      status: "completed",
+      output_text: "{}",
+      usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 },
+    });
+    const { createStructuredResponseWithMetrics } = await import("@/lib/openai/client");
+
+    await createStructuredResponseWithMetrics({
+      instructions: "Classify",
+      input: "private",
+      schema: { type: "object", properties: {}, additionalProperties: false },
+      name: "classification",
+      model: "gpt-5.5",
+      maxOutputTokens: 20_000,
+    });
+
+    expect(openAiMocks.createResponse.mock.calls[0]?.[0]).toMatchObject({
+      reasoning: { effort: "low" },
+      max_output_tokens: 20_000,
+    });
+  });
+});
+
 describe("OpenAI turn output replay", () => {
   const target = {
     provider: "openai" as const,
