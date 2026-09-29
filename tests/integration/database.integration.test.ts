@@ -96,7 +96,11 @@ import {
   finalizeEffectIntentV2,
 } from "@/lib/tools/effect-intent-v2";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
-import { toolInputSha256 } from "@/lib/tools/execution-scope";
+import {
+  getToolExecutionScopeBinding,
+  ToolExecutionScopeBindingError,
+  toolInputSha256,
+} from "@/lib/tools/execution-scope";
 import {
   appendWorkflowEvent,
   createWorkflowRun,
@@ -4443,6 +4447,146 @@ databaseDescribe("Postgres schema integration", () => {
       }]);
       expect(await operations(record.id)).toEqual(["saved"]);
     }
+  });
+
+  test("binds a new scoped tool execution in the transaction that creates it", async () => {
+    const tenantId = "scope_bind_tenant";
+    const actorId = "scope_bind_actor";
+    const inTenant = <T,>(operation: () => Promise<T>) =>
+      runWithDatabaseTenantScope(tenantId, operation);
+    const toolInput = { query: "standup", limit: 5 };
+    const scopeFor = (initiatingActorId: string) => createExecutionScope({
+      tenantId,
+      initiatingActorId,
+      executingPrincipalType: "user",
+      executingPrincipalId: initiatingActorId,
+      correlationId: "correlation:scope-bind-db",
+      purpose: "tool.execution.claim",
+    });
+    const scope = scopeFor(actorId);
+    const scoped = {
+      executionScope: scope,
+      scopeBinding: { toolInput, requesterRole: "operator" as const },
+    };
+    const executing = (id: string) => ({
+      ...createToolExecutionRecord({
+        tenantId,
+        actorId,
+        toolId: "memory.search",
+        toolName: "Search memory",
+        riskLevel: 0,
+        status: "executing",
+        dryRun: false,
+        approvalRequired: false,
+        input: toolInput,
+        output: {
+          __executionClaim: {
+            token: `${id}-token`,
+            claimedAt: new Date().toISOString(),
+          },
+        },
+        reason: "Claimed.",
+      }),
+      id,
+    });
+    const bindingEvents = (ids: string[]) => admin`
+      SELECT stream_id, actor_id, correlation_id
+      FROM omni_events
+      WHERE tenant_id = ${tenantId}
+        AND stream_id = ANY(${ids.map((id) => `tool_execution:${id}`)})
+        AND type = 'tool.scope_bound'
+      ORDER BY stream_id
+    `;
+    const storedIds = (ids: string[]) => admin`
+      SELECT id FROM omni_tool_executions
+      WHERE tenant_id = ${tenantId} AND id = ANY(${ids})
+      ORDER BY id
+    `;
+    const expectBound = async (id: string) => {
+      const binding = await inTenant(() =>
+        getToolExecutionScopeBinding(id, { tenantId })
+      );
+      expect(binding).toMatchObject({
+        requesterRole: "operator",
+        toolId: "memory.search",
+        inputSha256: toolInputSha256(toolInput),
+      });
+      expect(binding?.executionScope).toEqual(scope);
+    };
+
+    // The claim alone leaves the record bound; nothing has to run after it.
+    await expect(inTenant(() => claimIdempotentToolExecution(
+      executing("scope-bind-claim"),
+      { ...scoped, idempotencyKey: "scope-bind-claim:call-1" },
+    ))).resolves.toMatchObject({ outcome: "claimed" });
+    await expectBound("scope-bind-claim");
+
+    // The same key again finds that record and binds nothing more.
+    await expect(inTenant(() => claimIdempotentToolExecution(
+      executing("scope-bind-claim"),
+      { ...scoped, idempotencyKey: "scope-bind-claim:call-1" },
+    ))).resolves.toMatchObject({ outcome: "existing" });
+    expect(await bindingEvents(["scope-bind-claim"])).toEqual([{
+      stream_id: "tool_execution:scope-bind-claim",
+      actor_id: actorId,
+      correlation_id: "correlation:scope-bind-db",
+    }]);
+
+    // A new scoped record saved without a key is bound the same way.
+    await inTenant(() => saveToolExecution(
+      executing("scope-bind-save"),
+      { ...scoped, idempotencyKey: "scope-bind-save" },
+    ));
+    await expectBound("scope-bind-save");
+
+    // A binding that cannot be written takes its record with it.
+    const refused = ["scope-bind-refused-claim", "scope-bind-refused-save"];
+    await admin.unsafe(`
+      CREATE FUNCTION scope_bind_refuse() RETURNS trigger
+      LANGUAGE plpgsql AS $$
+      BEGIN
+        RAISE EXCEPTION 'simulated binding write failure';
+      END
+      $$
+    `);
+    await admin.unsafe(`
+      CREATE TRIGGER scope_bind_refuse
+      BEFORE INSERT ON omni_events
+      FOR EACH ROW
+      WHEN (NEW.type = 'tool.scope_bound' AND NEW.tenant_id = '${tenantId}')
+      EXECUTE FUNCTION scope_bind_refuse()
+    `);
+    try {
+      await expect(inTenant(() => claimIdempotentToolExecution(
+        executing(refused[0]),
+        { ...scoped, idempotencyKey: `${refused[0]}:call-1` },
+      ))).rejects.toThrow("simulated binding write failure");
+      await expect(inTenant(() => saveToolExecution(
+        executing(refused[1]),
+        { ...scoped, idempotencyKey: refused[1] },
+      ))).rejects.toThrow("simulated binding write failure");
+    } finally {
+      await admin`DROP TRIGGER IF EXISTS scope_bind_refuse ON omni_events`;
+      await admin`DROP FUNCTION IF EXISTS scope_bind_refuse()`;
+    }
+    expect(await storedIds(refused)).toEqual([]);
+    expect(await admin`
+      SELECT id FROM omni_events
+      WHERE tenant_id = ${tenantId}
+        AND stream_id = ANY(${refused.map((id) => `tool_execution:${id}`)})
+    `).toEqual([]);
+
+    // A scope that cannot bind the record is refused before any write.
+    const foreign = {
+      executionScope: scopeFor("scope_bind_other_actor"),
+      scopeBinding: scoped.scopeBinding,
+    };
+    await expect(inTenant(() => claimIdempotentToolExecution(
+      executing("scope-bind-foreign"),
+      { ...foreign, idempotencyKey: "scope-bind-foreign:call-1" },
+    ))).rejects.toBeInstanceOf(ToolExecutionScopeBindingError);
+    expect(await storedIds(["scope-bind-foreign"])).toEqual([]);
+    expect(await bindingEvents(["scope-bind-foreign"])).toEqual([]);
   });
 
   test("queues one approval per tool execution id and replaces only a failure that changed nothing", async () => {

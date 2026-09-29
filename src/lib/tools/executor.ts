@@ -1744,6 +1744,7 @@ export async function executeGovernedTool({
       claim = await claimIdempotentToolExecution(intent, {
         executionScope: scopedRequest.executionScope,
         idempotencyKey,
+        ...scopeBindingOption(preparedInput, scopedRequest),
         ...(policyLeaseAuthority && policyLeaseClaim
           ? { policyLeaseClaim }
           : retryFailedExecution
@@ -1972,6 +1973,7 @@ export async function executeGovernedTool({
     executionRecord = await saveToolExecution(intent, {
       executionScope: scopedRequest.executionScope,
       idempotencyKey: intent.id,
+      ...scopeBindingOption(preparedInput, scopedRequest),
       ...(agentRunId ? { activeAgentRun: { runId: agentRunId } } : {}),
     });
     activeExecutionClaimToken = claimToken;
@@ -3604,6 +3606,24 @@ function memoryWasCreatedForExecution(
   return Number.isFinite(memoryCreatedAt) &&
     Number.isFinite(executionCreatedAt) &&
     memoryCreatedAt >= executionCreatedAt;
+}
+
+/**
+ * Lets the store bind a new scoped record in the transaction that creates it.
+ * The bind that follows the write then only verifies that binding.
+ */
+function scopeBindingOption(
+  toolInput: Record<string, unknown>,
+  scopedRequest: ResolvedToolExecutionScope,
+) {
+  return scopedRequest.executionScope && scopedRequest.requesterRole
+    ? {
+        scopeBinding: {
+          toolInput,
+          requesterRole: scopedRequest.requesterRole,
+        },
+      }
+    : {};
 }
 
 async function bindToolScopeIfPresent(input: {

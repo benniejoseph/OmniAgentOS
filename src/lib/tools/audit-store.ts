@@ -16,8 +16,12 @@ import {
   getSql,
   hasDatabaseUrl,
 } from "@/lib/db/client";
-import { appendScopedDomainEvent } from "@/lib/events/store";
+import {
+  appendDomainEvent,
+  appendScopedDomainEvent,
+} from "@/lib/events/store";
 import { redactSensitive } from "@/lib/security/context";
+import type { SecurityRole } from "@/lib/security/types";
 import {
   consumeScheduledPolicyLeaseForEffectClaim,
   type ScheduledPolicyLeaseClaim,
@@ -58,7 +62,10 @@ import {
   type EffectReceiptV2,
 } from "@/lib/tools/effect-receipt-v2";
 import { toolApprovalExpired } from "@/lib/tools/approval-expiry";
-import { toolInputSha256 } from "@/lib/tools/execution-scope";
+import {
+  toolExecutionScopeBoundEvent,
+  toolInputSha256,
+} from "@/lib/tools/execution-scope";
 import {
   approvalSha256,
   TOOL_APPROVAL_EVENT_SCHEMA_VERSION,
@@ -88,6 +95,16 @@ const GOOGLE_WORKSPACE_CREATE_TOOL_IDS = new Set([
 export type ToolExecutionMutationOptions = {
   executionScope?: ExecutionScope;
   idempotencyKey?: string;
+  /**
+   * Binds the requester and the execution scope above to a record this call
+   * creates, in the transaction that creates it, so a crash cannot leave a
+   * scoped receipt that no retry can bind. File storage leaves the binding
+   * to the caller.
+   */
+  scopeBinding?: {
+    toolInput: Record<string, unknown>;
+    requesterRole: SecurityRole;
+  };
   /** Consumed in the same transaction as a newly inserted effect claim. */
   policyLeaseClaim?: ScheduledPolicyLeaseClaim;
   /**
@@ -159,6 +176,7 @@ export async function saveToolExecution(
       "Effect receipts may only be attached while finalizing a claimed execution.",
     );
   }
+  const scopeBound = scopeBoundEventFor(record, options);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     await getSql().transaction(async (sql: SqlClient) => {
@@ -177,6 +195,9 @@ export async function saveToolExecution(
         idempotencyKey: options.idempotencyKey,
         sql,
       });
+      if (scopeBound) {
+        await appendDomainEvent(scopeBound, { sql });
+      }
     });
     return record;
   }
@@ -225,6 +246,7 @@ export async function claimIdempotentToolExecution(
       "Policy-lease tool claims require atomic durable database storage.",
     );
   }
+  const scopeBound = scopeBoundEventFor(record, options);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     return getSql().transaction(async (sql: SqlClient) => {
@@ -266,6 +288,9 @@ export async function claimIdempotentToolExecution(
           idempotencyKey: options.idempotencyKey || record.id,
           sql,
         });
+        if (scopeBound) {
+          await appendDomainEvent(scopeBound, { sql });
+        }
         return {
           outcome: "claimed" as const,
           record: claimedRecord,
@@ -2259,6 +2284,26 @@ function assertEffectReceiptV2Finalization(input: {
       "Effect receipt v2 does not finalize the exact persisted intent.",
     );
   }
+}
+
+/**
+ * The binding a new record is written with. Checked before anything is
+ * written, so a scope that cannot bind the record creates no record.
+ */
+function scopeBoundEventFor(
+  record: ToolExecutionRecord,
+  options: ToolExecutionMutationOptions,
+) {
+  if (!options.scopeBinding) return undefined;
+  if (!options.executionScope) {
+    throw new Error("A tool execution scope binding requires an execution scope.");
+  }
+  return toolExecutionScopeBoundEvent({
+    record,
+    toolInput: options.scopeBinding.toolInput,
+    executionScope: options.executionScope,
+    requesterRole: options.scopeBinding.requesterRole,
+  });
 }
 
 async function appendToolExecutionMutationEvent({

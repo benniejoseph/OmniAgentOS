@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
   appendDomainEvent,
   listStreamEvents,
+  type AppendDomainEventInput,
 } from "@/lib/events/store";
 import {
   assertExecutionScopeTenant,
@@ -27,24 +28,22 @@ export class ToolExecutionScopeBindingError extends Error {
   }
 }
 
+type ToolExecutionScopeBindingInput = {
+  record: ToolExecutionRecord;
+  toolInput: Record<string, unknown>;
+  executionScope: ExecutionScope;
+  requesterRole: SecurityRole;
+};
+
 /**
  * Binds the original requester and execution scope to a governed-tool receipt.
  * The event ledger is used so this contract can roll out without changing the
  * existing execution table or inventing scope for legacy receipts.
  */
-export async function bindToolExecutionScope(input: {
-  record: ToolExecutionRecord;
-  toolInput: Record<string, unknown>;
-  executionScope: ExecutionScope;
-  requesterRole: SecurityRole;
-}) {
-  assertBindingMatchesRecord(input);
-  const expected: ToolExecutionScopeBinding = Object.freeze({
-    executionScope: input.executionScope,
-    requesterRole: input.requesterRole,
-    toolId: input.record.toolId,
-    inputSha256: toolInputSha256(input.toolInput),
-  });
+export async function bindToolExecutionScope(
+  input: ToolExecutionScopeBindingInput,
+) {
+  const expected = expectedBinding(input);
   const tenantId = normalizeTenantId(input.record.tenantId);
   const existing = await getToolExecutionScopeBinding(input.record.id, {
     tenantId,
@@ -54,20 +53,7 @@ export async function bindToolExecutionScope(input: {
     return existing;
   }
 
-  await appendDomainEvent({
-    streamId: toolExecutionStreamId(input.record.id),
-    type: TOOL_SCOPE_BOUND_EVENT_TYPE,
-    tenantId,
-    payload: {
-      scopeVersion: input.executionScope.version,
-      scopeSha256: executionScopeSha256(input.executionScope),
-      requesterRole: input.requesterRole,
-      toolId: input.record.toolId,
-      inputSha256: expected.inputSha256,
-    },
-    correlationId: input.executionScope.correlationId,
-    executionScope: input.executionScope,
-  });
+  await appendDomainEvent(scopeBoundEvent(input.record, expected));
 
   const bound = await getToolExecutionScopeBinding(input.record.id, {
     tenantId,
@@ -79,6 +65,17 @@ export async function bindToolExecutionScope(input: {
   }
   assertSameBinding(bound, expected);
   return bound;
+}
+
+/**
+ * The event that binds a new receipt to its requester and execution scope.
+ * The store writes it in the transaction that creates the receipt, so a crash
+ * cannot leave a scoped receipt that no retry can bind.
+ */
+export function toolExecutionScopeBoundEvent(
+  input: ToolExecutionScopeBindingInput,
+): AppendDomainEventInput {
+  return scopeBoundEvent(input.record, expectedBinding(input));
 }
 
 /** Returns the one canonical scope shared by all binding events. */
@@ -174,12 +171,39 @@ export function toolInputSha256(input: Record<string, unknown>) {
   return createHash("sha256").update(stableJson(input)).digest("hex");
 }
 
-function assertBindingMatchesRecord(input: {
-  record: ToolExecutionRecord;
-  toolInput: Record<string, unknown>;
-  executionScope: ExecutionScope;
-  requesterRole: SecurityRole;
-}) {
+function expectedBinding(
+  input: ToolExecutionScopeBindingInput,
+): ToolExecutionScopeBinding {
+  assertBindingMatchesRecord(input);
+  return Object.freeze({
+    executionScope: input.executionScope,
+    requesterRole: input.requesterRole,
+    toolId: input.record.toolId,
+    inputSha256: toolInputSha256(input.toolInput),
+  });
+}
+
+function scopeBoundEvent(
+  record: ToolExecutionRecord,
+  binding: ToolExecutionScopeBinding,
+): AppendDomainEventInput {
+  return {
+    streamId: toolExecutionStreamId(record.id),
+    type: TOOL_SCOPE_BOUND_EVENT_TYPE,
+    tenantId: normalizeTenantId(record.tenantId),
+    payload: {
+      scopeVersion: binding.executionScope.version,
+      scopeSha256: executionScopeSha256(binding.executionScope),
+      requesterRole: binding.requesterRole,
+      toolId: binding.toolId,
+      inputSha256: binding.inputSha256,
+    },
+    correlationId: binding.executionScope.correlationId,
+    executionScope: binding.executionScope,
+  };
+}
+
+function assertBindingMatchesRecord(input: ToolExecutionScopeBindingInput) {
   const tenantId = normalizeTenantId(input.record.tenantId);
   try {
     assertExecutionScopeTenant(input.executionScope, tenantId);
