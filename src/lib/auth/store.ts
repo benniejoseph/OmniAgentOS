@@ -825,6 +825,86 @@ async function ensureFederatedPrivateAccount(
   }
 }
 
+/**
+ * The role an account holds in a tenant now, under the rules a session is
+ * held to. Null when the account has no active membership there or the
+ * private-account policy no longer grants that membership; undefined when the
+ * actor is not an account at all, such as a trusted internal identity.
+ */
+export async function currentAccountRoleInTenant(input: {
+  tenantId: string;
+  actorId: string;
+}): Promise<SecurityRole | null | undefined> {
+  const email = normalizeEmail(input.actorId);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await runWithDatabaseSystemScope(
+      "Re-check an approval requester's membership before the approval is decided.",
+      () => getSql()`
+        SELECT
+          auth_user.status AS user_status,
+          membership.role,
+          membership.status AS membership_status,
+          EXISTS (
+            SELECT 1
+            FROM omni_auth_memberships other_membership
+            WHERE other_membership.user_id = auth_user.id
+              AND other_membership.tenant_id <> ${input.tenantId}
+              AND other_membership.status = 'active'
+          ) AS has_other_membership
+        FROM omni_auth_users auth_user
+        LEFT JOIN omni_auth_memberships membership
+          ON membership.user_id = auth_user.id
+          AND membership.tenant_id = ${input.tenantId}
+        WHERE auth_user.email = ${email}
+        LIMIT 1
+      `,
+    );
+    const row = rows[0];
+    if (!row) return undefined;
+    return grantedAccountRole({
+      email,
+      tenantId: input.tenantId,
+      active: row.user_status === "active" && row.membership_status === "active",
+      role: row.role as SecurityRole | null,
+      hasOtherMembership: row.has_other_membership === true,
+    });
+  }
+
+  const ledger = await readAuthLedger();
+  const user = ledger.users.find((candidate) => candidate.email === email);
+  if (!user) return undefined;
+  const membership = ledger.memberships.find((candidate) =>
+    candidate.userId === user.id && candidate.tenantId === input.tenantId);
+  return grantedAccountRole({
+    email,
+    tenantId: input.tenantId,
+    active: user.status === "active" && membership?.status === "active",
+    role: membership?.role ?? null,
+    hasOtherMembership: ledger.memberships.some((candidate) =>
+      candidate.userId === user.id &&
+      candidate.tenantId !== input.tenantId &&
+      candidate.status === "active"),
+  });
+}
+
+function grantedAccountRole(input: {
+  email: string;
+  tenantId: string;
+  active: boolean;
+  role: SecurityRole | null;
+  hasOtherMembership: boolean;
+}) {
+  if (!input.active || !input.role || input.hasOtherMembership) return null;
+  return privateAccountPolicyForIdentity({
+    email: input.email,
+    tenantId: input.tenantId,
+    role: input.role,
+  })
+    ? input.role
+    : null;
+}
+
 export async function hasExactPrivateAccountBinding(input: {
   userId: string;
   email: string;

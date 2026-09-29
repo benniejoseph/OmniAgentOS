@@ -34,7 +34,10 @@ import {
   reclaimStaleReadOnlyToolExecutionClaim,
   recoverStaleToolExecutionClaim,
   rejectPendingToolExecution,
+  withdrawPendingToolApproval,
 } from "@/lib/tools/audit-store";
+import { lapsedApprovalAuthority } from "@/lib/tools/approval-authority";
+import { toolApprovalExpired } from "@/lib/tools/approval-expiry";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import {
   executeGovernedTool,
@@ -146,6 +149,9 @@ function toolApprovalBlockReason(
 ) {
   if (record.status !== "approval_required") {
     return "This approval is no longer pending.";
+  }
+  if (toolApprovalExpired(record)) {
+    return "This approval expired before a decision was made.";
   }
   if (
     record.approvals?.some((approval) => approval.by === securityContext.actorId)
@@ -525,18 +531,65 @@ async function POSTHandler(
       ? { outcome: "claimed", record: reclaimed }
       : { outcome: "conflict", record };
   } else {
-    claim = await approveAndClaimToolExecution({
-      id: record.id,
-      tenantId: securityContext.tenantId,
-      approvedBy: securityContext.actorId,
-      approvedRole: securityContext.role,
-      approvalReason: parsed.data.reason,
-      claimToken,
-      mutation: approvalMutation,
-    });
+    // A pending approval must still hold the authority it was requested
+    // under; the claim withdraws an expired one itself.
+    const binding =
+      record.status === "approval_required" && !toolApprovalExpired(record)
+        ? await getToolExecutionScopeBinding(record.id, {
+            tenantId: securityContext.tenantId,
+          })
+        : undefined;
+    const lapsed = binding
+      ? await lapsedApprovalAuthority({ binding, record })
+      : undefined;
+    if (lapsed) {
+      const withdrawn = await withdrawPendingToolApproval({
+        id: record.id,
+        tenantId: securityContext.tenantId,
+        reason: lapsed,
+      });
+      claim = withdrawn
+        ? { outcome: "withdrawn", record: withdrawn }
+        : { outcome: "conflict" };
+    } else {
+      claim = await approveAndClaimToolExecution({
+        id: record.id,
+        tenantId: securityContext.tenantId,
+        approvedBy: securityContext.actorId,
+        approvedRole: securityContext.role,
+        approvalReason: parsed.data.reason,
+        claimToken,
+        mutation: approvalMutation,
+      });
+    }
   }
   if (claim.outcome === "not_found") {
     return Response.json({ error: "Tool approval record not found." }, { status: 404 });
+  }
+  if (claim.outcome === "withdrawn" && claim.record) {
+    // A withdrawn approval ends the run that waits on it, as a rejection does.
+    const continuation = await rejectAgentRunApproval({
+      executionId: record.id,
+      tenantId: securityContext.tenantId,
+      reason: claim.record.approvalReason,
+    });
+    const resumeJobs = await wakeOperationJobByDedupeKey(
+      getAgentResumeJobDedupeKey(record.id),
+      { tenantId: securityContext.tenantId },
+    );
+    return Response.json(
+      {
+        error: claim.record.approvalReason,
+        status: claim.record.status,
+        record: publicToolExecution(claim.record),
+        continuation: {
+          ...continuation,
+          scheduled: false,
+          reconciliationJobs: resumeJobs.length,
+        },
+      },
+      { status: 409 },
+    );
   }
   if (claim.outcome === "conflict" || !claim.record) {
     const recovered = claim.record?.status === "executing"

@@ -88,6 +88,7 @@ import {
   savePendingToolApproval,
   saveToolExecution,
   sealToolExecutionInput,
+  withdrawPendingToolApproval,
 } from "@/lib/tools/audit-store";
 import { AgentRunNotActiveError } from "@/lib/runs/active-run-fence";
 import {
@@ -3457,7 +3458,7 @@ databaseDescribe("Postgres schema integration", () => {
     const refused = await approve(orphaned.id);
 
     expect(refused).toMatchObject({
-      outcome: "conflict",
+      outcome: "withdrawn",
       record: {
         id: orphaned.id,
         status: "rejected",
@@ -3477,6 +3478,97 @@ databaseDescribe("Postgres schema integration", () => {
     await expect(approve(delegated.id)).resolves.toMatchObject({
       outcome: "claimed",
       record: { status: "executing" },
+    });
+
+    // An approval past its window is withdrawn by its claim with its input
+    // kept, and a pending approval is withdrawn once with the reason given.
+    const expiredReason =
+      "Withdrawn: the approval expired before a decision was made.";
+    const lapsedReason =
+      "Withdrawn: the member who requested this action no longer belongs to this workspace.";
+    const expired = await inTenant(() => saveToolExecution({
+      ...pendingRecord("approve-db-expired"),
+      createdAt: new Date(Date.now() - 8 * 86_400_000).toISOString(),
+    }));
+    const lapsed = await inTenant(() => saveToolExecution(
+      pendingRecord("approve-db-lapsed"),
+    ));
+    const withdraw = (id: string) => inTenant(() => withdrawPendingToolApproval({
+      id,
+      tenantId,
+      reason: lapsedReason,
+    }));
+
+    await expect(approve(expired.id)).resolves.toMatchObject({
+      outcome: "withdrawn",
+      record: { status: "rejected", reason: expiredReason, input: toolInput },
+    });
+    await expect(withdraw(lapsed.id)).resolves.toMatchObject({
+      status: "rejected",
+      approvalDecision: "rejected",
+      reason: lapsedReason,
+    });
+    await expect(withdraw(lapsed.id)).resolves.toBeUndefined();
+    await expect(withdraw(delegated.id)).resolves.toBeUndefined();
+    expect(await admin`
+      SELECT id, status, approval_decision, reason, input
+      FROM omni_tool_executions
+      WHERE tenant_id = ${tenantId}
+        AND id = ANY(${[expired.id, lapsed.id, delegated.id]})
+      ORDER BY id
+    `).toEqual([
+      {
+        id: delegated.id,
+        status: "executing",
+        approval_decision: "approved",
+        reason: null,
+        input: toolInput,
+      },
+      {
+        id: expired.id,
+        status: "rejected",
+        approval_decision: "rejected",
+        reason: expiredReason,
+        input: toolInput,
+      },
+      {
+        id: lapsed.id,
+        status: "rejected",
+        approval_decision: "rejected",
+        reason: lapsedReason,
+        input: toolInput,
+      },
+    ]);
+    expect(await withdrawnEvents([expired.id, lapsed.id])).toEqual([
+      { stream_id: `tool_execution:${expired.id}` },
+      { stream_id: `tool_execution:${lapsed.id}` },
+    ]);
+  });
+
+  test("reads the role an approval's requester holds now", async () => {
+    const tenantId = "current_role_tenant";
+    const email = "current-role-tenant@example.com";
+    await withPrivateMobileAccount(tenantId, async () => {
+      const auth = await import("@/lib/auth/store");
+      const safety = await import("@/lib/a2a/safety-store");
+      const role = (actorId: string, tenant = tenantId) =>
+        auth.currentAccountRoleInTenant({ tenantId: tenant, actorId });
+
+      await expect(role(email.toUpperCase())).resolves.toBe("operator");
+      await expect(role("internal-service")).resolves.toBeUndefined();
+      await expect(role(email, "current_role_elsewhere")).resolves.toBeNull();
+      await admin`
+        UPDATE omni_auth_memberships
+        SET status = 'disabled'
+        WHERE tenant_id = ${tenantId}
+      `;
+      await expect(role(email)).resolves.toBeNull();
+      await expect(runWithDatabaseTenantScope(tenantId, () =>
+        safety.findExternalA2ASafetyForDelegation({
+          tenantId,
+          ownerActorId: email,
+          delegationId: "delegation-without-reservation",
+        }))).resolves.toBeUndefined();
     });
   });
 

@@ -133,6 +133,30 @@ export async function getExternalA2ASafety(input: {
   return requireStateByTask(getSql(), input, false);
 }
 
+/**
+ * The safety reservation of an external delegation, if it has one; an active
+ * reservation is preferred, then the newest.
+ */
+export async function findExternalA2ASafetyForDelegation(input: {
+  tenantId: string;
+  ownerActorId: string;
+  delegationId: string;
+}) {
+  requireDatabase();
+  await ensureDatabaseSchema();
+  const rows = await getSql()`
+    SELECT reservation, status, tool_calls_used, progress_revision,
+           last_progress_at, terminal_at
+    FROM omni_a2a_safety_reservations
+    WHERE tenant_id = ${input.tenantId}
+      AND owner_actor_id = ${input.ownerActorId}
+      AND delegation_id = ${input.delegationId}
+    ORDER BY (status = 'active') DESC, created_at DESC
+    LIMIT 1
+  `;
+  return rows[0] ? stateFromRow(rows[0]) : undefined;
+}
+
 export async function claimExternalA2AToolCall(input: {
   tenantId: string;
   ownerActorId: string;

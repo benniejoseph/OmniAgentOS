@@ -12,17 +12,30 @@ const mocks = vi.hoisted(() => ({
   getGovernedTool: vi.fn(),
   getMcpGovernedTool: vi.fn(),
   getOpenApiGovernedTool: vi.fn(),
+  lapsedApprovalAuthority: vi.fn(),
   openToolExecutionInput: vi.fn(),
   publicToolExecution: vi.fn(),
   reclaimStaleGoogleWorkspaceCreateToolExecutionClaim: vi.fn(),
   reclaimStaleReadOnlyToolExecutionClaim: vi.fn(),
+  rejectAgentRunApproval: vi.fn(),
   resumeAgentRunInApprovalRequest: vi.fn(),
   wakeOperationJobByDedupeKey: vi.fn(),
+  withdrawPendingToolApproval: vi.fn(),
 }));
 
 vi.mock("next/server", async (importOriginal) => ({
   ...(await importOriginal<typeof import("next/server")>()),
   after: mocks.after,
+}));
+
+vi.mock("@/lib/orchestration/agent-runner", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/orchestration/agent-runner")>()),
+  rejectAgentRunApproval: mocks.rejectAgentRunApproval,
+}));
+
+vi.mock("@/lib/tools/approval-authority", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/tools/approval-authority")>()),
+  lapsedApprovalAuthority: mocks.lapsedApprovalAuthority,
 }));
 
 vi.mock("@/lib/orchestration/resume-queue", async (importOriginal) => ({
@@ -48,6 +61,7 @@ vi.mock("@/lib/tools/audit-store", async (importOriginal) => ({
   getToolExecution: mocks.getToolExecution,
   openToolExecutionInput: mocks.openToolExecutionInput,
   publicToolExecution: mocks.publicToolExecution,
+  withdrawPendingToolApproval: mocks.withdrawPendingToolApproval,
   reclaimStaleGoogleWorkspaceCreateToolExecutionClaim:
     mocks.reclaimStaleGoogleWorkspaceCreateToolExecutionClaim,
   reclaimStaleReadOnlyToolExecutionClaim:
@@ -102,7 +116,8 @@ const pendingRecord = {
   approvalRequired: true,
   input: { calendarId: "primary", title: "Reviewed meeting" },
   reason: "Voice-originated actions require visible approval.",
-  createdAt: "2026-09-07T12:00:00.000Z",
+  // Requested a minute ago, well inside the approval window.
+  createdAt: new Date(Date.now() - 60_000).toISOString(),
 };
 
 beforeEach(() => {
@@ -136,6 +151,12 @@ beforeEach(() => {
   mocks.getMcpGovernedTool.mockReset().mockResolvedValue(undefined);
   mocks.getOpenApiGovernedTool.mockReset().mockResolvedValue(undefined);
   mocks.publicToolExecution.mockReset().mockImplementation((record) => record);
+  mocks.lapsedApprovalAuthority.mockReset().mockResolvedValue(undefined);
+  mocks.withdrawPendingToolApproval.mockReset();
+  mocks.rejectAgentRunApproval.mockReset().mockResolvedValue({
+    rejected: true,
+    runId: "run-waiting",
+  });
 });
 
 describe("tool approval detail route", () => {
@@ -534,6 +555,172 @@ describe("This Mac approval continuation", () => {
       `agent-resume:${pendingRecord.id}`,
       { tenantId: "tenant-a" },
     );
+  });
+});
+
+describe("approvals that can no longer be approved", () => {
+  const binding = {
+    requesterRole: "operator" as const,
+    executionScope: {
+      version: 1 as const,
+      tenantId: "tenant-a",
+      initiatingActorId: "requester-a",
+      executingPrincipalType: "user" as const,
+      executingPrincipalId: "requester-a",
+      correlationId: "requested-event",
+      purpose: "tool.calendar.event.create",
+    },
+  };
+  const expiredRecord = {
+    ...pendingRecord,
+    createdAt: new Date(Date.now() - 8 * 86_400_000).toISOString(),
+  };
+  function withdrawnRecord(reason: string) {
+    return {
+      ...pendingRecord,
+      status: "rejected" as const,
+      approvalDecision: "rejected" as const,
+      approvalReason: reason,
+      reason,
+    };
+  }
+  function approve() {
+    return POST(new Request(
+      `http://asael.test/api/approvals/${pendingRecord.id}`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "approval-lapsed",
+        },
+        body: JSON.stringify({ kind: "tool", decision: "approve" }),
+      },
+    ), routeContext());
+  }
+
+  it("shows an approval past its window as expired", async () => {
+    mocks.getToolExecution.mockResolvedValue(expiredRecord);
+
+    const body = await (await GET(request(), routeContext())).json();
+
+    expect(body.approval).toMatchObject({
+      canApprove: false,
+      blockReason: "This approval expired before a decision was made.",
+    });
+  });
+
+  it("ends the waiting run when the claim withdraws an expired approval", async () => {
+    const reason = "Withdrawn: the approval expired before a decision was made.";
+    mocks.getToolExecution.mockResolvedValue(expiredRecord);
+    mocks.approveAndClaimToolExecution.mockResolvedValue({
+      outcome: "withdrawn",
+      record: withdrawnRecord(reason),
+    });
+    mocks.wakeOperationJobByDedupeKey.mockResolvedValue([{ id: "job-1" }]);
+
+    const response = await approve();
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      error: reason,
+      status: "rejected",
+      record: { status: "rejected", reason },
+      continuation: {
+        rejected: true,
+        runId: "run-waiting",
+        scheduled: false,
+        reconciliationJobs: 1,
+      },
+    });
+    expect(mocks.getToolExecutionScopeBinding).not.toHaveBeenCalled();
+    expect(mocks.rejectAgentRunApproval).toHaveBeenCalledWith({
+      executionId: pendingRecord.id,
+      tenantId: "tenant-a",
+      reason,
+    });
+    expect(mocks.wakeOperationJobByDedupeKey).toHaveBeenCalledWith(
+      `agent-resume:${pendingRecord.id}`,
+      { tenantId: "tenant-a" },
+    );
+    expect(mocks.executeGovernedTool).not.toHaveBeenCalled();
+  });
+
+  it("withdraws an approval whose requester lost its authority instead of claiming it", async () => {
+    const reason = "Withdrawn: the member who requested this action no longer belongs to this workspace.";
+    mocks.getToolExecutionScopeBinding.mockResolvedValue(binding);
+    mocks.lapsedApprovalAuthority.mockResolvedValue(reason);
+    mocks.withdrawPendingToolApproval.mockResolvedValue(withdrawnRecord(reason));
+
+    const response = await approve();
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      error: reason,
+      record: { status: "rejected", reason },
+    });
+    expect(mocks.getToolExecutionScopeBinding).toHaveBeenCalledWith(
+      pendingRecord.id,
+      { tenantId: "tenant-a" },
+    );
+    expect(mocks.lapsedApprovalAuthority).toHaveBeenCalledWith({
+      binding,
+      record: pendingRecord,
+    });
+    expect(mocks.withdrawPendingToolApproval).toHaveBeenCalledWith({
+      id: pendingRecord.id,
+      tenantId: "tenant-a",
+      reason,
+    });
+    expect(mocks.approveAndClaimToolExecution).not.toHaveBeenCalled();
+    expect(mocks.rejectAgentRunApproval).toHaveBeenCalledWith({
+      executionId: pendingRecord.id,
+      tenantId: "tenant-a",
+      reason,
+    });
+    expect(mocks.executeGovernedTool).not.toHaveBeenCalled();
+  });
+
+  it("claims an approval whose authority still holds", async () => {
+    mocks.getToolExecutionScopeBinding.mockResolvedValue(binding);
+    mocks.approveAndClaimToolExecution.mockResolvedValue({
+      outcome: "conflict",
+      record: { ...pendingRecord, status: "rejected" },
+    });
+
+    const response = await approve();
+
+    expect(response.status).toBe(409);
+    expect(mocks.lapsedApprovalAuthority).toHaveBeenCalledTimes(1);
+    expect(mocks.withdrawPendingToolApproval).not.toHaveBeenCalled();
+    expect(mocks.approveAndClaimToolExecution).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: pendingRecord.id,
+        tenantId: "tenant-a",
+        approvedBy: "requester-a",
+      }),
+    );
+    expect(mocks.rejectAgentRunApproval).not.toHaveBeenCalled();
+  });
+
+  it("does not re-check the authority of an approved action it retries", async () => {
+    mocks.getToolExecution.mockResolvedValue({
+      ...pendingRecord,
+      toolId: "memory.forget",
+      status: "executing",
+      approvalDecision: "approved",
+    });
+    mocks.getToolExecutionScopeBinding.mockResolvedValue(binding);
+    mocks.lapsedApprovalAuthority.mockResolvedValue(
+      "Withdrawn: the member who requested this action no longer belongs to this workspace.",
+    );
+    mocks.approveAndClaimToolExecution.mockResolvedValue({ outcome: "not_found" });
+
+    const response = await approve();
+
+    expect(response.status).toBe(404);
+    expect(mocks.approveAndClaimToolExecution).toHaveBeenCalledTimes(1);
+    expect(mocks.lapsedApprovalAuthority).not.toHaveBeenCalled();
+    expect(mocks.withdrawPendingToolApproval).not.toHaveBeenCalled();
   });
 });
 

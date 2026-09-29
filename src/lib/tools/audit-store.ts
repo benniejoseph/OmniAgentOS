@@ -57,6 +57,7 @@ import {
   parseEffectReceiptV2,
   type EffectReceiptV2,
 } from "@/lib/tools/effect-receipt-v2";
+import { toolApprovalExpired } from "@/lib/tools/approval-expiry";
 import { toolInputSha256 } from "@/lib/tools/execution-scope";
 import {
   approvalSha256,
@@ -112,7 +113,7 @@ type ToolExecutionMutationOperation =
   | "withdrawn";
 
 export type ToolApprovalClaimResult = {
-  outcome: "not_found" | "conflict" | "pending" | "claimed";
+  outcome: "not_found" | "conflict" | "withdrawn" | "pending" | "claimed";
   record?: ToolExecutionRecord;
 };
 
@@ -132,6 +133,8 @@ const LOCAL_COMPUTER_TASK_AUTHORITY_OUTPUT_KEY =
 const AGENT_RUN_BINDING_OUTPUT_KEY = "__agentRunId";
 const CANCELED_RUN_WITHDRAWAL_REASON =
   "Withdrawn: the agent run was canceled before this action was approved.";
+const EXPIRED_APPROVAL_WITHDRAWAL_REASON =
+  "Withdrawn: the approval expired before a decision was made.";
 
 export function createToolExecutionRecord(
   input: Omit<ToolExecutionRecord, "id" | "createdAt">,
@@ -476,7 +479,7 @@ export async function approveAndClaimToolExecution(input: {
         return { outcome: "not_found" as const };
       }
       const current = recordFromRow(rows[0]);
-      const withdrawn = await withdrawalForCanceledAgentRun(
+      const withdrawn = await withdrawalForStaleApproval(
         current,
         tenantId,
         sql,
@@ -488,7 +491,7 @@ export async function approveAndClaimToolExecution(input: {
           operation: "withdrawn",
           sql,
         });
-        return { outcome: "conflict" as const, record: withdrawn };
+        return { outcome: "withdrawn" as const, record: withdrawn };
       }
       const result = applyApprovalClaim(current, input);
       if (result.record && (result.outcome === "pending" || result.outcome === "claimed")) {
@@ -524,9 +527,9 @@ export async function approveAndClaimToolExecution(input: {
       result = { outcome: "not_found" };
       return ledger;
     }
-    withdrawn = await withdrawalForCanceledAgentRun(record, tenantId);
+    withdrawn = await withdrawalForStaleApproval(record, tenantId);
     if (withdrawn) {
-      result = { outcome: "conflict", record: withdrawn };
+      result = { outcome: "withdrawn", record: withdrawn };
       return replaceLedgerRecord(ledger, withdrawn);
     }
     result = applyApprovalClaim(record, input);
@@ -558,6 +561,70 @@ export async function approveAndClaimToolExecution(input: {
     });
   }
   return result;
+}
+
+/**
+ * Withdraws a pending approval that can no longer be approved, recording why.
+ * Returns the withdrawn record, or undefined once the approval is no longer
+ * pending.
+ */
+export async function withdrawPendingToolApproval(input: {
+  id: string;
+  tenantId?: string;
+  reason: string;
+}): Promise<ToolExecutionRecord | undefined> {
+  const tenantId = normalizeTenantId(input.tenantId);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    return getSql().transaction(async (sql: SqlClient) => {
+      const rows = await sql`
+        SELECT *
+        FROM omni_tool_executions
+        WHERE id = ${input.id}
+          AND COALESCE(tenant_id, 'default') = ${tenantId}
+        FOR UPDATE
+      `;
+      const current = rows[0] ? recordFromRow(rows[0]) : undefined;
+      if (current?.status !== "approval_required") {
+        return undefined;
+      }
+      const withdrawn = withdrawnToolExecutionRecord(
+        current,
+        new Date().toISOString(),
+        input.reason,
+      );
+      await writeToolExecutionDb(sql, withdrawn);
+      await appendToolExecutionMutationEvent({
+        record: withdrawn,
+        operation: "withdrawn",
+        sql,
+      });
+      return withdrawn;
+    }) as Promise<ToolExecutionRecord | undefined>;
+  }
+
+  let withdrawn: ToolExecutionRecord | undefined;
+  await updateJsonFile<ToolExecutionLedger>(getToolLedgerFile(), { records: [] }, async (ledger) => {
+    const record = ledger.records.find(
+      (item) => item.id === input.id && normalizeTenantId(item.tenantId) === tenantId,
+    );
+    if (record?.status !== "approval_required") {
+      return ledger;
+    }
+    withdrawn = withdrawnToolExecutionRecord(
+      record,
+      new Date().toISOString(),
+      input.reason,
+    );
+    return replaceLedgerRecord(ledger, withdrawn);
+  });
+  if (withdrawn) {
+    await appendToolExecutionMutationEvent({
+      record: withdrawn,
+      operation: "withdrawn",
+    });
+  }
+  return withdrawn;
 }
 
 export async function rejectPendingToolExecution(input: {
@@ -2583,18 +2650,30 @@ function boundAgentRunId(record: ToolExecutionRecord) {
 }
 
 /**
- * The withdrawn form of a pending approval whose agent run was canceled.
+ * The withdrawn form of a pending approval that can no longer be approved:
+ * one older than the approval window, or one whose agent run was canceled.
  * Nothing is returned while the run can still resume, after it completed or
  * failed (a council delegate's approval stays valid then), or when the
  * approver cannot read the run.
  */
-async function withdrawalForCanceledAgentRun(
+async function withdrawalForStaleApproval(
   record: ToolExecutionRecord,
   tenantId: string,
   sql?: SqlClient,
 ): Promise<ToolExecutionRecord | undefined> {
+  if (record.status !== "approval_required") {
+    return undefined;
+  }
+  const now = new Date();
+  if (toolApprovalExpired(record, now.getTime())) {
+    return withdrawnToolExecutionRecord(
+      record,
+      now.toISOString(),
+      EXPIRED_APPROVAL_WITHDRAWAL_REASON,
+    );
+  }
   const runId = boundAgentRunId(record);
-  if (!runId || record.status !== "approval_required") {
+  if (!runId) {
     return undefined;
   }
   const runStatus = await readAgentRunStatus({
@@ -2603,20 +2682,21 @@ async function withdrawalForCanceledAgentRun(
     ...(sql ? { sql } : {}),
   });
   return runStatus === "canceled"
-    ? withdrawnToolExecutionRecord(record, new Date().toISOString())
+    ? withdrawnToolExecutionRecord(record, now.toISOString())
     : undefined;
 }
 
 function withdrawnToolExecutionRecord(
   record: ToolExecutionRecord,
   now: string,
+  reason = CANCELED_RUN_WITHDRAWAL_REASON,
 ): ToolExecutionRecord {
   return {
     ...record,
     status: "rejected",
     approvalDecision: "rejected",
-    approvalReason: CANCELED_RUN_WITHDRAWAL_REASON,
-    reason: CANCELED_RUN_WITHDRAWAL_REASON,
+    approvalReason: reason,
+    reason,
     output: undefined,
     completedAt: now,
   };

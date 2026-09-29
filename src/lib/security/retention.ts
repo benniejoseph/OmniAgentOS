@@ -16,6 +16,7 @@ import { purgeExpiredKnowledgeCognitionsBoundedLocal } from "@/lib/knowledge/cog
 import { retireEntityMemoryLineage } from "@/lib/entities/store";
 import { queueTemporalRelationProjection } from "@/lib/entities/relation-projection-queue";
 import { createExecutionScope } from "@/lib/security/execution-scope";
+import { pendingToolApprovalDays } from "@/lib/tools/approval-expiry";
 import { getAccessRequestStore } from "@/lib/onboarding/access-request-store";
 
 export type RetentionPolicy = {
@@ -81,7 +82,7 @@ export type RetentionSweepResult = {
 
 export function getRetentionPolicy(): RetentionPolicy {
   return {
-    pendingApprovalDays: retentionDays("OMNIAGENT_RETENTION_PENDING_APPROVAL_DAYS", 7),
+    pendingApprovalDays: pendingToolApprovalDays(),
     pendingAccessRequestDays: retentionDays("OMNIAGENT_RETENTION_PENDING_ACCESS_DAYS", 30),
     reviewedAccessRequestDays: retentionDays("OMNIAGENT_RETENTION_REVIEWED_ACCESS_DAYS", 365),
     episodeMemoryDays: retentionDays("OMNIAGENT_RETENTION_EPISODE_MEMORY_DAYS", 30),

@@ -297,7 +297,7 @@ describe("approving an action of a stopped agent run (file mode)", () => {
     });
 
     expect(claim).toMatchObject({
-      outcome: "conflict",
+      outcome: "withdrawn",
       record: {
         id: pending.id,
         status: "rejected",
