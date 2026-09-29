@@ -113,11 +113,14 @@ export function ConversationProgressPanel({
   live,
   canCancel,
   onCancel,
+  approvalHref = "/app/approvals",
 }: {
   runId: string;
   live: boolean;
   canCancel: boolean;
   onCancel: () => void;
+  /** The inbox opened on the approval this run waits for. */
+  approvalHref?: string;
 }) {
   const [progress, setProgress] = useState<ConversationProgress>();
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
@@ -260,7 +263,7 @@ export function ConversationProgressPanel({
           </div>
         </div>
         {progress.recovery.kind === "approval" ? (
-          <Link href="/app/approvals" className="primary-button shrink-0">Review approval</Link>
+          <Link href={approvalHref} className="primary-button shrink-0">Review approval</Link>
         ) : progress.recovery.kind === "cancel" && canCancel ? (
           <button type="button" onClick={onCancel} className="action-button shrink-0 border-danger/40 text-danger">
             <Square size={12} aria-hidden="true" /> Stop run

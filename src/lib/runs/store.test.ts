@@ -208,6 +208,86 @@ describe("agent run approval continuations (file mode)", () => {
     await store.completeAgentRun(run.id, "resumed safely");
   });
 
+  it("links each paused execution to the newest run in the tenant still waiting on it", async () => {
+    const store = await import("@/lib/runs/store");
+    const tenantId = "tenant-approval-origins";
+    const park = async (executionId: string, threadId?: string, runTenantId = tenantId) => {
+      const run = await store.createAgentRun({
+        mode: "orchestrate",
+        prompt: `wait on ${executionId}`,
+        messages: [{ role: "user", content: `wait on ${executionId}` }],
+        tenantId: runTenantId,
+        actorId: "origin-owner",
+        threadId,
+      });
+      await store.markAgentRunWaitingForApproval(run.id, {
+        response: "partial",
+        continuation: {
+          ...continuationFor(executionId),
+          context: { tenantId: runTenantId, actorId: "origin-owner", role: "operator" },
+        },
+      });
+      return run;
+    };
+    await park("exec-origin-shared", "thread-older");
+    const newer = await park("exec-origin-shared", "thread-newer");
+    const resuming = await park("exec-origin-resuming");
+    expect(await store.markAgentRunResuming(resuming.id, { tenantId })).toBe(true);
+    const completed = await park("exec-origin-completed", "thread-completed");
+    await store.completeAgentRun(completed.id, "done", undefined, { tenantId });
+    await park("exec-origin-elsewhere", "thread-elsewhere", `${tenantId}-other`);
+    await park("exec-origin-unasked", "thread-unasked");
+
+    const origins = await store.findAgentRunsWaitingForToolApprovals(
+      [
+        " exec-origin-shared ",
+        "exec-origin-resuming",
+        "exec-origin-completed",
+        "exec-origin-elsewhere",
+        "   ",
+      ],
+      { tenantId },
+    );
+
+    expect(Object.fromEntries(origins)).toEqual({
+      "exec-origin-shared": {
+        runId: newer.id,
+        threadId: "thread-newer",
+        ownerActorId: "origin-owner",
+      },
+      "exec-origin-resuming": { runId: resuming.id, ownerActorId: "origin-owner" },
+    });
+    await expect(
+      store.findAgentRunsWaitingForToolApprovals(["   "], { tenantId }),
+    ).resolves.toEqual(new Map());
+  });
+
+  it("looks up at most 200 execution ids", async () => {
+    const store = await import("@/lib/runs/store");
+    const run = await store.createAgentRun({
+      mode: "orchestrate",
+      prompt: "wait on the last id",
+      messages: [{ role: "user", content: "wait on the last id" }],
+    });
+    await store.markAgentRunWaitingForApproval(run.id, {
+      response: "partial",
+      continuation: continuationFor("exec-bound-last"),
+    });
+    const others = (count: number) =>
+      Array.from({ length: count }, (_, index) => `exec-bound-${index}`);
+
+    const within = await store.findAgentRunsWaitingForToolApprovals([
+      ...others(199),
+      "exec-bound-last",
+    ]);
+    expect([...within.keys()]).toEqual(["exec-bound-last"]);
+    const beyond = await store.findAgentRunsWaitingForToolApprovals([
+      ...others(200),
+      "exec-bound-last",
+    ]);
+    expect(beyond.size).toBe(0);
+  });
+
   it("clears the continuation when the run reaches a terminal state", async () => {
     const store = await import("@/lib/runs/store");
     const run = await store.createAgentRun({

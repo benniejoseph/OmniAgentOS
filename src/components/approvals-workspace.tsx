@@ -3,70 +3,53 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Check, Loader2, RefreshCw, ShieldCheck, UserPlus, X } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowLeft,
+  Check,
+  ChevronDown,
+  Loader2,
+  RefreshCw,
+  ShieldCheck,
+  UserPlus,
+  X,
+} from "lucide-react";
 import { clsx } from "clsx";
 import {
   permissionMessage,
   useWorkspaceSession,
 } from "@/components/app-shell/session-context";
+import {
+  ApprovalCard,
+  decisionNoticeClasses,
+  formatTime,
+} from "@/components/approvals/approval-card";
+import {
+  APPROVAL_PAGE_SIZE,
+  MAX_REFRESHED_APPROVALS,
+  announceInboxChanged,
+  approvalItemKey,
+  approvalReturnPath,
+  findFocusedApproval,
+  loadApprovalQueue,
+  matchesApprovalFocus,
+  submitApprovalDecision,
+  type ApprovalDecision,
+  type ApprovalItem,
+  type ApprovalQueuePage,
+  type DecisionNotice,
+  type FocusedApproval,
+  type JsonRecord,
+  type TrustResponse,
+} from "@/components/approvals/approval-decision";
 import { useLiveRefresh } from "@/components/use-live-refresh";
+import {
+  approvalReturnLabel,
+  commandConversationHref,
+  type ApprovalKind,
+} from "@/lib/approvals/inbox-link";
 import { ASAEL_PENDING_USER_PROVISION_KEY } from "@/lib/browser-storage-keys";
 import styles from "./daybook-workspaces.module.css";
-
-type JsonRecord = Record<string, unknown>;
-
-type ApprovalItem = {
-  kind: "tool" | "workflow" | "slo_policy";
-  id: string;
-  title: string;
-  status: string;
-  riskLevel: number;
-  requestedBy?: string;
-  reason?: string;
-  createdAt: string;
-  input?: JsonRecord;
-  record?: {
-    toolId?: string;
-    approvals?: Array<{ by?: string; actorId?: string; role?: string }>;
-    approvalPolicy?: { quorum?: number };
-  };
-};
-
-type QueueResponse = {
-  items: ApprovalItem[];
-  stats: {
-    total: number;
-    tools: number;
-    reconciliations: number;
-    workflows: number;
-    sloPolicies: number;
-  };
-};
-
-type TrustProfile = {
-  toolId: string;
-  cleanStreak: number;
-  successes: number;
-  failures: number;
-  autonomyMode: "approve_each" | "auto_with_alert";
-  reversible: boolean;
-  autonomy?: {
-    stage: "manual" | "shadow" | "supervised" | "autonomous";
-    progress: number;
-    score: number;
-    confidence: number;
-    freshness: number;
-    reason: string;
-    budget: { maxActions: number; windowSeconds: number };
-  };
-};
-
-type TrustResponse = {
-  enabled: boolean;
-  authorityMode?: "bounded_grants";
-  threshold: number;
-  profiles: TrustProfile[];
-};
 
 type AccessRequestItem = {
   id: string;
@@ -90,22 +73,35 @@ type AccessQueueResponse = {
   stats: { shown: number; pending: number; provisioning?: number };
 };
 
-type DecisionNotice = {
-  message: string;
-  tone: "success" | "warning" | "danger" | "neutral";
-};
+type FocusState =
+  | FocusedApproval
+  | { status: "error"; message: string };
 
-export function ApprovalsWorkspace() {
+export function ApprovalsWorkspace({
+  focusId,
+  focusKind,
+  returnTo,
+}: {
+  /** The item a link opened the inbox on. */
+  focusId?: string;
+  focusKind?: ApprovalKind;
+  /** Where to send the approver once that item is decided. */
+  returnTo?: string;
+}) {
   const router = useRouter();
   const {
     session,
     status: sessionStatus,
     role,
   } = useWorkspaceSession();
-  const [queue, setQueue] = useState<QueueResponse>();
+  const [queue, setQueue] = useState<ApprovalQueuePage>();
+  const [focused, setFocused] = useState<FocusState>();
+  const [focusDecided, setFocusDecided] = useState(false);
+  const [shownLimit, setShownLimit] = useState(APPROVAL_PAGE_SIZE);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [error, setError] = useState<string>();
-  const [decisionInFlight, setDecisionInFlight] = useState<string>();
+  const [decisionInFlight, setDecisionInFlight] = useState<{ key: string; decision: string }>();
   const [reasons, setReasons] = useState<Record<string, string>>({});
   const [breakGlassSelections, setBreakGlassSelections] = useState<
     Record<string, boolean>
@@ -116,8 +112,13 @@ export function ApprovalsWorkspace() {
   const [trust, setTrust] = useState<TrustResponse>();
   const [accessQueue, setAccessQueue] = useState<AccessQueueResponse>();
   const loadVersionRef = useRef(0);
+  const shownLimitRef = useRef(APPROVAL_PAGE_SIZE);
   const decisionPermission = permissionMessage(session, sessionStatus, "manage.workflow");
   const accessPermission = permissionMessage(session, sessionStatus, "manage.identity");
+  const focus = useMemo(
+    () => (focusId ? { id: focusId, kind: focusKind } : undefined),
+    [focusId, focusKind],
+  );
 
   async function load() {
     const loadVersion = ++loadVersionRef.current;
@@ -128,8 +129,10 @@ export function ApprovalsWorkspace() {
     setState("loading");
     setError(undefined);
     try {
-      const [queueRes, trustRes, accessRes] = await Promise.all([
-        decisionPermission ? Promise.resolve(undefined) : fetch("/api/approvals?limit=50"),
+      const [queuePage, trustRes, accessRes] = await Promise.all([
+        decisionPermission
+          ? Promise.resolve(undefined)
+          : loadApprovalQueue(shownLimitRef.current),
         decisionPermission
           ? Promise.resolve(undefined)
           : fetch("/api/trust").catch(() => undefined),
@@ -137,25 +140,45 @@ export function ApprovalsWorkspace() {
           ? Promise.resolve(undefined)
           : fetch("/api/onboarding/access-requests?status=actionable&limit=50"),
       ]);
+      // The queue shown has its own error; the linked item reports its own.
+      const focusedApproval: FocusState | undefined = queuePage && focus
+        ? await findFocusedApproval(queuePage, focus).catch((focusError: unknown) => ({
+            status: "error" as const,
+            message: focusError instanceof Error
+              ? focusError.message
+              : "The approval you opened could not be loaded.",
+          }))
+        : undefined;
+      const trustBody = trustRes && trustRes.ok
+        ? ((await trustRes.json().catch(() => undefined)) as TrustResponse | undefined)
+        : undefined;
+      let accessBody: AccessQueueResponse | undefined;
+      let accessError: Error | undefined;
+      if (accessRes) {
+        const body = (await accessRes.json().catch(() => ({}))) as JsonRecord;
+        if (accessRes.ok) {
+          accessBody = body as unknown as AccessQueueResponse;
+        } else {
+          accessError = new Error(String(body.message || body.error || `Access requests returned ${accessRes.status}`));
+        }
+      }
       if (loadVersion !== loadVersionRef.current) {
         return;
       }
-      if (queueRes) {
-        const body = (await queueRes.json().catch(() => ({}))) as JsonRecord;
-        if (!queueRes.ok) {
-          throw new Error(String(body.message || body.error || `Approvals returned ${queueRes.status}`));
-        }
-        setQueue(body as unknown as QueueResponse);
+      if (queuePage) {
+        setQueue(queuePage);
       }
-      if (trustRes && trustRes.ok) {
-        setTrust((await trustRes.json().catch(() => undefined)) as TrustResponse | undefined);
+      if (focusedApproval) {
+        setFocused(focusedApproval);
       }
-      if (accessRes) {
-        const body = (await accessRes.json().catch(() => ({}))) as JsonRecord;
-        if (!accessRes.ok) {
-          throw new Error(String(body.message || body.error || `Access requests returned ${accessRes.status}`));
-        }
-        setAccessQueue(body as unknown as AccessQueueResponse);
+      if (trustBody) {
+        setTrust(trustBody);
+      }
+      if (accessError) {
+        throw accessError;
+      }
+      if (accessBody) {
+        setAccessQueue(accessBody);
       }
       setState("ready");
     } catch (loadError) {
@@ -192,82 +215,43 @@ export function ApprovalsWorkspace() {
     pollIntervalMs: 10_000,
   });
 
-  async function decide(item: ApprovalItem, decision: "approve" | "reject") {
+  function showMore() {
+    const next = Math.min(
+      MAX_REFRESHED_APPROVALS,
+      shownLimitRef.current + APPROVAL_PAGE_SIZE,
+    );
+    shownLimitRef.current = next;
+    setShownLimit(next);
+    setLoadingMore(true);
+    void load().finally(() => setLoadingMore(false));
+  }
+
+  async function decide(item: ApprovalItem, decision: ApprovalDecision) {
     if (decisionPermission) {
       setError(decisionPermission);
       return;
     }
-    setDecisionInFlight(`${item.id}:${decision}`);
+    const key = approvalItemKey(item);
+    const decidingFocus = Boolean(focus && matchesApprovalFocus(item, focus));
+    setDecisionInFlight({ key, decision });
     setError(undefined);
-    const reconciliationRequired = isReconciliationItem(item);
     try {
-      const response = await fetch(`/api/approvals/${item.id}`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          kind: item.kind,
-          decision,
-          reason: reconciliationRequired
-            ? undefined
-            : reasons[item.id] || undefined,
-          breakGlass:
-            item.kind === "slo_policy" && decision === "approve"
-              ? Boolean(breakGlassSelections[item.id])
-              : undefined,
-          ticket:
-            item.kind === "slo_policy" && decision === "approve"
-              ? tickets[item.id] || undefined
-              : undefined,
-        }),
+      const notice = await submitApprovalDecision(item, decision, {
+        reason: reasons[key],
+        breakGlass: breakGlassSelections[key],
+        ticket: tickets[key],
       });
-      const body = (await response.json().catch(() => ({}))) as JsonRecord;
-      if (!response.ok) {
-        throw new Error(String(body.message || body.error || `Decision failed (${response.status}).`));
-      }
-      const continuation = body.continuation as { scheduled?: boolean; rejected?: boolean } | undefined;
-      const quorum = body.quorum as
-        | { have?: number; need?: number; message?: string }
-        | undefined;
-      const approvalProgress = body.approvalProgress as
-        | { approvals?: number; required?: number; remaining?: number }
-        | undefined;
-      const executionRecord = body.record as
-        | { status?: string; reason?: string }
-        | undefined;
-      const resumeNote =
-        decision === "approve" && continuation?.scheduled
-        ? " The paused agent run is resuming in the background. Its final answer will appear in Results."
-        : "";
-      const stillPending =
-        decision === "approve" &&
-        (
-          response.status === 202 ||
-          Boolean(approvalProgress?.remaining)
-        );
       setApprovedAccessRequest(undefined);
-      setLastDecision({
-        message:
-        executionRecord?.status === "failed"
-          ? `${reconciliationRequired ? "Reconciliation finished" : "Approval recorded"} for ${item.title}, but execution failed${
-              executionRecord.reason ? `: ${executionRecord.reason}` : "."
-            }${resumeNote}`
-          : reconciliationRequired
-            ? stillPending
-              ? `Reconciliation is in progress for ${item.title}.${resumeNote}`
-              : `Reconciled and continued: ${item.title}.${resumeNote}`
-          : stillPending
-          ? `Approval recorded for ${item.title}. ${
-              quorum?.message ||
-              `${approvalProgress?.approvals || 0}/${approvalProgress?.required || 1} required approvals are recorded.`
-            }`
-            : `${decision === "approve" ? "Approved and released" : "Rejected"}: ${item.title}.${resumeNote}`,
-        tone:
-          executionRecord?.status === "failed"
-            ? "danger"
-            : stillPending
-              ? "warning"
-              : "success",
-      });
+      setLastDecision(notice);
+      announceInboxChanged();
+      if (decidingFocus) {
+        setFocusDecided(true);
+      }
+      const back = approvalReturnPath(item, notice, focus, returnTo);
+      if (back) {
+        router.push(back);
+        return;
+      }
       await load();
     } catch (decisionError) {
       setError(decisionError instanceof Error ? decisionError.message : "Decision failed.");
@@ -285,7 +269,7 @@ export function ApprovalsWorkspace() {
       return;
     }
     const key = `access:${item.id}`;
-    setDecisionInFlight(`${key}:${decision}`);
+    setDecisionInFlight({ key, decision });
     setError(undefined);
     try {
       const response = await fetch("/api/onboarding/access-requests", {
@@ -309,6 +293,7 @@ export function ApprovalsWorkspace() {
         tone: decision === "approved" ? "success" : "neutral",
       });
       setApprovedAccessRequest(decision === "approved" ? item : undefined);
+      announceInboxChanged();
       await load();
     } catch (decisionError) {
       setError(decisionError instanceof Error ? decisionError.message : "Decision failed.");
@@ -333,7 +318,12 @@ export function ApprovalsWorkspace() {
     router.push("/app/settings#create-user");
   }
 
-  const items = useMemo(() => queue?.items || [], [queue]);
+  const focusedItem = focused?.status === "ready" ? focused.item : undefined;
+  const focusedKey = focusedItem ? approvalItemKey(focusedItem) : undefined;
+  const items = useMemo(
+    () => (queue?.items || []).filter((item) => approvalItemKey(item) !== focusedKey),
+    [focusedKey, queue],
+  );
   const accessRequests = useMemo(
     () => accessQueue?.requests || [],
     [accessQueue],
@@ -367,6 +357,45 @@ export function ApprovalsWorkspace() {
       : undefined,
   ].filter(Boolean);
 
+  function approvalCard(item: ApprovalItem, focusedCard = false) {
+    const key = approvalItemKey(item);
+    return (
+      <ApprovalCard
+        key={key}
+        item={item}
+        focused={focusedCard}
+        originHref={
+          item.origin
+            ? commandConversationHref({
+                threadId: item.origin.threadId,
+                runId: item.origin.runId,
+              })
+            : undefined
+        }
+        trust={trust?.profiles.find((profile) => profile.toolId === item.record?.toolId)}
+        trustEnabled={trust?.enabled}
+        threshold={trust?.threshold}
+        approverRole={role}
+        approverId={session?.context?.actorId}
+        reason={reasons[key] || ""}
+        onReason={(value) => setReasons((current) => ({ ...current, [key]: value }))}
+        breakGlass={Boolean(breakGlassSelections[key])}
+        onBreakGlass={(value) =>
+          setBreakGlassSelections((current) => ({
+            ...current,
+            [key]: value,
+          }))
+        }
+        ticket={tickets[key] || ""}
+        onTicket={(value) =>
+          setTickets((current) => ({ ...current, [key]: value }))
+        }
+        onDecide={(decision) => void decide(item, decision)}
+        inFlight={decisionInFlight?.key === key ? decisionInFlight.decision : undefined}
+      />
+    );
+  }
+
   return (
     <div className={clsx("mx-auto max-w-[100rem] px-4 py-6 sm:px-6 lg:px-8", styles.daybook, styles.approvals)} aria-busy={state === "loading"} data-testid="inbox-workspace">
       <section className="rounded-lg border border-line bg-surface p-5" data-daybook="hero">
@@ -383,23 +412,31 @@ export function ApprovalsWorkspace() {
               </p>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={() => void load()}
-            className="action-button"
-            disabled={
-              state === "loading" ||
-              Boolean(decisionPermission && accessPermission)
-            }
-            title={
-              decisionPermission && accessPermission
-                ? decisionPermission
-                : undefined
-            }
-          >
-            {state === "loading" ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <RefreshCw size={15} aria-hidden="true" />}
-            Refresh
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            {returnTo ? (
+              <Link href={returnTo} className="action-link">
+                <ArrowLeft size={15} aria-hidden="true" />
+                {approvalReturnLabel(returnTo)}
+              </Link>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => void load()}
+              className="action-button"
+              disabled={
+                state === "loading" ||
+                Boolean(decisionPermission && accessPermission)
+              }
+              title={
+                decisionPermission && accessPermission
+                  ? decisionPermission
+                  : undefined
+              }
+            >
+              {state === "loading" ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <RefreshCw size={15} aria-hidden="true" />}
+              Refresh
+            </button>
+          </div>
         </div>
         {queue || accessQueue ? (
           <p className="mt-4 text-sm text-muted">
@@ -467,6 +504,43 @@ export function ApprovalsWorkspace() {
         </div>
       ) : null}
 
+      {focus && !decisionPermission && !(focusDecided && focused?.status === "missing") ? (
+        <section className="mt-6 space-y-4" aria-labelledby="focused-approval-heading" data-daybook="section">
+          <div>
+            <h2 id="focused-approval-heading" className="text-base font-semibold">The approval you opened</h2>
+            <p className="text-sm text-muted">
+              {returnTo
+                ? "Decide it here. Once the decision goes through, you go back to where you came from."
+                : "Decide it here. The rest of the queue follows."}
+            </p>
+          </div>
+          {!focused ? (
+            <div className="rounded-lg border border-dashed border-line p-6 text-center text-sm text-muted">
+              Loading the approval you opened…
+            </div>
+          ) : focused.status === "error" ? (
+            <p className="rounded-md border border-danger/40 bg-danger/10 px-4 py-2 text-sm text-danger" role="alert">
+              {focused.message}
+            </p>
+          ) : focused.status === "missing" ? (
+            <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed border-line p-6 text-center text-sm text-muted" data-focused="missing">
+              <p>
+                This approval is no longer waiting. It was decided, withdrawn,
+                or expired.
+              </p>
+              {returnTo ? (
+                <Link href={returnTo} className="action-link">
+                  <ArrowLeft size={15} aria-hidden="true" />
+                  {approvalReturnLabel(returnTo)}
+                </Link>
+              ) : null}
+            </div>
+          ) : (
+            approvalCard(focused.item, true)
+          )}
+        </section>
+      ) : null}
+
       {!accessPermission ? (
         <section className="mt-6 space-y-4" aria-labelledby="access-request-heading" data-daybook="section">
           <div className="flex items-center gap-3">
@@ -495,11 +569,7 @@ export function ApprovalsWorkspace() {
                 }
                 onDecide={(decision) => void decideAccess(item, decision)}
                 onProvision={() => beginProvisioning(item)}
-                inFlight={
-                  decisionInFlight?.startsWith(`${key}:`)
-                    ? decisionInFlight.split(":").at(-1)
-                    : undefined
-                }
+                inFlight={decisionInFlight?.key === key ? decisionInFlight.decision : undefined}
               />
             );
           })}
@@ -510,43 +580,34 @@ export function ApprovalsWorkspace() {
         <section className="mt-6 space-y-4" aria-labelledby="action-approval-heading" data-daybook="section">
           <div>
             <h2 id="action-approval-heading" className="text-base font-semibold">Agent and workflow actions</h2>
-            <p className="text-sm text-muted">Review new approvals and safely reconcile previously approved actions with unresolved outcomes.</p>
+            <p className="text-sm text-muted">Review new approvals and safely reconcile previously approved actions with unresolved outcomes. The riskiest and longest-waiting come first.</p>
           </div>
           {state === "ready" && !items.length ? (
             <div className="rounded-lg border border-dashed border-line p-6 text-center text-sm text-muted">
-              No pending action approvals.
+              {focusedItem ? "Nothing else is waiting." : "No pending action approvals."}
             </div>
           ) : null}
-          {items.map((item) => (
-            <ApprovalCard
-              key={`${item.kind}-${item.id}`}
-              item={item}
-              trust={trust?.profiles.find((profile) => profile.toolId === item.record?.toolId)}
-              trustEnabled={trust?.enabled}
-              threshold={trust?.threshold}
-              approverRole={role}
-              approverId={session?.context?.actorId}
-              reason={reasons[item.id] || ""}
-              onReason={(value) => setReasons((current) => ({ ...current, [item.id]: value }))}
-              breakGlass={Boolean(breakGlassSelections[item.id])}
-              onBreakGlass={(value) =>
-                setBreakGlassSelections((current) => ({
-                  ...current,
-                  [item.id]: value,
-                }))
-              }
-              ticket={tickets[item.id] || ""}
-              onTicket={(value) =>
-                setTickets((current) => ({ ...current, [item.id]: value }))
-              }
-              onDecide={(decision) => void decide(item, decision)}
-              inFlight={
-                decisionInFlight?.startsWith(`${item.id}:`)
-                  ? decisionInFlight.split(":").at(-1)
-                  : undefined
-              }
-            />
-          ))}
+          {items.map((item) => approvalCard(item))}
+          {queue?.nextCursor ? (
+            <div className="flex flex-col items-center gap-2 pt-2">
+              <p className="text-xs text-muted">
+                Showing {queue.items.length} of {queue.stats.total}.
+              </p>
+              {shownLimit < MAX_REFRESHED_APPROVALS ? (
+                <button
+                  type="button"
+                  onClick={showMore}
+                  disabled={loadingMore}
+                  className="action-button"
+                >
+                  {loadingMore ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <ChevronDown size={15} aria-hidden="true" />}
+                  Show more
+                </button>
+              ) : (
+                <p className="text-xs text-muted">Decide some of these to see the rest.</p>
+              )}
+            </div>
+          ) : null}
         </section>
       ) : null}
     </div>
@@ -644,447 +705,6 @@ function AccessRequestCard({
   );
 }
 
-function ApprovalCard({
-  item,
-  trust,
-  trustEnabled,
-  threshold,
-  approverRole,
-  approverId,
-  reason,
-  onReason,
-  breakGlass,
-  onBreakGlass,
-  ticket,
-  onTicket,
-  onDecide,
-  inFlight,
-}: {
-  item: ApprovalItem;
-  trust?: TrustProfile;
-  trustEnabled?: boolean;
-  threshold?: number;
-  approverRole: string;
-  approverId?: string;
-  reason: string;
-  onReason: (value: string) => void;
-  breakGlass: boolean;
-  onBreakGlass: (value: boolean) => void;
-  ticket: string;
-  onTicket: (value: string) => void;
-  onDecide: (decision: "approve" | "reject") => void;
-  inFlight?: string;
-}) {
-  const reconciliationRequired = isReconciliationItem(item);
-  const progress = reconciliationRequired ? undefined : approvalProgress(item);
-  const approvalPolicy = recordValue(item.input?.approvalPolicy);
-  const breakGlassPolicy = recordValue(item.input?.breakGlassPolicy);
-  const attestationRequired =
-    item.kind === "slo_policy" &&
-    Boolean(approvalPolicy.attestationRequired);
-  const breakGlassAvailable =
-    item.kind === "slo_policy" &&
-    Boolean(approvalPolicy.breakGlassAllowed) &&
-    Boolean(breakGlassPolicy.enabled);
-  const approvalBlockedReason = reconciliationRequired
-    ? undefined
-    : blockedApprovalReason(
-        item,
-        approverRole,
-        approverId,
-        {
-          breakGlass,
-          breakGlassPolicy,
-        },
-      );
-  const reasonMinimum = breakGlass
-    ? Number(breakGlassPolicy.reasonMinLength || 0)
-    : attestationRequired
-      ? 12
-      : 0;
-  const ticketRequired =
-    breakGlass && Boolean(breakGlassPolicy.requireTicket);
-  const approvalFormBlockedReason =
-    reason.trim().length < reasonMinimum
-      ? breakGlass
-        ? `Emergency approval requires at least ${reasonMinimum} characters of rationale.`
-        : "This approval requires an attestation of at least 12 characters."
-      : ticketRequired && !ticket.trim()
-        ? "Emergency approval requires a ticket reference."
-        : undefined;
-  return (
-    <article className="rounded-lg border border-line bg-surface p-5" data-daybook="approval-item">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <h2 className="text-base font-semibold">{item.title}</h2>
-            <span className="rounded-md border border-line bg-background px-2 py-0.5 font-mono text-xs text-muted">{kindLabel(item.kind)}</span>
-            <span className={clsx("rounded-md px-2 py-0.5 font-mono text-xs", riskPill(item.riskLevel))}>risk {item.riskLevel}</span>
-            {reconciliationRequired ? (
-              <span className="rounded-md border border-warning/40 bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning">
-                reconciliation required
-              </span>
-            ) : null}
-          </div>
-          <p className="mt-1 text-xs text-muted">
-            Requested {formatTime(item.createdAt)}
-            {item.requestedBy ? ` by ${item.requestedBy}` : ""}
-          </p>
-        </div>
-      </div>
-
-      {trust && !reconciliationRequired ? <TrackRecord trust={trust} threshold={threshold} enabled={trustEnabled} /> : null}
-      {progress ? (
-        <p className="mt-4 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm">
-          {progress.have}/{progress.need} distinct approvals recorded. This
-          action runs only after quorum is reached.
-        </p>
-      ) : null}
-      {item.kind === "workflow" ? (
-        <p className="mt-4 rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-sm leading-5">
-          One approval covers repeated reversible actions only when their exact
-          inputs are shown below. A changed target, tool contract, action class,
-          expired budget, or replanned workflow opens a new approval gate.
-        </p>
-      ) : null}
-
-      <div className="mt-4 grid gap-3 sm:grid-cols-3">
-        <ConsentFact label={reconciliationRequired ? "If you continue" : "If you approve"} value={whatWillHappen(item)} />
-        <ConsentFact
-          label={reconciliationRequired ? "Authority" : "Reversibility"}
-          value={
-            reconciliationRequired
-              ? "No new approval is granted. The original tenant, actor, input, and approval bindings remain unchanged."
-              : reversibility(item.riskLevel)
-          }
-        />
-        <ConsentFact label="Why it is waiting" value={item.reason || "This action requires human approval by policy."} />
-      </div>
-
-      {item.input && Object.keys(item.input).length ? (
-        <details className="mt-4 rounded-md border border-line bg-background p-3">
-          <summary className="cursor-pointer text-sm font-medium">
-            {reconciliationRequired ? "Bound inputs" : "Exact inputs"} (secrets redacted)
-          </summary>
-          <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap font-mono text-xs text-muted">{JSON.stringify(item.input, null, 2)}</pre>
-        </details>
-      ) : null}
-
-      {!reconciliationRequired && breakGlassAvailable ? (
-        <div className="mt-4 rounded-md border border-danger/40 bg-danger/10 p-3">
-          <label className="flex items-start gap-3 text-sm font-medium">
-            <input
-              type="checkbox"
-              checked={breakGlass}
-              onChange={(event) => onBreakGlass(event.target.checked)}
-              className="mt-0.5 size-4"
-            />
-            <span>
-              Use emergency break-glass approval
-              <span className="mt-1 block text-xs font-normal leading-5 text-muted">
-                {String(
-                  breakGlassPolicy.description ||
-                    "Bypass normal quorum under the configured emergency policy.",
-                )}
-              </span>
-            </span>
-          </label>
-          {breakGlass && ticketRequired ? (
-            <input
-              value={ticket}
-              onChange={(event) => onTicket(event.target.value)}
-              placeholder="Required incident or change ticket"
-              aria-label="Break-glass ticket reference"
-              className="mt-3 min-h-11 w-full rounded-md border border-line bg-background px-3 text-sm placeholder:text-muted"
-            />
-          ) : null}
-        </div>
-      ) : null}
-
-      {reconciliationRequired ? (
-        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-md border border-warning/40 bg-warning/10 p-3">
-          <p className="max-w-3xl text-sm leading-5 text-muted">
-            Approval is already recorded. This verifies the immutable deletion
-            receipt first and replays only the same bound request if needed.
-          </p>
-          <button
-            type="button"
-            onClick={() => onDecide("approve")}
-            disabled={Boolean(inFlight)}
-            className="primary-button"
-          >
-            {inFlight === "approve" ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <RefreshCw size={14} aria-hidden="true" />}
-            Reconcile and continue
-          </button>
-        </div>
-      ) : (
-        <>
-          <div className="mt-4 flex flex-wrap items-center gap-2">
-            <input
-              value={reason}
-              onChange={(event) => onReason(event.target.value)}
-              placeholder={
-                breakGlass
-                  ? `Required emergency rationale (${reasonMinimum}+ characters)`
-                  : attestationRequired
-                    ? "Required approval attestation (12+ characters)"
-                    : "Optional decision note (recorded in the audit trail)"
-              }
-              className="min-h-11 min-w-0 flex-1 rounded-md border border-line bg-background px-3 text-sm placeholder:text-muted"
-              aria-label={
-                breakGlass
-                  ? "Required break-glass rationale"
-                  : attestationRequired
-                    ? "Required approval attestation"
-                    : "Decision reason"
-              }
-            />
-            <button type="button" onClick={() => onDecide("reject")} disabled={Boolean(inFlight)} className="action-button">
-              {inFlight === "reject" ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <X size={14} aria-hidden="true" />}
-              Reject
-            </button>
-            <button
-              type="button"
-              onClick={() => onDecide("approve")}
-              disabled={
-                Boolean(inFlight) ||
-                Boolean(approvalBlockedReason) ||
-                Boolean(approvalFormBlockedReason)
-              }
-              title={approvalBlockedReason || approvalFormBlockedReason}
-              className="primary-button"
-            >
-              {inFlight === "approve" ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <Check size={14} aria-hidden="true" />}
-              {breakGlass
-                ? "Emergency approve"
-                : progress && progress.have + 1 < progress.need
-                ? `Record approval ${Math.min(progress.have + 1, progress.need)} of ${progress.need}`
-                : "Approve and run"}
-            </button>
-          </div>
-          {approvalBlockedReason || approvalFormBlockedReason ? (
-            <p className="mt-2 text-xs leading-5 text-muted">
-              {approvalBlockedReason || approvalFormBlockedReason}
-            </p>
-          ) : null}
-        </>
-      )}
-    </article>
-  );
-}
-
-function approvalProgress(item: ApprovalItem) {
-  if (isReconciliationItem(item)) {
-    return undefined;
-  }
-  if (item.kind === "tool" && item.riskLevel >= 3) {
-    const approvers = new Set(
-      (item.record?.approvals || [])
-        .filter((approval) => approval.role === "admin" || approval.role === "system")
-        .map((approval) => approval.by || approval.actorId)
-        .filter(Boolean),
-    );
-    return { have: approvers.size, need: 2 };
-  }
-  if (item.kind === "slo_policy") {
-    const raw = item.input?.approvalProgress;
-    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
-      const record = raw as JsonRecord;
-      const have = Number(record.approvals || 0);
-      const need = Number(record.required || 1);
-      if (need > 1) {
-        return { have, need };
-      }
-    }
-  }
-  return undefined;
-}
-
-function blockedApprovalReason(
-  item: ApprovalItem,
-  approverRole: string,
-  approverId?: string,
-  options: {
-    breakGlass?: boolean;
-    breakGlassPolicy?: JsonRecord;
-  } = {},
-) {
-  if (isReconciliationItem(item)) {
-    return undefined;
-  }
-  if (
-    approverId &&
-    item.record?.approvals?.some(
-      (approval) => (approval.by || approval.actorId) === approverId,
-    )
-  ) {
-    return "Your approval is already recorded. Another eligible approver must review this item.";
-  }
-  if (item.kind === "tool" && item.riskLevel >= 3) {
-    if (!["admin", "system"].includes(approverRole)) {
-      return "Risk 3 tool calls require an admin approval.";
-    }
-    if (approverId && item.requestedBy === approverId) {
-      return "The requester cannot approve their own risk 3 tool call.";
-    }
-  }
-  if (item.kind === "slo_policy") {
-    const rawPolicy = item.input?.approvalPolicy;
-    if (rawPolicy && typeof rawPolicy === "object" && !Array.isArray(rawPolicy)) {
-      const policy = rawPolicy as JsonRecord;
-      if (options.breakGlass) {
-        const requiredRole = String(
-          options.breakGlassPolicy?.requiredRole || "admin",
-        );
-        if (roleRank(approverRole) < roleRank(requiredRole)) {
-          return `Emergency approval requires ${requiredRole} role or higher.`;
-        }
-      } else {
-        const requiredRoles = Array.isArray(policy.requiredRoles)
-          ? policy.requiredRoles.map(String)
-          : [];
-        if (requiredRoles.length && !requiredRoles.includes(approverRole)) {
-          return `This policy change requires one of these roles: ${requiredRoles.join(", ")}.`;
-        }
-      }
-      if (
-        policy.allowRequesterApproval === false &&
-        approverId &&
-        item.requestedBy === approverId
-      ) {
-        return "The requester cannot approve their own SLO policy change.";
-      }
-    }
-  }
-  return undefined;
-}
-
-function TrackRecord({
-  trust,
-  threshold,
-  enabled,
-}: {
-  trust: TrustProfile;
-  threshold?: number;
-  enabled?: boolean;
-}) {
-  const target = threshold || 25;
-  const graduated = trust.autonomyMode === "auto_with_alert";
-  const pct = Math.min(Math.round((trust.autonomy?.progress ?? trust.cleanStreak / target) * 100), 100);
-  const stage = trust.autonomy?.stage || (graduated ? "autonomous" : "shadow");
-  return (
-    <div className="mt-4 rounded-md border border-line bg-background p-3" data-daybook="track">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted">{stage} evidence gate</p>
-        <p className="text-xs text-muted">
-          {trust.successes} ok · {trust.failures} failed · streak {trust.cleanStreak}
-        </p>
-      </div>
-      {trust.reversible ? (
-        <>
-          <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-surface-raised">
-            <div className={clsx("h-full rounded-full", graduated ? "bg-success" : "bg-primary")} style={{ width: `${pct}%` }} />
-          </div>
-          <p className="mt-2 text-xs text-muted">
-            {trust.autonomy?.reason || (graduated
-              ? enabled
-                ? "Evidence threshold reached. Execution still requires an exact bounded plan grant."
-                : "Evidence threshold reached; approval remains required."
-              : `${trust.cleanStreak}/${target} clean executions toward earning autonomy.`)}
-          </p>
-          {trust.autonomy ? (
-            <p className="mt-1 text-[11px] text-muted">
-              Reliability {Math.round(trust.autonomy.score * 100)}% · confidence {Math.round(trust.autonomy.confidence * 100)}% · budget {trust.autonomy.budget.maxActions}/hour
-            </p>
-          ) : null}
-        </>
-      ) : (
-        <p className="mt-2 text-xs text-muted">Irreversible action. It is always gated and never graduates.</p>
-      )}
-    </div>
-  );
-}
-
-function ConsentFact({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-md border border-line bg-background p-3" data-daybook="fact">
-      <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted">{label}</p>
-      <p className="mt-1 text-sm leading-5">{value}</p>
-    </div>
-  );
-}
-
-function recordValue(value: unknown): JsonRecord {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as JsonRecord)
-    : {};
-}
-
-function roleRank(role: string) {
-  return {
-    viewer: 0,
-    operator: 1,
-    admin: 2,
-    system: 3,
-  }[role] ?? -1;
-}
-
-function decisionNoticeClasses(tone: DecisionNotice["tone"]) {
-  if (tone === "danger") {
-    return "border-danger/40 bg-danger/10 text-danger";
-  }
-  if (tone === "warning") {
-    return "border-warning/45 bg-warning/10";
-  }
-  if (tone === "success") {
-    return "border-success/40 bg-success/10";
-  }
-  return "border-line bg-surface";
-}
-
-function kindLabel(kind: ApprovalItem["kind"]) {
-  if (kind === "tool") {
-    return "tool call";
-  }
-  return kind === "workflow" ? "workflow gate" : "SLO policy";
-}
-
-function isReconciliationItem(item: ApprovalItem) {
-  return item.kind === "tool" &&
-    item.status === "reconciliation_required" &&
-    item.record?.toolId === "memory.forget";
-}
-
-function whatWillHappen(item: ApprovalItem) {
-  if (isReconciliationItem(item)) {
-    return "The system checks the immutable deletion receipt first. If deletion already committed, it finalizes the existing audit record; otherwise it safely replays only the same tenant-, actor-, input-, and approval-bound request.";
-  }
-  if (item.kind === "tool") {
-    return `The ${item.title} tool executes for real with the inputs below, and the output is recorded in the tool audit ledger.`;
-  }
-  if (item.kind === "workflow") {
-    return "The workflow resumes. Exact reviewed reversible actions receive short-lived, budgeted plan grants; dynamic or changed targets still pause for their own approval.";
-  }
-  return "The monitoring policy change is applied and starts affecting SLO evaluation, incidents, and alerts.";
-}
-
-function reversibility(riskLevel: number) {
-  if (riskLevel <= 1) {
-    return "Low impact. It writes to internal stores that can be edited or removed afterwards.";
-  }
-  if (riskLevel === 2) {
-    return "Side-effecting. It may reach external systems and may not be reversible. Review the inputs first.";
-  }
-  return "High impact. It requires two distinct admin approvals, and the requester cannot approve their own request.";
-}
-
-function riskPill(riskLevel: number) {
-  if (riskLevel <= 1) {
-    return "bg-success/10 text-success";
-  }
-  return riskLevel === 2 ? "bg-warning/10 text-warning" : "bg-danger/10 text-danger";
-}
-
 function accessRoleLabel(value: string) {
   return {
     founder: "Founder",
@@ -1103,17 +723,4 @@ function timelineLabel(value: string) {
     quarter: "Planning this quarter",
     research: "Researching",
   }[value] || value;
-}
-
-function formatTime(value: string) {
-  const timestamp = Date.parse(value);
-  if (!Number.isFinite(timestamp)) {
-    return value;
-  }
-  return new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(timestamp));
 }

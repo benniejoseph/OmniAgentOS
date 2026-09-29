@@ -1,10 +1,18 @@
+import {
+  APPROVAL_SOURCE_RANK,
+  approvalSourceAfter,
+  decodeApprovalCursor,
+  encodeApprovalCursor,
+  mergeApprovalPages,
+} from "@/lib/approvals/order";
 import { listMcpConnectors } from "@/lib/connectors/store";
 import { listOpenApiConnectors } from "@/lib/connectors/openapi-store";
 import { summarizeWorkflowHealth } from "@/lib/diagnostics/health";
 import {
   getObservabilitySloApprovalPolicyConfig,
+  getObservabilitySloPolicyChange,
   getSloPolicyApprovalProgress,
-  listObservabilitySloPolicyChanges,
+  listPendingSloPolicyChangePage,
   type ObservabilitySloPolicyChange,
 } from "@/lib/observability/slo-policy-store";
 import {
@@ -12,7 +20,10 @@ import {
   listOperationJobRecoveryRows,
 } from "@/lib/operations/job-queue";
 import { inspectOperationsRecovery } from "@/lib/operations/recovery";
-import { listAgentRuns } from "@/lib/runs/store";
+import {
+  findAgentRunsWaitingForToolApprovals,
+  listAgentRuns,
+} from "@/lib/runs/store";
 import { publicAgentRun } from "@/lib/runs/public";
 import { redactSensitive } from "@/lib/security/context";
 import {
@@ -20,17 +31,23 @@ import {
   canonicalStatusForSloPolicyChange,
   type CanonicalStatusProjection,
 } from "@/lib/status/canonical";
-import { getToolExecutionStats, listPendingToolApprovals, listToolExecutions } from "@/lib/tools/audit-store";
+import {
+  getPendingToolApproval,
+  getToolExecutionStats,
+  listPendingToolApprovalPage,
+  listToolExecutions,
+} from "@/lib/tools/audit-store";
 import {
   getWorkflowPlanForRun,
   getWorkflowPlansForRuns,
 } from "@/lib/workflows/planner";
 import type { ToolExecutionRecord } from "@/lib/tools/types";
 import {
+  getWorkflowRun,
   getWorkflowStats,
+  listWorkflowApprovalPage,
   listWorkflowRecoveryEvents,
   listWorkflowRuns,
-  listWorkflowRunsByStatus,
 } from "@/lib/workflows/store";
 import { publicWorkflowRun } from "@/lib/workflows/public";
 import type { WorkflowRunRecord } from "@/lib/workflows/types";
@@ -49,6 +66,8 @@ export type ApprovalQueueItem =
       createdAt: string;
       input: Record<string, unknown>;
       record: ToolExecutionRecord;
+      /** The paused run and conversation, shown only to the run's owner. */
+      origin?: { runId: string; threadId?: string };
     }
   | {
       kind: "workflow";
@@ -79,53 +98,180 @@ export type ApprovalQueueItem =
       record: ObservabilitySloPolicyChange;
     };
 
-export async function getApprovalQueue(limit = 25, options: { tenantId?: string } = {}) {
-  const [
-    toolApprovals,
-    workflowRuns,
-    sloPolicyChanges,
-    sloApprovalPolicy,
-  ] = await Promise.all([
-    listPendingToolApprovals(limit, { tenantId: options.tenantId }),
-    listWorkflowRunsByStatus("waiting_approval", limit, {
+export type ApprovalQueueStats = {
+  total: number;
+  tools: number;
+  reconciliations: number;
+  workflows: number;
+  sloPolicies: number;
+};
+
+export type ApprovalQueueKind = ApprovalQueueItem["kind"];
+
+type ApprovalQueueSource =
+  | { kind: "tool"; record: ToolExecutionRecord }
+  | { kind: "workflow"; run: WorkflowRunRecord }
+  | { kind: "slo_policy"; change: ObservabilitySloPolicyChange };
+
+/**
+ * One page of the approvals waiting in a tenant, in approval order (see
+ * `@/lib/approvals/order`): reconciliations first, then by the time each
+ * item started waiting, less a day per risk level. Stats count every
+ * pending item, not only this page. `cursor` is a `nextCursor` from the
+ * page before; an invalid one throws ApprovalCursorError. With `actorId`,
+ * a tool item paused in that actor's run names the run and conversation.
+ */
+export async function getApprovalQueue(
+  limit = 25,
+  options: { tenantId?: string; cursor?: string | null; actorId?: string } = {},
+) {
+  const boundedLimit = Math.min(Math.max(Math.trunc(limit) || 1, 1), 100);
+  const cursor = options.cursor ? decodeApprovalCursor(options.cursor) : undefined;
+  const [toolPage, workflowPage, sloPage, sloApprovalPolicy] = await Promise.all([
+    listPendingToolApprovalPage({
       tenantId: options.tenantId,
+      limit: boundedLimit,
+      after: approvalSourceAfter(cursor, APPROVAL_SOURCE_RANK.tool),
     }),
-    listObservabilitySloPolicyChanges({ status: "pending", limit, tenantId: options.tenantId }),
+    listWorkflowApprovalPage({
+      tenantId: options.tenantId,
+      limit: boundedLimit,
+      after: approvalSourceAfter(cursor, APPROVAL_SOURCE_RANK.workflow),
+    }),
+    listPendingSloPolicyChangePage({
+      tenantId: options.tenantId,
+      limit: boundedLimit,
+      after: approvalSourceAfter(cursor, APPROVAL_SOURCE_RANK.slo_policy),
+    }),
     getObservabilitySloApprovalPolicyConfig(),
   ]);
-  const workflowApprovals = workflowRuns.slice(0, limit);
-  const workflowPlans = await getWorkflowPlansForRuns(
-    workflowApprovals.map((run) => run.id),
-    { tenantId: options.tenantId },
+  const merged = mergeApprovalPages<ApprovalQueueSource>([
+    {
+      entries: toolPage.entries.map(({ record, key }) => ({
+        item: { kind: "tool" as const, record },
+        key,
+      })),
+      last: toolPage.last,
+      exhausted: toolPage.exhausted,
+    },
+    {
+      entries: workflowPage.entries.map(({ run, key }) => ({
+        item: { kind: "workflow" as const, run },
+        key,
+      })),
+      last: workflowPage.last,
+      exhausted: workflowPage.exhausted,
+    },
+    {
+      entries: sloPage.entries.map(({ change, key }) => ({
+        item: { kind: "slo_policy" as const, change },
+        key,
+      })),
+      last: sloPage.last,
+      exhausted: sloPage.exhausted,
+    },
+  ], boundedLimit);
+  const sources = merged.entries.map(({ item }) => item);
+  const workflowRunIds = sources.flatMap((source) =>
+    source.kind === "workflow" ? [source.run.id] : []
   );
-  const workflowApprovalItems = workflowApprovals.map((run) =>
-    workflowApprovalToQueueItem(run, workflowPlans.get(run.id) || null),
+  const toolExecutionIds = sources.flatMap((source) =>
+    source.kind === "tool" ? [source.record.id] : []
   );
-  const reconciliationCount = toolApprovals.filter(
-    isToolReconciliationRecord,
-  ).length;
-  const items = [
-    ...toolApprovals.map(toolApprovalToQueueItem),
-    ...workflowApprovalItems,
-    ...sloPolicyChanges.map((change) =>
-      sloPolicyChangeToQueueItem(change, sloApprovalPolicy.breakGlass),
-    ),
-  ].sort(
-    (left, right) =>
-      Number(right.status === "reconciliation_required") -
-        Number(left.status === "reconciliation_required") ||
-      Date.parse(right.createdAt) - Date.parse(left.createdAt),
-  );
+  const [workflowPlans, origins] = await Promise.all([
+    workflowRunIds.length
+      ? getWorkflowPlansForRuns(workflowRunIds, { tenantId: options.tenantId })
+      : Promise.resolve(new Map<string, Awaited<ReturnType<typeof getWorkflowPlanForRun>>>()),
+    toolExecutionIds.length && options.actorId
+      ? findAgentRunsWaitingForToolApprovals(toolExecutionIds, {
+          tenantId: options.tenantId,
+        })
+      : Promise.resolve(undefined),
+  ]);
+  const items = sources.map((source): ApprovalQueueItem => {
+    if (source.kind === "tool") {
+      return withToolOrigin(
+        toolApprovalToQueueItem(source.record),
+        origins?.get(source.record.id),
+        options.actorId,
+      );
+    }
+    if (source.kind === "workflow") {
+      return workflowApprovalToQueueItem(
+        source.run,
+        workflowPlans.get(source.run.id) || null,
+      );
+    }
+    return sloPolicyChangeToQueueItem(source.change, sloApprovalPolicy.breakGlass);
+  });
+  const stats: ApprovalQueueStats = {
+    total: toolPage.total + workflowPage.total + sloPage.total,
+    tools: toolPage.total,
+    reconciliations: toolPage.reconciliations,
+    workflows: workflowPage.total,
+    sloPolicies: sloPage.total,
+  };
 
   return {
-    items: items.slice(0, limit),
-    stats: {
-      total: items.length,
-      tools: toolApprovals.length,
-      reconciliations: reconciliationCount,
-      workflows: workflowApprovals.length,
-      sloPolicies: sloPolicyChanges.length,
-    },
+    items,
+    stats,
+    nextCursor: merged.nextCursor ? encodeApprovalCursor(merged.nextCursor) : null,
+  };
+}
+
+/**
+ * One approval by id while it still waits on a person; null once it was
+ * decided, finished, or never existed in this tenant. Without `kind`, tool
+ * actions are tried first, then workflow runs, then SLO policy changes.
+ */
+export async function getApprovalQueueItem(
+  id: string,
+  options: { tenantId?: string; kind?: ApprovalQueueKind; actorId?: string } = {},
+): Promise<ApprovalQueueItem | null> {
+  const approvalId = id.trim();
+  if (!approvalId) return null;
+  const tenantId = options.tenantId;
+  if (!options.kind || options.kind === "tool") {
+    const record = await getPendingToolApproval(approvalId, { tenantId });
+    if (record) {
+      const origins = options.actorId
+        ? await findAgentRunsWaitingForToolApprovals([record.id], { tenantId })
+        : undefined;
+      return withToolOrigin(
+        toolApprovalToQueueItem(record),
+        origins?.get(record.id),
+        options.actorId,
+      );
+    }
+    if (options.kind) return null;
+  }
+  if (!options.kind || options.kind === "workflow") {
+    const run = await getWorkflowRun(approvalId, { tenantId });
+    if (run?.status === "waiting_approval") {
+      const plan = await getWorkflowPlanForRun(run.id, { tenantId });
+      return workflowApprovalToQueueItem(run, plan || null);
+    }
+    if (options.kind) return null;
+  }
+  const change = await getObservabilitySloPolicyChange(approvalId, { tenantId });
+  if (change?.status !== "pending") return null;
+  const sloApprovalPolicy = await getObservabilitySloApprovalPolicyConfig();
+  return sloPolicyChangeToQueueItem(change, sloApprovalPolicy.breakGlass);
+}
+
+function withToolOrigin(
+  item: ApprovalQueueItem,
+  origin: { runId: string; threadId?: string; ownerActorId: string } | undefined,
+  actorId: string | undefined,
+): ApprovalQueueItem {
+  if (item.kind !== "tool" || !origin || !actorId || origin.ownerActorId !== actorId) {
+    return item;
+  }
+  return {
+    ...item,
+    origin: origin.threadId
+      ? { runId: origin.runId, threadId: origin.threadId }
+      : { runId: origin.runId },
   };
 }
 
@@ -258,11 +404,6 @@ function isReadOnlyReconciliationRecord(record: ToolExecutionRecord) {
     !record.dryRun &&
     record.approvalRequired &&
     record.approvalDecision === "approved";
-}
-
-function isToolReconciliationRecord(record: ToolExecutionRecord) {
-  return isMemoryForgetReconciliationRecord(record) ||
-    isReadOnlyReconciliationRecord(record);
 }
 
 function workflowApprovalToQueueItem(

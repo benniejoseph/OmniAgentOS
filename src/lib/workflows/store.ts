@@ -1,4 +1,15 @@
 import { createHash, randomUUID } from "node:crypto";
+import {
+  APPROVAL_RISK_STEP_MS,
+  APPROVAL_SOURCE_RANK,
+  WORKFLOW_APPROVAL_RISK_LEVEL,
+  approvalAfterSqlValues,
+  approvalPriorityMs,
+  compareApprovalSourceRows,
+  isAfterApprovalPosition,
+  type ApprovalOrderKey,
+  type ApprovalSourceAfter,
+} from "@/lib/approvals/order";
 import { WORKFLOW_RUN_BUDGET_LIMITS } from "@/lib/config";
 import { ensureDatabaseSchema, getDatabaseTenantContext, getSql, hasDatabaseUrl } from "@/lib/db/client";
 import {
@@ -487,38 +498,117 @@ export async function listWorkflowRunSummaries(
     .slice(0, boundedLimit);
 }
 
-export async function listWorkflowRunsByStatus(
-  status: WorkflowRunStatus,
-  limit = 20,
-  options: { tenantId?: string } = {},
-) {
+/**
+ * One page of the runs waiting for approval, in approval order (see
+ * `@/lib/approvals/order`), with the count for the whole tenant. A run
+ * waits from its last update, at WORKFLOW_APPROVAL_RISK_LEVEL.
+ */
+export async function listWorkflowApprovalPage(options: {
+  tenantId?: string;
+  limit: number;
+  after?: ApprovalSourceAfter;
+}): Promise<WorkflowApprovalPage> {
   const tenantId = normalizeTenantId(options.tenantId);
-  const boundedLimit = Math.min(Math.max(limit, 1), 100);
+  const limit = Math.min(Math.max(Math.trunc(options.limit) || 1, 1), 200);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
+    const after = approvalAfterSqlValues(options.after);
     const rows = await getSql()`
-      SELECT
-        id, tenant_id, workflow_type, status, goal, input, current_step,
-        attempt, max_attempts, approval_required, approved_at, paused_at,
-        canceled_at, error, result, created_at, updated_at, completed_at
-      FROM omni_workflow_runs
-      WHERE tenant_id = ${tenantId}
-        AND status = ${status}
-      ORDER BY updated_at DESC
-      LIMIT ${boundedLimit}
+      WITH pending AS (
+        SELECT
+          id, tenant_id, workflow_type, status, goal, input, current_step,
+          attempt, max_attempts, approval_required, approved_at, paused_at,
+          canceled_at, error, result, created_at, updated_at, completed_at,
+          1 AS class_rank,
+          (extract(epoch FROM date_trunc('milliseconds', updated_at)) * 1000)::bigint
+            - ${WORKFLOW_APPROVAL_RISK_LEVEL}::bigint * ${APPROVAL_RISK_STEP_MS}::bigint
+            AS priority_ms
+        FROM omni_workflow_runs
+        WHERE tenant_id = ${tenantId}
+          AND status = 'waiting_approval'
+      ),
+      counts AS (
+        SELECT COUNT(*)::int AS pending_total
+        FROM pending
+      ),
+      page AS (
+        SELECT *
+        FROM pending
+        WHERE NOT ${after.set}::boolean
+          OR (class_rank, priority_ms) > (${after.classRank}::int, ${after.priorityMs}::bigint)
+          OR (
+            (class_rank, priority_ms) = (${after.classRank}::int, ${after.priorityMs}::bigint)
+            AND (
+              ${after.tieMode}::int = 1
+              OR (
+                ${after.tieMode}::int = 2
+                AND id COLLATE "C" > ${after.tieId}::text COLLATE "C"
+              )
+            )
+          )
+        ORDER BY class_rank, priority_ms, id COLLATE "C"
+        LIMIT ${limit + 1}
+      )
+      SELECT page.*, counts.pending_total
+      FROM counts
+      LEFT JOIN page ON true
+      ORDER BY page.class_rank, page.priority_ms, page.id COLLATE "C"
     `;
-    return rows.map(workflowRunFromRow);
+    const pageRows = rows.filter((row) => row.id !== null && row.id !== undefined);
+    const entries = pageRows.map((row) => ({
+      run: workflowRunFromRow(row),
+      key: {
+        classRank: 1 as const,
+        priorityMs: Number(row.priority_ms),
+        sourceRank: APPROVAL_SOURCE_RANK.workflow,
+        id: String(row.id),
+      },
+    }));
+    return {
+      entries,
+      last: entries.at(-1)?.key,
+      exhausted: pageRows.length <= limit,
+      total: Number(rows[0]?.pending_total || 0),
+    };
   }
 
   const ledger = await readWorkflowLedger();
-  return ledger.runs
+  const pending = ledger.runs
     .filter(
       (run) =>
         normalizeTenantId(run.tenantId) === tenantId &&
-        run.status === status,
+        run.status === "waiting_approval",
     )
-    .slice(0, boundedLimit);
+    .map((run) => ({
+      run,
+      key: {
+        classRank: 1 as const,
+        priorityMs: approvalPriorityMs(
+          Date.parse(run.updatedAt),
+          WORKFLOW_APPROVAL_RISK_LEVEL,
+        ),
+        sourceRank: APPROVAL_SOURCE_RANK.workflow,
+        id: run.id,
+      },
+    }))
+    .sort((left, right) => compareApprovalSourceRows(left.key, right.key));
+  const entries = pending
+    .filter(({ key }) => isAfterApprovalPosition(key, options.after))
+    .slice(0, limit + 1);
+  return {
+    entries,
+    last: entries.at(-1)?.key,
+    exhausted: entries.length <= limit,
+    total: pending.length,
+  };
 }
+
+export type WorkflowApprovalPage = {
+  entries: Array<{ run: WorkflowRunRecord; key: ApprovalOrderKey }>;
+  last?: ApprovalOrderKey;
+  exhausted: boolean;
+  total: number;
+};
 
 /**
  * Queued runs, oldest first. excludeIds drops runs before the limit applies,

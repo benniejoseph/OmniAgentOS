@@ -83,6 +83,10 @@ import {
   type ClientAgentMode,
 } from "@/lib/command/client-projection";
 import { startProgressiveThreadLoad } from "@/lib/command/progressive-thread-load";
+import {
+  approvalInboxHref,
+  commandConversationHref,
+} from "@/lib/approvals/inbox-link";
 import type {
   CommandContextCatalogItem,
   CommandContextReference,
@@ -132,6 +136,19 @@ const ConversationProgressPanel = dynamic(
     loading: () => (
       <div className="grid min-h-32 place-items-center text-sm text-muted">
         Loading activity…
+      </div>
+    ),
+  },
+);
+
+const InlineApproval = dynamic(
+  () => import("@/components/approvals/inline-approval").then((module) =>
+    module.InlineApproval
+  ),
+  {
+    loading: () => (
+      <div className="rounded-xl border border-warning/40 bg-warning/10 px-4 py-3 text-sm text-muted">
+        Loading the approval…
       </div>
     ),
   },
@@ -792,6 +809,24 @@ export function AgentRunsWorkspace({
   const workflowActionPermission = workflowPermission;
   const activeWorkflowId = stringPath(workflowRun, "run.id", "");
   const activeWorkflowStatus = stringPath(workflowRun, "run.status", "");
+  // The inbox opens on the item this conversation waits for and, once it is
+  // decided, comes back here.
+  const conversationReturnTo = threadId || activeAgentRunId
+    ? commandConversationHref({
+        threadId: threadId || undefined,
+        runId: activeAgentRunId || undefined,
+      })
+    : undefined;
+  const toolApprovalHref = approvalInboxHref({
+    id: waitingApproval?.executionId || undefined,
+    kind: "tool",
+    returnTo: conversationReturnTo,
+  });
+  const workflowApprovalHref = approvalInboxHref({
+    id: activeWorkflowId || undefined,
+    kind: "workflow",
+    returnTo: threadId ? commandConversationHref({ threadId }) : undefined,
+  });
   const workflowInProgress = Boolean(
     activeWorkflowId &&
       !["completed", "failed", "canceled"].includes(activeWorkflowStatus),
@@ -938,7 +973,17 @@ export function AgentRunsWorkspace({
       void refreshThreads();
       if (initialThreadId && !initialThreadLoadedRef.current) {
         initialThreadLoadedRef.current = true;
-        void loadThread(initialThreadId);
+        if (initialRunId && !initialRunLoadedRef.current) {
+          // Coming back to a conversation on one of its runs keeps following
+          // that run without opening its details over the conversation.
+          initialRunLoadedRef.current = true;
+          void loadRunActivity(initialRunId, {
+            openDetails: false,
+            threadId: initialThreadId,
+          });
+        } else {
+          void loadThread(initialThreadId);
+        }
       } else if (initialRunId && !initialRunLoadedRef.current) {
         initialRunLoadedRef.current = true;
         void loadRunActivity(initialRunId);
@@ -2892,7 +2937,15 @@ export function AgentRunsWorkspace({
     }
   }
 
-  async function loadRunActivity(id: string) {
+  async function loadRunActivity(
+    id: string,
+    options: {
+      openDetails?: boolean;
+      /** The conversation to open when the run itself cannot be read. */
+      threadId?: string;
+    } = {},
+  ) {
+    const openDetails = options.openDetails ?? true;
     setError(undefined);
     try {
       const payload = asRecord(await readJson(`/api/runs/${encodeURIComponent(id)}`));
@@ -2957,11 +3010,18 @@ export function AgentRunsWorkspace({
               : [{ type: "status" as const, label: "Durable run", detail: `Run is ${status.replaceAll("_", " ")}.` }]),
       ]);
       setActiveTab("execute");
-      setDetailsOpen(true);
-      setRunAnnouncement("Opened the durable activity and recovery record for this run.");
+      if (openDetails) {
+        setDetailsOpen(true);
+        setRunAnnouncement("Opened the durable activity and recovery record for this run.");
+      } else {
+        setRunAnnouncement("Reopened this conversation on its run.");
+      }
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Run activity could not be loaded.");
       setRunAnnouncement("Run activity could not be loaded.");
+      if (options.threadId) {
+        void loadThread(options.threadId);
+      }
     }
   }
 
@@ -3352,7 +3412,16 @@ export function AgentRunsWorkspace({
                 />
               ) : null}
 
-              {waitingApproval || activeWorkflowStatus === "waiting_approval" ? (
+              {waitingApproval?.executionId ? (
+                <div className="ml-0 max-w-2xl sm:ml-8">
+                  <InlineApproval
+                    key={waitingApproval.executionId}
+                    executionId={waitingApproval.executionId}
+                    summary={streamEventLabel(waitingApproval)}
+                    returnTo={conversationReturnTo}
+                  />
+                </div>
+              ) : waitingApproval || activeWorkflowStatus === "waiting_approval" ? (
                 <div className="ml-0 flex max-w-2xl items-start justify-between gap-4 rounded-xl border border-warning/40 bg-warning/10 px-4 py-3 sm:ml-8">
                   <div className="flex min-w-0 items-start gap-3">
                     <AlertTriangle size={16} className="mt-0.5 shrink-0 text-warning" aria-hidden="true" />
@@ -3363,7 +3432,7 @@ export function AgentRunsWorkspace({
                       </p>
                     </div>
                   </div>
-                  <Link href="/app/approvals" className="action-link shrink-0">Review</Link>
+                  <Link href={waitingApproval ? toolApprovalHref : workflowApprovalHref} className="action-link shrink-0">Review</Link>
                 </div>
               ) : null}
 
@@ -4105,7 +4174,7 @@ export function AgentRunsWorkspace({
                         <p className="mt-1 text-xs leading-5 text-muted">{streamEventLabel(waitingApproval)}</p>
                       </div>
                     </div>
-                    <Link href="/app/approvals" className="primary-button shrink-0">Open Approvals</Link>
+                    <Link href={toolApprovalHref} className="primary-button shrink-0">Open Approvals</Link>
                   </div>
                 ) : null}
                 {!waitingApproval &&
@@ -4131,7 +4200,7 @@ export function AgentRunsWorkspace({
                       </div>
                     </div>
                     <Link
-                      href="/app/approvals"
+                      href={workflowApprovalHref}
                       className="primary-button shrink-0"
                     >
                       Review approval
@@ -4151,6 +4220,11 @@ export function AgentRunsWorkspace({
                     live={loading === "agent" && (!selectedActivityRunId || selectedActivityRunId === activeAgentRunId)}
                     canCancel={Boolean(activeAgentRunId && (selectedActivityRunId || activeAgentRunId) === activeAgentRunId)}
                     onCancel={() => void stopAgent()}
+                    approvalHref={
+                      waitingApproval && (selectedActivityRunId || activeAgentRunId) === activeAgentRunId
+                        ? toolApprovalHref
+                        : undefined
+                    }
                   />
                 ) : null}
                 {workflowRun ? (

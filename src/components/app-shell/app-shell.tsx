@@ -18,7 +18,15 @@ import { clsx } from "clsx";
 import { appNav, appNavGroups, primaryNavItems } from "@/lib/navigation";
 import { CommandPalette } from "@/components/app-shell/command-palette";
 import { IntentPrefetchLink as Link } from "@/components/app-shell/intent-prefetch-link";
+import {
+  InboxHeaderLink,
+  NavCountPill,
+  navBadgeLabel,
+  navGroupBadgeLabel,
+  navItemAccessibleName,
+} from "@/components/app-shell/inbox-badge";
 import { useWorkspaceSession } from "@/components/app-shell/session-context";
+import { useInboxCount } from "@/components/app-shell/use-inbox-count";
 import { ThemeToggle } from "@/components/theme/theme-toggle";
 import { NotificationCenter } from "@/components/app-shell/notification-center";
 import { AsaelMark } from "@/components/brand/asael-mark";
@@ -29,6 +37,7 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
   const router = useRouter();
   const activeItem = appNav.find((item) => isActivePath(pathname, item.href));
   const { session, status: sessionStatus, error: sessionError, role, signOut } = useWorkspaceSession();
+  const inboxCount = useInboxCount()?.pending;
   const [mobileOpen, setMobileOpen] = useState(false);
   const [desktopNavCollapsed, setDesktopNavCollapsed] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
@@ -188,9 +197,11 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
           aria-label="Application navigation"
         >
           {desktopNavCollapsed ? (
-            <CompactNavigation pathname={pathname} />
+            <CompactNavigation pathname={pathname} inboxCount={inboxCount} />
           ) : (
-            appNavGroups.map((group) => <NavGroup key={group.label} group={group} pathname={pathname} />)
+            appNavGroups.map((group) => (
+              <NavGroup key={group.label} group={group} pathname={pathname} inboxCount={inboxCount} />
+            ))
           )}
         </nav>
         <div className={clsx("border-t border-line", desktopNavCollapsed ? "p-2" : "p-3")}>
@@ -263,6 +274,7 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
             </div>
             <div className="flex items-center gap-2">
               <CommandPalette />
+              <InboxHeaderLink count={inboxCount} pathname={pathname} />
               <NotificationCenter />
               <span className="hidden md:inline-flex"><ThemeToggle /></span>
               <span className="inline-flex md:hidden"><ThemeToggle compact /></span>
@@ -341,37 +353,11 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
                 <X size={19} aria-hidden="true" />
               </button>
             </div>
-            <nav className="min-h-0 flex-1 overflow-y-auto px-3 py-4" aria-label="Complete workspace navigation">
-              {appNavGroups.map((group) => (
-                <div key={group.label} className="mb-5">
-                  <p className="px-3 text-xs font-semibold text-muted">{group.label}</p>
-                  <div className="mt-2 space-y-1">
-                    {group.items.map((item) => {
-                      const Icon = item.icon;
-                      const active = isActivePath(pathname, item.href);
-                      return (
-                        <Link
-                          key={item.href}
-                          href={item.href}
-                          onClick={closeMobileNavigation}
-                          aria-current={active ? "page" : undefined}
-                          className={clsx(
-                            "flex min-h-11 items-center gap-3 rounded-md px-3 py-2 text-sm",
-                            active
-                              ? "bg-primary text-primary-ink"
-                              : "text-muted hover:bg-surface-raised hover:text-foreground",
-                          )}
-                        >
-                          <Icon size={17} aria-hidden="true" />
-                          <span className="min-w-0 flex-1 font-medium">{item.label}</span>
-                          {active ? <ArrowRight size={14} aria-hidden="true" /> : null}
-                        </Link>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
-            </nav>
+            <MobileNavigation
+              pathname={pathname}
+              inboxCount={inboxCount}
+              onNavigate={closeMobileNavigation}
+            />
             <div className="border-t border-line p-3">
               <AccountPanel
                 session={session}
@@ -391,7 +377,54 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
   );
 }
 
-function CompactNavigation({ pathname }: { pathname: string }) {
+export function MobileNavigation({
+  pathname,
+  inboxCount,
+  onNavigate,
+}: {
+  pathname: string;
+  inboxCount?: number;
+  onNavigate: () => void;
+}) {
+  return (
+    <nav className="min-h-0 flex-1 overflow-y-auto px-3 py-4" aria-label="Complete workspace navigation">
+      {appNavGroups.map((group) => (
+        <div key={group.label} className="mb-5">
+          <p className="px-3 text-xs font-semibold text-muted">{group.label}</p>
+          <div className="mt-2 space-y-1">
+            {group.items.map((item) => {
+              const Icon = item.icon;
+              const active = isActivePath(pathname, item.href);
+              const badge = navBadgeLabel(item.href, inboxCount);
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  onClick={onNavigate}
+                  aria-current={active ? "page" : undefined}
+                  aria-label={badge ? navItemAccessibleName(item.label, badge) : undefined}
+                  className={clsx(
+                    "flex min-h-11 items-center gap-3 rounded-md px-3 py-2 text-sm",
+                    active
+                      ? "bg-primary text-primary-ink"
+                      : "text-muted hover:bg-surface-raised hover:text-foreground",
+                  )}
+                >
+                  <Icon size={17} aria-hidden="true" />
+                  <span className="min-w-0 flex-1 font-medium">{item.label}</span>
+                  <NavCountPill badge={badge} active={active} />
+                  {active ? <ArrowRight size={14} aria-hidden="true" /> : null}
+                </Link>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </nav>
+  );
+}
+
+export function CompactNavigation({ pathname, inboxCount }: { pathname: string; inboxCount?: number }) {
   return (
     <>
       {appNavGroups.map((group, groupIndex) => (
@@ -404,11 +437,12 @@ function CompactNavigation({ pathname }: { pathname: string }) {
           {group.items.map((item) => {
             const Icon = item.icon;
             const active = isActivePath(pathname, item.href);
+            const badge = navBadgeLabel(item.href, inboxCount);
             return (
               <Link
                 key={item.href}
                 href={item.href}
-                aria-label={item.label}
+                aria-label={navItemAccessibleName(item.label, badge)}
                 aria-current={active ? "page" : undefined}
                 title={`${item.label} — ${item.description}`}
                 className={clsx(
@@ -420,6 +454,7 @@ function CompactNavigation({ pathname }: { pathname: string }) {
               >
                 <Icon size={18} aria-hidden="true" />
                 <span className="sr-only">{item.label}</span>
+                <NavCountPill badge={badge} active={active} compact />
                 {active ? (
                   <span
                     className="absolute -left-2 h-5 w-0.5 rounded-r-full bg-primary"
@@ -511,7 +546,15 @@ function CompactAccountAffordance({
   );
 }
 
-function NavGroup({ group, pathname }: { group: (typeof appNavGroups)[number]; pathname: string }) {
+function NavGroup({
+  group,
+  pathname,
+  inboxCount,
+}: {
+  group: (typeof appNavGroups)[number];
+  pathname: string;
+  inboxCount?: number;
+}) {
   const containsActive = group.items.some((item) => isActivePath(pathname, item.href));
   const [userPref, setUserPref] = useState<boolean | null>(null);
 
@@ -524,6 +567,7 @@ function NavGroup({ group, pathname }: { group: (typeof appNavGroups)[number]; p
   }, [group.label]);
 
   const open = !group.collapsible || containsActive || (userPref ?? false);
+  const hiddenBadge = open ? "" : navGroupBadgeLabel(group.items, inboxCount);
 
   function toggle() {
     const next = !open;
@@ -538,10 +582,14 @@ function NavGroup({ group, pathname }: { group: (typeof appNavGroups)[number]; p
           type="button"
           onClick={toggle}
           aria-expanded={open}
+          aria-label={hiddenBadge ? navItemAccessibleName(group.label, hiddenBadge) : undefined}
           className="flex min-h-9 w-full items-center justify-between rounded-md px-3 text-xs font-semibold text-muted transition hover:bg-surface-raised hover:text-foreground"
         >
           {group.label}
-          <ChevronDown size={13} className={clsx("transition-transform", open ? "" : "-rotate-90")} aria-hidden="true" />
+          <span className="flex items-center gap-2">
+            <NavCountPill badge={hiddenBadge} />
+            <ChevronDown size={13} className={clsx("transition-transform", open ? "" : "-rotate-90")} aria-hidden="true" />
+          </span>
         </button>
       ) : (
         <p className="px-3 text-xs font-semibold text-muted">{group.label}</p>
@@ -551,12 +599,14 @@ function NavGroup({ group, pathname }: { group: (typeof appNavGroups)[number]; p
           {group.items.map((item) => {
             const Icon = item.icon;
             const active = isActivePath(pathname, item.href);
+            const badge = navBadgeLabel(item.href, inboxCount);
             return (
               <Link
                 key={item.href}
                 href={item.href}
                 title={item.description}
                 aria-current={active ? "page" : undefined}
+                aria-label={badge ? navItemAccessibleName(item.label, badge) : undefined}
                 className={clsx(
                   "group flex min-h-11 items-center gap-3 rounded-md px-3 py-2 text-sm transition",
                   active
@@ -566,6 +616,7 @@ function NavGroup({ group, pathname }: { group: (typeof appNavGroups)[number]; p
               >
                 <Icon size={17} className="shrink-0" aria-hidden="true" />
                 <span className="min-w-0 flex-1 truncate font-medium">{item.label}</span>
+                <NavCountPill badge={badge} active={active} />
                 {active ? <ArrowRight size={14} className="shrink-0" aria-hidden="true" /> : null}
               </Link>
             );

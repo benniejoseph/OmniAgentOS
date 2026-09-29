@@ -2009,6 +2009,71 @@ export async function findAgentRunWaitingForToolApproval(
   );
 }
 
+/**
+ * The run paused on each of these tool executions, keyed by execution id,
+ * so an approval can link back to its conversation. The newest run wins
+ * when two name the same execution.
+ */
+export async function findAgentRunsWaitingForToolApprovals(
+  executionIds: readonly string[],
+  options: { tenantId?: string } = {},
+) {
+  const boundedIds = [...new Set(
+    executionIds.map((id) => id.trim()).filter(Boolean),
+  )].slice(0, 200);
+  const origins = new Map<
+    string,
+    { runId: string; threadId?: string; ownerActorId: string }
+  >();
+  if (!boundedIds.length) return origins;
+  const tenantId = normalizeTenantId(options.tenantId);
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT
+        id, owner_actor_id, thread_id,
+        continuation->'pendingToolCall'->>'executionId' AS execution_id
+      FROM omni_agent_runs
+      WHERE tenant_id = ${tenantId}
+        AND status IN ('waiting_approval', 'resuming')
+        AND continuation->'pendingToolCall'->>'executionId' = ANY(${boundedIds}::text[])
+      ORDER BY started_at DESC, id
+    `;
+    for (const row of rows) {
+      const executionId = String(row.execution_id);
+      if (origins.has(executionId)) continue;
+      origins.set(executionId, {
+        runId: String(row.id),
+        threadId: row.thread_id ? String(row.thread_id) : undefined,
+        ownerActorId: String(row.owner_actor_id || ""),
+      });
+    }
+    return origins;
+  }
+
+  const ids = new Set(boundedIds);
+  const ledger = await readRunLedger();
+  for (const run of ledger.runs) {
+    const executionId = run.continuation?.pendingToolCall.executionId;
+    if (
+      !executionId ||
+      !ids.has(executionId) ||
+      origins.has(executionId) ||
+      (run.status !== "waiting_approval" && run.status !== "resuming") ||
+      normalizeTenantId(run.tenantId) !== tenantId
+    ) {
+      continue;
+    }
+    origins.set(executionId, {
+      runId: run.id,
+      threadId: run.threadId,
+      ownerActorId: run.ownerActorId,
+    });
+  }
+  return origins;
+}
+
 export async function listAgentRuns(limit = 20, options: { tenantId?: string } = {}) {
   const tenantId = normalizeTenantId(options.tenantId);
 

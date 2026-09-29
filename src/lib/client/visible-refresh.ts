@@ -10,7 +10,7 @@ export type VisibleRefreshEnvironment = {
   removeVisibilityListener: (listener: () => void) => void;
 };
 
-const browserEnvironment: VisibleRefreshEnvironment = {
+export const browserRefreshEnvironment: VisibleRefreshEnvironment = {
   isVisible: () => document.visibilityState === "visible",
   setTimer: (callback, delayMs) => window.setTimeout(callback, delayMs),
   clearTimer: (timer) => window.clearTimeout(timer),
@@ -24,7 +24,7 @@ export function startVisibleRefresh({
   onRefresh,
   pollIntervalMs,
   refreshOnStart = false,
-  environment = browserEnvironment,
+  environment = browserRefreshEnvironment,
 }: {
   onRefresh: () => Promise<void>;
   pollIntervalMs?: number;

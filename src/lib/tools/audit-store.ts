@@ -1,5 +1,15 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
+  APPROVAL_RISK_STEP_MS,
+  APPROVAL_SOURCE_RANK,
+  approvalAfterSqlValues,
+  approvalPriorityMs,
+  compareApprovalSourceRows,
+  isAfterApprovalPosition,
+  type ApprovalOrderKey,
+  type ApprovalSourceAfter,
+} from "@/lib/approvals/order";
+import {
   ensureDatabaseSchema,
   getDatabaseActorContext,
   getDatabaseTenantContext,
@@ -1543,8 +1553,20 @@ export async function getToolExecutionsByIds(
   });
 }
 
-export async function listPendingToolApprovals(limit = 25, options: { tenantId?: string } = {}) {
+/**
+ * One page of the tool actions waiting on a person, in approval order (see
+ * `@/lib/approvals/order`), with the counts for the whole tenant. A row
+ * waits when it needs approval, or when it was approved and its claim went
+ * stale in a state only a person can reconcile: a memory deletion, or a
+ * read-only call that stopped before its result.
+ */
+export async function listPendingToolApprovalPage(options: {
+  tenantId?: string;
+  limit: number;
+  after?: ApprovalSourceAfter;
+}): Promise<PendingToolApprovalPage> {
   const tenantId = normalizeTenantId(options.tenantId);
+  const limit = Math.min(Math.max(Math.trunc(options.limit) || 1, 1), 200);
   const staleClaimCutoff = new Date(
     Date.now() - DEFAULT_STALE_TOOL_EXECUTION_CLAIM_MS,
   ).toISOString();
@@ -1559,111 +1581,198 @@ export async function listPendingToolApprovals(limit = 25, options: { tenantId?:
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
+    const after = approvalAfterSqlValues(options.after);
     const rows = await getSql()`
-      SELECT
-        id, tenant_id, actor_id, tool_id, tool_name, risk_level, status,
-        dry_run, approval_required, input, output, reason, approval_decision,
-        approvals, approved_by, approved_at, approval_reason, created_at,
-        completed_at
-      FROM omni_tool_executions
-      WHERE COALESCE(tenant_id, 'default') = ${tenantId}
-        AND (
-          status = 'approval_required'
-          OR (
-            status = 'executing'
-            AND tool_id = 'memory.forget'
-            AND NOT dry_run
-            AND approval_required
-            AND approval_decision = 'approved'
-            AND actor_id IS NOT NULL
-            AND BTRIM(actor_id) <> ''
-            AND approved_by IS NOT NULL
-            AND BTRIM(approved_by) <> ''
-            AND approved_at IS NOT NULL
-            AND effect_receipt IS NULL
-            AND NULLIF(BTRIM(output #>> '{__executionClaim,token}'), '') IS NOT NULL
-            AND CASE
-              WHEN output #>> '{__executionClaim,claimedAt}' ~
-                '^[0-9]{4}-[0-9]{2}-[0-9]{2}T'
-              THEN (output #>> '{__executionClaim,claimedAt}')::timestamptz
-              ELSE NULL
-            END <= ${staleClaimCutoff}::timestamptz
-          )
-          OR (
-            status = 'executing'
-            AND NOT dry_run
-            AND approval_required
-            AND approval_decision = 'approved'
-            AND actor_id IS NOT NULL
-            AND BTRIM(actor_id) <> ''
-            AND approved_by IS NOT NULL
-            AND BTRIM(approved_by) <> ''
-            AND approved_at IS NOT NULL
-            AND effect_receipt IS NULL
-            AND jsonb_typeof(output -> '__sealedInput') = 'object'
-            AND jsonb_typeof(output -> '__approvalFingerprint') = 'string'
-            AND NOT (output ? ${EFFECT_INTENT_V2_OUTPUT_KEY})
-            AND NOT (
-              tool_id = 'memory.write'
+      WITH pending AS (
+        SELECT
+          id, tenant_id, actor_id, tool_id, tool_name, risk_level, status,
+          dry_run, approval_required, input, output, reason, approval_decision,
+          approvals, approved_by, approved_at, approval_reason, created_at,
+          completed_at,
+          CASE WHEN status = 'executing' THEN 0 ELSE 1 END AS class_rank,
+          (extract(epoch FROM date_trunc('milliseconds', created_at)) * 1000)::bigint
+            - risk_level::bigint * ${APPROVAL_RISK_STEP_MS}::bigint AS priority_ms
+        FROM omni_tool_executions
+        WHERE COALESCE(tenant_id, 'default') = ${tenantId}
+          AND (
+            status = 'approval_required'
+            OR (
+              status = 'executing'
+              AND tool_id = 'memory.forget'
+              AND NOT dry_run
+              AND approval_required
+              AND approval_decision = 'approved'
+              AND actor_id IS NOT NULL
+              AND BTRIM(actor_id) <> ''
+              AND approved_by IS NOT NULL
+              AND BTRIM(approved_by) <> ''
+              AND approved_at IS NOT NULL
+              AND effect_receipt IS NULL
+              AND NULLIF(BTRIM(output #>> '{__executionClaim,token}'), '') IS NOT NULL
+              AND CASE
+                WHEN output #>> '{__executionClaim,claimedAt}' ~
+                  '^[0-9]{4}-[0-9]{2}-[0-9]{2}T'
+                THEN (output #>> '{__executionClaim,claimedAt}')::timestamptz
+                ELSE NULL
+              END <= ${staleClaimCutoff}::timestamptz
+            )
+            OR (
+              status = 'executing'
+              AND NOT dry_run
+              AND approval_required
+              AND approval_decision = 'approved'
+              AND actor_id IS NOT NULL
+              AND BTRIM(actor_id) <> ''
+              AND approved_by IS NOT NULL
+              AND BTRIM(approved_by) <> ''
+              AND approved_at IS NOT NULL
+              AND effect_receipt IS NULL
+              AND jsonb_typeof(output -> '__sealedInput') = 'object'
+              AND jsonb_typeof(output -> '__approvalFingerprint') = 'string'
+              AND NOT (output ? ${EFFECT_INTENT_V2_OUTPUT_KEY})
+              AND NOT (
+                tool_id = 'memory.write'
+                AND (
+                  output ? '__effectIdempotencyKeySha256'
+                  OR output ? '__effectInputSha256'
+                  OR output ? '__effectPlanSha256'
+                  OR output ? '__effectTargetId'
+                  OR output ? '__effectToolContractSha256'
+                )
+              )
               AND (
-                output ? '__effectIdempotencyKeySha256'
-                OR output ? '__effectInputSha256'
-                OR output ? '__effectPlanSha256'
-                OR output ? '__effectTargetId'
-                OR output ? '__effectToolContractSha256'
+                output #>> '{__operationClass}' = 'read_only'
+                OR (
+                  (${legacyReadOnlyApprovalFingerprints}::jsonb ->> tool_id) =
+                    output #>> '{__approvalFingerprint}'
+                )
               )
+              AND NULLIF(BTRIM(output #>> '{__executionClaim,token}'), '') IS NOT NULL
+              AND CASE
+                WHEN output #>> '{__executionClaim,claimedAt}' ~
+                  '^[0-9]{4}-[0-9]{2}-[0-9]{2}T'
+                THEN (output #>> '{__executionClaim,claimedAt}')::timestamptz
+                ELSE NULL
+              END <= ${staleClaimCutoff}::timestamptz
             )
-            AND (
-              output #>> '{__operationClass}' = 'read_only'
-              OR (
-                (${legacyReadOnlyApprovalFingerprints}::jsonb ->> tool_id) =
-                  output #>> '{__approvalFingerprint}'
-              )
-            )
-            AND NULLIF(BTRIM(output #>> '{__executionClaim,token}'), '') IS NOT NULL
-            AND CASE
-              WHEN output #>> '{__executionClaim,claimedAt}' ~
-                '^[0-9]{4}-[0-9]{2}-[0-9]{2}T'
-              THEN (output #>> '{__executionClaim,claimedAt}')::timestamptz
-              ELSE NULL
-            END <= ${staleClaimCutoff}::timestamptz
           )
-        )
-      ORDER BY
-        CASE WHEN status = 'executing' THEN 0 ELSE 1 END,
-        created_at DESC
-      LIMIT ${limit}
-    `;
-    return rows
-      .map(recordFromRow)
-      .filter(
-        (record) =>
-          record.status === "approval_required" ||
-          isStaleApprovedMemoryForgetExecution(record) ||
-          isStaleReclaimableApprovedReadOnlyExecution(record),
+      ),
+      counts AS (
+        SELECT
+          COUNT(*)::int AS pending_total,
+          COUNT(*) FILTER (WHERE class_rank = 0)::int AS pending_reconciliations
+        FROM pending
+      ),
+      page AS (
+        SELECT *
+        FROM pending
+        WHERE NOT ${after.set}::boolean
+          OR (class_rank, priority_ms) > (${after.classRank}::int, ${after.priorityMs}::bigint)
+          OR (
+            (class_rank, priority_ms) = (${after.classRank}::int, ${after.priorityMs}::bigint)
+            AND (
+              ${after.tieMode}::int = 1
+              OR (
+                ${after.tieMode}::int = 2
+                AND id COLLATE "C" > ${after.tieId}::text COLLATE "C"
+              )
+            )
+          )
+        ORDER BY class_rank, priority_ms, id COLLATE "C"
+        LIMIT ${limit + 1}
       )
-      .map(sanitizeToolExecutionRecord);
+      SELECT page.*, counts.pending_total, counts.pending_reconciliations
+      FROM counts
+      LEFT JOIN page ON true
+      ORDER BY page.class_rank, page.priority_ms, page.id COLLATE "C"
+    `;
+    const pageRows = rows.filter((row) => row.id !== null && row.id !== undefined);
+    const keyed = pageRows.map((row) => ({
+      record: recordFromRow(row),
+      key: {
+        classRank: Number(row.class_rank) === 0 ? 0 as const : 1 as const,
+        priorityMs: Number(row.priority_ms),
+        sourceRank: APPROVAL_SOURCE_RANK.tool,
+        id: String(row.id),
+      },
+    }));
+    return {
+      entries: keyed
+        .filter(({ record }) => isPendingToolApprovalRecord(record))
+        .map(({ record, key }) => ({
+          record: sanitizeToolExecutionRecord(record),
+          key,
+        })),
+      last: keyed.at(-1)?.key,
+      exhausted: pageRows.length <= limit,
+      total: Number(rows[0]?.pending_total || 0),
+      reconciliations: Number(rows[0]?.pending_reconciliations || 0),
+    };
   }
 
   const ledger = await readToolLedger();
-  return ledger.records
+  const pending = ledger.records
     .filter(
       (record) =>
         normalizeTenantId(record.tenantId) === tenantId &&
-        (
-          record.status === "approval_required" ||
-          isStaleApprovedMemoryForgetExecution(record) ||
-          isStaleReclaimableApprovedReadOnlyExecution(record)
+        isPendingToolApprovalRecord(record),
+    )
+    .map((record) => ({
+      record,
+      key: {
+        classRank: record.status === "executing" ? 0 as const : 1 as const,
+        priorityMs: approvalPriorityMs(
+          Date.parse(record.createdAt),
+          record.riskLevel,
         ),
-    )
-    .sort(
-      (left, right) =>
-        Number(right.status === "executing") -
-          Number(left.status === "executing") ||
-        Date.parse(right.createdAt) - Date.parse(left.createdAt),
-    )
-    .slice(0, limit)
-    .map(sanitizeToolExecutionRecord);
+        sourceRank: APPROVAL_SOURCE_RANK.tool,
+        id: record.id,
+      },
+    }))
+    .sort((left, right) => compareApprovalSourceRows(left.key, right.key));
+  const page = pending
+    .filter(({ key }) => isAfterApprovalPosition(key, options.after))
+    .slice(0, limit + 1);
+  return {
+    entries: page.map(({ record, key }) => ({
+      record: sanitizeToolExecutionRecord(record),
+      key,
+    })),
+    last: page.at(-1)?.key,
+    exhausted: page.length <= limit,
+    total: pending.length,
+    reconciliations: pending.filter(({ key }) => key.classRank === 0).length,
+  };
+}
+
+export type PendingToolApprovalPage = {
+  entries: Array<{ record: ToolExecutionRecord; key: ApprovalOrderKey }>;
+  last?: ApprovalOrderKey;
+  exhausted: boolean;
+  total: number;
+  reconciliations: number;
+};
+
+/**
+ * One tool action when it is waiting on a person (see
+ * `listPendingToolApprovalPage`), sanitized; otherwise undefined.
+ */
+export async function getPendingToolApproval(
+  id: string,
+  options: { tenantId?: string } = {},
+) {
+  const record = await getToolExecution(id, {
+    tenantId: normalizeTenantId(options.tenantId),
+  });
+  return record && isPendingToolApprovalRecord(record)
+    ? sanitizeToolExecutionRecord(record)
+    : undefined;
+}
+
+function isPendingToolApprovalRecord(record: ToolExecutionRecord) {
+  return record.status === "approval_required" ||
+    isStaleApprovedMemoryForgetExecution(record) ||
+    isStaleReclaimableApprovedReadOnlyExecution(record);
 }
 
 export async function getToolExecutionStats(options: { tenantId?: string } = {}) {

@@ -8,6 +8,10 @@ import {
   buildAgentRunIdentityPinV1,
   buildBuiltInAgentIdentityV1,
 } from "@/lib/agents/identity-contracts";
+import {
+  WORKFLOW_APPROVAL_RISK_LEVEL,
+  approvalPriorityMs,
+} from "@/lib/approvals/order";
 import type { MobileIdentity } from "@/lib/auth/mobile-types";
 import { VECTOR_INDEX_DIMENSIONS } from "@/lib/config";
 import {
@@ -29,6 +33,10 @@ import {
   type RecordHeldMemoryDataRightRequestResultV1,
 } from "@/lib/memory/data-right-request-writer";
 import { saveMemories } from "@/lib/memory/store";
+import {
+  listPendingSloPolicyChangePage,
+  requestObservabilitySloPolicyChange,
+} from "@/lib/observability/slo-policy-store";
 import { createKnowledgeDocument } from "@/lib/rag/store";
 import {
   cancelOperationJobByDedupeKey,
@@ -44,6 +52,7 @@ import {
   repairExpiredOperationJobs,
   wakeOperationJobByDedupeKey,
 } from "@/lib/operations/job-queue";
+import { getApprovalQueue, getApprovalQueueItem } from "@/lib/operations/queue";
 import { runEventCursor } from "@/lib/runs/event-cursor";
 import {
   AgentRunAlreadyExistsError,
@@ -71,6 +80,7 @@ import {
   createToolExecutionRecord,
   getToolExecution,
   getToolExecutionEffectIntentV2,
+  listPendingToolApprovalPage,
   persistClaimedToolEffectIntentV2,
   publicToolExecution,
   saveToolExecution,
@@ -87,6 +97,7 @@ import {
   createWorkflowRun,
   getWorkflowRun,
   listRunnableWorkflowRuns,
+  listWorkflowApprovalPage,
   recordWorkflowSpecialistsPending,
 } from "@/lib/workflows/store";
 import {
@@ -5649,6 +5660,420 @@ databaseDescribe("Postgres schema integration", () => {
     `).toEqual(databaseSchemaMigrations);
     expect(await rotations()).toEqual(recorded);
     expect(await schemaCatalogSnapshot(admin)).toEqual(fileCatalog);
+  });
+
+  test("orders pending approvals by risk and age across every source and pages them without a gap", async () => {
+    const tenantId = "approval_order_tenant";
+    const otherTenantId = "approval_order_other";
+    const inTenant = <T,>(operation: () => Promise<T>, tenant = tenantId) =>
+      runWithDatabaseTenantScope(tenant, operation);
+    const day = 24 * 60 * 60 * 1000;
+    const base = Date.parse("2026-09-01T12:00:00.000Z");
+    const at = (days: number) => new Date(base + days * day).toISOString();
+    const staleClaimAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+
+    // Priority is the time an item started waiting less a day per risk
+    // level, so several rows below share one. One row from each source has
+    // milliseconds and microseconds, which the database must cut to the
+    // millisecond the way a JS Date does, and the tied ids differ only in
+    // case, which COLLATE "C" orders upper first.
+    await admin`
+      INSERT INTO omni_tool_executions (
+        id, tool_id, tool_name, risk_level, status, dry_run, approval_required,
+        tenant_id, actor_id, input, created_at
+      )
+      VALUES
+        (
+          'approval-order-tool-old', 'http.request', 'HTTP Request', 0,
+          'approval_required', FALSE, TRUE, ${tenantId}, 'queue-owner',
+          '{}'::jsonb, '2026-09-01T12:00:00.250999Z'::timestamptz
+        ),
+        (
+          'approval-order-tie-B', 'http.request', 'HTTP Request', 1,
+          'approval_required', FALSE, TRUE, ${tenantId}, 'queue-owner',
+          '{}'::jsonb, ${at(2)}::timestamptz
+        ),
+        (
+          'approval-order-tie-a', 'http.request', 'HTTP Request', 0,
+          'approval_required', FALSE, TRUE, ${tenantId}, 'queue-owner',
+          '{}'::jsonb, ${at(1)}::timestamptz
+        ),
+        (
+          'approval-order-tool-late', 'http.request', 'HTTP Request', 3,
+          'approval_required', FALSE, TRUE, ${tenantId}, 'queue-owner',
+          '{}'::jsonb, ${at(5)}::timestamptz
+        ),
+        (
+          'approval-order-tool-done', 'http.request', 'HTTP Request', 3,
+          'executed', FALSE, TRUE, ${tenantId}, 'queue-owner',
+          '{}'::jsonb, ${at(0)}::timestamptz
+        ),
+        (
+          'approval-order-tool-other', 'http.request', 'HTTP Request', 3,
+          'approval_required', FALSE, TRUE, ${otherTenantId}, 'queue-owner',
+          '{}'::jsonb, ${at(0)}::timestamptz
+        )
+    `;
+    // An approved deletion whose claim went stale waits for reconciliation,
+    // ahead of everything else however recent it is.
+    await admin`
+      INSERT INTO omni_tool_executions (
+        id, tool_id, tool_name, risk_level, status, dry_run, approval_required,
+        tenant_id, actor_id, input, output, approval_decision, approved_by,
+        approved_at, created_at
+      )
+      VALUES (
+        'approval-order-reconcile', 'memory.forget', 'Forget memory', 2,
+        'executing', FALSE, TRUE, ${tenantId}, 'queue-owner', '{}'::jsonb,
+        jsonb_build_object(
+          '__executionClaim',
+          jsonb_build_object('token', 'claim-token', 'claimedAt', ${staleClaimAt}::text)
+        ),
+        'approved', 'queue-reviewer', ${at(10)}::timestamptz, ${at(10)}::timestamptz
+      )
+    `;
+    // A workflow run waits from its last update, at risk level two.
+    await admin`
+      INSERT INTO omni_workflow_runs (
+        id, tenant_id, workflow_type, status, goal, approval_required,
+        created_at, updated_at
+      )
+      VALUES
+        (
+          'approval-order-workflow-tie', ${tenantId}, 'agent.orchestrate',
+          'waiting_approval', 'Publish the weekly summary', TRUE,
+          ${at(0)}::timestamptz, ${at(3)}::timestamptz
+        ),
+        (
+          'approval-order-workflow-late', ${tenantId}, 'agent.orchestrate',
+          'waiting_approval', 'Archive the quarter', TRUE,
+          ${at(0)}::timestamptz, '2026-09-06T12:00:00.100999Z'::timestamptz
+        ),
+        (
+          'approval-order-workflow-running', ${tenantId}, 'agent.orchestrate',
+          'running', 'Still running', TRUE,
+          ${at(0)}::timestamptz, ${at(0)}::timestamptz
+        ),
+        (
+          'approval-order-workflow-other', ${otherTenantId}, 'agent.orchestrate',
+          'waiting_approval', 'Another tenant', TRUE,
+          ${at(0)}::timestamptz, ${at(0)}::timestamptz
+        )
+    `;
+    const requestChange = (tenant = tenantId) => inTenant(
+      () => requestObservabilitySloPolicyChange({
+        policyId: "latency-p95",
+        action: "delete_policy",
+        tenantId: tenant,
+        requestedBy: "queue-owner",
+        reason: "Retire the latency objective.",
+      }),
+      tenant,
+    );
+    const sloRiskThree = await requestChange();
+    const sloRiskZero = await requestChange();
+    const sloRiskNine = await requestChange();
+    const sloRejected = await requestChange();
+    const sloOther = await requestChange(otherTenantId);
+    // A stored risk level of zero reads as two and one above three as three.
+    for (const [change, riskLevel, createdAt, changeStatus] of [
+      [sloRiskThree, 3, at(4), "pending"],
+      [sloRiskZero, 0, at(4), "pending"],
+      [sloRiskNine, 9, "2026-09-07T12:00:00.250999Z", "pending"],
+      [sloRejected, 3, at(0), "rejected"],
+      [sloOther, 3, at(0), "pending"],
+    ] as const) {
+      await admin`
+        UPDATE omni_observability_slo_policy_changes
+        SET risk_level = ${riskLevel}, created_at = ${createdAt}::timestamptz,
+          status = ${changeStatus}
+        WHERE id = ${change.id}
+      `;
+    }
+
+    const order = [
+      "tool:approval-order-reconcile",
+      "tool:approval-order-tool-old",
+      "tool:approval-order-tie-B",
+      "tool:approval-order-tie-a",
+      "workflow:approval-order-workflow-tie",
+      `slo_policy:${sloRiskThree.id}`,
+      "tool:approval-order-tool-late",
+      `slo_policy:${sloRiskZero.id}`,
+      "workflow:approval-order-workflow-late",
+      `slo_policy:${sloRiskNine.id}`,
+    ];
+    const stats = {
+      total: 10,
+      tools: 5,
+      reconciliations: 1,
+      workflows: 2,
+      sloPolicies: 3,
+    };
+    const itemKey = (item: { kind: string; id: string }) => `${item.kind}:${item.id}`;
+
+    const whole = await inTenant(() => getApprovalQueue(100, { tenantId }));
+    expect(whole.items.map(itemKey)).toEqual(order);
+    expect(whole.stats).toEqual(stats);
+    expect(whole.nextCursor).toBeNull();
+    expect(whole.items[0]).toMatchObject({ status: "reconciliation_required" });
+
+    for (const limit of [1, 2, 3, 4]) {
+      const seen: string[] = [];
+      let cursor: string | null = null;
+      let pages = 0;
+      do {
+        const page: Awaited<ReturnType<typeof getApprovalQueue>> = await inTenant(
+          () => getApprovalQueue(limit, { tenantId, cursor }),
+        );
+        expect(page.items.length).toBeLessThanOrEqual(limit);
+        if (page.nextCursor) expect(page.items).toHaveLength(limit);
+        expect(page.stats).toEqual(stats);
+        seen.push(...page.items.map(itemKey));
+        cursor = page.nextCursor;
+        pages += 1;
+        expect(pages).toBeLessThanOrEqual(order.length + 1);
+      } while (cursor);
+      expect(seen).toEqual(order);
+    }
+
+    // Each source computes the priority in SQL exactly as the order module
+    // does from the record it returns.
+    const toolPage = await inTenant(() =>
+      listPendingToolApprovalPage({ tenantId, limit: 50 })
+    );
+    expect(toolPage).toMatchObject({
+      exhausted: true,
+      total: 5,
+      reconciliations: 1,
+    });
+    expect(toolPage.entries.map(({ record, key }) => [record.id, key.classRank, key.priorityMs]))
+      .toEqual([
+        ["approval-order-reconcile", 0, base + 8 * day],
+        ["approval-order-tool-old", 1, base + 250],
+        ["approval-order-tie-B", 1, base + day],
+        ["approval-order-tie-a", 1, base + day],
+        ["approval-order-tool-late", 1, base + 2 * day],
+      ]);
+    for (const { record, key } of toolPage.entries) {
+      expect(key.priorityMs).toBe(
+        approvalPriorityMs(Date.parse(record.createdAt), record.riskLevel),
+      );
+    }
+    const workflowPage = await inTenant(() =>
+      listWorkflowApprovalPage({ tenantId, limit: 50 })
+    );
+    expect(workflowPage).toMatchObject({ exhausted: true, total: 2 });
+    expect(workflowPage.entries.map(({ run, key }) => [run.id, key.priorityMs])).toEqual([
+      ["approval-order-workflow-tie", base + day],
+      ["approval-order-workflow-late", base + 3 * day + 100],
+    ]);
+    for (const { run, key } of workflowPage.entries) {
+      expect(key.priorityMs).toBe(
+        approvalPriorityMs(Date.parse(run.updatedAt), WORKFLOW_APPROVAL_RISK_LEVEL),
+      );
+    }
+    const sloPage = await inTenant(() =>
+      listPendingSloPolicyChangePage({ tenantId, limit: 50 })
+    );
+    expect(sloPage).toMatchObject({ exhausted: true, total: 3 });
+    expect(sloPage.entries.map(({ change, key }) => [change.id, change.riskLevel, key.priorityMs]))
+      .toEqual([
+        [sloRiskThree.id, 3, base + day],
+        [sloRiskZero.id, 2, base + 2 * day],
+        [sloRiskNine.id, 3, base + 3 * day + 250],
+      ]);
+    for (const { change, key } of sloPage.entries) {
+      expect(key.priorityMs).toBe(
+        approvalPriorityMs(Date.parse(change.createdAt), change.riskLevel),
+      );
+    }
+
+    // A page its rows fill exactly is a source's last; one row short of the
+    // total reads one row ahead and ends on it.
+    const sourcePages: Array<[
+      (limit: number) => Promise<{
+        entries: ReadonlyArray<{ key: unknown }>;
+        last?: unknown;
+        exhausted: boolean;
+      }>,
+      number,
+    ]> = [
+      [(limit) => listPendingToolApprovalPage({ tenantId, limit }), 5],
+      [(limit) => listWorkflowApprovalPage({ tenantId, limit }), 2],
+      [(limit) => listPendingSloPolicyChangePage({ tenantId, limit }), 3],
+    ];
+    for (const [readPage, total] of sourcePages) {
+      const filled = await inTenant(() => readPage(total));
+      expect(filled.exhausted).toBe(true);
+      expect(filled.entries).toHaveLength(total);
+      const short = await inTenant(() => readPage(total - 1));
+      expect(short.exhausted).toBe(false);
+      expect(short.entries).toHaveLength(total);
+      expect(short.last).toEqual(short.entries.at(-1)?.key);
+    }
+
+    // One item by id, while it still waits and only in its own tenant.
+    const item = (id: string, kind?: "tool" | "workflow" | "slo_policy", tenant = tenantId) =>
+      inTenant(() => getApprovalQueueItem(id, { tenantId: tenant, kind }), tenant);
+    await expect(item("approval-order-tie-a", "tool")).resolves.toMatchObject({
+      kind: "tool",
+      id: "approval-order-tie-a",
+      status: "approval_required",
+    });
+    await expect(item("approval-order-reconcile")).resolves.toMatchObject({
+      kind: "tool",
+      status: "reconciliation_required",
+    });
+    await expect(item("approval-order-workflow-tie")).resolves.toMatchObject({
+      kind: "workflow",
+      id: "approval-order-workflow-tie",
+    });
+    await expect(item(sloRiskNine.id, "slo_policy")).resolves.toMatchObject({
+      kind: "slo_policy",
+      id: sloRiskNine.id,
+      riskLevel: 3,
+    });
+    for (const [id, kind] of [
+      ["approval-order-tie-a", "workflow"],
+      ["approval-order-workflow-tie", "tool"],
+      [sloRiskThree.id, "workflow"],
+      ["approval-order-tool-done", undefined],
+      ["approval-order-workflow-running", undefined],
+      [sloRejected.id, undefined],
+      ["approval-order-missing", undefined],
+    ] as const) {
+      await expect(item(id, kind)).resolves.toBeNull();
+    }
+    await expect(item("approval-order-tool-other", "tool")).resolves.toBeNull();
+    await expect(item("approval-order-workflow-other", "workflow")).resolves.toBeNull();
+    await expect(item(sloOther.id, "slo_policy")).resolves.toBeNull();
+    await expect(item("approval-order-tool-other", "tool", otherTenantId))
+      .resolves.toMatchObject({ id: "approval-order-tool-other" });
+
+    // A tool item names the run paused on it, and that run's conversation,
+    // only to the run's owner; the newest run wins when two name one item.
+    const thread = await inTenant(() => createThread({
+      tenantId,
+      actorId: "queue-owner",
+      title: "Check the status page",
+      mode: "orchestrate",
+    }));
+    for (const run of [
+      {
+        id: "approval-order-run-late",
+        tenant: tenantId,
+        owner: "queue-owner",
+        runStatus: "waiting_approval",
+        executionId: "approval-order-tool-late",
+        startedAt: at(5),
+        threadId: thread.id,
+      },
+      {
+        id: "approval-order-run-tie-older",
+        tenant: tenantId,
+        owner: "queue-owner",
+        runStatus: "waiting_approval",
+        executionId: "approval-order-tie-B",
+        startedAt: at(1),
+        threadId: null,
+      },
+      {
+        id: "approval-order-run-tie-newer",
+        tenant: tenantId,
+        owner: "queue-owner",
+        runStatus: "resuming",
+        executionId: "approval-order-tie-B",
+        startedAt: at(2),
+        threadId: null,
+      },
+      {
+        id: "approval-order-run-completed",
+        tenant: tenantId,
+        owner: "queue-owner",
+        runStatus: "completed",
+        executionId: "approval-order-tool-old",
+        startedAt: at(0),
+        threadId: null,
+      },
+      {
+        id: "approval-order-run-other-tenant",
+        tenant: otherTenantId,
+        owner: "queue-owner",
+        runStatus: "waiting_approval",
+        executionId: "approval-order-tie-a",
+        startedAt: at(1),
+        threadId: null,
+      },
+      {
+        id: "approval-order-run-someone-else",
+        tenant: tenantId,
+        owner: "someone-else",
+        runStatus: "waiting_approval",
+        executionId: "approval-order-reconcile",
+        startedAt: at(10),
+        threadId: null,
+      },
+    ]) {
+      await admin`
+        INSERT INTO omni_agent_runs (
+          id, tenant_id, owner_actor_id, mode, status, prompt, messages,
+          continuation, started_at, thread_id
+        )
+        VALUES (
+          ${run.id}, ${run.tenant}, ${run.owner}, 'orchestrate', ${run.runStatus},
+          'Check the status page.', '[]'::jsonb,
+          jsonb_build_object(
+            'pendingToolCall',
+            jsonb_build_object('executionId', ${run.executionId}::text)
+          ),
+          ${run.startedAt}::timestamptz, ${run.threadId}
+        )
+      `;
+    }
+    const origins = async (actorId?: string) => {
+      const queue = await inTenant(() => getApprovalQueue(100, { tenantId, actorId }));
+      expect(queue.items.map(itemKey)).toEqual(order);
+      return Object.fromEntries(queue.items.flatMap((queued) =>
+        queued.kind === "tool" && queued.origin ? [[queued.id, queued.origin]] : []
+      ));
+    };
+    await expect(origins("queue-owner")).resolves.toEqual({
+      "approval-order-tool-late": { runId: "approval-order-run-late", threadId: thread.id },
+      "approval-order-tie-B": { runId: "approval-order-run-tie-newer" },
+    });
+    await expect(origins("someone-else")).resolves.toEqual({
+      "approval-order-reconcile": { runId: "approval-order-run-someone-else" },
+    });
+    await expect(origins()).resolves.toEqual({});
+    await expect(inTenant(() => getApprovalQueueItem("approval-order-tool-late", {
+      tenantId,
+      kind: "tool",
+      actorId: "queue-owner",
+    }))).resolves.toMatchObject({
+      origin: { runId: "approval-order-run-late", threadId: thread.id },
+    });
+    await expect(inTenant(() => getApprovalQueueItem("approval-order-tool-late", {
+      tenantId,
+      kind: "tool",
+      actorId: "someone-else",
+    }))).resolves.not.toHaveProperty("origin");
+
+    // A stored risk level below zero reads as zero, in the page's SQL too.
+    await admin`
+      UPDATE omni_observability_slo_policy_changes
+      SET risk_level = -1
+      WHERE id = ${sloRiskZero.id}
+    `;
+    const belowZero = await inTenant(() =>
+      listPendingSloPolicyChangePage({ tenantId, limit: 50 })
+    );
+    expect(belowZero.entries.map(({ change, key }) => [change.id, change.riskLevel, key.priorityMs]))
+      .toEqual([
+        [sloRiskThree.id, 3, base + day],
+        [sloRiskNine.id, 3, base + 3 * day + 250],
+        [sloRiskZero.id, 0, base + 4 * day],
+      ]);
   });
 });
 

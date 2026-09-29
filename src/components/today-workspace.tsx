@@ -30,6 +30,7 @@ import { IntentPrefetchLink as Link } from "@/components/app-shell/intent-prefet
 import { useWorkspaceSession } from "@/components/app-shell/session-context";
 import { SourceCoveragePanel } from "@/components/source-coverage/source-coverage-panel";
 import { useLiveRefresh } from "@/components/use-live-refresh";
+import { approvalInboxHref, parseApprovalKind } from "@/lib/approvals/inbox-link";
 import {
   formatTodayDue,
   formatTodayRelative,
@@ -668,7 +669,7 @@ export function TodayWorkspace({
       {["approvals", "customers", "active_agents", "work", "memory", "conversations"].some((section) => visibleSections.has(section as TodaySectionKey)) ? <section className="today-context-grid">
         {visibleSections.has("approvals") ? <TodayContextSection icon={Bell} title="Needs your approval" description="Consequential actions remain paused until you review them." href="/app/approvals">
           {approvals.length ? approvals.slice(0, 5).map((approval, index) => (
-            <Link key={text(approval.id) || index} href="/app/approvals" className="today-context-row">
+            <Link key={text(approval.id) || index} href={approvalInboxHref({ id: text(approval.id), kind: parseApprovalKind(approval.kind), returnTo: "/app" })} className="today-context-row">
               <span className="today-live-dot is-active" /><div><strong>{text(approval.title, "Approval required")}</strong><small>Risk {text(approval.riskLevel, "unknown")} · {text(approval.status, "waiting").replaceAll("_", " ")}</small></div><ArrowRight size={14} aria-hidden="true" />
             </Link>
           )) : <ContextEmpty>No governed action is waiting for your approval.</ContextEmpty>}

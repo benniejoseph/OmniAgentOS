@@ -1,5 +1,15 @@
 import { createHash } from "node:crypto";
 import {
+  APPROVAL_RISK_STEP_MS,
+  APPROVAL_SOURCE_RANK,
+  approvalAfterSqlValues,
+  approvalPriorityMs,
+  compareApprovalSourceRows,
+  isAfterApprovalPosition,
+  type ApprovalOrderKey,
+  type ApprovalSourceAfter,
+} from "@/lib/approvals/order";
+import {
   ensureDatabaseSchema,
   getDatabaseTenantContext,
   getSql,
@@ -811,6 +821,118 @@ export async function listObservabilitySloPolicyChanges({
     .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))
     .slice(0, cappedLimit);
 }
+
+/**
+ * One page of the pending changes, in approval order (see
+ * `@/lib/approvals/order`), with the count for the whole tenant. A change
+ * waits from its creation, at its own risk level.
+ */
+export async function listPendingSloPolicyChangePage(options: {
+  tenantId?: string;
+  limit: number;
+  after?: ApprovalSourceAfter;
+}): Promise<PendingSloPolicyChangePage> {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const limit = Math.min(Math.max(Math.trunc(options.limit) || 1, 1), 200);
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const after = approvalAfterSqlValues(options.after);
+    // The risk level is normalized the way sloPolicyChangeFromRow reads it.
+    const rows = await getSql()`
+      WITH pending AS (
+        SELECT
+          *,
+          1 AS class_rank,
+          (extract(epoch FROM date_trunc('milliseconds', created_at)) * 1000)::bigint
+            - LEAST(GREATEST(COALESCE(NULLIF(risk_level, 0), 2), 0), 3)::bigint
+              * ${APPROVAL_RISK_STEP_MS}::bigint AS priority_ms
+        FROM omni_observability_slo_policy_changes
+        WHERE COALESCE(tenant_id, 'default') = ${tenantId}
+          AND status = 'pending'
+      ),
+      counts AS (
+        SELECT COUNT(*)::int AS pending_total
+        FROM pending
+      ),
+      page AS (
+        SELECT *
+        FROM pending
+        WHERE NOT ${after.set}::boolean
+          OR (class_rank, priority_ms) > (${after.classRank}::int, ${after.priorityMs}::bigint)
+          OR (
+            (class_rank, priority_ms) = (${after.classRank}::int, ${after.priorityMs}::bigint)
+            AND (
+              ${after.tieMode}::int = 1
+              OR (
+                ${after.tieMode}::int = 2
+                AND id COLLATE "C" > ${after.tieId}::text COLLATE "C"
+              )
+            )
+          )
+        ORDER BY class_rank, priority_ms, id COLLATE "C"
+        LIMIT ${limit + 1}
+      )
+      SELECT page.*, counts.pending_total
+      FROM counts
+      LEFT JOIN page ON true
+      ORDER BY page.class_rank, page.priority_ms, page.id COLLATE "C"
+    `;
+    const pageRows = rows.filter((row) => row.id !== null && row.id !== undefined);
+    const entries = pageRows.map((row) => ({
+      change: sloPolicyChangeFromRow(row),
+      key: {
+        classRank: 1 as const,
+        priorityMs: Number(row.priority_ms),
+        sourceRank: APPROVAL_SOURCE_RANK.slo_policy,
+        id: String(row.id),
+      },
+    }));
+    return {
+      entries,
+      last: entries.at(-1)?.key,
+      exhausted: pageRows.length <= limit,
+      total: Number(rows[0]?.pending_total || 0),
+    };
+  }
+
+  const ledger = await readSloPolicyChangeLedger();
+  const pending = ledger.changes
+    .filter(
+      (change) =>
+        normalizeTenantId(change.tenantId) === tenantId &&
+        change.status === "pending",
+    )
+    .map((change) => ({
+      change,
+      key: {
+        classRank: 1 as const,
+        priorityMs: approvalPriorityMs(
+          Date.parse(change.createdAt),
+          change.riskLevel,
+        ),
+        sourceRank: APPROVAL_SOURCE_RANK.slo_policy,
+        id: change.id,
+      },
+    }))
+    .sort((left, right) => compareApprovalSourceRows(left.key, right.key));
+  const entries = pending
+    .filter(({ key }) => isAfterApprovalPosition(key, options.after))
+    .slice(0, limit + 1);
+  return {
+    entries,
+    last: entries.at(-1)?.key,
+    exhausted: entries.length <= limit,
+    total: pending.length,
+  };
+}
+
+export type PendingSloPolicyChangePage = {
+  entries: Array<{ change: ObservabilitySloPolicyChange; key: ApprovalOrderKey }>;
+  last?: ApprovalOrderKey;
+  exhausted: boolean;
+  total: number;
+};
 
 export async function getObservabilitySloPolicyChange(changeId: string, options: { tenantId?: string } = {}) {
   const tenantId = normalizeTenantId(options.tenantId);
