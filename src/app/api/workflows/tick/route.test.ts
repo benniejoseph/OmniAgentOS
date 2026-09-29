@@ -31,6 +31,10 @@ const routeMocks = vi.hoisted(() => ({
   recordWorkerHeartbeat: vi.fn(),
   reconcileAbandonedExternalA2ATasks: vi.fn(),
   reconcileCheckpointShadowsDaily: vi.fn(),
+  processWorkflowQueue: vi.fn(),
+  processAgentResumeQueue: vi.fn(),
+  processDurableSpecialistQueue: vi.fn(),
+  processBackgroundOperationQueue: vi.fn(),
 }));
 
 vi.mock("@/lib/db/client", async (importOriginal) => ({
@@ -66,6 +70,12 @@ vi.mock("@/lib/orchestration/resume-queue", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/orchestration/resume-queue")>()),
   processAllTenantAgentResumeQueues:
     routeMocks.processAllTenantAgentResumeQueues,
+  processAgentResumeQueue: routeMocks.processAgentResumeQueue,
+}));
+
+vi.mock("@/lib/operations/background-jobs", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/operations/background-jobs")>()),
+  processBackgroundOperationQueue: routeMocks.processBackgroundOperationQueue,
 }));
 
 vi.mock("@/lib/orchestration/loop-v2-recovery", async (importOriginal) => ({
@@ -180,11 +190,13 @@ vi.mock("@/lib/subagents/worker", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/subagents/worker")>()),
   processAllTenantDurableSpecialistQueues:
     routeMocks.processAllTenantDurableSpecialistQueues,
+  processDurableSpecialistQueue: routeMocks.processDurableSpecialistQueue,
 }));
 
 vi.mock("@/lib/workflows/queue", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/workflows/queue")>()),
   processAllTenantWorkflowQueues: routeMocks.processAllTenantWorkflowQueues,
+  processWorkflowQueue: routeMocks.processWorkflowQueue,
 }));
 
 vi.mock("@/lib/workflows/triggers", async (importOriginal) => ({
@@ -328,6 +340,14 @@ beforeEach(() => {
   });
   routeMocks.processActiveProjectExecutions.mockReset().mockResolvedValue([]);
   routeMocks.syncDuePersonalProviders.mockReset().mockResolvedValue([]);
+  routeMocks.processWorkflowQueue.mockReset().mockResolvedValue({
+    leased: 0,
+    completed: 0,
+    failed: 0,
+  });
+  routeMocks.processAgentResumeQueue.mockReset().mockResolvedValue({});
+  routeMocks.processDurableSpecialistQueue.mockReset().mockResolvedValue({});
+  routeMocks.processBackgroundOperationQueue.mockReset().mockResolvedValue({});
   routeMocks.syncDueSalesforceConnections.mockReset().mockResolvedValue([]);
   routeMocks.processDueMoltbookHeartbeats.mockReset().mockResolvedValue({
     processed: 0,
@@ -1105,6 +1125,45 @@ describe("dedicated worker heartbeat timing", () => {
       limit: 1,
       abortSignal: expect.any(AbortSignal),
     });
+  });
+});
+
+describe("operator workflow tick", () => {
+  it("gives the connected-source sync 90 seconds, and stops it when the request ends", async () => {
+    routeMocks.authorizeRequest.mockResolvedValue({
+      tenantId: "tenant-personal",
+      actorId: "owner",
+      role: "owner",
+    });
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    const caller = new AbortController();
+    let syncSignal: AbortSignal | undefined;
+    routeMocks.syncDuePersonalProviders.mockImplementation(async (input) => {
+      syncSignal = input.abortSignal;
+      expect(syncSignal?.aborted).toBe(false);
+      caller.abort();
+      return [];
+    });
+
+    try {
+      const response = await POST(new Request("http://localhost/api/workflows/tick", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+        signal: caller.signal,
+      }));
+
+      expect(response.status).toBe(200);
+      expect(routeMocks.syncDuePersonalProviders).toHaveBeenCalledWith({
+        tenantId: "tenant-personal",
+        limit: 2,
+        abortSignal: expect.any(AbortSignal),
+      });
+      expect(syncSignal?.aborted).toBe(true);
+      expect(timeout).toHaveBeenCalledWith(90_000);
+    } finally {
+      timeout.mockRestore();
+    }
   });
 });
 

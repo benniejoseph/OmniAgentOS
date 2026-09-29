@@ -45,6 +45,10 @@ export type OAuthGrant = {
   syncError?: string;
   lastSyncedAt?: string;
   syncedItems?: number;
+  /** Syncs in a row that reached none of the connection's sources. */
+  syncFailureCount?: number;
+  /** Until then, the scheduler does not sync the connection. */
+  syncRetryAt?: string;
   sourceCoverage?: OAuthSourceCoverage;
   createdAt: string;
   updatedAt: string;
@@ -77,6 +81,8 @@ type InternalGrant = OAuthGrant & {
 };
 const filePath = () => getDataPath("oauth-grants.json");
 const OAUTH_SYNC_LEASE_MS = 10 * 60_000;
+const OAUTH_SYNC_RETRY_BASE_MS = 5 * 60_000;
+const OAUTH_SYNC_RETRY_MAX_MS = 6 * 60 * 60_000;
 
 export type OAuthCredentialState =
   | "active"
@@ -261,6 +267,18 @@ export async function saveOAuthGrant(input: {
             THEN 0
           ELSE omni_oauth_grants.synced_items
         END,
+        -- Reconnecting the account clears the retry delay; a token refresh
+        -- keeps it.
+        sync_failure_count = CASE
+          WHEN ${authorizationMode === "reauthorize"}
+            THEN 0
+          ELSE omni_oauth_grants.sync_failure_count
+        END,
+        sync_retry_at = CASE
+          WHEN ${authorizationMode === "reauthorize"}
+            THEN NULL
+          ELSE omni_oauth_grants.sync_retry_at
+        END,
         sync_lease_owner_id = CASE
           WHEN ${resetAuthorization}
             THEN NULL
@@ -287,7 +305,7 @@ export async function saveOAuthGrant(input: {
         : (grant.connectionPurpose || "personal") === connectionPurpose)
     );
     const preserveSyncState = Boolean(existing && !resetAuthorization);
-    saved = { id: existing?.id || id, tenantId: input.tenantId, actorId: input.actorId, provider: input.provider, accountEmail, connectionLabel, connectionPurpose, scopes, sealedTokens, sealedSyncCursor: preserveSyncState ? existing?.sealedSyncCursor : undefined, syncCursor: preserveSyncState ? existing?.syncCursor : undefined, syncStatus: preserveSyncState ? existing?.syncStatus || "idle" : "idle", syncError: preserveSyncState ? existing?.syncError : undefined, lastSyncedAt: preserveSyncState ? existing?.lastSyncedAt : undefined, syncedItems: preserveSyncState ? existing?.syncedItems || 0 : 0, sourceCoverage: preserveSyncState ? existing?.sourceCoverage || {} : {}, status: "active", authorizationGeneration: existing ? Math.max(1, Number(existing.authorizationGeneration || 1)) + (resetAuthorization ? 1 : 0) : 1, expiresAt, createdAt: existing?.createdAt || now, updatedAt: now, ...(preserveSyncState ? { syncLeaseOwnerId: existing?.syncLeaseOwnerId, syncLeaseExpiresAt: existing?.syncLeaseExpiresAt, syncLeaseGeneration: existing?.syncLeaseGeneration } : { syncLeaseGeneration: existing?.syncLeaseGeneration || 0 }) };
+    saved = { id: existing?.id || id, tenantId: input.tenantId, actorId: input.actorId, provider: input.provider, accountEmail, connectionLabel, connectionPurpose, scopes, sealedTokens, sealedSyncCursor: preserveSyncState ? existing?.sealedSyncCursor : undefined, syncCursor: preserveSyncState ? existing?.syncCursor : undefined, syncStatus: preserveSyncState ? existing?.syncStatus || "idle" : "idle", syncError: preserveSyncState ? existing?.syncError : undefined, lastSyncedAt: preserveSyncState ? existing?.lastSyncedAt : undefined, syncedItems: preserveSyncState ? existing?.syncedItems || 0 : 0, sourceCoverage: preserveSyncState ? existing?.sourceCoverage || {} : {}, status: "active", authorizationGeneration: existing ? Math.max(1, Number(existing.authorizationGeneration || 1)) + (resetAuthorization ? 1 : 0) : 1, expiresAt, createdAt: existing?.createdAt || now, updatedAt: now, ...(preserveSyncState && authorizationMode === "refresh" ? { syncFailureCount: existing?.syncFailureCount, syncRetryAt: existing?.syncRetryAt } : {}), ...(preserveSyncState ? { syncLeaseOwnerId: existing?.syncLeaseOwnerId, syncLeaseExpiresAt: existing?.syncLeaseExpiresAt, syncLeaseGeneration: existing?.syncLeaseGeneration } : { syncLeaseGeneration: existing?.syncLeaseGeneration || 0 }) };
     return { grants: [saved, ...ledger.grants.filter((grant) => grant.id !== existing?.id)].slice(0, 100) };
   });
   return stripTokens(saved);
@@ -585,6 +603,11 @@ export async function updateOAuthSyncState(input: {
   syncedItems?: number;
   lease?: OAuthSyncLease;
   releaseLease?: boolean;
+  /**
+   * A finished sync that reached none of the sources failed, and one that
+   * reached any succeeded. Left out, the retry delay stays as it is.
+   */
+  attempt?: "failed" | "succeeded";
   sourceSettlements?: readonly (OAuthSourceCoverageCheckpoint & {
     source: OAuthPersonalSourceId;
   })[];
@@ -596,6 +619,10 @@ export async function updateOAuthSyncState(input: {
   if (input.releaseLease && !input.lease) {
     throw new Error("OAuth sync lease release requires an exact fence.");
   }
+  if (input.attempt && !input.lease) {
+    throw new Error("OAuth sync attempt requires an exact fence.");
+  }
+  const retryScale = 1 - Math.random() / 4;
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const sealedCursor = input.cursor
@@ -603,7 +630,7 @@ export async function updateOAuthSyncState(input: {
       : undefined;
     const persist = async (sql: ReturnType<typeof getSql>) => {
       let rows = input.lease
-        ? await sql`UPDATE omni_oauth_grants SET sync_status = ${input.status}, sync_error = ${input.error || null}, sync_cursor = COALESCE(${sealedCursor || null}, sync_cursor), synced_items = synced_items + ${input.syncedItems || 0}, last_synced_at = CASE WHEN ${input.status} = 'healthy' THEN ${now}::timestamptz ELSE last_synced_at END, sync_lease_owner_id = CASE WHEN ${Boolean(input.releaseLease)} THEN NULL ELSE sync_lease_owner_id END, sync_lease_expires_at = CASE WHEN ${Boolean(input.releaseLease)} THEN NULL ELSE sync_lease_expires_at END, updated_at = ${now} WHERE tenant_id = ${input.tenantId} AND actor_id = ${input.actorId} AND provider = ${input.provider} AND id = ${connectionId} AND status = 'active' AND sync_lease_owner_id = ${input.lease.ownerId} AND sync_lease_generation = ${input.lease.generation} AND sync_lease_expires_at > clock_timestamp() RETURNING *`
+        ? await sql`UPDATE omni_oauth_grants SET sync_status = ${input.status}, sync_error = ${input.error || null}, sync_cursor = COALESCE(${sealedCursor || null}, sync_cursor), synced_items = synced_items + ${input.syncedItems || 0}, sync_failure_count = CASE ${input.attempt || null}::text WHEN 'failed' THEN sync_failure_count + 1 WHEN 'succeeded' THEN 0 ELSE sync_failure_count END, sync_retry_at = CASE ${input.attempt || null}::text WHEN 'failed' THEN ${now}::timestamptz + INTERVAL '1 millisecond' * round(LEAST(${OAUTH_SYNC_RETRY_MAX_MS}::float8, ${OAUTH_SYNC_RETRY_BASE_MS}::float8 * power(2::float8, LEAST(sync_failure_count, 16))) * ${retryScale}::float8) WHEN 'succeeded' THEN NULL ELSE sync_retry_at END, last_synced_at = CASE WHEN ${input.status} = 'healthy' THEN ${now}::timestamptz ELSE last_synced_at END, sync_lease_owner_id = CASE WHEN ${Boolean(input.releaseLease)} THEN NULL ELSE sync_lease_owner_id END, sync_lease_expires_at = CASE WHEN ${Boolean(input.releaseLease)} THEN NULL ELSE sync_lease_expires_at END, updated_at = ${now} WHERE tenant_id = ${input.tenantId} AND actor_id = ${input.actorId} AND provider = ${input.provider} AND id = ${connectionId} AND status = 'active' AND sync_lease_owner_id = ${input.lease.ownerId} AND sync_lease_generation = ${input.lease.generation} AND sync_lease_expires_at > clock_timestamp() RETURNING *`
         : await sql`UPDATE omni_oauth_grants SET sync_status = ${input.status}, sync_error = ${input.error || null}, sync_cursor = COALESCE(${sealedCursor || null}, sync_cursor), synced_items = synced_items + ${input.syncedItems || 0}, last_synced_at = CASE WHEN ${input.status} = 'healthy' THEN ${now}::timestamptz ELSE last_synced_at END, updated_at = ${now} WHERE tenant_id = ${input.tenantId} AND actor_id = ${input.actorId} AND provider = ${input.provider} AND id = ${connectionId} AND status = 'active' RETURNING *`;
       if (!rows[0]) return undefined;
       for (const settlement of sourceSettlements) {
@@ -645,16 +672,33 @@ export async function updateOAuthSyncState(input: {
     ) {
       return grant;
     }
-    const next: InternalGrant = { ...grant, syncStatus: input.status, syncError: input.error, sealedSyncCursor: input.cursor ? sealJsonPayload(input.cursor, syncCursorBinding(grant)) : grant.sealedSyncCursor, syncCursor: input.cursor ? undefined : grant.syncCursor, syncedItems: (grant.syncedItems || 0) + (input.syncedItems || 0), sourceCoverage: mergeSourceCoverage(grant.sourceCoverage, sourceSettlements), lastSyncedAt: input.status === "healthy" ? now : grant.lastSyncedAt, updatedAt: now, ...(input.releaseLease ? { syncLeaseOwnerId: undefined, syncLeaseExpiresAt: undefined } : {}) };
+    const failures = input.attempt === "failed" ? (grant.syncFailureCount || 0) + 1 : 0;
+    const next: InternalGrant = { ...grant, syncStatus: input.status, syncError: input.error, sealedSyncCursor: input.cursor ? sealJsonPayload(input.cursor, syncCursorBinding(grant)) : grant.sealedSyncCursor, syncCursor: input.cursor ? undefined : grant.syncCursor, syncedItems: (grant.syncedItems || 0) + (input.syncedItems || 0), sourceCoverage: mergeSourceCoverage(grant.sourceCoverage, sourceSettlements), lastSyncedAt: input.status === "healthy" ? now : grant.lastSyncedAt, updatedAt: now, ...(input.releaseLease ? { syncLeaseOwnerId: undefined, syncLeaseExpiresAt: undefined } : {}), ...(input.attempt ? { syncFailureCount: failures || undefined, syncRetryAt: failures ? new Date(Date.parse(now) + oauthSyncRetryDelayMs(failures, retryScale)).toISOString() : undefined } : {}) };
     updated = stripTokens(next); return next;
   }) }));
   return updated;
 }
 
-function stripTokens(grant: InternalGrant): NormalizedOAuthGrant {
-  return { id: grant.id, tenantId: grant.tenantId, actorId: grant.actorId, provider: grant.provider, accountEmail: normalizeAccountEmail(grant.accountEmail || "") || undefined, connectionLabel: normalizeConnectionLabel(grant.connectionLabel || "Personal"), connectionPurpose: grant.connectionPurpose || "personal", scopes: grant.scopes, status: grant.status, authorizationGeneration: Math.max(1, Number(grant.authorizationGeneration || 1)), expiresAt: grant.expiresAt, syncStatus: grant.syncStatus || "idle", syncError: grant.syncError, lastSyncedAt: grant.lastSyncedAt, syncedItems: grant.syncedItems || 0, sourceCoverage: parseSourceCoverage(grant.sourceCoverage), createdAt: grant.createdAt, updatedAt: grant.updatedAt };
+/**
+ * The wait after `failures` syncs in a row that reached no source: five
+ * minutes, doubling up to six hours, times `scale` in (0.75, 1] so that
+ * connections that failed together do not retry together. The database path
+ * computes the same in SQL, where the exponent is capped so it cannot
+ * overflow.
+ */
+function oauthSyncRetryDelayMs(failures: number, scale: number) {
+  return Math.round(
+    Math.min(
+      OAUTH_SYNC_RETRY_MAX_MS,
+      OAUTH_SYNC_RETRY_BASE_MS * 2 ** (failures - 1),
+    ) * scale,
+  );
 }
-function publicGrant(row: Record<string, unknown>): NormalizedOAuthGrant { return { id: String(row.id), tenantId: String(row.tenant_id), actorId: String(row.actor_id), provider: String(row.provider) as OAuthProvider, accountEmail: normalizeAccountEmail(String(row.account_email || "")) || undefined, connectionLabel: normalizeConnectionLabel(String(row.connection_label || "Personal")), connectionPurpose: row.connection_purpose === "work" ? "work" : "personal", scopes: Array.isArray(row.scopes) ? row.scopes.map(String) : [], status: String(row.status) as "active" | "revoked", authorizationGeneration: Math.max(1, Number(row.authorization_generation || 1)), expiresAt: row.expires_at ? new Date(String(row.expires_at)).toISOString() : undefined, syncStatus: String(row.sync_status || "idle") as OAuthGrant["syncStatus"], syncError: row.sync_error ? String(row.sync_error) : undefined, lastSyncedAt: row.last_synced_at ? new Date(String(row.last_synced_at)).toISOString() : undefined, syncedItems: Number(row.synced_items || 0), sourceCoverage: parseSourceCoverage(row.source_sync_health), createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString() }; }
+
+function stripTokens(grant: InternalGrant): NormalizedOAuthGrant {
+  return { id: grant.id, tenantId: grant.tenantId, actorId: grant.actorId, provider: grant.provider, accountEmail: normalizeAccountEmail(grant.accountEmail || "") || undefined, connectionLabel: normalizeConnectionLabel(grant.connectionLabel || "Personal"), connectionPurpose: grant.connectionPurpose || "personal", scopes: grant.scopes, status: grant.status, authorizationGeneration: Math.max(1, Number(grant.authorizationGeneration || 1)), expiresAt: grant.expiresAt, syncStatus: grant.syncStatus || "idle", syncError: grant.syncError, lastSyncedAt: grant.lastSyncedAt, syncedItems: grant.syncedItems || 0, ...(grant.syncFailureCount ? { syncFailureCount: grant.syncFailureCount } : {}), ...(grant.syncRetryAt ? { syncRetryAt: grant.syncRetryAt } : {}), sourceCoverage: parseSourceCoverage(grant.sourceCoverage), createdAt: grant.createdAt, updatedAt: grant.updatedAt };
+}
+function publicGrant(row: Record<string, unknown>): NormalizedOAuthGrant { return { id: String(row.id), tenantId: String(row.tenant_id), actorId: String(row.actor_id), provider: String(row.provider) as OAuthProvider, accountEmail: normalizeAccountEmail(String(row.account_email || "")) || undefined, connectionLabel: normalizeConnectionLabel(String(row.connection_label || "Personal")), connectionPurpose: row.connection_purpose === "work" ? "work" : "personal", scopes: Array.isArray(row.scopes) ? row.scopes.map(String) : [], status: String(row.status) as "active" | "revoked", authorizationGeneration: Math.max(1, Number(row.authorization_generation || 1)), expiresAt: row.expires_at ? new Date(String(row.expires_at)).toISOString() : undefined, syncStatus: String(row.sync_status || "idle") as OAuthGrant["syncStatus"], syncError: row.sync_error ? String(row.sync_error) : undefined, lastSyncedAt: row.last_synced_at ? new Date(String(row.last_synced_at)).toISOString() : undefined, syncedItems: Number(row.synced_items || 0), ...(Number(row.sync_failure_count || 0) > 0 ? { syncFailureCount: Number(row.sync_failure_count) } : {}), ...(row.sync_retry_at ? { syncRetryAt: new Date(String(row.sync_retry_at)).toISOString() } : {}), sourceCoverage: parseSourceCoverage(row.source_sync_health), createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString() }; }
 function internalGrantFromRow(row: Record<string, unknown>): InternalGrant {
   const grant = publicGrant(row);
   const storedCursor = row.sync_cursor ? String(row.sync_cursor) : undefined;

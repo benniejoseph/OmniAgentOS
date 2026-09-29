@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { sealJsonPayload } from "@/lib/security/sealed-payload";
 
 let dataDir = "";
@@ -149,6 +149,112 @@ describe("OAuth source synchronization lease", () => {
       status: "claimed",
       lease: { generation: second.lease.generation + 1 },
     });
+  });
+
+  it("holds a connection back after syncs that reach no source, until one does or the account reconnects", async () => {
+    const store = await import("@/lib/connectors/oauth-store");
+    const owner = {
+      tenantId: "tenant-sync-backoff",
+      actorId: "actor-sync",
+      provider: "google" as const,
+    };
+    const tokens = {
+      access_token: "test-access-token",
+      refresh_token: "retained-refresh-token",
+      scope: "drive.readonly",
+      expires_in: 3_600,
+    };
+    const finish = async (attempt?: "failed" | "succeeded") => {
+      const claim = await store.claimOAuthSyncLease(owner);
+      if (claim.status !== "claimed") throw new Error("Expected a lease.");
+      return store.updateOAuthSyncState({
+        ...owner,
+        status: attempt === "succeeded" ? "healthy" : "error",
+        lease: claim.lease,
+        releaseLease: true,
+        ...(attempt ? { attempt } : {}),
+      });
+    };
+    vi.useFakeTimers({
+      now: new Date("2026-09-29T12:00:00.000Z"),
+      toFake: ["Date"],
+    });
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    try {
+      await store.saveOAuthGrant({
+        ...owner,
+        accountEmail: googleAccountEmail,
+        tokens,
+      });
+
+      await expect(finish("failed")).resolves.toMatchObject({
+        syncFailureCount: 1,
+        syncRetryAt: "2026-09-29T12:05:00.000Z",
+      });
+      await expect(finish("failed")).resolves.toMatchObject({
+        syncFailureCount: 2,
+        syncRetryAt: "2026-09-29T12:10:00.000Z",
+      });
+      // Connections that failed together do not retry together.
+      random.mockReturnValue(0.5);
+      await expect(finish("failed")).resolves.toMatchObject({
+        syncFailureCount: 3,
+        syncRetryAt: "2026-09-29T12:17:30.000Z",
+      });
+      // A sync that ends without an outcome, like an interrupted one, keeps
+      // the delay, and the scheduler reads it from the connection list.
+      await expect(finish()).resolves.toMatchObject({
+        syncFailureCount: 3,
+        syncRetryAt: "2026-09-29T12:17:30.000Z",
+      });
+      await expect(store.listOAuthGrantsForTenant(owner.tenantId))
+        .resolves.toEqual([expect.objectContaining({
+          syncFailureCount: 3,
+          syncRetryAt: "2026-09-29T12:17:30.000Z",
+        })]);
+      await expect(store.updateOAuthSyncState({
+        ...owner,
+        status: "error",
+        attempt: "failed",
+      })).rejects.toThrow("OAuth sync attempt requires an exact fence.");
+
+      // A token refresh keeps the delay; reconnecting the account clears it.
+      await expect(store.saveOAuthGrant({
+        ...owner,
+        accountEmail: googleAccountEmail,
+        tokens,
+        authorizationMode: "refresh",
+      })).resolves.toMatchObject({
+        syncFailureCount: 3,
+        syncRetryAt: "2026-09-29T12:17:30.000Z",
+      });
+      const reconnected = await store.saveOAuthGrant({
+        ...owner,
+        accountEmail: googleAccountEmail,
+        tokens,
+      });
+      expect(reconnected).not.toHaveProperty("syncFailureCount");
+      expect(reconnected).not.toHaveProperty("syncRetryAt");
+
+      random.mockReturnValue(0);
+      for (let failure = 1; failure < 7; failure += 1) await finish("failed");
+      await expect(finish("failed")).resolves.toMatchObject({
+        syncFailureCount: 7,
+        syncRetryAt: "2026-09-29T17:20:00.000Z",
+      });
+      // Five minutes doubled seven times would pass six hours.
+      await expect(finish("failed")).resolves.toMatchObject({
+        syncFailureCount: 8,
+        syncRetryAt: "2026-09-29T18:00:00.000Z",
+      });
+      const recovered = await finish("succeeded");
+      expect(recovered).toMatchObject({ syncStatus: "healthy" });
+      expect(recovered).not.toHaveProperty("syncFailureCount");
+      expect(recovered).not.toHaveProperty("syncRetryAt");
+    } finally {
+      random.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it("persists a validated source checkpoint without treating its discriminator as payload", async () => {

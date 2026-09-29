@@ -20,6 +20,7 @@ import {
   getSchemaMigrationSteps,
   getSql,
   getVectorStoreStatus,
+  runWithDatabaseActorScope,
   runWithDatabaseSystemScope,
   runWithDatabaseTenantScope,
   tenantPolicyTables,
@@ -5663,6 +5664,245 @@ databaseDescribe("Postgres schema integration", () => {
     expect(await schemaCatalogSnapshot(admin)).toEqual(fileCatalog);
   });
 
+  test("holds an OAuth connection back after syncs that reach no source, doubling the wait up to six hours", async () => {
+    const tenantId = "oauth_backoff_tenant";
+    const actorId = "oauth-backoff-owner";
+    const owner = { tenantId, actorId, provider: "google" as const };
+    const store = await import("@/lib/connectors/oauth-store");
+    const asOwner = <T,>(operation: () => Promise<T>) =>
+      runWithDatabaseActorScope(tenantId, [actorId], operation);
+    const save = (authorizationMode?: "refresh") => asOwner(() =>
+      store.saveOAuthGrant({
+        ...owner,
+        accountEmail: "oauth-backoff@example.com",
+        tokens: {
+          access_token: "backoff-access-token",
+          refresh_token: "backoff-refresh-token",
+          scope: "https://www.googleapis.com/auth/drive",
+          expires_in: 3_600,
+        },
+        ...(authorizationMode ? { authorizationMode } : {}),
+      }));
+    const backoff = async () => {
+      const [row] = await admin`
+        SELECT sync_failure_count AS failures,
+          extract(epoch FROM sync_retry_at)::float8 * 1000 AS "retryAtMs"
+        FROM omni_oauth_grants
+        WHERE tenant_id = ${tenantId}
+      `;
+      return row as { failures: number; retryAtMs: number | null };
+    };
+    // Finishes one sync, and checks the wait it set from the moment it did.
+    const finish = async (
+      attempt: "failed" | "succeeded" | undefined,
+      expected: { failures: number; waitMs?: number },
+    ) => {
+      const claim = await asOwner(() => store.claimOAuthSyncLease(owner));
+      if (claim.status !== "claimed") throw new Error("Expected a lease.");
+      const before = Date.now();
+      const grant = await asOwner(() => store.updateOAuthSyncState({
+        ...owner,
+        status: attempt === "succeeded" ? "healthy" : "error",
+        lease: claim.lease,
+        releaseLease: true,
+        ...(attempt ? { attempt } : {}),
+      }));
+      const after = Date.now();
+      expect(grant).toBeDefined();
+      const row = await backoff();
+      expect(row.failures).toBe(expected.failures);
+      if (expected.waitMs === undefined) {
+        expect(row.retryAtMs).toBeNull();
+      } else {
+        expect(row.retryAtMs! - expected.waitMs).toBeGreaterThanOrEqual(before);
+        expect(row.retryAtMs! - expected.waitMs).toBeLessThanOrEqual(after);
+      }
+      return row;
+    };
+    const setFailures = (failures: number) => admin`
+      UPDATE omni_oauth_grants
+      SET sync_failure_count = ${failures}, sync_retry_at = NOW()
+      WHERE tenant_id = ${tenantId}
+    `;
+    const minute = 60_000;
+    const previousKeyring = process.env.OMNIAGENT_CREDENTIAL_KEYRING;
+    process.env.OMNIAGENT_CREDENTIAL_KEYRING = JSON.stringify({
+      activeKeyId: "oauth-backoff-v1",
+      keys: { "oauth-backoff-v1": Buffer.alloc(32, 7).toString("base64url") },
+    });
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+
+    try {
+      await save();
+      await finish("failed", { failures: 1, waitMs: 5 * minute });
+      // Connections that failed together do not retry together.
+      random.mockReturnValue(0.5);
+      await finish("failed", { failures: 2, waitMs: 10 * minute * 0.875 });
+      random.mockReturnValue(0);
+      const held = await finish("failed", { failures: 3, waitMs: 20 * minute });
+      // A sync that ends without an outcome, like an interrupted one, keeps
+      // the wait, and the scheduler reads it from the connection list.
+      const claim = await asOwner(() => store.claimOAuthSyncLease(owner));
+      if (claim.status !== "claimed") throw new Error("Expected a lease.");
+      await asOwner(() => store.updateOAuthSyncState({
+        ...owner,
+        status: "syncing",
+        lease: claim.lease,
+        releaseLease: true,
+      }));
+      expect(await backoff()).toEqual(held);
+      const [listed] = await asOwner(() => store.listOAuthGrantsForTenant(tenantId));
+      expect(listed.syncFailureCount).toBe(3);
+      expect(Math.abs(Date.parse(listed.syncRetryAt!) - held.retryAtMs!))
+        .toBeLessThan(1_000);
+
+      // A token refresh keeps the wait; reconnecting the account clears it.
+      await expect(save("refresh")).resolves.toMatchObject({ syncFailureCount: 3 });
+      expect(await backoff()).toEqual(held);
+      const reconnected = await save();
+      expect(reconnected).not.toHaveProperty("syncFailureCount");
+      expect(reconnected).not.toHaveProperty("syncRetryAt");
+      expect(await backoff()).toEqual({ failures: 0, retryAtMs: null });
+
+      await setFailures(6);
+      await finish("failed", { failures: 7, waitMs: 320 * minute });
+      // Five minutes doubled seven times would pass six hours.
+      await finish("failed", { failures: 8, waitMs: 360 * minute });
+      // A connection left failing for a year does not overflow the wait.
+      await setFailures(5_000);
+      await finish("failed", { failures: 5_001, waitMs: 360 * minute });
+      await finish("succeeded", { failures: 0 });
+    } finally {
+      random.mockRestore();
+      if (previousKeyring === undefined) {
+        delete process.env.OMNIAGENT_CREDENTIAL_KEYRING;
+      } else {
+        process.env.OMNIAGENT_CREDENTIAL_KEYRING = previousKeyring;
+      }
+    }
+  });
+
+  test("keeps an OAuth retry time only beside a failure count above zero", async () => {
+    const [constraint] = await admin`
+      SELECT convalidated AS validated
+      FROM pg_constraint
+      WHERE conrelid = 'public.omni_oauth_grants'::regclass
+        AND conname = 'omni_oauth_grants_sync_backoff_check'
+    `;
+    // Added without scanning the table, whose rows had no failures then.
+    expect(constraint).toEqual({ validated: false });
+    const [grant] = await admin`
+      SELECT id FROM omni_oauth_grants ORDER BY created_at LIMIT 1
+    `;
+    expect(grant).toBeDefined();
+    const setBackoff = (failures: string, retryAt: string) =>
+      admin.unsafe(`
+        UPDATE public.omni_oauth_grants
+        SET sync_failure_count = ${failures}, sync_retry_at = ${retryAt}
+        WHERE id = '${String(grant.id)}'
+      `);
+
+    for (const [failures, retryAt] of [
+      ["1", "NULL"],
+      ["0", "NOW()"],
+      ["-1", "NOW()"],
+      ["-1", "NULL"],
+    ]) {
+      await expect(setBackoff(failures, retryAt)).rejects.toMatchObject({ code: "23514" });
+    }
+    await setBackoff("1", "NOW()");
+    await setBackoff("0", "NULL");
+  });
+
+  test("refuses to migrate over a sync backoff column that exists with another type, default or nullability", async () => {
+    const alter = "ALTER TABLE public.omni_oauth_grants ALTER COLUMN";
+    const variants = [
+      {
+        change: [`${alter} sync_failure_count TYPE BIGINT`],
+        restore: [`${alter} sync_failure_count TYPE INTEGER`],
+      },
+      {
+        change: [`${alter} sync_failure_count SET DEFAULT 1`],
+        restore: [`${alter} sync_failure_count SET DEFAULT 0`],
+      },
+      {
+        change: [`${alter} sync_failure_count DROP NOT NULL`],
+        restore: [`${alter} sync_failure_count SET NOT NULL`],
+      },
+      {
+        change: [`${alter} sync_retry_at TYPE TIMESTAMP`],
+        restore: [`${alter} sync_retry_at TYPE TIMESTAMPTZ`],
+      },
+      {
+        change: [`${alter} sync_retry_at SET DEFAULT NOW()`],
+        restore: [`${alter} sync_retry_at DROP DEFAULT`],
+      },
+      {
+        change: [
+          "UPDATE public.omni_oauth_grants SET sync_retry_at = COALESCE(sync_retry_at, NOW())",
+          `${alter} sync_retry_at SET NOT NULL`,
+        ],
+        restore: [`${alter} sync_retry_at DROP NOT NULL`],
+      },
+    ];
+    const backoffs = () => admin`
+      SELECT id, sync_failure_count, sync_retry_at
+      FROM omni_oauth_grants
+      ORDER BY id
+    `;
+    const fileCatalog = await schemaCatalogSnapshot(admin);
+    const recorded = await backoffs();
+    expect(recorded.length).toBeGreaterThan(0);
+    // Each variant puts the values back from this copy, to the microsecond.
+    await admin`
+      CREATE TEMPORARY TABLE oauth_sync_backoff_backup AS
+      SELECT id, sync_failure_count, sync_retry_at
+      FROM omni_oauth_grants
+    `;
+
+    try {
+      await withMigrationsPendingFrom(admin, oauthSyncBackoffVersion, async () => {
+        // The file adds the CHECK again once the columns are the ones it adds.
+        await admin`
+          ALTER TABLE public.omni_oauth_grants
+          DROP CONSTRAINT omni_oauth_grants_sync_backoff_check
+        `;
+        for (const variant of variants) {
+          for (const statement of variant.change) {
+            await admin.unsafe(statement);
+          }
+          await expect(migrateWithFreshClient()).rejects.toMatchObject({
+            message: expect.stringContaining(
+              "omni_oauth_grants has a sync backoff column this migration does not add",
+            ),
+            cause: { cause: { code: "55000" } },
+          });
+          for (const statement of variant.restore) {
+            await admin.unsafe(statement);
+          }
+          await admin`
+            UPDATE omni_oauth_grants grant_row
+            SET sync_failure_count = backup.sync_failure_count,
+              sync_retry_at = backup.sync_retry_at
+            FROM oauth_sync_backoff_backup backup
+            WHERE backup.id = grant_row.id
+          `;
+        }
+        await migrateWithFreshClient();
+      });
+    } finally {
+      await admin`DROP TABLE IF EXISTS oauth_sync_backoff_backup`;
+    }
+    expect(await admin`
+      SELECT version, name, checksum
+      FROM omni_schema_version
+      WHERE version IS NOT NULL
+      ORDER BY version ASC
+    `).toEqual(databaseSchemaMigrations);
+    expect(await backoffs()).toEqual(recorded);
+    expect(await schemaCatalogSnapshot(admin)).toEqual(fileCatalog);
+  });
+
   test("orders pending approvals by risk and age across every source and pages them without a gap", async () => {
     const tenantId = "approval_order_tenant";
     const otherTenantId = "approval_order_other";
@@ -6194,6 +6434,7 @@ function migrationLockLogLines(calls: readonly unknown[][]) {
 
 const schemaConvergenceVersion = 208;
 const refreshRotationRetryVersion = 209;
+const oauthSyncBackoffVersion = 210;
 
 // A native client that attests an Android build.
 const androidClient = {

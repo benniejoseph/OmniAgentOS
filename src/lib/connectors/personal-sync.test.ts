@@ -1,12 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  claimLease: vi.fn(), getSecrets: vi.fn(), saveGrant: vi.fn(), updateState: vi.fn(), refresh: vi.fn(), ingest: vi.fn(), remove: vi.fn(), getDocument: vi.fn(), projectCalendar: vi.fn(), cancelCalendar: vi.fn(), mapInbound: vi.fn(), observeDrive: vi.fn(), observeCanonicalDrive: vi.fn(), fetch: vi.fn(), driveFence: vi.fn(),
+  claimLease: vi.fn(), getSecrets: vi.fn(), saveGrant: vi.fn(), updateState: vi.fn(), refresh: vi.fn(), ingest: vi.fn(), remove: vi.fn(), getDocument: vi.fn(), projectCalendar: vi.fn(), cancelCalendar: vi.fn(), mapInbound: vi.fn(), observeDrive: vi.fn(), observeCanonicalDrive: vi.fn(), fetch: vi.fn(), driveFence: vi.fn(), listGrants: vi.fn(),
 }));
 vi.mock("@/lib/connectors/oauth-store", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/lib/connectors/oauth-store")>(),
   claimOAuthSyncLease: mocks.claimLease,
   getOAuthGrantSecrets: mocks.getSecrets,
+  listOAuthGrantsForTenant: mocks.listGrants,
   saveOAuthGrant: mocks.saveGrant,
   updateOAuthSyncState: mocks.updateState,
 }));
@@ -25,7 +26,10 @@ vi.mock("@/lib/rag/store", () => ({ deleteKnowledgeDocumentByIdempotencyKey: moc
 vi.mock("@/lib/meetings/google-calendar-projection", () => ({ projectGoogleCalendarMeeting: mocks.projectCalendar, cancelGoogleCalendarMeeting: mocks.cancelCalendar }));
 vi.mock("@/lib/communications/store", () => ({ mapInboundCommunication: mocks.mapInbound }));
 
-import { syncPersonalProvider } from "@/lib/connectors/personal-sync";
+import {
+  syncDuePersonalProviders,
+  syncPersonalProvider,
+} from "@/lib/connectors/personal-sync";
 import { getDatabaseActorContext } from "@/lib/db/client";
 
 const GOOGLE_SYNC_SCOPES = [
@@ -367,6 +371,8 @@ describe("personal OAuth synchronization", () => {
         status: "error",
         cursor: expect.stringContaining("calendar-partial"),
         error: expect.stringContaining("mail:"),
+        // The sync reached two of its sources, so the connection is not held back.
+        attempt: "succeeded",
       }),
     );
     const finalCursor = JSON.parse(
@@ -1484,6 +1490,11 @@ describe("personal OAuth synchronization", () => {
     // A request Drive rejects for another reason would be rejected again
     // after every fresh listing, so it is not mistaken for a stale position.
     expect(requestedUrls).toHaveLength(1);
+    // Every source the sync tried failed.
+    expect(mocks.updateState).toHaveBeenLastCalledWith(expect.objectContaining({
+      status: "error",
+      attempt: "failed",
+    }));
     expect(mocks.driveFence).not.toHaveBeenCalled();
     expect(savedCursor()).toEqual({
       driveChangesStartPageToken: "drive-changes-1",
@@ -1623,6 +1634,277 @@ describe("personal OAuth synchronization", () => {
       releaseLease: true,
       sourceSettlements: [],
     }));
+    // An interrupted sync is neither a failure nor a success.
+    expect(mocks.updateState.mock.calls.at(-1)?.[0]).not.toHaveProperty("attempt");
+  });
+
+  it("counts a sync that fails before it reaches any source", async () => {
+    mocks.getSecrets.mockResolvedValue({
+      ...googleSecrets({}),
+      tokens: { refresh_token: "refresh" },
+      credentialState: "refresh_required",
+    });
+    mocks.refresh.mockRejectedValue(new Error("Google refused the token refresh."));
+
+    await expect(syncPersonalProvider({
+      tenantId: "personal",
+      actorId: "owner",
+      provider: "google",
+    })).rejects.toThrow("Google refused the token refresh.");
+    expect(mocks.fetch).not.toHaveBeenCalled();
+    expect(mocks.updateState).toHaveBeenLastCalledWith(expect.objectContaining({
+      status: "error",
+      releaseLease: true,
+      attempt: "failed",
+    }));
+  });
+
+  it("does not hold back a connection with no sources to read", async () => {
+    mocks.getSecrets.mockResolvedValue({
+      ...googleSecrets({}),
+      grant: {
+        ...googleSecrets({}).grant,
+        scopes: ["https://www.googleapis.com/auth/userinfo.email"],
+      },
+    });
+
+    await expect(syncPersonalProvider({
+      tenantId: "personal",
+      actorId: "owner",
+      provider: "google",
+    })).resolves.toMatchObject({ status: "healthy", sources: [] });
+    expect(mocks.updateState).toHaveBeenLastCalledWith(expect.objectContaining({
+      attempt: "succeeded",
+    }));
+  });
+
+  it("fails a source whose request or response outlasts its time limit", async () => {
+    // Each request's own time limit, by the signal it hands to fetch.
+    const deadlines = new Map<AbortSignal, AbortController>();
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation(() => {
+      const deadline = new AbortController();
+      deadlines.set(deadline.signal, deadline);
+      return deadline.signal;
+    });
+    const expire = (signal: AbortSignal) => deadlines.get(signal)?.abort(
+      new DOMException("The operation was aborted due to timeout", "TimeoutError"),
+    );
+    mocks.fetch.mockImplementation(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      const signal = init?.signal as AbortSignal;
+      if (url.endsWith("/profile")) return json({ historyId: "mail-on-time" });
+      if (url.includes("/messages?")) return json({ messages: [] });
+      if (url.includes("calendar")) {
+        // Calendar never answers.
+        return new Promise((_, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+          expire(signal);
+        });
+      }
+      if (url.includes("/drive/v3/files")) {
+        // Drive answers, then its body stops arriving.
+        return new Response(new ReadableStream({
+          start(body) {
+            signal.addEventListener("abort", () => body.error(signal.reason), { once: true });
+            expire(signal);
+          },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      throw new Error(`Unexpected URL ${url}`);
+    });
+
+    try {
+      await expect(syncPersonalProvider({
+        tenantId: "personal",
+        actorId: "owner",
+        provider: "google",
+      })).resolves.toMatchObject({
+        status: "partial",
+        sources: [
+          { source: "mail", status: "healthy" },
+          {
+            source: "calendar",
+            status: "error",
+            failureCode: "provider_unavailable",
+            error: "Connected source timed out.",
+          },
+          {
+            source: "drive",
+            status: "error",
+            failureCode: "provider_unavailable",
+            error: "Connected source timed out.",
+          },
+        ],
+      });
+      expect(timeout).toHaveBeenCalledWith(30_000);
+      expect(mocks.updateState).toHaveBeenLastCalledWith(expect.objectContaining({
+        status: "error",
+        releaseLease: true,
+        attempt: "succeeded",
+      }));
+    } finally {
+      timeout.mockRestore();
+    }
+  });
+
+  it("keeps a Drive file's metadata when its export or download outlasts its time limit", async () => {
+    const deadlines = new Map<AbortSignal, AbortController>();
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation(() => {
+      const deadline = new AbortController();
+      deadlines.set(deadline.signal, deadline);
+      return deadline.signal;
+    });
+    const stalled: Array<{ id: string; limited: boolean }> = [];
+    mocks.fetch.mockImplementation(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/messages?")) return json({ messages: [] });
+      if (url.endsWith("/profile")) return json({ historyId: "h5" });
+      if (url.includes("calendar")) return json({ nextSyncToken: "c5", items: [] });
+      if (url.includes("/drive/v3/files?")) {
+        return json({ files: [
+          { ...DRIVE_FILE, id: "doc", name: "Slow brief" },
+          { ...DRIVE_FILE, id: "scan", name: "Slow scan.pdf", mimeType: "application/pdf", size: "1024" },
+        ] });
+      }
+      const file = /\/files\/(doc)\/export\?|\/files\/(scan)\?alt=media$/.exec(url);
+      if (file) {
+        // The file starts to arrive, then stops until its time limit ends it.
+        const deadline = deadlines.get(init?.signal as AbortSignal);
+        stalled.push({ id: file[1] || file[2], limited: Boolean(deadline) });
+        return new Response(new ReadableStream({
+          start(body) {
+            if (!deadline) return body.error(new Error("No time limit."));
+            deadline.signal.addEventListener("abort", () => body.error(deadline.signal.reason), { once: true });
+            deadline.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
+          },
+        }), { status: 200 });
+      }
+      throw new Error(`Unexpected URL ${url}`);
+    });
+
+    try {
+      await expect(syncPersonalProvider({
+        tenantId: "personal",
+        actorId: "owner",
+        provider: "google",
+      })).resolves.toMatchObject({ status: "healthy", imported: 2 });
+      expect(stalled).toEqual([
+        { id: "doc", limited: true },
+        { id: "scan", limited: true },
+      ]);
+      for (const [id, name] of [["doc", "Slow brief"], ["scan", "Slow scan.pdf"]]) {
+        expect(mocks.ingest).toHaveBeenCalledWith(expect.objectContaining({
+          idempotencyKey: `oauth:google:drive:${id}`,
+          content: expect.stringContaining(`File: ${name}`),
+        }));
+      }
+    } finally {
+      timeout.mockRestore();
+    }
+  });
+
+  it("holds a request to its time limit while the caller's own signal stays open", async () => {
+    const deadlines: AbortController[] = [];
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation(() => {
+      const deadline = new AbortController();
+      deadlines.push(deadline);
+      return deadline.signal;
+    });
+    const limited: boolean[] = [];
+    mocks.fetch.mockImplementation(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      const signal = init?.signal as AbortSignal;
+      if (url.includes("calendar")) {
+        // Calendar stalls until its time limit ends it.
+        for (const deadline of deadlines) {
+          deadline.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
+        }
+        limited.push(signal.aborted);
+        throw signal.aborted ? signal.reason : new Error("No time limit.");
+      }
+      throw new Error(`Unexpected URL ${url}`);
+    });
+
+    try {
+      await expect(syncPersonalProvider({
+        tenantId: "personal",
+        actorId: "owner",
+        provider: "google",
+        sources: ["calendar"],
+        abortSignal: new AbortController().signal,
+      })).resolves.toMatchObject({
+        sources: [{
+          source: "calendar",
+          status: "error",
+          failureCode: "provider_unavailable",
+          error: "Connected source timed out.",
+        }],
+      });
+      expect(limited).toEqual([true]);
+    } finally {
+      timeout.mockRestore();
+    }
+  });
+
+  it("stops a provider request when the caller aborts, and leaves the sync interrupted", async () => {
+    const caller = new AbortController();
+    mocks.fetch.mockImplementation(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      const signal = init?.signal as AbortSignal;
+      if (url.includes("calendar")) {
+        return new Promise((_, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+          caller.abort();
+        });
+      }
+      throw new Error(`Unexpected URL ${url}`);
+    });
+
+    await expect(syncPersonalProvider({
+      tenantId: "personal",
+      actorId: "owner",
+      provider: "google",
+      sources: ["calendar"],
+      abortSignal: caller.signal,
+    })).rejects.toMatchObject({ name: "AbortError" });
+    expect(mocks.updateState).toHaveBeenLastCalledWith(expect.objectContaining({
+      status: "syncing",
+      error: undefined,
+      releaseLease: true,
+    }));
+    expect(mocks.updateState.mock.calls.at(-1)?.[0]).not.toHaveProperty("attempt");
+  });
+
+  it("syncs on schedule only the connections whose retry delay has passed", async () => {
+    const now = Date.parse("2026-09-29T12:00:00.000Z");
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+    const grant = (id: string, syncRetryAt?: number) => ({
+      ...googleSecrets({}).grant,
+      id,
+      ...(syncRetryAt === undefined
+        ? {}
+        : { syncRetryAt: new Date(syncRetryAt).toISOString() }),
+    });
+    mocks.listGrants.mockResolvedValue([
+      grant("waiting", now + 1),
+      grant("due", now),
+      grant("never-failed"),
+      grant("overdue", now - 60_000),
+    ]);
+    // Each due connection stops at its lease; only which ones start matters.
+    mocks.claimLease.mockResolvedValue({ status: "busy" });
+
+    try {
+      await syncDuePersonalProviders({ tenantId: "personal", limit: 5 });
+    } finally {
+      clock.mockRestore();
+    }
+    expect(mocks.listGrants).toHaveBeenCalledWith("personal");
+    expect(mocks.getSecrets.mock.calls.map((call) => call[3])).toEqual([
+      { connectionId: "due" },
+      { connectionId: "never-failed" },
+      { connectionId: "overdue" },
+    ]);
   });
 });
 

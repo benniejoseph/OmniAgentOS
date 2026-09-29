@@ -35,6 +35,8 @@ If `/api/health` returns 503, inspect server logs for TLS, credentials, extensio
 - `Schema catalog convergence predecessor is invalid`: migration 208 was run outside `npm run db:migrate` on a database whose latest recorded version is not v207 `memory_forget_lineage_closure_v1` with its release checksum.
 - `… failed: omni_mobile_sessions has a refresh rotation column this migration does not add`, from migration 209: the table already had `refresh_rotated_at` or `refresh_rotation_key`, but not as a nullable `timestamptz` or `text` column without a default. The migration rolled back. Find out where the column came from before you change or drop it, then run the job again.
 - `Mobile refresh rotation retry predecessor is invalid`: migration 209 was run outside `npm run db:migrate` on a database whose latest recorded version is not v208 `schema_catalog_convergence_v1` with its release checksum.
+- `… failed: omni_oauth_grants has a sync backoff column this migration does not add`, from migration 210: the table already had `sync_failure_count` or `sync_retry_at`, but not as an `integer NOT NULL DEFAULT 0` count and a nullable `timestamptz` without a default. The migration rolled back. Find out where the column came from before you change or drop it, then run the job again.
+- `OAuth sync backoff predecessor is invalid`: migration 210 was run outside `npm run db:migrate` on a database whose latest recorded version is not v209 `mobile_refresh_rotation_retry_v1` with its release checksum.
 
 If pgvector is unavailable, set `OMNIAGENT_LOG_PGVECTOR_FAILURES=true` temporarily. The app can use JSON embeddings, but vector-index status remains not ready until the extension, columns, dimensions, and HNSW indexes match. The migration fills a row's vector only when its JSON embedding is an array of numbers at least as long as the column; any other embedding stays JSON-only.
 
@@ -188,6 +190,16 @@ Files are parsed by the contained document parser described in the [security mod
 - `400 extraction_failed`: the parser rejected the file. `Document parser could not read this document.` logs only the error name: `PasswordException` is an encrypted PDF and `InvalidPDFException` or `FormatError` a damaged one, while a `ReferenceError` or `TypeError` points at the deployment or a parser defect rather than the file.
 
 Background processing (`capture.asset.process`) makes three attempts with backoff and records the failed extraction receipt only after the last one, so even a deterministic 413 appears only after the third attempt.
+
+## A Google connection stops syncing on schedule
+
+A connection whose last syncs reached none of its sources waits until `sync_retry_at` in `omni_oauth_grants`, and `sync_failure_count` is how many such syncs ran in a row. The wait starts at five minutes and doubles up to six hours. `sync_error` holds the last sync's error, with each failed source's name before its message, and `source_sync_health` holds each source's failure code.
+
+- Every source failed with `Connected source timed out.` (`provider_unavailable`): Google took longer than 30 seconds to answer a request, or to send its body. Check Google's status and the deployment's egress.
+- The sync failed before any source, for example on a refused token refresh: reconnect the account, which clears the wait. A refused refresh keeps retrying about every six hours until then, because a misconfigured OAuth client is refused the same way.
+- One source keeps failing while another syncs: the connection is not held back, so the failing source is tried again on every tick.
+
+Run a manual sync to try right away; it does not wait, and its outcome counts like a scheduled one.
 
 ## Connector discovery or execution is blocked
 

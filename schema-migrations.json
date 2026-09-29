@@ -1255,5 +1255,12 @@
     "checksum": "e78561b7a9b0c38fd91376d9f8fb094e3b629d5e5b94b3a48592a9b89855531f",
     "file": "20260928100000_mobile_refresh_rotation_retry.sql",
     "sha256": "e78561b7a9b0c38fd91376d9f8fb094e3b629d5e5b94b3a48592a9b89855531f"
+  },
+  {
+    "version": 210,
+    "name": "oauth_sync_backoff_v1",
+    "checksum": "3c2122c7222e4a5aafca6e5ef3eca7905353be7aae675367a16b9cdb4787fff3",
+    "file": "20260929120000_oauth_sync_backoff.sql",
+    "sha256": "3c2122c7222e4a5aafca6e5ef3eca7905353be7aae675367a16b9cdb4787fff3"
   }
 ]

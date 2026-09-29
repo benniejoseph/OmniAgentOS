@@ -482,7 +482,14 @@ async function POSTHandler(request: Request) {
       tenantId: context.tenantId,
       limit: 10,
     });
-    const connectedSourceSyncs = await syncDuePersonalProviders({ tenantId: context.tenantId, limit: 2 });
+    const connectedSourceSyncs = await syncDuePersonalProviders({
+      tenantId: context.tenantId,
+      limit: 2,
+      abortSignal: AbortSignal.any([
+        request.signal,
+        AbortSignal.timeout(90_000),
+      ]),
+    });
     const salesforceSyncs = await syncDueSalesforceConnections({
       tenantId: context.tenantId,
       limit: 2,

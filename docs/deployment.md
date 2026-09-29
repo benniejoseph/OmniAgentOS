@@ -262,6 +262,50 @@ new pair. After the 60 seconds it is reuse, as before.
   rolls back. See
   [troubleshooting.md](troubleshooting.md#schema-startup-fails).
 
+### OAuth sync backoff (v210)
+
+Migration `20260929120000_oauth_sync_backoff.sql` installs schema v210
+(`oauth_sync_backoff_v1`) after v209. Apply it before deploying the code that
+needs it: until it runs, every database-backed request fails with
+`Database schema is behind (pending versions: 210)`. A release older than v210
+still serves against a v210 database.
+
+v210 adds `sync_failure_count` (`integer NOT NULL DEFAULT 0`) and the nullable
+`sync_retry_at` to `omni_oauth_grants`. The default is a constant, so the table
+is not rewritten. The `NOT VALID` check `omni_oauth_grants_sync_backoff_check`
+requires a count of at least 0 and a retry time exactly when the count is
+above 0. Every existing row has a count of 0 and no retry time, so leaving the
+check unvalidated skips no row.
+
+A Google sync in which every source failed, or which failed as a whole, for
+example on a refused token refresh, adds one to the count. The scheduler then
+leaves the connection alone until `sync_retry_at`: five minutes after the
+first such sync, doubling with each one in a row, up to six hours, and up to a
+quarter shorter at random so connections that failed together do not retry
+together. A sync that reaches any source clears the count, and so does
+reconnecting the account; a token refresh does not. A manual sync does not
+wait, and its outcome counts like any other. An interrupted sync changes
+neither column.
+
+Each request to a Google source, with its response body, now has 30 seconds
+before the source fails as `provider_unavailable` with
+`Connected source timed out.`; the token refresh already had 15. The operator
+workflow tick gives connected-source sync 90 seconds; the maintenance tick
+already stopped it 5 seconds before its own deadline.
+
+- **Rollback.** A release older than v210 neither reads nor writes these
+  columns, so it syncs every due connection on every tick, as before. The
+  count and retry time stay as they were, and the next v210 release goes on
+  from them.
+- **Refused refresh.** A refresh token Google refuses does not stop the
+  connection: it keeps retrying, with the wait growing to about six hours,
+  because a misconfigured OAuth client is refused the same way. Reconnect the
+  account to clear the wait.
+- **Existing columns.** If either column already exists with another type,
+  nullability, or default, v210 stops with `55000` and the whole migration
+  rolls back. See
+  [troubleshooting.md](troubleshooting.md#schema-startup-fails).
+
 ### Web Command durable structured-context release
 
 Web Command defaults a new conversation to `session` scope. Attached Agents,
@@ -947,6 +991,12 @@ knowledge. A Drive file that left the account before the change feed began, or
 while a rejected position was being replaced, and a message moved into Spam or
 Trash before this rule, stays indexed.
 
+Each request to a Google source gets 30 seconds, response included, before
+the source fails. A connection whose scheduled sync reaches none of its sources waits
+before the next one: five minutes, doubling up to six hours. Reconnecting the
+account, or a sync that reaches any source, ends the wait, and a manual sync
+does not wait. See [OAuth sync backoff (v210)](#oauth-sync-backoff-v210).
+
 ## Capture document extraction
 
 Uploaded and synced files are extracted inside the Vercel functions, never on
@@ -1096,7 +1146,7 @@ Keep migrations backward-compatible for at least one application rollback. If a 
 ### Installed adaptive-runtime migration chain
 
 The adaptive-runtime migrations below are registered in `schema-migrations.json`.
-Versions 196-206 are installed in production; v207, v208, and v209 are pending
+Versions 196-206 are installed in production; v207 through v210 are pending
 their first release. Each migration takes the schema advisory lock,
 checks the exact immediately preceding version/name/checksum, installs or extends
 forced actor RLS, verifies its privilege/trigger boundary, and writes its own
@@ -1118,6 +1168,7 @@ marker in the same transaction.
 | 207 | `memory_forget_lineage_closure_v1` | `980dfe0af300eac5072cf0bf6b5f80b6a4e5335f444f0046732e7291f3f26c36` | forget lineage closure over every visibility, applied through the receipt with trace, graph, descendant, and agent-grant removal |
 | 208 | `schema_catalog_convergence_v1` | `514f00004c8726a2c762f6069728b20d4816a92731c72c125bf39cbca9a0371f` | actor policies alone on 38 tables, 43 missing CHECKs added `NOT VALID` and 8 renamed, and system scope for the `BYPASSRLS` maintenance role, on databases the old runner migrated |
 | 209 | `mobile_refresh_rotation_retry_v1` | `e78561b7a9b0c38fd91376d9f8fb094e3b629d5e5b94b3a48592a9b89855531f` | nullable rotation time and key on mobile sessions, so the refresh token a rotation replaced gets the same pair again for 60 seconds |
+| 210 | `oauth_sync_backoff_v1` | `3c2122c7222e4a5aafca6e5ef3eca7905353be7aae675367a16b9cdb4787fff3` | a failure count and retry time on OAuth grants, so a connection whose syncs reach no source waits five minutes, doubling up to six hours |
 
 Version 196 requires the exact predecessor marker v195
 `moltbook_autonomy_privilege_repair_v1` with checksum

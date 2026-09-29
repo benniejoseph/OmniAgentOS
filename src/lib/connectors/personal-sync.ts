@@ -75,6 +75,8 @@ const GOOGLE_DRIVE_FILE_FIELDS =
 const GOOGLE_DRIVE_REVISION_MARKER_KEY = "googleDriveProviderRevision";
 const GOOGLE_DRIVE_REVISION_MARKER_VERSION = 1;
 const GOOGLE_DRIVE_REUSE_MAX_CHUNKS = 128;
+// Each Google request, with its body, gets this long before its source fails.
+const PROVIDER_REQUEST_TIMEOUT_MS = 30_000;
 type SyncItem = {
   id: string;
   kind: "mail" | "calendar" | "drive";
@@ -163,9 +165,14 @@ export async function syncDuePersonalProviders(options: {
   abortSignal?: AbortSignal;
 }) {
   const limit = Math.min(Math.max(options.limit || 2, 1), 5);
-  const staleBefore = Date.now() - (options.staleAfterMs || 30 * 60_000);
+  const now = Date.now();
+  const staleBefore = now - (options.staleAfterMs || 30 * 60_000);
   const grants = (await listOAuthGrantsForTenant(options.tenantId))
-    .filter((grant) => !grant.lastSyncedAt || Date.parse(grant.lastSyncedAt) <= staleBefore)
+    .filter((grant) =>
+      (!grant.lastSyncedAt || Date.parse(grant.lastSyncedAt) <= staleBefore) &&
+      // A connection whose last syncs reached none of its sources waits.
+      (!grant.syncRetryAt || Date.parse(grant.syncRetryAt) <= now)
+    )
     .slice(0, limit);
   const results: Array<{ provider: OAuthProvider; status: "healthy" | "error"; imported?: number; error?: string }> = [];
   for (const grant of grants) {
@@ -550,6 +557,9 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
       error,
       lease,
       releaseLease: true,
+      attempt: failed.length && failed.length === sources.length
+        ? "failed"
+        : "succeeded",
       sourceSettlements: sources.map((source) => ({
         source: source.source,
         schemaVersion: 1,
@@ -587,6 +597,8 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
         : error instanceof Error ? error.message : "Sync failed.",
       lease,
       releaseLease: true,
+      // An interrupted sync resumes on the next tick.
+      ...(interrupted ? {} : { attempt: "failed" as const }),
       sourceSettlements: interrupted || sourceObservationStarted
         ? []
         : grantedSources.map((source) => ({
@@ -1421,9 +1433,29 @@ function calendarPerson(
   };
 }
 
-async function providerJson(url: string, headers: Record<string, string>, signal?: AbortSignal, accepted: number[] = []) { const response = await fetch(url, { headers, signal }); const body = await response.json().catch(() => ({})) as Record<string, unknown>; if (!response.ok && !accepted.includes(response.status)) throw new Error(`Connected source returned ${response.status}.`); return { status: response.status, body }; }
-async function providerText(url: string, headers: Record<string, string>, signal?: AbortSignal) { const parsed = new URL(url); if (parsed.protocol !== "https:" || parsed.hostname !== "www.googleapis.com") throw new Error("Provider returned an unsafe document URL."); const response = await fetch(url, { headers, signal }); if (!response.ok) throw new Error(`Connected source returned ${response.status}.`); return response.text(); }
-async function providerBytes(url: string, headers: Record<string, string>, signal: AbortSignal | undefined, maxBytes: number) { const parsed = new URL(url); if (parsed.protocol !== "https:" || parsed.hostname !== "www.googleapis.com") throw new Error("Provider returned an unsafe document URL."); const response = await fetch(url, { headers, signal }); if (!response.ok) throw new Error(`Connected source returned ${response.status}.`); const declared = Number(response.headers.get("content-length") || 0); if (declared > maxBytes) throw new Error("Connected file exceeds the extraction limit."); const bytes = new Uint8Array(await response.arrayBuffer()); if (bytes.byteLength > maxBytes) throw new Error("Connected file exceeds the extraction limit."); return bytes; }
+async function providerJson(url: string, headers: Record<string, string>, signal?: AbortSignal, accepted: number[] = []) { return withProviderDeadline(signal, async (requestSignal) => { const response = await fetch(url, { headers, signal: requestSignal }); const body = await response.json().catch((error: unknown) => { if (requestSignal.aborted) throw error; return {}; }) as Record<string, unknown>; if (!response.ok && !accepted.includes(response.status)) throw new Error(`Connected source returned ${response.status}.`); return { status: response.status, body }; }); }
+async function providerText(url: string, headers: Record<string, string>, signal?: AbortSignal) { const parsed = new URL(url); if (parsed.protocol !== "https:" || parsed.hostname !== "www.googleapis.com") throw new Error("Provider returned an unsafe document URL."); return withProviderDeadline(signal, async (requestSignal) => { const response = await fetch(url, { headers, signal: requestSignal }); if (!response.ok) throw new Error(`Connected source returned ${response.status}.`); return response.text(); }); }
+async function providerBytes(url: string, headers: Record<string, string>, signal: AbortSignal | undefined, maxBytes: number) { const parsed = new URL(url); if (parsed.protocol !== "https:" || parsed.hostname !== "www.googleapis.com") throw new Error("Provider returned an unsafe document URL."); return withProviderDeadline(signal, async (requestSignal) => { const response = await fetch(url, { headers, signal: requestSignal }); if (!response.ok) throw new Error(`Connected source returned ${response.status}.`); const declared = Number(response.headers.get("content-length") || 0); if (declared > maxBytes) throw new Error("Connected file exceeds the extraction limit."); const bytes = new Uint8Array(await response.arrayBuffer()); if (bytes.byteLength > maxBytes) throw new Error("Connected file exceeds the extraction limit."); return bytes; }); }
+
+/**
+ * Runs one provider request, body included, under the caller's signal and a
+ * time limit of its own. A request past the limit fails as a timeout, which
+ * counts against the source; the caller's abort still interrupts the sync.
+ */
+async function withProviderDeadline<T>(
+  signal: AbortSignal | undefined,
+  request: (signal: AbortSignal) => Promise<T>,
+) {
+  const deadline = AbortSignal.timeout(PROVIDER_REQUEST_TIMEOUT_MS);
+  try {
+    return await request(signal ? AbortSignal.any([signal, deadline]) : deadline);
+  } catch (error) {
+    if (deadline.aborted && !signal?.aborted) {
+      throw new Error("Connected source timed out.");
+    }
+    throw error;
+  }
+}
 
 function personalSyncCorrelationId(input: {
   tenantId: string;
@@ -1656,7 +1688,7 @@ function personalSourceFailureCode(
   if (/\b429\b|rate limit/i.test(message)) {
     return "provider_rate_limited";
   }
-  if (/\b5\d\d\b|unavailable|timeout/i.test(message)) {
+  if (/\b5\d\d\b|unavailable|timeout|timed out/i.test(message)) {
     return "provider_unavailable";
   }
   return "processing_failed";
