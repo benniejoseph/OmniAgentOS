@@ -53,6 +53,7 @@ import {
   reserveWorkflowModelCall,
   workflowRunBudgetAbortSignal,
   type WorkflowBudgetSession,
+  type WorkflowModelAttempts,
 } from "@/lib/workflows/budgets";
 import {
   buildWorkflowOutcomeContractBindingV1,
@@ -1251,7 +1252,7 @@ async function executeStep(
       plan: plan?.plan,
       authoritativeToolExecutions,
       abortSignal: workflowRunBudgetAbortSignal(runBudget, abortSignal),
-      modelMaxAttempts: modelBudget.maxAttempts,
+      modelAttempts: modelBudget,
     });
     return {
       // The model can veto a mechanically-passing run, never rescue a failing one.
@@ -1387,7 +1388,7 @@ async function verifyWithModel({
   plan,
   authoritativeToolExecutions,
   abortSignal,
-  modelMaxAttempts,
+  modelAttempts,
 }: {
   detail: WorkflowRunDetail;
   runtimeModel: RuntimeModelResolution;
@@ -1398,7 +1399,7 @@ async function verifyWithModel({
   plan?: WorkflowDynamicPlan;
   authoritativeToolExecutions: ToolExecutionRecord[];
   abortSignal?: AbortSignal;
-  modelMaxAttempts: number;
+  modelAttempts: WorkflowModelAttempts;
 }): Promise<ModelVerificationVerdict | undefined> {
   if (!runtimeModel.configured) {
     return undefined;
@@ -1446,7 +1447,7 @@ async function verifyWithModel({
       },
       abortSignal: combineAbortSignals(controller.signal, abortSignal),
       tier: "reasoning",
-      maxAttempts: modelMaxAttempts,
+      ...modelAttempts,
       ...(usageScope ? { usageScope } : {}),
     }));
     const parsed = JSON.parse(generated.text) as ModelVerificationVerdict;
@@ -1623,7 +1624,7 @@ async function buildPlan(
       reuseExisting: !replanEvent,
       abortSignal: workflowRunBudgetAbortSignal(budget, abortSignal),
       deadlineAt,
-      modelMaxAttempts: modelBudget.maxAttempts,
+      modelAttempts: modelBudget,
     });
   const outcomeContractBinding = buildWorkflowOutcomeContractBindingV1({
     workflowRunId: detail.run.id,
@@ -1771,7 +1772,7 @@ async function executeGoal(
       },
       abortSignal: combineAbortSignals(controller.signal, budgetAbortSignal),
       tier: "reasoning",
-      maxAttempts: modelBudget.maxAttempts,
+      ...modelBudget,
       ...(usageScope ? { usageScope } : {}),
     })).finally(() => clearTimeout(timer));
 

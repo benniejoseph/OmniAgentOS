@@ -143,6 +143,12 @@ export type ModelTextRequest = {
   allowCrossProviderFallback?: boolean;
   /** Maximum provider/model attempts for this logical call, including the first. */
   maxAttempts?: number;
+  /**
+   * Asked before each attempt after the first. Resolving false, or failing,
+   * ends the call with the last failure, so a caller can charge a retry to
+   * its budget only when one is made.
+   */
+  beforeRetry?: () => Promise<boolean>;
   maxOutputTokens?: number;
   /** Exact provider-native effort, only after model capability validation. */
   reasoningEffort?: ModelReasoningEffort;

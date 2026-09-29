@@ -687,7 +687,104 @@ describe("workflow runner deadline", () => {
 
     expect(mocks.buildDynamicWorkflowPlan).toHaveBeenCalledTimes(1);
     expect(mocks.buildDynamicWorkflowPlan).toHaveBeenCalledWith(
-      expect.objectContaining({ workflowRunId: detail.run.id, deadlineAt }),
+      expect.objectContaining({
+        workflowRunId: detail.run.id,
+        deadlineAt,
+        modelAttempts: { maxAttempts: 2, beforeRetry: expect.any(Function) },
+      }),
+    );
+  });
+});
+
+describe("workflow runner model fallbacks", () => {
+  const retryAllowance = (retries: number) => {
+    detail.run.input.budgetLimits = { ...WORKFLOW_RUN_BUDGET_LIMITS, retries };
+  };
+
+  it("leaves a run's only retry for the step when no fallback is made", async () => {
+    retryAllowance(1);
+    mocks.generateModelStructured.mockRejectedValueOnce(
+      new Error("Verification timed out."),
+    );
+
+    const retrying = await tickWorkflowRun(detail.run.id, {
+      tenantId: "tenant-1",
+    });
+
+    expect(mocks.generateModelStructured).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "workflow_verification",
+        maxAttempts: 2,
+        beforeRetry: expect.any(Function),
+      }),
+    );
+    expect(retrying.run).toMatchObject({ status: "queued", currentStep: "verify" });
+    expect(retrying.events.map((event) => event.type)).toContain(
+      "step.retry_scheduled",
+    );
+    expect(retrying.events.some((event) =>
+      event.type === "workflow.budget_exhausted"
+    )).toBe(false);
+  });
+
+  it("charges a fallback it makes to the run's retry budget", async () => {
+    retryAllowance(1);
+    const allowed: Array<boolean | undefined> = [];
+    mocks.generateModelStructured.mockImplementationOnce(async (
+      request: { beforeRetry?: () => Promise<boolean> },
+    ) => {
+      allowed.push(await request.beforeRetry?.());
+      throw new Error("Verification timed out.");
+    });
+
+    const stopped = await tickWorkflowRun(detail.run.id, {
+      tenantId: "tenant-1",
+    });
+
+    expect(allowed).toEqual([true]);
+    expect(stopped.run).toMatchObject({ status: "failed", currentStep: "verify" });
+    expect(stopped.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "workflow.budget_reserved",
+        payload: expect.objectContaining({
+          phase: "workflow.verify.fallback",
+          used: expect.objectContaining({ retries: 1 }),
+        }),
+      }),
+      expect.objectContaining({
+        type: "workflow.budget_exhausted",
+        payload: expect.objectContaining({
+          dimension: "retries",
+          stepKey: "verify",
+        }),
+      }),
+    ]));
+    expect(stopped.events.some((event) =>
+      event.type === "step.retry_scheduled"
+    )).toBe(false);
+  });
+
+  it("lets the synthesis call fall back on the same terms", async () => {
+    for (const step of detail.steps.slice(4)) {
+      Object.assign(step, { status: "pending", attempt: 0, output: undefined });
+    }
+    detail.run.currentStep = "execute";
+    mocks.generateModelStructured.mockResolvedValueOnce({
+      text: JSON.stringify({
+        deliverable: "A sourced report.",
+        response: "The report is ready.",
+        nextAction: "Review the report.",
+      }),
+    });
+
+    await tickWorkflowRun(detail.run.id, { tenantId: "tenant-1" });
+
+    expect(mocks.generateModelStructured).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "workflow_execution_result",
+        maxAttempts: 2,
+        beforeRetry: expect.any(Function),
+      }),
     );
   });
 });

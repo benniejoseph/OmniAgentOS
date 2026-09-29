@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import { WORKFLOW_RUN_BUDGET_LIMITS } from "@/lib/config";
+import type { ModelTextRequest } from "@/lib/models/types";
 import {
   RUN_BUDGET_DIMENSIONS,
+  RunBudgetExceededError,
   createRunBudgetState,
   refreshRunBudgetWallTime,
   remainingRunBudget,
@@ -83,15 +85,22 @@ export function createWorkflowBudgetSession(
   };
 }
 
+/** How many targets a workflow model call may try, and how a fallback is paid for. */
+export type WorkflowModelAttempts = Pick<
+  ModelTextRequest,
+  "maxAttempts" | "beforeRetry"
+>;
+
+/**
+ * Reserve one model call. The call may fall back to a second target. That
+ * fallback draws on the retry budget that step retries and queue redelivery
+ * also use, so it is charged only when the first target fails.
+ */
 export async function reserveWorkflowModelCall(
   budget: WorkflowBudgetSession,
   context: WorkflowBudgetReservationContext,
   options: { agents?: number; fanOut?: number; allowRetry?: boolean } = {},
-) {
-  const remaining = budget.remaining();
-  const retrySlots = options.allowRetry === false || remaining.retries === 0
-    ? 0
-    : 1;
+): Promise<WorkflowModelAttempts> {
   await budget.reserve({
     modelTurns: 1,
     tokens: modelCallShare(budget.limits.tokens, budget.limits.modelTurns),
@@ -99,11 +108,27 @@ export async function reserveWorkflowModelCall(
       budget.limits.costMicrousd,
       budget.limits.modelTurns,
     ),
-    retries: retrySlots,
     agents: options.agents || 0,
     fanOut: options.fanOut || 0,
   }, context);
-  return { maxAttempts: 1 + retrySlots };
+  if (options.allowRetry === false || budget.remaining().retries === 0) {
+    return { maxAttempts: 1 };
+  }
+  return {
+    maxAttempts: 2,
+    beforeRetry: async () => {
+      try {
+        await budget.reserve(
+          { retries: 1 },
+          { ...context, phase: `${context.phase}.fallback` },
+        );
+        return true;
+      } catch (error) {
+        if (error instanceof RunBudgetExceededError) return false;
+        throw error;
+      }
+    },
+  };
 }
 
 export function workflowActiveWallTimeMs(

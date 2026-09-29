@@ -326,4 +326,23 @@ describe("workflow planner interruption", () => {
     expect(again.id).toBe(first.id);
     expect(mocks.generateModelStructured).not.toHaveBeenCalled();
   });
+
+  it("gives the planning call the caller's attempts and fallback check", async () => {
+    const { buildDynamicWorkflowPlan } = await import("@/lib/workflows/planner");
+    const beforeRetry = vi.fn(async () => true);
+    mocks.generateModelStructured.mockResolvedValueOnce(modelAnswer);
+
+    await buildDynamicWorkflowPlan({
+      ...planRequest("workflow-plan-attempts"),
+      modelAttempts: { maxAttempts: 2, beforeRetry },
+    });
+
+    expect(mocks.generateModelStructured).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "dynamic_workflow_plan",
+        maxAttempts: 2,
+        beforeRetry,
+      }),
+    );
+  });
 });

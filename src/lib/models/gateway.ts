@@ -312,7 +312,11 @@ async function executeGateway<
           : {}),
       });
       lastError = failure;
-      if (!failure.retryable || index === candidates.length - 1) {
+      if (
+        !failure.retryable ||
+        index === candidates.length - 1 ||
+        !(await retryPermitted(request))
+      ) {
         const totalUsage = sumAttemptUsage(attempts);
         const estimatedCostUsd = sumKnownAttemptCost(attempts);
         const gatewayLatencyMs = Date.now() - gatewayStartedAt;
@@ -356,6 +360,17 @@ async function executeGateway<
     lastError || new ModelProviderError("Every model provider failed.", "local", "unknown", false),
     attempts,
   );
+}
+
+/** Whether the caller lets a failed call try its next target. */
+async function retryPermitted(request: ModelTextRequest) {
+  if (!request.beforeRetry) return true;
+  try {
+    return await request.beforeRetry();
+  } catch {
+    // A retry the caller cannot account for is not made.
+    return false;
+  }
 }
 
 function sumAttemptUsage(attempts: readonly ModelAttemptReceipt[]) {

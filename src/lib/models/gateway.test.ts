@@ -178,6 +178,80 @@ describe("model gateway", () => {
     expect(openAI.generateText).toHaveBeenCalledTimes(1);
   });
 
+  it("asks the caller before each fallback and ends the call when it declines", async () => {
+    openAI.configured.mockReturnValue(true);
+    openAI.targets.mockReturnValue([
+      target("openai", "openai-primary", ["text"]),
+      target("openai", "openai-backup", ["text"]),
+      target("openai", "openai-last", ["text"]),
+    ]);
+    const outage = () =>
+      Object.assign(new Error("primary unavailable"), { status: 503 });
+    const call = (beforeRetry: () => Promise<boolean>) => generateModelText({
+      input: "bounded private context",
+      preferredProvider: "openai",
+      beforeRetry,
+    });
+
+    const allow = vi.fn(async () => true);
+    openAI.generateText
+      .mockRejectedValueOnce(outage())
+      .mockRejectedValueOnce(outage())
+      .mockResolvedValueOnce(result("openai", "openai-last"));
+    await expect(call(allow)).resolves.toMatchObject({ model: "openai-last" });
+    expect(allow).toHaveBeenCalledTimes(2);
+    expect(openAI.generateText).toHaveBeenCalledTimes(3);
+
+    for (const decline of [
+      vi.fn(async () => false),
+      vi.fn(async (): Promise<boolean> => {
+        throw new Error("budget store unavailable");
+      }),
+    ]) {
+      openAI.generateText.mockReset();
+      openAI.generateText
+        .mockRejectedValueOnce(outage())
+        .mockResolvedValue(result("openai", "openai-backup"));
+      await expect(call(decline)).rejects.toMatchObject({
+        message: "primary unavailable",
+        provider: "openai",
+        retryable: true,
+        attempts: [{ model: "openai-primary", status: "failed" }],
+      });
+      expect(decline).toHaveBeenCalledTimes(1);
+      expect(openAI.generateText).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("does not ask about a fallback it would not make", async () => {
+    openAI.configured.mockReturnValue(true);
+    openAI.targets.mockReturnValue([
+      target("openai", "openai-primary", ["text"]),
+      target("openai", "openai-backup", ["text"]),
+    ]);
+    const beforeRetry = vi.fn(async () => true);
+    const call = (maxAttempts?: number) => generateModelText({
+      input: "bounded private context",
+      preferredProvider: "openai",
+      maxAttempts,
+      beforeRetry,
+    });
+
+    openAI.generateText.mockResolvedValueOnce(result("openai", "openai-primary"));
+    await expect(call()).resolves.toMatchObject({ model: "openai-primary" });
+    openAI.generateText.mockRejectedValueOnce(
+      Object.assign(new Error("invalid request"), { status: 400 }),
+    );
+    await expect(call()).rejects.toMatchObject({ kind: "invalid_request" });
+    openAI.generateText.mockRejectedValueOnce(
+      Object.assign(new Error("primary unavailable"), { status: 503 }),
+    );
+    await expect(call(1)).rejects.toMatchObject({ retryable: true });
+
+    expect(openAI.generateText).toHaveBeenCalledTimes(3);
+    expect(beforeRetry).not.toHaveBeenCalled();
+  });
+
   it("does not fall back on invalid or safety failures", async () => {
     process.env.OMNIAGENT_MODEL_PROVIDER_ORDER = "google,openai";
     google.configured.mockReturnValue(true);

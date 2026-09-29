@@ -12,6 +12,7 @@ import {
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import { generateModelStructured } from "@/lib/models/gateway";
 import type { CommandModelSelectionRequest } from "@/lib/models/command-selection";
+import type { ModelTextRequest } from "@/lib/models/types";
 import {
   AUTHORIZED_CONTEXT_RETRIEVAL_SOURCES,
   AUTHORIZED_MEMORY_ONLY_RETRIEVAL_SOURCES,
@@ -99,7 +100,8 @@ type BuildWorkflowPlanInput = {
   abortSignal?: AbortSignal;
   /** Epoch ms at which the caller's abortSignal stops this work. */
   deadlineAt?: number;
-  modelMaxAttempts?: number;
+  /** How many targets the planning call may try, and how a fallback is paid for. */
+  modelAttempts?: Pick<ModelTextRequest, "maxAttempts" | "beforeRetry">;
   usageAttribution?: Pick<AiUsageScope, "actorId" | "executionScope" | "correlationId" | "causationId">;
   executionScope?: ExecutionScope;
 };
@@ -363,7 +365,7 @@ export async function buildDynamicWorkflowPlan(input: BuildWorkflowPlanInput) {
       ? `workflow:${input.workflowRunId}`
       : `workflow-plan:${planId}`,
     usageAttribution: input.usageAttribution,
-    modelMaxAttempts: input.modelMaxAttempts,
+    modelAttempts: input.modelAttempts,
     commandModel: input.commandModel,
   });
   const admittedPlan = input.replan
@@ -681,7 +683,7 @@ async function generatePlan({
   deadlineAt,
   sourceStreamId,
   usageAttribution,
-  modelMaxAttempts,
+  modelAttempts,
   commandModel,
 }: {
   tenantId: string;
@@ -699,7 +701,7 @@ async function generatePlan({
   deadlineAt?: number;
   sourceStreamId: string;
   usageAttribution?: BuildWorkflowPlanInput["usageAttribution"];
-  modelMaxAttempts?: number;
+  modelAttempts?: BuildWorkflowPlanInput["modelAttempts"];
   commandModel?: BuildWorkflowPlanInput["commandModel"];
 }): Promise<{ planner: WorkflowPlanRecord["planner"]; model: string; plan: WorkflowDynamicPlan }> {
   if (requiredToolBindings.length) {
@@ -784,7 +786,7 @@ async function generatePlan({
           : controller.signal,
         reasoningEffort: "low",
         tier: "reasoning",
-        maxAttempts: modelMaxAttempts,
+        ...modelAttempts,
         ...(actorId
           ? {
               usageScope: {
