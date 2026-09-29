@@ -8,8 +8,8 @@ const migration = readFileSync(
   ),
   "utf8",
 );
-const databaseClient = readFileSync(
-  new URL("../db/client.ts", import.meta.url),
+const tenantIsolation = readFileSync(
+  new URL("../db/schema/tenant-isolation.ts", import.meta.url),
   "utf8",
 );
 
@@ -47,7 +47,7 @@ describe("P10.7 resumable media migration", () => {
     expect(migration).toContain("version = 134");
     expect(migration).toContain("135,");
     expect(migration).toContain("resumable_capture_media_v1");
-    expect(databaseClient).toContain('"omni_capture_media_heads"');
-    expect(databaseClient).toContain('"omni_capture_media_revisions"');
+    expect(tenantIsolation).toContain('"omni_capture_media_heads"');
+    expect(tenantIsolation).toContain('"omni_capture_media_revisions"');
   });
 });

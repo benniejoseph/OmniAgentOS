@@ -972,7 +972,8 @@ Production request traffic verifies the schema and fails closed when a migration
 is missing; it never runs DDL. `schema-migrations.json` lists every version in
 order. A version with a `file` is defined only by that file in
 `supabase/migrations`; the versions without one, all older than v117, run as
-TypeScript steps in `src/lib/db/client.ts`. `npm run db:migrate` applies every
+TypeScript steps in `src/lib/db/schema/`, mapped by version in
+`src/lib/db/schema/steps.ts`. `npm run db:migrate` applies every
 pending version in one transaction under a Postgres advisory lock, then runs the
 optional pgvector step. The path also upgrades the legacy timestamp-only marker.
 Versions already recorded in `omni_schema_version` are skipped, so rerunning the

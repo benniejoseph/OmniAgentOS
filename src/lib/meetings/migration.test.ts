@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const migration = readFileSync(
@@ -8,10 +8,12 @@ const migration = readFileSync(
   ),
   "utf8",
 );
-const databaseClient = readFileSync(
-  new URL("../db/client.ts", import.meta.url),
-  "utf8",
-);
+// The database client and every TypeScript migration step it runs.
+const databaseClient = [
+  "../db/client.ts",
+  ...readdirSync(new URL("../db/schema/", import.meta.url))
+    .map((name) => `../db/schema/${name}`),
+].map((file) => readFileSync(new URL(file, import.meta.url), "utf8")).join("\n");
 
 describe("P10.6 meeting domain migration", () => {
   it("keeps revisions immutable and advances the projection monotonically", () => {

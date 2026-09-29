@@ -3,9 +3,9 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-const source = readFileSync(join(process.cwd(), "src/lib/db/client.ts"), "utf8");
+const source = readFileSync(join(process.cwd(), "src/lib/db/schema/agents.ts"), "utf8");
 const start = source.indexOf("async function ensureAgentDefinitionPersonaV1");
-const end = source.indexOf("async function ensureGraphQueryTelemetryV1", start);
+const end = source.indexOf("async function ensureCustomAgentSkillReferenceIntegrity", start);
 const migration = source.slice(start, end);
 
 describe("agent definition persona v1 migration", () => {

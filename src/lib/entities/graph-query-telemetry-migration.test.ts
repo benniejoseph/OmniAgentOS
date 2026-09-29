@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 describe("P5.6 graph query telemetry migration", () => {
   it("pins an actor-private, append-only runtime boundary", async () => {
-    const source = await readFile("src/lib/db/client.ts", "utf8");
+    const source = await readFile("src/lib/db/schema/entities.ts", "utf8");
     const start = source.indexOf("async function ensureGraphQueryTelemetryV1");
     const end = source.indexOf("async function ensureEntityRegistryV1", start);
     const migration = source.slice(start, end);

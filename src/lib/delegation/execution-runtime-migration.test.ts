@@ -12,9 +12,9 @@ const rlsRepairMigration = readFileSync(resolve(
   process.cwd(),
   "supabase/migrations/20260923110000_delegation_execution_rls_composition_repair.sql",
 ), "utf8");
-const databaseClient = readFileSync(resolve(
+const tenantIsolation = readFileSync(resolve(
   process.cwd(),
-  "src/lib/db/client.ts",
+  "src/lib/db/schema/tenant-isolation.ts",
 ), "utf8");
 const manifest = JSON.parse(readFileSync(resolve(
   process.cwd(),
@@ -79,8 +79,8 @@ describe("Delegation execution runtime v196 migration", () => {
     expect(rlsRepairMigration).toContain("AND NOT polpermissive");
     expect(rlsRepairMigration).toContain("omni_actor_scope_v1_allows(tenant_id, owner_actor_id)");
     expect(rlsRepairMigration).toContain("SELECT count(*)");
-    expect(databaseClient).toContain('"omni_delegation_budget_ledgers"');
-    expect(databaseClient).toContain('"omni_delegation_executions"');
+    expect(tenantIsolation).toContain('"omni_delegation_budget_ledgers"');
+    expect(tenantIsolation).toContain('"omni_delegation_executions"');
     expect(rlsRepairMigration).toContain("CREATE POLICY omni_tenant_isolation");
   });
 });

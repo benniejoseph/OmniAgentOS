@@ -32,7 +32,7 @@ describe("tool execution retention redaction v2 migration", () => {
 
   it("keeps the embedded v1 and file-backed v2 redaction predicates null-safe and syntactically closed", async () => {
     const [source, v2] = await Promise.all([
-      readFile(new URL("../db/client.ts", import.meta.url), "utf8"),
+      readFile(new URL("../db/schema/runs.ts", import.meta.url), "utf8"),
       readFile(
         new URL(
           "../../../supabase/migrations/20260915210000_tool_execution_retention_redaction_v2.sql",
@@ -44,7 +44,10 @@ describe("tool execution retention redaction v2 migration", () => {
     const v1Start = source.indexOf(
       "async function ensureToolExecutionRetentionRedactionV1",
     );
-    const v1End = source.indexOf("\nasync function ", v1Start + 1);
+    const v1End = source.indexOf(
+      "async function ensureActorScopedEventCorrelationIndex",
+      v1Start,
+    );
 
     expect(v1Start).toBeGreaterThan(0);
     expect(v1End).toBeGreaterThan(v1Start);

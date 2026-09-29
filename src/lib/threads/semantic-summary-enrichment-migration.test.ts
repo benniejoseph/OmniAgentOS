@@ -8,7 +8,10 @@ const migrationPath = path.join(
   "supabase/migrations/20260911110000_conversation_summary_enrichments.sql",
 );
 const manifestPath = path.join(process.cwd(), "schema-migrations.json");
-const bootstrapPath = path.join(process.cwd(), "src/lib/db/client.ts");
+const bootstrapPath = path.join(
+  process.cwd(),
+  "src/lib/db/schema/tenant-isolation.ts",
+);
 
 describe("conversation summary enrichment migration", () => {
   it("installs an actor-private, immutable, shadow-only episode boundary", async () => {
