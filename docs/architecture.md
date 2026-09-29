@@ -952,6 +952,14 @@ rejected. The maintenance scrub finishes receipts written before v207 and takes
 each shell's time from the receipt row in SQL, because a bound JavaScript
 timestamp would lose its microseconds.
 
+Memory events keep only keyed digests of a memory's title, content, and
+source: HMAC-SHA-256 under a per-tenant key derived from the server secret, so
+an event cannot confirm a guess of a short fact. Forget deletes those digests,
+and the plain SHA-256 digests that earlier releases wrote, from the
+`memory.created`, `memory.corrected`, and reconciliation events that name a
+memory in the closure. It marks each changed event with `digestsForgottenAt`.
+The rest of the event log stays append-only.
+
 Migration v43 begins the P3.1 memory-access foundation without changing a
 served read or write. Existing and rollback-created memories remain explicit
 version-0 `legacy_unattributed` rows; owner, agent, workspace, project,

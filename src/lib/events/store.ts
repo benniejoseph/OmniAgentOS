@@ -288,6 +288,85 @@ export async function appendDomainEventSafely(
   }
 }
 
+export type EventDigestRule = {
+  type: string;
+  /** The payload field that names the record the digests describe. */
+  idField: string;
+  digestFields: readonly string[];
+};
+
+/**
+ * Deletes the digests a tenant's events keep of forgotten records and marks
+ * each event it changed. Only the named digest fields of events of the named
+ * types that name a forgotten id are removed; the rest of the log stays
+ * append-only.
+ */
+export async function forgetEventDigests(
+  input: {
+    tenantId: string;
+    ids: readonly string[];
+    rules: readonly EventDigestRule[];
+    forgottenAt: string;
+  },
+  options: { sql?: EventSqlClient } = {},
+): Promise<number> {
+  const tenantId = normalizeTenantId(input.tenantId);
+  const ids = [...new Set(input.ids.filter(Boolean))];
+  if (!ids.length) return 0;
+
+  if (options.sql || hasDatabaseUrl()) {
+    if (!options.sql) {
+      await ensureDatabaseSchema();
+    }
+    const sql = options.sql || getSql();
+    let forgotten = 0;
+    for (const rule of input.rules) {
+      const digestFields = [...rule.digestFields];
+      const rows = await sql`
+        UPDATE omni_events
+        SET payload = (payload - ${digestFields}::text[]) ||
+          jsonb_build_object('digestsForgottenAt', ${input.forgottenAt}::text)
+        WHERE tenant_id = ${tenantId}
+          AND type = ${rule.type}
+          AND payload ->> ${rule.idField}::text = ANY(${ids}::text[])
+          AND payload ?| ${digestFields}::text[]
+        RETURNING id
+      `;
+      forgotten += rows.length;
+    }
+    return forgotten;
+  }
+
+  let forgotten = 0;
+  await updateJsonFile<EventLedger>(getEventsFile(), { nextSeq: 1, events: [] }, (ledger) => {
+    forgotten = 0;
+    ledger.events = ledger.events.map((event) => {
+      const rule = event.tenantId === tenantId
+        ? input.rules.find((candidate) => candidate.type === event.type)
+        : undefined;
+      if (
+        !rule ||
+        !ids.includes(String(event.payload?.[rule.idField])) ||
+        !rule.digestFields.some((field) => field in event.payload)
+      ) {
+        return event;
+      }
+      forgotten += 1;
+      const payload = Object.fromEntries(
+        Object.entries(event.payload).filter(([field]) =>
+          !rule.digestFields.includes(field)
+        ),
+      );
+      return {
+        ...event,
+        payload: { ...payload, digestsForgottenAt: input.forgottenAt },
+      };
+    });
+    return ledger;
+  });
+  return forgotten;
+}
+
 export async function listStreamEvents(
   streamId: string,
   options: {

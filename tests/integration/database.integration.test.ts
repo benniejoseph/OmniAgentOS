@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -27,6 +28,7 @@ import {
 } from "@/lib/db/client";
 import { sqlMigrationFileDigest } from "@/lib/db/sql-migration-files";
 import { checkSharedRateLimit } from "@/lib/http/rate-limit";
+import { memoryContentDigest } from "@/lib/memory/content-digest";
 import { rebuildMemoryGraph } from "@/lib/memory/graph";
 import {
   recordHeldMemoryDataRightRequestV1,
@@ -2871,6 +2873,10 @@ databaseDescribe("Postgres schema integration", () => {
         databaseUrlForRole(databaseUrl!, lineageMaintenanceRole),
       );
       vi.stubEnv("NODE_ENV", "production");
+      vi.stubEnv(
+        "OMNIAGENT_INTERNAL_AUTH_SECRET",
+        "integration-only-internal-secret-0123456789",
+      );
       vi.resetModules();
       const client = await import("@/lib/db/client");
       try {
@@ -2966,6 +2972,43 @@ databaseDescribe("Postgres schema integration", () => {
             'workspace', 'manual'
           )
         `;
+        // Events keep digests of a memory's text: keyed ones now, plain ones
+        // from before. Forget deletes those of each memory it forgets, only.
+        const digestPayload = async (eventId: string) => {
+          const [row] = await admin`
+            SELECT payload FROM omni_events WHERE id = ${eventId}
+          `;
+          return row?.payload as Record<string, unknown> | undefined;
+        };
+        const sourceCreatedEventId = "memory_mutation_created_lineage-source";
+        expect(await digestPayload(sourceCreatedEventId)).toMatchObject({
+          schemaVersion: 2,
+          memoryId: "lineage-source",
+          titleHmac: memoryContentDigest(tenantId, "Agent source"),
+          contentHmac: memoryContentDigest(tenantId, "agent-alpha private content"),
+          sourceHmac: memoryContentDigest(tenantId, "effect-receipt"),
+        });
+        expect(memoryContentDigest(tenantId, "Agent source")).not.toBe(
+          createHash("sha256").update("Agent source").digest("hex"),
+        );
+        await admin.unsafe(`
+          INSERT INTO omni_events (id, stream_id, type, tenant_id, actor_id, payload)
+          VALUES
+            ('lineage-digest-copy', 'memory:${copyId}',
+              'memory.reconciliation.detected', '${tenantId}', '${actorId}',
+              '{"candidateMemoryId":"${copyId}","candidateContentSha256":"${"a".repeat(64)}","kind":"confirmation"}'::jsonb),
+            ('lineage-digest-keep', 'memory:lineage-keep', 'memory.created',
+              '${tenantId}', '${actorId}',
+              '{"memoryId":"lineage-keep","contentSha256":"${"b".repeat(64)}"}'::jsonb),
+            ('lineage-digest-other-type', 'memory:lineage-source',
+              'memory.feedback_applied', '${tenantId}', '${actorId}',
+              '{"memoryId":"lineage-source","contentSha256":"${"c".repeat(64)}"}'::jsonb),
+            ('lineage-digest-other-tenant', 'memory:lineage-source',
+              'memory.created', 'lineage-other-tenant', '${actorId}',
+              '{"memoryId":"lineage-source","contentSha256":"${"d".repeat(64)}"}'::jsonb),
+            ('lineage-digest-none', 'memory:lineage-source', 'memory.created',
+              '${tenantId}', '${actorId}', '{"memoryId":"lineage-source"}'::jsonb)
+        `);
         // Literal JSON: a string bound to a jsonb parameter is encoded again.
         await admin.unsafe(`
           INSERT INTO omni_retrieval_traces (id, tenant_id, query, results)
@@ -3056,6 +3099,32 @@ databaseDescribe("Postgres schema integration", () => {
         });
         expect(await memoryRow("lineage-source")).toEqual(shell);
         expect(await memoryRow(copyId)).toEqual(shell);
+        const forgottenSource = await digestPayload(sourceCreatedEventId);
+        expect(forgottenSource).toMatchObject({
+          schemaVersion: 2,
+          memoryId: "lineage-source",
+          digestsForgottenAt: forgotten?.receipt?.forgottenAt,
+        });
+        for (const field of ["titleHmac", "contentHmac", "sourceHmac"]) {
+          expect(forgottenSource).not.toHaveProperty(field);
+        }
+        expect(await digestPayload("lineage-digest-copy")).toEqual({
+          candidateMemoryId: copyId,
+          kind: "confirmation",
+          digestsForgottenAt: forgotten?.receipt?.forgottenAt,
+        });
+        for (const [eventId, digest] of [
+          ["lineage-digest-keep", "b"],
+          ["lineage-digest-other-type", "c"],
+          ["lineage-digest-other-tenant", "d"],
+        ]) {
+          const payload = await digestPayload(eventId);
+          expect(payload).toMatchObject({ contentSha256: digest.repeat(64) });
+          expect(payload).not.toHaveProperty("digestsForgottenAt");
+        }
+        expect(await digestPayload("lineage-digest-none")).toEqual({
+          memoryId: "lineage-source",
+        });
         expect(await memoryRow("lineage-keep")).toMatchObject({
           claim_status: "active",
           content: "unrelated content",

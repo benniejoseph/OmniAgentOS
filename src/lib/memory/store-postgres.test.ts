@@ -136,6 +136,7 @@ import {
   shareAgentPrivateMemory,
 } from "@/lib/memory/store";
 import { appendScopedDomainEvent } from "@/lib/events/store";
+import { memoryContentDigest } from "@/lib/memory/content-digest";
 import {
   buildMemoryDeletionReceiptV1,
   memoryDeletionManifestSha256,
@@ -909,6 +910,14 @@ describe("Postgres memory recall", () => {
         payload: expect.objectContaining({
           kind: "confirmation",
           detectionReason: "unverified_inference",
+          candidateTitleHmac: memoryContentDigest(
+            "tenant-a",
+            "Unconfirmed candidate",
+          ),
+          candidateContentHmac: memoryContentDigest(
+            "tenant-a",
+            "This candidate must remain outside recall.",
+          ),
         }),
       }),
       expect.objectContaining({

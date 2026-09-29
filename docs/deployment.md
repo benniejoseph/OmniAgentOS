@@ -102,10 +102,9 @@ Behavior that changes with this release:
   `memory_deletion_scrub_failed` and no longer stops the rest of the
   maintenance tick; its receipts are retried on the next tick.
 
-Still open: content digests derived from forgotten memories (MEM-16) are not
-scrubbed. Briefs, entities, and runs are still invalidated only where the
-caller's row policies reach (MEM-2b). A version-1 private memory that cites a
-legacy memory or another owner's memory it cannot read is still rejected with
+Still open: briefs, entities, and runs are still invalidated only where the
+caller's row policies reach. A version-1 private memory that cites a legacy
+memory or another owner's memory it cannot read is still rejected with
 `23503`.
 
 Receipts written before v207 list only the descendants their caller could read
@@ -305,6 +304,35 @@ already stopped it 5 seconds before its own deadline.
   nullability, or default, v210 stops with `55000` and the whole migration
   rolls back. See
   [troubleshooting.md](troubleshooting.md#schema-startup-fails).
+
+### Keyed memory text digests
+
+This release needs no migration. Memory events no longer keep a plain SHA-256
+of a memory's title, content, or source, which would confirm a guess of a
+short fact. `memory.created`, `memory.corrected`,
+`memory.reconciliation.detected`, and `memory.reconciliation.resolved` now
+carry HMAC-SHA-256 digests (`titleHmac`, `candidateContentHmac`, and so on,
+at payload `schemaVersion` 2) under a per-tenant key derived from
+`OMNIAGENT_INTERNAL_AUTH_SECRET`. The ids of governed memory writes are
+derived from the same keyed digests.
+
+Behavior that changes with this release:
+
+- In production, a memory write that emits one of these events needs
+  `OMNIAGENT_INTERNAL_AUTH_SECRET`. Without it the write fails rather than
+  fall back to a plain digest.
+- Forget deletes the keyed digests, and the plain ones written by earlier
+  releases, from these events when they name the forgotten memory or a
+  descendant it scrubs. It marks each changed event with `digestsForgottenAt`.
+  The rest of each event, and every other event, stays as written.
+- A governed memory write retried across the deploy computes a different id,
+  so it may be stored twice.
+- Rotating `OMNIAGENT_INTERNAL_AUTH_SECRET` changes the digests and ids of new
+  writes. Digests written under the old secret can no longer be recomputed.
+
+Still open: promotion reviews keep a plain fingerprint of the claim they
+promote. A memory removed by retention rather than forget keeps its keyed
+digests. An audit export taken before a forget keeps what it had.
 
 ### Web Command durable structured-context release
 

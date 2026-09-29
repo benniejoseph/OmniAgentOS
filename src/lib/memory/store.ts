@@ -13,7 +13,11 @@ import {
   setTransactionLocalDatabaseMemoryAccessScope,
   type DatabaseMemoryAccessScope,
 } from "@/lib/db/memory-access-scope";
-import { appendScopedDomainEvent } from "@/lib/events/store";
+import {
+  appendScopedDomainEvent,
+  forgetEventDigests,
+  type EventDigestRule,
+} from "@/lib/events/store";
 import { retireEntityMemoryLineage } from "@/lib/entities/store";
 import { queueTemporalRelationProjection } from "@/lib/entities/relation-projection-queue";
 import {
@@ -85,6 +89,7 @@ import {
   memoryLifecycleReasons,
   memoryRetrievalPriorityMultiplier,
 } from "@/lib/memory/lifecycle";
+import { memoryContentDigest } from "@/lib/memory/content-digest";
 import {
   memoryReconciliationDecisionSchema,
   memoryReconciliationDetectionReason,
@@ -573,9 +578,9 @@ function deterministicMemoryId(
     tenantId: input.tenantId,
     correlationId: executionScope.correlationId,
     purpose: executionScope.purpose,
-    titleSha256: createHash("sha256").update(input.title).digest("hex"),
-    contentSha256: createHash("sha256").update(input.content).digest("hex"),
-    sourceSha256: createHash("sha256").update(input.source).digest("hex"),
+    titleHmac: memoryContentDigest(input.tenantId, input.title),
+    contentHmac: memoryContentDigest(input.tenantId, input.content),
+    sourceHmac: memoryContentDigest(input.tenantId, input.source),
     tags: input.tags,
     evidenceRefs: input.evidenceRefs,
     supersedesId: input.supersedesId || null,
@@ -587,6 +592,49 @@ function deterministicMemoryId(
 function memoryTextSha256(value: string) {
   return createHash("sha256").update(value).digest("hex");
 }
+
+function candidateTextDigests(
+  tenantId: string,
+  candidate: Pick<MemoryRecord, "title" | "content">,
+) {
+  return {
+    candidateTitleHmac: memoryContentDigest(tenantId, candidate.title),
+    candidateContentHmac: memoryContentDigest(tenantId, candidate.content),
+  };
+}
+
+/**
+ * The events that keep digests of a memory's text, including the plain
+ * digests written before they were keyed. Forget deletes them.
+ */
+const MEMORY_CONTENT_DIGEST_RULES: readonly EventDigestRule[] = Object.freeze([
+  {
+    type: "memory.created",
+    idField: "memoryId",
+    digestFields: [
+      "titleHmac", "contentHmac", "sourceHmac",
+      "titleSha256", "contentSha256", "sourceSha256",
+    ],
+  },
+  ...["memory.reconciliation.detected", "memory.reconciliation.resolved"].map(
+    (type) => ({
+      type,
+      idField: "candidateMemoryId",
+      digestFields: [
+        "candidateTitleHmac", "candidateContentHmac",
+        "candidateTitleSha256", "candidateContentSha256",
+      ],
+    }),
+  ),
+  {
+    type: "memory.corrected",
+    idField: "correctedMemoryId",
+    digestFields: [
+      "correctedTitleHmac", "correctedContentHmac",
+      "correctedTitleSha256", "correctedContentSha256",
+    ],
+  },
+]);
 
 export async function saveMemory(input: CreateMemoryInput) {
   return (await saveMemoryWithCommitStatus(input)).record;
@@ -1913,7 +1961,7 @@ export async function resolveMemoryReconciliationReview(
         type: "memory.reconciliation.resolved",
         executionScope,
         payload: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           reviewId,
           kind,
           decision: parsedDecision,
@@ -1921,8 +1969,7 @@ export async function resolveMemoryReconciliationReview(
           existingMemoryId: existingId || null,
           candidateClaimStatus: resolution.candidateStatus,
           existingClaimStatus: resolution.existingStatus || null,
-          candidateTitleSha256: memoryTextSha256(candidate.title),
-          candidateContentSha256: memoryTextSha256(candidate.content),
+          ...candidateTextDigests(tenantId, candidate),
         },
       }, { sql });
       return loadMemoryReconciliationReview(sql, tenantId, reviewId);
@@ -2021,7 +2068,7 @@ export async function resolveMemoryReconciliationReview(
     type: "memory.reconciliation.resolved",
     executionScope,
     payload: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       reviewId,
       kind: current.kind,
       decision: parsedDecision,
@@ -2029,8 +2076,7 @@ export async function resolveMemoryReconciliationReview(
       existingMemoryId: current.existing?.id || null,
       candidateClaimStatus: resolution.candidateStatus,
       existingClaimStatus: resolution.existingStatus || null,
-      candidateTitleSha256: memoryTextSha256(current.candidate.title),
-      candidateContentSha256: memoryTextSha256(current.candidate.content),
+      ...candidateTextDigests(tenantId, current.candidate),
     },
   });
   return resolved;
@@ -2120,13 +2166,19 @@ async function appendMemoryCorrectionEvent(
     type: "memory.corrected",
     executionScope: input.executionScope,
     payload: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       previousMemoryId: input.existing.id,
       correctedMemoryId: input.corrected.id,
       previousClaimStatus: input.oldStatus,
       contradiction: input.contradiction,
-      correctedTitleSha256: memoryTextSha256(input.corrected.title),
-      correctedContentSha256: memoryTextSha256(input.corrected.content),
+      correctedTitleHmac: memoryContentDigest(
+        input.executionScope.tenantId,
+        input.corrected.title,
+      ),
+      correctedContentHmac: memoryContentDigest(
+        input.executionScope.tenantId,
+        input.corrected.content,
+      ),
     },
   }, sql ? { sql } : undefined);
 }
@@ -2584,6 +2636,12 @@ export async function forgetMemoryWithReceipt(
       if (!forgottenRows[0]) {
         throw new Error("Memory disappeared during its deletion transaction.");
       }
+      await forgetEventDigests({
+        tenantId,
+        ids: canonicalizeMemoryDeletionIds([id, ...descendantMemoryIds]),
+        rules: MEMORY_CONTENT_DIGEST_RULES,
+        forgottenAt: receipt.forgottenAt,
+      }, { sql });
 
       await appendScopedDomainEvent({
         id: memoryForgottenEventId(tenantId, id),
@@ -2702,6 +2760,12 @@ export async function forgetMemoryWithReceipt(
     }),
   );
   if (!forgotten) return null;
+  await forgetEventDigests({
+    tenantId,
+    ids: [...affectedFileMemoryIds],
+    rules: MEMORY_CONTENT_DIGEST_RULES,
+    forgottenAt,
+  });
   const fileExecutionScope = parsePersistedExecutionScope(options.executionScope);
   const entityRetirement = fileExecutionScope?.initiatingActorId
     ? await retireEntityMemoryLineage({
@@ -3624,7 +3688,7 @@ async function appendMemoryMutationEvents(
       type: "memory.created",
       executionScope,
       payload: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         memoryId: record.id,
         memoryType: record.type,
         memoryTier: record.tier,
@@ -3637,9 +3701,12 @@ async function appendMemoryMutationEvents(
         claimStatus: record.claimStatus,
         assertedBy: record.assertedBy,
         evidenceRefCount: record.evidenceRefs?.length || 0,
-        titleSha256: memoryTextSha256(record.title),
-        contentSha256: memoryTextSha256(record.content),
-        sourceSha256: memoryTextSha256(record.source),
+        titleHmac: memoryContentDigest(executionScope.tenantId, record.title),
+        contentHmac: memoryContentDigest(
+          executionScope.tenantId,
+          record.content,
+        ),
+        sourceHmac: memoryContentDigest(executionScope.tenantId, record.source),
       },
     }, sql ? { sql } : undefined);
   }
@@ -3697,14 +3764,13 @@ async function appendMemoryReconciliationReviews(
       type: "memory.reconciliation.detected",
       executionScope,
       payload: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         reviewId,
         kind,
         detectionReason,
         candidateMemoryId: record.id,
         existingMemoryId: record.contradictionOfId || null,
-        candidateTitleSha256: memoryTextSha256(record.title),
-        candidateContentSha256: memoryTextSha256(record.content),
+        ...candidateTextDigests(executionScope.tenantId, record),
         evidenceRefCount: record.evidenceRefs?.length || 0,
       },
     }, { sql });
