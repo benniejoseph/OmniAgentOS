@@ -17,14 +17,17 @@ const FILE_USAGE_RECORD_LIMIT = 10_000;
 const USAGE_COUNTER_MAX = 1_000_000_000_000;
 
 /**
- * Sum the AI usage the ledger recorded for a tenant since a time. A record's
- * tokens are the larger of its reported total and its input plus output, and
- * a record without a price adds no cost.
+ * Sum the AI usage the ledger recorded for a tenant since a time, or only the
+ * usage of one source stream. A record's tokens are the larger of its
+ * reported total and its input plus output, and a record without a price
+ * adds no cost.
  */
 export async function loadTenantAiUsageSince(input: {
   tenantId: string;
   since: Date;
+  sourceStreamId?: string;
 }): Promise<TenantAiUsageTotals> {
+  const sourceStreamId = input.sourceStreamId ?? null;
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
@@ -41,6 +44,7 @@ export async function loadTenantAiUsageSince(input: {
       FROM omni_ai_usage ledger
       WHERE ledger.tenant_id = ${input.tenantId}
         AND ledger.recorded_at >= ${input.since.toISOString()}::timestamptz
+        AND (${sourceStreamId}::text IS NULL OR ledger.source_stream_id = ${sourceStreamId})
     `;
     const row = rows[0] as
       | { tokens?: unknown; cost_microusd?: unknown }
@@ -60,6 +64,7 @@ export async function loadTenantAiUsageSince(input: {
   let costMicrousd = 0;
   for (const record of records) {
     if (!(Date.parse(record.recordedAt) >= sinceMs)) continue;
+    if (sourceStreamId !== null && record.sourceStreamId !== sourceStreamId) continue;
     tokens += recordTokens(record);
     costMicrousd += usageCounter(record.estimatedCostMicrousd);
   }

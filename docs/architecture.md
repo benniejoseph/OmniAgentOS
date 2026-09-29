@@ -2371,6 +2371,12 @@ context/capability/tool grants and idempotency binding, forces approval for
 mutations, and returns only a bounded redacted execution projection. Inbound
 peers currently receive no ambient tool grants.
 
+Inbound work is metered per peer. The council's model calls for an inbound
+task record usage under the peer's digest-named `a2a-peer:` stream, and before
+a new task is submitted the peer must have task starts left in the hour and
+room for the task's whole budget in both its own and the workspace's AI usage
+over the last 24 hours. A check that cannot be made refuses the task.
+
 P8.7 places a durable safety lease around that adapter. Before outbound
 dispatch, the database traverses the canonical parent-delegation chain and
 serializes reservations at the root. A repeated peer is a cycle; more than two

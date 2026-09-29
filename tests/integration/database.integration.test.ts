@@ -6857,8 +6857,17 @@ databaseDescribe("Postgres schema integration", () => {
       usage: Record<string, unknown>;
       cost: number | null;
       recordedAt: string;
+      stream?: string;
     }> = [
       { id: "at-start", tenant: tenantId, usage: { totalTokens: 100 }, cost: 2_000, recordedAt: at(0) },
+      {
+        id: "peer-stream",
+        tenant: tenantId,
+        usage: { totalTokens: 40 },
+        cost: 4,
+        recordedAt: at(hour),
+        stream: "a2a-peer:ai-usage-window",
+      },
       {
         id: "parts-exceed-total",
         tenant: tenantId,
@@ -6880,6 +6889,7 @@ databaseDescribe("Postgres schema integration", () => {
         usage: { totalTokens: 7_777 },
         cost: 7_777,
         recordedAt: at(hour),
+        stream: "a2a-peer:ai-usage-window",
       },
     ];
     for (const row of rows) {
@@ -6889,7 +6899,7 @@ databaseDescribe("Postgres schema integration", () => {
           status, provider, model, usage, estimated_cost_microusd, recorded_at
         ) VALUES (
           ${`ai-usage-window-${row.id}`}, ${row.tenant}, 'ai-usage-window-owner',
-          'run:ai-usage-window', 'tool_turn', 'agent', 'completed', 'openai',
+          ${row.stream ?? "run:ai-usage-window"}, 'tool_turn', 'agent', 'completed', 'openai',
           'gpt-5.2', ${JSON.stringify(row.usage)}::text::jsonb, ${row.cost},
           ${row.recordedAt}::timestamptz
         )
@@ -6899,6 +6909,22 @@ databaseDescribe("Postgres schema integration", () => {
     await expect(runWithDatabaseTenantScope(
       tenantId,
       () => loadTenantAiUsageSince({ tenantId, since }),
+    )).resolves.toEqual({ tokens: 490, costMicrousd: 3_504 });
+    await expect(runWithDatabaseTenantScope(
+      tenantId,
+      () => loadTenantAiUsageSince({
+        tenantId,
+        since,
+        sourceStreamId: "a2a-peer:ai-usage-window",
+      }),
+    )).resolves.toEqual({ tokens: 40, costMicrousd: 4 });
+    await expect(runWithDatabaseTenantScope(
+      tenantId,
+      () => loadTenantAiUsageSince({
+        tenantId,
+        since,
+        sourceStreamId: "run:ai-usage-window",
+      }),
     )).resolves.toEqual({ tokens: 450, costMicrousd: 3_500 });
     await expect(runWithDatabaseTenantScope(
       tenantId,

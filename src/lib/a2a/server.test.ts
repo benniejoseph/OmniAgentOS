@@ -12,6 +12,7 @@ const delegationMocks = vi.hoisted(() => ({
   transitionDelegationTask: vi.fn(),
 }));
 const councilMocks = vi.hoisted(() => ({ runCouncilRound: vi.fn() }));
+const budgetMocks = vi.hoisted(() => ({ admitInboundA2ATask: vi.fn() }));
 
 vi.mock("@/lib/a2a/task-store", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/lib/a2a/task-store")>(),
@@ -19,13 +20,19 @@ vi.mock("@/lib/a2a/task-store", async (importOriginal) => ({
 }));
 vi.mock("@/lib/delegation/store", () => delegationMocks);
 vi.mock("@/lib/orchestration/council", () => councilMocks);
+vi.mock("@/lib/a2a/inbound-budget", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/a2a/inbound-budget")>(),
+  ...budgetMocks,
+}));
 
 import {
   getInboundA2ATaskV1,
   sendInboundA2AMessageV1,
 } from "@/lib/a2a/server";
 import type { AuthorizedA2APrincipal } from "@/lib/a2a/auth";
+import { inboundA2AUsageStreamId } from "@/lib/a2a/inbound-budget";
 import { A2ATaskStoreError } from "@/lib/a2a/task-store";
+import { A2AProtocolError } from "@/lib/a2a/v1-contracts";
 import {
   buildA2APeerRolloutV1,
   transitionA2APeerRolloutV1,
@@ -36,6 +43,7 @@ describe("A2A server adapter", () => {
     for (const mock of Object.values(taskStoreMocks)) mock.mockReset();
     for (const mock of Object.values(delegationMocks)) mock.mockReset();
     councilMocks.runCouncilRound.mockReset();
+    budgetMocks.admitInboundA2ATask.mockReset().mockResolvedValue(undefined);
     taskStoreMocks.appendA2AExchange.mockImplementation(async (input) => input);
     taskStoreMocks.createA2ATaskMapping.mockResolvedValue(mapping());
     taskStoreMocks.readA2ATaskProjection.mockResolvedValue({
@@ -61,12 +69,27 @@ describe("A2A server adapter", () => {
       },
     });
 
+    expect(budgetMocks.admitInboundA2ATask).toHaveBeenCalledWith(
+      principal(),
+      expect.objectContaining({ tokens: 12_000, costMicrousd: 500_000 }),
+    );
     expect(councilMocks.runCouncilRound).toHaveBeenCalledWith(
       expect.objectContaining({
         specialistIds: ["scout"],
         delegationAuthority: expect.objectContaining({ governedToolIds: [] }),
       }),
     );
+    const { delegationAuthority, usageAttribution } =
+      councilMocks.runCouncilRound.mock.calls[0][0];
+    expect(usageAttribution).toEqual({
+      tenantId: "tenant:one",
+      actorId: "actor:one",
+      sourceStreamId: inboundA2AUsageStreamId(principal()),
+      correlationId: delegationAuthority.executionScope.correlationId,
+      causationId: delegationAuthority.executionScope.causationId,
+      executionScope: delegationAuthority.executionScope,
+    });
+    expect(usageAttribution.causationId).toMatch(/^a2a-task:[0-9a-f]{64}$/);
     expect(taskStoreMocks.createA2ATaskMapping).toHaveBeenCalledWith(
       expect.objectContaining({
         direction: "inbound",
@@ -86,8 +109,29 @@ describe("A2A server adapter", () => {
       request: request(),
     });
     expect(result.id).toBe("a2a-task:one");
+    expect(budgetMocks.admitInboundA2ATask).not.toHaveBeenCalled();
     expect(councilMocks.runCouncilRound).not.toHaveBeenCalled();
     expect(taskStoreMocks.createA2ATaskMapping).not.toHaveBeenCalled();
+  });
+
+  it("refuses a task past its peer's budget before submitting it", async () => {
+    taskStoreMocks.getA2ATaskMapping.mockRejectedValue(
+      new A2ATaskStoreError("not found", 404),
+    );
+    const refusal = new A2AProtocolError("No room.", 429, "resource_exhausted");
+    budgetMocks.admitInboundA2ATask.mockRejectedValue(refusal);
+    const statuses: string[] = [];
+    await expect(sendInboundA2AMessageV1({
+      principal: principal(),
+      request: request(),
+      onStatus: (update) => {
+        statuses.push(update.state);
+      },
+    })).rejects.toBe(refusal);
+    expect(statuses).toEqual([]);
+    expect(councilMocks.runCouncilRound).not.toHaveBeenCalled();
+    expect(taskStoreMocks.createA2ATaskMapping).not.toHaveBeenCalled();
+    expect(taskStoreMocks.appendA2AExchange).not.toHaveBeenCalled();
   });
 
   it("rejects a local Agent outside the exact peer rollout", async () => {
@@ -98,6 +142,7 @@ describe("A2A server adapter", () => {
       principal: principal(),
       request: request({ metadata: { asaelAgentId: "forge" } }),
     })).rejects.toThrow(/outside this peer rollout/i);
+    expect(budgetMocks.admitInboundA2ATask).not.toHaveBeenCalled();
     expect(councilMocks.runCouncilRound).not.toHaveBeenCalled();
   });
 

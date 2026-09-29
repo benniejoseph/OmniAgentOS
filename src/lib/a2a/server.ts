@@ -23,6 +23,10 @@ import { runCouncilRound, type CouncilAgentId } from "@/lib/orchestration/counci
 import { createExecutionScope, type ExecutionScope } from "@/lib/security/execution-scope";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { externalA2ABudgetLimits } from "@/lib/a2a/safety";
+import {
+  admitInboundA2ATask,
+  inboundA2AUsageStreamId,
+} from "@/lib/a2a/inbound-budget";
 import { isInboundA2AAgentId } from "@/lib/a2a/rollout";
 
 const terminalStates = new Set([
@@ -68,6 +72,7 @@ export async function sendInboundA2AMessageV1(input: {
     contextId,
   });
   const externalBudgets = externalA2ABudgetLimits(input.principal.peer);
+  await admitInboundA2ATask(input.principal, externalBudgets);
   await input.onStatus?.({
     taskId: externalTaskId,
     contextId,
@@ -101,6 +106,14 @@ export async function sendInboundA2AMessageV1(input: {
       connectorTargets: [],
     },
     abortSignal: input.abortSignal,
+    usageAttribution: {
+      tenantId: input.principal.tenantId,
+      actorId: input.principal.actorId,
+      sourceStreamId: inboundA2AUsageStreamId(input.principal),
+      correlationId: executionScope.correlationId,
+      causationId: executionScope.causationId || undefined,
+      executionScope,
+    },
     checkpointHooks: {
       beforeModel: async () => input.onStatus?.({
         taskId: externalTaskId,

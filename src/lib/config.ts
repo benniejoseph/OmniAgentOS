@@ -329,6 +329,22 @@ export const TENANT_DAILY_MAX_COST_MICROUSD = normalizePositiveInteger(
   25_000_000,
 );
 
+// A new inbound A2A task starts only while its peer has task starts left in
+// the hour and the task's whole budget fits the peer's AI usage over the last
+// 24 hours as well as the workspace's.
+export const A2A_PEER_TASKS_PER_HOUR = normalizePositiveInteger(
+  process.env.OMNIAGENT_A2A_PEER_TASKS_PER_HOUR,
+  20,
+);
+export const A2A_PEER_DAILY_MAX_TOKENS = normalizePositiveInteger(
+  process.env.OMNIAGENT_A2A_PEER_DAILY_MAX_TOKENS,
+  240_000,
+);
+export const A2A_PEER_DAILY_MAX_COST_MICROUSD = normalizePositiveInteger(
+  process.env.OMNIAGENT_A2A_PEER_DAILY_MAX_COST_MICROUSD,
+  5_000_000,
+);
+
 export const AGENT_RUN_BUDGET_LIMITS = Object.freeze({
   modelTurns: AGENT_MAX_MODEL_TURNS,
   tokens: AGENT_MAX_TOTAL_TOKENS,

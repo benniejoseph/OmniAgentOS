@@ -1274,6 +1274,17 @@ generation before activation; pause or revoke it to invalidate all exact-digest
 delegated callbacks. Do not reuse service API keys or outbound bearer tokens
 across peers.
 
+Inbound A2A tasks are metered per peer. Their model usage is recorded under the
+peer's `a2a-peer:` usage stream, and a new task starts only while its peer has
+task starts left in the hour (`OMNIAGENT_A2A_PEER_TASKS_PER_HOUR`, 20 by
+default) and the task's whole budget of 12,000 tokens and 500,000 micro-USD
+fits the peer's AI usage over the last 24 hours
+(`OMNIAGENT_A2A_PEER_DAILY_MAX_TOKENS`, 240,000, and
+`OMNIAGENT_A2A_PEER_DAILY_MAX_COST_MICROUSD`, 5,000,000, by default) and the
+workspace's daily window. A refused task returns 429 `resource_exhausted`. If
+the rate-limit store or the usage ledger cannot be read, the task is refused
+with 503 rather than run unmetered.
+
 Migration 119 adds the actor-private safety reservation and append-only
 tool-call claim ledgers. The maintenance worker must keep its maintenance lane
 enabled: it pages the same tenant inventory and closes active reservations when
