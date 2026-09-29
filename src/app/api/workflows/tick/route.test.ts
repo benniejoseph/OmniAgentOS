@@ -30,6 +30,7 @@ const routeMocks = vi.hoisted(() => ({
   recordRuntimeEventSafely: vi.fn(),
   recordWorkerHeartbeat: vi.fn(),
   reconcileAbandonedExternalA2ATasks: vi.fn(),
+  reconcileCheckpointShadowsDaily: vi.fn(),
 }));
 
 vi.mock("@/lib/db/client", async (importOriginal) => ({
@@ -202,6 +203,13 @@ vi.mock("@/lib/a2a/maintenance", () => ({
     routeMocks.reconcileAbandonedExternalA2ATasks,
 }));
 
+vi.mock("@/lib/runs/checkpoint-shadow-reconciliation", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@/lib/runs/checkpoint-shadow-reconciliation")
+  >()),
+  reconcileCheckpointShadowsDaily: routeMocks.reconcileCheckpointShadowsDaily,
+}));
+
 import { POST } from "@/app/api/workflows/tick/route";
 import { listRunnableOperationDispatchTenants } from "@/lib/operations/job-queue";
 import { emptyWorkflowScheduleTotals } from "@/lib/workflows/triggers";
@@ -343,6 +351,9 @@ beforeEach(() => {
       failed: 0,
       results: [],
     });
+  routeMocks.reconcileCheckpointShadowsDaily
+    .mockReset()
+    .mockResolvedValue({ status: "skipped" });
   routeMocks.recordRuntimeEventSafely.mockReset().mockResolvedValue(undefined);
   routeMocks.recordSecurityAudit.mockReset().mockResolvedValue(undefined);
   routeMocks.recordWorkerHeartbeat.mockReset().mockImplementation(async (input) => ({
@@ -886,6 +897,88 @@ describe("dedicated worker heartbeat timing", () => {
       }));
       expect(errorLog.mock.calls.flat().join(" ")).not.toContain(
         "untrusted model transport detail",
+      );
+    } finally {
+      errorLog.mockRestore();
+    }
+  });
+
+  it("checks each tenant's checkpoint shadow last, when maintenance has time for it", async () => {
+    routeMocks.listMaintenanceTenantIds.mockResolvedValue(["tenant-a"]);
+    const order: string[] = [];
+    routeMocks.processDueMoltbookHeartbeats.mockImplementation(async () => {
+      order.push("moltbook-heartbeats");
+      return { processed: 0, healthy: 0, failed: 0, skipped: 0 };
+    });
+    routeMocks.reconcileCheckpointShadowsDaily.mockImplementation(async () => {
+      order.push("checkpoint-shadow");
+      return {
+        status: "matched",
+        mode: "approval",
+        sampledRunCount: 3,
+        mismatchedRunCount: 0,
+        matchedDays: 7,
+      };
+    });
+
+    const response = await POST(workerRequest({
+      startup: false,
+      lane: "maintenance",
+      timeBudgetMs: 240_000,
+    }));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      maintenance: [{
+        tenantId: "tenant-a",
+        checkpointShadowReconciliation: { status: "matched", matchedDays: 7 },
+      }],
+    });
+    expect(routeMocks.reconcileCheckpointShadowsDaily).toHaveBeenCalledWith({
+      tenantId: "tenant-a",
+    });
+    expect(order).toEqual(["moltbook-heartbeats", "checkpoint-shadow"]);
+
+    routeMocks.reconcileCheckpointShadowsDaily.mockClear();
+    await POST(workerRequest({
+      startup: false,
+      lane: "maintenance",
+      timeBudgetMs: 10_000,
+    }));
+    expect(routeMocks.reconcileCheckpointShadowsDaily).not.toHaveBeenCalled();
+  });
+
+  it("keeps a tenant's maintenance results when its checkpoint shadow check fails", async () => {
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    routeMocks.listMaintenanceTenantIds.mockResolvedValue(["tenant-a"]);
+    routeMocks.repairStuckAgentRuns.mockResolvedValue(2);
+    routeMocks.reconcileCheckpointShadowsDaily.mockRejectedValue(
+      new Error("untrusted rollout storage detail"),
+    );
+
+    try {
+      const response = await POST(workerRequest({
+        startup: false,
+        lane: "maintenance",
+        timeBudgetMs: 240_000,
+      }));
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.maintenance).toEqual([
+        expect.objectContaining({ tenantId: "tenant-a", agentRunsRepaired: 2 }),
+      ]);
+      expect(body.maintenance[0]).not.toHaveProperty("maintenanceError");
+      expect(body.maintenance[0]).not.toHaveProperty(
+        "checkpointShadowReconciliation",
+      );
+      expect(errorLog).toHaveBeenCalledWith(JSON.stringify({
+        level: "error",
+        msg: "checkpoint_shadow_reconciliation_failed",
+        tenantId: "tenant-a",
+      }));
+      expect(errorLog.mock.calls.flat().join(" ")).not.toContain(
+        "untrusted rollout storage detail",
       );
     } finally {
       errorLog.mockRestore();

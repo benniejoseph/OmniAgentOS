@@ -18,6 +18,7 @@ import {
 } from "@/lib/orchestration/resume-queue";
 import { recoverInterruptedLoopV2Runs } from "@/lib/orchestration/loop-v2-recovery";
 import { repairStuckAgentRuns } from "@/lib/runs/store";
+import { reconcileCheckpointShadowsDaily } from "@/lib/runs/checkpoint-shadow-reconciliation";
 import { recordSecurityAudit } from "@/lib/security/audit-store";
 import { redactSensitive, SecurityPolicyError } from "@/lib/security/context";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -949,6 +950,9 @@ async function runAllTenantScheduledWork({
     loopV2Recovery: Awaited<ReturnType<typeof recoverInterruptedLoopV2Runs>>;
     slo?: Awaited<ReturnType<typeof runObservabilitySloMonitor>>;
     alerts?: Awaited<ReturnType<typeof runScheduledAlertDispatch>>;
+    checkpointShadowReconciliation?: Awaited<
+      ReturnType<typeof reconcileCheckpointShadowsDaily>
+    >;
   }> = [];
 
   for (const tenantId of maintenanceCandidates) {
@@ -1089,6 +1093,9 @@ async function runTenantMaintenance({
     loopV2Recovery: Awaited<ReturnType<typeof recoverInterruptedLoopV2Runs>>;
     slo?: Awaited<ReturnType<typeof runObservabilitySloMonitor>>;
     alerts?: Awaited<ReturnType<typeof runScheduledAlertDispatch>>;
+    checkpointShadowReconciliation?: Awaited<
+      ReturnType<typeof reconcileCheckpointShadowsDaily>
+    >;
   } = {
     tenantId,
     agentRunsRepaired: 0,
@@ -1253,6 +1260,20 @@ async function runTenantMaintenance({
       queueLimit: alertQueueLimit,
       dispatchLimit: alertDispatchLimit,
     });
+  }
+  if (deadlineAt - Date.now() > 30_000) {
+    try {
+      result.checkpointShadowReconciliation =
+        await reconcileCheckpointShadowsDaily({ tenantId });
+    } catch {
+      // Checkpoints never resume a run, so a failed daily check must not
+      // fail the rest of this tenant's maintenance.
+      console.error(JSON.stringify({
+        level: "error",
+        msg: "checkpoint_shadow_reconciliation_failed",
+        tenantId,
+      }));
+    }
   }
   return result;
 }

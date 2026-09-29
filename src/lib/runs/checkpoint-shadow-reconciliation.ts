@@ -1,5 +1,14 @@
 import { z } from "zod";
 
+import { getSql, hasDatabaseUrl } from "@/lib/db/client";
+import {
+  listObservabilityEvents,
+  recordRuntimeEventSafely,
+} from "@/lib/observability/store";
+import {
+  getCurrentTenantCapabilityRollout,
+  type TenantCapabilityRollout,
+} from "@/lib/rollouts/tenant-capability-rollouts";
 import {
   RUN_CHECKPOINT_CAPABILITY_ID,
   RUN_CHECKPOINT_CONFIGURATION_SHA256,
@@ -192,6 +201,137 @@ export async function reconcileStoredApprovalCheckpointShadows(
     resumeAuthorityGranted: false as const,
     runs: Object.freeze(runs),
   });
+}
+
+export const CHECKPOINT_SHADOW_RECONCILED_ACTION =
+  "run_checkpoint.shadow_reconciled";
+
+const DAY_MS = 24 * 60 * 60 * 1_000;
+
+const reconciliationModes = Object.freeze([
+  "approval",
+  "expanded",
+  "expanded_canary",
+] as const satisfies readonly CheckpointShadowReconciliationMode[]);
+
+export type DailyCheckpointShadowReconciliation = Readonly<{
+  status:
+    | ApprovalCheckpointShadowReconciliationReport["status"]
+    | "failed"
+    | "not_due"
+    | "skipped";
+  mode?: CheckpointShadowReconciliationMode;
+  sampledRunCount?: number;
+  mismatchedRunCount?: number;
+  /** Consecutive daily reports, this one included, that matched in this mode. */
+  matchedDays?: number;
+}>;
+
+/**
+ * The mode that reconciles a tenant's active checkpoint rollout. The approval
+ * canary has none, so it is not reconciled.
+ */
+export function checkpointShadowReconciliationMode(
+  rollout: TenantCapabilityRollout | null,
+): CheckpointShadowReconciliationMode | undefined {
+  if (
+    !rollout ||
+    rollout.capabilityId !== RUN_CHECKPOINT_CAPABILITY_ID ||
+    rollout.engineVersion !== RUN_CHECKPOINT_ENGINE_VERSION_ID ||
+    rollout.contractVersionId !== RUN_CHECKPOINT_CONTRACT_VERSION_ID ||
+    rollout.status !== "active"
+  ) {
+    return undefined;
+  }
+  return reconciliationModes.find((mode) =>
+    rollout.mode === rolloutModeFor(mode) &&
+    rollout.configurationSha256 === checkpointConfigurationForMode(mode)
+  );
+}
+
+/**
+ * Reconciles an enrolled tenant's checkpoint shadow at most once a day, and
+ * records the report with the count of consecutive matched days that the
+ * shadow's exit metric reads.
+ */
+export async function reconcileCheckpointShadowsDaily(input: {
+  tenantId: string;
+  now?: Date;
+}): Promise<DailyCheckpointShadowReconciliation> {
+  if (!hasDatabaseUrl()) return Object.freeze({ status: "skipped" as const });
+  const mode = checkpointShadowReconciliationMode(
+    await getCurrentTenantCapabilityRollout({
+      tenantId: input.tenantId,
+      capabilityId: RUN_CHECKPOINT_CAPABILITY_ID,
+    }),
+  );
+  if (!mode) return Object.freeze({ status: "skipped" as const });
+
+  const now = (input.now ?? new Date()).getTime();
+  const [previous] = await listObservabilityEvents({
+    action: CHECKPOINT_SHADOW_RECONCILED_ACTION,
+    tenantId: input.tenantId,
+    limit: 1,
+  });
+  const previousAgeMs = previous
+    ? now - Date.parse(previous.createdAt)
+    : Number.POSITIVE_INFINITY;
+  if (previousAgeMs < DAY_MS) {
+    return Object.freeze({ status: "not_due" as const, mode });
+  }
+
+  let report: ApprovalCheckpointShadowReconciliationReport | undefined;
+  try {
+    report = await reconcileStoredApprovalCheckpointShadows(
+      { tenantId: input.tenantId, mode },
+      getSql(),
+    );
+  } catch {
+    // Recorded below as a failed day, so the next attempt waits a day too.
+    console.error(JSON.stringify({
+      level: "error",
+      msg: "checkpoint_shadow_reconciliation_failed",
+      tenantId: input.tenantId,
+      mode,
+    }));
+  }
+  const status = report?.status ?? "failed";
+  // A matched day extends the count only when the day before matched too.
+  const previousMatchedDays =
+    previous?.metadata.status === "matched" &&
+    previous.metadata.mode === mode &&
+    previousAgeMs < 2 * DAY_MS &&
+    Number.isSafeInteger(previous.metadata.matchedDays)
+      ? Number(previous.metadata.matchedDays)
+      : 0;
+  const summary = Object.freeze({
+    status,
+    mode,
+    sampledRunCount: report?.sampledRunCount ?? 0,
+    mismatchedRunCount: report?.mismatchedRunCount ?? 0,
+    matchedDays: status === "matched" ? previousMatchedDays + 1 : 0,
+  });
+  await recordRuntimeEventSafely({
+    level: status === "matched" || status === "no_sample" ? "info" : "warn",
+    category: "diagnostics",
+    action: CHECKPOINT_SHADOW_RECONCILED_ACTION,
+    tenantId: input.tenantId,
+    resourceType: "run_checkpoint_shadow",
+    resourceId: mode,
+    message: `Checkpoint shadow reconciliation: ${status}.`,
+    metadata: {
+      ...summary,
+      missingBoundaryPhases: report?.missingBoundaryPhases ?? [],
+      mismatchedRuns: (report?.runs ?? [])
+        .filter((run) => run.status === "mismatch")
+        .slice(0, 10)
+        .map((run) => ({
+          runId: run.runId,
+          issues: [...new Set(run.issues.map((issue) => issue.code))],
+        })),
+    },
+  });
+  return summary;
 }
 
 async function reconcileRun(
@@ -610,9 +750,13 @@ function supportedShadowPin(
     pin.engineVersionId === RUN_CHECKPOINT_ENGINE_VERSION_ID &&
     pin.contractVersionId === RUN_CHECKPOINT_CONTRACT_VERSION_ID &&
     pin.configurationSha256 === checkpointConfigurationForMode(mode) &&
-    pin.rolloutMode === (mode === "expanded_canary" ? "canary" : "shadow") &&
+    pin.rolloutMode === rolloutModeFor(mode) &&
     pin.rolloutLifecycleStatus === "active"
   );
+}
+
+function rolloutModeFor(mode: CheckpointShadowReconciliationMode) {
+  return mode === "expanded_canary" ? "canary" : "shadow";
 }
 
 function isExpandedMode(mode: CheckpointShadowReconciliationMode) {

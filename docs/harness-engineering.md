@@ -117,6 +117,14 @@ shadow. It rereads one tenant's stored rows, reference indexes, typed events,
 approval decision, and effect-receipt state; it does not open continuation
 contents. Empty and mismatched samples fail closed.
 
+Tenant maintenance runs the same check once a day for each tenant with an
+active approval shadow, expanded shadow, or expanded canary rollout, and
+records the report as a `run_checkpoint.shadow_reconciled` diagnostics event.
+Its `matchedDays` counts consecutive matched days in the same mode; a missed
+day, a mode change, or any other status starts the count again, and a mismatch,
+incomplete coverage, or failed check is recorded as a warning. The approval
+canary has no reconciliation mode and is not checked.
+
 Passing `expanded` or `expanded_canary` as the command's final argument selects
 the exact full-boundary shadow or canary configuration. Those modes additionally
 require model, tool, approval, delegation, and verifier phase coverage; check

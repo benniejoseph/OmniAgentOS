@@ -55,7 +55,7 @@ export const COMPLEXITY_REGISTRY: readonly ComplexityEntry[] = Object.freeze((
       summary:
         "Run checkpoints are written beside the live run state at approval, tool, council and boundary points, and never resume a run.",
       exitMetric:
-        "Reconciliation reports matched, never mismatch or incomplete_coverage, for 30 consecutive days on both tenants; then give checkpoints resume authority, or delete the shadow writers and the capability.",
+        "The daily run_checkpoint.shadow_reconciled event reports matchedDays of 30 or more on both tenants; then give checkpoints resume authority, or delete the shadow writers and the capability.",
       reviewedOn: REVIEWED_ON,
       expiresOn: EXPIRES_ON,
       paths: [

@@ -1,7 +1,36 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const dailyMocks = vi.hoisted(() => ({
+  hasDatabaseUrl: vi.fn(() => false),
+  getSql: vi.fn(),
+  getCurrentTenantCapabilityRollout: vi.fn(),
+  listObservabilityEvents: vi.fn(),
+  recordRuntimeEventSafely: vi.fn(),
+}));
+
+vi.mock("@/lib/db/client", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/db/client")>()),
+  hasDatabaseUrl: dailyMocks.hasDatabaseUrl,
+  getSql: dailyMocks.getSql,
+}));
+
+vi.mock("@/lib/rollouts/tenant-capability-rollouts", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@/lib/rollouts/tenant-capability-rollouts")
+  >()),
+  getCurrentTenantCapabilityRollout:
+    dailyMocks.getCurrentTenantCapabilityRollout,
+}));
+
+vi.mock("@/lib/observability/store", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/observability/store")>()),
+  listObservabilityEvents: dailyMocks.listObservabilityEvents,
+  recordRuntimeEventSafely: dailyMocks.recordRuntimeEventSafely,
+}));
 
 import {
   buildApprovalWaitingCheckpointShadow,
+  RUN_CHECKPOINT_CANARY_CONFIGURATION_SHA256,
   RUN_CHECKPOINT_CAPABILITY_ID,
   RUN_CHECKPOINT_CONFIGURATION_SHA256,
   RUN_CHECKPOINT_CONTRACT_VERSION_ID,
@@ -11,9 +40,13 @@ import {
   type ApprovalCheckpointShadowEnrollment,
 } from "@/lib/runs/approval-checkpoint-shadow";
 import {
+  CHECKPOINT_SHADOW_RECONCILED_ACTION,
+  checkpointShadowReconciliationMode,
+  reconcileCheckpointShadowsDaily,
   reconcileStoredApprovalCheckpointShadows,
   type RunCheckpointReconciliationSql,
 } from "@/lib/runs/checkpoint-shadow-reconciliation";
+import type { TenantCapabilityRollout } from "@/lib/rollouts/tenant-capability-rollouts";
 import { buildInitialShadowRunContract } from "@/lib/runs/contract-runtime";
 import {
   buildRunCheckpointV1,
@@ -502,6 +535,242 @@ function expandedCheckpointChain(mode: "shadow" | "canary" = "shadow") {
     "tool_execution",
   );
   return checkpoints;
+}
+
+describe("daily checkpoint shadow reconciliation", () => {
+  const NOW = new Date("2026-09-29T12:00:00.000Z");
+  const WAITING_TOOL = {
+    id: EXECUTION_ID,
+    status: "approval_required",
+    approval_decision: null,
+    effect_receipt: null,
+  };
+  const daily = () =>
+    reconcileCheckpointShadowsDaily({ tenantId: SCOPE.tenantId, now: NOW });
+  const recorded = () =>
+    dailyMocks.recordRuntimeEventSafely.mock.calls.at(-1)?.[0];
+  const previousReport = (hoursAgo: number, metadata: Record<string, unknown>) => [{
+    id: "previous-report",
+    level: "info",
+    category: "diagnostics",
+    action: CHECKPOINT_SHADOW_RECONCILED_ACTION,
+    correlationId: "diagnostics:previous-report",
+    tenantId: SCOPE.tenantId,
+    message: "Checkpoint shadow reconciliation: matched.",
+    metadata,
+    createdAt: new Date(NOW.getTime() - hoursAgo * 3_600_000).toISOString(),
+  }];
+
+  beforeEach(() => {
+    dailyMocks.hasDatabaseUrl.mockReset().mockReturnValue(true);
+    dailyMocks.getCurrentTenantCapabilityRollout
+      .mockReset()
+      .mockResolvedValue(rollout());
+    dailyMocks.listObservabilityEvents.mockReset().mockResolvedValue([]);
+    dailyMocks.recordRuntimeEventSafely.mockReset().mockResolvedValue(undefined);
+    dailyMocks.getSql.mockReset().mockReturnValue(fixtureSql({
+      checkpoints: [waitingCheckpoint()],
+      tool: WAITING_TOOL,
+    }));
+  });
+
+  it("reconciles an enrolled tenant once a day and counts its consecutive matched days", async () => {
+    await expect(daily()).resolves.toEqual({
+      status: "matched",
+      mode: "approval",
+      sampledRunCount: 1,
+      mismatchedRunCount: 0,
+      matchedDays: 1,
+    });
+    expect(dailyMocks.getCurrentTenantCapabilityRollout).toHaveBeenCalledWith({
+      tenantId: SCOPE.tenantId,
+      capabilityId: RUN_CHECKPOINT_CAPABILITY_ID,
+    });
+    expect(dailyMocks.listObservabilityEvents).toHaveBeenCalledWith({
+      action: "run_checkpoint.shadow_reconciled",
+      tenantId: SCOPE.tenantId,
+      limit: 1,
+    });
+    expect(recorded()).toEqual({
+      level: "info",
+      category: "diagnostics",
+      action: "run_checkpoint.shadow_reconciled",
+      tenantId: SCOPE.tenantId,
+      resourceType: "run_checkpoint_shadow",
+      resourceId: "approval",
+      message: "Checkpoint shadow reconciliation: matched.",
+      metadata: {
+        status: "matched",
+        mode: "approval",
+        sampledRunCount: 1,
+        mismatchedRunCount: 0,
+        matchedDays: 1,
+        missingBoundaryPhases: [],
+        mismatchedRuns: [],
+      },
+    });
+
+    dailyMocks.getSql.mockClear();
+    dailyMocks.recordRuntimeEventSafely.mockClear();
+    dailyMocks.listObservabilityEvents.mockResolvedValue(previousReport(23.9, {
+      status: "matched",
+      mode: "approval",
+      matchedDays: 4,
+    }));
+    await expect(daily()).resolves.toEqual({ status: "not_due", mode: "approval" });
+    expect(dailyMocks.getSql).not.toHaveBeenCalled();
+    expect(dailyMocks.recordRuntimeEventSafely).not.toHaveBeenCalled();
+
+    for (const [hoursAgo, metadata, matchedDays] of [
+      [24, { status: "matched", mode: "approval", matchedDays: 29 }, 30],
+      [47.9, { status: "matched", mode: "approval", matchedDays: 29 }, 30],
+      // A missed day, another mode, or a day that did not match starts over.
+      [48, { status: "matched", mode: "approval", matchedDays: 29 }, 1],
+      [25, { status: "matched", mode: "expanded", matchedDays: 29 }, 1],
+      [25, { status: "no_sample", mode: "approval", matchedDays: 29 }, 1],
+      [25, { status: "matched", mode: "approval", matchedDays: "29" }, 1],
+    ] as const) {
+      dailyMocks.listObservabilityEvents.mockResolvedValue(
+        previousReport(hoursAgo, metadata),
+      );
+      await expect(daily(), `${hoursAgo}h ${JSON.stringify(metadata)}`)
+        .resolves.toMatchObject({ status: "matched", matchedDays });
+      expect(recorded()?.metadata).toMatchObject({ matchedDays });
+    }
+  });
+
+  it("records a mismatch or a failed check as a warning that restarts the count", async () => {
+    dailyMocks.listObservabilityEvents.mockResolvedValue(previousReport(25, {
+      status: "matched",
+      mode: "approval",
+      matchedDays: 12,
+    }));
+    dailyMocks.getSql.mockReturnValue(fixtureSql({
+      checkpoints: [waitingCheckpoint()],
+      tool: WAITING_TOOL,
+      omitComparisonReceipt: true,
+    }));
+
+    await expect(daily()).resolves.toEqual({
+      status: "mismatch",
+      mode: "approval",
+      sampledRunCount: 1,
+      mismatchedRunCount: 1,
+      matchedDays: 0,
+    });
+    expect(recorded()).toMatchObject({
+      level: "warn",
+      message: "Checkpoint shadow reconciliation: mismatch.",
+      metadata: {
+        status: "mismatch",
+        matchedDays: 0,
+        mismatchedRuns: [{ runId: RUN_ID, issues: ["comparison_receipt_mismatch"] }],
+      },
+    });
+
+    dailyMocks.getSql.mockReturnValue({ query: async () => [] });
+    await expect(daily()).resolves.toMatchObject({
+      status: "no_sample",
+      matchedDays: 0,
+    });
+    expect(recorded()).toMatchObject({ level: "info" });
+
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    dailyMocks.getSql.mockReturnValue({
+      query: async () => {
+        throw new Error("untrusted connection detail");
+      },
+    });
+    try {
+      await expect(daily()).resolves.toEqual({
+        status: "failed",
+        mode: "approval",
+        sampledRunCount: 0,
+        mismatchedRunCount: 0,
+        matchedDays: 0,
+      });
+      expect(recorded()).toMatchObject({
+        level: "warn",
+        metadata: { status: "failed", matchedDays: 0, mismatchedRuns: [] },
+      });
+      expect(errorLog).toHaveBeenCalledWith(JSON.stringify({
+        level: "error",
+        msg: "checkpoint_shadow_reconciliation_failed",
+        tenantId: SCOPE.tenantId,
+        mode: "approval",
+      }));
+      expect(errorLog.mock.calls.flat().join(" ")).not.toContain(
+        "untrusted connection detail",
+      );
+    } finally {
+      errorLog.mockRestore();
+    }
+  });
+
+  it("reconciles only an active checkpoint rollout it has a mode for", async () => {
+    expect(checkpointShadowReconciliationMode(rollout())).toBe("approval");
+    expect(checkpointShadowReconciliationMode(rollout({
+      configurationSha256: RUN_CHECKPOINT_EXPANDED_SHADOW_CONFIGURATION_SHA256,
+    }))).toBe("expanded");
+    expect(checkpointShadowReconciliationMode(rollout({
+      mode: "canary",
+      configurationSha256: RUN_CHECKPOINT_EXPANDED_CANARY_CONFIGURATION_SHA256,
+    }))).toBe("expanded_canary");
+    for (const unsupported of [
+      null,
+      rollout({ status: "paused" }),
+      rollout({ status: "registered", lifecycleRevision: 0 }),
+      // The approval canary has no reconciliation mode.
+      rollout({
+        mode: "canary",
+        configurationSha256: RUN_CHECKPOINT_CANARY_CONFIGURATION_SHA256,
+      }),
+      rollout({ mode: "canary" }),
+      rollout({ mode: "enabled" }),
+      rollout({
+        configurationSha256: RUN_CHECKPOINT_EXPANDED_CANARY_CONFIGURATION_SHA256,
+      }),
+      rollout({ capabilityId: "another_capability" }),
+      rollout({ engineVersion: "another_engine" }),
+      rollout({ contractVersionId: "another_contract" }),
+    ]) {
+      expect(checkpointShadowReconciliationMode(unsupported)).toBeUndefined();
+    }
+
+    dailyMocks.getCurrentTenantCapabilityRollout.mockResolvedValue(
+      rollout({ status: "paused" }),
+    );
+    await expect(daily()).resolves.toEqual({ status: "skipped" });
+    dailyMocks.hasDatabaseUrl.mockReturnValue(false);
+    dailyMocks.getCurrentTenantCapabilityRollout.mockClear();
+    await expect(daily()).resolves.toEqual({ status: "skipped" });
+    expect(dailyMocks.getCurrentTenantCapabilityRollout).not.toHaveBeenCalled();
+    expect(dailyMocks.listObservabilityEvents).not.toHaveBeenCalled();
+    expect(dailyMocks.recordRuntimeEventSafely).not.toHaveBeenCalled();
+  });
+});
+
+function rollout(
+  overrides: Partial<TenantCapabilityRollout> = {},
+): TenantCapabilityRollout {
+  return {
+    schemaVersion: 1,
+    tenantId: SCOPE.tenantId,
+    capabilityId: RUN_CHECKPOINT_CAPABILITY_ID,
+    rolloutGeneration: 1,
+    engineVersion: RUN_CHECKPOINT_ENGINE_VERSION_ID,
+    contractVersionId: RUN_CHECKPOINT_CONTRACT_VERSION_ID,
+    configurationSha256: RUN_CHECKPOINT_CONFIGURATION_SHA256,
+    mode: "shadow",
+    status: "active",
+    lifecycleRevision: 1,
+    createdByActorId: "actor_checkpoint_reconciliation",
+    activatedByActorId: "actor_checkpoint_reconciliation",
+    activatedAt: "2026-09-01T00:00:00.000Z",
+    createdAt: "2026-09-01T00:00:00.000Z",
+    updatedAt: "2026-09-01T00:00:00.000Z",
+    ...overrides,
+  };
 }
 
 function fixtureSql(input: {
