@@ -198,6 +198,7 @@ A connection whose last syncs reached none of its sources waits until `sync_retr
 - Every source failed with `Connected source timed out.` (`provider_unavailable`): Google took longer than 30 seconds to answer a request, or to send its body. Check Google's status and the deployment's egress.
 - The sync failed before any source, for example on a refused token refresh: reconnect the account, which clears the wait. A refused refresh keeps retrying about every six hours until then, because a misconfigured OAuth client is refused the same way.
 - One source keeps failing while another syncs: the connection is not held back, so the failing source is tried again on every tick.
+- A sync stopped with `Connected source was revoked during synchronization.`: the account was disconnected or reconnected, or another sync took the connection over, while this one ran. The sources that finished before then keep their progress, and no later source is read. The source that was running may have indexed part of a page already; its next sync reads that page again without duplicating it.
 
 Run a manual sync to try right away; it does not wait, and its outcome counts like a scheduled one.
 

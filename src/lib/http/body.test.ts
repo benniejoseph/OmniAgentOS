@@ -3,6 +3,7 @@ import {
   JsonBodyError,
   parseBoundedInteger,
   parseJsonBody,
+  readResponseBytesLimited,
   readResponseTextLimited,
 } from "@/lib/http/body";
 
@@ -66,6 +67,42 @@ describe("bounded HTTP bodies", () => {
       bytesRead: 7,
       truncated: true,
     });
+  });
+
+  it("caps response bytes without decoding them, and stops reading at the cap", async () => {
+    let pulled = 0;
+    let canceled = false;
+    const response = new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled += 1;
+        controller.enqueue(new Uint8Array([0xff, 0xfe, 0x00, 0x01]));
+      },
+      cancel() {
+        canceled = true;
+      },
+    }));
+    const result = await readResponseBytesLimited(response, 6);
+    expect([...result.bytes]).toEqual([0xff, 0xfe, 0x00, 0x01, 0xff, 0xfe]);
+    expect(result).toMatchObject({ bytesRead: 6, truncated: true });
+    expect(canceled).toBe(true);
+    expect(pulled).toBeLessThanOrEqual(3);
+  });
+
+  it("keeps a response that ends at the cap whole", async () => {
+    const result = await readResponseBytesLimited(
+      new Response(chunkedBody(["1234", "56"])),
+      6,
+    );
+    expect(new TextDecoder().decode(result.bytes)).toBe("123456");
+    expect(result).toMatchObject({ bytesRead: 6, truncated: false });
+  });
+
+  it("reports a response that declares more than the cap as truncated", async () => {
+    const result = await readResponseBytesLimited(
+      new Response(chunkedBody(["1234"]), { headers: { "content-length": "100" } }),
+      6,
+    );
+    expect(result).toMatchObject({ bytesRead: 4, truncated: true });
   });
 });
 

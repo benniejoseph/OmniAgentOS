@@ -38,6 +38,10 @@ import { sourceContractSha256 } from "@/lib/sources/contracts";
 import { KNOWLEDGE_COGNIFY_PURPOSE_ID } from "@/lib/sources/purposes";
 import { contentSha256Hex } from "@/lib/sources/text-lineage";
 import { runWithDatabaseActorScope } from "@/lib/db/client";
+import {
+  readResponseBytesLimited,
+  readResponseTextLimited,
+} from "@/lib/http/body";
 
 type SyncCursor = {
   calendar?: string;
@@ -77,6 +81,9 @@ const GOOGLE_DRIVE_REVISION_MARKER_VERSION = 1;
 const GOOGLE_DRIVE_REUSE_MAX_CHUNKS = 128;
 // Each Google request, with its body, gets this long before its source fails.
 const PROVIDER_REQUEST_TIMEOUT_MS = 30_000;
+// A Drive export keeps 100,000 characters, and UTF-8 spends at most four bytes
+// on each, so the rest of a longer export is never read.
+const DRIVE_EXPORT_READ_BYTES = 400_000;
 type SyncItem = {
   id: string;
   kind: "mail" | "calendar" | "drive";
@@ -298,6 +305,7 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
     });
     let nextCursor = { ...cursor };
     const sources: PersonalSourceSettlement[] = [];
+    let fenceLost = false;
     for (const observation of observations) {
       if (observation.status === "rejected") {
         if (isPersonalSyncInterruption(observation.reason, input.abortSignal)) {
@@ -508,6 +516,9 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
           }],
         });
         if (!checkpoint) {
+          // The connection was revoked, or this sync lost its lease, so no
+          // later source may be ingested under it.
+          fenceLost = true;
           throw new Error("Connected source was revoked during synchronization.");
         }
         nextCursor = candidateCursor;
@@ -522,7 +533,9 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
           removed: sourceRemoved,
         });
       } catch (error) {
-        if (isPersonalSyncInterruption(error, input.abortSignal)) throw error;
+        if (fenceLost || isPersonalSyncInterruption(error, input.abortSignal)) {
+          throw error;
+        }
         const lastAttemptedAt = new Date().toISOString();
         sources.push({
           source: observation.source,
@@ -1393,6 +1406,7 @@ function googleEvent(value: Record<string, unknown>): SyncItem {
   if (!deleted && !sourceUpdatedAt) {
     throw new Error("Google Calendar item is missing a canonical updated timestamp.");
   }
+  const description = String(value.description || "").slice(0, 100_000);
   return {
     id: String(value.id),
     kind: "calendar",
@@ -1405,7 +1419,7 @@ function googleEvent(value: Record<string, unknown>): SyncItem {
     calendarEvent: deleted ? undefined : {
       eventId: String(value.id),
       title: String(value.summary || "Calendar event"),
-      description: String(value.description || ""),
+      description,
       status: String(value.status || "confirmed"),
       start: String(start.dateTime || start.date || ""),
       end: String(end.dateTime || end.date || ""),
@@ -1416,7 +1430,7 @@ function googleEvent(value: Record<string, unknown>): SyncItem {
         calendarPerson(record(item), "required")
       ),
     },
-    content: [`Event: ${String(value.summary || "Untitled")}`, `Status: ${String(value.status || "")}`, `Start: ${String(start.dateTime || start.date || "")}`, `End: ${String(end.dateTime || end.date || "")}`, `Timezone: ${String(start.timeZone || end.timeZone || "")}`, `Location: ${String(value.location || "")}`, `Organizer: ${String(organizer.email || "")}`, `Meeting: ${String(value.hangoutLink || conference.conferenceId || "")}`, `Recurrence: ${array(value.recurrence).map(String).join("; ")}`, `Description: ${String(value.description || "")}`, `Attendees: ${array(value.attendees).map((item) => { const attendee = record(item); return `${String(attendee.email || "")} (${String(attendee.responseStatus || "unknown")})`; }).filter(Boolean).join(", ")}`].join("\n"),
+    content: [`Event: ${String(value.summary || "Untitled")}`, `Status: ${String(value.status || "")}`, `Start: ${String(start.dateTime || start.date || "")}`, `End: ${String(end.dateTime || end.date || "")}`, `Timezone: ${String(start.timeZone || end.timeZone || "")}`, `Location: ${String(value.location || "")}`, `Organizer: ${String(organizer.email || "")}`, `Meeting: ${String(value.hangoutLink || conference.conferenceId || "")}`, `Recurrence: ${array(value.recurrence).map(String).join("; ")}`, `Description: ${description}`, `Attendees: ${array(value.attendees).map((item) => { const attendee = record(item); return `${String(attendee.email || "")} (${String(attendee.responseStatus || "unknown")})`; }).filter(Boolean).join(", ")}`].join("\n"),
   };
 }
 
@@ -1434,8 +1448,8 @@ function calendarPerson(
 }
 
 async function providerJson(url: string, headers: Record<string, string>, signal?: AbortSignal, accepted: number[] = []) { return withProviderDeadline(signal, async (requestSignal) => { const response = await fetch(url, { headers, signal: requestSignal }); const body = await response.json().catch((error: unknown) => { if (requestSignal.aborted) throw error; return {}; }) as Record<string, unknown>; if (!response.ok && !accepted.includes(response.status)) throw new Error(`Connected source returned ${response.status}.`); return { status: response.status, body }; }); }
-async function providerText(url: string, headers: Record<string, string>, signal?: AbortSignal) { const parsed = new URL(url); if (parsed.protocol !== "https:" || parsed.hostname !== "www.googleapis.com") throw new Error("Provider returned an unsafe document URL."); return withProviderDeadline(signal, async (requestSignal) => { const response = await fetch(url, { headers, signal: requestSignal }); if (!response.ok) throw new Error(`Connected source returned ${response.status}.`); return response.text(); }); }
-async function providerBytes(url: string, headers: Record<string, string>, signal: AbortSignal | undefined, maxBytes: number) { const parsed = new URL(url); if (parsed.protocol !== "https:" || parsed.hostname !== "www.googleapis.com") throw new Error("Provider returned an unsafe document URL."); return withProviderDeadline(signal, async (requestSignal) => { const response = await fetch(url, { headers, signal: requestSignal }); if (!response.ok) throw new Error(`Connected source returned ${response.status}.`); const declared = Number(response.headers.get("content-length") || 0); if (declared > maxBytes) throw new Error("Connected file exceeds the extraction limit."); const bytes = new Uint8Array(await response.arrayBuffer()); if (bytes.byteLength > maxBytes) throw new Error("Connected file exceeds the extraction limit."); return bytes; }); }
+async function providerText(url: string, headers: Record<string, string>, signal?: AbortSignal) { const parsed = new URL(url); if (parsed.protocol !== "https:" || parsed.hostname !== "www.googleapis.com") throw new Error("Provider returned an unsafe document URL."); return withProviderDeadline(signal, async (requestSignal) => { const response = await fetch(url, { headers, signal: requestSignal }); if (!response.ok) throw new Error(`Connected source returned ${response.status}.`); return (await readResponseTextLimited(response, DRIVE_EXPORT_READ_BYTES)).text; }); }
+async function providerBytes(url: string, headers: Record<string, string>, signal: AbortSignal | undefined, maxBytes: number) { const parsed = new URL(url); if (parsed.protocol !== "https:" || parsed.hostname !== "www.googleapis.com") throw new Error("Provider returned an unsafe document URL."); return withProviderDeadline(signal, async (requestSignal) => { const response = await fetch(url, { headers, signal: requestSignal }); if (!response.ok) throw new Error(`Connected source returned ${response.status}.`); const declared = Number(response.headers.get("content-length") || 0); if (declared > maxBytes) throw new Error("Connected file exceeds the extraction limit."); const body = await readResponseBytesLimited(response, maxBytes); if (body.truncated) throw new Error("Connected file exceeds the extraction limit."); return body.bytes; }); }
 
 /**
  * Runs one provider request, body included, under the caller's signal and a

@@ -6,6 +6,12 @@ export type LimitedTextBody = {
   truncated: boolean;
 };
 
+export type LimitedBytesBody = {
+  bytes: Uint8Array<ArrayBuffer>;
+  bytesRead: number;
+  truncated: boolean;
+};
+
 export class JsonBodyError extends Error {
   constructor(
     message: string,
@@ -111,9 +117,18 @@ export async function readResponseTextLimited(
   response: Response,
   maxBytes: number,
 ): Promise<LimitedTextBody> {
+  const { bytes, ...body } = await readResponseBytesLimited(response, maxBytes);
+  return { text: new TextDecoder().decode(bytes), ...body };
+}
+
+/** The bytes of readResponseTextLimited, left undecoded. */
+export async function readResponseBytesLimited(
+  response: Response,
+  maxBytes: number,
+): Promise<LimitedBytesBody> {
   const boundedMax = normalizeMaxBytes(maxBytes);
   const declaredLength = Number(response.headers.get("content-length") || 0);
-  const body = await readStreamTextLimited(response.body, boundedMax);
+  const body = await readStreamBytesLimited(response.body, boundedMax);
   return {
     ...body,
     truncated: body.truncated || (Number.isFinite(declaredLength) && declaredLength > boundedMax),
@@ -124,9 +139,17 @@ async function readStreamTextLimited(
   stream: ReadableStream<Uint8Array> | null,
   maxBytes: number,
 ): Promise<LimitedTextBody> {
+  const { bytes, ...body } = await readStreamBytesLimited(stream, maxBytes);
+  return { text: new TextDecoder().decode(bytes), ...body };
+}
+
+async function readStreamBytesLimited(
+  stream: ReadableStream<Uint8Array> | null,
+  maxBytes: number,
+): Promise<LimitedBytesBody> {
   const boundedMax = normalizeMaxBytes(maxBytes);
   if (!stream) {
-    return { text: "", bytesRead: 0, truncated: false };
+    return { bytes: new Uint8Array(), bytesRead: 0, truncated: false };
   }
 
   const reader = stream.getReader();
@@ -173,11 +196,7 @@ async function readStreamTextLimited(
     offset += chunk.byteLength;
   }
 
-  return {
-    text: new TextDecoder().decode(bytes),
-    bytesRead,
-    truncated,
-  };
+  return { bytes, bytesRead, truncated };
 }
 
 function normalizeMaxBytes(value: number) {
