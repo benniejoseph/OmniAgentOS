@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { tenantHasAtMostOneActiveMember } from "@/lib/auth/tenant-membership";
 import {
   ensureDatabaseSchema,
   getDatabaseTenantContext,
@@ -175,6 +176,23 @@ const TENANT_COMPATIBLE_CONTEXT_RETRIEVAL_SOURCES = Object.freeze({
   entityGraph: "authorized",
 } as const satisfies ContextRetrievalSources);
 
+/**
+ * The default lane once a tenant has more than one member: only the memory
+ * and relation paths the run's own scope authorizes. The tenant-compatible
+ * sources would read every member's unattributed memory, knowledge and
+ * topics.
+ */
+function memberScopedContextRetrievalSources(
+  databaseMemoryAccessScope: DatabaseMemoryAccessScope | undefined,
+): ContextRetrievalSources {
+  return {
+    memory: databaseMemoryAccessScope ? "authorized_only" : "exclude",
+    knowledge: "exclude",
+    topicGraph: "exclude",
+    entityGraph: "authorized",
+  };
+}
+
 type RetrievalTraceLedger = {
   traces: RetrievalTraceRecord[];
 };
@@ -186,15 +204,21 @@ export async function buildContextPack(
   const startedAt = Date.now();
   const databaseMemoryAccessScope = resolveContextMemoryAccessScope(options);
   const compilerV2Request = contextCompilerV2Request(options);
+  const tenantId = resolveContextTenantId(options, databaseMemoryAccessScope);
+  // The tenant-wide default is one person's own only while the tenant has
+  // one member. With more, a run reads just what its scope authorizes and
+  // leaves no tenant-wide trace of the query.
+  const memberScopedDefault = !options.retrievalSources &&
+    !(await tenantHasAtMostOneActiveMember(normalizeTenantId(tenantId)));
   const retrievalSources = resolveContextRetrievalSources(
     options,
     databaseMemoryAccessScope,
     compilerV2Request,
+    memberScopedDefault,
   );
   const privateTraceAccessScope = resolvePrivateTraceAccessScope(
     databaseMemoryAccessScope,
   );
-  const tenantId = resolveContextTenantId(options, databaseMemoryAccessScope);
   const normalizedQuery = String(redactSensitive(query.trim())).slice(0, 4_000);
   const evidenceIds = normalizeExplicitEvidenceIds(options.evidenceIds);
   const limit = Math.min(Math.max(options.limit || 8, evidenceIds?.length || 1), 24);
@@ -275,7 +299,11 @@ export async function buildContextPack(
       ...(compilerV2Canary ? { compilerV2Canary } : {}),
       ...(compilerV2Automatic ? { compilerV2Automatic } : {}),
     };
-    if (options.persistTrace !== false && !databaseMemoryAccessScope) {
+    if (
+      options.persistTrace !== false &&
+      !databaseMemoryAccessScope &&
+      !memberScopedDefault
+    ) {
       pack.trace = await saveRetrievalTrace({
         tenantId,
         query: normalizedQuery,
@@ -537,7 +565,7 @@ export async function buildContextPack(
   const trace =
     options.persistTrace === false
       ? undefined
-      : !databaseMemoryAccessScope
+      : !databaseMemoryAccessScope && !memberScopedDefault
         ? await saveRetrievalTrace({
           tenantId,
           query: normalizedQuery,
@@ -620,9 +648,11 @@ function resolveContextRetrievalSources(
   options: BuildContextPackOptions,
   databaseMemoryAccessScope: DatabaseMemoryAccessScope | undefined,
   compilerV2Request: ReturnType<typeof contextCompilerV2Request>,
+  memberScopedDefault: boolean,
 ): ContextRetrievalSources {
-  const sources = options.retrievalSources ||
-    TENANT_COMPATIBLE_CONTEXT_RETRIEVAL_SOURCES;
+  const sources = options.retrievalSources || (memberScopedDefault
+    ? memberScopedContextRetrievalSources(databaseMemoryAccessScope)
+    : TENANT_COMPATIBLE_CONTEXT_RETRIEVAL_SOURCES);
   if (sources.memory === "authorized_only" && !databaseMemoryAccessScope) {
     throw new Error(
       "Authorized-only context memory requires a database memory access scope.",

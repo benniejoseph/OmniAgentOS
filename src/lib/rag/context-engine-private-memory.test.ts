@@ -10,7 +10,12 @@ const mocks = vi.hoisted(() => ({
   searchMemoryGraph: vi.fn(async () => []),
   searchMemories: vi.fn(),
   setTransactionLocalDatabaseMemoryAccessScope: vi.fn(),
+  tenantHasAtMostOneActiveMember: vi.fn(async (_tenantId: string) => true),
   updateJsonFile: vi.fn(),
+}));
+
+vi.mock("@/lib/auth/tenant-membership", () => ({
+  tenantHasAtMostOneActiveMember: mocks.tenantHasAtMostOneActiveMember,
 }));
 
 vi.mock("@/lib/db/client", () => ({
@@ -236,6 +241,7 @@ describe("actor-scoped context retrieval", () => {
       transactionScoped: false,
     });
     mocks.getSql.mockReturnValue(rootSql);
+    mocks.tenantHasAtMostOneActiveMember.mockResolvedValue(true);
     mocks.setTransactionLocalDatabaseMemoryAccessScope.mockImplementation(
       async (_sql: unknown, scope: unknown) => scope,
     );
@@ -577,5 +583,97 @@ describe("actor-scoped context retrieval", () => {
       },
     })).rejects.toThrow("requires explicit evidence");
     expect(mocks.searchMemories).not.toHaveBeenCalled();
+  });
+
+  it("keeps the tenant-wide lane and its trace while the tenant has one member", async () => {
+    const pack = await buildContextPack("remember my deployment preference", {
+      tenantId: " tenant-a ",
+      persistTrace: true,
+    });
+
+    expect(mocks.tenantHasAtMostOneActiveMember).toHaveBeenCalledWith("tenant-a");
+    expect(mocks.searchMemories).toHaveBeenCalledOnce();
+    expect(mocks.searchKnowledge).toHaveBeenCalledOnce();
+    expect(mocks.searchMemoryGraph).toHaveBeenCalledOnce();
+    expect(pack.memoryResults.map((result) => result.record.id)).toEqual([
+      "legacy-memory",
+    ]);
+    expect(pack.trace?.tenantId).toBe("tenant-a");
+    expect(pack.trace?.accessBinding).toBeUndefined();
+
+    const unselected = await buildContextPack("remember my deployment preference", {
+      tenantId: "tenant-a",
+      evidenceIds: [],
+      persistTrace: true,
+    });
+    expect(unselected.trace?.tenantId).toBe("tenant-a");
+  });
+
+  it("reads only the run's scoped memory once the tenant has another member", async () => {
+    mocks.tenantHasAtMostOneActiveMember.mockResolvedValue(false);
+    const pack = await buildContextPack("remember my deployment preference", {
+      tenantId: "tenant-a",
+      databaseMemoryAccessScope: accessScope(),
+      persistTrace: true,
+      limit: 8,
+    });
+
+    expect(mocks.tenantHasAtMostOneActiveMember).toHaveBeenCalledWith("tenant-a");
+    expect(mocks.searchMemories).toHaveBeenCalledOnce();
+    expect(mocks.searchMemories).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ accessScope: accessScope() }),
+    );
+    expect(mocks.searchKnowledge).not.toHaveBeenCalled();
+    expect(mocks.searchMemoryGraph).not.toHaveBeenCalled();
+    expect(pack.memoryResults.map((result) => result.record.id)).toEqual([
+      "private-memory",
+    ]);
+    expect(pack.trace).toEqual(expect.objectContaining({
+      accessBinding: expect.objectContaining({
+        ownerActorId: actorId,
+        visibility: "user_private",
+      }),
+    }));
+  });
+
+  it("reads and traces nothing tenant-wide for an unscoped run once the tenant has another member", async () => {
+    mocks.tenantHasAtMostOneActiveMember.mockResolvedValue(false);
+    const pack = await buildContextPack("remember my deployment preference", {
+      tenantId: "tenant-a",
+      persistTrace: true,
+    });
+
+    expect(mocks.searchMemories).not.toHaveBeenCalled();
+    expect(mocks.searchKnowledge).not.toHaveBeenCalled();
+    expect(mocks.searchMemoryGraph).not.toHaveBeenCalled();
+    expect(pack.results).toEqual([]);
+    expect(pack.trace).toBeUndefined();
+
+    const unselected = await buildContextPack("remember my deployment preference", {
+      tenantId: "tenant-a",
+      evidenceIds: [],
+      persistTrace: true,
+    });
+    expect(unselected.trace).toBeUndefined();
+    expect(mocks.getSql).not.toHaveBeenCalled();
+  });
+
+  it("leaves a caller's chosen sources alone without counting members", async () => {
+    mocks.tenantHasAtMostOneActiveMember.mockResolvedValue(false);
+    await buildContextPack("remember my deployment preference", {
+      tenantId: "tenant-a",
+      retrievalSources: {
+        memory: "exclude",
+        knowledge: "tenant_compatible",
+        topicGraph: "exclude",
+        entityGraph: "exclude",
+      },
+      persistTrace: true,
+    });
+
+    expect(mocks.tenantHasAtMostOneActiveMember).not.toHaveBeenCalled();
+    expect(mocks.searchKnowledge).toHaveBeenCalledOnce();
+    expect(mocks.getSql).toHaveBeenCalled();
   });
 });

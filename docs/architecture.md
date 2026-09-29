@@ -969,6 +969,16 @@ and the plain SHA-256 digests that earlier releases wrote, from the
 memory in the closure. It marks each changed event with `digestsForgottenAt`.
 The rest of the event log stays append-only.
 
+A context pack whose caller names no retrieval sources uses the
+tenant-compatible lane only while the tenant has at most one active member:
+unattributed memory, tenant knowledge, and the topic graph beside the run's
+scoped memory. Once a second member is active, that default reads only the
+memory the run's own access scope authorizes, plus authorized relation paths.
+It skips tenant knowledge and the topic graph and writes no tenant-wide
+retrieval trace; an unscoped run then gets no retrieved context at all. The
+check costs one membership query per context pack, and a caller that names
+its sources is not affected.
+
 Migration v43 begins the P3.1 memory-access foundation without changing a
 served read or write. Existing and rollback-created memories remain explicit
 version-0 `legacy_unattributed` rows; owner, agent, workspace, project,

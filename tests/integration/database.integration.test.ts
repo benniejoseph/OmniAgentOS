@@ -76,6 +76,7 @@ import {
 } from "@/lib/threads/store";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { loadTenantAiUsageSince } from "@/lib/usage/allowance";
+import { tenantHasAtMostOneActiveMember } from "@/lib/auth/tenant-membership";
 import { approvalMaterialBindingSha256 } from "@/lib/tools/approval-binding";
 import {
   approveAndClaimToolExecution,
@@ -6930,6 +6931,53 @@ databaseDescribe("Postgres schema integration", () => {
       tenantId,
       () => loadTenantAiUsageSince({ tenantId, since: new Date(since.getTime() + 3 * hour) }),
     )).resolves.toEqual({ tokens: 0, costMicrousd: 0 });
+  });
+
+  test("counts only a tenant's active members for its default context lane", async () => {
+    const tenantId = "membership_count_tenant";
+    const otherTenantId = "membership_count_other";
+    const userIds = [
+      "00000000-0000-4000-8000-000000000901",
+      "00000000-0000-4000-8000-000000000902",
+      "00000000-0000-4000-8000-000000000903",
+    ];
+    await admin`
+      INSERT INTO omni_auth_tenants (id, name, slug)
+      VALUES
+        (${tenantId}, 'Membership count', ${tenantId}),
+        (${otherTenantId}, 'Membership count other', ${otherTenantId})
+    `;
+    for (const [index, userId] of userIds.entries()) {
+      await admin`
+        INSERT INTO omni_auth_users (id, email, password_hash)
+        VALUES (${userId}, ${`membership-count-${index}@example.test`}, 'test-only')
+      `;
+    }
+    await admin`
+      INSERT INTO omni_auth_memberships (id, tenant_id, user_id, role, status)
+      VALUES
+        ('membership-count-owner', ${tenantId}, ${userIds[0]}, 'admin', 'active'),
+        ('membership-count-second', ${tenantId}, ${userIds[1]}, 'operator', 'disabled'),
+        ('membership-count-other', ${otherTenantId}, ${userIds[2]}, 'admin', 'active')
+    `;
+
+    await expect(tenantHasAtMostOneActiveMember(tenantId)).resolves.toBe(true);
+    await expect(runWithDatabaseTenantScope(
+      tenantId,
+      () => tenantHasAtMostOneActiveMember(tenantId),
+    )).resolves.toBe(true);
+
+    await admin`
+      UPDATE omni_auth_memberships
+      SET status = 'active'
+      WHERE id = 'membership-count-second'
+    `;
+    await expect(tenantHasAtMostOneActiveMember(tenantId)).resolves.toBe(false);
+    await expect(runWithDatabaseTenantScope(
+      tenantId,
+      () => tenantHasAtMostOneActiveMember(tenantId),
+    )).resolves.toBe(false);
+    await expect(tenantHasAtMostOneActiveMember(otherTenantId)).resolves.toBe(true);
   });
 });
 
