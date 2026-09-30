@@ -10,21 +10,21 @@ export const BACKUP_EXCLUDED_TABLE_DATA = Object.freeze([
   "omni_local_computer_commands",
 ]);
 
-/** pg_dump's arguments for one snapshot of the public schema. */
-export function backupDumpArguments({ snapshotId, file }) {
+/**
+ * pg_dump's arguments for one snapshot of the public schema, grants included,
+ * written to standard output for the backup to encrypt as it arrives.
+ */
+export function backupDumpArguments({ snapshotId }) {
   return [
     "--format=custom",
     "--compress=9",
     "--schema=public",
     "--no-owner",
-    "--no-acl",
     ...BACKUP_EXCLUDED_TABLE_DATA.map(
       (tableName) => `--exclude-table-data=public.${tableName}`,
     ),
     "--snapshot",
     snapshotId,
-    "--file",
-    file,
   ];
 }
 

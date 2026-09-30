@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
+import { createReadStream, createWriteStream } from "node:fs";
 import {
-  chmod,
   mkdir,
   readFile,
   rename,
@@ -11,14 +10,27 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { pipeline } from "node:stream/promises";
 import postgres from "postgres";
 import {
   BACKUP_EXCLUDED_TABLE_DATA,
   backupDumpArguments,
   dumpedTableRowCounts,
 } from "./db-backup-dump.mjs";
+import {
+  BACKUP_ENCRYPTION_ALGORITHM,
+  GRANT_INVENTORY_JSON,
+  GRANT_ROLES_JSON,
+  assertOutsideCheckout,
+  backupEncryptionKeyId,
+  createBackupEncryptionStream,
+  isGrantInventory,
+  isRoleNameList,
+  parseBackupEncryptionKey,
+} from "./db-backup-security.mjs";
 
 const schemaMigrationManifest = JSON.parse(
   await readFile(new URL("../schema-migrations.json", import.meta.url), "utf8"),
@@ -45,14 +57,34 @@ if (
   );
 }
 
+let encryptionKey;
+try {
+  encryptionKey = parseBackupEncryptionKey(
+    process.env.OMNIAGENT_BACKUP_ENCRYPTION_KEY,
+  );
+} catch (error) {
+  fail(error.message);
+}
+
 const createdAt = new Date();
+// Outside any checkout by default, where a dump cannot be committed.
 const output = path.resolve(
   process.env.OMNIAGENT_BACKUP_OUTPUT ||
-    path.join("backups", `omniagent-${createdAt.toISOString().replace(/[:.]/g, "-")}.dump`),
+    path.join(
+      os.homedir(),
+      ".asael",
+      "backups",
+      `omniagent-${createdAt.toISOString().replace(/[:.]/g, "-")}.dump.enc`,
+    ),
 );
 const temporaryOutput = `${output}.partial-${process.pid}`;
 const manifestOutput = `${output}.manifest.json`;
 
+try {
+  await assertOutsideCheckout(output, "OMNIAGENT_BACKUP_OUTPUT");
+} catch (error) {
+  fail(error.message);
+}
 await mkdir(path.dirname(output), { recursive: true, mode: 0o700 });
 await rm(temporaryOutput, { force: true });
 
@@ -73,6 +105,7 @@ try {
     ssl: "require",
   });
   let sourceTableRowCounts;
+  let sourceGrants;
   try {
     await snapshotClient.begin(
       "ISOLATION LEVEL REPEATABLE READ READ ONLY",
@@ -80,26 +113,32 @@ try {
         const [snapshot] =
           await sql`SELECT pg_export_snapshot() AS snapshot_id`;
         sourceTableRowCounts = await readDatabaseTableRowCountsFromSql(sql);
-        await run("pg_dump", backupDumpArguments({
-          snapshotId: snapshot.snapshot_id,
-          file: temporaryOutput,
-        }), postgresEnvironment(backupDatabaseUrl));
+        sourceGrants = await readDatabaseGrantsFromSql(sql);
+        await dumpEncrypted(
+          backupDumpArguments({ snapshotId: snapshot.snapshot_id }),
+          postgresEnvironment(backupDatabaseUrl),
+        );
       },
     );
   } finally {
     await snapshotClient.end({ timeout: 5 });
   }
-  if (!sourceTableRowCounts) {
+  if (!sourceTableRowCounts || !sourceGrants) {
     throw new Error("Database snapshot row counts were not captured.");
   }
-  await chmod(temporaryOutput, 0o600);
   await rename(temporaryOutput, output);
 
   const file = await stat(output);
+  const { configuredEndpoint, ...sourceIdentity } = sourceDatabaseIdentity;
   const manifest = {
+    manifestVersion: 2,
     format: "postgres-custom",
+    encryption: {
+      algorithm: BACKUP_ENCRYPTION_ALGORITHM,
+      keyId: backupEncryptionKeyId(encryptionKey),
+    },
     createdAt: createdAt.toISOString(),
-    file: output,
+    file: path.basename(output),
     bytes: file.size,
     sha256: await hashFile(output),
     sourceRevision:
@@ -107,18 +146,37 @@ try {
       process.env.GITHUB_SHA ||
       process.env.OMNIAGENT_RELEASE_SHA ||
       null,
-    sourceDatabase: databaseIdentity(backupDatabaseUrl),
-    sourceDatabaseIdentity,
+    // The manifest sits beside the backup unencrypted, so it names the
+    // source database's host only by digest.
+    sourceDatabaseIdentity: {
+      ...sourceIdentity,
+      configuredEndpointSha256: createHash("sha256")
+        .update(configuredEndpoint)
+        .digest("hex"),
+    },
     schemaMigrations: sourceSchemaMigrations,
     forcedRlsTables: sourceForcedRlsTables,
     excludedTableData: BACKUP_EXCLUDED_TABLE_DATA,
     tableRowCounts: dumpedTableRowCounts(sourceTableRowCounts),
+    grants: sourceGrants.grants,
+    grantRoles: sourceGrants.roles,
   };
   await writeFile(manifestOutput, `${JSON.stringify(manifest, null, 2)}\n`, {
     encoding: "utf8",
     mode: 0o600,
   });
-  console.log(JSON.stringify({ level: "info", message: "Database backup completed.", ...manifest }));
+  console.log(JSON.stringify({
+    level: "info",
+    message: "Database backup completed.",
+    file: output,
+    manifest: manifestOutput,
+    bytes: manifest.bytes,
+    sha256: manifest.sha256,
+    keyId: manifest.encryption.keyId,
+    schemaVersion: sourceSchemaMigrations.at(-1)?.version ?? 0,
+    tables: Object.keys(manifest.tableRowCounts).length,
+    grants: manifest.grants.length,
+  }));
 } catch (error) {
   await rm(temporaryOutput, { force: true });
   fail(error instanceof Error ? error.message : "Database backup failed.");
@@ -407,6 +465,44 @@ async function readDatabaseTableRowCountsFromSql(sql) {
   return counts;
 }
 
+async function readDatabaseGrantsFromSql(sql) {
+  const [row] = await sql.unsafe(
+    `SELECT ${GRANT_INVENTORY_JSON}::text AS grants, ${GRANT_ROLES_JSON}::text AS roles`,
+  );
+  const grants = JSON.parse(row.grants);
+  const roles = JSON.parse(row.roles);
+  if (!isGrantInventory(grants) || !isRoleNameList(roles)) {
+    throw new Error("Unable to inventory Asael grants.");
+  }
+  return { grants, roles };
+}
+
+// pg_dump writes the archive to a pipe, and only its ciphertext reaches disk.
+async function dumpEncrypted(args, env) {
+  const child = spawn("pg_dump", args, {
+    env,
+    stdio: ["ignore", "pipe", "inherit"],
+  });
+  const exited = new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", (code, signal) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`pg_dump failed (${signal || `exit ${code}`}).`));
+      }
+    });
+  });
+  await Promise.all([
+    pipeline(
+      child.stdout,
+      createBackupEncryptionStream(encryptionKey),
+      createWriteStream(temporaryOutput, { flags: "wx", mode: 0o600 }),
+    ),
+    exited,
+  ]);
+}
+
 async function readDatabaseForcedRlsTables(value) {
   const output = await runCapture(
     "psql",
@@ -467,20 +563,6 @@ function databaseIdentity(value) {
 
 function quoteIdentifier(value) {
   return `"${String(value).replaceAll('"', '""')}"`;
-}
-
-function run(command, args, env) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { env, stdio: ["ignore", "inherit", "inherit"] });
-    child.once("error", reject);
-    child.once("exit", (code, signal) => {
-      if (code === 0) {
-        resolve();
-      } else {
-        reject(new Error(`${command} failed (${signal || `exit ${code}`}).`));
-      }
-    });
-  });
 }
 
 function runCapture(command, args, env) {

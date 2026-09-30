@@ -1798,22 +1798,25 @@ Define an owner, RPO, RTO, retention period, and restore-test cadence before lau
 - Test restore into an isolated database, run schema/RLS integration tests, and verify a representative tenant before calling a backup valid.
 - File/demo storage is not a production backup source.
 
-The repository includes operator-safe wrappers that keep database passwords out of command arguments and write checksum/evidence files with owner-only permissions:
+The repository includes operator-safe wrappers that keep database passwords out of command arguments, encrypt each backup as `pg_dump` writes it, and write manifest and evidence files with owner-only permissions:
 
 ```bash
 DATABASE_URL=... \
 OMNIAGENT_BACKUP_DATABASE_URL=... \
-OMNIAGENT_BACKUP_OUTPUT=/secure/omniagent.dump \
+OMNIAGENT_BACKUP_ENCRYPTION_KEY=... \
 npm run db:backup
 
-OMNIAGENT_BACKUP_INPUT=/secure/omniagent.dump \
+OMNIAGENT_BACKUP_INPUT="$HOME/.asael/backups/omniagent-<timestamp>.dump.enc" \
+OMNIAGENT_BACKUP_ENCRYPTION_KEY=... \
 DATABASE_URL=postgres://.../production \
 RESTORE_DATABASE_URL=postgres://.../isolated_restore \
 RESTORE_CONFIRM=restore-into-isolated-database:isolated_restore \
 npm run db:restore-drill
 ```
 
-The restore drill is destructive only to `RESTORE_DATABASE_URL`. It requires the production URL for comparison, rejects a target with the production database name even when provider host aliases differ, requires target-specific confirmation, verifies the backup manifest checksum before restore, validates the exact Asael table, row-count, migration-marker, database-identity, and forced-RLS inventories, and writes a restore-evidence artifact. Run it on a schedule in isolated infrastructure and retain the evidence.
+`OMNIAGENT_BACKUP_ENCRYPTION_KEY` is 32 random bytes in base64; create it once with `openssl rand -base64 32` and keep it in a password manager, apart from the backups. No backup restores without it. The backup streams the archive through AES-256-GCM, so no plaintext dump reaches disk, and writes `~/.asael/backups/omniagent-<timestamp>.dump.enc` unless `OMNIAGENT_BACKUP_OUTPUT` says otherwise. Both scripts refuse a backup path inside a git checkout. The manifest beside each backup is not encrypted: it holds the key's identifier, a digest of the source host, row counts, and the grant inventory, but no rows. Backups taken before encryption cannot be drilled; take a new one.
+
+The restore drill is destructive only to `RESTORE_DATABASE_URL`. It requires the production URL for comparison, rejects a target with the production database name even when provider host aliases differ, requires target-specific confirmation, and verifies the manifest checksum and the key before it restores. It decrypts into an owner-only directory beside the backup and removes it however the drill ends. It restores the backup's grants, so the target server needs every role they name; the drill lists any that are missing before it touches the target, and a `NOLOGIN` role is enough. The restore user must be a superuser or `BYPASSRLS` role that can `SET ROLE omni_runtime`. The drill validates the exact Asael table, row-count, migration-marker, database-identity, forced-RLS, and grant inventories. It then reads the restored data as `omni_runtime`, which must see no memberships without a tenant and exactly each tenant's own when scoped to it. It fails when the whole drill takes longer than `OMNIAGENT_RESTORE_RTO_SECONDS` (3600 by default), and records the measured time and the backup's age in the restore-evidence artifact. Run it on a schedule in isolated infrastructure and retain the evidence.
 
 Backups dump `omni_local_computer_commands` without its rows. That table holds each Mac action's result, a screenshot included until the run reads it, and a restored queued command must not reach a Mac again. A restore recreates the table empty; the manifest lists it under `excludedTableData` and records its row count as `0`, which the restore drill checks. Provider point-in-time recovery still holds those rows for its own retention window.
 
@@ -1821,7 +1824,7 @@ Restore procedure:
 
 1. Stop workers and disable cron so no new writes arrive.
 2. Create a new isolated database from the selected point-in-time or logical backup.
-3. Validate schema versions, pgvector, row-level policies, tenant counts, and auth records.
+3. Validate schema versions, pgvector, row-level policies, grants, tenant counts, and auth records.
 4. Point a canary deployment at the restored database and run smoke.
 5. Switch production only after evidence passes; then restart one worker and watch queue behavior.
 

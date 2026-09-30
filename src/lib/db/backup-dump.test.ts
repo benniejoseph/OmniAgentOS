@@ -9,23 +9,16 @@ import {
 } from "../../../scripts/db-backup-dump.mjs";
 
 describe("database backup dump", () => {
-  it("dumps the public schema at the snapshot without the Mac's command rows", () => {
-    expect(
-      backupDumpArguments({
-        snapshotId: "00000003-0000001B-1",
-        file: "/secure/omniagent.dump.partial-7",
-      }),
-    ).toEqual([
+  it("dumps the public schema and its grants at the snapshot without the Mac's command rows", () => {
+    // No --file: the archive goes to standard output, to be encrypted.
+    expect(backupDumpArguments({ snapshotId: "00000003-0000001B-1" })).toEqual([
       "--format=custom",
       "--compress=9",
       "--schema=public",
       "--no-owner",
-      "--no-acl",
       "--exclude-table-data=public.omni_local_computer_commands",
       "--snapshot",
       "00000003-0000001B-1",
-      "--file",
-      "/secure/omniagent.dump.partial-7",
     ]);
     expect(Object.isFrozen(BACKUP_EXCLUDED_TABLE_DATA)).toBe(true);
   });
@@ -55,14 +48,18 @@ describe("database backup dump", () => {
     const script = await readFile("scripts/db-backup.mjs", "utf8");
 
     for (const wiring of [
-      'await run("pg_dump", backupDumpArguments({\n' +
-        "          snapshotId: snapshot.snapshot_id,\n" +
-        "          file: temporaryOutput,\n",
+      "await dumpEncrypted(\n" +
+        "          backupDumpArguments({ snapshotId: snapshot.snapshot_id }),\n",
+      'spawn("pg_dump", args, {',
+      "createBackupEncryptionStream(encryptionKey),\n",
       "excludedTableData: BACKUP_EXCLUDED_TABLE_DATA,\n",
       "tableRowCounts: dumpedTableRowCounts(sourceTableRowCounts),\n",
+      "grants: sourceGrants.grants,\n",
+      "grantRoles: sourceGrants.roles,\n",
     ]) {
       expect(script).toContain(wiring);
     }
     expect(script).not.toContain('"--format=custom"');
+    expect(script).not.toContain('"--no-acl"');
   });
 });
