@@ -9,7 +9,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/auth/native_client_info.dart';
@@ -609,7 +608,7 @@ Future<void> asaelFirebaseMessagingBackgroundHandler(
     if (Firebase.apps.isEmpty) await Firebase.initializeApp();
     final envelope = MobilePushEnvelope.fromData(message.data);
     try {
-      final store = SecureSessionStore(const FlutterSecureStorage());
+      final store = createBackgroundSecureSessionStore();
       final owner = await store.readOfflineProjectionOwner();
       if (owner == null) {
         throw const FormatException(
@@ -711,7 +710,7 @@ Future<void> _persistLocalNotificationResponse(
       lifecycle: lifecycle,
     );
     final queue = MobilePushReceiptQueue.forCurrentPlatform(
-      SecureSessionStore(const FlutterSecureStorage()),
+      createBackgroundSecureSessionStore(),
     );
     for (final record in records) {
       await queue.add(record);

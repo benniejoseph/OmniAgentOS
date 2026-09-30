@@ -628,6 +628,104 @@ class FlutterSecureValueStore implements AsaelEnumerableSecureValueStore {
   Future<Map<String, String>> readAll() => storage.readAll();
 }
 
+/// Keeps Asael's iOS Keychain items on this device and readable from the
+/// first unlock after a restart.
+///
+/// The plugin's default items open only while the device is unlocked, and a
+/// backup carries them to another phone, which would then share this phone's
+/// refresh chain. The app's store moves them once to a service of its own: it
+/// copies every item, marks the move done, and only then deletes the old
+/// items, so a move cut short starts over from the old items it left in
+/// place. A background isolate never moves items; it reads the old ones until
+/// the app has moved them.
+class IosDeviceKeychainStore implements AsaelEnumerableSecureValueStore {
+  IosDeviceKeychainStore({required this.movesLegacyItems});
+
+  static const _movedKey = 'asael.keychain_moved_v1';
+  static const _device = FlutterSecureStorage(
+    iOptions: IOSOptions(
+      accountName: 'app.omniagent.omniagent.device-keychain.v1',
+      accessibility: KeychainAccessibility.first_unlock_this_device,
+    ),
+  );
+  static const _legacy = FlutterSecureStorage();
+  final bool movesLegacyItems;
+  FlutterSecureStorage? _resolved;
+  Future<FlutterSecureStorage>? _resolving;
+
+  @override
+  Future<void> prepare() async {
+    await _target();
+  }
+
+  @override
+  Future<void> migrateLegacyCredentials() async {}
+
+  @override
+  Future<String?> read({required String key}) async =>
+      (await _target()).read(key: key);
+
+  @override
+  Future<void> write({required String key, required String value}) async =>
+      (await _target()).write(key: key, value: value);
+
+  @override
+  Future<void> delete({required String key}) async =>
+      (await _target()).delete(key: key);
+
+  @override
+  Future<Map<String, String>> readAll() async =>
+      {...await (await _target()).readAll()}..remove(_movedKey);
+
+  Future<FlutterSecureStorage> _target() async {
+    if (_resolved case final resolved?) return resolved;
+    final resolving = _resolving ??= _resolve();
+    try {
+      return await resolving;
+    } finally {
+      if (identical(_resolving, resolving)) _resolving = null;
+    }
+  }
+
+  Future<FlutterSecureStorage> _resolve() async {
+    if (await _device.read(key: _movedKey) != null) {
+      if (movesLegacyItems) await _deleteLegacyItems();
+      return _resolved = _device;
+    }
+    if (!movesLegacyItems) return _legacy;
+    try {
+      final values = await _legacy.readAll();
+      // Items here without the mark are what a move cut short left behind.
+      for (final key in (await _device.readAll()).keys) {
+        if (!values.containsKey(key)) await _device.delete(key: key);
+      }
+      for (final MapEntry(:key, :value) in values.entries) {
+        await _device.write(key: key, value: value);
+      }
+      await _device.write(key: _movedKey, value: 'true');
+    } catch (error) {
+      // The old items open only while the device is unlocked. This launch
+      // keeps using them, and the next one moves them.
+      debugPrint('Keychain items stay in place for now: ${_describe(error)}');
+      return _resolved = _legacy;
+    }
+    await _deleteLegacyItems();
+    return _resolved = _device;
+  }
+
+  Future<void> _deleteLegacyItems() async {
+    try {
+      await _legacy.deleteAll();
+    } catch (error) {
+      debugPrint('Old Keychain items remain for now: ${_describe(error)}');
+    }
+  }
+
+  static String _describe(Object error) => error is PlatformException
+      ? 'Keychain status ${error.code}'
+      : '${error.runtimeType}';
+}
+
 /// Debug-only adapter for ordinary `flutter run`, whose Xcode product does not
 /// embed the separately provisioned release broker.
 ///
@@ -851,9 +949,12 @@ AsaelSecureValueStore createAsaelSecureStorage({
   bool? isWeb,
   bool? isDebugMode,
 }) {
-  final usesMacOSKeychain =
-      !(isWeb ?? kIsWeb) &&
-      (platform ?? defaultTargetPlatform) == TargetPlatform.macOS;
+  final native = !(isWeb ?? kIsWeb);
+  final target = platform ?? defaultTargetPlatform;
+  if (native && target == TargetPlatform.iOS) {
+    return IosDeviceKeychainStore(movesLegacyItems: true);
+  }
+  final usesMacOSKeychain = native && target == TargetPlatform.macOS;
   if (!usesMacOSKeychain) {
     return const FlutterSecureValueStore(FlutterSecureStorage());
   }
@@ -867,6 +968,15 @@ AsaelSecureValueStore createAsaelSecureStorage({
   // the Share Extension must continue using its reviewed intake handoff.
   return const MacOsCredentialBrokerStore();
 }
+
+/// A background isolate's session store. On iOS it reads the Keychain items
+/// wherever the app last left them and never moves them itself.
+SecureSessionStore createBackgroundSecureSessionStore() =>
+    SecureSessionStore.withStorage(
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS
+          ? IosDeviceKeychainStore(movesLegacyItems: false)
+          : const FlutterSecureValueStore(FlutterSecureStorage()),
+    );
 
 final secureSessionStoreProvider = Provider<SecureSessionStore>(
   (_) => SecureSessionStore.withStorage(createAsaelSecureStorage()),
