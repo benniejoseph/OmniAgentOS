@@ -3214,6 +3214,7 @@ class TalkView extends StatefulWidget {
     this.voiceRecorder,
     this.ambientRealtimeFactory,
     this.ambientConsent,
+    this.workspaceLocked,
     this.quickEntry = false,
     this.ambientVoice = false,
     this.onQuickEntryReady,
@@ -3229,6 +3230,10 @@ class TalkView extends StatefulWidget {
   /// The owner's agreement that live microphone audio goes to OpenAI. Ambient
   /// Command does not listen until it is recorded.
   final AmbientVoiceConsent? ambientConsent;
+
+  /// Whether the workspace is locked. Voice input stops when it locks, since
+  /// Ambient Command on macOS keeps listening while other apps have focus.
+  final ValueListenable<bool>? workspaceLocked;
   final bool quickEntry;
   final bool ambientVoice;
   final VoidCallback? onQuickEntryReady;
@@ -3279,6 +3284,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       if (realtimeVoice != null) unawaited(_loadAmbientConsent());
     }
     input.addListener(_handleComposerChanged);
+    widget.workspaceLocked?.addListener(_handleWorkspaceLockChanged);
     WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) unawaited(loadCommandModelCatalog());
@@ -3302,6 +3308,11 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   @override
   void didUpdateWidget(covariant TalkView oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (widget.workspaceLocked != oldWidget.workspaceLocked) {
+      oldWidget.workspaceLocked?.removeListener(_handleWorkspaceLockChanged);
+      widget.workspaceLocked?.addListener(_handleWorkspaceLockChanged);
+      _handleWorkspaceLockChanged();
+    }
     if (widget.ambientConsent != oldWidget.ambientConsent) {
       ambientConsentAccepted = false;
       if (realtimeVoice != null) unawaited(_loadAmbientConsent());
@@ -3325,12 +3336,23 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    // The macOS Ambient Command panel floats over other apps, so it keeps
+    // listening while another app has focus.
+    if (state == AppLifecycleState.inactive &&
+        widget.ambientVoice &&
+        defaultTargetPlatform == TargetPlatform.macOS) {
+      return;
+    }
     if (state == AppLifecycleState.inactive ||
         state == AppLifecycleState.paused ||
         state == AppLifecycleState.hidden ||
         state == AppLifecycleState.detached) {
       unawaited(interruptVoiceDraft());
     }
+  }
+
+  void _handleWorkspaceLockChanged() {
+    if (widget.workspaceLocked?.value == true) unawaited(interruptVoiceDraft());
   }
 
   @override
@@ -3345,6 +3367,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       );
     }
     input.removeListener(_handleComposerChanged);
+    widget.workspaceLocked?.removeListener(_handleWorkspaceLockChanged);
     input.dispose();
     inputFocus.dispose();
     scroll.dispose();

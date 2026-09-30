@@ -11,6 +11,7 @@ import '../../core/storage/secure_session_store.dart';
 import '../../core/sync/reconnect_coordinator.dart';
 import '../../features/ambient_voice/ambient_voice_consent.dart';
 import '../../features/ambient_voice/realtime_voice_controller.dart';
+import '../../features/auth/application/biometric_session_lock_controller.dart';
 import '../../features/auth/application/session_controller.dart';
 import '../../features/auth/presentation/login_screen.dart';
 import '../../features/auth/presentation/session_bootstrap_screen.dart';
@@ -137,6 +138,15 @@ class ProviderBoundTalkRoute extends ConsumerWidget {
           )
         : null,
     ambientConsent: ambientVoice ? _ambientConsent(ref) : null,
+    workspaceLocked: ambientVoice
+        ? _WorkspaceLocked(
+            ref.watch(
+              biometricSessionLockControllerProvider.select(
+                (controller) => controller,
+              ),
+            ),
+          )
+        : null,
     onQuickEntryReady: onQuickEntryReady,
     onExitQuickEntry: onExitQuickEntry,
   );
@@ -150,6 +160,29 @@ class ProviderBoundTalkRoute extends ConsumerWidget {
       actorId: owner.actorId,
     );
   }
+}
+
+/// Whether the owner's workspace is locked, as its lock controller reports.
+class _WorkspaceLocked implements ValueListenable<bool> {
+  const _WorkspaceLocked(this.lock);
+
+  final BiometricSessionLockController lock;
+
+  @override
+  bool get value => lock.state.blocksInteraction;
+
+  @override
+  void addListener(VoidCallback listener) => lock.addListener(listener);
+
+  @override
+  void removeListener(VoidCallback listener) => lock.removeListener(listener);
+
+  @override
+  bool operator ==(Object other) =>
+      other is _WorkspaceLocked && identical(other.lock, lock);
+
+  @override
+  int get hashCode => identityHashCode(lock);
 }
 
 final appRouterProvider = Provider<GoRouter>((ref) {

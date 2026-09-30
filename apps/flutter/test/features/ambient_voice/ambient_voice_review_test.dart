@@ -8,6 +8,7 @@ import 'package:asael/features/ambient_voice/ambient_voice_view.dart';
 import 'package:asael/features/ambient_voice/realtime_voice_controller.dart';
 import 'package:asael/features/talk/talk.dart';
 import 'package:audioplayers/audioplayers.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -19,6 +20,13 @@ class _Sessions extends Fake implements SecureSessionStore {}
 class _Player extends Fake implements AudioPlayer {}
 
 class _Recorder extends Fake implements VoiceDraftRecorder {}
+
+class _CountingRecorder extends Fake implements VoiceDraftRecorder {
+  int cancels = 0;
+
+  @override
+  Future<void> cancel() async => cancels += 1;
+}
 
 class _Consent implements AmbientVoiceConsent {
   _Consent({this.agreed = false, this.failSave = false, this.held});
@@ -105,6 +113,53 @@ AmbientRealtimeVoiceController _voice() => AmbientRealtimeVoiceController(
   sessionStore: _Sessions(),
   audioPlayer: _Player(),
 );
+
+/// A realtime session that is listening, without a microphone.
+class _ListeningVoice extends ChangeNotifier
+    implements AmbientRealtimeVoiceController {
+  bool listening = true;
+  int cancels = 0;
+
+  @override
+  AmbientRealtimeVoicePhase get phase => listening
+      ? AmbientRealtimeVoicePhase.listening
+      : AmbientRealtimeVoicePhase.stopped;
+
+  @override
+  bool get isListening => listening;
+
+  @override
+  bool get isSpeechPlaying => false;
+
+  @override
+  String get transcript => '';
+
+  @override
+  String get detail => 'Listening…';
+
+  @override
+  double get level => 0;
+
+  @override
+  Future<void> cancel() async {
+    cancels += 1;
+    listening = false;
+    notifyListeners();
+  }
+
+  @override
+  Future<void> interruptSpeech() async {}
+
+  @override
+  Object? noSuchMethod(Invocation invocation) => null;
+}
+
+/// A workspace lock whose listeners a test can see.
+class _Lock extends ValueNotifier<bool> {
+  _Lock(super.value);
+
+  bool get listened => hasListeners;
+}
 
 /// A finished transcription turn whose tokens carry these log probabilities.
 Map<String, Object?> _turn(String transcript, List<double> logprobs) => {
@@ -563,6 +618,127 @@ void main() {
       expect(voice.confidenceBand, AmbientVoiceConfidenceBand.edited);
       expect(find.byType(Checkbox), findsOneWidget);
     });
+  });
+
+  group('Ambient Command focus', () {
+    final macOS = TargetPlatformVariant.only(TargetPlatform.macOS);
+
+    Future<_ListeningVoice> listening(
+      WidgetTester tester, {
+      ValueListenable<bool>? workspaceLocked,
+    }) async {
+      final voice = _ListeningVoice();
+      final talk = TalkController(_Repository());
+      addTearDown(talk.dispose);
+      addTearDown(
+        () => tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.resumed,
+        ),
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: TalkView(
+            controller: talk,
+            voiceRecorder: _Recorder(),
+            ambientVoice: true,
+            ambientRealtimeFactory: () => voice,
+            workspaceLocked: workspaceLocked,
+          ),
+        ),
+      );
+      return voice;
+    }
+
+    Future<void> enter(WidgetTester tester, AppLifecycleState state) async {
+      tester.binding.handleAppLifecycleStateChanged(state);
+      await tester.pump();
+    }
+
+    testWidgets('keeps listening on macOS while another app has focus', (
+      tester,
+    ) async {
+      final voice = await listening(tester);
+
+      await enter(tester, AppLifecycleState.inactive);
+      expect(voice.cancels, 0);
+
+      await enter(tester, AppLifecycleState.hidden);
+      expect(voice.cancels, 1);
+    }, variant: macOS);
+
+    testWidgets('stops listening when the workspace locks', (tester) async {
+      final [first, second, engaged] = [
+        for (final value in [false, false, true]) _Lock(value),
+      ];
+      for (final lock in [first, second, engaged]) {
+        addTearDown(lock.dispose);
+      }
+      final voice = await listening(tester, workspaceLocked: first);
+      final talk = tester.widget<TalkView>(find.byType(TalkView));
+      Future<void> show(ValueListenable<bool> workspaceLocked) =>
+          tester.pumpWidget(
+            MaterialApp(
+              home: TalkView(
+                controller: talk.controller,
+                voiceRecorder: talk.voiceRecorder,
+                ambientVoice: true,
+                ambientRealtimeFactory: talk.ambientRealtimeFactory,
+                workspaceLocked: workspaceLocked,
+              ),
+            ),
+          );
+
+      first.value = true;
+      await tester.pump();
+      expect(voice.cancels, 1);
+
+      voice.listening = true;
+      await show(second);
+      expect(voice.cancels, 1);
+      expect(first.listened, isFalse);
+
+      second.value = true;
+      await tester.pump();
+      expect(voice.cancels, 2);
+
+      // A workspace that is already locked stops listening at once.
+      voice.listening = true;
+      await show(engaged);
+      expect(voice.cancels, 3);
+
+      await tester.pumpWidget(const SizedBox());
+      expect(engaged.listened, isFalse);
+    }, variant: macOS);
+
+    testWidgets('stops listening on focus loss away from macOS', (
+      tester,
+    ) async {
+      final voice = await listening(tester);
+
+      await enter(tester, AppLifecycleState.inactive);
+      expect(voice.cancels, 1);
+    });
+
+    testWidgets('stops a voice draft when the main window loses focus', (
+      tester,
+    ) async {
+      final recorder = _CountingRecorder();
+      final talk = TalkController(_Repository());
+      addTearDown(talk.dispose);
+      addTearDown(
+        () => tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.resumed,
+        ),
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: TalkView(controller: talk, voiceRecorder: recorder),
+        ),
+      );
+
+      await enter(tester, AppLifecycleState.inactive);
+      expect(recorder.cancels, 1);
+    }, variant: macOS);
   });
 
   group('Ambient Command consent', () {

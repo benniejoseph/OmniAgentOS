@@ -6,6 +6,7 @@ import 'package:asael/core/platform/local_computer_bridge.dart';
 import 'package:asael/core/storage/secure_session_store.dart';
 import 'package:asael/core/sync/reconnect_coordinator.dart';
 import 'package:asael/features/ambient_voice/ambient_voice_consent.dart';
+import 'package:asael/features/auth/application/biometric_session_lock_controller.dart';
 import 'package:asael/features/auth/application/session_controller.dart';
 import 'package:asael/features/auth/domain/app_session.dart';
 import 'package:asael/features/agents/agent_council.dart';
@@ -79,6 +80,59 @@ void main() {
     sessions.replace(null);
     await tester.pump();
     expect(asked(), isNull);
+  });
+
+  testWidgets('Ambient Command learns when the workspace locks', (
+    tester,
+  ) async {
+    final container = ProviderContainer(
+      overrides: [
+        sessionControllerProvider.overrideWith(
+          () => _TestSessionController(
+            Completer<AppSession?>()..complete(_ownerA),
+          ),
+        ),
+        secureSessionStoreProvider.overrideWithValue(
+          SecureSessionStore.withStorage(_MemoryValues()),
+        ),
+        talkRepositoryProvider.overrideWith(
+          (ref) => _RecordingTalkRepository(),
+        ),
+        reconnectCoordinatorProvider.overrideWithValue(
+          ReconnectCoordinator(() async => const [], const Stream.empty()),
+        ),
+        localComputerRepositoryProvider.overrideWithValue(
+          _UnusedLocalComputerRepository(),
+        ),
+        localComputerNativeHostProvider.overrideWithValue(
+          _UnsupportedLocalComputerHost(),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const MaterialApp(
+          home: ProviderBoundTalkRoute(ambientVoice: true),
+        ),
+      ),
+    );
+    await tester.pump();
+    final locked = tester
+        .widget<TalkView>(find.byType(TalkView))
+        .workspaceLocked!;
+    expect(locked.value, isFalse);
+
+    final seen = <bool>[];
+    void record() => seen.add(locked.value);
+    locked.addListener(record);
+    // Without biometric protection, locking passes through a locking phase.
+    await container.read(biometricSessionLockControllerProvider).lock();
+    locked.removeListener(record);
+    await container.read(biometricSessionLockControllerProvider).lock();
+
+    expect(seen, [true, false]);
   });
 
   testWidgets(
