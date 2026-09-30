@@ -8,6 +8,7 @@ import 'package:asael/core/sync/reconnect_coordinator.dart';
 import 'package:asael/features/ambient_voice/ambient_voice_consent.dart';
 import 'package:asael/features/auth/application/session_controller.dart';
 import 'package:asael/features/auth/domain/app_session.dart';
+import 'package:asael/features/agents/agent_council.dart';
 import 'package:asael/features/agents/agents.dart' hide Json;
 import 'package:asael/features/agents/agents_providers.dart';
 import 'package:asael/features/computer_use/local_computer.dart';
@@ -17,6 +18,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import 'features/agents/agent_council_fixture.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -188,6 +191,9 @@ void main() {
           ),
           appInitialLocationProvider.overrideWithValue('/agents'),
           agentsRepositoryProvider.overrideWithValue(_AgentRepository()),
+          agentCouncilRepositoryProvider.overrideWithValue(
+            _EmptyCouncilRepository(),
+          ),
           talkRepositoryProvider.overrideWithValue(talkRepository),
           reconnectCoordinatorProvider.overrideWithValue(
             ReconnectCoordinator(() async => const [], const Stream.empty()),
@@ -201,7 +207,7 @@ void main() {
         ],
       );
       addTearDown(container.dispose);
-      tester.view.physicalSize = const Size(1440, 900);
+      tester.view.physicalSize = _macWindow;
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
@@ -217,6 +223,7 @@ void main() {
       await tester.pump();
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
+      await _showYourAgents(tester);
 
       expect(find.byKey(const Key('macos-agent-assign-work')), findsOneWidget);
       await tester.tap(find.byKey(const Key('macos-agent-assign-work')));
@@ -264,6 +271,9 @@ void main() {
         ),
         appInitialLocationProvider.overrideWithValue('/agents'),
         agentsRepositoryProvider.overrideWithValue(_AgentRepository()),
+        agentCouncilRepositoryProvider.overrideWithValue(
+          _EmptyCouncilRepository(),
+        ),
         talkControllerProvider.overrideWith((ref) => talk),
         reconnectCoordinatorProvider.overrideWithValue(
           ReconnectCoordinator(() async => const [], const Stream.empty()),
@@ -277,7 +287,7 @@ void main() {
       ],
     );
     addTearDown(container.dispose);
-    tester.view.physicalSize = const Size(1440, 900);
+    tester.view.physicalSize = _macWindow;
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
@@ -299,6 +309,7 @@ void main() {
     expect(talk.sending, isFalse);
     expect(talk.hasPendingConversationWork, isTrue);
     final waitingRunId = talk.runId;
+    await _showYourAgents(tester);
     await tester.tap(find.byKey(const Key('macos-agent-assign-work')));
     await tester.pump();
 
@@ -312,6 +323,30 @@ void main() {
     );
     debugDefaultTargetPlatformOverride = null;
   });
+}
+
+/// A Mac window with room beside the sidebar for the Agents toolbar's labels
+/// in the test font, which is about twice as wide as the system font.
+const _macWindow = Size(1680, 1050);
+
+/// Agents opens on what is happening now; the team is the next tab.
+Future<void> _showYourAgents(WidgetTester tester) async {
+  await tester.tap(
+    find.descendant(
+      of: find.byKey(const Key('macos-agents-workspace')),
+      matching: find.text('Your agents'),
+    ),
+  );
+  await tester.pump();
+}
+
+/// Live work with nothing running, so the page makes no network request.
+class _EmptyCouncilRepository implements AgentCouncilRepository {
+  @override
+  Future<AgentCouncilProjection> load({int limit = 60}) async =>
+      AgentCouncilProjection.fromJson(
+        agentCouncilFixtureJson(state: 'empty', includeExecutions: false),
+      );
 }
 
 class _RouterHarness extends ConsumerWidget {
