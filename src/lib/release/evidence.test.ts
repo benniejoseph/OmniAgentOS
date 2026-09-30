@@ -25,7 +25,8 @@ vi.mock("@/lib/db/client", () => ({
 vi.mock("@/lib/openai/client", () => ({
   getOpenAIReadiness: mocks.getOpenAIReadiness,
 }));
-vi.mock("@/lib/operations/worker-heartbeat", () => ({
+vi.mock("@/lib/operations/worker-heartbeat", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/operations/worker-heartbeat")>()),
   getLatestWorkerHeartbeats: mocks.getLatestWorkerHeartbeats,
 }));
 

@@ -73,6 +73,11 @@ import {
   wakeOperationJobByDedupeKey,
 } from "@/lib/operations/job-queue";
 import { getApprovalQueue, getApprovalQueueItem } from "@/lib/operations/queue";
+import {
+  getWorkerReleaseActivation,
+  listWorkerReleaseActivations,
+  recordWorkerHeartbeat,
+} from "@/lib/operations/worker-heartbeat";
 import { runEventCursor } from "@/lib/runs/event-cursor";
 import {
   AgentRunAlreadyExistsError,
@@ -7281,6 +7286,66 @@ databaseDescribe("Postgres schema integration", () => {
       () => tenantHasAtMostOneActiveMember(tenantId),
     )).resolves.toBe(false);
     await expect(tenantHasAtMostOneActiveMember(otherTenantId)).resolves.toBe(true);
+  });
+
+  test("keeps a worker's release activation across its startup registrations", async () => {
+    const worker = {
+      instanceId: "activation-machine",
+      protocol: "1",
+      revision: "activation-release",
+      target: "https://asael.test",
+    };
+    const at = (time: string) => vi.setSystemTime(new Date(`2026-09-30T${time}Z`));
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      at("10:00:00.000");
+      await recordWorkerHeartbeat({ ...worker, lane: "fast", phase: "startup" });
+      await expect(getWorkerReleaseActivation(worker)).resolves.toBeUndefined();
+
+      at("10:05:00.000");
+      await recordWorkerHeartbeat({ ...worker, lane: "fast", phase: "active" });
+      at("10:20:00.000");
+      await recordWorkerHeartbeat({ ...worker, lane: "maintenance", phase: "active" });
+      at("10:25:00.000");
+      await recordWorkerHeartbeat({ ...worker, lane: "fast", phase: "active" });
+      // A restart registers again; that leaves the activation as it was.
+      at("10:30:00.000");
+      await recordWorkerHeartbeat({ ...worker, lane: "fast", phase: "startup" });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    await expect(getWorkerReleaseActivation(worker)).resolves.toEqual({
+      instanceId: "activation-machine",
+      revision: "activation-release",
+      activatedAt: "2026-09-30T10:05:00.000Z",
+      lanes: {
+        fast: "2026-09-30T10:25:00.000Z",
+        maintenance: "2026-09-30T10:20:00.000Z",
+      },
+    });
+    await expect(getWorkerReleaseActivation({
+      instanceId: "activation-machine",
+      revision: "another-release",
+    })).resolves.toBeUndefined();
+    await expect(listWorkerReleaseActivations({
+      revision: "activation-release",
+    })).resolves.toHaveLength(1);
+    const rows = await admin<{
+      tenant_id: string;
+      status: string;
+      created_at: Date | string;
+    }[]>`
+      SELECT tenant_id, status, created_at
+      FROM omni_system_health_checks
+      WHERE scope = 'worker_release_activation'
+    `;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ tenant_id: "system", status: "healthy" });
+    // Retention ages the row from its last work, not from its activation.
+    expect(new Date(rows[0]!.created_at).toISOString()).toBe(
+      "2026-09-30T10:25:00.000Z",
+    );
   });
 
   test("finds a workflow run's authority however many events come before its binding", async () => {

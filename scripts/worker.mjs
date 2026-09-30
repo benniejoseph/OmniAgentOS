@@ -3,6 +3,7 @@
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { internalIdentityHeaders } from "./internal-identity-token.mjs";
 import { startOpenAIEgressGateway } from "./openai-egress-gateway.mjs";
+import { registrationShowsReleaseActivation } from "./worker-release-activation.mjs";
 
 const heartbeatFile = "/tmp/omniagent-worker-heartbeat";
 const workerPidFile = "/tmp/asael-worker.pid";
@@ -172,6 +173,8 @@ let lastAutomaticCanonicalRetryAt = 0;
 let canonicalActivation;
 let canonicalPromotionActivation;
 let releaseActivation;
+let releaseHoldExit;
+let recordedActivationResume;
 function beginShutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
@@ -420,16 +423,7 @@ async function activateReleaseWork(reason) {
   }
   if (releaseActivation) return releaseActivation;
   releaseActivation = (async () => {
-    if (releaseHeld) {
-      const temporaryMarker = `${releaseActivationFile}.${process.pid}.tmp`;
-      await writeFile(temporaryMarker, `${releaseRevision}\n`, { mode: 0o600 });
-      await rename(temporaryMarker, releaseActivationFile);
-      releaseHeld = false;
-      releaseWorkGeneration += 1;
-      const sleepingOnReleaseHold = releaseHoldController;
-      releaseHoldController = new AbortController();
-      sleepingOnReleaseHold.abort(new Error("Release work activated."));
-    }
+    if (releaseHeld) await exitReleaseHold();
     console.log(JSON.stringify({
       level: "info",
       message: "Canonical release work activated.",
@@ -443,6 +437,54 @@ async function activateReleaseWork(reason) {
   } finally {
     releaseActivation = undefined;
   }
+}
+
+function exitReleaseHold() {
+  releaseHoldExit ||= (async () => {
+    const temporaryMarker = `${releaseActivationFile}.${process.pid}.tmp`;
+    await writeFile(temporaryMarker, `${releaseRevision}\n`, { mode: 0o600 });
+    await rename(temporaryMarker, releaseActivationFile);
+    if (!releaseHeld) return;
+    releaseHeld = false;
+    releaseWorkGeneration += 1;
+    const sleepingOnReleaseHold = releaseHoldController;
+    releaseHoldController = new AbortController();
+    sleepingOnReleaseHold.abort(new Error("Release work activated."));
+  })().finally(() => {
+    releaseHoldExit = undefined;
+  });
+  return releaseHoldExit;
+}
+
+function resumeRecordedReleaseActivation(lane) {
+  if (!releaseHeld) return Promise.resolve();
+  recordedActivationResume ||= (async () => {
+    try {
+      // The same exact-revision canonical rule as a restart with the local
+      // marker: work stays off until canonical health reports this release.
+      await exitReleaseHold();
+      console.log(JSON.stringify({
+        level: "info",
+        message: "Release work resumed from this machine's recorded activation.",
+        lane,
+        releaseRevision,
+      }));
+      lastAutomaticCanonicalRetryAt = Date.now();
+      await activateCanonicalWorkerTarget("recorded activation recovery");
+    } catch (error) {
+      console.log(JSON.stringify({
+        level: "info",
+        message: releaseHeld
+          ? "Recorded release activation could not resume work."
+          : "Canonical worker target is not active yet; retaining staged target.",
+        error: error instanceof Error ? error.message : "Unknown release activation error.",
+        releaseRevision,
+      }));
+    }
+  })().finally(() => {
+    recordedActivationResume = undefined;
+  });
+  return recordedActivationResume;
 }
 
 async function retryActivatedCanonicalTarget() {
@@ -594,6 +636,14 @@ async function runTickLane(
             // target changes or work is explicitly activated. Repeating it
             // creates avoidable serverless/database pressure during the most
             // demanding release checks.
+            if (
+              registrationShowsReleaseActivation(body, {
+                instanceId,
+                releaseRevision,
+              })
+            ) {
+              void resumeRecordedReleaseActivation(lane);
+            }
             waitForHeldWorkerEvent = true;
             nextDelayMs = null;
           } else {

@@ -30,6 +30,7 @@ const routeMocks = vi.hoisted(() => ({
   recordSecurityAudit: vi.fn(),
   recordRuntimeEventSafely: vi.fn(),
   recordWorkerHeartbeat: vi.fn(),
+  getWorkerReleaseActivation: vi.fn(),
   reconcileAbandonedExternalA2ATasks: vi.fn(),
   reconcileCheckpointShadowsDaily: vi.fn(),
   processWorkflowQueue: vi.fn(),
@@ -213,6 +214,7 @@ vi.mock("@/lib/workflows/triggers", async (importOriginal) => ({
 vi.mock("@/lib/operations/worker-heartbeat", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/operations/worker-heartbeat")>()),
   recordWorkerHeartbeat: routeMocks.recordWorkerHeartbeat,
+  getWorkerReleaseActivation: routeMocks.getWorkerReleaseActivation,
 }));
 
 vi.mock("@/lib/a2a/maintenance", () => ({
@@ -388,6 +390,7 @@ beforeEach(() => {
     ...input,
     recordedAt: "2026-08-26T12:00:00.000Z",
   }));
+  routeMocks.getWorkerReleaseActivation.mockReset().mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -669,6 +672,48 @@ describe("dedicated worker heartbeat timing", () => {
       revision: "release-test",
       target: "http://localhost",
     });
+  });
+
+  it("tells a restarted worker the release its machine already activated", async () => {
+    routeMocks.getWorkerReleaseActivation.mockResolvedValueOnce({
+      instanceId: "worker-test",
+      revision: "release-test",
+      activatedAt: "2026-08-26T11:00:00.000Z",
+      lanes: { fast: "2026-08-26T11:55:00.000Z" },
+    });
+
+    const response = await POST(workerRequest({ startup: true }));
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toMatchObject({
+      startup: true,
+      count: 0,
+      releaseActivation: {
+        instanceId: "worker-test",
+        revision: "release-test",
+        activatedAt: "2026-08-26T11:00:00.000Z",
+      },
+    });
+    expect(body.releaseActivation).not.toHaveProperty("lanes");
+    expect(routeMocks.getWorkerReleaseActivation).toHaveBeenCalledWith({
+      instanceId: "worker-test",
+      revision: "release-test",
+    });
+    expect(routeMocks.processAllTenantWorkflowQueues).not.toHaveBeenCalled();
+  });
+
+  it("names no activation for a new machine or a worker without a revision", async () => {
+    const fresh = await POST(workerRequest({ startup: true }));
+    expect(fresh.status).toBe(200);
+    expect(await fresh.json()).not.toHaveProperty("releaseActivation");
+    expect(routeMocks.getWorkerReleaseActivation).toHaveBeenCalledOnce();
+
+    routeMocks.getWorkerReleaseActivation.mockClear();
+    const unrevised = await POST(workerRequest({ startup: true, revision: "" }));
+    expect(unrevised.status).toBe(200);
+    expect(await unrevised.json()).not.toHaveProperty("releaseActivation");
+    expect(routeMocks.getWorkerReleaseActivation).not.toHaveBeenCalled();
   });
 
   it("records an ordinary heartbeat only after scheduled work succeeds", async () => {
@@ -1254,11 +1299,13 @@ function workerRequest({
   target = "http://localhost",
   lane = "fast",
   timeBudgetMs = 1_000,
+  revision = "release-test",
 }: {
   startup: boolean;
   target?: string;
   lane?: "fast" | "background" | "maintenance" | "all";
   timeBudgetMs?: number;
+  revision?: string;
 }) {
   return new Request("http://localhost/api/workflows/tick", {
     method: "POST",
@@ -1266,7 +1313,7 @@ function workerRequest({
       "content-type": "application/json",
       "x-omni-worker-instance": "worker-test",
       "x-omni-worker-protocol": "1",
-      "x-omni-worker-revision": "release-test",
+      ...(revision ? { "x-omni-worker-revision": revision } : {}),
       "x-omni-worker-target": target,
     },
     body: JSON.stringify({

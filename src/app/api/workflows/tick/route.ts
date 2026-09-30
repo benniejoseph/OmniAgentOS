@@ -40,7 +40,10 @@ import {
   processAllTenantBackgroundOperationQueues,
   processBackgroundOperationQueue,
 } from "@/lib/operations/background-jobs";
-import { recordWorkerHeartbeat } from "@/lib/operations/worker-heartbeat";
+import {
+  getWorkerReleaseActivation,
+  recordWorkerHeartbeat,
+} from "@/lib/operations/worker-heartbeat";
 import {
   checkWorkerCompatibility,
   workerCompatibilityErrorResponse,
@@ -339,6 +342,14 @@ async function POSTHandler(request: Request) {
           ...workerHeartbeatInput,
           phase: "startup",
         });
+        // A restarted machine lost its local activation marker; this record
+        // lets it resume the release it had already activated.
+        const releaseActivation = workerHeartbeatInput.revision
+          ? await getWorkerReleaseActivation({
+              instanceId: workerHeartbeatInput.instanceId,
+              revision: workerHeartbeatInput.revision,
+            })
+          : undefined;
         await recordSecurityAudit({
           context,
           action: "manage.workflow",
@@ -351,12 +362,22 @@ async function POSTHandler(request: Request) {
             workerInstance,
             workerRevision: request.headers.get("x-omni-worker-revision"),
             workerTarget: requestTarget,
+            releaseActivationRecorded: Boolean(releaseActivation),
           },
         });
         return Response.json({
           startup: true,
           lane,
           workerHeartbeat,
+          ...(releaseActivation
+            ? {
+                releaseActivation: {
+                  instanceId: releaseActivation.instanceId,
+                  revision: releaseActivation.revision,
+                  activatedAt: releaseActivation.activatedAt,
+                },
+              }
+            : {}),
           count: 0,
         });
       }

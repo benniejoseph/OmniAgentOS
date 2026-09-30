@@ -5,7 +5,7 @@ ENV NODE_ENV=production
 ENV OMNIAGENT_RELEASE_SHA=$OMNIAGENT_RELEASE_SHA
 WORKDIR /app
 
-COPY --chown=node:node scripts/worker.mjs scripts/internal-identity-token.mjs scripts/openai-egress-gateway.mjs ./
+COPY --chown=node:node scripts/worker.mjs scripts/internal-identity-token.mjs scripts/openai-egress-gateway.mjs scripts/worker-release-activation.mjs ./
 
 USER node
 STOPSIGNAL SIGTERM

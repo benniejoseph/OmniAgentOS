@@ -27,9 +27,42 @@ type WorkerHeartbeatFilter = {
   target?: string;
 };
 
+/**
+ * A worker machine's record that it ran a release's work, kept apart from the
+ * heartbeat that each startup registration overwrites. `lanes` holds when each
+ * lane last did that work.
+ */
+export type WorkerReleaseActivation = {
+  instanceId: string;
+  revision: string;
+  activatedAt: string;
+  lanes: Partial<Record<WorkerLane, string>>;
+};
+
+export type WorkerLaneActivity = {
+  lane: (typeof monitoredWorkerLanes)[number];
+  status: "fresh" | "stale" | "missing";
+  ageMs?: number;
+};
+
+const monitoredWorkerLanes = ["fast", "background", "maintenance"] as const;
+
+/** How long a lane may go without a heartbeat before it counts as stale. */
+export function workerHeartbeatMaxAgeMs() {
+  const parsed = Number(process.env.OMNIAGENT_WORKER_HEARTBEAT_MAX_AGE_MS);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 2_100_000;
+}
+
 export function workerHeartbeatId(instanceId: string, lane: WorkerLane = "all") {
   return `worker_heartbeat_${createHash("sha256")
     .update(`${instanceId.trim() || "dedicated-worker"}:${lane}`)
+    .digest("hex")
+    .slice(0, 32)}`;
+}
+
+export function workerReleaseActivationId(instanceId: string, revision: string) {
+  return `worker_release_activation_${createHash("sha256")
+    .update(`${instanceId.trim() || "dedicated-worker"}:${revision.trim()}`)
     .digest("hex")
     .slice(0, 32)}`;
 }
@@ -40,6 +73,7 @@ type StoredWorkerHeartbeat = Omit<WorkerHeartbeat, "phase"> & {
 
 type WorkerHeartbeatLedger = {
   latestByLane?: Partial<Record<WorkerLane, StoredWorkerHeartbeat>>;
+  activations?: Record<string, WorkerReleaseActivation>;
 };
 
 export async function recordWorkerHeartbeat(input: {
@@ -59,12 +93,16 @@ export async function recordWorkerHeartbeat(input: {
     target: normalizeWorkerTarget(input.target),
     recordedAt: new Date().toISOString(),
   };
+  // Only work proves activation: a held worker registers at startup and
+  // does nothing else until its release is activated.
+  const activationRevision =
+    heartbeat.phase === "active" ? heartbeat.revision : undefined;
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     await runWithDatabaseSystemScope(
       "Record the dedicated worker heartbeat for release readiness.",
-      () =>
-        getSql()`
+      async () => {
+        await getSql()`
           INSERT INTO omni_system_health_checks (
             id, tenant_id, status, scope, components, metrics, incidents,
             recovery_actions, latency_ms, created_at
@@ -98,7 +136,50 @@ export async function recordWorkerHeartbeat(input: {
             recovery_actions = EXCLUDED.recovery_actions,
             latency_ms = EXCLUDED.latency_ms,
             created_at = EXCLUDED.created_at
-        `,
+        `;
+        if (!activationRevision) return;
+        // The first activation time stays; each lane's work time and the
+        // row's age, which retention reads, move forward.
+        await getSql()`
+          INSERT INTO omni_system_health_checks (
+            id, tenant_id, status, scope, components, metrics, incidents,
+            recovery_actions, latency_ms, created_at
+          )
+          VALUES (
+            ${workerReleaseActivationId(heartbeat.instanceId, activationRevision)},
+            'system',
+            'healthy',
+            'worker_release_activation',
+            ${[{
+              name: "dedicated_worker_release",
+              status: "healthy",
+              instanceId: heartbeat.instanceId,
+              revision: activationRevision,
+              activatedAt: heartbeat.recordedAt,
+              lanes: { [heartbeat.lane]: heartbeat.recordedAt },
+            }]}::jsonb,
+            '{}'::jsonb,
+            '[]'::jsonb,
+            '[]'::jsonb,
+            0,
+            ${heartbeat.recordedAt}
+          )
+          ON CONFLICT (id) DO UPDATE SET
+            components = jsonb_build_array(
+              COALESCE(
+                omni_system_health_checks.components -> 0,
+                EXCLUDED.components -> 0
+              ) || jsonb_build_object(
+                'lanes',
+                COALESCE(
+                  omni_system_health_checks.components -> 0 -> 'lanes',
+                  '{}'::jsonb
+                ) || (EXCLUDED.components -> 0 -> 'lanes')
+              )
+            ),
+            created_at = EXCLUDED.created_at
+        `;
+      },
     );
     return heartbeat;
   }
@@ -106,14 +187,127 @@ export async function recordWorkerHeartbeat(input: {
   await updateJsonFile<WorkerHeartbeatLedger>(
     getDataPath("worker-heartbeat.json"),
     {},
-    (ledger) => ({
-      latestByLane: {
-        ...ledger.latestByLane,
-        [heartbeat.lane]: heartbeat,
-      },
-    }),
+    (ledger) => {
+      const next: WorkerHeartbeatLedger = {
+        ...ledger,
+        latestByLane: {
+          ...ledger.latestByLane,
+          [heartbeat.lane]: heartbeat,
+        },
+      };
+      if (activationRevision) {
+        const id = workerReleaseActivationId(
+          heartbeat.instanceId,
+          activationRevision,
+        );
+        const previous = ledger.activations?.[id];
+        next.activations = {
+          ...ledger.activations,
+          [id]: {
+            instanceId: heartbeat.instanceId,
+            revision: activationRevision,
+            activatedAt: previous?.activatedAt ?? heartbeat.recordedAt,
+            lanes: { ...previous?.lanes, [heartbeat.lane]: heartbeat.recordedAt },
+          },
+        };
+      }
+      return next;
+    },
   );
   return heartbeat;
+}
+
+/**
+ * The activation this worker machine recorded for the release it runs, which
+ * lets it resume work after a restart that lost its local marker.
+ */
+export async function getWorkerReleaseActivation(input: {
+  instanceId: string;
+  revision: string;
+}) {
+  const instanceId = input.instanceId.slice(0, 160);
+  const revision = input.revision.slice(0, 160);
+  if (!instanceId.trim() || !revision.trim()) return undefined;
+  const activations = await readWorkerReleaseActivations(
+    workerReleaseActivationId(instanceId, revision),
+  );
+  return activations.find(
+    (activation) =>
+      activation.instanceId === instanceId && activation.revision === revision,
+  );
+}
+
+export async function listWorkerReleaseActivations(
+  filter: { revision?: string } = {},
+) {
+  const activations = await readWorkerReleaseActivations();
+  return filter.revision
+    ? activations.filter((activation) => activation.revision === filter.revision)
+    : activations;
+}
+
+/**
+ * How long ago each lane last did release work. A lane that has not worked
+ * yet counts from the moment its machine first activated the release.
+ */
+export function summarizeWorkerLaneActivity(
+  activations: WorkerReleaseActivation[],
+  options: { maxAgeMs: number; now?: number },
+): WorkerLaneActivity[] {
+  const now = options.now ?? Date.now();
+  return monitoredWorkerLanes.map((lane) => {
+    const times = activations
+      .map((activation) =>
+        Date.parse(activation.lanes[lane] ?? activation.activatedAt),
+      )
+      .filter(Number.isFinite);
+    if (times.length === 0) return { lane, status: "missing" };
+    const ageMs = Math.max(0, now - Math.max(...times));
+    return {
+      lane,
+      status: ageMs <= options.maxAgeMs ? "fresh" : "stale",
+      ageMs,
+    };
+  });
+}
+
+async function readWorkerReleaseActivations(id?: string) {
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await runWithDatabaseSystemScope(
+      "Read the dedicated worker release activations.",
+      () =>
+        id
+          ? getSql()`
+              SELECT components
+              FROM omni_system_health_checks
+              WHERE id = ${id}
+                AND scope = 'worker_release_activation'
+            `
+          : getSql()`
+              SELECT components
+              FROM omni_system_health_checks
+              WHERE scope = 'worker_release_activation'
+              ORDER BY created_at DESC
+              LIMIT 50
+            `,
+    );
+    return rows.flatMap((row) => {
+      const activation = workerReleaseActivation(
+        Array.isArray(row?.components) ? row.components[0] : undefined,
+      );
+      return activation ? [activation] : [];
+    });
+  }
+
+  const ledger = await readJsonFile<WorkerHeartbeatLedger>(
+    getDataPath("worker-heartbeat.json"),
+    {},
+  );
+  return Object.entries(ledger.activations || {}).flatMap(([key, value]) => {
+    const activation = id && key !== id ? undefined : workerReleaseActivation(value);
+    return activation ? [activation] : [];
+  });
 }
 
 export async function getLatestWorkerHeartbeats(
@@ -209,6 +403,34 @@ export async function getLatestWorkerHeartbeat() {
     (left, right) =>
       Date.parse(right.recordedAt) - Date.parse(left.recordedAt),
   )[0];
+}
+
+function workerReleaseActivation(
+  value: unknown,
+): WorkerReleaseActivation | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  if (
+    typeof record.instanceId !== "string" ||
+    typeof record.revision !== "string" ||
+    typeof record.activatedAt !== "string"
+  ) {
+    return undefined;
+  }
+  const lanes: Partial<Record<WorkerLane, string>> = {};
+  if (record.lanes && typeof record.lanes === "object") {
+    for (const [lane, at] of Object.entries(record.lanes)) {
+      if (typeof at === "string" && workerLane(lane) === lane) {
+        lanes[lane as WorkerLane] = at;
+      }
+    }
+  }
+  return {
+    instanceId: record.instanceId,
+    revision: record.revision,
+    activatedAt: record.activatedAt,
+    lanes,
+  };
 }
 
 function workerLane(value: unknown): WorkerLane {

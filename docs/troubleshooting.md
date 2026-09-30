@@ -70,6 +70,7 @@ A native app that signs out after a refresh answered 401 with `refresh_token_reu
 - Probe the configured web `/api/health` from the worker network.
 - Compare the interval with queue lease duration; too many replicas or a short interval can increase contention.
 - On Fly, inspect machine health and restart count. The container health probe uses only the public health endpoint and never sends the internal secret.
+- `GET /api/health/worker` shows which lanes of the deployed revision have worked recently. Every lane `missing` after a release means the worker is still held: it logged one registration per lane and waits for `SIGUSR1`. A restart on the same machine resumes by itself once canonical `/api/health` reports its revision, and logs `Release work resumed from this machine's recorded activation.`; a worker on a new machine stays held until the next activation signal. One `stale` lane has done no work within `OMNIAGENT_WORKER_HEARTBEAT_MAX_AGE_MS`; check that lane's tick records.
 
 ## A queued workflow run waits, or one tenant's workflows stop
 

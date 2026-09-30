@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -338,6 +338,114 @@ describe("dedicated worker startup cadence", () => {
     await exit;
   }, 10_000);
 
+  it("resumes a restarted machine's recorded activation without its marker", async () => {
+    const revision = `recorded-activation-${process.pid}`;
+    const staged: Array<boolean | undefined> = [];
+    const canonical: Array<boolean | undefined> = [];
+    await rm("/tmp/asael-worker-release-activated", { force: true });
+    const stagedServer = await startWorkerServer(
+      (_lane, startup) => {
+        staged.push(startup);
+      },
+      {
+        responseBody: (_lane, startup) => startup
+          ? {
+              startup: true,
+              releaseActivation: {
+                instanceId: "recorded-machine",
+                revision,
+                activatedAt: "2026-09-30T10:05:00.000Z",
+              },
+            }
+          : { result: { moreAvailable: false } },
+      },
+    );
+    const canonicalServer = await startWorkerServer(
+      (_lane, startup) => {
+        canonical.push(startup);
+      },
+      { healthRevision: revision },
+    );
+    const child = startWorker(stagedServer.baseUrl, {
+      FLY_MACHINE_ID: "recorded-machine",
+      OMNIAGENT_WORKER_CANONICAL_BASE_URL: canonicalServer.baseUrl,
+      OMNIAGENT_RELEASE_SHA: revision,
+      OMNIAGENT_WORKER_RELEASE_HOLD: "true",
+      OMNIAGENT_WORKER_INTERVAL_MS: "50",
+      OMNIAGENT_WORKER_BACKGROUND_STARTUP_DELAY_MS: "600000",
+      OMNIAGENT_WORKER_MAINTENANCE_STARTUP_DELAY_MS: "600000",
+      OMNIAGENT_WORKER_RETENTION_STARTUP_DELAY_MS: "600000",
+    });
+
+    await waitFor(() => canonical.some((startup) => startup !== true));
+
+    // The staged target only ever sees registrations; work starts on the
+    // canonical target once its health names this release.
+    expect(staged.length).toBeGreaterThanOrEqual(1);
+    expect(staged.every((startup) => startup === true)).toBe(true);
+    expect(canonical[0]).toBe(true);
+    expect(
+      (await readFile("/tmp/asael-worker-release-activated", "utf8")).trim(),
+    ).toBe(revision);
+    expect(child.exitCode).toBeNull();
+
+    const exit = once(child, "exit");
+    child.kill("SIGTERM");
+    await exit;
+  }, 10_000);
+
+  it("keeps a new machine held when the recorded activation is another's", async () => {
+    const revision = `recorded-elsewhere-${process.pid}`;
+    const staged: Array<boolean | undefined> = [];
+    const canonical: Array<boolean | undefined> = [];
+    await rm("/tmp/asael-worker-release-activated", { force: true });
+    const stagedServer = await startWorkerServer(
+      (_lane, startup) => {
+        staged.push(startup);
+      },
+      {
+        responseBody: () => ({
+          startup: true,
+          releaseActivation: {
+            instanceId: "replaced-machine",
+            revision,
+            activatedAt: "2026-09-30T10:05:00.000Z",
+          },
+        }),
+      },
+    );
+    const canonicalServer = await startWorkerServer(
+      (_lane, startup) => {
+        canonical.push(startup);
+      },
+      { healthRevision: revision },
+    );
+    const child = startWorker(stagedServer.baseUrl, {
+      FLY_MACHINE_ID: "replacement-machine",
+      OMNIAGENT_WORKER_CANONICAL_BASE_URL: canonicalServer.baseUrl,
+      OMNIAGENT_RELEASE_SHA: revision,
+      OMNIAGENT_WORKER_RELEASE_HOLD: "true",
+      OMNIAGENT_WORKER_INTERVAL_MS: "50",
+      OMNIAGENT_WORKER_BACKGROUND_STARTUP_DELAY_MS: "600000",
+      OMNIAGENT_WORKER_MAINTENANCE_STARTUP_DELAY_MS: "600000",
+      OMNIAGENT_WORKER_RETENTION_STARTUP_DELAY_MS: "600000",
+    });
+
+    await waitFor(() => staged.length >= 1);
+    await delay(500);
+
+    expect(staged).toEqual([true]);
+    expect(canonical).toEqual([]);
+    await expect(
+      readFile("/tmp/asael-worker-release-activated", "utf8"),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(child.exitCode).toBeNull();
+
+    const exit = once(child, "exit");
+    child.kill("SIGTERM");
+    await exit;
+  }, 10_000);
+
   it("retries a transient canonical mismatch after one SIGHUP", async () => {
     const revision = `held-canonical-retry-${process.pid}`;
     const staged: Array<{ lane: string; startup: boolean | undefined }> = [];
@@ -637,11 +745,11 @@ describe("dedicated worker startup cadence", () => {
   }, 10_000);
 
   it("pins conservative production defaults", async () => {
-    const [workerScript, flyConfig, workerImage, releaseEvidence] = await Promise.all([
+    const [workerScript, flyConfig, workerImage, workerHeartbeat] = await Promise.all([
       readFile("scripts/worker.mjs", "utf8"),
       readFile("fly.toml", "utf8"),
       readFile("Dockerfile.worker", "utf8"),
-      readFile("src/lib/release/evidence.ts", "utf8"),
+      readFile("src/lib/operations/worker-heartbeat.ts", "utf8"),
     ]);
 
     expect(workerScript).toContain("Math.floor(backgroundIntervalMs / 2)");
@@ -691,7 +799,7 @@ describe("dedicated worker startup cadence", () => {
     expect(flyConfig).toContain('OMNIAGENT_WORKER_RETENTION_STARTUP_DELAY_MS = "600000"');
     expect(flyConfig).toContain('OMNIAGENT_WORKER_HEARTBEAT_MAX_AGE_MS = "2100000"');
     expect(workerImage).toContain("OMNIAGENT_WORKER_HEARTBEAT_MAX_AGE_MS||2100000");
-    expect(releaseEvidence).toContain("2_100_000");
+    expect(workerHeartbeat).toContain("2_100_000");
   });
 
   it("rejects a previous gateway token without a primary token", async () => {
@@ -729,11 +837,13 @@ async function startWorkerServer(
     responseStatus = () => 200,
     onResponse = () => undefined,
     healthRevision = "release-not-promoted",
+    responseBody = () => ({ result: { moreAvailable: false } }),
   }: {
     responseDelayMs?: number | ((lane: string, attempt: number, startup: boolean | undefined) => number);
     responseStatus?: (lane: string, attempt: number, startup: boolean | undefined) => number;
     onResponse?: (lane: string, startup: boolean | undefined) => void;
     healthRevision?: string | (() => string);
+    responseBody?: (lane: string, startup: boolean | undefined) => unknown;
   } = {},
 ) {
   const attempts = new Map<string, number>();
@@ -775,7 +885,7 @@ async function startWorkerServer(
       await delay(requestDelayMs);
     }
     response.writeHead(responseStatus(lane, attempt, body.startup), { "content-type": "application/json" });
-    response.end(JSON.stringify({ result: { moreAvailable: false } }));
+    response.end(JSON.stringify(responseBody(lane, body.startup)));
     onResponse(lane, body.startup);
   });
   servers.add(server);

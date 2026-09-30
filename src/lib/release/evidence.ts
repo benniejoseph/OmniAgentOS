@@ -5,7 +5,10 @@ import {
 } from "@/lib/db/client";
 import { getObservabilitySloSnapshot } from "@/lib/observability/slo-monitor";
 import { getOpenAIReadiness } from "@/lib/openai/client";
-import { getLatestWorkerHeartbeats } from "@/lib/operations/worker-heartbeat";
+import {
+  getLatestWorkerHeartbeats,
+  workerHeartbeatMaxAgeMs as configuredWorkerHeartbeatMaxAgeMs,
+} from "@/lib/operations/worker-heartbeat";
 import { WORKER_PROTOCOL_VERSION } from "@/lib/operations/worker-request";
 import { getTenantIsolationReport, type TenantIsolationReport } from "@/lib/security/isolation-report";
 
@@ -178,10 +181,7 @@ async function collectReleaseEvidenceReport(
   const criticalBlockingBreaches = observabilitySlo.breaches.filter(
     (breach) => breach.severity === "critical" && !advisorySloPolicyIds.has(breach.policy.id),
   );
-  const workerHeartbeatMaxAgeMs = normalizePositiveInteger(
-    process.env.OMNIAGENT_WORKER_HEARTBEAT_MAX_AGE_MS,
-    2_100_000,
-  );
+  const workerHeartbeatMaxAgeMs = configuredWorkerHeartbeatMaxAgeMs();
   const expectedWorkerProtocol =
     process.env.OMNIAGENT_WORKER_PROTOCOL_VERSION?.trim() ||
     WORKER_PROTOCOL_VERSION;

@@ -5,3 +5,4 @@ scripts/*
 !scripts/worker.mjs
 !scripts/internal-identity-token.mjs
 !scripts/openai-egress-gateway.mjs
+!scripts/worker-release-activation.mjs
