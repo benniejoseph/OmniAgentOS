@@ -207,6 +207,21 @@ describe("dedicated worker", () => {
     expect(modules).toContain("scripts/internal-identity-token.mjs");
     for (const imported of modules) expect(copied).toContain(imported);
   });
+
+  it("keeps every module the worker imports in its image build context", async () => {
+    const [ignored, modules] = await Promise.all([
+      readFile(".dockerignore", "utf8"),
+      localModules("scripts/worker.mjs"),
+    ]);
+    const rules = dockerIgnoreRules(ignored);
+
+    expect(inDockerContext(rules, ".env.local")).toBe(false);
+    expect(inDockerContext(rules, "scripts/deploy-production.mjs")).toBe(false);
+    for (const file of ["Dockerfile.worker", ...modules]) {
+      expect({ file, included: inDockerContext(rules, file) })
+        .toEqual({ file, included: true });
+    }
+  });
 });
 
 function signedRequest(
@@ -224,6 +239,45 @@ async function sourceFiles(directory: string): Promise<string[]> {
     return /\.(ts|tsx)$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name) ? [entryPath] : [];
   }));
   return files.flat();
+}
+
+/** Docker's rule: the last pattern matching a path or a parent decides. */
+function dockerIgnoreRules(source: string) {
+  return source
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"))
+    .map((line) => {
+      const include = line.startsWith("!");
+      const pattern = (include ? line.slice(1) : line).replace(/^\/+|\/+$/g, "");
+      const expression = pattern
+        .split("/")
+        .map((part) =>
+          part === "**"
+            ? ".*"
+            : part
+                .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+                .replaceAll("*", "[^/]*")
+                .replaceAll("?", "[^/]"),
+        )
+        .join("/");
+      return { include, expression: new RegExp(`^${expression}$`) };
+    });
+}
+
+function inDockerContext(
+  rules: ReturnType<typeof dockerIgnoreRules>,
+  file: string,
+) {
+  const parts = file.split("/");
+  const paths = parts.map((_, index) => parts.slice(0, index + 1).join("/"));
+  let included = true;
+  for (const rule of rules) {
+    if (paths.some((candidate) => rule.expression.test(candidate))) {
+      included = rule.include;
+    }
+  }
+  return included;
 }
 
 async function localModules(entry: string, seen = new Set<string>()): Promise<string[]> {
