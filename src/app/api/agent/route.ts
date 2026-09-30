@@ -1091,6 +1091,7 @@ async function POSTHandler(request: Request) {
       await runRoutingSemanticDecisionShadow({
         tenantId: context.tenantId,
         actorId: context.actorId,
+        actorRole: context.role,
         requestId,
         message: safeRequestMessage,
         deterministicFallbackRoute: deterministicDecision.route,

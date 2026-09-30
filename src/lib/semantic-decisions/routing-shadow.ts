@@ -6,6 +6,7 @@ import { appendScopedDomainEvent } from "@/lib/events/store";
 import type { SupervisorRoute } from "@/lib/orchestration/supervisor";
 import { redactSensitive } from "@/lib/security/context";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
+import type { SecurityRole } from "@/lib/security/types";
 import { resolveSemanticDecisionRuntime } from "@/lib/semantic-decisions/runtime";
 import {
   ROUTING_SHADOW_CHOICES,
@@ -15,6 +16,7 @@ import { TypeSafeSemanticDecisionError } from "@/lib/semantic-decisions/typesafe
 import { recordAiUsageSafely } from "@/lib/usage/ledger";
 
 const ROUTING_SHADOW_TIMEOUT_MS = 1_800;
+const ROUTING_SHADOW_STORE_TIMEOUT_MS = 5_000;
 const ROUTING_SHADOW_SCHEMA_VERSION = "semantic-decision-shadow-receipt:1" as const;
 const ROUTING_SHADOW_POLICY_VERSION = "jev-routing-shadow:1" as const;
 const ROUTING_QUESTION_ID = "execution_shape";
@@ -90,6 +92,8 @@ type RoutingShadowDependencies = Readonly<{
   recordUsage: typeof recordAiUsageSafely;
   now: () => Date;
   timeoutMs: number;
+  /** How long the Settings read, the usage record and the receipt may take. */
+  storeTimeoutMs: number;
 }>;
 
 const defaultDependencies: RoutingShadowDependencies = {
@@ -98,17 +102,21 @@ const defaultDependencies: RoutingShadowDependencies = {
   recordUsage: recordAiUsageSafely,
   now: () => new Date(),
   timeoutMs: ROUTING_SHADOW_TIMEOUT_MS,
+  storeTimeoutMs: ROUTING_SHADOW_STORE_TIMEOUT_MS,
 };
 
 /**
  * Runs an advisory TypeSafe/Jev classification after the live route has been
  * selected. The provider result is observable only and cannot alter the live
- * route, its risk posture, approvals, tools, or any external state.
+ * route, its risk posture, approvals, tools, or any external state. The
+ * request text leaves Asael for TypeSafe, so only a tenant admin's requests
+ * are classified, with email addresses and long numbers masked first.
  */
 export async function runRoutingSemanticDecisionShadow(
   input: {
     tenantId: string;
     actorId: string;
+    actorRole: SecurityRole;
     requestId: string;
     message: string;
     deterministicFallbackRoute: SupervisorRoute;
@@ -117,14 +125,20 @@ export async function runRoutingSemanticDecisionShadow(
   },
   dependencies: RoutingShadowDependencies = defaultDependencies,
 ): Promise<RoutingSemanticDecisionShadowReceipt | undefined> {
-  const runtime = await dependencies.resolveRuntime({
-    tenantId: input.tenantId,
-    actorId: input.actorId,
-  });
+  if (input.actorRole !== "admin") return undefined;
+  // A Settings read that does not answer in time cannot establish the
+  // actor's opt-in, so the shadow does not run.
+  const runtime = await withTimeout(
+    () => dependencies.resolveRuntime({
+      tenantId: input.tenantId,
+      actorId: input.actorId,
+    }),
+    dependencies.storeTimeoutMs,
+  ).catch(() => undefined);
   if (!runtime) return undefined;
 
   const sanitizedMessage = boundedMessage(
-    String(redactSensitive(input.message)),
+    redactPersonalData(String(redactSensitive(input.message))),
   );
   const state = Object.freeze({
     current_request: sanitizedMessage,
@@ -181,7 +195,7 @@ export async function runRoutingSemanticDecisionShadow(
   }
 
   const latencyMs = Math.max(0, Date.now() - startedAt);
-  const usage = await dependencies.recordUsage({
+  const usage = await withTimeout(() => dependencies.recordUsage({
     id: shadowUsageId(eventId),
     tenantId: input.tenantId,
     actorId: input.actorId,
@@ -204,7 +218,7 @@ export async function runRoutingSemanticDecisionShadow(
     failureKind: failureKind || undefined,
     retryable,
     ...runtime.assignmentReceipt,
-  });
+  }), dependencies.storeTimeoutMs).catch(() => undefined);
   const receipt = routingSemanticDecisionShadowReceiptSchema.parse({
     schemaVersion: ROUTING_SHADOW_SCHEMA_VERSION,
     policyVersion: ROUTING_SHADOW_POLICY_VERSION,
@@ -247,13 +261,13 @@ export async function runRoutingSemanticDecisionShadow(
     evaluatedAt: dependencies.now().toISOString(),
   });
 
-  await dependencies.appendEvent({
+  await withTimeout(() => dependencies.appendEvent({
     id: eventId,
     streamId: `intent:${input.requestId}`,
     type: "intent.semantic_decision_shadowed",
     executionScope: input.executionScope,
     payload: receipt,
-  });
+  }), dependencies.storeTimeoutMs);
   return receipt;
 }
 
@@ -307,6 +321,13 @@ function semanticDecisionFailure(error: unknown): {
     };
   }
   return { outcome: "failed", kind: "unexpected_failure", retryable: false };
+}
+
+/** Masks email addresses and runs of seven or more digits, such as phone numbers. */
+function redactPersonalData(value: string) {
+  return value
+    .replace(/[\p{L}\p{N}._%+-]+@[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)+/gu, "[email]")
+    .replace(/\+?\d(?:[\s().-]*\d){6,}/g, "[number]");
 }
 
 function boundedMessage(value: string) {

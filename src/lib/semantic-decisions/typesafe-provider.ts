@@ -1,6 +1,7 @@
 import "server-only";
 
 import { z } from "zod";
+import { readResponseTextLimited } from "@/lib/http/body";
 import type {
   SemanticDecisionJson,
   SemanticDecisionProvider,
@@ -123,8 +124,11 @@ export function createTypeSafeSemanticDecisionProvider(input: {
         }
         throw new TypeSafeSemanticDecisionError("request_rejected", false);
       }
-      const raw = await response.text();
-      if (Buffer.byteLength(raw, "utf8") > MAX_RESPONSE_BYTES) {
+      const { text: raw, truncated } = await readResponseTextLimited(
+        response,
+        MAX_RESPONSE_BYTES,
+      );
+      if (truncated) {
         throw new TypeSafeSemanticDecisionError("response_too_large", false);
       }
       let decoded: unknown;

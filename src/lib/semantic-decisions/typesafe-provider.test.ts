@@ -96,4 +96,33 @@ describe("TypeSafe semantic decision provider", () => {
       signal: new AbortController().signal,
     })).rejects.toMatchObject({ code: "schema_mismatch" });
   });
+
+  it("stops reading a response once it passes the size limit", async () => {
+    let chunksRead = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        chunksRead += 1;
+        controller.enqueue(new Uint8Array(16_000).fill(32));
+      },
+    });
+    const provider = createTypeSafeSemanticDecisionProvider({
+      apiKey,
+      fetchImpl: vi.fn(async () => new Response(body, { status: 200 })),
+    });
+
+    await expect(provider.decide({
+      model: "jev-configured-by-settings",
+      state: "classify",
+      question: {
+        id: "execution_shape",
+        criteria: {
+          direct: "One bounded run.",
+          durable_workflow: "Durable work.",
+          clarify: "Missing input.",
+        },
+      },
+      signal: new AbortController().signal,
+    })).rejects.toMatchObject({ code: "response_too_large" });
+    expect(chunksRead).toBeLessThanOrEqual(6);
+  });
 });

@@ -83,6 +83,7 @@ function input() {
   return {
     tenantId: "tenant-a",
     actorId: "actor-a",
+    actorRole: "admin" as const,
     requestId: "request-a",
     message: "Deploy the complete feature and verify it.",
     deterministicFallbackRoute: "durable_workflow" as const,
@@ -102,6 +103,7 @@ function dependencies(resolvedRuntime: SemanticDecisionRuntime | undefined) {
     } as Awaited<ReturnType<typeof recordAiUsageSafely>>)),
     now: () => new Date("2026-09-18T09:00:00.000Z"),
     timeoutMs: 100,
+    storeTimeoutMs: 100,
   };
 }
 
@@ -171,6 +173,65 @@ describe("Jev routing shadow", () => {
       attemptCount: 1,
       failedAttemptCount: 1,
     }));
+  });
+
+  it("classifies only a tenant admin's requests", async () => {
+    const provider = providerWithChoice("direct");
+    const decide = vi.spyOn(provider, "decide");
+    const deps = dependencies(runtime(provider));
+
+    await expect(runRoutingSemanticDecisionShadow(
+      { ...input(), actorRole: "operator" },
+      deps,
+    )).resolves.toBeUndefined();
+
+    expect(deps.resolveRuntime).not.toHaveBeenCalled();
+    expect(decide).not.toHaveBeenCalled();
+    expect(deps.appendEvent).not.toHaveBeenCalled();
+  });
+
+  it("masks email addresses and long numbers before the provider sees them", async () => {
+    const provider = providerWithChoice("direct");
+    const decide = vi.spyOn(provider, "decide");
+    const deps = dependencies(runtime(provider));
+
+    await runRoutingSemanticDecisionShadow({
+      ...input(),
+      message:
+        "Email jane.doe@example.co.uk or call +1 (415) 555-0134 about card 4111 1111 1111 1111 by 3 pm.",
+    }, deps);
+
+    expect(decide.mock.calls[0][0].state).toEqual({
+      current_request: "Email [email] or call [number] about card [number] by 3 pm.",
+      deterministic_baseline: "durable_workflow",
+    });
+  });
+
+  it("does not wait past its limit on the Settings read or the usage record", async () => {
+    const provider = providerWithChoice("direct");
+    const decide = vi.spyOn(provider, "decide");
+    const hung = dependencies(runtime(provider));
+    hung.resolveRuntime.mockImplementation(() => new Promise(() => undefined));
+
+    await expect(runRoutingSemanticDecisionShadow(input(), hung))
+      .resolves.toBeUndefined();
+    expect(decide).not.toHaveBeenCalled();
+    expect(hung.appendEvent).not.toHaveBeenCalled();
+
+    const slowUsage = dependencies(runtime(provider));
+    slowUsage.recordUsage.mockImplementation(() => new Promise(() => undefined));
+
+    await expect(runRoutingSemanticDecisionShadow(input(), slowUsage))
+      .resolves.toMatchObject({ outcome: "completed", usageRecorded: false });
+    expect(slowUsage.appendEvent).toHaveBeenCalledOnce();
+  });
+
+  it("fails when its receipt is not written in time", async () => {
+    const deps = dependencies(runtime(providerWithChoice("direct")));
+    deps.appendEvent.mockImplementation(() => new Promise(() => undefined));
+
+    await expect(runRoutingSemanticDecisionShadow(input(), deps))
+      .rejects.toThrow("Semantic decision timed out.");
   });
 
   it("does nothing when Settings has not explicitly enrolled the actor", async () => {
