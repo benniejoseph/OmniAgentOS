@@ -3,6 +3,7 @@ import 'package:asael/features/agents/agent_council.dart';
 import 'package:asael/features/agents/agents.dart';
 import 'package:asael/features/agents/macos_agents_view.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'agent_council_fixture.dart';
@@ -438,15 +439,19 @@ void main() {
         find.byKey(const Key('macos-agents-live-summary')),
         findsOneWidget,
       );
-      expect(find.text('Execution queue'), findsOneWidget);
+      expect(find.text('Recent work'), findsOneWidget);
       expect(find.text('Scout'), findsWidgets);
-      expect(find.text('Current work'), findsOneWidget);
-      expect(find.text('Team messages'), findsOneWidget);
-      expect(find.text('Shared outputs'), findsOneWidget);
-      expect(find.text('Independent verification'), findsOneWidget);
+      expect(find.text('What Scout is doing'), findsOneWidget);
+      expect(find.text('What they reported'), findsOneWidget);
+      expect(find.text('What they produced'), findsOneWidget);
+      expect(find.text('Independent check'), findsOneWidget);
+      // The evidence behind the work sits in the inspector's technical
+      // details.
+      await tester.ensureVisible(find.text('Technical details'));
+      await tester.tap(find.text('Technical details'));
+      await tester.pumpAndSettle();
       expect(find.text('82%'), findsOneWidget);
       expect(find.text('Verified delegation receipt'), findsOneWidget);
-      expect(find.text('Observed ledger'), findsOneWidget);
       expect(find.text('gpt-6-astra'), findsWidgets);
       expect(
         find.byKey(const Key('macos-council-cancel-task-scout-one')),
@@ -465,9 +470,12 @@ void main() {
         ),
         findsOneWidget,
       );
+      await tester.ensureVisible(find.text('Technical details'));
+      await tester.tap(find.text('Technical details'));
+      await tester.pumpAndSettle();
       expect(find.text('Not recorded'), findsWidgets);
 
-      await tester.tap(find.text('Roster'));
+      await tester.tap(find.text('Your agents'));
       await tester.pumpAndSettle();
       expect(find.text('Agent and role'), findsOneWidget);
       expect(find.byKey(const Key('macos-agent-row-atlas')), findsOneWidget);
@@ -620,6 +628,16 @@ void main() {
     await tester.tap(find.byKey(const Key('macos-agent-row-mnemosyne')));
     await tester.pump();
     expect(find.text(_mnemosyne.description), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('Memory stewardship'),
+      300,
+      scrollable: find
+          .descendant(
+            of: find.byKey(const Key('macos-agents-inspector')),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
     expect(find.text('Memory stewardship'), findsOneWidget);
 
     await tester.enterText(
@@ -642,7 +660,7 @@ void main() {
     await controller.refresh();
     await tester.pumpWidget(_app(MacosAgentsView(controller: controller)));
 
-    await tester.tap(find.text('Skills'));
+    await tester.tap(_workspaceTab('Capabilities'));
     await tester.pumpAndSettle();
     expect(find.text('Skill and purpose'), findsOneWidget);
     expect(find.byKey(const Key('macos-skill-row-memory')), findsOneWidget);
@@ -652,7 +670,7 @@ void main() {
     expect(find.text(_memory.instructions), findsOneWidget);
     expect(find.byKey(const Key('macos-skill-edit')), findsOneWidget);
 
-    await tester.tap(find.text('Outcomes'));
+    await tester.tap(_workspaceTab('Results'));
     await tester.pumpAndSettle();
     expect(find.text('Average latency'), findsOneWidget);
     expect(
@@ -1184,8 +1202,23 @@ void main() {
   });
 }
 
-Widget _app(Widget child) =>
-    MaterialApp(theme: MacosAppTheme.light(), home: child);
+/// Live work animates while an Agent is working, so the views are pumped
+/// with reduced motion to let them settle.
+Widget _app(Widget child) => ProviderScope(
+  child: MaterialApp(
+    theme: MacosAppTheme.light(),
+    builder: (context, child) => MediaQuery(
+      data: MediaQuery.of(context).copyWith(disableAnimations: true),
+      child: child!,
+    ),
+    home: child,
+  ),
+);
+
+Finder _workspaceTab(String label) => find.descendant(
+  of: find.byKey(const Key('macos-agents-workspace')),
+  matching: find.text(label),
+);
 
 Future<void> _useDesktopViewport(WidgetTester tester) async {
   await _useViewport(tester, const Size(1440, 900));

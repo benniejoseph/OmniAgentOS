@@ -1406,10 +1406,15 @@ class _CouncilExecutionGroup extends StatelessWidget {
                       _CouncilStatePill(
                         state: _executionDisplayState(execution),
                       ),
-                      const Spacer(),
-                      Text(
-                        _relativeTime(execution.updatedAt),
-                        style: Theme.of(context).textTheme.labelSmall,
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          _relativeTime(execution.updatedAt),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          textAlign: TextAlign.end,
+                          style: Theme.of(context).textTheme.labelSmall,
+                        ),
                       ),
                     ],
                   ),
@@ -1592,28 +1597,37 @@ class _CouncilMemberCanvas extends StatelessWidget {
                   ],
                 ),
               ),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Text(
-                    'Updated ${_relativeTime(member.updatedAt)}',
-                    style: Theme.of(context).textTheme.labelSmall,
-                  ),
-                  if (onCancel != null) ...[
-                    const SizedBox(height: 7),
-                    OutlinedButton.icon(
-                      key: Key('macos-council-cancel-${member.taskId}'),
-                      onPressed: canceling ? null : onCancel,
-                      icon: canceling
-                          ? const SizedBox.square(
-                              dimension: 14,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Icon(Icons.stop_circle_outlined, size: 16),
-                      label: Text(canceling ? 'Stopping' : 'Stop work'),
+              const SizedBox(width: 11),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 200),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text(
+                      'Updated ${_relativeTime(member.updatedAt)}',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.end,
+                      style: Theme.of(context).textTheme.labelSmall,
                     ),
+                    if (onCancel != null) ...[
+                      const SizedBox(height: 7),
+                      OutlinedButton.icon(
+                        key: Key('macos-council-cancel-${member.taskId}'),
+                        onPressed: canceling ? null : onCancel,
+                        icon: canceling
+                            ? const SizedBox.square(
+                                dimension: 14,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.stop_circle_outlined, size: 16),
+                        label: Text(canceling ? 'Stopping' : 'Stop work'),
+                      ),
+                    ],
                   ],
-                ],
+                ),
               ),
             ],
           ),
@@ -1943,6 +1957,11 @@ class _AgentCouncilInspector extends StatelessWidget {
     final authority = member.authority;
     final budgets = authority.budgets;
     final verifiedAuthority = authority.source == 'delegation_grants';
+    final mac = MacosThemeColors.of(context);
+    final detailsShape = RoundedRectangleBorder(
+      side: BorderSide(color: mac.divider),
+      borderRadius: BorderRadius.circular(10),
+    );
     return SingleChildScrollView(
       key: const Key('macos-agents-live-inspector-scroll'),
       padding: const EdgeInsets.fromLTRB(18, 18, 18, 28),
@@ -2031,275 +2050,266 @@ class _AgentCouncilInspector extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 20),
-          Theme(
-            data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-            child: Container(
-              decoration: BoxDecoration(
-                color: MacosThemeColors.of(context).toolbar,
-                border: Border.all(color: MacosThemeColors.of(context).divider),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: ExpansionTile(
-                key: ValueKey('macos-council-technical-${member.taskId}'),
-                initiallyExpanded: false,
-                tilePadding: const EdgeInsets.symmetric(horizontal: 12),
-                childrenPadding: const EdgeInsets.fromLTRB(12, 2, 12, 16),
-                leading: const Icon(Icons.tune_rounded, size: 18),
-                title: const Text('Technical details'),
-                subtitle: const Text(
-                  'Models, permissions, limits, identifiers, and cost',
-                ),
+          ExpansionTile(
+            key: ValueKey('macos-council-technical-${member.taskId}'),
+            initiallyExpanded: false,
+            backgroundColor: mac.toolbar,
+            collapsedBackgroundColor: mac.toolbar,
+            shape: detailsShape,
+            collapsedShape: detailsShape,
+            tilePadding: const EdgeInsets.symmetric(horizontal: 12),
+            childrenPadding: const EdgeInsets.fromLTRB(12, 2, 12, 16),
+            leading: const Icon(Icons.tune_rounded, size: 18),
+            title: const Text('Technical details'),
+            subtitle: const Text(
+              'Models, permissions, limits, identifiers, and cost',
+            ),
+            children: [
+              _InspectorSection(
+                title: 'Verification',
                 children: [
-                  _InspectorSection(
-                    title: 'Verification',
-                    children: [
-                      _MetaLine(
-                        label: 'Verdict',
-                        value: _councilStatusLabel(member.verifier.verdict),
-                      ),
-                      _MetaLine(
-                        label: 'Verifier',
-                        value: member.verifier.identity.name,
-                      ),
-                      _MetaLine(
-                        label: 'Method',
-                        value: _label(member.verifier.method),
-                      ),
-                      _MetaLine(
-                        label: 'Confidence',
-                        value: member.confidence == null
-                            ? 'Not recorded'
-                            : '${(member.confidence! * 100).round()}%',
-                      ),
-                      _MetaLine(
-                        label: 'Verifier score',
-                        value: member.verifier.score == null
-                            ? 'Not scored'
-                            : '${(member.verifier.score! * 100).round()}%',
-                      ),
-                      _MetaLine(
-                        label: 'Acceptance threshold',
-                        value:
-                            '${(member.verifier.acceptanceThreshold * 100).round()}%',
-                      ),
-                    ],
+                  _MetaLine(
+                    label: 'Verdict',
+                    value: _councilStatusLabel(member.verifier.verdict),
                   ),
-                  const SizedBox(height: 18),
-                  _InspectorSection(
-                    title: 'Authority',
-                    children: [
-                      Row(
-                        children: [
-                          Icon(
-                            verifiedAuthority
-                                ? Icons.verified_outlined
-                                : Icons.warning_amber_rounded,
-                            size: 16,
-                            color: verifiedAuthority
-                                ? Theme.of(context).colorScheme.primary
-                                : Theme.of(context).colorScheme.secondary,
-                          ),
-                          const SizedBox(width: 7),
-                          Expanded(
-                            child: Text(
-                              verifiedAuthority
-                                  ? 'Verified delegation receipt'
-                                  : 'Historical authority unavailable',
-                              style: Theme.of(context).textTheme.labelMedium,
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 9),
-                      Text(authority.purpose),
-                      const SizedBox(height: 10),
-                      _MetaLine(
-                        label: 'Context grants',
-                        value: _authorityCount(
-                          authority.contextState,
-                          authority.contextGrantCount,
-                        ),
-                      ),
-                      _MetaLine(
-                        label: 'Capability grants',
-                        value: _authorityCount(
-                          authority.capabilityState,
-                          authority.capabilityGrantCount,
-                        ),
-                      ),
-                      _MetaLine(
-                        label: 'Governed tools',
-                        value: authority.toolState == 'unavailable'
-                            ? 'Unavailable'
-                            : '${authority.toolIds.length}',
-                      ),
-                      if (authority.toolIds.isNotEmpty) ...[
-                        const SizedBox(height: 8),
-                        Wrap(
-                          spacing: 6,
-                          runSpacing: 6,
-                          children: authority.toolIds
-                              .map((tool) => _SmallBadge(label: tool))
-                              .toList(growable: false),
-                        ),
-                      ],
-                    ],
+                  _MetaLine(
+                    label: 'Verifier',
+                    value: member.verifier.identity.name,
                   ),
-                  if (controller != null) ...[
-                    const SizedBox(height: 18),
-                    _InspectorSection(
-                      title: 'Exact signed grants',
-                      child: AgentTaskAuthorityView(
-                        key: ValueKey('macos-task-authority-${member.taskId}'),
-                        controller: controller!,
-                        taskId: member.taskId,
-                        compact: true,
-                      ),
-                    ),
-                  ],
-                  const SizedBox(height: 18),
-                  _InspectorSection(
-                    title: 'Budget limits',
-                    children: [
-                      _MetaLine(
-                        label: 'Model turns',
-                        value: _budgetValue(budgets.modelTurns),
-                      ),
-                      _MetaLine(
-                        label: 'Tokens',
-                        value: _budgetValue(budgets.tokens),
-                      ),
-                      _MetaLine(
-                        label: 'Tool calls',
-                        value: _budgetValue(budgets.toolCalls),
-                      ),
-                      _MetaLine(
-                        label: 'Computer use',
-                        value: _budgetValue(budgets.browserActions),
-                      ),
-                      _MetaLine(
-                        label: 'Wall time',
-                        value: budgets.wallTimeMs == null
-                            ? 'Not recorded'
-                            : _formatDuration(budgets.wallTimeMs!),
-                      ),
-                      _MetaLine(
-                        label: 'Cost limit',
-                        value: budgets.costMicrousd == null
-                            ? 'Not recorded'
-                            : _formatKnownMicrousd(budgets.costMicrousd!),
-                      ),
-                    ],
+                  _MetaLine(
+                    label: 'Method',
+                    value: _label(member.verifier.method),
                   ),
-                  const SizedBox(height: 18),
-                  _InspectorSection(
-                    title: 'Observed usage',
-                    children: [
-                      _MetaLine(
-                        label: 'Worker cost',
-                        value: _costLabel(member.cost),
-                      ),
-                      _MetaLine(
-                        label: 'Verifier cost',
-                        value: _costLabel(execution.verifierCost),
-                      ),
-                      _MetaLine(
-                        label: 'Worker tokens',
-                        value: member.cost.receiptCount == 0
-                            ? 'Not recorded'
-                            : '${member.cost.totalTokens}',
-                      ),
-                      _MetaLine(
-                        label: 'Usage receipts',
-                        value: '${member.cost.receiptCount}',
-                      ),
-                    ],
+                  _MetaLine(
+                    label: 'Confidence',
+                    value: member.confidence == null
+                        ? 'Not recorded'
+                        : '${(member.confidence! * 100).round()}%',
                   ),
-                  const SizedBox(height: 18),
-                  _InspectorSection(
-                    title: 'Scope and identity',
-                    children: [
-                      _MetaLine(
-                        label: 'Workspace',
-                        value: authority.workspaceId ?? 'Not scoped',
-                      ),
-                      _MetaLine(
-                        label: 'Project',
-                        value: authority.projectId ?? 'Not scoped',
-                      ),
-                      _MetaLine(
-                        label: 'Mission',
-                        value: authority.missionId ?? 'Not scoped',
-                      ),
-                      _MetaLine(
-                        label: 'Definition',
-                        value: 'v${member.identity.definitionVersion}',
-                      ),
-                      _MetaLine(
-                        label: 'Revision',
-                        value: '${member.lifecycleRevision}',
-                      ),
-                      const SizedBox(height: 7),
-                      SelectableText(
-                        'Run ${execution.parentExecutionId}\nTask ${member.taskId}\nDelegation ${member.delegationId}\nContract ${authority.contractSha256}\nReceipt ${authority.receiptSha256 ?? 'Not recorded'}',
-                        style: Theme.of(context).textTheme.labelSmall
-                            ?.copyWith(fontFamily: 'monospace', height: 1.5),
-                      ),
-                    ],
+                  _MetaLine(
+                    label: 'Verifier score',
+                    value: member.verifier.score == null
+                        ? 'Not scored'
+                        : '${(member.verifier.score! * 100).round()}%',
                   ),
-                  const SizedBox(height: 18),
-                  _InspectorSection(
-                    title: 'Model route',
-                    children: [
-                      if (member.runtime == null)
-                        Text(
-                          'Not recorded for this historical task.',
-                          style: Theme.of(context).textTheme.bodySmall,
-                        )
-                      else ...[
-                        _MetaLine(
-                          label: 'Provider',
-                          value: member.runtime!.providerId,
-                        ),
-                        _MetaLine(
-                          label: 'Model',
-                          value: member.runtime!.modelId,
-                        ),
-                        _MetaLine(
-                          label: 'Tier',
-                          value: _label(member.runtime!.modelTier),
-                        ),
-                      ],
-                      const SizedBox(height: 9),
-                      Text(
-                        'Verifier route',
-                        style: Theme.of(context).textTheme.labelMedium,
-                      ),
-                      const SizedBox(height: 5),
-                      if (member.verifier.runtime == null)
-                        Text(
-                          'Not recorded for this historical task.',
-                          style: Theme.of(context).textTheme.bodySmall,
-                        )
-                      else ...[
-                        _MetaLine(
-                          label: 'Provider',
-                          value: member.verifier.runtime!.providerId,
-                        ),
-                        _MetaLine(
-                          label: 'Model',
-                          value: member.verifier.runtime!.modelId,
-                        ),
-                        _MetaLine(
-                          label: 'Tier',
-                          value: _label(member.verifier.runtime!.modelTier),
-                        ),
-                      ],
-                    ],
+                  _MetaLine(
+                    label: 'Acceptance threshold',
+                    value:
+                        '${(member.verifier.acceptanceThreshold * 100).round()}%',
                   ),
                 ],
               ),
-            ),
+              const SizedBox(height: 18),
+              _InspectorSection(
+                title: 'Authority',
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        verifiedAuthority
+                            ? Icons.verified_outlined
+                            : Icons.warning_amber_rounded,
+                        size: 16,
+                        color: verifiedAuthority
+                            ? Theme.of(context).colorScheme.primary
+                            : Theme.of(context).colorScheme.secondary,
+                      ),
+                      const SizedBox(width: 7),
+                      Expanded(
+                        child: Text(
+                          verifiedAuthority
+                              ? 'Verified delegation receipt'
+                              : 'Historical authority unavailable',
+                          style: Theme.of(context).textTheme.labelMedium,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 9),
+                  Text(authority.purpose),
+                  const SizedBox(height: 10),
+                  _MetaLine(
+                    label: 'Context grants',
+                    value: _authorityCount(
+                      authority.contextState,
+                      authority.contextGrantCount,
+                    ),
+                  ),
+                  _MetaLine(
+                    label: 'Capability grants',
+                    value: _authorityCount(
+                      authority.capabilityState,
+                      authority.capabilityGrantCount,
+                    ),
+                  ),
+                  _MetaLine(
+                    label: 'Governed tools',
+                    value: authority.toolState == 'unavailable'
+                        ? 'Unavailable'
+                        : '${authority.toolIds.length}',
+                  ),
+                  if (authority.toolIds.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: authority.toolIds
+                          .map((tool) => _SmallBadge(label: tool))
+                          .toList(growable: false),
+                    ),
+                  ],
+                ],
+              ),
+              if (controller != null) ...[
+                const SizedBox(height: 18),
+                _InspectorSection(
+                  title: 'Exact signed grants',
+                  child: AgentTaskAuthorityView(
+                    key: ValueKey('macos-task-authority-${member.taskId}'),
+                    controller: controller!,
+                    taskId: member.taskId,
+                    compact: true,
+                  ),
+                ),
+              ],
+              const SizedBox(height: 18),
+              _InspectorSection(
+                title: 'Budget limits',
+                children: [
+                  _MetaLine(
+                    label: 'Model turns',
+                    value: _budgetValue(budgets.modelTurns),
+                  ),
+                  _MetaLine(
+                    label: 'Tokens',
+                    value: _budgetValue(budgets.tokens),
+                  ),
+                  _MetaLine(
+                    label: 'Tool calls',
+                    value: _budgetValue(budgets.toolCalls),
+                  ),
+                  _MetaLine(
+                    label: 'Computer use',
+                    value: _budgetValue(budgets.browserActions),
+                  ),
+                  _MetaLine(
+                    label: 'Wall time',
+                    value: budgets.wallTimeMs == null
+                        ? 'Not recorded'
+                        : _formatDuration(budgets.wallTimeMs!),
+                  ),
+                  _MetaLine(
+                    label: 'Cost limit',
+                    value: budgets.costMicrousd == null
+                        ? 'Not recorded'
+                        : _formatKnownMicrousd(budgets.costMicrousd!),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 18),
+              _InspectorSection(
+                title: 'Observed usage',
+                children: [
+                  _MetaLine(
+                    label: 'Worker cost',
+                    value: _costLabel(member.cost),
+                  ),
+                  _MetaLine(
+                    label: 'Verifier cost',
+                    value: _costLabel(execution.verifierCost),
+                  ),
+                  _MetaLine(
+                    label: 'Worker tokens',
+                    value: member.cost.receiptCount == 0
+                        ? 'Not recorded'
+                        : '${member.cost.totalTokens}',
+                  ),
+                  _MetaLine(
+                    label: 'Usage receipts',
+                    value: '${member.cost.receiptCount}',
+                  ),
+                ],
+              ),
+              const SizedBox(height: 18),
+              _InspectorSection(
+                title: 'Scope and identity',
+                children: [
+                  _MetaLine(
+                    label: 'Workspace',
+                    value: authority.workspaceId ?? 'Not scoped',
+                  ),
+                  _MetaLine(
+                    label: 'Project',
+                    value: authority.projectId ?? 'Not scoped',
+                  ),
+                  _MetaLine(
+                    label: 'Mission',
+                    value: authority.missionId ?? 'Not scoped',
+                  ),
+                  _MetaLine(
+                    label: 'Definition',
+                    value: 'v${member.identity.definitionVersion}',
+                  ),
+                  _MetaLine(
+                    label: 'Revision',
+                    value: '${member.lifecycleRevision}',
+                  ),
+                  const SizedBox(height: 7),
+                  SelectableText(
+                    'Run ${execution.parentExecutionId}\nTask ${member.taskId}\nDelegation ${member.delegationId}\nContract ${authority.contractSha256}\nReceipt ${authority.receiptSha256 ?? 'Not recorded'}',
+                    style: Theme.of(context).textTheme.labelSmall
+                        ?.copyWith(fontFamily: 'monospace', height: 1.5),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 18),
+              _InspectorSection(
+                title: 'Model route',
+                children: [
+                  if (member.runtime == null)
+                    Text(
+                      'Not recorded for this historical task.',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    )
+                  else ...[
+                    _MetaLine(
+                      label: 'Provider',
+                      value: member.runtime!.providerId,
+                    ),
+                    _MetaLine(label: 'Model', value: member.runtime!.modelId),
+                    _MetaLine(
+                      label: 'Tier',
+                      value: _label(member.runtime!.modelTier),
+                    ),
+                  ],
+                  const SizedBox(height: 9),
+                  Text(
+                    'Verifier route',
+                    style: Theme.of(context).textTheme.labelMedium,
+                  ),
+                  const SizedBox(height: 5),
+                  if (member.verifier.runtime == null)
+                    Text(
+                      'Not recorded for this historical task.',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    )
+                  else ...[
+                    _MetaLine(
+                      label: 'Provider',
+                      value: member.verifier.runtime!.providerId,
+                    ),
+                    _MetaLine(
+                      label: 'Model',
+                      value: member.verifier.runtime!.modelId,
+                    ),
+                    _MetaLine(
+                      label: 'Tier',
+                      value: _label(member.verifier.runtime!.modelTier),
+                    ),
+                  ],
+                ],
+              ),
+            ],
           ),
         ],
       ),
@@ -2534,10 +2544,14 @@ class _CouncilStatusBadge extends StatelessWidget {
           children: [
             Icon(icon, size: 14, color: color),
             const SizedBox(width: 6),
-            Text(
-              '$prefix · $label',
-              style: Theme.of(context).textTheme.labelSmall
-                  ?.copyWith(color: color, fontWeight: FontWeight.w700),
+            Flexible(
+              child: Text(
+                '$prefix · $label',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.labelSmall
+                    ?.copyWith(color: color, fontWeight: FontWeight.w700),
+              ),
             ),
           ],
         ),
