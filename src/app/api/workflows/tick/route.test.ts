@@ -15,6 +15,7 @@ const routeMocks = vi.hoisted(() => ({
   listMaintenanceTenantIds: vi.fn(),
   recoverInterruptedLoopV2Runs: vi.fn(),
   repairStuckAgentRuns: vi.fn(),
+  reconcileMissionProjections: vi.fn(),
   recoverStaleToolExecutionClaims: vi.fn(),
   processDueDailyBriefs: vi.fn(),
   processDueNotifications: vi.fn(),
@@ -88,6 +89,10 @@ vi.mock("@/lib/orchestration/loop-v2-recovery", async (importOriginal) => ({
 vi.mock("@/lib/runs/store", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/runs/store")>()),
   repairStuckAgentRuns: routeMocks.repairStuckAgentRuns,
+}));
+
+vi.mock("@/lib/missions/reconcile", () => ({
+  reconcileMissionProjections: routeMocks.reconcileMissionProjections,
 }));
 
 vi.mock("@/lib/security/retention", async (importOriginal) => ({
@@ -314,6 +319,9 @@ beforeEach(() => {
     .mockReset()
     .mockResolvedValue(emptyLoopV2Recovery);
   routeMocks.repairStuckAgentRuns.mockReset().mockResolvedValue(0);
+  routeMocks.reconcileMissionProjections
+    .mockReset()
+    .mockResolvedValue({ repaired: 0, failed: 0 });
   routeMocks.recoverStaleToolExecutionClaims.mockReset().mockResolvedValue([]);
   routeMocks.reconcileAbandonedExternalA2ATasks.mockReset().mockResolvedValue({
     scanned: 0,
@@ -784,6 +792,77 @@ describe("dedicated worker heartbeat timing", () => {
       tenantId: "tenant-a",
       limit: 2,
     });
+  });
+
+  it("replays missed mission updates after stale-run repair", async () => {
+    const order: string[] = [];
+    routeMocks.listMaintenanceTenantIds.mockResolvedValue(["tenant-a"]);
+    routeMocks.repairStuckAgentRuns.mockImplementation(async () => {
+      order.push("generic-repair");
+      return 1;
+    });
+    routeMocks.reconcileMissionProjections.mockImplementation(async () => {
+      order.push("mission-repair");
+      return { repaired: 3, failed: 1 };
+    });
+
+    const response = await POST(workerRequest({
+      startup: false,
+      lane: "maintenance",
+    }));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      maintenance: [{
+        tenantId: "tenant-a",
+        agentRunsRepaired: 1,
+        missionProjectionsRepaired: 3,
+      }],
+    });
+    expect(order).toEqual(["generic-repair", "mission-repair"]);
+    expect(routeMocks.reconcileMissionProjections.mock.calls).toEqual([
+      [{ tenantId: "tenant-a" }],
+    ]);
+  });
+
+  it("keeps a tenant's maintenance results when mission repair fails", async () => {
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    routeMocks.listMaintenanceTenantIds.mockResolvedValue(["tenant-a"]);
+    routeMocks.repairStuckAgentRuns.mockResolvedValue(2);
+    routeMocks.reconcileMissionProjections.mockRejectedValue(
+      new Error("untrusted mission storage detail"),
+    );
+
+    try {
+      const response = await POST(workerRequest({
+        startup: false,
+        lane: "maintenance",
+      }));
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.maintenance).toEqual([
+        expect.objectContaining({
+          tenantId: "tenant-a",
+          agentRunsRepaired: 2,
+          missionProjectionsRepaired: 0,
+        }),
+      ]);
+      expect(body.maintenance[0]).not.toHaveProperty("maintenanceError");
+      expect(routeMocks.recoverStaleToolExecutionClaims).toHaveBeenCalledWith({
+        tenantId: "tenant-a",
+      });
+      expect(errorLog).toHaveBeenCalledWith(JSON.stringify({
+        level: "error",
+        msg: "mission_projection_reconciliation_failed",
+        tenantId: "tenant-a",
+      }));
+      expect(errorLog.mock.calls.flat().join(" ")).not.toContain(
+        "untrusted mission storage detail",
+      );
+    } finally {
+      errorLog.mockRestore();
+    }
   });
 
   it("prioritizes a due Moltbook autonomy cycle before slower tenant maintenance", async () => {

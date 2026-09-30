@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
   AGENT_RUN_BUDGET_LIMITS,
@@ -9,7 +8,6 @@ import {
   runWithDatabaseTenantScope,
 } from "@/lib/db/client";
 import { syncMissionExecutor } from "@/lib/missions/runtime";
-import { recordMissionArtifact } from "@/lib/missions/store";
 import { processDelegationExecutionJob } from "@/lib/delegation/worker";
 import { delegationExecutionJobPayloadSchema } from "@/lib/delegation/runtime-job";
 import { runAgent } from "@/lib/orchestration/agent-runner";
@@ -42,11 +40,15 @@ import {
 } from "@/lib/security/execution-scope";
 import { inspectWorkflowSpecialistDependencies } from "@/lib/subagents/context";
 import {
-  durableSpecialistLabel,
-  durableSpecialistProfile,
-} from "@/lib/subagents/profiles";
+  durableSpecialistReceipt,
+  recordDurableSpecialistFindings,
+} from "@/lib/subagents/findings";
+import { durableSpecialistProfile } from "@/lib/subagents/profiles";
 import type { DurableSpecialistJobPayload } from "@/lib/subagents/types";
-import { DURABLE_SPECIALIST_SCOPE_PURPOSE } from "@/lib/subagents/types";
+import {
+  DURABLE_SPECIALIST_AGENT_IDS,
+  DURABLE_SPECIALIST_SCOPE_PURPOSE,
+} from "@/lib/subagents/types";
 import { enqueueWorkflowRunTick } from "@/lib/workflows/queue";
 import { getWorkflowRunDetail } from "@/lib/workflows/store";
 
@@ -55,7 +57,7 @@ const specialistJobSchema = z.object({
   missionId: z.string().min(1).max(200),
   taskId: z.string().min(1).max(200),
   runId: z.string().min(1).max(200),
-  agentId: z.enum(["atlas", "scout", "forge", "sentinel", "mnemosyne"]),
+  agentId: z.enum(DURABLE_SPECIALIST_AGENT_IDS),
   requestId: z.string().min(1).max(200).optional(),
   delegationId: z.string().min(1).max(200).optional(),
   executionScope: z.unknown().optional(),
@@ -609,23 +611,13 @@ async function finalizeTerminalRun(
     idempotencyKey: job.dedupeKey,
   };
   if (run.status === "completed") {
-    const response = (run.response || "").slice(0, 12_000);
-    const label = durableSpecialistLabel(payload.agentId);
-    await recordMissionArtifact({
-      ...owner,
+    await recordDurableSpecialistFindings({
       missionId: payload.missionId,
       taskId: payload.taskId,
-      sourceKey: `subagent:${run.id}:result`,
-      kind: "specialist_result",
-      title: `${label.name} · durable findings`,
-      mimeType: "text/plain",
-      data: {
-        agentId: payload.agentId,
-        response,
-        responseLength: run.response?.length || 0,
-        responseSha256: createHash("sha256").update(run.response || "").digest("hex"),
-      },
-    });
+      runId: run.id,
+      agentId: payload.agentId,
+      response: run.response,
+    }, owner);
   }
   const missionStatus = run.status === "completed"
     ? "succeeded"
@@ -637,11 +629,7 @@ async function finalizeTerminalRun(
     executorId: run.id,
     status: missionStatus,
     output: run.status === "completed"
-      ? {
-          agentId: payload.agentId,
-          responseLength: run.response?.length || 0,
-          responseSha256: createHash("sha256").update(run.response || "").digest("hex"),
-        }
+      ? durableSpecialistReceipt(payload.agentId, run.response)
       : undefined,
     error: run.status === "failed" ? run.error : undefined,
   }, owner);

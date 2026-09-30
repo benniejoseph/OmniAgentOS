@@ -5,12 +5,22 @@ import type { ExecutionScope } from "@/lib/security/execution-scope";
 export const DURABLE_SPECIALIST_SCOPE_PURPOSE =
   "agent.delegation.read_only" as const;
 
+export const DURABLE_SPECIALIST_AGENT_IDS = [
+  "atlas",
+  "scout",
+  "forge",
+  "sentinel",
+  "mnemosyne",
+] as const;
+
 export type DurableSpecialistAgentId =
-  | "atlas"
-  | "scout"
-  | "forge"
-  | "sentinel"
-  | "mnemosyne";
+  (typeof DURABLE_SPECIALIST_AGENT_IDS)[number];
+
+export function isDurableSpecialistAgentId(
+  value: unknown,
+): value is DurableSpecialistAgentId {
+  return DURABLE_SPECIALIST_AGENT_IDS.some((agentId) => agentId === value);
+}
 
 export type PreparedDurableSpecialist = {
   agentId: DurableSpecialistAgentId;

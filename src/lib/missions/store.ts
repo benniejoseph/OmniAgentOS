@@ -4,6 +4,7 @@ import {
   getDatabaseTenantContext,
   getSql,
   hasDatabaseUrl,
+  runWithDatabaseSystemScope,
 } from "@/lib/db/client";
 import {
   appendDomainEvent,
@@ -1299,6 +1300,186 @@ export async function listMissionAttempts(
   return ledger.attempts
     .filter((attempt) => attempt.missionId === id && owns(attempt, owner))
     .sort(compareNewest)
+    .slice(0, bounded);
+}
+
+/**
+ * Lists the latest attempt of each open task whose end has not reached the
+ * task: its run ended, or it ended after the task last changed, at or
+ * before `settledBefore`. Newest changes come first. The list spans every
+ * actor in the tenant, so a database read takes a system scope. The file
+ * ledger holds no runs, so there it lists every open attempt unchanged
+ * since `settledBefore`, and callers check each run either way.
+ */
+export async function listMissionAttemptsToReconcile({
+  tenantId: requestedTenantId,
+  settledBefore,
+  limit,
+}: {
+  tenantId: string;
+  settledBefore: string;
+  limit?: number;
+}): Promise<MissionAttempt[]> {
+  const tenantId = normalizeTenantId(requestedTenantId);
+  const bounded = boundedLimit(limit, 25);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await runWithDatabaseSystemScope(
+      `Reconcile mission attempts for tenant ${tenantId}.`,
+      () => getSql()`
+        SELECT attempt.* FROM omni_mission_attempts AS attempt
+        JOIN omni_mission_tasks AS task
+          ON task.id = attempt.task_id AND task.tenant_id = attempt.tenant_id
+            AND task.actor_id = attempt.actor_id
+        LEFT JOIN omni_agent_runs AS agent_run
+          ON attempt.executor_type = 'agent_run'
+            AND agent_run.id = attempt.executor_id
+            AND agent_run.tenant_id = attempt.tenant_id
+        LEFT JOIN omni_workflow_runs AS workflow_run
+          ON attempt.executor_type = 'workflow_run'
+            AND workflow_run.id = attempt.executor_id
+            AND workflow_run.tenant_id = attempt.tenant_id
+        WHERE attempt.tenant_id = ${tenantId}
+          AND attempt.executor_type IN ('agent_run', 'workflow_run')
+          AND task.status NOT IN ('succeeded', 'failed', 'canceled')
+          AND NOT EXISTS (
+            SELECT 1 FROM omni_mission_attempts AS newer
+            WHERE newer.tenant_id = attempt.tenant_id
+              AND newer.actor_id = attempt.actor_id
+              AND newer.task_id = attempt.task_id
+              AND newer.created_at > attempt.created_at
+          )
+          AND (
+            (
+              attempt.status IN ('succeeded', 'failed', 'canceled')
+              AND attempt.terminal_at > task.updated_at
+              AND attempt.terminal_at <= ${settledBefore}::timestamptz
+            )
+            OR (
+              attempt.status IN ('queued', 'running', 'waiting')
+              AND (
+                (
+                  agent_run.status IN ('completed', 'failed', 'canceled')
+                  AND COALESCE(agent_run.completed_at, agent_run.started_at)
+                    <= ${settledBefore}::timestamptz
+                )
+                OR (
+                  workflow_run.status IN ('completed', 'failed', 'canceled')
+                  AND COALESCE(workflow_run.completed_at, workflow_run.updated_at)
+                    <= ${settledBefore}::timestamptz
+                )
+              )
+            )
+          )
+        ORDER BY attempt.updated_at DESC, attempt.id COLLATE "C" DESC
+        LIMIT ${bounded}
+      `,
+    );
+    return rows.map(attemptFromRow);
+  }
+  const ledger = await readLedger();
+  const settled = Date.parse(settledBefore);
+  const tasks = new Map(
+    ledger.tasks
+      .filter((task) => task.tenantId === tenantId)
+      .map((task) => [task.id, task]),
+  );
+  const latest = new Map<string, MissionAttempt>();
+  for (const attempt of ledger.attempts) {
+    const current = latest.get(attempt.taskId);
+    if (
+      attempt.tenantId === tenantId &&
+      (!current || attempt.createdAt > current.createdAt)
+    ) {
+      latest.set(attempt.taskId, attempt);
+    }
+  }
+  return [...latest.values()]
+    .filter((attempt) => {
+      const task = tasks.get(attempt.taskId);
+      if (
+        !task ||
+        task.actorId !== attempt.actorId ||
+        TERMINAL_TASK_STATUSES.has(task.status) ||
+        !["agent_run", "workflow_run"].includes(attempt.executorType)
+      ) {
+        return false;
+      }
+      if (!TERMINAL_ATTEMPT_STATUSES.has(attempt.status)) {
+        return Date.parse(attempt.updatedAt) <= settled;
+      }
+      const endedAt = Date.parse(attempt.terminalAt || "");
+      return endedAt > Date.parse(task.updatedAt) && endedAt <= settled;
+    })
+    .sort(compareRecentlyChanged)
+    .slice(0, bounded);
+}
+
+/**
+ * Lists open missions whose tasks all ended at or before `settledBefore`,
+ * newest changes first. The list spans every actor in the tenant, so a
+ * database read takes a system scope.
+ */
+export async function listEndedMissionsToReconcile({
+  tenantId: requestedTenantId,
+  settledBefore,
+  limit,
+}: {
+  tenantId: string;
+  settledBefore: string;
+  limit?: number;
+}): Promise<Mission[]> {
+  const tenantId = normalizeTenantId(requestedTenantId);
+  const bounded = boundedLimit(limit, 25);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await runWithDatabaseSystemScope(
+      `Reconcile ended missions for tenant ${tenantId}.`,
+      () => getSql()`
+        SELECT mission.* FROM omni_missions AS mission
+        WHERE mission.tenant_id = ${tenantId}
+          AND mission.status NOT IN ('succeeded', 'failed', 'canceled', 'archived')
+          AND EXISTS (
+            SELECT 1 FROM omni_mission_tasks AS task
+            WHERE task.tenant_id = mission.tenant_id
+              AND task.actor_id = mission.actor_id
+              AND task.mission_id = mission.id
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM omni_mission_tasks AS task
+            WHERE task.tenant_id = mission.tenant_id
+              AND task.actor_id = mission.actor_id
+              AND task.mission_id = mission.id
+              AND (
+                task.status NOT IN ('succeeded', 'failed', 'canceled')
+                OR task.updated_at > ${settledBefore}::timestamptz
+              )
+          )
+        ORDER BY mission.updated_at DESC, mission.id COLLATE "C" DESC
+        LIMIT ${bounded}
+      `,
+    );
+    return rows.map(missionFromRow);
+  }
+  const ledger = await readLedger();
+  const settled = Date.parse(settledBefore);
+  return ledger.missions
+    .filter((mission) => {
+      if (
+        mission.tenantId !== tenantId ||
+        TERMINAL_MISSION_STATUSES.has(mission.status)
+      ) {
+        return false;
+      }
+      const tasks = ledger.tasks.filter((task) =>
+        task.missionId === mission.id && owns(task, mission)
+      );
+      return tasks.length > 0 && tasks.every((task) =>
+        TERMINAL_TASK_STATUSES.has(task.status) &&
+        Date.parse(task.updatedAt) <= settled
+      );
+    })
+    .sort(compareRecentlyChanged)
     .slice(0, bounded);
 }
 
@@ -2811,4 +2992,12 @@ function compareTasks(left: MissionTask, right: MissionTask) {
 
 function compareNewest<T extends { createdAt: string }>(left: T, right: T) {
   return right.createdAt.localeCompare(left.createdAt);
+}
+
+function compareRecentlyChanged<T extends { id: string; updatedAt: string }>(
+  left: T,
+  right: T,
+) {
+  return right.updatedAt.localeCompare(left.updatedAt) ||
+    (right.id < left.id ? -1 : right.id > left.id ? 1 : 0);
 }

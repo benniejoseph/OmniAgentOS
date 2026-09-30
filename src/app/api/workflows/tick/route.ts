@@ -17,6 +17,7 @@ import {
   processAllTenantAgentResumeQueues,
 } from "@/lib/orchestration/resume-queue";
 import { recoverInterruptedLoopV2Runs } from "@/lib/orchestration/loop-v2-recovery";
+import { reconcileMissionProjections } from "@/lib/missions/reconcile";
 import { repairStuckAgentRuns } from "@/lib/runs/store";
 import { reconcileCheckpointShadowsDaily } from "@/lib/runs/checkpoint-shadow-reconciliation";
 import { recordSecurityAudit } from "@/lib/security/audit-store";
@@ -932,6 +933,7 @@ async function runAllTenantScheduledWork({
   const maintenance: Array<{
     tenantId: string;
     agentRunsRepaired: number;
+    missionProjectionsRepaired: number;
     toolClaimsRecovered: number;
     dailyBriefsGenerated: number;
     personalNotificationsProcessed: number;
@@ -1075,6 +1077,7 @@ async function runTenantMaintenance({
   const result: {
     tenantId: string;
     agentRunsRepaired: number;
+    missionProjectionsRepaired: number;
     toolClaimsRecovered: number;
     dailyBriefsGenerated: number;
     personalNotificationsProcessed: number;
@@ -1106,6 +1109,7 @@ async function runTenantMaintenance({
   } = {
     tenantId,
     agentRunsRepaired: 0,
+    missionProjectionsRepaired: 0,
     toolClaimsRecovered: 0,
     dailyBriefsGenerated: 0,
     personalNotificationsProcessed: 0,
@@ -1132,6 +1136,21 @@ async function runTenantMaintenance({
   }
   if (Date.now() < deadlineAt) {
     result.agentRunsRepaired = await repairStuckAgentRuns({ tenantId });
+  }
+  if (Date.now() < deadlineAt) {
+    try {
+      result.missionProjectionsRepaired = (
+        await reconcileMissionProjections({ tenantId })
+      ).repaired;
+    } catch {
+      // Each pass lists the missed updates again, so a failed pass must not
+      // fail the rest of this tenant's maintenance.
+      console.error(JSON.stringify({
+        level: "error",
+        msg: "mission_projection_reconciliation_failed",
+        tenantId,
+      }));
+    }
   }
   if (Date.now() < deadlineAt) {
     result.toolClaimsRecovered = (
@@ -1292,6 +1311,7 @@ function failedTenantMaintenance(
   return {
     tenantId,
     agentRunsRepaired: 0,
+    missionProjectionsRepaired: 0,
     toolClaimsRecovered: 0,
     dailyBriefsGenerated: 0,
     personalNotificationsProcessed: 0,

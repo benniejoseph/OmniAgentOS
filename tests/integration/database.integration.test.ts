@@ -36,6 +36,16 @@ import {
   type RecordHeldMemoryDataRightRequestResultV1,
 } from "@/lib/memory/data-right-request-writer";
 import { saveMemories } from "@/lib/memory/store";
+import { reconcileMissionProjections } from "@/lib/missions/reconcile";
+import { attachMissionExecutor } from "@/lib/missions/runtime";
+import {
+  createMission,
+  ensureMissionTask,
+  listEndedMissionsToReconcile,
+  listMissionAttemptsToReconcile,
+  transitionMissionAttempt,
+  transitionMissionTask,
+} from "@/lib/missions/store";
 import {
   listPendingSloPolicyChangePage,
   requestObservabilitySloPolicyChange,
@@ -6978,6 +6988,271 @@ databaseDescribe("Postgres schema integration", () => {
       () => tenantHasAtMostOneActiveMember(tenantId),
     )).resolves.toBe(false);
     await expect(tenantHasAtMostOneActiveMember(otherTenantId)).resolves.toBe(true);
+  });
+
+  test("replays the mission updates a run's end never delivered, for every owner in a tenant", async () => {
+    await ensureDatabaseSchema();
+    const tenant = "mission_repair_tenant";
+    const otherTenant = "mission_repair_other";
+    const userIds = [
+      "00000000-0000-4000-8000-000000000911",
+      "00000000-0000-4000-8000-000000000912",
+    ];
+    await admin`
+      INSERT INTO omni_auth_tenants (id, name, slug)
+      VALUES
+        (${tenant}, 'Mission repair', ${tenant}),
+        (${otherTenant}, 'Mission repair other', ${otherTenant})
+    `;
+    for (const [index, userId] of userIds.entries()) {
+      await admin`
+        INSERT INTO omni_auth_users (id, email, password_hash)
+        VALUES (${userId}, ${`mission-repair-${index}@example.test`}, 'test-only')
+      `;
+    }
+    await admin`
+      INSERT INTO omni_auth_memberships (id, tenant_id, user_id, role, status)
+      VALUES
+        ('mission-repair-a', ${tenant}, ${userIds[0]}, 'admin', 'active'),
+        ('mission-repair-b', ${tenant}, ${userIds[1]}, 'operator', 'active'),
+        ('mission-repair-other-a', ${otherTenant}, ${userIds[0]}, 'admin', 'active')
+    `;
+    const [ownerA, ownerB] = userIds.map((userId) => `actor:${userId}`);
+    type Owner = { tenantId: string; actorId: string };
+    const asOwner = <T,>(owner: Owner, operation: () => Promise<T>) =>
+      runWithDatabaseActorScope(owner.tenantId, [owner.actorId], operation);
+    const startTask = (
+      key: string,
+      actorId: string,
+      options: { tenantId?: string; workflow?: boolean } = {},
+    ) => {
+      const owner = { tenantId: options.tenantId || tenant, actorId };
+      return asOwner(owner, async () => {
+        let executorId = `db-mission-repair-${key}`;
+        if (options.workflow) {
+          executorId = (await createWorkflowRun({
+            tenantId: owner.tenantId,
+            goal: `Run ${key}`,
+          })).run.id;
+        } else {
+          await createAgentRun({
+            id: executorId,
+            ...owner,
+            mode: "orchestrate",
+            prompt: `Run ${key}`,
+            messages: [{ role: "user", content: `Run ${key}` }],
+          });
+        }
+        const mission = await createMission({
+          ...owner,
+          title: `Mission ${key}`,
+          objective: "Finish one task.",
+          sourceKey: `mission:${key}`,
+        });
+        const task = await ensureMissionTask(mission.id, {
+          sourceKey: `task:${key}`,
+          title: `Task ${key}`,
+        }, owner);
+        const attempt = await attachMissionExecutor({
+          taskId: task.id,
+          executorType: options.workflow ? "workflow_run" : "agent_run",
+          executorId,
+          status: "running",
+        }, owner);
+        return { owner, mission, task, attempt, executorId };
+      });
+    };
+    const agentDone = await startTask("agent-done", ownerA);
+    const workflowFailed = await startTask("workflow-failed", ownerB, {
+      workflow: true,
+    });
+    const agentRecent = await startTask("agent-recent", ownerA);
+    const agentRunning = await startTask("agent-running", ownerB);
+    const foreign = await startTask("foreign", ownerA, {
+      tenantId: otherTenant,
+    });
+    const endAttempt = async (key: string, actorId: string) => {
+      const started = await startTask(key, actorId);
+      await asOwner(started.owner, () => transitionMissionAttempt(
+        started.attempt.id,
+        "failed",
+        {
+          fenceToken: started.attempt.fenceToken,
+          error: "The run stopped.",
+          agentRunId: started.attempt.agentRunId,
+        },
+        started.owner,
+      ));
+      return started;
+    };
+    const attemptEnded = await endAttempt("attempt-ended", ownerB);
+    const attemptRecent = await endAttempt("attempt-recent", ownerA);
+    const attemptSeen = await endAttempt("attempt-seen", ownerB);
+    const taskCanceled = await startTask("task-canceled", ownerA);
+    await asOwner(taskCanceled.owner, () => transitionMissionTask(
+      taskCanceled.task.id,
+      "canceled",
+      taskCanceled.owner,
+    ));
+    const endMission = (key: string, actorId: string, options = { withTask: true }) => {
+      const owner = { tenantId: tenant, actorId };
+      return asOwner(owner, async () => {
+        const mission = await createMission({
+          ...owner,
+          title: `Mission ${key}`,
+          objective: "Finish one task.",
+          sourceKey: `mission:${key}`,
+        });
+        if (!options.withTask) return { mission, task: undefined };
+        const task = await ensureMissionTask(mission.id, {
+          sourceKey: `task:${key}`,
+          title: `Task ${key}`,
+        }, owner);
+        await transitionMissionTask(task.id, "canceled", owner);
+        return { mission, task };
+      });
+    };
+    const missionEnded = await endMission("mission-ended", ownerA);
+    const missionRecent = await endMission("mission-recent", ownerB);
+    await endMission("mission-empty", ownerA, { withTask: false });
+    // The runs end, but their own mission updates never land.
+    await admin`
+      UPDATE omni_agent_runs
+      SET status = 'completed', response = 'Brief ready.',
+        completed_at = NOW() - INTERVAL '3 minutes'
+      WHERE id IN (${agentDone.executorId}, ${foreign.executorId})
+    `;
+    await admin`
+      UPDATE omni_agent_runs
+      SET status = 'completed', response = 'Brief ready.',
+        completed_at = NOW() - INTERVAL '1 minute'
+      WHERE id = ${agentRecent.executorId}
+    `;
+    // A run that started long ago and is still going has not ended.
+    await admin`
+      UPDATE omni_agent_runs
+      SET started_at = NOW() - INTERVAL '5 minutes'
+      WHERE id = ${agentRunning.executorId}
+    `;
+    await admin`
+      UPDATE omni_workflow_runs
+      SET status = 'failed', error = 'The source stopped answering.',
+        updated_at = NOW() - INTERVAL '3 minutes'
+      WHERE id = ${workflowFailed.executorId}
+    `;
+    // One attempt ended after its task last changed, one ended under two
+    // minutes ago, and one ended before its task last changed.
+    await admin`
+      UPDATE omni_mission_attempts
+      SET terminal_at = NOW() - CASE id
+        WHEN ${attemptRecent.attempt.id} THEN INTERVAL '1 minute'
+        ELSE INTERVAL '3 minutes'
+      END
+      WHERE id IN (
+        ${attemptEnded.attempt.id},
+        ${attemptRecent.attempt.id},
+        ${attemptSeen.attempt.id}
+      )
+    `;
+    await admin`
+      UPDATE omni_mission_tasks
+      SET updated_at = NOW() - CASE id
+        WHEN ${attemptSeen.task.id} THEN INTERVAL '150 seconds'
+        WHEN ${missionEnded.task!.id} THEN INTERVAL '3 minutes'
+        WHEN ${missionRecent.task!.id} THEN INTERVAL '1 minute'
+        ELSE INTERVAL '4 minutes'
+      END
+      WHERE id IN (
+        ${attemptEnded.task.id},
+        ${attemptRecent.task.id},
+        ${attemptSeen.task.id},
+        ${missionEnded.task!.id},
+        ${missionRecent.task!.id}
+      )
+    `;
+    await admin`
+      UPDATE omni_agent_runs
+      SET status = 'completed', completed_at = NOW() - INTERVAL '3 minutes'
+      WHERE id = ${taskCanceled.executorId}
+    `;
+    await admin`
+      UPDATE omni_mission_attempts
+      SET updated_at = NOW() - CASE id
+        WHEN ${attemptEnded.attempt.id} THEN INTERVAL '3 minutes'
+        WHEN ${agentDone.attempt.id} THEN INTERVAL '5 minutes'
+        ELSE INTERVAL '6 minutes'
+      END
+      WHERE id IN (
+        ${attemptEnded.attempt.id},
+        ${agentDone.attempt.id},
+        ${workflowFailed.attempt.id}
+      )
+    `;
+
+    const settledBefore = new Date(Date.now() - 2 * 60_000).toISOString();
+    await expect(runWithDatabaseTenantScope(tenant, async () => ({
+      attempts: (await listMissionAttemptsToReconcile({
+        tenantId: tenant,
+        settledBefore,
+      })).map((attempt) => attempt.id),
+      missions: (await listEndedMissionsToReconcile({
+        tenantId: tenant,
+        settledBefore,
+      })).map((mission) => mission.id),
+    }))).resolves.toEqual({
+      attempts: [
+        attemptEnded.attempt.id,
+        agentDone.attempt.id,
+        workflowFailed.attempt.id,
+      ],
+      missions: [missionEnded.mission.id],
+    });
+    const reconcile = () => runWithDatabaseTenantScope(
+      tenant,
+      () => reconcileMissionProjections({ tenantId: tenant }),
+    );
+    await expect(reconcile()).resolves.toEqual({ repaired: 4, failed: 0 });
+    await expect(reconcile()).resolves.toEqual({ repaired: 0, failed: 0 });
+
+    expect(await admin`
+      SELECT
+        mission.source_key AS key,
+        mission.status AS mission,
+        task.status AS task,
+        attempt.status AS attempt
+      FROM omni_missions mission
+      JOIN omni_mission_tasks task ON task.mission_id = mission.id
+      LEFT JOIN omni_mission_attempts attempt ON attempt.task_id = task.id
+      WHERE mission.tenant_id IN (${tenant}, ${otherTenant})
+      ORDER BY mission.source_key COLLATE "C"
+    `).toEqual([
+      { key: "mission:agent-done", mission: "succeeded", task: "succeeded", attempt: "succeeded" },
+      { key: "mission:agent-recent", mission: "running", task: "running", attempt: "running" },
+      { key: "mission:agent-running", mission: "running", task: "running", attempt: "running" },
+      { key: "mission:attempt-ended", mission: "failed", task: "failed", attempt: "failed" },
+      { key: "mission:attempt-recent", mission: "running", task: "running", attempt: "failed" },
+      { key: "mission:attempt-seen", mission: "running", task: "running", attempt: "failed" },
+      { key: "mission:foreign", mission: "running", task: "running", attempt: "running" },
+      { key: "mission:mission-ended", mission: "canceled", task: "canceled", attempt: null },
+      { key: "mission:mission-recent", mission: "draft", task: "canceled", attempt: null },
+      { key: "mission:task-canceled", mission: "running", task: "canceled", attempt: "running" },
+      { key: "mission:workflow-failed", mission: "failed", task: "failed", attempt: "failed" },
+    ]);
+    expect(await admin`
+      SELECT output, error
+      FROM omni_mission_attempts
+      WHERE id IN (${agentDone.attempt.id}, ${workflowFailed.attempt.id})
+      ORDER BY id = ${agentDone.attempt.id} DESC
+    `).toEqual([
+      {
+        output: {
+          responseLength: 12,
+          responseSha256: createHash("sha256").update("Brief ready.").digest("hex"),
+        },
+        error: null,
+      },
+      { output: null, error: "The source stopped answering." },
+    ]);
   });
 });
 

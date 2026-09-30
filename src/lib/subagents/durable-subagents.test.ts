@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -382,6 +383,14 @@ describe("durable specialist delegation", () => {
     const missionAfter = await missions.getMissionDetail(mission.id, owner);
     expect(missionAfter?.tasks.find((task) => task.id === specialists[0].taskId))
       .toMatchObject({ status: "succeeded" });
+    const specialistResponse = specialistRun?.response || "";
+    expect(missionAfter?.attempts.find((attempt) =>
+      attempt.taskId === specialists[0].taskId
+    )?.output).toEqual({
+      agentId: "sentinel",
+      responseLength: specialistResponse.length,
+      responseSha256: createHash("sha256").update(specialistResponse).digest("hex"),
+    });
     expect(missionAfter?.artifacts).toEqual(expect.arrayContaining([
       expect.objectContaining({
         taskId: specialists[0].taskId,

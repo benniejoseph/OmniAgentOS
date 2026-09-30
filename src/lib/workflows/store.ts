@@ -1080,7 +1080,8 @@ async function syncWorkflowMissionTransition(
   });
 }
 
-function workflowResultReceipt(result?: Record<string, unknown>) {
+/** What a completed workflow run's mission attempt keeps of its result. */
+export function workflowResultReceipt(result?: Record<string, unknown>) {
   if (!result) return { verified: true };
   const report = typeof result.report === "string" ? result.report : "";
   return {
