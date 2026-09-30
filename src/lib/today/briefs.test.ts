@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  findActorTimezone,
   getTodayBriefBundle,
   isBriefGenerationDue,
   localScheduleParts,
@@ -31,6 +32,19 @@ describe("proactive daily briefs", () => {
       .toEqual({ date: "2026-08-25", time: "07:59" });
     expect(isBriefGenerationDue(preferences, new Date("2026-08-25T02:29:00.000Z"))).toBe(false);
     expect(isBriefGenerationDue(preferences, new Date("2026-08-25T02:30:00.000Z"))).toBe(true);
+  });
+
+  it("reads an actor's timezone without creating their preferences", async () => {
+    const owner = { tenantId: "personal", actorId: "owner" };
+
+    await expect(findActorTimezone(owner)).resolves.toBeUndefined();
+    await expect(findActorTimezone(owner)).resolves.toBeUndefined();
+
+    await updateTodayPreferences({ timezone: "Asia/Kolkata" }, owner);
+
+    await expect(findActorTimezone(owner)).resolves.toBe("Asia/Kolkata");
+    await expect(findActorTimezone({ tenantId: "personal", actorId: "other" }))
+      .resolves.toBeUndefined();
   });
 
   it("generates at most one grounded fallback brief per local day", async () => {

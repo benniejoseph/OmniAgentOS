@@ -242,6 +242,7 @@ import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { getToolExecutionScopeBinding } from "@/lib/tools/execution-scope";
 import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
 import { appendThreadTurn } from "@/lib/threads/store";
+import { findActorTimezone } from "@/lib/today/briefs";
 import { loadTenantAiUsageSince } from "@/lib/usage/allowance";
 import { recordAiUsageSafely } from "@/lib/usage/ledger";
 import { formatLiveWebSearchContext, runLiveWebSearch, shouldUseLiveWebSearch } from "@/lib/web-search/search";
@@ -1261,6 +1262,17 @@ async function* runAgentUntilStopped(
           WORKSPACE_ACCESS_CONTEXT_TIMEOUT_MS,
         )
       : Promise.resolve(undefined);
+    // The actor's own timezone dates "today" and "tomorrow" in the prompt.
+    const actorTimeZonePromise = request.actorId
+      ? settleOptionalWithin(
+          findActorTimezone({
+            tenantId: runTenantId,
+            actorId: request.actorId,
+            requestActorBinding: request.requestActorBinding,
+          }).catch(() => undefined),
+          WORKSPACE_ACCESS_CONTEXT_TIMEOUT_MS,
+        )
+      : Promise.resolve(undefined);
     const adaptationGuidancePromise = !isolatedMemoryContext &&
       durableMemoryEnabled &&
       request.contextSelection?.evidenceIds.length !== 0 &&
@@ -1461,8 +1473,10 @@ async function* runAgentUntilStopped(
     const adaptationGuidance = activeAdaptations.map((adaptation) =>
       `Activation v${adaptation.activationVersion}: ${adaptation.guidance}`
     );
+    const actorTimeZone = await actorTimeZonePromise;
     const instructions = buildAgentInstructions({
       mode,
+      runtimeClock: { timeZone: actorTimeZone },
       agentId: request.agentId,
       specialistIds: request.specialistIds,
       adaptationGuidance,

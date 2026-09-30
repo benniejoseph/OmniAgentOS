@@ -64,6 +64,7 @@ const mocks = vi.hoisted(() => ({
   streamResponseTurn: vi.fn(),
   executeGovernedTool: vi.fn(),
   failAgentRun: vi.fn(),
+  findActorTimezone: vi.fn(),
   findAgentRunWaitingForToolApproval: vi.fn(),
   generateModelToolTurn: vi.fn(),
   getAgentRunExecutionScope: vi.fn(),
@@ -247,6 +248,9 @@ vi.mock("@/lib/web-search/search", () => ({
   runLiveWebSearch: vi.fn(),
   shouldUseLiveWebSearch: () => false,
 }));
+vi.mock("@/lib/today/briefs", () => ({
+  findActorTimezone: mocks.findActorTimezone,
+}));
 
 describe("agent memory scope", () => {
   beforeEach(() => {
@@ -290,6 +294,7 @@ describe("agent memory scope", () => {
     mocks.executeGovernedTool.mockReset();
     mocks.failAgentRun.mockResolvedValue({ id: "run-memory-scope" });
     mocks.findAgentRunWaitingForToolApproval.mockReset();
+    mocks.findActorTimezone.mockResolvedValue(undefined);
     mocks.getAgentRunExecutionScope.mockResolvedValue(undefined);
     mocks.getToolExecutionScopeBinding.mockResolvedValue(undefined);
     mocks.loadTenantAiUsageSince.mockResolvedValue({
@@ -396,6 +401,28 @@ describe("agent memory scope", () => {
     }));
     expect(JSON.stringify(mocks.streamResponseTurn.mock.calls[0]?.[0].input))
       .not.toContain("DURABLE_MEMORY_CONTEXT");
+  });
+
+  it("dates the prompt by the actor's own timezone, or says it is unknown", async () => {
+    mocks.findActorTimezone.mockResolvedValueOnce("Asia/Kolkata");
+
+    await collectRun("session");
+
+    expect(mocks.findActorTimezone).toHaveBeenCalledWith({
+      tenantId: "paid-test-tenant",
+      actorId: "paid-test-actor",
+      requestActorBinding: undefined,
+    });
+    expect(mocks.streamResponseTurn.mock.calls[0]?.[0].instructions).toMatch(
+      /- The user's local time: \w+ \d{4}-\d{2}-\d{2} \d{2}:\d{2} GMT\+05:30 \(Asia\/Kolkata\)\./,
+    );
+
+    mocks.findActorTimezone.mockRejectedValueOnce(new Error("Preferences unavailable."));
+    await collectRun("session");
+
+    expect(mocks.streamResponseTurn.mock.calls[1]?.[0].instructions).toContain(
+      "- The user's timezone is unknown.",
+    );
   });
 
   it("lets a reviewed session scope narrow an all-memory agent", async () => {

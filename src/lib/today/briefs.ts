@@ -154,6 +154,16 @@ export async function getTodayPreferences(options: TodayPreferenceRequestOptions
   });
 }
 
+/** The timezone an actor keeps for Today, without creating their preferences. */
+export async function findActorTimezone(options: TodayPreferenceRequestOptions) {
+  const stored = await findTodayPreferences({
+    tenantId: normalizeTenantId(options.tenantId),
+    actorId: options.actorId,
+    requestActorBinding: options.requestActorBinding,
+  });
+  return stored?.preferences.timezone;
+}
+
 export async function updateTodayPreferences(
   input: Partial<Pick<TodayPreferences,
     | "briefEnabled"

@@ -162,13 +162,46 @@ export function trustedRuntimeClockInstruction(input?: {
 }) {
   const now = input?.now || new Date();
   const validNow = Number.isFinite(now.getTime()) ? now : new Date();
-  const timeZone = input?.timeZone?.trim() || "UTC";
+  const timeZone = knownTimeZone(input?.timeZone);
   return [
     "Trusted runtime clock:",
-    `- Current UTC timestamp: ${validNow.toISOString()}`,
-    `- User or workspace timezone when supplied: ${timeZone}`,
+    `- Current UTC time: ${validNow.toISOString().slice(0, 16)}Z`,
+    timeZone
+      ? `- The user's local time: ${localClock(validNow, timeZone)} (${timeZone}). Date "today", "tomorrow", and other relative days by it.`
+      : "- The user's timezone is unknown. When a local date or time matters, say which timezone you assume.",
     "- Treat this clock as authoritative for relative dates. For facts that may have changed by this time, use live web evidence before answering.",
   ].join("\n");
+}
+
+/** A timezone the runtime can format, as given, or nothing. */
+function knownTimeZone(value?: string) {
+  const timeZone = value?.trim();
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone });
+    return timeZone;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The weekday, date, minute, and UTC offset of a moment in a timezone. */
+function localClock(now: Date, timeZone: string) {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      weekday: "long",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+      timeZoneName: "longOffset",
+    })
+      .formatToParts(now)
+      .map((part) => [part.type, part.value]),
+  );
+  return `${parts.weekday} ${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute} ${parts.timeZoneName}`;
 }
 
 export function isBuiltInPromptAgentId(value: string): value is BuiltInAgentId {
