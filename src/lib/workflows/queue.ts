@@ -108,8 +108,8 @@ export async function enqueueWorkflowRunTick(
     wake?: boolean;
   } = {},
 ) {
-  const detail = await getWorkflowRunDetail(workflowRunId, { tenantId });
-  const authorizedRetries = detail?.run.input.budgetLimits?.retries ??
+  const run = await getWorkflowRun(workflowRunId, { tenantId });
+  const authorizedRetries = run?.input.budgetLimits?.retries ??
     workflowJobMaxAttempts - 1;
   let job = await enqueueOperationJob({
     tenantId,

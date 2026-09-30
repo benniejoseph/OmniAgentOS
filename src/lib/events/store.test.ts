@@ -22,6 +22,21 @@ describe("event store (file mode)", () => {
     expect(stream.map((event) => event.type)).toEqual(["run.status", "run.done"]);
   });
 
+  it("reads one type from a stream before its limit", async () => {
+    const store = await import("@/lib/events/store");
+    for (const n of [1, 2, 3]) {
+      await store.appendDomainEvent({ streamId: "typed:1", type: "typed.other", payload: { n } });
+    }
+    await store.appendDomainEvent({ streamId: "typed:1", type: "typed.wanted", payload: { n: 4 } });
+    await store.appendDomainEvent({ streamId: "typed:2", type: "typed.wanted", payload: { n: 5 } });
+    await store.appendDomainEvent({ streamId: "typed:1", type: "typed.wanted", payload: { n: 6 } });
+
+    const first = await store.listStreamEvents("typed:1", { type: "typed.wanted", limit: 1 });
+    expect(first.map((event) => event.payload.n)).toEqual([4]);
+    const wanted = await store.listStreamEvents("typed:1", { type: "typed.wanted" });
+    expect(wanted.map((event) => event.payload.n)).toEqual([4, 6]);
+  });
+
   it("scopes reads by tenant", async () => {
     const store = await import("@/lib/events/store");
     await store.appendDomainEvent({ streamId: "t:x", type: "x", tenantId: "tenant-a" });

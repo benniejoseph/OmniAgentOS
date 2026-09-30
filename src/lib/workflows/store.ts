@@ -316,8 +316,10 @@ export async function getWorkflowRunExecutionAuthority(
   options: { tenantId?: string } = {},
 ): Promise<WorkflowExecutionAuthority | undefined> {
   const tenantId = normalizeTenantId(options.tenantId);
+  // Only the bindings, however many other events the run has.
   const events = await listStreamEvents(`workflow:${runId}`, {
     tenantId,
+    type: WORKFLOW_SCOPE_BOUND_EVENT_TYPE,
     limit: 2_000,
     order: "asc",
   });
@@ -725,10 +727,17 @@ export async function getWorkflowRun(
   ) || null;
 }
 
-export async function getWorkflowRunDetail(runId: string, options: { tenantId?: string } = {}): Promise<WorkflowRunDetail | null> {
+/**
+ * Reads one run without its steps and events, as getWorkflowRunDetail finds
+ * it: without a tenant, in whichever tenant holds it.
+ */
+async function findWorkflowRunRecord(
+  runId: string,
+  options: { tenantId?: string } = {},
+): Promise<WorkflowRunRecord | null> {
+  const tenantId = options.tenantId ? normalizeTenantId(options.tenantId) : undefined;
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const tenantId = options.tenantId ? normalizeTenantId(options.tenantId) : undefined;
     const runRows = tenantId
       ? await getSql()`
           SELECT *
@@ -743,7 +752,19 @@ export async function getWorkflowRunDetail(runId: string, options: { tenantId?: 
           WHERE id = ${runId}
           LIMIT 1
         `;
-    if (!runRows[0]) {
+    return runRows[0] ? workflowRunFromRow(runRows[0]) : null;
+  }
+
+  const run = (await readWorkflowLedger()).runs.find((item) => item.id === runId);
+  return run && (!tenantId || normalizeTenantId(run.tenantId) === tenantId)
+    ? run
+    : null;
+}
+
+export async function getWorkflowRunDetail(runId: string, options: { tenantId?: string } = {}): Promise<WorkflowRunDetail | null> {
+  if (hasDatabaseUrl()) {
+    const run = await findWorkflowRunRecord(runId, options);
+    if (!run) {
       return null;
     }
 
@@ -763,7 +784,7 @@ export async function getWorkflowRunDetail(runId: string, options: { tenantId?: 
     ]);
 
     return {
-      run: workflowRunFromRow(runRows[0]),
+      run,
       steps: stepRows.map(workflowStepFromRow),
       events: eventRows.map(workflowEventFromRow),
     };
@@ -791,26 +812,26 @@ export async function updateWorkflowRun(
   runId: string,
   patch: Partial<Omit<WorkflowRunRecord, "id" | "createdAt">>,
 ) {
-  const existing = await getWorkflowRunDetail(runId);
+  const existing = await findWorkflowRunRecord(runId);
   if (!existing) {
     return null;
   }
-  const authority = existing.run.input.executionAuthorityRequired
+  const authority = existing.input.executionAuthorityRequired
     ? await getWorkflowRunExecutionAuthority(runId, {
-        tenantId: existing.run.tenantId,
+        tenantId: existing.tenantId,
       })
     : undefined;
   return transitionWorkflowRunWithEvents(
     runId,
-    [existing.run.status],
+    [existing.status],
     patch,
     [{
       type: "workflow.updated",
       payload: { changedFields: Object.keys(patch).sort() },
     }],
     {
-      tenantId: existing.run.tenantId,
-      expectedUpdatedAt: existing.run.updatedAt,
+      tenantId: existing.tenantId,
+      expectedUpdatedAt: existing.updatedAt,
       executionAuthority: authority,
     },
   );
@@ -839,11 +860,11 @@ export async function transitionWorkflowRun(
   } = {},
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
-  const existing = await getWorkflowRunDetail(runId, { tenantId });
-  if (!existing || !expectedStatuses.includes(existing.run.status)) {
+  const existing = await findWorkflowRunRecord(runId, { tenantId });
+  if (!existing || !expectedStatuses.includes(existing.status)) {
     return null;
   }
-  const authority = existing.run.input.executionAuthorityRequired
+  const authority = existing.input.executionAuthorityRequired
     ? await getWorkflowRunExecutionAuthority(runId, { tenantId })
     : undefined;
   return transitionWorkflowRunWithEvents(
@@ -853,8 +874,8 @@ export async function transitionWorkflowRun(
     [{
       type: "workflow.transitioned",
       payload: {
-        previousStatus: existing.run.status,
-        nextStatus: patch.status || existing.run.status,
+        previousStatus: existing.status,
+        nextStatus: patch.status || existing.status,
         changedFields: Object.keys(patch).sort(),
       },
     }],
@@ -890,12 +911,12 @@ export async function transitionWorkflowRunWithEvents(
     throw new Error("Workflow transitions require at least one event.");
   }
   const tenantId = normalizeTenantId(options.tenantId);
-  const existing = await getWorkflowRunDetail(runId, { tenantId });
-  if (!existing || !expectedStatuses.includes(existing.run.status)) {
+  const existing = await findWorkflowRunRecord(runId, { tenantId });
+  if (!existing || !expectedStatuses.includes(existing.status)) {
     return null;
   }
   const authority = options.executionAuthority;
-  if (existing.run.input.executionAuthorityRequired && !authority) {
+  if (existing.input.executionAuthorityRequired && !authority) {
     throw new WorkflowRunExecutionScopeBindingError(
       "Workflow transition requires its bound execution authority.",
     );
@@ -912,7 +933,7 @@ export async function transitionWorkflowRunWithEvents(
 
   const now = new Date().toISOString();
   const nextRun = sanitizeWorkflowRunRecord({
-    ...existing.run,
+    ...existing,
     ...patch,
     updatedAt: now,
   });
@@ -997,7 +1018,7 @@ export async function transitionWorkflowRunWithEvents(
     ) as WorkflowRunRecord | null;
     if (transitioned) {
       await syncWorkflowMissionTransition(
-        existing.run,
+        existing,
         transitioned,
         eventExecutionScope,
       );
@@ -1041,7 +1062,7 @@ export async function transitionWorkflowRunWithEvents(
     }
   }
   await syncWorkflowMissionTransition(
-    existing.run,
+    existing,
     transitioned,
     eventExecutionScope,
   );

@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { WORKFLOW_RUN_BUDGET_LIMITS } from "@/lib/config";
+import {
+  RUN_BUDGET_DIMENSIONS,
+  type RunBudgetCountersV1,
+} from "@/lib/runs/budgets";
 import type { WorkflowRunDetail } from "@/lib/workflows/types";
 
 vi.mock("@/lib/workflows/store", () => ({
@@ -39,6 +43,42 @@ describe("durable workflow budgets", () => {
   it("fails before a persisted run-wide dimension is exceeded", async () => {
     const budget = createWorkflowBudgetSession(detail());
     await budget.reserve({ toolCalls: 1 }, { phase: "execute" });
+    await expect(
+      budget.reserve({ toolCalls: 1 }, { phase: "execute" }),
+    ).rejects.toMatchObject({ dimension: "toolCalls" });
+  });
+
+  it("resumes from each dimension's highest recorded usage, whatever order its records are read in", async () => {
+    const reserved = (id: string, used: Record<string, unknown>) => ({
+      id,
+      workflowRunId: "workflow-budget",
+      type: "workflow.budget_reserved",
+      // Records made in the same millisecond come back in either order.
+      createdAt: "2026-09-06T00:00:01.000Z",
+      payload: {
+        used: {
+          ...Object.fromEntries(RUN_BUDGET_DIMENSIONS.map((dimension) => [dimension, 0])),
+          ...used,
+        } as Partial<RunBudgetCountersV1>,
+      },
+    });
+    const run = detail();
+    run.events = [
+      reserved("model-call", { modelTurns: 2, toolCalls: 1 }),
+      // A redelivery reserved from the same usage as the model call.
+      reserved("redelivery", { modelTurns: 1, toolCalls: 1, retries: 1 }),
+      reserved("tool-call", { modelTurns: 1, toolCalls: 1 }),
+      reserved("unreadable", { modelTurns: -1 }),
+    ];
+
+    const budget = createWorkflowBudgetSession(run);
+
+    expect(budget.snapshot().used).toMatchObject({
+      modelTurns: 2,
+      toolCalls: 1,
+      retries: 1,
+      replans: 0,
+    });
     await expect(
       budget.reserve({ toolCalls: 1 }, { phase: "execute" }),
     ).rejects.toMatchObject({ dimension: "toolCalls" });

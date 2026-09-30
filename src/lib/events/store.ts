@@ -378,6 +378,8 @@ export async function listStreamEvents(
      */
     privateActorIds?: readonly string[];
     afterSeq?: number;
+    /** Reads only events of this type, before the limit applies. */
+    type?: string;
     limit?: number;
     order?: "asc" | "desc";
   } = {},
@@ -398,6 +400,10 @@ export async function listStreamEvents(
     if (options.actorId) {
       params.push(options.actorId);
       predicates.push(`actor_id = $${params.length}`);
+    }
+    if (options.type) {
+      params.push(options.type);
+      predicates.push(`type = $${params.length}`);
     }
     if (
       privateActorIds &&
@@ -425,6 +431,7 @@ export async function listStreamEvents(
         event.seq > afterSeq &&
         (!options.tenantId || event.tenantId === normalizeTenantId(options.tenantId)) &&
         (!options.actorId || event.actorId === options.actorId) &&
+        (!options.type || event.type === options.type) &&
         isVisibleWithinPrivateActorScope(event, privateActorIds),
     )
     .sort((left, right) => left.seq - right.seq);

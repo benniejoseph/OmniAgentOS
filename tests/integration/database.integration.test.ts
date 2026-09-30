@@ -116,8 +116,10 @@ import {
 } from "@/lib/tools/execution-scope";
 import {
   appendWorkflowEvent,
+  bindWorkflowRunExecutionAuthority,
   createWorkflowRun,
   getWorkflowRun,
+  getWorkflowRunExecutionAuthority,
   listRunnableWorkflowRuns,
   listWorkflowApprovalPage,
   recordWorkflowSpecialistsPending,
@@ -6988,6 +6990,43 @@ databaseDescribe("Postgres schema integration", () => {
       () => tenantHasAtMostOneActiveMember(tenantId),
     )).resolves.toBe(false);
     await expect(tenantHasAtMostOneActiveMember(otherTenantId)).resolves.toBe(true);
+  });
+
+  test("finds a workflow run's authority however many events come before its binding", async () => {
+    const tenantId = "workflow_authority_tenant";
+    const { run } = await runWithDatabaseTenantScope(tenantId, () => createWorkflowRun({
+      tenantId,
+      goal: "Summarize the quarter.",
+    }));
+    // More events than one stream read returns, all before the binding.
+    await admin`
+      INSERT INTO omni_events (id, stream_id, type, tenant_id)
+      SELECT 'workflow-authority-filler-' || n, ${`workflow:${run.id}`},
+        'workflow.queue.enqueued', ${tenantId}
+      FROM generate_series(1, 2001) AS n
+    `;
+    const authority = {
+      executionScope: createExecutionScope({
+        tenantId,
+        initiatingActorId: "workflow-authority-owner",
+        executingPrincipalType: "user",
+        executingPrincipalId: "workflow-authority-owner",
+        correlationId: "workflow-authority-request",
+        purpose: "workflow.run",
+      }),
+      requesterRole: "admin" as const,
+    };
+    const bound = {
+      requesterRole: "admin",
+      executionScope: { correlationId: "workflow-authority-request" },
+    };
+
+    await expect(runWithDatabaseTenantScope(tenantId, () =>
+      bindWorkflowRunExecutionAuthority(run.id, authority, { tenantId })
+    )).resolves.toMatchObject(bound);
+    await expect(runWithDatabaseTenantScope(tenantId, () =>
+      getWorkflowRunExecutionAuthority(run.id, { tenantId })
+    )).resolves.toMatchObject(bound);
   });
 
   test("replays the mission updates a run's end never delivered, for every owner in a tenant", async () => {

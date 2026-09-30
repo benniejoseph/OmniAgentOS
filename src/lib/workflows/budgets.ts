@@ -51,7 +51,7 @@ export function createWorkflowBudgetSession(
   const limits = runBudgetCountersV1Schema.parse(
     detail.run.input.budgetLimits || WORKFLOW_RUN_BUDGET_LIMITS,
   );
-  const persisted = latestPersistedBudgetState(detail.events, limits);
+  const persisted = persistedBudgetState(detail.events, limits);
   const legacyUsed = detail.run.input.budgetLimits
     ? undefined
     : conservativeLegacyUsage(detail, limits);
@@ -233,17 +233,27 @@ function conservativeLegacyUsage(
   };
 }
 
-function latestPersistedBudgetState(
+/**
+ * The run's recorded usage: each dimension's highest count across its
+ * reservations. Usage only grows, so this is the latest usage however
+ * reservations recorded in the same millisecond are ordered.
+ */
+function persistedBudgetState(
   events: readonly WorkflowEventRecord[],
   limits: RunBudgetCountersV1,
 ) {
-  for (const event of [...events].reverse()) {
+  let used: RunBudgetCountersV1 | undefined;
+  for (const event of events) {
     if (event.type !== "workflow.budget_reserved") continue;
-    const used = runBudgetCountersV1Schema.safeParse(event.payload.used);
-    if (!used.success) continue;
-    return createRunBudgetState(limits, { used: used.data });
+    const recorded = runBudgetCountersV1Schema.safeParse(event.payload.used);
+    if (!recorded.success) continue;
+    const highest: RunBudgetCountersV1 = { ...recorded.data };
+    for (const dimension of RUN_BUDGET_DIMENSIONS) {
+      highest[dimension] = Math.max(used?.[dimension] || 0, highest[dimension]);
+    }
+    used = highest;
   }
-  return undefined;
+  return used ? createRunBudgetState(limits, { used }) : undefined;
 }
 
 function completeReservation(
