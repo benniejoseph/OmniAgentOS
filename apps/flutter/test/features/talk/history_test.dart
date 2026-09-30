@@ -269,7 +269,7 @@ void main() {
     expect(find.text('Research notebook'), findsOneWidget);
     expect(find.text('1 linked memory'), findsOneWidget);
     expect(find.text('Public answer for $_threadA'), findsOneWidget);
-    expect(find.text('Live activity'), findsOneWidget);
+    expect(find.text('What Asael is doing'), findsOneWidget);
 
     await tester.tap(find.byKey(const ValueKey('conversation-$_threadB')));
     await tester.pumpAndSettle();

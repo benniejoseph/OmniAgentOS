@@ -5777,10 +5777,16 @@ class _ModelThinkingControls extends StatelessWidget {
           children: [
             Icon(icon, size: 16, color: foreground),
             const SizedBox(width: 7),
-            Text(
-              '$label · $value',
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(color: foreground, fontWeight: FontWeight.w600),
+            Flexible(
+              child: Text(
+                '$label · $value',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: foreground,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
             ),
             const SizedBox(width: 4),
             Icon(Icons.expand_more_rounded, size: 16, color: foreground),
