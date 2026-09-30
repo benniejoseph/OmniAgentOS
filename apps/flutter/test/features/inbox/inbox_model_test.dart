@@ -131,12 +131,17 @@ void main() {
       expect(identical(first, second), isTrue);
       expect(repository.approvalLoads, 1);
       expect(repository.notificationLoads, 1);
-      expect(repository.dispositionLoads, 1);
+      // Delivery history waits until approvals and notifications arrive.
+      expect(repository.dispositionLoads, 0);
       expect(controller.loading, isTrue);
       expect(controller.hasData, isTrue);
 
       repository.approvals.complete(_emptyApprovals);
       repository.notifications.complete(_emptyNotifications);
+      await pumpEventQueue();
+      expect(repository.dispositionLoads, 1);
+      expect(controller.loading, isTrue);
+      expect(identical(controller.refresh(), first), isTrue);
       repository.dispositions.complete(
         const NotificationDispositionHistory(
           version: 'notification-disposition-projection:1',
@@ -153,9 +158,11 @@ void main() {
       final next = controller.refresh();
       expect(repository.approvalLoads, 2);
       expect(repository.notificationLoads, 2);
-      expect(repository.dispositionLoads, 2);
+      expect(repository.dispositionLoads, 1);
       repository.approvals.complete(_emptyApprovals);
       repository.notifications.complete(_emptyNotifications);
+      await pumpEventQueue();
+      expect(repository.dispositionLoads, 2);
       repository.dispositions.complete(
         const NotificationDispositionHistory(
           version: 'notification-disposition-projection:1',
