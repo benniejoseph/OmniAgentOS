@@ -218,6 +218,8 @@ Run a manual sync to try right away; it does not wait, and its outcome counts li
 - A database the old runner migrated fails 38 actor tables until migration 208 runs, because each also has a permissive `omni_tenant_isolation` policy that admits every actor's rows. Apply every pending migration; [deployment.md](deployment.md#schema-catalog-convergence-v208) has a query that lists these tables.
 - Otherwise, list the table's rows in `pg_policies`. A second permissive policy widens the table, because permissive policies combine with OR. Find out where it came from before you drop it.
 
+It lists a table under `unclassifiedTables` when `src/lib/db/schema/tenant-isolation.ts` does not classify it, and the database integration test fails on the same table. Add a table that `omni_tenant_isolation` should protect to `tenantRootPolicyTables` or `tenantChildPolicyTables`, and one whose migration creates its own row security to `migrationScopedTenantTables`. Add a table that holds no tenant's rows to `tenantIsolationExemptTables`, with the reason.
+
 ## Production smoke fails
 
 - Preflight: set an explicit HTTPS `BASE_URL`, all three smoke credentials, and `RELEASE_EVIDENCE_OUTPUT`.

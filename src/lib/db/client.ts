@@ -103,7 +103,9 @@ const DATABASE_SINGLE_STATEMENT_QUERY_OPTIONS = Object.freeze({
 // ---------------------------------------------------------------------------
 
 export {
+  migrationScopedTenantTables,
   tenantChildPolicyTables,
+  tenantIsolationExemptTables,
   tenantPolicyTables,
   tenantRootPolicyTables,
 } from "@/lib/db/schema/tenant-isolation";

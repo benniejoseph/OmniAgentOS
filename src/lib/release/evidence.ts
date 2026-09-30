@@ -392,7 +392,7 @@ async function collectReleaseEvidenceReport(
       name: "Database tenant isolation",
       status: tenantIsolation.status === "passing" ? "pass" : "fail",
       summary: tenantIsolation.status === "passing"
-        ? "All tracked tenant tables have tenant columns, forced RLS, and isolation policies."
+        ? "Every table is classified, and each tenant table has its tenant column, forced RLS, and isolation policies."
         : "Tenant isolation schema evidence is incomplete.",
       details: {
         storageBackend: tenantIsolation.storageBackend,
@@ -400,6 +400,7 @@ async function collectReleaseEvidenceReport(
         expectedTables: tenantIsolation.summary.expectedTables,
         protectedTables: tenantIsolation.summary.protectedTables,
         failingTables: tenantIsolation.summary.failingTables,
+        unclassifiedTables: tenantIsolation.summary.unclassifiedTables,
         missingTables: tenantIsolation.summary.missingTables,
         rlsDisabled: tenantIsolation.summary.rlsDisabled,
         forceRlsDisabled: tenantIsolation.summary.forceRlsDisabled,

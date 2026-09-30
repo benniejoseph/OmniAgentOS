@@ -179,7 +179,7 @@ contract, not only that a policy of the expected name exists:
 - each actor and actor-scope table has its actor policy as its only
   permissive policy;
 - every other tracked table has `omni_tenant_isolation` as its only permissive
-  policy, and on 40 of them it must be narrowed by a restrictive actor policy;
+  policy, and on 49 of them it must be narrowed by a restrictive actor policy;
 - the permissive policy covers every command.
 
 Before this release the report expected a permissive actor policy on the 12
@@ -188,6 +188,13 @@ the tenant policy on the 20 app builder and market tables. It failed those
 tables even where their policies were right, and it passed the 38 tables above
 while the tenant policy widened them. On a database the old runner built, the
 report now fails those 38 tables until v208 runs.
+
+The report also reads every `omni_` table in the catalog, and it fails, with
+the release gate, while any of them is unclassified. Each table must be a
+tenant table in `src/lib/db/schema/tenant-isolation.ts`, or exempt there with
+the reason it holds no tenant's rows. It now checks the 17 local computer,
+market analysis and forecast, Moltbook autonomy, and notification tables
+whose migrations create their own row security.
 
 Before and after migrating, this read-only query lists the tables where a
 permissive tenant policy widens an actor policy. After v208 it returns no rows:

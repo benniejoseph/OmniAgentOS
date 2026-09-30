@@ -21,9 +21,11 @@ import {
   getSchemaMigrationSteps,
   getSql,
   getVectorStoreStatus,
+  migrationScopedTenantTables,
   runWithDatabaseActorScope,
   runWithDatabaseSystemScope,
   runWithDatabaseTenantScope,
+  tenantIsolationExemptTables,
   tenantPolicyTables,
 } from "@/lib/db/client";
 import { sqlMigrationFileDigest } from "@/lib/db/sql-migration-files";
@@ -303,6 +305,8 @@ databaseDescribe("Postgres schema integration", () => {
     } else {
       expect(vectorStatus.dimensions).toBeGreaterThan(0);
     }
+    // The fixture is no app table, and the catalog checks below read them all.
+    await admin`DROP TABLE omni_jsonb_migration_fixture`;
   });
 
   test("refuses to run part of a migration file that records two versions", async () => {
@@ -774,16 +778,53 @@ databaseDescribe("Postgres schema integration", () => {
     });
   });
 
-  test("enables and forces RLS on every tenant policy table", async () => {
+  test("enables and forces RLS on every tenant table", async () => {
+    const tenantTables = [...tenantPolicyTables, ...migrationScopedTenantTables];
     const rows = await admin`
       SELECT relname, relrowsecurity, relforcerowsecurity
       FROM pg_class
       WHERE relnamespace = 'public'::regnamespace
-        AND relname = ANY(${tenantPolicyTables as readonly string[]})
+        AND relname = ANY(${tenantTables as readonly string[]})
     `;
 
-    expect(rows).toHaveLength(tenantPolicyTables.length);
+    expect(rows).toHaveLength(tenantTables.length);
     expect(rows.every((row) => row.relrowsecurity && row.relforcerowsecurity)).toBe(true);
+  });
+
+  test("classifies every table as a tenant table or as exempt", async () => {
+    const rows = await admin`
+      SELECT relation.relname AS table_name,
+        EXISTS (
+          SELECT 1
+          FROM pg_attribute attribute
+          WHERE attribute.attrelid = relation.oid
+            AND attribute.attname = 'tenant_id'
+            AND attribute.attnum > 0
+            AND NOT attribute.attisdropped
+        ) AS tenant_column
+      FROM pg_class relation
+      WHERE relation.relnamespace = 'public'::regnamespace
+        AND relation.relkind IN ('r', 'p')
+      ORDER BY relation.relname
+    `;
+    const tenantTables = new Set<string>([
+      ...tenantPolicyTables,
+      ...migrationScopedTenantTables,
+    ]);
+    const exemptTables = new Set(Object.keys(tenantIsolationExemptTables));
+    const catalogTables = new Set(rows.map((row) => String(row.table_name)));
+
+    // A new table fails here until it is classified.
+    expect([...catalogTables].filter((tableName) =>
+      !tenantTables.has(tableName) && !exemptTables.has(tableName)
+    )).toEqual([]);
+    expect([...tenantTables, ...exemptTables].filter((tableName) =>
+      !catalogTables.has(tableName)
+    )).toEqual([]);
+    // An exempt table holds no tenant's rows, so it has no tenant column.
+    expect(rows
+      .filter((row) => row.tenant_column && exemptTables.has(String(row.table_name)))
+      .map((row) => row.table_name)).toEqual([]);
   });
 
   test("converges repaired tables on exact tenant and actor RLS", async () => {
@@ -6031,14 +6072,17 @@ databaseDescribe("Postgres schema integration", () => {
       FROM pg_policy policy
       JOIN pg_class relation ON relation.oid = policy.polrelid
       WHERE relation.relnamespace = 'public'::regnamespace
-        AND relation.relname = ANY(${tenantPolicyTables as readonly string[]})
+        AND relation.relname = ANY(${[
+          ...tenantPolicyTables,
+          ...migrationScopedTenantTables,
+        ] as readonly string[]})
         AND NOT policy.polpermissive
         AND policy.polname ~ '_actor$'
       ORDER BY relation.relname
     `;
     // Each one covers every command and role, as its restore below does.
     expect(restrictivePolicies.map(({ command, roles }) => ({ command, roles })))
-      .toEqual(Array(40).fill({ command: "*", roles: "{0}" }));
+      .toEqual(Array(49).fill({ command: "*", roles: "{0}" }));
     const catalog = await schemaCatalogSnapshot(admin);
     const dropped: typeof restrictivePolicies[number][] = [];
 
@@ -6066,6 +6110,29 @@ databaseDescribe("Postgres schema integration", () => {
       }
     }
     expect(await schemaCatalogSnapshot(admin)).toEqual(catalog);
+  });
+
+  test("reports an app table that no isolation class covers", async () => {
+    const tenantId = "tenant_unclassified_table";
+    const isolationReport = () =>
+      runWithDatabaseTenantScope(tenantId, () => getTenantIsolationReport(tenantId));
+    expect((await isolationReport()).status).toBe("passing");
+
+    await admin`CREATE TABLE public.omni_unclassified_notes (id TEXT PRIMARY KEY)`;
+    await admin`CREATE TABLE public.unrelated_notes (id TEXT PRIMARY KEY)`;
+    try {
+      const report = await isolationReport();
+      expect(report.status).toBe("degraded");
+      expect(report.summary).toMatchObject({
+        failingTables: 0,
+        unclassifiedTables: ["omni_unclassified_notes"],
+      });
+      expect(report.recommendations[0]).toMatch(/^Classify each new table/);
+    } finally {
+      await admin`DROP TABLE public.omni_unclassified_notes`;
+      await admin`DROP TABLE public.unrelated_notes`;
+    }
+    expect((await isolationReport()).summary.unclassifiedTables).toEqual([]);
   });
 
   test("gives a mobile refresh token replaced in the last 60 seconds the pair that replaced it, and revokes on any other replaced token", async () => {

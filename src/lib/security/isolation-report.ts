@@ -3,7 +3,9 @@ import {
   getSql,
   getStorageBackend,
   hasDatabaseUrl,
+  migrationScopedTenantTables,
   tenantChildPolicyTables,
+  tenantIsolationExemptTables,
   tenantPolicyTables,
 } from "@/lib/db/client";
 import { getEvalRunDetail, listEvalRuns } from "@/lib/evaluations/store";
@@ -70,6 +72,14 @@ const ACTOR_SCOPE_POLICY_TABLES = new Set([
   "omni_market_event_replay_events",
   "omni_market_backtests",
   "omni_market_backtest_events",
+  "omni_local_computer_commands",
+  "omni_local_computer_devices",
+  "omni_local_computer_sessions",
+  "omni_market_analysis_events",
+  "omni_market_analysis_versions",
+  "omni_market_forecast_events",
+  "omni_market_forecast_outcomes",
+  "omni_market_forward_forecasts",
 ]);
 
 /**
@@ -103,8 +113,17 @@ const RESTRICTIVE_ACTOR_POLICIES = new Map<string, string>([
     "omni_generated_artifacts",
     "omni_mobile_push_delivery_receipts",
     "omni_moltbook_activities",
+    "omni_moltbook_authority_versions",
+    "omni_moltbook_autonomy_action_claims",
+    "omni_moltbook_autonomy_cycles",
+    "omni_moltbook_autonomy_enrollments",
+    "omni_moltbook_autonomy_events",
     "omni_moltbook_connections",
     "omni_moltbook_effect_receipts",
+    "omni_moltbook_interest_observations",
+    "omni_notification_digest_deliveries",
+    "omni_notification_digest_watermarks",
+    "omni_notification_dispositions",
     "omni_plugin_install_previews",
     "omni_plugin_installations",
     "omni_plugin_mutation_receipts",
@@ -159,6 +178,19 @@ export function hasExpectedTenantIsolationPolicy(
     );
 }
 
+const CLASSIFIED_TABLES = new Set<string>([
+  ...tenantPolicyTables,
+  ...migrationScopedTenantTables,
+  ...Object.keys(tenantIsolationExemptTables),
+]);
+
+/** The tables that are neither tenant tables nor exempt from tenant policy. */
+export function unclassifiedTenantIsolationTables(tableNames: Iterable<string>) {
+  return [...new Set(tableNames)]
+    .filter((tableName) => !CLASSIFIED_TABLES.has(tableName))
+    .sort();
+}
+
 type LatestTenantIsolationEval = {
   runId: string;
   runStatus: string;
@@ -179,6 +211,7 @@ export type TenantIsolationReport = {
     protectedTables: number;
     childTables: number;
     failingTables: number;
+    unclassifiedTables: string[];
     missingTables: string[];
     missingTenantColumns: string[];
     rlsDisabled: string[];
@@ -192,7 +225,7 @@ export type TenantIsolationReport = {
 
 export async function getTenantIsolationReport(tenantId: string): Promise<TenantIsolationReport> {
   const checkedAt = new Date().toISOString();
-  const expectedTables = [...tenantPolicyTables];
+  const expectedTables = [...tenantPolicyTables, ...migrationScopedTenantTables];
   const childTables = new Set<string>(tenantChildPolicyTables);
 
   if (!hasDatabaseUrl()) {
@@ -207,6 +240,7 @@ export async function getTenantIsolationReport(tenantId: string): Promise<Tenant
         protectedTables: 0,
         childTables: tenantChildPolicyTables.length,
         failingTables: expectedTables.length,
+        unclassifiedTables: [],
         missingTables: expectedTables,
         missingTenantColumns: expectedTables,
         rlsDisabled: expectedTables,
@@ -236,6 +270,7 @@ export async function getTenantIsolationReport(tenantId: string): Promise<Tenant
   const evidence = await getSql().transaction(async (
     sql: ReturnType<typeof getSql>,
   ) => {
+    // Every app table, so that one no isolation class covers is reported.
     const catalogRows = await sql.query(
       `
         SELECT c.relname AS table_name,
@@ -244,10 +279,9 @@ export async function getTenantIsolationReport(tenantId: string): Promise<Tenant
         FROM pg_class c
         INNER JOIN pg_namespace n ON n.oid = c.relnamespace
         WHERE n.nspname = current_schema()
-          AND c.relkind = 'r'
-          AND c.relname IN (${placeholders})
+          AND c.relkind IN ('r', 'p')
+          AND c.relname LIKE 'omni\\_%'
       `,
-      expectedTables,
     );
     // information_schema hides columns when the caller intentionally has no
     // table privilege. Read the non-sensitive system catalogs so owner-only
@@ -331,18 +365,20 @@ export async function getTenantIsolationReport(tenantId: string): Promise<Tenant
   const forceRlsDisabled = tables.filter((table) => !table.forceRls).map((table) => table.tableName);
   const missingPolicies = tables.filter((table) => !table.policyPresent).map((table) => table.tableName);
   const failingTables = tables.filter((table) => table.status === "fail");
+  const unclassifiedTables = unclassifiedTenantIsolationTables(catalogByTable.keys());
 
   return {
     tenantId,
     checkedAt,
     storageBackend: getStorageBackend(),
     databaseConfigured: true,
-    status: failingTables.length ? "degraded" : "passing",
+    status: failingTables.length || unclassifiedTables.length ? "degraded" : "passing",
     summary: {
       expectedTables: expectedTables.length,
       protectedTables: tables.length - failingTables.length,
       childTables: tables.filter((table) => table.category === "child" && table.status === "pass").length,
       failingTables: failingTables.length,
+      unclassifiedTables,
       missingTables,
       missingTenantColumns,
       rlsDisabled,
@@ -352,6 +388,7 @@ export async function getTenantIsolationReport(tenantId: string): Promise<Tenant
     tables,
     latestEval,
     recommendations: buildRecommendations({
+      unclassifiedTables,
       missingTables,
       missingTenantColumns,
       rlsDisabled,
@@ -413,6 +450,7 @@ async function latestFileTenantIsolationEval(tenantId: string): Promise<LatestTe
 }
 
 function buildRecommendations({
+  unclassifiedTables,
   missingTables,
   missingTenantColumns,
   rlsDisabled,
@@ -420,6 +458,7 @@ function buildRecommendations({
   missingPolicies,
   latestEval,
 }: {
+  unclassifiedTables: string[];
   missingTables: string[];
   missingTenantColumns: string[];
   rlsDisabled: string[];
@@ -428,6 +467,9 @@ function buildRecommendations({
   latestEval?: LatestTenantIsolationEval;
 }) {
   const recommendations: string[] = [];
+  if (unclassifiedTables.length) {
+    recommendations.push("Classify each new table in tenant-isolation.ts as a tenant table with its row security, or as exempt with the reason it holds no tenant's rows.");
+  }
   if (missingTables.length || missingTenantColumns.length) {
     recommendations.push("Run database schema migration during deployment startup and verify all tenant tables include tenant_id.");
   }

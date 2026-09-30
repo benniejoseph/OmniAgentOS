@@ -106,6 +106,7 @@ describe("release evidence", () => {
         protectedTables: 1,
         childTables: 0,
         failingTables: 0,
+        unclassifiedTables: [],
         missingTables: [],
         missingTenantColumns: [],
         rlsDisabled: [],
@@ -562,6 +563,72 @@ describe("release evidence", () => {
       },
     });
   });
+
+  it("fails the tenant isolation gate while a table is unclassified", async () => {
+    const revision = "unclassified-table-release";
+    configurePassingEvidence(revision, [
+      "fast",
+      "background",
+      "maintenance",
+    ].map((lane) => ({
+      instanceId: "worker",
+      lane,
+      protocol: "1",
+      revision,
+      target: "https://release.example.test",
+      recordedAt: new Date().toISOString(),
+    })));
+    const classify =
+      "Classify each new table in tenant-isolation.ts as a tenant table.";
+    mocks.getTenantIsolationReport.mockResolvedValue({
+      tenantId: "default",
+      checkedAt: new Date().toISOString(),
+      storageBackend: "postgres",
+      databaseConfigured: true,
+      status: "degraded",
+      summary: {
+        expectedTables: 1,
+        protectedTables: 1,
+        childTables: 0,
+        failingTables: 0,
+        unclassifiedTables: ["omni_new_notes"],
+        missingTables: [],
+        missingTenantColumns: [],
+        rlsDisabled: [],
+        forceRlsDisabled: [],
+        missingPolicies: [],
+      },
+      tables: [],
+      latestEval: {
+        runId: "eval-run",
+        runStatus: "completed",
+        resultStatus: "pass",
+        score: 1,
+        createdAt: new Date().toISOString(),
+      },
+      recommendations: [classify],
+    });
+
+    const report = await getReleaseEvidenceReport("unclassified-table", {
+      force: true,
+      expectedWorkerTarget: "https://release.example.test",
+    });
+
+    expect(report.releaseGate.approved).toBe(false);
+    expect(
+      report.gates.filter((gate) => gate.status === "fail").map((gate) => gate.id),
+    ).toEqual(["tenant_isolation_database"]);
+    expect(
+      report.gates.find((gate) => gate.id === "tenant_isolation_database"),
+    ).toMatchObject({
+      status: "fail",
+      details: {
+        failingTables: 0,
+        unclassifiedTables: ["omni_new_notes"],
+      },
+    });
+    expect(report.recommendations).toContain(classify);
+  });
 });
 
 function configurePassingEvidence(
@@ -603,6 +670,7 @@ function configurePassingEvidence(
       protectedTables: 1,
       childTables: 0,
       failingTables: 0,
+      unclassifiedTables: [],
       missingTables: [],
       missingTenantColumns: [],
       rlsDisabled: [],

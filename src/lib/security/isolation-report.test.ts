@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  migrationScopedTenantTables,
+  tenantIsolationExemptTables,
+  tenantPolicyTables,
+} from "@/lib/db/client";
+import {
   expectedTenantIsolationPolicyName,
   hasExpectedTenantIsolationPolicy,
+  unclassifiedTenantIsolationTables,
 } from "@/lib/security/isolation-report";
 
 type Policy = Parameters<typeof hasExpectedTenantIsolationPolicy>[1][number];
@@ -30,6 +36,12 @@ describe("tenant isolation policy evidence", () => {
       .toBe("omni_app_builder_sessions_actor_scope");
     expect(expectedTenantIsolationPolicyName("omni_market_backtest_events"))
       .toBe("omni_market_backtest_events_actor_scope");
+    expect(expectedTenantIsolationPolicyName("omni_local_computer_devices"))
+      .toBe("omni_local_computer_devices_actor_scope");
+    expect(expectedTenantIsolationPolicyName("omni_market_forward_forecasts"))
+      .toBe("omni_market_forward_forecasts_actor_scope");
+    expect(expectedTenantIsolationPolicyName("omni_notification_dispositions"))
+      .toBe("omni_tenant_isolation");
   });
 
   it("requires the expected policy to be the only permissive one, covering all operations", () => {
@@ -111,6 +123,15 @@ describe("tenant isolation policy evidence", () => {
     ])).toBe(false);
     expect(hasExpectedTenantIsolationPolicy(tableName, [actor])).toBe(false);
 
+    const cycles = "omni_moltbook_autonomy_cycles";
+    expect(hasExpectedTenantIsolationPolicy(cycles, [
+      policy(cycles, "omni_tenant_isolation"),
+      policy(cycles, "omni_moltbook_autonomy_cycles_actor", { permissive: false }),
+    ])).toBe(true);
+    expect(hasExpectedTenantIsolationPolicy(cycles, [
+      policy(cycles, "omni_tenant_isolation"),
+    ])).toBe(false);
+
     // Some tables name their restrictive policy differently.
     const triggers = "omni_workflow_triggers";
     expect(hasExpectedTenantIsolationPolicy(triggers, [
@@ -136,5 +157,36 @@ describe("tenant isolation policy evidence", () => {
     expect(hasExpectedTenantIsolationPolicy(tableName, [
       policy(tableName, "omni_tenant_isolation", { command: "w" }),
     ])).toBe(false);
+  });
+});
+
+describe("tenant isolation table classes", () => {
+  it("puts each table in one class and gives each exemption its reason", () => {
+    const tenant = new Set<string>(tenantPolicyTables);
+    const scoped = new Set<string>(migrationScopedTenantTables);
+    const exempt = Object.keys(tenantIsolationExemptTables);
+
+    expect(tenant.size).toBe(tenantPolicyTables.length);
+    expect(scoped.size).toBe(migrationScopedTenantTables.length);
+    expect([...scoped].filter((tableName) => tenant.has(tableName))).toEqual([]);
+    expect(exempt.filter((tableName) => tenant.has(tableName) || scoped.has(tableName)))
+      .toEqual([]);
+    expect(Object.values(tenantIsolationExemptTables).every((reason) => reason.trim()))
+      .toBe(true);
+  });
+
+  it("names the tables that no class covers", () => {
+    expect(unclassifiedTenantIsolationTables([
+      "omni_memories",
+      "omni_project_tasks",
+      "omni_local_computer_sessions",
+      "omni_moltbook_autonomy_events",
+      "omni_schema_version",
+      "omni_rate_limits",
+      "omni_unclassified_notes",
+      "omni_another_new_table",
+      "omni_unclassified_notes",
+    ])).toEqual(["omni_another_new_table", "omni_unclassified_notes"]);
+    expect(unclassifiedTenantIsolationTables([])).toEqual([]);
   });
 });

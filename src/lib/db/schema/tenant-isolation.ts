@@ -236,6 +236,60 @@ export const tenantPolicyTables = [
   ...tenantChildPolicyTables,
 ] as const;
 
+/**
+ * Tenant tables whose SQL migrations create their own row security. The
+ * isolation report checks them, but ensureTenantIsolationPolicies leaves them
+ * alone: another permissive policy would admit rows their policies refuse.
+ */
+export const migrationScopedTenantTables = [
+  "omni_local_computer_commands",
+  "omni_local_computer_devices",
+  "omni_local_computer_sessions",
+  "omni_market_analysis_events",
+  "omni_market_analysis_versions",
+  "omni_market_forecast_events",
+  "omni_market_forecast_outcomes",
+  "omni_market_forward_forecasts",
+  "omni_moltbook_authority_versions",
+  "omni_moltbook_autonomy_action_claims",
+  "omni_moltbook_autonomy_cycles",
+  "omni_moltbook_autonomy_enrollments",
+  "omni_moltbook_autonomy_events",
+  "omni_moltbook_interest_observations",
+  "omni_notification_digest_deliveries",
+  "omni_notification_digest_watermarks",
+  "omni_notification_dispositions",
+] as const;
+
+/**
+ * Tables that hold no tenant's rows, each with the reason it has no tenant
+ * policy. Every other table must be a tenant table, so a new one fails the
+ * isolation checks until it is classified here or above.
+ */
+export const tenantIsolationExemptTables: Readonly<Record<string, string>> = {
+  omni_schema_version: "The migration ledger.",
+  omni_database_identity: "The database's own identity, one row.",
+  omni_rate_limits: "Rate-limit windows under hashed keys.",
+  omni_auth_tenants: "The tenant registry, read to resolve a session.",
+  omni_auth_users: "Login identities, read before a tenant is known.",
+  omni_auth_user_actor_identifiers:
+    "Actor identifier aliases, readable only by the schema owner.",
+  omni_memory_purpose_catalog:
+    "Memory purpose contracts shared by every tenant, owner-only.",
+  omni_memory_informed_notice_contracts:
+    "Notice texts shared by every tenant, owner-only.",
+  omni_memory_informed_notice_approval_batches:
+    "Deployment notice approvals, owner-only.",
+  omni_memory_informed_notice_approval_contracts:
+    "Deployment notice approvals, owner-only.",
+  omni_memory_informed_notice_review_attestations:
+    "Deployment notice approvals, owner-only.",
+  omni_observability_slo_approval_policies:
+    "The deployment's one SLO approval policy.",
+  omni_observability_slo_approval_policy_versions:
+    "Versions of the deployment's one SLO approval policy.",
+};
+
 
 export async function ensureTenantIsolationPolicies(sql: SqlClient) {
   await sql`
