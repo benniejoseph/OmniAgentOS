@@ -71,7 +71,7 @@ void main() {
 
   testWidgets('portable Studio keeps source failures honest', (tester) async {
     final controller = AutomationController(
-      _PortableRepository(toolsUnavailable: true),
+      _PortableRepository(customConnectionsUnavailable: true),
       canManage: true,
       mutationsAvailable: true,
     );
@@ -89,8 +89,11 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('Tools'), findsWidgets);
-    expect(find.text('Tool inventory unavailable.'), findsOneWidget);
+    expect(find.text('Custom connections'), findsOneWidget);
+    expect(
+      find.text('Custom connection inventory unavailable.'),
+      findsOneWidget,
+    );
     expect(find.text('Unavailable'), findsOneWidget);
   });
 }
@@ -109,9 +112,9 @@ class _OperatorSession extends SessionController {
 }
 
 class _PortableRepository implements AutomationRepository {
-  _PortableRepository({this.toolsUnavailable = false});
+  _PortableRepository({this.customConnectionsUnavailable = false});
 
-  final bool toolsUnavailable;
+  final bool customConnectionsUnavailable;
   final scheduleLoads = <String>[];
 
   @override
@@ -127,10 +130,12 @@ class _PortableRepository implements AutomationRepository {
         },
       }),
     ),
-    mcp: const AutomationResource.ready([]),
-    tools: toolsUnavailable
-        ? const AutomationResource.failed('Tool inventory unavailable.')
+    mcp: customConnectionsUnavailable
+        ? const AutomationResource.failed(
+            'Custom connection inventory unavailable.',
+          )
         : const AutomationResource.ready([]),
+    tools: const AutomationResource.ready([]),
     workflows: const AutomationResource.ready([]),
     triggers: AutomationResource.ready([
       AutomationTrigger.fromJson({

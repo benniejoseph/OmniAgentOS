@@ -5,6 +5,7 @@ import 'package:asael/app/platform/macos_presentation.dart';
 import 'package:asael/app/theme/macos_app_theme.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 
@@ -73,16 +74,20 @@ void main() {
     addTearDown(router.dispose);
 
     await tester.pumpWidget(
-      MaterialApp.router(theme: MacosAppTheme.light(), routerConfig: router),
+      ProviderScope(
+        child: MaterialApp.router(
+          theme: MacosAppTheme.light(),
+          routerConfig: router,
+        ),
+      ),
     );
     await tester.pumpAndSettle();
 
     expect(find.text('Workspaces'), findsOneWidget);
     expect(find.text('Projects'), findsOneWidget);
-    expect(find.text('Automation Studio'), findsOneWidget);
+    expect(find.text('Capabilities'), findsOneWidget);
     expect(find.text('Automations'), findsNothing);
     expect(find.text('Connections'), findsNothing);
-    expect(find.text('Capabilities'), findsNothing);
     expect(find.text('Ask Asael or run a command'), findsOneWidget);
     expect(find.text('Body Today'), findsOneWidget);
     expect(find.byType(NavigationBar), findsNothing);
@@ -115,7 +120,12 @@ void main() {
     addTearDown(router.dispose);
 
     await tester.pumpWidget(
-      MaterialApp.router(theme: MacosAppTheme.light(), routerConfig: router),
+      ProviderScope(
+        child: MaterialApp.router(
+          theme: MacosAppTheme.light(),
+          routerConfig: router,
+        ),
+      ),
     );
     await tester.pumpAndSettle();
 

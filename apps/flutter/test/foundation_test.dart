@@ -73,7 +73,7 @@ void main() {
         group: AppDestinationGroup.automation,
         adaptiveVisible: true,
       ).map((index) => appDestinations[index].path),
-      ['/workflows', '/integrations', '/tools'],
+      ['/workflows', '/integrations'],
     );
     expect(destinationIndex('/inbox'), isNonNegative);
   });

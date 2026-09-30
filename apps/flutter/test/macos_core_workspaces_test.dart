@@ -66,9 +66,9 @@ void main() {
       final scaffold = tester.widget<Scaffold>(find.byType(Scaffold).first);
       expect((scaffold.appBar! as AppBar).toolbarHeight, 52);
       expect(find.text('Conversation'), findsOneWidget);
-      expect(find.text('Orchestrate'), findsOneWidget);
-      expect(find.text('Direct'), findsOneWidget);
-      expect(find.text('Governed'), findsOneWidget);
+      expect(find.text('Use a team'), findsOneWidget);
+      expect(find.text('Work alone'), findsOneWidget);
+      expect(find.text('Private & protected'), findsOneWidget);
       expect(tester.takeException(), isNull);
       debugDefaultTargetPlatformOverride = null;
     },

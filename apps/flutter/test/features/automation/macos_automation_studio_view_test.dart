@@ -84,7 +84,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('GitHub Project Kit'), findsWidgets);
       expect(
-        find.text('Installation is a review, not an authority shortcut.'),
+        find.text('An Extension adds methods, not permission.'),
         findsOneWidget,
       );
       expect(
@@ -144,6 +144,11 @@ void main() {
   testWidgets('partial connections remain explicit and MCP is not duplicated', (
     tester,
   ) async {
+    tester.view.physicalSize = const Size(1240, 820);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
     final snapshot = _snapshot().copyWith(
       connections: AutomationResource.ready(
         AutomationConnectionInventory.fromResponse({
