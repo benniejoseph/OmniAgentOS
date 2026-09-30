@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { serverErrorResponse } from "@/lib/http/errors";
 import { getOperationsOverview } from "@/lib/operations/queue";
 import { reconcileOperationsRecovery } from "@/lib/operations/recovery";
 import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observability/store";
@@ -129,9 +130,6 @@ async function POSTHandler(request: Request) {
       message: "Operations recovery action failed.",
       metadata: { error: error instanceof Error ? error.message : "Operations recovery failed." },
     });
-    return Response.json(
-      { error: error instanceof Error ? error.message : "Operations recovery failed." },
-      { status: 500 },
-    );
+    return serverErrorResponse(error, { message: "Operations recovery failed.", request });
   }
 }

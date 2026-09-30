@@ -10,6 +10,7 @@ import {
   recordMcpConnectorError,
   saveMcpDiscovery,
 } from "@/lib/connectors/store";
+import { isServerFailure, serverErrorResponse } from "@/lib/http/errors";
 import { createRequestTelemetry } from "@/lib/observability/store";
 import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -109,6 +110,9 @@ async function POSTHandler(
       },
     });
   } catch (error) {
+    if (isServerFailure(error)) {
+      return serverErrorResponse(error, { message: "MCP discovery failed.", request });
+    }
     const message = error instanceof Error ? error.message : "MCP discovery failed.";
     return Response.json(
       {

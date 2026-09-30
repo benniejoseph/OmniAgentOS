@@ -12,6 +12,7 @@ import {
   reportDownloadFilename,
 } from "@/lib/evaluations/reports";
 import { getEvalReportSnapshot, listEvalReportSnapshots } from "@/lib/evaluations/store";
+import { serverErrorResponse } from "@/lib/http/errors";
 import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observability/store";
 import { SecurityPolicyError } from "@/lib/security/context";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -168,9 +169,6 @@ async function POSTHandler(
       message: "Evaluation report snapshot failed.",
       metadata: { error: error instanceof Error ? error.message : "Evaluation report failed." },
     });
-    return Response.json(
-      { error: error instanceof Error ? error.message : "Evaluation report failed." },
-      { status: 500 },
-    );
+    return serverErrorResponse(error, { message: "Evaluation report failed.", request });
   }
 }

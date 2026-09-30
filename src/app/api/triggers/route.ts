@@ -7,6 +7,7 @@ import {
   parseBoundedInteger,
   parseJsonBody,
 } from "@/lib/http/body";
+import { isServerFailure, serverErrorResponse } from "@/lib/http/errors";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
@@ -260,6 +261,9 @@ async function POSTHandler(request: Request) {
       }),
     }, { status: 201 });
   } catch (error) {
+    if (isServerFailure(error)) {
+      return serverErrorResponse(error, { message: "Workflow trigger create failed", request });
+    }
     return Response.json(
       { error: "Workflow trigger create failed", message: error instanceof Error ? error.message : "Unknown error." },
       { status: 400 },

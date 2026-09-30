@@ -13,6 +13,7 @@ import {
   summarizeEvaluationGovernance,
 } from "@/lib/evaluations/runner";
 import { getEvalStats, listEvalRuns } from "@/lib/evaluations/store";
+import { serverErrorResponse } from "@/lib/http/errors";
 import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observability/store";
 import {
   BackgroundJobIdempotencyConflictError,
@@ -248,10 +249,7 @@ async function POSTHandler(request: Request) {
           ...telemetry.syntheticMetadata,
         },
       });
-      return Response.json(
-        { error: error instanceof Error ? error.message : "Evaluation failed." },
-        { status: 500 },
-      );
+      return serverErrorResponse(error, { message: "Evaluation failed.", request });
     }
     return forbiddenResponse(error);
   }

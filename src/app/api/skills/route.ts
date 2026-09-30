@@ -2,6 +2,7 @@ import { withDatabaseRequestScope } from "@/lib/db/client";
 import { createAppServiceCaller, createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
 import { createSkillService, listSkillsService } from "@/lib/app-services/agents";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { serverErrorResponse } from "@/lib/http/errors";
 import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { skillInputSchema } from "@/lib/skills/schema";
@@ -34,6 +35,7 @@ async function POSTHandler(request: Request) {
     return Response.json({ ...result.data, serviceReceipt: result.receipt }, { status: 201 });
   } catch (error) {
     const duplicate = error instanceof Error && /unique|duplicate/i.test(error.message);
-    return Response.json({ error: duplicate ? "A skill with this name already exists." : "Skill creation failed." }, { status: duplicate ? 409 : 500 });
+    if (!duplicate) return serverErrorResponse(error, { message: "Skill creation failed.", request });
+    return Response.json({ error: "A skill with this name already exists." }, { status: 409 });
   }
 }

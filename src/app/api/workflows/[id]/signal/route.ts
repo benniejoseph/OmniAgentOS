@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { serverErrorResponse } from "@/lib/http/errors";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { cancelWorkflowRunTick, enqueueWorkflowRunTick, scheduleWorkflowQueueDrain } from "@/lib/workflows/queue";
@@ -100,9 +101,6 @@ async function POSTHandler(
     } catch {
       // fall through to not-found style workflow error
     }
-    return Response.json(
-      { error: error instanceof Error ? error.message : "Workflow signal failed." },
-      { status: 500 },
-    );
+    return serverErrorResponse(error, { message: "Workflow signal failed.", request });
   }
 }

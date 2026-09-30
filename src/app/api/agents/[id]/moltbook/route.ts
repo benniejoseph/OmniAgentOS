@@ -1,3 +1,4 @@
+import { isServerFailure, serverErrorResponse } from "@/lib/http/errors";
 import {
   listMoltbookConnection,
   MoltbookConnectionError,
@@ -389,6 +390,12 @@ function moltbookErrorResponse(error: unknown) {
       headers: privateNoStoreHeaders,
     });
   }
+  if (isServerFailure(error)) {
+    return serverErrorResponse(error, {
+      message: "The Moltbook Agent operation failed.",
+      headers: privateNoStoreHeaders,
+    });
+  }
   if (error && typeof error === "object" && "code" in error) {
     const code = String((error as { code?: unknown }).code || "");
     if (/^[a-z0-9_]{1,80}$/.test(code)) {
@@ -398,8 +405,8 @@ function moltbookErrorResponse(error: unknown) {
       }, { status: 409, headers: privateNoStoreHeaders });
     }
   }
-  return Response.json({ error: "The Moltbook Agent operation failed." }, {
-    status: 500,
+  return serverErrorResponse(error, {
+    message: "The Moltbook Agent operation failed.",
     headers: privateNoStoreHeaders,
   });
 }

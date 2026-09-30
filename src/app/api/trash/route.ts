@@ -1,6 +1,7 @@
 import { listTrashService } from "@/lib/app-services/trash";
 import { createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
 import { withDatabaseRequestScope } from "@/lib/db/client";
+import { isServerFailure, serverErrorResponse } from "@/lib/http/errors";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
@@ -32,6 +33,9 @@ async function GETHandler(request: Request) {
       { headers: { "cache-control": "private, no-store" } },
     );
   } catch (error) {
+    if (isServerFailure(error)) {
+      return serverErrorResponse(error, { message: "Trash could not be listed.", request });
+    }
     return Response.json(
       { error: error instanceof Error ? error.message : "Trash could not be listed." },
       { status: 400, headers: { "cache-control": "private, no-store" } },

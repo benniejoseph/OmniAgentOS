@@ -30,6 +30,7 @@ import {
 } from "@/lib/app-services/app-builder";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { isServerFailure, serverErrorResponse } from "@/lib/http/errors";
 import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
@@ -86,6 +87,9 @@ async function GETHandler(request: Request, route: { params: Promise<{ id: strin
         : await showProjectBuilderService(caller, { projectId: id });
     return Response.json({ ...result.data, serviceReceipt: result.receipt }, { headers: privateNoStoreHeaders });
   } catch (error) {
+    if (isServerFailure(error)) {
+      return serverErrorResponse(error, { message: "App Builder could not be read.", request, headers: privateNoStoreHeaders });
+    }
     return Response.json({ error: error instanceof Error ? error.message : "App Builder could not be read." }, { status: 404, headers: privateNoStoreHeaders });
   }
 }
@@ -148,6 +152,9 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
                   : await stopProjectBuilderService(caller, { projectId: id, sessionId: parsed.data.sessionId });
     return Response.json({ ...result.data, serviceReceipt: result.receipt }, { headers: privateNoStoreHeaders });
   } catch (error) {
+    if (isServerFailure(error)) {
+      return serverErrorResponse(error, { message: "App Builder operation failed.", request, headers: privateNoStoreHeaders });
+    }
     return Response.json({ error: error instanceof Error ? error.message : "App Builder operation failed." }, { status: 409, headers: privateNoStoreHeaders });
   }
 }

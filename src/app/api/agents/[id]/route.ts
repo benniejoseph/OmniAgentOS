@@ -7,6 +7,7 @@ import {
   updateAgentService,
 } from "@/lib/app-services/agents";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { isServerFailure, serverErrorResponse } from "@/lib/http/errors";
 import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { customAgentPatchSchema } from "@/lib/skills/schema";
@@ -87,12 +88,12 @@ async function PATCHHandler(request: Request, context: RouteContext<"/api/agents
     }
     const duplicate = error instanceof Error &&
       /unique|duplicate|already exists/i.test(error.message);
+    if (!duplicate) {
+      return serverErrorResponse(error, { message: "Agent update failed.", request });
+    }
     return Response.json(
-      { error: duplicate ? "An agent with this name already exists." : "Agent update failed." },
-      {
-        status: duplicate ? 409 : 500,
-        headers: { "cache-control": "private, no-store" },
-      },
+      { error: "An agent with this name already exists." },
+      { status: 409, headers: { "cache-control": "private, no-store" } },
     );
   }
 }
@@ -114,6 +115,9 @@ async function DELETEHandler(request: Request, context: RouteContext<"/api/agent
     );
     return Response.json({ ...result.data, serviceReceipt: result.receipt });
   } catch (error) {
+    if (isServerFailure(error)) {
+      return serverErrorResponse(error, { message: "Agent could not be moved to trash.", request });
+    }
     return Response.json(
       { error: error instanceof Error ? error.message : "Agent could not be moved to trash." },
       { status: error instanceof Error && /not found/i.test(error.message) ? 404 : 409 },

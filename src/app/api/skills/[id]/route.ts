@@ -7,6 +7,7 @@ import {
   updateSkillService,
 } from "@/lib/app-services/agents";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { isServerFailure, serverErrorResponse } from "@/lib/http/errors";
 import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { skillPatchSchema } from "@/lib/skills/schema";
@@ -71,6 +72,9 @@ async function DELETEHandler(request: Request, context: RouteContext<"/api/skill
     );
     return Response.json({ ...result.data, serviceReceipt: result.receipt });
   } catch (error) {
+    if (isServerFailure(error)) {
+      return serverErrorResponse(error, { message: "Skill could not be moved to trash.", request });
+    }
     return Response.json(
       { error: error instanceof Error ? error.message : "Skill could not be moved to trash." },
       { status: error instanceof Error && /not found/i.test(error.message) ? 404 : 409 },

@@ -2,6 +2,7 @@ import { withDatabaseRequestScope } from "@/lib/db/client";
 import { createAppServiceCaller, createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
 import { createAgentService, listAgentsService } from "@/lib/app-services/agents";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { serverErrorResponse } from "@/lib/http/errors";
 import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { customAgentInputSchema } from "@/lib/skills/schema";
@@ -61,12 +62,12 @@ async function POSTHandler(request: Request) {
     }
     const duplicate = error instanceof Error &&
       /unique|duplicate|already exists/i.test(error.message);
+    if (!duplicate) {
+      return serverErrorResponse(error, { message: "Agent creation failed.", request });
+    }
     return Response.json(
-      { error: duplicate ? "An agent with this name already exists." : "Agent creation failed." },
-      {
-        status: duplicate ? 409 : 500,
-        headers: { "cache-control": "private, no-store" },
-      },
+      { error: "An agent with this name already exists." },
+      { status: 409, headers: { "cache-control": "private, no-store" } },
     );
   }
 }

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { serverErrorResponse } from "@/lib/http/errors";
 import {
   BackgroundJobIdempotencyConflictError,
   enqueueKnowledgeIngestJob,
@@ -65,10 +66,7 @@ async function POSTHandler(request: Request) {
     if (error instanceof BackgroundJobIdempotencyConflictError) {
       return Response.json({ error: error.message }, { status: 409 });
     }
-    return Response.json(
-      { error: error instanceof Error ? error.message : "Ingestion queue failed." },
-      { status: 500 },
-    );
+    return serverErrorResponse(error, { message: "Ingestion queue failed.", request });
   }
   return Response.json(
     {

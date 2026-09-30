@@ -14,6 +14,7 @@ import {
   parseBoundedInteger,
   parseJsonBody,
 } from "@/lib/http/body";
+import { serverErrorResponse } from "@/lib/http/errors";
 import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
@@ -113,10 +114,7 @@ async function POSTHandler(request: Request) {
     try {
       return forbiddenResponse(error);
     } catch {
-      return Response.json({
-        error: "Memory write failed",
-        message: error instanceof Error ? error.message : "Unknown error",
-      }, { status: 500 });
+      return serverErrorResponse(error, { message: "Memory write failed", request });
     }
   }
 }

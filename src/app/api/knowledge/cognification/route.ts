@@ -9,6 +9,7 @@ import {
   withDatabaseRequestScope,
 } from "@/lib/db/client";
 import { projectExplicitMemoryEntities } from "@/lib/entities/extraction";
+import { serverErrorResponse } from "@/lib/http/errors";
 import {
   collectCognificationEvidenceRefs,
   renderCognificationCandidateReview,
@@ -362,16 +363,20 @@ async function PATCHHandler(request: Request) {
       },
     }, { headers: privateNoStoreHeaders });
   } catch (error) {
-    const status = error instanceof KnowledgeCognitionNotFoundError
-      ? 404
-      : error instanceof KnowledgeCognitionConflictError
-        ? 409
-        : 500;
-    return Response.json({
-      error: error instanceof Error
-        ? error.message
-        : "Knowledge cognition review failed.",
-    }, { status, headers: privateNoStoreHeaders });
+    if (
+      !(error instanceof KnowledgeCognitionNotFoundError) &&
+      !(error instanceof KnowledgeCognitionConflictError)
+    ) {
+      return serverErrorResponse(error, {
+        message: "Knowledge cognition review failed.",
+        request,
+        headers: privateNoStoreHeaders,
+      });
+    }
+    return Response.json({ error: error.message }, {
+      status: error instanceof KnowledgeCognitionNotFoundError ? 404 : 409,
+      headers: privateNoStoreHeaders,
+    });
   }
 }
 

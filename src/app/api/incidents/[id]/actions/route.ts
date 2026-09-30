@@ -3,6 +3,7 @@ import { withDatabaseRequestScope } from "@/lib/db/client";
 import { acknowledgeIncident, getIncidentDetail, resolveIncident } from "@/lib/diagnostics/incidents";
 import { runIncidentPlaybook } from "@/lib/diagnostics/playbooks";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { isServerFailure, serverErrorResponse } from "@/lib/http/errors";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
@@ -119,6 +120,9 @@ async function POSTHandler(
       ms: Date.now() - startedAt,
       error: error instanceof Error ? error.message : "Incident action failed.",
     }));
+    if (isServerFailure(error)) {
+      return serverErrorResponse(error, { message: "Incident action failed.", request });
+    }
     return Response.json(
       { error: error instanceof Error ? error.message : "Incident action failed." },
       { status: 400 },

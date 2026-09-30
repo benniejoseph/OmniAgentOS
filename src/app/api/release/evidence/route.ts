@@ -1,4 +1,5 @@
 import { withDatabaseRequestScope } from "@/lib/db/client";
+import { serverErrorResponse } from "@/lib/http/errors";
 import { getReleaseEvidenceReport } from "@/lib/release/evidence";
 import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observability/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -99,9 +100,6 @@ async function GETHandler(request: Request) {
         ...telemetry.syntheticMetadata,
       },
     });
-    return Response.json(
-      { error: error instanceof Error ? error.message : "Release evidence failed." },
-      { status: 500 },
-    );
+    return serverErrorResponse(error, { message: "Release evidence failed.", request });
   }
 }

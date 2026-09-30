@@ -3,6 +3,7 @@ import { createRequestMutationAppServiceCaller } from "@/lib/app-services/contra
 import { recordProjectArtifactFeedbackService } from "@/lib/app-services/projects";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { serverErrorResponse } from "@/lib/http/errors";
 import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
@@ -34,6 +35,6 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
       ? Response.json({ artifact })
       : Response.json({ error: "Project artifact not found." }, { status: 404 });
   } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : "Artifact reflection failed." }, { status: 500 });
+    return serverErrorResponse(error, { message: "Artifact reflection failed.", request });
   }
 }

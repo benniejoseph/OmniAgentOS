@@ -722,9 +722,12 @@ describe("dedicated worker heartbeat timing", () => {
     const response = await POST(workerRequest({ startup: false }));
 
     expect(response.status).toBe(500);
-    await expect(response.json()).resolves.toMatchObject({
-      error: "scheduled work failed",
+    const body = await response.json();
+    expect(body).toMatchObject({
+      error: "Workflow tick failed.",
+      code: "internal_error",
     });
+    expect(JSON.stringify(body)).not.toContain("scheduled work failed");
     expect(routeMocks.recordWorkerHeartbeat).not.toHaveBeenCalled();
   });
 

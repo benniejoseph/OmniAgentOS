@@ -16,6 +16,7 @@ import {
   parseBoundedInteger,
   parseJsonBody,
 } from "@/lib/http/body";
+import { serverErrorResponse } from "@/lib/http/errors";
 import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observability/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
@@ -277,10 +278,7 @@ async function POSTHandler(request: Request) {
       ms: Date.now() - startedAt,
       error: error instanceof Error ? error.message : "Alert action failed.",
     }));
-    return Response.json(
-      { error: error instanceof Error ? error.message : "Alert action failed." },
-      { status: 500 },
-    );
+    return serverErrorResponse(error, { message: "Alert action failed.", request });
   }
 }
 

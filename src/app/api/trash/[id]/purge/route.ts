@@ -5,6 +5,7 @@ import {
 import { createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { isServerFailure, serverErrorResponse } from "@/lib/http/errors";
 import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
@@ -56,6 +57,9 @@ async function DELETEHandler(
       ? Response.json({ ...result.data, serviceReceipt: result.receipt })
       : Response.json({ error: "Purge preview targets a different trash item." }, { status: 409 });
   } catch (error) {
+    if (isServerFailure(error)) {
+      return serverErrorResponse(error, { message: "Trash item could not be purged.", request });
+    }
     return Response.json(
       { error: error instanceof Error ? error.message : "Trash item could not be purged." },
       { status: 409 },

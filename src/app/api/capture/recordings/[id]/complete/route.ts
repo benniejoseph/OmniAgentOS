@@ -18,6 +18,7 @@ import {
 } from "@/lib/capture/recordings";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { serverErrorResponse } from "@/lib/http/errors";
 import { projectOperationJobStatus } from "@/lib/operations/job-queue";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import type { SecurityContext } from "@/lib/security/types";
@@ -149,10 +150,11 @@ async function POSTHandler(
         { status: 409, headers: privateNoStoreHeaders },
       );
     }
-    return Response.json(
-      { error: error instanceof Error ? error.message : "Recording processing could not be queued." },
-      { status: 500, headers: privateNoStoreHeaders },
-    );
+    return serverErrorResponse(error, {
+      message: "Recording processing could not be queued.",
+      request,
+      headers: privateNoStoreHeaders,
+    });
   }
 }
 

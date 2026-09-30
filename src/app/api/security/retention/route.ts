@@ -4,6 +4,7 @@ import {
   withDatabaseRequestScope,
 } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { serverErrorResponse } from "@/lib/http/errors";
 import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observability/store";
 import {
   checkWorkerCompatibility,
@@ -130,9 +131,6 @@ async function POSTHandler(request: Request) {
         ...telemetry.syntheticMetadata,
       },
     });
-    return Response.json(
-      { error: error instanceof Error ? error.message : "Retention sweep failed." },
-      { status: 500 },
-    );
+    return serverErrorResponse(error, { message: "Retention sweep failed.", request });
   }
 }

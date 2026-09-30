@@ -7,6 +7,7 @@ import {
   getDatabaseActorContext,
   withDatabaseRequestScope,
 } from "@/lib/db/client";
+import { isServerFailure, serverErrorResponse } from "@/lib/http/errors";
 import {
   applyObservabilitySloPolicyChange,
   getObservabilitySloPolicyChange,
@@ -257,10 +258,7 @@ async function POSTHandler(
       try {
         return forbiddenResponse(error);
       } catch {
-        return Response.json(
-          { error: error instanceof Error ? error.message : "Workflow approval decision failed." },
-          { status: 500 },
-        );
+        return serverErrorResponse(error, { message: "Workflow approval decision failed.", request });
       }
     }
   }
@@ -325,6 +323,9 @@ async function POSTHandler(
         status: result.change.status === "pending" ? 202 : 200,
       });
     } catch (error) {
+      if (isServerFailure(error)) {
+        return serverErrorResponse(error, { message: "SLO policy decision failed.", request });
+      }
       const message =
         error instanceof Error ? error.message : "SLO policy decision failed.";
       return Response.json(

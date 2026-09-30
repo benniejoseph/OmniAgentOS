@@ -3,6 +3,7 @@ import { z } from "zod";
 import { captureExecutionScopeFromSecurityContext } from "@/lib/capture/execution-scope";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { isServerFailure, serverErrorResponse } from "@/lib/http/errors";
 import { clipVideoMediaAsset } from "@/lib/media/operations";
 import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observability/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -81,6 +82,9 @@ async function POSTHandler(request: Request) {
       },
     }, { headers: { "cache-control": "private, no-store" } });
   } catch (error) {
+    if (!request.signal.aborted && isServerFailure(error)) {
+      return serverErrorResponse(error, { message: "Video clipping failed.", request });
+    }
     const message = request.signal.aborted
       ? "Video clipping was cancelled."
       : error instanceof Error ? error.message : "Video clipping failed.";

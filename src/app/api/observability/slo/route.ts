@@ -2,6 +2,7 @@ import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { dispatchAlertDeliveries } from "@/lib/diagnostics/alerts";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { serverErrorResponse } from "@/lib/http/errors";
 import {
   getDefaultObservabilitySloPolicies,
   getObservabilitySloSnapshot,
@@ -171,9 +172,6 @@ async function POSTHandler(request: Request) {
       message: "Operator observability SLO monitor failed.",
       metadata: { error: error instanceof Error ? error.message : "SLO monitor failed." },
     });
-    return Response.json(
-      { error: error instanceof Error ? error.message : "Observability SLO monitor failed." },
-      { status: 500 },
-    );
+    return serverErrorResponse(error, { message: "Observability SLO monitor failed.", request });
   }
 }

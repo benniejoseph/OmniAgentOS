@@ -3,6 +3,7 @@ import { createAppServiceCaller, createRequestMutationAppServiceCaller } from "@
 import { createProjectService, listProjectsService } from "@/lib/app-services/projects";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { isServerFailure, serverErrorResponse } from "@/lib/http/errors";
 import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { listProjectSummaries } from "@/lib/projects/store";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
@@ -68,6 +69,9 @@ async function POSTHandler(request: Request) {
       { status: 201 },
     );
   } catch (error) {
+    if (isServerFailure(error)) {
+      return serverErrorResponse(error, { message: "Project creation failed.", request });
+    }
     const message = error instanceof Error ? error.message : "Project creation failed.";
     return Response.json(
       { error: message },

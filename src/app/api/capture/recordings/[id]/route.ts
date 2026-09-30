@@ -10,6 +10,7 @@ import { deleteCaptureRecordingWithKnowledge } from "@/lib/capture/deletion";
 import { captureExecutionScopeFromSecurityContext } from "@/lib/capture/execution-scope";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { serverErrorResponse } from "@/lib/http/errors";
 import { cancelOperationJobByDedupeKey, getOperationJob } from "@/lib/operations/job-queue";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -135,7 +136,7 @@ async function DELETEHandler(request: Request, route: { params: Promise<{ id: st
 
 function captureErrorResponse(error: unknown) {
   if (error instanceof CaptureRecordingError) return Response.json({ error: error.message, code: error.code }, { status: error.status });
-  return Response.json({ error: error instanceof Error ? error.message : "Capture recording request failed." }, { status: 500 });
+  return serverErrorResponse(error, { message: "Capture recording request failed." });
 }
 
 function captureRecordingMetadataReadErrorResponse(error: unknown) {

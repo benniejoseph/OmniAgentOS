@@ -11,6 +11,7 @@ import {
 import { captureExecutionScopeFromSecurityContext } from "@/lib/capture/execution-scope";
 import { enqueueCaptureSegmentTranscriptionJob } from "@/lib/capture/media-jobs";
 import { withDatabaseRequestScope } from "@/lib/db/client";
+import { serverErrorResponse } from "@/lib/http/errors";
 import { projectOperationJobStatus } from "@/lib/operations/job-queue";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
@@ -128,14 +129,12 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
         },
       });
     } catch (error) {
-      return Response.json({
-        segment: saved.segment,
-        stored: true,
-        error: error instanceof Error
-          ? error.message
-          : "The stored segment could not be queued for processing.",
-        retryable: true,
-      }, { status: 503, headers: { "cache-control": "private, no-store" } });
+      return serverErrorResponse(error, {
+        message: "The stored segment could not be queued for processing.",
+        status: 503,
+        request,
+        body: { segment: saved.segment, stored: true, retryable: true },
+      });
     }
   } catch (error) {
     return captureErrorResponse(error);
@@ -144,5 +143,5 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
 
 function captureErrorResponse(error: unknown) {
   if (error instanceof CaptureRecordingError) return Response.json({ error: error.message, code: error.code }, { status: error.status });
-  return Response.json({ error: error instanceof Error ? error.message : "Recording segment request failed." }, { status: 500 });
+  return serverErrorResponse(error, { message: "Recording segment request failed." });
 }

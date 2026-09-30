@@ -1,4 +1,5 @@
 import { withDatabaseRequestScope } from "@/lib/db/client";
+import { isServerFailure, serverErrorResponse } from "@/lib/http/errors";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { getOperationJobStats } from "@/lib/operations/job-queue";
 import { requestWorkDeadline } from "@/lib/observability/request-timing";
@@ -48,6 +49,9 @@ async function POSTHandler(
       return forbiddenResponse(error);
     } catch {
       // fall through to not-found style workflow error
+    }
+    if (isServerFailure(error)) {
+      return serverErrorResponse(error, { message: "Workflow tick failed.", request });
     }
     return Response.json(
       { error: error instanceof Error ? error.message : "Workflow tick failed." },

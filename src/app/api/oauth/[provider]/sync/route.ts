@@ -1,6 +1,7 @@
 import { isOAuthProvider } from "@/lib/connectors/oauth-providers";
 import { syncPersonalProvider } from "@/lib/connectors/personal-sync";
 import { withDatabaseRequestScope } from "@/lib/db/client";
+import { isServerFailure, serverErrorResponse } from "@/lib/http/errors";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
@@ -21,6 +22,9 @@ async function POSTHandler(request: Request, context: { params: Promise<{ provid
     }
     return Response.json(await syncPersonalProvider({ tenantId: security.tenantId, actorId: security.actorId, provider, connectionId, sources: requestedSource ? ["calendar"] : undefined, abortSignal: request.signal }));
   } catch (error) {
+    if (isServerFailure(error)) {
+      return serverErrorResponse(error, { message: "Connected source sync failed.", request });
+    }
     return Response.json({ error: error instanceof Error ? error.message : "Connected source sync failed." }, { status: 502 });
   }
 }

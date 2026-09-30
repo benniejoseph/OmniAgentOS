@@ -11,6 +11,7 @@ import {
 } from "@/lib/app-services/connectors";
 import { createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { isServerFailure, serverErrorResponse } from "@/lib/http/errors";
 import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observability/store";
 import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
@@ -274,6 +275,9 @@ async function DELETEHandler(
       connectorId: id,
       message: error instanceof Error ? error.message : "OpenAPI connector trash move failed.",
     });
+    if (isServerFailure(error)) {
+      return serverErrorResponse(error, { message: "OpenAPI connector could not be moved to trash.", request });
+    }
     return Response.json(
       { error: error instanceof Error ? error.message : "OpenAPI connector could not be moved to trash." },
       { status: error instanceof Error && /not found/i.test(error.message) ? 404 : 409 },

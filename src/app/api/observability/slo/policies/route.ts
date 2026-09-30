@@ -2,6 +2,7 @@ import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { getIncidentAlertTargets } from "@/lib/diagnostics/incidents";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { serverErrorResponse } from "@/lib/http/errors";
 import {
   listObservabilitySloPolicyChanges,
   requestObservabilitySloPolicyChange,
@@ -312,16 +313,15 @@ async function POSTHandler(request: Request) {
       message: "Observability SLO policy update failed.",
       metadata: { error: error instanceof Error ? error.message : "SLO policy update failed." },
     });
+    if (!conflict) {
+      return serverErrorResponse(error, { message: "Observability SLO policy update failed.", request });
+    }
     return Response.json(
       {
-        error: conflict
-          ? "SLO approval policy version conflict"
-          : error instanceof Error
-            ? error.message
-            : "Observability SLO policy update failed.",
-        message: error instanceof Error ? error.message : undefined,
+        error: "SLO approval policy version conflict",
+        message: error.message,
       },
-      { status: conflict ? 409 : 500 },
+      { status: 409 },
     );
   }
 }

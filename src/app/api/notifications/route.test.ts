@@ -103,4 +103,38 @@ describe("notification inbox route", () => {
       },
     });
   });
+
+  it("answers a database failure without its detail and keeps conflicts", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const patch = () => PATCH(new Request("http://localhost/api/notifications", {
+      method: "PATCH",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "read-all-2",
+      },
+      body: JSON.stringify({ action: "read_all" }),
+    }));
+    routeMocks.markAllNotificationsRead
+      .mockRejectedValueOnce(Object.assign(
+        new Error('relation "notification_reads" does not exist'),
+        { name: "PostgresError", code: "42P01" },
+      ))
+      .mockRejectedValueOnce(new Error("Notification changed during update."));
+
+    const failed = await patch();
+    const failedBody = await failed.json();
+    const conflict = await patch();
+
+    expect(failed.status).toBe(500);
+    expect(failedBody).toMatchObject({
+      error: "Notification update failed.",
+      code: "internal_error",
+    });
+    expect(JSON.stringify(failedBody)).not.toContain("notification_reads");
+    expect(conflict.status).toBe(409);
+    await expect(conflict.json()).resolves.toEqual({
+      error: "Notification changed during update.",
+    });
+    consoleError.mockRestore();
+  });
 });

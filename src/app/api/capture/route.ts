@@ -11,6 +11,7 @@ import {
 } from "@/lib/capture/offline-outbox";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { parseBoundedInteger } from "@/lib/http/body";
+import { serverErrorResponse } from "@/lib/http/errors";
 import {
   BackgroundJobIdempotencyConflictError,
   enqueueCaptureAssetProcessJob,
@@ -177,7 +178,7 @@ async function POSTHandler(request: Request) {
         extractionStatus: "pending",
         error: error instanceof Error ? error.message : "Capture queue failed.",
       });
-      return Response.json({ error: error instanceof Error ? error.message : "Capture queue failed.", asset }, { status: 500 });
+      return serverErrorResponse(error, { message: "Capture queue failed.", request, body: { asset } });
     }
   }
 
@@ -209,6 +210,6 @@ async function POSTHandler(request: Request) {
     if (error instanceof BackgroundJobIdempotencyConflictError) {
       return Response.json({ error: error.message }, { status: 409 });
     }
-    return Response.json({ error: error instanceof Error ? error.message : "Capture queue failed." }, { status: 500 });
+    return serverErrorResponse(error, { message: "Capture queue failed.", request });
   }
 }

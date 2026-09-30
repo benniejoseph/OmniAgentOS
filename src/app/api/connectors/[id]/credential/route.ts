@@ -14,6 +14,7 @@ import {
 } from "@/lib/connectors/store";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { isServerFailure, serverErrorResponse } from "@/lib/http/errors";
 import { createRequestTelemetry } from "@/lib/observability/store";
 import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -144,6 +145,9 @@ async function POSTHandler(
       reviewRequired: true,
     });
   } catch (error) {
+    if (isServerFailure(error)) {
+      return serverErrorResponse(error, { message: "MCP discovery failed.", request });
+    }
     const message = error instanceof Error ? error.message : "MCP discovery failed.";
     return Response.json(
       {

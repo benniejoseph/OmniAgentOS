@@ -324,7 +324,8 @@ describe("Capture recording detail ownership", () => {
     consoleError.mockRestore();
   });
 
-  it("preserves the established bare GET error behavior", async () => {
+  it("answers a bare GET failure without its internal detail", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
     routeMocks.getCaptureRecording.mockRejectedValueOnce(
       new Error("exact recording read failed"),
     );
@@ -334,9 +335,16 @@ describe("Capture recording detail ownership", () => {
     ), route);
 
     expect(response.status).toBe(500);
-    await expect(response.json()).resolves.toEqual({
-      error: "exact recording read failed",
+    const body = await response.json();
+    expect(body).toEqual({
+      error: "Capture recording request failed.",
+      code: "internal_error",
+      requestId: response.headers.get("x-request-id"),
     });
+    expect(JSON.stringify(consoleError.mock.calls)).toContain(
+      "exact recording read failed",
+    );
+    consoleError.mockRestore();
   });
 
   it("keeps PATCH exact even when the URL carries the readable opt-in", async () => {

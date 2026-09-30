@@ -261,6 +261,25 @@ describe("Moltbook Agent route", () => {
     expect(mocks.resume).not.toHaveBeenCalled();
   });
 
+  it("answers a database failure without echoing it as a conflict", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mocks.pause.mockRejectedValueOnce(Object.assign(
+      new Error('duplicate key value violates unique constraint "moltbook_pkey"'),
+      { name: "PostgresError", code: "23505" },
+    ));
+
+    const response = await post({ action: "pause" });
+    const body = await response.json();
+
+    expect(response.status).toBe(500);
+    expect(body).toMatchObject({
+      error: "The Moltbook Agent operation failed.",
+      code: "internal_error",
+    });
+    expect(JSON.stringify(body)).not.toContain("moltbook_pkey");
+    consoleError.mockRestore();
+  });
+
   it("upgrades the exact Agent boundary before enabling autonomy", async () => {
     const response = await post({
       action: "enable_autonomy",

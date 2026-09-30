@@ -3,6 +3,7 @@ import { createRequestMutationAppServiceCaller } from "@/lib/app-services/contra
 import { planProjectService } from "@/lib/app-services/projects";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { serverErrorResponse } from "@/lib/http/errors";
 import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { ProjectPlanningError } from "@/lib/projects/planner";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -31,6 +32,6 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
   } catch (error) {
     return error instanceof ProjectPlanningError
       ? Response.json({ error: error.message }, { status: 409 })
-      : Response.json({ error: error instanceof Error ? error.message : "Project planning failed." }, { status: 500 });
+      : serverErrorResponse(error, { message: "Project planning failed.", request });
   }
 }

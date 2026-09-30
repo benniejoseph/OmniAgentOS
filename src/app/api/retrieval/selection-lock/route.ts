@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { isServerFailure, serverErrorResponse } from "@/lib/http/errors";
 import { lockContextSelection } from "@/lib/rag/context-selection-lock";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
@@ -72,6 +73,9 @@ async function POSTHandler(request: Request) {
       headers: { "cache-control": "private, no-store" },
     });
   } catch (error) {
+    if (isServerFailure(error)) {
+      return serverErrorResponse(error, { message: "Context selection could not be locked.", request });
+    }
     return Response.json({
       error: "Context selection could not be locked.",
       message: error instanceof Error

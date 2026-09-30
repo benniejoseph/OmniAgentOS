@@ -1,3 +1,4 @@
+import { serverErrorResponse } from "@/lib/http/errors";
 import { createSignedAuditExport } from "@/lib/security/audit-export";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -12,5 +13,5 @@ async function GETHandler(request: Request) {
   try {
     const report = await createSignedAuditExport(context.tenantId);
     return Response.json(report, { headers: { "cache-control": "private, no-store", "content-disposition": `attachment; filename=asael-audit-${new Date().toISOString().slice(0, 10)}.json` } });
-  } catch (error) { return Response.json({ error: error instanceof Error ? error.message : "Signed audit export failed." }, { status: 503 }); }
+  } catch (error) { return serverErrorResponse(error, { message: "Signed audit export failed.", status: 503, request }); }
 }

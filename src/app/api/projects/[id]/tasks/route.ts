@@ -3,6 +3,7 @@ import { createRequestMutationAppServiceCaller } from "@/lib/app-services/contra
 import { createWorkItemService } from "@/lib/app-services/projects";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { isServerFailure, serverErrorResponse } from "@/lib/http/errors";
 import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
@@ -33,6 +34,9 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
           { status: 409 },
         );
   } catch (error) {
+    if (isServerFailure(error)) {
+      return serverErrorResponse(error, { message: "Project task creation failed.", request });
+    }
     const message = error instanceof Error ? error.message : "Project task creation failed.";
     return Response.json(
       { error: message },

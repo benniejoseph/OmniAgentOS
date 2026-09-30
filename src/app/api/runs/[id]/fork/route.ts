@@ -9,6 +9,7 @@ import {
 import { AGENT_RUNS_PER_MINUTE } from "@/lib/config";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { isServerFailure, serverErrorResponse } from "@/lib/http/errors";
 import {
   checkSharedRateLimit,
   RateLimitStoreUnavailableError,
@@ -146,11 +147,16 @@ async function POSTHandler(
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Run fork failed.";
-    const status = /not found|expected exactly one source/i.test(message)
-      ? 404
-      : /idempotency|already exists|invalid|does not match|missing|requires/i.test(message)
-        ? 409
-        : 500;
+    const status = isServerFailure(error)
+      ? 500
+      : /not found|expected exactly one source/i.test(message)
+        ? 404
+        : /idempotency|already exists|invalid|does not match|missing|requires/i.test(message)
+          ? 409
+          : 500;
+    if (status === 500) {
+      return serverErrorResponse(error, { message: "Run fork failed", request });
+    }
     return Response.json({ error: "Run fork failed", message }, { status });
   }
 

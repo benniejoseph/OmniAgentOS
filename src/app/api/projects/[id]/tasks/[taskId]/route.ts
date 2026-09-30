@@ -3,6 +3,7 @@ import { createRequestMutationAppServiceCaller } from "@/lib/app-services/contra
 import { updateWorkItemService } from "@/lib/app-services/projects";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { serverErrorResponse } from "@/lib/http/errors";
 import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { ProjectTransitionError } from "@/lib/projects/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -31,6 +32,6 @@ async function PATCHHandler(request: Request, route: { params: Promise<{ id: str
   } catch (error) {
     return error instanceof ProjectTransitionError
       ? Response.json({ error: error.message }, { status: 409 })
-      : Response.json({ error: error instanceof Error ? error.message : "Task update failed." }, { status: 500 });
+      : serverErrorResponse(error, { message: "Task update failed.", request });
   }
 }

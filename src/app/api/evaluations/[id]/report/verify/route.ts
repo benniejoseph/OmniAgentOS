@@ -7,6 +7,7 @@ import {
   verifyEvalReportSnapshot,
 } from "@/lib/evaluations/reports";
 import { getEvalReportSnapshot } from "@/lib/evaluations/store";
+import { serverErrorResponse } from "@/lib/http/errors";
 import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observability/store";
 import { SecurityPolicyError } from "@/lib/security/context";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -147,10 +148,7 @@ async function POSTHandler(
       return forbiddenResponse(error);
     }
 
-    return Response.json(
-      { error: error instanceof Error ? error.message : "Evaluation report verification failed." },
-      { status: 500 },
-    );
+    return serverErrorResponse(error, { message: "Evaluation report verification failed.", request });
   }
 }
 

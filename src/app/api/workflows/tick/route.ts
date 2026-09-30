@@ -10,6 +10,7 @@ import {
 } from "@/lib/config";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { getAlertDeliveryStats, runScheduledAlertDispatch } from "@/lib/diagnostics/alerts";
+import { serverErrorResponse } from "@/lib/http/errors";
 import { runObservabilitySloMonitor } from "@/lib/observability/slo-monitor";
 import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observability/store";
 import {
@@ -248,7 +249,7 @@ async function runCronTick(request: Request, context: SecurityContext) {
       metadata: { error: message },
     });
 
-    return Response.json({ error: message, trigger: "vercel_cron" }, { status: 500 });
+    return serverErrorResponse(error, { message: "Scheduled tick failed.", request, body: { trigger: "vercel_cron" } });
   }
 }
 
@@ -610,10 +611,7 @@ async function POSTHandler(request: Request) {
       message: "Operator workflow queue tick failed.",
       metadata: { error: error instanceof Error ? error.message : "Workflow tick failed." },
     });
-    return Response.json(
-      { error: error instanceof Error ? error.message : "Workflow tick failed." },
-      { status: 500 },
-    );
+    return serverErrorResponse(error, { message: "Workflow tick failed.", request });
   }
 }
 

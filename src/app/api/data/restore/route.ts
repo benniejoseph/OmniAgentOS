@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { restorePortableArchive } from "@/lib/data/portable";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { isServerFailure, serverErrorResponse } from "@/lib/http/errors";
 import { MEMORY_PURPOSE_IDS } from "@/lib/memory/access-binding";
 import { requestMemoryAccessFromSecurityContext } from "@/lib/memory/request-access";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -41,6 +42,9 @@ async function POSTHandler(request: Request) {
     });
     return Response.json({ restored }, { headers: { "cache-control": "private, no-store" } });
   } catch (error) {
+    if (isServerFailure(error)) {
+      return serverErrorResponse(error, { message: "Archive restore failed.", request });
+    }
     return Response.json({ error: error instanceof Error ? error.message : "Archive restore failed." }, { status: 400 });
   }
 }

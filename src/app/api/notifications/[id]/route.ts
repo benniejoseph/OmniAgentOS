@@ -3,6 +3,7 @@ import { createRequestMutationAppServiceCaller } from "@/lib/app-services/contra
 import { updateNotificationService } from "@/lib/app-services/notifications";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { isServerFailure, serverErrorResponse } from "@/lib/http/errors";
 import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
@@ -52,12 +53,12 @@ async function PATCHHandler(request: Request, route: { params: Promise<{ id: str
       ? Response.json({ ...result.data, serviceReceipt: result.receipt })
       : Response.json({ error: "Notification not found." }, { status: 404 });
   } catch (error) {
-    const message = error instanceof Error
-      ? error.message
-      : "Notification update failed.";
+    if (isServerFailure(error)) {
+      return serverErrorResponse(error, { message: "Notification update failed.", request });
+    }
     return Response.json(
-      { error: message },
-      { status: message.startsWith("Idempotency-Key") ? 400 : 409 },
+      { error: error instanceof Error ? error.message : "Notification update failed." },
+      { status: 409 },
     );
   }
 }

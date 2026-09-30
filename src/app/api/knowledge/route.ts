@@ -10,6 +10,7 @@ import {
 } from "@/lib/app-services/knowledge";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { parseBoundedInteger } from "@/lib/http/body";
+import { isServerFailure, serverErrorResponse } from "@/lib/http/errors";
 import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { knowledgeDeletionTargetId } from "@/lib/rag/deletion-events";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -54,6 +55,9 @@ async function DELETEHandler(request: Request) {
       serviceReceipt: result.receipt,
     }, { headers: privateNoStoreHeaders });
   } catch (error) {
+    if (isServerFailure(error)) {
+      return serverErrorResponse(error, { message: "Knowledge deletion failed.", request });
+    }
     const message = error instanceof Error
       ? error.message
       : "Knowledge deletion failed.";

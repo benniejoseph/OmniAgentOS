@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { isServerFailure, serverErrorResponse } from "@/lib/http/errors";
 import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import {
@@ -198,6 +199,9 @@ function scheduleErrorResponse(error: unknown) {
       { error: error.message, code: error.code },
       { status: error.code === "not_found" ? 404 : 409 },
     );
+  }
+  if (isServerFailure(error)) {
+    return serverErrorResponse(error, { message: "Schedule control failed" });
   }
   return Response.json(
     {

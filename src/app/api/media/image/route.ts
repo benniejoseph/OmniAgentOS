@@ -4,6 +4,7 @@ import { captureExecutionScopeFromSecurityContext } from "@/lib/capture/executio
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { describeGeminiImageFailure, GeminiImageGenerationError } from "@/lib/google/ai";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { isServerFailure, serverErrorResponse } from "@/lib/http/errors";
 import { createImageMediaAsset } from "@/lib/media/operations";
 import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observability/store";
 import { describeOpenAIImageFailure, OpenAIImageGenerationError } from "@/lib/openai/image";
@@ -64,6 +65,9 @@ async function POSTHandler(request: Request) {
       asset: publicAsset(result.asset, result.contentUrl),
     }, { headers: privateHeaders() });
   } catch (error) {
+    if (!request.signal.aborted && isServerFailure(error)) {
+      return serverErrorResponse(error, { message: "The image request failed.", request, headers: privateHeaders() });
+    }
     const failure = imageFailure(error, request.signal.aborted);
     await recordRuntimeEventSafely({
       level: failure.category === "cancelled" ? "info" : failure.category === "quota" || failure.category === "safety" ? "warn" : "error",

@@ -5,6 +5,7 @@ import { SPEECH_MODEL, hasOpenAIKey } from "@/lib/config";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import { parseJsonBody, jsonBodyErrorResponse } from "@/lib/http/body";
+import { serverErrorResponse } from "@/lib/http/errors";
 import {
   checkSharedRateLimit,
   RateLimitStoreUnavailableError,
@@ -275,10 +276,12 @@ async function POSTHandler(request: Request) {
         { status: 499, headers: privateNoStoreHeaders },
       );
     }
-    return Response.json(
-      { error: error instanceof Error ? error.message : "Speech synthesis failed." },
-      { status: 502, headers: privateNoStoreHeaders },
-    );
+    return serverErrorResponse(error, {
+      message: "Speech synthesis failed.",
+      status: 502,
+      request,
+      headers: privateNoStoreHeaders,
+    });
   }
 }
 

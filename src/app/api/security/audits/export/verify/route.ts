@@ -1,3 +1,4 @@
+import { serverErrorResponse } from "@/lib/http/errors";
 import { verifySignedAuditExport } from "@/lib/security/audit-export";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
@@ -12,5 +13,5 @@ async function POSTHandler(request: Request) {
   let body: unknown;
   try { body = await parseJsonBody(request, 10 * 1024 * 1024); } catch (error) { return jsonBodyErrorResponse(error); }
   try { const result = verifySignedAuditExport(body); return Response.json(result, { status: result.valid ? 200 : 422, headers: { "cache-control": "private, no-store" } }); }
-  catch (error) { return Response.json({ valid: false, error: error instanceof Error ? error.message : "Audit verification failed." }, { status: 503 }); }
+  catch (error) { return serverErrorResponse(error, { message: "Audit verification failed.", status: 503, request, body: { valid: false } }); }
 }

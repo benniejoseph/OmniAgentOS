@@ -7,6 +7,7 @@ import {
   GeminiVideoGenerationError,
 } from "@/lib/google/ai";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { isServerFailure, serverErrorResponse } from "@/lib/http/errors";
 import { createVideoMediaAsset } from "@/lib/media/operations";
 import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observability/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -81,6 +82,9 @@ async function POSTHandler(request: Request) {
       asset: { id: result.asset.id, filename: result.asset.filename, byteCount: result.asset.byteCount, storageKind: result.asset.storageKind, contentUrl: result.contentUrl, indexUrl: `/api/capture/assets/${encodeURIComponent(result.asset.id)}` },
     }, { headers: privateHeaders() });
   } catch (error) {
+    if (!request.signal.aborted && isServerFailure(error)) {
+      return serverErrorResponse(error, { message: "The video request failed.", request, headers: privateHeaders() });
+    }
     const failure = request.signal.aborted || error instanceof GeminiVideoGenerationError
       ? describeGeminiVideoFailure(request.signal.aborted ? { name: "AbortError" } : error)
       : plainFailure(error instanceof Error ? error : new Error("The video request failed."));
