@@ -276,6 +276,37 @@ void main() {
     expect(find.text('Public answer for $_threadB'), findsOneWidget);
   });
 
+  testWidgets('keeps an empty conversation readable above a phone keyboard', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    tester.view.viewInsets = const FakeViewPadding(bottom: 336);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetViewInsets);
+    final controller = TalkController(_HistoryRepository());
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TalkView(controller: controller, voiceRecorder: _VoiceRecorder()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('What needs to move?'), findsOneWidget);
+    final description = find.textContaining('Ask a question or describe');
+    await tester.scrollUntilVisible(
+      description,
+      80,
+      scrollable: find
+          .ancestor(of: description, matching: find.byType(Scrollable))
+          .first,
+    );
+    expect(description.hitTestable(), findsOneWidget);
+  });
+
   testWidgets('uses a conversation-history sheet below desktop width', (
     tester,
   ) async {

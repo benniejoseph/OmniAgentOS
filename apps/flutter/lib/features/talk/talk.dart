@@ -7572,54 +7572,65 @@ class _TalkEmpty extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final macos = usesMacosPresentation();
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (macos)
-              AsaelMascot(
-                state: loading
-                    ? AsaelMascotState.working
-                    : AsaelMascotState.ready,
-                size: 132,
-              )
-            else if (loading)
-              const SizedBox.square(
-                dimension: 38,
-                child: CircularProgressIndicator(strokeWidth: 2.5),
-              )
-            else
-              const AsaelMark(size: 52),
-            SizedBox(height: macos ? 14 : 20),
-            Text(
-              loading
-                  ? 'Opening conversation'
-                  : selectedThread
-                  ? 'This conversation is empty'
-                  : 'What needs to move?',
-              style: Theme.of(context).textTheme.headlineSmall,
-            ),
-            const SizedBox(height: 8),
-            Text(
-              loading
-                  ? macos
-                        ? 'Bringing your latest messages back into view.'
-                        : 'Reading the latest public message projection.'
-                  : selectedThread
-                  ? 'Send a message to continue this durable conversation.'
-                  : macos
-                  ? 'Ask naturally. Asael can work alone, bring in specialists, or use this Mac when you choose.'
-                  : 'Ask a question or describe an outcome. Asael will keep plans, evidence, and approvals connected.',
-              textAlign: TextAlign.center,
-              style: macos
-                  ? TextStyle(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+    // Centred when it fits, and scrollable when the keyboard or a larger
+    // text size leaves less room than it needs.
+    return LayoutBuilder(
+      builder: (context, constraints) => SingleChildScrollView(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(minHeight: constraints.maxHeight),
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(32),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (macos)
+                    AsaelMascot(
+                      state: loading
+                          ? AsaelMascotState.working
+                          : AsaelMascotState.ready,
+                      size: 132,
                     )
-                  : null,
+                  else if (loading)
+                    const SizedBox.square(
+                      dimension: 38,
+                      child: CircularProgressIndicator(strokeWidth: 2.5),
+                    )
+                  else
+                    const AsaelMark(size: 52),
+                  SizedBox(height: macos ? 14 : 20),
+                  Text(
+                    loading
+                        ? 'Opening conversation'
+                        : selectedThread
+                        ? 'This conversation is empty'
+                        : 'What needs to move?',
+                    style: Theme.of(context).textTheme.headlineSmall,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    loading
+                        ? macos
+                              ? 'Bringing your latest messages back into view.'
+                              : 'Reading the latest public message projection.'
+                        : selectedThread
+                        ? 'Send a message to continue this durable conversation.'
+                        : macos
+                        ? 'Ask naturally. Asael can work alone, bring in specialists, or use this Mac when you choose.'
+                        : 'Ask a question or describe an outcome. Asael will keep plans, evidence, and approvals connected.',
+                    textAlign: TextAlign.center,
+                    style: macos
+                        ? TextStyle(
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurfaceVariant,
+                          )
+                        : null,
+                  ),
+                ],
+              ),
             ),
-          ],
+          ),
         ),
       ),
     );
