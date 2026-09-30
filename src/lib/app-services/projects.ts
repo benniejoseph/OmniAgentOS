@@ -256,15 +256,20 @@ export async function controlProjectExecutionService(
     return completeAppServiceCall(authorized, { snapshot: await projectSnapshot(value.projectId, scope) });
   }
   if (value.action === "pause" || value.action === "resume") {
-    await signalProjectWorkflows({ projectId: value.projectId, signal: value.action, ...scope });
-    await updateProjectExecution(value.projectId, { executionStatus: value.action === "pause" ? "paused" : "running" }, {
-      ...exactOwner(caller), mutation: mutationContext(caller),
-    });
+    const recordStatus = () => updateProjectExecution(value.projectId, {
+      executionStatus: value.action === "pause" ? "paused" : "running",
+    }, { ...exactOwner(caller), mutation: mutationContext(caller) });
+    // A pause is recorded before any run is signaled, so no task is dispatched
+    // while its runs pause; a resume is recorded once its runs are queued.
+    if (value.action === "pause") await recordStatus();
+    const workflows = await signalProjectWorkflows({ projectId: value.projectId, signal: value.action, ...scope });
+    if (value.action === "resume") await recordStatus();
     const snapshot = value.action === "resume"
       ? await syncProjectExecution({ projectId: value.projectId, ...scope, drain: true })
       : await projectSnapshot(value.projectId, scope);
     return completeAppServiceCall(authorized, {
       snapshot: await withCanonicalProjectSnapshot(caller.context.tenantId, snapshot),
+      workflows,
     });
   }
   if (value.action === "approve" || value.action === "retry") {

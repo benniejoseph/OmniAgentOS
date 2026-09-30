@@ -16,14 +16,30 @@ import {
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
 import { projectMutationSha256 } from "@/lib/projects/events";
+import { redactSensitive } from "@/lib/security/context";
 import { cancelWorkflowRunTick, enqueueWorkflowRunTick, scheduleWorkflowQueueDrain } from "@/lib/workflows/queue";
-import { signalWorkflowRun } from "@/lib/workflows/runner";
-import { createWorkflowRun, getWorkflowRunDetail } from "@/lib/workflows/store";
+import { signalWorkflowRun, WorkflowSignalConflictError } from "@/lib/workflows/runner";
+import { createWorkflowRun, getWorkflowRun, getWorkflowRunDetail } from "@/lib/workflows/store";
 import type { WorkflowRunStatus } from "@/lib/workflows/types";
 
 const activeWorkflowStatuses = new Set<WorkflowRunStatus>([
   "queued", "running", "waiting_approval", "paused",
 ]);
+/** The live run statuses each project signal moves. */
+const signalableWorkflowStatuses: Record<"pause" | "resume", ReadonlySet<WorkflowRunStatus>> = {
+  pause: new Set(["queued", "running"]),
+  resume: new Set(["paused"]),
+};
+
+/** How a project signal left each of the project's workflow runs. */
+export type ProjectWorkflowSignalResult = {
+  /** Runs the signal moved. */
+  signaled: number;
+  /** Runs already in its state, ended, waiting on an approval, or moved first. */
+  unchanged: number;
+  /** Runs whose signal failed; the others were still signaled. */
+  failed: number;
+};
 
 export async function syncProjectExecution(input: {
   projectId: string;
@@ -163,6 +179,7 @@ export async function syncProjectExecution(input: {
   if (project.executionStatus !== "running" && project.executionStatus !== "waiting_approval") {
     return executionSnapshot(project, tasks, []);
   }
+  const syncedStatus = project.executionStatus;
 
   const activeCount = tasks.filter((task) => task.workflowStatus && activeWorkflowStatuses.has(task.workflowStatus as WorkflowRunStatus)).length;
   const capacity = Math.max(0, project.maxParallelTasks - activeCount);
@@ -219,12 +236,14 @@ export async function syncProjectExecution(input: {
     lastSyncedAt: new Date().toISOString(),
   }, {
     ...input,
+    // A pause, or any other change made while this sync ran, stands.
+    expectedExecutionStatus: syncedStatus,
     mutation: mutationFor(
       "project.execution.status",
       project.id,
       { executionStatus: nextStatus, tasksDispatched: project.tasksDispatched },
     ),
-  })) || project;
+  })) || (await getProject(project.id, input)) || project;
   return executionSnapshot(project, tasks, dispatched);
 }
 
@@ -243,35 +262,89 @@ export async function processActiveProjectExecutions(options: { tenantId?: strin
   return results;
 }
 
-export async function signalProjectWorkflows(input: {
+type ProjectWorkflowSignal = {
   projectId: string;
   tenantId?: string;
   actorId: string;
   executionScope: ExecutionScope;
   signal: "pause" | "resume";
-}) {
+};
+
+/**
+ * Pauses or resumes each of a project's workflow runs by its live status. A
+ * run that moved before its signal landed is left as it is, and a run whose
+ * signal fails is counted without stopping the others.
+ */
+export async function signalProjectWorkflows(
+  input: ProjectWorkflowSignal,
+): Promise<ProjectWorkflowSignalResult> {
   const tasks = await listProjectTasks(input.projectId, input);
-  const candidates = tasks.filter((task) => task.workflowRunId && (
-    input.signal === "pause"
-      ? task.workflowStatus === "queued" || task.workflowStatus === "running"
-      : task.workflowStatus === "paused"
-  ));
-  for (const task of candidates) {
-    await signalWorkflowRun(task.workflowRunId!, input.signal, {
+  const result: ProjectWorkflowSignalResult = { signaled: 0, unchanged: 0, failed: 0 };
+  for (const task of tasks) {
+    if (!task.workflowRunId) continue;
+    try {
+      result[await signalProjectWorkflow(task.workflowRunId, input)] += 1;
+    } catch (error) {
+      result.failed += 1;
+      logProjectWorkflowFailure("project_workflow_signal_failed", input, task.workflowRunId, error);
+    }
+  }
+  if (input.signal === "resume" && result.signaled) {
+    scheduleWorkflowQueueDrain(Math.min(result.signaled, 3), input.tenantId);
+  }
+  return result;
+}
+
+async function signalProjectWorkflow(
+  runId: string,
+  input: ProjectWorkflowSignal,
+): Promise<"signaled" | "unchanged"> {
+  const run = await getWorkflowRun(runId, { tenantId: input.tenantId });
+  if (!run || !signalableWorkflowStatuses[input.signal].has(run.status)) {
+    return "unchanged";
+  }
+  try {
+    await signalWorkflowRun(runId, input.signal, {
       tenantId: input.tenantId,
       actorId: input.actorId,
       executionScope: input.executionScope,
     });
+  } catch (error) {
+    // The run paused, resumed, ended, or began waiting on an approval first.
+    if (error instanceof WorkflowSignalConflictError) return "unchanged";
+    throw error;
+  }
+  // The run has moved. A tick left queued finds it paused and does nothing,
+  // and the queue drain gives a resumed run left without a tick a new one.
+  try {
     if (input.signal === "pause") {
-      await cancelWorkflowRunTick(task.workflowRunId!, "Project execution paused.", input.tenantId);
+      await cancelWorkflowRunTick(runId, "Project execution paused.", input.tenantId);
     } else {
-      await enqueueWorkflowRunTick(task.workflowRunId!, "project_execution_resumed", 10, input.tenantId);
+      await enqueueWorkflowRunTick(runId, "project_execution_resumed", 10, input.tenantId);
     }
+  } catch (error) {
+    logProjectWorkflowFailure("project_workflow_tick_update_failed", input, runId, error);
   }
-  if (input.signal === "resume" && candidates.length) {
-    scheduleWorkflowQueueDrain(Math.min(candidates.length, 3), input.tenantId);
-  }
-  return candidates.length;
+  return "signaled";
+}
+
+function logProjectWorkflowFailure(
+  msg: string,
+  input: ProjectWorkflowSignal,
+  workflowRunId: string,
+  error: unknown,
+) {
+  console.error(JSON.stringify({
+    level: "error",
+    msg,
+    tenantId: input.tenantId,
+    projectId: input.projectId,
+    workflowRunId,
+    signal: input.signal,
+    error: String(
+      redactSensitive(error instanceof Error ? error.message : error),
+    ).slice(0, 500),
+  }));
 }
 
 export async function signalProjectTask(input: {

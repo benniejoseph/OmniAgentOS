@@ -413,10 +413,13 @@ export async function updateProjectExecution(
     tenantId?: string;
     actorId: string;
     mutation?: ProjectMutationContext;
+    /** Writes only while the project's execution is still in this status. */
+    expectedExecutionStatus?: ProjectExecutionStatus;
   },
 ) {
   const current = await getProject(id, options);
   if (!current) return undefined;
+  const expectedStatus = options.expectedExecutionStatus || null;
   const mutation = options.mutation
     ? exactProjectMutationContext(
         options.mutation,
@@ -450,6 +453,7 @@ export async function updateProjectExecution(
           max_parallel_tasks = ${next.maxParallelTasks}, require_approval = ${next.requireApproval},
           last_synced_at = ${next.lastSyncedAt || null}, updated_at = ${now}
         WHERE id = ${id} AND tenant_id = ${next.tenantId} AND actor_id = ${next.actorId}
+          AND (${expectedStatus}::text IS NULL OR execution_status = ${expectedStatus})
         RETURNING *
       `;
       const saved = rows[0] ? projectFromRow(rows[0]) : undefined;
@@ -466,10 +470,17 @@ export async function updateProjectExecution(
       return saved;
     }) as Promise<PersonalProject | undefined>;
   }
+  let written = false;
   await updateLedger((ledger) => ({
     ...ledger,
-    projects: ledger.projects.map((item) => item.id === id ? next : item),
+    projects: ledger.projects.map((item) => {
+      if (item.id !== id) return item;
+      if (expectedStatus && item.executionStatus !== expectedStatus) return item;
+      written = true;
+      return next;
+    }),
   }));
+  if (!written) return undefined;
   if (mutation) {
     await appendProjectMutationEvent({
       mutation,

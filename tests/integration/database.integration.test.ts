@@ -50,6 +50,11 @@ import {
   listPendingSloPolicyChangePage,
   requestObservabilitySloPolicyChange,
 } from "@/lib/observability/slo-policy-store";
+import {
+  createProject,
+  getProject,
+  updateProjectExecution,
+} from "@/lib/projects/store";
 import { createKnowledgeDocument } from "@/lib/rag/store";
 import {
   cancelOperationJobByDedupeKey,
@@ -4547,6 +4552,67 @@ databaseDescribe("Postgres schema integration", () => {
           AND status IN ('claimed', 'enqueued')
       `;
     }
+  });
+
+  test("writes a project's execution status only while it keeps the status expected", async () => {
+    await ensureDatabaseSchema();
+    const tenantId = "project_status_check";
+    const userId = "00000000-0000-4000-8000-000000000110";
+    const actorId = `actor:${userId}`;
+    const owner = { tenantId, actorId };
+    await admin`
+      INSERT INTO omni_auth_tenants (id, name, slug)
+      VALUES (${tenantId}, 'Project status', 'project-status-check')
+    `;
+    await admin`
+      INSERT INTO omni_auth_users (id, email, password_hash)
+      VALUES (${userId}, 'project-status@example.test', 'test-only')
+    `;
+    await admin`
+      INSERT INTO omni_auth_memberships (id, tenant_id, user_id, role)
+      VALUES ('membership:project-status', ${tenantId}, ${userId}, 'admin')
+    `;
+    const mutation = (key: string) => ({
+      executionScope: createExecutionScope({
+        tenantId,
+        initiatingActorId: actorId,
+        executingPrincipalType: "user",
+        executingPrincipalId: actorId,
+        correlationId: `project-status:${key}`,
+        purpose: `project.test.${key}`,
+      }),
+      idempotencyKey: `project-status:${key}`,
+    });
+    const asOwner = <T,>(operation: () => Promise<T>) =>
+      runWithDatabaseActorScope(tenantId, [actorId], operation);
+    const project = await asOwner(() => createProject({
+      ...owner,
+      title: "Status check",
+      objective: "A pause stands.",
+      mutation: mutation("create"),
+    }));
+    await asOwner(() => updateProjectExecution(project.id, { executionStatus: "paused" }, {
+      ...owner,
+      mutation: mutation("pause"),
+    }));
+
+    // A sync that read the project running does not write over its pause.
+    await expect(asOwner(() => updateProjectExecution(project.id, {
+      executionStatus: "running",
+      lastSyncedAt: new Date().toISOString(),
+    }, {
+      ...owner,
+      expectedExecutionStatus: "running",
+      mutation: mutation("sync"),
+    }))).resolves.toBeUndefined();
+    await expect(asOwner(() => getProject(project.id, owner))).resolves.toMatchObject({
+      executionStatus: "paused",
+    });
+    await expect(asOwner(() => updateProjectExecution(project.id, { executionStatus: "running" }, {
+      ...owner,
+      expectedExecutionStatus: "paused",
+      mutation: mutation("resume"),
+    }))).resolves.toMatchObject({ executionStatus: "running" });
   });
 
   test("claims a failed tool execution again only when its failure changed nothing", async () => {
