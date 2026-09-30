@@ -247,7 +247,7 @@ export async function executeDynamicWorkflowPlan(
       executionAuthority?.executionScope,
     );
 
-  const sortedNodes = topologicalSort(parsedPlan.plan.nodes);
+  const sortedNodes = topologicalSort(parsedPlan.plan);
   const priorRecords = await listWorkflowPlanNodeExecutionsForRun(detail.run.id, 250);
   const planRecords = priorRecords.filter(
     (record) => record.planId === parsedPlan.id,
@@ -2389,8 +2389,27 @@ export function workflowPlanElapsedMs(
   }, 0);
 }
 
-function topologicalSort(nodes: WorkflowPlanNode[]) {
-  const byId = new Map(nodes.map((node) => [node.id, node]));
+/**
+ * Orders a plan's nodes after their dependencies. A plan cannot run when it
+ * repeats a node ID, names a dependency it lacks, orders nodes by an edge
+ * their dependencies leave out, or has a dependency cycle.
+ */
+function topologicalSort(plan: WorkflowDynamicPlan) {
+  const byId = new Map(plan.nodes.map((node) => [node.id, node]));
+  if (byId.size !== plan.nodes.length) {
+    throw new Error("Workflow plan repeats a node ID.");
+  }
+  for (const node of plan.nodes) {
+    const unknown = node.dependsOn.find((dependencyId) => !byId.has(dependencyId));
+    if (unknown !== undefined) {
+      throw new Error(`Workflow node ${node.id} depends on unknown node ${unknown}.`);
+    }
+  }
+  for (const edge of plan.edges) {
+    if (!byId.get(edge.to)?.dependsOn.includes(edge.from)) {
+      throw new Error(`Workflow plan edge ${edge.from} -> ${edge.to} is not a dependency of ${edge.to}.`);
+    }
+  }
   const visited = new Set<string>();
   const visiting = new Set<string>();
   const sorted: WorkflowPlanNode[] = [];
@@ -2400,24 +2419,19 @@ function topologicalSort(nodes: WorkflowPlanNode[]) {
       return;
     }
     if (visiting.has(node.id)) {
-      sorted.push(node);
-      visited.add(node.id);
-      return;
+      throw new Error(`Workflow plan has a dependency cycle through node ${node.id}.`);
     }
 
     visiting.add(node.id);
     for (const dependencyId of node.dependsOn) {
-      const dependency = byId.get(dependencyId);
-      if (dependency) {
-        visit(dependency);
-      }
+      visit(byId.get(dependencyId)!);
     }
     visiting.delete(node.id);
     visited.add(node.id);
     sorted.push(node);
   };
 
-  for (const node of nodes) {
+  for (const node of plan.nodes) {
     visit(node);
   }
 

@@ -1173,7 +1173,7 @@ function normalizePlan(
 ): WorkflowDynamicPlan {
   const knownToolIds = new Set(context.toolCandidates.map((tool) => tool.id));
   const nodes = ensureRequiredToolBindings(
-    normalizeNodes(input.nodes, knownToolIds),
+    normalizeNodes(input.nodes, input.edges, knownToolIds),
     context.requiredToolBindings || [],
   );
   const selectedToolIds = unique([
@@ -1214,16 +1214,29 @@ function normalizePlan(
   };
 }
 
-function normalizeNodes(nodes: WorkflowPlanNode[], knownToolIds: Set<string>) {
+function normalizeNodes(
+  nodes: WorkflowPlanNode[],
+  edges: WorkflowDynamicPlan["edges"],
+  knownToolIds: Set<string>,
+) {
   const seen = new Set<string>();
-  return nodes.slice(0, 18).map((node, index) => {
-    const id = uniqueNodeId(slugify(node.id || node.label || `node-${index + 1}`), seen);
+  const planned = nodes.slice(0, 18).map((node, index) => ({
+    node,
+    id: uniqueNodeId(slugify(node.id || node.label || `node-${index + 1}`), seen),
+  }));
+  // The executor orders steps by their dependencies alone, so each edge
+  // becomes a dependency of the step it leads to.
+  const edgeDependencies = normalizeEdges(edges, new Set(planned.map(({ id }) => id)));
+  return planned.map(({ node, id }, index) => {
     const toolIds = unique(
       node.toolIds.filter((toolId) => knownToolIds.has(toolId)),
     ).slice(0, 8);
-    const dependsOn = unique(
-      node.dependsOn.map(slugify).filter((dep) => dep && dep !== id),
-    ).slice(0, 8);
+    const dependsOn = unique([
+      ...unique(
+        node.dependsOn.map(slugify).filter((dep) => dep && dep !== id),
+      ).slice(0, 8),
+      ...edgeDependencies.filter((edge) => edge.to === id).map((edge) => edge.from),
+    ]);
     const toolInputs = (node.toolInputs || [])
       .flatMap((toolInput) => {
         if (!toolIds.includes(toolInput.toolId)) {

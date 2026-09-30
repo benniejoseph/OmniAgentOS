@@ -370,6 +370,45 @@ describe("workflow parallel DAG scheduling", () => {
     expect(events).toContain("workflow.plan_node.interrupted");
     expect(events).not.toContain("workflow.plan_node.completed");
   });
+
+  it.each([
+    [
+      "repeats a node ID",
+      [agentNode("draft"), agentNode("draft")],
+      [],
+      "Workflow plan repeats a node ID.",
+    ],
+    [
+      "names a dependency it lacks",
+      [dependentNode("report", ["draft"])],
+      [],
+      "Workflow node report depends on unknown node draft.",
+    ],
+    [
+      "orders nodes by an edge their dependencies leave out",
+      [agentNode("draft"), agentNode("report")],
+      [{ from: "draft", to: "report", condition: "completed" }],
+      "Workflow plan edge draft -> report is not a dependency of report.",
+    ],
+    [
+      "has a dependency cycle",
+      [dependentNode("draft", ["report"]), dependentNode("report", ["draft"])],
+      [],
+      "Workflow plan has a dependency cycle through node draft.",
+    ],
+  ])("runs no node of a plan that %s", async (flaw, nodes, edges, message) => {
+    const detail = workflowDetail(
+      `workflow-plan-${flaw.replaceAll(" ", "-")}`,
+      nodes,
+      edges,
+    );
+
+    await expect(executeDynamicWorkflowPlan(detail)).rejects.toThrow(message);
+
+    expect(mocks.generateModelStructured).not.toHaveBeenCalled();
+    await expect(listWorkflowPlanNodeExecutionsForRun(detail.run.id))
+      .resolves.toEqual([]);
+  });
 });
 
 function agentNode(id: string): WorkflowPlanNode {
@@ -387,6 +426,10 @@ function agentNode(id: string): WorkflowPlanNode {
     acceptanceCriteria: ["The branch produced substantive analysis."],
     expectedOutputs: ["branch analysis"],
   });
+}
+
+function dependentNode(id: string, dependsOn: string[]): WorkflowPlanNode {
+  return withWorkflowNodeContract({ ...agentNode(id), dependsOn });
 }
 
 function toolNode(id: string, toolId: string): WorkflowPlanNode {
@@ -409,8 +452,9 @@ function toolNode(id: string, toolId: string): WorkflowPlanNode {
 function workflowDetail(
   workflowRunId: string,
   nodes: WorkflowPlanNode[],
+  extraEdges: WorkflowDynamicPlan["edges"] = [],
 ): WorkflowRunDetail {
-  const plan = workflowPlan(nodes);
+  const plan = workflowPlan(nodes, extraEdges);
   return {
     run: {
       id: workflowRunId,
@@ -450,7 +494,10 @@ function workflowDetail(
   };
 }
 
-function workflowPlan(nodes: WorkflowPlanNode[]): WorkflowDynamicPlan {
+function workflowPlan(
+  nodes: WorkflowPlanNode[],
+  extraEdges: WorkflowDynamicPlan["edges"] = [],
+): WorkflowDynamicPlan {
   return {
     objective: "Execute a bounded test workflow.",
     summary: "Exercise DAG scheduling and typed dependencies.",
@@ -460,11 +507,14 @@ function workflowPlan(nodes: WorkflowPlanNode[]): WorkflowDynamicPlan {
     risks: [],
     acceptanceCriteria: nodes.flatMap((node) => node.acceptanceCriteria),
     nodes,
-    edges: nodes.flatMap((node) => node.dependsOn.map((dependencyId) => ({
-      from: dependencyId,
-      to: node.id,
-      condition: "completed",
-    }))),
+    edges: [
+      ...nodes.flatMap((node) => node.dependsOn.map((dependencyId) => ({
+        from: dependencyId,
+        to: node.id,
+        condition: "completed",
+      }))),
+      ...extraEdges,
+    ],
     selectedToolIds: [...new Set(nodes.flatMap((node) => node.toolIds))],
     connectorTargets: [],
     executionPolicy: {
