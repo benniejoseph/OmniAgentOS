@@ -1,8 +1,52 @@
+import 'dart:async';
+
 import 'package:asael/core/auth/biometric_gate.dart';
 import 'package:asael/core/storage/secure_session_store.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+const _tokenKey = 'asael.session_token';
+const _refreshTokenKey = 'asael.refresh_token';
+
+String _expiresAt() =>
+    DateTime.now().add(const Duration(minutes: 5)).toUtc().toIso8601String();
+
+/// Holds the first write of [heldKey] until [release], so a test can act
+/// while a token pair is half stored.
+class _HeldStorage implements AsaelSecureValueStore {
+  _HeldStorage(this.heldKey);
+
+  final String heldKey;
+  final values = <String, String>{};
+  final _reached = Completer<void>();
+  final _released = Completer<void>();
+
+  Future<void> get reached => _reached.future;
+
+  void release() => _released.complete();
+
+  @override
+  Future<void> prepare() async {}
+
+  @override
+  Future<void> migrateLegacyCredentials() async {}
+
+  @override
+  Future<String?> read({required String key}) async => values[key];
+
+  @override
+  Future<void> write({required String key, required String value}) async {
+    if (key == heldKey && !_reached.isCompleted) {
+      _reached.complete();
+      await _released.future;
+    }
+    values[key] = value;
+  }
+
+  @override
+  Future<void> delete({required String key}) async => values.remove(key);
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -223,4 +267,80 @@ void main() {
       expect(afterWipe.bytes, isNot(first.bytes));
     },
   );
+
+  test('a lock while a refreshed pair is stored keeps the pair', () async {
+    final storage = _HeldStorage(_tokenKey);
+    final store = SecureSessionStore.withStorage(storage);
+    await store.setBiometricEnabled(true);
+
+    final writing = store.writeTokens(
+      accessToken: 'access-2',
+      refreshToken: 'refresh-2',
+      accessExpiresAt: _expiresAt(),
+    );
+    await storage.reached;
+    store.lockBiometricRelease();
+    storage.release();
+    await writing;
+
+    expect(storage.values, containsPair(_refreshTokenKey, 'refresh-2'));
+    expect(await store.readTokenForRemoteWipe(), 'access-2');
+    await expectLater(
+      store.readToken(),
+      throwsA(isA<BiometricGateException>()),
+    );
+
+    store.unlockBiometricRelease();
+    expect(await store.readToken(), 'access-2');
+    expect(await store.readRefreshToken(), 'refresh-2');
+  });
+
+  test('after a lock the stored pair is read again, not a RAM copy', () async {
+    final storage = _HeldStorage(_tokenKey);
+    final store = SecureSessionStore.withStorage(storage);
+
+    final writing = store.writeTokens(
+      accessToken: 'access-2',
+      refreshToken: 'refresh-2',
+      accessExpiresAt: _expiresAt(),
+    );
+    await storage.reached;
+    // Without biometrics the app locks and unlocks again on every pause.
+    store
+      ..lockBiometricRelease()
+      ..unlockBiometricRelease();
+    storage.release();
+    await writing;
+    // Another engine stores the next pair.
+    storage.values
+      ..[_tokenKey] = 'access-3'
+      ..[_refreshTokenKey] = 'refresh-3';
+
+    expect(await store.readToken(), 'access-3');
+    expect(await store.readRefreshToken(), 'refresh-3');
+  });
+
+  test('a sign-out while a pair is stored takes the pair back out', () async {
+    for (final (name, signOut)
+        in <(String, Future<void> Function(SecureSessionStore))>[
+          ('clear', (store) => store.clear()),
+          ('remote wipe', (store) => store.clearForRemoteWipe()),
+        ]) {
+      final storage = _HeldStorage(_tokenKey);
+      final store = SecureSessionStore.withStorage(storage);
+
+      final writing = store.writeTokens(
+        accessToken: 'access-2',
+        refreshToken: 'refresh-2',
+        accessExpiresAt: _expiresAt(),
+      );
+      await storage.reached;
+      await signOut(store);
+      storage.release();
+      await writing;
+
+      expect(await store.hasStoredCredentials(), isFalse, reason: name);
+      expect(storage.values, isEmpty, reason: name);
+    }
+  });
 }

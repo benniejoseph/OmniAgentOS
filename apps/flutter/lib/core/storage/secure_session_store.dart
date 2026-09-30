@@ -58,6 +58,8 @@ class SecureSessionStore {
   _CredentialSnapshot? _credentialSnapshot;
   Future<_CredentialSnapshot>? _credentialLoad;
   int _credentialGeneration = 0;
+  // Moves only when the session is signed out, not when RAM copies are dropped.
+  int _signOutGeneration = 0;
   String? _deviceIdSnapshot;
   bool _deviceIdLoaded = false;
   Future<String?>? _deviceIdLoad;
@@ -163,6 +165,7 @@ class SecureSessionStore {
   }) async {
     _invalidateCredentialSnapshot();
     final generation = _credentialGeneration;
+    final signOutGeneration = _signOutGeneration;
     // Store the new refresh credential first and publish its matching access
     // token last. A crash cannot expose the new access token with an old
     // refresh token.
@@ -170,7 +173,9 @@ class SecureSessionStore {
     await _write(_accessExpiresAtKey, accessExpiresAt);
     await _write(_tokenKey, accessToken);
     await _delete(_legacyTokenKey);
-    if (generation != _credentialGeneration) {
+    // The service has already retired the refresh token this pair replaced,
+    // so only a sign-out during the write takes the pair back out.
+    if (signOutGeneration != _signOutGeneration) {
       await Future.wait([
         _delete(_tokenKey),
         _delete(_refreshTokenKey),
@@ -179,6 +184,9 @@ class SecureSessionStore {
       ]);
       return;
     }
+    // A lock or another credential change dropped the RAM copies meanwhile.
+    // The pair stays stored and the next read loads it again.
+    if (generation != _credentialGeneration) return;
     _credentialSnapshot = _CredentialSnapshot(
       accessToken: accessToken,
       refreshToken: refreshToken,
@@ -487,6 +495,7 @@ class SecureSessionStore {
   }
 
   Future<void> clear() async {
+    _signOutGeneration += 1;
     _invalidateOfflineProjectionOwnerSnapshot();
     _invalidateProtectedSnapshots();
     await Future.wait([
@@ -503,6 +512,7 @@ class SecureSessionStore {
   }
 
   Future<void> clearForRemoteWipe() async {
+    _signOutGeneration += 1;
     _invalidateDeviceIdSnapshot();
     _invalidateOfflineProjectionOwnerSnapshot();
     _invalidateProtectedSnapshots();
