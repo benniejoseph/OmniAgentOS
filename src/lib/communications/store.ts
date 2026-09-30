@@ -199,7 +199,12 @@ export async function createMessageDraft(input: {
     `;
     if (priorRows[0]) {
       const prior = messageDraftSchema.parse(priorRows[0].draft);
-      if (prior.googleConnectionId !== input.googleConnectionId) {
+      // A draft saved before drafts named their account is sent from the
+      // account connected at send time, so a retry returns it unchanged.
+      if (
+        prior.googleConnectionId &&
+        prior.googleConnectionId !== input.googleConnectionId
+      ) {
         throw new CommunicationPolicyError(
           "The idempotency key is already bound to another Google account.",
           "delivery_conflict",

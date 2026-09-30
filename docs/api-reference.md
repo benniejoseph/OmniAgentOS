@@ -182,7 +182,12 @@ canceling the canonical task before its deadline or expiring it at the deadline.
   proving that the underlying data is empty. Raw cursors, provider content,
   credentials, metadata, provider identifiers, and actor coordinates are
   excluded. The same governed read is exposed as
-  `app.sources.coverage.show`.
+  `app.sources.coverage.show`. Once a Google account is connected, each
+  Google domain id names its connection (`gmail:<connectionId>`,
+  `google_calendar:<connectionId>`, `google_drive:<connectionId>`, and
+  `google_photos:<connectionId>`); without one, the ids are `gmail`,
+  `google_calendar`, `google_drive`, and `google_photos`. A client that
+  matches a Google domain should match the part before the colon.
 - `GET|POST /api/capabilities/rollouts` exposes the tenant-bound capability rollout control plane. Authorized security readers may inspect a current generation by capability ID; trusted system automation may register or compare-and-swap a generation transition as a risk-3 operation. Responses expose opaque identifiers and hashes, never private capability payloads.
 
 Connector API records never contain credential plaintext or sealed payloads. App-managed bearer credentials are decrypted only immediately before the exact-origin MCP request; deployer-managed connector records reference environment-variable names instead of values. Registration does not make an endpoint safe by itself; discovery/import and execution remain subject to network, role, risk, and approval policy.

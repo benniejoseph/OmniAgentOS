@@ -1062,6 +1062,17 @@ before the next one: five minutes, doubling up to six hours. Reconnecting the
 account, or a sync that reaches any source, ends the wait, and a manual sync
 does not wait. See [OAuth sync backoff (v210)](#oauth-sync-backoff-v210).
 
+Google changes now name the connection they act on, and work started before
+that change meets these rules. A Google change approved or planned without a
+`connectionId` is refused when it runs and must be asked for again. A change
+asked for again is a new change, because its effect identity includes the
+connection, so check the account for a copy made before the upgrade. A Photos
+Picker import retried after the upgrade gets a new correlation ID, because its
+execution scope includes the connection. The Personal account keeps its
+original import key, so the retry still binds to the Capture job it started.
+A retried Gmail draft request returns the draft it saved; a draft saved before
+drafts named their account is sent from the account's Google connection.
+
 ## Capture document extraction
 
 Uploaded and synced files are extracted inside the Vercel functions, never on
