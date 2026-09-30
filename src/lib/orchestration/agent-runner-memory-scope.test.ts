@@ -1819,6 +1819,82 @@ describe("agent memory scope", () => {
     expect(streamed?.claimEvidence).not.toHaveProperty("claimEvidenceMap");
   });
 
+  describe("an answer the output limit cut off", () => {
+    const NOTICE =
+      "\n\n[The answer reached its length limit and stops here. Ask to continue for the rest.]";
+    const cutOffStatus = expect.objectContaining({
+      type: "status",
+      label: "answer cut off",
+    });
+
+    function cutOffTurn() {
+      mocks.streamResponseTurn.mockImplementationOnce(async (modelRequest) => {
+        await modelRequest.onDelta("The first half");
+        return { ...openAITurn({ text: "The first half" }), truncated: true };
+      });
+    }
+
+    /** The stored answer text, with where the cut-off status landed in it. */
+    function storedLog() {
+      return mocks.appendRunEvent.mock.calls.flatMap(([, event]) =>
+        event?.type === "delta"
+          ? [event.text]
+          : event?.label === "answer cut off" ? ["<status>"] : []
+      ).join("");
+    }
+
+    it("finishes the run with the text it streamed and says it stops short", async () => {
+      cutOffTurn();
+
+      const events = await collectRun("session");
+
+      expect(mocks.streamResponseTurn.mock.calls[0]?.[0]).toMatchObject({
+        keepTruncatedAnswer: true,
+      });
+      expect(events.filter((event) => event.type === "delta")).toEqual([
+        { type: "delta", text: "The first half" },
+        { type: "delta", text: NOTICE },
+      ]);
+      expect(events).toContainEqual(cutOffStatus);
+      expect(events.at(-1)).toMatchObject({
+        type: "done",
+        response: `The first half${NOTICE}`,
+      });
+      expect(completedResponse()).toBe(`The first half${NOTICE}`);
+      expect(storedLog()).toBe(`The first half${NOTICE}<status>`);
+      expect(mocks.failAgentRun).not.toHaveBeenCalled();
+    });
+
+    it("adds no notice to a whole answer", async () => {
+      const events = await collectRun("session");
+
+      expect(events).not.toContainEqual(cutOffStatus);
+      expect(completedResponse()).toBe("ASAEL_LIVE_OK");
+    });
+
+    it("finishes a resumed run the same way", async () => {
+      const continuation = await pauseDelegatingRun("openai", [APPROVAL_CALL]);
+      mocks.appendRunEvent.mockClear();
+      cutOffTurn();
+
+      await expect(resumeAfterApproval(continuation)).resolves.toMatchObject({
+        resumed: true,
+        status: "completed",
+      });
+
+      expect(mocks.streamResponseTurn.mock.calls.at(-1)?.[0]).toMatchObject({
+        keepTruncatedAnswer: true,
+      });
+      expect(completedResponse()).toBe(`The first half${NOTICE}`);
+      expect(mocks.appendRunEvent).toHaveBeenCalledWith(
+        "run-memory-scope",
+        cutOffStatus,
+        expect.anything(),
+      );
+      expect(storedLog()).toBe(`The first half${NOTICE}<status>`);
+    });
+  });
+
   describe("the final turn after the tool budget", () => {
     const REFUSED =
       "openai returned tool calls after the governed tool-step budget was exhausted.";

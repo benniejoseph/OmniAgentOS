@@ -2234,6 +2234,7 @@ async function* runAgentUntilStopped(
             reasoningEffort:
               runtimeModel.reasoningEffort || AGENT_REASONING_EFFORT,
             maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
+            keepTruncatedAnswer: true,
             model: modelRoute.model,
             fallbackModel: modelBudget.maxAttempts > 1
               ? modelRoute.fallbackModel
@@ -2350,6 +2351,12 @@ async function* runAgentUntilStopped(
         });
 
         if (!turn.functionCalls.length) {
+          if (turn.truncated) {
+            response += CUT_OFF_ANSWER_NOTICE;
+            persistDelta(CUT_OFF_ANSWER_NOTICE);
+            yield { type: "delta", text: CUT_OFF_ANSWER_NOTICE };
+            yield await emit(answerCutOffEvent());
+          }
           break;
         }
         if (!toolsEnabled) {
@@ -2863,6 +2870,19 @@ async function* runAgentUntilStopped(
     });
     yield { type: "error", message };
   }
+}
+
+/** Ends an answer the output limit cut short, so the reader knows it stops early. */
+const CUT_OFF_ANSWER_NOTICE =
+  "\n\n[The answer reached its length limit and stops here. Ask to continue for the rest.]";
+
+function answerCutOffEvent() {
+  return {
+    type: "status" as const,
+    label: "answer cut off",
+    detail:
+      "The answer reached the model's output limit, so it ends where the model stopped.",
+  };
 }
 
 function finishingWithinBudgetEvent() {
@@ -4663,6 +4683,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
             reasoningEffort:
               resumeRuntimeModel.reasoningEffort || AGENT_REASONING_EFFORT,
             maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
+            keepTruncatedAnswer: true,
             model: resumeModel,
             apiKey: workspaceOpenAIAvailable ? apiKey : undefined,
             usageScope: {
@@ -4769,6 +4790,12 @@ async function resumeAgentRunAfterToolApprovalInScope({
       });
 
       if (!turn.functionCalls.length) {
+        if (turn.truncated) {
+          response += CUT_OFF_ANSWER_NOTICE;
+          pendingDeltaText += CUT_OFF_ANSWER_NOTICE;
+          await flushDeltas();
+          await appendScopedRunEvent(answerCutOffEvent());
+        }
         break;
       }
       if (!toolsEnabled) {

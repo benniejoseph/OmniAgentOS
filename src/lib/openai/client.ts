@@ -335,6 +335,7 @@ export async function streamResponseTurn({
   usageScope,
   usageRecordId,
   promptCacheKey,
+  keepTruncatedAnswer,
 }: {
   instructions?: string;
   input: ResponseTurnInput;
@@ -357,6 +358,11 @@ export async function streamResponseTurn({
   usageRecordId?: string;
   /** Opaque provider cache bucket. Tenant, actor, and content must never appear here. */
   promptCacheKey?: string;
+  /**
+   * Returns a reply the output limit cut off as truncated, instead of
+   * failing, once it holds answer text and started no tool call.
+   */
+  keepTruncatedAnswer?: boolean;
 }): Promise<{
   responseId: string;
   functionCalls: ResponseFunctionCall[];
@@ -371,6 +377,8 @@ export async function streamResponseTurn({
   attempts: ModelAttemptReceipt[];
   usageReceiptRecorded: boolean;
   usageReceiptId?: string;
+  /** The answer stopped at the output limit. */
+  truncated?: true;
 }> {
   const startedAt = Date.now();
   let activeModel = model;
@@ -476,6 +484,7 @@ export async function streamResponseTurn({
   let usageObserved = false;
   let terminalSeen = false;
   let terminalFailure: ModelProviderError | undefined;
+  let truncated = false;
   const billableFailureReceipts: ModelProviderResponseReceipt[] = [];
 
   async function consumeStreamEvent(rawEvent: Record<string, unknown>) {
@@ -516,7 +525,16 @@ export async function streamResponseTurn({
     if (eventType === "response.incomplete") {
       terminalSeen = true;
       const reason = response?.incomplete_details?.reason || "";
-      terminalFailure = openAIIncompleteResponseError(reason);
+      if (
+        keepTruncatedAnswer &&
+        reason === "max_output_tokens" &&
+        text.trim() &&
+        !callsByItemId.size
+      ) {
+        truncated = true;
+      } else {
+        terminalFailure = openAIIncompleteResponseError(reason);
+      }
       if (reason === "content_filter") emittedOutput = true;
     }
     if (eventType.startsWith("response.refusal.")) {
@@ -720,6 +738,7 @@ export async function streamResponseTurn({
     attempts,
     usageReceiptRecorded,
     ...(usageRecordId ? { usageReceiptId: usageRecordId } : {}),
+    ...(truncated ? { truncated: true as const } : {}),
   };
 }
 

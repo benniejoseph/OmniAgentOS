@@ -153,6 +153,106 @@ describe("OpenAI response privacy", () => {
     });
   });
 
+  describe("an answer the output limit cut off", () => {
+    const LIMIT_MESSAGE =
+      "OpenAI reached the response token limit. Narrow the request or split it into smaller steps.";
+
+    function cutOffStream(events: Record<string, unknown>[], reason = "max_output_tokens") {
+      openAiMocks.createResponse.mockReturnValue({
+        async *[Symbol.asyncIterator]() {
+          yield* events;
+          yield {
+            type: "response.incomplete",
+            response: {
+              id: "response-cut-off",
+              incomplete_details: { reason },
+              usage: { input_tokens: 20, output_tokens: 100, total_tokens: 120 },
+            },
+          };
+        },
+      });
+    }
+
+    async function turn(keepTruncatedAnswer?: boolean) {
+      process.env.OPENAI_API_KEY = "test-key";
+      delete process.env.OMNIAGENT_OPENAI_GATEWAY_URL;
+      delete process.env.OMNIAGENT_OPENAI_GATEWAY_TOKEN;
+      const deltas: string[] = [];
+      const { streamResponseTurn } = await import("@/lib/openai/client");
+      const result = streamResponseTurn({
+        input: "a long report",
+        onDelta: (delta) => { deltas.push(delta); },
+        model: "gpt-5",
+        maxOutputTokens: 100,
+        ...(keepTruncatedAnswer === undefined ? {} : { keepTruncatedAnswer }),
+      });
+      return { result, deltas };
+    }
+
+    const answerDelta = { type: "response.output_text.delta", delta: "The first half" };
+
+    it("keeps the answer it streamed when asked", async () => {
+      cutOffStream([answerDelta]);
+
+      const { result, deltas } = await turn(true);
+
+      await expect(result).resolves.toMatchObject({
+        text: "The first half",
+        functionCalls: [],
+        truncated: true,
+        responseId: "response-cut-off",
+        usage: { inputTokens: 20, outputTokens: 100, totalTokens: 120 },
+        attempts: [expect.objectContaining({ status: "completed" })],
+      });
+      expect(deltas).toEqual(["The first half"]);
+    });
+
+    it.each([
+      ["without being asked", [answerDelta], undefined, "max_output_tokens"],
+      ["when asked not to", [answerDelta], false, "max_output_tokens"],
+      ["with no answer text", [
+        { type: "response.output_text.delta", delta: " \n " },
+      ], true, "max_output_tokens"],
+      ["once a tool call started", [answerDelta, {
+        type: "response.output_item.added",
+        output_index: 1,
+        item: { id: "item-call", type: "function_call", call_id: "call-a", name: "search" },
+      }], true, "max_output_tokens"],
+      ["for another reason", [answerDelta], true, "server_limit"],
+    ] as const)("still fails %s", async (_, events, keep, reason) => {
+      cutOffStream([...events], reason);
+
+      const { result } = await turn(keep);
+
+      await expect(result).rejects.toMatchObject({
+        message: reason === "max_output_tokens"
+          ? LIMIT_MESSAGE
+          : "OpenAI returned an incomplete response.",
+        kind: "unknown",
+        retryable: false,
+      });
+    });
+
+    it("marks only a cut-off answer as truncated", async () => {
+      openAiMocks.createResponse.mockReturnValue({
+        async *[Symbol.asyncIterator]() {
+          yield answerDelta;
+          yield {
+            type: "response.completed",
+            response: {
+              id: "response-whole",
+              usage: { input_tokens: 20, output_tokens: 10, total_tokens: 30 },
+            },
+          };
+        },
+      });
+
+      const { result } = await turn(true);
+
+      expect(await result).not.toHaveProperty("truncated");
+    });
+  });
+
   it("does not expose raw credentials when production gateway configuration is invalid", async () => {
     process.env.OPENAI_API_KEY = "upstream-api-key";
     process.env.VERCEL_ENV = "production";
