@@ -25,7 +25,7 @@ async function GETHandler(request: Request) {
   try {
     const context = await authorizeRequest({
       request,
-      action: "read.identity",
+      action: "manage.own_device",
       resourceType: "mobile_push_registration",
     });
     return Response.json(
@@ -53,7 +53,7 @@ async function POSTHandler(request: Request) {
   try {
     const context = await authorizeRequest({
       request,
-      action: "read.identity",
+      action: "manage.own_device",
       resourceType: "mobile_push_registration",
       nativeMutationCapability: "push.registration.update",
     });

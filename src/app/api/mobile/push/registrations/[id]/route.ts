@@ -18,7 +18,7 @@ async function DELETEHandler(
   try {
     const context = await authorizeRequest({
       request,
-      action: "read.identity",
+      action: "manage.own_device",
       resourceType: "mobile_push_registration",
       resourceId: id,
       nativeMutationCapability: "push.registration.update",

@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
   authorizeRequest: vi.fn(),
   listMobilePushDevices: vi.fn(),
   registerMobilePushDevice: vi.fn(),
+  revokeMobilePushDevice: vi.fn(),
 }));
 
 vi.mock("@/lib/db/client", () => ({
@@ -22,8 +23,10 @@ vi.mock("@/lib/mobile/push-store", () => ({
   MobilePushStorageRequiredError: class extends Error { readonly status = 503; },
   listMobilePushDevices: mocks.listMobilePushDevices,
   registerMobilePushDevice: mocks.registerMobilePushDevice,
+  revokeMobilePushDevice: mocks.revokeMobilePushDevice,
 }));
 
+import { DELETE } from "@/app/api/mobile/push/registrations/[id]/route";
 import { GET, POST } from "@/app/api/mobile/push/registrations/route";
 
 const context = {
@@ -129,5 +132,41 @@ describe("mobile push registrations route", () => {
     ));
     expect(response.status).toBe(200);
     expect(mocks.listMobilePushDevices).toHaveBeenCalledWith(context);
+  });
+
+  it("lets any member list, register, and revoke their own device", async () => {
+    const url = "https://app.example.test/api/mobile/push/registrations";
+    mocks.revokeMobilePushDevice.mockResolvedValue({ id: "registration-one" });
+
+    await GET(new Request(url));
+    await POST(new Request(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "push-register-device-one",
+      },
+      body: JSON.stringify({
+        provider: "fcm",
+        environment: "production",
+        token: `fcm-${"a".repeat(40)}`,
+        previewPolicy: "generic",
+      }),
+    }));
+    const revoked = await DELETE(
+      new Request(`${url}/registration-one`, {
+        method: "DELETE",
+        headers: { "idempotency-key": "push-revoke-device-one" },
+      }),
+      { params: Promise.resolve({ id: "registration-one" }) },
+    );
+
+    expect(revoked.status).toBe(200);
+    expect(mocks.authorizeRequest.mock.calls.map(([input]) => input.action))
+      .toEqual(["manage.own_device", "manage.own_device", "manage.own_device"]);
+    expect(mocks.revokeMobilePushDevice).toHaveBeenCalledWith(
+      context,
+      "registration-one",
+      "push-revoke-device-one",
+    );
   });
 });

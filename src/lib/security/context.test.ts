@@ -20,6 +20,14 @@ describe("RBAC rules", () => {
     expect(canPerform("operator", "manage.identity")).toBe(false);
   });
 
+  it("lets every role manage its own device but only admins read identity", () => {
+    for (const role of ["viewer", "operator", "admin", "system"] as const) {
+      expect(canPerform(role, "manage.own_device")).toBe(true);
+    }
+    expect(canPerform("viewer", "read.identity")).toBe(false);
+    expect(canPerform("operator", "read.identity")).toBe(false);
+  });
+
   it("denies unknown actions for every role", () => {
     expect(canPerform("admin", "not.a.real.action")).toBe(false);
     expect(canPerform("system", "not.a.real.action")).toBe(false);

@@ -113,6 +113,11 @@ export const rbacRules: RbacRule[] = [
     roles: ["admin", "system"],
   },
   {
+    action: "manage.own_device",
+    description: "List, register, and revoke push delivery for the caller's own signed-in device.",
+    roles: ["viewer", "operator", "admin", "system"],
+  },
+  {
     action: "manage.identity",
     description: "Create users, assign tenant roles, and administer the identity control plane.",
     roles: ["admin", "system"],
