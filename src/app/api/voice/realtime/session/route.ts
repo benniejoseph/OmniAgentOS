@@ -316,6 +316,7 @@ async function PATCHHandler(request: Request) {
       confidenceSampleCount: parsed.confidenceSampleCount,
       reviewRequired: parsed.reviewRequired,
       reviewAttested: parsed.reviewAttested,
+      providerErrorCode: parsed.providerErrorCode ?? null,
     },
   });
   return Response.json({ recorded: true }, { headers: privateNoStoreHeaders });

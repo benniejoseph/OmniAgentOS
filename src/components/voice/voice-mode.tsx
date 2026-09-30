@@ -14,6 +14,7 @@ import {
   realtimeTranscriptText,
   type RealtimeTranscriptState,
 } from "@/lib/voice/realtime-transcript";
+import { classifyRealtimeError } from "@/lib/voice/realtime-error";
 import {
   StreamingPcmPlayer,
   streamVersionedSpeech,
@@ -129,6 +130,7 @@ export function VoiceMode({
   const sessionRef = useRef<VoiceSession | null>(null);
   const transcriptStateRef = useRef<RealtimeTranscriptState>(EMPTY_REALTIME_TRANSCRIPT);
   const commitPendingRef = useRef(false);
+  const providerErrorCodeRef = useRef("");
   const recordingStartedAtRef = useRef(0);
   const sessionTokenRef = useRef(0);
   const phaseRef = useRef<VoicePhase>("consent");
@@ -222,6 +224,7 @@ export function VoiceMode({
         confidenceSampleCount: confidence.sampleCount,
         reviewRequired: confidence.requiresExplicitAttestation,
         reviewAttested: reviewAttestedRef.current,
+        providerErrorCode: providerErrorCodeRef.current || undefined,
       }),
       keepalive: true,
     }).catch(() => undefined);
@@ -231,6 +234,7 @@ export function VoiceMode({
     sessionRef.current = null;
     transcriptStateRef.current = EMPTY_REALTIME_TRANSCRIPT;
     reconnectCountRef.current = 0;
+    providerErrorCodeRef.current = "";
     reportedRef.current = false;
     reviewAttestedRef.current = false;
     approvalRunIdRef.current = "";
@@ -347,6 +351,25 @@ export function VoiceMode({
     setAnnouncement(message);
   }
 
+  /** Keeps the draft for review when the session ends before its review. */
+  function reviewAfterSessionEnded(message: string, token: number) {
+    if (!realtimeTranscriptText(transcriptStateRef.current).trim()) {
+      failVoice(`${message} Nothing was sent.`, token);
+      return;
+    }
+    if (!mountedRef.current || token !== sessionTokenRef.current) return;
+    // Ends the session's pending work, as a failure does.
+    sessionTokenRef.current += 1;
+    stopSpeech();
+    stopTransport();
+    updateTranscript(closeRealtimeTranscript(transcriptStateRef.current));
+    reviewAttestedRef.current = false;
+    setReviewAttested(false);
+    setPhase("review");
+    setError(`${message} Review the draft before sending it.`);
+    setAnnouncement(`${message} Review the draft before sending it.`);
+  }
+
   async function issueSession(
     token: number,
     reconnectAttempt: number,
@@ -412,7 +435,18 @@ export function VoiceMode({
       } else if (eventType === "input_audio_buffer.committed") {
         commitPendingRef.current = false;
       } else if (eventType === "error") {
-        failVoice("The realtime transcription provider reported an error.", token);
+        const providerError = classifyRealtimeError(providerEvent);
+        if (providerError.emptyCommit) {
+          // Turn detection had already committed the last turn.
+          commitPendingRef.current = false;
+          return;
+        }
+        providerErrorCodeRef.current = providerError.code;
+        if (providerError.fatal) {
+          reviewAfterSessionEnded("The transcription provider ended the session.", token);
+        } else {
+          setAnnouncement("The transcription provider reported a problem it can recover from.");
+        }
         return;
       }
       updateTranscript(applyRealtimeTranscriptEvent(transcriptStateRef.current, providerEvent));
@@ -451,7 +485,7 @@ export function VoiceMode({
     stopPeer();
     const attempt = reconnectCountRef.current + 1;
     if (attempt > 3) {
-      failVoice("Realtime voice disconnected after three recovery attempts. Your draft is still available to copy.", token);
+      reviewAfterSessionEnded("Realtime voice disconnected after three recovery attempts.", token);
       return;
     }
     reconnectCountRef.current = attempt;
@@ -551,11 +585,13 @@ export function VoiceMode({
     sessionRef.current = null;
     transcriptStateRef.current = EMPTY_REALTIME_TRANSCRIPT;
     reconnectCountRef.current = 0;
+    providerErrorCodeRef.current = "";
     reportedRef.current = false;
     reviewAttestedRef.current = false;
     setTranscriptState(EMPTY_REALTIME_TRANSCRIPT);
     setReviewAttested(false);
     setElapsedSeconds(0);
+    setError("");
     setAnnouncement("Reopening listening so you can interrupt the reply.");
     const stream = await requestMicrophone();
     if (!mountedRef.current || token !== sessionTokenRef.current) {
@@ -1042,7 +1078,7 @@ function voiceStatus(phase: VoicePhase, elapsedSeconds: number, error: string) {
   if (phase === "speaking") return { title: formatDuration(elapsedSeconds), detail: "Speech detected. Server VAD will close this turn after a short pause." };
   if (phase === "reconnecting") return { title: "Reconnecting", detail: "Your editable draft is preserved while the audio connection recovers." };
   if (phase === "finishing") return { title: "Finishing this turn", detail: "Waiting briefly for the last partial transcription." };
-  if (phase === "review") return { title: "Review before sending", detail: "Edit the transcript. Nothing is sent to the Command API until you confirm." };
+  if (phase === "review") return { title: "Review before sending", detail: error || "Edit the transcript. Nothing is sent to the Command API until you confirm." };
   if (phase === "sending") return { title: "Sending command", detail: "The reviewed text is being attributed to this conversation." };
   if (phase === "waiting") return { title: "Waiting for the result", detail: "The governed agent run is completing before speech playback starts." };
   if (phase === "replying") return { title: "Speaking response", detail: "This is the exact agent result. Speak or use Interrupt reply to stop it." };

@@ -225,11 +225,46 @@ describe("realtime voice session route", () => {
           confidenceSampleCount: 12,
           reviewRequired: false,
           reviewAttested: true,
+          providerErrorCode: null,
         }),
       }),
     );
     const event = routeMocks.appendScopedDomainEvent.mock.calls[0]?.[0];
     expect(JSON.stringify(event)).not.toContain("transcript\":");
+  });
+
+  it("records the provider's error code, and only a code", async () => {
+    const receipt = {
+      sessionId,
+      conversationId,
+      outcome: "failed",
+      durationMilliseconds: 4_000,
+      turnCount: 1,
+      reconnectCount: 0,
+      transcriptCharacters: 20,
+      confidenceBand: "unavailable",
+      confidenceSampleCount: 0,
+      reviewRequired: true,
+      reviewAttested: false,
+    };
+
+    expect((await PATCH(request("PATCH", {
+      ...receipt,
+      providerErrorCode: "session_expired",
+    }))).status).toBe(200);
+    expect(routeMocks.appendScopedDomainEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "voice.realtime_failed",
+        payload: expect.objectContaining({ providerErrorCode: "session_expired" }),
+      }),
+    );
+
+    routeMocks.appendScopedDomainEvent.mockClear();
+    expect((await PATCH(request("PATCH", {
+      ...receipt,
+      providerErrorCode: "Your session hit the maximum duration.",
+    }))).status).toBe(400);
+    expect(routeMocks.appendScopedDomainEvent).not.toHaveBeenCalled();
   });
 
   it("rejects a sent command without the required review attestation", async () => {

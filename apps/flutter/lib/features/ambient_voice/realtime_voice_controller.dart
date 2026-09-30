@@ -30,6 +30,18 @@ const _maximumSpeechPcmBytes = 32 * 1024 * 1024;
 const _maximumProviderEventCharacters = 1024 * 1024;
 const _maximumSdpCharacters = 1024 * 1024;
 
+/// The shape of a provider error code that a session receipt may keep.
+final _providerErrorCodePattern = RegExp(r'^[a-z0-9][a-z0-9_.-]{0,63}$');
+
+/// Codes after which the provider session cannot continue. The Realtime API
+/// keeps the session open after most errors, and a transport that does end
+/// is handled by reconnection.
+const _fatalProviderErrorCodes = {'session_expired'};
+
+/// The client's commit found the audio buffer empty, because turn detection
+/// had already committed the last turn.
+const _emptyCommitErrorCode = 'input_audio_buffer_commit_empty';
+
 /// Stands in the draft for speech the provider did not transcribe.
 const _transcriptGap = '[not transcribed]';
 
@@ -158,6 +170,7 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
   bool _reconnectInFlight = false;
   bool _statsReadInFlight = false;
   bool _commitPending = false;
+  String? _providerErrorCode;
   int _generation = 0;
   int _speechGeneration = 0;
   int _reconnectCount = 0;
@@ -179,6 +192,9 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
   String get detail => _detail;
   String? get errorMessage => _errorMessage;
   String? get errorCode => _errorCode;
+
+  /// The provider's most recent error code, never its message.
+  String? get providerErrorCode => _providerErrorCode;
   double get level => _level;
   bool get microphoneEnabled => _microphoneEnabled;
   bool get isSpeechPlaying => _speechPlaying;
@@ -742,12 +758,20 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
       return;
     }
     if (type == 'error') {
-      unawaited(
-        _fail(
-          'The realtime transcription provider reported an error.',
-          code: 'provider_voice_error',
-        ),
-      );
+      final code = _providerErrorCodeOf(event['error']);
+      if (code == _emptyCommitErrorCode) {
+        _commitPending = false;
+        return;
+      }
+      _providerErrorCode = code;
+      if (_fatalProviderErrorCodes.contains(code)) {
+        unawaited(
+          _fail(
+            'The transcription provider ended the session. Your visible draft is preserved.',
+            code: 'provider_session_ended',
+          ),
+        );
+      }
       return;
     }
     if (type == 'input_audio_buffer.committed') _commitPending = false;
@@ -758,6 +782,18 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
       _errorMessage = null;
       if (_isCurrent(generation)) _notify();
     }
+  }
+
+  /// Reads an untrusted provider error by its code alone.
+  static String _providerErrorCodeOf(Object? error) {
+    String? identifier(Object? value) {
+      if (value is! String) return null;
+      final normalized = value.trim().toLowerCase();
+      return _providerErrorCodePattern.hasMatch(normalized) ? normalized : null;
+    }
+
+    if (error is! Map) return 'unknown';
+    return identifier(error['code']) ?? identifier(error['type']) ?? 'unknown';
   }
 
   void _scheduleReconnect(int generation) {
@@ -893,6 +929,7 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
       'confidenceSampleCount': confidence.sampleCount.clamp(0, 10000),
       'reviewRequired': confidence.requiresExplicitAttestation,
       'reviewAttested': _reviewAttested,
+      'providerErrorCode': ?_providerErrorCode,
     };
   }
 
@@ -1165,6 +1202,7 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
     _sessionReported = false;
     _reconnectCount = 0;
     _commitPending = false;
+    _providerErrorCode = null;
     _sessionStartedAt = null;
     _session = null;
     _sessionMode = 'orchestrate';

@@ -10,6 +10,7 @@ import {
   promptQueueUpdateRequestSchema,
 } from "@/lib/command/prompt-queue-contracts";
 import { commandModelSelectionRequestSchema } from "@/lib/models/command-selection";
+import { REALTIME_PROVIDER_ERROR_CODE_PATTERN } from "@/lib/voice/realtime-error";
 import { COMMAND_REASONING_LEVELS } from "@/lib/models/reasoning-effort";
 import {
   LOCAL_COMPUTER_PROTOCOL_VERSION,
@@ -105,6 +106,7 @@ export const nativeRealtimeVoiceSessionFinishRequestSchema = z.object({
   confidenceSampleCount: z.number().int().min(0).max(10_000),
   reviewRequired: z.boolean(),
   reviewAttested: z.boolean(),
+  providerErrorCode: z.string().regex(REALTIME_PROVIDER_ERROR_CODE_PATTERN).optional(),
 }).strict().superRefine((value, context) => {
   if (value.outcome === "sent" && !value.reviewAttested) {
     context.addIssue({

@@ -292,6 +292,94 @@ void main() {
     });
   });
 
+  group('provider errors', () {
+    Map<String, Object?> providerError(Object? error) => {
+      'type': 'error',
+      'event_id': 'event_1',
+      'error': error,
+    };
+
+    Future<AmbientRealtimeVoiceController> reviewed(
+      List<Map<String, Object?>> events,
+    ) async {
+      final voice = _voice()..reviewProviderEventsForTesting(events);
+      addTearDown(voice.dispose);
+      await Future<void>.delayed(Duration.zero);
+      return voice;
+    }
+
+    test('keep the session through an error it can recover from', () async {
+      final voice = await reviewed([
+        _committed('item_1'),
+        _finished('item_1', 'Send the invoice', _confident),
+        providerError({'type': 'server_error', 'message': 'Server error.'}),
+        _committed('item_2'),
+        _finished('item_2', 'to Sam.', _confident),
+      ]);
+
+      expect(voice.phase, AmbientRealtimeVoicePhase.review);
+      expect(voice.errorCode, isNull);
+      expect(voice.transcript, 'Send the invoice to Sam.');
+      expect(voice.providerErrorCode, 'server_error');
+    });
+
+    test('end the session after one it cannot, keeping the draft', () async {
+      final voice = await reviewed([
+        _committed('item_1'),
+        _finished('item_1', 'Send the invoice', _confident),
+        providerError({
+          'type': 'invalid_request_error',
+          'code': 'session_expired',
+          'message': 'Your session hit the maximum duration.',
+        }),
+      ]);
+
+      expect(voice.phase, AmbientRealtimeVoicePhase.error);
+      expect(voice.errorCode, 'provider_session_ended');
+      expect(voice.providerErrorCode, 'session_expired');
+      expect(voice.transcript, 'Send the invoice');
+    });
+
+    test('keep only a code, never the message', () async {
+      final codes = {
+        'invalid_value': {
+          'type': 'invalid_request_error',
+          'code': 'invalid_value',
+          'message': 'Invalid value.',
+        },
+        'server_error': {
+          'type': ' Server_Error ',
+          'code': 'Call Sam at 555-0100',
+          'message': 'Call Sam at 555-0100.',
+        },
+        'unknown': {'code': 'x' * 65, 'message': 'x'},
+      };
+      for (final MapEntry(key: code, value: error) in codes.entries) {
+        final voice = await reviewed([providerError(error)]);
+        expect(voice.providerErrorCode, code);
+      }
+      final unshaped = await reviewed([providerError('session_expired')]);
+      expect(unshaped.providerErrorCode, 'unknown');
+      expect(unshaped.phase, AmbientRealtimeVoicePhase.review);
+    });
+
+    test('ignore a commit turn detection had already made', () async {
+      final voice = await reviewed([
+        _committed('item_1'),
+        _finished('item_1', 'Send the invoice', _confident),
+        providerError({
+          'type': 'invalid_request_error',
+          'code': 'input_audio_buffer_commit_empty',
+          'message': 'Error committing input audio buffer.',
+        }),
+      ]);
+
+      expect(voice.phase, AmbientRealtimeVoicePhase.review);
+      expect(voice.providerErrorCode, isNull);
+      expect(voice.transcript, 'Send the invoice');
+    });
+  });
+
   group('review surface', () {
     Widget surface({
       required AmbientVoiceConfidenceBand band,
