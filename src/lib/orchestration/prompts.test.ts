@@ -11,6 +11,24 @@ import {
 import { DEFAULT_CUSTOM_AGENT_PERSONA } from "@/lib/agents/persona";
 import { MAX_ASSIGNED_SKILLS } from "@/lib/skills/limits";
 
+describe("agent instruction order", () => {
+  it("keeps the mode and the clock after the instructions every run shares", () => {
+    const at = (mode: "orchestrate" | "execute", iso: string) => buildAgentInstructions({
+      mode,
+      runtimeClock: { now: new Date(iso), timeZone: "UTC" },
+    });
+    const first = at("orchestrate", "2026-09-30T08:00:00Z");
+    const later = at("execute", "2026-10-01T17:42:00Z");
+    const shared = (text: string) => text.slice(0, text.indexOf("Operating mode:"));
+
+    expect(shared(first).length).toBeGreaterThan(0);
+    expect(shared(first)).toBe(shared(later));
+    expect(shared(first)).toContain("Autonomous execution contract:");
+    expect(first.slice(shared(first).length)).toContain("Operating mode: orchestrate");
+    expect(later.slice(shared(later).length)).toContain("2026-10-01");
+  });
+});
+
 describe("agent prompt provenance", () => {
   it("keeps retrieved and web content out of privileged instructions", () => {
     const instructions = buildAgentInstructions({
