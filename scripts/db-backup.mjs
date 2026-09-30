@@ -14,6 +14,11 @@ import {
 import path from "node:path";
 import { spawn } from "node:child_process";
 import postgres from "postgres";
+import {
+  BACKUP_EXCLUDED_TABLE_DATA,
+  backupDumpArguments,
+  dumpedTableRowCounts,
+} from "./db-backup-dump.mjs";
 
 const schemaMigrationManifest = JSON.parse(
   await readFile(new URL("../schema-migrations.json", import.meta.url), "utf8"),
@@ -75,17 +80,10 @@ try {
         const [snapshot] =
           await sql`SELECT pg_export_snapshot() AS snapshot_id`;
         sourceTableRowCounts = await readDatabaseTableRowCountsFromSql(sql);
-        await run("pg_dump", [
-          "--format=custom",
-          "--compress=9",
-          "--schema=public",
-          "--no-owner",
-          "--no-acl",
-          "--snapshot",
-          snapshot.snapshot_id,
-          "--file",
-          temporaryOutput,
-        ], postgresEnvironment(backupDatabaseUrl));
+        await run("pg_dump", backupDumpArguments({
+          snapshotId: snapshot.snapshot_id,
+          file: temporaryOutput,
+        }), postgresEnvironment(backupDatabaseUrl));
       },
     );
   } finally {
@@ -113,7 +111,8 @@ try {
     sourceDatabaseIdentity,
     schemaMigrations: sourceSchemaMigrations,
     forcedRlsTables: sourceForcedRlsTables,
-    tableRowCounts: sourceTableRowCounts,
+    excludedTableData: BACKUP_EXCLUDED_TABLE_DATA,
+    tableRowCounts: dumpedTableRowCounts(sourceTableRowCounts),
   };
   await writeFile(manifestOutput, `${JSON.stringify(manifest, null, 2)}\n`, {
     encoding: "utf8",

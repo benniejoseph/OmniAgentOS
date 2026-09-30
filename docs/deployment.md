@@ -642,8 +642,10 @@ finance apps (`restricted_application_refused`), refuses to act in Asael
 itself, and refuses while a supported browser's window shows a settings,
 saved-password, extension, developer-tools, or other non-web page
 (`restricted_page_refused`). The browser check is bounded and best effort.
-These refusals take effect only after the macOS app is rebuilt; an older
-helper keeps refusing only the terminals and System Settings it listed.
+A screenshot leaves out the windows of those apps, of Asael, and of
+notification banners. These refusals and exclusions take effect only after the
+macOS app is rebuilt; an older helper keeps refusing only the terminals and
+System Settings it listed, and captures every window on the display.
 
 Vercel deployment `dpl_GWtwwNMwaroDcX8ixTGe18FY2Vj5` is promoted to
 `https://asael.bennierichard.com` at exact server revision
@@ -1785,6 +1787,8 @@ npm run db:restore-drill
 ```
 
 The restore drill is destructive only to `RESTORE_DATABASE_URL`. It requires the production URL for comparison, rejects a target with the production database name even when provider host aliases differ, requires target-specific confirmation, verifies the backup manifest checksum before restore, validates the exact Asael table, row-count, migration-marker, database-identity, and forced-RLS inventories, and writes a restore-evidence artifact. Run it on a schedule in isolated infrastructure and retain the evidence.
+
+Backups dump `omni_local_computer_commands` without its rows. That table holds each Mac action's result, a screenshot included until the run reads it, and a restored queued command must not reach a Mac again. A restore recreates the table empty; the manifest lists it under `excludedTableData` and records its row count as `0`, which the restore drill checks. Provider point-in-time recovery still holds those rows for its own retention window.
 
 Restore procedure:
 

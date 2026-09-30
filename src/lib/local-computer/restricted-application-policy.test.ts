@@ -41,4 +41,26 @@ describe("This Mac restricted application gates", () => {
       helper.indexOf("guard !refusesTarget(targetApplication) else {"),
     ).toBeLessThan(helper.indexOf("try restoreObservedTarget(targetApplication)"));
   });
+
+  it("leaves restricted apps, Asael, and notification banners out of a screenshot", async () => {
+    const helper = await readFile(helperFile, "utf8");
+
+    expect(helper).toContain(
+      "let filter = SCContentFilter(\n" +
+        "      display: display,\n" +
+        "      excludingApplications: content.applications.filter { hidesWindows(of: $0) },\n" +
+        "      exceptingWindows: []\n" +
+        "    )\n",
+    );
+    expect(helper).toContain(
+      "return RestrictedApplicationPolicy.hidesWindows(\n" +
+        "      pid: application.processID,\n" +
+        "      bundleIdentifier: running?.bundleIdentifier ?? application.bundleIdentifier,\n" +
+        "      declaredCategory: bundleURL.flatMap(RestrictedApplicationPolicy.declaredCategory),\n" +
+        "      storeGenre: bundleURL.flatMap(RestrictedApplicationPolicy.storeGenre),\n" +
+        "      trustedHostPID: trustedHostPID,\n" +
+        "      trustedHostBundleIdentifier: ParentVerifier.parentIdentifier\n",
+    );
+    expect(helper).not.toContain("excludingWindows:");
+  });
 });

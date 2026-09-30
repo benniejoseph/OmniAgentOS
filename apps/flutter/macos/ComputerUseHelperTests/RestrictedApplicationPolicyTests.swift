@@ -10,6 +10,7 @@ private enum RestrictedApplicationPolicyTests {
     bundleMetadata()
     browserPages()
     trustedHost()
+    screenshotWindows()
   }
 
   private static func refused(
@@ -41,6 +42,7 @@ private enum RestrictedApplicationPolicyTests {
       RestrictedApplicationPolicy.shells, RestrictedApplicationPolicy.systemAndSecurity,
       RestrictedApplicationPolicy.automation, RestrictedApplicationPolicy.credentialApplications,
       RestrictedApplicationPolicy.credentialVendors, RestrictedApplicationPolicy.browsers,
+      RestrictedApplicationPolicy.hiddenFromScreenshots,
     ]
     for list in lists {
       for identifier in list {
@@ -224,6 +226,48 @@ private enum RestrictedApplicationPolicyTests {
     expect(!isHost(7, "app.omniagent.omniagent.computer-use-helper"), "the helper is not the host")
     expect(!isHost(7, "com.google.Chrome"), "another app is not the host")
     expect(!isHost(7, nil), "an unnamed app is not the host")
+  }
+
+  private static func screenshotWindows() {
+    func hides(
+      _ pid: pid_t,
+      _ bundleIdentifier: String?,
+      category: String? = nil,
+      genre: Int? = nil
+    ) -> Bool {
+      RestrictedApplicationPolicy.hidesWindows(
+        pid: pid,
+        bundleIdentifier: bundleIdentifier,
+        declaredCategory: category,
+        storeGenre: genre,
+        trustedHostPID: 4_242,
+        trustedHostBundleIdentifier: "app.omniagent.omniagent"
+      )
+    }
+    for identifier in [
+      "com.1password.1password", "com.apple.Terminal", "com.apple.SystemSettings",
+      "com.apple.keychainaccess", "com.apple.notificationcenterui",
+      "COM.APPLE.NOTIFICATIONCENTERUI",
+    ] {
+      expect(hides(7, identifier), "a screenshot leaves out \(identifier)")
+    }
+    expect(
+      hides(7, "com.example.bank", category: "public.app-category.finance"),
+      "a screenshot leaves out a finance app"
+    )
+    expect(
+      hides(7, "com.example.wallet", genre: 6015),
+      "a screenshot leaves out a finance store app"
+    )
+    expect(hides(4_242, nil), "a screenshot leaves out the host's process")
+    expect(hides(7, "App.OmniAgent.OmniAgent"), "a screenshot leaves out the host's bundle")
+    for identifier in [
+      "com.google.Chrome", "com.apple.Safari", "com.apple.finder", "com.apple.dock",
+      "com.apple.notificationcenterui.agent", "app.omniagent.omniagent.computer-use-helper",
+    ] {
+      expect(!hides(7, identifier), "a screenshot shows \(identifier)")
+    }
+    expect(!hides(7, nil), "a screenshot shows an unnamed app")
   }
 
   private static func expect(_ condition: @autoclosure () -> Bool, _ message: String) {

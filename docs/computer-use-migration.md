@@ -188,6 +188,12 @@ when it finds no page address in time, so it is a best-effort guard rather
 than a boundary. These refusals live in the helper and take effect once the
 macOS app is rebuilt.
 
+A screenshot leaves out every window of an app the helper refuses, of Asael
+itself, and of notification banners, which can show a message or a sign-in
+code; the desktop or the window beneath shows through where they sit. The
+Accessibility snapshot of Asael's own window is still returned while Asael is
+in front.
+
 The agent-visible allowlist is `observe`, `list_apps`, `activate_app`,
 `open_url`, `press`, `click`, `type`, `key`, and `scroll`. Observation and
 listing are read-only. The other visual operations retain their risk-two audit

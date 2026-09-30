@@ -576,6 +576,9 @@ enum RestrictedApplicationPolicy {
     "com.vivaldi.vivaldi", "company.thebrowser.browser", "org.chromium.chromium",
     "org.mozilla.firefox",
   ]
+  /// Besides the restricted apps and Asael, a screenshot leaves out
+  /// notification banners, which can show a message or a sign-in code.
+  static let hiddenFromScreenshots: Set<String> = ["com.apple.notificationcenterui"]
   private static let webPageSchemes: Set<String> = ["blob", "data", "file", "http", "https"]
   private static let newTabPages: Set<String> = [
     "about:blank", "about:home", "about:newtab", "brave://newtab", "chrome://new-tab-page",
@@ -644,8 +647,33 @@ enum RestrictedApplicationPolicy {
     return !newTabPages.contains(page)
   }
 
-  /// The agent may look at Asael's own window but never act in it, where an
-  /// action could answer the agent's own approval request.
+  /// A screenshot shows no window of an app the agent may not observe or
+  /// drive, of Asael, or of notification banners.
+  static func hidesWindows(
+    pid: pid_t,
+    bundleIdentifier: String?,
+    declaredCategory: String?,
+    storeGenre: Int?,
+    trustedHostPID: pid_t,
+    trustedHostBundleIdentifier: String
+  ) -> Bool {
+    refuses(
+      bundleIdentifier: bundleIdentifier,
+      declaredCategory: declaredCategory,
+      storeGenre: storeGenre
+    )
+      || isTrustedHost(
+        pid: pid,
+        bundleIdentifier: bundleIdentifier,
+        trustedHostPID: trustedHostPID,
+        trustedHostBundleIdentifier: trustedHostBundleIdentifier
+      )
+      || bundleIdentifier.map { hiddenFromScreenshots.contains($0.lowercased()) } == true
+  }
+
+  /// The agent may read Asael's own window, though a screenshot leaves it
+  /// out, but never act in it, where an action could answer the agent's own
+  /// approval request.
   static func isTrustedHost(
     pid: pid_t,
     bundleIdentifier: String?,
@@ -1565,7 +1593,11 @@ private final class ComputerUseExecutor {
     guard approximatelyEqual(logicalBounds, CGDisplayBounds(display.displayID)) else {
       throw HelperFailure.rejected("coordinate_mapping_unavailable")
     }
-    let filter = SCContentFilter(display: display, excludingWindows: [])
+    let filter = SCContentFilter(
+      display: display,
+      excludingApplications: content.applications.filter { hidesWindows(of: $0) },
+      exceptingWindows: []
+    )
     let configuration = SCStreamConfiguration()
     let scale = min(1, 1_440 / max(1, CGFloat(display.width)))
     configuration.width = max(1, Int(CGFloat(display.width) * scale))
@@ -2162,6 +2194,19 @@ private final class ComputerUseExecutor {
     guard refreshedIdentity == expectedIdentity else {
       throw HelperFailure.rejected("stale_observation")
     }
+  }
+
+  private func hidesWindows(of application: SCRunningApplication) -> Bool {
+    let running = NSRunningApplication(processIdentifier: application.processID)
+    let bundleURL = running?.bundleURL
+    return RestrictedApplicationPolicy.hidesWindows(
+      pid: application.processID,
+      bundleIdentifier: running?.bundleIdentifier ?? application.bundleIdentifier,
+      declaredCategory: bundleURL.flatMap(RestrictedApplicationPolicy.declaredCategory),
+      storeGenre: bundleURL.flatMap(RestrictedApplicationPolicy.storeGenre),
+      trustedHostPID: trustedHostPID,
+      trustedHostBundleIdentifier: ParentVerifier.parentIdentifier
+    )
   }
 
   /// Refuses a restricted application and Asael itself as an action target.

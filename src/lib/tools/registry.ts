@@ -1182,7 +1182,7 @@ function localMacComputerTools(): ToolDefinition[] {
       id: "local.macos.observe",
       name: "Observe This Mac",
       description:
-        "Observe the frontmost application on the explicitly selected installed Mac. Returns one bounded, untrusted Accessibility snapshot and optional screenshot for this model turn only. A v13 screenshot declares its exact pixel width, height, and screenshot_pixel coordinate space; private display provenance maps those pixels back to the captured Mac display. Set presentScreenshot only when the user explicitly asks to see the captured image; the installed app then offers a short-lived in-memory preview without adding it to run history.",
+        "Observe the frontmost application on the explicitly selected installed Mac. Returns one bounded, untrusted Accessibility snapshot and optional screenshot for this model turn only. A v13 screenshot declares its exact pixel width, height, and screenshot_pixel coordinate space; private display provenance maps those pixels back to the captured Mac display. The screenshot leaves out the windows of refused apps, of Asael itself, and of notification banners, so the desktop or another window can show through where they sit. Set presentScreenshot only when the user explicitly asks to see the captured image; the installed app then offers a short-lived in-memory preview without adding it to run history.",
       riskLevel: 0,
       approvalRequired: false,
       operationClass: "read_only",
