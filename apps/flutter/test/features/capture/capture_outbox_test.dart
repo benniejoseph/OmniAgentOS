@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -85,10 +86,16 @@ void main() {
       final restored = await createOutbox().list(owner);
       expect(restored, hasLength(1));
       expect(restored.single.id, entry.id);
-      expect((await createOutbox().get(owner, entry.id))?.id, entry.id);
       expect(restored.single.idempotencyKey, entry.idempotencyKey);
       expect(restored.single.draft.kind, CaptureKind.meetingMedia);
-      expect(restored.single.draft.file?.bytes, [1, 2, 3, 4]);
+      // Listing decrypts only the metadata; an upload opens the payload.
+      expect(restored.single.draft.content, isEmpty);
+      expect(restored.single.draft.file?.bytes, isEmpty);
+      expect(restored.single.draft.file?.byteLength, 4);
+      final opened = await createOutbox().get(owner, entry.id);
+      expect(opened?.id, entry.id);
+      expect(opened?.draft.content, 'Confidential meeting notes');
+      expect(opened?.draft.file?.bytes, [1, 2, 3, 4]);
       expect(
         await createOutbox().list(
           const CaptureOwnerBinding(
@@ -125,8 +132,22 @@ void main() {
           .where((entity) => entity is File && entity.path.endsWith('.capture'))
           .cast<File>()
           .single;
-      final raw = await encrypted.readAsString();
-      await encrypted.writeAsString('${raw.substring(0, raw.length - 2)}xx');
+      final [metadata, payload] = (await encrypted.readAsString()).split('\n');
+      String forged(String envelope) {
+        final value = jsonDecode(envelope) as Map<String, Object?>;
+        final mac = value['mac']! as String;
+        value['mac'] = '${mac.startsWith('A') ? 'B' : 'A'}${mac.substring(1)}';
+        return jsonEncode(value);
+      }
+
+      await encrypted.writeAsString('$metadata\n${forged(payload)}');
+      expect((await outbox.list(owner)).single.id, entry.id);
+      await expectLater(
+        outbox.get(owner, entry.id),
+        throwsA(isA<CaptureOutboxIntegrityException>()),
+      );
+
+      await encrypted.writeAsString('${forged(metadata)}\n$payload');
       await expectLater(
         outbox.list(owner),
         throwsA(isA<CaptureOutboxIntegrityException>()),
