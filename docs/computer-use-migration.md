@@ -305,9 +305,14 @@ the helper each check the exact name, and the helper also refuses a listed name
 whose file resolves to a shell or launcher. Arguments can still make a listed
 program run another (`find -exec`, `git -c`, package scripts), which is why each
 command pauses for exact approval. To allow another program, add it to the list,
-run `npm run generate:command-program-policy`, and rebuild the macOS app. Stop
-terminates the active process group, timeout kills it, and uncertain or expired
-claims are not replayed.
+run `npm run generate:command-program-policy`, and rebuild the macOS app. Each
+command leads a process group of its own. Stop, a timeout, and the command's own
+exit all end that group: its processes get SIGTERM, and whatever still runs a
+quarter of a second later is killed. The helper reaps the command only after
+that, so it never signals a reused process ID, and the app kills the group itself
+if the helper has not exited a second after Stop. A process that leaves the
+group, for example with `setsid`, is not reached. Uncertain or expired claims are
+not replayed.
 
 Bounded stdout and stderr are sanitized and treated as untrusted one-turn evidence.
 The native Conversation rail may show a short-lived terminal artifact and the

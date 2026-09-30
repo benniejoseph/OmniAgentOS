@@ -296,10 +296,12 @@ only from fixed system executable directories, directly with an argument vector,
 fixed minimal environment and isolated home, and a timeout
 of at most 30 seconds. It canonicalizes the workspace and relative working directory,
 rejects `..` and symlink escape, and refuses shells, `sudo`, AppleScript,
-LaunchServices, Keychain/security administration, and system-control launchers. Stop
-terminates the active process group. It has neither Asael credentials nor a network or
-server interface; the executable itself still has the ordinary authority of the
-owner's macOS account, which is disclosed at approval time.
+LaunchServices, Keychain/security administration, and system-control launchers. Stop,
+a timeout, and the command's exit each end the command's whole process group, and the
+app ends the group itself if the helper does not stop within a second. It has neither
+Asael credentials nor a network or server interface; the executable itself still has
+the ordinary authority of the owner's macOS account, which is disclosed at approval
+time.
 
 Private-release credential continuity uses a different separately signed child,
 `AsaelCredentialBroker.app`. The Computer Use helper remains credential-free and

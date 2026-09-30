@@ -19,30 +19,38 @@ private struct CommandRequest {
   let timeoutSeconds: Int
 }
 
-private final class ActiveChildRegistry: @unchecked Sendable {
+/// The command being run, for the signal handlers to stop when the app stops
+/// the helper. The lock is held while the command starts and while its group
+/// is ended, so a stop neither misses a starting command nor signals a reaped
+/// one, and no command starts once a stop has begun.
+final class ActiveChildRegistry: @unchecked Sendable {
   static let shared = ActiveChildRegistry()
 
   private let lock = NSLock()
-  private var process: Process?
+  private var leader: pid_t?
+  private var stopping = false
 
-  func set(_ process: Process) {
+  func start(_ spawn: () -> pid_t?) -> pid_t? {
     lock.lock()
-    self.process = process
-    lock.unlock()
+    defer { lock.unlock() }
+    guard !stopping else { return nil }
+    leader = spawn()
+    return leader
   }
 
-  func clear(_ expected: Process) {
+  /// Forgets the command. It is reaped only after this returns.
+  func clear(_ expected: pid_t) {
     lock.lock()
-    if process === expected { process = nil }
+    if leader == expected { leader = nil }
     lock.unlock()
   }
 
   func terminate() {
     lock.lock()
-    let target = process
-    lock.unlock()
-    guard let target, target.isRunning else { return }
-    terminateProcessGroup(target, grace: 0.25)
+    defer { lock.unlock() }
+    stopping = true
+    guard let leader else { return }
+    CommandProcessGroup.end(leader, grace: 0.25)
   }
 }
 
@@ -256,6 +264,100 @@ enum CommandProgramPolicy {
   }
 }
 
+/// Starts a command as the leader of a process group of its own, and ends the
+/// group. Signalling the group reaches everything the command starts, including
+/// processes it leaves running when it exits. The command stays unreaped until
+/// its group has been ended, so its process ID, which is also the group's, is
+/// not given to another process while the helper signals it.
+enum CommandProcessGroup {
+  /// Starts `executable` with exactly `environment`, in `directory`, reading
+  /// /dev/null and writing to `output` and `errors`. It inherits no other
+  /// descriptor, and every signal starts at its default action and unblocked,
+  /// whatever the helper ignores or blocks. Answers the command's process ID.
+  static func spawn(
+    _ executable: URL,
+    arguments: [String],
+    environment: [String: String],
+    directory: URL,
+    output: Int32,
+    errors: Int32
+  ) -> pid_t? {
+    var actions: posix_spawn_file_actions_t?
+    guard posix_spawn_file_actions_init(&actions) == 0 else { return nil }
+    defer { posix_spawn_file_actions_destroy(&actions) }
+    var attributes: posix_spawnattr_t?
+    guard posix_spawnattr_init(&attributes) == 0 else { return nil }
+    defer { posix_spawnattr_destroy(&attributes) }
+    var defaultSignals = sigset_t()
+    var blockedSignals = sigset_t()
+    sigfillset(&defaultSignals)
+    sigemptyset(&blockedSignals)
+    let flags = POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK
+      | POSIX_SPAWN_CLOEXEC_DEFAULT
+    guard posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0) == 0,
+          posix_spawn_file_actions_adddup2(&actions, output, STDOUT_FILENO) == 0,
+          posix_spawn_file_actions_adddup2(&actions, errors, STDERR_FILENO) == 0,
+          posix_spawn_file_actions_addchdir_np(&actions, directory.path) == 0,
+          posix_spawnattr_setflags(&attributes, Int16(flags)) == 0,
+          posix_spawnattr_setpgroup(&attributes, 0) == 0,
+          posix_spawnattr_setsigdefault(&attributes, &defaultSignals) == 0,
+          posix_spawnattr_setsigmask(&attributes, &blockedSignals) == 0
+    else { return nil }
+    let argv: [UnsafeMutablePointer<CChar>?] =
+      ([executable.path] + arguments).map { strdup($0) } + [nil]
+    let envp: [UnsafeMutablePointer<CChar>?] =
+      environment.map { strdup("\($0.key)=\($0.value)") } + [nil]
+    defer { (argv + envp).forEach { free($0) } }
+    guard !(argv.dropLast() + envp.dropLast()).contains(nil) else { return nil }
+    var leader: pid_t = 0
+    guard posix_spawn(&leader, executable.path, &actions, &attributes, argv, envp) == 0,
+          leader > 1
+    else { return nil }
+    return leader
+  }
+
+  /// Whether the command has exited. It is left unreaped.
+  static func hasExited(_ leader: pid_t) -> Bool {
+    var info = siginfo_t()
+    guard waitid(P_PID, id_t(leader), &info, WEXITED | WNOHANG | WNOWAIT) == 0 else {
+      return errno != EINTR
+    }
+    return info.si_pid == leader
+  }
+
+  /// Whether anything in the group still runs. An exited, unreaped leader does
+  /// not count.
+  static func isOccupied(_ leader: pid_t) -> Bool {
+    kill(-leader, 0) == 0
+  }
+
+  /// Asks everything in the group, and the command itself in case it left the
+  /// group, to stop, then kills whatever still runs after `grace`. Call only
+  /// before the command is reaped.
+  static func end(_ leader: pid_t, grace: TimeInterval) {
+    guard leader > 1 else { return }
+    _ = kill(-leader, SIGTERM)
+    _ = kill(leader, SIGTERM)
+    let deadline = Date().addingTimeInterval(max(0, grace))
+    while (isOccupied(leader) || !hasExited(leader)) && Date() < deadline {
+      Thread.sleep(forTimeInterval: 0.025)
+    }
+    _ = kill(-leader, SIGKILL)
+    _ = kill(leader, SIGKILL)
+  }
+
+  /// Reaps the command. Answers its exit code, or the number of the signal that
+  /// ended it, as Process reported them.
+  static func reap(_ leader: pid_t) -> Int32? {
+    var status: Int32 = 0
+    while waitpid(leader, &status, 0) == -1 {
+      guard errno == EINTR else { return nil }
+    }
+    let signal = status & 0x7f
+    return signal == 0 ? (status >> 8) & 0xff : signal
+  }
+}
+
 private final class CommandRunner {
   private static let allowedInputKeys: Set<String> = [
     "workspaceId", "workspaceName", "workspaceRoot", "workingDirectory",
@@ -356,14 +458,7 @@ private final class CommandRunner {
     let stdoutDrain = startDrain(stdoutPipe.fileHandleForReading, into: stdout, group: drainGroup)
     let stderrDrain = startDrain(stderrPipe.fileHandleForReading, into: stderr, group: drainGroup)
 
-    let process = Process()
-    process.executableURL = request.executableURL
-    process.arguments = request.arguments
-    process.currentDirectoryURL = request.workingDirectory
-    process.standardInput = FileHandle.nullDevice
-    process.standardOutput = stdoutPipe
-    process.standardError = stderrPipe
-    process.environment = [
+    let environment = [
       "CI": "1",
       "GIT_ASKPASS": "/usr/bin/false",
       "GIT_TERMINAL_PROMPT": "0",
@@ -378,40 +473,51 @@ private final class CommandRunner {
     ]
 
     let startedAt = Date()
-    ActiveChildRegistry.shared.set(process)
-    do {
-      try process.run()
-    } catch {
-      ActiveChildRegistry.shared.clear(process)
+    let started = ActiveChildRegistry.shared.start {
+      CommandProcessGroup.spawn(
+        request.executableURL,
+        arguments: request.arguments,
+        environment: environment,
+        directory: request.workingDirectory,
+        output: stdoutPipe.fileHandleForWriting.fileDescriptor,
+        errors: stderrPipe.fileHandleForWriting.fileDescriptor
+      )
+    }
+    // Only the command's copies of the write ends stay open, so each drain ends
+    // when the last process writing to it does.
+    try? stdoutPipe.fileHandleForWriting.close()
+    try? stderrPipe.fileHandleForWriting.close()
+    guard let leader = started else {
       closeDrain(stdoutPipe.fileHandleForReading, completion: stdoutDrain)
       closeDrain(stderrPipe.fileHandleForReading, completion: stderrDrain)
       throw CommandRunnerFailure.rejected("command_launch_failed")
     }
-    _ = setpgid(process.processIdentifier, process.processIdentifier)
-    defer { ActiveChildRegistry.shared.clear(process) }
 
     let requestedDeadline = startedAt.addingTimeInterval(TimeInterval(request.timeoutSeconds))
     let deadline = min(requestedDeadline, expiration.addingTimeInterval(-0.1))
     var failureCode: String?
-    while process.isRunning {
+    while !CommandProcessGroup.hasExited(leader) {
       if stdout.hardLimitExceeded || stderr.hardLimitExceeded {
         failureCode = "command_output_limit_exceeded"
-        terminateProcessGroup(process, grace: 0.25)
         break
       }
       if Date() >= deadline {
         failureCode = "command_timeout"
-        terminateProcessGroup(process, grace: 0.25)
         break
       }
       Thread.sleep(forTimeInterval: 0.025)
     }
-    process.waitUntilExit()
+    // A stopped command, and anything a finished one left running, gets the
+    // same short grace before the rest of its group is killed.
+    CommandProcessGroup.end(leader, grace: 0.25)
+    ActiveChildRegistry.shared.clear(leader)
+    let status = CommandProcessGroup.reap(leader)
     _ = drainGroup.wait(timeout: .now() + 1.0)
     closeDrain(stdoutPipe.fileHandleForReading, completion: stdoutDrain)
     closeDrain(stderrPipe.fileHandleForReading, completion: stderrDrain)
 
     if let failureCode { throw CommandRunnerFailure.rejected(failureCode) }
+    guard let status else { throw CommandRunnerFailure.rejected("command_runner_error") }
     let stdoutResult = stdout.snapshot()
     let stderrResult = stderr.snapshot()
     if stdoutResult.exceededHardLimit || stderrResult.exceededHardLimit {
@@ -419,7 +525,7 @@ private final class CommandRunner {
     }
 
     let durationMs = max(0, Int(Date().timeIntervalSince(startedAt) * 1_000))
-    let exitCode = Int(process.terminationStatus)
+    let exitCode = Int(status)
     let terminalOutput: [String: Any] = [
       "stdout": stdoutResult.text,
       "stderr": stderrResult.text,
@@ -620,23 +726,6 @@ private func sanitizedOutput(
     }
   }
   return (result, truncated)
-}
-
-private func terminateProcessGroup(_ process: Process, grace: TimeInterval) {
-  guard process.isRunning else { return }
-  let pid = process.processIdentifier
-  if pid > 1 {
-    _ = kill(-pid, SIGTERM)
-    _ = kill(pid, SIGTERM)
-  }
-  let deadline = Date().addingTimeInterval(max(0, grace))
-  while process.isRunning && Date() < deadline {
-    Thread.sleep(forTimeInterval: 0.025)
-  }
-  if process.isRunning, pid > 1 {
-    _ = kill(-pid, SIGKILL)
-    _ = kill(pid, SIGKILL)
-  }
 }
 
 #if !ASAEL_COMMAND_RUNNER_HELPER_TESTING

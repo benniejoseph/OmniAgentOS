@@ -590,6 +590,9 @@ private final class LocalComputerController: NSObject {
   private static let commandWorkspaceDefaultsKey = "AsaelCommandWorkspaceGrantsV1"
   private static let maximumCommandWorkspaceCount = 32
   private static let maximumCommandResponseBytes = 256 * 1_024
+  /// How long the command helper has to exit once asked to stop. It ends the
+  /// command's process group within about a quarter of a second.
+  private static let commandHelperStopGrace: TimeInterval = 1.0
   private static let maximumResponseBytes = 4 * 1_024 * 1_024
   private static let maximumRequestBytes = 96 * 1_024
   private static let internetDateFormatter = ISO8601DateFormatter()
@@ -1042,7 +1045,6 @@ private final class LocalComputerController: NSObject {
       errors.fileHandleForReading.readabilityHandler = nil
       return false
     }
-    _ = setpgid(launched.processIdentifier, launched.processIdentifier)
     commandProcess = launched
     commandInputPipe = input
     commandOutputPipe = output
@@ -1130,12 +1132,34 @@ private final class LocalComputerController: NSObject {
     let id = commandExecutionId ?? "invalid"
     if let terminating, terminating.isRunning {
       terminating.terminate()
-      DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak terminating] in
+      let deadline = DispatchTime.now() + Self.commandHelperStopGrace
+      DispatchQueue.main.asyncAfter(deadline: deadline) { [weak terminating] in
         guard let terminating, terminating.isRunning else { return }
-        kill(terminating.processIdentifier, SIGKILL)
+        let helper = terminating.processIdentifier
+        Self.killChildProcessGroups(of: helper)
+        kill(helper, SIGKILL)
       }
     }
     finishCommandHelper(Self.ipcResponse(id: id, outcome: outcome, code: code))
+  }
+
+  /// Kills the process group that each child of `parent` leads. A helper that
+  /// has not exited in time may not have ended its command's group, which
+  /// killing the helper alone would leave running.
+  private static func killChildProcessGroups(of parent: pid_t) {
+    guard parent > 1 else { return }
+    var children = [pid_t](repeating: 0, count: 16)
+    let bytes = proc_listpids(
+      UInt32(PROC_PPID_ONLY),
+      UInt32(parent),
+      &children,
+      Int32(children.count * MemoryLayout<pid_t>.stride)
+    )
+    guard bytes > 0 else { return }
+    for child in children.prefix(Int(bytes) / MemoryLayout<pid_t>.stride) where child > 1 {
+      _ = kill(-child, SIGKILL)
+      _ = kill(child, SIGKILL)
+    }
   }
 
   private func envelope(

@@ -417,7 +417,9 @@ other before an approval exists, and the macOS app and helper check the same
 generated list. Allowing a new program takes a list change,
 `npm run generate:command-program-policy`, and a macOS app rebuild. The helper
 uses a minimal environment and isolated temporary home, bounds and sanitizes
-output, and terminates the process group on Stop or timeout. Raw stdout/stderr
+output, and ends the command's whole process group on Stop, on timeout, and when
+the command exits. If the helper has not exited a second after Stop, the app
+kills the command's group and then the helper. Raw stdout/stderr
 are one-turn untrusted evidence and a short-lived local artifact only. Durable
 approval, event, continuation, and tool stores retain metadata and digests
 rather than terminal content.

@@ -91,6 +91,11 @@ task_run_suite CommandProgramPolicyTests ASAEL_COMMAND_RUNNER_HELPER_TESTING \
   "$task_macos_dir/CommandRunnerHelper/HelperMain.swift" \
   "$task_macos_dir/CommandRunnerHelperTests/CommandProgramPolicyTests.swift"
 
+task_run_suite CommandProcessGroupTests ASAEL_COMMAND_RUNNER_HELPER_TESTING \
+  "${task_command_runner_frameworks[@]}" \
+  "$task_macos_dir/CommandRunnerHelper/HelperMain.swift" \
+  "$task_macos_dir/CommandRunnerHelperTests/CommandProcessGroupTests.swift"
+
 # The guard test signs throwaway copies of a system executable ad hoc, so it
 # needs codesign and lipo but no signing identity.
 echo "==> MacosHardenedRuntimeGuardTests"
