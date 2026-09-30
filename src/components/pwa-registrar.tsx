@@ -2,12 +2,9 @@
 
 import { useEffect } from "react";
 
+import { registerServiceWorkerAfterLoad } from "@/lib/pwa/register";
+
 export function PwaRegistrar() {
-  useEffect(() => {
-    if (!("serviceWorker" in navigator)) return;
-    const register = () => { void navigator.serviceWorker.register("/sw.js", { scope: "/" }); };
-    window.addEventListener("load", register, { once: true });
-    return () => window.removeEventListener("load", register);
-  }, []);
+  useEffect(() => registerServiceWorkerAfterLoad(window), []);
   return null;
 }
