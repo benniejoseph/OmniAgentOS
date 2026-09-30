@@ -56,7 +56,7 @@ export async function deliverMobilePush(input: {
 async function deliverFcm(input: {
   token: string;
   envelope: MobilePushEnvelope;
-  preview?: { title: string; body: string };
+  preview: { title: string; body: string };
 }) {
   const config = fcmConfiguration();
   if (!config) {
@@ -87,22 +87,8 @@ async function deliverFcm(input: {
             data: stringRecord(input.envelope, input.preview),
             android: { priority: "HIGH" },
             apns: {
-              headers: {
-                "apns-push-type": input.preview ? "alert" : "background",
-                "apns-priority": input.preview ? "10" : "5",
-              },
-              payload: {
-                aps: input.preview
-                  ? {
-                      alert: input.preview,
-                      sound: "default",
-                      ...(input.envelope.notificationId
-                        ? { category: asaelNotificationCategory }
-                        : {}),
-                      "content-available": 1,
-                    }
-                  : { "content-available": 1 },
-              },
+              headers: { "apns-push-type": "alert", "apns-priority": "10" },
+              payload: { aps: apnsAlert(input.envelope, input.preview) },
             },
           },
         }),
@@ -148,7 +134,7 @@ async function deliverApns(input: {
   environment: PushEnvironment;
   token: string;
   envelope: MobilePushEnvelope;
-  preview?: { title: string; body: string };
+  preview: { title: string; body: string };
 }) {
   const config = apnsConfiguration();
   if (!config) {
@@ -163,18 +149,8 @@ async function deliverApns(input: {
     : "https://api.push.apple.com";
   const client = connect(origin);
   const jwt = apnsJwt(config);
-  const pushType = input.preview ? "alert" : "background";
   const body = JSON.stringify({
-    aps: input.preview
-      ? {
-          alert: input.preview,
-          sound: "default",
-          ...(input.envelope.notificationId
-            ? { category: asaelNotificationCategory }
-            : {}),
-          "content-available": 1,
-        }
-      : { "content-available": 1 },
+    aps: apnsAlert(input.envelope, input.preview),
     asael: input.envelope,
   });
   return new Promise<{ messageId: string }>((resolve, reject) => {
@@ -202,8 +178,8 @@ async function deliverApns(input: {
       ":path": `/3/device/${input.token}`,
       authorization: `bearer ${jwt}`,
       "apns-topic": config.bundleId,
-      "apns-push-type": pushType,
-      "apns-priority": input.preview ? "10" : "5",
+      "apns-push-type": "alert",
+      "apns-priority": "10",
       "content-type": "application/json",
       "content-length": Buffer.byteLength(body),
     });
@@ -377,20 +353,32 @@ function base64UrlJson(value: Record<string, unknown>) {
   return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
 }
 
+/**
+ * Every Apple push alerts. A push that only wakes the app shows nothing, and
+ * Apple throttles it and drops it once the app is force-quit.
+ */
+function apnsAlert(
+  envelope: MobilePushEnvelope,
+  preview: { title: string; body: string },
+) {
+  return {
+    alert: preview,
+    sound: "default",
+    ...(envelope.notificationId ? { category: asaelNotificationCategory } : {}),
+    "content-available": 1,
+  };
+}
+
 function stringRecord(
   envelope: MobilePushEnvelope,
-  preview?: { title: string; body: string },
+  preview: { title: string; body: string },
 ) {
   const entries: Array<[string, unknown]> = [
     ...Object.entries(envelope),
-    ...(preview
-      ? [
-          ["asaelTitle", preview.title] as [string, unknown],
-          ["asaelBody", preview.body] as [string, unknown],
-          ...(envelope.notificationId
-            ? [["asaelCategory", asaelNotificationCategory] as [string, unknown]]
-            : []),
-        ]
+    ["asaelTitle", preview.title],
+    ["asaelBody", preview.body],
+    ...(envelope.notificationId
+      ? [["asaelCategory", asaelNotificationCategory] as [string, unknown]]
       : []),
   ];
   return Object.fromEntries(

@@ -23,7 +23,10 @@ describe("mobile push causal contract", () => {
 
   it("keeps sensitive titles out of hidden and generic previews", () => {
     const target = { kind: "approval", id: "approval-one" } as const;
-    expect(mobilePushPreview("hidden", target, "Secret acquisition")).toBeUndefined();
+    expect(mobilePushPreview("hidden", target, "Secret acquisition")).toEqual({
+      title: "Asael",
+      body: "You have an update.",
+    });
     expect(mobilePushPreview("generic", target, "Secret acquisition")).toEqual({
       title: "Asael",
       body: "An approval needs your attention.",
@@ -31,6 +34,21 @@ describe("mobile push causal contract", () => {
     expect(mobilePushPreview("title", target, "Secret acquisition")).toEqual({
       title: "Asael",
       body: "Secret acquisition",
+    });
+  });
+
+  it.each([
+    "approval",
+    "work_item",
+    "meeting",
+    "customer",
+    "run",
+    "notification",
+    "canary",
+  ] as const)("shows the same hidden alert for a %s", (kind) => {
+    expect(mobilePushPreview("hidden", { kind, id: `${kind}-one` }, "Secret")).toEqual({
+      title: "Asael",
+      body: "You have an update.",
     });
   });
 

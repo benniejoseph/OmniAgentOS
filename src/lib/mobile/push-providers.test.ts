@@ -5,6 +5,33 @@ import {
   mobilePushProviderConfiguration,
 } from "@/lib/mobile/push-providers";
 
+const apnsRequests = vi.hoisted(
+  () => [] as Array<{ headers: Record<string, unknown>; body: string }>,
+);
+
+vi.mock("node:http2", async (importOriginal) => {
+  const { EventEmitter } = await import("node:events");
+  return {
+    ...(await importOriginal<typeof import("node:http2")>()),
+    connect: () => Object.assign(new EventEmitter(), {
+      close: () => undefined,
+      request: (headers: Record<string, unknown>) => {
+        const request = Object.assign(new EventEmitter(), {
+          setEncoding: () => undefined,
+          end: (body: string) => {
+            apnsRequests.push({ headers, body });
+            queueMicrotask(() => {
+              request.emit("response", { ":status": 200, "apns-id": "apns-one" });
+              request.emit("end");
+            });
+          },
+        });
+        return request;
+      },
+    }),
+  };
+});
+
 vi.mock("node:crypto", async (importOriginal) => ({
   ...(await importOriginal<typeof import("node:crypto")>()),
   createSign: () => ({
@@ -137,5 +164,87 @@ describe("mobile push provider configuration", () => {
     });
     expect(openOnlyBody.message.data.asaelCategory).toBeUndefined();
     expect(openOnlyBody.message.apns.payload.aps.category).toBeUndefined();
+  });
+
+  it("alerts Apple devices with fixed text when previews are hidden", async () => {
+    process.env.OMNIAGENT_FCM_SERVICE_ACCOUNT_JSON = JSON.stringify({
+      project_id: "asael-hidden-test",
+      client_email: "push@example.test",
+      private_key: "-----BEGIN PRIVATE KEY-----\nfixture\n-----END PRIVATE KEY-----",
+    });
+    process.env.OMNIAGENT_APNS_TEAM_ID = "TEAM123456";
+    process.env.OMNIAGENT_APNS_KEY_ID = "KEY1234567";
+    process.env.OMNIAGENT_APNS_BUNDLE_ID = "app.omniagent.omniagent";
+    process.env.OMNIAGENT_APNS_PRIVATE_KEY = "-----BEGIN PRIVATE KEY-----\\nfixture\\n-----END PRIVATE KEY-----";
+    const fetchMock = vi.fn(async (url: string | URL | Request, _init?: RequestInit) =>
+      String(url) === "https://oauth2.googleapis.com/token"
+        ? new Response(JSON.stringify({
+            access_token: "oauth-token",
+            expires_in: 3_600,
+          }), { status: 200 })
+        : new Response(JSON.stringify({
+            name: "projects/asael-hidden-test/messages/provider-three",
+          }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const envelope = {
+      schemaVersion: "1",
+      deliveryId: "delivery-three",
+      notificationId: "notification-three",
+      causeKind: "approval",
+      causeId: "approval-three",
+      deepLink: "/inbox/approvals/approval-three",
+    } as const;
+    const alert = {
+      alert: { title: "Asael", body: "You have an update." },
+      sound: "default",
+      category: "ASAEL_ACTIONABLE_V1",
+      "content-available": 1,
+    };
+    const hidden = {
+      target: { kind: "approval", id: "approval-three" },
+      envelope,
+      previewPolicy: "hidden",
+      sensitiveTitle: "Secret acquisition",
+    } as const;
+
+    await expect(deliverMobilePush({
+      ...hidden,
+      provider: "fcm",
+      environment: "production",
+      token: `fcm-${"c".repeat(40)}`,
+    })).resolves.toEqual({
+      messageId: "projects/asael-hidden-test/messages/provider-three",
+    });
+    const send = fetchMock.mock.calls.find(([url]) =>
+      String(url).endsWith("/messages:send"));
+    const sent = String(send?.[1]?.body);
+    expect(sent).not.toContain("Secret");
+    const { message } = JSON.parse(sent);
+    expect(message.apns).toEqual({
+      headers: { "apns-push-type": "alert", "apns-priority": "10" },
+      payload: { aps: alert },
+    });
+    expect(message.data).toMatchObject({
+      asaelTitle: "Asael",
+      asaelBody: "You have an update.",
+      asaelCategory: "ASAEL_ACTIONABLE_V1",
+    });
+
+    apnsRequests.length = 0;
+    await expect(deliverMobilePush({
+      ...hidden,
+      provider: "apns",
+      environment: "sandbox",
+      token: "d".repeat(64),
+    })).resolves.toEqual({ messageId: "apns-one" });
+    expect(apnsRequests).toHaveLength(1);
+    const [apns] = apnsRequests;
+    expect(apns.headers).toMatchObject({
+      ":path": `/3/device/${"d".repeat(64)}`,
+      "apns-push-type": "alert",
+      "apns-priority": "10",
+    });
+    expect(apns.body).not.toContain("Secret");
+    expect(JSON.parse(apns.body)).toEqual({ aps: alert, asael: envelope });
   });
 });

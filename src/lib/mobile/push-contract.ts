@@ -123,7 +123,11 @@ export function mobilePushPreview(
   target: MobilePushTarget,
   sensitiveTitle?: string,
 ) {
-  if (policy === "hidden") return undefined;
+  // Apple platforms show nothing for a push without an alert, so hidden still
+  // alerts, with fixed text that names neither the item nor its kind.
+  if (policy === "hidden") {
+    return { title: "Asael", body: "You have an update." } as const;
+  }
   if (policy === "title" && sensitiveTitle?.trim()) {
     return {
       title: "Asael",
