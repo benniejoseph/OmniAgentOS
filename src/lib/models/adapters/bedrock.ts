@@ -44,6 +44,7 @@ const MAX_CONTINUATION_MESSAGES = 64;
 const MAX_CONTENT_BLOCKS = 64;
 const MAX_TOOL_CALLS = 16;
 const MAX_TOOL_ARGUMENT_BYTES = 64 * 1024;
+const MAX_REASONING_BYTES = 256 * 1024;
 const DEFAULT_FAST_MODEL = "amazon.nova-lite-v1:0";
 const REGION_PATTERN = /^[a-z]{2}(?:-gov)?-[a-z]+-\d$/;
 const TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
@@ -66,8 +67,18 @@ type BedrockToolUse = {
   input: Record<string, unknown>;
 };
 
+/**
+ * Reasoning Claude signed or redacted. Claude needs the reasoning before a
+ * tool call back with the call's result, unchanged since the signature
+ * covers it.
+ */
+type BedrockReasoningContent =
+  | { reasoningText: { text: string; signature: string } }
+  | { redactedContent: string };
+
 type BedrockContentBlock =
   | { text: string }
+  | { reasoningContent: BedrockReasoningContent }
   | { toolUse: BedrockToolUse }
   | {
       toolResult: {
@@ -939,6 +950,10 @@ function normalizeContinuationBlock(
   const block = recordValue(value);
   if (!block) return undefined;
   if (typeof block.text === "string") return { text: block.text };
+  const reasoningContent = role === "assistant"
+    ? normalizeReasoningContent(block.reasoningContent)
+    : undefined;
+  if (reasoningContent) return { reasoningContent };
 
   const toolUse = recordValue(block.toolUse);
   if (toolUse && role === "assistant") {
@@ -962,9 +977,39 @@ function normalizeContinuationBlock(
     }
     return { toolResult: { toolUseId, content, status } };
   }
-  // Reasoning and provider-specific content are intentionally not carried in
-  // the public continuation. This prevents private chain-of-thought leakage.
+  // Other provider-specific content is not carried in the continuation.
   return undefined;
+}
+
+/**
+ * A signed or redacted reasoning block as Converse returned it. Unsigned
+ * reasoning, which no model needs back, and oversized blocks are left out.
+ * It stays in the provider state and never becomes answer text.
+ */
+function normalizeReasoningContent(
+  value: unknown,
+): BedrockReasoningContent | undefined {
+  const reasoning = recordValue(value);
+  const reasoningText = recordValue(reasoning?.reasoningText);
+  const normalized: BedrockReasoningContent | undefined =
+    typeof reasoningText?.text === "string" &&
+      typeof reasoningText.signature === "string" &&
+      reasoningText.signature
+      ? {
+          reasoningText: {
+            text: reasoningText.text,
+            signature: reasoningText.signature,
+          },
+        }
+      : typeof reasoning?.redactedContent === "string" &&
+          reasoning.redactedContent
+        ? { redactedContent: reasoning.redactedContent }
+        : undefined;
+  return normalized &&
+    Buffer.byteLength(JSON.stringify(normalized), "utf8") <=
+      MAX_REASONING_BYTES
+    ? normalized
+    : undefined;
 }
 
 function invalidContinuation() {
@@ -1019,6 +1064,11 @@ function normalizeAssistantOutput(value: unknown) {
       continuationContent.push({ text: block.text });
       continue;
     }
+    const reasoningContent = normalizeReasoningContent(block.reasoningContent);
+    if (reasoningContent) {
+      continuationContent.push({ reasoningContent });
+      continue;
+    }
     const rawToolUse = recordValue(block.toolUse);
     if (!rawToolUse) continue;
     const toolUse = normalizeToolUse(rawToolUse);
@@ -1038,7 +1088,10 @@ function normalizeAssistantOutput(value: unknown) {
     });
     continuationContent.push({ toolUse });
   }
-  if (!continuationContent.length || toolCalls.length > MAX_TOOL_CALLS) {
+  if (
+    continuationContent.every((block) => "reasoningContent" in block) ||
+    toolCalls.length > MAX_TOOL_CALLS
+  ) {
     throw new ModelProviderError(
       "Amazon Bedrock returned unsupported content.",
       PROVIDER,

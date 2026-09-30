@@ -540,6 +540,154 @@ describe("Amazon Bedrock turns that ask for no tool call", () => {
   });
 });
 
+describe("Amazon Bedrock reasoning", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const target: ModelTarget = {
+    provider: "aws_bedrock",
+    model: "global.anthropic.claude-opus-5-5-v1:0",
+    tier: "reasoning",
+    features: ["text", "tools"],
+  };
+  const signed = {
+    reasoningContent: {
+      reasoningText: { text: "A private thought.", signature: "signature-1" },
+    },
+  };
+  const redacted = { reasoningContent: { redactedContent: "b3BhcXVl" } };
+  const weatherCall = {
+    toolUse: {
+      toolUseId: "tooluse_w",
+      name: "get_weather",
+      input: { city: "Paris" },
+    },
+  };
+  const weatherResult = {
+    callId: "tooluse_w",
+    name: "get_weather",
+    output: "Sunny, 21 °C.",
+  };
+  const reply = (content: unknown[], stopReason = "tool_use") => new Response(
+    JSON.stringify({
+      output: { message: { role: "assistant", content } },
+      stopReason,
+      usage: { inputTokens: 12, outputTokens: 4, totalTokens: 16 },
+    }),
+    { status: 200, headers: { "content-type": "application/json" } },
+  );
+
+  function stubbedTurns(...replies: Response[]) {
+    const fetchImplementation = vi.fn();
+    for (const response of replies) {
+      fetchImplementation.mockResolvedValueOnce(response);
+    }
+    const adapter = createBedrockModelAdapter({ fetchImplementation });
+    const turn = (request: Partial<ModelToolTurnRequest>) =>
+      adapter.generateToolTurn!(bindModelRuntime<ModelToolTurnRequest>({
+        input: "What is the weather in Paris?",
+        preferredProvider: "aws_bedrock",
+        tools: [{
+          type: "function",
+          name: "get_weather",
+          description: "Get the weather in a city",
+          parameters: { type: "object" },
+        }],
+        ...request,
+      }, {
+        targets: [target],
+        credentials: {
+          aws_bedrock: {
+            kind: "aws_bedrock",
+            accessKeyId: "AKIATESTACCESSKEY",
+            secretAccessKey: "bedrock-test-secret-access-key-123456",
+            region: "us-east-1",
+          },
+        },
+      }), target);
+    const sent = (index: number) => JSON.parse(
+      String(fetchImplementation.mock.calls[index]?.[1]?.body),
+    );
+    return { turn, sent };
+  }
+
+  it("sends signed reasoning back unchanged with the call's result", async () => {
+    const unsigned = {
+      reasoningContent: { reasoningText: { text: "An unsigned thought." } },
+    };
+    const { turn, sent } = stubbedTurns(
+      reply([signed, unsigned, redacted, weatherCall]),
+      reply([{ text: "It is sunny." }], "end_turn"),
+    );
+
+    const first = await turn({});
+
+    expect(first.text).toBe("");
+    expect(first.toolCalls.map((call) => call.callId)).toEqual(["tooluse_w"]);
+    expect(first.continuation.state.at(-1)).toEqual({
+      role: "assistant",
+      content: [signed, redacted, weatherCall],
+    });
+    // The reasoning stays in the provider state and nowhere else.
+    const { state, ...rest } = first.continuation;
+    expect(JSON.stringify(state)).toContain("A private thought.");
+    expect(JSON.stringify({ ...first, continuation: rest }))
+      .not.toContain("thought");
+
+    const second = await turn({
+      continuation: first.continuation,
+      toolResults: [weatherResult],
+    });
+
+    expect(sent(1).messages.at(-2)).toEqual({
+      role: "assistant",
+      content: [signed, redacted, weatherCall],
+    });
+    expect(second.text).toBe("It is sunny.");
+  });
+
+  it("leaves out reasoning too large to keep or outside the model's turns", async () => {
+    const oversized = {
+      reasoningContent: {
+        reasoningText: { text: "x".repeat(256 * 1024), signature: "signature-2" },
+      },
+    };
+    const { turn, sent } = stubbedTurns(
+      reply([oversized, weatherCall]),
+      reply([{ text: "It is sunny." }], "end_turn"),
+    );
+
+    const first = await turn({});
+
+    expect(first.continuation.state.at(-1)).toEqual({
+      role: "assistant",
+      content: [weatherCall],
+    });
+
+    // A stored user message never carries reasoning to the model.
+    const [prompt, ...later] = first.continuation.state;
+    await turn({
+      continuation: {
+        ...first.continuation,
+        state: [
+          { ...prompt, content: [...(prompt.content as unknown[]), signed] },
+          ...later,
+        ],
+      },
+      toolResults: [weatherResult],
+    });
+
+    expect(sent(1).messages[0]).toEqual(prompt);
+  });
+
+  it("rejects a reply with nothing but reasoning", async () => {
+    const { turn } = stubbedTurns(reply([signed, redacted], "end_turn"));
+
+    await expect(turn({})).rejects.toMatchObject({
+      message: "Amazon Bedrock returned unsupported content.",
+    });
+  });
+});
+
 describe("Amazon Bedrock replies cut off at the token limit", () => {
   afterEach(() => vi.restoreAllMocks());
 
