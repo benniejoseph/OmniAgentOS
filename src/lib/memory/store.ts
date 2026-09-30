@@ -6,6 +6,7 @@ import {
   getSql,
   hasDatabaseUrl,
 } from "@/lib/db/client";
+import { withHnswCandidateScan } from "@/lib/db/vector-search";
 import {
   databaseMemoryAccessScopeFromExecutionScope,
   parseDatabaseMemoryAccessScope,
@@ -3246,7 +3247,10 @@ async function searchMemoriesDb(
 
   if (vector) {
     try {
-      const rows = await sql`
+      const rows = await withHnswCandidateScan(
+        sql,
+        vectorCandidateLimit,
+        (scan) => scan`
         WITH vector_candidates AS MATERIALIZED (
           SELECT memory.id,
                  memory.embedding_vector <=> ${vector}::vector AS distance
@@ -3324,7 +3328,8 @@ async function searchMemoriesDb(
           ELSE 1.00
         END) DESC
         LIMIT ${limit}
-      `;
+      `,
+      );
       return rows.map(memorySearchResultFromRow);
     } catch {
       return searchMemoriesLexicalCandidatesDb(

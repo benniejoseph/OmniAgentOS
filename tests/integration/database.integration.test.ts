@@ -29,6 +29,8 @@ import {
   tenantPolicyTables,
 } from "@/lib/db/client";
 import { sqlMigrationFileDigest } from "@/lib/db/sql-migration-files";
+import type { SqlClient } from "@/lib/db/sql-types";
+import { withHnswCandidateScan } from "@/lib/db/vector-search";
 import { checkSharedRateLimit } from "@/lib/http/rate-limit";
 import { memoryContentDigest } from "@/lib/memory/content-digest";
 import { rebuildMemoryGraph } from "@/lib/memory/graph";
@@ -37,7 +39,7 @@ import {
   type MemoryDataRightRequestWriterSql,
   type RecordHeldMemoryDataRightRequestResultV1,
 } from "@/lib/memory/data-right-request-writer";
-import { saveMemories } from "@/lib/memory/store";
+import { saveMemories, searchMemories } from "@/lib/memory/store";
 import { reconcileMissionProjections } from "@/lib/missions/reconcile";
 import { attachMissionExecutor } from "@/lib/missions/runtime";
 import {
@@ -7829,6 +7831,120 @@ databaseDescribe("Postgres schema integration", () => {
       await admin.unsafe("DROP TABLE IF EXISTS retention_transaction_probe");
     }
   });
+
+  test.skipIf(!requirePgvector)(
+    "sizes an HNSW scan for its own transaction and keeps the iterative scan to releases that have it",
+    async () => {
+      const tenantId = "tenant-hnsw-scan-settings";
+      const scanSettings = async (sql: SqlClient) => {
+        // Reading a vector loads pgvector, so its settings show their values.
+        const [settings] = await sql`
+          SELECT '[1,2,3]'::vector::text AS loaded,
+                 current_setting('hnsw.ef_search') AS ef_search,
+                 current_setting('hnsw.iterative_scan') AS iterative_scan
+        `;
+        return settings;
+      };
+      const scoped = <T>(operation: () => Promise<T>) =>
+        runWithDatabaseTenantScope(tenantId, operation);
+
+      expect(await scoped(() => withHnswCandidateScan(getSql(), 240, scanSettings)))
+        .toEqual({ loaded: "[1,2,3]", ef_search: "240", iterative_scan: "relaxed_order" });
+      expect(await scoped(() => scanSettings(getSql()))).toEqual({
+        loaded: "[1,2,3]",
+        ef_search: "40",
+        iterative_scan: "off",
+      });
+
+      const [{ extversion }] = await admin`
+        SELECT extversion FROM pg_extension WHERE extname = 'vector'
+      `;
+      try {
+        await admin`UPDATE pg_extension SET extversion = '0.7.4' WHERE extname = 'vector'`;
+
+        expect(await scoped(() => withHnswCandidateScan(getSql(), 240, scanSettings)))
+          .toEqual({ loaded: "[1,2,3]", ef_search: "240", iterative_scan: "off" });
+      } finally {
+        await admin`
+          UPDATE pg_extension SET extversion = ${extversion} WHERE extname = 'vector'
+        `;
+      }
+    },
+  );
+
+  test.skipIf(!requirePgvector)(
+    "finds a tenant's nearest memories past nearer memories of another tenant",
+    async () => {
+      const tenantId = "tenant-hnsw-recall";
+      const neighborTenantId = "tenant-hnsw-recall-neighbor";
+      const queryEmbedding = Array.from(
+        { length: VECTOR_INDEX_DIMENSIONS },
+        (_, index) => (index === 0 ? 1 : 0),
+      );
+      // Each of the neighbor's 200 memories lies nearer the query than any of
+      // the tenant's 30, as other tenants' rows can in the shared index.
+      await admin`
+        INSERT INTO omni_memories (
+          id, tenant_id, type, title, content, scope, source, embedding_vector
+        )
+        SELECT
+          'hnsw-recall-' || owner.label || '-' || lpad(g::text, 3, '0'),
+          owner.tenant_id,
+          'fact',
+          'HNSW recall',
+          'A memory for the recall search.',
+          'tenant',
+          'integration-test',
+          (
+            SELECT array_agg(
+              (CASE
+                WHEN d = owner.axis THEN 1
+                WHEN d = 1 THEN 0.1
+                WHEN d = 4 THEN g / 1000.0
+                ELSE 0
+              END)::real
+              ORDER BY d
+            )::vector
+            FROM generate_series(1, ${VECTOR_INDEX_DIMENSIONS}::int) d
+          )
+        FROM (
+          VALUES
+            (${tenantId}::text, 'far', 3, 30),
+            (${neighborTenantId}::text, 'near', 1, 200)
+        ) AS owner(tenant_id, label, axis, memories)
+        CROSS JOIN LATERAL generate_series(1, owner.memories) g
+      `;
+      // Without a sequential scan or a sort, the search reads the HNSW index.
+      await admin`SET enable_seqscan = off`;
+      await admin`SET enable_sort = off`;
+      try {
+        // At pgvector's defaults the index scan yields only the neighbor's
+        // memories, which the tenant filter then drops.
+        const [defaults] = await admin`
+          SELECT count(*)::int AS memories
+          FROM (
+            SELECT id
+            FROM omni_memories
+            WHERE tenant_id = ${tenantId}
+            ORDER BY embedding_vector <=> ${`[${queryEmbedding.join(",")}]`}::vector
+            LIMIT 120
+          ) nearest
+        `;
+        expect(defaults).toEqual({ memories: 0 });
+
+        const results = await runWithDatabaseTenantScope(tenantId, () =>
+          searchMemories("recall search", { tenantId, limit: 30, queryEmbedding })
+        );
+
+        expect(results).toHaveLength(30);
+        expect(new Set(results.map(({ record }) => record.id.replace(/-\d+$/, ""))))
+          .toEqual(new Set(["hnsw-recall-far"]));
+      } finally {
+        await admin`RESET enable_seqscan`;
+        await admin`RESET enable_sort`;
+      }
+    },
+  );
 });
 
 async function dropDatabaseRole(

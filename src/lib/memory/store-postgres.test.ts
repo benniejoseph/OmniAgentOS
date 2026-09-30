@@ -9,6 +9,8 @@ const mocks = vi.hoisted(() => ({
   visibleDescendantRows: [] as Array<Record<string, unknown>>,
   coveringReceiptRows: [] as Array<Record<string, unknown>>,
   queryParams: [] as unknown[][],
+  queryClients: [] as boolean[],
+  transactions: 0,
 }));
 
 function createSql(transactionScoped = false) {
@@ -19,6 +21,7 @@ function createSql(transactionScoped = false) {
     const query = strings.join("?");
     mocks.queries.push(query);
     mocks.queryParams.push(params);
+    mocks.queryClients.push(transactionScoped);
     mocks.events.push("query");
     if (query.includes("FROM omni_memory_deletion_manifest_v1(")) {
       return mocks.deletionManifestRows;
@@ -87,7 +90,10 @@ function createSql(transactionScoped = false) {
     transactionScoped,
     transaction: async <T>(operation: (
       transaction: ReturnType<typeof createSql>,
-    ) => Promise<T>) => operation(createSql(true)),
+    ) => Promise<T>) => {
+      mocks.transactions += 1;
+      return operation(createSql(true));
+    },
   });
   return sql;
 }
@@ -143,6 +149,7 @@ import {
   type MemoryDeletionReceiptV1,
 } from "@/lib/memory/deletion-receipt";
 import { createExecutionScope } from "@/lib/security/execution-scope";
+import { VECTOR_INDEX_DIMENSIONS } from "@/lib/config";
 import {
   LOCAL_MULTILINGUAL_EMBEDDING_SPACE,
   embedLocalMultilingualTexts,
@@ -289,6 +296,8 @@ describe("Postgres memory recall", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.queries.length = 0;
+    mocks.queryClients.length = 0;
+    mocks.transactions = 0;
     mocks.events.length = 0;
     mocks.returnedMemoryRows.length = 0;
     mocks.returnedReviewRows.length = 0;
@@ -704,6 +713,41 @@ describe("Postgres memory recall", () => {
     expect(mocks.queries.some((queryText) =>
       queryText.includes("embedding_vector <=>")
     )).toBe(false);
+  });
+
+  it("sizes the stored-vector scan inside the search's own transaction", async () => {
+    const queryEmbedding = Array.from(
+      { length: VECTOR_INDEX_DIMENSIONS },
+      (_, index) => (index === 0 ? 1 : 0),
+    );
+
+    await searchMemories("database restore", {
+      tenantId: "tenant-a",
+      limit: 30,
+      queryEmbedding,
+    });
+
+    const scan = mocks.queries.findIndex((query) => query.includes("hnsw.ef_search"));
+    expect(scan).toBeGreaterThanOrEqual(0);
+    expect(mocks.queries[scan + 1]).toContain("WITH vector_candidates AS MATERIALIZED");
+    expect(mocks.queryParams[scan]).toEqual(["120"]);
+    expect(mocks.queryClients.slice(scan, scan + 2)).toEqual([true, true]);
+    expect(mocks.transactions).toBe(1);
+
+    mocks.queries.length = 0;
+    mocks.events.length = 0;
+    mocks.transactions = 0;
+    await searchMemories("database restore", {
+      tenantId: "tenant-a",
+      accessScope: accessScope(MEMORY_PURPOSE_IDS.retrieve),
+      queryEmbedding,
+    });
+
+    // A scoped search sizes the scan in the transaction that holds its scope.
+    expect(mocks.events.slice(0, 3)).toEqual(["scope", "query", "query"]);
+    expect(mocks.queries[0]).toContain("hnsw.ef_search");
+    expect(mocks.queries[1]).toContain("WITH vector_candidates AS MATERIALIZED");
+    expect(mocks.transactions).toBe(1);
   });
 
   it("keeps only the local semantic matches from the candidate window", async () => {

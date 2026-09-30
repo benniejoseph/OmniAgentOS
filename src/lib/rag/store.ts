@@ -7,6 +7,7 @@ import {
   runWithDatabaseActorScope,
   runWithDatabaseTenantScope,
 } from "@/lib/db/client";
+import { withHnswCandidateScan } from "@/lib/db/vector-search";
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import {
   retireEntityEvidenceLineage,
@@ -3050,7 +3051,10 @@ async function searchAuthorizedCanonicalKnowledgeDb(
       ? lexicalQuery
       : "";
     if (withVector) {
-      return getSql()`
+      return withHnswCandidateScan(
+        getSql(),
+        vectorCandidateLimit,
+        (scan) => scan`
         WITH authorized_vector_candidates AS MATERIALIZED (
           SELECT to_jsonb(c) - ARRAY[
                    'embedding', 'embedding_vector'
@@ -3195,7 +3199,8 @@ async function searchAuthorizedCanonicalKnowledgeDb(
           )))
         ) DESC
         LIMIT ${candidateLimit}
-      `;
+      `,
+      );
     }
 
     return getSql()`
