@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   applyDatabaseScope,
   databaseSchemaMigrations,
@@ -507,13 +507,13 @@ describe("database pool acquisition", () => {
       checksum: migration.checksum,
     }));
     const neverSettles = new Promise<Record<string, unknown>[]>(() => undefined);
-    retiredPool.pg.mockImplementation(() => {
-      events.push("verify:retired");
-      return Promise.resolve(schemaRows);
+    retiredPool.pg.mockImplementation((strings: TemplateStringsArray) => {
+      events.push(`${bootCheck(strings)}:retired`);
+      return Promise.resolve(bootCheckRows(strings, schemaRows));
     });
-    replacementPool.pg.mockImplementation(() => {
-      events.push("verify:replacement");
-      return Promise.resolve(schemaRows);
+    replacementPool.pg.mockImplementation((strings: TemplateStringsArray) => {
+      events.push(`${bootCheck(strings)}:replacement`);
+      return Promise.resolve(bootCheckRows(strings, schemaRows));
     });
     retiredPool.pg.reserve.mockImplementation(() => {
       events.push("reserve:retired");
@@ -552,14 +552,16 @@ describe("database pool acquisition", () => {
       await vi.waitFor(() => {
         expect(retiredPool.reserved).toHaveBeenCalledTimes(2);
       });
-      expect(events).toEqual(["verify:retired", "reserve:retired"]);
+      expect(events).toEqual(["verify:retired", "role:retired", "reserve:retired"]);
 
       closeHandlers[0]?.(1);
       await expect(pendingQuery).resolves.toEqual([{ ok: true }]);
       expect(events).toEqual([
         "verify:retired",
+        "role:retired",
         "reserve:retired",
         "verify:replacement",
+        "role:replacement",
         "reserve:replacement",
       ]);
       expect(postgresFactory).toHaveBeenCalledTimes(2);
@@ -678,9 +680,9 @@ describe("database pool acquisition", () => {
       name: migration.name,
       checksum: migration.checksum,
     }));
-    runtimeVerifier.pg.mockImplementation(() => {
-      events.push("verify:runtime");
-      return Promise.resolve(schemaRows);
+    runtimeVerifier.pg.mockImplementation((strings: TemplateStringsArray) => {
+      events.push(`${bootCheck(strings)}:runtime`);
+      return Promise.resolve(bootCheckRows(strings, schemaRows));
     });
     retiredMaintenance.pg.reserve.mockImplementation(() => {
       events.push("reserve:retired-maintenance");
@@ -737,6 +739,7 @@ describe("database pool acquisition", () => {
       });
       expect(events).toEqual([
         "verify:runtime",
+        "role:runtime",
         "reserve:retired-maintenance",
       ]);
 
@@ -748,6 +751,7 @@ describe("database pool acquisition", () => {
       expect(retiredMaintenance.reserved.release).not.toHaveBeenCalled();
       expect(events).toEqual([
         "verify:runtime",
+        "role:runtime",
         "reserve:retired-maintenance",
         "reserve:replacement-maintenance",
       ]);
@@ -1901,12 +1905,15 @@ function createMockPoolClient(
   );
   const pg = Object.assign(vi.fn((strings: TemplateStringsArray) => {
     const text = strings.join("?");
-    if (text.includes("FROM omni_schema_version")) {
-      return Promise.resolve(databaseSchemaMigrations.map((migration) => ({
-        version: migration.version,
-        name: migration.name,
-        checksum: migration.checksum,
-      })));
+    if (text.includes("FROM omni_schema_version") || text.includes("FROM pg_roles")) {
+      return Promise.resolve(bootCheckRows(
+        strings,
+        databaseSchemaMigrations.map((migration) => ({
+          version: migration.version,
+          name: migration.name,
+          checksum: migration.checksum,
+        })),
+      ));
     }
     return Promise.resolve(resultRows);
   }), {
@@ -1914,6 +1921,21 @@ function createMockPoolClient(
     end: vi.fn(() => Promise.resolve()),
   });
   return { pg, reserved, statements };
+}
+
+/** Which production boot check a query is: the schema markers or the role. */
+function bootCheck(strings: TemplateStringsArray) {
+  return strings.join("?").includes("FROM pg_roles") ? "role" : "verify";
+}
+
+/** Answers a boot check with the markers, or with a safe serving role. */
+function bootCheckRows(
+  strings: TemplateStringsArray,
+  schemaRows: Record<string, unknown>[],
+) {
+  return bootCheck(strings) === "role"
+    ? [{ rolname: "omni_runtime", rolsuper: false, rolbypassrls: false, owns_schema: false }]
+    : schemaRows;
 }
 
 function transactionCommands(
@@ -2476,13 +2498,91 @@ describe("ordered database schema versions", () => {
 
       await expect(isolatedClient.ensureDatabaseSchema()).resolves.toBeUndefined();
       expect(cancel).toHaveBeenCalledOnce();
-      expect(queries).toBe(2);
+      // The markers that timed out, then the markers and the role.
+      expect(queries).toBe(3);
     } finally {
       vi.doUnmock("postgres");
       vi.unstubAllEnvs();
       vi.useRealTimers();
       vi.resetModules();
     }
+  });
+
+  describe("production role check at boot", () => {
+    const markers = databaseSchemaMigrations.map(({ version, name, checksum }) => ({
+      version,
+      name,
+      checksum,
+    }));
+    const role = (overrides: Record<string, boolean> = {}) => [{
+      rolname: "omni_app",
+      rolsuper: false,
+      rolbypassrls: false,
+      owns_schema: false,
+      ...overrides,
+    }];
+
+    /** A production client whose role query answers with `roleRows`. */
+    async function productionClient(roleRows: () => unknown) {
+      vi.stubEnv("NODE_ENV", "production");
+      vi.stubEnv("DATABASE_URL", "postgresql://example.invalid/omniagent");
+      vi.stubEnv("OMNIAGENT_SCHEMA_VERIFICATION_TIMEOUT_MS", "1000");
+      const sql = (strings: TemplateStringsArray) =>
+        strings.join("").includes("pg_roles")
+          ? roleRows()
+          : Promise.resolve(markers);
+      vi.doMock("postgres", () => ({
+        default: vi.fn(() => sql),
+      }));
+      vi.resetModules();
+      return import("@/lib/db/client");
+    }
+
+    afterEach(() => {
+      vi.doUnmock("postgres");
+      vi.unstubAllEnvs();
+      vi.useRealTimers();
+      vi.resetModules();
+    });
+
+    it("refuses an unsafe or unknown role and checks again on the next request", async () => {
+      const roles = [
+        role({ rolbypassrls: true }),
+        role({ owns_schema: true }),
+        role({ rolsuper: true }),
+        [],
+        role(),
+      ];
+      const isolatedClient = await productionClient(
+        () => Promise.resolve(roles.shift()),
+      );
+      const unsafe =
+        "Unsafe runtime database role omni_app: production runtime roles must be non-owner, non-superuser, and unable to BYPASSRLS.";
+
+      for (const message of [unsafe, unsafe, unsafe, "Unable to verify the runtime database role."]) {
+        await expect(isolatedClient.ensureDatabaseSchema()).rejects.toThrow(message);
+      }
+      await expect(isolatedClient.ensureDatabaseSchema()).resolves.toBeUndefined();
+      expect(roles).toEqual([]);
+    });
+
+    it("gives up on a role query that does not answer in time", async () => {
+      vi.useFakeTimers();
+      const cancel = vi.fn(() => Promise.resolve());
+      const isolatedClient = await productionClient(() => Object.assign(
+        new Promise<Record<string, unknown>[]>(() => undefined),
+        { cancel },
+      ));
+
+      const verification = isolatedClient.ensureDatabaseSchema();
+      const rejection = expect(verification).rejects.toThrow(
+        "Database schema verification timed out after 1000ms.",
+      );
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      await rejection;
+      expect(cancel).toHaveBeenCalledOnce();
+    });
   });
 
   it("propagates a tenant resolved after an asynchronous lookup to the caller", async () => {

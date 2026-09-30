@@ -914,7 +914,13 @@ export async function ensureMigrationGranteeRoles(
 }
 
 async function verifyDatabaseSchema() {
-  return verifyDatabaseSchemaWithClient(getRawPg());
+  const pg = getRawPg();
+  await verifyDatabaseSchemaWithClient(pg);
+  // Every production boot checks the serving role, not only a migration.
+  await assertRuntimeDatabaseRoleSafety(
+    pg,
+    getDatabaseSchemaVerificationTimeoutMs(),
+  );
 }
 
 export async function verifyDatabaseSchemaWithClient(pg: AnyPg) {
@@ -1019,11 +1025,14 @@ async function waitForSchemaVerificationQuery<T>(
   });
 }
 
-async function assertRuntimeDatabaseRoleSafety(pg: postgres.Sql) {
+async function assertRuntimeDatabaseRoleSafety(
+  pg: postgres.Sql,
+  timeoutMs?: number,
+) {
   if (process.env.NODE_ENV !== "production") {
     return;
   }
-  const role = await readRuntimeDatabaseRoleSafety(pg);
+  const role = await readRuntimeDatabaseRoleSafety(pg, timeoutMs);
   if (!role) {
     throw new Error("Unable to verify the runtime database role.");
   }
@@ -1085,8 +1094,11 @@ export async function getMaintenanceDatabaseRoleSafety() {
   };
 }
 
-async function readRuntimeDatabaseRoleSafety(pg: postgres.Sql) {
-  const rows = await pg`
+async function readRuntimeDatabaseRoleSafety(
+  pg: postgres.Sql,
+  timeoutMs?: number,
+) {
+  const query = pg`
     SELECT
       roles.rolname,
       roles.rolsuper,
@@ -1098,6 +1110,9 @@ async function readRuntimeDatabaseRoleSafety(pg: postgres.Sql) {
       AND schema_table.oid = 'omni_schema_version'::regclass
     LIMIT 1
   `;
+  const rows = timeoutMs === undefined
+    ? await query
+    : await waitForSchemaVerificationQuery(query, timeoutMs);
   const role = rows[0];
   if (!role) {
     return undefined;
