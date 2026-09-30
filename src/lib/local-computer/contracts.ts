@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import { isIP } from "node:net";
 import { z } from "zod";
+import commandProgramPolicy from "@/lib/local-computer/command-program-policy.json";
 
 export const LOCAL_COMPUTER_PROTOCOL_VERSION = 1 as const;
 export const LOCAL_COMPUTER_NATIVE_CONTRACT_VERSION = 11 as const;
@@ -261,29 +262,9 @@ const localComputerHelperClickInputSchema = z.union([
   }).strict(),
 ]);
 
-const commandExecutableDenylist = new Set([
-  "ash",
-  "bash",
-  "csh",
-  "dash",
-  "env",
-  "exec",
-  "fish",
-  "ksh",
-  "launchctl",
-  "login",
-  "nohup",
-  "open",
-  "osascript",
-  "script",
-  "security",
-  "sh",
-  "sudo",
-  "tcsh",
-  "time",
-  "xargs",
-  "zsh",
-]);
+// The programs This Mac may start. The native validators hold generated
+// copies of the same list; npm run generate:command-program-policy updates them.
+const commandPrograms: ReadonlySet<string> = new Set(commandProgramPolicy.programs);
 const commandArgument = z.string().max(8_192).superRefine((value, context) => {
   if (
     /[\u0000-\u0008\u000b-\u001f\u007f]/.test(value) ||
@@ -301,10 +282,10 @@ export const localComputerRunCommandInputSchema = z.object({
   executable: z.string().trim().min(1).max(64)
     .regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/)
     .superRefine((value, context) => {
-      if (commandExecutableDenylist.has(value.toLowerCase())) {
+      if (!commandPrograms.has(value)) {
         context.addIssue({
           code: "custom",
-          message: "Shells and security-sensitive command launchers are not permitted.",
+          message: "Only listed development and file programs can run on This Mac.",
         });
       }
     }),

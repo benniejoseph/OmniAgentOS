@@ -195,6 +195,37 @@ void main() {
     }
   });
 
+  test('accepts only listed programs for a governed command', () {
+    LocalComputerCommand runCommand(String executable) => LocalComputerCommand(
+      id: 'local_computer_command_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      action: 'run_command',
+      input: {
+        'workspaceId': 'local_workspace_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        'executable': executable,
+        'arguments': const ['status', '--short'],
+        'relativeDirectory': '.',
+        'timeoutSeconds': 10,
+      },
+      expiresAt: DateTime.now().toUtc().add(const Duration(minutes: 1)),
+    );
+
+    for (final executable in ['git', 'npm', 'python3', 'true']) {
+      expect(runCommand(executable).input['executable'], executable);
+    }
+    for (final executable in [
+      'bash',
+      'sudo',
+      'env',
+      'osascript',
+      'perl',
+      'defaults',
+      'Git',
+      '/usr/bin/git',
+    ]) {
+      expect(() => runCommand(executable), throwsArgumentError);
+    }
+  });
+
   test('rejects an invented native effect verdict', () {
     expect(
       () => LocalComputerCommandResult.fromArguments(const {

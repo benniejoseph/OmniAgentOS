@@ -212,18 +212,54 @@ private enum ParentVerifier {
   }
 }
 
+/// The programs a command may start, and the programs a listed name may never
+/// resolve to through a link. Names match exactly, so a name in other case is
+/// refused even where the file system would find it.
+enum CommandProgramPolicy {
+  // BEGIN GENERATED command program policy
+  // From src/lib/local-computer/command-program-policy.json; regenerate with
+  // npm run generate:command-program-policy.
+  static let programs: Set<String> = [
+    "awk", "basename", "bun", "cargo", "cat", "cmake", "cmp", "cp", "cut", "dart", "date", "deno",
+    "df", "diff", "dirname", "du", "echo", "false", "file", "find", "flutter", "git", "go", "grep",
+    "gunzip", "gzip", "head", "jq", "ls", "make", "md5", "mkdir", "mv", "node", "npm", "pip3",
+    "pnpm", "pod", "printf", "pwd", "python3", "realpath", "rg", "rm", "rmdir", "rustc", "sed",
+    "shasum", "sort", "stat", "sw_vers", "swift", "swiftc", "tail", "tar", "touch", "tr", "tree",
+    "true", "uname", "uniq", "unzip", "wc", "which", "xcodebuild", "yarn", "zip",
+  ]
+  static let refusedTargets: Set<String> = [
+    "arch", "ash", "bash", "caffeinate", "chroot", "csh", "dash", "doas", "env", "exec", "expect",
+    "fish", "ksh", "launchctl", "login", "nice", "nohup", "npx", "open", "osacompile", "osascript",
+    "perl", "php", "pwsh", "ruby", "sandbox-exec", "script", "security", "sh", "su", "sudo",
+    "taskpolicy", "tclsh", "tcsh", "time", "timeout", "watch", "xargs", "xcrun", "zsh",
+  ]
+  // END GENERATED command program policy
+  static let searchDirectories = [
+    "/usr/bin", "/bin", "/usr/sbin", "/sbin", "/opt/homebrew/bin", "/usr/local/bin",
+  ]
+
+  /// Finds a listed program in the first directory that holds it. An unlisted
+  /// name, or a file that resolves to a refused program, finds nothing.
+  static func resolve(_ name: String, in directories: [String] = searchDirectories) -> URL? {
+    guard programs.contains(name) else { return nil }
+    for directory in directories {
+      let candidate = URL(fileURLWithPath: directory, isDirectory: true)
+        .appendingPathComponent(name, isDirectory: false)
+      if FileManager.default.isExecutableFile(atPath: candidate.path) {
+        let resolved = candidate.standardizedFileURL.resolvingSymlinksInPath()
+        guard !refusedTargets.contains(resolved.lastPathComponent.lowercased())
+        else { return nil }
+        return resolved
+      }
+    }
+    return nil
+  }
+}
+
 private final class CommandRunner {
   private static let allowedInputKeys: Set<String> = [
     "workspaceId", "workspaceName", "workspaceRoot", "workingDirectory",
     "executable", "arguments", "relativeDirectory", "timeoutSeconds",
-  ]
-  private static let forbiddenExecutables: Set<String> = [
-    "ash", "bash", "csh", "dash", "env", "exec", "fish", "ksh", "launchctl",
-    "login", "nohup", "open", "osascript", "script", "security", "sh", "sudo",
-    "tcsh", "time", "xargs", "zsh",
-  ]
-  private static let executableSearchDirectories = [
-    "/usr/bin", "/bin", "/usr/sbin", "/sbin", "/opt/homebrew/bin", "/usr/local/bin",
   ]
   private static let maximumArgumentCount = 64
   private static let maximumArgumentBytes = 8 * 1_024
@@ -265,7 +301,6 @@ private final class CommandRunner {
           let rawDirectory = input["workingDirectory"] as? String,
           let executable = input["executable"] as? String,
           isExecutableName(executable),
-          !Self.forbiddenExecutables.contains(executable.lowercased()),
           let arguments = input["arguments"] as? [String],
           arguments.count <= Self.maximumArgumentCount,
           arguments.allSatisfy({ isSafeArgument($0) }),
@@ -278,7 +313,7 @@ private final class CommandRunner {
           let workingDirectory = canonicalDirectory(rawDirectory),
           contains(root: root, candidate: workingDirectory),
           resolveWorkingDirectory(root: root, relativeDirectory: relativeDirectory) == workingDirectory,
-          let executableURL = resolveExecutable(executable)
+          let executableURL = CommandProgramPolicy.resolve(executable)
     else { throw CommandRunnerFailure.rejected("invalid_command_input") }
 
     return (
@@ -336,7 +371,7 @@ private final class CommandRunner {
       "LANG": "en_US.UTF-8",
       "LC_ALL": "en_US.UTF-8",
       "NO_COLOR": "1",
-      "PATH": Self.executableSearchDirectories.joined(separator: ":"),
+      "PATH": CommandProgramPolicy.searchDirectories.joined(separator: ":"),
       "SSH_ASKPASS": "/usr/bin/false",
       "TERM": "dumb",
       "TMPDIR": isolatedTmp.path,
@@ -456,20 +491,6 @@ private final class CommandRunner {
     if let result { value["result"] = result }
     if let errorCode { value["errorCode"] = errorCode }
     return value
-  }
-
-  private func resolveExecutable(_ name: String) -> URL? {
-    for directory in Self.executableSearchDirectories {
-      let candidate = URL(fileURLWithPath: directory, isDirectory: true)
-        .appendingPathComponent(name, isDirectory: false)
-      if FileManager.default.isExecutableFile(atPath: candidate.path) {
-        let resolved = candidate.standardizedFileURL.resolvingSymlinksInPath()
-        guard !Self.forbiddenExecutables.contains(resolved.lastPathComponent.lowercased())
-        else { return nil }
-        return resolved
-      }
-    }
-    return nil
   }
 
   private func canonicalDirectory(_ path: String) -> URL? {

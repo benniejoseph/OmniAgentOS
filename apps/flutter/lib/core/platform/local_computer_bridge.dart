@@ -185,6 +185,80 @@ class LocalComputerCommand {
   };
   static final _uuid = RegExp(r'^local_computer_command_[a-f0-9]{48}$');
 
+  // BEGIN GENERATED command program policy
+  // From src/lib/local-computer/command-program-policy.json; regenerate with
+  // npm run generate:command-program-policy.
+  static const _commandPrograms = <String>{
+    'awk',
+    'basename',
+    'bun',
+    'cargo',
+    'cat',
+    'cmake',
+    'cmp',
+    'cp',
+    'cut',
+    'dart',
+    'date',
+    'deno',
+    'df',
+    'diff',
+    'dirname',
+    'du',
+    'echo',
+    'false',
+    'file',
+    'find',
+    'flutter',
+    'git',
+    'go',
+    'grep',
+    'gunzip',
+    'gzip',
+    'head',
+    'jq',
+    'ls',
+    'make',
+    'md5',
+    'mkdir',
+    'mv',
+    'node',
+    'npm',
+    'pip3',
+    'pnpm',
+    'pod',
+    'printf',
+    'pwd',
+    'python3',
+    'realpath',
+    'rg',
+    'rm',
+    'rmdir',
+    'rustc',
+    'sed',
+    'shasum',
+    'sort',
+    'stat',
+    'sw_vers',
+    'swift',
+    'swiftc',
+    'tail',
+    'tar',
+    'touch',
+    'tr',
+    'tree',
+    'true',
+    'uname',
+    'uniq',
+    'unzip',
+    'wc',
+    'which',
+    'xcodebuild',
+    'yarn',
+    'zip',
+  };
+  // END GENERATED command program policy
+
   /// Marks an action that runs on This Mac task authority alone. The helper
   /// checks its real on-screen target and refuses one that task authority
   /// does not cover.
@@ -248,29 +322,6 @@ class LocalComputerCommand {
       final arguments = input['arguments'];
       final relativeDirectory = input['relativeDirectory'];
       final timeoutSeconds = input['timeoutSeconds'];
-      const deniedExecutables = {
-        'ash',
-        'bash',
-        'csh',
-        'dash',
-        'env',
-        'exec',
-        'fish',
-        'ksh',
-        'launchctl',
-        'login',
-        'nohup',
-        'open',
-        'osascript',
-        'script',
-        'security',
-        'sh',
-        'sudo',
-        'tcsh',
-        'time',
-        'xargs',
-        'zsh',
-      };
       final validArguments =
           arguments is List &&
           arguments.length <= 64 &&
@@ -307,7 +358,7 @@ class LocalComputerCommand {
           RegExp(r'^local_workspace_[a-f0-9]{32}$').hasMatch(workspaceId) &&
           executable is String &&
           RegExp(r'^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$').hasMatch(executable) &&
-          !deniedExecutables.contains(executable.toLowerCase()) &&
+          _commandPrograms.contains(executable) &&
           validArguments &&
           validRelativeDirectory &&
           timeoutSeconds is int &&

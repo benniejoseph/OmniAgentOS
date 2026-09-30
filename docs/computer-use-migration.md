@@ -254,10 +254,18 @@ approval UI states explicitly.
 The separately signed helper receives no Asael bearer, connector credential, App
 Group authority, or inherited application environment. It invokes the program
 directly with a fixed minimal environment and isolated home; it never evaluates a
-shell string. Shell interpreters, `sudo`, AppleScript, LaunchServices, Keychain and
-security administration, and system-control launchers are denied. Stop terminates the
-active process group, timeout kills it, and uncertain or expired claims are not
-replayed.
+shell string. Only programs named in
+`src/lib/local-computer/command-program-policy.json` can run: common file,
+text, archive, version-control, and build tools. Shell interpreters, `sudo`,
+AppleScript, LaunchServices, Keychain and security administration, launchers,
+and network clients are not on it. The server, the Flutter bridge, the app, and
+the helper each check the exact name, and the helper also refuses a listed name
+whose file resolves to a shell or launcher. Arguments can still make a listed
+program run another (`find -exec`, `git -c`, package scripts), which is why each
+command pauses for exact approval. To allow another program, add it to the list,
+run `npm run generate:command-program-policy`, and rebuild the macOS app. Stop
+terminates the active process group, timeout kills it, and uncertain or expired
+claims are not replayed.
 
 Bounded stdout and stderr are sanitized and treated as untrusted one-turn evidence.
 The native Conversation rail may show a short-lived terminal artifact and the

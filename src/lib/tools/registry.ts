@@ -1,5 +1,6 @@
 import type { ToolDefinition } from "@/lib/tools/types";
 import { FIRST_PARTY_APP_TOOLS } from "@/lib/tools/app-registry";
+import commandProgramPolicy from "@/lib/local-computer/command-program-policy.json";
 
 export const governedTools: ToolDefinition[] = [
   ...FIRST_PARTY_APP_TOOLS,
@@ -1224,11 +1225,9 @@ function localMacComputerTools(): ToolDefinition[] {
         },
         executable: {
           type: "string",
-          minLength: 1,
-          maxLength: 64,
-          pattern: "^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$",
+          enum: [...commandProgramPolicy.programs],
           description:
-            "One executable basename. Shells, launchers, absolute paths, slashes, and command strings are refused.",
+            "One listed program name. Other programs, shells, launchers, paths, and command strings are refused.",
         },
         arguments: {
           type: "array",

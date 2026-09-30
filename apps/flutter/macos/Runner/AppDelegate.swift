@@ -568,11 +568,18 @@ private final class LocalComputerController: NSObject {
   private static let commandInputKeys: Set<String> = [
     "workspaceId", "executable", "arguments", "relativeDirectory", "timeoutSeconds",
   ]
-  private static let forbiddenCommandExecutables: Set<String> = [
-    "ash", "bash", "csh", "dash", "env", "exec", "fish", "ksh", "launchctl",
-    "login", "nohup", "open", "osascript", "script", "security", "sh", "sudo",
-    "tcsh", "time", "xargs", "zsh",
+  // BEGIN GENERATED command program policy
+  // From src/lib/local-computer/command-program-policy.json; regenerate with
+  // npm run generate:command-program-policy.
+  private static let commandPrograms: Set<String> = [
+    "awk", "basename", "bun", "cargo", "cat", "cmake", "cmp", "cp", "cut", "dart", "date", "deno",
+    "df", "diff", "dirname", "du", "echo", "false", "file", "find", "flutter", "git", "go", "grep",
+    "gunzip", "gzip", "head", "jq", "ls", "make", "md5", "mkdir", "mv", "node", "npm", "pip3",
+    "pnpm", "pod", "printf", "pwd", "python3", "realpath", "rg", "rm", "rmdir", "rustc", "sed",
+    "shasum", "sort", "stat", "sw_vers", "swift", "swiftc", "tail", "tar", "touch", "tr", "tree",
+    "true", "uname", "uniq", "unzip", "wc", "which", "xcodebuild", "yarn", "zip",
   ]
+  // END GENERATED command program policy
   private static let helperBundleName = "AsaelComputerUseHelper.app"
   private static let helperExecutableName = "AsaelComputerUseHelper"
   private static let helperBundleIdentifier = "app.omniagent.omniagent.computer-use-helper"
@@ -916,7 +923,7 @@ private final class LocalComputerController: NSObject {
           Self.isWorkspaceId(workspaceId),
           let executable = input["executable"] as? String,
           Self.isCommandExecutable(executable),
-          !Self.forbiddenCommandExecutables.contains(executable.lowercased()),
+          Self.commandPrograms.contains(executable),
           let arguments = input["arguments"] as? [String],
           arguments.count <= 64,
           arguments.allSatisfy(Self.isSafeCommandArgument),
