@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:async';
 
+import 'package:asael/core/platform/local_computer_bridge.dart';
 import 'package:asael/features/computer_use/local_computer.dart';
 import 'package:asael/features/talk/talk.dart';
 import 'package:flutter/material.dart';
@@ -1286,11 +1287,11 @@ void main() {
       ),
     );
 
-    expect(find.text('Live activity'), findsOneWidget);
+    expect(find.text('What Asael is doing'), findsOneWidget);
     expect(find.text('Scout'), findsOneWidget);
     expect(find.text('Approval required'), findsOneWidget);
     expect(find.text('Review approval'), findsOneWidget);
-    expect(find.textContaining('Governed run run-observab'), findsOneWidget);
+    expect(find.textContaining('Protected run run-observab'), findsOneWidget);
   });
 
   testWidgets('shows the captured Agent on queued and retry work', (
@@ -1362,11 +1363,14 @@ void main() {
         ..assignAgent(id: 'agent-moltbook', name: 'Moltbook Steward');
       var exits = 0;
       var presentationReady = 0;
+      final thisMac = _ReadyThisMac();
+      addTearDown(thisMac.dispose);
       await tester.pumpWidget(
         MaterialApp(
           home: TalkView(
             controller: controller,
             voiceRecorder: _VoiceDraftRecorder(),
+            localComputer: thisMac,
             quickEntry: true,
             onQuickEntryReady: () => presentationReady += 1,
             onExitQuickEntry: () => exits += 1,
@@ -1452,4 +1456,31 @@ class _VoiceDraftRecorder implements VoiceDraftRecorder {
 
   @override
   Future<String?> stop() async => null;
+}
+
+/// The main window's Mac broker, ready to take a command.
+class _ReadyThisMac extends ChangeNotifier implements LocalComputerCoordinator {
+  @override
+  bool get canClaimCommands => true;
+
+  @override
+  LocalComputerBrokerPhase get phase => LocalComputerBrokerPhase.ready;
+
+  @override
+  bool get ready => true;
+
+  @override
+  bool get active => false;
+
+  @override
+  bool get changing => false;
+
+  @override
+  LocalComputerStatus? get status => null;
+
+  @override
+  Future<bool> prepareForCommand() async => true;
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
