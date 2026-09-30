@@ -30,6 +30,9 @@ const _maximumSpeechPcmBytes = 32 * 1024 * 1024;
 const _maximumProviderEventCharacters = 1024 * 1024;
 const _maximumSdpCharacters = 1024 * 1024;
 
+/// Stands in the draft for speech the provider did not transcribe.
+const _transcriptGap = '[not transcribed]';
+
 enum AmbientRealtimeVoicePhase {
   idle,
   requestingPermission,
@@ -154,6 +157,7 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
   bool _sessionReported = false;
   bool _reconnectInFlight = false;
   bool _statsReadInFlight = false;
+  bool _commitPending = false;
   int _generation = 0;
   int _speechGeneration = 0;
   int _reconnectCount = 0;
@@ -294,8 +298,10 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
     final activePhase = _phase;
     _setPhase(AmbientRealtimeVoicePhase.finishing, 'Finishing your request.');
     final channel = _dataChannel;
-    if (channel?.state == RTCDataChannelState.RTCDataChannelOpen &&
-        activePhase == AmbientRealtimeVoicePhase.speechDetected) {
+    final open = channel?.state == RTCDataChannelState.RTCDataChannelOpen;
+    _commitPending =
+        open && activePhase == AmbientRealtimeVoicePhase.speechDetected;
+    if (_commitPending) {
       try {
         await channel!.send(
           RTCDataChannelMessage(
@@ -304,14 +310,24 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
         );
       } catch (_) {
         // The server VAD may already have committed the final turn.
+        _commitPending = false;
       }
     }
     for (final track in _microphoneStream?.getAudioTracks() ?? const []) {
       track.enabled = false;
     }
-    await Future<void>.delayed(const Duration(milliseconds: 1200));
+    // Review waits for every committed turn's final transcript, for as long
+    // as one is likely to take.
+    final deadline = DateTime.now().add(const Duration(seconds: 4));
+    while (open &&
+        _isCurrent(generation) &&
+        DateTime.now().isBefore(deadline) &&
+        (_commitPending || _transcript.pending)) {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
     if (!_isCurrent(generation)) return;
     await _stopLocalTransport(stopMicrophone: true);
+    _transcript = _transcript.closed();
     _setPhase(
       AmbientRealtimeVoicePhase.review,
       'Recognized request ready to send.',
@@ -359,6 +375,7 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
     for (final event in events) {
       _applyProviderMessage(jsonEncode(event), _generation);
     }
+    _transcript = _transcript.closed();
     _setPhase(
       AmbientRealtimeVoicePhase.review,
       'Recognized request ready to send.',
@@ -595,7 +612,11 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
       }
     };
     channel.onMessage = (message) {
-      if (!_isCurrent(generation) || message.isBinary) return;
+      if (!_isCurrent(generation) ||
+          !identical(_dataChannel, channel) ||
+          message.isBinary) {
+        return;
+      }
       _applyProviderMessage(message.text, generation);
     };
     peer.onConnectionState = (state) {
@@ -729,6 +750,7 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
       );
       return;
     }
+    if (type == 'input_audio_buffer.committed') _commitPending = false;
     final next = _transcript.applied(event);
     if (!identical(next, _transcript)) {
       _transcript = next;
@@ -1142,6 +1164,7 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
     _reviewAttested = false;
     _sessionReported = false;
     _reconnectCount = 0;
+    _commitPending = false;
     _sessionStartedAt = null;
     _session = null;
     _sessionMode = 'orchestrate';
@@ -1375,6 +1398,7 @@ class _TranscriptAccumulator {
     required this.itemText,
     required this.itemConfidence,
     required this.completedItems,
+    required this.failedItems,
     required this.ignoredItems,
     required this.turnCount,
     required this.manuallyEdited,
@@ -1386,6 +1410,7 @@ class _TranscriptAccumulator {
     itemText: {},
     itemConfidence: {},
     completedItems: {},
+    failedItems: {},
     ignoredItems: {},
     turnCount: 0,
     manuallyEdited: false,
@@ -1396,9 +1421,16 @@ class _TranscriptAccumulator {
   final Map<String, String> itemText;
   final Map<String, _ItemConfidence> itemConfidence;
   final Set<String> completedItems;
+  final Set<String> failedItems;
   final Set<String> ignoredItems;
   final int turnCount;
   final bool manuallyEdited;
+
+  /// Whether a committed turn is still waiting for its final transcript.
+  bool get pending => itemOrder.any(_unfinished);
+
+  bool _unfinished(String itemId) =>
+      !completedItems.contains(itemId) && !failedItems.contains(itemId);
 
   String get text {
     var result = manualText;
@@ -1411,6 +1443,8 @@ class _TranscriptAccumulator {
     return result;
   }
 
+  /// Bands only a draft whose every turn finished with a score; a turn still
+  /// arriving, failed, or unscored leaves the confidence unavailable.
   _TranscriptConfidence get confidence {
     if (manuallyEdited) {
       return const _TranscriptConfidence(
@@ -1419,12 +1453,18 @@ class _TranscriptAccumulator {
         requiresExplicitAttestation: true,
       );
     }
+    final unscored = itemOrder.any(
+      (itemId) =>
+          !completedItems.contains(itemId) ||
+          ((itemText[itemId] ?? '').isNotEmpty &&
+              !itemConfidence.containsKey(itemId)),
+    );
     final summaries = [for (final itemId in itemOrder) ?itemConfidence[itemId]];
     final sampleCount = summaries.fold<int>(
       0,
       (total, value) => total + value.sampleCount,
     );
-    if (sampleCount == 0) {
+    if (unscored || sampleCount == 0) {
       return const _TranscriptConfidence(
         band: AmbientVoiceConfidenceBand.unavailable,
         sampleCount: 0,
@@ -1452,20 +1492,38 @@ class _TranscriptAccumulator {
 
   _TranscriptAccumulator applied(Map<String, dynamic> event) {
     final type = event['type'];
-    if (type != 'conversation.item.input_audio_transcription.delta' &&
-        type != 'conversation.item.input_audio_transcription.completed') {
+    if (type != 'input_audio_buffer.committed' &&
+        type != 'conversation.item.input_audio_transcription.delta' &&
+        type != 'conversation.item.input_audio_transcription.completed' &&
+        type != 'conversation.item.input_audio_transcription.failed') {
       return this;
     }
     final itemId = _safeItemId(event['item_id']);
     if (itemId == null || ignoredItems.contains(itemId)) return this;
+    // Transcripts can finish out of order, so each turn takes its place when
+    // its audio is committed.
+    if (type == 'input_audio_buffer.committed') {
+      if (itemOrder.contains(itemId)) return this;
+      return _copy(itemOrder: [...itemOrder, itemId].take(1000).toList());
+    }
     final completed =
         type == 'conversation.item.input_audio_transcription.completed';
-    if (!completed && completedItems.contains(itemId)) return this;
+    if (failedItems.contains(itemId) ||
+        (!completed && completedItems.contains(itemId))) {
+      return this;
+    }
+    if (type == 'conversation.item.input_audio_transcription.failed') {
+      return _untranscribed([itemId]);
+    }
     final content = _safeTranscriptText(
       completed ? event['transcript'] : event['delta'],
       completed ? _maximumTranscriptCharacters : 8000,
     );
-    if (content.isEmpty) return this;
+    if (content.isEmpty) {
+      // A turn that finished with no words holds nothing back.
+      if (!completed || completedItems.contains(itemId)) return this;
+      return _copy(completedItems: {...completedItems, itemId});
+    }
     final nextOrder = itemOrder.contains(itemId)
         ? [...itemOrder]
         : [...itemOrder, itemId].take(1000).toList(growable: false);
@@ -1486,19 +1544,20 @@ class _TranscriptAccumulator {
       final confidence = _confidenceFromLogprobs(event['logprobs']);
       if (confidence != null) nextConfidence[itemId] = confidence;
     }
-    final next = _TranscriptAccumulator(
-      manualText: manualText,
+    return _copy(
       itemOrder: nextOrder,
       itemText: nextText,
       itemConfidence: nextConfidence,
       completedItems: nextCompleted,
-      ignoredItems: {...ignoredItems},
       turnCount: completed ? math.min(1000, turnCount + 1) : turnCount,
-      manuallyEdited: manuallyEdited,
-    );
-    return next.text.length <= _maximumTranscriptCharacters
-        ? next
-        : next.edited(next.text);
+    )._bounded();
+  }
+
+  /// Ends the draft for review: a turn whose transcript never arrived shows as
+  /// a gap rather than disappearing from the command.
+  _TranscriptAccumulator closed() {
+    final unfinished = itemOrder.where(_unfinished).toList();
+    return unfinished.isEmpty ? this : _untranscribed(unfinished);
   }
 
   _TranscriptAccumulator edited(String value) => _TranscriptAccumulator(
@@ -1507,9 +1566,48 @@ class _TranscriptAccumulator {
     itemText: const {},
     itemConfidence: const {},
     completedItems: const {},
+    failedItems: const {},
     ignoredItems: {...ignoredItems, ...itemOrder}.take(1000).toSet(),
     turnCount: turnCount,
     manuallyEdited: true,
+  );
+
+  /// Keeps any words that arrived and marks where the rest are missing.
+  _TranscriptAccumulator _untranscribed(List<String> itemIds) {
+    final nextText = {...itemText};
+    for (final itemId in itemIds) {
+      nextText[itemId] = _joinTranscript(
+        nextText[itemId] ?? '',
+        _transcriptGap,
+      );
+    }
+    return _copy(
+      itemOrder: {...itemOrder, ...itemIds}.take(1000).toList(),
+      itemText: nextText,
+      failedItems: {...failedItems, ...itemIds},
+    )._bounded();
+  }
+
+  _TranscriptAccumulator _bounded() =>
+      text.length <= _maximumTranscriptCharacters ? this : edited(text);
+
+  _TranscriptAccumulator _copy({
+    List<String>? itemOrder,
+    Map<String, String>? itemText,
+    Map<String, _ItemConfidence>? itemConfidence,
+    Set<String>? completedItems,
+    Set<String>? failedItems,
+    int? turnCount,
+  }) => _TranscriptAccumulator(
+    manualText: manualText,
+    itemOrder: itemOrder ?? this.itemOrder,
+    itemText: itemText ?? this.itemText,
+    itemConfidence: itemConfidence ?? this.itemConfidence,
+    completedItems: completedItems ?? this.completedItems,
+    failedItems: failedItems ?? this.failedItems,
+    ignoredItems: ignoredItems,
+    turnCount: turnCount ?? this.turnCount,
+    manuallyEdited: manuallyEdited,
   );
 }
 

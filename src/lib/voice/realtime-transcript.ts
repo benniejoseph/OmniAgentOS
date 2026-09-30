@@ -1,11 +1,15 @@
 export const MAX_REALTIME_TRANSCRIPT_CHARACTERS = 100_000;
 
+/** Stands in the draft for speech the provider did not transcribe. */
+export const REALTIME_TRANSCRIPT_GAP = "[not transcribed]";
+
 export type RealtimeTranscriptState = Readonly<{
   manualText: string;
   itemOrder: readonly string[];
   itemText: Readonly<Record<string, string>>;
   itemConfidence: Readonly<Record<string, RealtimeItemConfidence>>;
   completedItemIds: readonly string[];
+  failedItemIds: readonly string[];
   ignoredItemIds: readonly string[];
   turnCount: number;
   manuallyEdited: boolean;
@@ -31,15 +35,16 @@ export const EMPTY_REALTIME_TRANSCRIPT: RealtimeTranscriptState = Object.freeze(
   itemText: Object.freeze({}),
   itemConfidence: Object.freeze({}),
   completedItemIds: Object.freeze([]),
+  failedItemIds: Object.freeze([]),
   ignoredItemIds: Object.freeze([]),
   turnCount: 0,
   manuallyEdited: false,
 });
 
 /**
- * Reduces only the allowlisted, content-bearing transcription fields from an
- * untrusted Realtime server event. Provider metadata can never become UI
- * instructions or application authority through this projection.
+ * Reduces only the allowlisted transcription fields from an untrusted Realtime
+ * server event. Provider metadata can never become UI instructions or
+ * application authority through this projection.
  */
 export function applyRealtimeTranscriptEvent(
   state: RealtimeTranscriptState,
@@ -48,21 +53,40 @@ export function applyRealtimeTranscriptEvent(
   if (!isRecord(event)) return state;
   const type = event.type;
   if (
+    type !== "input_audio_buffer.committed" &&
     type !== "conversation.item.input_audio_transcription.delta" &&
-    type !== "conversation.item.input_audio_transcription.completed"
+    type !== "conversation.item.input_audio_transcription.completed" &&
+    type !== "conversation.item.input_audio_transcription.failed"
   ) return state;
 
   const itemId = safeItemId(event.item_id);
   if (!itemId || state.ignoredItemIds.includes(itemId)) return state;
+  // Transcripts can finish out of order, so each turn takes its place when
+  // its audio is committed.
+  if (type === "input_audio_buffer.committed") {
+    if (state.itemOrder.includes(itemId)) return state;
+    return { ...state, itemOrder: [...state.itemOrder, itemId].slice(-1_000) };
+  }
   if (
-    type === "conversation.item.input_audio_transcription.delta" &&
-    state.completedItemIds.includes(itemId)
+    state.failedItemIds.includes(itemId) ||
+    (type !== "conversation.item.input_audio_transcription.completed" &&
+      state.completedItemIds.includes(itemId))
   ) return state;
+  if (type === "conversation.item.input_audio_transcription.failed") {
+    return markUntranscribed(state, [itemId]);
+  }
 
   const content = type.endsWith(".delta")
     ? safeText(event.delta, 8_000)
     : safeText(event.transcript, MAX_REALTIME_TRANSCRIPT_CHARACTERS);
-  if (!content) return state;
+  if (!content) {
+    // A turn that finished with no words holds nothing back.
+    if (type.endsWith(".delta") || state.completedItemIds.includes(itemId)) return state;
+    return {
+      ...state,
+      completedItemIds: [...state.completedItemIds, itemId].slice(-1_000),
+    };
+  }
 
   const itemOrder = state.itemOrder.includes(itemId)
     ? [...state.itemOrder]
@@ -95,6 +119,25 @@ export function applyRealtimeTranscriptEvent(
   });
 }
 
+/**
+ * Whether a committed turn is still waiting for its final transcript, so
+ * review can wait for it instead of for a fixed delay.
+ */
+export function realtimeTranscriptPending(state: RealtimeTranscriptState) {
+  return state.itemOrder.some((itemId) => isUnfinished(state, itemId));
+}
+
+/**
+ * Ends the draft for review: a turn whose transcript never arrived shows as a
+ * gap rather than disappearing from the command.
+ */
+export function closeRealtimeTranscript(
+  state: RealtimeTranscriptState,
+): RealtimeTranscriptState {
+  const unfinished = state.itemOrder.filter((itemId) => isUnfinished(state, itemId));
+  return unfinished.length ? markUntranscribed(state, unfinished) : state;
+}
+
 /** Converts the visible provider draft into user-owned editable text. */
 export function editRealtimeTranscript(
   state: RealtimeTranscriptState,
@@ -106,6 +149,7 @@ export function editRealtimeTranscript(
     itemText: {},
     itemConfidence: {},
     completedItemIds: [],
+    failedItemIds: [],
     ignoredItemIds: [...new Set([
       ...state.ignoredItemIds,
       ...state.itemOrder,
@@ -118,6 +162,8 @@ export function editRealtimeTranscript(
 /**
  * Projects provider token log probabilities into content-free review metadata.
  * Tokens and bytes are deliberately discarded and can never become authority.
+ * Only a draft whose every turn finished with a score can be banded; a turn
+ * still arriving, failed, or unscored leaves the confidence unavailable.
  */
 export function realtimeTranscriptConfidence(
   state: RealtimeTranscriptState,
@@ -129,6 +175,9 @@ export function realtimeTranscriptConfidence(
       requiresExplicitAttestation: true,
     };
   }
+  const unscored = state.itemOrder.some((itemId) =>
+    !state.completedItemIds.includes(itemId) ||
+    (Boolean(state.itemText[itemId]) && !state.itemConfidence[itemId]));
   const summaries = state.itemOrder
     .map((itemId) => state.itemConfidence[itemId])
     .filter((value): value is RealtimeItemConfidence => Boolean(value));
@@ -136,7 +185,7 @@ export function realtimeTranscriptConfidence(
     (total, summary) => total + summary.sampleCount,
     0,
   );
-  if (!sampleCount) {
+  if (unscored || !sampleCount) {
     return {
       band: "unavailable",
       sampleCount: 0,
@@ -170,6 +219,27 @@ function unboundedTranscriptText(state: RealtimeTranscriptState) {
     state.manualText,
     ...state.itemOrder.map((itemId) => state.itemText[itemId] || ""),
   ].reduce(joinTranscriptParts, "");
+}
+
+function isUnfinished(state: RealtimeTranscriptState, itemId: string) {
+  return !state.completedItemIds.includes(itemId) && !state.failedItemIds.includes(itemId);
+}
+
+/** Keeps any words that arrived and marks where the rest are missing. */
+function markUntranscribed(
+  state: RealtimeTranscriptState,
+  itemIds: readonly string[],
+): RealtimeTranscriptState {
+  const itemText = { ...state.itemText };
+  for (const itemId of itemIds) {
+    itemText[itemId] = joinTranscriptParts(itemText[itemId] || "", REALTIME_TRANSCRIPT_GAP);
+  }
+  return boundedState({
+    ...state,
+    itemOrder: [...new Set([...state.itemOrder, ...itemIds])].slice(-1_000),
+    itemText,
+    failedItemIds: [...new Set([...state.failedItemIds, ...itemIds])].slice(-1_000),
+  });
 }
 
 function boundedState(state: RealtimeTranscriptState) {

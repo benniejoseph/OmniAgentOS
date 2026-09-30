@@ -116,6 +116,35 @@ Map<String, Object?> _turn(String transcript, List<double> logprobs) => {
   ],
 };
 
+/// The audio of a turn, committed before its transcript arrives.
+Map<String, Object?> _committed(String itemId) => {
+  'type': 'input_audio_buffer.committed',
+  'item_id': itemId,
+};
+
+Map<String, Object?> _partial(String itemId, String delta) => {
+  'type': 'conversation.item.input_audio_transcription.delta',
+  'item_id': itemId,
+  'delta': delta,
+};
+
+Map<String, Object?> _finished(
+  String itemId,
+  String transcript, [
+  List<double>? logprobs,
+]) => {
+  'type': 'conversation.item.input_audio_transcription.completed',
+  'item_id': itemId,
+  'transcript': transcript,
+  'logprobs': ?logprobs?.map((logprob) => {'logprob': logprob}).toList(),
+};
+
+Map<String, Object?> _failed(String itemId) => {
+  'type': 'conversation.item.input_audio_transcription.failed',
+  'item_id': itemId,
+  'error': {'type': 'server_error', 'message': 'Transcription failed.'},
+};
+
 const _confident = [-.05, -.1];
 const _unsure = [-1.2, -3.0];
 const _request = 'Book the flight to Lisbon';
@@ -173,6 +202,93 @@ void main() {
 
       expect(voice.attestReviewBySend(), isFalse);
       expect(voice.reviewAttested, isFalse);
+    });
+  });
+
+  group('recognized draft', () {
+    AmbientRealtimeVoiceController reviewed(List<Map<String, Object?>> events) {
+      final voice = _voice()..reviewProviderEventsForTesting(events);
+      addTearDown(voice.dispose);
+      return voice;
+    }
+
+    final first = [
+      _committed('item_1'),
+      _finished('item_1', 'Send the invoice', _confident),
+    ];
+
+    test('keeps turns in the order they were spoken', () {
+      final voice = reviewed([
+        _committed('item_1'),
+        _committed('item_2'),
+        _committed('item_1'),
+        _finished('item_2', 'and email it to Sam.', _confident),
+        _finished('item_1', 'Draft the report', _confident),
+      ]);
+
+      expect(voice.transcript, 'Draft the report and email it to Sam.');
+      expect(voice.confidenceBand, AmbientVoiceConfidenceBand.high);
+    });
+
+    test('needs review unless every turn finished with a score', () {
+      final drafts = {
+        'arriving': [
+          ...first,
+          _committed('item_2'),
+          _partial('item_2', ''),
+          _partial('item_2', "but don't"),
+        ],
+        'untranscribed': [...first, _committed('item_2')],
+        'failed': [...first, _committed('item_2'), _failed('item_2')],
+        'unscored': [...first, _finished('item_2', "but don't send it yet.")],
+      };
+      for (final MapEntry(key: name, value: events) in drafts.entries) {
+        final voice = reviewed(events);
+        expect(
+          voice.confidenceBand,
+          AmbientVoiceConfidenceBand.unavailable,
+          reason: name,
+        );
+        expect(voice.attestReviewBySend(), isFalse, reason: name);
+      }
+
+      // A turn that held no words does not hold the band back.
+      final silent = reviewed([
+        ...first,
+        _committed('item_2'),
+        _finished('item_2', ''),
+      ]);
+      expect(silent.transcript, 'Send the invoice');
+      expect(silent.confidenceBand, AmbientVoiceConfidenceBand.high);
+    });
+
+    test('shows where speech was not transcribed', () {
+      final failed = reviewed([
+        ...first,
+        _committed('item_2'),
+        _partial('item_2', "but don't"),
+        _failed('item_2'),
+        _finished('item_2', "but don't send it yet.", _confident),
+        _partial('item_2', ' late'),
+        _failed('item_1'),
+      ]);
+      expect(failed.transcript, "Send the invoice but don't [not transcribed]");
+
+      final unknown = reviewed([...first, _failed('item_9')]);
+      expect(unknown.transcript, 'Send the invoice [not transcribed]');
+
+      // Review closes turns whose transcripts never arrived.
+      final unfinished = reviewed([
+        ...first,
+        _committed('item_2'),
+        _partial('item_2', "but don't"),
+        _committed('item_3'),
+      ]);
+      expect(
+        unfinished.transcript,
+        "Send the invoice but don't [not transcribed] [not transcribed]",
+      );
+      expect(unfinished.confidenceBand, AmbientVoiceConfidenceBand.unavailable);
     });
   });
 

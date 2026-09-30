@@ -6,9 +6,11 @@ import { clsx } from "clsx";
 import { postApprovalDecision } from "@/components/approvals/approval-decision";
 import {
   applyRealtimeTranscriptEvent,
+  closeRealtimeTranscript,
   editRealtimeTranscript,
   EMPTY_REALTIME_TRANSCRIPT,
   realtimeTranscriptConfidence,
+  realtimeTranscriptPending,
   realtimeTranscriptText,
   type RealtimeTranscriptState,
 } from "@/lib/voice/realtime-transcript";
@@ -126,6 +128,7 @@ export function VoiceMode({
   const maxSessionTimerRef = useRef<number | null>(null);
   const sessionRef = useRef<VoiceSession | null>(null);
   const transcriptStateRef = useRef<RealtimeTranscriptState>(EMPTY_REALTIME_TRANSCRIPT);
+  const commitPendingRef = useRef(false);
   const recordingStartedAtRef = useRef(0);
   const sessionTokenRef = useRef(0);
   const phaseRef = useRef<VoicePhase>("consent");
@@ -138,9 +141,13 @@ export function VoiceMode({
   const approvalConversationIdRef = useRef("");
   const mountedRef = useRef(true);
 
-  useEffect(() => {
-    transcriptStateRef.current = transcriptState;
-  }, [transcriptState]);
+  // The ref leads, so a review waiting on it never reads a draft React has
+  // not rendered yet.
+  const updateTranscript = useCallback((next: RealtimeTranscriptState) => {
+    if (next === transcriptStateRef.current) return;
+    transcriptStateRef.current = next;
+    setTranscriptState(next);
+  }, []);
 
   useEffect(() => {
     phaseRef.current = phase;
@@ -329,6 +336,9 @@ export function VoiceMode({
 
   function failVoice(message: string, token: number) {
     if (!mountedRef.current || token !== sessionTokenRef.current) return;
+    // Ends the session's pending work, so a review finishing in the
+    // background cannot replace the error.
+    sessionTokenRef.current += 1;
     void reportSession("failed");
     stopSpeech();
     stopTransport();
@@ -385,7 +395,7 @@ export function VoiceMode({
       setAnnouncement("Realtime transcription connected. Listening.");
     });
     channel.addEventListener("message", (event) => {
-      if (token !== sessionTokenRef.current || typeof event.data !== "string") return;
+      if (token !== sessionTokenRef.current || dataChannelRef.current !== channel || typeof event.data !== "string") return;
       let providerEvent: unknown;
       try { providerEvent = JSON.parse(event.data); } catch { return; }
       const eventType = eventTypeOf(providerEvent);
@@ -399,11 +409,13 @@ export function VoiceMode({
       } else if (eventType === "input_audio_buffer.speech_stopped") {
         setPhase("listening");
         setAnnouncement("Turn detected. Listening for more.");
+      } else if (eventType === "input_audio_buffer.committed") {
+        commitPendingRef.current = false;
       } else if (eventType === "error") {
         failVoice("The realtime transcription provider reported an error.", token);
         return;
       }
-      setTranscriptState((current) => applyRealtimeTranscriptEvent(current, providerEvent));
+      updateTranscript(applyRealtimeTranscriptEvent(transcriptStateRef.current, providerEvent));
     });
     peer.addEventListener("connectionstatechange", () => {
       if (token !== sessionTokenRef.current || peerRef.current !== peer || !["failed", "disconnected"].includes(peer.connectionState)) return;
@@ -506,13 +518,26 @@ export function VoiceMode({
     setPhase("finishing");
     setAnnouncement("Finishing the current transcription turn.");
     const channel = dataChannelRef.current;
-    if (activePhase === "speaking" && channel?.readyState === "open") {
-      channel.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+    const open = channel?.readyState === "open";
+    commitPendingRef.current = open && activePhase === "speaking";
+    if (commitPendingRef.current) {
+      channel?.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
     }
     streamRef.current?.getAudioTracks().forEach((track) => { track.enabled = false; });
-    await delay(1_200);
+    // Review waits for every committed turn's final transcript, for as long
+    // as one is likely to take.
+    const deadline = Date.now() + 4_000;
+    while (
+      open &&
+      token === sessionTokenRef.current &&
+      Date.now() < deadline &&
+      (commitPendingRef.current || realtimeTranscriptPending(transcriptStateRef.current))
+    ) {
+      await delay(50);
+    }
     if (token !== sessionTokenRef.current) return;
     stopTransport();
+    updateTranscript(closeRealtimeTranscript(transcriptStateRef.current));
     reviewAttestedRef.current = false;
     setReviewAttested(false);
     setPhase("review");
@@ -878,7 +903,7 @@ export function VoiceMode({
                           reviewAttestedRef.current = false;
                           setReviewAttested(false);
                           setError("");
-                          setTranscriptState((current) => editRealtimeTranscript(current, event.currentTarget.value));
+                          updateTranscript(editRealtimeTranscript(transcriptStateRef.current, event.currentTarget.value));
                         }}
                         rows={5}
                         maxLength={100_000}
