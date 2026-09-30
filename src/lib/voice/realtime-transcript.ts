@@ -160,6 +160,29 @@ export function editRealtimeTranscript(
 }
 
 /**
+ * Leaves a turn out of the draft, as one that only heard the reply being
+ * spoken, and ignores any later event for it.
+ */
+export function ignoreRealtimeTranscriptItem(
+  state: RealtimeTranscriptState,
+  itemId: string,
+): RealtimeTranscriptState {
+  const others = (itemIds: readonly string[]) =>
+    itemIds.filter((id) => id !== itemId);
+  const otherEntries = <T>(record: Readonly<Record<string, T>>) =>
+    Object.fromEntries(Object.entries(record).filter(([id]) => id !== itemId));
+  return {
+    ...state,
+    itemOrder: others(state.itemOrder),
+    itemText: otherEntries(state.itemText),
+    itemConfidence: otherEntries(state.itemConfidence),
+    completedItemIds: others(state.completedItemIds),
+    failedItemIds: others(state.failedItemIds),
+    ignoredItemIds: [...new Set([...state.ignoredItemIds, itemId])].slice(-1_000),
+  };
+}
+
+/**
  * Projects provider token log probabilities into content-free review metadata.
  * Tokens and bytes are deliberately discarded and can never become authority.
  * Only a draft whose every turn finished with a score can be banded; a turn

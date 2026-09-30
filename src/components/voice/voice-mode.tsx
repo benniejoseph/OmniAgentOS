@@ -9,12 +9,14 @@ import {
   closeRealtimeTranscript,
   editRealtimeTranscript,
   EMPTY_REALTIME_TRANSCRIPT,
+  ignoreRealtimeTranscriptItem,
   realtimeTranscriptConfidence,
   realtimeTranscriptPending,
   realtimeTranscriptText,
   type RealtimeTranscriptState,
 } from "@/lib/voice/realtime-transcript";
 import { classifyRealtimeError } from "@/lib/voice/realtime-error";
+import { ReplyEchoGuard } from "@/lib/voice/reply-echo";
 import {
   StreamingPcmPlayer,
   streamVersionedSpeech,
@@ -125,6 +127,7 @@ export function VoiceMode({
   const speechControllerRef = useRef<AbortController | null>(null);
   const speechPlayerRef = useRef<StreamingPcmPlayer | null>(null);
   const speechActiveRef = useRef(false);
+  const [echoGuard] = useState(() => new ReplyEchoGuard());
   const reconnectTimerRef = useRef<number | null>(null);
   const maxSessionTimerRef = useRef<number | null>(null);
   const sessionRef = useRef<VoiceSession | null>(null);
@@ -183,11 +186,12 @@ export function VoiceMode({
 
   const stopSpeech = useCallback(() => {
     speechActiveRef.current = false;
+    echoGuard.replyEnded(Date.now());
     speechControllerRef.current?.abort();
     speechControllerRef.current = null;
     speechPlayerRef.current?.stop();
     speechPlayerRef.current = null;
-  }, []);
+  }, [echoGuard]);
 
   const stopTransport = useCallback(() => {
     requestControllerRef.current?.abort();
@@ -423,6 +427,8 @@ export function VoiceMode({
       try { providerEvent = JSON.parse(event.data); } catch { return; }
       const eventType = eventTypeOf(providerEvent);
       if (eventType === "input_audio_buffer.speech_started") {
+        // Speech just after the reply starts is most likely its own echo.
+        if (!echoGuard.speechStarted(providerEvent, Date.now())) return;
         const interruptedReply = speechActiveRef.current;
         if (interruptedReply) stopSpeech();
         setPhase("speaking");
@@ -430,8 +436,23 @@ export function VoiceMode({
           ? "Reply interrupted. Listening to your new turn."
           : "Speech detected. Live transcription is updating.");
       } else if (eventType === "input_audio_buffer.speech_stopped") {
-        setPhase("listening");
-        setAnnouncement("Turn detected. Listening for more.");
+        if (!speechActiveRef.current) {
+          setPhase("listening");
+          setAnnouncement("Turn detected. Listening for more.");
+        }
+      } else if (eventType === "conversation.item.input_audio_transcription.completed") {
+        const turn = echoGuard.finishedTurn(providerEvent);
+        if (turn?.echo) {
+          updateTranscript(ignoreRealtimeTranscriptItem(transcriptStateRef.current, turn.itemId));
+          setAnnouncement("Speech that matched the reply was left out of your draft.");
+          return;
+        }
+        // Speech the guard let the reply talk over interrupts it once heard.
+        if (turn && speechActiveRef.current) {
+          stopSpeech();
+          setPhase("listening");
+          setAnnouncement("Reply interrupted. Listening to your new turn.");
+        }
       } else if (eventType === "input_audio_buffer.committed") {
         commitPendingRef.current = false;
       } else if (eventType === "error") {
@@ -639,6 +660,7 @@ export function VoiceMode({
         signal: controller.signal,
         onStarted: () => {
           if (token !== sessionTokenRef.current) return;
+          echoGuard.replyStarted(reply.text, Date.now());
           setPhase("replying");
           setAnnouncement(`${agentName} is speaking. Speak to interrupt.`);
         },
@@ -651,6 +673,7 @@ export function VoiceMode({
       if (speechControllerRef.current === controller) {
         speechControllerRef.current = null;
         speechActiveRef.current = false;
+        echoGuard.replyEnded(Date.now());
       }
       if (speechPlayerRef.current === player) speechPlayerRef.current = null;
     }

@@ -4,6 +4,7 @@ import {
   closeRealtimeTranscript,
   editRealtimeTranscript,
   EMPTY_REALTIME_TRANSCRIPT,
+  ignoreRealtimeTranscriptItem,
   realtimeTranscriptConfidence,
   realtimeTranscriptPending,
   realtimeTranscriptText,
@@ -229,6 +230,32 @@ describe("realtime transcription projection", () => {
 
     const finished = transcriptOf(first);
     expect(closeRealtimeTranscript(finished)).toBe(finished);
+  });
+
+  it("leaves out turns that only heard the reply, along with their later events", () => {
+    const owner = transcriptOf([committed("item_1"), completed("item_1", "Book the train.", confident)]);
+    const echoes = ["item_arriving", "item_finished", "item_failed"];
+    const heard = transcriptOf([
+      committed("item_1"),
+      committed("item_arriving"),
+      delta("item_arriving", "Here are the three"),
+      completed("item_1", "Book the train.", confident),
+      completed("item_finished", "Here are the three results.", confident),
+      failed("item_failed"),
+    ]);
+
+    const ignored = echoes.reduce(ignoreRealtimeTranscriptItem, heard);
+
+    expect(ignored).toEqual({ ...owner, turnCount: 2, ignoredItemIds: echoes });
+    expect(realtimeTranscriptText(ignored)).toBe("Book the train.");
+    expect(realtimeTranscriptConfidence(ignored).band).toBe("high");
+    const later = [
+      delta("item_arriving", " results"),
+      completed("item_arriving", "Here are the three results.", confident),
+      failed("item_finished"),
+    ].reduce(applyRealtimeTranscriptEvent, ignored);
+    expect(later).toEqual(ignored);
+    expect(ignoreRealtimeTranscriptItem(ignored, "item_failed")).toEqual(ignored);
   });
 
   it("requires explicit review when confidence is unavailable or text was edited", () => {
