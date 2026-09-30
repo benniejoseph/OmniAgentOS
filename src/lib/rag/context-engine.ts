@@ -363,7 +363,6 @@ export async function buildContextPack(
           tenantId,
           workingMemoryReference: options.workingMemoryReference,
           asOfTime: compilerAsOfTime,
-          includeUnmatchedCandidates: true,
         })
       : Promise.resolve([]),
     retrievalSources.memory !== "exclude" && databaseMemoryAccessScope
@@ -375,7 +374,6 @@ export async function buildContextPack(
           accessScope: databaseMemoryAccessScope,
           workingMemoryReference: options.workingMemoryReference,
           asOfTime: compilerAsOfTime,
-          includeUnmatchedCandidates: true,
         })
       : Promise.resolve([]),
     retrievalSources.knowledge === "exclude"

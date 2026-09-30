@@ -10,6 +10,9 @@ export const LOCAL_MULTILINGUAL_EMBEDDING_MODEL =
   "asael-multilingual-feature-hash:1" as const;
 export const LOCAL_MULTILINGUAL_EMBEDDING_SPACE =
   `${LOCAL_MULTILINGUAL_EMBEDDING_MODEL}:${LOCAL_MULTILINGUAL_EMBEDDING_DIMENSIONS}` as const;
+// Hash collisions leave unrelated texts near 0.1 in the local space, while a
+// shared word or concept scores well above this.
+export const LOCAL_MULTILINGUAL_MATCH_SIMILARITY = 0.2;
 
 export type RetrievalEmbeddingProviderId = "local" | "openai";
 

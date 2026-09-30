@@ -687,8 +687,8 @@ describe("Postgres memory recall", () => {
     });
 
     expect(mocks.events.slice(0, 2)).toEqual(["scope", "query"]);
-    // Local multilingual similarity is scored by the context engine's learned
-    // reranker; the store only returns bounded candidates read under scope.
+    // The store scores local multilingual similarity over a bounded window of
+    // candidates read under scope.
     const candidateQuery = mocks.queries.find((queryText) =>
       queryText.includes("memory.id <> ALL(")
     );
@@ -704,6 +704,74 @@ describe("Postgres memory recall", () => {
     expect(mocks.queries.some((queryText) =>
       queryText.includes("embedding_vector <=>")
     )).toBe(false);
+  });
+
+  it("keeps only the local semantic matches from the candidate window", async () => {
+    const row = (id: string, title: string, content: string, importance: number) => ({
+      id,
+      tenant_id: "tenant-a",
+      type: "procedure",
+      tier: "procedural",
+      title,
+      content,
+      tags: [],
+      evidence_refs: [],
+      scope: "user",
+      source: "manual",
+      importance,
+      confidence: 1,
+      claim_status: "active",
+      asserted_by: "user",
+      created_at: "2026-09-06T00:00:00.000Z",
+      updated_at: "2026-09-06T00:00:00.000Z",
+    });
+    // The window arrives in priority order, most important first.
+    mocks.returnedMemoryRows.push(
+      row(
+        "invoice-memory",
+        "Customer invoice renewal",
+        "The customer billing contract renews next quarter.",
+        1,
+      ),
+      row(
+        "size-memory",
+        "Database size",
+        "The database grows by a gigabyte each month.",
+        0.9,
+      ),
+      row(
+        "restore-memory",
+        "Database restore procedure",
+        "Restore the latest database backup.",
+        0.2,
+      ),
+    );
+    const search = (query: string, limit?: number) => searchMemories(query, {
+      tenantId: "tenant-a",
+      limit,
+      accessScope: accessScope(MEMORY_PURPOSE_IDS.retrieve),
+      queryEmbedding: embedLocalMultilingualTexts([query])[0],
+      queryEmbeddingSpaceId: LOCAL_MULTILINGUAL_EMBEDDING_SPACE,
+    });
+    const query = "restaurar la copia de la base de datos";
+
+    const results = await search(query);
+
+    expect(results.map((result) => result.record.id)).toEqual([
+      "restore-memory",
+      "size-memory",
+    ]);
+    expect(results.every((result) =>
+      result.reasons.includes("semantic match")
+    )).toBe(true);
+    const windowQuery = mocks.queries.findIndex((queryText) =>
+      queryText.includes("memory.id <> ALL(")
+    );
+    expect(mocks.queryParams[windowQuery]?.at(-1)).toBe(32);
+    expect((await search(query, 1)).map((result) => result.record.id)).toEqual([
+      "restore-memory",
+    ]);
+    expect(await search("hello")).toEqual([]);
   });
 
   it("previews the database lineage closure, including descendants the caller cannot read", async () => {

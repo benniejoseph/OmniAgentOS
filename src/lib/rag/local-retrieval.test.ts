@@ -83,6 +83,64 @@ describe("P4.4 local multilingual retrieval", () => {
     expect(results[0]?.reasons).toContain("semantic match");
   });
 
+  it("leaves out memory and knowledge that share only noise with the query", async () => {
+    const [{ saveMemory, searchMemories }, { createKnowledgeDocument, searchKnowledge }, embedding] =
+      await Promise.all([
+        import("@/lib/memory/store"),
+        import("@/lib/rag/store"),
+        import("@/lib/rag/retrieval-embedding"),
+      ]);
+    const tenantId = "tenant-local-unmatched";
+    const query = "hello";
+    const queryEmbedding = embedding.embedLocalMultilingualTexts([query])[0];
+    const title = "Customer invoice renewal";
+    const content = "The customer billing contract renews next quarter.";
+    const memory = await saveMemory({
+      tenantId,
+      title,
+      content,
+      importance: 0.9,
+      embedding: queryEmbedding,
+    });
+    const { chunks: [chunk] } = await createKnowledgeDocument({
+      tenantId,
+      title,
+      content,
+      chunks: [{ index: 0, content, embedding: queryEmbedding }],
+    });
+    // Hash collisions leave both slightly similar to the query.
+    for (const { title, content, tags } of [memory, chunk]) {
+      const similarity = embedding.retrievalEmbeddingCosine(
+        queryEmbedding,
+        embedding.embedLocalMultilingualTexts([
+          `${title} ${content} ${tags.join(" ")}`,
+        ])[0],
+      );
+      expect(similarity).toBeGreaterThan(0);
+      expect(similarity).toBeLessThan(
+        embedding.LOCAL_MULTILINGUAL_MATCH_SIMILARITY,
+      );
+    }
+    const options = {
+      tenantId,
+      queryEmbedding,
+      queryEmbeddingSpaceId: embedding.LOCAL_MULTILINGUAL_EMBEDDING_SPACE,
+    };
+
+    expect(await searchMemories(query, options)).toEqual([]);
+    expect(await searchKnowledge(query, options)).toEqual([]);
+    expect(await searchKnowledge(query, { tenantId })).toEqual([]);
+    // A shared word still makes a match.
+    expect(
+      (await searchMemories("billing contract", { tenantId }))
+        .map((result) => result.record.id),
+    ).toEqual([memory.id]);
+    expect(
+      (await searchKnowledge("billing contract", { tenantId }))
+        .map((result) => result.chunk.id),
+    ).toEqual([chunk.id]);
+  });
+
   it("builds a complete context pack when the OpenAI key is absent", async () => {
     delete process.env.OPENAI_API_KEY;
     const [{ saveMemory }, { buildContextPack }] = await Promise.all([

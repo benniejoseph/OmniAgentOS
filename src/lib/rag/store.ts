@@ -26,6 +26,7 @@ import { cosineSimilarity, parseEmbedding, toVectorLiteral } from "@/lib/rag/vec
 import {
   embedLocalMultilingualTexts,
   isLocalRetrievalEmbeddingSpace,
+  LOCAL_MULTILINGUAL_MATCH_SIMILARITY,
   retrievalEmbeddingCosine,
   retrievalEmbeddingSpaceSupportsStoredVectorIndex,
 } from "@/lib/rag/retrieval-embedding";
@@ -3447,6 +3448,11 @@ function rankChunksInMemory(
   const terms = tokenize(query);
   const now = Date.now();
   const requiredTags = normalizeTags(options.tags || []);
+  const minimumVectorScore = isLocalRetrievalEmbeddingSpace(
+      options.queryEmbeddingSpaceId,
+    )
+    ? LOCAL_MULTILINGUAL_MATCH_SIMILARITY
+    : Number.MIN_VALUE;
 
   return chunks
     .filter((chunk) => requiredTags.length === 0 || requiredTags.every((tag) => chunk.tags.includes(tag)))
@@ -3489,7 +3495,11 @@ function rankChunksInMemory(
         reasons: buildReasons({ overlap, vectorScore, lexicalScore, recencyScore }),
       };
     })
-    .filter((result) => result.score > 0.04)
+    // Recency alone does not make a chunk an answer to the query.
+    .filter((result) =>
+      (result.lexicalScore > 0 || result.vectorScore >= minimumVectorScore) &&
+      result.score > 0.04
+    )
     .sort((a, b) => b.score - a.score);
 }
 

@@ -60,6 +60,7 @@ import { cosineSimilarity, parseEmbedding, toVectorLiteral } from "@/lib/rag/vec
 import {
   embedLocalMultilingualTexts,
   isLocalRetrievalEmbeddingSpace,
+  LOCAL_MULTILINGUAL_MATCH_SIMILARITY,
   retrievalEmbeddingCosine,
   retrievalEmbeddingSpaceSupportsStoredVectorIndex,
 } from "@/lib/rag/retrieval-embedding";
@@ -1234,7 +1235,6 @@ export async function searchMemories(
     accessScope?: DatabaseMemoryAccessScope;
     workingMemoryReference?: string;
     asOfTime?: string;
-    includeUnmatchedCandidates?: boolean;
   } = {},
 ): Promise<MemorySearchResult[]> {
   const localEmbeddingSpace = isLocalRetrievalEmbeddingSpace(
@@ -1246,8 +1246,9 @@ export async function searchMemories(
     const search = (sql: MemorySqlClient) => searchMemoriesDb(query, {
       ...options,
       tenantId,
-      includeUnmatchedCandidates:
-        options.includeUnmatchedCandidates ?? localEmbeddingSpace,
+      localQueryEmbedding: localEmbeddingSpace
+        ? options.queryEmbedding
+        : undefined,
       queryEmbedding: !localEmbeddingSpace &&
           retrievalEmbeddingSpaceSupportsStoredVectorIndex(
             options.queryEmbeddingSpaceId,
@@ -1284,7 +1285,7 @@ export async function searchMemories(
       )
     )
     .map((record) => {
-      const text = `${record.title} ${record.content} ${record.tags.join(" ")}`;
+      const text = memorySearchText(record);
       const recordTerms = tokenize(text);
       const overlap = terms.filter((term) => recordTerms.includes(term));
       const lexicalScore = terms.length === 0 ? 0 : overlap.length / terms.length;
@@ -1312,6 +1313,9 @@ export async function searchMemories(
                 cosineSimilarity(options.queryEmbedding, record.embedding),
               )
           : 0;
+      const semanticMatch = localCandidateEmbedding
+        ? embeddingScore >= LOCAL_MULTILINGUAL_MATCH_SIMILARITY
+        : embeddingScore > 0;
       const confidence = clamp01(record.confidence ?? 0.7);
       const tierWeight = memoryTierPolicy(
         resolveMemoryTier(record.tier, record.type),
@@ -1321,7 +1325,7 @@ export async function searchMemories(
         (0.35 + confidence * 0.65) * tierWeight * lifecycleWeight;
       const reasons = [
         overlap.length ? `matched ${overlap.slice(0, 5).join(", ")}` : "",
-        embeddingScore ? "semantic match" : "",
+        semanticMatch ? "semantic match" : "",
         record.importance >= 0.8 ? "high importance" : "",
         confidence >= 0.85 ? "high-confidence claim" : confidence < 0.5 ? "low-confidence claim" : "",
         tierWeight > 1 ? `${record.tier} memory priority` : "",
@@ -1332,7 +1336,7 @@ export async function searchMemories(
         record,
         score,
         reasons,
-        hasQueryMatch: overlap.length > 0 || tagScore > 0 || embeddingScore > 0,
+        hasQueryMatch: overlap.length > 0 || tagScore > 0 || semanticMatch,
       };
     })
     .filter((result) => result.hasQueryMatch && result.score > 0.05)
@@ -3225,7 +3229,7 @@ async function searchMemoriesDb(
     tenantId?: string;
     workingMemoryReference?: string;
     asOfTime?: string;
-    includeUnmatchedCandidates?: boolean;
+    localQueryEmbedding?: readonly number[];
   },
   sql: MemorySqlClient,
 ): Promise<MemorySearchResult[]> {
@@ -3330,7 +3334,7 @@ async function searchMemoriesDb(
         workingMemoryReference,
         asOfTime,
         sql,
-        Boolean(options.includeUnmatchedCandidates),
+        options.localQueryEmbedding,
       );
     }
   }
@@ -3342,7 +3346,7 @@ async function searchMemoriesDb(
     workingMemoryReference,
     asOfTime,
     sql,
-    Boolean(options.includeUnmatchedCandidates),
+    options.localQueryEmbedding,
   );
 }
 
@@ -3353,7 +3357,7 @@ async function searchMemoriesLexicalCandidatesDb(
   workingMemoryReference: string,
   asOfTime: string,
   sql: MemorySqlClient,
-  includeUnmatchedCandidates: boolean,
+  localQueryEmbedding: readonly number[] | undefined,
 ) {
   const matched = await searchMemoriesLexicalDb(
     query,
@@ -3363,18 +3367,20 @@ async function searchMemoriesLexicalCandidatesDb(
     asOfTime,
     sql,
   );
-  if (!includeUnmatchedCandidates || matched.length >= limit) {
+  if (!localQueryEmbedding || matched.length >= limit) {
     return matched;
   }
-  const fallback = await searchMemoryPriorityCandidatesDb({
+  const semantic = await searchMemoryLocalSemanticCandidatesDb({
     limit: limit - matched.length,
+    windowLimit: Math.min(Math.max(limit * 4, 32), 240),
+    queryEmbedding: localQueryEmbedding,
     tenantId,
     workingMemoryReference,
     asOfTime,
     excludeIds: matched.map((result) => result.record.id),
     sql,
   });
-  return [...matched, ...fallback];
+  return [...matched, ...semantic];
 }
 
 async function searchMemoriesLexicalDb(
@@ -3451,8 +3457,12 @@ async function searchMemoriesLexicalDb(
   return rows.map(memorySearchResultFromRow);
 }
 
-async function searchMemoryPriorityCandidatesDb(input: {
+// The local space has no stored vectors, so a bounded window of priority
+// memories is scored here and only the ones close to the query are kept.
+async function searchMemoryLocalSemanticCandidatesDb(input: {
   limit: number;
+  windowLimit: number;
+  queryEmbedding: readonly number[];
   tenantId: string;
   workingMemoryReference: string;
   asOfTime: string;
@@ -3496,9 +3506,26 @@ async function searchMemoryPriorityCandidatesDb(input: {
       memory.confidence DESC,
       memory.updated_at DESC,
       memory.id COLLATE "C"
-    LIMIT ${input.limit}
+    LIMIT ${input.windowLimit}
   `;
-  return rows.map(memorySearchResultFromRow);
+  return rows
+    .map((row) => ({
+      row,
+      similarity: retrievalEmbeddingCosine(
+        input.queryEmbedding,
+        embedLocalMultilingualTexts([
+          memorySearchText(memorySearchResultFromRow(row).record),
+        ])[0],
+      ),
+    }))
+    .filter(({ similarity }) =>
+      similarity >= LOCAL_MULTILINGUAL_MATCH_SIMILARITY
+    )
+    .sort((left, right) => right.similarity - left.similarity)
+    .slice(0, input.limit)
+    .map(({ row, similarity }) =>
+      memorySearchResultFromRow({ ...row, vector_score: similarity })
+    );
 }
 
 function normalizeMemorySearchAsOfTime(value?: string) {
@@ -4227,6 +4254,10 @@ function normalizeTenantId(value?: string) {
     .trim()
     .replace(/[^a-zA-Z0-9_.:-]/g, "_")
     .slice(0, 120) || "default";
+}
+
+function memorySearchText(record: MemoryRecord) {
+  return `${record.title} ${record.content} ${record.tags.join(" ")}`;
 }
 
 function memorySearchResultFromRow(row: Record<string, unknown>): MemorySearchResult {
