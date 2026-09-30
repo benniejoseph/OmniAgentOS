@@ -3271,6 +3271,9 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   bool ambientSessionSent = false;
   String? ambientSubmittedText;
   String? ambientSpokenText;
+
+  /// Why the finished answer was not played aloud, shown beside it.
+  String? ambientSpeechNotice;
   bool syncingRealtimeTranscript = false;
   DesktopAmbientVoiceState? lastPublishedAmbientState;
 
@@ -3528,6 +3531,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     ambientSessionSent = false;
     ambientSubmittedText = null;
     ambientSpokenText = null;
+    ambientSpeechNotice = null;
     try {
       await realtime.start(
         conversationId: widget.controller.threadId,
@@ -4299,6 +4303,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       return;
     }
     ambientSpokenText = reply.text;
+    ambientSpeechNotice = null;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || realtimeVoice != realtime) return;
       unawaited(_speakAmbientResult(realtime, reply.text));
@@ -4317,12 +4322,19 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
         agentId: widget.controller.assignedAgent?.id,
       );
     } catch (error) {
+      // The run finished and its answer is shown, so this is not an error.
       if (!mounted || realtimeVoice != realtime) return;
-      setState(() {
-        recordingError =
-            'The answer is ready on screen, but Asael could not play it aloud. ${_ambientRealtimeError(error)}';
-      });
+      setState(() => ambientSpeechNotice = _ambientSpeechFailure(error));
     }
+  }
+
+  String _ambientSpeechFailure(Object error) {
+    final reason = switch (error) {
+      AmbientVoiceException(:final message) => message,
+      ApiException(:final message) => _boundedDisplayText(message, 320),
+      _ => null,
+    };
+    return ['Asael could not play the answer aloud.', ?reason].join(' ');
   }
 
   Future<void> _openAmbientFromToolbar() async {
@@ -4392,6 +4404,9 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                         widget.controller.voiceErrorMessage
             : null,
         lastResult: _ambientLastResult,
+        speechNotice: phase == AmbientVoicePhase.completed
+            ? ambientSpeechNotice
+            : null,
         onDestinationChanged: _selectAmbientDestination,
         onMicrophonePressed:
             widget.controller.sending || widget.controller.transcribing

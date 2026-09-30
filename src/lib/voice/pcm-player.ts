@@ -1,3 +1,5 @@
+import { balanceCodeFences } from "@/lib/voice/speech-text";
+
 export const ASAEL_PCM_SAMPLE_RATE = 24_000;
 export const ASAEL_VOICE_PROFILE_VERSION = "asael-voice:1";
 export const ASAEL_VOICE_ENCODING = "pcm_s16le";
@@ -171,6 +173,10 @@ export async function streamVersionedSpeech(
   }
 }
 
+/**
+ * Splits text for the speech service near sentence ends. A chunk that splits
+ * a code block also closes or reopens it, which can add a few characters.
+ */
 export function splitSpeechText(
   value: string,
   maxCharacters = MAX_SPEECH_TEXT_CHARACTERS,
@@ -200,7 +206,7 @@ export function splitSpeechText(
     remaining = remaining.slice(boundary).trim();
   }
   if (remaining) chunks.push(remaining);
-  return chunks;
+  return balanceCodeFences(chunks);
 }
 
 async function requestSpeechStream(

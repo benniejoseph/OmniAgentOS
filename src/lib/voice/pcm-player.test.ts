@@ -50,4 +50,17 @@ describe("speech text chunking", () => {
 
     expect(chunks).toEqual(["abcd", "efgh", "ij"]);
   });
+
+  it("closes a code block that a chunk boundary splits and reopens it", () => {
+    const chunks = splitSpeechText(
+      "Intro line.\n```ts\nconst alpha = 1;\nconst beta = 2;\n```\nDone.",
+      30,
+    );
+
+    expect(chunks).toEqual([
+      "Intro line.\n```ts\n```",
+      "```\nconst alpha = 1;\n```",
+      "```\nconst beta = 2;\n```\nDone.",
+    ]);
+  });
 });

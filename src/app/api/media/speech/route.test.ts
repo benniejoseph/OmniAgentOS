@@ -167,6 +167,45 @@ describe("P9.10 versioned streaming Agent speech", () => {
     );
   });
 
+  it("speaks a reply's words rather than its markup, within the provider bound", async () => {
+    const response = await POST(speechRequest({
+      text: "## Result\nRun `npm test`.\n```sh\nrm -rf build\n```",
+      threadId,
+      voiceProfileVersion: "asael-voice:1",
+    }));
+    await response.arrayBuffer();
+
+    const spoken = "Result.\nRun npm test.\nThe code is on screen.";
+    expect(mocks.createOpenAISpeechStream).toHaveBeenCalledWith(
+      expect.objectContaining({ text: spoken }),
+    );
+    expect(mocks.recordAiUsageSafely).toHaveBeenCalledWith(
+      expect.objectContaining({
+        usage: { inputCharacters: spoken.length, outputBytes: 4 },
+      }),
+    );
+    expect(mocks.recordRuntimeEventSafely).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({ characters: spoken.length }),
+      }),
+    );
+    expect(mocks.appendScopedDomainEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: expect.objectContaining({ characters: spoken.length }),
+      }),
+    );
+
+    const notices = await POST(speechRequest({
+      text: "a\n```\n```\n".repeat(400),
+      voiceProfileVersion: "asael-voice:1",
+    }));
+    await notices.arrayBuffer();
+
+    expect(notices.status).toBe(200);
+    expect(mocks.createOpenAISpeechStream.mock.calls[1]?.[0].text)
+      .toHaveLength(4_000);
+  });
+
   it("resolves an owned custom Agent definition before fixing its delivery digest", async () => {
     mocks.getCustomAgentForRequest.mockResolvedValue({
       id: "agent-one",

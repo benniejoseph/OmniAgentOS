@@ -618,6 +618,36 @@ void main() {
       expect(voice.confidenceBand, AmbientVoiceConfidenceBand.edited);
       expect(find.byType(Checkbox), findsOneWidget);
     });
+
+    testWidgets('shows a finished answer as done when it cannot be spoken', (
+      tester,
+    ) async {
+      final semantics = tester.ensureSemantics();
+      final (voice, repository) = await review(tester, _request, _confident);
+
+      await pressCommandEnter(tester);
+      for (var frame = 0; frame < 4; frame += 1) {
+        await tester.pump();
+      }
+
+      expect(repository.sent, [_request]);
+      expect(find.text('Done'), findsOneWidget);
+      expect(find.text('Not spoken'), findsOneWidget);
+      expect(
+        find.byTooltip('Asael could not play the answer aloud.'),
+        findsOneWidget,
+      );
+      expect(
+        find.bySemanticsLabel(
+          RegExp(r'Asael could not play the answer aloud\. Asael destination'),
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('Needs attention'), findsNothing);
+      expect(voice.phase, AmbientRealtimeVoicePhase.stopped);
+      expect(voice.errorMessage, isNull);
+      semantics.dispose();
+    });
   });
 
   group('Ambient Command focus', () {

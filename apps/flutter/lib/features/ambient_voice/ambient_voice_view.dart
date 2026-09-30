@@ -44,6 +44,7 @@ class AmbientVoiceSurface extends StatelessWidget {
     required this.onClose,
     this.error,
     this.lastResult,
+    this.speechNotice,
     this.confidenceBand,
     this.reviewRequired = false,
     this.reviewAttested = false,
@@ -66,6 +67,9 @@ class AmbientVoiceSurface extends StatelessWidget {
   final VoidCallback onClose;
   final String? error;
   final String? lastResult;
+
+  /// Why the finished answer was not played aloud, if it was not.
+  final String? speechNotice;
 
   /// How confidently the transcript under review was recognized.
   final AmbientVoiceConfidenceBand? confidenceBand;
@@ -106,7 +110,7 @@ class AmbientVoiceSurface extends StatelessWidget {
     final supportingText = _supportingText(recognized);
     final liveStatus = reviewing
         ? '${[title, ?bandLabel].join('. ')}. Recognized request: $recognized.'
-        : '$title. $supportingText.';
+        : ['$title. $supportingText.', ?speechNotice].join(' ');
     final foreground = scheme.onSurface;
     final muted = scheme.onSurfaceVariant;
     final dark = scheme.brightness == Brightness.dark;
@@ -211,6 +215,20 @@ class AmbientVoiceSurface extends StatelessWidget {
                                           ? scheme.tertiary
                                           : muted,
                                       fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ] else if (speechNotice case final notice?) ...[
+                                  const SizedBox(width: 8),
+                                  Tooltip(
+                                    message: notice,
+                                    child: Text(
+                                      'Not spoken',
+                                      maxLines: 1,
+                                      style: theme.textTheme.labelSmall
+                                          ?.copyWith(
+                                            color: muted,
+                                            fontWeight: FontWeight.w600,
+                                          ),
                                     ),
                                   ),
                                 ],

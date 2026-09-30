@@ -28,13 +28,16 @@ import {
   versionedVoiceProfile,
 } from "@/lib/voice/profile";
 import { REALTIME_AUDIO_RETENTION } from "@/lib/voice/realtime-session";
+import { speakableText } from "@/lib/voice/speech-text";
 
 export const runtime = "nodejs";
 export const maxDuration = 180;
 export const POST = withDatabaseRequestScope(POSTHandler);
 
+const MAX_SPEECH_CHARACTERS = 4_000;
+
 const schema = z.object({
-  text: z.string().trim().min(1).max(4_000),
+  text: z.string().trim().min(1).max(MAX_SPEECH_CHARACTERS),
   agentId: z.string().trim().min(1).max(240).regex(
     /^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$/,
   ).optional(),
@@ -145,11 +148,14 @@ async function POSTHandler(request: Request) {
     correlationId,
     purpose: "agent.voice.stream",
   });
+  // A reply's markup stays on screen. The notices that stand in for code can
+  // outgrow what they replace, so the provider's bound still applies.
+  const spokenText = speakableText(parsed.data.text).slice(0, MAX_SPEECH_CHARACTERS);
   const startedAt = Date.now();
   try {
     const upstreamBody = await runtimeModel.withApiKey((apiKey) =>
       createOpenAISpeechStream({
-        text: parsed.data.text,
+        text: spokenText,
         profile,
         apiKey,
         signal: request.signal,
@@ -175,7 +181,7 @@ async function POSTHandler(request: Request) {
         provider: profile.provider,
         model: profile.model,
         usage: {
-          inputCharacters: parsed.data.text.length,
+          inputCharacters: spokenText.length,
           outputBytes,
         },
         providerCallCount: 1,
@@ -219,7 +225,7 @@ async function POSTHandler(request: Request) {
             agentDefinitionVersion: identity.definitionVersion,
             threadId: parsed.data.threadId,
             runId: parsed.data.runId,
-            characters: parsed.data.text.length,
+            characters: spokenText.length,
             outputBytes,
             audioRetention: parsed.data.audioRetention,
           },
@@ -244,7 +250,7 @@ async function POSTHandler(request: Request) {
             agentDefinitionVersion: identity.definitionVersion,
             threadId: parsed.data.threadId,
             runId: parsed.data.runId,
-            characters: parsed.data.text.length,
+            characters: spokenText.length,
             outputBytes,
             audioRetention: parsed.data.audioRetention,
           },

@@ -27,6 +27,16 @@ const _maximumTranscriptCharacters = 100000;
 const _maximumSpeechCharacters = 20000;
 const _maximumSpeechChunkCharacters = 3800;
 const _maximumSpeechPcmBytes = 32 * 1024 * 1024;
+
+/// Longer fence markers are shortened when a split code block is reopened.
+const _maximumReopenedFenceCharacters = 20;
+
+/// Spoken after a reply that is too long to speak in full.
+const _speechRemainderNotice = 'The rest of the answer is on screen.';
+
+/// A line that opens or closes a fenced code block.
+final _codeFenceLine = RegExp(r'^ {0,3}(`{3,}|~{3,})(.*)$');
+
 const _maximumProviderEventCharacters = 1024 * 1024;
 const _maximumSdpCharacters = 1024 * 1024;
 
@@ -462,6 +472,9 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
 
   /// Speaks the configured Agent response. Raw PCM is validated, wrapped in a
   /// bounded temporary WAV, and erased immediately after playback or stop.
+  /// Each chunk's audio downloads while the one before it plays. A reply too
+  /// long to speak in full stops with a pointer to the screen, and a failure
+  /// leaves the session's phase as it was, since the answer is still shown.
   Future<void> speak(
     String value, {
     String? threadId,
@@ -474,12 +487,6 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
       throw const AmbientVoiceException(
         'speech_empty',
         'There is no response to speak.',
-      );
-    }
-    if (text.length > _maximumSpeechCharacters) {
-      throw const AmbientVoiceException(
-        'speech_too_long',
-        'The spoken response is too long. Read it on screen or select a shorter passage.',
       );
     }
     _validateOptionalToken(agentId, 'agentId');
@@ -498,17 +505,22 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
       AmbientRealtimeVoicePhase.playingSpeech,
       'Speaking the configured Agent response. Stop interrupts immediately.',
     );
+    final chunks = _speechChunks(_speechExcerpt(text)).toList();
+    Future<Uint8List> fetch(String chunk) => _prefetched(
+      _requestSpeechPcm(
+        chunk,
+        threadId: threadId,
+        runId: runId,
+        agentId: agentId,
+        cancelToken: cancel,
+      ),
+    );
     try {
-      for (final chunk in _speechChunks(text)) {
+      var next = fetch(chunks.first);
+      for (var index = 0; index < chunks.length; index += 1) {
+        final pcm = await next;
         if (!_isCurrentSpeech(speechGeneration)) return;
-        final pcm = await _requestSpeechPcm(
-          chunk,
-          threadId: threadId,
-          runId: runId,
-          agentId: agentId,
-          cancelToken: cancel,
-        );
-        if (!_isCurrentSpeech(speechGeneration)) return;
+        if (index + 1 < chunks.length) next = fetch(chunks[index + 1]);
         final wav = _pcmToWave(pcm);
         final file = await _writeTemporarySpeech(wav);
         _speechFile = file;
@@ -536,11 +548,16 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
         _setPhase(_restoredPhaseAfterSpeech(), 'Spoken response finished.');
       }
     } catch (error) {
+      // Nothing more is played, so stop any chunk still downloading.
+      if (!cancel.isCancelled) cancel.cancel('speech_failed');
       if (!_isCurrentSpeech(speechGeneration) || _isCanceled(error)) return;
       _speechPlaying = false;
       _speechCancel = null;
-      _errorMessage = _speechErrorMessage(error);
-      _setPhase(AmbientRealtimeVoicePhase.error, _errorMessage!);
+      _setPhase(
+        _restoredPhaseAfterSpeech(),
+        'The answer is on screen, but it could not be played aloud. '
+        '${_speechErrorMessage(error)}',
+      );
       rethrow;
     } finally {
       if (_speechCancel == cancel) _speechCancel = null;
@@ -1666,7 +1683,12 @@ _ItemConfidence? _confidenceFromLogprobs(Object? value) {
   );
 }
 
-Iterable<String> _speechChunks(String value) sync* {
+/// Splits text for the speech service near sentence ends, keeping each code
+/// block's fences within a chunk.
+Iterable<String> _speechChunks(String value) =>
+    _balancedCodeFences(_splitSpeech(value));
+
+Iterable<String> _splitSpeech(String value) sync* {
   var remaining = value.trim();
   while (remaining.length > _maximumSpeechChunkCharacters) {
     final window = remaining.substring(0, _maximumSpeechChunkCharacters + 1);
@@ -1686,6 +1708,73 @@ Iterable<String> _speechChunks(String value) sync* {
     remaining = remaining.substring(boundary).trim();
   }
   if (remaining.isNotEmpty) yield remaining;
+}
+
+/// As much of [text] as is spoken, cut at a sentence or word and followed by
+/// a pointer to the screen when the text is too long.
+String _speechExcerpt(String text) {
+  if (text.length <= _maximumSpeechCharacters) return text;
+  final window = text.substring(0, _maximumSpeechCharacters);
+  final sentence = [
+    window.lastIndexOf('. '),
+    window.lastIndexOf('! '),
+    window.lastIndexOf('? '),
+    window.lastIndexOf('\n'),
+  ].reduce(math.max);
+  final whitespace = window.lastIndexOf(' ');
+  final end = sentence >= _maximumSpeechCharacters ~/ 2
+      ? sentence + 1
+      : whitespace > 0
+      ? whitespace
+      : _maximumSpeechCharacters;
+  final excerpt = text.substring(0, end).trim();
+  final fence = _openCodeFence(excerpt);
+  return [excerpt, ?fence, '', _speechRemainderNotice].join('\n');
+}
+
+/// Closes a code block that a split leaves open at the end of one chunk and
+/// reopens it at the start of the next, so the speech service tells code from
+/// prose in each chunk alone.
+Iterable<String> _balancedCodeFences(Iterable<String> chunks) sync* {
+  String? open;
+  for (final chunk in chunks) {
+    final text = open == null ? chunk : '$open\n$chunk';
+    final fence = _openCodeFence(text);
+    open = fence?.substring(
+      0,
+      math.min(fence.length, _maximumReopenedFenceCharacters),
+    );
+    yield open == null ? text : '$text\n$open';
+  }
+}
+
+/// The marker of a code block that [text] leaves open, if any.
+String? _openCodeFence(String text) => text
+    .split('\n')
+    .fold<String?>(null, (open, line) => _nextCodeFence(line, open));
+
+/// The code fence open after [line]: a new marker when the line opens a
+/// block, none when it closes the open one, and the open one otherwise.
+String? _nextCodeFence(String line, String? open) {
+  final match = _codeFenceLine.firstMatch(line);
+  if (match == null) return open;
+  final marker = match.group(1)!;
+  final rest = match.group(2)!;
+  if (open != null) {
+    return marker[0] == open[0] &&
+            marker.length >= open.length &&
+            rest.trim().isEmpty
+        ? null
+        : open;
+  }
+  return marker[0] == '`' && rest.contains('`') ? null : marker;
+}
+
+/// Starts [request] without reporting its failure until it is awaited, so a
+/// chunk can download while the one before it plays.
+Future<T> _prefetched<T>(Future<T> request) {
+  unawaited(request.then<void>((_) {}, onError: (Object _) {}));
+  return request;
 }
 
 String? _normalizedLanguage(String? value) {
