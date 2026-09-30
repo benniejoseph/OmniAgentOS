@@ -1,8 +1,83 @@
+import { mkdtemp } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
+  createRequestTelemetry,
   getObservabilityStats,
+  recordRuntimeEvent,
   summarizeObservabilityEvents,
 } from "@/lib/observability/store";
+
+describe("observability event ids", () => {
+  const telemetryFor = (headers: Record<string, string>) => createRequestTelemetry(
+    new Request("https://asael.test/api/agent", { headers }),
+    "security",
+  );
+
+  it("keeps a well-formed client id and mints one for any other", () => {
+    expect(telemetryFor({
+      "x-omni-correlation-id": "production-smoke:security:123-abc_1.2",
+      "x-vercel-id": "sin1::iad1::abcde-1727654400000-0123456789ab",
+    })).toMatchObject({
+      correlationId: "production-smoke:security:123-abc_1.2",
+      requestId: "sin1::iad1::abcde-1727654400000-0123456789ab",
+    });
+    expect(telemetryFor({ "x-omni-correlation-id": "c".repeat(128) }).correlationId)
+      .toBe("c".repeat(128));
+
+    for (const supplied of ["c".repeat(129), "x".repeat(3_000), "forged id", "a\tb", "id/../other"]) {
+      const telemetry = telemetryFor({
+        "x-omni-correlation-id": supplied,
+        "x-vercel-id": supplied,
+      });
+      expect(telemetry.requestId).toBeUndefined();
+      expect(telemetry.correlationId).toMatch(/^security:[0-9a-f-]{36}$/);
+    }
+    // A well-formed Vercel id stands in for a malformed client id.
+    expect(telemetryFor({
+      "x-omni-correlation-id": "x".repeat(3_000),
+      "x-vercel-id": "sin1::abcde-1",
+    }).correlationId).toBe("sin1::abcde-1");
+  });
+
+  it("bounds the indexed fields a request can shape before it records them", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+    vi.stubEnv(
+      "OMNIAGENT_DATA_DIR",
+      await mkdtemp(path.join(os.tmpdir(), "asael-observability-ids-")),
+    );
+    try {
+      const record = await recordRuntimeEvent({
+        category: "security",
+        action: "security.auth_failed",
+        route: `/api/connectors/${"r".repeat(3_000)}`,
+        requestId: `req\n${"q".repeat(3_000)}`,
+        correlationId: `corr\r\n${"c".repeat(3_000)}`,
+        resourceType: "connector",
+        resourceId: `\u0000${"i".repeat(3_000)}`,
+        message: "Authentication failed.",
+      });
+
+      expect(record).toMatchObject({
+        route: `/api/connectors/${"r".repeat(496)}`,
+        requestId: `req${"q".repeat(125)}`,
+        correlationId: `corr${"c".repeat(124)}`,
+        resourceId: "i".repeat(256),
+      });
+      await expect(recordRuntimeEvent({
+        category: "security",
+        action: "security.auth_failed",
+        correlationId: "\u0000\n ",
+        message: "Authentication failed.",
+      })).resolves.toMatchObject({
+        correlationId: expect.stringMatching(/^security:[0-9a-f-]{36}$/),
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
 
 describe("observability summaries", () => {
   it("derives SLO and failure statistics from an existing event window", () => {

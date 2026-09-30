@@ -71,15 +71,22 @@ type ObservabilityLedger = {
   events: ObservabilityEventRecord[];
 };
 
+/** The ids a caller may choose: short, and safe to index and to show. */
+const CLIENT_EVENT_ID = /^[A-Za-z0-9:._-]{1,128}$/;
+
 export function createRequestTelemetry(request?: Request, prefix = "obs") {
-  const requestId = request?.headers.get("x-vercel-id") || undefined;
+  const requestId = clientEventId(request?.headers.get("x-vercel-id"));
   const correlationId =
-    request?.headers.get("x-omni-correlation-id") ||
-    request?.headers.get("x-vercel-id") ||
+    clientEventId(request?.headers.get("x-omni-correlation-id")) ||
+    requestId ||
     `${prefix}:${randomUUID()}`;
   const syntheticMetadata = getSyntheticRequestMetadata(request);
 
   return { requestId, correlationId, syntheticMetadata };
+}
+
+function clientEventId(value?: string | null) {
+  return value && CLIENT_EVENT_ID.test(value) ? value : undefined;
 }
 
 export function getSyntheticRequestMetadata(request?: Request): Record<string, unknown> {
@@ -116,12 +123,14 @@ export async function recordRuntimeEvent(input: {
     level: input.level || (input.statusCode && input.statusCode >= 500 ? "error" : "info"),
     category: input.category,
     action: input.action,
-    route: input.route,
+    route: boundedEventField(input.route, 512),
     method: input.method,
     statusCode: input.statusCode,
     durationMs: input.durationMs,
-    requestId: input.requestId,
-    correlationId: input.correlationId || `${input.category}:${randomUUID()}`,
+    requestId: boundedEventField(input.requestId, 128),
+    correlationId:
+      boundedEventField(input.correlationId, 128) ||
+      `${input.category}:${randomUUID()}`,
     tenantId: normalizeTenantId(
       input.tenantId ||
         getDatabaseTenantContext() ||
@@ -130,7 +139,7 @@ export async function recordRuntimeEvent(input: {
     ),
     actorId: input.actorId,
     resourceType: input.resourceType,
-    resourceId: input.resourceId,
+    resourceId: boundedEventField(input.resourceId, 256),
     message: String(redactSensitive(input.message)).slice(0, 2_000),
     metadata: boundedRedactedMetadata(input.metadata),
     createdAt: new Date().toISOString(),
@@ -161,6 +170,17 @@ export async function recordRuntimeEvent(input: {
     return trimObservabilityLedger(ledger);
   });
   return record;
+}
+
+/**
+ * Keeps an indexed field that a request can shape short enough to index,
+ * without the control characters that could forge log lines.
+ */
+function boundedEventField(value: string | undefined, maxLength: number) {
+  return value
+    ?.replace(/[\u0000-\u001f\u007f]/g, "")
+    .trim()
+    .slice(0, maxLength) || undefined;
 }
 
 function boundedRedactedMetadata(metadata?: Record<string, unknown>) {
