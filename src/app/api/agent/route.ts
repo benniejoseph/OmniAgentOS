@@ -130,6 +130,7 @@ import {
 import {
   measureSupervisorOutcomeEvidence,
   applySupervisorStrategy,
+  requireDirectRoute,
   compileThreadContext,
   routeAgentRequest,
 } from "@/lib/orchestration/supervisor";
@@ -1072,12 +1073,21 @@ async function POSTHandler(request: Request) {
         preferredAgentId: requestedBuiltInAgent,
         executionScope: semanticExecutionScope,
       });
-  const preliminaryDecision = applySupervisorStrategy(
-    semanticResolution.decision,
-    computerUseTarget === "local_macos" || commandContext
-      ? "direct"
-      : parsed.data.strategy,
+  // A workflow started here cannot carry Local Computer Use, pinned Command
+  // context, or a scope's durable memory, so those run direct unless durable
+  // is asked for, which is refused below.
+  const scopeCarriesDurableContext = Boolean(
+    parsed.data.contextScope &&
+      getContextScopePolicy(parsed.data.contextScope).durableContext !== "none",
   );
+  const preliminaryDecision =
+    computerUseTarget === "local_macos" || commandContext ||
+      (scopeCarriesDurableContext && parsed.data.strategy !== "durable")
+      ? requireDirectRoute(semanticResolution.decision)
+      : applySupervisorStrategy(
+          semanticResolution.decision,
+          parsed.data.strategy,
+        );
   const semanticDecisionShadowScope = executionScopeFromSecurityContext(context, {
     executingPrincipalType: "agent",
     executingPrincipalId:
@@ -1179,7 +1189,7 @@ async function POSTHandler(request: Request) {
   }
 
   if (
-    parsed.data.contextScope &&
+    scopeCarriesDurableContext &&
     preliminaryDecision.route === "durable_workflow"
   ) {
     return Response.json(

@@ -3,6 +3,7 @@ import {
   measureSupervisorOutcomeEvidence,
   analyzeAgentRequestAmbiguity,
   applySupervisorStrategy,
+  requireDirectRoute,
   compileThreadContext,
   resolveKnownProcedure,
   routeAgentRequest,
@@ -86,6 +87,29 @@ describe("supervisor routing", () => {
       aliases: ["port"],
       requiredToolIds: [],
     }])).toEqual({ state: "none" });
+  });
+
+  it("runs a saved procedure as its workflow unless only a direct run can carry it", () => {
+    const procedure = routeAgentRequest("Run my weekly digest.", "orchestrate", undefined, [
+      { id: "workflow:weekly-digest", aliases: ["weekly digest"], requiredToolIds: [] },
+    ]);
+    expect(procedure).toMatchObject({
+      route: "durable_workflow",
+      procedure: { workflowId: "workflow:weekly-digest" },
+    });
+    expect(applySupervisorStrategy(procedure, "direct")).toBe(procedure);
+    expect(requireDirectRoute(procedure)).toMatchObject({
+      route: "direct",
+      reasons: ["This request can run only as a direct run."],
+    });
+
+    const escalated = { ...procedure, procedure: undefined };
+    expect(applySupervisorStrategy(escalated, "direct")).toMatchObject({
+      route: "direct",
+      reasons: ["Direct execution was explicitly selected."],
+    });
+    const clarify = routeAgentRequest("Delete the old project", "orchestrate");
+    expect(requireDirectRoute(clarify)).toBe(clarify);
   });
 
   it("starts a saved procedure only when the whole request invokes it", () => {

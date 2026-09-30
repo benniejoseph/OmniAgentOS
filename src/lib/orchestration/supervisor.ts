@@ -215,16 +215,31 @@ export function applySupervisorStrategy(
     return decision;
   }
   if (strategy === "direct") {
-    return {
-      ...decision,
-      route: "direct",
-      reasons: ["Direct execution was explicitly selected."],
-    };
+    // Direct is a preference, so a saved procedure still runs as its workflow.
+    return decision.procedure
+      ? decision
+      : {
+          ...decision,
+          route: "direct",
+          reasons: ["Direct execution was explicitly selected."],
+        };
   }
   return {
     ...decision,
     route: "durable_workflow",
     reasons: ["Durable execution was explicitly selected."],
+  };
+}
+
+/** The decision for a request that only a direct run can carry. */
+export function requireDirectRoute(
+  decision: SupervisorDecision,
+): SupervisorDecision {
+  if (decision.route === "clarify") return decision;
+  return {
+    ...decision,
+    route: "direct",
+    reasons: ["This request can run only as a direct run."],
   };
 }
 

@@ -2141,7 +2141,7 @@ export function AgentRunsWorkspace({
           clientCorrelationId: correlationId,
           prompt,
           mode,
-          strategy: "direct",
+          strategy: "auto",
           agentId: preferredAgentId || "atlas",
           contextReferences: commandReferences.map(
             commandContextReferenceRequest,
@@ -2421,7 +2421,7 @@ export function AgentRunsWorkspace({
               projectId: selectedProjectId || undefined,
               message: submittedGoal,
               requestId,
-              strategy: resumeRunId ? "auto" : "direct",
+              strategy: "auto",
               agentId: submittedAgentId,
               contextScope: resumeRunId ? undefined : contextScope,
               contextSelection: resumeRunId ? undefined : contextSelection,

@@ -1715,6 +1715,94 @@ describe("agent semantic intent routing", () => {
     );
   });
 
+  it.each(["none", "current_turn", "session"])(
+    "starts the workflow a request needs in the %s scope",
+    async (contextScope) => {
+      routeMocks.resolveSemanticIntent.mockResolvedValue(durableWorkflowIntent());
+      routeMocks.createMission.mockResolvedValue({
+        id: "mission-scoped-workflow",
+        title: "Coordinate the launch",
+        objective: "Coordinate the launch across the team.",
+        priority: "high",
+        status: "queued",
+      });
+      vi.mocked(prepareDurableSpecialistDelegation).mockResolvedValueOnce([]);
+      vi.mocked(scheduleDurableSpecialistDrain).mockReturnValueOnce(undefined);
+      vi.mocked(createWorkflowRun).mockImplementationOnce(async (input) => ({
+        run: {
+          id: "workflow-scoped-a",
+          goal: input.goal,
+          input: { metadata: input.metadata },
+          approvalRequired: input.requireApproval ?? true,
+        },
+      }) as never);
+
+      const response = await POST(new Request("http://asael.test/api/agent", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          message: "Coordinate the launch across the team.",
+          requestId: `scoped-workflow-${contextScope}`,
+          strategy: "auto",
+          contextScope,
+        }),
+      }));
+
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain("event: delegated");
+      expect(createWorkflowRun).toHaveBeenCalledWith(expect.objectContaining({
+        metadata: expect.objectContaining({ contextScope }),
+      }));
+      expect(routeMocks.runAgent).not.toHaveBeenCalled();
+    },
+  );
+
+  it("runs a scope with durable memory direct, and refuses it a workflow", async () => {
+    // Even a saved procedure, since a workflow cannot carry the scope.
+    const intent = durableWorkflowIntent();
+    routeMocks.resolveSemanticIntent.mockResolvedValue({
+      ...intent,
+      decision: {
+        ...intent.decision,
+        procedure: {
+          workflowId: "workflow:weekly-digest",
+          matchedAlias: "weekly digest",
+          requiredToolIds: [],
+        },
+      },
+    });
+    routeMocks.runAgent.mockImplementation(async function* () {
+      yield { type: "run", runId: "run-agent-private-work" };
+      yield { type: "done", response: "Agent memory used." };
+    });
+    const post = (strategy: string) => POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        message: "Coordinate the launch across the team.",
+        requestId: `agent-private-work-${strategy}`,
+        strategy,
+        contextScope: "agent_private",
+      }),
+    }));
+
+    const auto = await post("auto");
+    expect(auto.status).toBe(200);
+    await auto.text();
+    expect(routeMocks.runAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ contextScope: "agent_private" }),
+      expect.any(AbortSignal),
+    );
+
+    const durable = await post("durable");
+    expect(durable.status).toBe(409);
+    await expect(durable.json()).resolves.toMatchObject({
+      error: "Context scope unavailable for durable workflow",
+    });
+    expect(createWorkflowRun).not.toHaveBeenCalled();
+    expect(routeMocks.runAgent).toHaveBeenCalledOnce();
+  });
+
   it("requires reviewed evidence only for explicit-selection scope", async () => {
     const response = await POST(new Request("http://asael.test/api/agent", {
       method: "POST",
