@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, AudioLines, Check, Loader2, Mic, RotateCcw, Send, ShieldCheck, Square, X } from "lucide-react";
 import { clsx } from "clsx";
+import { postApprovalDecision } from "@/components/approvals/approval-decision";
 import {
   applyRealtimeTranscriptEvent,
   editRealtimeTranscript,
@@ -689,14 +690,10 @@ export function VoiceMode({
     setError("");
     setAnnouncement(`${decision === "approve" ? "Approving" : "Rejecting"} the exact visible action.`);
     try {
-      const response = await fetch(`/api/approvals/${encodeURIComponent(approval.id)}`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          kind: "tool",
-          decision,
-          ...(approvalNote.trim() ? { reason: approvalNote.trim() } : {}),
-        }),
+      const response = await postApprovalDecision(approval.id, {
+        kind: "tool",
+        decision,
+        ...(approvalNote.trim() ? { reason: approvalNote.trim() } : {}),
       });
       const body: unknown = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(errorMessage(body, "The approval decision could not be recorded."));

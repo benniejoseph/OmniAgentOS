@@ -25,6 +25,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { clsx } from "clsx";
+import { postApprovalDecision } from "@/components/approvals/approval-decision";
 import { PersonalConnections } from "@/components/connectors/personal-connections";
 import { McpConnections } from "@/components/connectors/mcp-connections";
 import { PersonalDataControls } from "@/components/settings/personal-data-controls";
@@ -1552,15 +1553,19 @@ export function DomainConsole({
     }
     setRunningAction(`${decision}-${id}`);
     try {
-      const result = await readJson(`/api/approvals/${id}`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          kind,
-          decision,
-          reason: decision === "approve" ? "Approved from operations console." : "Rejected from operations console.",
-        }),
+      const response = await postApprovalDecision(id, {
+        kind,
+        decision,
+        reason: decision === "approve" ? "Approved from operations console." : "Rejected from operations console.",
       });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const record = asRecord(result);
+        throw new HttpError(
+          response.status,
+          stringValue(record.message || record.error, `/api/approvals/${id} returned ${response.status}`),
+        );
+      }
       setActionResult({ title: "Approval decision", status: "success", message: `${decision} recorded.`, data: result });
       await load();
     } catch (error) {

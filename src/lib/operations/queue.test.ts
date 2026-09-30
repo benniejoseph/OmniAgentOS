@@ -431,6 +431,67 @@ describe("approval queue item", () => {
   });
 });
 
+describe("approval queue contract", () => {
+  it("states each tool's declared effect, and none for a tool outside the registry", async () => {
+    const operations = await import("@/lib/operations/queue");
+    const store = await import("@/lib/tools/audit-store");
+    const { getGovernedTool } = await import("@/lib/tools/registry");
+    const tenantId = "tenant-approval-contract";
+    const toolIds = [
+      "app.projects.builder.verification.run",
+      "app.projects.builder.checkpoint.restore",
+      "moltbook.home.read",
+      "mcp_unregistered_tool",
+    ];
+    for (const [index, toolId] of toolIds.entries()) {
+      await store.saveToolExecution({
+        id: `contract-${index}`,
+        tenantId,
+        actorId: "queue-owner",
+        toolId,
+        toolName: toolId,
+        riskLevel: 1,
+        status: "approval_required",
+        dryRun: false,
+        approvalRequired: true,
+        input: {},
+        createdAt: new Date(Date.UTC(2026, 8, 1, 0, index)).toISOString(),
+      });
+    }
+    const effect = (toolId: string) => getGovernedTool(toolId)!.description;
+
+    const { items } = await operations.getApprovalQueue(10, { tenantId });
+
+    expect(Object.fromEntries(items.map((item) => [
+      item.kind === "tool" ? item.record.toolId : item.id,
+      item.kind === "tool" ? item.contract : undefined,
+    ]))).toEqual({
+      // A risk-one tool whose effect cannot be undone.
+      "app.projects.builder.verification.run": {
+        reversible: false,
+        readOnly: false,
+        effect: effect("app.projects.builder.verification.run"),
+      },
+      "app.projects.builder.checkpoint.restore": {
+        reversible: true,
+        readOnly: false,
+        effect: effect("app.projects.builder.checkpoint.restore"),
+      },
+      "moltbook.home.read": {
+        reversible: true,
+        readOnly: true,
+        effect: effect("moltbook.home.read"),
+      },
+      mcp_unregistered_tool: { reversible: false, readOnly: false },
+    });
+    await expect(
+      operations.getApprovalQueueItem("contract-1", { tenantId }),
+    ).resolves.toMatchObject({
+      contract: { reversible: true, readOnly: false },
+    });
+  });
+});
+
 describe("approval queue origin", () => {
   it("links a tool item to its paused run only for the run's owner", async () => {
     const operations = await import("@/lib/operations/queue");

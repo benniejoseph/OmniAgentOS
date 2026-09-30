@@ -20,6 +20,8 @@ export type ApprovalItem = {
   title: string;
   status: string;
   riskLevel: number;
+  /** What a tool item's contract says its effect is; see the queue. */
+  contract?: { reversible: boolean; readOnly: boolean; effect?: string };
   requestedBy?: string;
   reason?: string;
   createdAt: string;
@@ -162,6 +164,36 @@ export function approvalDecisionNotice(
   };
 }
 
+/**
+ * The Idempotency-Key of each decision sent and not yet answered. Sending
+ * the same decision again, after the answer was lost or the server failed,
+ * reuses its key; a changed decision or note is a new request.
+ */
+const unansweredDecisionKeys = new Map<string, string>();
+
+/** Posts one decision on an item under its Idempotency-Key. */
+export async function postApprovalDecision(
+  id: string,
+  request: { kind: string; decision: ApprovalDecision; reason?: string },
+  fetchImpl: typeof fetch = fetch,
+) {
+  const body = JSON.stringify(request);
+  const sent = `${id}\u0000${body}`;
+  const idempotencyKey = unansweredDecisionKeys.get(sent) ??
+    `approval-${request.decision}-${crypto.randomUUID()}`;
+  unansweredDecisionKeys.set(sent, idempotencyKey);
+  const response = await fetchImpl(`/api/approvals/${encodeURIComponent(id)}`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "idempotency-key": idempotencyKey,
+    },
+    body,
+  });
+  if (response.status < 500) unansweredDecisionKeys.delete(sent);
+  return response;
+}
+
 /** Sends one decision and returns the notice for it, or throws the server's reason. */
 export async function submitApprovalDecision(
   item: ApprovalItem,
@@ -169,11 +201,11 @@ export async function submitApprovalDecision(
   form: ApprovalDecisionForm = {},
   fetchImpl: typeof fetch = fetch,
 ) {
-  const response = await fetchImpl(`/api/approvals/${encodeURIComponent(item.id)}`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(approvalDecisionRequest(item, decision, form)),
-  });
+  const response = await postApprovalDecision(
+    item.id,
+    approvalDecisionRequest(item, decision, form),
+    fetchImpl,
+  );
   const body = (await response.json().catch(() => ({}))) as JsonRecord;
   if (!response.ok) {
     throw new Error(String(body.message || body.error || `Decision failed (${response.status}).`));

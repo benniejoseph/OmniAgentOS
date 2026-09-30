@@ -59,6 +59,32 @@ describe("ApprovalCard", () => {
     expect(html).toContain("border-line");
   });
 
+  it("states a tool's reversibility from its contract, not its risk", () => {
+    const fact = (overrides: Partial<ApprovalItem>) =>
+      render({ item: item(overrides) });
+
+    const permanent = fact({
+      riskLevel: 1,
+      contract: { reversible: false, readOnly: false, effect: "Runs the checks." },
+    });
+    expect(permanent).toContain("Not reversible.");
+    expect(permanent).not.toContain("can be edited or removed");
+    expect(permanent).toContain("Runs the checks. The Send email tool executes for real");
+    expect(fact({ riskLevel: 3, contract: { reversible: true, readOnly: false } }))
+      .toContain("Reversible. Its tool contract declares");
+    expect(fact({ riskLevel: 2, contract: { reversible: true, readOnly: true } }))
+      .toContain("Read-only.");
+    const unknown = fact({ riskLevel: 0 });
+    expect(unknown).toContain("Not reversible.");
+    expect(unknown).toContain("<p class=\"mt-1 text-sm leading-5\">The Send email tool executes");
+    // Other approvals keep the facts their risk gives.
+    expect(fact({ kind: "workflow", riskLevel: 2 })).toContain("Side-effecting.");
+  });
+
+  it("shows the exact inputs without a click", () => {
+    expect(render()).toContain('<details open="" class="mt-4');
+  });
+
   it("marks the item a link opened and links to the conversation it paused", () => {
     const html = render({
       focused: true,

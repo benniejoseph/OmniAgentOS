@@ -201,6 +201,42 @@ describe("submitting a decision", () => {
     });
   });
 
+  it("sends a decision again under its key until the server answers it", async () => {
+    const keys: string[] = [];
+    const answers: Array<Response | Error> = [];
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      keys.push(new Headers(init?.headers).get("idempotency-key") ?? "");
+      const answer = answers.shift();
+      if (!answer || answer instanceof Error) throw answer ?? new Error("unexpected request");
+      return answer;
+    }) as unknown as typeof fetch;
+    const send = async (
+      answer: Response | Error,
+      decision: "approve" | "reject" = "approve",
+      reason = "Checked.",
+      id = "exec-keyed",
+    ) => {
+      answers.push(answer);
+      await submitApprovalDecision(item({ id }), decision, { reason }, fetchImpl)
+        .catch(() => undefined);
+      return keys.at(-1);
+    };
+    const lost = () => new TypeError("Failed to fetch");
+
+    const first = await send(lost());
+    expect(first).toMatch(/^approval-approve-[0-9a-f-]{36}$/);
+    const others = [
+      await send(lost(), "approve", "Checked twice."),
+      await send(lost(), "reject"),
+      await send(lost(), "approve", "Checked.", "exec-other"),
+    ];
+    expect(await send(new Response("", { status: 503 }))).toBe(first);
+    expect(await send(jsonResponse({ error: "Already decided." }, 409))).toBe(first);
+    const next = await send(jsonResponse({}));
+    expect(new Set([first, ...others, next]).size).toBe(5);
+    expect(others[1]).toMatch(/^approval-reject-/);
+  });
+
   it("throws the server's reason", async () => {
     await expect(submitApprovalDecision(
       item(),

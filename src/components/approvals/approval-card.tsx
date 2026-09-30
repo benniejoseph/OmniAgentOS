@@ -141,14 +141,14 @@ export function ApprovalCard({
           value={
             reconciliationRequired
               ? "No new approval is granted. The original tenant, actor, input, and approval bindings remain unchanged."
-              : reversibility(item.riskLevel)
+              : reversibility(item)
           }
         />
         <ConsentFact label="Why it is waiting" value={item.reason || "This action requires human approval by policy."} />
       </div>
 
       {item.input && Object.keys(item.input).length ? (
-        <details className="mt-4 rounded-md border border-line bg-background p-3">
+        <details open className="mt-4 rounded-md border border-line bg-background p-3">
           <summary className="cursor-pointer text-sm font-medium">
             {reconciliationRequired ? "Bound inputs" : "Exact inputs"} (secrets redacted)
           </summary>
@@ -440,7 +440,8 @@ function whatWillHappen(item: ApprovalItem) {
     return "The system checks the immutable deletion receipt first. If deletion already committed, it finalizes the existing audit record; otherwise it safely replays only the same tenant-, actor-, input-, and approval-bound request.";
   }
   if (item.kind === "tool") {
-    return `The ${item.title} tool executes for real with the inputs below, and the output is recorded in the tool audit ledger.`;
+    const effect = item.contract?.effect ? `${item.contract.effect} ` : "";
+    return `${effect}The ${item.title} tool executes for real with the inputs below, and the output is recorded in the tool audit ledger.`;
   }
   if (item.kind === "workflow") {
     return "The workflow resumes. Exact reviewed reversible actions receive short-lived, budgeted plan grants; dynamic or changed targets still pause for their own approval.";
@@ -448,7 +449,20 @@ function whatWillHappen(item: ApprovalItem) {
   return "The monitoring policy change is applied and starts affecting SLO evaluation, incidents, and alerts.";
 }
 
-function reversibility(riskLevel: number) {
+/**
+ * A tool's reversibility is what its contract declares, whatever its risk.
+ * A tool without one is treated as permanent.
+ */
+function reversibility(item: ApprovalItem) {
+  if (item.kind === "tool") {
+    if (item.contract?.readOnly) {
+      return "Read-only. It reads data and changes nothing.";
+    }
+    return item.contract?.reversible
+      ? "Reversible. Its tool contract declares an effect that can be undone afterwards."
+      : "Not reversible. Its tool contract does not declare an effect that can be undone, so treat it as permanent.";
+  }
+  const { riskLevel } = item;
   if (riskLevel <= 1) {
     return "Low impact. It writes to internal stores that can be edited or removed afterwards.";
   }

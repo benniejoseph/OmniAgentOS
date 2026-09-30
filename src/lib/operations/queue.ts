@@ -37,6 +37,7 @@ import {
   listPendingToolApprovalPage,
   listToolExecutions,
 } from "@/lib/tools/audit-store";
+import { getGovernedTool } from "@/lib/tools/registry";
 import {
   getWorkflowPlanForRun,
   getWorkflowPlansForRuns,
@@ -60,6 +61,7 @@ export type ApprovalQueueItem =
       status: "approval_required" | "reconciliation_required";
       canonicalStatus: CanonicalStatusProjection;
       riskLevel: number;
+      contract: ToolApprovalContract;
       requestedBy?: string;
       tenantId?: string;
       reason?: string;
@@ -97,6 +99,18 @@ export type ApprovalQueueItem =
       input: Record<string, unknown>;
       record: ObservabilitySloPolicyChange;
     };
+
+/**
+ * What the tool's contract says its effect is, for the approver to read:
+ * whether it can be undone, whether it only reads, and what it does. A tool
+ * outside the built-in registry declares none of this, so it counts as an
+ * irreversible change.
+ */
+export type ToolApprovalContract = {
+  reversible: boolean;
+  readOnly: boolean;
+  effect?: string;
+};
 
 export type ApprovalQueueStats = {
   total: number;
@@ -373,6 +387,7 @@ function toolApprovalToQueueItem(record: ToolExecutionRecord): ApprovalQueueItem
       ? { ...canonicalStatus, sourceStatus: "reconciliation_required" }
       : canonicalStatus,
     riskLevel: record.riskLevel,
+    contract: toolApprovalContract(record.toolId),
     requestedBy: record.actorId,
     tenantId: record.tenantId,
     reason: memoryForgetReconciliation
@@ -388,6 +403,17 @@ function toolApprovalToQueueItem(record: ToolExecutionRecord): ApprovalQueueItem
       output: redactSensitive(record.output),
     },
   };
+}
+
+function toolApprovalContract(toolId: string): ToolApprovalContract {
+  const tool = getGovernedTool(toolId);
+  return tool
+    ? {
+        reversible: tool.reversible === true,
+        readOnly: tool.operationClass === "read_only",
+        effect: tool.description,
+      }
+    : { reversible: false, readOnly: false };
 }
 
 function isMemoryForgetReconciliationRecord(record: ToolExecutionRecord) {
