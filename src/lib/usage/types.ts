@@ -41,6 +41,8 @@ export type AiUsageScope = {
   tenantId: string;
   actorId: string;
   sourceStreamId: string;
+  /** What the call shares a prompt cache with; its source stream when unset. */
+  promptCacheScope?: string;
   operation: AiUsageOperation;
   purpose: string;
   correlationId?: string;

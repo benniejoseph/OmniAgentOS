@@ -11,6 +11,56 @@ import {
 import { DEFAULT_CUSTOM_AGENT_PERSONA } from "@/lib/agents/persona";
 import { MAX_ASSIGNED_SKILLS } from "@/lib/skills/limits";
 
+describe("agent input order", () => {
+  const order = (messages: Parameters<typeof buildAgentInput>[0]["messages"]) =>
+    buildAgentInput({
+      messages,
+      memoryContext: "Remembered notes.",
+      liveWebContext: "Web notes.",
+    }).map((item) => item.type === "message"
+      ? `${item.role}:${item.content}`
+      : `${item.type}:${item.source}`);
+
+  it("puts the context just before the latest request", () => {
+    expect(order([
+      { role: "user", content: "first" },
+      { role: "assistant", content: "reply" },
+      { role: "user", content: "second" },
+    ])).toEqual([
+      "user:first",
+      "assistant:reply",
+      "observation:memory",
+      "observation:web",
+      "user:second",
+    ]);
+    expect(order([
+      { role: "user", content: "first" },
+      { role: "assistant", content: "reply" },
+      { role: "user", content: "second" },
+      { role: "assistant", content: "partial" },
+    ])).toEqual([
+      "user:first",
+      "assistant:reply",
+      "observation:memory",
+      "observation:web",
+      "user:second",
+      "assistant:partial",
+    ]);
+  });
+
+  it("keeps the context first when the conversation opens with the assistant", () => {
+    expect(order([
+      { role: "assistant", content: "hello" },
+      { role: "user", content: "question" },
+    ])).toEqual([
+      "observation:memory",
+      "observation:web",
+      "assistant:hello",
+      "user:question",
+    ]);
+  });
+});
+
 describe("agent instruction order", () => {
   it("keeps the mode and the clock after the instructions every run shares", () => {
     const at = (mode: "orchestrate" | "execute", iso: string) => buildAgentInstructions({
@@ -132,9 +182,9 @@ describe("agent prompt provenance", () => {
     ]);
 
     expect(replay.map((item) => item.type)).toEqual([
+      "message",
+      "message",
       "observation",
-      "message",
-      "message",
       "message",
       "message",
       "tool_call",

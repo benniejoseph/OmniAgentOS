@@ -5,7 +5,8 @@ const PROMPT_CACHE_KEY_PREFIX = "asael-pc-v1";
 
 /**
  * Build a provider-safe cache bucket without disclosing tenant, actor, or run
- * identifiers. The key is stable for every model turn in one source stream.
+ * identifiers. The key is stable for every model turn in one cache scope, or
+ * in one source stream when the turn names no cache scope.
  */
 export function promptCacheKeyForScope(
   scope: AiUsageScope | undefined,
@@ -19,7 +20,7 @@ export function promptCacheKeyForScope(
     .update("\0")
     .update(scope.actorId)
     .update("\0")
-    .update(scope.sourceStreamId)
+    .update(scope.promptCacheScope ?? scope.sourceStreamId)
     .digest("base64url");
   return `${PROMPT_CACHE_KEY_PREFIX}-${digest}`;
 }

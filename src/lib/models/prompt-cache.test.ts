@@ -32,6 +32,21 @@ describe("provider prompt caching", () => {
     expect(first).not.toContain(scope.sourceStreamId);
   });
 
+  it("shares one key across the runs of a cache scope", () => {
+    vi.stubEnv("OMNIAGENT_INTERNAL_AUTH_SECRET", "prompt-cache-test-secret");
+    const agent = { ...scope, promptCacheScope: "agent:private" };
+    const first = promptCacheKeyForScope(agent);
+
+    expect(promptCacheKeyForScope({ ...agent, sourceStreamId: "run:other" }))
+      .toBe(first);
+    expect(promptCacheKeyForScope({ ...agent, promptCacheScope: "agent:other" }))
+      .not.toBe(first);
+    expect(promptCacheKeyForScope({ ...agent, actorId: "actor-other" }))
+      .not.toBe(first);
+    expect(first).not.toBe(promptCacheKeyForScope(scope));
+    expect(first).not.toContain("private");
+  });
+
   it("omits a cache key when no server secret or scope is available", () => {
     vi.stubEnv("OMNIAGENT_INTERNAL_AUTH_SECRET", "");
     expect(promptCacheKeyForScope(scope)).toBeUndefined();

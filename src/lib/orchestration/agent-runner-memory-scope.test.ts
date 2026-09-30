@@ -1454,6 +1454,19 @@ describe("agent memory scope", () => {
     ["OpenAI", "openai"],
     ["provider-bound", "google"],
   ] as const)("a %s approval resume", (_label, provider) => {
+    it("shares the resumed turn's prompt cache with the agent's other runs", async () => {
+      const continuation = await pauseForApproval(request("session"), provider);
+      const turns = provider === "openai"
+        ? mocks.streamResponseTurn
+        : mocks.generateModelToolTurn;
+      turns.mockClear();
+
+      await resumeAfterApproval(continuation);
+
+      expect(turns.mock.calls[0]?.[0]?.usageScope)
+        .toMatchObject({ promptCacheScope: "agent:paid-test-agent" });
+    });
+
     it.each([
       ["a session-only agent", () => request("session")],
       ["a project-scoped agent", () => request("project")],
@@ -2781,6 +2794,21 @@ describe("agent memory scope", () => {
         ? mocks.streamResponseTurn.mock.calls[0]?.[0]
         : mocks.generateModelToolTurn.mock.calls[0]?.[0];
     }
+
+    it.each(["openai", "google"] as const)(
+      "shares a %s turn's prompt cache with the agent's other runs",
+      async (provider) => {
+        mocks.resolveRuntimeModelAssignment.mockResolvedValueOnce(
+          workspaceRoute(provider),
+        );
+        mocks.generateModelToolTurn.mockResolvedValue(providerTurn({ text: "Done." }));
+
+        await collectRequest(request("session"));
+
+        expect(firstTurnRequest(provider)?.usageScope)
+          .toMatchObject({ promptCacheScope: "agent:paid-test-agent" });
+      },
+    );
 
     it.each(["openai", "google"] as const)(
       "attributes a %s turn to the Settings assignment that routed it",

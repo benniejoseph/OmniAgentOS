@@ -1993,6 +1993,7 @@ async function* runAgentUntilStopped(
           moltbookAutonomy: request.moltbookAutonomy,
           executionScope,
           runId: run.id,
+          promptCacheScope: agentPromptCacheScope(run.agentId),
           computerUseTarget,
           usageReceipt: runtimeModel.usageReceipt,
           abortSignal: runAbortSignal,
@@ -2257,6 +2258,7 @@ async function* runAgentUntilStopped(
                 tenantId: runTenantId,
                 actorId: request.actorId,
                 sourceStreamId: `run:${run.id}`,
+                promptCacheScope: agentPromptCacheScope(run.agentId),
                 operation: "tool_turn" as const,
                 purpose: "agent.turn",
                 correlationId: executionScope.correlationId,
@@ -2947,6 +2949,11 @@ type NonOpenAIProviderLoopResult = {
   };
 };
 
+/** One agent's model turns share a prompt cache across its runs. */
+function agentPromptCacheScope(agentId: string | undefined) {
+  return `agent:${agentId?.trim() || "atlas"}`;
+}
+
 function resolveMaxToolSteps(
   requested: number | undefined,
   authority: number,
@@ -2979,6 +2986,8 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   moltbookAutonomy?: AgentRunRequest["moltbookAutonomy"];
   executionScope?: ExecutionScope;
   runId: string;
+  /** What the loop's model turns share a prompt cache with. */
+  promptCacheScope?: string;
   computerUseTarget?: ComputerUseTarget;
   usageReceipt?: ModelUsageReceipt;
   abortSignal?: AbortSignal;
@@ -3142,6 +3151,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
           input.executionScope?.initiatingActorId ||
           input.securityContext.actorId,
         sourceStreamId: `run:${input.runId}`,
+        promptCacheScope: input.promptCacheScope,
         operation: "tool_turn",
         purpose: "agent.turn",
         correlationId: input.executionScope?.correlationId || input.runId,
@@ -4701,6 +4711,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
               tenantId: normalizeTenantId(tenantId),
               actorId: continuation.context.actorId,
               sourceStreamId: `run:${run.id}`,
+              promptCacheScope: agentPromptCacheScope(run.agentId),
               operation: "tool_turn",
               purpose: "agent.turn",
               correlationId: executionScope?.correlationId || run.id,
@@ -5716,6 +5727,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
       requestActorBinding: resumeActorBinding,
       executionScope,
       runId: run.id,
+      promptCacheScope: agentPromptCacheScope(run.agentId),
       computerUseTarget: continuation.computerUseTarget === "local_macos"
         ? "local_macos"
         : undefined,

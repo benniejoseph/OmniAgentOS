@@ -276,14 +276,19 @@ export function buildAgentInput({
         }]
       : []),
   ];
-  return [
-    ...observations,
-    ...messages.map((message) => ({
-      type: "message" as const,
-      role: message.role,
-      content: message.content,
-    })),
-  ];
+  const conversation = messages.map((message) => ({
+    type: "message" as const,
+    role: message.role,
+    content: message.content,
+  }));
+  // The context goes just before the latest request, so the conversation
+  // before it stays the same from one run to the next and its cached prefix
+  // holds. A conversation that opens with the assistant keeps the context
+  // first, since some providers need the user to speak first.
+  const at = messages[0]?.role === "user"
+    ? messages.map((message) => message.role).lastIndexOf("user")
+    : 0;
+  return [...conversation.slice(0, at), ...observations, ...conversation.slice(at)];
 }
 
 export function escapeUntrustedPromptText(value: string) {
