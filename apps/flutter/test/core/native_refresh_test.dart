@@ -5,10 +5,12 @@ import 'package:asael/core/auth/biometric_gate.dart';
 import 'package:asael/core/network/api_client.dart';
 import 'package:asael/core/network/api_exception.dart';
 import 'package:asael/core/storage/secure_session_store.dart';
+import 'package:asael/features/auth/application/session_controller.dart';
 import 'package:asael/features/auth/data/session_repository.dart';
 import 'package:asael/generated/native_contract.g.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -45,6 +47,31 @@ void main() {
       );
       expect(service.refreshes, ['refresh-1']);
       expect(await _stored(), ('rotated-access-1', 'rotated-refresh-1'));
+    });
+  });
+
+  group('an upload refused with a stale access token', () {
+    test('is sent again whole after the refresh', () async {
+      final service = _Service()..issueRefreshOnly('refresh-1');
+      final store = await _signedIn('access-1', 'refresh-1');
+
+      expect(
+        await _client(store, service).postMultipart(
+          '/api/capture/documents',
+          fields: {'title': 'Lease'},
+          bytes: Uint8List.fromList(utf8.encode('page one')),
+          filename: 'lease.pdf',
+          contentType: 'application/pdf',
+        ),
+        _bootstrap,
+      );
+      expect(service.refreshes, ['refresh-1']);
+      expect(service.uploads, hasLength(2));
+      expect(service.uploads.last, service.uploads.first);
+      expect(
+        service.uploads.last,
+        allOf(contains('Lease'), contains('lease.pdf'), contains('page one')),
+      );
     });
   });
 
@@ -98,6 +125,38 @@ void main() {
       );
       expect(service.refreshes, ['refresh-1']);
       expect(await store.hasStoredCredentials(), isFalse);
+    });
+
+    test('reports that the session has ended', () async {
+      final service = _Service();
+      final store = await _signedIn('access-1', 'refresh-1');
+      final api = _client(store, service);
+      var ended = 0;
+      api.sessionEnded.listen((_) => ended += 1);
+
+      await expectLater(
+        api.getJsonFresh(NativePaths.bootstrapGet),
+        throwsA(_status(401)),
+      );
+      await pumpEventQueue();
+      expect(ended, 1);
+    });
+
+    test('keeps a session it could not refresh for another reason', () async {
+      final service = _Service()
+        ..onRefresh = () => throw StateError('The service is unreachable.');
+      final store = await _signedIn('access-1', 'refresh-1');
+      final api = _client(store, service);
+      var ended = 0;
+      api.sessionEnded.listen((_) => ended += 1);
+
+      await expectLater(
+        api.getJsonFresh(NativePaths.bootstrapGet),
+        throwsA(_status(401)),
+      );
+      await pumpEventQueue();
+      expect(ended, 0);
+      expect(await store.hasStoredCredentials(), isTrue);
     });
 
     test('erases the installation when the service asks for a wipe', () async {
@@ -203,6 +262,35 @@ void main() {
       expect(await store.hasStoredCredentials(), isFalse);
     });
   });
+
+  test('the app signs out once the service refuses its session', () async {
+    final service = _Service()..issue('access-1', 'refresh-1');
+    final store = await _signedIn('access-1', 'refresh-1');
+    final api = _client(store, service);
+    final container = ProviderContainer(
+      overrides: [
+        sessionRepositoryProvider.overrideWithValue(
+          SessionRepository(api, store, _NoBiometrics()),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+    expect(
+      (await container.read(sessionControllerProvider.future))?.tenantId,
+      'tenant-1',
+    );
+
+    service.revoke();
+    await expectLater(
+      api.getJsonFresh(NativePaths.bootstrapGet),
+      throwsA(_status(401)),
+    );
+    await pumpEventQueue();
+
+    final state = container.read(sessionControllerProvider);
+    expect(state, isA<AsyncData<Object?>>());
+    expect(state.value, isNull);
+  });
 }
 
 const _bootstrap = {
@@ -269,6 +357,9 @@ class _Service implements HttpClientAdapter {
   final refreshes = <String>[];
   var _rotations = 0;
 
+  /// The body of each form posted to the service, in order.
+  final uploads = <String>[];
+
   /// Runs when a refresh arrives, before the service answers it.
   Future<void> Function()? onRefresh;
 
@@ -283,6 +374,13 @@ class _Service implements HttpClientAdapter {
 
   void issueRefreshOnly(String refreshToken) =>
       _refreshTokens[refreshToken] = null;
+
+  /// Refuses every token issued so far, as the service does for a session it
+  /// has revoked.
+  void revoke() {
+    _accessTokens.clear();
+    _refreshTokens.clear();
+  }
 
   @override
   Future<ResponseBody> fetch(
@@ -327,6 +425,10 @@ class _Service implements HttpClientAdapter {
           (options.data as Map)['deviceId'] == wipeDeviceId &&
           wipeDeviceId != null;
       return _respond(200, {'acknowledged': true});
+    }
+    if (options.data is FormData) {
+      final body = await requestStream!.expand((chunk) => chunk).toList();
+      uploads.add(utf8.decode(body));
     }
     final authorization = options.headers['Authorization'];
     if (authorization is String &&

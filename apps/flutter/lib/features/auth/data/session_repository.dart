@@ -14,6 +14,9 @@ class SessionRepository {
   final SecureSessionStore _store;
   final BiometricGate _biometricGate;
 
+  /// Fires when the service has refused this session and nothing is stored.
+  Stream<void> get sessionEnded => _api.sessionEnded;
+
   Future<AppSession?> restore() async {
     await _store.prepare();
     if (!await _store.hasStoredCredentials()) return null;

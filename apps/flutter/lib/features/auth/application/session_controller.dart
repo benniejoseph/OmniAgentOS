@@ -6,7 +6,21 @@ import 'biometric_session_lock_controller.dart';
 
 class SessionController extends AsyncNotifier<AppSession?> {
   @override
-  Future<AppSession?> build() => ref.read(sessionRepositoryProvider).restore();
+  Future<AppSession?> build() {
+    final repository = ref.read(sessionRepositoryProvider);
+    final ended = repository.sessionEnded.listen((_) => _showSignedOut());
+    ref.onDispose(ended.cancel);
+    return repository.restore();
+  }
+
+  /// Stops showing a session the service refused, whose credentials are
+  /// already cleared, so the app does not stay signed in while every request
+  /// fails. A sign-in or sign-out in progress sets the state itself.
+  void _showSignedOut() {
+    if (state.value == null) return;
+    ref.read(biometricSessionLockControllerProvider).resetAfterSessionCleared();
+    state = const AsyncData(null);
+  }
 
   Future<bool> signIn(String email, String password) async {
     state = const AsyncLoading();

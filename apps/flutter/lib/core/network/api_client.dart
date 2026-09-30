@@ -35,6 +35,7 @@ ApiClient createApiClient(
     store.readOrCreateOfflineProjectionSecret,
   );
   Future<void>? refreshInFlight;
+  final sessionEnded = StreamController<void>.broadcast();
 
   Future<void> refreshSession(String? rejectedAccessToken) async {
     // Another engine, such as a second macOS window, may have rotated the pair
@@ -95,6 +96,16 @@ ApiClient createApiClient(
     }
   }
 
+  // A refused request that leaves nothing stored has ended the session,
+  // whether this engine's refresh cleared it or another engine signed out.
+  Future<void> reportIfSessionEnded() async {
+    try {
+      if (!await store.hasStoredCredentials()) sessionEnded.add(null);
+    } catch (_) {
+      // An unreadable Keychain does not show that the session is over.
+    }
+  }
+
   client.interceptors.add(
     InterceptorsWrapper(
       onRequest: (options, handler) async {
@@ -125,16 +136,20 @@ ApiClient createApiClient(
             rejectedAccessToken: _bearerToken(request.headers['Authorization']),
           );
           final token = await store.readToken();
-          if (token == null) {
-            handler.next(error);
+          if (token != null) {
+            request.headers['Authorization'] = 'Bearer $token';
+            request.extra['asaelNativeRefreshRetried'] = true;
+            // Dio sends a form once, so the retry sends a copy of it.
+            final data = request.data;
+            if (data is FormData) request.data = data.clone();
+            handler.resolve(await client.fetch<Object?>(request));
             return;
           }
-          request.headers['Authorization'] = 'Bearer $token';
-          request.extra['asaelNativeRefreshRetried'] = true;
-          handler.resolve(await client.fetch<Object?>(request));
         } catch (_) {
-          handler.next(error);
+          // The request fails with the service's refusal.
         }
+        await reportIfSessionEnded();
+        handler.next(error);
       },
     ),
   );
@@ -144,6 +159,7 @@ ApiClient createApiClient(
     store,
     projectionStore,
     ensureRefreshed,
+    sessionEnded.stream,
   );
 }
 
@@ -197,12 +213,18 @@ class ApiClient {
     this._store, [
     this._projectionStore,
     this._refreshSession,
+    this._sessionEnded,
   ]);
   final Dio _dio;
   final Dio _rawDio;
   final SecureSessionStore _store;
   final OfflineProjectionStore? _projectionStore;
   final NativeSessionRefresh? _refreshSession;
+  final Stream<void>? _sessionEnded;
+
+  /// Fires when a refused request finds no session stored any more, so the
+  /// app can sign out instead of showing a session every request fails.
+  Stream<void> get sessionEnded => _sessionEnded ?? const Stream<void>.empty();
 
   Future<bool> clearAndAcknowledgeRemoteWipe() =>
       _clearAndAcknowledgeRemoteWipe(_rawDio, _store);
