@@ -13,6 +13,9 @@ void main() {
     'accessibility': 'granted',
     'screenRecording': 'granted',
     'helperVersion': '1.0.0',
+    'commandHelperInstalled': false,
+    'commandHelperVersion': '1.0.0',
+    'commandWorkspaces': <Object?>[],
   };
 
   test('reads status and keeps native enablement explicit', () async {
@@ -30,6 +33,7 @@ void main() {
     final stopped = await bridge.stop();
 
     expect(initial.ready, isTrue);
+    expect(initial.commandRunnerReady, isFalse);
     expect(enabled.accessibility, LocalComputerPermission.granted);
     expect(stopped.helperVersion, '1.0.0');
     expect(calls.map((call) => call.method), [
