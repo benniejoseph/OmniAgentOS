@@ -1,27 +1,31 @@
-import { indexStoredAssetService } from "@/lib/app-services/assets";
-import { createAppServiceCaller } from "@/lib/app-services/contracts";
+import {
+  deleteAssetService,
+  indexStoredAssetService,
+  previewAssetDeleteService,
+} from "@/lib/app-services/assets";
+import {
+  AppServicePreviewMismatchError,
+  appServiceTargetId,
+  createAppServiceCaller,
+  createRequestMutationAppServiceCaller,
+} from "@/lib/app-services/contracts";
 import {
   CaptureAssetContentIntegrityError,
   CaptureAssetContentNotReadyError,
   CaptureAssetError,
   CaptureAssetExtractionIntegrityError,
   CaptureAssetReadConflictError,
-  getCaptureAsset,
   getCaptureAssetForRequest,
   getCaptureAssetContentForRequest,
   getCaptureAssetExtractionForRequest,
 } from "@/lib/capture/assets";
-import { deleteCaptureAssetWithKnowledge } from "@/lib/capture/deletion";
 import { captureExecutionScopeFromSecurityContext } from "@/lib/capture/execution-scope";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import {
   BackgroundJobIdempotencyConflictError,
 } from "@/lib/operations/background-jobs";
-import {
-  cancelOperationJobByDedupeKey,
-  getOperationJob,
-} from "@/lib/operations/job-queue";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { redactSensitive } from "@/lib/security/context";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -29,8 +33,8 @@ import { z } from "zod";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
-export const POST = withDatabaseRequestScope(POSTHandler);
-export const DELETE = withDatabaseRequestScope(DELETEHandler);
+export const POST = withDatabaseRequestScope(requireIdempotencyKey(POSTHandler));
+export const DELETE = withDatabaseRequestScope(requireIdempotencyKey(DELETEHandler));
 
 const indexAssetSchema = z.object({
   title: z.string().trim().min(1).max(240).optional(),
@@ -100,23 +104,33 @@ async function DELETEHandler(request: Request, route: { params: Promise<{ id: st
   } catch (error) {
     return forbiddenResponse(error);
   }
-  const executionScope = captureExecutionScopeFromSecurityContext(
-    context,
-    request,
-    "capture.asset.delete",
-  );
+  const assetId = appServiceTargetId(id);
+  if (!assetId) return assetNotFound();
   try {
-    const asset = await getCaptureAsset(id, context);
-    if (!asset) return Response.json({ error: "Captured file not found." }, { status: 404, headers: privateNoStoreHeaders });
-    await cancelIngestJob(asset.ingestJobId, context.tenantId);
-    const forgotten = await deleteCaptureAssetWithKnowledge(asset, {
-      ...context,
-      executionScope,
+    // The deletion is bound to the exact file this request previews.
+    const caller = createRequestMutationAppServiceCaller(request, context, {
+      purpose: "capture.asset.delete",
+      causationId: assetId,
     });
-    return Response.json({ deleted: true, forgotten }, { headers: { "cache-control": "private, no-store" } });
+    const preview = await previewAssetDeleteService(caller, { kind: "asset", id: assetId });
+    if (!preview.data.target) return assetNotFound();
+    const result = await deleteAssetService(caller, {
+      kind: "asset",
+      id: assetId,
+      expectedTargetSha256: preview.data.targetSha256,
+    });
+    if (!result.data.deleted) return assetNotFound();
+    return Response.json({ ...result.data, serviceReceipt: result.receipt }, { headers: privateNoStoreHeaders });
   } catch (error) {
+    if (error instanceof AppServicePreviewMismatchError) {
+      return Response.json({ error: error.message }, { status: 409, headers: privateNoStoreHeaders });
+    }
     return assetErrorResponse(error);
   }
+}
+
+function assetNotFound() {
+  return Response.json({ error: "Captured file not found." }, { status: 404, headers: privateNoStoreHeaders });
 }
 
 async function POSTHandler(request: Request, route: { params: Promise<{ id: string }> }) {
@@ -249,8 +263,3 @@ function safeInlineMediaType(mediaType: string) {
   ].includes(mediaType.toLowerCase().split(";", 1)[0].trim());
 }
 
-async function cancelIngestJob(jobId: string | undefined, tenantId: string) {
-  if (!jobId) return;
-  const job = await getOperationJob(jobId, { tenantId });
-  if (job?.dedupeKey) await cancelOperationJobByDedupeKey(job.dedupeKey, "Captured file deleted by its owner.", { tenantId });
-}

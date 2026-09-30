@@ -310,7 +310,10 @@ export function SettingsWorkspace() {
     try {
       const response = await fetch(path, {
         method,
-        headers: body === undefined ? undefined : { "content-type": "application/json" },
+        headers: {
+          "idempotency-key": crypto.randomUUID(),
+          ...(body === undefined ? {} : { "content-type": "application/json" }),
+        },
         body: body === undefined ? undefined : JSON.stringify(body),
       });
       const payload = await response.json().catch(() => ({})) as T & { message?: string; error?: string };

@@ -19,6 +19,7 @@ const routeContext = { params: Promise.resolve({ id: "item-a" }) };
 // Exports in a route that uses the request mutation caller but whose own
 // handler does not.
 const UNKEYED_ROUTE_EXPORTS = new Set([
+  "src/app/api/capture/recordings/[id]/route.ts PATCH",
   "src/app/api/connectors/[id]/route.ts PATCH",
   "src/app/api/openapi-connectors/[id]/route.ts PATCH",
 ]);
@@ -172,7 +173,7 @@ describe("client idempotency keys", () => {
 
     expect(unguarded).toEqual([]);
     expect(exempt.sort()).toEqual([...UNKEYED_ROUTE_EXPORTS].sort());
-    expect(guarded).toBeGreaterThanOrEqual(61);
+    expect(guarded).toBeGreaterThanOrEqual(69);
   });
 });
 

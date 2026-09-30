@@ -111,7 +111,7 @@ vi.mock("@/lib/operations/job-queue", () => ({
   projectOperationJobStatus: vi.fn(),
 }));
 
-import { GET } from "@/app/api/capture/assets/[id]/route";
+import { DELETE, GET, POST } from "@/app/api/capture/assets/[id]/route";
 
 const authUserId = "11111111-1111-4111-8111-111111111111";
 const actorId = "capture-owner@example.test";
@@ -352,5 +352,110 @@ describe("request-bound Capture asset detail route", () => {
     await expect(response.json()).resolves.toEqual({
       error: "Captured file content could not be resolved safely.",
     });
+  });
+});
+
+describe("Capture asset deletion route", () => {
+  const owner = { tenantId: context.tenantId, actorId };
+  const route = { params: Promise.resolve({ id: asset.id }) };
+
+  function deleteRequest(headers: Record<string, string> = { "idempotency-key": "delete-asset-1" }) {
+    return new Request(`http://localhost/api/capture/assets/${asset.id}`, {
+      method: "DELETE",
+      headers,
+    });
+  }
+
+  beforeEach(() => {
+    routeMocks.getCaptureAsset.mockResolvedValue(asset);
+    routeMocks.deleteCaptureAssetWithKnowledge
+      .mockReset()
+      .mockResolvedValue({ documents: 1, memories: 0 });
+  });
+
+  it("deletes the exact file it previewed through the asset service", async () => {
+    const response = await DELETE(deleteRequest(), route);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(routeMocks.getCaptureAsset).toHaveBeenCalledWith(asset.id, owner);
+    expect(routeMocks.deleteCaptureAssetWithKnowledge).toHaveBeenCalledTimes(1);
+    expect(routeMocks.deleteCaptureAssetWithKnowledge).toHaveBeenCalledWith(asset, {
+      ...owner,
+      executionScope: expect.objectContaining({
+        purpose: "capture.asset.delete",
+        correlationId: "delete-asset-1",
+        causationId: asset.id,
+      }),
+    });
+    const body = await response.json();
+    expect(body).toMatchObject({
+      deleted: true,
+      forgotten: { documents: 1, memories: 0 },
+      target: { kind: "asset", id: asset.id, contentSha256: asset.contentSha256 },
+      serviceReceipt: { operation: "app.assets.delete", accessMode: "mutation" },
+    });
+    expect(body.serviceReceipt.idempotencyKeySha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(routeMocks.canonicalRequestActorBindingFromSecurityContext).not.toHaveBeenCalled();
+  });
+
+  it("refuses a delete or re-index without an Idempotency-Key before it is authorized", async () => {
+    const deletion = await DELETE(deleteRequest({}), route);
+    const reindex = await POST(new Request(`http://localhost/api/capture/assets/${asset.id}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    }), route);
+
+    expect(deletion.status).toBe(400);
+    expect(reindex.status).toBe(400);
+    expect(routeMocks.authorizeRequest).not.toHaveBeenCalled();
+    expect(routeMocks.getCaptureAsset).not.toHaveBeenCalled();
+    expect(routeMocks.deleteCaptureAssetWithKnowledge).not.toHaveBeenCalled();
+  });
+
+  it("deletes nothing for a file the owner does not have", async () => {
+    routeMocks.getCaptureAsset.mockResolvedValue(undefined);
+
+    const response = await DELETE(deleteRequest(), route);
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({ error: "Captured file not found." });
+    expect(routeMocks.deleteCaptureAssetWithKnowledge).not.toHaveBeenCalled();
+  });
+
+  it("reads no file for an id the services would change", async () => {
+    for (const id of [`${asset.id} `, "a".repeat(201)]) {
+      const response = await DELETE(deleteRequest(), { params: Promise.resolve({ id }) });
+
+      expect(response.status, id).toBe(404);
+    }
+    expect(routeMocks.getCaptureAsset).not.toHaveBeenCalled();
+  });
+
+  it("answers not found when the file is gone by the time it is deleted", async () => {
+    routeMocks.getCaptureAsset
+      .mockResolvedValueOnce(asset)
+      .mockResolvedValueOnce(asset)
+      .mockResolvedValueOnce(undefined);
+
+    const response = await DELETE(deleteRequest(), route);
+
+    expect(response.status).toBe(404);
+    expect(routeMocks.deleteCaptureAssetWithKnowledge).not.toHaveBeenCalled();
+  });
+
+  it("refuses to delete a file that changed after its preview", async () => {
+    routeMocks.getCaptureAsset
+      .mockResolvedValueOnce(asset)
+      .mockResolvedValueOnce({ ...asset, contentSha256: "b".repeat(64) });
+
+    const response = await DELETE(deleteRequest(), route);
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: "Asset deletion target changed after preview; review the exact target again.",
+    });
+    expect(routeMocks.deleteCaptureAssetWithKnowledge).not.toHaveBeenCalled();
   });
 });

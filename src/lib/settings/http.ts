@@ -1,3 +1,4 @@
+import { AppServicePreviewMismatchError } from "@/lib/app-services/contracts";
 import { CredentialVaultUnavailableError } from "@/lib/settings/credential-vault";
 import { ProviderValidationError } from "@/lib/settings/provider-catalog";
 import { ServiceApiKeyError } from "@/lib/settings/service-api-keys";
@@ -5,6 +6,7 @@ import { SettingsStoreError } from "@/lib/settings/store";
 
 export function settingsErrorResponse(error: unknown) {
   if (
+    error instanceof AppServicePreviewMismatchError ||
     error instanceof CredentialVaultUnavailableError ||
     error instanceof ProviderValidationError ||
     error instanceof ServiceApiKeyError ||

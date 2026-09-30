@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  AppServicePreviewMismatchError,
   authorizeAppServiceCall,
   completeAppServiceCall,
   type AppServiceCaller,
@@ -108,7 +109,7 @@ export async function revokeProviderService(caller: AppServiceCaller, input: z.i
   const value = deleteSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.settings.providers.revoke"));
   const preview = await previewProviderRevokeService(caller, { id: value.id });
-  if (!preview.data.target || preview.data.targetSha256 !== value.expectedTargetSha256) throw new Error("Provider revocation target changed after preview; review the exact target again.");
+  if (!preview.data.target || preview.data.targetSha256 !== value.expectedTargetSha256) throw new AppServicePreviewMismatchError("Provider revocation target changed after preview; review the exact target again.");
   const connection = await revokeProviderConnection({ ...exactOwner(caller), connectionId: value.id });
   return completeAppServiceCall(authorized, { connection, targetSha256: preview.data.targetSha256 });
 }
@@ -135,7 +136,7 @@ export async function revokeApiKeyService(caller: AppServiceCaller, input: z.inp
   const value = deleteSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.settings.api_keys.revoke"));
   const preview = await previewApiKeyRevokeService(caller, { id: value.id });
-  if (!preview.data.target || preview.data.targetSha256 !== value.expectedTargetSha256) throw new Error("API-key revocation target changed after preview; review the exact target again.");
+  if (!preview.data.target || preview.data.targetSha256 !== value.expectedTargetSha256) throw new AppServicePreviewMismatchError("API-key revocation target changed after preview; review the exact target again.");
   const apiKey = await revokeServiceApiKey({ ...exactOwner(caller), keyId: value.id });
   return completeAppServiceCall(authorized, { apiKey, targetSha256: preview.data.targetSha256 });
 }

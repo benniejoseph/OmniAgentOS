@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  AppServicePreviewMismatchError,
   authorizeAppServiceCall,
   completeAppServiceCall,
   type AppServiceCaller,
@@ -221,7 +222,7 @@ export async function deleteAssetService(caller: AppServiceCaller, input: z.inpu
   const value = deleteSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.assets.delete"));
   const preview = await previewAssetDeleteService(caller, { kind: value.kind, id: value.id });
-  if (!preview.data.target || preview.data.targetSha256 !== value.expectedTargetSha256) throw new Error("Asset deletion target changed after preview; review the exact target again.");
+  if (!preview.data.target || preview.data.targetSha256 !== value.expectedTargetSha256) throw new AppServicePreviewMismatchError("Asset deletion target changed after preview; review the exact target again.");
   const owner = { ...exactOwner(caller), executionScope: caller.executionScope! };
   let forgotten;
   if (value.kind === "asset") {

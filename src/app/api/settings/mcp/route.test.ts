@@ -175,11 +175,15 @@ describe("MCP export configuration route ownership", () => {
   });
 
   it("keeps PUT exact-owner even when its URL carries the read opt-in", async () => {
+    routeMocks.saveMcpExportConfiguration.mockResolvedValue(exactConfiguration);
     const response = await PUT(new Request(
       "http://localhost/api/settings/mcp?ownerScope=readable",
       {
         method: "PUT",
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "mcp-save-1",
+        },
         body: JSON.stringify({
           enabled: true,
           serverName: "Current MCP",
@@ -191,11 +195,19 @@ describe("MCP export configuration route ownership", () => {
 
     expect(response.status).toBe(200);
     expect(routeMocks.saveMcpExportConfiguration).toHaveBeenCalledWith({
-      ...context,
+      tenantId: context.tenantId,
+      actorId: context.actorId,
       enabled: true,
       serverName: "Current MCP",
       allowedScopes: ["mcp:discover", "mcp:tools:list"],
       exposeResources: true,
+    });
+    await expect(response.json()).resolves.toMatchObject({
+      mcp: exactConfiguration,
+      serviceReceipt: {
+        operation: "app.settings.mcp.update",
+        accessMode: "mutation",
+      },
     });
     expect(routeMocks.getMcpExportConfiguration).not.toHaveBeenCalled();
     expect(
@@ -204,6 +216,22 @@ describe("MCP export configuration route ownership", () => {
     expect(
       routeMocks.canonicalRequestActorBindingFromSecurityContext,
     ).not.toHaveBeenCalled();
+  });
+
+  it("refuses a PUT without an Idempotency-Key before it saves", async () => {
+    const response = await PUT(new Request("http://localhost/api/settings/mcp", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        enabled: true,
+        serverName: "Current MCP",
+        allowedScopes: ["mcp:discover"],
+      }),
+    }));
+
+    expect(response.status).toBe(400);
+    expect(routeMocks.authorizeRequest).not.toHaveBeenCalled();
+    expect(routeMocks.saveMcpExportConfiguration).not.toHaveBeenCalled();
   });
 
   it("returns a private conflict without exposing request-reader details", async () => {

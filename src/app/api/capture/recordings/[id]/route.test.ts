@@ -69,10 +69,16 @@ vi.mock("@/lib/capture/execution-scope", () => ({
     routeMocks.captureExecutionScopeFromSecurityContext,
 }));
 
+vi.mock("@/lib/operations/background-jobs", () => ({
+  enqueueCaptureAssetProcessJob: vi.fn(),
+  enqueueKnowledgeIngestJob: vi.fn(),
+}));
+
 vi.mock("@/lib/operations/job-queue", () => ({
   cancelOperationJobByDedupeKey:
     routeMocks.cancelOperationJobByDedupeKey,
   getOperationJob: routeMocks.getOperationJob,
+  projectOperationJobStatus: vi.fn(),
 }));
 
 import {
@@ -372,20 +378,39 @@ describe("Capture recording detail ownership", () => {
   });
 
   it("keeps DELETE pre-read and mutation exact with the readable query present", async () => {
-    const response = await DELETE(new Request(
-      `http://localhost/api/capture/recordings/${exactRecording.id}?ownerScope=readable`,
-      { method: "DELETE" },
-    ), route);
+    const response = await DELETE(deleteRequest("?ownerScope=readable"), route);
 
     expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    const owner = { tenantId: context.tenantId, actorId: context.actorId };
     expect(routeMocks.getCaptureRecording).toHaveBeenCalledWith(
       exactRecording.id,
-      context,
+      owner,
     );
+    expect(routeMocks.deleteCaptureRecordingWithKnowledge).toHaveBeenCalledTimes(1);
     expect(routeMocks.deleteCaptureRecordingWithKnowledge).toHaveBeenCalledWith(
       exactRecording,
-      { ...context, executionScope },
+      {
+        ...owner,
+        executionScope: expect.objectContaining({
+          purpose: "capture.recording.delete",
+          correlationId: "delete-recording-1",
+          causationId: exactRecording.id,
+        }),
+      },
     );
+    const body = await response.json();
+    expect(body).toMatchObject({
+      deleted: true,
+      forgotten: { documents: 1, memories: 1 },
+      target: { kind: "recording", id: exactRecording.id },
+      serviceReceipt: {
+        operation: "app.assets.delete",
+        accessMode: "mutation",
+        resourceCount: 1,
+      },
+    });
+    expect(body.serviceReceipt.idempotencyKeySha256).toMatch(/^[a-f0-9]{64}$/);
     expect(
       routeMocks.getCaptureRecordingMetadataForRequest,
     ).not.toHaveBeenCalled();
@@ -393,4 +418,72 @@ describe("Capture recording detail ownership", () => {
       routeMocks.canonicalRequestActorBindingFromSecurityContext,
     ).not.toHaveBeenCalled();
   });
+
+  it("refuses a DELETE without an Idempotency-Key before it is authorized", async () => {
+    const response = await DELETE(new Request(
+      `http://localhost/api/capture/recordings/${exactRecording.id}`,
+      { method: "DELETE" },
+    ), route);
+
+    expect(response.status).toBe(400);
+    expect(routeMocks.authorizeRequest).not.toHaveBeenCalled();
+    expect(routeMocks.getCaptureRecording).not.toHaveBeenCalled();
+    expect(routeMocks.deleteCaptureRecordingWithKnowledge).not.toHaveBeenCalled();
+  });
+
+  it("deletes nothing for a recording the owner does not have", async () => {
+    routeMocks.getCaptureRecording.mockResolvedValue(undefined);
+
+    const response = await DELETE(deleteRequest(), route);
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({ error: "Recording not found." });
+    expect(routeMocks.deleteCaptureRecordingWithKnowledge).not.toHaveBeenCalled();
+  });
+
+  it("reads no recording for an id the services would change", async () => {
+    for (const id of [` ${exactRecording.id}`, "r".repeat(201)]) {
+      const response = await DELETE(
+        deleteRequest(),
+        { params: Promise.resolve({ id }) },
+      );
+
+      expect(response.status, id).toBe(404);
+    }
+    expect(routeMocks.getCaptureRecording).not.toHaveBeenCalled();
+    expect(routeMocks.deleteCaptureRecordingWithKnowledge).not.toHaveBeenCalled();
+  });
+
+  it("answers not found when the recording is gone by the time it is deleted", async () => {
+    routeMocks.getCaptureRecording
+      .mockResolvedValueOnce(exactRecording)
+      .mockResolvedValueOnce(exactRecording)
+      .mockResolvedValueOnce(undefined);
+
+    const response = await DELETE(deleteRequest(), route);
+
+    expect(response.status).toBe(404);
+    expect(routeMocks.deleteCaptureRecordingWithKnowledge).not.toHaveBeenCalled();
+  });
+
+  it("refuses to delete a recording that changed after its preview", async () => {
+    routeMocks.getCaptureRecording
+      .mockResolvedValueOnce(exactRecording)
+      .mockResolvedValueOnce({ ...exactRecording, title: "Renamed meanwhile" });
+
+    const response = await DELETE(deleteRequest(), route);
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: "Asset deletion target changed after preview; review the exact target again.",
+    });
+    expect(routeMocks.deleteCaptureRecordingWithKnowledge).not.toHaveBeenCalled();
+  });
 });
+
+function deleteRequest(query = "") {
+  return new Request(
+    `http://localhost/api/capture/recordings/${exactRecording.id}${query}`,
+    { method: "DELETE", headers: { "idempotency-key": "delete-recording-1" } },
+  );
+}

@@ -1,6 +1,9 @@
 import { z } from "zod";
+import { createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
+import { updateMcpExportService } from "@/lib/app-services/settings";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { settingsErrorResponse } from "@/lib/settings/http";
@@ -8,13 +11,12 @@ import {
   getMcpExportConfiguration,
   getMcpExportConfigurationForRequest,
   McpExportConfigurationReadConflictError,
-  saveMcpExportConfiguration,
 } from "@/lib/settings/store";
 import { SERVICE_API_SCOPES } from "@/lib/settings/types";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
-export const PUT = withDatabaseRequestScope(PUTHandler);
+export const PUT = withDatabaseRequestScope(requireIdempotencyKey(PUTHandler));
 
 const configSchema = z.object({
   enabled: z.boolean(),
@@ -62,8 +64,11 @@ async function PUTHandler(request: Request) {
   try {
     context = await authorizeRequest({ request, action: "manage.connector", resourceType: "mcp_export", riskLevel: 2, metadata: { operation: "update", enabled: parsed.data.enabled, allowedScopes: parsed.data.allowedScopes, exposeResources: parsed.data.exposeResources } });
   } catch (error) { return forbiddenResponse(error); }
-  try { return Response.json({ mcp: await saveMcpExportConfiguration({ ...context, ...parsed.data }) }); }
-  catch (error) { return settingsErrorResponse(error); }
+  try {
+    const caller = createRequestMutationAppServiceCaller(request, context, { purpose: "settings.mcp.update" });
+    const result = await updateMcpExportService(caller, parsed.data);
+    return Response.json({ ...result.data, serviceReceipt: result.receipt }, { headers: { "cache-control": "no-store, private" } });
+  } catch (error) { return settingsErrorResponse(error); }
 }
 
 function mcpConfigurationReadErrorResponse(error: unknown) {

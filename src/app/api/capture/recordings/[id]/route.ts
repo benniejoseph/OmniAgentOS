@@ -1,4 +1,10 @@
 import { z } from "zod";
+import { deleteAssetService, previewAssetDeleteService } from "@/lib/app-services/assets";
+import {
+  AppServicePreviewMismatchError,
+  appServiceTargetId,
+  createRequestMutationAppServiceCaller,
+} from "@/lib/app-services/contracts";
 import {
   CaptureRecordingError,
   CaptureRecordingReadConflictError,
@@ -6,19 +12,18 @@ import {
   getCaptureRecordingMetadataForRequest,
   updateCaptureRecording,
 } from "@/lib/capture/recordings";
-import { deleteCaptureRecordingWithKnowledge } from "@/lib/capture/deletion";
 import { captureExecutionScopeFromSecurityContext } from "@/lib/capture/execution-scope";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { serverErrorResponse } from "@/lib/http/errors";
-import { cancelOperationJobByDedupeKey, getOperationJob } from "@/lib/operations/job-queue";
+import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
 export const PATCH = withDatabaseRequestScope(PATCHHandler);
-export const DELETE = withDatabaseRequestScope(DELETEHandler);
+export const DELETE = withDatabaseRequestScope(requireIdempotencyKey(DELETEHandler));
 const privateNoStoreHeaders = { "cache-control": "private, no-store" };
 
 const updateRecordingSchema = z.object({
@@ -112,26 +117,33 @@ async function DELETEHandler(request: Request, route: { params: Promise<{ id: st
   } catch (error) {
     return forbiddenResponse(error);
   }
-  const executionScope = captureExecutionScopeFromSecurityContext(
-    context,
-    request,
-    "capture.recording.delete",
-  );
+  const recordingId = appServiceTargetId(id);
+  if (!recordingId) return recordingNotFound();
   try {
-    const recording = await getCaptureRecording(id, context);
-    if (!recording) return Response.json({ error: "Recording not found." }, { status: 404 });
-    if (recording.ingestJobId) {
-      const job = await getOperationJob(recording.ingestJobId, { tenantId: context.tenantId });
-      if (job?.dedupeKey) await cancelOperationJobByDedupeKey(job.dedupeKey, "Captured recording deleted by its owner.", { tenantId: context.tenantId });
-    }
-    const forgotten = await deleteCaptureRecordingWithKnowledge(recording, {
-      ...context,
-      executionScope,
+    // The deletion is bound to the exact recording this request previews.
+    const caller = createRequestMutationAppServiceCaller(request, context, {
+      purpose: "capture.recording.delete",
+      causationId: recordingId,
     });
-    return Response.json({ deleted: true, forgotten }, { headers: { "cache-control": "private, no-store" } });
+    const preview = await previewAssetDeleteService(caller, { kind: "recording", id: recordingId });
+    if (!preview.data.target) return recordingNotFound();
+    const result = await deleteAssetService(caller, {
+      kind: "recording",
+      id: recordingId,
+      expectedTargetSha256: preview.data.targetSha256,
+    });
+    if (!result.data.deleted) return recordingNotFound();
+    return Response.json({ ...result.data, serviceReceipt: result.receipt }, { headers: privateNoStoreHeaders });
   } catch (error) {
+    if (error instanceof AppServicePreviewMismatchError) {
+      return Response.json({ error: error.message }, { status: 409, headers: privateNoStoreHeaders });
+    }
     return captureErrorResponse(error);
   }
+}
+
+function recordingNotFound() {
+  return Response.json({ error: "Recording not found." }, { status: 404, headers: privateNoStoreHeaders });
 }
 
 function captureErrorResponse(error: unknown) {

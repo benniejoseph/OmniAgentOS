@@ -1,11 +1,12 @@
 import { z } from "zod";
+import { createAppServiceCaller } from "@/lib/app-services/contracts";
+import { listApiKeysService } from "@/lib/app-services/settings";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { settingsErrorResponse } from "@/lib/settings/http";
-import { createServiceApiKey, listServiceApiKeysForRequest } from "@/lib/settings/service-api-keys";
+import { createServiceApiKey } from "@/lib/settings/service-api-keys";
 import { SERVICE_API_SCOPES } from "@/lib/settings/types";
-import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
@@ -25,14 +26,10 @@ async function GETHandler(request: Request) {
   try { context = await authorizeRequest({ request, action: "read", resourceType: "service_api_key" }); }
   catch (error) { return forbiddenResponse(error); }
   try {
-    return Response.json({
-      apiKeys: await listServiceApiKeysForRequest({
-        tenantId: context.tenantId,
-        actorId: context.actorId,
-        requestActorBinding:
-          canonicalRequestActorBindingFromSecurityContext(context),
-      }),
-    }, { headers: { "cache-control": "no-store, private" } });
+    const result = await listApiKeysService(createAppServiceCaller({ context }), {});
+    return Response.json({ ...result.data, serviceReceipt: result.receipt }, {
+      headers: { "cache-control": "no-store, private" },
+    });
   }
   catch (error) { return settingsErrorResponse(error); }
 }

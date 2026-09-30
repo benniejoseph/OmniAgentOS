@@ -125,13 +125,18 @@ Key properties:
 - Text deltas stream to the client immediately but persist to the run ledger in batches.
 
 P9.1 inserts a transport-neutral application-service boundary between product
-callers and domain stores. P9.2 and P9.3 extend it to 109 active `app.*` operations in
-the required workspace, project, work-item, asset, memory, Agent, Skill, run,
-workflow, connector, settings, Today, and notification families. Their
-overlapping UI routes call `src/lib/app-services/*`; the governed executor no
-longer imports domain stores or retrievers and never uses the product DOM. HTTP routes retain request
+callers and domain stores. Later phases extend it to 204 active `app.*`
+operations, listed in `APP_SERVICE_OPERATION_CONTRACTS` in
+`src/lib/app-services/registry.ts`, across the workspace, project, work-item,
+asset, memory, Agent, Skill, run, workflow, connector, settings, Today, and
+notification families. Their overlapping UI routes call
+`src/lib/app-services/*`; the governed executor no longer imports domain stores
+or retrievers and never uses the product DOM. HTTP routes retain request
 authentication, origin/CSRF enforcement, and durable security audit, while the
-service independently revalidates tenant, initiating actor, and RBAC action.
+service independently revalidates tenant, initiating actor, and RBAC action. A
+route never calls a permanent effect such as a key or provider revocation or a
+capture deletion itself: it previews the exact target through the service and
+passes that preview's digest to the service's effect.
 
 Every service mutation requires an exact execution scope and opaque
 idempotency key before it can reach the existing atomic evented domain writer.
@@ -140,9 +145,9 @@ Every read or mutation returns the same metadata-only
 resource, event contract, authority digest, optional idempotency digest,
 outcome digest, count, and time without copying application content or the raw
 key. Internal memory effect readback supports lost-acknowledgement
-reconciliation but is not registered as Agent authority. Eight deliberately
-excluded operations remain human/direct surfaces because they carry raw
-secrets or binary content, deliver raw browser frames, or could recursively
+reconciliation but is not registered as Agent authority. The 7 deliberately
+excluded operations in `MAIN_AGENT_EXCLUDED_APP_OPERATIONS` remain human/direct
+surfaces because they carry raw secrets or binary content, or could recursively
 fork the Main Agent. Every permanent Agent effect has an exact read-only
 preview digest and requires approval before execution.
 

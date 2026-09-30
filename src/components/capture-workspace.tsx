@@ -628,7 +628,10 @@ export function CaptureWorkspace() {
     }
     setDeletingAsset(id);
     try {
-      const response = await fetch(`/api/capture/assets/${encodeURIComponent(id)}`, { method: "DELETE" });
+      const response = await fetch(`/api/capture/assets/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        headers: { "idempotency-key": crypto.randomUUID() },
+      });
       const payload = (await response.json().catch(() => ({}))) as { error?: string };
       if (!response.ok) throw new Error(payload.error || "The file could not be deleted.");
       setCaptureNotice({ tone: "success", text: "Original file, indexed knowledge, and linked memory were removed." });

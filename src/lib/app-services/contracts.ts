@@ -81,6 +81,24 @@ export type AppServiceResult<T> = Readonly<{
   receipt: AppServiceReceipt;
 }>;
 
+/**
+ * A path id the application services accept unchanged. They trim ids and bound
+ * them to 200 characters, so any other id could name a different target.
+ */
+export function appServiceTargetId(id: string) {
+  return id.length > 0 && id.length <= 200 && id.trim() === id ? id : undefined;
+}
+
+/** A permanent effect's target no longer matches the preview it was given. */
+export class AppServicePreviewMismatchError extends Error {
+  readonly status = 409 as const;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "AppServicePreviewMismatchError";
+  }
+}
+
 export function createAppServiceCaller(input: {
   context: SecurityContext;
   executionScope?: ExecutionScope;

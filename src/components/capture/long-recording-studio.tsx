@@ -414,7 +414,10 @@ export function LongRecordingStudio({ disabledReason, onJob, onIndexed }: Props)
     } catch (startError) {
       stopLocalMedia();
       if (createdRecordingId) {
-        void fetch(`/api/capture/recordings/${encodeURIComponent(createdRecordingId)}`, { method: "DELETE" }).catch(() => undefined);
+        void fetch(`/api/capture/recordings/${encodeURIComponent(createdRecordingId)}`, {
+          method: "DELETE",
+          headers: { "idempotency-key": crypto.randomUUID() },
+        }).catch(() => undefined);
       }
       setError(startError instanceof Error ? startError.message : "Microphone access was not granted.");
       setPhase("error");
@@ -531,7 +534,12 @@ export function LongRecordingStudio({ disabledReason, onJob, onIndexed }: Props)
     }
     stopLocalMedia();
     await uploadQueueRef.current;
-    if (id) await fetch(`/api/capture/recordings/${encodeURIComponent(id)}`, { method: "DELETE" });
+    if (id) {
+      await fetch(`/api/capture/recordings/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        headers: { "idempotency-key": crypto.randomUUID() },
+      });
+    }
     resetDraft();
     await loadRecordings();
   }
@@ -551,7 +559,7 @@ export function LongRecordingStudio({ disabledReason, onJob, onIndexed }: Props)
     setError(undefined);
     const response = await fetch(
       `/api/capture/recordings/${encodeURIComponent(id)}`,
-      { method: "DELETE" },
+      { method: "DELETE", headers: { "idempotency-key": crypto.randomUUID() } },
     );
     const payload = (await response.json().catch(() => ({}))) as {
       error?: string;

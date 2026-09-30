@@ -1,13 +1,16 @@
 import { z } from "zod";
+import { appServiceTargetId, createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
+import { previewProviderRevokeService, revokeProviderService, updateProviderService } from "@/lib/app-services/settings";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { settingsErrorResponse } from "@/lib/settings/http";
-import { revokeProviderConnection, updateProviderConnection } from "@/lib/settings/store";
+import { SettingsStoreError } from "@/lib/settings/store";
 
 export const runtime = "nodejs";
-export const PATCH = withDatabaseRequestScope(PATCHHandler);
-export const DELETE = withDatabaseRequestScope(DELETEHandler);
+export const PATCH = withDatabaseRequestScope(requireIdempotencyKey(PATCHHandler));
+export const DELETE = withDatabaseRequestScope(requireIdempotencyKey(DELETEHandler));
 
 const updateSchema = z.object({
   label: z.string().trim().min(1).max(120).optional(),
@@ -25,7 +28,10 @@ async function PATCHHandler(request: Request, route: { params: Promise<{ id: str
     context = await authorizeRequest({ request, action: "manage.connector", resourceType: "provider_connection", resourceId: id, metadata: { operation: "update", fields: Object.keys(parsed.data) } });
   } catch (error) { return forbiddenResponse(error); }
   try {
-    return Response.json({ connection: await updateProviderConnection({ ...context, connectionId: id, ...parsed.data }) });
+    const connectionId = providerConnectionId(id);
+    const caller = createRequestMutationAppServiceCaller(request, context, { purpose: "settings.provider.update", causationId: connectionId });
+    const result = await updateProviderService(caller, { id: connectionId, ...parsed.data });
+    return Response.json({ ...result.data, serviceReceipt: result.receipt }, { headers: { "cache-control": "no-store, private" } });
   } catch (error) { return settingsErrorResponse(error); }
 }
 
@@ -36,6 +42,18 @@ async function DELETEHandler(request: Request, route: { params: Promise<{ id: st
     context = await authorizeRequest({ request, action: "manage.connector", resourceType: "provider_connection", resourceId: id, riskLevel: 2, metadata: { operation: "revoke_and_scrub" } });
   } catch (error) { return forbiddenResponse(error); }
   try {
-    return Response.json({ connection: await revokeProviderConnection({ ...context, connectionId: id }) });
+    const connectionId = providerConnectionId(id);
+    // The revocation is bound to the exact connection this request previews.
+    const caller = createRequestMutationAppServiceCaller(request, context, { purpose: "settings.provider.revoke", causationId: connectionId });
+    const preview = await previewProviderRevokeService(caller, { id: connectionId });
+    if (!preview.data.target) throw new SettingsStoreError("Provider connection not found.", 404);
+    const result = await revokeProviderService(caller, { id: connectionId, expectedTargetSha256: preview.data.targetSha256 });
+    return Response.json({ ...result.data, serviceReceipt: result.receipt }, { headers: { "cache-control": "no-store, private" } });
   } catch (error) { return settingsErrorResponse(error); }
+}
+
+function providerConnectionId(id: string) {
+  const connectionId = appServiceTargetId(id);
+  if (!connectionId) throw new SettingsStoreError("Provider connection not found.", 404);
+  return connectionId;
 }
