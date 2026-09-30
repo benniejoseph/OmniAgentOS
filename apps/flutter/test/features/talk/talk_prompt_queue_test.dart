@@ -20,15 +20,7 @@ void main() {
       final controller = TalkController(repository);
       addTearDown(controller.dispose);
 
-      await tester.pumpWidget(
-        MaterialApp(
-          theme: MacosAppTheme.light(),
-          home: TalkView(
-            controller: controller,
-            voiceRecorder: _VoiceDraftRecorder(),
-          ),
-        ),
-      );
+      await tester.pumpWidget(_talkApp(controller));
       await tester.pumpAndSettle();
 
       expect(controller.artifacts, isEmpty);
@@ -64,21 +56,65 @@ void main() {
     final controller = TalkController(_PromptQueueTalkRepository());
     addTearDown(controller.dispose);
 
-    await tester.pumpWidget(
-      MaterialApp(
-        theme: MacosAppTheme.light(),
-        home: TalkView(
-          controller: controller,
-          voiceRecorder: _VoiceDraftRecorder(),
-        ),
-      ),
-    );
+    await tester.pumpWidget(_talkApp(controller));
     await tester.pumpAndSettle();
 
     expect(find.byTooltip('Prompt queue'), findsOneWidget);
     expect(tester.takeException(), isNull);
     debugDefaultTargetPlatformOverride = null;
   });
+
+  testWidgets(
+    'Conversation beside the sidebar keeps the prompt queue in its toolbar',
+    (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      // The window is wide enough for the rail, but Talk's share is not.
+      tester.view.physicalSize = const Size(1300, 900);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final controller = TalkController(_PromptQueueTalkRepository());
+      addTearDown(controller.dispose);
+
+      await tester.pumpWidget(_talkApp(controller, sidebarWidth: 238));
+      await tester.pumpAndSettle();
+
+      // Talk has too little room for its rail, so the toolbar keeps the queue.
+      expect(find.text('What Asael is doing'), findsNothing);
+      expect(find.byTooltip('Prompt queue'), findsOneWidget);
+      await tester.tap(find.byTooltip('Prompt queue'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Queue is clear'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      debugDefaultTargetPlatformOverride = null;
+    },
+  );
+}
+
+/// Talk in the Mac theme, beside a sidebar of [sidebarWidth] when there is
+/// one. Motion is reduced so the idle mascot lets the frame settle.
+Widget _talkApp(TalkController controller, {double sidebarWidth = 0}) {
+  final talk = TalkView(
+    controller: controller,
+    voiceRecorder: _VoiceDraftRecorder(),
+  );
+  return MaterialApp(
+    theme: MacosAppTheme.light(),
+    builder: (context, child) => MediaQuery(
+      data: MediaQuery.of(context).copyWith(disableAnimations: true),
+      child: child!,
+    ),
+    home: sidebarWidth == 0
+        ? talk
+        : Row(
+            children: [
+              SizedBox(width: sidebarWidth),
+              Expanded(child: talk),
+            ],
+          ),
+  );
 }
 
 class _PromptQueueTalkRepository

@@ -4608,6 +4608,17 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       );
     }
     if (widget.quickEntry) return _buildQuickEntry(context);
+    // The side rail and its toolbar shortcuts follow the same width, so one
+    // of them is there however much of the window Talk is given.
+    return LayoutBuilder(
+      builder: (context, constraints) => _buildWorkspace(
+        context,
+        railVisible: constraints.maxWidth >= _talkRailBreakpoint,
+      ),
+    );
+  }
+
+  Widget _buildWorkspace(BuildContext context, {required bool railVisible}) {
     final macos = usesMacosPresentation();
     final mac = MacosThemeColors.of(context);
     return Scaffold(
@@ -4645,9 +4656,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
           ListenableBuilder(
             listenable: widget.controller,
             builder: (_, _) {
-              if (MediaQuery.sizeOf(context).width >= 1180) {
-                return const SizedBox.shrink();
-              }
+              if (railVisible) return const SizedBox.shrink();
               return Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -5242,7 +5251,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                 ],
               );
             }
-            if (constraints.maxWidth < 1180) return conversation;
+            if (!railVisible) return conversation;
             return Row(
               children: [
                 Expanded(child: conversation),
@@ -5258,6 +5267,9 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     );
   }
 }
+
+/// The width from which Talk shows its activity rail beside the conversation.
+const double _talkRailBreakpoint = 1180;
 
 enum _TalkRailSection { activity, artifacts, queue }
 
