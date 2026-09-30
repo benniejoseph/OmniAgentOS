@@ -1699,16 +1699,28 @@ function freshnessFromDate(value: string) {
   return 1 / (1 + ageMs / (14 * 24 * 60 * 60 * 1000));
 }
 
+/** Scripts whose words run a character or two, often without spaces between. */
+const DENSE_SCRIPT =
+  /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Thai}\p{Script=Lao}\p{Script=Khmer}\p{Script=Myanmar}]/u;
+const wordSegmenter = new Intl.Segmenter(undefined, { granularity: "word" });
+
+/** The query's words in any script, so a question in one is not small talk. */
 function tokenize(value: string) {
-  return Array.from(
-    new Set(
-      value
-        .toLowerCase()
-        .replace(/[^a-z0-9\s-]/g, " ")
-        .split(/\s+/)
-        .filter((term) => term.length > 2),
-    ),
-  );
+  const terms = new Set<string>();
+  const chunks = value
+    .toLowerCase()
+    .replace(/[^\p{L}\p{M}\p{N}\s-]/gu, " ")
+    .split(/\s+/);
+  for (const chunk of chunks) {
+    if (!DENSE_SCRIPT.test(chunk)) {
+      if (chunk.length > 2) terms.add(chunk);
+      continue;
+    }
+    for (const { segment } of wordSegmenter.segment(chunk)) {
+      if (segment.length > 1) terms.add(segment);
+    }
+  }
+  return Array.from(terms);
 }
 
 function average(values: number[]) {

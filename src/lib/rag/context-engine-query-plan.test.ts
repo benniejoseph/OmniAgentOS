@@ -200,6 +200,36 @@ describe("context-engine P4.3 query-plan integration", () => {
     );
   });
 
+  it.each([
+    ["我的项目进度如何？", ["我的", "项目", "进度", "如何"]],
+    ["プロジェクトのスケジュールはどうですか", ["プロジェクト", "スケジュール", "どう", "です"]],
+    ["สถานะโครงการของฉัน", ["สถานะ", "โครงการ", "ของ", "ฉัน"]],
+    ["내 일정 알려줘", ["일정", "알려줘"]],
+    ["मेरी परियोजना की स्थिति क्या है?", ["मेरी", "परियोजना", "स्थिति", "क्या"]],
+    ["Какой статус проекта?", ["какой", "статус", "проекта"]],
+    ["Follow-up on the café's v2 rollout", ["follow-up", "the", "café", "rollout"]],
+  ])("retrieves for %s by its words", async (query, queryTerms) => {
+    const pack = await buildContextPack(query, {
+      tenantId: "tenant-a",
+      databaseMemoryAccessScope: accessScope,
+      persistTrace: false,
+    });
+
+    expect(pack.profile).toMatchObject({ mode: "hybrid", queryTerms });
+    expect(mocks.planRetrievalQuery).toHaveBeenCalledOnce();
+  });
+
+  it("answers small talk without retrieval", async () => {
+    const pack = await buildContextPack("Hi", {
+      tenantId: "tenant-a",
+      databaseMemoryAccessScope: accessScope,
+      persistTrace: false,
+    });
+
+    expect(pack.profile).toMatchObject({ mode: "direct", queryTerms: [] });
+    expect(mocks.planRetrievalQuery).not.toHaveBeenCalled();
+  });
+
   it("does not invoke semantic planning for an explicit empty selection", async () => {
     const pack = await buildContextPack("Who manages Project Orion?", {
       tenantId: "tenant-a",
