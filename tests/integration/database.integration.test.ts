@@ -4391,6 +4391,164 @@ databaseDescribe("Postgres schema integration", () => {
     }
   });
 
+  test("runs a tenant's schedule owners by their oldest work, not their names", async () => {
+    await ensureDatabaseSchema();
+    const tenantId = "schedule_owner_order";
+    const otherTenantId = "schedule_owner_order_other";
+    const userId = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+    const actorFor = (n: number) => `actor:${userId(n)}`;
+    for (const [id, slug] of [
+      [tenantId, "schedule-owner-order"],
+      [otherTenantId, "schedule-owner-other"],
+    ]) {
+      await admin`
+        INSERT INTO omni_auth_tenants (id, name, slug)
+        VALUES (${id}, 'Schedule owners', ${slug})
+      `;
+    }
+    for (let n = 105; n <= 109; n += 1) {
+      await admin`
+        INSERT INTO omni_auth_users (id, email, password_hash)
+        VALUES (${userId(n)}, ${`schedule-owner-${n}@example.test`}, 'test-only')
+      `;
+      await admin`
+        INSERT INTO omni_auth_memberships (id, tenant_id, user_id, role)
+        VALUES (
+          ${`membership:schedule-owner-${n}`},
+          ${n === 109 ? otherTenantId : tenantId},
+          ${userId(n)},
+          'admin'
+        )
+      `;
+    }
+    const create = (tenant: string, n: number, key: string) =>
+      runWithDatabaseTenantScope(tenant, () => createWorkflowTrigger(
+        scheduleTriggerInput({ tenantId: tenant, actorId: actorFor(n), key }),
+      ));
+    const [{ base }] = await admin`
+      SELECT date_trunc('second', clock_timestamp()) AS base
+    `;
+    const due = (triggerId: string, next: string) => admin`
+      UPDATE omni_workflow_triggers
+      SET next_due_at = ${base}::timestamptz + ${next}::interval,
+          shadow_next_due_at = ${base}::timestamptz + interval '1 day'
+      WHERE id = ${triggerId}
+    `;
+    const workflowRun = async (tenant: string, status: string, endedAt: string | null) => {
+      const { run } = await runWithDatabaseTenantScope(tenant, () => createWorkflowRun({
+        tenantId: tenant,
+        goal: "Send the weekly digest.",
+      }));
+      await admin`
+        UPDATE omni_workflow_runs
+        SET status = ${status},
+            completed_at = ${base}::timestamptz + ${endedAt}::interval
+        WHERE id = ${run.id}
+      `;
+      return run.id;
+    };
+    const occurrence = (
+      triggerId: string,
+      occurrenceId: string,
+      offset: string,
+      workflowRunId?: string,
+    ) => admin`
+      INSERT INTO omni_workflow_schedule_occurrences (
+        id, tenant_id, owner_actor_id, trigger_id, occurrence_kind, status,
+        scheduled_for, evaluated_through, outcome, occurrences_consumed,
+        occurrence_count, configuration_sha256, agent_identity_pin_sha256,
+        policy_pin_sha256, procedure_snapshot_sha256, reviewed_snapshot_sha256,
+        occurrence_budget_sha256, authority_sha256, workflow_run_id, queue_job_id
+      )
+      SELECT
+        ${occurrenceId}::text, tenant_id, owner_actor_id, id, 'scheduled',
+        ${workflowRunId ? "enqueued" : "claimed"}::text,
+        ${base}::timestamptz + ${offset}::interval,
+        ${base}::timestamptz + ${offset}::interval,
+        'due', 1, 1, schedule_config_sha256, agent_identity_pin_sha256,
+        policy_pin_sha256, procedure_snapshot_sha256, reviewed_snapshot_sha256,
+        occurrence_budget_sha256, repeat('a', 64),
+        ${workflowRunId || null}::text,
+        ${workflowRunId ? `job:${occurrenceId}` : null}::text
+      FROM omni_workflow_triggers
+      WHERE id = ${triggerId}
+    `;
+
+    const going = await create(tenantId, 105, "schedule-owner-going");
+    const dueCursor = await create(tenantId, 106, "schedule-owner-due");
+    const claimed = await create(tenantId, 107, "schedule-owner-claimed");
+    const ended = await create(tenantId, 108, "schedule-owner-ended");
+    const other = await create(otherTenantId, 109, "schedule-owner-other");
+    // The first owner by name has only a queued run that is still going.
+    await occurrence(
+      going.id,
+      "schedule-owner-going-run",
+      "-3 hours",
+      await workflowRun(tenantId, "running", null),
+    );
+    await due(dueCursor.id, "-1 hour");
+    await occurrence(claimed.id, "schedule-owner-claimed-run", "-30 minutes");
+    // The last owner by name has the oldest work: a queued run that ended.
+    await occurrence(
+      ended.id,
+      "schedule-owner-ended-run",
+      "-3 hours",
+      await workflowRun(tenantId, "completed", "-2 hours"),
+    );
+    // The other tenant's owner has older work of every kind.
+    await due(other.id, "-4 hours");
+    await occurrence(other.id, "schedule-owner-other-claimed", "-5 hours");
+    await occurrence(
+      other.id,
+      "schedule-owner-other-ended",
+      "-7 hours",
+      await workflowRun(otherTenantId, "failed", "-6 hours"),
+    );
+
+    const owners = (limit?: number) => listDueWorkflowScheduleOwners({ tenantId, limit })
+      .then((listed) => listed.owners.map((owner) => owner.actorId));
+    try {
+      await expect(owners()).resolves.toEqual([actorFor(108), actorFor(106), actorFor(107)]);
+      // A pass of one owner reaches the oldest work and records the ended run.
+      await expect(processDueWorkflowSchedulesForTenant({
+        tenantId,
+        systemActorId: "integration-worker",
+        correlationId: "correlation:schedule-owner-order",
+        limit: 1,
+      })).resolves.toEqual({
+        ownerActors: 1,
+        ownerFailures: 0,
+        shadowEvaluated: 0,
+        occurrencesClaimed: 0,
+        occurrencesEnqueued: 0,
+        occurrencesSkipped: 0,
+        occurrencesMissed: 0,
+        occurrencesFailed: 0,
+        occurrencesReconciled: 1,
+      });
+      const [recorded] = await admin`
+        SELECT status FROM omni_workflow_schedule_occurrences
+        WHERE id = 'schedule-owner-ended-run'
+      `;
+      expect(recorded.status).toBe("completed");
+      await expect(owners()).resolves.toEqual([actorFor(106), actorFor(107)]);
+      await expect(owners(1)).resolves.toEqual([actorFor(106)]);
+    } finally {
+      // Later passes list every tenant's due work, so leave none behind.
+      await admin`
+        UPDATE omni_workflow_triggers
+        SET status = 'paused'
+        WHERE tenant_id IN (${tenantId}, ${otherTenantId}) AND trigger_kind = 'schedule'
+      `;
+      await admin`
+        UPDATE omni_workflow_schedule_occurrences
+        SET status = 'skipped'
+        WHERE tenant_id IN (${tenantId}, ${otherTenantId})
+          AND status IN ('claimed', 'enqueued')
+      `;
+    }
+  });
+
   test("claims a failed tool execution again only when its failure changed nothing", async () => {
     const tenantId = "retry_failed_tenant";
     const actorId = "retry_failed_actor";

@@ -1276,20 +1276,32 @@ async function readWorkflowScheduleClock() {
 }
 
 /**
- * Lists the owners whose schedules have work in every tenant, oldest due work
- * first, with the database time the listing used. Work is a due trigger cursor
- * or an occurrence still waiting to enter the workflow queue.
+ * Lists the owners whose schedules have work, in every tenant or in one,
+ * oldest work first, with the database time the listing used. Work is a due
+ * trigger cursor, an occurrence still waiting to enter the workflow queue, or
+ * a queued occurrence whose run ended; a queued run still going is not work.
  */
-export async function listDueWorkflowScheduleOwners(input: { limit?: number } = {}) {
+export async function listDueWorkflowScheduleOwners(input: {
+  tenantId?: string;
+  now?: string;
+  limit?: number;
+} = {}) {
   if (!hasDatabaseUrl()) {
     throw new Error("Scheduled workflow processing requires durable database storage.");
   }
+  const tenantId = input.tenantId === undefined
+    ? null
+    : normalizeTenantId(input.tenantId);
   const limit = Math.min(Math.max(input.limit || 20, 1), 100);
   return runWithDatabaseSystemScope(
-    "Discover due scheduled workflow owners across tenants.",
+    tenantId
+      ? `Discover due scheduled workflow owners for tenant ${tenantId}.`
+      : "Discover due scheduled workflow owners across tenants.",
     async () => {
       await ensureDatabaseSchema();
-      const now = await readWorkflowScheduleClock();
+      const now = input.now
+        ? new Date(requireTimestamp(input.now, "schedule processing time")).toISOString()
+        : await readWorkflowScheduleClock();
       const rows = await getSql()`
         WITH work AS (
           SELECT
@@ -1297,7 +1309,8 @@ export async function listDueWorkflowScheduleOwners(input: { limit?: number } = 
             owner_actor_id,
             LEAST(next_due_at, shadow_next_due_at) AS due_at
           FROM omni_workflow_triggers
-          WHERE trigger_kind = 'schedule'
+          WHERE (${tenantId}::text IS NULL OR tenant_id = ${tenantId})
+            AND trigger_kind = 'schedule'
             AND owner_actor_id IS NOT NULL
             AND status = 'active'
             AND circuit_state = 'closed'
@@ -1308,7 +1321,20 @@ export async function listDueWorkflowScheduleOwners(input: { limit?: number } = 
           UNION ALL
           SELECT tenant_id, owner_actor_id, scheduled_for AS due_at
           FROM omni_workflow_schedule_occurrences
-          WHERE status = 'claimed'
+          WHERE (${tenantId}::text IS NULL OR tenant_id = ${tenantId})
+            AND status = 'claimed'
+          UNION ALL
+          SELECT
+            occurrence.tenant_id,
+            occurrence.owner_actor_id,
+            COALESCE(run.completed_at, run.updated_at) AS due_at
+          FROM omni_workflow_schedule_occurrences occurrence
+          JOIN omni_workflow_runs run
+            ON run.tenant_id = occurrence.tenant_id
+            AND run.id = occurrence.workflow_run_id
+          WHERE (${tenantId}::text IS NULL OR occurrence.tenant_id = ${tenantId})
+            AND occurrence.status = 'enqueued'
+            AND run.status IN ('completed', 'failed', 'canceled')
         )
         SELECT tenant_id, owner_actor_id, MIN(due_at) AS due_at
         FROM work
@@ -1388,6 +1414,7 @@ async function processWorkflowScheduleOwners(input: {
   return totals;
 }
 
+/** Runs one tenant's schedule work in its maintenance, oldest work first. */
 export async function processDueWorkflowSchedulesForTenant(input: {
   tenantId: string;
   systemActorId: string;
@@ -1397,55 +1424,13 @@ export async function processDueWorkflowSchedulesForTenant(input: {
   deadlineAt?: number;
 }) {
   if (!hasDatabaseUrl()) return emptyWorkflowScheduleTotals();
-  const tenantId = normalizeTenantId(input.tenantId);
   const limit = Math.min(Math.max(input.limit || 20, 1), 100);
-  const { now, ownerRows } = await runWithDatabaseSystemScope(
-    `Discover due scheduled workflow owners for tenant ${tenantId}.`,
-    async () => {
-      await ensureDatabaseSchema();
-      const now = input.now
-        ? new Date(requireTimestamp(input.now, "schedule processing time")).toISOString()
-        : await readWorkflowScheduleClock();
-      const ownerRows = await getSql()`
-        SELECT DISTINCT trigger.owner_actor_id COLLATE "C" AS owner_actor_id
-        FROM omni_workflow_triggers trigger
-        WHERE trigger.tenant_id = ${tenantId}
-          AND trigger.trigger_kind = 'schedule'
-          AND trigger.owner_actor_id IS NOT NULL
-          AND (
-            (
-              trigger.status = 'active'
-              AND trigger.circuit_state = 'closed'
-              AND (
-                (trigger.next_due_at IS NOT NULL AND trigger.next_due_at <= ${now})
-                OR (trigger.shadow_next_due_at IS NOT NULL AND trigger.shadow_next_due_at <= ${now})
-              )
-            ) OR EXISTS (
-              SELECT 1
-              FROM omni_workflow_schedule_occurrences occurrence
-              WHERE occurrence.tenant_id = trigger.tenant_id
-                AND occurrence.owner_actor_id = trigger.owner_actor_id
-                AND occurrence.trigger_id = trigger.id
-                AND occurrence.status IN ('claimed', 'enqueued')
-            )
-          )
-        ORDER BY trigger.owner_actor_id COLLATE "C"
-        LIMIT ${limit}
-      `;
-      return { now, ownerRows };
-    },
-  );
-  return processWorkflowScheduleOwners({
-    owners: ownerRows.map((row: Record<string, unknown>) => ({
-      tenantId,
-      actorId: requiredActorId(String(row.owner_actor_id)),
-    })),
-    systemActorId: input.systemActorId,
-    correlationId: input.correlationId,
-    now,
+  const { now, owners } = await listDueWorkflowScheduleOwners({
+    tenantId: input.tenantId,
+    now: input.now,
     limit,
-    deadlineAt: input.deadlineAt,
   });
+  return processWorkflowScheduleOwners({ ...input, owners, now, limit });
 }
 
 export async function processActorWorkflowSchedules(input: {
