@@ -209,7 +209,59 @@ async function sweepPostgres(policy: RetentionPolicy, tenantId?: string) {
   const graphBuildCutoff = cutoff(policy.graphBuildHistoryDays);
   const securityCutoff = cutoff(policy.securityAuditDays);
 
-  const result = await sql.transaction(async (transaction: ReturnType<typeof getSql>) => {
+  // Only the memory batch needs one transaction: it holds the tenant graph
+  // locks, taken in canonical order, until its scrub commits. Each other
+  // table's batch is one statement in the client's short implicit
+  // transaction, so memory writers wait only for the memory batch, row locks
+  // last only as long as one table's batch, and a failure keeps the batches
+  // committed before it.
+  const localComputerObservations = tenantId
+    ? await sql`
+        WITH expired AS (
+          SELECT ctid
+          FROM omni_local_computer_commands
+          WHERE tenant_id = ${tenantId}
+            AND result ? 'observation'
+            AND completed_at <= NOW() - INTERVAL '5 minutes'
+          ORDER BY completed_at ASC, id ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        UPDATE omni_local_computer_commands target
+        SET result = target.result - 'observation', state = 'consumed',
+            consumed_at = COALESCE(target.consumed_at, NOW()),
+            error_code = COALESCE(
+              target.error_code,
+              'observation_expired'
+            ),
+            updated_at = NOW()
+        FROM expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `
+    : await sql`
+        WITH expired AS (
+          SELECT ctid
+          FROM omni_local_computer_commands
+          WHERE result ? 'observation'
+            AND completed_at <= NOW() - INTERVAL '5 minutes'
+          ORDER BY completed_at ASC, tenant_id ASC, id ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        UPDATE omni_local_computer_commands target
+        SET result = target.result - 'observation', state = 'consumed',
+            consumed_at = COALESCE(target.consumed_at, NOW()),
+            error_code = COALESCE(
+              target.error_code,
+              'observation_expired'
+            ),
+            updated_at = NOW()
+        FROM expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `;
+  const memory = await sql.transaction(async (transaction: ReturnType<typeof getSql>) => {
     if (!tenantId) {
       // Match the unscoped statement trigger before enumerating any tenant
       // graph lock set. This prevents a newly created tenant from producing an
@@ -220,52 +272,6 @@ async function sweepPostgres(policy: RetentionPolicy, tenantId?: string) {
         )
       `;
     }
-    const localComputerObservations = tenantId
-      ? await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_local_computer_commands
-            WHERE tenant_id = ${tenantId}
-              AND result ? 'observation'
-              AND completed_at <= NOW() - INTERVAL '5 minutes'
-            ORDER BY completed_at ASC, id ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          UPDATE omni_local_computer_commands target
-          SET result = target.result - 'observation', state = 'consumed',
-              consumed_at = COALESCE(target.consumed_at, NOW()),
-              error_code = COALESCE(
-                target.error_code,
-                'observation_expired'
-              ),
-              updated_at = NOW()
-          FROM expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `
-      : await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_local_computer_commands
-            WHERE result ? 'observation'
-              AND completed_at <= NOW() - INTERVAL '5 minutes'
-            ORDER BY completed_at ASC, tenant_id ASC, id ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          UPDATE omni_local_computer_commands target
-          SET result = target.result - 'observation', state = 'consumed',
-              consumed_at = COALESCE(target.consumed_at, NOW()),
-              error_code = COALESCE(
-                target.error_code,
-                'observation_expired'
-              ),
-              updated_at = NOW()
-          FROM expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `;
     // Purge expired/revoked source-map proposals first. The guarded database
     // function also shortens any linked reviewed memory to NOW(), allowing
     // the ordinary memory-retention path below to scrub it in this transaction.
@@ -602,924 +608,930 @@ async function sweepPostgres(policy: RetentionPolicy, tenantId?: string) {
         sql: transaction,
       });
     }
-    const expiredAccessRequests = tenantId
-      ? await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_access_requests
-            WHERE tenant_id = ${tenantId}
-              AND status = 'pending_review'
-              AND created_at < ${pendingAccessCutoff}::timestamptz
-            ORDER BY created_at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          UPDATE omni_access_requests target
-          SET status = 'declined',
-              name = '[expired]',
-              email = 'expired+' || target.id || '@invalid',
-              company = '[expired]',
-              role = 'other',
-              use_case = '[expired by retention policy]',
-              timeline = 'research',
-              reviewed_by = 'retention',
-              review_note = 'Expired before administrator review.',
-              reviewed_at = NOW(),
-              updated_at = NOW()
-          FROM expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `
-      : await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_access_requests
-            WHERE status = 'pending_review'
-              AND created_at < ${pendingAccessCutoff}::timestamptz
-            ORDER BY created_at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          UPDATE omni_access_requests target
-          SET status = 'declined',
-              name = '[expired]',
-              email = 'expired+' || target.id || '@invalid',
-              company = '[expired]',
-              role = 'other',
-              use_case = '[expired by retention policy]',
-              timeline = 'research',
-              reviewed_by = 'retention',
-              review_note = 'Expired before administrator review.',
-              reviewed_at = NOW(),
-              updated_at = NOW()
-          FROM expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `;
-    const accessRequests = tenantId
-      ? await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_access_requests
-            WHERE tenant_id = ${tenantId}
-              AND status IN (
-                'approved',
-                'provisioning_pending',
-                'provisioned',
-                'declined'
-              )
-              AND updated_at < ${reviewedAccessCutoff}::timestamptz
-            ORDER BY updated_at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          DELETE FROM omni_access_requests target
-          USING expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `
-      : await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_access_requests
-            WHERE status IN (
+    return {
+      knowledgeCognitionCandidates: knowledgeCognitionCandidates.length,
+      memoryGraphEdges: memoryGraphEdges.length,
+      memoryGraphNodes: memoryGraphNodes.length,
+      memories: memories.length,
+      retrievalTraces: retrievalTraces.length,
+    };
+  }) as Record<
+    | "knowledgeCognitionCandidates"
+    | "memoryGraphEdges"
+    | "memoryGraphNodes"
+    | "memories"
+    | "retrievalTraces",
+    number
+  >;
+  const expiredAccessRequests = tenantId
+    ? await sql`
+        WITH expired AS (
+          SELECT ctid
+          FROM omni_access_requests
+          WHERE tenant_id = ${tenantId}
+            AND status = 'pending_review'
+            AND created_at < ${pendingAccessCutoff}::timestamptz
+          ORDER BY created_at ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        UPDATE omni_access_requests target
+        SET status = 'declined',
+            name = '[expired]',
+            email = 'expired+' || target.id || '@invalid',
+            company = '[expired]',
+            role = 'other',
+            use_case = '[expired by retention policy]',
+            timeline = 'research',
+            reviewed_by = 'retention',
+            review_note = 'Expired before administrator review.',
+            reviewed_at = NOW(),
+            updated_at = NOW()
+        FROM expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `
+    : await sql`
+        WITH expired AS (
+          SELECT ctid
+          FROM omni_access_requests
+          WHERE status = 'pending_review'
+            AND created_at < ${pendingAccessCutoff}::timestamptz
+          ORDER BY created_at ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        UPDATE omni_access_requests target
+        SET status = 'declined',
+            name = '[expired]',
+            email = 'expired+' || target.id || '@invalid',
+            company = '[expired]',
+            role = 'other',
+            use_case = '[expired by retention policy]',
+            timeline = 'research',
+            reviewed_by = 'retention',
+            review_note = 'Expired before administrator review.',
+            reviewed_at = NOW(),
+            updated_at = NOW()
+        FROM expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `;
+  const accessRequests = tenantId
+    ? await sql`
+        WITH expired AS (
+          SELECT ctid
+          FROM omni_access_requests
+          WHERE tenant_id = ${tenantId}
+            AND status IN (
               'approved',
               'provisioning_pending',
               'provisioned',
               'declined'
             )
-              AND updated_at < ${reviewedAccessCutoff}::timestamptz
-            ORDER BY updated_at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
+            AND updated_at < ${reviewedAccessCutoff}::timestamptz
+          ORDER BY updated_at ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        DELETE FROM omni_access_requests target
+        USING expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `
+    : await sql`
+        WITH expired AS (
+          SELECT ctid
+          FROM omni_access_requests
+          WHERE status IN (
+            'approved',
+            'provisioning_pending',
+            'provisioned',
+            'declined'
           )
-          DELETE FROM omni_access_requests target
-          USING expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `;
-    const authSessions = tenantId
-      ? await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_auth_sessions
-            WHERE tenant_id = ${tenantId}
-              AND expires_at < NOW()
-            ORDER BY expires_at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          DELETE FROM omni_auth_sessions target
-          USING expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `
-      : await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_auth_sessions
-            WHERE expires_at < NOW()
-            ORDER BY expires_at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          DELETE FROM omni_auth_sessions target
-          USING expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `;
-    const expiredToolApprovals = tenantId
-      ? await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_tool_executions
-            WHERE tenant_id = ${tenantId}
-              AND status = 'approval_required'
-              AND created_at < ${pendingCutoff}::timestamptz
-            ORDER BY created_at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          UPDATE omni_tool_executions target
-          SET status = 'rejected',
-              input = '{"redacted":"expired approval"}'::jsonb,
-              output = NULL,
-              reason = 'Approval expired before an operator decision.',
-              approval_decision = 'rejected',
-              approval_reason = 'Expired by retention policy.',
-              effect_receipt = NULL,
-              completed_at = NOW()
-          FROM expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `
-      : await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_tool_executions
-            WHERE status = 'approval_required'
-              AND created_at < ${pendingCutoff}::timestamptz
-            ORDER BY created_at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          UPDATE omni_tool_executions target
-          SET status = 'rejected',
-              input = '{"redacted":"expired approval"}'::jsonb,
-              output = NULL,
-              reason = 'Approval expired before an operator decision.',
-              approval_decision = 'rejected',
-              approval_reason = 'Expired by retention policy.',
-              effect_receipt = NULL,
-              completed_at = NOW()
-          FROM expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `;
-    const expiredApprovalRuns = tenantId
-      ? await transaction`
-          WITH expired AS (
-            SELECT run.ctid
-            FROM omni_agent_runs run
-            WHERE run.tenant_id = ${tenantId}
-              AND run.status = 'waiting_approval'
-              AND EXISTS (
+            AND updated_at < ${reviewedAccessCutoff}::timestamptz
+          ORDER BY updated_at ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        DELETE FROM omni_access_requests target
+        USING expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `;
+  const authSessions = tenantId
+    ? await sql`
+        WITH expired AS (
+          SELECT ctid
+          FROM omni_auth_sessions
+          WHERE tenant_id = ${tenantId}
+            AND expires_at < NOW()
+          ORDER BY expires_at ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        DELETE FROM omni_auth_sessions target
+        USING expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `
+    : await sql`
+        WITH expired AS (
+          SELECT ctid
+          FROM omni_auth_sessions
+          WHERE expires_at < NOW()
+          ORDER BY expires_at ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        DELETE FROM omni_auth_sessions target
+        USING expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `;
+  const expiredToolApprovals = tenantId
+    ? await sql`
+        WITH expired AS (
+          SELECT ctid
+          FROM omni_tool_executions
+          WHERE tenant_id = ${tenantId}
+            AND status = 'approval_required'
+            AND created_at < ${pendingCutoff}::timestamptz
+          ORDER BY created_at ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        UPDATE omni_tool_executions target
+        SET status = 'rejected',
+            input = '{"redacted":"expired approval"}'::jsonb,
+            output = NULL,
+            reason = 'Approval expired before an operator decision.',
+            approval_decision = 'rejected',
+            approval_reason = 'Expired by retention policy.',
+            effect_receipt = NULL,
+            completed_at = NOW()
+        FROM expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `
+    : await sql`
+        WITH expired AS (
+          SELECT ctid
+          FROM omni_tool_executions
+          WHERE status = 'approval_required'
+            AND created_at < ${pendingCutoff}::timestamptz
+          ORDER BY created_at ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        UPDATE omni_tool_executions target
+        SET status = 'rejected',
+            input = '{"redacted":"expired approval"}'::jsonb,
+            output = NULL,
+            reason = 'Approval expired before an operator decision.',
+            approval_decision = 'rejected',
+            approval_reason = 'Expired by retention policy.',
+            effect_receipt = NULL,
+            completed_at = NOW()
+        FROM expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `;
+  const expiredApprovalRuns = tenantId
+    ? await sql`
+        WITH expired AS (
+          SELECT run.ctid
+          FROM omni_agent_runs run
+          WHERE run.tenant_id = ${tenantId}
+            AND run.status = 'waiting_approval'
+            AND EXISTS (
+              SELECT 1
+              FROM omni_tool_executions tool
+              WHERE tool.id = run.continuation->'pendingToolCall'->>'executionId'
+                AND tool.tenant_id = ${tenantId}
+                AND tool.status = 'rejected'
+                AND tool.approval_reason = 'Expired by retention policy.'
+            )
+          ORDER BY run.started_at ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        UPDATE omni_agent_runs target
+        SET status = 'failed',
+            prompt = '[expired approval]',
+            messages = '[]'::jsonb,
+            response = NULL,
+            continuation = NULL,
+            error = 'Approval expired before an operator decision.',
+            completed_at = NOW()
+        FROM expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `
+    : await sql`
+        WITH expired AS (
+          SELECT run.ctid
+          FROM omni_agent_runs run
+          WHERE run.status = 'waiting_approval'
+            AND EXISTS (
+              SELECT 1
+              FROM omni_tool_executions tool
+              WHERE tool.id = run.continuation->'pendingToolCall'->>'executionId'
+                AND tool.status = 'rejected'
+                AND tool.approval_reason = 'Expired by retention policy.'
+            )
+          ORDER BY run.started_at ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        UPDATE omni_agent_runs target
+        SET status = 'failed',
+            prompt = '[expired approval]',
+            messages = '[]'::jsonb,
+            response = NULL,
+            continuation = NULL,
+            error = 'Approval expired before an operator decision.',
+            completed_at = NOW()
+        FROM expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `;
+  const workflowPlans = tenantId
+    ? await sql`
+        WITH expired AS (
+          SELECT plan.ctid
+          FROM omni_workflow_plans plan
+          WHERE plan.tenant_id = ${tenantId}
+            AND plan.updated_at < ${workflowCutoff}::timestamptz
+            AND (
+              plan.workflow_run_id IS NULL
+              OR EXISTS (
                 SELECT 1
-                FROM omni_tool_executions tool
-                WHERE tool.id = run.continuation->'pendingToolCall'->>'executionId'
-                  AND tool.tenant_id = ${tenantId}
-                  AND tool.status = 'rejected'
-                  AND tool.approval_reason = 'Expired by retention policy.'
+                FROM omni_workflow_runs run
+                WHERE run.id = plan.workflow_run_id
+                  AND run.status IN ('completed', 'failed', 'canceled')
+                  AND COALESCE(run.completed_at, run.updated_at) < ${workflowCutoff}::timestamptz
               )
-            ORDER BY run.started_at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          UPDATE omni_agent_runs target
-          SET status = 'failed',
-              prompt = '[expired approval]',
-              messages = '[]'::jsonb,
-              response = NULL,
-              continuation = NULL,
-              error = 'Approval expired before an operator decision.',
-              completed_at = NOW()
-          FROM expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `
-      : await transaction`
-          WITH expired AS (
-            SELECT run.ctid
-            FROM omni_agent_runs run
-            WHERE run.status = 'waiting_approval'
-              AND EXISTS (
+            )
+          ORDER BY plan.updated_at ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        DELETE FROM omni_workflow_plans target
+        USING expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `
+    : await sql`
+        WITH expired AS (
+          SELECT plan.ctid
+          FROM omni_workflow_plans plan
+          WHERE plan.updated_at < ${workflowCutoff}::timestamptz
+            AND (
+              plan.workflow_run_id IS NULL
+              OR EXISTS (
                 SELECT 1
-                FROM omni_tool_executions tool
-                WHERE tool.id = run.continuation->'pendingToolCall'->>'executionId'
-                  AND tool.status = 'rejected'
-                  AND tool.approval_reason = 'Expired by retention policy.'
+                FROM omni_workflow_runs run
+                WHERE run.id = plan.workflow_run_id
+                  AND run.status IN ('completed', 'failed', 'canceled')
+                  AND COALESCE(run.completed_at, run.updated_at) < ${workflowCutoff}::timestamptz
               )
-            ORDER BY run.started_at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          UPDATE omni_agent_runs target
-          SET status = 'failed',
-              prompt = '[expired approval]',
-              messages = '[]'::jsonb,
-              response = NULL,
-              continuation = NULL,
-              error = 'Approval expired before an operator decision.',
-              completed_at = NOW()
-          FROM expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `;
-    const workflowPlans = tenantId
-      ? await transaction`
-          WITH expired AS (
-            SELECT plan.ctid
-            FROM omni_workflow_plans plan
-            WHERE plan.tenant_id = ${tenantId}
-              AND plan.updated_at < ${workflowCutoff}::timestamptz
-              AND (
-                plan.workflow_run_id IS NULL
-                OR EXISTS (
-                  SELECT 1
-                  FROM omni_workflow_runs run
-                  WHERE run.id = plan.workflow_run_id
-                    AND run.status IN ('completed', 'failed', 'canceled')
-                    AND COALESCE(run.completed_at, run.updated_at) < ${workflowCutoff}::timestamptz
-                )
-              )
-            ORDER BY plan.updated_at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          DELETE FROM omni_workflow_plans target
-          USING expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `
-      : await transaction`
-          WITH expired AS (
-            SELECT plan.ctid
-            FROM omni_workflow_plans plan
-            WHERE plan.updated_at < ${workflowCutoff}::timestamptz
-              AND (
-                plan.workflow_run_id IS NULL
-                OR EXISTS (
-                  SELECT 1
-                  FROM omni_workflow_runs run
-                  WHERE run.id = plan.workflow_run_id
-                    AND run.status IN ('completed', 'failed', 'canceled')
-                    AND COALESCE(run.completed_at, run.updated_at) < ${workflowCutoff}::timestamptz
-                )
-              )
-            ORDER BY plan.updated_at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          DELETE FROM omni_workflow_plans target
-          USING expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `;
-    const workflows = tenantId
-      ? await transaction`
-          WITH expired AS (
-            SELECT run.ctid
-            FROM omni_workflow_runs run
-            WHERE run.tenant_id = ${tenantId}
-              AND run.status IN ('completed', 'failed', 'canceled')
-              AND COALESCE(run.completed_at, run.updated_at) < ${workflowCutoff}::timestamptz
-              AND NOT EXISTS (
-                SELECT 1
-                FROM omni_workflow_plans plan
-                WHERE plan.workflow_run_id = run.id
-              )
-            ORDER BY COALESCE(run.completed_at, run.updated_at) ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          DELETE FROM omni_workflow_runs target
-          USING expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `
-      : await transaction`
-          WITH expired AS (
-            SELECT run.ctid
-            FROM omni_workflow_runs run
-            WHERE run.status IN ('completed', 'failed', 'canceled')
-              AND COALESCE(run.completed_at, run.updated_at) < ${workflowCutoff}::timestamptz
-              AND NOT EXISTS (
-                SELECT 1
-                FROM omni_workflow_plans plan
-                WHERE plan.workflow_run_id = run.id
-              )
-            ORDER BY COALESCE(run.completed_at, run.updated_at) ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          DELETE FROM omni_workflow_runs target
-          USING expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `;
-    const triggerEvents = tenantId
-      ? await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_workflow_trigger_events
-            WHERE tenant_id = ${tenantId}
-              AND received_at < ${triggerEventCutoff}::timestamptz
-            ORDER BY received_at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          DELETE FROM omni_workflow_trigger_events target
-          USING expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `
-      : await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_workflow_trigger_events
-            WHERE received_at < ${triggerEventCutoff}::timestamptz
-            ORDER BY received_at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          DELETE FROM omni_workflow_trigger_events target
-          USING expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `;
-    const operationJobs = tenantId
-      ? await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_operation_jobs
-            WHERE tenant_id = ${tenantId}
-              AND status IN ('completed', 'failed', 'canceled')
-              AND COALESCE(completed_at, updated_at) < ${operationJobCutoff}::timestamptz
-            ORDER BY COALESCE(completed_at, updated_at) ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          DELETE FROM omni_operation_jobs target
-          USING expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `
-      : await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_operation_jobs
-            WHERE status IN ('completed', 'failed', 'canceled')
-              AND COALESCE(completed_at, updated_at) < ${operationJobCutoff}::timestamptz
-            ORDER BY COALESCE(completed_at, updated_at) ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          DELETE FROM omni_operation_jobs target
-          USING expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `;
-    const runs = tenantId
-      ? await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_agent_runs
-            WHERE tenant_id = ${tenantId}
-              AND status IN ('completed', 'failed', 'canceled')
-              AND completed_at < ${runCutoff}::timestamptz
-            ORDER BY completed_at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          DELETE FROM omni_agent_runs target
-          USING expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `
-      : await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_agent_runs
-            WHERE status IN ('completed', 'failed', 'canceled')
-              AND completed_at < ${runCutoff}::timestamptz
-            ORDER BY completed_at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          DELETE FROM omni_agent_runs target
-          USING expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `;
-    const toolExecutions = tenantId
-      ? await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_tool_executions
-            WHERE tenant_id = ${tenantId}
-              AND status IN ('dry_run', 'executed', 'blocked', 'failed', 'rejected')
-              AND COALESCE(completed_at, created_at) < ${toolCutoff}::timestamptz
-            ORDER BY COALESCE(completed_at, created_at) ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          DELETE FROM omni_tool_executions target
-          USING expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `
-      : await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_tool_executions
-            WHERE status IN ('dry_run', 'executed', 'blocked', 'failed', 'rejected')
-              AND COALESCE(completed_at, created_at) < ${toolCutoff}::timestamptz
-            ORDER BY COALESCE(completed_at, created_at) ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          DELETE FROM omni_tool_executions target
-          USING expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `;
-    const aiUsage = tenantId
-      ? await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_ai_usage
-            WHERE tenant_id = ${tenantId}
-              AND recorded_at < ${aiUsageCutoff}::timestamptz
-            ORDER BY recorded_at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          DELETE FROM omni_ai_usage target
-          USING expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `
-      : await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_ai_usage
-            WHERE recorded_at < ${aiUsageCutoff}::timestamptz
-            ORDER BY recorded_at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          DELETE FROM omni_ai_usage target
-          USING expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `;
-    const aiUsageEvents = tenantId
-      ? await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_events
-            WHERE tenant_id = ${tenantId}
-              AND type = 'ai.usage.recorded'
-              AND at < ${aiUsageCutoff}::timestamptz
-            ORDER BY at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          DELETE FROM omni_events target
-          USING expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `
-      : await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_events
-            WHERE type = 'ai.usage.recorded'
-              AND at < ${aiUsageCutoff}::timestamptz
-            ORDER BY at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          DELETE FROM omni_events target
-          USING expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `;
-    const aiUsageAgentEvents = tenantId
-      ? await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_agent_events
-            WHERE tenant_id = ${tenantId}
-              AND type = 'model'
-              AND created_at < ${aiUsageCutoff}::timestamptz
-              AND payload ?| ARRAY[
-                'inputTokens', 'outputTokens', 'cachedInputTokens',
-                'totalTokens', 'latencyMs', 'estimatedCostUsd', 'costKnown',
-                'providerRequestId', 'usageReceiptId', 'attemptCount',
-                'failedAttemptCount', 'iterationCount', 'callReceipts'
-              ]
-            ORDER BY created_at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          UPDATE omni_agent_events target
-          SET payload = (
-            target.payload - ARRAY[
+            )
+          ORDER BY plan.updated_at ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        DELETE FROM omni_workflow_plans target
+        USING expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `;
+  const workflows = tenantId
+    ? await sql`
+        WITH expired AS (
+          SELECT run.ctid
+          FROM omni_workflow_runs run
+          WHERE run.tenant_id = ${tenantId}
+            AND run.status IN ('completed', 'failed', 'canceled')
+            AND COALESCE(run.completed_at, run.updated_at) < ${workflowCutoff}::timestamptz
+            AND NOT EXISTS (
+              SELECT 1
+              FROM omni_workflow_plans plan
+              WHERE plan.workflow_run_id = run.id
+            )
+          ORDER BY COALESCE(run.completed_at, run.updated_at) ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        DELETE FROM omni_workflow_runs target
+        USING expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `
+    : await sql`
+        WITH expired AS (
+          SELECT run.ctid
+          FROM omni_workflow_runs run
+          WHERE run.status IN ('completed', 'failed', 'canceled')
+            AND COALESCE(run.completed_at, run.updated_at) < ${workflowCutoff}::timestamptz
+            AND NOT EXISTS (
+              SELECT 1
+              FROM omni_workflow_plans plan
+              WHERE plan.workflow_run_id = run.id
+            )
+          ORDER BY COALESCE(run.completed_at, run.updated_at) ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        DELETE FROM omni_workflow_runs target
+        USING expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `;
+  const triggerEvents = tenantId
+    ? await sql`
+        WITH expired AS (
+          SELECT ctid
+          FROM omni_workflow_trigger_events
+          WHERE tenant_id = ${tenantId}
+            AND received_at < ${triggerEventCutoff}::timestamptz
+          ORDER BY received_at ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        DELETE FROM omni_workflow_trigger_events target
+        USING expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `
+    : await sql`
+        WITH expired AS (
+          SELECT ctid
+          FROM omni_workflow_trigger_events
+          WHERE received_at < ${triggerEventCutoff}::timestamptz
+          ORDER BY received_at ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        DELETE FROM omni_workflow_trigger_events target
+        USING expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `;
+  const operationJobs = tenantId
+    ? await sql`
+        WITH expired AS (
+          SELECT ctid
+          FROM omni_operation_jobs
+          WHERE tenant_id = ${tenantId}
+            AND status IN ('completed', 'failed', 'canceled')
+            AND COALESCE(completed_at, updated_at) < ${operationJobCutoff}::timestamptz
+          ORDER BY COALESCE(completed_at, updated_at) ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        DELETE FROM omni_operation_jobs target
+        USING expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `
+    : await sql`
+        WITH expired AS (
+          SELECT ctid
+          FROM omni_operation_jobs
+          WHERE status IN ('completed', 'failed', 'canceled')
+            AND COALESCE(completed_at, updated_at) < ${operationJobCutoff}::timestamptz
+          ORDER BY COALESCE(completed_at, updated_at) ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        DELETE FROM omni_operation_jobs target
+        USING expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `;
+  const runs = tenantId
+    ? await sql`
+        WITH expired AS (
+          SELECT ctid
+          FROM omni_agent_runs
+          WHERE tenant_id = ${tenantId}
+            AND status IN ('completed', 'failed', 'canceled')
+            AND completed_at < ${runCutoff}::timestamptz
+          ORDER BY completed_at ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        DELETE FROM omni_agent_runs target
+        USING expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `
+    : await sql`
+        WITH expired AS (
+          SELECT ctid
+          FROM omni_agent_runs
+          WHERE status IN ('completed', 'failed', 'canceled')
+            AND completed_at < ${runCutoff}::timestamptz
+          ORDER BY completed_at ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        DELETE FROM omni_agent_runs target
+        USING expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `;
+  const toolExecutions = tenantId
+    ? await sql`
+        WITH expired AS (
+          SELECT ctid
+          FROM omni_tool_executions
+          WHERE tenant_id = ${tenantId}
+            AND status IN ('dry_run', 'executed', 'blocked', 'failed', 'rejected')
+            AND COALESCE(completed_at, created_at) < ${toolCutoff}::timestamptz
+          ORDER BY COALESCE(completed_at, created_at) ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        DELETE FROM omni_tool_executions target
+        USING expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `
+    : await sql`
+        WITH expired AS (
+          SELECT ctid
+          FROM omni_tool_executions
+          WHERE status IN ('dry_run', 'executed', 'blocked', 'failed', 'rejected')
+            AND COALESCE(completed_at, created_at) < ${toolCutoff}::timestamptz
+          ORDER BY COALESCE(completed_at, created_at) ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        DELETE FROM omni_tool_executions target
+        USING expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `;
+  const aiUsage = tenantId
+    ? await sql`
+        WITH expired AS (
+          SELECT ctid
+          FROM omni_ai_usage
+          WHERE tenant_id = ${tenantId}
+            AND recorded_at < ${aiUsageCutoff}::timestamptz
+          ORDER BY recorded_at ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        DELETE FROM omni_ai_usage target
+        USING expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `
+    : await sql`
+        WITH expired AS (
+          SELECT ctid
+          FROM omni_ai_usage
+          WHERE recorded_at < ${aiUsageCutoff}::timestamptz
+          ORDER BY recorded_at ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        DELETE FROM omni_ai_usage target
+        USING expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `;
+  const aiUsageEvents = tenantId
+    ? await sql`
+        WITH expired AS (
+          SELECT ctid
+          FROM omni_events
+          WHERE tenant_id = ${tenantId}
+            AND type = 'ai.usage.recorded'
+            AND at < ${aiUsageCutoff}::timestamptz
+          ORDER BY at ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        DELETE FROM omni_events target
+        USING expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `
+    : await sql`
+        WITH expired AS (
+          SELECT ctid
+          FROM omni_events
+          WHERE type = 'ai.usage.recorded'
+            AND at < ${aiUsageCutoff}::timestamptz
+          ORDER BY at ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        DELETE FROM omni_events target
+        USING expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `;
+  const aiUsageAgentEvents = tenantId
+    ? await sql`
+        WITH expired AS (
+          SELECT ctid
+          FROM omni_agent_events
+          WHERE tenant_id = ${tenantId}
+            AND type = 'model'
+            AND created_at < ${aiUsageCutoff}::timestamptz
+            AND payload ?| ARRAY[
               'inputTokens', 'outputTokens', 'cachedInputTokens',
               'totalTokens', 'latencyMs', 'estimatedCostUsd', 'costKnown',
               'providerRequestId', 'usageReceiptId', 'attemptCount',
               'failedAttemptCount', 'iterationCount', 'callReceipts'
-            ]::text[]
-          ) || jsonb_build_object('usageExpiredAt', NOW())
-          FROM expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `
-      : await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_agent_events
-            WHERE type = 'model'
-              AND created_at < ${aiUsageCutoff}::timestamptz
-              AND payload ?| ARRAY[
-                'inputTokens', 'outputTokens', 'cachedInputTokens',
-                'totalTokens', 'latencyMs', 'estimatedCostUsd', 'costKnown',
-                'providerRequestId', 'usageReceiptId', 'attemptCount',
-                'failedAttemptCount', 'iterationCount', 'callReceipts'
-              ]
-            ORDER BY created_at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          UPDATE omni_agent_events target
-          SET payload = (
-            target.payload - ARRAY[
+            ]
+          ORDER BY created_at ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        UPDATE omni_agent_events target
+        SET payload = (
+          target.payload - ARRAY[
+            'inputTokens', 'outputTokens', 'cachedInputTokens',
+            'totalTokens', 'latencyMs', 'estimatedCostUsd', 'costKnown',
+            'providerRequestId', 'usageReceiptId', 'attemptCount',
+            'failedAttemptCount', 'iterationCount', 'callReceipts'
+          ]::text[]
+        ) || jsonb_build_object('usageExpiredAt', NOW())
+        FROM expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `
+    : await sql`
+        WITH expired AS (
+          SELECT ctid
+          FROM omni_agent_events
+          WHERE type = 'model'
+            AND created_at < ${aiUsageCutoff}::timestamptz
+            AND payload ?| ARRAY[
               'inputTokens', 'outputTokens', 'cachedInputTokens',
               'totalTokens', 'latencyMs', 'estimatedCostUsd', 'costKnown',
               'providerRequestId', 'usageReceiptId', 'attemptCount',
               'failedAttemptCount', 'iterationCount', 'callReceipts'
-            ]::text[]
-          ) || jsonb_build_object('usageExpiredAt', NOW())
-          FROM expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `;
-    const aiUsageRunEvents = tenantId
-      ? await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_events
-            WHERE tenant_id = ${tenantId}
-              AND type = 'run.model'
-              AND at < ${aiUsageCutoff}::timestamptz
-              AND payload ?| ARRAY[
-                'inputTokens', 'outputTokens', 'cachedInputTokens',
-                'totalTokens', 'latencyMs', 'estimatedCostUsd', 'costKnown',
-                'providerRequestId', 'usageReceiptId', 'attemptCount',
-                'failedAttemptCount', 'iterationCount', 'callReceipts'
-              ]
-            ORDER BY at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          UPDATE omni_events target
-          SET payload = (
-            target.payload - ARRAY[
+            ]
+          ORDER BY created_at ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        UPDATE omni_agent_events target
+        SET payload = (
+          target.payload - ARRAY[
+            'inputTokens', 'outputTokens', 'cachedInputTokens',
+            'totalTokens', 'latencyMs', 'estimatedCostUsd', 'costKnown',
+            'providerRequestId', 'usageReceiptId', 'attemptCount',
+            'failedAttemptCount', 'iterationCount', 'callReceipts'
+          ]::text[]
+        ) || jsonb_build_object('usageExpiredAt', NOW())
+        FROM expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `;
+  const aiUsageRunEvents = tenantId
+    ? await sql`
+        WITH expired AS (
+          SELECT ctid
+          FROM omni_events
+          WHERE tenant_id = ${tenantId}
+            AND type = 'run.model'
+            AND at < ${aiUsageCutoff}::timestamptz
+            AND payload ?| ARRAY[
               'inputTokens', 'outputTokens', 'cachedInputTokens',
               'totalTokens', 'latencyMs', 'estimatedCostUsd', 'costKnown',
               'providerRequestId', 'usageReceiptId', 'attemptCount',
               'failedAttemptCount', 'iterationCount', 'callReceipts'
-            ]::text[]
-          ) || jsonb_build_object('usageExpiredAt', NOW())
-          FROM expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `
-      : await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_events
-            WHERE type = 'run.model'
-              AND at < ${aiUsageCutoff}::timestamptz
-              AND payload ?| ARRAY[
-                'inputTokens', 'outputTokens', 'cachedInputTokens',
-                'totalTokens', 'latencyMs', 'estimatedCostUsd', 'costKnown',
-                'providerRequestId', 'usageReceiptId', 'attemptCount',
-                'failedAttemptCount', 'iterationCount', 'callReceipts'
-              ]
-            ORDER BY at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          UPDATE omni_events target
-          SET payload = (
-            target.payload - ARRAY[
+            ]
+          ORDER BY at ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        UPDATE omni_events target
+        SET payload = (
+          target.payload - ARRAY[
+            'inputTokens', 'outputTokens', 'cachedInputTokens',
+            'totalTokens', 'latencyMs', 'estimatedCostUsd', 'costKnown',
+            'providerRequestId', 'usageReceiptId', 'attemptCount',
+            'failedAttemptCount', 'iterationCount', 'callReceipts'
+          ]::text[]
+        ) || jsonb_build_object('usageExpiredAt', NOW())
+        FROM expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `
+    : await sql`
+        WITH expired AS (
+          SELECT ctid
+          FROM omni_events
+          WHERE type = 'run.model'
+            AND at < ${aiUsageCutoff}::timestamptz
+            AND payload ?| ARRAY[
               'inputTokens', 'outputTokens', 'cachedInputTokens',
               'totalTokens', 'latencyMs', 'estimatedCostUsd', 'costKnown',
               'providerRequestId', 'usageReceiptId', 'attemptCount',
               'failedAttemptCount', 'iterationCount', 'callReceipts'
-            ]::text[]
-          ) || jsonb_build_object('usageExpiredAt', NOW())
-          FROM expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `;
-    const aiUsageObservabilityEvents = tenantId
-      ? await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_observability_events
-            WHERE tenant_id = ${tenantId}
-              AND created_at < ${aiUsageCutoff}::timestamptz
-              AND metadata ?| ARRAY[
-                'usage', 'estimatedCostUsd', 'costKnown', 'attempts', 'turns',
-                'callReceipts', 'responseId', 'providerRequestId'
-              ]
-            ORDER BY created_at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          UPDATE omni_observability_events target
-          SET metadata = (
-            target.metadata - ARRAY[
+            ]
+          ORDER BY at ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        UPDATE omni_events target
+        SET payload = (
+          target.payload - ARRAY[
+            'inputTokens', 'outputTokens', 'cachedInputTokens',
+            'totalTokens', 'latencyMs', 'estimatedCostUsd', 'costKnown',
+            'providerRequestId', 'usageReceiptId', 'attemptCount',
+            'failedAttemptCount', 'iterationCount', 'callReceipts'
+          ]::text[]
+        ) || jsonb_build_object('usageExpiredAt', NOW())
+        FROM expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `;
+  const aiUsageObservabilityEvents = tenantId
+    ? await sql`
+        WITH expired AS (
+          SELECT ctid
+          FROM omni_observability_events
+          WHERE tenant_id = ${tenantId}
+            AND created_at < ${aiUsageCutoff}::timestamptz
+            AND metadata ?| ARRAY[
               'usage', 'estimatedCostUsd', 'costKnown', 'attempts', 'turns',
               'callReceipts', 'responseId', 'providerRequestId'
-            ]::text[]
-          ) || jsonb_build_object('usageExpiredAt', NOW())
-          FROM expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `
-      : await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_observability_events
-            WHERE created_at < ${aiUsageCutoff}::timestamptz
-              AND metadata ?| ARRAY[
-                'usage', 'estimatedCostUsd', 'costKnown', 'attempts', 'turns',
-                'callReceipts', 'responseId', 'providerRequestId'
-              ]
-            ORDER BY created_at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          UPDATE omni_observability_events target
-          SET metadata = (
-            target.metadata - ARRAY[
+            ]
+          ORDER BY created_at ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        UPDATE omni_observability_events target
+        SET metadata = (
+          target.metadata - ARRAY[
+            'usage', 'estimatedCostUsd', 'costKnown', 'attempts', 'turns',
+            'callReceipts', 'responseId', 'providerRequestId'
+          ]::text[]
+        ) || jsonb_build_object('usageExpiredAt', NOW())
+        FROM expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `
+    : await sql`
+        WITH expired AS (
+          SELECT ctid
+          FROM omni_observability_events
+          WHERE created_at < ${aiUsageCutoff}::timestamptz
+            AND metadata ?| ARRAY[
               'usage', 'estimatedCostUsd', 'costKnown', 'attempts', 'turns',
               'callReceipts', 'responseId', 'providerRequestId'
-            ]::text[]
-          ) || jsonb_build_object('usageExpiredAt', NOW())
-          FROM expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `;
-    const domainEvents = tenantId
-      ? await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_events
-            WHERE tenant_id = ${tenantId}
-              AND type <> 'ai.usage.recorded'
-              AND at < ${eventCutoff}::timestamptz
-            ORDER BY at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          DELETE FROM omni_events target
-          USING expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `
-      : await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_events
-            WHERE type <> 'ai.usage.recorded'
-              AND at < ${eventCutoff}::timestamptz
-            ORDER BY at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          DELETE FROM omni_events target
-          USING expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `;
-    const observabilityEvents = tenantId
-      ? await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_observability_events
-            WHERE tenant_id = ${tenantId}
-              AND created_at < ${observabilityCutoff}::timestamptz
-            ORDER BY created_at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          DELETE FROM omni_observability_events target
-          USING expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `
-      : await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_observability_events
-            WHERE created_at < ${observabilityCutoff}::timestamptz
-            ORDER BY created_at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          DELETE FROM omni_observability_events target
-          USING expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `;
-    const healthChecks = tenantId
-      ? await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_system_health_checks
-            WHERE tenant_id = ${tenantId}
-              AND created_at < ${healthCutoff}::timestamptz
-            ORDER BY created_at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          DELETE FROM omni_system_health_checks target
-          USING expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `
-      : await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_system_health_checks
-            WHERE created_at < ${healthCutoff}::timestamptz
-            ORDER BY created_at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          DELETE FROM omni_system_health_checks target
-          USING expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `;
-    const evaluationRuns = tenantId
-      ? await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_eval_runs
-            WHERE tenant_id = ${tenantId}
-              AND status IN ('completed', 'failed')
-              AND COALESCE(completed_at, updated_at) < ${evaluationCutoff}::timestamptz
-            ORDER BY COALESCE(completed_at, updated_at) ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          DELETE FROM omni_eval_runs target
-          USING expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `
-      : await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_eval_runs
-            WHERE status IN ('completed', 'failed')
-              AND COALESCE(completed_at, updated_at) < ${evaluationCutoff}::timestamptz
-            ORDER BY COALESCE(completed_at, updated_at) ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          DELETE FROM omni_eval_runs target
-          USING expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `;
-    const graphBuilds = tenantId
-      ? await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_memory_graph_builds
-            WHERE tenant_id = ${tenantId}
-              AND status IN ('completed', 'failed')
-              AND created_at < ${graphBuildCutoff}::timestamptz
-            ORDER BY created_at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          DELETE FROM omni_memory_graph_builds target
-          USING expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `
-      : await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_memory_graph_builds
-            WHERE status IN ('completed', 'failed')
-              AND created_at < ${graphBuildCutoff}::timestamptz
-            ORDER BY created_at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          DELETE FROM omni_memory_graph_builds target
-          USING expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `;
-    const securityAudits = tenantId
-      ? await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_security_audits
-            WHERE tenant_id = ${tenantId}
-              AND created_at < ${securityCutoff}::timestamptz
-            ORDER BY created_at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          DELETE FROM omni_security_audits target
-          USING expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `
-      : await transaction`
-          WITH expired AS (
-            SELECT ctid
-            FROM omni_security_audits
-            WHERE created_at < ${securityCutoff}::timestamptz
-            ORDER BY created_at ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${batchLimit}
-          )
-          DELETE FROM omni_security_audits target
-          USING expired
-          WHERE target.ctid = expired.ctid
-          RETURNING target.id
-        `;
+            ]
+          ORDER BY created_at ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        UPDATE omni_observability_events target
+        SET metadata = (
+          target.metadata - ARRAY[
+            'usage', 'estimatedCostUsd', 'costKnown', 'attempts', 'turns',
+            'callReceipts', 'responseId', 'providerRequestId'
+          ]::text[]
+        ) || jsonb_build_object('usageExpiredAt', NOW())
+        FROM expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `;
+  const domainEvents = tenantId
+    ? await sql`
+        WITH expired AS (
+          SELECT ctid
+          FROM omni_events
+          WHERE tenant_id = ${tenantId}
+            AND type <> 'ai.usage.recorded'
+            AND at < ${eventCutoff}::timestamptz
+          ORDER BY at ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        DELETE FROM omni_events target
+        USING expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `
+    : await sql`
+        WITH expired AS (
+          SELECT ctid
+          FROM omni_events
+          WHERE type <> 'ai.usage.recorded'
+            AND at < ${eventCutoff}::timestamptz
+          ORDER BY at ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        DELETE FROM omni_events target
+        USING expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `;
+  const observabilityEvents = tenantId
+    ? await sql`
+        WITH expired AS (
+          SELECT ctid
+          FROM omni_observability_events
+          WHERE tenant_id = ${tenantId}
+            AND created_at < ${observabilityCutoff}::timestamptz
+          ORDER BY created_at ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        DELETE FROM omni_observability_events target
+        USING expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `
+    : await sql`
+        WITH expired AS (
+          SELECT ctid
+          FROM omni_observability_events
+          WHERE created_at < ${observabilityCutoff}::timestamptz
+          ORDER BY created_at ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        DELETE FROM omni_observability_events target
+        USING expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `;
+  const healthChecks = tenantId
+    ? await sql`
+        WITH expired AS (
+          SELECT ctid
+          FROM omni_system_health_checks
+          WHERE tenant_id = ${tenantId}
+            AND created_at < ${healthCutoff}::timestamptz
+          ORDER BY created_at ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        DELETE FROM omni_system_health_checks target
+        USING expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `
+    : await sql`
+        WITH expired AS (
+          SELECT ctid
+          FROM omni_system_health_checks
+          WHERE created_at < ${healthCutoff}::timestamptz
+          ORDER BY created_at ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        DELETE FROM omni_system_health_checks target
+        USING expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `;
+  const evaluationRuns = tenantId
+    ? await sql`
+        WITH expired AS (
+          SELECT ctid
+          FROM omni_eval_runs
+          WHERE tenant_id = ${tenantId}
+            AND status IN ('completed', 'failed')
+            AND COALESCE(completed_at, updated_at) < ${evaluationCutoff}::timestamptz
+          ORDER BY COALESCE(completed_at, updated_at) ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        DELETE FROM omni_eval_runs target
+        USING expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `
+    : await sql`
+        WITH expired AS (
+          SELECT ctid
+          FROM omni_eval_runs
+          WHERE status IN ('completed', 'failed')
+            AND COALESCE(completed_at, updated_at) < ${evaluationCutoff}::timestamptz
+          ORDER BY COALESCE(completed_at, updated_at) ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        DELETE FROM omni_eval_runs target
+        USING expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `;
+  const graphBuilds = tenantId
+    ? await sql`
+        WITH expired AS (
+          SELECT ctid
+          FROM omni_memory_graph_builds
+          WHERE tenant_id = ${tenantId}
+            AND status IN ('completed', 'failed')
+            AND created_at < ${graphBuildCutoff}::timestamptz
+          ORDER BY created_at ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        DELETE FROM omni_memory_graph_builds target
+        USING expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `
+    : await sql`
+        WITH expired AS (
+          SELECT ctid
+          FROM omni_memory_graph_builds
+          WHERE status IN ('completed', 'failed')
+            AND created_at < ${graphBuildCutoff}::timestamptz
+          ORDER BY created_at ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        DELETE FROM omni_memory_graph_builds target
+        USING expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `;
+  const securityAudits = tenantId
+    ? await sql`
+        WITH expired AS (
+          SELECT ctid
+          FROM omni_security_audits
+          WHERE tenant_id = ${tenantId}
+            AND created_at < ${securityCutoff}::timestamptz
+          ORDER BY created_at ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        DELETE FROM omni_security_audits target
+        USING expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `
+    : await sql`
+        WITH expired AS (
+          SELECT ctid
+          FROM omni_security_audits
+          WHERE created_at < ${securityCutoff}::timestamptz
+          ORDER BY created_at ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${batchLimit}
+        )
+        DELETE FROM omni_security_audits target
+        USING expired
+        WHERE target.ctid = expired.ctid
+        RETURNING target.id
+      `;
 
-    return {
-      affectedMemoryTenantIds,
-      deleted: {
-        expiredApprovalRuns: expiredApprovalRuns.length,
-        expiredToolApprovals: expiredToolApprovals.length,
-        expiredAccessRequests: expiredAccessRequests.length,
-        accessRequests: accessRequests.length,
-        authSessions: authSessions.length,
-        localComputerObservations: localComputerObservations.length,
-        memoryGraphEdges: memoryGraphEdges.length,
-        memoryGraphNodes: memoryGraphNodes.length,
-        memories: memories.length,
-        knowledgeCognitionCandidates: knowledgeCognitionCandidates.length,
-        retrievalTraces: retrievalTraces.length,
-        workflowPlans: workflowPlans.length,
-        workflows: workflows.length,
-        triggerEvents: triggerEvents.length,
-        operationJobs: operationJobs.length,
-        runs: runs.length,
-        toolExecutions: toolExecutions.length,
-        aiUsage: aiUsage.length,
-        aiUsageEvents: aiUsageEvents.length,
-        aiUsageAgentEvents: aiUsageAgentEvents.length,
-        aiUsageRunEvents: aiUsageRunEvents.length,
-        aiUsageObservabilityEvents: aiUsageObservabilityEvents.length,
-        domainEvents: domainEvents.length,
-        observabilityEvents: observabilityEvents.length,
-        healthChecks: healthChecks.length,
-        evaluationRuns: evaluationRuns.length,
-        graphBuilds: graphBuilds.length,
-        securityAudits: securityAudits.length,
-      },
-    };
-  }) as {
-    affectedMemoryTenantIds: string[];
-    deleted: RetentionSweepResult["deleted"];
+  const deleted: RetentionSweepResult["deleted"] = {
+    expiredApprovalRuns: expiredApprovalRuns.length,
+    expiredToolApprovals: expiredToolApprovals.length,
+    expiredAccessRequests: expiredAccessRequests.length,
+    accessRequests: accessRequests.length,
+    authSessions: authSessions.length,
+    localComputerObservations: localComputerObservations.length,
+    memoryGraphEdges: memory.memoryGraphEdges,
+    memoryGraphNodes: memory.memoryGraphNodes,
+    memories: memory.memories,
+    knowledgeCognitionCandidates: memory.knowledgeCognitionCandidates,
+    retrievalTraces: memory.retrievalTraces,
+    workflowPlans: workflowPlans.length,
+    workflows: workflows.length,
+    triggerEvents: triggerEvents.length,
+    operationJobs: operationJobs.length,
+    runs: runs.length,
+    toolExecutions: toolExecutions.length,
+    aiUsage: aiUsage.length,
+    aiUsageEvents: aiUsageEvents.length,
+    aiUsageAgentEvents: aiUsageAgentEvents.length,
+    aiUsageRunEvents: aiUsageRunEvents.length,
+    aiUsageObservabilityEvents: aiUsageObservabilityEvents.length,
+    domainEvents: domainEvents.length,
+    observabilityEvents: observabilityEvents.length,
+    healthChecks: healthChecks.length,
+    evaluationRuns: evaluationRuns.length,
+    graphBuilds: graphBuilds.length,
+    securityAudits: securityAudits.length,
   };
 
-  // The deletion transaction durably queues each affected tenant. Rebuilding
+  // The memory transaction durably queues each affected tenant. Rebuilding
   // synchronously here used to keep the system-scope retention request open
   // for minutes and starve authentication reads that share the maintenance
   // pool. The bounded maintenance lane drains this queue independently.
   return {
-    deleted: result.deleted,
+    deleted,
     batchLimit,
-    moreAvailable: Object.values(result.deleted).some(
-      (count) => count >= batchLimit,
-    ),
+    moreAvailable: Object.values(deleted).some((count) => count >= batchLimit),
   };
 }
 

@@ -7649,6 +7649,186 @@ databaseDescribe("Postgres schema integration", () => {
       { output: null, error: "The source stopped answering." },
     ]);
   });
+  test("sweeps each retention table outside the memory graph transaction", async () => {
+    const tenantId = "tenant_short_retention";
+    // The memory statement trigger locks only tenants that have memories, so
+    // only the sweep itself locks a tenant whose expired rows are all traces.
+    const traceTenantId = "tenant_short_retention_traces";
+    const userId = "7c1e2a90-4b5d-4f3e-8a61-2d9b0c4e5f71";
+    // A single-user server, such as the one the local harness embeds, reports
+    // no backend pid for its locks.
+    const graphLockHeld = (key: string) => `EXISTS (
+      SELECT 1
+      FROM pg_locks
+      WHERE locktype = 'advisory'
+        AND granted
+        AND COALESCE(pid, pg_backend_pid()) = pg_backend_pid()
+        AND objsubid = 1
+        AND ((classid::bigint << 32) | objid::bigint) = hashtextextended('${key}', 0)
+    )`;
+    const addExpiredWork = async (suffix: string) => {
+      await admin`
+        INSERT INTO omni_auth_sessions (
+          id, tenant_id, user_id, token_hash, expires_at
+        )
+        VALUES (
+          ${`expired-session-${suffix}`}, ${tenantId}, ${userId},
+          ${`expired-token-${suffix}`}, NOW() - INTERVAL '1 day'
+        )
+      `;
+      await admin`
+        INSERT INTO omni_memories (
+          id, tenant_id, type, title, content, tags, scope, source, importance,
+          created_at, updated_at
+        )
+        VALUES (
+          ${`expired-episode-${suffix}`}, ${tenantId}, 'episode', 'Episode',
+          'Sensitive episode', '{}'::text[], 'workspace', 'agent', 0.5,
+          NOW() - INTERVAL '4000 days', NOW() - INTERVAL '4000 days'
+        )
+      `;
+    };
+    await admin`
+      INSERT INTO omni_auth_tenants (id, name, slug)
+      VALUES (${tenantId}, 'Short retention tenant', 'short-retention-tenant')
+    `;
+    await admin`
+      INSERT INTO omni_auth_users (id, email, password_hash)
+      VALUES (${userId}, 'short-retention@example.test', 'test-password-hash')
+    `;
+    try {
+      await admin.unsafe(`
+        CREATE TABLE retention_transaction_probe (
+          id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+          label TEXT NOT NULL,
+          transaction_id BIGINT NOT NULL,
+          tenant_graph_lock BOOLEAN NOT NULL,
+          global_graph_lock BOOLEAN NOT NULL
+        )
+      `);
+      // Named to fire before the graph lock trigger, so each probe sees the
+      // locks held before its statement starts.
+      await admin.unsafe(`
+        CREATE FUNCTION record_retention_transaction_probe()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        SECURITY DEFINER
+        SET search_path = public, pg_temp
+        AS $$
+        BEGIN
+          INSERT INTO retention_transaction_probe (
+            label, transaction_id, tenant_graph_lock, global_graph_lock
+          )
+          VALUES (
+            TG_ARGV[0],
+            txid_current(),
+            ${graphLockHeld(`memory-graph:${traceTenantId}`)},
+            ${graphLockHeld("memory-graph-lock-order:global")}
+          );
+          RETURN NULL;
+        END
+        $$
+      `);
+      for (const [table, action, label] of [
+        ["omni_local_computer_commands", "UPDATE", "commands"],
+        ["omni_memories", "UPDATE", "memories"],
+        ["omni_auth_sessions", "DELETE", "sessions"],
+        ["omni_security_audits", "DELETE", "audits"],
+      ]) {
+        await admin.unsafe(`
+          CREATE TRIGGER a_retention_transaction_probe
+          BEFORE ${action} ON ${table}
+          FOR EACH STATEMENT
+          EXECUTE FUNCTION record_retention_transaction_probe('${label}')
+        `);
+      }
+      await addExpiredWork("probed");
+      await admin`
+        INSERT INTO omni_retrieval_traces (id, tenant_id, query, created_at)
+        VALUES (
+          'expired-short-retention-trace', ${traceTenantId},
+          'Sensitive historical query', NOW() - INTERVAL '4000 days'
+        )
+      `;
+
+      const result = await sweepExpiredSensitiveData({ tenantId, allTenants: true });
+
+      expect(result.deleted.authSessions).toBeGreaterThanOrEqual(1);
+      expect(result.deleted.memories).toBeGreaterThanOrEqual(1);
+      expect(await admin`
+        SELECT id FROM omni_retrieval_traces WHERE tenant_id = ${traceTenantId}
+      `).toEqual([]);
+      expect(await admin`
+        SELECT label,
+          COUNT(DISTINCT transaction_id)::int AS transactions,
+          BOOL_OR(tenant_graph_lock) AS any_tenant_graph_lock,
+          BOOL_AND(global_graph_lock) AS always_global_graph_lock,
+          BOOL_OR(global_graph_lock) AS any_global_graph_lock
+        FROM retention_transaction_probe
+        GROUP BY label
+        ORDER BY label
+      `).toEqual([
+        ["audits", false],
+        ["commands", false],
+        ["memories", true],
+        ["sessions", false],
+      ].map(([label, locked]) => ({
+        label,
+        transactions: 1,
+        any_tenant_graph_lock: locked,
+        always_global_graph_lock: locked,
+        any_global_graph_lock: locked,
+      })));
+      const [{ transactions }] = await admin`
+        SELECT COUNT(DISTINCT transaction_id)::int AS transactions
+        FROM retention_transaction_probe
+      `;
+      expect(transactions).toBe(4);
+
+      await admin.unsafe(`
+        CREATE FUNCTION fail_retention_audit_store()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $$
+        BEGIN
+          RAISE EXCEPTION 'The audit store is unavailable.';
+        END
+        $$
+      `);
+      await admin.unsafe(`
+        CREATE TRIGGER a_retention_audit_store_failure
+        BEFORE DELETE ON omni_security_audits
+        FOR EACH STATEMENT
+        EXECUTE FUNCTION fail_retention_audit_store()
+      `);
+      await addExpiredWork("before-failure");
+
+      await expect(sweepExpiredSensitiveData({ tenantId })).rejects.toThrow(
+        "The audit store is unavailable.",
+      );
+
+      expect(await admin`
+        SELECT id
+        FROM omni_auth_sessions
+        WHERE tenant_id = ${tenantId}
+      `).toEqual([]);
+      expect(await admin`
+        SELECT id, title, content
+        FROM omni_memories
+        WHERE tenant_id = ${tenantId}
+        ORDER BY id
+      `).toEqual([
+        { id: "expired-episode-before-failure", title: "[retired]", content: "" },
+        { id: "expired-episode-probed", title: "[retired]", content: "" },
+      ]);
+    } finally {
+      await admin.unsafe("DROP FUNCTION IF EXISTS fail_retention_audit_store() CASCADE");
+      await admin.unsafe(
+        "DROP FUNCTION IF EXISTS record_retention_transaction_probe() CASCADE",
+      );
+      await admin.unsafe("DROP TABLE IF EXISTS retention_transaction_probe");
+    }
+  });
 });
 
 async function dropDatabaseRole(
