@@ -7,6 +7,7 @@ import {
   runWithDatabaseSystemScope,
 } from "@/lib/db/client";
 import { appendScopedDomainEvent } from "@/lib/events/store";
+import { localComputerCommandFailureMessage } from "@/lib/local-computer/command-failure";
 import {
   LOCAL_COMPUTER_COMMAND_LEASE_SECONDS,
   LOCAL_COMPUTER_COMMAND_RUNNER_CONTRACT_VERSION,
@@ -985,10 +986,8 @@ async function waitForLocalComputerCommand(
       };
     }
     if (["failed", "canceled", "expired"].includes(String(row.state))) {
-      throw new LocalComputerCommandError(
-        String(row.error_code || row.state),
-        `The installed Mac did not complete the action (${row.error_code || row.state}).`,
-      );
+      const code = String(row.error_code || row.state);
+      throw new LocalComputerCommandError(code, localComputerCommandFailureMessage(code));
     }
     await delay(350, input.abortSignal);
   }

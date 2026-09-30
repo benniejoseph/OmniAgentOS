@@ -647,6 +647,13 @@ notification banners. These refusals and exclusions take effect only after the
 macOS app is rebuilt; an older helper keeps refusing only the terminals and
 System Settings it listed, and captures every window on the display.
 
+The helper also refuses a click with `click_target_covered` when another app's
+window, or anything other than the chosen element, is on top of the target,
+and stops typing with `typing_interrupted` when the field loses focus partway,
+after which part of the text may already be typed. Both take effect after the
+macOS app is rebuilt; an older helper posts every click and every chunk of text
+without these checks.
+
 Vercel deployment `dpl_GWtwwNMwaroDcX8ixTGe18FY2Vj5` is promoted to
 `https://asael.bennierichard.com` at exact server revision
 `0c9c4fe0b93dbd216c496d0579f6af7b63c0162b`; canonical health reported that

@@ -194,6 +194,20 @@ code; the desktop or the window beneath shows through where they sit. The
 Accessibility snapshot of Asael's own window is still returned while Asael is
 in front.
 
+A click is posted only when its target is on top. The frontmost window under
+the point must belong to the observed app, and for a click on an observed
+element, what sits under the element's center must be that element or lie
+inside it. A floating Asael window, a notification banner, a menu, or a dialog
+over the target refuses the click with `click_target_covered` before the Mac
+acts. Text is typed in chunks of up to 20 characters; before each chunk after
+the first, the helper pauses briefly and checks that the observed field still
+has focus in the observed window. When it does not, typing stops with
+`typing_interrupted`, and the run is told that part of the text may already be
+typed. The window check sees only which app owns the frontmost window, so a
+window that lets clicks through, such as the transparent ends of the Dock,
+refuses a click beneath it. These checks take effect once the macOS app is
+rebuilt.
+
 The agent-visible allowlist is `observe`, `list_apps`, `activate_app`,
 `open_url`, `press`, `click`, `type`, `key`, and `scroll`. Observation and
 listing are read-only. The other visual operations retain their risk-two audit

@@ -81,6 +81,11 @@ task_run_suite RestrictedApplicationPolicyTests ASAEL_COMPUTER_USE_HELPER_TESTIN
   "$task_macos_dir/ComputerUseHelper/HelperMain.swift" \
   "$task_macos_dir/ComputerUseHelperTests/RestrictedApplicationPolicyTests.swift"
 
+task_run_suite InputDeliveryPolicyTests ASAEL_COMPUTER_USE_HELPER_TESTING \
+  "${task_computer_use_frameworks[@]}" \
+  "$task_macos_dir/ComputerUseHelper/HelperMain.swift" \
+  "$task_macos_dir/ComputerUseHelperTests/InputDeliveryPolicyTests.swift"
+
 task_run_suite CommandProgramPolicyTests ASAEL_COMMAND_RUNNER_HELPER_TESTING \
   "${task_command_runner_frameworks[@]}" \
   "$task_macos_dir/CommandRunnerHelper/HelperMain.swift" \

@@ -685,6 +685,56 @@ enum RestrictedApplicationPolicy {
   }
 }
 
+/// Where a posted click or keystroke lands. macOS delivers a click to the
+/// frontmost window under its point and keystrokes to the focused element,
+/// and either can change between an observation and the action.
+enum InputDeliveryPolicy {
+  /// The process owning the frontmost window under a point, from window
+  /// descriptions listed front to back, as CGWindowListCopyWindowInfo lists
+  /// them. A fully transparent window is passed over. A description whose
+  /// bounds or owner cannot be read answers nil, so the click is refused.
+  static func windowOwner(at point: CGPoint, windows: [[String: Any]]) -> pid_t? {
+    for window in windows {
+      guard let bounds = frame(window[kCGWindowBounds as String]) else { return nil }
+      let alpha = (window[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1
+      guard alpha > 0, bounds.contains(point) else { continue }
+      return (window[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value
+    }
+    return nil
+  }
+
+  /// A window's bounds from its description. CGRect's own dictionary reader
+  /// raises an exception, ending the helper, on a value that is not a number.
+  private static func frame(_ description: Any?) -> CGRect? {
+    guard let description = description as? [String: Any],
+          let x = (description["X"] as? NSNumber)?.doubleValue,
+          let y = (description["Y"] as? NSNumber)?.doubleValue,
+          let width = (description["Width"] as? NSNumber)?.doubleValue,
+          let height = (description["Height"] as? NSNumber)?.doubleValue
+    else { return nil }
+    return CGRect(x: x, y: y, width: width, height: height)
+  }
+
+  /// Whether a click's real target is the chosen element or lies inside it:
+  /// the chosen element is the target or one of its first `limit` ancestors.
+  static func isWithin<Element>(
+    _ target: Element,
+    chosen: Element,
+    limit: Int,
+    parent: (Element) -> Element?,
+    same: (Element, Element) -> Bool
+  ) -> Bool {
+    var cursor = target
+    var depth = 0
+    while !same(cursor, chosen) {
+      guard depth < limit, let next = parent(cursor) else { return false }
+      cursor = next
+      depth += 1
+    }
+    return true
+  }
+}
+
 private enum ParentVerifier {
   static let parentIdentifier = "app.omniagent.omniagent"
   private static let helperIdentifier = "app.omniagent.omniagent.computer-use-helper"
@@ -798,6 +848,12 @@ private final class ComputerUseExecutor {
   // `authority: "task"`. The helper then checks its real on-screen target and
   // refuses one that task authority does not cover, before any event is posted.
   private static let taskAuthorityRefused = "task_authority_refused"
+  // A click whose target something else covers is refused before any event
+  // is posted. Typing that loses its field stops partway, with part of the
+  // text typed, and pauses between chunks so a lost field is noticed.
+  private static let clickTargetCovered = "click_target_covered"
+  private static let typingInterrupted = "typing_interrupted"
+  private static let typingChunkPauseNanoseconds: UInt64 = 10_000_000
   // A task-authorized target is read up to its window within this bound, or
   // the action is refused. Chromium nests page content deeply.
   private static let maximumTaskAuthorityPathLength = 64
@@ -1367,16 +1423,21 @@ private final class ComputerUseExecutor {
         expectedElement: expectedElement,
         expectedIdentity: expectedIdentity
       )
-      if taskAuthority {
-        // The click lands on whatever is topmost at the element's center now,
-        // so task authority must cover that element, not only the observed one.
-        try withBoundedAccessibilityMessaging {
-          guard let target = currentObservedHitTarget(at: point) else {
-            throw HelperFailure.rejected(Self.taskAuthorityRefused)
-          }
-          try requireTaskAuthorityPointerTarget(target.element)
+      // The click lands on whatever is topmost at the element's center now,
+      // which must be the element or lie inside it, and task authority must
+      // cover that target, not only the observed element.
+      try withBoundedAccessibilityMessaging {
+        guard let target = clickTarget(inside: expectedElement, at: point) else {
+          throw HelperFailure.rejected(Self.clickTargetCovered)
         }
+        if taskAuthority { try requireTaskAuthorityPointerTarget(target) }
       }
+    }
+    // Another app's window over the point, such as a floating Asael window or
+    // a notification banner, would take the click even with the observed app
+    // in front.
+    guard clickReachesObservedApplication(at: point) else {
+      throw HelperFailure.rejected(Self.clickTargetCovered)
     }
     guard let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown,
                              mouseCursorPosition: point, mouseButton: .left),
@@ -1421,6 +1482,15 @@ private final class ComputerUseExecutor {
     let units = Array(text.utf16)
     var offset = 0
     while offset < units.count {
+      if offset > 0 {
+        // Each chunk goes wherever focus is when it arrives, so give the field
+        // time to take the last one, then stop if keystrokes would go elsewhere.
+        try? await Task.sleep(nanoseconds: Self.typingChunkPauseNanoseconds)
+        let fieldHasFocus = (try? withBoundedAccessibilityMessaging {
+          typingTargetIsCurrent(focusTarget.element)
+        }) ?? false
+        guard fieldHasFocus else { throw HelperFailure.rejected(Self.typingInterrupted) }
+      }
       let chunk = Array(units[offset..<min(offset + 20, units.count)])
       guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
             let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false)
@@ -1545,6 +1615,60 @@ private final class ComputerUseExecutor {
     if isSecure(role: role, subrole: subrole) {
       throw HelperFailure.rejected("secure_input_refused")
     }
+  }
+
+  /// Whether keystrokes still reach the observed field: secure input is off,
+  /// the observed display, app, and window are current, and the field has
+  /// focus. Callers bound Accessibility messaging around this check.
+  private func typingTargetIsCurrent(_ field: AXUIElement) -> Bool {
+    guard !IsSecureEventInputEnabled(),
+          captureTargetIsCurrent(),
+          let expectedPID = snapshotFrontmostPID,
+          let focused = axElementAttribute(
+            AXUIElementCreateApplication(expectedPID),
+            kAXFocusedUIElementAttribute as String
+          )
+    else { return false }
+    return CFEqual(focused, field)
+  }
+
+  /// The element a click at an observed element's center reaches now: the
+  /// element or something inside it, and never a secure field. Anything else
+  /// on top, such as a menu, a dialog, or another part of the page, answers
+  /// nil. Callers bound Accessibility messaging around this check.
+  private func clickTarget(inside element: AXUIElement, at point: CGPoint) -> AXUIElement? {
+    guard let expectedPID = snapshotFrontmostPID else { return nil }
+    var hitElement: AXUIElement?
+    guard AXUIElementCopyElementAtPosition(
+            AXUIElementCreateApplication(expectedPID),
+            Float(point.x),
+            Float(point.y),
+            &hitElement
+          ) == .success,
+          let hitElement,
+          InputDeliveryPolicy.isWithin(
+            hitElement,
+            chosen: element,
+            limit: Self.maximumHitTargetAncestorDepth,
+            parent: { self.axElementAttribute($0, kAXParentAttribute as String) },
+            same: { CFEqual($0, $1) }
+          ),
+          let identity = screenshotHitTargetMetadata(hitElement)?.identity,
+          !isSecure(role: identity.role, subrole: identity.subrole)
+    else { return nil }
+    return hitElement
+  }
+
+  /// Whether the frontmost window under a point belongs to the observed app.
+  /// A window list that cannot be read refuses the click.
+  private func clickReachesObservedApplication(at point: CGPoint) -> Bool {
+    guard let expectedPID = snapshotFrontmostPID,
+          let windows = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements],
+            kCGNullWindowID
+          ) as? [[String: Any]]
+    else { return false }
+    return InputDeliveryPolicy.windowOwner(at: point, windows: windows) == expectedPID
   }
 
   /// Returns fresh model evidence for an effect that has already completed.
