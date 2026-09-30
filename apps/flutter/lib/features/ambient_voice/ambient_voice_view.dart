@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../../app/brand/asael_mark.dart';
+import 'realtime_voice_controller.dart' show AmbientVoiceConfidenceBand;
 
 enum AmbientVoicePhase {
   asleep,
@@ -21,8 +22,10 @@ enum AmbientVoicePhase {
 /// Asael's compact, voice-only desktop presence.
 ///
 /// Recognized words are deliberately read-only here. Ambient Command is a
-/// voice surface, not a second Command composer. The ordinary governed command
-/// path still owns review attestation, approvals, cancellation, and execution.
+/// voice surface, not a second Command composer. A transcript under review
+/// shows how confidently it was recognized; one that needs review keeps Send
+/// off until its review checkbox is ticked. The ordinary governed command path
+/// still owns approvals, cancellation, and execution.
 class AmbientVoiceSurface extends StatelessWidget {
   const AmbientVoiceSurface({
     super.key,
@@ -41,6 +44,10 @@ class AmbientVoiceSurface extends StatelessWidget {
     required this.onClose,
     this.error,
     this.lastResult,
+    this.confidenceBand,
+    this.reviewRequired = false,
+    this.reviewAttested = false,
+    this.onReviewAttested,
   });
 
   final AmbientVoicePhase phase;
@@ -58,6 +65,14 @@ class AmbientVoiceSurface extends StatelessWidget {
   final VoidCallback onClose;
   final String? error;
   final String? lastResult;
+
+  /// How confidently the transcript under review was recognized.
+  final AmbientVoiceConfidenceBand? confidenceBand;
+
+  /// Whether the transcript needs its review checkbox, not Send alone.
+  final bool reviewRequired;
+  final bool reviewAttested;
+  final ValueChanged<bool>? onReviewAttested;
 
   bool get _capturing =>
       phase == AmbientVoicePhase.starting ||
@@ -78,10 +93,16 @@ class AmbientVoiceSurface extends StatelessWidget {
     final recognized = transcript.trim();
     final reviewing =
         phase == AmbientVoicePhase.review && recognized.isNotEmpty;
+    final attestationNeeded = reviewing && reviewRequired;
+    final title = attestationNeeded
+        ? 'Check the transcript'
+        : presentation.title;
+    final band = reviewing ? confidenceBand : null;
+    final bandLabel = band == null ? null : _confidenceLabel(band);
     final supportingText = _supportingText(recognized);
     final liveStatus = reviewing
-        ? '${presentation.title}. Recognized request: $recognized.'
-        : '${presentation.title}. $supportingText.';
+        ? '${[title, ?bandLabel].join('. ')}. Recognized request: $recognized.'
+        : '$title. $supportingText.';
     final foreground = scheme.onSurface;
     final muted = scheme.onSurfaceVariant;
     final dark = scheme.brightness == Brightness.dark;
@@ -163,8 +184,8 @@ class AmbientVoiceSurface extends StatelessWidget {
                                         ? Duration.zero
                                         : const Duration(milliseconds: 170),
                                     child: Text(
-                                      presentation.title,
-                                      key: ValueKey(presentation.title),
+                                      title,
+                                      key: ValueKey(title),
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
                                       style: theme.textTheme.titleSmall
@@ -176,6 +197,19 @@ class AmbientVoiceSurface extends StatelessWidget {
                                     ),
                                   ),
                                 ),
+                                if (bandLabel != null) ...[
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    bandLabel,
+                                    maxLines: 1,
+                                    style: theme.textTheme.labelSmall?.copyWith(
+                                      color: attestationNeeded
+                                          ? scheme.tertiary
+                                          : muted,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ],
                               ],
                             ),
                             const SizedBox(height: 4),
@@ -241,12 +275,21 @@ class AmbientVoiceSurface extends StatelessWidget {
                         ),
                         const SizedBox(width: 6),
                       ],
+                      if (attestationNeeded) ...[
+                        _ReviewAttestation(
+                          attested: reviewAttested,
+                          onChanged: onReviewAttested,
+                        ),
+                        const SizedBox(width: 2),
+                      ],
                       _PrimaryAction(
                         phase: phase,
                         useThisMac: useThisMac,
                         color: presentation.color,
                         onMicrophonePressed: onMicrophonePressed,
-                        onSend: onSend,
+                        onSend: attestationNeeded && !reviewAttested
+                            ? null
+                            : onSend,
                         onStop: onStop,
                         onReviewApproval: onReviewApproval,
                       ),
@@ -286,6 +329,40 @@ class AmbientVoiceSurface extends StatelessWidget {
       return recognized;
     }
     return detail;
+  }
+}
+
+String _confidenceLabel(AmbientVoiceConfidenceBand band) => switch (band) {
+  AmbientVoiceConfidenceBand.high => 'High confidence',
+  AmbientVoiceConfidenceBand.low => 'Low confidence',
+  AmbientVoiceConfidenceBand.unavailable => 'Confidence unavailable',
+  AmbientVoiceConfidenceBand.edited => 'Edited',
+};
+
+/// The visible review a transcript needs when it was not confidently
+/// recognized. Send stays off until it is ticked.
+class _ReviewAttestation extends StatelessWidget {
+  const _ReviewAttestation({required this.attested, required this.onChanged});
+
+  static const statement =
+      'I checked the transcript and it is the exact command I mean to send. '
+      'Risk-bearing actions still need their own approval.';
+
+  final bool attested;
+  final ValueChanged<bool>? onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final change = onChanged;
+    return Tooltip(
+      message: statement,
+      child: Checkbox(
+        value: attested,
+        semanticLabel: statement,
+        visualDensity: VisualDensity.compact,
+        onChanged: change == null ? null : (value) => change(value == true),
+      ),
+    );
   }
 }
 

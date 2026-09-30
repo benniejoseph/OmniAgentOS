@@ -10,6 +10,8 @@ AmbientVoiceDraft _draft({
   String? sessionId = _sessionId,
   String? conversationId = _conversationId,
   bool reviewAttested = true,
+  AmbientVoiceConfidenceBand confidenceBand = AmbientVoiceConfidenceBand.high,
+  bool reviewRequired = false,
   double? confidenceMean = 0.82,
   double? confidenceMinimum = 0.41,
   int confidenceSampleCount = 24,
@@ -17,11 +19,11 @@ AmbientVoiceDraft _draft({
   text: 'Email the team the launch summary',
   sessionId: sessionId,
   conversationId: conversationId,
-  confidenceBand: AmbientVoiceConfidenceBand.high,
+  confidenceBand: confidenceBand,
   confidenceMean: confidenceMean,
   confidenceMinimum: confidenceMinimum,
   confidenceSampleCount: confidenceSampleCount,
-  reviewRequired: false,
+  reviewRequired: reviewRequired,
   reviewAttested: reviewAttested,
   turnCount: 1,
   reconnectCount: 0,
@@ -133,6 +135,21 @@ void main() {
     expect(bounded['confidenceMean'], 1.0);
     expect(bounded.containsKey('confidenceMinimum'), isFalse);
     expect(bounded['confidenceSampleCount'], 10000);
+  });
+
+  test('declares the review checkbox for a draft that needed review', () {
+    final checked = TalkVoiceInput.fromReviewedDraft(
+      _draft(
+        confidenceBand: AmbientVoiceConfidenceBand.low,
+        reviewRequired: true,
+        confidenceMean: 0.4,
+        confidenceMinimum: 0.05,
+      ),
+    )!.toRequestJson();
+
+    expect(checked, containsPair('confidenceBand', 'low'));
+    expect(checked, containsPair('reviewMethod', 'explicit_checkbox'));
+    expect(checked, containsPair('reviewAttested', true));
   });
 
   test(

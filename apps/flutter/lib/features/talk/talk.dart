@@ -4139,6 +4139,16 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     if (voiceDraftBusy || widget.controller.sending) return;
     final text = input.text.trim();
     if (text.isEmpty) return;
+    final realtime = realtimeVoice;
+    if (realtime != null) {
+      try {
+        if (!await _attestAmbientReviewForSend(realtime, text)) return;
+      } catch (error) {
+        if (!mounted) return;
+        setState(() => recordingError = _ambientRealtimeError(error));
+        return;
+      }
+    }
     if (executionTarget == TalkExecutionTarget.thisMac) {
       final localComputer = widget.localComputer;
       final ready =
@@ -4154,15 +4164,9 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
         return;
       }
     }
-    final realtime = realtimeVoice;
     TalkVoiceInput? voiceInput;
     if (realtime != null) {
       try {
-        if (realtime.transcript != text ||
-            realtime.phase != AmbientRealtimeVoicePhase.review) {
-          realtime.editTranscript(text);
-        }
-        realtime.attestReview(true);
         voiceInput = TalkVoiceInput.fromReviewedDraft(realtime.reviewDraft);
         await realtime.finish(AmbientVoiceOutcome.sent);
       } catch (error) {
@@ -4178,6 +4182,25 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       recordingError = null;
     });
     submit(voiceInput: voiceInput);
+  }
+
+  /// Brings the spoken draft to an attested review, and returns whether it may
+  /// be sent now. Speech still in progress ends in review first, and a draft
+  /// that was not confidently recognized waits for its review checkbox.
+  Future<bool> _attestAmbientReviewForSend(
+    AmbientRealtimeVoiceController realtime,
+    String text,
+  ) async {
+    if (realtime.isListening) {
+      await realtime.stopAndReview();
+      return false;
+    }
+    if (realtime.phase == AmbientRealtimeVoicePhase.finishing) return false;
+    if (realtime.transcript.trim() != text ||
+        realtime.phase != AmbientRealtimeVoicePhase.review) {
+      realtime.editTranscript(text);
+    }
+    return realtime.attestReviewBySend();
   }
 
   void _scheduleAmbientSpeech(AmbientVoicePhase phase) {
@@ -4250,6 +4273,11 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     final phase = _ambientVoicePhase;
     _publishAmbientVoiceState(phase);
     _scheduleAmbientSpeech(phase);
+    final realtime = realtimeVoice;
+    final review = realtime?.phase == AmbientRealtimeVoicePhase.review
+        ? realtime
+        : null;
+    final reviewRequired = review?.reviewRequired ?? false;
     final canSend =
         !voiceDraftBusy &&
         !widget.controller.sending &&
@@ -4295,6 +4323,10 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
             ? () => unawaited(_openAmbientApproval())
             : null,
         onClose: () => unawaited(_closeAmbientVoice()),
+        confidenceBand: review?.confidenceBand,
+        reviewRequired: reviewRequired,
+        reviewAttested: review?.reviewAttested ?? false,
+        onReviewAttested: reviewRequired ? review?.attestReview : null,
       ),
     );
   }

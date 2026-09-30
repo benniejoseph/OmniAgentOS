@@ -9,10 +9,12 @@ final _voiceUuidPattern = RegExp(
 
 /// The reviewed realtime voice declaration one Ambient Voice command carries.
 ///
-/// It exists only after the visible Send action attested the transcript, and
-/// the command it rides on is pinned to the voice conversation. The server
-/// never trusts it alone: an unmarked command that arrives while a voice
-/// session is still open on the conversation is held for approval too.
+/// It exists only after the transcript review was attested: by the visible
+/// Send action for a confidently recognized transcript, or by its review
+/// checkbox for any other. The command it rides on is pinned to the voice
+/// conversation. The server never trusts it alone: an unmarked command that
+/// arrives while a voice session is still open on the conversation is held
+/// for approval too.
 @immutable
 class TalkVoiceInput {
   const TalkVoiceInput._({
@@ -20,6 +22,7 @@ class TalkVoiceInput {
     required this.conversationId,
     required this.confidenceBand,
     required this.confidenceSampleCount,
+    required this.reviewRequired,
     this.confidenceMean,
     this.confidenceMinimum,
   });
@@ -30,6 +33,9 @@ class TalkVoiceInput {
   final double? confidenceMean;
   final double? confidenceMinimum;
   final int confidenceSampleCount;
+
+  /// Whether the transcript needed its review checkbox, not Send alone.
+  final bool reviewRequired;
 
   /// Returns null unless the draft names the minted session and conversation
   /// and its transcript review was attested.
@@ -50,6 +56,7 @@ class TalkVoiceInput {
       confidenceMean: _unitInterval(draft.confidenceMean),
       confidenceMinimum: _unitInterval(draft.confidenceMinimum),
       confidenceSampleCount: draft.confidenceSampleCount.clamp(0, 10000),
+      reviewRequired: draft.reviewRequired,
     );
   }
 
@@ -63,8 +70,7 @@ class TalkVoiceInput {
     'confidenceMean': ?confidenceMean,
     'confidenceMinimum': ?confidenceMinimum,
     'confidenceSampleCount': confidenceSampleCount,
-    // The Ambient Voice Send button is the attestation; there is no checkbox.
-    'reviewMethod': 'send_button',
+    'reviewMethod': reviewRequired ? 'explicit_checkbox' : 'send_button',
     'reviewAttested': true,
   };
 }

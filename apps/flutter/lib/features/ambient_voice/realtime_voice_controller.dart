@@ -328,12 +328,41 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
     _notify();
   }
 
+  /// Records the visible review checkbox that a draft needing review
+  /// ([reviewRequired]) must be attested by before it is sent.
   void attestReview(bool value) {
     _assertUsable();
     if (_phase != AmbientRealtimeVoicePhase.review) return;
     _reviewAttested = value;
     _errorMessage = null;
     _notify();
+  }
+
+  /// Attests the review from the visible Send action, and returns whether the
+  /// draft may be sent. Send attests only a confidently recognized transcript
+  /// nobody edited; any other draft needs [attestReview] from its checkbox.
+  bool attestReviewBySend() {
+    _assertUsable();
+    if (_phase != AmbientRealtimeVoicePhase.review) return false;
+    if (!reviewRequired) {
+      _reviewAttested = true;
+      _notify();
+    }
+    return _reviewAttested;
+  }
+
+  /// Applies provider transcription events and ends in review, as a finished
+  /// session does, without a microphone or a provider connection.
+  @visibleForTesting
+  void reviewProviderEventsForTesting(Iterable<Map<String, Object?>> events) {
+    _assertUsable();
+    for (final event in events) {
+      _applyProviderMessage(jsonEncode(event), _generation);
+    }
+    _setPhase(
+      AmbientRealtimeVoicePhase.review,
+      'Recognized request ready to send.',
+    );
   }
 
   Future<void> setMicrophoneEnabled(bool enabled) async {
@@ -353,8 +382,9 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
 
   Future<void> micOff() => setMicrophoneEnabled(false);
 
-  /// Completes the content-free session receipt. Call [attestReview] from the
-  /// visible send action first; a spoken confirmation never satisfies it.
+  /// Completes the content-free session receipt. Attest the review first, with
+  /// [attestReviewBySend] or [attestReview]; a spoken confirmation never
+  /// satisfies it.
   Future<void> finish(AmbientVoiceOutcome outcome) async {
     _assertUsable();
     if (outcome == AmbientVoiceOutcome.sent && !_reviewAttested) {
