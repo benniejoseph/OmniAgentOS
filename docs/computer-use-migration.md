@@ -161,8 +161,16 @@ authority to the credential broker.
 
 The visual helper intentionally has no authority to:
 
-- operate Terminal, iTerm, Warp, other supported terminal applications, or
-  System Settings;
+- observe, bring forward, or act in a terminal (Terminal, iTerm, Warp, and
+  other supported terminals), system or security app (System Settings,
+  Keychain Access, Passwords, Activity Monitor, Disk Utility, Console,
+  Installer, and the system's authentication prompts), automation tool (Script
+  Editor, Automator, Shortcuts), password manager, or finance app, which it
+  refuses with `restricted_application_refused`;
+- act in Asael itself, which it may still observe;
+- observe or act while a supported browser's window shows anything other than
+  a web page or a new tab, such as a settings, saved-password, extension, or
+  developer-tools page, which it refuses with `restricted_page_refused`;
 - run shell commands, direct executables, arbitrary AppleScript, or general
   filesystem actions;
 - read or type into a secure field or continue while Secure Event Input is
@@ -170,6 +178,15 @@ The visual helper intentionally has no authority to:
 - install software, change macOS security settings, or silently acquire a new
   permission; or
 - accept an arbitrary local tool or unbounded key/mouse operation.
+
+Finance apps are recognized by their declared `public.app-category.finance`
+category or, for an iPhone or iPad app, its App Store Finance genre; the other
+categories are fixed lists of bundle identifiers, with each password-manager
+vendor matched by its identifier prefix. The browser page check reads at most
+300 Accessibility elements within 0.4 seconds and lets the action continue
+when it finds no page address in time, so it is a best-effort guard rather
+than a boundary. These refusals live in the helper and take effect once the
+macOS app is rebuilt.
 
 The agent-visible allowlist is `observe`, `list_apps`, `activate_app`,
 `open_url`, `press`, `click`, `type`, `key`, and `scroll`. Observation and
@@ -208,9 +225,14 @@ the Mac has not acted, and the executor offers the same action for review on a
 new approval record whose reason says why. The word list is English-only, so a
 consequential control named in another language is caught only by the dialog,
 role, and naming checks and by the server's effect classification.
-`activate_app`, `scroll`, and named-site `open_url` still continue within the
-task. A human-approved action never carries the marker, and a refusal code on
-an action the user already reviewed stays a failure.
+`activate_app` for an app the user named, `scroll`, and named-site `open_url`
+still continue within the task. An app counts as named when a word in the
+request, or two adjacent words, spell its bundle identifier's name part
+(`Spotify` for `com.spotify.client`, `VS Code` for `com.microsoft.VSCode`);
+switching to any other app enters per-action approval, so on-screen text
+cannot choose the next app the task drives. A human-approved action never
+carries the marker, and a refusal code on an action the user already reviewed
+stays a failure.
 A voice-originated command, whether the client declared it or the server
 inferred it from an open voice session, never runs on task authority: every
 action above risk zero enters per-action approval.

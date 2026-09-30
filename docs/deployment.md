@@ -632,7 +632,18 @@ and window titles never refuse a target. The word list is English-only: it does 
 consequential control named in another language, where the dialog, role, and
 naming checks and the server's effect classification remain the protection.
 `activate_app`, `scroll`, and named-site `open_url` still continue within the
-task.
+task, but task authority switches only to an app the user named in the request:
+a word, or two adjacent words, must spell the name part of its bundle
+identifier. Any other app switch goes to review with a reason that says so.
+
+The Computer Use helper refuses to observe, bring forward, or act in
+terminals, system and security apps, automation tools, password managers, and
+finance apps (`restricted_application_refused`), refuses to act in Asael
+itself, and refuses while a supported browser's window shows a settings,
+saved-password, extension, developer-tools, or other non-web page
+(`restricted_page_refused`). The browser check is bounded and best effort.
+These refusals take effect only after the macOS app is rebuilt; an older
+helper keeps refusing only the terminals and System Settings it listed.
 
 Vercel deployment `dpl_GWtwwNMwaroDcX8ixTGe18FY2Vj5` is promoted to
 `https://asael.bennierichard.com` at exact server revision

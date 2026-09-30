@@ -1200,7 +1200,7 @@ function localMacComputerTools(): ToolDefinition[] {
       id: "local.macos.list_apps",
       name: "List Apps on This Mac",
       description:
-        "List visible applications running on the explicitly selected installed Mac. Terminal applications are never controllable.",
+        "List visible applications running on the explicitly selected installed Mac. Terminals, system and security settings, automation tools, password managers, and finance apps are never controllable.",
       riskLevel: 0,
       approvalRequired: false,
       operationClass: "read_only",
@@ -1266,7 +1266,7 @@ function localMacComputerTools(): ToolDefinition[] {
       id: "local.macos.activate_app",
       name: "Activate App on This Mac",
       description:
-        "Bring one exact, already-running non-terminal application to the foreground on the explicitly selected installed Mac.",
+        "Bring one exact, already-running application to the foreground on the explicitly selected installed Mac. Terminals, system and security settings, automation tools, password managers, finance apps, and Asael itself are refused. Under This Mac task authority, an app the user did not name in their request needs review.",
       riskLevel: 1,
       approvalRequired: false,
       operationClass: "mutation",
@@ -1284,7 +1284,7 @@ function localMacComputerTools(): ToolDefinition[] {
       id: "local.macos.open_url",
       name: "Open a Web Page on This Mac",
       description:
-        "Open one absolute HTTP or HTTPS URL in an allowlisted browser on the explicitly selected installed Mac. This launches or activates the browser, waits for a short bounded settling period, and returns a fresh observation plus a closed effectVerdict; it does not claim that the page finished loading. Set presentScreenshot only when the user explicitly asks to see the fresh post-navigation screenshot; the installed app then offers a short-lived in-memory preview without adding it to run history. URL credentials, arbitrary schemes, Terminal, and System Settings are refused.",
+        "Open one absolute HTTP or HTTPS URL in an allowlisted browser on the explicitly selected installed Mac. This launches or activates the browser, waits for a short bounded settling period, and returns a fresh observation plus a closed effectVerdict; it does not claim that the page finished loading. Set presentScreenshot only when the user explicitly asks to see the fresh post-navigation screenshot; the installed app then offers a short-lived in-memory preview without adding it to run history. URL credentials and arbitrary schemes are refused, and so is acting on a browser settings, saved-password, extension, or developer-tools page.",
       riskLevel: 2,
       approvalRequired: true,
       operationClass: "mutation",
@@ -1386,7 +1386,7 @@ function localMacComputerTools(): ToolDefinition[] {
       id: "local.macos.type",
       name: "Type on This Mac",
       description:
-        "Type bounded non-sensitive text into the focused non-terminal, non-secure control from the latest installed-Mac observation.",
+        "Type bounded non-sensitive text into the focused non-secure control from the latest installed-Mac observation. Terminals, settings, automation tools, password managers, finance apps, Asael itself, and browser settings pages are refused.",
       riskLevel: 2,
       approvalRequired: true,
       operationClass: "mutation",
@@ -1400,7 +1400,7 @@ function localMacComputerTools(): ToolDefinition[] {
       id: "local.macos.key",
       name: "Press Key on This Mac",
       description:
-        "Send one bounded key or shortcut to the focused non-terminal, non-secure control from the latest installed-Mac observation.",
+        "Send one bounded key or shortcut to the focused non-secure control from the latest installed-Mac observation. Terminals, settings, automation tools, password managers, finance apps, Asael itself, and browser settings pages are refused.",
       riskLevel: 2,
       approvalRequired: true,
       operationClass: "mutation",

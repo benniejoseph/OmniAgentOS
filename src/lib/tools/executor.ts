@@ -641,13 +641,21 @@ export async function executeGovernedTool({
     });
     return { record: saved, result: null };
   }
+  // Task authority brings forward only an app the user named in their
+  // request; switching to any other app goes to the user for review.
+  const localComputerTaskAppReview =
+    registeredTool.id === "local.macos.activate_app" &&
+    localComputerTaskAuthority !== undefined &&
+    !localComputerTaskAppNamed(
+      input.bundleId,
+      localComputerTaskAuthority.objective,
+    );
   // A durable approval record is part of the execution identity even when the
   // registry tool is normally risk 0. Reconstruct the forced policy for every
   // risk level so approval resume cannot rewrite `approval_required` while
   // terminalizing the claimed record.
-  const effectiveForceApproval = forceApproval || Boolean(
-    existingRecord?.approvalRequired && !registeredTool.approvalRequired,
-  );
+  const effectiveForceApproval = forceApproval || localComputerTaskAppReview ||
+    Boolean(existingRecord?.approvalRequired && !registeredTool.approvalRequired);
   const registeredApprovalFingerprint = toolApprovalFingerprint(registeredTool);
   const tool = effectiveForceApproval
     ? {
@@ -1404,7 +1412,10 @@ export async function executeGovernedTool({
   // and expiry binding; a tenant + action-class streak cannot confer authority.
   const decision = evaluateToolPolicy({ tool, approved: effectiveApproved });
   const approvalReviewReason =
-    localComputerTaskAuthorityDecision.reviewReason ?? taskAuthorityReviewReason;
+    localComputerTaskAuthorityDecision.reviewReason ??
+    (localComputerTaskAppReview
+      ? "This Mac task authority switches only to apps named in your request."
+      : taskAuthorityReviewReason);
   const baseRecord = {
     tenantId: existingRecord?.tenantId || context?.tenantId,
     actorId: existingRecord?.actorId || context?.actorId,
@@ -3378,6 +3389,68 @@ function localComputerTaskNavigationCovered(url: unknown, objective: string) {
   return false;
 }
 
+// Bundle identifier parts that name a platform, a build, or a kind of app
+// rather than the app itself.
+const LOCAL_COMPUTER_TASK_GENERIC_APP_NAME_PARTS = new Set([
+  "app",
+  "application",
+  "apps",
+  "beta",
+  "client",
+  "co",
+  "com",
+  "desktop",
+  "dev",
+  "electron",
+  "id",
+  "io",
+  "mac",
+  "macos",
+  "me",
+  "net",
+  "org",
+  "osx",
+  "release",
+  "stable",
+  "us",
+  "xos",
+]);
+
+/**
+ * The name a bundle identifier gives its app: its last part that is not a
+ * platform or build word, as `spotify` for `com.spotify.client`.
+ */
+function localComputerTaskAppName(bundleId: string) {
+  const parts = bundleId.toLowerCase().split(".");
+  for (let index = parts.length - 1; index >= 0; index -= 1) {
+    const pieces = parts[index].split(/[-_]/).filter((piece) =>
+      piece && !LOCAL_COMPUTER_TASK_GENERIC_APP_NAME_PARTS.has(piece)
+    );
+    if (pieces.length === 0) continue;
+    const name = pieces.join("").replace(/\d+$/, "");
+    return name.length >= 3 ? name : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * On-screen text must not choose which app task authority drives next. Only
+ * an app the user named, in one word or two written apart ("VS Code" for
+ * `com.microsoft.VSCode`), qualifies.
+ */
+function localComputerTaskAppNamed(bundleId: unknown, objective: string) {
+  if (typeof bundleId !== "string") return false;
+  const name = localComputerTaskAppName(bundleId);
+  if (!name) return false;
+  const words = Array.from(
+    objective.toLowerCase().matchAll(/[\p{L}\p{N}]+/gu),
+    ([word]) => word,
+  );
+  return words.some((word, index) =>
+    word === name || `${word}${words[index + 1] ?? ""}` === name
+  );
+}
+
 const LOCAL_COMPUTER_TASK_NAVIGATION_KEYS = new Set([
   "tab",
   "escape",
@@ -3443,8 +3516,9 @@ function decideLocalComputerTaskAuthority(input: {
   agentRunId?: string;
 }): LocalComputerTaskAuthorityDecision {
   const scope = input.executionScope;
-  // Forced approval (voice input, an "always approve" agent profile, or a
-  // durable approval record) outranks task authority. A task authorization
+  // Forced approval (voice input, an "always approve" agent profile, a
+  // durable approval record, or an app the request does not name) outranks
+  // task authority. A task authorization
   // widens what runs without review; it must never narrow a forced review.
   if (input.forceApproval) return { covered: false };
   if (

@@ -533,6 +533,130 @@ enum TaskAuthorityTargetPolicy {
   }
 }
 
+/// Applications the agent never observes or drives on This Mac, by category:
+/// shells and terminals, system and security settings, automation tools,
+/// credential managers, and any app filed under finance. Bundle identifiers
+/// are compared without regard to case, as LaunchServices compares them.
+enum RestrictedApplicationPolicy {
+  static let shells: Set<String> = [
+    "co.zeit.hyper", "com.apple.terminal", "com.github.wez.wezterm", "com.googlecode.iterm2",
+    "com.mitchellh.ghostty", "dev.warp.warp-stable", "net.kovidgoyal.kitty", "org.alacritty",
+    "org.tabby",
+  ]
+  static let systemAndSecurity: Set<String> = [
+    "com.apple.activitymonitor", "com.apple.console", "com.apple.coreservices.uiagent",
+    "com.apple.directoryutility", "com.apple.diskutility", "com.apple.installer",
+    "com.apple.keychainaccess", "com.apple.localauthentication.uiagent",
+    "com.apple.migrateassistant", "com.apple.passwords", "com.apple.securityagent",
+    "com.apple.systempreferences", "com.apple.systemsettings", "com.apple.usernotificationcenter",
+  ]
+  static let automation: Set<String> = [
+    "com.apple.automator", "com.apple.scripteditor2", "com.apple.shortcuts",
+  ]
+  static let credentialApplications: Set<String> = [
+    "com.hicknhacksoftware.macpass", "com.outercorner.secrets",
+  ]
+  /// Makers of credential managers and authenticators. Every app a listed
+  /// maker ships is refused, so a new edition is refused as well.
+  static let credentialVendors: Set<String> = [
+    "com.1password", "com.agilebits", "com.authy", "com.bitwarden", "com.dashlane",
+    "com.keepersecurity", "com.lastpass", "com.markmcguill", "com.nordsec", "in.sinew",
+    "me.proton.pass", "org.keepassxc",
+  ]
+  static let financeCategory = "public.app-category.finance"
+  /// The App Store genre of finance apps. An iPhone or iPad app on the Mac
+  /// records it in its store metadata instead of declaring a category.
+  static let financeStoreGenre = 6015
+  /// Browsers whose pages are read, so that a settings, saved-password,
+  /// extension, or developer-tools page is refused like an application.
+  static let browsers: Set<String> = [
+    "com.apple.safari", "com.apple.safaritechnologypreview", "com.brave.browser",
+    "com.google.chrome", "com.google.chrome.beta", "com.google.chrome.canary",
+    "com.google.chrome.dev", "com.microsoft.edgemac", "com.operasoftware.opera",
+    "com.vivaldi.vivaldi", "company.thebrowser.browser", "org.chromium.chromium",
+    "org.mozilla.firefox",
+  ]
+  private static let webPageSchemes: Set<String> = ["blob", "data", "file", "http", "https"]
+  private static let newTabPages: Set<String> = [
+    "about:blank", "about:home", "about:newtab", "brave://newtab", "chrome://new-tab-page",
+    "chrome://newtab", "edge://newtab", "favorites:", "opera://startpage", "topsites:",
+    "vivaldi://startpage",
+  ]
+
+  static func refuses(_ application: NSRunningApplication) -> Bool {
+    let bundleURL = application.bundleURL
+    return refuses(
+      bundleIdentifier: application.bundleIdentifier,
+      declaredCategory: bundleURL.flatMap(declaredCategory(ofBundleAt:)),
+      storeGenre: bundleURL.flatMap(storeGenre(ofBundleAt:))
+    )
+  }
+
+  static func refuses(
+    bundleIdentifier: String?,
+    declaredCategory: String?,
+    storeGenre: Int?
+  ) -> Bool {
+    if declaredCategory?.lowercased() == financeCategory || storeGenre == financeStoreGenre {
+      return true
+    }
+    guard let identifier = bundleIdentifier?.lowercased() else { return false }
+    return shells.contains(identifier)
+      || systemAndSecurity.contains(identifier)
+      || automation.contains(identifier)
+      || credentialApplications.contains(identifier)
+      || credentialVendors.contains { identifier == $0 || identifier.hasPrefix($0 + ".") }
+  }
+
+  static func declaredCategory(ofBundleAt url: URL) -> String? {
+    Bundle(url: url)?.object(forInfoDictionaryKey: "LSApplicationCategoryType") as? String
+  }
+
+  /// An iPhone or iPad app on the Mac sits in a Wrapper folder beside its
+  /// store metadata, and the running app may report either bundle.
+  static func storeGenre(ofBundleAt bundleURL: URL) -> Int? {
+    let url = bundleURL.resolvingSymlinksInPath()
+    let wrapper = url.deletingLastPathComponent().lastPathComponent == "Wrapper"
+      ? url.deletingLastPathComponent()
+      : url.appendingPathComponent("Wrapper", isDirectory: true)
+    guard let data = try? Data(
+            contentsOf: wrapper.appendingPathComponent("iTunesMetadata.plist")
+          ),
+          let metadata = try? PropertyListSerialization.propertyList(
+            from: data,
+            format: nil
+          ) as? [String: Any]
+    else { return nil }
+    return (metadata["genreId"] as? NSNumber)?.intValue
+  }
+
+  static func readsPages(ofBundleIdentifier bundleIdentifier: String?) -> Bool {
+    bundleIdentifier.map { browsers.contains($0.lowercased()) } ?? false
+  }
+
+  /// Web pages, local files, and a blank or new tab are the only browser
+  /// pages the agent may see or act in.
+  static func refusesPage(_ url: URL) -> Bool {
+    guard let scheme = url.scheme?.lowercased() else { return true }
+    if webPageSchemes.contains(scheme) { return false }
+    var page = url.absoluteString.lowercased()
+    while page.hasSuffix("/") { page.removeLast() }
+    return !newTabPages.contains(page)
+  }
+
+  /// The agent may look at Asael's own window but never act in it, where an
+  /// action could answer the agent's own approval request.
+  static func isTrustedHost(
+    pid: pid_t,
+    bundleIdentifier: String?,
+    trustedHostPID: pid_t,
+    trustedHostBundleIdentifier: String
+  ) -> Bool {
+    pid == trustedHostPID
+      || bundleIdentifier?.lowercased() == trustedHostBundleIdentifier.lowercased()
+  }
+}
+
 private enum ParentVerifier {
   static let parentIdentifier = "app.omniagent.omniagent"
   private static let helperIdentifier = "app.omniagent.omniagent.computer-use-helper"
@@ -651,15 +775,13 @@ private final class ComputerUseExecutor {
   private static let maximumTaskAuthorityPathLength = 64
   private static let taskAuthorityPathBudgetSeconds = 1.5
   private static let maximumTaskAuthorityLabelLength = 1_000
-  private static let restrictedAutomationBundleIdentifiers: Set<String> = [
-    "com.apple.Terminal",
-    "com.apple.systempreferences",
-    "com.apple.SystemSettings",
-    "com.googlecode.iterm2",
-    "dev.warp.Warp-Stable",
-    "net.kovidgoyal.kitty",
-    "org.alacritty",
-    "com.github.wez.wezterm",
+  // A browser page is found within these bounds or the page is not checked.
+  private static let maximumBrowserPageSearchNodes = 300
+  private static let browserPageSearchBudgetSeconds = 0.4
+  private static let browserPageLeafRoles: Set<String> = [
+    "AXButton", "AXCheckBox", "AXImage", "AXLink", "AXMenu", "AXMenuBar", "AXMenuButton",
+    "AXPopUpButton", "AXRadioButton", "AXSlider", "AXStaticText", "AXTextArea", "AXTextField",
+    "AXToolbar",
   ]
   private static let maximumInputBytes = 64 * 1_024
   private static let maximumTextUnits = 4_000
@@ -837,9 +959,9 @@ private final class ComputerUseExecutor {
     guard input.count == 1,
           let bundleId = input["bundleId"] as? String,
           isSafeIdentifier(bundleId),
-          !Self.restrictedAutomationBundleIdentifiers.contains(bundleId),
           let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first,
-          app.activationPolicy == .regular
+          app.activationPolicy == .regular,
+          !refusesTarget(app)
     else { throw HelperFailure.rejected("application_not_allowed") }
     guard app.activate(options: [.activateAllWindows]) else {
       throw HelperFailure.rejected("activation_failed")
@@ -861,7 +983,11 @@ private final class ComputerUseExecutor {
           let bundleIdentifier = SafeBrowserNavigationPolicy.bundleIdentifier(
             for: browser
           ),
-          !Self.restrictedAutomationBundleIdentifiers.contains(bundleIdentifier),
+          !RestrictedApplicationPolicy.refuses(
+            bundleIdentifier: bundleIdentifier,
+            declaredCategory: nil,
+            storeGenre: nil
+          ),
           let rawURL = input["url"] as? String,
           let url = SafeBrowserNavigationPolicy.validatedURL(rawURL),
           let loadWaitSeconds = boundedLoadWaitSeconds(
@@ -971,8 +1097,7 @@ private final class ComputerUseExecutor {
     } else if expectedBundleIdentifier != nil {
       throw HelperFailure.rejected("invalid_input")
     }
-    if let bundleId = app?.bundleIdentifier,
-       Self.restrictedAutomationBundleIdentifiers.contains(bundleId) {
+    if let app, RestrictedApplicationPolicy.refuses(app) {
       throw HelperFailure.rejected("restricted_application_refused")
     }
     snapshotTargetApplication = app
@@ -986,6 +1111,11 @@ private final class ComputerUseExecutor {
     }
     snapshotFocusedElement = applicationElement.flatMap {
       axElementAttribute($0, kAXFocusedUIElementAttribute as String)
+    }
+    if let app, let snapshotFocusedWindow,
+       showsRestrictedPage(app, window: snapshotFocusedWindow) {
+      snapshotTargetApplication = nil
+      throw HelperFailure.rejected("restricted_page_refused")
     }
     snapshotFocusedElementIdentity = snapshotFocusedElement.flatMap(elementIdentity)
     snapshotWindowIdentity = snapshotFocusedWindow.flatMap(elementIdentity)
@@ -1376,8 +1506,7 @@ private final class ComputerUseExecutor {
   private func verifyKeyboardTarget() throws {
     guard AXIsProcessTrusted() else { throw HelperFailure.rejected("accessibility_denied") }
     guard !IsSecureEventInputEnabled() else { throw HelperFailure.rejected("secure_input_refused") }
-    if let bundleId = NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
-       Self.restrictedAutomationBundleIdentifiers.contains(bundleId) {
+    if let app = NSWorkspace.shared.frontmostApplication, refusesTarget(app) {
       throw HelperFailure.rejected("restricted_application_refused")
     }
     let system = AXUIElementCreateSystemWide()
@@ -1969,11 +2098,11 @@ private final class ComputerUseExecutor {
           targetApplication.processIdentifier == expectedPID,
           !targetApplication.isTerminated,
           targetApplication.bundleIdentifier == snapshotFrontmostBundleIdentifier,
-          activeDisplayBounds() == snapshotDisplayBounds,
-          !Self.restrictedAutomationBundleIdentifiers.contains(
-            snapshotFrontmostBundleIdentifier ?? ""
-          )
+          activeDisplayBounds() == snapshotDisplayBounds
     else { throw HelperFailure.rejected("stale_observation") }
+    guard !refusesTarget(targetApplication) else {
+      throw HelperFailure.rejected("restricted_application_refused")
+    }
 
     let frontmost = NSWorkspace.shared.frontmostApplication
     let focusedWindowMatches = currentFocusedWindow(pid: expectedPID).map { currentWindow in
@@ -2004,6 +2133,10 @@ private final class ComputerUseExecutor {
           activeDisplayBounds() == snapshotDisplayBounds,
           observedWindowIsCurrent(pid: expectedPID)
     else { throw HelperFailure.rejected("stale_observation") }
+    if let window = currentFocusedWindow(pid: expectedPID),
+       showsRestrictedPage(targetApplication, window: window) {
+      throw HelperFailure.rejected("restricted_page_refused")
+    }
 
     let application = AXUIElementCreateApplication(expectedPID)
     let refreshedIdentity: SnapshotElementIdentity?
@@ -2029,6 +2162,68 @@ private final class ComputerUseExecutor {
     guard refreshedIdentity == expectedIdentity else {
       throw HelperFailure.rejected("stale_observation")
     }
+  }
+
+  /// Refuses a restricted application and Asael itself as an action target.
+  private func refusesTarget(_ application: NSRunningApplication) -> Bool {
+    RestrictedApplicationPolicy.refuses(application)
+      || RestrictedApplicationPolicy.isTrustedHost(
+        pid: application.processIdentifier,
+        bundleIdentifier: application.bundleIdentifier,
+        trustedHostPID: trustedHostPID,
+        trustedHostBundleIdentifier: ParentVerifier.parentIdentifier
+      )
+  }
+
+  private func showsRestrictedPage(
+    _ application: NSRunningApplication,
+    window: AXUIElement
+  ) -> Bool {
+    RestrictedApplicationPolicy.readsPages(ofBundleIdentifier: application.bundleIdentifier)
+      && browserPageURLs(in: window).contains(where: RestrictedApplicationPolicy.refusesPage)
+  }
+
+  /// Reads the address of each page in a browser window, breadth first and
+  /// within a small bound, fetching an element's role, children, and address
+  /// in one message. Pages inside a page are not searched. The window keeps
+  /// the caller's timeout; each element below it gets a short one of its own.
+  private func browserPageURLs(in window: AXUIElement) -> [URL] {
+    let attributes = [
+      kAXRoleAttribute as CFString,
+      kAXChildrenAttribute as CFString,
+      "AXURL" as CFString,
+    ] as CFArray
+    let deadline = Date().addingTimeInterval(Self.browserPageSearchBudgetSeconds)
+    var queue = [window]
+    var next = 0
+    var urls: [URL] = []
+    while next < queue.count, next < Self.maximumBrowserPageSearchNodes, Date() < deadline {
+      let element = queue[next]
+      if next > 0 {
+        _ = AXUIElementSetMessagingTimeout(element, Self.liveAccessibilityTimeoutSeconds)
+      }
+      next += 1
+      var copiedValues: CFArray?
+      guard AXUIElementCopyMultipleAttributeValues(element, attributes, [], &copiedValues)
+              == .success,
+            let values = copiedValues as? [Any],
+            values.count == 3,
+            let role = values[0] as? String
+      else { continue }
+      if role == "AXWebArea" {
+        if let url = values[2] as? URL {
+          urls.append(url)
+        } else if let address = values[2] as? String, let url = URL(string: address) {
+          urls.append(url)
+        }
+        continue
+      }
+      guard !Self.browserPageLeafRoles.contains(role),
+            let children = values[1] as? [AXUIElement]
+      else { continue }
+      queue.append(contentsOf: children.prefix(80))
+    }
+    return urls
   }
 
   private func restoreObservedTarget(_ application: NSRunningApplication) throws {
