@@ -3,7 +3,9 @@ import 'dart:async';
 import 'package:asael/app/router/app_router.dart';
 import 'package:asael/app/theme/app_theme.dart';
 import 'package:asael/core/platform/local_computer_bridge.dart';
+import 'package:asael/core/storage/secure_session_store.dart';
 import 'package:asael/core/sync/reconnect_coordinator.dart';
+import 'package:asael/features/ambient_voice/ambient_voice_consent.dart';
 import 'package:asael/features/auth/application/session_controller.dart';
 import 'package:asael/features/auth/domain/app_session.dart';
 import 'package:asael/features/agents/agents.dart' hide Json;
@@ -18,6 +20,63 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  testWidgets('Ambient Command asks each signed-in owner for their own '
+      'agreement', (tester) async {
+    late _TestSessionController sessions;
+    final store = SecureSessionStore.withStorage(_MemoryValues());
+    final container = ProviderContainer(
+      overrides: [
+        sessionControllerProvider.overrideWith(() {
+          sessions = _TestSessionController(
+            Completer<AppSession?>()..complete(_ownerA),
+          );
+          return sessions;
+        }),
+        secureSessionStoreProvider.overrideWithValue(store),
+        talkRepositoryProvider.overrideWith(
+          (ref) => _RecordingTalkRepository(),
+        ),
+        reconnectCoordinatorProvider.overrideWithValue(
+          ReconnectCoordinator(() async => const [], const Stream.empty()),
+        ),
+        localComputerRepositoryProvider.overrideWithValue(
+          _UnusedLocalComputerRepository(),
+        ),
+        localComputerNativeHostProvider.overrideWithValue(
+          _UnsupportedLocalComputerHost(),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+    AmbientVoiceConsent? asked() =>
+        tester.widget<TalkView>(find.byType(TalkView)).ambientConsent;
+    AmbientVoiceConsent agreementOf(AppSession owner) =>
+        SecureAmbientVoiceConsent(
+          store,
+          tenantId: owner.tenantId,
+          actorId: owner.actorId,
+        );
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const MaterialApp(
+          home: ProviderBoundTalkRoute(ambientVoice: true),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(asked(), agreementOf(_ownerA));
+
+    sessions.replace(_ownerB);
+    await tester.pump();
+    expect(asked(), agreementOf(_ownerB));
+
+    sessions.replace(null);
+    await tester.pump();
+    expect(asked(), isNull);
+  });
 
   testWidgets(
     'routed Conversation submits through the live owner-scoped controller',
@@ -293,6 +352,26 @@ const _ownerMac = AppSession(
   workspaceName: 'Asael',
   role: 'owner',
 );
+
+class _MemoryValues implements AsaelSecureValueStore {
+  final values = <String, String>{};
+
+  @override
+  Future<void> prepare() async {}
+
+  @override
+  Future<void> migrateLegacyCredentials() async {}
+
+  @override
+  Future<String?> read({required String key}) async => values[key];
+
+  @override
+  Future<void> write({required String key, required String value}) async =>
+      values[key] = value;
+
+  @override
+  Future<void> delete({required String key}) async => values.remove(key);
+}
 
 class _TestSessionController extends SessionController {
   _TestSessionController(this.bootstrap);

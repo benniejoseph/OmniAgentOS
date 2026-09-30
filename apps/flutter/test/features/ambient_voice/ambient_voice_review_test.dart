@@ -1,5 +1,9 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:asael/core/network/api_client.dart';
 import 'package:asael/core/storage/secure_session_store.dart';
+import 'package:asael/features/ambient_voice/ambient_voice_consent.dart';
 import 'package:asael/features/ambient_voice/ambient_voice_view.dart';
 import 'package:asael/features/ambient_voice/realtime_voice_controller.dart';
 import 'package:asael/features/talk/talk.dart';
@@ -15,6 +19,51 @@ class _Sessions extends Fake implements SecureSessionStore {}
 class _Player extends Fake implements AudioPlayer {}
 
 class _Recorder extends Fake implements VoiceDraftRecorder {}
+
+class _Consent implements AmbientVoiceConsent {
+  _Consent({this.agreed = false, this.failSave = false, this.held});
+
+  bool agreed;
+  final bool failSave;
+
+  /// Holds every read and save until it completes.
+  final Completer<void>? held;
+  var accepts = 0;
+
+  @override
+  Future<bool> accepted() async {
+    await held?.future;
+    return agreed;
+  }
+
+  @override
+  Future<void> accept() async {
+    accepts += 1;
+    await held?.future;
+    if (failSave) throw StateError('The keychain is locked.');
+    agreed = true;
+  }
+}
+
+class _Values implements AsaelSecureValueStore {
+  final values = <String, String>{};
+
+  @override
+  Future<void> prepare() async {}
+
+  @override
+  Future<void> migrateLegacyCredentials() async {}
+
+  @override
+  Future<String?> read({required String key}) async => values[key];
+
+  @override
+  Future<void> write({required String key, required String value}) async =>
+      values[key] = value;
+
+  @override
+  Future<void> delete({required String key}) async => values.remove(key);
+}
 
 class _Repository implements TalkRepository {
   final sent = <String>[];
@@ -71,6 +120,10 @@ const _confident = [-.05, -.1];
 const _unsure = [-1.2, -3.0];
 const _request = 'Book the flight to Lisbon';
 final _sendButton = find.widgetWithIcon(IconButton, Icons.arrow_upward_rounded);
+final _microphone = find.widgetWithIcon(IconButton, Icons.mic_rounded);
+const _notice =
+    'OpenAI transcribes your live microphone audio. Asael does not store it. '
+    'Press the microphone to agree and start.';
 
 void main() {
   group('review attestation', () {
@@ -305,6 +358,261 @@ void main() {
       expect(voice.phase, AmbientRealtimeVoicePhase.review);
       expect(voice.confidenceBand, AmbientVoiceConfidenceBand.edited);
       expect(find.byType(Checkbox), findsOneWidget);
+    });
+  });
+
+  group('Ambient Command consent', () {
+    /// Lets the stored agreement load and the text transitions finish.
+    Future<void> settle(WidgetTester tester) async {
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+    }
+
+    Future<List<AmbientRealtimeVoicePhase>> open(
+      WidgetTester tester, {
+      AmbientVoiceConsent? consent,
+      bool withConsent = true,
+    }) async {
+      final voice = _voice();
+      final phases = <AmbientRealtimeVoicePhase>[];
+      voice.addListener(() => phases.add(voice.phase));
+      final talk = TalkController(_Repository());
+      addTearDown(talk.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: TalkView(
+            controller: talk,
+            voiceRecorder: _Recorder(),
+            quickEntry: true,
+            ambientVoice: true,
+            ambientRealtimeFactory: () => voice,
+            ambientConsent: withConsent ? consent ?? _Consent() : null,
+          ),
+        ),
+      );
+      await settle(tester);
+      return phases;
+    }
+
+    Future<void> pressMicrophone(WidgetTester tester) async {
+      tester.widget<IconButton>(_microphone).onPressed!();
+      await settle(tester);
+    }
+
+    String microphoneTooltip(WidgetTester tester) =>
+        tester.widget<IconButton>(_microphone).tooltip!;
+
+    testWidgets('opens without listening and names OpenAI first', (
+      tester,
+    ) async {
+      final phases = await open(tester);
+
+      expect(phases, isEmpty);
+      expect(find.text(_notice), findsOneWidget);
+      expect(microphoneTooltip(tester), 'Agree and start listening');
+    });
+
+    testWidgets('records the agreement on the first press, then starts', (
+      tester,
+    ) async {
+      final consent = _Consent();
+      final phases = await open(tester, consent: consent);
+
+      await pressMicrophone(tester);
+
+      expect(consent.accepts, 1);
+      expect(phases, contains(AmbientRealtimeVoicePhase.requestingPermission));
+    });
+
+    testWidgets('an agreement already recorded skips the notice', (
+      tester,
+    ) async {
+      final consent = _Consent(agreed: true);
+      final phases = await open(tester, consent: consent);
+
+      expect(phases, isEmpty);
+      expect(find.text(_notice), findsNothing);
+      expect(find.text('Say what you want Asael to do.'), findsOneWidget);
+      expect(microphoneTooltip(tester), 'Speak to Asael');
+
+      await pressMicrophone(tester);
+
+      expect(consent.accepts, 0);
+      expect(phases, contains(AmbientRealtimeVoicePhase.requestingPermission));
+    });
+
+    testWidgets('an unsaved agreement keeps the microphone off', (
+      tester,
+    ) async {
+      final consent = _Consent(failSave: true);
+      final phases = await open(tester, consent: consent);
+
+      await pressMicrophone(tester);
+
+      expect(consent.accepts, 1);
+      expect(phases, isEmpty);
+      expect(
+        find.text(
+          'Asael could not save your agreement, so the microphone stayed '
+          'off. Try again.',
+        ),
+        findsOneWidget,
+      );
+
+      await pressMicrophone(tester);
+
+      expect(consent.accepts, 1);
+      expect(find.text(_notice), findsOneWidget);
+
+      await pressMicrophone(tester);
+
+      expect(consent.accepts, 2);
+      expect(phases, isEmpty);
+    });
+
+    testWidgets('without a signed-in owner nothing listens', (tester) async {
+      final phases = await open(tester, withConsent: false);
+
+      expect(find.text(_notice), findsOneWidget);
+
+      await pressMicrophone(tester);
+
+      expect(phases, isEmpty);
+      expect(
+        find.textContaining('could not save your agreement'),
+        findsOneWidget,
+      );
+    });
+
+    /// One mounted Ambient Command view whose owner can change.
+    Future<
+      (
+        List<AmbientRealtimeVoicePhase>,
+        Future<void> Function(AmbientVoiceConsent),
+      )
+    >
+    owned(WidgetTester tester, AmbientVoiceConsent first) async {
+      final voice = _voice();
+      final phases = <AmbientRealtimeVoicePhase>[];
+      voice.addListener(() => phases.add(voice.phase));
+      final talk = TalkController(_Repository());
+      addTearDown(talk.dispose);
+      Future<void> show(AmbientVoiceConsent consent) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: TalkView(
+              controller: talk,
+              voiceRecorder: _Recorder(),
+              ambientVoice: true,
+              ambientRealtimeFactory: () => voice,
+              ambientConsent: consent,
+            ),
+          ),
+        );
+        await settle(tester);
+      }
+
+      await show(first);
+      return (phases, show);
+    }
+
+    testWidgets('another owner is asked again', (tester) async {
+      final second = _Consent();
+      final (phases, show) = await owned(tester, _Consent(agreed: true));
+      expect(find.text(_notice), findsNothing);
+
+      await show(second);
+
+      expect(find.text(_notice), findsOneWidget);
+      await pressMicrophone(tester);
+      expect(second.accepts, 1);
+      expect(phases, contains(AmbientRealtimeVoicePhase.requestingPermission));
+    });
+
+    testWidgets('a late answer for the previous owner is not reused', (
+      tester,
+    ) async {
+      final read = Completer<void>();
+      final (phases, show) = await owned(
+        tester,
+        _Consent(agreed: true, held: read),
+      );
+      await show(_Consent());
+
+      read.complete();
+      await settle(tester);
+
+      expect(find.text(_notice), findsOneWidget);
+      expect(phases, isEmpty);
+    });
+
+    testWidgets('an agreement saved as the owner changed starts nothing', (
+      tester,
+    ) async {
+      final save = Completer<void>();
+      final first = _Consent(held: save);
+      final (phases, show) = await owned(tester, first);
+      await pressMicrophone(tester);
+      expect(first.accepts, 1);
+      await show(_Consent());
+
+      save.complete();
+      await settle(tester);
+
+      expect(phases, isEmpty);
+      expect(find.text(_notice), findsOneWidget);
+    });
+
+    test('one owner keeps one agreement on this device', () async {
+      final values = _Values();
+      final store = SecureSessionStore.withStorage(values);
+      SecureAmbientVoiceConsent consent(
+        SecureSessionStore store,
+        String tenantId,
+        String actorId,
+      ) => SecureAmbientVoiceConsent(
+        store,
+        tenantId: tenantId,
+        actorId: actorId,
+      );
+      final owner = consent(store, 'tenant-a', 'owner-a');
+
+      expect(owner, consent(store, 'tenant-a', 'owner-a'));
+      expect(owner.hashCode, consent(store, 'tenant-a', 'owner-a').hashCode);
+      for (final other in [
+        consent(store, 'tenant-b', 'owner-a'),
+        consent(store, 'tenant-a', 'owner-b'),
+        consent(
+          SecureSessionStore.withStorage(_Values()),
+          'tenant-a',
+          'owner-a',
+        ),
+      ]) {
+        expect(owner, isNot(other));
+      }
+
+      expect(await owner.accepted(), isFalse);
+      await owner.accept();
+      expect(await consent(store, 'tenant-a', 'owner-a').accepted(), isTrue);
+      expect(await consent(store, 'tenant-a', 'owner-b').accepted(), isFalse);
+      expect(values.values.values, [
+        SecureSessionStore.ambientVoiceConsentTerms,
+      ]);
+    });
+
+    test('the macOS host keeps Ambient Command off until it is turned on', () {
+      final host = File('macos/Runner/AppDelegate.swift').readAsStringSync();
+
+      expect(host, contains('private var ambientVoiceAvailable = false\n'));
+      expect(
+        host,
+        contains(
+          '  private func savedAmbientVoiceAvailability() -> Bool {\n'
+          '    UserDefaults.standard.bool(forKey: '
+          'Self.ambientVoiceAvailabilityDefaultsKey)\n'
+          '  }',
+        ),
+      );
     });
   });
 }

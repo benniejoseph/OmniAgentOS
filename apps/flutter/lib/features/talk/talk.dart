@@ -19,6 +19,7 @@ import '../../core/network/api_exception.dart';
 import '../../core/platform/desktop_host_bridge.dart';
 import '../../core/platform/local_computer_bridge.dart';
 import '../../generated/native_contract.g.dart';
+import '../ambient_voice/ambient_voice_consent.dart';
 import '../ambient_voice/ambient_voice_view.dart';
 import '../ambient_voice/realtime_voice_controller.dart';
 import '../computer_use/local_computer.dart';
@@ -3212,6 +3213,7 @@ class TalkView extends StatefulWidget {
     this.controllerResolver,
     this.voiceRecorder,
     this.ambientRealtimeFactory,
+    this.ambientConsent,
     this.quickEntry = false,
     this.ambientVoice = false,
     this.onQuickEntryReady,
@@ -3223,6 +3225,10 @@ class TalkView extends StatefulWidget {
   final TalkController Function()? controllerResolver;
   final VoiceDraftRecorder? voiceRecorder;
   final AmbientRealtimeVoiceController Function()? ambientRealtimeFactory;
+
+  /// The owner's agreement that live microphone audio goes to OpenAI. Ambient
+  /// Command does not listen until it is recorded.
+  final AmbientVoiceConsent? ambientConsent;
   final bool quickEntry;
   final bool ambientVoice;
   final VoidCallback? onQuickEntryReady;
@@ -3238,6 +3244,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   final scroll = ScrollController();
   late final VoiceDraftRecorder recorder;
   AmbientRealtimeVoiceController? realtimeVoice;
+  bool ambientConsentAccepted = false;
   String strategy = 'auto';
   String commandMode = 'orchestrate';
   final commandReferences = <TalkCommandContextReference>[];
@@ -3269,6 +3276,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     if (widget.ambientVoice) {
       realtimeVoice = widget.ambientRealtimeFactory?.call()
         ?..addListener(_handleRealtimeVoiceChanged);
+      if (realtimeVoice != null) unawaited(_loadAmbientConsent());
     }
     input.addListener(_handleComposerChanged);
     WidgetsBinding.instance.addObserver(this);
@@ -3279,7 +3287,6 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         widget.onQuickEntryReady?.call();
-        if (widget.ambientVoice) unawaited(_startAmbientVoice());
       });
     } else {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -3295,6 +3302,10 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   @override
   void didUpdateWidget(covariant TalkView oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (widget.ambientConsent != oldWidget.ambientConsent) {
+      ambientConsentAccepted = false;
+      if (realtimeVoice != null) unawaited(_loadAmbientConsent());
+    }
     if (widget.quickEntry && !oldWidget.quickEntry) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) widget.onQuickEntryReady?.call();
@@ -3498,7 +3509,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       await realtime.start(
         conversationId: widget.controller.threadId,
         mode: commandMode,
-        providerConsent: true,
+        providerConsent: ambientConsentAccepted,
       );
     } catch (error) {
       if (!mounted) return;
@@ -3512,6 +3523,10 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       await toggleVoiceDraft();
       return;
     }
+    if (_ambientConsentPending) {
+      await _acceptAmbientConsent();
+      return;
+    }
     if (realtime.isSpeechPlaying) {
       await realtime.interruptSpeech();
       await _startAmbientVoice();
@@ -3521,6 +3536,51 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       await realtime.stopAndReview();
       return;
     }
+    await _startAmbientVoice();
+  }
+
+  bool get _ambientConsentPending =>
+      realtimeVoice != null && !ambientConsentAccepted;
+
+  Future<void> _loadAmbientConsent() async {
+    final consent = widget.ambientConsent;
+    var accepted = false;
+    try {
+      accepted = await consent?.accepted() ?? false;
+    } catch (_) {
+      // An agreement that cannot be read is asked for again.
+    }
+    if (!mounted || !accepted || widget.ambientConsent != consent) return;
+    setState(() => ambientConsentAccepted = true);
+  }
+
+  /// A press agrees only while the notice naming OpenAI is on screen; any
+  /// other press clears what hides that notice.
+  Future<void> _acceptAmbientConsent() async {
+    if (_ambientVoicePhase != AmbientVoicePhase.asleep) {
+      setState(() {
+        recordingError = null;
+        voiceDraftNotice = null;
+      });
+      widget.controller.clearVoiceError();
+      return;
+    }
+    final consent = widget.ambientConsent;
+    var saved = false;
+    try {
+      await consent?.accept();
+      saved = consent != null;
+    } catch (_) {
+      // Reported below; the microphone stays off.
+    }
+    if (!mounted || widget.ambientConsent != consent) return;
+    if (!saved) {
+      setState(() {
+        recordingError = 'Asael could not save your agreement, so the microphone stayed off. Try again.';
+      });
+      return;
+    }
+    setState(() => ambientConsentAccepted = true);
     await _startAmbientVoice();
   }
 
@@ -4034,6 +4094,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     }
     final status = widget.controller.status;
     return switch (_ambientVoicePhase) {
+      AmbientVoicePhase.asleep when _ambientConsentPending => 'OpenAI transcribes your live microphone audio. Asael does not store it. Press the microphone to agree and start.',
       AmbientVoicePhase.asleep => 'Say what you want Asael to do.',
       AmbientVoicePhase.starting => 'Opening the private voice connection.',
       AmbientVoicePhase.listening => 'Speak naturally.',
@@ -4327,6 +4388,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
         reviewRequired: reviewRequired,
         reviewAttested: review?.reviewAttested ?? false,
         onReviewAttested: reviewRequired ? review?.attestReview : null,
+        consentRequired: _ambientConsentPending,
       ),
     );
   }

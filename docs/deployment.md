@@ -547,6 +547,13 @@ voice nor the native bridge can approve an action or grant local-computer
 authority. Ambient Voice does not expose an editor or full command form;
 Quick Entry remains the separate text-entry surface.
 
+Ambient Command is off until the owner turns it on in Settings → General,
+including for an installation upgraded from a release where it was on. The
+menu, shortcut, and URL open the HUD without listening. The first microphone
+press records, per owner on that device, the agreement that OpenAI transcribes
+the live audio and that Asael does not store it; only then does the HUD ask
+the server for a realtime session.
+
 Vercel deployment `dpl_omUXE7N5pHWhRXZk3AVZnKq8Uide` is promoted to
 `https://asael.bennierichard.com` at exact server revision
 `7c5784f73ef9e9d15e6f7ab22269230b461ffccb`. Focused production checks returned

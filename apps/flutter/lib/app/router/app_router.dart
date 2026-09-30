@@ -9,6 +9,7 @@ import '../../core/network/api_client.dart';
 import '../../core/platform/desktop_host_bridge.dart';
 import '../../core/storage/secure_session_store.dart';
 import '../../core/sync/reconnect_coordinator.dart';
+import '../../features/ambient_voice/ambient_voice_consent.dart';
 import '../../features/ambient_voice/realtime_voice_controller.dart';
 import '../../features/auth/application/session_controller.dart';
 import '../../features/auth/presentation/login_screen.dart';
@@ -135,9 +136,20 @@ class ProviderBoundTalkRoute extends ConsumerWidget {
                 ref.read(talkControllerProvider).adoptConversationThreadId(id),
           )
         : null,
+    ambientConsent: ambientVoice ? _ambientConsent(ref) : null,
     onQuickEntryReady: onQuickEntryReady,
     onExitQuickEntry: onExitQuickEntry,
   );
+
+  static AmbientVoiceConsent? _ambientConsent(WidgetRef ref) {
+    final owner = ref.watch(sessionOwnerKeyProvider);
+    if (owner == null) return null;
+    return SecureAmbientVoiceConsent(
+      ref.read(secureSessionStoreProvider),
+      tenantId: owner.tenantId,
+      actorId: owner.actorId,
+    );
+  }
 }
 
 final appRouterProvider = Provider<GoRouter>((ref) {

@@ -48,6 +48,7 @@ class AmbientVoiceSurface extends StatelessWidget {
     this.reviewRequired = false,
     this.reviewAttested = false,
     this.onReviewAttested,
+    this.consentRequired = false,
   });
 
   final AmbientVoicePhase phase;
@@ -73,6 +74,9 @@ class AmbientVoiceSurface extends StatelessWidget {
   final bool reviewRequired;
   final bool reviewAttested;
   final ValueChanged<bool>? onReviewAttested;
+
+  /// Whether the next microphone press also agrees to the provider notice.
+  final bool consentRequired;
 
   bool get _capturing =>
       phase == AmbientVoicePhase.starting ||
@@ -284,6 +288,7 @@ class AmbientVoiceSurface extends StatelessWidget {
                       ],
                       _PrimaryAction(
                         phase: phase,
+                        consentRequired: consentRequired,
                         useThisMac: useThisMac,
                         color: presentation.color,
                         onMicrophonePressed: onMicrophonePressed,
@@ -826,6 +831,7 @@ class _TargetButton extends StatelessWidget {
 class _PrimaryAction extends StatelessWidget {
   const _PrimaryAction({
     required this.phase,
+    required this.consentRequired,
     required this.useThisMac,
     required this.color,
     required this.onMicrophonePressed,
@@ -835,6 +841,7 @@ class _PrimaryAction extends StatelessWidget {
   });
 
   final AmbientVoicePhase phase;
+  final bool consentRequired;
   final bool useThisMac;
   final Color color;
   final VoidCallback? onMicrophonePressed;
@@ -877,6 +884,8 @@ class _PrimaryAction extends StatelessWidget {
       AmbientVoicePhase.approval => 'Review action',
       AmbientVoicePhase.starting => 'Opening microphone',
       AmbientVoicePhase.transcribing => 'Finishing transcript',
+      AmbientVoicePhase.asleep when consentRequired =>
+        'Agree and start listening',
       _ => 'Speak to Asael',
     };
     return Semantics(

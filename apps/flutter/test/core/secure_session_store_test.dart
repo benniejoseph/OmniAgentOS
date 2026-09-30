@@ -268,6 +268,38 @@ void main() {
     },
   );
 
+  test('an Ambient Command agreement belongs to one owner', () async {
+    final storage = _HeldStorage('');
+    final store = SecureSessionStore.withStorage(storage);
+    Future<bool> agreed(String tenantId, String actorId) =>
+        store.readAmbientVoiceConsent(tenantId: tenantId, actorId: actorId);
+
+    expect(await agreed('tenant-a', 'owner@example.test'), isFalse);
+    await store.writeAmbientVoiceConsent(
+      tenantId: 'tenant-a',
+      actorId: 'owner@example.test',
+    );
+
+    expect(await agreed('tenant-a', 'owner@example.test'), isTrue);
+    expect(await agreed('tenant-b', 'owner@example.test'), isFalse);
+    expect(await agreed('tenant-a', 'other@example.test'), isFalse);
+    expect(await agreed('tenant-', 'aowner@example.test'), isFalse);
+    final entry = storage.values.entries.single;
+    expect(
+      entry.key,
+      startsWith(SecureSessionStore.ambientVoiceConsentKeyPrefix),
+    );
+    expect(entry.key, isNot(contains('owner@example.test')));
+    expect(entry.value, SecureSessionStore.ambientVoiceConsentTerms);
+
+    storage.values[entry.key] = 'openai:earlier_terms';
+    expect(await agreed('tenant-a', 'owner@example.test'), isFalse);
+    await expectLater(
+      store.writeAmbientVoiceConsent(tenantId: ' ', actorId: 'owner'),
+      throwsArgumentError,
+    );
+  });
+
   test('a lock while a refreshed pair is stored keeps the pair', () async {
     final storage = _HeldStorage(_tokenKey);
     final store = SecureSessionStore.withStorage(storage);

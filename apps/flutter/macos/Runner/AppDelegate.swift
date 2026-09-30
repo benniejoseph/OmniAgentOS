@@ -2143,7 +2143,7 @@ private final class DesktopHostController: NSObject {
   private var shortcutRegistered = false
   private var pendingRoute: Route?
   private var pendingAmbientVoiceSource: AmbientVoiceRequestSource?
-  private var ambientVoiceAvailable = true
+  private var ambientVoiceAvailable = false
   private var ambientVoiceState = AmbientVoiceState.asleep
   private var isDartReady = false
   private var isNotificationHandlerReady = false
@@ -2482,12 +2482,9 @@ private final class DesktopHostController: NSObject {
     }
   }
 
+  /// Ambient Command stays off until its owner turns it on in Settings.
   private func savedAmbientVoiceAvailability() -> Bool {
-    let defaults = UserDefaults.standard
-    guard defaults.object(forKey: Self.ambientVoiceAvailabilityDefaultsKey) != nil else {
-      return true
-    }
-    return defaults.bool(forKey: Self.ambientVoiceAvailabilityDefaultsKey)
+    UserDefaults.standard.bool(forKey: Self.ambientVoiceAvailabilityDefaultsKey)
   }
 
   private func setAmbientVoiceAvailability(_ available: Bool) {

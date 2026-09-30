@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:math';
 
+import 'package:cryptography/cryptography.dart' show Sha256;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -50,6 +51,12 @@ class SecureSessionStore {
       'asael.pending_push_acknowledgement_v1';
   static const pendingPushReceiptRecordKeyPrefix =
       'asael.pending_push_receipt_v1.';
+  static const ambientVoiceConsentKeyPrefix = 'asael.ambient_voice_consent_v1.';
+
+  /// What an owner agrees to before Ambient Command listens: OpenAI processes
+  /// the live microphone audio, and Asael does not store it. Different terms
+  /// need a new agreement.
+  static const ambientVoiceConsentTerms = 'openai:audio_not_stored_by_asael';
   static const _legacyTokenKey = 'omniagent.session_token';
   final AsaelSecureValueStore _storage;
   bool _biometricReleaseUnlocked = false;
@@ -274,6 +281,36 @@ class SecureSessionStore {
       throw ArgumentError.value(value, 'value', 'Unknown push preview policy.');
     }
     await _write(_pushPreviewPolicyKey, value);
+  }
+
+  /// Whether this owner agreed to [ambientVoiceConsentTerms] on this device.
+  Future<bool> readAmbientVoiceConsent({
+    required String tenantId,
+    required String actorId,
+  }) async =>
+      await _read(await _ambientVoiceConsentKey(tenantId, actorId)) ==
+      ambientVoiceConsentTerms;
+
+  Future<void> writeAmbientVoiceConsent({
+    required String tenantId,
+    required String actorId,
+  }) async => _write(
+    await _ambientVoiceConsentKey(tenantId, actorId),
+    ambientVoiceConsentTerms,
+  );
+
+  Future<String> _ambientVoiceConsentKey(
+    String tenantId,
+    String actorId,
+  ) async {
+    if (tenantId.trim().isEmpty || actorId.trim().isEmpty) {
+      throw ArgumentError('An Ambient Command agreement needs its owner.');
+    }
+    final digest = await Sha256().hash(
+      utf8.encode(jsonEncode([tenantId, actorId])),
+    );
+    return '$ambientVoiceConsentKeyPrefix'
+        '${base64UrlEncode(digest.bytes).replaceAll('=', '')}';
   }
 
   Future<String?> readPendingPushAcknowledgement() =>

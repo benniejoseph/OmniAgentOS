@@ -374,7 +374,7 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
                                               ),
                                             ),
                                             Text(
-                                              'Open a compact voice window from anywhere. Live audio goes only to your configured transcription provider and is not stored by Asael.',
+                                              'Open a compact voice window from anywhere. It listens only after you press the microphone. OpenAI transcribes the live audio, and Asael does not store it.',
                                             ),
                                           ],
                                         ),
@@ -394,7 +394,7 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
                                   ),
                                   const SizedBox(height: 8),
                                   Text(
-                                    'You can also create a macOS Vocal Shortcut that opens asael://ambient-voice.',
+                                    'You can also create a macOS Vocal Shortcut that opens asael://ambient-voice. The window opens without listening.',
                                     style: Theme.of(context)
                                         .textTheme
                                         .bodySmall,
@@ -834,7 +834,7 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
                           ),
                           SizedBox(height: 2),
                           Text(
-                            'Talk to Asael from a compact window. Live audio is not stored by Asael, and a voice command waits for your approval before any action beyond reading, even with “Use this Mac”.',
+                            'Talk to Asael from a compact window. It listens only after you press the microphone. OpenAI transcribes the live audio, and Asael does not store it. A voice command waits for your approval before any action beyond reading, even with “Use this Mac”.',
                           ),
                         ],
                       ),
@@ -853,7 +853,7 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
                 const Align(
                   alignment: Alignment.centerLeft,
                   child: Text(
-                    'Optional hands-free entry: create a macOS Vocal Shortcut that opens asael://ambient-voice.',
+                    'Optional entry: create a macOS Vocal Shortcut that opens asael://ambient-voice. The window opens without listening.',
                   ),
                 ),
                 const Divider(height: 28),
