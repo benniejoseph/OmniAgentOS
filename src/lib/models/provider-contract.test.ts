@@ -343,9 +343,12 @@ const WIRE: Record<ContractProvider, Wire> = {
     toolNames: (body) => (body.toolConfig?.tools || [])
       .map((tool) => String(tool.toolSpec?.name)),
     // Converse has no tool choice that forbids a call, so the adapter asks
-    // for a text answer in the last user message.
+    // for a text answer in the last user message. A cache point after it is
+    // not content the model reads.
     noCallRequested: (body) => {
-      const last = items(body.messages?.at(-1)?.content).at(-1);
+      const last = items(body.messages?.at(-1)?.content)
+        .filter((block) => !("cachePoint" in block))
+        .at(-1);
       return typeof last?.text === "string" &&
         /without calling a tool/i.test(last.text);
     },

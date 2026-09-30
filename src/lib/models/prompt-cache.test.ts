@@ -62,5 +62,20 @@ describe("provider prompt caching", () => {
       "anthropic.claude-3-5-sonnet-20240620-v1:0",
     )).toBe(false);
     expect(supportsBedrockPromptCache("cohere.command-r-v1:0")).toBe(false);
+    for (const model of [
+      "anthropic.claude-3-5-sonnet-20241022-v2:0",
+      "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+      "global.anthropic.claude-opus-5-5-v1:0",
+      "us.anthropic.claude-sonnet-5-v1:0",
+      "global.anthropic.claude-fable-5-1-v1:0",
+      "global.anthropic.claude-mythos-5-1-v1:0",
+      "arn:aws:bedrock:us-east-1::foundation-model/" +
+        "anthropic.claude-haiku-4-5-20251001-v1:0",
+    ]) {
+      expect(supportsBedrockPromptCache(model), model).toBe(true);
+    }
+    expect(supportsBedrockPromptCache(
+      "anthropic.claude-3-haiku-20240307-v1:0",
+    )).toBe(false);
   });
 });

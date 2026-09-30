@@ -8,6 +8,9 @@ import type {
 } from "@/lib/models/types";
 import { getModelProviderResponseReceipt } from "@/lib/models/types";
 
+/** The cache point a cache-capable model gets after the last user message. */
+const CACHE_POINT = { cachePoint: { type: "default" } };
+
 describe("Amazon Bedrock prompt caching", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -92,6 +95,71 @@ describe("Amazon Bedrock prompt caching", () => {
     // Nova bills a cache write as input and a cache read at its cached price.
     expect(result.estimatedCostUsd).toBe(0.000068);
     expect(result.continuation.provider).toBe("aws_bedrock");
+    expect(JSON.stringify(result.continuation.state)).not.toContain(
+      "cachePoint",
+    );
+  });
+
+  it.each([
+    ["global.anthropic.claude-opus-5-5-v1:0", true],
+    ["anthropic.claude-3-haiku-20240307-v1:0", false],
+    ["cohere.command-r-plus-v1:0", false],
+  ])("marks what %s can cache and keeps it out of the continuation", async (
+    model,
+    cached,
+  ) => {
+    const fetchImplementation = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({
+        output: {
+          message: { role: "assistant", content: [{ text: "Done." }] },
+        },
+        stopReason: "end_turn",
+        usage: { inputTokens: 3, outputTokens: 5, totalTokens: 8 },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    ));
+    const adapter = createBedrockModelAdapter({
+      fetchImplementation,
+      now: () => new Date("2026-09-07T10:00:00.000Z"),
+    });
+    const target: ModelTarget = {
+      provider: "aws_bedrock",
+      model,
+      tier: "fast",
+      features: ["text", "tools"],
+    };
+    const request = bindModelRuntime<ModelToolTurnRequest>({
+      input: "Continue the task.",
+      instructions: "Use governed tools and answer concisely.",
+      preferredProvider: "aws_bedrock",
+      conversation: [{
+        type: "message",
+        role: "user",
+        content: "Continue the task.",
+      }],
+      tools: [],
+    }, {
+      targets: [target],
+      credentials: {
+        aws_bedrock: {
+          kind: "aws_bedrock",
+          accessKeyId: "AKIATESTACCESSKEY",
+          secretAccessKey: "bedrock-test-secret-access-key-123456",
+          region: "us-east-1",
+        },
+      },
+    });
+
+    const result = await adapter.generateToolTurn!(request, target);
+    const body = JSON.parse(String(fetchImplementation.mock.calls[0]?.[1]?.body));
+
+    const system = [{ text: "Use governed tools and answer concisely." }];
+    const content = [{ text: "Continue the task." }];
+    expect(body.system).toEqual(cached ? [...system, CACHE_POINT] : system);
+    expect(body.messages).toEqual([{
+      role: "user",
+      content: cached ? [...content, CACHE_POINT] : content,
+    }]);
     expect(JSON.stringify(result.continuation.state)).not.toContain(
       "cachePoint",
     );
@@ -307,7 +375,7 @@ describe("Amazon Bedrock tool results", () => {
           content: [{ text: "One hotel." }],
           status: "success",
         },
-      }],
+      }, CACHE_POINT],
     });
 
     // A turn that ended in text has nothing to answer.
@@ -417,7 +485,7 @@ describe("Amazon Bedrock turns that ask for no tool call", () => {
     });
     expect(body.messages.at(-1)).toEqual({
       role: "user",
-      content: [flightResult, textAnswerRequest],
+      content: [flightResult, textAnswerRequest, CACHE_POINT],
     });
     // Only the request asks: the saved turn holds the results alone.
     expect(result.continuation.state.at(-2)).toEqual({
@@ -435,7 +503,7 @@ describe("Amazon Bedrock turns that ask for no tool call", () => {
 
     expect(sent().messages).toEqual([{
       role: "user",
-      content: [...prompt.content, textAnswerRequest],
+      content: [...prompt.content, textAnswerRequest, CACHE_POINT],
     }]);
     expect(result.continuation.state[0]).toEqual(prompt);
   });
@@ -452,7 +520,7 @@ describe("Amazon Bedrock turns that ask for no tool call", () => {
 
     expect(sent().messages).toEqual([
       ...state,
-      { role: "user", content: [textAnswerRequest] },
+      { role: "user", content: [textAnswerRequest, CACHE_POINT] },
     ]);
   });
 
@@ -465,7 +533,9 @@ describe("Amazon Bedrock turns that ask for no tool call", () => {
     await turn({ tools, ...settings });
 
     const body = sent();
-    expect(body.messages).toEqual([prompt]);
+    expect(body.messages).toEqual([
+      { ...prompt, content: [...prompt.content, CACHE_POINT] },
+    ]);
     expect("toolConfig" in body).toBe(tools.length > 0);
   });
 });

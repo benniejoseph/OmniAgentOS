@@ -245,15 +245,17 @@ async function callBedrockConverse(input: {
   const credentials = resolveCredentials(input.request);
   const modelId = normalizeModelId(input.target.model);
   const url = bedrockConverseUrl(credentials.region, modelId);
+  const cached = supportsBedrockPromptCache(input.target.model);
   const payload = {
     ...input.payload,
+    ...(cached
+      ? { messages: withMessageCachePoint(input.payload.messages) }
+      : {}),
     ...(input.request.instructions
       ? {
           system: [
             { text: input.request.instructions },
-            ...(supportsBedrockPromptCache(input.target.model)
-              ? [{ cachePoint: { type: "default" } }]
-              : []),
+            ...(cached ? [{ cachePoint: { type: "default" } }] : []),
           ],
         }
       : {}),
@@ -813,6 +815,22 @@ function bedrockToolMessages(
 
 const TEXT_ANSWER_REQUEST =
   "Answer now in text, without calling a tool, from the information you already have.";
+
+/**
+ * A cache point after the last user message lets the loop's next turn, which
+ * repeats every message so far, read them from the cache. Only the copy sent
+ * gets it, so no continuation stores it.
+ */
+function withMessageCachePoint(messages: unknown) {
+  const last = Array.isArray(messages)
+    ? messages.at(-1) as BedrockMessage | undefined
+    : undefined;
+  if (!Array.isArray(messages) || last?.role !== "user") return messages;
+  return [
+    ...messages.slice(0, -1),
+    { ...last, content: [...last.content, { cachePoint: { type: "default" } }] },
+  ];
+}
 
 /** The messages with a request for a text answer at the end of the last user turn. */
 function withTextAnswerRequest(messages: BedrockMessage[]): BedrockMessage[] {

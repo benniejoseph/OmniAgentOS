@@ -1,4 +1,5 @@
 import { createHmac } from "node:crypto";
+import { claudeModelInBedrockId } from "@/lib/models/anthropic-capabilities";
 import type { AiUsageScope } from "@/lib/usage/types";
 
 const PROMPT_CACHE_KEY_PREFIX = "asael-pc-v1";
@@ -25,11 +26,15 @@ export function promptCacheKeyForScope(
   return `${PROMPT_CACHE_KEY_PREFIX}-${digest}`;
 }
 
+// Claude models documented to take Converse cache points: Claude 3.5 Sonnet
+// v2, Claude 3.7 Sonnet, and every family from Claude 4 on, Claude 5 too.
+const BEDROCK_CACHE_CLAUDE_MODELS =
+  /^claude-(?:3-5-sonnet-20241022|3-7-sonnet|(?:opus|sonnet|haiku|fable|mythos)-[4-9])/;
+
 /** Only add Converse cache points for model families documented to accept them. */
 export function supportsBedrockPromptCache(model: string) {
   const normalized = model.trim().toLowerCase();
+  const claude = claudeModelInBedrockId(normalized);
   return normalized.includes("amazon.nova-") ||
-    /anthropic\.claude-(?:3-5-sonnet-20241022-v2|3-7-sonnet|(?:opus|sonnet|haiku)-4)/.test(
-      normalized,
-    );
+    (claude !== undefined && BEDROCK_CACHE_CLAUDE_MODELS.test(claude));
 }
