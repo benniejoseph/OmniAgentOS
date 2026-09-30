@@ -6,6 +6,7 @@ import type {
   ModelToolResult,
   ModelUsage,
 } from "@/lib/models/types";
+import { modelCallSignal } from "@/lib/models/call-deadline";
 import { attachModelProviderResponseReceipt } from "@/lib/models/types";
 import { estimateModelCostUsd } from "@/lib/models/pricing";
 import { recordAiUsageSafely } from "@/lib/usage/ledger";
@@ -103,6 +104,7 @@ export async function generateGeminiText(input: {
   const model = input.model.trim();
   if (!model) throw new Error("The Gemini model route is invalid.");
   const startedAt = Date.now();
+  const signal = modelCallSignal(input.abortSignal);
   const response = await fetch(INTERACTIONS_URL, {
     method: "POST",
     headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
@@ -113,9 +115,10 @@ export async function generateGeminiText(input: {
       generation_config: { max_output_tokens: geminiMaxOutputTokens(input.maxOutputTokens) },
       store: false,
     }),
-    signal: input.abortSignal,
+    signal,
   });
   const body = await readInteractionResponse(response);
+  signal.throwIfAborted();
   const unfinished = unfinishedInteractionError(body);
   if (unfinished) throw geminiResponseFailure(unfinished, body, model, startedAt);
   const text = interactionContents(body).filter((item) => item.type === "text").map((item) => item.text || "").join("").trim();
@@ -199,6 +202,7 @@ export async function generateGeminiToolTurn(input: {
   }
 
   const startedAt = Date.now();
+  const signal = modelCallSignal(input.abortSignal);
   const response = await fetch(INTERACTIONS_URL, {
     method: "POST",
     headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
@@ -220,9 +224,10 @@ export async function generateGeminiToolTurn(input: {
       },
       store: false,
     }),
-    signal: input.abortSignal,
+    signal,
   });
   const body = await readInteractionResponse(response);
+  signal.throwIfAborted();
   const unfinished = unfinishedInteractionError(body);
   if (unfinished) throw geminiResponseFailure(unfinished, body, model, startedAt);
   const steps = Array.isArray(body.steps) ? body.steps : [];
@@ -786,8 +791,9 @@ async function readJsonResponse(response: Response) {
       String(
         nested?.message || body.message || `Google API returned ${response.status}.`,
       ).slice(0, 1_000),
-    ) as Error & { status: number; reason?: string };
+    ) as Error & { status: number; reason?: string; headers: Headers };
     error.status = response.status;
+    error.headers = response.headers;
     const reason = googleErrorReason(nested?.details);
     if (reason) error.reason = reason;
     throw error;

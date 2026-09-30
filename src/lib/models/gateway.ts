@@ -25,6 +25,10 @@ import {
 import { sanitizeModelComputerObservation } from "@/lib/models/computer-observation";
 
 const MAX_TARGET_ATTEMPTS = 4;
+/** The most a call waits before it tries a provider again, whatever it asked. */
+const MAX_RETRY_WAIT_MS = 8_000;
+/** The longest first wait before trying a provider again; doubles each try. */
+const RETRY_WAIT_BASE_MS = 250;
 const MAX_TOOL_DEFINITIONS = 32;
 const MAX_TOOL_DESCRIPTION_CHARS = 1_000;
 const MAX_TOOL_SCHEMA_BYTES = 16 * 1024;
@@ -315,7 +319,9 @@ async function executeGateway<
       if (
         !failure.retryable ||
         index === candidates.length - 1 ||
-        !(await retryPermitted(request))
+        !(await retryPermitted(request)) ||
+        (candidates[index + 1].adapter.id === candidate.adapter.id &&
+          !(await waitedToRetry(request.abortSignal, failure, index)))
       ) {
         const totalUsage = sumAttemptUsage(attempts);
         const estimatedCostUsd = sumKnownAttemptCost(attempts);
@@ -371,6 +377,33 @@ async function retryPermitted(request: ModelTextRequest) {
     // A retry the caller cannot account for is not made.
     return false;
   }
+}
+
+/**
+ * Waits before a call tries the provider that just failed again: as long as
+ * the provider asked, or else a jittered wait that doubles with each try,
+ * and never past the cap. False when the caller aborts first.
+ */
+async function waitedToRetry(
+  signal: AbortSignal | undefined,
+  failure: ModelProviderError,
+  retry: number,
+) {
+  if (signal?.aborted) return false;
+  const waitMs = Math.min(
+    failure.retryAfterMs ?? Math.random() * RETRY_WAIT_BASE_MS * 2 ** retry,
+    MAX_RETRY_WAIT_MS,
+  );
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(done, waitMs);
+    signal?.addEventListener("abort", done, { once: true });
+    function done() {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    }
+  });
+  return !signal?.aborted;
 }
 
 function sumAttemptUsage(attempts: readonly ModelAttemptReceipt[]) {

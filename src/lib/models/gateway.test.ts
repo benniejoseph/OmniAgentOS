@@ -425,6 +425,151 @@ describe("model gateway", () => {
   });
 });
 
+describe("the wait before a model call tries again", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    openAI.configured.mockReturnValue(true);
+    openAI.targets.mockReturnValue([
+      target("openai", "openai-primary", ["text"]),
+      target("openai", "openai-backup", ["text"]),
+      target("openai", "openai-last", ["text"]),
+    ]);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  const busy = (retryAfterMs?: number) => Object.assign(new Error("busy"), {
+    provider: "openai",
+    kind: "overloaded",
+    retryable: true,
+    ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+  });
+
+  /** Starts a call and records how it settles, so time can move meanwhile. */
+  function start(request: Partial<Parameters<typeof generateModelText>[0]> = {}) {
+    const call: { settled: boolean; value?: unknown; error?: unknown } = {
+      settled: false,
+    };
+    generateModelText({
+      input: "private context",
+      preferredProvider: "openai",
+      ...request,
+    }).then(
+      (value) => Object.assign(call, { settled: true, value }),
+      (error: unknown) => Object.assign(call, { settled: true, error }),
+    );
+    return call;
+  }
+
+  const calls = () => openAI.generateText.mock.calls.length;
+
+  it("waits a jittered backoff that doubles before each try", async () => {
+    openAI.generateText
+      .mockRejectedValueOnce(busy())
+      .mockRejectedValueOnce(busy())
+      .mockResolvedValueOnce(result("openai", "openai-last"));
+
+    const call = start();
+    await vi.advanceTimersByTimeAsync(124);
+    expect(calls()).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(calls()).toBe(2);
+    await vi.advanceTimersByTimeAsync(249);
+    expect(calls()).toBe(2);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(calls()).toBe(3);
+    expect(call.value).toMatchObject({ model: "openai-last" });
+  });
+
+  it.each([
+    ["as long as the provider asked", 3_000, 3_000],
+    ["no longer than the cap", 60_000, 8_000],
+    ["not at all when the provider asked for none", 0, 0],
+  ])("waits %s", async (_, retryAfterMs, waitMs) => {
+    openAI.generateText
+      .mockRejectedValueOnce(busy(retryAfterMs))
+      .mockResolvedValueOnce(result("openai", "openai-backup"));
+
+    const call = start();
+    if (waitMs) {
+      await vi.advanceTimersByTimeAsync(waitMs - 1);
+      expect(calls()).toBe(1);
+    }
+    await vi.advanceTimersByTimeAsync(waitMs ? 1 : 0);
+
+    expect(calls()).toBe(2);
+    expect(call.value).toMatchObject({ model: "openai-backup" });
+  });
+
+  it("tries another provider without waiting", async () => {
+    process.env.OMNIAGENT_MODEL_PROVIDER_ORDER = "openai,google";
+    openAI.targets.mockReturnValue([target("openai", "openai-primary", ["text"])]);
+    google.configured.mockReturnValue(true);
+    openAI.generateText.mockRejectedValueOnce(busy(3_000));
+    google.generateText.mockResolvedValueOnce(result("google"));
+
+    const call = start({
+      preferredProvider: undefined,
+      allowCrossProviderFallback: true,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(call.value).toMatchObject({ provider: "google" });
+  });
+
+  it("stops waiting and lets go of the signal when the caller aborts", async () => {
+    const caller = new AbortController();
+    openAI.generateText.mockRejectedValueOnce(busy(3_000));
+
+    const call = start({ abortSignal: caller.signal });
+    await vi.advanceTimersByTimeAsync(1_000);
+    caller.abort();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(call.error).toMatchObject({ message: "busy", retryable: true });
+    expect(calls()).toBe(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("does not wait once the caller has aborted", async () => {
+    const caller = new AbortController();
+    openAI.generateText.mockRejectedValueOnce(busy(3_000));
+
+    const call = start({
+      abortSignal: caller.signal,
+      beforeRetry: async () => {
+        caller.abort();
+        return true;
+      },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(call.error).toMatchObject({ message: "busy" });
+    expect(calls()).toBe(1);
+  });
+
+  it("lets go of the caller's signal once it has waited", async () => {
+    const caller = new AbortController();
+    const added = vi.spyOn(caller.signal, "addEventListener");
+    const removed = vi.spyOn(caller.signal, "removeEventListener");
+    openAI.generateText
+      .mockRejectedValueOnce(busy(1_000))
+      .mockResolvedValueOnce(result("openai", "openai-backup"));
+
+    const call = start({ abortSignal: caller.signal });
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(call.value).toMatchObject({ model: "openai-backup" });
+    expect(added).toHaveBeenCalledTimes(1);
+    expect(removed.mock.calls).toEqual([["abort", added.mock.calls[0][1]]]);
+  });
+});
+
 function adapter(id: "openai" | "google" | "anthropic", mock: Record<string, ReturnType<typeof vi.fn>>, features: string[]) {
   return {
     id,

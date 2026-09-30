@@ -631,7 +631,7 @@ describe("Anthropic replies that are not used", () => {
 
     await expect(toolTurn()).rejects.toMatchObject({
       provider: "anthropic",
-      kind: "invalid_request",
+      kind: "context_length",
       retryable: false,
       message:
         "Claude reached the end of its context window. Narrow the request or split it into smaller steps.",
@@ -897,6 +897,115 @@ function toolAnswer(usage?: Record<string, number>) {
 function textAnswer() {
   return answer([{ type: "text", text: "Lisbon suits a spring trip." }], "end_turn");
 }
+
+describe("an Anthropic call's deadline", () => {
+  afterEach(() => {
+    delete process.env.ANTHROPIC_API_KEY;
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  const timedOut = new DOMException(
+    "The operation was aborted due to timeout",
+    "TimeoutError",
+  );
+
+  /** Stands in for the call's deadline, so a test ends it when it likes. */
+  function stubDeadline() {
+    const deadline = new AbortController();
+    const timeout = vi.spyOn(AbortSignal, "timeout")
+      .mockReturnValue(deadline.signal);
+    return { timeout, expire: () => deadline.abort(timedOut) };
+  }
+
+  /** A fetch that never answers and fails only once its signal aborts. */
+  function stubSilentProvider() {
+    process.env.ANTHROPIC_API_KEY = "test-key";
+    vi.stubGlobal("fetch", vi.fn((_url: string, init: RequestInit) =>
+      new Promise((_, reject) => {
+        const signal = init.signal!;
+        if (signal.aborted) reject(signal.reason);
+        signal.addEventListener("abort", () => reject(signal.reason), {
+          once: true,
+        });
+      })));
+  }
+
+  const failureOf = (call: Promise<unknown>) => call.then(
+    () => undefined,
+    (error: unknown) => anthropicModelAdapter.classifyError(error),
+  );
+
+  it("ends a call that passes its deadline", async () => {
+    const { timeout, expire } = stubDeadline();
+    stubSilentProvider();
+
+    // The caller's own signal stays live, so only the deadline ends the call.
+    const call = anthropicModelAdapter.generateText(
+      { input: "Summarize the trip.", abortSignal: new AbortController().signal },
+      target,
+    );
+    expire();
+
+    await expect(failureOf(call)).resolves.toMatchObject({
+      provider: "anthropic",
+      kind: "timeout",
+      retryable: true,
+      message: "The model provider did not answer before the call deadline.",
+    });
+    expect(timeout).toHaveBeenCalledWith(300_000);
+  });
+
+  it("still ends when its caller aborts", async () => {
+    stubDeadline();
+    stubSilentProvider();
+    const caller = new AbortController();
+
+    const call = anthropicModelAdapter.generateText(
+      { input: "Summarize the trip.", abortSignal: caller.signal },
+      target,
+    );
+    caller.abort();
+
+    await expect(failureOf(call)).resolves.toMatchObject({
+      kind: "abort",
+      retryable: false,
+    });
+  });
+
+  it("fails a body the deadline cut off instead of reading it as empty", async () => {
+    const { expire } = stubDeadline();
+    const cutOff = Object.assign(new Response("{}", { status: 200 }), {
+      json: async () => {
+        expire();
+        throw timedOut;
+      },
+    });
+    stubAnswers(cutOff);
+
+    await expect(failureOf(anthropicModelAdapter.generateText(
+      { input: "Summarize the trip." },
+      target,
+    ))).resolves.toMatchObject({ kind: "timeout", retryable: true });
+  });
+
+  it("keeps the wait a rate limit asks for", async () => {
+    stubAnswers(new Response(
+      JSON.stringify({ error: { message: "Rate limited." } }),
+      { status: 429, headers: { "retry-after": "7" } },
+    ));
+
+    await expect(failureOf(anthropicModelAdapter.generateText(
+      { input: "Summarize the trip." },
+      target,
+    ))).resolves.toMatchObject({
+      kind: "rate_limit",
+      retryable: true,
+      retryAfterMs: 7_000,
+      message: "Rate limited.",
+    });
+  });
+});
 
 function stubAnswers(...responses: Response[]) {
   process.env.ANTHROPIC_API_KEY = "test-key";

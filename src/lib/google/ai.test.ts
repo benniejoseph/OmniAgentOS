@@ -699,3 +699,114 @@ describe("Gemini tool choice on tool turns", () => {
     expect(sent().generation_config.tool_choice).toBe("none");
   });
 });
+
+describe("a Gemini call's deadline", () => {
+  afterEach(() => {
+    delete process.env.GEMINI_API_KEY;
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  const timedOut = new DOMException(
+    "The operation was aborted due to timeout",
+    "TimeoutError",
+  );
+  const calls = [
+    ["text", (abortSignal?: AbortSignal) => generateGeminiText({
+      prompt: "Summarize this",
+      model: "gemini-test",
+      abortSignal,
+    })],
+    ["tool turn", (abortSignal?: AbortSignal) => generateGeminiToolTurn({
+      prompt: "Find flights",
+      model: "gemini-test",
+      tools: [],
+      abortSignal,
+    })],
+  ] as const;
+
+  /** Stands in for the call's deadline, so a test ends it when it likes. */
+  function stubDeadline() {
+    const deadline = new AbortController();
+    const timeout = vi.spyOn(AbortSignal, "timeout")
+      .mockReturnValue(deadline.signal);
+    return { timeout, expire: () => deadline.abort(timedOut) };
+  }
+
+  function stubFetch(answer: (init: RequestInit) => Promise<Response>) {
+    process.env.GEMINI_API_KEY = "test-key";
+    vi.stubGlobal("fetch", vi.fn((_url: string, init: RequestInit) => answer(init)));
+  }
+
+  /** A provider that never answers and fails only once the signal aborts. */
+  const silent = (init: RequestInit) => new Promise<Response>((_, reject) => {
+    const signal = init.signal!;
+    if (signal.aborted) reject(signal.reason);
+    signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+  });
+
+  const failureOf = (call: Promise<unknown>) => call.then(
+    () => undefined,
+    (error: unknown) => googleModelAdapter.classifyError(error),
+  );
+
+  it.each(calls)("ends a %s that passes its deadline", async (_, call) => {
+    const { timeout, expire } = stubDeadline();
+    stubFetch(silent);
+
+    // The caller's own signal stays live, so only the deadline ends the call.
+    const pending = call(new AbortController().signal);
+    expire();
+
+    await expect(failureOf(pending)).resolves.toMatchObject({
+      provider: "google",
+      kind: "timeout",
+      retryable: true,
+      message: "The model provider did not answer before the call deadline.",
+    });
+    expect(timeout).toHaveBeenCalledWith(300_000);
+  });
+
+  it.each(calls)("still ends a %s when its caller aborts", async (_, call) => {
+    stubDeadline();
+    stubFetch(silent);
+    const caller = new AbortController();
+
+    const pending = call(caller.signal);
+    caller.abort();
+
+    await expect(failureOf(pending)).resolves.toMatchObject({
+      kind: "abort",
+      retryable: false,
+    });
+  });
+
+  it.each(calls)("fails a %s body the deadline cut off", async (_, call) => {
+    const { expire } = stubDeadline();
+    stubFetch(async () => Object.assign(new Response("{}", { status: 200 }), {
+      json: async () => {
+        expire();
+        throw timedOut;
+      },
+    }));
+
+    await expect(failureOf(call())).resolves.toMatchObject({
+      kind: "timeout",
+      retryable: true,
+    });
+  });
+
+  it.each(calls)("keeps the wait a rate-limited %s asks for", async (_, call) => {
+    stubFetch(async () => new Response(
+      JSON.stringify({ error: { message: "Resource exhausted." } }),
+      { status: 429, headers: { "retry-after": "5" } },
+    ));
+
+    await expect(failureOf(call())).resolves.toMatchObject({
+      kind: "rate_limit",
+      retryable: true,
+      retryAfterMs: 5_000,
+      message: "Resource exhausted.",
+    });
+  });
+});

@@ -23,7 +23,7 @@ export type ModelReasoningEffort =
   | "xhigh"
   | "max";
 export type ModelFeature = "text" | "streaming" | "tools" | "json_schema" | "vision" | "audio";
-export type ModelFailureKind = "abort" | "authentication" | "invalid_request" | "rate_limit" | "safety" | "timeout" | "unavailable" | "unknown";
+export type ModelFailureKind = "abort" | "authentication" | "context_length" | "invalid_request" | "overloaded" | "rate_limit" | "safety" | "timeout" | "unavailable" | "unknown";
 
 export type ModelTarget = {
   provider: ProviderId;
@@ -164,15 +164,20 @@ export type ModelStructuredRequest = ModelTextRequest & {
 };
 
 export class ModelProviderError extends Error {
+  /** How long the provider asked the caller to wait before trying again. */
+  readonly retryAfterMs?: number;
+
   constructor(
     message: string,
     readonly provider: ProviderId,
     readonly kind: ModelFailureKind,
     readonly retryable: boolean,
     readonly status?: number,
+    options: { retryAfterMs?: number } = {},
   ) {
     super(message);
     this.name = "ModelProviderError";
+    if (options.retryAfterMs !== undefined) this.retryAfterMs = options.retryAfterMs;
   }
 }
 

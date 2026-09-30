@@ -3,6 +3,7 @@ import {
   ANTHROPIC_REASONING_MODEL,
   hasAnthropicKey,
 } from "@/lib/config";
+import { modelCallSignal } from "@/lib/models/call-deadline";
 import { classifyProviderError } from "@/lib/models/provider-errors";
 import {
   anthropicModelCapabilities,
@@ -228,7 +229,9 @@ async function callAnthropic(
   );
   const answerTokens = Math.min(Math.max(request.maxOutputTokens || 2_000, 64), 16_000);
   const startedAt = Date.now();
+  const signal = modelCallSignal(request.abortSignal);
   let response: Response;
+  let body: AnthropicResponse;
   try {
     response = await fetch(MESSAGES_URL, {
       method: "POST",
@@ -245,15 +248,18 @@ async function callAnthropic(
         ...(effort ? { output_config: { effort } } : {}),
         ...extra,
       }),
-      signal: request.abortSignal,
+      signal,
     });
+    body = await response.json().catch(() => ({})) as AnthropicResponse;
+    signal.throwIfAborted();
   } catch (error) {
     throw earlier ? anthropicResponseFailure(error, earlier, target) : error;
   }
-  const body = await response.json().catch(() => ({})) as AnthropicResponse;
   if (!response.ok) {
-    const error = new Error(body.error?.message || `Anthropic returned ${response.status}.`) as Error & { status: number };
-    error.status = response.status;
+    const error = Object.assign(
+      new Error(body.error?.message || `Anthropic returned ${response.status}.`),
+      { status: response.status, headers: response.headers },
+    );
     throw earlier ? anthropicResponseFailure(error, earlier, target) : error;
   }
   const latest = { body, latencyMs: Date.now() - startedAt };
@@ -286,7 +292,7 @@ function unfinishedResponseError(stopReason: string | undefined) {
     return new ModelProviderError(
       "Claude reached the end of its context window. Narrow the request or split it into smaller steps.",
       "anthropic",
-      "invalid_request",
+      "context_length",
       false,
     );
   }
