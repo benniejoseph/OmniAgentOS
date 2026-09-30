@@ -1819,6 +1819,46 @@ describe("agent memory scope", () => {
     expect(streamed?.claimEvidence).not.toHaveProperty("claimEvidenceMap");
   });
 
+  describe("a run's wall budget", () => {
+    /** How long the run's work may take, as its wall deadline was set. */
+    async function wallDeadlineMs(invocation?: AgentRunRequest["invocation"]) {
+      const timeout = vi.spyOn(AbortSignal, "timeout");
+      try {
+        await collectRequest({ ...request("session"), invocation });
+        return timeout.mock.calls.map(([milliseconds]) => milliseconds);
+      } finally {
+        timeout.mockRestore();
+      }
+    }
+
+    it("counts the work before the run from when its request arrived", async () => {
+      const [deadline] = await wallDeadlineMs({
+        receivedAtMs: Date.now() - 100_000,
+        endsAtMs: Date.now() + 200_000,
+      });
+
+      expect(deadline).toBeGreaterThan(139_000);
+      expect(deadline).toBeLessThanOrEqual(140_000);
+    });
+
+    it("stops the work in time to record the result before its invocation ends", async () => {
+      const [deadline] = await wallDeadlineMs({
+        receivedAtMs: Date.now(),
+        endsAtMs: Date.now() + 100_000,
+      });
+
+      expect(deadline).toBeGreaterThan(69_000);
+      expect(deadline).toBeLessThanOrEqual(70_000);
+    });
+
+    it("counts from the run's own start when no request started it", async () => {
+      const [deadline] = await wallDeadlineMs();
+
+      expect(deadline).toBeGreaterThan(239_000);
+      expect(deadline).toBeLessThanOrEqual(240_000);
+    });
+  });
+
   describe("an answer the output limit cut off", () => {
     const NOTICE =
       "\n\n[The answer reached its length limit and stops here. Ask to continue for the rest.]";

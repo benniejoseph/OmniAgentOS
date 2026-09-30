@@ -255,6 +255,8 @@ const MAX_TOOL_CALLS_PER_TURN = 5;
 const LOCAL_COMPUTER_TOOL_CALLS_PER_TURN = 1;
 const MAX_TOOL_ARGUMENT_BYTES = 64_000;
 const WORKSPACE_ACCESS_CONTEXT_TIMEOUT_MS = 3_000;
+/** Time a run leaves its invocation, once its work stops, to record the result. */
+const INVOCATION_TEARDOWN_MS = 30_000;
 const AGENT_CONTEXT_TASK_TOKEN_LIMIT = 4_096;
 
 type QueuedFunctionCall = ResponseFunctionCall & {
@@ -563,14 +565,23 @@ async function* runAgentUntilStopped(
         agentId: request.agentId,
         specialistIds: request.specialistIds,
       });
+  // Routing and context work before the run was created count against its
+  // wall budget, which counts from when its request arrived.
   let runBudgetState = createRunBudgetState(budgetLimits, {
-    startedAt: run.startedAt,
+    startedAt: request.invocation
+      ? new Date(request.invocation.receivedAtMs).toISOString()
+      : run.startedAt,
   });
   const budgetWallSignal = AbortSignal.timeout(Math.max(
     1,
-    budgetLimits.wallTimeMs - Math.max(
-      0,
-      Date.now() - Date.parse(runBudgetState.startedAt),
+    Math.min(
+      budgetLimits.wallTimeMs - Math.max(
+        0,
+        Date.now() - Date.parse(runBudgetState.startedAt),
+      ),
+      request.invocation
+        ? request.invocation.endsAtMs - INVOCATION_TEARDOWN_MS - Date.now()
+        : Infinity,
     ),
   ));
   // A cancel recorded by another request or worker aborts this signal too.

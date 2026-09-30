@@ -254,6 +254,12 @@ export type AgentRunRequest = {
   promptEntityGraphAccess?: RequestEntityAccessV1;
   /** Server-validated effective limits; delegated callers may only narrow them. */
   budgetLimits?: RunBudgetCountersV1;
+  /**
+   * When the request that starts this run arrived and when its invocation
+   * ends, in epoch milliseconds. The wall budget counts from the arrival, and
+   * the run's work stops early enough to record its result before the end.
+   */
+  invocation?: { receivedAtMs: number; endsAtMs: number };
   /** Trusted server-selected tool/model round cap for the chosen execution surface. */
   maxToolSteps?: number;
   /** Internal durable dispatch: the worker has already CAS-claimed this run. */

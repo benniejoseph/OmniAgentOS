@@ -612,6 +612,37 @@ describe("agent prompt queue lifecycle", () => {
     );
   });
 
+  it("tells the run when its request arrived and when its invocation ends", async () => {
+    authorizeCanonicalQueueRequest();
+    routeMocks.runAgent.mockImplementation(async function* () {
+      yield { type: "run", runId: "run-invocation", threadId: "thread-a" };
+      yield { type: "done", response: "Timed result." };
+    });
+    const before = Date.now();
+
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-asael-prompt-queue-item":
+          "11111111-1111-4111-8111-111111111111",
+        "x-asael-prompt-queue-token": "private-dispatch-token",
+      },
+      body: JSON.stringify({
+        message: "Inspect the queued context.",
+        requestId: "prompt-queue-invocation-a",
+        strategy: "direct",
+        agentId: "atlas",
+      }),
+    }));
+    await response.text();
+
+    const { invocation } = routeMocks.runAgent.mock.calls[0]?.[0] ?? {};
+    expect(invocation?.receivedAtMs).toBeGreaterThanOrEqual(before);
+    expect(invocation?.receivedAtMs).toBeLessThanOrEqual(Date.now());
+    expect(invocation?.endsAtMs - invocation?.receivedAtMs).toBe(300_000);
+  });
+
   it("withholds a terminal event and emits a generic error when its queue receipt fails", async () => {
     authorizeCanonicalQueueRequest();
     const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);

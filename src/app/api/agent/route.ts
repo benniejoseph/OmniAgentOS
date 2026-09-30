@@ -256,6 +256,7 @@ const requestSchema = z.object({
   });
 
 async function POSTHandler(request: Request) {
+  const receivedAtMs = Date.now();
   let body: unknown;
   try {
     body = await parseJsonBody(request);
@@ -2011,6 +2012,10 @@ async function POSTHandler(request: Request) {
           : runAgent(
               {
                 runId: directRootRunId,
+                invocation: {
+                  receivedAtMs,
+                  endsAtMs: receivedAtMs + maxDuration * 1_000,
+                },
                 mode: parsed.data.mode,
                 threadId,
                 messages: safeMessages,
