@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import dynamic from "next/dynamic";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   ArrowDown,
@@ -163,6 +163,14 @@ type JsonRecord = Record<string, unknown>;
 type ThreadSummary = { id: string; title: string; updatedAt: string; mode: AgentMode };
 type CommandProject = { id: string; title: string; status: string };
 type ThreadTurn = { id: string; role: "user" | "assistant"; content: string; createdAt: string; runId?: string };
+type RunMediaProjection = {
+  runId: string;
+  artifacts: CommandMediaArtifact[];
+  files: CommandFileArtifact[];
+  fileState: CommandFileArtifactState;
+  workspaceArtifacts: CommandWorkspaceArtifact[];
+  workspaceArtifactState: CommandWorkspaceArtifactState;
+};
 type AgentMode = ClientAgentMode;
 type AgentId = string;
 type AgentPresentation = {
@@ -548,14 +556,7 @@ export function AgentRunsWorkspace({
   const [workflowRun, setWorkflowRun] = useState<JsonRecord>();
   const [streamEvents, setStreamEvents] = useState<StreamEvent[]>([]);
   const [agentResponse, setAgentResponse] = useState("");
-  const [runMediaProjection, setRunMediaProjection] = useState<{
-    runId: string;
-    artifacts: CommandMediaArtifact[];
-    files: CommandFileArtifact[];
-    fileState: CommandFileArtifactState;
-    workspaceArtifacts: CommandWorkspaceArtifact[];
-    workspaceArtifactState: CommandWorkspaceArtifactState;
-  }>({
+  const [runMediaProjection, setRunMediaProjection] = useState<RunMediaProjection>({
     runId: "",
     artifacts: [],
     files: [],
@@ -851,6 +852,18 @@ export function AgentRunsWorkspace({
       turns.at(-1)?.content === currentAssistantResponse,
   );
   const visibleTurns = currentResponseIsLastTurn ? turns.slice(0, -1) : turns;
+  // The response being written parses again as it grows; deferring it keeps
+  // typing and the rest of the view ahead of that work.
+  const deferredAssistantResponse = useDeferredValue(currentAssistantResponse);
+  // Past turns are memoized, so they share one handler across renders, and it
+  // calls this render's openTaskDetails.
+  const openTaskDetailsRef = useRef(openTaskDetails);
+  useEffect(() => {
+    openTaskDetailsRef.current = openTaskDetails;
+  });
+  const openTurnActivity = useCallback((runId: string) => {
+    openTaskDetailsRef.current("execute", runId);
+  }, []);
   const activityVisible = Boolean(
     loading === "agent" || streamEvents.length > 0 || workflowRun,
   );
@@ -1079,7 +1092,8 @@ export function AgentRunsWorkspace({
       if (transcript) transcript.scrollTop = transcript.scrollHeight;
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [agentResponse, currentAssistantResponse, loading, streamEvents.length, turns.length]);
+    // The reply shows as its deferred value, so the view follows that too.
+  }, [agentResponse, currentAssistantResponse, deferredAssistantResponse, loading, streamEvents.length, turns.length]);
 
   useEffect(() => {
     if (
@@ -3362,50 +3376,14 @@ export function AgentRunsWorkspace({
             >
               <div className={clsx("mx-auto max-w-3xl space-y-7", workspaceStyles.transcriptInner)}>
               {visibleTurns.map((turn) => (
-                <article key={turn.id} className={clsx("flex", workspaceStyles.turn, turn.role === "user" ? clsx("justify-end", workspaceStyles.userTurn) : clsx("justify-start", workspaceStyles.assistantTurn))}>
-                  {turn.role === "user" ? (
-                    <div className={clsx("max-w-[88%] rounded-2xl rounded-br-md bg-foreground px-4 py-3 text-background sm:max-w-[78%]", workspaceStyles.userBubble)}>
-                      <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-background/60">You</p>
-                      <p className="whitespace-pre-wrap text-sm leading-6">{turn.content}</p>
-                    </div>
-                  ) : (
-                    <div className={clsx("min-w-0 max-w-full sm:pl-1", workspaceStyles.assistantMessage)}>
-                      <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-primary">
-                        {activeAssistantName}
-                        {preferredAgent?.role ? <span className="ml-2 text-muted">· {preferredAgent.role}</span> : null}
-                      </p>
-                      <ConversationMessageContent
-                        content={turn.content}
-                        mediaArtifacts={turn.runId && turn.runId === runMediaProjection.runId
-                          ? runMediaProjection.artifacts
-                          : undefined}
-                        fileArtifacts={turn.runId && turn.runId === runMediaProjection.runId
-                          ? runMediaProjection.files
-                          : undefined}
-                        fileArtifactState={turn.runId && turn.runId === runMediaProjection.runId
-                          ? runMediaProjection.fileState
-                          : undefined}
-                        workspaceArtifacts={turn.runId && turn.runId === runMediaProjection.runId
-                          ? runMediaProjection.workspaceArtifacts
-                          : undefined}
-                        workspaceArtifactState={turn.runId && turn.runId === runMediaProjection.runId
-                          ? runMediaProjection.workspaceArtifactState
-                          : undefined}
-                      />
-                      {turn.runId ? (
-                        <button
-                          type="button"
-                          onClick={() => openTaskDetails("execute", turn.runId)}
-                          className="mt-3 inline-flex min-h-9 items-center gap-2 rounded-full px-3 text-xs font-semibold text-muted transition hover:bg-surface-raised hover:text-foreground"
-                          aria-haspopup="dialog"
-                        >
-                          <Globe2 size={13} aria-hidden="true" />
-                          View activity
-                        </button>
-                      ) : null}
-                    </div>
-                  )}
-                </article>
+                <TranscriptTurn
+                  key={turn.id}
+                  turn={turn}
+                  assistantName={activeAssistantName}
+                  assistantRole={preferredAgent?.role}
+                  projection={projectionForTurn(turn, runMediaProjection)}
+                  onOpenActivity={openTurnActivity}
+                />
               ))}
 
               {activityVisible ? (
@@ -3459,7 +3437,7 @@ export function AgentRunsWorkspace({
                     </div>
                     <div className="mt-2">
                       <ConversationMessageContent
-                        content={currentAssistantResponse}
+                        content={deferredAssistantResponse}
                         grounding={grounding}
                         mediaArtifacts={runMediaProjection.artifacts}
                         fileArtifacts={runMediaProjection.files}
@@ -4419,7 +4397,87 @@ function InlineTaskProgress({
   );
 }
 
-function ConversationMessageContent({
+type TranscriptTurnProps = {
+  turn: ThreadTurn;
+  assistantName: string;
+  assistantRole?: string;
+  /** The run's media, files, and workspace artifacts, when the turn is that run's. */
+  projection?: RunMediaProjection;
+  onOpenActivity: (runId: string) => void;
+};
+
+/** A run's media, files, and workspace artifacts show on the turn it wrote. */
+export function projectionForTurn(turn: Pick<ThreadTurn, "runId">, projection: RunMediaProjection) {
+  return turn.runId && turn.runId === projection.runId ? projection : undefined;
+}
+
+/**
+ * Whether a past turn would show the same thing, so it need not render or
+ * parse its message again. Turns compare by what they show, since a reloaded
+ * thread brings new objects for the same turns.
+ */
+export function sameTranscriptTurn(previous: TranscriptTurnProps, next: TranscriptTurnProps) {
+  return (
+    previous.turn.id === next.turn.id &&
+    previous.turn.role === next.turn.role &&
+    previous.turn.content === next.turn.content &&
+    previous.turn.runId === next.turn.runId &&
+    previous.assistantName === next.assistantName &&
+    previous.assistantRole === next.assistantRole &&
+    previous.projection === next.projection &&
+    previous.onOpenActivity === next.onOpenActivity
+  );
+}
+
+export const TranscriptTurn = memo(function TranscriptTurn({
+  turn,
+  assistantName,
+  assistantRole,
+  projection,
+  onOpenActivity,
+}: TranscriptTurnProps) {
+  const runId = turn.runId;
+  return (
+    <article className={clsx("flex", workspaceStyles.turn, turn.role === "user" ? clsx("justify-end", workspaceStyles.userTurn) : clsx("justify-start", workspaceStyles.assistantTurn))}>
+      {turn.role === "user" ? (
+        <div className={clsx("max-w-[88%] rounded-2xl rounded-br-md bg-foreground px-4 py-3 text-background sm:max-w-[78%]", workspaceStyles.userBubble)}>
+          <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-background/60">You</p>
+          <p className="whitespace-pre-wrap text-sm leading-6">{turn.content}</p>
+        </div>
+      ) : (
+        <div className={clsx("min-w-0 max-w-full sm:pl-1", workspaceStyles.assistantMessage)}>
+          <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-primary">
+            {assistantName}
+            {assistantRole ? <span className="ml-2 text-muted">· {assistantRole}</span> : null}
+          </p>
+          <ConversationMessageContent
+            content={turn.content}
+            mediaArtifacts={projection?.artifacts}
+            fileArtifacts={projection?.files}
+            fileArtifactState={projection?.fileState}
+            workspaceArtifacts={projection?.workspaceArtifacts}
+            workspaceArtifactState={projection?.workspaceArtifactState}
+          />
+          {runId ? (
+            <button
+              type="button"
+              onClick={() => onOpenActivity(runId)}
+              className="mt-3 inline-flex min-h-9 items-center gap-2 rounded-full px-3 text-xs font-semibold text-muted transition hover:bg-surface-raised hover:text-foreground"
+              aria-haspopup="dialog"
+            >
+              <Globe2 size={13} aria-hidden="true" />
+              View activity
+            </button>
+          ) : null}
+        </div>
+      )}
+    </article>
+  );
+}, sameTranscriptTurn);
+
+// Parsing a message builds its blocks on every render, so it renders again
+// only when its content, grounding, or artifacts change.
+export const ConversationMessageContent = memo(function ConversationMessageContent({
   content,
   grounding,
   mediaArtifacts = [],
@@ -4641,7 +4699,7 @@ function ConversationMessageContent({
       ) : null}
     </div>
   );
-}
+});
 
 function CommandFileArtifactCard({ artifact }: { artifact: CommandFileArtifact }) {
   const downloadUrl = commandArtifactContentUrl(
