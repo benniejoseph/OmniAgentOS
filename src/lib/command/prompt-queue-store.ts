@@ -887,9 +887,12 @@ export async function validatePromptQueueDispatch(input: {
 /**
  * Reconcile an interrupted dispatch without replaying its command. A run id is
  * durable proof that normal governed execution accepted the command, but is
- * not proof that the run finished. Active, waiting, or temporarily unreadable
- * runs retain a bounded dispatch lease; only a terminal run closes the queue
- * item. A lease with no run id fails closed and may be explicitly resumed.
+ * not proof that the run finished. The item follows the run's own status: an
+ * active run keeps its dispatch lease for as long as it runs, since the run
+ * store's repair and recovery decide when a stopped run has failed, and a
+ * finished or waiting run closes the item. A run that cannot be read keeps a
+ * lease only for a bounded time. A lease with no run id fails closed and may
+ * be explicitly resumed.
  */
 export async function reconcileExpiredPromptQueueDispatches(
   authority: PromptQueueAuthority,
@@ -932,8 +935,9 @@ export async function reconcileExpiredPromptQueueDispatches(
         runStatus === "completed" ||
         runStatus === "failed" ||
         runStatus === "canceled";
-      const orphanConfirmationExpired = accepted && !waitingAccepted &&
-        !terminalRun &&
+      // Only a run that cannot be read is given up on by age. Failing a live
+      // one would release the next prompt while it still runs.
+      const orphanConfirmationExpired = accepted && !runStatus &&
         dispatchAgeMs(row, now) >=
           PROMPT_QUEUE_ORPHAN_CONFIRMATION_MAX_AGE_MS;
       if (

@@ -1035,27 +1035,64 @@ describe("persistent prompt queue store fences", () => {
     expect(mocks.sql.mock.calls[2]?.[0].join("?")).toContain("SET state = ?");
   });
 
-  it("extends a recent active run but fails it after the finite recovery bound", async () => {
+  it("keeps a live run's prompt dispatching however long ago it was dispatched", async () => {
+    for (const [index, dispatchedAt] of [
+      new Date().toISOString(),
+      new Date(Date.now() - 16 * 60_000).toISOString(),
+      new Date(Date.now() - 24 * 60 * 60_000).toISOString(),
+    ].entries()) {
+      mocks.sql.mockReset();
+      mocks.appendEvent.mockReset().mockResolvedValue(undefined);
+      const live = row({
+        id: `00000000-0000-4000-8000-00000000001${index}`,
+        state: "dispatching",
+        lifecycle_revision: 5,
+        run_id: "run-live",
+        dispatched_at: dispatchedAt,
+      });
+      mocks.sql
+        .mockResolvedValueOnce([live])
+        .mockResolvedValueOnce([{ status: "running", thread_id: "thread-live" }])
+        .mockResolvedValueOnce([row({
+          ...live,
+          lifecycle_revision: 6,
+          progress_label: "Governed run is still active",
+        })]);
+
+      await expect(reconcileExpiredPromptQueueDispatches(authority)).resolves.toBe(1);
+      expect(mocks.appendEvent.mock.calls.map(([event]) => event.type)).toEqual([
+        "command.prompt_queue.item.progressed",
+      ]);
+      const [update, ...values] = mocks.sql.mock.calls[2] ?? [];
+      expect(update.join("?")).not.toContain("SET state = ?");
+      expect(values).toContain("Governed run is still active");
+      expect(values).not.toContain("run_outcome_unconfirmed");
+    }
+  });
+
+  it("gives up on a run it cannot read only after the confirmation bound", async () => {
     const recent = row({
       id: "00000000-0000-4000-8000-000000000014",
       state: "dispatching",
       lifecycle_revision: 5,
-      run_id: "run-recent",
-      dispatched_at: new Date().toISOString(),
-    });
-    const refreshed = row({
-      ...recent,
-      lifecycle_revision: 6,
-      progress_label: "Governed run is still active",
+      run_id: "run-unread",
+      dispatched_at: new Date(Date.now() - 14 * 60_000).toISOString(),
     });
     mocks.sql
       .mockResolvedValueOnce([recent])
-      .mockResolvedValueOnce([{ status: "running", thread_id: "thread-recent" }])
-      .mockResolvedValueOnce([refreshed]);
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([row({
+        ...recent,
+        lifecycle_revision: 6,
+        progress_label: "Verifying governed run status",
+      })]);
 
     await expect(reconcileExpiredPromptQueueDispatches(authority)).resolves.toBe(1);
     expect(mocks.appendEvent.mock.calls[0]?.[0]?.type).toBe(
       "command.prompt_queue.item.progressed",
+    );
+    expect(mocks.sql.mock.calls[2]?.slice(1)).toContain(
+      "Verifying governed run status",
     );
 
     mocks.sql.mockReset();
@@ -1064,19 +1101,18 @@ describe("persistent prompt queue store fences", () => {
       id: "00000000-0000-4000-8000-000000000015",
       state: "dispatching",
       lifecycle_revision: 7,
-      run_id: "run-old",
+      run_id: "run-unread",
       dispatched_at: new Date(Date.now() - 16 * 60_000).toISOString(),
-    });
-    const failed = row({
-      ...old,
-      state: "failed",
-      lifecycle_revision: 8,
-      failure_code: "run_outcome_unconfirmed",
     });
     mocks.sql
       .mockResolvedValueOnce([old])
-      .mockResolvedValueOnce([{ status: "running", thread_id: "thread-old" }])
-      .mockResolvedValueOnce([failed]);
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([row({
+        ...old,
+        state: "failed",
+        lifecycle_revision: 8,
+        failure_code: "run_outcome_unconfirmed",
+      })]);
 
     await expect(reconcileExpiredPromptQueueDispatches(authority)).resolves.toBe(1);
     expect(mocks.appendEvent.mock.calls[0]?.[0]?.type).toBe(
@@ -1084,6 +1120,28 @@ describe("persistent prompt queue store fences", () => {
     );
     expect(mocks.sql.mock.calls[2]?.slice(1)).toContain(
       "run_outcome_unconfirmed",
+    );
+
+    mocks.sql.mockReset();
+    mocks.appendEvent.mockReset().mockResolvedValue(undefined);
+    const unaccepted = row({
+      id: "00000000-0000-4000-8000-000000000016",
+      state: "dispatching",
+      lifecycle_revision: 2,
+      dispatched_at: new Date(Date.now() - 16 * 60_000).toISOString(),
+    });
+    mocks.sql
+      .mockResolvedValueOnce([unaccepted])
+      .mockResolvedValueOnce([row({
+        ...unaccepted,
+        state: "failed",
+        lifecycle_revision: 3,
+        failure_code: "dispatch_lease_expired_before_acceptance",
+      })]);
+
+    await expect(reconcileExpiredPromptQueueDispatches(authority)).resolves.toBe(1);
+    expect(mocks.sql.mock.calls[1]?.slice(1)).toContain(
+      "dispatch_lease_expired_before_acceptance",
     );
   });
 });
