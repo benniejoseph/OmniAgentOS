@@ -7,6 +7,7 @@ import {
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 
 describe("paired production deployment", () => {
@@ -889,60 +890,7 @@ describe("paired production deployment", () => {
     });
   });
 
-  it("restores the prior token before the worker image and verifies the rollback pair", async () => {
-    const deployScript = await readFile(
-      "scripts/deploy-production.mjs",
-      "utf8",
-    );
-    const rollbackPreflight = deployScript.slice(
-      deployScript.indexOf("if (rollbackOpenAIGateway) {"),
-      deployScript.indexOf("let workerMutationStarted"),
-    );
-    expect(rollbackPreflight).toContain(
-      "await waitForOpenAIGatewayReadiness(",
-    );
-    expect(rollbackPreflight).not.toContain(
-      "waitForOpenAIGatewayTokenPair",
-    );
-    const rollback = deployScript.slice(
-      deployScript.indexOf("} catch (error) {"),
-      deployScript.indexOf("console.log(\n  `Production release"),
-    );
-    expect(rollback).not.toContain("workerReleaseActivationArgs");
-    const secretRollbackIndex = rollback.indexOf(
-      "stageFlyGatewayTokenOverlap(rollbackOpenAIGateway",
-    );
-    const workerRollbackIndex = rollback.indexOf("previousWorkerImage");
-    const vercelRollbackIndex = rollback.indexOf(
-      '"promote",\n        previousVercelDeployment',
-    );
-    const verificationIndex = rollback.indexOf("runRollbackVerification(");
-
-    expect(secretRollbackIndex).toBeGreaterThanOrEqual(0);
-    expect(workerRollbackIndex).toBeGreaterThan(secretRollbackIndex);
-    expect(vercelRollbackIndex).toBeGreaterThan(workerRollbackIndex);
-    expect(verificationIndex).toBeGreaterThan(vercelRollbackIndex);
-    expect(rollback).toContain(
-      "Vercel rollback was skipped because the active worker could not be safely rolled back first.",
-    );
-    expect(deployScript).toContain(
-      "token: gateway.previousToken || gateway.token",
-    );
-    expect(deployScript).toContain(
-      "previousToken: gateway.previousToken ? gateway.token : undefined",
-    );
-    expect(deployScript).toContain(
-      "await waitForOpenAIGatewayTokenPair(\n      rollbackGateway",
-    );
-    expect(deployScript).toContain(
-      '["secrets", "import", "--app", flyApp, "--stage"]',
-    );
-    expect(deployScript).not.toMatch(
-      /--env[^\n]+OMNIAGENT_OPENAI_GATEWAY_(?:PREVIOUS_)?TOKEN=/,
-    );
-  });
-
-  it("rejects untracked drift and polls asynchronous evaluation smoke jobs", async () => {
+  it("keeps the smoke, benchmark and worker release wiring", async () => {
     const [
       deployScript,
       evaluationSmoke,
@@ -972,17 +920,6 @@ describe("paired production deployment", () => {
         readFile("fly.initial-cutover-rollback.toml", "utf8"),
       ]);
 
-    expect(deployScript).toContain('"--porcelain"');
-    expect(deployScript).not.toContain("--untracked-files=no");
-    expect(deployScript).toContain('"--skip-domain"');
-    expect(deployScript).toContain('"--scope", VERCEL_SCOPE');
-    expect(deployScript).toContain("previousWorkerImage");
-    expect(deployScript).toContain("previousVercelDeployment");
-    expect(deployScript).toContain("previousHealthRevision");
-    expect(deployScript).toContain("runRollbackVerification");
-    expect(deployScript).toContain(
-      "SMOKE_EXPECTED_REVISION: expectedRevision",
-    );
     expect(deployScript).toContain("asael-release-evidence-");
     expect(deployScript).toContain('SMOKE_REQUEST_TIMEOUT_MS: "60000"');
     expect(deployScript).toContain("OMNIAGENT_OPENAI_GATEWAY_URL");
@@ -995,39 +932,12 @@ describe("paired production deployment", () => {
       '`/v1/models/${GATEWAY_AUTHORIZATION_PROBE_ID}`',
     );
     expect(deployScript).toContain("waitForOpenAIGatewayReadiness");
-    expect(deployScript).toContain("waitForOpenAIGatewayTokenPair");
-    expect(deployScript).toContain("stageFlyGatewayTokenOverlap");
-    expect(deployScript).toContain("createRollbackGatewayConfiguration");
     expect(deployScript).toContain("runPaidOpenAIGatewayInference");
-    expect(deployScript).toContain("runPaidAgentVerification");
-    expect(deployScript).toContain('["run", "smoke:paid-agent"]');
     expect(deployScript).toContain("PAID_INFERENCE_MAX_OUTPUT_TOKENS = 16");
     expect(deployScript).toContain("store: false");
-    expect(deployScript).toContain("/tmp/asael-worker.pid");
-    expect(deployScript).toContain("kill -HUP");
-    expect(deployScript).toContain("kill -USR1");
-    expect(deployScript).toContain(
-      '"OMNIAGENT_WORKER_RELEASE_HOLD=true"',
-    );
-    expect(deployScript).toContain(
-      '"OMNIAGENT_WORKER_RELEASE_HOLD=false"',
-    );
-    expect(deployScript).toContain("workerRollbackArgs");
-    expect(deployScript).toContain("fly.initial-cutover-rollback.toml");
-    expect(deployScript).toContain(
-      "runRollbackVerification(\n      productionBaseUrl,\n      previousHealthRevision,\n      rollbackOpenAIGateway",
-    );
-    expect(deployScript).toContain("sensitive command output was suppressed");
     expect(deployScript).toContain(
       'const PRODUCTION_BASE_URL = "https://asael.bennierichard.com"',
     );
-    expect(deployScript).toContain(
-      "candidate?.status ?? candidate?.Status",
-    );
-    expect(deployScript).toContain(
-      "candidate?.version ?? candidate?.Version",
-    );
-    expect(deployScript).toContain('status === "complete"');
     expect(deployScript).toContain(
       "VERCEL_DEPLOYMENT_HOST_PATTERN.test(url.hostname)",
     );
@@ -1065,6 +975,289 @@ describe("paired production deployment", () => {
     expect(releaseEvidenceSmoke).toContain(
       'evidenceQuery.set(\n    "workerHeartbeatNotBefore"',
     );
+  });
+});
+
+describe("rolling back a failed production release", () => {
+  const head = FAKE_RELEASE_HEAD;
+  const canonical = "https://asael.bennierichard.com";
+  const staged = "https://omniagent-candidate-benniejosephs-projects.vercel.app";
+  const gateway = "https://omniagent-os-worker.fly.dev";
+  const activeToken =
+    releaseConfigurationEnvironment().OMNIAGENT_OPENAI_GATEWAY_TOKEN;
+  const candidateToken = "gateway_candidate_abcdefghijklmnopqrstuvwxyz1234";
+  const priorToken = "gateway_prior_abcdefghijklmnopqrstuvwxyz98765432";
+  // A release that rotates the gateway token. The running gateway accepts
+  // only the token the prior release uses until the release is deployed.
+  const rotation = {
+    OMNIAGENT_OPENAI_GATEWAY_TOKEN: candidateToken,
+    OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN: priorToken,
+    FAKE_GATEWAY_TOKENS: priorToken,
+  };
+  const listSecrets = "fly secrets list --app omniagent-os-worker --json";
+  const stageSecrets = "fly secrets import --app omniagent-os-worker --stage";
+  const releaseDeploy = `fly deploy --app omniagent-os-worker --build-arg OMNIAGENT_RELEASE_SHA=${head} --env OMNIAGENT_WORKER_BASE_URL=${staged} --env OMNIAGENT_WORKER_CANONICAL_BASE_URL=${canonical} --env OMNIAGENT_WORKER_RELEASE_HOLD=true --strategy bluegreen --yes`;
+  const workerRollback = `fly deploy --app omniagent-os-worker --strategy bluegreen --image registry.fly.io/omniagent-os-worker:prior --env OMNIAGENT_WORKER_BASE_URL=${canonical} --env OMNIAGENT_WORKER_CANONICAL_BASE_URL=${canonical} --env OMNIAGENT_WORKER_RELEASE_HOLD=false --yes`;
+  const webRollback =
+    "vercel promote https://omniagent-prior-benniejosephs-projects.vercel.app --yes --scope benniejosephs-projects";
+  const rollbackVerified = `npm run smoke:preflight against ${canonical} expecting prior-release`;
+  const staging =(token: string, previousToken?: string) =>
+    `fly staged OMNIAGENT_OPENAI_GATEWAY_TOKEN=${token}${previousToken ? ` OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN=${previousToken}` : ""}`;
+  const gatewayChecks = (token: string) => [
+    `fetch ${gateway}/healthz with ${token}`,
+    `fetch ${gateway}/v1/models/authorization-probe with ${token}`,
+  ];
+  const verificationCommands = (baseUrl: string) =>
+    ["test:production-smoke", "benchmark:preview", "benchmark:dashboard"].map(
+      (script) => `npm run ${script} against ${baseUrl} expecting ${head}`,
+    );
+
+  it("rolls a promoted release back worker first, then web, and verifies the prior pair", async () => {
+    await withFakeReleasePlatform(async ({ deploy }) => {
+      const failure = `npm run smoke:release against ${canonical} expecting ${head}`;
+      const result = await deploy({ ...rotation, FAKE_RELEASE_FAIL: failure });
+
+      expect(result.code).toBe(1);
+      expect(result.stderr).toBe(
+        "Production deployment failed: npm run smoke:release failed with exit code 1.\n",
+      );
+      expect(result.log).toEqual([
+        "git status --porcelain",
+        "git rev-parse HEAD",
+        `gh api --hostname github.com --method GET repos/benniejoseph/OmniAgentOS/compare/main...${head} --jq {status, ahead_by, behind_by}`,
+        `gh api --hostname github.com --method GET repos/benniejoseph/OmniAgentOS/commits/${head}/check-runs?filter=latest&per_page=100`,
+        `npm run verify against ${canonical}`,
+        "fly releases --app omniagent-os-worker --image --json",
+        `vercel inspect ${canonical} --format=json --scope benniejosephs-projects`,
+        `fetch ${canonical}/api/health`,
+        // The token the prior release uses still reaches the running gateway.
+        ...gatewayChecks(priorToken),
+        `npm run smoke:release against ${canonical}`,
+        `vercel deploy --prod --skip-domain --yes --scope benniejosephs-projects --env OMNIAGENT_RELEASE_SHA=${head}`,
+        `fetch ${staged}/api/health`,
+        stageSecrets,
+        staging(candidateToken, priorToken),
+        releaseDeploy,
+        ...gatewayChecks(candidateToken),
+        ...gatewayChecks(priorToken),
+        `npm run smoke:paid-agent against ${staged} expecting ${head}`,
+        ...verificationCommands(staged),
+        `vercel promote ${staged} --yes --scope benniejosephs-projects`,
+        `fetch ${canonical}/api/health`,
+        expect.stringMatching(
+          /^fly ssh console --app omniagent-os-worker --command sh -c '.*cat \/tmp\/asael-worker\.pid.*kill -HUP "\$worker_pid"'$/,
+        ),
+        ...gatewayChecks(candidateToken),
+        ...gatewayChecks(priorToken),
+        `npm run smoke:paid-agent against ${canonical} expecting ${head}`,
+        ...verificationCommands(canonical),
+        expect.stringMatching(
+          new RegExp(
+            `^fly ssh console --app omniagent-os-worker --command sh -c '.*expected_revision='"'"'${head}'"'"'.*kill -USR1 "\\$worker_pid"`,
+          ),
+        ),
+        `npm run smoke:security against ${canonical} expecting ${head}`,
+        failure,
+        // The worker goes back first, with the prior release's token active.
+        stageSecrets,
+        staging(priorToken, candidateToken),
+        workerRollback,
+        webRollback,
+        `fetch ${canonical}/api/health`,
+        ...gatewayChecks(priorToken),
+        ...gatewayChecks(candidateToken),
+        rollbackVerified,
+      ]);
+      expectNoSecretTokens(result, [candidateToken, priorToken]);
+    });
+  });
+
+  it("rolls the web back too when its promotion fails", async () => {
+    await withFakeReleasePlatform(async ({ deploy }) => {
+      // A promotion that fails may still have moved the domain.
+      const promotion = `vercel promote ${staged} --yes --scope benniejosephs-projects`;
+      const result = await deploy({ FAKE_RELEASE_FAIL: promotion });
+
+      expect(result.code).toBe(1);
+      expect(result.stderr).toBe(
+        `Production deployment failed: ${promotion} failed with exit code 1.\n`,
+      );
+      expect(result.log.slice(result.log.indexOf(promotion))).toEqual([
+        promotion,
+        listSecrets,
+        stageSecrets,
+        staging(activeToken),
+        workerRollback,
+        webRollback,
+        `fetch ${canonical}/api/health`,
+        ...gatewayChecks(activeToken),
+        rollbackVerified,
+      ]);
+    });
+  });
+
+  it("rolls back only the worker when the release fails before promotion", async () => {
+    await withFakeReleasePlatform(async ({ deploy }) => {
+      const failure = `npm run test:production-smoke against ${staged} expecting ${head}`;
+      const retirePreviousToken =
+        "fly secrets unset OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN --app omniagent-os-worker --stage";
+      const result = await deploy({
+        // A finished rotation left the retired token on Fly.
+        FAKE_FLY_SECRETS: JSON.stringify([
+          { Name: "OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN" },
+        ]),
+        FAKE_RELEASE_FAIL: failure,
+      });
+
+      expect(result.code).toBe(1);
+      expect(result.stderr).toBe(
+        "Production deployment failed: npm run test:production-smoke failed with exit code 1.\n",
+      );
+      const stagedHealth = `fetch ${staged}/api/health`;
+      expect(result.log.slice(result.log.indexOf(stagedHealth))).toEqual([
+        stagedHealth,
+        listSecrets,
+        stageSecrets,
+        staging(activeToken),
+        retirePreviousToken,
+        releaseDeploy,
+        ...gatewayChecks(activeToken),
+        `npm run smoke:paid-agent against ${staged} expecting ${head}`,
+        failure,
+        listSecrets,
+        stageSecrets,
+        staging(activeToken),
+        retirePreviousToken,
+        workerRollback,
+        `fetch ${canonical}/api/health`,
+        ...gatewayChecks(activeToken),
+        rollbackVerified,
+      ]);
+      expect(
+        result.log.filter((line) => line.startsWith("vercel promote ")),
+      ).toEqual([]);
+      expectNoSecretTokens(result, [activeToken]);
+    });
+  });
+
+  it("keeps the web release when the worker cannot be rolled back first", async () => {
+    await withFakeReleasePlatform(async ({ deploy }) => {
+      const failure = `npm run test:production-smoke against ${canonical} expecting ${head}`;
+      const failed =
+        "Production deployment failed: npm run test:production-smoke failed with exit code 1.";
+      const skipped =
+        "Vercel rollback was skipped because the active worker could not be safely rolled back first.";
+
+      const rollbackFails = await deploy({
+        ...rotation,
+        FAKE_RELEASE_FAIL: [failure, workerRollback].join("\n"),
+      });
+      expect(rollbackFails.code).toBe(1);
+      expect(rollbackFails.stderr).toBe(
+        [
+          failed,
+          `Fly rollback failed: ${workerRollback} failed with exit code 1.`,
+          skipped,
+          "",
+        ].join("\n"),
+      );
+      expect(
+        rollbackFails.log.slice(rollbackFails.log.indexOf(failure)),
+      ).toEqual([
+        failure,
+        stageSecrets,
+        staging(priorToken, candidateToken),
+        workerRollback,
+      ]);
+
+      const stagingFails = await deploy({
+        ...rotation,
+        FAKE_RELEASE_FAIL: [failure, staging(priorToken, candidateToken)].join(
+          "\n",
+        ),
+      });
+      expect(stagingFails.code).toBe(1);
+      expect(stagingFails.stderr).toBe(
+        [
+          failed,
+          `Fly rollback gateway secret staging failed: ${stageSecrets} failed with exit code 1; sensitive command output was suppressed.`,
+          skipped,
+          "",
+        ].join("\n"),
+      );
+      expect(
+        stagingFails.log.slice(stagingFails.log.indexOf(failure)),
+      ).toEqual([failure, stageSecrets]);
+    });
+  });
+
+  it("leaves both platforms alone until the worker changes, then restores it", async () => {
+    await withFakeReleasePlatform(async ({ deploy }) => {
+      const stagedDeploy = `vercel deploy --prod --skip-domain --yes --scope benniejosephs-projects --env OMNIAGENT_RELEASE_SHA=${head}`;
+      const untouched = await deploy({ FAKE_RELEASE_FAIL: stagedDeploy });
+      expect(untouched.code).toBe(1);
+      expect(untouched.stderr).toBe(
+        `Production deployment failed: ${stagedDeploy} failed with exit code 1.\n`,
+      );
+      expect(untouched.log.at(-1)).toBe(stagedDeploy);
+
+      const partlyStaged = await deploy({
+        ...rotation,
+        FAKE_RELEASE_FAIL: staging(candidateToken, priorToken),
+      });
+      expect(partlyStaged.code).toBe(1);
+      expect(partlyStaged.stderr).toBe(
+        `Production deployment failed: ${stageSecrets} failed with exit code 1; sensitive command output was suppressed.\n`,
+      );
+      const stagedHealth = `fetch ${staged}/api/health`;
+      expect(
+        partlyStaged.log.slice(partlyStaged.log.indexOf(stagedHealth)),
+      ).toEqual([
+        stagedHealth,
+        // Fly may hold part of the candidate secrets, so the worker is restored.
+        stageSecrets,
+        stageSecrets,
+        staging(priorToken, candidateToken),
+        workerRollback,
+        `fetch ${canonical}/api/health`,
+        ...gatewayChecks(priorToken),
+        ...gatewayChecks(candidateToken),
+        rollbackVerified,
+      ]);
+    });
+  });
+
+  it("rolls an initial gateway cutover back to the worker without a gateway", async () => {
+    await withFakeReleasePlatform(async ({ deploy }) => {
+      const failure = `npm run test:production-smoke against ${staged} expecting ${head}`;
+      const releaseSmoke = `npm run smoke:release against ${canonical}`;
+      const result = await deploy({
+        OMNIAGENT_OPENAI_GATEWAY_INITIAL_CUTOVER: "CONFIRMED",
+        // The running worker serves no gateway yet.
+        FAKE_GATEWAY_TOKENS: "",
+        FAKE_RELEASE_FAIL: failure,
+      });
+
+      expect(result.code).toBe(1);
+      expect(result.stdout).toContain(
+        "Initial OpenAI gateway cutover confirmed",
+      );
+      expect(result.stderr).toBe(
+        "Production deployment failed: npm run test:production-smoke failed with exit code 1.\n",
+      );
+      expect(result.log).toContain(releaseSmoke);
+      expect(
+        result.log
+          .slice(0, result.log.indexOf(releaseSmoke))
+          .filter((line) => line.startsWith(`fetch ${gateway}`)),
+      ).toEqual([]);
+      expect(result.log.slice(result.log.indexOf(failure))).toEqual([
+        failure,
+        `fly deploy --app omniagent-os-worker --config fly.initial-cutover-rollback.toml --strategy immediate --image registry.fly.io/omniagent-os-worker:prior --env OMNIAGENT_WORKER_BASE_URL=${canonical} --env OMNIAGENT_WORKER_CANONICAL_BASE_URL=${canonical} --env OMNIAGENT_WORKER_RELEASE_HOLD=false --yes`,
+        `fetch ${canonical}/api/health`,
+        rollbackVerified,
+      ]);
+    });
   });
 });
 
@@ -1141,13 +1334,15 @@ function releaseConfigurationEnvironment() {
   };
 }
 
-// Puts logging stand-ins for git, gh, npm, vercel, and fly first on PATH. npm,
-// vercel, and fly always fail, so a test can never reach a real deployment.
+// Puts logging stand-ins for git, gh, npm, vercel, and fly first on PATH, so a
+// test can never reach a real deployment. npm, vercel, and fly fail unless a
+// test replaces a stand-in's whole script.
 async function withFakeReleaseTools(
   callback: (tools: {
     environment: NodeJS.ProcessEnv;
     readLog: () => Promise<string[]>;
   }) => Promise<void>,
+  scripts: Record<string, string> = {},
 ) {
   const directory = await mkdtemp(path.join(tmpdir(), "asael-release-tools-"));
   const logFile = path.join(directory, "invocations.log");
@@ -1179,7 +1374,7 @@ async function withFakeReleaseTools(
       const file = path.join(directory, name);
       await writeFile(
         file,
-        `#!/bin/sh\nprintf '%s\\n' "${name} $*" >> "$FAKE_RELEASE_LOG"\n${body}\n`,
+        `#!/bin/sh\n${scripts[name] ?? `printf '%s\\n' "${name} $*" >> "$FAKE_RELEASE_LOG"\n${body}`}\n`,
       );
       await chmod(file, 0o755);
     }
@@ -1201,6 +1396,196 @@ async function withFakeReleaseTools(
     });
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+}
+
+const FAKE_RELEASE_HEAD = "a53a77aee2e1056f8989cc19b24b0a6a620cf084";
+
+// Each platform stand-in logs its call and fails when FAKE_RELEASE_FAIL lists
+// one of its lines.
+const FAKE_PLATFORM_PRELUDE = `
+log() { printf '%s\\n' "$1" >> "$FAKE_RELEASE_LOG"; }
+fails() { printf '%s\\n' "$FAKE_RELEASE_FAIL" | grep -qxF -e "$1" -e "\${2:-$1}"; }`;
+
+// npm logs the URL and revision a run targets. fly logs the secrets it is
+// asked to stage as a "fly staged" line, which a test can fail on its own.
+const FAKE_PLATFORM_SCRIPTS: Record<string, string> = {
+  npm: `${FAKE_PLATFORM_PRELUDE}
+expected="\${SMOKE_EXPECTED_REVISION:-$EXPECTED_REVISION}"
+line="npm $*\${BASE_URL:+ against $BASE_URL}\${expected:+ expecting $expected}"
+log "$line"
+if fails "$line"; then exit 1; fi`,
+  vercel: `${FAKE_PLATFORM_PRELUDE}
+log "vercel $*"
+if fails "vercel $*"; then exit 1; fi
+case "$1" in
+  inspect) printf '%s\\n' '{"url":"omniagent-prior-benniejosephs-projects.vercel.app"}' ;;
+  deploy) printf '%s\\n' "Inspect: https://vercel.com/benniejosephs-projects/omniagent" "https://omniagent-candidate-benniejosephs-projects.vercel.app" ;;
+esac`,
+  fly: `${FAKE_PLATFORM_PRELUDE}
+log "fly $*"
+staged=""
+if [ "$1 $2" = "secrets import" ]; then staged="fly staged $(paste -sd ' ' -)"; fi
+if fails "fly $*" "$staged"; then exit 1; fi
+if [ -n "$staged" ]; then log "$staged"; fi
+case "$1 $2" in
+  "releases --app") printf '%s\\n' "$FAKE_FLY_RELEASES" ;;
+  "secrets list") printf '%s\\n' "$FAKE_FLY_SECRETS" ;;
+esac`,
+};
+
+// Answers the deploy script's fetches from the log: the canonical web serves
+// whichever deployment was promoted last, and the gateway serves the last Fly
+// deploy with the secrets staged before it. Any other origin is the staged web.
+const FAKE_PLATFORM_FETCH = `
+import { appendFileSync, readFileSync } from "node:fs";
+
+const { FAKE_RELEASE_LOG, FAKE_PRIOR_REVISION, OMNIAGENT_RELEASE_SHA } = process.env;
+
+function json(status, body) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+globalThis.fetch = async (input, init = {}) => {
+  const url = new URL(String(input));
+  const token = new Headers(init.headers).get("x-asael-gateway-token");
+  appendFileSync(
+    FAKE_RELEASE_LOG,
+    "fetch " + url.origin + url.pathname + (token ? " with " + token : "") + "\\n",
+  );
+  const lines = readFileSync(FAKE_RELEASE_LOG, "utf8").split("\\n");
+  if (url.origin === "https://omniagent-os-worker.fly.dev") {
+    const deployed = lines.findLastIndex((line) => line.startsWith("fly deploy "));
+    const staged = lines
+      .slice(0, Math.max(deployed, 0))
+      .findLast((line) => line.startsWith("fly staged "));
+    const accepted = staged
+      ? staged.split(" ").slice(2).map((pair) => pair.slice(pair.indexOf("=") + 1))
+      : (process.env.FAKE_GATEWAY_TOKENS || "").split(" ");
+    const revision = lines[deployed]?.includes("OMNIAGENT_RELEASE_SHA=" + OMNIAGENT_RELEASE_SHA)
+      ? OMNIAGENT_RELEASE_SHA
+      : FAKE_PRIOR_REVISION;
+    if (url.pathname === "/healthz") {
+      return json(200, {
+        status: "healthy",
+        service: "asael-openai-egress",
+        region: "iad",
+        protocol: "1",
+        revision,
+      });
+    }
+    if (url.pathname === "/v1/models/authorization-probe") {
+      return json(token && accepted.includes(token) ? 400 : 401, {});
+    }
+    return json(404, {});
+  }
+  if (url.origin === "https://asael.bennierichard.com") {
+    const promoted = lines.findLast((line) => line.startsWith("vercel promote "));
+    return json(200, {
+      status: "healthy",
+      revision: promoted?.includes("omniagent-candidate-")
+        ? OMNIAGENT_RELEASE_SHA
+        : FAKE_PRIOR_REVISION,
+    });
+  }
+  return json(200, { status: "healthy", revision: OMNIAGENT_RELEASE_SHA });
+};
+`;
+
+type FakeReleaseRun = {
+  code: number | null;
+  stdout: string;
+  stderr: string;
+  log: string[];
+};
+
+// Runs the whole deploy script against the platform stand-ins. The prior
+// release is Fly image ":prior" and revision "prior-release".
+async function withFakeReleasePlatform(
+  callback: (platform: {
+    deploy: (overrides?: Record<string, string>) => Promise<FakeReleaseRun>;
+  }) => Promise<void>,
+) {
+  await withFakeReleaseTools(async ({ environment, readLog }) => {
+    const fetchStub = path.join(
+      path.dirname(String(environment.FAKE_RELEASE_LOG)),
+      "fetch.mjs",
+    );
+    await writeFile(fetchStub, FAKE_PLATFORM_FETCH);
+    const configuration = releaseConfigurationEnvironment();
+    await callback({
+      async deploy(overrides = {}) {
+        const result = await runProcess(
+          process.execPath,
+          [
+            "--import",
+            pathToFileURL(fetchStub).href,
+            "scripts/deploy-production.mjs",
+          ],
+          {
+            ...environment,
+            ...configuration,
+            OMNIAGENT_RELEASE_SHA: FAKE_RELEASE_HEAD,
+            FAKE_GIT_HEAD: FAKE_RELEASE_HEAD,
+            FAKE_GH_COMPARE: JSON.stringify({
+              status: "identical",
+              ahead_by: 0,
+              behind_by: 0,
+            }),
+            FAKE_GH_CHECKS: releaseCheckRunsJson(FAKE_RELEASE_HEAD),
+            FAKE_PRIOR_REVISION: "prior-release",
+            // Newest first is a failed release; status case varies by flyctl.
+            FAKE_FLY_RELEASES: JSON.stringify([
+              {
+                Version: 13,
+                Status: "failed",
+                ImageRef: "registry.fly.io/omniagent-os-worker:failed",
+              },
+              {
+                Version: 12,
+                Status: "Complete",
+                ImageRef: "registry.fly.io/omniagent-os-worker:prior",
+              },
+              {
+                version: 11,
+                status: "complete",
+                imageRef: "registry.fly.io/omniagent-os-worker:older",
+              },
+            ]),
+            FAKE_FLY_SECRETS: "[]",
+            FAKE_GATEWAY_TOKENS: configuration.OMNIAGENT_OPENAI_GATEWAY_TOKEN,
+            FAKE_RELEASE_FAIL: "",
+            SMOKE_EXPECTED_REVISION: "",
+            EXPECTED_REVISION: "",
+            FLY_APP: "",
+            VERCEL_AUTOMATION_BYPASS_SECRET: "",
+            OMNIAGENT_DEPLOY_READINESS_TIMEOUT_MS: "1000",
+            OMNIAGENT_DEPLOY_READINESS_POLL_MS: "100",
+            OMNIAGENT_DEPLOY_GATEWAY_READINESS_TIMEOUT_MS: "1000",
+            OMNIAGENT_DEPLOY_GATEWAY_READINESS_POLL_MS: "100",
+            OMNIAGENT_DEPLOY_WORKER_STARTUP_SETTLE_MS: "0",
+            ...overrides,
+          },
+        );
+        return { ...result, log: await readLog() };
+      },
+    });
+  }, FAKE_PLATFORM_SCRIPTS);
+}
+
+// Secret values reach Fly only on stdin, so no command line or output carries
+// one. The stand-ins' own fetch and staging lines are left out.
+function expectNoSecretTokens(run: FakeReleaseRun, tokens: string[]) {
+  const visible = [
+    ...run.log.filter((line) => !/^(?:fetch|fly staged) /.test(line)),
+    run.stdout,
+    run.stderr,
+  ].join("\n");
+  for (const token of tokens) {
+    expect(visible).not.toContain(token);
   }
 }
 
