@@ -6,6 +6,11 @@ import { pipeline, Transform } from "node:stream";
 const MEBIBYTE = 1024 * 1024;
 const DEFAULT_PORT = 8080;
 const DEFAULT_CONCURRENCY = 8;
+const DEFAULT_QUEUE_TIMEOUT_MS = 10_000;
+// OpenAI is reported failing after this many failures in a row, the last
+// one recent.
+const UPSTREAM_FAILURES_TO_DEGRADE = 3;
+const UPSTREAM_FAILURE_WINDOW_MS = 60_000;
 const DEFAULT_SHUTDOWN_GRACE_MS = 280_000;
 const DEFAULT_OPENAI_UPSTREAM_HOST = "api.openai.com";
 const OPENAI_UPSTREAM_REGIONS = new Map([
@@ -137,6 +142,16 @@ export async function startOpenAIEgressGateway(options = {}) {
     1,
     16,
   );
+  // A request waits this long for a free slot, behind at most as many others
+  // as there are slots, before it is turned away.
+  const queueTimeoutMs = boundedInteger(
+    options.queueTimeoutMs ??
+      process.env.OMNIAGENT_OPENAI_GATEWAY_QUEUE_TIMEOUT_MS,
+    DEFAULT_QUEUE_TIMEOUT_MS,
+    0,
+    30_000,
+  );
+  const now = options.now || Date.now;
   const requestUpstream = options.upstreamRequest || httpsRequest;
   const agent = options.upstreamAgent === undefined
     ? upstreamAgent
@@ -145,6 +160,8 @@ export async function startOpenAIEgressGateway(options = {}) {
   const routeOverrides = options.routeOverrides || {};
   const liveUpstreams = new Set();
   const sockets = new Set();
+  const waiters = [];
+  const upstreamFailures = { consecutive: 0, lastAt: 0 };
   let activeRequests = 0;
   let closing = false;
   let closePromise;
@@ -224,21 +241,33 @@ export async function startOpenAIEgressGateway(options = {}) {
       request.resume();
       return;
     }
-    if (activeRequests >= maxConcurrency) {
-      rejectRequest(
-        response,
-        logger,
-        requestId,
-        parsed.route.id,
-        503,
-        "concurrency",
-        { "retry-after": "1" },
-      );
+    const queuedAt = Date.now();
+    const slot = await acquireSlot(response);
+    if (slot !== "granted") {
+      if (slot === "busy") {
+        rejectRequest(
+          response,
+          logger,
+          requestId,
+          parsed.route.id,
+          503,
+          "concurrency",
+          { "retry-after": "1" },
+        );
+      } else {
+        rejectRequest(
+          response,
+          logger,
+          requestId,
+          parsed.route.id,
+          slot === "closing" ? 503 : 499,
+          slot,
+        );
+      }
       request.resume();
       return;
     }
 
-    activeRequests += 1;
     try {
       await proxyToOpenAI({
         request,
@@ -251,12 +280,58 @@ export async function startOpenAIEgressGateway(options = {}) {
         agent,
         logger,
         liveUpstreams,
+        queuedMs: Date.now() - queuedAt,
+        recordUpstreamOutcome,
       });
     } finally {
       activeRequests -= 1;
+      waiters[0]?.settle("granted");
       if (closing && activeRequests === 0) {
         setImmediate(() => server.closeIdleConnections?.());
       }
+    }
+  }
+
+  /**
+   * Takes a slot, or waits in line for one. The outcome is "granted",
+   * "busy" when the line is full or the wait runs out, "closing", or
+   * "client_closed" when the caller leaves the line.
+   */
+  function acquireSlot(response) {
+    // A slot is handed straight to the next in line when it frees, so no one
+    // waits while one is free.
+    if (activeRequests < maxConcurrency) {
+      activeRequests += 1;
+      return "granted";
+    }
+    if (waiters.length >= maxConcurrency) return "busy";
+    return new Promise((resolve) => {
+      let settled = false;
+      const waiter = {
+        settle(outcome) {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          response.off("close", leave);
+          waiters.splice(waiters.indexOf(waiter), 1);
+          if (outcome === "granted") activeRequests += 1;
+          resolve(outcome);
+        },
+      };
+      const leave = () => waiter.settle("client_closed");
+      const timer = setTimeout(() => waiter.settle("busy"), queueTimeoutMs);
+      timer.unref?.();
+      response.once("close", leave);
+      waiters.push(waiter);
+    });
+  }
+
+  function recordUpstreamOutcome(outcome) {
+    if (outcome === "failure") {
+      upstreamFailures.consecutive += 1;
+      upstreamFailures.lastAt = now();
+    } else if (outcome === "success") {
+      upstreamFailures.consecutive = 0;
     }
   }
 
@@ -285,6 +360,7 @@ export async function startOpenAIEgressGateway(options = {}) {
     close({ graceMs = DEFAULT_SHUTDOWN_GRACE_MS } = {}) {
       if (closePromise) return closePromise;
       closing = true;
+      for (const waiter of [...waiters]) waiter.settle("closing");
       const boundedGraceMs = boundedInteger(graceMs, DEFAULT_SHUTDOWN_GRACE_MS, 0, 300_000);
       closePromise = new Promise((resolve) => {
         let settled = false;
@@ -320,9 +396,24 @@ export async function startOpenAIEgressGateway(options = {}) {
     },
   };
 
+  /**
+   * The gateway is degraded while every slot is taken or while OpenAI keeps
+   * failing, and draining once it is closing. Either way the check passes: a
+   * degraded gateway still serves, and a draining one takes no new
+   * connections.
+   */
   function healthPayload() {
+    const reasons = [];
+    if (activeRequests >= maxConcurrency) reasons.push("saturated");
+    if (
+      upstreamFailures.consecutive >= UPSTREAM_FAILURES_TO_DEGRADE &&
+      now() - upstreamFailures.lastAt <= UPSTREAM_FAILURE_WINDOW_MS
+    ) {
+      reasons.push("upstream_failing");
+    }
     return {
-      status: "healthy",
+      status: closing ? "draining" : reasons.length > 0 ? "degraded" : "healthy",
+      ...(reasons.length > 0 ? { reasons } : {}),
       service: "asael-openai-egress",
       region: safeRuntimeValue(process.env.FLY_REGION),
       revision: safeRuntimeValue(process.env.OMNIAGENT_RELEASE_SHA),
@@ -342,6 +433,8 @@ function proxyToOpenAI({
   agent,
   logger,
   liveUpstreams,
+  queuedMs,
+  recordUpstreamOutcome,
 }) {
   return new Promise((resolve) => {
     const startedAt = Date.now();
@@ -358,11 +451,13 @@ function proxyToOpenAI({
       completed = true;
       clearTimeout(timeout);
       if (upstream) liveUpstreams.delete(upstream);
+      recordUpstreamOutcome(upstreamOutcome(statusCode, errorKind));
       emitLog(logger, errorKind ? "warn" : "info", "openai_egress.completed", {
         requestId,
         route: route.id,
         method: route.method,
         statusCode,
+        queuedMs,
         durationMs: Date.now() - startedAt,
         ttfbMs,
         requestBytes,
@@ -595,6 +690,15 @@ function classifyProxyFailure(error) {
     return { statusCode: 499, kind: "client_closed", publicMessage: "Client disconnected." };
   }
   return { statusCode: 502, kind: "upstream_unavailable", publicMessage: "OpenAI is unavailable." };
+}
+
+/** Whether a proxied request shows OpenAI failing, working, or neither. */
+function upstreamOutcome(statusCode, errorKind) {
+  if (errorKind === "upstream_unavailable" || errorKind === "upstream_timeout") {
+    return "failure";
+  }
+  if (errorKind) return "neutral";
+  return statusCode >= 500 ? "failure" : "success";
 }
 
 function rejectRequest(response, logger, requestId, route, statusCode, reason, headers) {

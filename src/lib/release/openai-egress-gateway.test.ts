@@ -361,6 +361,7 @@ describe("Fly OpenAI egress gateway", () => {
     });
     const gateway = await startGateway(upstream.baseUrl, {
       maxConcurrency: 1,
+      queueTimeoutMs: 0,
       routeOverrides: { model_readiness: { timeoutMs: 40 } },
     });
 
@@ -385,6 +386,156 @@ describe("Fly OpenAI egress gateway", () => {
     });
     expect(timedOut.status).toBe(504);
     expect(upstreamRequests).toBe(2);
+  });
+
+  it("holds a request in a bounded line until a slot frees", async () => {
+    const lines: string[] = [];
+    const logger = { log: (line: string) => lines.push(line), warn() {}, error() {} };
+    const { upstream, releases } = await startHeldUpstream();
+    const gateway = await startGateway(upstream.baseUrl, {
+      maxConcurrency: 1,
+      queueTimeoutMs: 5_000,
+      logger,
+    });
+    const post = () => postResponse(gateway.baseUrl);
+
+    const first = post();
+    await until(() => releases.length === 1);
+    expect(gateway.health()).toMatchObject({ status: "degraded", reasons: ["saturated"] });
+    const secondArrived = nextRequest(gateway.server);
+    const second = post();
+    await secondArrived;
+    // One slot allows one request in line, and the next is turned away at once.
+    const thirdAt = Date.now();
+    const third = await post();
+    expect(third.status).toBe(503);
+    expect(third.headers.get("retry-after")).toBe("1");
+    expect(Date.now() - thirdAt).toBeLessThan(1_000);
+
+    await delay(20);
+    releases.shift()!();
+    expect((await first).status).toBe(200);
+    await until(() => releases.length === 1);
+    // The slot passed to the request in line is still taken.
+    expect(gateway.health()).toMatchObject({ status: "degraded", reasons: ["saturated"] });
+    releases.shift()!();
+    expect((await second).status).toBe(200);
+    expect(gateway.health()).toEqual(expect.objectContaining({ status: "healthy" }));
+    expect(gateway.health()).not.toHaveProperty("reasons");
+
+    const completed = lines
+      .map((line) => JSON.parse(line))
+      .filter((entry) => entry.event === "openai_egress.completed");
+    expect(completed.map((entry) => entry.statusCode)).toEqual([200, 200]);
+    expect(completed[1].queuedMs).toBeGreaterThanOrEqual(15);
+    expect(completed[1].queuedMs).toBeGreaterThan(completed[0].queuedMs);
+  });
+
+  it("turns a waiting request away when its wait runs out, its caller leaves, or the gateway closes", async () => {
+    const lines: string[] = [];
+    const logger = { log: (line: string) => lines.push(line), warn: (line: string) => lines.push(line), error() {} };
+    const { upstream, releases } = await startHeldUpstream();
+    const brief = await startGateway(upstream.baseUrl, { maxConcurrency: 1, queueTimeoutMs: 50 });
+    const firstBrief = postResponse(brief.baseUrl);
+    await until(() => releases.length === 1);
+    const startedAt = Date.now();
+    const timedOut = await postResponse(brief.baseUrl);
+    expect(timedOut.status).toBe(503);
+    expect(timedOut.headers.get("retry-after")).toBe("1");
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(45);
+    releases.shift()!();
+    expect((await firstBrief).status).toBe(200);
+
+    const gateway = await startGateway(upstream.baseUrl, {
+      maxConcurrency: 1,
+      queueTimeoutMs: 5_000,
+      logger,
+    });
+    const first = postResponse(gateway.baseUrl);
+    await until(() => releases.length === 1);
+    const controller = new AbortController();
+    const leaverArrived = nextRequest(gateway.server);
+    const leaver = postResponse(gateway.baseUrl, controller.signal).catch((error: unknown) => error);
+    await leaverArrived;
+    controller.abort();
+    expect(await leaver).toBeInstanceOf(Error);
+    await until(() => lines.some((line) => line.includes('"reason":"client_closed"')));
+
+    // The caller who left gave up its place, so the next one can wait.
+    const waitingArrived = nextRequest(gateway.server);
+    const waiting = postResponse(gateway.baseUrl);
+    await waitingArrived;
+    const close = gateway.close({ graceMs: 1_000 });
+    expect((await waiting).status).toBe(503);
+    releases.shift()!();
+    expect((await first).status).toBe(200);
+    await close;
+    expect(
+      lines
+        .map((line) => JSON.parse(line))
+        .filter((entry) => entry.event === "openai_egress.rejected")
+        .map((entry) => [entry.statusCode, entry.reason]),
+    ).toEqual([[499, "client_closed"], [503, "closing"]]);
+  });
+
+  it("reports OpenAI failing after three failures in a row, until it answers or a minute passes", async () => {
+    let clock = 1_000_000;
+    let mode: "fail" | "hang" | "limited" = "fail";
+    let received = 0;
+    const lines: string[] = [];
+    const logger = { log() {}, warn: (line: string) => lines.push(line), error() {} };
+    const upstream = await startServer(async (request, response) => {
+      for await (const chunk of request) void chunk;
+      received += 1;
+      if (mode === "hang") return;
+      response.writeHead(mode === "fail" ? 500 : 429, { "content-type": "application/json" });
+      response.end("{}");
+    });
+    const gateway = await startGateway(upstream.baseUrl, {
+      now: () => clock,
+      logger,
+      routeOverrides: { responses: { timeoutMs: 200 } },
+    });
+    const post = async () => (await postResponse(gateway.baseUrl)).status;
+
+    expect(await post()).toBe(500);
+    mode = "hang";
+    expect(await post()).toBe(504);
+    expect(gateway.health().status).toBe("healthy");
+    // A caller who leaves says nothing about OpenAI.
+    const controller = new AbortController();
+    const leaver = postResponse(gateway.baseUrl, controller.signal).catch((error: unknown) => error);
+    await until(() => received === 3);
+    controller.abort();
+    expect(await leaver).toBeInstanceOf(Error);
+    await until(() => lines.some((line) => line.includes('"errorKind":"client_closed"')));
+    expect(gateway.health().status).toBe("healthy");
+    mode = "fail";
+    expect(await post()).toBe(500);
+    expect(gateway.health()).toMatchObject({ status: "degraded", reasons: ["upstream_failing"] });
+    // A degraded gateway still serves, so the check passes.
+    const health = await fetch(`${gateway.baseUrl}/healthz`);
+    expect([health.status, (await health.json()).status]).toEqual([200, "degraded"]);
+
+    clock += 60_000;
+    expect(gateway.health().status).toBe("degraded");
+    clock += 1;
+    expect(gateway.health().status).toBe("healthy");
+    expect(await post()).toBe(500);
+    expect(gateway.health().status).toBe("degraded");
+    // A rate limit is OpenAI answering.
+    mode = "limited";
+    expect(await post()).toBe(429);
+    expect(gateway.health().status).toBe("healthy");
+
+    // So is one that cannot be reached.
+    const closed = await startServer(() => {});
+    await new Promise((resolve) => closed.server.close(resolve));
+    const unreachable = await startGateway(closed.baseUrl);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      expect((await postResponse(unreachable.baseUrl)).status).toBe(502);
+    }
+    expect(unreachable.health().status).toBe("degraded");
   });
 
   it("stops accepting connections while allowing an active stream to drain", async () => {
@@ -412,6 +563,13 @@ describe("Fly OpenAI egress gateway", () => {
 
     let closed = false;
     const close = gateway.close({ graceMs: 1_000 }).then(() => { closed = true; });
+    expect(gateway.health()).toEqual({
+      status: "draining",
+      service: "asael-openai-egress",
+      region: "unknown",
+      revision: "unknown",
+      protocol: "1",
+    });
     await delay(30);
     expect(closed).toBe(false);
     releaseStream();
@@ -483,6 +641,37 @@ async function startGateway(
   const address = gateway.address;
   if (!address || typeof address === "string") throw new Error("Gateway did not bind TCP.");
   return { ...gateway, baseUrl: `http://127.0.0.1:${address.port}` };
+}
+
+/** An upstream that answers each request only when the test releases it. */
+async function startHeldUpstream() {
+  const releases: Array<() => void> = [];
+  const upstream = await startServer(async (request, response) => {
+    for await (const chunk of request) void chunk;
+    await new Promise<void>((resolve) => releases.push(resolve));
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end('{"output":[]}');
+  });
+  return { upstream, releases };
+}
+
+function postResponse(baseUrl: string, signal?: AbortSignal) {
+  return fetch(`${baseUrl}/v1/responses`, {
+    method: "POST",
+    headers: gatewayHeaders(),
+    body: "{}",
+    signal,
+  });
+}
+
+/** Resolves once the gateway has taken in its next request. */
+function nextRequest(server: Server) {
+  return new Promise<void>((resolve) => server.once("request", () => resolve()));
+}
+
+async function until(condition: () => boolean) {
+  for (let attempt = 0; attempt < 200 && !condition(); attempt += 1) await delay(10);
+  expect(condition()).toBe(true);
 }
 
 async function startServer(

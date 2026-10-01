@@ -739,9 +739,10 @@ describe("paired production deployment", () => {
       }
       response.writeHead(200);
       response.end(JSON.stringify({
-        status: "healthy",
+        // A draining gateway is not ready; a degraded one still serves.
+        status: ["draining", "healthy", "degraded"][healthRequests - 2] ?? "healthy",
         service: "asael-openai-egress",
-        region: healthRequests === 2 ? "sin" : "iad",
+        region: healthRequests === 3 ? "sin" : "iad",
         revision: "release-ready",
         protocol: "1",
         secret: token,
@@ -763,8 +764,8 @@ describe("paired production deployment", () => {
       );
 
       expect(result.code, `${result.stdout}\n${result.stderr}`).toBe(0);
-      expect(healthRequests).toBe(4);
-      expect(observedPaths.filter((value) => value === "/healthz")).toHaveLength(4);
+      expect(healthRequests).toBe(5);
+      expect(observedPaths.filter((value) => value === "/healthz")).toHaveLength(5);
       expect(observedPaths.filter((value) => value === "/v1/models/authorization-probe")).toHaveLength(2);
       expect(observedTokens).toContain(token);
       expect(observedTokens).toContain(previousToken);

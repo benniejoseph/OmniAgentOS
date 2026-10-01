@@ -105,6 +105,9 @@ const advisorySloPolicyIds = new Set([
 const openAIGatewayService = "asael-openai-egress";
 const openAIGatewayRegion = "iad";
 const openAIGatewayProtocol = "1";
+// A degraded gateway still serves: it is busy, or OpenAI is failing, and
+// neither is the release's to fix.
+const openAIGatewayServingStatuses = new Set(["healthy", "degraded"]);
 const openAIGatewayProductionBaseUrl =
   "https://omniagent-os-worker.fly.dev/v1";
 const releaseEvidenceCache = new Map<
@@ -298,8 +301,8 @@ async function collectReleaseEvidenceReport(
         : "pass",
       summary: openAIGateway.required || openAIGateway.present
         ? openAIGateway.ready
-          ? "The OpenAI gateway is healthy in the US and matches this release and protocol."
-          : "The Singapore deployment does not have a healthy, release-matched US OpenAI gateway."
+          ? "The OpenAI gateway is serving in the US and matches this release and protocol."
+          : "The Singapore deployment does not have a serving, release-matched US OpenAI gateway."
         : "The US OpenAI gateway is not required for this deployment region.",
       details: openAIGateway,
     },
@@ -599,7 +602,7 @@ async function getOpenAIGatewayEvidence(
     configured,
     safeConfiguration,
     reachable: false,
-    healthy: false,
+    serving: false,
     serviceMatches: false,
     regionMatches: false,
     revisionMatches: false,
@@ -636,7 +639,9 @@ async function getOpenAIGatewayEvidence(
   const observation = {
     ...empty,
     reachable: response.status === 200,
-    healthy: body?.status === "healthy",
+    serving:
+      typeof body?.status === "string" &&
+      openAIGatewayServingStatuses.has(body.status),
     serviceMatches: body?.service === openAIGatewayService,
     regionMatches: body?.region === openAIGatewayRegion,
     revisionMatches: Boolean(
@@ -648,7 +653,7 @@ async function getOpenAIGatewayEvidence(
     ...observation,
     ready:
       observation.reachable &&
-      observation.healthy &&
+      observation.serving &&
       observation.serviceMatches &&
       observation.regionMatches &&
       observation.revisionMatches &&

@@ -62,6 +62,7 @@ describe("release evidence", () => {
     const order: string[] = [];
     let gatewayRevision = revision;
     let gatewayRegion = "iad";
+    let gatewayStatus = "healthy";
     let observedGatewayToken: string | undefined;
     const gatewayFetch = vi.fn(async (
       input: string | URL | Request,
@@ -75,7 +76,7 @@ describe("release evidence", () => {
         "https://omniagent-os-worker.fly.dev/healthz",
       );
       return new Response(JSON.stringify({
-        status: "healthy",
+        status: gatewayStatus,
         service: "asael-openai-egress",
         region: gatewayRegion,
         revision: gatewayRevision,
@@ -250,6 +251,18 @@ describe("release evidence", () => {
     expect(JSON.stringify(gatewayMismatch)).not.toContain(gatewayToken);
     gatewayRevision = revision;
     gatewayRegion = "iad";
+
+    // A busy gateway, or one whose OpenAI calls are failing, still serves; a
+    // draining one does not.
+    const gatewayGate = async (status: string) => {
+      gatewayStatus = status;
+      const evidence = await getReleaseEvidenceReport(`gateway-${status}`);
+      const gate = evidence.gates.find((entry) => entry.id === "openai_us_egress_gateway");
+      return [evidence.releaseGate.approved, gate?.status, (gate?.details as { serving?: boolean })?.serving];
+    };
+    expect(await gatewayGate("degraded")).toEqual([true, "pass", true]);
+    expect(await gatewayGate("draining")).toEqual([false, "fail", false]);
+    gatewayStatus = "healthy";
 
     const gatewayFetchesBeforeSpoof = gatewayFetch.mock.calls.length;
     vi.stubEnv(

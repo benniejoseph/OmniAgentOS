@@ -37,6 +37,9 @@ const VERCEL_DEPLOYMENT_HOST_PATTERN =
 const OPENAI_GATEWAY_SERVICE = "asael-openai-egress";
 const OPENAI_GATEWAY_REGION = "iad";
 const OPENAI_GATEWAY_PROTOCOL = "1";
+// A degraded gateway still serves: it is busy, or OpenAI is failing, and
+// neither is the release's to fix.
+const OPENAI_GATEWAY_SERVING_STATUSES = new Set(["healthy", "degraded"]);
 const OPENAI_GATEWAY_URL = "https://omniagent-os-worker.fly.dev/v1";
 const OPENAI_GATEWAY_TOKEN_ENV = "OMNIAGENT_OPENAI_GATEWAY_TOKEN";
 const OPENAI_GATEWAY_PREVIOUS_TOKEN_ENV =
@@ -1440,7 +1443,7 @@ async function readGatewayHealthObservation(response, expectedRevision) {
     bodyState: result.exceeded ? "oversized" : body ? "json" : "invalid",
     revision:
       typeof body?.revision === "string" ? body.revision : undefined,
-    healthy: body?.status === "healthy",
+    serving: OPENAI_GATEWAY_SERVING_STATUSES.has(body?.status),
     serviceMatches: body?.service === OPENAI_GATEWAY_SERVICE,
     regionMatches: body?.region === OPENAI_GATEWAY_REGION,
     revisionMatches: body?.revision === expectedRevision,
@@ -1451,7 +1454,7 @@ async function readGatewayHealthObservation(response, expectedRevision) {
 function gatewayHealthObservationReady(observation) {
   return (
     observation.httpStatus === 200 &&
-    observation.healthy &&
+    observation.serving &&
     observation.serviceMatches &&
     observation.regionMatches &&
     observation.revisionMatches &&
@@ -1463,7 +1466,7 @@ function formatGatewayHealthObservation(observation) {
   return [
     `http=${observation.httpStatus}`,
     `body=${observation.bodyState}`,
-    `healthy=${observation.healthy}`,
+    `serving=${observation.serving}`,
     `service=${observation.serviceMatches}`,
     `region=${observation.regionMatches}`,
     `revision=${observation.revisionMatches}`,
