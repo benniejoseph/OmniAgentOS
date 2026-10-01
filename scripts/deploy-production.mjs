@@ -46,6 +46,7 @@ const OPENAI_GATEWAY_PREVIOUS_TOKEN_ENV =
   "OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN";
 const OPENAI_GATEWAY_INITIAL_CUTOVER_ENV =
   "OMNIAGENT_OPENAI_GATEWAY_INITIAL_CUTOVER";
+const RELEASE_SPLIT_RECOVERY_ENV = "OMNIAGENT_RELEASE_SPLIT_RECOVERY";
 const PAID_INFERENCE_SENTINEL = "ASAEL_RELEASE_OK";
 const PAID_INFERENCE_MAX_OUTPUT_TOKENS = 16;
 // This identifier is never sent to OpenAI. The gateway rejects the request at
@@ -264,6 +265,7 @@ const productionBaseUrl = releaseConfiguration.baseUrl;
 const openAIGateway = releaseConfiguration.openAIGateway;
 const initialOpenAIGatewayCutover =
   releaseConfiguration.initialOpenAIGatewayCutover;
+const splitRecovery = releaseConfiguration.splitRecovery;
 await requireCleanWorkingTree();
 // Vercel and Fly build the checked-out tree, so prove that tree is a reviewed
 // commit on main with green CI before spending time on local verification.
@@ -281,9 +283,19 @@ const previousHealthRevision = await getCurrentHealthRevision(
 const rollbackOpenAIGateway = openAIGateway && !initialOpenAIGatewayCutover
   ? createRollbackGatewayConfiguration(openAIGateway)
   : undefined;
+// A rollback restores the gateway to the revision it serves now. That is the
+// web's revision unless production is split.
+const previousGatewayRevision = splitRecovery
+  ? await getSplitGatewayRevision(openAIGateway, previousHealthRevision)
+  : previousHealthRevision;
 if (initialOpenAIGatewayCutover) {
   console.log(
     "Initial OpenAI gateway cutover confirmed: prior-gateway preflight is skipped and rollback uses the pre-gateway worker topology.",
+  );
+}
+if (splitRecovery) {
+  console.log(
+    `Split production recovery confirmed: web ${previousHealthRevision} and gateway ${previousGatewayRevision} are each checked, and restored together on rollback.`,
   );
 }
 if (rollbackOpenAIGateway) {
@@ -291,7 +303,7 @@ if (rollbackOpenAIGateway) {
   // reaches the current Fly revision before either platform is mutated.
   await waitForOpenAIGatewayReadiness(
     rollbackOpenAIGateway,
-    previousHealthRevision,
+    previousGatewayRevision,
     { label: "Rollback gateway preflight" },
   ).catch((error) => fail(errorMessage(error)));
 }
@@ -299,15 +311,28 @@ if (rollbackOpenAIGateway) {
 let workerMutationStarted = false;
 let vercelPromoted = false;
 try {
-  await run("npm", ["run", "smoke:release"], {
-    environment: {
-      BASE_URL: productionBaseUrl,
-      // Release evidence intentionally performs ordered database, worker, SLO,
-      // and provider checks. Its normal cold path can exceed the generic 15s
-      // HTTP smoke deadline without indicating an unhealthy deployment.
-      SMOKE_REQUEST_TIMEOUT_MS: "60000",
-    },
-  });
+  if (splitRecovery) {
+    // Release evidence fails a split production on its worker and gateway
+    // revision gates, so only its health and cron authentication can pass.
+    await run("npm", ["run", "smoke:preflight"], {
+      environment: {
+        BASE_URL: productionBaseUrl,
+        SMOKE_EXPECTED_REVISION: previousHealthRevision,
+        SMOKE_REQUEST_TIMEOUT_MS: "60000",
+      },
+    });
+  } else {
+    await run("npm", ["run", "smoke:release"], {
+      environment: {
+        BASE_URL: productionBaseUrl,
+        // Release evidence intentionally performs ordered database, worker,
+        // SLO, and provider checks. Its normal cold path can exceed the
+        // generic 15s HTTP smoke deadline without indicating an unhealthy
+        // deployment.
+        SMOKE_REQUEST_TIMEOUT_MS: "60000",
+      },
+    });
+  }
   const deploymentOutput = await capture(
     "vercel",
     [
@@ -433,6 +458,7 @@ try {
       productionBaseUrl,
       previousHealthRevision,
       rollbackOpenAIGateway,
+      previousGatewayRevision,
     ).catch((rollbackError) => {
       rollbackErrors.push(
         `Rollback verification failed: ${errorMessage(rollbackError)}`,
@@ -551,12 +577,19 @@ function validateReleaseConfiguration() {
     gateway: openAIGateway,
     previousToken,
   });
+  const splitRecovery = validateSplitRecovery({
+    value: process.env[RELEASE_SPLIT_RECOVERY_ENV],
+    gateway: openAIGateway,
+    previousToken,
+    initialOpenAIGatewayCutover,
+  });
   if (openAIGateway && openAIGateway.baseUrl.origin === productionOrigin) {
     fail("OMNIAGENT_OPENAI_GATEWAY_URL must use a separate gateway origin.");
   }
   return {
     baseUrl,
     initialOpenAIGatewayCutover,
+    splitRecovery,
     openAIGateway: openAIGateway
       ? withPreviousGatewayToken(openAIGateway, previousToken)
       : undefined,
@@ -695,6 +728,74 @@ function validateInitialOpenAIGatewayCutover({
     );
   }
   return true;
+}
+
+// A release whose web rollback failed leaves the web and the gateway on
+// different revisions, and no release can then pass a check of the pair. The
+// confirmed flag checks each half at its own revision instead.
+function validateSplitRecovery({
+  value,
+  gateway,
+  previousToken,
+  initialOpenAIGatewayCutover,
+}) {
+  const confirmation = String(value || "").trim();
+  if (!confirmation) return false;
+  if (confirmation !== "CONFIRMED") {
+    fail(`${RELEASE_SPLIT_RECOVERY_ENV} must equal CONFIRMED.`);
+  }
+  if (!gateway) {
+    fail(
+      `${RELEASE_SPLIT_RECOVERY_ENV} requires a complete OpenAI gateway configuration.`,
+    );
+  }
+  if (previousToken) {
+    fail(
+      `${RELEASE_SPLIT_RECOVERY_ENV} cannot be used with ${OPENAI_GATEWAY_PREVIOUS_TOKEN_ENV}.`,
+    );
+  }
+  if (initialOpenAIGatewayCutover) {
+    fail(
+      `${RELEASE_SPLIT_RECOVERY_ENV} cannot be used with ${OPENAI_GATEWAY_INITIAL_CUTOVER_ENV}.`,
+    );
+  }
+  return true;
+}
+
+async function getSplitGatewayRevision(gateway, webRevision) {
+  let observation;
+  try {
+    const response = await fetch(new URL("/healthz", gateway.baseUrl.origin), {
+      cache: "no-store",
+      headers: {
+        accept: "application/json",
+        "x-asael-gateway-token": gateway.token,
+      },
+      redirect: "manual",
+      signal: AbortSignal.timeout(gatewayReadinessRequestTimeoutMs),
+    });
+    observation = await readGatewayHealthObservation(response, webRevision);
+  } catch (error) {
+    fail(
+      `Unable to read the current gateway revision: ${safeDiagnostic(errorMessage(error))}`,
+    );
+  }
+  if (
+    observation.httpStatus !== 200 ||
+    !observation.revision ||
+    observation.revision.length > 200 ||
+    !/^[a-zA-Z0-9._:-]+$/.test(observation.revision)
+  ) {
+    fail(
+      `The current gateway must report a bounded revision; observed ${formatGatewayHealthObservation(observation)}.`,
+    );
+  }
+  if (observation.revisionMatches) {
+    fail(
+      `Production web and gateway both serve ${webRevision}; unset ${RELEASE_SPLIT_RECOVERY_ENV}.`,
+    );
+  }
+  return observation.revision;
 }
 
 function withPreviousGatewayToken(gateway, previousToken) {
@@ -1039,6 +1140,7 @@ async function runRollbackVerification(
   baseUrl,
   expectedRevision,
   rollbackGateway,
+  gatewayRevision = expectedRevision,
 ) {
   await waitForDeploymentReadiness(baseUrl, expectedRevision, {
     label: "Rollback web",
@@ -1046,7 +1148,7 @@ async function runRollbackVerification(
   if (rollbackGateway) {
     await waitForOpenAIGatewayTokenPair(
       rollbackGateway,
-      expectedRevision,
+      gatewayRevision,
       { label: "Rollback gateway" },
     );
   }

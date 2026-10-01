@@ -14,6 +14,7 @@
 - [ ] Load the non-exportable active gateway token from the owner's password manager with the silent-prompt procedure in `docs/deployment.md`. If rotating, also load the distinct token embedded in the currently promoted Vercel release as `OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN`; otherwise ensure that variable is unset. Confirm all shell values will be unset after the release.
 - [ ] During rotation, keep the prior Vercel token accepted on Fly through staged verification, promotion, and the rollback window. Do not set the previous token on Vercel or retire it between paired release stages.
 - [ ] For the first gateway rollout only, set `OMNIAGENT_OPENAI_GATEWAY_INITIAL_CUTOVER=CONFIRMED`, verify `fly.initial-cutover-rollback.toml`, and unset the flag after success. Never reuse it for an established gateway or a token rotation.
+- [ ] Only when the promoted web and the Fly gateway report different revisions, set `OMNIAGENT_RELEASE_SPLIT_RECOVERY=CONFIRMED` for the one repairing release, then unset it. The runner refuses it when both serve one revision.
 - [ ] Confirm `OMNIAGENT_MAINTENANCE_DATABASE_URL` uses a dedicated non-superuser `BYPASSRLS` role against the same logical database as `DATABASE_URL`.
 - [ ] Confirm alert destinations, data-retention policy, connector allowlist, and worker capacity.
 - [ ] Confirm the worker retention sweep is enabled and legal-hold/export needs are handled outside automatic deletion.

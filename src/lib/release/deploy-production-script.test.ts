@@ -389,6 +389,7 @@ describe("paired production deployment", () => {
       OMNIAGENT_OPENAI_GATEWAY_TOKEN: "",
       OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN: "",
       OMNIAGENT_OPENAI_GATEWAY_INITIAL_CUTOVER: "",
+      OMNIAGENT_RELEASE_SPLIT_RECOVERY: "",
     };
     const missing = await runProcess(
       process.execPath,
@@ -516,6 +517,41 @@ describe("paired production deployment", () => {
     );
     expect(unconfirmedInitialCutover.code).toBe(1);
     expect(unconfirmedInitialCutover.stderr).toContain("must equal CONFIRMED");
+
+    const gatewayEnvironment = {
+      ...baseEnvironment,
+      OMNIAGENT_OPENAI_GATEWAY_URL: "https://omniagent-os-worker.fly.dev/v1",
+      OMNIAGENT_OPENAI_GATEWAY_TOKEN: token,
+    };
+    for (const [overrides, error] of [
+      [{ OMNIAGENT_RELEASE_SPLIT_RECOVERY: "CONFIRMED" }, ""],
+      [
+        { OMNIAGENT_RELEASE_SPLIT_RECOVERY: "true" },
+        "OMNIAGENT_RELEASE_SPLIT_RECOVERY must equal CONFIRMED",
+      ],
+      [
+        {
+          OMNIAGENT_RELEASE_SPLIT_RECOVERY: "CONFIRMED",
+          OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN: previousToken,
+        },
+        "OMNIAGENT_RELEASE_SPLIT_RECOVERY cannot be used with OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN",
+      ],
+      [
+        {
+          OMNIAGENT_RELEASE_SPLIT_RECOVERY: "CONFIRMED",
+          OMNIAGENT_OPENAI_GATEWAY_INITIAL_CUTOVER: "CONFIRMED",
+        },
+        "OMNIAGENT_RELEASE_SPLIT_RECOVERY cannot be used with OMNIAGENT_OPENAI_GATEWAY_INITIAL_CUTOVER",
+      ],
+    ] as const) {
+      const splitRecovery = await runProcess(
+        process.execPath,
+        ["scripts/deploy-production.mjs", "--configuration-probe"],
+        { ...gatewayEnvironment, ...overrides },
+      );
+      expect(splitRecovery.code).toBe(error ? 1 : 0);
+      expect(splitRecovery.stderr).toContain(error);
+    }
 
     const duplicate = await runProcess(
       process.execPath,
@@ -1227,6 +1263,103 @@ describe("rolling back a failed production release", () => {
     });
   });
 
+  it("replaces a split production and rolls back to the same split", async () => {
+    await withFakeReleasePlatform(async ({ deploy }) => {
+      // The web serves "prior-release" but the gateway an older worker.
+      const split = { FAKE_PRIOR_GATEWAY_REVISION: "prior-gateway" };
+      const preDeploy = [
+        `npm run verify against ${canonical}`,
+        "fly releases --app omniagent-os-worker --image --json",
+        `vercel inspect ${canonical} --format=json --scope benniejosephs-projects`,
+        `fetch ${canonical}/api/health`,
+      ];
+
+      // Without the flag no release can start from a split production.
+      const blocked = await deploy(split);
+      expect(blocked.code).toBe(1);
+      expect(blocked.stderr).toContain(
+        "Rollback gateway preflight did not become ready",
+      );
+      const blockedStart = blocked.log.indexOf(preDeploy[0]);
+      expect(
+        blocked.log.slice(blockedStart, blockedStart + preDeploy.length),
+      ).toEqual(preDeploy);
+      expect(
+        new Set(blocked.log.slice(blockedStart + preDeploy.length)),
+      ).toEqual(new Set([`fetch ${gateway}/healthz with ${activeToken}`]));
+
+      const failure = `npm run test:production-smoke against ${canonical} expecting ${head}`;
+      const result = await deploy({
+        ...split,
+        OMNIAGENT_RELEASE_SPLIT_RECOVERY: "CONFIRMED",
+        FAKE_RELEASE_FAIL: failure,
+      });
+      expect(result.code).toBe(1);
+      expect(result.stdout).toContain(
+        "Split production recovery confirmed: web prior-release and gateway prior-gateway",
+      );
+      expect(result.stderr).toBe(
+        "Production deployment failed: npm run test:production-smoke failed with exit code 1.\n",
+      );
+      const stagedDeploy = `vercel deploy --prod --skip-domain --yes --scope benniejosephs-projects --env OMNIAGENT_RELEASE_SHA=${head}`;
+      expect(
+        result.log.slice(
+          result.log.indexOf(preDeploy[0]),
+          result.log.indexOf(stagedDeploy) + 1,
+        ),
+      ).toEqual([
+        ...preDeploy,
+        `fetch ${gateway}/healthz with ${activeToken}`,
+        // The running gateway is checked at its own revision.
+        ...gatewayChecks(activeToken),
+        `npm run smoke:preflight against ${canonical} expecting prior-release`,
+        stagedDeploy,
+      ]);
+      expect(result.log.slice(result.log.indexOf(failure))).toEqual([
+        failure,
+        listSecrets,
+        stageSecrets,
+        staging(activeToken),
+        workerRollback,
+        webRollback,
+        `fetch ${canonical}/api/health`,
+        ...gatewayChecks(activeToken),
+        rollbackVerified,
+      ]);
+    });
+  });
+
+  it("refuses split recovery unless the gateway reports its own bounded revision", async () => {
+    await withFakeReleasePlatform(async ({ deploy }) => {
+      const paired = await deploy({ OMNIAGENT_RELEASE_SPLIT_RECOVERY: "CONFIRMED" });
+
+      expect(paired.code).toBe(1);
+      expect(paired.stderr).toContain(
+        "Production web and gateway both serve prior-release; unset OMNIAGENT_RELEASE_SPLIT_RECOVERY.",
+      );
+      expect(paired.log.slice(-2)).toEqual([
+        `fetch ${canonical}/api/health`,
+        `fetch ${gateway}/healthz with ${activeToken}`,
+      ]);
+
+      for (const revision of ["r".repeat(201), "prior gateway"]) {
+        const unbounded = await deploy({
+          FAKE_PRIOR_GATEWAY_REVISION: revision,
+          OMNIAGENT_RELEASE_SPLIT_RECOVERY: "CONFIRMED",
+        });
+
+        expect(unbounded.code).toBe(1);
+        expect(unbounded.stderr).toContain(
+          "The current gateway must report a bounded revision; observed http=200",
+        );
+        expect(unbounded.stderr).not.toContain(revision);
+        expect(unbounded.log.at(-1)).toBe(
+          `fetch ${gateway}/healthz with ${activeToken}`,
+        );
+      }
+    });
+  });
+
   it("rolls an initial gateway cutover back to the worker without a gateway", async () => {
     await withFakeReleasePlatform(async ({ deploy }) => {
       const failure = `npm run test:production-smoke against ${staged} expecting ${head}`;
@@ -1331,6 +1464,7 @@ function releaseConfigurationEnvironment() {
       "gateway_token_abcdefghijklmnopqrstuvwxyz123456",
     OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN: "",
     OMNIAGENT_OPENAI_GATEWAY_INITIAL_CUTOVER: "",
+    OMNIAGENT_RELEASE_SPLIT_RECOVERY: "",
   };
 }
 
@@ -1467,7 +1601,7 @@ globalThis.fetch = async (input, init = {}) => {
       : (process.env.FAKE_GATEWAY_TOKENS || "").split(" ");
     const revision = lines[deployed]?.includes("OMNIAGENT_RELEASE_SHA=" + OMNIAGENT_RELEASE_SHA)
       ? OMNIAGENT_RELEASE_SHA
-      : FAKE_PRIOR_REVISION;
+      : process.env.FAKE_PRIOR_GATEWAY_REVISION || FAKE_PRIOR_REVISION;
     if (url.pathname === "/healthz") {
       return json(200, {
         status: "healthy",
@@ -1503,7 +1637,8 @@ type FakeReleaseRun = {
 };
 
 // Runs the whole deploy script against the platform stand-ins. The prior
-// release is Fly image ":prior" and revision "prior-release".
+// release is Fly image ":prior" and revision "prior-release", which its
+// gateway also serves unless FAKE_PRIOR_GATEWAY_REVISION says otherwise.
 async function withFakeReleasePlatform(
   callback: (platform: {
     deploy: (overrides?: Record<string, string>) => Promise<FakeReleaseRun>;
@@ -1537,6 +1672,7 @@ async function withFakeReleasePlatform(
             }),
             FAKE_GH_CHECKS: releaseCheckRunsJson(FAKE_RELEASE_HEAD),
             FAKE_PRIOR_REVISION: "prior-release",
+            FAKE_PRIOR_GATEWAY_REVISION: "",
             // Newest first is a failed release; status case varies by flyctl.
             FAKE_FLY_RELEASES: JSON.stringify([
               {

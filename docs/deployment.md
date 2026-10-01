@@ -1478,6 +1478,16 @@ image after restoring the previous Vercel release. The flag is rejected during
 a token rotation and must be unset immediately after the first successful
 rollout. It must never be configured as a persistent Vercel or Fly variable.
 
+If a failed rollback left the promoted web and the Fly gateway on different
+revisions, no release can pass the prior-pair checks. Export
+`OMNIAGENT_RELEASE_SPLIT_RECOVERY=CONFIRMED` for the one release that repairs
+it. The runner then checks the gateway at the revision it reports, runs
+`smoke:preflight` instead of `smoke:release` against the web, and verifies a
+rollback against both recorded revisions. The new release still passes every
+staged and canonical gate. The flag is rejected when both platforms serve one
+revision, during a token rotation, and with the initial cutover; unset it after
+the release and never store it as a Vercel or Fly variable.
+
 Do not place either gateway token in `.env`, a command argument, shell history, CI output, or `BASE_URL`. The release runner sends Fly secret values only over suppressed stdin; values are never put in a subprocess argument or diagnostic. `OPENAI_API_KEY` remains a non-exportable Vercel secret and is deliberately absent from normal release configuration.
 
 Do not set `OPENAI_API_KEY` on Fly. `/healthz` is the intentionally minimal, non-sensitive Fly liveness route and returns only status, service, Fly region, release revision, and gateway protocol. `/v1/*` proxy requests require `x-asael-gateway-token` plus the OpenAI `Authorization` header supplied by Vercel. Gateway readiness also calls the allowlisted model-readiness path without an OpenAI Authorization header: HTTP 400 proves that the supplied gateway token reached the authorization boundary without making an upstream or paid request.
