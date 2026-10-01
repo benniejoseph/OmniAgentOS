@@ -54,6 +54,38 @@ describe("operations overview", () => {
     );
   });
 
+  it("lists quarantined jobs by their counts, without their payload", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const queue = await import("@/lib/operations/job-queue");
+    const operations = await import("@/lib/operations/queue");
+    const tenantId = "tenant-overview-quarantine";
+    const crashing = await queue.enqueueOperationJob({
+      tenantId,
+      type: "memory.consolidate",
+      dedupeKey: "overview-crashing",
+      payload: { request: { memoryId: "must-not-reach-overview" } },
+      maxAttempts: 10,
+    });
+    for (let lapse = 0; lapse < 3; lapse += 1) {
+      await queue.leaseOperationJobs({ tenantId, leaseSeconds: 10 });
+      vi.setSystemTime(Date.now() + 11_000);
+      await queue.repairExpiredOperationJobs({ tenantId });
+    }
+
+    const overview = await operations.getOperationsOverview({ tenantId });
+
+    expect(overview.summary.quarantinedJobs).toBe(1);
+    expect(overview.latest.quarantinedJobs).toEqual([{
+      id: crashing.id,
+      type: "memory.consolidate",
+      attempt: 3,
+      maxAttempts: 10,
+      leaseLapses: 3,
+      lastError: queue.OPERATION_JOB_QUARANTINE_ERROR,
+      updatedAt: expect.any(String),
+    }]);
+  });
+
   it("surfaces exact stale approved reads as redacted reconciliations", async () => {
     const operations = await import("@/lib/operations/queue");
     const tenantId = "tenant-read-reconciliation";

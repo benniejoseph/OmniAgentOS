@@ -7,6 +7,7 @@ import {
   hasDatabaseUrl,
   runWithDatabaseSystemScope,
 } from "@/lib/db/client";
+import { appendDomainEvent } from "@/lib/events/store";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 
@@ -28,7 +29,13 @@ export type OperationJobType =
   | "asset.object.backfill"
   | "capture.media.segment.transcribe"
   | "capture.media.recording.process";
-export type OperationJobStatus = "queued" | "running" | "completed" | "failed" | "canceled";
+export type OperationJobStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "canceled"
+  | "quarantined";
 
 export const BACKGROUND_OPERATION_JOB_TYPES = [
   "memory.consolidate",
@@ -50,6 +57,24 @@ export const BACKGROUND_OPERATION_JOB_TYPES = [
 const OPERATION_PRIORITY_AGING_INTERVAL_MS = 60_000;
 const OPERATION_PRIORITY_AGING_CAP = 100;
 
+/**
+ * A job whose lease lapses this many deliveries in a row, without its worker
+ * reporting any outcome, is quarantined: nothing delivers it again until an
+ * operator releases it. A job that crashes or hangs its worker lapses on
+ * every delivery, and its retries would otherwise take the worker down with
+ * it each time.
+ */
+export const OPERATION_JOB_QUARANTINE_LAPSES = 3;
+
+export const OPERATION_JOB_QUARANTINE_ERROR =
+  `Quarantined after ${OPERATION_JOB_QUARANTINE_LAPSES} deliveries in a row lapsed without an outcome.`;
+
+export const OPERATION_JOB_EVENT_TYPES = Object.freeze({
+  quarantined: "operation.job.quarantined",
+  released: "operation.job.released",
+  discarded: "operation.job.discarded",
+} as const);
+
 export type OperationJobRecord = {
   id: string;
   tenantId: string;
@@ -65,6 +90,8 @@ export type OperationJobRecord = {
   leaseOwner?: string;
   leaseExpiresAt?: string;
   lastError?: string;
+  /** Deliveries in a row whose lease lapsed without an outcome. */
+  leaseLapses?: number;
   createdAt: string;
   updatedAt: string;
   completedAt?: string;
@@ -127,7 +154,11 @@ export function projectOperationJobStatus(job: OperationJobRecord) {
   return {
     id: job.id,
     type: job.type,
-    status: job.status,
+    // Clients read a job that will not run again on its own as failed. A
+    // quarantined job is one, and the flag tells them an operator can still
+    // release it.
+    status: job.status === "quarantined" ? "failed" : job.status,
+    ...(job.status === "quarantined" ? { quarantined: true as const } : {}),
     progress: semanticSummaryJob
       ? projectSemanticSummaryProgress(rawProgress, rawResult)
       : rawProgress,
@@ -332,6 +363,16 @@ export async function enqueueOperationJob(
       const preserveTerminal = input.requeueTerminal === false;
       const preserveFailed =
         preserveTerminal && input.requeueFailed !== true;
+      // A lapsed delivery of this job counts before new work coalesces into
+      // it, as it would had repair settled it first.
+      const storedKey = storageDedupeKey(tenantId, dedupeKey);
+      if (options.sql) {
+        await settleLapsedOperationJobs(options.sql, tenantId, storedKey);
+      } else {
+        await getSql().transaction((tx: ReturnType<typeof getSql>) =>
+          settleLapsedOperationJobs(tx, tenantId, storedKey),
+        );
+      }
       const rows = await sql`
         INSERT INTO omni_operation_jobs (
           id, tenant_id, type, status, payload, dedupe_key, priority, attempt,
@@ -407,16 +448,18 @@ export async function enqueueOperationJob(
           END,
           completed_at = NULL,
           updated_at = NOW()
-        WHERE NOT (
-          ${preserveTerminal}
-          AND (
-            omni_operation_jobs.status IN ('completed', 'canceled')
-            OR (
-              ${preserveFailed}
-              AND omni_operation_jobs.status = 'failed'
+        -- Work never revives a quarantined job; only an operator releases it.
+        WHERE omni_operation_jobs.status <> 'quarantined'
+          AND NOT (
+            ${preserveTerminal}
+            AND (
+              omni_operation_jobs.status IN ('completed', 'canceled')
+              OR (
+                ${preserveFailed}
+                AND omni_operation_jobs.status = 'failed'
+              )
             )
           )
-        )
         RETURNING *
       `;
       if (rows[0]) {
@@ -448,13 +491,20 @@ export async function enqueueOperationJob(
   }
 
   let saved = job;
+  let lapses: LedgerLapseSettlement = { settled: 0, quarantined: [] };
   await mutateJobLedger((ledger) => {
     if (input.dedupeKey) {
+      if (input.dedupeMode !== "idempotent") {
+        lapses = settleLapsedLedgerJobs(ledger, tenantId, input.dedupeKey);
+      }
       const existing = ledger.jobs.find(
         (item) => jobTenantId(item) === tenantId && item.dedupeKey === input.dedupeKey,
       );
       if (existing) {
-        if (input.dedupeMode === "idempotent") {
+        if (
+          input.dedupeMode === "idempotent" ||
+          existing.status === "quarantined"
+        ) {
           saved = existing;
           return trimJobLedger(ledger);
         }
@@ -509,6 +559,7 @@ export async function enqueueOperationJob(
     ledger.jobs.unshift(job);
     return trimJobLedger(ledger);
   });
+  await appendOperationJobQuarantinedEvents(lapses.quarantined, tenantId);
   return saved;
 }
 
@@ -649,62 +700,72 @@ export async function leaseOperationJobByDedupeKey(
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const storedKey = storageDedupeKey(tenantId, dedupeKey);
-    const rows = await getSql()`
-      UPDATE omni_operation_jobs
-      SET status = 'running',
-          attempt = attempt + 1,
-          locked_at = NOW(),
-          lease_owner = ${owner},
-          lease_expires_at = NOW() + (${leaseSeconds}::int * INTERVAL '1 second'),
-          last_error = NULL,
-          completed_at = NULL,
-          updated_at = NOW()
-      WHERE tenant_id = ${tenantId}
-        AND dedupe_key = ${storedKey}
-        AND type = ${input.type}
-        AND (
-          status IN ('queued', 'failed')
-          OR (
-            status = 'running'
-            AND (lease_expires_at IS NULL OR lease_expires_at <= NOW())
+    return await getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      await settleLapsedOperationJobs(sql, tenantId, storedKey);
+      const rows = await sql`
+        UPDATE omni_operation_jobs
+        SET status = 'running',
+            attempt = attempt + 1,
+            locked_at = NOW(),
+            lease_owner = ${owner},
+            lease_expires_at = NOW() + (${leaseSeconds}::int * INTERVAL '1 second'),
+            last_error = NULL,
+            completed_at = NULL,
+            updated_at = NOW()
+        WHERE tenant_id = ${tenantId}
+          AND dedupe_key = ${storedKey}
+          AND type = ${input.type}
+          AND (
+            status IN ('queued', 'failed')
+            OR (
+              status = 'running'
+              AND (lease_expires_at IS NULL OR lease_expires_at <= NOW())
+            )
           )
-        )
-      RETURNING *
-    `;
-    if (rows[0]) {
-      return { outcome: "leased", job: operationJobFromRow(rows[0]) };
-    }
-    // The job either belongs to a live lease or is gone. A job that changed
-    // state between the two statements still exists, so retrying can claim it.
-    const live = await getSql()`
-      SELECT id
-      FROM omni_operation_jobs
-      WHERE tenant_id = ${tenantId}
-        AND dedupe_key = ${storedKey}
-        AND type = ${input.type}
-        AND status IN ('queued', 'failed', 'running')
-      LIMIT 1
-    `;
-    return live[0] ? { outcome: "busy" } : { outcome: "absent" };
+        RETURNING *
+      `;
+      if (rows[0]) {
+        return { outcome: "leased", job: operationJobFromRow(rows[0]) };
+      }
+      // The job belongs to a live lease, is quarantined, or is gone. A job
+      // that changed state between the two statements still exists, so
+      // retrying can claim it. A quarantined job is busy rather than absent,
+      // so the caller never runs its work in its own process instead.
+      const live = await sql`
+        SELECT id
+        FROM omni_operation_jobs
+        WHERE tenant_id = ${tenantId}
+          AND dedupe_key = ${storedKey}
+          AND type = ${input.type}
+          AND status IN ('queued', 'failed', 'running', 'quarantined')
+        LIMIT 1
+      `;
+      return live[0] ? { outcome: "busy" } : { outcome: "absent" };
+    }) as OperationJobDedupeLease;
   }
 
   let result: OperationJobDedupeLease = { outcome: "absent" };
+  let lapses: LedgerLapseSettlement = { settled: 0, quarantined: [] };
   await mutateJobLedger((ledger) => {
+    lapses = settleLapsedLedgerJobs(ledger, tenantId, dedupeKey);
     const nowMs = Date.now();
     const index = ledger.jobs.findIndex((job) =>
       jobTenantId(job) === tenantId &&
       job.dedupeKey === dedupeKey &&
       job.type === input.type &&
-      ["queued", "failed", "running"].includes(job.status)
+      ["queued", "failed", "running", "quarantined"].includes(job.status)
     );
     if (index < 0) {
       return ledger;
     }
     const job = ledger.jobs[index];
     if (
-      job.status === "running" &&
-      job.leaseExpiresAt &&
-      Date.parse(job.leaseExpiresAt) > nowMs
+      job.status === "quarantined" ||
+      (
+        job.status === "running" &&
+        job.leaseExpiresAt &&
+        Date.parse(job.leaseExpiresAt) > nowMs
+      )
     ) {
       result = { outcome: "busy" };
       return ledger;
@@ -726,6 +787,7 @@ export async function leaseOperationJobByDedupeKey(
     result = { outcome: "leased", job: leasedJob };
     return ledger;
   });
+  await appendOperationJobQuarantinedEvents(lapses.quarantined, tenantId);
   return result;
 }
 
@@ -873,6 +935,7 @@ export async function completeOperationJob(jobId: string, leaseOwner?: string, r
           locked_at = NULL,
           lease_owner = NULL,
           lease_expires_at = NULL,
+          lease_lapses = 0,
           last_error = NULL,
           completed_at = CASE
             WHEN payload->>'__rerunRequested' = 'true' THEN NULL
@@ -917,6 +980,7 @@ export async function completeOperationJob(jobId: string, leaseOwner?: string, r
         lockedAt: undefined,
         leaseOwner: undefined,
         leaseExpiresAt: undefined,
+        leaseLapses: 0,
         lastError: undefined,
         completedAt: rerunRequested ? undefined : completedAt,
         updatedAt: completedAt,
@@ -977,6 +1041,7 @@ export async function failOperationJob(
           locked_at = NULL,
           lease_owner = NULL,
           lease_expires_at = NULL,
+          lease_lapses = 0,
           last_error = CASE
             WHEN payload->>'__rerunRequested' = 'true' THEN NULL
             ELSE ${error}
@@ -1031,6 +1096,7 @@ export async function failOperationJob(
         lockedAt: undefined,
         leaseOwner: undefined,
         leaseExpiresAt: undefined,
+        leaseLapses: 0,
         lastError: rerunRequested ? undefined : error,
         completedAt: willRetry ? undefined : now,
         updatedAt: now,
@@ -1088,6 +1154,7 @@ export async function deferOperationJob(
           locked_at = NULL,
           lease_owner = NULL,
           lease_expires_at = NULL,
+          lease_lapses = 0,
           last_error = ${reason},
           completed_at = NULL,
           updated_at = ${now}
@@ -1123,6 +1190,7 @@ export async function deferOperationJob(
         lockedAt: undefined,
         leaseOwner: undefined,
         leaseExpiresAt: undefined,
+        leaseLapses: 0,
         lastError: reason,
         completedAt: undefined,
         updatedAt: now,
@@ -1143,33 +1211,39 @@ export async function wakeOperationJobByDedupeKey(
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`
-      UPDATE omni_operation_jobs
-      SET status = 'queued',
-          run_at = NOW(),
-          locked_at = NULL,
-          lease_owner = NULL,
-          lease_expires_at = NULL,
-          last_error = NULL,
-          completed_at = NULL,
-          updated_at = NOW()
-      WHERE tenant_id = ${tenantId}
-        AND dedupe_key = ${storageDedupeKey(tenantId, dedupeKey)}
-        AND (
-          status = 'queued'
-          OR status = 'failed'
-          OR (
-            status = 'running'
-            AND (lease_expires_at IS NULL OR lease_expires_at <= NOW())
+    const storedKey = storageDedupeKey(tenantId, dedupeKey);
+    const rows = await getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      await settleLapsedOperationJobs(sql, tenantId, storedKey);
+      return await sql`
+        UPDATE omni_operation_jobs
+        SET status = 'queued',
+            run_at = NOW(),
+            locked_at = NULL,
+            lease_owner = NULL,
+            lease_expires_at = NULL,
+            last_error = NULL,
+            completed_at = NULL,
+            updated_at = NOW()
+        WHERE tenant_id = ${tenantId}
+          AND dedupe_key = ${storedKey}
+          AND (
+            status = 'queued'
+            OR status = 'failed'
+            OR (
+              status = 'running'
+              AND (lease_expires_at IS NULL OR lease_expires_at <= NOW())
+            )
           )
-        )
-      RETURNING *
-    `;
+        RETURNING *
+      `;
+    }) as Array<Record<string, unknown>>;
     return rows.map(operationJobFromRow);
   }
 
   const woken: OperationJobRecord[] = [];
+  let lapses: LedgerLapseSettlement = { settled: 0, quarantined: [] };
   await mutateJobLedger((ledger) => {
+    lapses = settleLapsedLedgerJobs(ledger, tenantId, dedupeKey);
     ledger.jobs = ledger.jobs.map((job) => {
       const expired =
         job.status === "running" &&
@@ -1198,9 +1272,15 @@ export async function wakeOperationJobByDedupeKey(
     });
     return trimJobLedger(ledger);
   });
+  await appendOperationJobQuarantinedEvents(lapses.quarantined, tenantId);
   return woken;
 }
 
+/**
+ * Cancels the job with this dedupe key for an owner that no longer wants its
+ * work. A quarantined job is canceled too, so a release never runs work its
+ * owner canceled.
+ */
 export async function cancelOperationJobByDedupeKey(
   dedupeKey: string,
   reason = "Job canceled.",
@@ -1222,7 +1302,7 @@ export async function cancelOperationJobByDedupeKey(
           updated_at = ${now}
       WHERE dedupe_key = ${storageDedupeKey(tenantId, dedupeKey)}
         AND tenant_id = ${tenantId}
-        AND status IN ('queued', 'running')
+        AND status IN ('queued', 'running', 'quarantined')
       RETURNING *
     `;
     return rows.map(operationJobFromRow);
@@ -1234,7 +1314,7 @@ export async function cancelOperationJobByDedupeKey(
       if (
         jobTenantId(job) !== tenantId ||
         job.dedupeKey !== dedupeKey ||
-        !["queued", "running"].includes(job.status)
+        !["queued", "running", "quarantined"].includes(job.status)
       ) {
         return job;
       }
@@ -1266,32 +1346,38 @@ export async function requeueOperationJobByDedupeKey(
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`
-      UPDATE omni_operation_jobs
-      SET status = 'queued',
-          run_at = NOW(),
-          locked_at = NULL,
-          lease_owner = NULL,
-          lease_expires_at = NULL,
-          last_error = ${reason},
-          completed_at = NULL,
-          updated_at = NOW()
-      WHERE dedupe_key = ${storageDedupeKey(tenantId, dedupeKey)}
-        AND tenant_id = ${tenantId}
-        AND (
-          status IN ('queued', 'failed')
-          OR (
-            status = 'running'
-            AND (lease_expires_at IS NULL OR lease_expires_at <= NOW())
+    const storedKey = storageDedupeKey(tenantId, dedupeKey);
+    const rows = await getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      await settleLapsedOperationJobs(sql, tenantId, storedKey);
+      return await sql`
+        UPDATE omni_operation_jobs
+        SET status = 'queued',
+            run_at = NOW(),
+            locked_at = NULL,
+            lease_owner = NULL,
+            lease_expires_at = NULL,
+            last_error = ${reason},
+            completed_at = NULL,
+            updated_at = NOW()
+        WHERE dedupe_key = ${storedKey}
+          AND tenant_id = ${tenantId}
+          AND (
+            status IN ('queued', 'failed')
+            OR (
+              status = 'running'
+              AND (lease_expires_at IS NULL OR lease_expires_at <= NOW())
+            )
           )
-        )
-      RETURNING *
-    `;
+        RETURNING *
+      `;
+    }) as Array<Record<string, unknown>>;
     return rows.map(operationJobFromRow);
   }
 
   const requeued: OperationJobRecord[] = [];
+  let lapses: LedgerLapseSettlement = { settled: 0, quarantined: [] };
   await mutateJobLedger((ledger) => {
+    lapses = settleLapsedLedgerJobs(ledger, tenantId, dedupeKey);
     ledger.jobs = ledger.jobs.map((job) => {
       const expiredOrMissingLease = !job.leaseExpiresAt || Date.parse(job.leaseExpiresAt) <= Date.now();
       if (
@@ -1317,77 +1403,433 @@ export async function requeueOperationJobByDedupeKey(
     });
     return trimJobLedger(ledger);
   });
+  await appendOperationJobQuarantinedEvents(lapses.quarantined, tenantId);
   return requeued;
 }
 
 export async function repairExpiredOperationJobs(
   options: { tenantId?: string } = {},
 ) {
-  const now = new Date().toISOString();
   const tenantId = normalizeTenantId(options.tenantId);
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`
-      UPDATE omni_operation_jobs
-      SET status = CASE
-            WHEN attempt < max_attempts OR type = 'workflow.tick'
-              THEN 'queued'
-            ELSE 'failed'
-          END,
-          run_at = CASE
-            WHEN attempt < max_attempts OR type = 'workflow.tick'
-              THEN NOW()
-            ELSE run_at
-          END,
-          locked_at = NULL,
-          lease_owner = NULL,
-          lease_expires_at = NULL,
-          last_error = COALESCE(last_error, 'Lease expired before completion.'),
-          completed_at = CASE
-            WHEN attempt < max_attempts OR type = 'workflow.tick'
-              THEN NULL
-            ELSE NOW()
-          END,
-          updated_at = NOW()
-      WHERE status = 'running'
-        AND tenant_id = ${tenantId}
-        AND lease_expires_at IS NOT NULL
-        AND lease_expires_at <= NOW()
-      RETURNING id
-    `;
-    return rows.length;
+    return await getSql().transaction((sql: ReturnType<typeof getSql>) =>
+      settleLapsedOperationJobs(sql, tenantId),
+    ) as number;
   }
 
-  let repaired = 0;
+  let settled: LedgerLapseSettlement = { settled: 0, quarantined: [] };
   await mutateJobLedger((ledger) => {
-    ledger.jobs = ledger.jobs.map((job) => {
-      if (
-        jobTenantId(job) !== tenantId ||
-        job.status !== "running" ||
-        !job.leaseExpiresAt ||
-        Date.parse(job.leaseExpiresAt) > Date.now()
-      ) {
-        return job;
-      }
-      repaired += 1;
-      const willRetry =
-        job.attempt < job.maxAttempts || job.type === "workflow.tick";
-      return {
-        ...job,
-        status: willRetry ? "queued" : "failed",
-        runAt: willRetry ? now : job.runAt,
-        lockedAt: undefined,
-        leaseOwner: undefined,
-        leaseExpiresAt: undefined,
-        lastError: job.lastError || "Lease expired before completion.",
-        completedAt: willRetry ? undefined : now,
-        updatedAt: now,
-      };
-    });
+    settled = settleLapsedLedgerJobs(ledger, tenantId);
     return trimJobLedger(ledger);
   });
-  return repaired;
+  await appendOperationJobQuarantinedEvents(settled.quarantined, tenantId);
+  return settled.settled;
+}
+
+type LedgerLapseSettlement = {
+  settled: number;
+  quarantined: OperationJobRecord[];
+};
+
+/**
+ * Settles the running jobs whose lease lapsed. Each counts one more lapse in
+ * a row, and one that reaches OPERATION_JOB_QUARANTINE_LAPSES is quarantined
+ * with its payload kept. Any other is requeued while it has attempts left,
+ * as a workflow tick always is so its run can reconcile, and fails
+ * otherwise. Every path that would revive a lapsed job settles it here first,
+ * so none of them skips the count. With a dedupe key only that job settles.
+ */
+async function settleLapsedOperationJobs(
+  sql: ReturnType<typeof getSql>,
+  tenantId: string,
+  storedDedupeKey?: string,
+) {
+  const rows = await sql`
+    UPDATE omni_operation_jobs
+    SET lease_lapses = lease_lapses + 1,
+        status = CASE
+          WHEN lease_lapses + 1 >= ${OPERATION_JOB_QUARANTINE_LAPSES}
+            THEN 'quarantined'
+          WHEN attempt < max_attempts OR type = 'workflow.tick'
+            THEN 'queued'
+          ELSE 'failed'
+        END,
+        run_at = CASE
+          WHEN lease_lapses + 1 < ${OPERATION_JOB_QUARANTINE_LAPSES}
+            AND (attempt < max_attempts OR type = 'workflow.tick')
+            THEN NOW()
+          ELSE run_at
+        END,
+        locked_at = NULL,
+        lease_owner = NULL,
+        lease_expires_at = NULL,
+        last_error = CASE
+          WHEN lease_lapses + 1 >= ${OPERATION_JOB_QUARANTINE_LAPSES}
+            THEN ${OPERATION_JOB_QUARANTINE_ERROR}
+          ELSE COALESCE(last_error, 'Lease expired before completion.')
+        END,
+        completed_at = CASE
+          WHEN lease_lapses + 1 < ${OPERATION_JOB_QUARANTINE_LAPSES}
+            AND (attempt < max_attempts OR type = 'workflow.tick')
+            THEN NULL
+          ELSE NOW()
+        END,
+        updated_at = NOW()
+    WHERE status = 'running'
+      AND tenant_id = ${tenantId}
+      AND lease_expires_at IS NOT NULL
+      AND lease_expires_at <= NOW()
+      AND (
+        ${storedDedupeKey ?? null}::text IS NULL
+        OR dedupe_key = ${storedDedupeKey ?? null}
+      )
+    RETURNING *
+  `;
+  await appendOperationJobQuarantinedEvents(
+    rows
+      .map(operationJobFromRow)
+      .filter((job) => job.status === "quarantined"),
+    tenantId,
+    sql,
+  );
+  return rows.length;
+}
+
+/** The file ledger's twin of settleLapsedOperationJobs. */
+function settleLapsedLedgerJobs(
+  ledger: OperationJobLedger,
+  tenantId: string,
+  dedupeKey?: string,
+): LedgerLapseSettlement {
+  const nowMs = Date.now();
+  const now = new Date(nowMs).toISOString();
+  const settlement: LedgerLapseSettlement = { settled: 0, quarantined: [] };
+  ledger.jobs = ledger.jobs.map((job) => {
+    if (
+      jobTenantId(job) !== tenantId ||
+      job.status !== "running" ||
+      !job.leaseExpiresAt ||
+      Date.parse(job.leaseExpiresAt) > nowMs ||
+      (dedupeKey !== undefined && job.dedupeKey !== dedupeKey)
+    ) {
+      return job;
+    }
+    settlement.settled += 1;
+    const leaseLapses = (job.leaseLapses || 0) + 1;
+    const quarantine = leaseLapses >= OPERATION_JOB_QUARANTINE_LAPSES;
+    const willRetry = !quarantine &&
+      (job.attempt < job.maxAttempts || job.type === "workflow.tick");
+    const next: OperationJobRecord = {
+      ...job,
+      status: quarantine ? "quarantined" : willRetry ? "queued" : "failed",
+      runAt: willRetry ? now : job.runAt,
+      lockedAt: undefined,
+      leaseOwner: undefined,
+      leaseExpiresAt: undefined,
+      lastError: quarantine
+        ? OPERATION_JOB_QUARANTINE_ERROR
+        : job.lastError || "Lease expired before completion.",
+      leaseLapses,
+      completedAt: willRetry ? undefined : now,
+      updatedAt: now,
+    };
+    if (quarantine) {
+      settlement.quarantined.push({ ...next, tenantId });
+    }
+    return next;
+  });
+  return settlement;
+}
+
+export function operationJobStreamId(jobId: string) {
+  return `operation-job:${jobId}`;
+}
+
+/**
+ * A quarantine is named by the job and the time it was quarantined, so its
+ * event, and the one decision an operator makes on it, each have one id.
+ */
+function operationJobEventId(
+  quarantined: Pick<OperationJobRecord, "id" | "updatedAt">,
+  kind: keyof typeof OPERATION_JOB_EVENT_TYPES,
+) {
+  return `${operationJobStreamId(quarantined.id)}:${kind}:${quarantined.updatedAt}`;
+}
+
+async function appendOperationJobQuarantinedEvents(
+  jobs: readonly OperationJobRecord[],
+  tenantId: string,
+  sql?: ReturnType<typeof getSql>,
+) {
+  for (const job of jobs) {
+    await appendDomainEvent(
+      {
+        id: operationJobEventId(job, "quarantined"),
+        streamId: operationJobStreamId(job.id),
+        type: OPERATION_JOB_EVENT_TYPES.quarantined,
+        tenantId,
+        payload: {
+          jobId: job.id,
+          jobType: job.type,
+          attempt: job.attempt,
+          maxAttempts: job.maxAttempts,
+          leaseLapses: job.leaseLapses || 0,
+        },
+      },
+      sql ? { sql } : {},
+    );
+  }
+}
+
+/** Job types whose work a run owns; canceling the run discards them. */
+const RUN_OWNED_OPERATION_JOB_TYPES = new Set<OperationJobType>([
+  "workflow.tick",
+  "agent.execute",
+  "agent.resume",
+]);
+
+export type OperationJobQuarantineDecision =
+  | { outcome: "released" | "discarded"; job: OperationJobRecord }
+  | { outcome: "not_quarantined" | "owned_by_run"; job: OperationJobRecord }
+  | { outcome: "absent" };
+
+/**
+ * Returns a quarantined job to the queue with its attempts and lapses
+ * cleared, for an operator who judged its work safe to run again.
+ */
+export async function releaseQuarantinedOperationJob(
+  jobId: string,
+  options: { tenantId?: string; actorId?: string } = {},
+) {
+  return decideQuarantinedOperationJob(jobId, "release", options);
+}
+
+/**
+ * Cancels a quarantined job for an operator who gave up on its work. A job a
+ * run owns is refused: the run would deliver its work again, so the operator
+ * cancels the run, which cancels its job.
+ */
+export async function discardQuarantinedOperationJob(
+  jobId: string,
+  options: { tenantId?: string; actorId?: string; reason?: string } = {},
+) {
+  return decideQuarantinedOperationJob(jobId, "discard", options);
+}
+
+async function decideQuarantinedOperationJob(
+  jobId: string,
+  action: "release" | "discard",
+  options: { tenantId?: string; actorId?: string; reason?: string },
+): Promise<OperationJobQuarantineDecision> {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const reason = options.reason?.trim() ||
+    "Discarded from quarantine by an operator.";
+  const refusal = (job: OperationJobRecord) =>
+    job.status !== "quarantined"
+      ? { outcome: "not_quarantined" as const, job }
+      : action === "discard" && RUN_OWNED_OPERATION_JOB_TYPES.has(job.type)
+        ? { outcome: "owned_by_run" as const, job }
+        : undefined;
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    return await getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      const current = await sql`
+        SELECT *
+        FROM omni_operation_jobs
+        WHERE id = ${jobId}
+          AND tenant_id = ${tenantId}
+        FOR UPDATE
+      `;
+      if (!current[0]) {
+        return { outcome: "absent" };
+      }
+      const quarantined = operationJobFromRow(current[0]);
+      const refused = refusal(quarantined);
+      if (refused) {
+        return refused;
+      }
+      const rows = action === "release"
+        ? await sql`
+            UPDATE omni_operation_jobs
+            SET status = 'queued',
+                attempt = 0,
+                lease_lapses = 0,
+                run_at = NOW(),
+                locked_at = NULL,
+                lease_owner = NULL,
+                lease_expires_at = NULL,
+                last_error = NULL,
+                completed_at = NULL,
+                updated_at = NOW()
+            WHERE id = ${jobId}
+              AND tenant_id = ${tenantId}
+              AND status = 'quarantined'
+            RETURNING *
+          `
+        : await sql`
+            UPDATE omni_operation_jobs
+            SET status = 'canceled',
+                payload = CASE
+                  WHEN jsonb_typeof(payload) = 'object'
+                  THEN payload - '__rerunRequested' - 'request'
+                  ELSE '{}'::jsonb
+                END,
+                locked_at = NULL,
+                lease_owner = NULL,
+                lease_expires_at = NULL,
+                last_error = ${reason},
+                completed_at = NOW(),
+                updated_at = NOW()
+            WHERE id = ${jobId}
+              AND tenant_id = ${tenantId}
+              AND status = 'quarantined'
+            RETURNING *
+          `;
+      await appendOperationJobDecisionEvent(
+        quarantined,
+        action,
+        tenantId,
+        options.actorId,
+        sql,
+      );
+      return {
+        outcome: action === "release" ? "released" : "discarded",
+        job: operationJobFromRow(rows[0]),
+      };
+    }) as OperationJobQuarantineDecision;
+  }
+
+  let decision: OperationJobQuarantineDecision = { outcome: "absent" };
+  let quarantined: OperationJobRecord | undefined;
+  await mutateJobLedger((ledger) => {
+    const index = ledger.jobs.findIndex((job) =>
+      job.id === jobId && jobTenantId(job) === tenantId
+    );
+    if (index < 0) {
+      return ledger;
+    }
+    const current = { ...ledger.jobs[index], tenantId };
+    const refused = refusal(current);
+    if (refused) {
+      decision = refused;
+      return ledger;
+    }
+    const now = new Date().toISOString();
+    // A discarded job never runs again, so it keeps no request.
+    const discardedPayload = { ...current.payload };
+    delete discardedPayload.__rerunRequested;
+    delete discardedPayload.request;
+    const next: OperationJobRecord = action === "release"
+      ? {
+          ...current,
+          status: "queued",
+          attempt: 0,
+          leaseLapses: 0,
+          runAt: now,
+          lockedAt: undefined,
+          leaseOwner: undefined,
+          leaseExpiresAt: undefined,
+          lastError: undefined,
+          completedAt: undefined,
+          updatedAt: now,
+        }
+      : {
+          ...current,
+          status: "canceled",
+          payload: discardedPayload,
+          lockedAt: undefined,
+          leaseOwner: undefined,
+          leaseExpiresAt: undefined,
+          lastError: reason,
+          completedAt: now,
+          updatedAt: now,
+        };
+    ledger.jobs[index] = next;
+    quarantined = current;
+    decision = {
+      outcome: action === "release" ? "released" : "discarded",
+      job: next,
+    };
+    return ledger;
+  });
+  if (quarantined) {
+    await appendOperationJobDecisionEvent(
+      quarantined,
+      action,
+      tenantId,
+      options.actorId,
+    );
+  }
+  return decision;
+}
+
+async function appendOperationJobDecisionEvent(
+  quarantined: OperationJobRecord,
+  action: "release" | "discard",
+  tenantId: string,
+  actorId?: string,
+  sql?: ReturnType<typeof getSql>,
+) {
+  await appendDomainEvent(
+    {
+      id: operationJobEventId(
+        quarantined,
+        action === "release" ? "released" : "discarded",
+      ),
+      streamId: operationJobStreamId(quarantined.id),
+      type: action === "release"
+        ? OPERATION_JOB_EVENT_TYPES.released
+        : OPERATION_JOB_EVENT_TYPES.discarded,
+      tenantId,
+      actorId,
+      payload: {
+        jobId: quarantined.id,
+        jobType: quarantined.type,
+        attempt: quarantined.attempt,
+        maxAttempts: quarantined.maxAttempts,
+        leaseLapses: quarantined.leaseLapses || 0,
+      },
+    },
+    sql ? { sql } : {},
+  );
+}
+
+/**
+ * Quarantined jobs safe for tenant-wide operational surfaces, newest first.
+ * Actor-private jobs are counted in the stats but listed only on their
+ * owner's detail route.
+ */
+export async function listQuarantinedOperationJobs(
+  limit = 20,
+  options: { tenantId?: string } = {},
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const boundedLimit = Math.min(Math.max(Math.round(limit), 1), 100);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT *
+      FROM omni_operation_jobs
+      WHERE tenant_id = ${tenantId}
+        AND status = 'quarantined'
+        AND NOT (type = ANY(${[...ACTOR_PRIVATE_OPERATION_JOB_TYPES]}::text[]))
+      ORDER BY updated_at DESC
+      LIMIT ${boundedLimit}
+    `;
+    return rows.map(operationJobFromRow);
+  }
+
+  const ledger = await readJobLedger();
+  return ledger.jobs
+    .filter((job) => jobTenantId(job) === tenantId)
+    .filter((job) => job.status === "quarantined")
+    .filter((job) => !ACTOR_PRIVATE_OPERATION_JOB_TYPES.has(job.type))
+    .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
+    .slice(0, boundedLimit)
+    .map((job) => ({ ...job, tenantId }));
 }
 
 export async function listOperationJobs(
@@ -1425,8 +1867,10 @@ export async function listOperationJobs(
 }
 
 /**
- * IDs of the workflow runs with a tick waiting or running, whatever its
- * run_at or lease, so the queue enqueues ticks only for runs without one.
+ * IDs of the workflow runs with a tick waiting, running or quarantined,
+ * whatever its run_at or lease, so the queue enqueues ticks only for runs
+ * without one. A quarantined tick holds its run until an operator releases
+ * it or the run fails or is canceled.
  */
 export async function listActiveWorkflowTickRunIds(
   options: { tenantId?: string } = {},
@@ -1439,7 +1883,7 @@ export async function listActiveWorkflowTickRunIds(
       FROM omni_operation_jobs
       WHERE tenant_id = ${tenantId}
         AND type = 'workflow.tick'
-        AND status IN ('queued', 'running')
+        AND status IN ('queued', 'running', 'quarantined')
         AND payload->>'workflowRunId' IS NOT NULL
     `;
     return new Set(rows.map((row) => String(row.workflow_run_id)));
@@ -1449,14 +1893,18 @@ export async function listActiveWorkflowTickRunIds(
   return new Set(ledger.jobs.flatMap((job) =>
     jobTenantId(job) === tenantId &&
       job.type === "workflow.tick" &&
-      (job.status === "queued" || job.status === "running") &&
+      ["queued", "running", "quarantined"].includes(job.status) &&
       typeof job.payload.workflowRunId === "string"
       ? [job.payload.workflowRunId]
       : []
   ));
 }
 
-/** Metadata-only queue view used by recovery inspection and reconciliation. */
+/**
+ * Metadata-only queue view used by recovery inspection and reconciliation:
+ * the latest rows, and the quarantined ones however long ago they changed,
+ * so recovery sees every run a quarantined job holds.
+ */
 export async function listOperationJobRecoveryRows(
   limit = 100,
   options: { tenantId?: string } = {},
@@ -1467,10 +1915,25 @@ export async function listOperationJobRecoveryRows(
     await ensureDatabaseSchema();
     const rows = await getSql()`
       SELECT id, status, dedupe_key, lease_expires_at
-      FROM omni_operation_jobs
-      WHERE tenant_id = ${tenantId}
+      FROM (
+        (
+          SELECT id, status, dedupe_key, lease_expires_at, updated_at
+          FROM omni_operation_jobs
+          WHERE tenant_id = ${tenantId}
+          ORDER BY updated_at DESC
+          LIMIT ${boundedLimit}
+        )
+        UNION
+        (
+          SELECT id, status, dedupe_key, lease_expires_at, updated_at
+          FROM omni_operation_jobs
+          WHERE tenant_id = ${tenantId}
+            AND status = 'quarantined'
+          ORDER BY updated_at DESC
+          LIMIT ${boundedLimit}
+        )
+      ) recovery_rows
       ORDER BY updated_at DESC
-      LIMIT ${boundedLimit}
     `;
     return rows.map((row) => ({
       id: String(row.id),
@@ -1485,15 +1948,19 @@ export async function listOperationJobRecoveryRows(
   }
 
   const ledger = await readJobLedger();
-  return ledger.jobs
-    .filter((job) => jobTenantId(job) === tenantId)
+  const tenantJobs = ledger.jobs.filter((job) => jobTenantId(job) === tenantId);
+  const latest = tenantJobs.slice(0, boundedLimit);
+  const latestIds = new Set(latest.map((job) => job.id));
+  const quarantined = tenantJobs
+    .filter((job) => job.status === "quarantined")
     .slice(0, boundedLimit)
-    .map((job) => ({
-      id: job.id,
-      status: job.status,
-      dedupeKey: job.dedupeKey,
-      leaseExpiresAt: job.leaseExpiresAt,
-    }));
+    .filter((job) => !latestIds.has(job.id));
+  return [...latest, ...quarantined].map((job) => ({
+    id: job.id,
+    status: job.status,
+    dedupeKey: job.dedupeKey,
+    leaseExpiresAt: job.leaseExpiresAt,
+  }));
 }
 
 /**
@@ -1725,10 +2192,11 @@ export async function listRunnableOperationDispatchTenants(
               runnable_at ASC,
               created_at ASC
           ),
-          -- A queued run counts only while it has no tick waiting or
-          -- running; the queue's bootstrap enqueues its tick. A run whose
-          -- tick waits out a backoff or runs under a live lease is not
-          -- runnable, however long it has been queued.
+          -- A queued run counts only while it has no tick waiting,
+          -- running or quarantined; the queue's bootstrap enqueues its
+          -- tick. A run whose tick waits out a backoff, runs under a live
+          -- lease, or is quarantined is not runnable, however long it has
+          -- been queued.
           workflow_candidates AS (
             SELECT tenant_id, runnable_at
             FROM operation_candidates
@@ -1743,7 +2211,7 @@ export async function listRunnableOperationDispatchTenants(
                 FROM omni_operation_jobs jobs
                 WHERE jobs.tenant_id = runs.tenant_id
                   AND jobs.type = 'workflow.tick'
-                  AND jobs.status IN ('queued', 'running')
+                  AND jobs.status IN ('queued', 'running', 'quarantined')
                   AND jobs.payload->>'workflowRunId' = runs.id
               )
             GROUP BY runs.tenant_id
@@ -2014,6 +2482,7 @@ export async function getOperationJobStats(
           (COUNT(*) FILTER (WHERE status = 'completed'))::int AS stats_completed,
           (COUNT(*) FILTER (WHERE status = 'failed'))::int AS stats_failed,
           (COUNT(*) FILTER (WHERE status = 'canceled'))::int AS stats_canceled,
+          (COUNT(*) FILTER (WHERE status = 'quarantined'))::int AS stats_quarantined,
           (COUNT(*) FILTER (
             WHERE status = 'queued' AND run_at <= NOW()
           ))::int AS stats_runnable,
@@ -2105,6 +2574,7 @@ function operationJobStatusCounts(row: Record<string, unknown>) {
     "completed",
     "failed",
     "canceled",
+    "quarantined",
   ] as const) {
     const count = Number(row[`stats_${status}`] || 0);
     if (count > 0) counts[status] = count;
@@ -2150,6 +2620,7 @@ function operationJobFromRow(row: Record<string, unknown>): OperationJobRecord {
     leaseOwner: row.lease_owner ? String(row.lease_owner) : undefined,
     leaseExpiresAt: row.lease_expires_at ? normalizeDate(row.lease_expires_at) : undefined,
     lastError: row.last_error ? String(row.last_error) : undefined,
+    leaseLapses: Number(row.lease_lapses || 0),
     createdAt: normalizeDate(row.created_at),
     updatedAt: normalizeDate(row.updated_at),
     completedAt: row.completed_at ? normalizeDate(row.completed_at) : undefined,
@@ -2173,11 +2644,19 @@ async function mutateJobLedger(mutator: (ledger: OperationJobLedger) => Operatio
   );
 }
 
+const DURABLE_LEDGER_STATUSES = new Set<OperationJobStatus>([
+  "queued",
+  "running",
+  "quarantined",
+]);
+
 function trimJobLedger(ledger: OperationJobLedger): OperationJobLedger {
   const sorted = ledger.jobs
     .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
-  const durable = sorted.filter((job) => job.status === "queued" || job.status === "running");
-  const terminal = sorted.filter((job) => job.status !== "queued" && job.status !== "running");
+  // A quarantined job waits on an operator, so the ledger keeps it as it
+  // keeps live work.
+  const durable = sorted.filter((job) => DURABLE_LEDGER_STATUSES.has(job.status));
+  const terminal = sorted.filter((job) => !DURABLE_LEDGER_STATUSES.has(job.status));
   return {
     jobs: [...durable, ...terminal.slice(0, Math.max(0, 500 - durable.length))],
   };

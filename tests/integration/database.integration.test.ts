@@ -83,9 +83,16 @@ import {
   heartbeatOperationJob,
   leaseOperationJobByDedupeKey,
   leaseOperationJobs,
+  discardQuarantinedOperationJob,
+  getOperationJobStats,
   listActiveWorkflowTickRunIds,
+  listOperationJobRecoveryRows,
+  listQuarantinedOperationJobs,
   listRunnableOperationDispatchTenants,
+  OPERATION_JOB_QUARANTINE_ERROR,
+  releaseQuarantinedOperationJob,
   repairExpiredOperationJobs,
+  requeueOperationJobByDedupeKey,
   wakeOperationJobByDedupeKey,
 } from "@/lib/operations/job-queue";
 import { getApprovalQueue, getApprovalQueueItem } from "@/lib/operations/queue";
@@ -4174,6 +4181,268 @@ databaseDescribe("Postgres schema integration", () => {
       FROM omni_operation_jobs
       WHERE id = ${beat.id}
     `).toEqual([{ long_enough: true, bounded: true, current: true }]);
+  });
+
+  test("quarantines a job whose leases keep lapsing until an operator decides", async () => {
+    const tenantId = "job_quarantine_tenant";
+    const inTenant = <T,>(operation: () => Promise<T>) =>
+      runWithDatabaseTenantScope(tenantId, operation);
+    type JobType = "memory.consolidate" | "workflow.tick";
+    const enqueue = (
+      dedupeKey: string,
+      type: JobType = "memory.consolidate",
+      payload: Record<string, unknown> = { request: { memoryId: dedupeKey } },
+    ) => inTenant(() => enqueueOperationJob({
+      tenantId,
+      type,
+      dedupeKey,
+      payload,
+      maxAttempts: 10,
+    }));
+    const lease = async (
+      jobId: string,
+      dedupeKey: string,
+      type: JobType = "memory.consolidate",
+    ) => {
+      const [leased] = await inTenant(() => leaseOperationJobs({
+        tenantId,
+        type,
+        dedupeKey,
+        leaseSeconds: 60,
+      }));
+      expect(leased?.id).toBe(jobId);
+      return leased;
+    };
+    const lapse = (jobId: string) => admin`
+      UPDATE omni_operation_jobs
+      SET lease_expires_at = NOW() - INTERVAL '1 second'
+      WHERE id = ${jobId}
+    `;
+    const leaseThenLapse = async (
+      jobId: string,
+      dedupeKey: string,
+      type: JobType = "memory.consolidate",
+    ) => {
+      await lease(jobId, dedupeKey, type);
+      await lapse(jobId);
+    };
+    const row = async (jobId: string) => (await admin`
+      SELECT status, attempt, lease_lapses, last_error, payload,
+        completed_at IS NOT NULL AS completed
+      FROM omni_operation_jobs
+      WHERE id = ${jobId}
+    `)[0];
+    const events = (jobId: string) => admin`
+      SELECT type, actor_id, (payload->>'leaseLapses')::int AS lease_lapses
+      FROM omni_events
+      WHERE stream_id = ${`operation-job:${jobId}`}
+      ORDER BY seq
+    `;
+    const quarantine = async (
+      dedupeKey: string,
+      type: JobType = "memory.consolidate",
+      payload?: Record<string, unknown>,
+    ) => {
+      const job = await enqueue(dedupeKey, type, payload);
+      for (let count = 0; count < 3; count += 1) {
+        await leaseThenLapse(job.id, dedupeKey, type);
+        await inTenant(() => repairExpiredOperationJobs({ tenantId }));
+      }
+      expect((await row(job.id)).status).toBe("quarantined");
+      return job;
+    };
+
+    // A lapse counts, and an outcome the worker reports clears the count.
+    const job = await enqueue("job-quarantine-memory");
+    await leaseThenLapse(job.id, "job-quarantine-memory");
+    await expect(inTenant(() => repairExpiredOperationJobs({ tenantId }))).resolves.toBe(1);
+    expect(await row(job.id)).toMatchObject({ status: "queued", lease_lapses: 1 });
+    const reported = await lease(job.id, "job-quarantine-memory");
+    await inTenant(() => failOperationJob(job.id, "transient", reported.leaseOwner, tenantId));
+    expect(await row(job.id)).toMatchObject({ status: "queued", lease_lapses: 0 });
+    await admin`UPDATE omni_operation_jobs SET run_at = NOW() WHERE id = ${job.id}`;
+    for (const outcome of ["complete", "defer"] as const) {
+      const dedupeKey = `job-quarantine-${outcome}`;
+      const settled = await enqueue(dedupeKey);
+      await leaseThenLapse(settled.id, dedupeKey);
+      await inTenant(() => repairExpiredOperationJobs({ tenantId }));
+      expect(await row(settled.id)).toMatchObject({ lease_lapses: 1 });
+      const leased = await lease(settled.id, dedupeKey);
+      await inTenant(() => outcome === "complete"
+        ? completeOperationJob(settled.id, leased.leaseOwner, tenantId)
+        : deferOperationJob(settled.id, leased.leaseOwner!, { tenantId }));
+      expect(await row(settled.id)).toMatchObject({ lease_lapses: 0 });
+    }
+
+    // Every path that would revive a lapsed job counts the lapse first, and
+    // the third in a row quarantines the job instead of redelivering it.
+    await leaseThenLapse(job.id, "job-quarantine-memory");
+    await expect(enqueue("job-quarantine-memory")).resolves.toMatchObject({
+      id: job.id,
+      status: "queued",
+      leaseLapses: 1,
+    });
+    await leaseThenLapse(job.id, "job-quarantine-memory");
+    await expect(inTenant(() => wakeOperationJobByDedupeKey(
+      "job-quarantine-memory",
+      { tenantId },
+    ))).resolves.toMatchObject([{ id: job.id, leaseLapses: 2 }]);
+    await leaseThenLapse(job.id, "job-quarantine-memory");
+    await expect(inTenant(() => leaseOperationJobByDedupeKey("job-quarantine-memory", {
+      tenantId,
+      type: "memory.consolidate",
+    }))).resolves.toEqual({ outcome: "busy" });
+    expect(await row(job.id)).toMatchObject({
+      status: "quarantined",
+      attempt: 5,
+      lease_lapses: 3,
+      last_error: OPERATION_JOB_QUARANTINE_ERROR,
+      payload: { request: { memoryId: "job-quarantine-memory" } },
+      completed: true,
+    });
+    expect(await events(job.id)).toEqual([
+      { type: "operation.job.quarantined", actor_id: "system", lease_lapses: 3 },
+    ]);
+
+    // Nothing revives it on its own, and recovery and stats still see it.
+    await expect(enqueue("job-quarantine-memory")).resolves.toMatchObject({
+      id: job.id,
+      status: "quarantined",
+    });
+    await expect(inTenant(() => wakeOperationJobByDedupeKey(
+      "job-quarantine-memory",
+      { tenantId },
+    ))).resolves.toEqual([]);
+    await expect(inTenant(() => requeueOperationJobByDedupeKey(
+      "job-quarantine-memory",
+      "again",
+      { tenantId },
+    ))).resolves.toEqual([]);
+    await expect(inTenant(() => leaseOperationJobs({ tenantId }))).resolves.toEqual([]);
+    const newer = await enqueue("job-quarantine-newer");
+    expect((await inTenant(() => listOperationJobRecoveryRows(1, { tenantId })))
+      .map((recoveryRow) => recoveryRow.id)).toEqual([newer.id, job.id]);
+    expect((await inTenant(() => getOperationJobStats({ tenantId }))).byStatus)
+      .toMatchObject({ quarantined: 1, queued: 2 });
+    expect((await inTenant(() => listQuarantinedOperationJobs(10, { tenantId })))
+      .map((quarantined) => quarantined.id)).toEqual([job.id]);
+
+    // A requeue, and an enqueue in the caller's transaction, count the lapse
+    // too; another tenant's lapsed lease is its own to settle.
+    const otherTenantId = "job_quarantine_other";
+    const bystander = await runWithDatabaseTenantScope(otherTenantId, async () => {
+      const otherJob = await enqueueOperationJob({
+        tenantId: otherTenantId,
+        type: "memory.consolidate",
+        dedupeKey: "job-quarantine-bystander",
+        payload: {},
+      });
+      await leaseOperationJobs({ tenantId: otherTenantId, leaseSeconds: 60 });
+      return otherJob;
+    });
+    await lapse(bystander.id);
+    const requeued = await enqueue("job-quarantine-requeue");
+    await leaseThenLapse(requeued.id, "job-quarantine-requeue");
+    await expect(inTenant(() => requeueOperationJobByDedupeKey(
+      "job-quarantine-requeue",
+      "again",
+      { tenantId },
+    ))).resolves.toMatchObject([{ id: requeued.id, leaseLapses: 1 }]);
+    await leaseThenLapse(requeued.id, "job-quarantine-requeue");
+    await expect(inTenant(() => getSql().transaction((sql: ReturnType<typeof getSql>) =>
+      enqueueOperationJob({
+        tenantId,
+        type: "memory.consolidate",
+        dedupeKey: "job-quarantine-requeue",
+        payload: {},
+      }, { sql })
+    ))).resolves.toMatchObject({ id: requeued.id, leaseLapses: 2 });
+    await inTenant(() => repairExpiredOperationJobs({ tenantId }));
+    expect(await row(bystander.id)).toMatchObject({ status: "running", lease_lapses: 0 });
+
+    // An operator's release starts it over, and the decision is an event.
+    await expect(runWithDatabaseTenantScope(
+      "job_quarantine_other",
+      () => releaseQuarantinedOperationJob(job.id, { tenantId: "job_quarantine_other" }),
+    )).resolves.toEqual({ outcome: "absent" });
+    await expect(inTenant(() => releaseQuarantinedOperationJob(job.id, {
+      tenantId,
+      actorId: "operator-q",
+    }))).resolves.toMatchObject({
+      outcome: "released",
+      job: { id: job.id, status: "queued", attempt: 0, leaseLapses: 0 },
+    });
+    expect(await row(job.id)).toMatchObject({ last_error: null, completed: false });
+    await expect(inTenant(() => releaseQuarantinedOperationJob(job.id, { tenantId })))
+      .resolves.toMatchObject({ outcome: "not_quarantined" });
+    await expect(lease(job.id, "job-quarantine-memory")).resolves.toMatchObject({ attempt: 1 });
+    expect(await events(job.id)).toEqual([
+      { type: "operation.job.quarantined", actor_id: "system", lease_lapses: 3 },
+      { type: "operation.job.released", actor_id: "operator-q", lease_lapses: 3 },
+    ]);
+
+    // A discard cancels background work and drops its request; a job a run
+    // owns is left for the run to cancel.
+    const doomed = await quarantine("job-quarantine-doomed", "memory.consolidate", {
+      request: { memoryId: "private" },
+      progress: { stage: "indexing" },
+      __rerunRequested: true,
+    });
+    await expect(inTenant(() => discardQuarantinedOperationJob(doomed.id, {
+      tenantId,
+      actorId: "operator-q",
+      reason: "Poison input.",
+    }))).resolves.toMatchObject({ outcome: "discarded", job: { status: "canceled" } });
+    const discarded = await row(doomed.id);
+    expect(discarded).toMatchObject({ status: "canceled", last_error: "Poison input." });
+    expect(discarded.payload).toEqual({ progress: { stage: "indexing" } });
+    expect(await events(doomed.id)).toEqual([
+      { type: "operation.job.quarantined", actor_id: "system", lease_lapses: 3 },
+      { type: "operation.job.discarded", actor_id: "operator-q", lease_lapses: 3 },
+    ]);
+
+    // A queued run whose tick is quarantined keeps it: dispatch neither
+    // bootstraps the run nor counts the tenant until the tick is canceled.
+    const { run } = await inTenant(() => createWorkflowRun({
+      tenantId,
+      goal: "Reconcile the archive.",
+    }));
+    // The oldest runnable work dispatches first, so this run is not cut by
+    // the dispatch limit.
+    await admin`
+      UPDATE omni_workflow_runs
+      SET updated_at = NOW() - INTERVAL '30 days'
+      WHERE id = ${run.id}
+    `;
+    const tick = await quarantine(`workflow:${run.id}`, "workflow.tick", {
+      workflowRunId: run.id,
+    });
+    await expect(inTenant(() => discardQuarantinedOperationJob(tick.id, { tenantId })))
+      .resolves.toMatchObject({ outcome: "owned_by_run" });
+    await expect(inTenant(() => listActiveWorkflowTickRunIds({ tenantId })))
+      .resolves.toEqual(new Set([run.id]));
+    const dispatchTenants = async () =>
+      (await listRunnableOperationDispatchTenants({ workflowLimit: 25 })).workflowTenantIds;
+    expect(await dispatchTenants()).not.toContain(tenantId);
+    await expect(inTenant(() => cancelOperationJobByDedupeKey(
+      `workflow:${run.id}`,
+      "Workflow canceled.",
+      { tenantId },
+    ))).resolves.toMatchObject([{ id: tick.id, status: "canceled" }]);
+    await expect(inTenant(() => listActiveWorkflowTickRunIds({ tenantId })))
+      .resolves.toEqual(new Set());
+    expect(await dispatchTenants()).toContain(tenantId);
+    // Later dispatch tests count their own tenants within the same limit.
+    await admin`
+      UPDATE omni_workflow_runs
+      SET status = 'canceled', updated_at = NOW()
+      WHERE id = ${run.id}
+    `;
+    await admin`
+      UPDATE omni_operation_jobs
+      SET status = 'canceled', lease_expires_at = NULL, completed_at = NOW()
+      WHERE id = ${bystander.id}
+    `;
   });
 
   test("keeps request-derived run, thread, and turn identities single-use", async () => {

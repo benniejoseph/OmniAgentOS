@@ -1269,5 +1269,12 @@
     "checksum": "84d660e88fc6bcdaf9bac76939d03ad470e2fe6fee615d52be55a16dda6a88e1",
     "file": "20261001090000_rls_scope_initplans.sql",
     "sha256": "84d660e88fc6bcdaf9bac76939d03ad470e2fe6fee615d52be55a16dda6a88e1"
+  },
+  {
+    "version": 212,
+    "name": "operation_job_quarantine_v1",
+    "checksum": "35fa5330f5f0577af4af9f95b5998954d7db829bff4e40c13e14a21461f67898",
+    "file": "20261001120000_operation_job_quarantine.sql",
+    "sha256": "35fa5330f5f0577af4af9f95b5998954d7db829bff4e40c13e14a21461f67898"
   }
 ]

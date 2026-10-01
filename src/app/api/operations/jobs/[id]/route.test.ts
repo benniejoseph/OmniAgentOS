@@ -4,6 +4,9 @@ const routeMocks = vi.hoisted(() => ({
   authorizeRequest: vi.fn(),
   getOperationJob: vi.fn(),
   projectOperationJobStatus: vi.fn(),
+  releaseQuarantinedOperationJob: vi.fn(),
+  discardQuarantinedOperationJob: vi.fn(),
+  recordRuntimeEventSafely: vi.fn(),
 }));
 
 vi.mock("@/lib/db/client", async (importOriginal) => ({
@@ -20,9 +23,16 @@ vi.mock("@/lib/security/guard", async (importOriginal) => ({
 vi.mock("@/lib/operations/job-queue", () => ({
   getOperationJob: routeMocks.getOperationJob,
   projectOperationJobStatus: routeMocks.projectOperationJobStatus,
+  releaseQuarantinedOperationJob: routeMocks.releaseQuarantinedOperationJob,
+  discardQuarantinedOperationJob: routeMocks.discardQuarantinedOperationJob,
 }));
 
-import { GET } from "@/app/api/operations/jobs/[id]/route";
+vi.mock("@/lib/observability/store", () => ({
+  createRequestTelemetry: () => ({ requestId: "request-a", correlationId: "correlation-a" }),
+  recordRuntimeEventSafely: routeMocks.recordRuntimeEventSafely,
+}));
+
+import { GET, POST } from "@/app/api/operations/jobs/[id]/route";
 
 const context = {
   tenantId: "tenant-a",
@@ -36,6 +46,9 @@ const authUserId = "11111111-1111-4111-8111-111111111111";
 beforeEach(() => {
   routeMocks.authorizeRequest.mockReset().mockResolvedValue(context);
   routeMocks.getOperationJob.mockReset();
+  routeMocks.releaseQuarantinedOperationJob.mockReset();
+  routeMocks.discardQuarantinedOperationJob.mockReset();
+  routeMocks.recordRuntimeEventSafely.mockReset().mockResolvedValue(undefined);
   routeMocks.projectOperationJobStatus.mockReset().mockImplementation((job) => ({
     id: job.id,
     type: job.type,
@@ -364,5 +377,157 @@ describe("operation job detail route", () => {
 
     expect(response.status).toBe(200);
     expect(routeMocks.projectOperationJobStatus).toHaveBeenCalledWith(tenantJob);
+  });
+});
+
+describe("operation job quarantine decision route", () => {
+  const quarantined = {
+    id: "job-q",
+    tenantId: context.tenantId,
+    type: "memory.consolidate",
+    status: "quarantined",
+    payload: { progress: { stage: "indexing" } },
+  };
+
+  function decide(body: unknown, id = "job-q") {
+    return POST(
+      new Request(`http://localhost/api/operations/jobs/${id}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+      { params: Promise.resolve({ id }) },
+    );
+  }
+
+  it("releases a quarantined job for the operator's tenant and records the decision", async () => {
+    routeMocks.getOperationJob.mockResolvedValueOnce(quarantined);
+    routeMocks.releaseQuarantinedOperationJob.mockResolvedValueOnce({
+      outcome: "released",
+      job: { ...quarantined, status: "queued" },
+    });
+
+    const response = await decide({ action: "release" });
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toEqual({
+      outcome: "released",
+      job: { id: "job-q", type: "memory.consolidate", status: "queued", progress: { stage: "indexing" } },
+    });
+    expect(routeMocks.authorizeRequest).toHaveBeenCalledWith(expect.objectContaining({
+      action: "manage.workflow",
+      resourceType: "operation_job",
+      resourceId: "job-q",
+    }));
+    expect(routeMocks.getOperationJob).toHaveBeenCalledWith("job-q", { tenantId: "tenant-a" });
+    expect(routeMocks.releaseQuarantinedOperationJob).toHaveBeenCalledWith("job-q", {
+      tenantId: "tenant-a",
+      actorId: "owner-a",
+    });
+    expect(routeMocks.discardQuarantinedOperationJob).not.toHaveBeenCalled();
+    expect(routeMocks.recordRuntimeEventSafely).toHaveBeenCalledWith(expect.objectContaining({
+      action: "operations.job.release",
+      statusCode: 200,
+      tenantId: "tenant-a",
+      metadata: { action: "release", outcome: "released" },
+    }));
+  });
+
+  it("discards with the operator's reason", async () => {
+    routeMocks.getOperationJob.mockResolvedValueOnce(quarantined);
+    routeMocks.discardQuarantinedOperationJob.mockResolvedValueOnce({
+      outcome: "discarded",
+      job: { ...quarantined, status: "canceled" },
+    });
+
+    const response = await decide({ action: "discard", reason: " poison input " });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).outcome).toBe("discarded");
+    expect(routeMocks.discardQuarantinedOperationJob).toHaveBeenCalledWith("job-q", {
+      tenantId: "tenant-a",
+      actorId: "owner-a",
+      reason: "poison input",
+    });
+    expect(routeMocks.releaseQuarantinedOperationJob).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unknown action or extra fields before deciding anything", async () => {
+    for (const body of [{ action: "requeue" }, { action: "release", force: true }, { action: "discard", reason: " " }]) {
+      const response = await decide(body);
+      expect(response.status).toBe(400);
+    }
+    expect(routeMocks.authorizeRequest).not.toHaveBeenCalled();
+    expect(routeMocks.releaseQuarantinedOperationJob).not.toHaveBeenCalled();
+    expect(routeMocks.discardQuarantinedOperationJob).not.toHaveBeenCalled();
+  });
+
+  it("does not decide a job the operator cannot read", async () => {
+    routeMocks.getOperationJob.mockResolvedValueOnce({
+      ...quarantined,
+      type: "knowledge.cognify",
+      payload: { actorId: "owner-b", progress: { stage: "queued" } },
+    });
+
+    const response = await decide({ action: "release" });
+
+    expect(response.status).toBe(404);
+    expect(routeMocks.releaseQuarantinedOperationJob).not.toHaveBeenCalled();
+  });
+
+  it("is not found when the job is missing or vanishes before the decision", async () => {
+    routeMocks.getOperationJob.mockResolvedValueOnce(undefined);
+    expect((await decide({ action: "release" })).status).toBe(404);
+    expect(routeMocks.releaseQuarantinedOperationJob).not.toHaveBeenCalled();
+
+    routeMocks.getOperationJob.mockResolvedValueOnce(quarantined);
+    routeMocks.releaseQuarantinedOperationJob.mockResolvedValueOnce({ outcome: "absent" });
+    expect((await decide({ action: "release" })).status).toBe(404);
+    expect(routeMocks.recordRuntimeEventSafely).toHaveBeenLastCalledWith(expect.objectContaining({
+      statusCode: 404,
+      metadata: { action: "release", outcome: "absent" },
+    }));
+  });
+
+  it("refuses a job that is not quarantined and a run-owned discard", async () => {
+    routeMocks.getOperationJob.mockResolvedValueOnce({ ...quarantined, status: "queued" });
+    routeMocks.releaseQuarantinedOperationJob.mockResolvedValueOnce({
+      outcome: "not_quarantined",
+      job: { ...quarantined, status: "queued" },
+    });
+    const notQuarantined = await decide({ action: "release" });
+    expect(notQuarantined.status).toBe(409);
+    expect((await notQuarantined.json()).error).toBe("Operation job is not quarantined.");
+
+    routeMocks.getOperationJob.mockResolvedValueOnce({ ...quarantined, type: "workflow.tick" });
+    routeMocks.discardQuarantinedOperationJob.mockResolvedValueOnce({
+      outcome: "owned_by_run",
+      job: { ...quarantined, type: "workflow.tick" },
+    });
+    const owned = await decide({ action: "discard" });
+    expect(owned.status).toBe(409);
+    expect((await owned.json()).error).toBe("Cancel the run that owns this job to discard it.");
+    expect(routeMocks.recordRuntimeEventSafely).toHaveBeenLastCalledWith(expect.objectContaining({
+      statusCode: 409,
+      metadata: { action: "discard", outcome: "owned_by_run" },
+    }));
+  });
+
+  it("records a failed decision without leaking the error", async () => {
+    routeMocks.getOperationJob.mockResolvedValueOnce(quarantined);
+    routeMocks.releaseQuarantinedOperationJob.mockRejectedValueOnce(
+      new Error("private database detail"),
+    );
+
+    const response = await decide({ action: "release" });
+
+    expect(response.status).toBe(500);
+    expect(JSON.stringify(await response.json())).not.toContain("private database detail");
+    expect(routeMocks.recordRuntimeEventSafely).toHaveBeenCalledWith(expect.objectContaining({
+      level: "error",
+      action: "operations.job.release.failed",
+      statusCode: 500,
+    }));
   });
 });

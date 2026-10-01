@@ -345,6 +345,54 @@ they were: its writer refuses to write unless they read exactly as created.
   such as `(SELECT omni_system_scope_enabled())`. The integration suite fails
   on a policy that calls one per row.
 
+### Operation job quarantine (v212)
+
+Migration `20261001120000_operation_job_quarantine.sql` installs schema v212
+(`operation_job_quarantine_v1`) after v211. Apply it before deploying the code
+that needs it: until it runs, every database-backed request fails with
+`Database schema is behind (pending versions: 212)`. A release older than v212
+still serves against a v212 database.
+
+v212 adds `lease_lapses` (`integer NOT NULL DEFAULT 0`) to
+`omni_operation_jobs`. The default is a constant, so the table is not
+rewritten. The `NOT VALID` check `omni_operation_jobs_lease_lapses_check`
+requires a count of at least 0. Every existing row has a count of 0, so
+leaving the check unvalidated skips no row.
+
+A job's lease lapses when its worker stops reporting before the lease ends,
+which is what a job that crashes or hangs its worker does on every delivery.
+Each lapse in a row adds one to the count. A completion, failure, or deferral
+the worker reports clears it; a heartbeat does not. The third lapse in a row
+quarantines the job, a workflow tick included, whatever attempts it has left:
+it keeps its payload, its last error reads `Quarantined after 3 deliveries in
+a row lapsed without an outcome.`, and nothing delivers it again. A repair, a
+lease, an enqueue or wake of its dedupe key, and a requeue all leave it as it
+is. Each quarantine, and the decision an operator makes on it, appends an
+`operation.job.quarantined`, `operation.job.released`, or
+`operation.job.discarded` event to the job's `operation-job:<id>` stream.
+
+The Workflows console lists quarantined jobs and decides each one through
+`POST /api/operations/jobs/:id` (see [api-reference.md](api-reference.md)). A
+release queues the job again with its attempts and lapses cleared. A discard
+cancels it and drops its request. A workflow tick or agent job is not
+discarded, because its run would deliver the work again: cancel the run, which
+cancels its job.
+
+- **Held runs.** A quarantined workflow tick or agent job holds its run until
+  an operator releases the job or cancels the run. Recovery fails a stale
+  workflow whose tick is quarantined, 10 minutes after its last update by
+  default, and failing it cancels the tick, so release a tick before then.
+- **Deploys.** A worker stopped mid-job during a deploy lapses the lease of
+  each job it held, and that lapse counts like any other.
+- **Rollback.** A release older than v212 neither reads nor writes the count
+  and never quarantines a job. It leaves a quarantined job alone unless it
+  enqueues the same dedupe key, which queues the job again from its first
+  attempt.
+- **Existing column.** If `lease_lapses` already exists with another type,
+  nullability, or default, v212 stops with `55000` and the whole migration
+  rolls back. See
+  [troubleshooting.md](troubleshooting.md#schema-startup-fails).
+
 ### Keyed memory text digests
 
 This release needs no migration. Memory events no longer keep a plain SHA-256
@@ -1301,6 +1349,7 @@ marker in the same transaction.
 | 209 | `mobile_refresh_rotation_retry_v1` | `e78561b7a9b0c38fd91376d9f8fb094e3b629d5e5b94b3a48592a9b89855531f` | nullable rotation time and key on mobile sessions, so the refresh token a rotation replaced gets the same pair again for 60 seconds |
 | 210 | `oauth_sync_backoff_v1` | `3c2122c7222e4a5aafca6e5ef3eca7905353be7aae675367a16b9cdb4787fff3` | a failure count and retry time on OAuth grants, so a connection whose syncs reach no source waits five minutes, doubling up to six hours |
 | 211 | `rls_scope_initplans_v1` | `84d660e88fc6bcdaf9bac76939d03ad470e2fe6fee615d52be55a16dda6a88e1` | row security scope helpers run once per query as initplans, and `omni_tenant_visible()` reads the system scope setting before calling its check |
+| 212 | `operation_job_quarantine_v1` | `35fa5330f5f0577af4af9f95b5998954d7db829bff4e40c13e14a21461f67898` | a count of lease lapses in a row on operation jobs, so a job whose worker crashes or hangs on three deliveries in a row is quarantined until an operator releases or discards it |
 
 Version 196 requires the exact predecessor marker v195
 `moltbook_autonomy_privilege_repair_v1` with checksum

@@ -95,6 +95,7 @@ export const MUTATION_EVENT_CONTRACTS = Object.freeze([
       "src/lib/workflows/planner.ts",
       "src/lib/workflows/executor.ts",
       "src/lib/workflows/triggers.ts",
+      "src/lib/operations/job-queue.ts",
     ]),
     mutationSurfaces: Object.freeze([
       "workflow lifecycle and queue",
@@ -102,6 +103,7 @@ export const MUTATION_EVENT_CONTRACTS = Object.freeze([
       "plan-node executions",
       "plan-node step journal",
       "workflow triggers and deliveries",
+      "operation job quarantine",
     ]),
     eventTypes: Object.freeze([
       "workflow.scope_bound",
@@ -121,6 +123,9 @@ export const MUTATION_EVENT_CONTRACTS = Object.freeze([
       "workflow.queue.redelivery_failed",
       "workflow.queue.redelivery_reclaimed",
       "workflow.queue.retry_budget_exhausted",
+      "operation.job.quarantined",
+      "operation.job.released",
+      "operation.job.discarded",
     ]),
   }),
   Object.freeze({

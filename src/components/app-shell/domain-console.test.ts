@@ -3,6 +3,8 @@ import {
   catalogConnectorInstalled,
   isConnectorReviewable,
   mcpConnectorRow,
+  quarantinedJobAction,
+  quarantinedJobRow,
 } from "@/components/app-shell/domain-console";
 
 describe("MCP connector presentation", () => {
@@ -55,5 +57,39 @@ describe("integration catalog presentation", () => {
 
     expect(catalogConnectorInstalled({ id: "github" }, installed)).toBe(true);
     expect(catalogConnectorInstalled({ id: "slack" }, installed)).toBe(false);
+  });
+});
+
+describe("quarantined job presentation", () => {
+  it("shows a quarantined job with its attempts, lapses and ID", () => {
+    expect(quarantinedJobRow({
+      id: "job-7",
+      type: "memory.index",
+      attempt: 3,
+      maxAttempts: 5,
+      leaseLapses: 3,
+      updatedAt: "2026-10-01T12:00:00.000Z",
+    })).toEqual({
+      title: "memory.index",
+      status: "quarantined",
+      meta: "attempt 3/5 · 3 lapsed leases · job-7",
+      time: "2026-10-01T12:00:00.000Z",
+      tone: "danger",
+    });
+    expect(quarantinedJobRow({ id: "job-8", leaseLapses: 1 }).meta)
+      .toBe("attempt 0/? · 1 lapsed lease · job-8");
+  });
+
+  it("posts a release or discard decision to the job it names", () => {
+    expect(quarantinedJobAction.buildPath?.({ jobId: " job/7 " }))
+      .toBe("/api/operations/jobs/job%2F7");
+    expect(() => quarantinedJobAction.buildPath?.({ jobId: " " }))
+      .toThrow("Quarantined job ID is required.");
+    expect(quarantinedJobAction.buildPayload?.({ action: "release", reason: "ignored" }))
+      .toEqual({ action: "release", reason: undefined });
+    expect(quarantinedJobAction.buildPayload?.({ action: "discard", reason: " poison input " }))
+      .toEqual({ action: "discard", reason: "poison input" });
+    expect(quarantinedJobAction.buildPayload?.({ action: "discard", reason: "" }))
+      .toEqual({ action: "discard", reason: undefined });
   });
 });

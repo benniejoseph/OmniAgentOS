@@ -122,12 +122,16 @@ export async function reconcileOperationsRecovery(input: OperationsRecoveryInput
   const expiredLeasesRepaired = mode === "inspect"
     ? 0
     : await repairExpiredOperationJobs(tenantOptions);
+  // A repair can quarantine a tick, so recovery reads the rows it left.
+  const currentJobRows = expiredLeasesRepaired > 0
+    ? await listOperationJobRecoveryRows(100, tenantOptions)
+    : jobRows;
   const staleWorkflows: OperationsRecoveryWorkflow[] = [];
 
   for (const run of staleCandidates) {
     const staleMs = Date.now() - Date.parse(run.updatedAt);
     const ageMs = Date.now() - Date.parse(run.createdAt);
-    if (hasActiveWorkflowLease(run, jobRows)) {
+    if (hasActiveWorkflowLease(run, currentJobRows)) {
       staleWorkflows.push(
         summarizeWorkflow(
           run,
@@ -137,6 +141,28 @@ export async function reconcileOperationsRecovery(input: OperationsRecoveryInput
           "Workflow has an active queue lease and is not eligible for recovery.",
         ),
       );
+      continue;
+    }
+    // A quarantined tick never runs again on its own, so a requeue would
+    // leave the run waiting on it. The run fails, and failing it cancels the
+    // tick.
+    if (hasQuarantinedWorkflowTick(run, currentJobRows)) {
+      staleWorkflows.push(mode === "inspect"
+        ? summarizeWorkflow(
+            run,
+            staleMs,
+            ageMs,
+            "inspect",
+            "Workflow's queue tick is quarantined and the workflow should be failed.",
+          )
+        : await failStaleWorkflow(
+            run,
+            staleMs,
+            ageMs,
+            input.actorId,
+            input.executionScope,
+            "Recovery failed the workflow because its queue tick is quarantined.",
+          ));
       continue;
     }
     if (mode === "inspect") {
@@ -161,7 +187,7 @@ export async function reconcileOperationsRecovery(input: OperationsRecoveryInput
       staleMs,
       ageMs,
       input.actorId,
-      jobRows,
+      currentJobRows,
       input.executionScope,
     ));
   }
@@ -229,6 +255,16 @@ function hasActiveWorkflowLease(
       job.dedupeKey === dedupeKey &&
       job.status === "running" &&
       Date.parse(job.leaseExpiresAt || "") > Date.now(),
+  );
+}
+
+function hasQuarantinedWorkflowTick(
+  run: WorkflowRunRecord,
+  jobs: readonly OperationJobRecoveryRow[],
+) {
+  const dedupeKey = getWorkflowJobDedupeKey(run.id);
+  return jobs.some(
+    (job) => job.dedupeKey === dedupeKey && job.status === "quarantined",
   );
 }
 
@@ -338,10 +374,11 @@ async function failStaleWorkflow(
   ageMs: number,
   actorId?: string,
   executionScope?: ExecutionScope,
+  failureReason?: string,
 ) {
-  const reason = run.attempt >= run.maxAttempts
+  const reason = failureReason || (run.attempt >= run.maxAttempts
     ? "Recovery failed stale workflow after max attempts were exhausted."
-    : "Recovery failed workflow after stale fail-after threshold was exceeded.";
+    : "Recovery failed workflow after stale fail-after threshold was exceeded.");
   const executionAuthority = run.input.executionAuthorityRequired
     ? await getWorkflowRunExecutionAuthority(run.id, { tenantId: run.tenantId })
     : undefined;

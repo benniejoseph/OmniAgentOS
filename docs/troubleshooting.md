@@ -74,6 +74,16 @@ A native app that signs out after a refresh answered 401 with `refresh_token_reu
 - On Fly, inspect machine health and restart count. The container health probe uses only the public health endpoint and never sends the internal secret.
 - `GET /api/health/worker` shows which lanes of the deployed revision have worked recently. Every lane `missing` after a release means the worker is still held: it logged one registration per lane and waits for `SIGUSR1`. A restart on the same machine resumes by itself once canonical `/api/health` reports its revision, and logs `Release work resumed from this machine's recorded activation.`; a worker on a new machine stays held until the next activation signal. One `stale` lane has done no work within `OMNIAGENT_WORKER_HEARTBEAT_MAX_AGE_MS`; check that lane's tick records.
 
+## A job is quarantined, or a run waits on a quarantined job
+
+A job is quarantined after its lease lapsed on three deliveries in a row: each time, its worker stopped reporting before the lease ended, which is what a job that crashes or hangs its worker does. Its last error is `Quarantined after 3 deliveries in a row lapsed without an outcome.`, its payload is kept, and nothing runs it again on its own. The Workflows console lists it under Quarantined jobs, and its `operation-job:<id>` event stream shows `operation.job.quarantined`.
+
+- Find why its worker died before deciding. The worker's logs around the job's last three leases usually show an out-of-memory kill, a crash, or a step that hangs past its lease.
+- **Release** it once the cause is fixed. It runs again from its first attempt, with its lapse count cleared.
+- **Discard** background work that should not run again. The job is canceled and its request dropped.
+- A workflow tick or agent job cannot be discarded; the decision returns `409`. Release it, or cancel the run that owns it, which cancels the job. Until then the run waits, and recovery fails a stale workflow whose tick is quarantined, 10 minutes after the run last changed by default.
+- A single lapse that was not the job's fault, such as a worker stopped during a deploy, counts too. A completion, failure, or deferral clears the count.
+
 ## A queued workflow run waits, or one tenant's workflows stop
 
 - `workflow_queue_tenant_failed` with a `tenantId`: that tenant's workflow queue threw during a fast pass, usually on a database error. The logged error is redacted, and the same text is in that tenant's `tenantResults` entry of the tick response. The other tenants' ticks still ran, and the failed tenant is tried again on the next pass.
