@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { nextProjectTaskStatus, normalizeProjects } from "@/components/projects-workspace";
+import {
+  nextProjectTaskStatus,
+  normalizeProjects,
+  withRefreshedProject,
+} from "@/components/projects-workspace";
 
 const status = {
   schemaVersion: 1,
@@ -107,5 +111,63 @@ describe("Projects task transitions", () => {
         execution: { ...canonicalWorkItem.execution, availability: "unavailable" },
       },
     })).toBe("doing");
+  });
+});
+
+describe("Projects refreshed from the server", () => {
+  function taskWith(id: string, sourceStatus: string) {
+    const taskStatus = { ...status, workItemId: id, sourceId: id, sourceStatus };
+    return {
+      id,
+      workItemStatus: taskStatus,
+      workItem: { ...workItem, status: taskStatus },
+    };
+  }
+  const known = normalizeProjects([
+    {
+      id: "project-a",
+      executionStatus: "running",
+      tasks: [taskWith("task-a", "doing:running"), taskWith("task-b", "open:queued")],
+      artifacts: [{ id: "artifact-b" }, { id: "artifact-a" }],
+    },
+    { id: "project-b", executionStatus: "running", tasks: [], artifacts: [] },
+  ])!;
+
+  it("takes what the read returns and keeps what it left out", () => {
+    const refreshed = withRefreshedProject(known, "project-a", {
+      id: "project-a",
+      executionStatus: "waiting_approval",
+      tasks: [taskWith("task-a", "doing:waiting_approval"), taskWith("task-c", "open:queued")],
+      artifacts: [{ id: "artifact-c" }, { id: "artifact-b", verdict: "useful" }],
+    });
+
+    expect(refreshed[0]).toMatchObject({ id: "project-a", executionStatus: "waiting_approval" });
+    expect(refreshed[0]!.tasks.map((task) => [task.id, task.workItem.status.sourceStatus])).toEqual([
+      ["task-a", "doing:waiting_approval"],
+      ["task-c", "open:queued"],
+      ["task-b", "open:queued"],
+    ]);
+    expect(refreshed[0]!.artifacts).toEqual([
+      { id: "artifact-c" },
+      { id: "artifact-b", verdict: "useful" },
+      { id: "artifact-a" },
+    ]);
+    expect(refreshed[1]).toBe(known[1]);
+  });
+
+  it("ignores a read of another project or one it cannot trust", () => {
+    expect(withRefreshedProject(known, "project-a", {
+      id: "project-b",
+      executionStatus: "completed",
+      tasks: [],
+      artifacts: [],
+    })).toBe(known);
+    expect(withRefreshedProject(known, "project-a", {
+      id: "project-a",
+      executionStatus: "completed",
+      tasks: [{ ...taskWith("task-a", "done:completed"), workItemStatus: { ...status, status: "failed" } }],
+      artifacts: [],
+    })).toBe(known);
+    expect(withRefreshedProject(known, "project-a", undefined)).toBe(known);
   });
 });

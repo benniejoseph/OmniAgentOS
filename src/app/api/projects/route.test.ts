@@ -164,11 +164,11 @@ describe("request-bound project routes", () => {
     });
     expect(routeMocks.listProjectTasks).toHaveBeenCalledWith("project-a", {
       tenantId: context.tenantId,
-      limit: 30,
+      limit: 200,
     });
     expect(routeMocks.listProjectArtifacts).toHaveBeenCalledWith("project-a", {
       tenantId: context.tenantId,
-      limit: 100,
+      limit: 200,
     });
     expect(routeMocks.getOwnedProject.mock.invocationCallOrder[0]).toBeLessThan(
       routeMocks.listProjectTasks.mock.invocationCallOrder[0],

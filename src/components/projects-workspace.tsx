@@ -39,6 +39,11 @@ import { WorkspaceLibrary } from "@/components/workspace-library";
 import { ProjectSharedMemory } from "@/components/project-shared-memory";
 import { AppBuilderStudio } from "@/components/app-builder-studio";
 import {
+  projectExecutionIsLive,
+  runProjectWrite,
+  startProjectExecutionRefresh,
+} from "@/lib/client/project-execution-refresh";
+import {
   canonicalWorkItemCostLabel,
   canonicalWorkItemStatusLabel,
   parseCanonicalWorkItemSurface,
@@ -242,10 +247,13 @@ export function ProjectsWorkspace({ initialView = "overview" }: { initialView?: 
   }, [sessionStatus, session]);
 
   useEffect(() => {
-    if (!selected || !["running", "waiting_approval"].includes(selected.executionStatus)) return;
-    const timer = window.setInterval(() => void executeProject("sync", undefined, true), 12_000);
-    return () => window.clearInterval(timer);
-    // Execution polling follows only the durable selected project state.
+    if (!selected || !projectExecutionIsLive(selected.executionStatus)) return;
+    const projectId = selected.id;
+    return startProjectExecutionRefresh({
+      projectId,
+      onProject: (value) => setProjects((current) => withRefreshedProject(current, projectId, value)),
+    });
+    // The refresh follows only the durable selected project state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected?.id, selected?.executionStatus]);
 
@@ -418,9 +426,9 @@ export function ProjectsWorkspace({ initialView = "overview" }: { initialView?: 
     setExecutionDraft({ projectId: selected.id, autonomyMode, taskBudget, maxParallelTasks, requireApproval, ...patch });
   }
 
-  async function executeProject(action: "configure" | "start" | "pause" | "resume" | "sync" | "approve" | "retry", taskId?: string, silent = false) {
+  async function executeProject(action: "configure" | "start" | "pause" | "resume" | "sync" | "approve" | "retry", taskId?: string) {
     if (!selected || executionBusy) return;
-    if (!silent) setExecutionBusy(taskId || action);
+    setExecutionBusy(taskId || action);
     try {
       const body = action === "configure" || action === "start"
         ? { action, autonomyMode, taskBudget, maxParallelTasks, requireApproval }
@@ -441,12 +449,12 @@ export function ProjectsWorkspace({ initialView = "overview" }: { initialView?: 
       if (project) {
         setProjects((current) => current.map((item) => item.id === selected.id ? { ...item, ...project, tasks: tasks || item.tasks, artifacts: artifacts || item.artifacts } : item));
       }
-      if (!silent) setAnnouncement(executionAnnouncement(action, payload.dispatchedTaskIds as string[] | undefined));
+      setAnnouncement(executionAnnouncement(action, payload.dispatchedTaskIds as string[] | undefined));
       setError(undefined);
     } catch (executionError) {
-      if (!silent) setError(message(executionError));
+      setError(message(executionError));
     } finally {
-      if (!silent) setExecutionBusy("");
+      setExecutionBusy("");
     }
   }
 
@@ -695,7 +703,7 @@ function ProjectExecutionBoard({
   actingId: string;
   executionBusy: string;
   onMoveTask: (task: ProjectTask) => Promise<void>;
-  onExecute: (action: "configure" | "start" | "pause" | "resume" | "sync" | "approve" | "retry", taskId?: string, silent?: boolean) => Promise<void>;
+  onExecute: (action: "configure" | "start" | "pause" | "resume" | "sync" | "approve" | "retry", taskId?: string) => Promise<void>;
 }) {
   const grouped = new Map(PROJECT_BOARD_COLUMNS.map((column) => [column.id, [] as ProjectTask[]]));
   for (const task of project.tasks) grouped.get(projectBoardColumn(task))!.push(task);
@@ -850,6 +858,27 @@ export function normalizeProjects(value: unknown): Project[] | undefined {
   }
   return projects;
 }
+/**
+ * The projects with one of them read again. The read replaces its fields, and
+ * any task or artifact it left out stays: the route returns a bounded page of
+ * each, and neither is ever deleted.
+ */
+export function withRefreshedProject(projects: Project[], projectId: string, value: unknown) {
+  const refreshed = normalizeProjects([value])?.[0];
+  if (!refreshed || refreshed.id !== projectId) return projects;
+  return projects.map((project) => project.id === projectId
+    ? {
+        ...project,
+        ...refreshed,
+        tasks: withUnreadKept(refreshed.tasks, project.tasks),
+        artifacts: withUnreadKept(refreshed.artifacts, project.artifacts),
+      }
+    : project);
+}
+function withUnreadKept<T extends { id: string }>(read: T[], known: T[]) {
+  const readIds = new Set(read.map((item) => item.id));
+  return [...read, ...known.filter((item) => !readIds.has(item.id))];
+}
 function normalizeProjectTasks(value: unknown, projectId: string) {
   if (!Array.isArray(value) || value.length > 500) return undefined;
   const tasks = value.map((task) => normalizeProjectTask(task, projectId));
@@ -884,5 +913,14 @@ function executionAnnouncement(action: string, dispatched?: string[]) {
 }
 function formatDate(value: string) { return new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric", year: new Date(value).getFullYear() !== new Date().getFullYear() ? "numeric" : undefined }); }
 function formatTimestamp(value: string) { return new Date(value).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }); }
-async function readJson(path: string, init?: RequestInit) { const response = await fetch(path, { cache: "no-store", ...init }); const payload = await response.json().catch(() => ({})); if (!response.ok) throw new Error(String(payload.message || payload.error || `${path} returned ${response.status}`)); return payload as Record<string, unknown>; }
+async function readJson(path: string, init?: RequestInit) {
+  const read = async () => {
+    const response = await fetch(path, { cache: "no-store", ...init });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(String(payload.message || payload.error || `${path} returned ${response.status}`));
+    return payload as Record<string, unknown>;
+  };
+  // A write is counted, so a refresh read meanwhile cannot undo it.
+  return init?.method && init.method !== "GET" ? runProjectWrite(read) : read();
+}
 function message(error: unknown) { return error instanceof Error ? error.message : "Projects could not be updated."; }

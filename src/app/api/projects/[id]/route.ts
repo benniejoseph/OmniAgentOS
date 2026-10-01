@@ -36,7 +36,7 @@ async function GETHandler(request: Request, route: { params: Promise<{ id: strin
   } catch (error) {
     return forbiddenResponse(error);
   }
-  const result = await showProjectService(createAppServiceCaller({ context }), { projectId: id, taskLimit: 30, artifactLimit: 100 });
+  const result = await showProjectService(createAppServiceCaller({ context }), { projectId: id, taskLimit: 200, artifactLimit: 200 });
   const project = result.data.project;
   if (!project) {
     return Response.json(
