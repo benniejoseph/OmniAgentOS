@@ -393,6 +393,28 @@ cancels its job.
   rolls back. See
   [troubleshooting.md](troubleshooting.md#schema-startup-fails).
 
+### Injection canary
+
+This release needs no migration. The agent loop plants a per-tenant context
+seal at the head of its retrieved context, and the governed executor blocks a
+tool call whose arguments carry it (see
+[architecture.md](architecture.md#security-model) and
+[troubleshooting.md](troubleshooting.md#a-tool-call-is-blocked-because-it-carried-the-context-seal)).
+
+- In production the seal needs `OMNIAGENT_INTERNAL_AUTH_SECRET`, which the
+  worker and governed memory writes already need. Without it an agent run
+  fails before its first model turn, and every governed tool call fails.
+- Rotating the secret changes the seal. A run that resumes after a rotation
+  holds the old seal, which the executor no longer recognizes.
+- **Rollback.** A release without the canary neither plants nor checks the
+  seal, and ignores `injection.canary_tripped` events.
+
+Still open: the workflow planner, the council, and the loop summarizer read
+retrieved content without the seal. A run's later calls are blocked only in
+the process that saw the seal, so an approval resumed in another process is
+checked on its own arguments. A seal split across two fields, reversed, or
+otherwise rewritten is not recognized, and reply text is not checked.
+
 ### Keyed memory text digests
 
 This release needs no migration. Memory events no longer keep a plain SHA-256

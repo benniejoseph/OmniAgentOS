@@ -188,11 +188,13 @@ export const MUTATION_EVENT_CONTRACTS = Object.freeze([
       "tool execution ledger",
       "external effect intents",
       "external effect receipts",
+      "injection canary trips",
     ]),
     eventTypes: Object.freeze([
       "tool.execution.upserted",
       "tool.effect_intent.recorded",
       "tool.effect_receipt.recorded",
+      "injection.canary_tripped",
     ]),
   }),
   Object.freeze({

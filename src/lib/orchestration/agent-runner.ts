@@ -223,6 +223,7 @@ import type {
 import type { SecurityContext, SecurityRole } from "@/lib/security/types";
 import { redactSensitive } from "@/lib/security/context";
 import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
+import { renderInjectionCanary } from "@/lib/security/context-seal";
 import {
   ModelRouteUnavailableError,
   resolveRuntimeModelAssignment,
@@ -1937,6 +1938,7 @@ async function* runAgentUntilStopped(
       messages: safeMessages,
       commandContext: request.commandContext?.content,
       memoryContext: request.agentProfile?.memoryScope === "session" ? "" : retrieval.contextBlock,
+      injectionCanary: renderInjectionCanary(normalizeTenantId(request.tenantId)),
       liveWebContext,
       councilContext: formatCouncilContributions(councilContributions),
       workspaceCapabilityContext,

@@ -142,6 +142,7 @@ import {
   sealToolExecutionInput,
   withdrawPendingToolApproval,
 } from "@/lib/tools/audit-store";
+import type { ToolExecutionRecord } from "@/lib/tools/types";
 import { AgentRunNotActiveError } from "@/lib/runs/active-run-fence";
 import {
   buildEffectIntentV2,
@@ -576,6 +577,82 @@ databaseDescribe("Postgres schema integration", () => {
         AND tenant_id = ${tenantId}
     `;
     expect(eventCount.count).toBe(1);
+  });
+
+  test("records an injection canary trip with the blocked tool execution", async () => {
+    const tenantId = "injection_canary_tenant";
+    const actorId = "injection-canary-actor";
+    const claimToken = "injection-canary-claim";
+    const record = (overrides: Partial<ToolExecutionRecord>) => createToolExecutionRecord({
+      tenantId,
+      actorId,
+      toolId: "memory.write",
+      toolName: "Write Memory",
+      riskLevel: 1,
+      status: "blocked",
+      dryRun: true,
+      approvalRequired: false,
+      input: { title: "Forwarded notes" },
+      output: undefined,
+      reason: "Blocked.",
+      ...overrides,
+    });
+    const blocked = record({});
+    const claimed = record({
+      status: "executing",
+      dryRun: false,
+      approvalRequired: true,
+      approvalDecision: "approved",
+      output: {
+        __executionClaim: { token: claimToken, claimedAt: new Date().toISOString() },
+      },
+    });
+
+    await runWithDatabaseTenantScope(tenantId, () => saveToolExecution(blocked, {
+      injectionCanaryTrip: { encoding: "hex", agentRunId: "injection-canary-run" },
+    }));
+    await runWithDatabaseTenantScope(tenantId, () => saveToolExecution(claimed));
+    const completed = await runWithDatabaseTenantScope(tenantId, () =>
+      completeClaimedToolExecution({
+        ...claimed,
+        status: "blocked",
+        output: undefined,
+        reason: "Blocked.",
+        completedAt: new Date().toISOString(),
+      }, claimToken, { injectionCanaryTrip: { encoding: "base64" } })
+    );
+
+    expect(completed?.status).toBe("blocked");
+    const rows = await admin`
+      SELECT id, stream_id, payload
+      FROM omni_events
+      WHERE tenant_id = ${tenantId}
+        AND type = 'injection.canary_tripped'
+    `;
+    expect(rows.map((row) => ({ id: row.id, streamId: row.stream_id, payload: row.payload })))
+      .toEqual(expect.arrayContaining([
+        {
+          id: `injection-canary:${blocked.id}`,
+          streamId: `tool_execution:${blocked.id}`,
+          payload: expect.objectContaining({
+            executionId: blocked.id,
+            dryRun: true,
+            encoding: "hex",
+            agentRunId: "injection-canary-run",
+          }),
+        },
+        {
+          id: `injection-canary:${claimed.id}`,
+          streamId: `tool_execution:${claimed.id}`,
+          payload: expect.objectContaining({
+            executionId: claimed.id,
+            dryRun: false,
+            encoding: "base64",
+            agentRunId: null,
+          }),
+        },
+      ]));
+    expect(rows).toHaveLength(2);
   });
 
   test("returns newly inserted and replayed bulk memories", async () => {

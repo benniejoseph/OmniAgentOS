@@ -22,6 +22,7 @@ import {
   type GroundingReport,
 } from "@/lib/rag/citations";
 import { createExecutionScope } from "@/lib/security/execution-scope";
+import { injectionCanaryToken } from "@/lib/security/context-seal";
 import type { SecurityContext } from "@/lib/security/types";
 import { sourceContractSha256 } from "@/lib/sources/contracts";
 import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
@@ -401,6 +402,18 @@ describe("agent memory scope", () => {
     }));
     expect(JSON.stringify(mocks.streamResponseTurn.mock.calls[0]?.[0].input))
       .not.toContain("DURABLE_MEMORY_CONTEXT");
+  });
+
+  it("plants the run tenant's context seal in the retrieved context, even session-only", async () => {
+    for (const memoryScope of ["all", "session"] as const) {
+      mocks.streamResponseTurn.mockClear();
+
+      await collectRun(memoryScope);
+
+      const input = JSON.stringify(mocks.streamResponseTurn.mock.calls[0]?.[0].input);
+      expect(input).toContain(injectionCanaryToken("paid-test-tenant"));
+      expect(input).not.toContain(injectionCanaryToken("default"));
+    }
   });
 
   it("dates the prompt by the actor's own timezone, or says it is unknown", async () => {
