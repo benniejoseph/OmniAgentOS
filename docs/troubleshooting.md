@@ -48,6 +48,14 @@ authenticated model-readiness probe failed. Rotate or correct the deployment
 credential; a nonempty environment variable is not provider health. Provider
 error text and credential material are not persisted in the health record.
 
+## A tenant's own vector index is missing, or its build failed
+
+The migration gives a tenant its own HNSW index (`omni_memories_tenant_vector_…` or `omni_knowledge_chunks_tenant_vector_…`) once it holds `OMNIAGENT_TENANT_VECTOR_INDEX_MIN_ROWS` vectors in that table, 2,000 by default. Until then, and while its index is missing, the tenant's searches use the shared index and work as before.
+
+- A tenant past the threshold has no index yet: a run builds at most four a table, the largest tenants first, so the next migration run builds the rest. A tenant id with characters outside letters, digits, `_`, `.`, `:` and `-` never gets one.
+- `database_tenant_vector_index_failed`, with `table`, `index` and `error`: that drop or build failed and the run went on. A build that stopped part way leaves an index that is not valid (`pg_index.indisvalid = false`); the next run drops it and builds it again. Without `index`, the run could not read the tenant counts or the catalog, and changed nothing for that table.
+- A build holds a lock that blocks writes to its table until it finishes. To avoid that for a large tenant, build its index out of band with `CREATE INDEX CONCURRENTLY`, with the name the migration would use and the same definition; the migration then keeps it.
+
 ## Login does not work
 
 - Call `GET /api/auth/session` and inspect `authEnabled`, `bootstrapConfigured`, and `authenticated`.

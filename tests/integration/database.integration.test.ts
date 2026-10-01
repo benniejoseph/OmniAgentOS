@@ -33,6 +33,7 @@ import {
 import { verifyMigratedDatabase } from "@/lib/db/migrated-database";
 import { sqlMigrationFileDigest } from "@/lib/db/sql-migration-files";
 import type { SqlClient } from "@/lib/db/sql-types";
+import { tenantVectorIndexName } from "@/lib/db/tenant-vector-indexes";
 import { withHnswCandidateScan } from "@/lib/db/vector-search";
 import { checkSharedRateLimit } from "@/lib/http/rate-limit";
 import { memoryContentDigest } from "@/lib/memory/content-digest";
@@ -8725,6 +8726,252 @@ databaseDescribe("Postgres schema integration", () => {
       } finally {
         await admin`RESET enable_seqscan`;
         await admin`RESET enable_sort`;
+      }
+    },
+  );
+
+  test.skipIf(!requirePgvector)(
+    "gives each tenant with enough vectors an HNSW index of its own and keeps it in step",
+    async () => {
+      const tenantId = "tenant-own-hnsw";
+      const neighborTenantId = "tenant-own-hnsw-neighbor";
+      const smallTenantId = "tenant-own-hnsw-small";
+      const tenantIndex = tenantVectorIndexName("omni_memories", tenantId);
+      const neighborIndex = tenantVectorIndexName("omni_memories", neighborTenantId);
+      const ours = [tenantIndex, neighborIndex, tenantVectorIndexName("omni_memories", smallTenantId)];
+      // The schema, should this test run alone.
+      await migrateWithFreshClient();
+      const tenantIndexNames = async () => (await admin`
+        SELECT relname::text AS name
+        FROM pg_class
+        WHERE relkind = 'i'
+          AND strpos(relname::text, '_tenant_vector_') > 0
+      `).map((row) => String(row.name));
+      const before = new Set(await tenantIndexNames());
+      const ownIndexes = async () => (await admin`
+        SELECT
+          index_class.relname::text AS name,
+          pg_index.indisvalid AS valid,
+          pg_get_indexdef(index_class.oid) AS definition
+        FROM pg_index
+        JOIN pg_class index_class ON index_class.oid = pg_index.indexrelid
+        WHERE starts_with(index_class.relname::text, 'omni_memories_tenant_vector_')
+        ORDER BY index_class.relname
+      `).filter((row) => ours.includes(String(row.name))).map((row) => ({
+        name: String(row.name),
+        valid: row.valid === true,
+        definition: String(row.definition),
+      }));
+      const definition = (name: string, tenant: string) =>
+        `CREATE INDEX ${name} ON public.omni_memories USING hnsw ` +
+        `(embedding_vector vector_cosine_ops) WHERE (tenant_id = '${tenant}'::text)`;
+      // Each DDL command on these indexes, with its transaction and settings.
+      const ddl = async () => {
+        const rows = await admin`
+          SELECT tag, query, txid, lock_timeout, reason
+          FROM tenant_vector_index_ddl
+          ORDER BY seq
+        `;
+        await admin`DELETE FROM tenant_vector_index_ddl`;
+        return rows.flatMap((row) => {
+          const index = ours.find((name) => String(row.query).includes(name));
+          return index
+            ? [{
+              command: [String(row.tag), index],
+              txid: String(row.txid),
+              settings: `${row.lock_timeout} ${row.reason}`,
+            }]
+            : [];
+        });
+      };
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const failures = () => warn.mock.calls.flatMap(([line]) => {
+        try {
+          const parsed = JSON.parse(String(line)) as { event?: unknown };
+          return parsed.event === "database_tenant_vector_index_failed" ? [parsed] : [];
+        } catch {
+          return [];
+        }
+      });
+      const queryVector = `[${Array.from(
+        { length: VECTOR_INDEX_DIMENSIONS },
+        (_, index) => (index === 0 ? 1 : 0),
+      ).join(",")}]`;
+      const nearest = async (tenant: string) => (await admin`
+        SELECT count(*)::int AS memories
+        FROM (
+          SELECT id
+          FROM omni_memories
+          WHERE tenant_id = ${tenant}
+          ORDER BY embedding_vector <=> ${queryVector}::vector
+          LIMIT 120
+        ) nearest
+      `)[0];
+      vi.stubEnv("OMNIAGENT_TENANT_VECTOR_INDEX_MIN_ROWS", "250");
+      vi.stubEnv("OMNIAGENT_MIGRATION_LOCK_TIMEOUT_MS", "7000");
+      try {
+        // The neighbor's 500 memories all lie nearer the query than the
+        // tenant's 250 and the small tenant's 5.
+        await admin`
+          INSERT INTO omni_memories (
+            id, tenant_id, type, title, content, scope, source, embedding_vector
+          )
+          SELECT
+            'own-hnsw-' || owner.label || '-' || lpad(g::text, 3, '0'),
+            owner.tenant_id,
+            'fact',
+            'Own HNSW index',
+            'A memory for the tenant index search.',
+            'tenant',
+            'integration-test',
+            (
+              SELECT array_agg(
+                (CASE
+                  WHEN d = owner.axis THEN 1
+                  WHEN d = 1 THEN 0.1
+                  WHEN d = 4 THEN g / 1000.0
+                  ELSE 0
+                END)::real
+                ORDER BY d
+              )::vector
+              FROM generate_series(1, ${VECTOR_INDEX_DIMENSIONS}::int) d
+            )
+          FROM (
+            VALUES
+              (${tenantId}::text, 'far', 3, 250),
+              (${neighborTenantId}::text, 'near', 1, 500),
+              (${smallTenantId}::text, 'small', 3, 5)
+          ) AS owner(tenant_id, label, axis, memories)
+          CROSS JOIN LATERAL generate_series(1, owner.memories) g
+        `;
+        await admin`
+          CREATE TABLE tenant_vector_index_ddl (
+            seq BIGSERIAL PRIMARY KEY,
+            tag TEXT NOT NULL,
+            query TEXT NOT NULL,
+            txid TEXT NOT NULL,
+            lock_timeout TEXT NOT NULL,
+            reason TEXT
+          )
+        `;
+        await admin`CREATE TABLE tenant_vector_index_failures (name TEXT NOT NULL)`;
+        await admin.unsafe(`
+          CREATE FUNCTION tenant_vector_index_ddl_start() RETURNS event_trigger
+          LANGUAGE plpgsql AS $$
+          BEGIN
+            IF strpos(current_query(), '_tenant_vector_') = 0 THEN
+              RETURN;
+            END IF;
+            IF tg_tag = 'CREATE INDEX' AND EXISTS (
+              SELECT 1
+              FROM tenant_vector_index_failures failure
+              WHERE strpos(current_query(), failure.name) > 0
+            ) THEN
+              RAISE EXCEPTION 'simulated tenant vector index failure';
+            END IF;
+            INSERT INTO tenant_vector_index_ddl (tag, query, txid, lock_timeout, reason)
+            VALUES (
+              tg_tag,
+              current_query(),
+              txid_current()::text,
+              current_setting('lock_timeout'),
+              current_setting('omni.system_reason', true)
+            );
+          END
+          $$
+        `);
+        await admin`
+          CREATE EVENT TRIGGER tenant_vector_index_ddl
+          ON ddl_command_start
+          WHEN TAG IN ('CREATE INDEX', 'DROP INDEX')
+          EXECUTE FUNCTION tenant_vector_index_ddl_start()
+        `;
+
+        // The neighbor's build fails; the tenant's goes on after it.
+        await admin`INSERT INTO tenant_vector_index_failures (name) VALUES (${neighborIndex})`;
+        await migrateWithFreshClient();
+        const first = await ddl();
+        expect(first.map(({ command }) => command)).toEqual([["CREATE INDEX", tenantIndex]]);
+        expect(first.map(({ settings }) => settings)).toEqual([
+          "7s optional vector schema maintenance",
+        ]);
+        expect(failures()).toEqual([{
+          level: "warn",
+          event: "database_tenant_vector_index_failed",
+          table: "omni_memories",
+          index: neighborIndex,
+          error: "simulated tenant vector index failure",
+        }]);
+        expect(await ownIndexes()).toEqual([
+          { name: tenantIndex, valid: true, definition: definition(tenantIndex, tenantId) },
+        ]);
+        // Without a sequential scan or a sort, the search reads an HNSW index.
+        // At pgvector's defaults the tenant's own index yields 40 of its
+        // memories; the small tenant, with only the shared index, gets none.
+        await admin`SET enable_seqscan = off`;
+        await admin`SET enable_sort = off`;
+        try {
+          expect(await nearest(tenantId)).toEqual({ memories: 40 });
+          expect(await nearest(smallTenantId)).toEqual({ memories: 0 });
+        } finally {
+          await admin`RESET enable_seqscan`;
+          await admin`RESET enable_sort`;
+        }
+
+        // The next run builds the index that failed and keeps the other.
+        await admin`DELETE FROM tenant_vector_index_failures`;
+        warn.mockClear();
+        await migrateWithFreshClient();
+        expect((await ddl()).map(({ command }) => command)).toEqual([
+          ["CREATE INDEX", neighborIndex],
+        ]);
+        expect(failures()).toEqual([]);
+        expect(await ownIndexes()).toEqual([
+          { name: tenantIndex, valid: true, definition: definition(tenantIndex, tenantId) },
+          {
+            name: neighborIndex,
+            valid: true,
+            definition: definition(neighborIndex, neighborTenantId),
+          },
+        ].sort((left, right) => (left.name < right.name ? -1 : 1)));
+
+        // An index left invalid is dropped and built again; the index of a
+        // tenant that holds no vectors any more is dropped. Each command runs
+        // in a migration transaction of its own.
+        await admin`
+          UPDATE pg_index SET indisvalid = false WHERE indexrelid = ${tenantIndex}::regclass
+        `;
+        await admin`
+          UPDATE omni_memories SET embedding_vector = NULL WHERE tenant_id = ${neighborTenantId}
+        `;
+        await migrateWithFreshClient();
+        const third = await ddl();
+        expect(third.map(({ command }) => command)).toEqual([
+          ...[tenantIndex, neighborIndex].sort().map((name) => ["DROP INDEX", name]),
+          ["CREATE INDEX", tenantIndex],
+        ]);
+        expect(new Set(third.map(({ txid }) => txid)).size).toBe(3);
+        expect(new Set(third.map(({ settings }) => settings))).toEqual(
+          new Set(["7s optional vector schema maintenance"]),
+        );
+        expect(failures()).toEqual([]);
+        expect(await ownIndexes()).toEqual([
+          { name: tenantIndex, valid: true, definition: definition(tenantIndex, tenantId) },
+        ]);
+      } finally {
+        warn.mockRestore();
+        vi.unstubAllEnvs();
+        await admin`DROP EVENT TRIGGER IF EXISTS tenant_vector_index_ddl`;
+        await admin`DROP FUNCTION IF EXISTS tenant_vector_index_ddl_start()`;
+        await admin`DROP TABLE IF EXISTS tenant_vector_index_ddl`;
+        await admin`DROP TABLE IF EXISTS tenant_vector_index_failures`;
+        for (const name of await tenantIndexNames()) {
+          if (!before.has(name)) {
+            await admin.unsafe(`DROP INDEX IF EXISTS "${name}"`);
+          }
+        }
+        // Memory rows are never deleted; the tenant's vectors stay below the
+        // default threshold.
       }
     },
   );

@@ -1115,7 +1115,7 @@ Keep `OPENAI_API_KEY` only on Vercel; the normal release shell does not need it,
 - Model credentials and inbound MCP: `OMNIAGENT_CREDENTIAL_KEYRING`, `OMNIAGENT_MCP_ALLOWED_HOSTS`, and `OMNIAGENT_MCP_ALLOWED_ORIGINS`. MCP remains disabled per actor until enabled in Settings and requires a scoped, hash-only service key.
 - Model routing: a workspace model assignment that cannot be used as saved (Settings unreadable, provider disconnected, credential unopenable) stops the run with a `model_route_degraded` event and calls no model. Set `OMNIAGENT_MODEL_ROUTE_ALLOW_DEPLOYMENT_FALLBACK=true` only to let those runs use the deployment's own provider keys instead; each such run still records the event.
 - Workflow triggers: use dedicated `OMNIAGENT_TRIGGER_*` HMAC keys. Put legacy server-only names in `OMNIAGENT_TRIGGER_SECRET_ALLOWLIST`; platform credentials are always rejected, and unauthenticated triggers remain disabled at dispatch time in production.
-- Diagnostics/storage: `BLOB_READ_WRITE_TOKEN`, `OMNIAGENT_ASSET_DELIVERY_SECRET`, `OMNIAGENT_LOG_PGVECTOR_FAILURES`, `OMNIAGENT_DATA_DIR`, and the demo-storage switch.
+- Diagnostics/storage: `BLOB_READ_WRITE_TOKEN`, `OMNIAGENT_ASSET_DELIVERY_SECRET`, `OMNIAGENT_LOG_PGVECTOR_FAILURES`, `OMNIAGENT_TENANT_VECTOR_INDEX_MIN_ROWS` (the vectors a tenant holds in a table before the migration builds it an HNSW index of its own), `OMNIAGENT_DATA_DIR`, and the demo-storage switch.
 - Market research: server-only `TWELVE_DATA_API_KEY` for XAU/USD bars and the entitlement-gated NDX cash index, plus `FRED_API_KEY` for official release dates and ALFRED vintages. The public BLS calendar needs no credential and supplies reviewed CPI, PPI, Employment Situation, and JOLTS release times. Never expose market credentials through `NEXT_PUBLIC_*`; NDX time-series availability is plan-dependent and must fail closed when the account lacks the required Twelve Data entitlement.
 
 Platform-provided `VERCEL_*` values supply deployment metadata and are not copied into `.env.example`. See [api-reference.md](api-reference.md) for route authentication and response expectations.
@@ -1250,6 +1250,25 @@ transaction, so a lock timeout repeats one batch and never undoes the batches
 before it. A batch skips rows another session has locked, which a later run
 fills, and embeddings shorter than the column or holding an element that is not
 a number, which stay JSON-only.
+
+Last, the step gives each tenant that holds at least
+`OMNIAGENT_TENANT_VECTOR_INDEX_MIN_ROWS` vectors in a table (2,000 by default)
+an HNSW index of its own, partial to its rows, beside the shared index. A
+search filtered to that tenant then walks a graph of the tenant's vectors,
+where the shared index makes it pass every nearer vector of other tenants
+first. The index is named `<table>_tenant_vector_` followed by the first 16 hex
+digits of the SHA-256 of the tenant id. One transaction reads each tenant's
+count and the tenant indexes the catalog holds; then each drop and each build
+runs in a transaction of its own. A run builds at most four indexes a table,
+the largest tenants first, so a tenant past that gets its index on a later
+run. An index that is not valid, which a failed build leaves, is dropped and
+built again; an index whose tenant holds no vectors any more is dropped; a
+tenant that falls below the threshold keeps its index. A failed drop or build
+logs a `database_tenant_vector_index_failed` JSON line, and the step goes on.
+A build locks its table against writes while it runs, so for a large tenant,
+build the index out of band first with `CREATE INDEX CONCURRENTLY`, under the
+same name and as `USING hnsw (embedding_vector vector_cosine_ops) WHERE
+tenant_id = '<tenant id>'`; the step then keeps it.
 
 Each file runs inside that transaction. The runner removes the file's own
 `BEGIN` and `COMMIT` and refuses any other transaction control, any statement

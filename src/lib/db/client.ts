@@ -12,6 +12,12 @@ import {
   beginMigrationTransaction,
   runWithMigrationLockRetry,
 } from "@/lib/db/migration-transaction";
+import {
+  maintainTenantVectorIndexes,
+  planTenantVectorIndexes,
+  tenantVectorIndexMinRows,
+  tenantVectorIndexPrefix,
+} from "@/lib/db/tenant-vector-indexes";
 import { typescriptSchemaMigrations } from "@/lib/db/schema/steps";
 import type { SchemaMigrationUp, SqlClient, SqlRow } from "@/lib/db/sql-types";
 import schemaMigrationManifest from "../../../schema-migrations.json";
@@ -2398,7 +2404,67 @@ async function ensureVectorSchema(pg: postgres.Sql) {
   );
   for (const tableName of tableNames) {
     await backfillVectorColumn(pg, tableName);
+    if (VECTOR_INDEX_DIMENSIONS <= PGVECTOR_HNSW_MAX_DIMENSIONS) {
+      await ensureTenantVectorIndexes(pg, tableName);
+    }
   }
+}
+
+/**
+ * Gives each tenant holding enough vectors in a table an HNSW index of its own
+ * (src/lib/db/tenant-vector-indexes.ts). Its searches then walk a graph of its
+ * own vectors, where the shared index makes them pass every nearer vector of
+ * other tenants first. One migration transaction reads the counts and the
+ * catalog; then each drop and each build runs in a transaction of its own. A
+ * build locks the table against writes while it runs, as the shared index's
+ * does. A failure is logged, and the other drops and builds go on.
+ */
+async function ensureTenantVectorIndexes(
+  pg: postgres.Sql,
+  tableName: "omni_memories" | "omni_knowledge_chunks",
+) {
+  await maintainTenantVectorIndexes({
+    table: tableName,
+    plan: () =>
+      runWithMigrationLockRetry(`Tenant vector indexes of ${tableName}`, () =>
+        pg.begin(async (tx) => {
+          await beginMigrationTransaction(tx, "optional vector schema maintenance");
+          const tenants = await tx.unsafe(`
+            SELECT tenant_id, count(*)::int AS rows
+            FROM ${tableName}
+            WHERE embedding_vector IS NOT NULL
+            GROUP BY tenant_id
+          `);
+          const indexes = await tx`
+            SELECT index_class.relname AS name, pg_index.indisvalid AS valid
+            FROM pg_index
+            JOIN pg_class index_class ON index_class.oid = pg_index.indexrelid
+            JOIN pg_class table_class ON table_class.oid = pg_index.indrelid
+            JOIN pg_namespace namespace ON namespace.oid = table_class.relnamespace
+            WHERE namespace.nspname = current_schema()
+              AND table_class.relname = ${tableName}
+              AND starts_with(index_class.relname::text, ${tenantVectorIndexPrefix(tableName)})
+          `;
+          return planTenantVectorIndexes({
+            table: tableName,
+            tenants: tenants.map((row) => ({
+              tenantId: String(row.tenant_id),
+              rows: Number(row.rows),
+            })),
+            indexes: indexes.map((row) => ({ name: String(row.name), valid: row.valid === true })),
+            minRows: tenantVectorIndexMinRows(),
+          });
+        }),
+      ),
+    run: async (indexName, statement) => {
+      await runWithMigrationLockRetry(`Tenant vector index ${indexName}`, () =>
+        pg.begin(async (tx) => {
+          await beginMigrationTransaction(tx, "optional vector schema maintenance");
+          await tx.unsafe(statement);
+        }),
+      );
+    },
+  });
 }
 
 /**
