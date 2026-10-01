@@ -71,6 +71,25 @@ describe("ApprovalsWorkspace", () => {
     expect(html).not.toContain("Back to conversation");
   });
 
+  it("is busy until it first reads the queues, with its announcers in place", () => {
+    session.role = "admin";
+    const html = render();
+
+    expect(html).toMatch(/^<div class="[^"]*" aria-busy="true" data-testid="inbox-workspace">/);
+    expect(html).toContain("Loading decisions…");
+    // A decision is announced in regions already in the page.
+    expect(html).toContain(
+      '<div role="status" aria-live="polite" aria-atomic="true"></div><div role="alert" aria-atomic="true"></div>',
+    );
+    // Focus can be put on a list's heading once its last card is decided.
+    expect(html).toContain(
+      '<h2 id="access-request-heading" tabindex="-1" class="text-base font-semibold">Workspace access</h2>',
+    );
+    expect(html).toContain(
+      '<h2 id="action-approval-heading" tabindex="-1" class="text-base font-semibold">Agent and workflow actions</h2>',
+    );
+  });
+
   it("shows no linked item to a role that cannot decide it", () => {
     session.role = "viewer";
     const html = render({ focusId: "exec-1", focusKind: "tool", returnTo: "/app/today" });

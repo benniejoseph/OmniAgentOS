@@ -44,6 +44,9 @@ const pending: ApprovalItem = {
 
 const trust: TrustResponse = { enabled: true, threshold: 20, profiles: [] };
 
+const politeRegion = '<div role="status" aria-live="polite" aria-atomic="true">';
+const alertRegion = '<div role="alert" aria-atomic="true">';
+
 const deepLink =
   "/app/approvals?id=exec-1&amp;kind=tool&amp;returnTo=%2Fapp%2Fcommand%3Fthread%3Dthread-1%26run%3Drun-1";
 
@@ -75,8 +78,9 @@ describe("the inline approval banner", () => {
     expect(html).toContain(">Review</a>");
     expect(html).not.toContain("Open in Inbox");
     expect(html).not.toContain("Loading the approval…");
-    expect(html).not.toContain('role="alert"');
-    expect(html).not.toContain('role="status"');
+    // The regions a decision is announced in are there, empty, before it.
+    expect(html).toContain(`${politeRegion}</div>${alertRegion}</div>`);
+    expect(html.match(/role="(alert|status)"/g)).toHaveLength(2);
   });
 
   it("says it is loading and why there is no card", () => {
@@ -100,18 +104,18 @@ describe("the inline approval banner", () => {
 
   it("announces a decision and alerts on a failure", () => {
     const released = view({ notice: { message: "Approved and released: Send email.", tone: "success" } });
-    expect(released).toContain('role="status"');
-    expect(released).toContain("border-success/40");
-    expect(released).toContain("Approved and released: Send email.");
-    expect(released).not.toContain('role="alert"');
+    expect(released).toMatch(new RegExp(
+      `${politeRegion}<div class="mt-3 rounded-md border px-3 py-2 text-sm border-success/40[^"]*"><p>Approved and released: Send email\\.</p></div></div>${alertRegion}</div>`,
+    ));
 
     const failed = view({ notice: { message: "Execution failed.", tone: "danger" } });
-    expect(failed).toContain('role="alert"');
-    expect(failed).toContain("border-danger/40");
+    expect(failed).toMatch(new RegExp(
+      `${politeRegion}</div>${alertRegion}<div class="mt-3 rounded-md border px-3 py-2 text-sm border-danger/40[^"]*"><p>Execution failed\\.</p></div></div>`,
+    ));
 
     const refused = view({ decisionError: "Already decided." });
-    expect(refused).toContain('role="alert"');
-    expect(refused).toContain("Already decided.");
+    expect(refused).toContain(`${politeRegion}</div>${alertRegion}</div>`);
+    expect(refused).toMatch(/<p class="[^"]*" role="alert">Already decided\.<\/p>/);
   });
 });
 

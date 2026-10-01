@@ -1,8 +1,8 @@
-import { createElement, type ComponentProps } from "react";
+import { createElement, type ComponentProps, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { ApprovalCard } from "@/components/approvals/approval-card";
-import type { ApprovalItem } from "@/components/approvals/approval-decision";
+import { ApprovalCard, DecisionNoticeRegion } from "@/components/approvals/approval-card";
+import type { ApprovalItem, DecisionNotice } from "@/components/approvals/approval-decision";
 
 function item(overrides: Partial<ApprovalItem> = {}): ApprovalItem {
   return {
@@ -43,7 +43,10 @@ describe("ApprovalCard", () => {
   it("shows an ordinary tool approval under a section heading", () => {
     const html = render();
 
-    expect(html).toContain('<h3 class="text-base font-semibold">Send email</h3>');
+    // Focus can be put on the heading once a decision is read back.
+    expect(html).toContain(
+      '<h3 id="approval-heading-tool:exec-1" tabindex="-1" class="text-base font-semibold">Send email</h3>',
+    );
     expect(html).toContain("tool call");
     expect(html).toContain("risk 2");
     expect(html).toContain("Requested ");
@@ -211,5 +214,47 @@ describe("ApprovalCard", () => {
     expect(html).toContain("shadow evidence gate");
     expect(html).toContain("9 ok · 1 failed · streak 5");
     expect(html).toContain("5/20 clean executions toward earning autonomy.");
+  });
+});
+
+describe("DecisionNoticeRegion", () => {
+  const politeRegion = '<div role="status" aria-live="polite" aria-atomic="true">';
+  const alertRegion = '<div role="alert" aria-atomic="true">';
+
+  function region(notice?: DecisionNotice, next?: ReactNode) {
+    return renderToStaticMarkup(createElement(
+      DecisionNoticeRegion,
+      { notice, className: "notice" },
+      next,
+    ));
+  }
+
+  it("is in the page, empty, before there is an outcome", () => {
+    expect(region()).toBe(`${politeRegion}</div>${alertRegion}</div>`);
+    expect(region(undefined, createElement("button", null, "Provision"))).toBe(
+      `${politeRegion}</div>${alertRegion}</div>`,
+    );
+  });
+
+  it("says an outcome politely, with what can be done next", () => {
+    for (const [tone, classes] of [
+      ["success", "border-success/40"],
+      ["warning", "border-warning/45 bg-warning/10"],
+      ["neutral", "border-line"],
+    ] as const) {
+      const html = region(
+        { message: "Approved.", tone },
+        createElement("button", null, "Provision"),
+      );
+      expect(html).toMatch(new RegExp(
+        `^${politeRegion}<div class="notice ${classes}[^"]*"><p>Approved\\.</p><button>Provision</button></div></div>${alertRegion}</div>$`,
+      ));
+    }
+  });
+
+  it("alerts at once on a failure", () => {
+    expect(region({ message: "Execution failed.", tone: "danger" })).toBe(
+      `${politeRegion}</div>${alertRegion}<div class="notice border-danger/40 bg-danger/10 text-danger"><p>Execution failed.</p></div></div>`,
+    );
   });
 });

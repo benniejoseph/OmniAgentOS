@@ -21,16 +21,18 @@ import {
 } from "@/components/app-shell/session-context";
 import {
   ApprovalCard,
-  decisionNoticeClasses,
+  DecisionNoticeRegion,
   formatTime,
 } from "@/components/approvals/approval-card";
 import {
   APPROVAL_PAGE_SIZE,
   MAX_REFRESHED_APPROVALS,
   announceInboxChanged,
+  approvalHeadingId,
   approvalItemKey,
   approvalReturnPath,
   findFocusedApproval,
+  focusAfterDecision,
   loadApprovalQueue,
   matchesApprovalFocus,
   submitApprovalDecision,
@@ -77,6 +79,15 @@ type FocusState =
   | FocusedApproval
   | { status: "error"; message: string };
 
+type DecisionList = "actions" | "access";
+
+const ACTION_LIST_HEADING_ID = "action-approval-heading";
+const ACCESS_LIST_HEADING_ID = "access-request-heading";
+
+function accessRequestKey(item: Pick<AccessRequestItem, "id">) {
+  return `access:${item.id}`;
+}
+
 export function ApprovalsWorkspace({
   focusId,
   focusKind,
@@ -113,6 +124,13 @@ export function ApprovalsWorkspace({
   const [accessQueue, setAccessQueue] = useState<AccessQueueResponse>();
   const loadVersionRef = useRef(0);
   const shownLimitRef = useRef(APPROVAL_PAGE_SIZE);
+  // The card a decision was made on, until the queues are read back.
+  const decidedRef = useRef<{ list: DecisionList; key: string }>(undefined);
+  // The cards each list showed before its latest read.
+  const shownKeysRef = useRef<Record<DecisionList, readonly string[]>>({
+    actions: [],
+    access: [],
+  });
   const decisionPermission = permissionMessage(session, sessionStatus, "manage.workflow");
   const accessPermission = permissionMessage(session, sessionStatus, "manage.identity");
   const focus = useMemo(
@@ -120,11 +138,12 @@ export function ApprovalsWorkspace({
     [focusId, focusKind],
   );
 
+  /** Reads the queues again, and says whether what it read is shown. */
   async function load() {
     const loadVersion = ++loadVersionRef.current;
     if (decisionPermission && accessPermission) {
       setState("ready");
-      return;
+      return false;
     }
     setState("loading");
     setError(undefined);
@@ -163,7 +182,7 @@ export function ApprovalsWorkspace({
         }
       }
       if (loadVersion !== loadVersionRef.current) {
-        return;
+        return false;
       }
       if (queuePage) {
         setQueue(queuePage);
@@ -181,12 +200,22 @@ export function ApprovalsWorkspace({
         setAccessQueue(accessBody);
       }
       setState("ready");
+      return true;
     } catch (loadError) {
       if (loadVersion !== loadVersionRef.current) {
-        return;
+        return false;
       }
       setState("error");
       setError(loadError instanceof Error ? loadError.message : "Approvals unavailable.");
+      return false;
+    }
+  }
+
+  /** Reads the queues back after a decision on the card with this key. */
+  async function rereadAfterDecision(list: DecisionList, key: string) {
+    decidedRef.current = { list, key };
+    if (!(await load())) {
+      decidedRef.current = undefined;
     }
   }
 
@@ -211,7 +240,9 @@ export function ApprovalsWorkspace({
     enabled:
       sessionStatus === "ready" &&
       (!decisionPermission || !accessPermission),
-    onRefresh: load,
+    onRefresh: async () => {
+      await load();
+    },
     pollIntervalMs: 10_000,
   });
 
@@ -235,6 +266,7 @@ export function ApprovalsWorkspace({
     const decidingFocus = Boolean(focus && matchesApprovalFocus(item, focus));
     setDecisionInFlight({ key, decision });
     setError(undefined);
+    setLastDecision(undefined);
     try {
       const notice = await submitApprovalDecision(item, decision, {
         reason: reasons[key],
@@ -252,7 +284,7 @@ export function ApprovalsWorkspace({
         router.push(back);
         return;
       }
-      await load();
+      await rereadAfterDecision("actions", key);
     } catch (decisionError) {
       setError(decisionError instanceof Error ? decisionError.message : "Decision failed.");
     } finally {
@@ -268,9 +300,10 @@ export function ApprovalsWorkspace({
       setError(accessPermission);
       return;
     }
-    const key = `access:${item.id}`;
+    const key = accessRequestKey(item);
     setDecisionInFlight({ key, decision });
     setError(undefined);
+    setLastDecision(undefined);
     try {
       const response = await fetch("/api/onboarding/access-requests", {
         method: "POST",
@@ -294,7 +327,7 @@ export function ApprovalsWorkspace({
       });
       setApprovedAccessRequest(decision === "approved" ? item : undefined);
       announceInboxChanged();
-      await load();
+      await rereadAfterDecision("access", key);
     } catch (decisionError) {
       setError(decisionError instanceof Error ? decisionError.message : "Decision failed.");
     } finally {
@@ -328,6 +361,34 @@ export function ApprovalsWorkspace({
     () => accessQueue?.requests || [],
     [accessQueue],
   );
+  // The cards of each list, in the order they are shown.
+  const actionKeys = useMemo(
+    () => [...(focusedKey ? [focusedKey] : []), ...items.map(approvalItemKey)],
+    [focusedKey, items],
+  );
+  const accessKeys = useMemo(
+    () => accessRequests.map(accessRequestKey),
+    [accessRequests],
+  );
+
+  // Once a decision is read back, focus goes to the card that took the
+  // decided one's place, unless the approver took it somewhere else.
+  useEffect(() => {
+    const before = shownKeysRef.current;
+    shownKeysRef.current = { actions: actionKeys, access: accessKeys };
+    const decided = decidedRef.current;
+    if (!decided) {
+      return;
+    }
+    decidedRef.current = undefined;
+    const index = before[decided.list].indexOf(decided.key);
+    if (decided.list === "access") {
+      focusAfterDecision(document, { key: decided.key, index }, accessKeys, ACCESS_LIST_HEADING_ID);
+    } else {
+      focusAfterDecision(document, { key: decided.key, index }, actionKeys, ACTION_LIST_HEADING_ID);
+    }
+  }, [accessKeys, actionKeys]);
+  const firstLoad = state === "loading" && !queue && !accessQueue;
   const visiblePendingCount =
     (queue?.stats.total || 0) +
     (accessQueue?.stats.pending || 0) +
@@ -397,7 +458,7 @@ export function ApprovalsWorkspace({
   }
 
   return (
-    <div className={clsx("mx-auto max-w-[100rem] px-4 py-6 sm:px-6 lg:px-8", styles.daybook, styles.approvals)} aria-busy={state === "loading"} data-testid="inbox-workspace">
+    <div className={clsx("mx-auto max-w-[100rem] px-4 py-6 sm:px-6 lg:px-8", styles.daybook, styles.approvals)} aria-busy={firstLoad} data-testid="inbox-workspace">
       <section className="rounded-lg border border-line bg-surface p-5" data-daybook="hero">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-3">
@@ -472,33 +533,27 @@ export function ApprovalsWorkspace({
         </section>
       ) : null}
 
-      {lastDecision ? (
-        <div
-          className={clsx(
-            "mt-4 flex flex-col gap-3 rounded-md border px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between",
-            decisionNoticeClasses(lastDecision.tone),
-          )}
-          role={lastDecision.tone === "danger" ? "alert" : "status"}
-        >
-          <p>{lastDecision.message}</p>
-          {approvedAccessRequest ? (
-            <button
-              type="button"
-              onClick={() => beginProvisioning(approvedAccessRequest)}
-              className="action-button shrink-0"
-            >
-              Provision {approvedAccessRequest.name}
-            </button>
-          ) : null}
-        </div>
-      ) : null}
+      <DecisionNoticeRegion
+        notice={lastDecision}
+        className="mt-4 flex flex-col gap-3 rounded-md border px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between"
+      >
+        {approvedAccessRequest ? (
+          <button
+            type="button"
+            onClick={() => beginProvisioning(approvedAccessRequest)}
+            className="action-button shrink-0"
+          >
+            Provision {approvedAccessRequest.name}
+          </button>
+        ) : null}
+      </DecisionNoticeRegion>
       {error ? (
         <p className="mt-4 rounded-md border border-danger/40 bg-danger/10 px-4 py-2 text-sm text-danger" role="alert">
           {error}
         </p>
       ) : null}
 
-      {state === "loading" && !queue && !accessQueue ? (
+      {firstLoad ? (
         <div className="mt-4 rounded-lg border border-dashed border-line p-8 text-center text-sm text-muted">
           Loading decisions…
         </div>
@@ -542,13 +597,13 @@ export function ApprovalsWorkspace({
       ) : null}
 
       {!accessPermission ? (
-        <section className="mt-6 space-y-4" aria-labelledby="access-request-heading" data-daybook="section">
+        <section className="mt-6 space-y-4" aria-labelledby={ACCESS_LIST_HEADING_ID} data-daybook="section">
           <div className="flex items-center gap-3">
             <span className="grid size-9 place-items-center rounded-md border border-line bg-surface">
               <UserPlus size={16} aria-hidden="true" />
             </span>
             <div>
-              <h2 id="access-request-heading" className="text-base font-semibold">Workspace access</h2>
+              <h2 id={ACCESS_LIST_HEADING_ID} tabIndex={-1} className="text-base font-semibold">Workspace access</h2>
               <p className="text-sm text-muted">Review who is asking to join this tenant.</p>
             </div>
           </div>
@@ -558,7 +613,7 @@ export function ApprovalsWorkspace({
             </div>
           ) : null}
           {accessRequests.map((item) => {
-            const key = `access:${item.id}`;
+            const key = accessRequestKey(item);
             return (
               <AccessRequestCard
                 key={item.id}
@@ -577,9 +632,9 @@ export function ApprovalsWorkspace({
       ) : null}
 
       {!decisionPermission ? (
-        <section className="mt-6 space-y-4" aria-labelledby="action-approval-heading" data-daybook="section">
+        <section className="mt-6 space-y-4" aria-labelledby={ACTION_LIST_HEADING_ID} data-daybook="section">
           <div>
-            <h2 id="action-approval-heading" className="text-base font-semibold">Agent and workflow actions</h2>
+            <h2 id={ACTION_LIST_HEADING_ID} tabIndex={-1} className="text-base font-semibold">Agent and workflow actions</h2>
             <p className="text-sm text-muted">Review new approvals and safely reconcile previously approved actions with unresolved outcomes. The riskiest and longest-waiting come first.</p>
           </div>
           {state === "ready" && !items.length ? (
@@ -635,7 +690,7 @@ function AccessRequestCard({
     <article className="rounded-lg border border-line bg-surface p-5" data-daybook="approval-item">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h3 className="text-base font-semibold">{item.name}</h3>
+          <h3 id={approvalHeadingId(accessRequestKey(item))} tabIndex={-1} className="text-base font-semibold">{item.name}</h3>
           <p className="mt-1 text-sm text-muted">
             {item.email} · {item.company}
           </p>

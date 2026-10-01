@@ -4,12 +4,15 @@ import {
   appendApprovalPage,
   approvalDecisionNotice,
   approvalDecisionRequest,
+  approvalHeadingId,
   approvalItemKey,
   approvalReturnPath,
   decideAndReread,
   fetchApprovalQueueItem,
   fetchApprovalQueuePage,
   findFocusedApproval,
+  focusAfterDecision,
+  headingAfterDecision,
   isReconciliationItem,
   loadApprovalQueue,
   readApprovalItem,
@@ -569,5 +572,64 @@ describe("inbox change announcement", () => {
 
   it("does nothing without a window", () => {
     expect(() => announceInboxChanged()).not.toThrow();
+  });
+});
+
+describe("where focus goes once a decision is read back", () => {
+  const shown = ["tool:a", "tool:b", "tool:c"];
+
+  it("names each card's heading by the card's key", () => {
+    expect(approvalHeadingId("tool:exec-1")).toBe("approval-heading-tool:exec-1");
+  });
+
+  it("stays on the decided card while it is still listed", () => {
+    expect(headingAfterDecision({ key: "tool:b", index: 1 }, shown, "list"))
+      .toBe("approval-heading-tool:b");
+    expect(headingAfterDecision({ key: "tool:c", index: 0 }, shown, "list"))
+      .toBe("approval-heading-tool:c");
+  });
+
+  it("goes to the card now in its place, or else the last one", () => {
+    expect(headingAfterDecision({ key: "tool:x", index: 0 }, shown, "list"))
+      .toBe("approval-heading-tool:a");
+    expect(headingAfterDecision({ key: "tool:x", index: 1 }, shown, "list"))
+      .toBe("approval-heading-tool:b");
+    expect(headingAfterDecision({ key: "tool:x", index: 3 }, shown, "list"))
+      .toBe("approval-heading-tool:c");
+    expect(headingAfterDecision({ key: "tool:x", index: 9 }, shown, "list"))
+      .toBe("approval-heading-tool:c");
+  });
+
+  it("goes to the heading of the list when no card is left", () => {
+    expect(headingAfterDecision({ key: "tool:x", index: 0 }, [], "list")).toBe("list");
+    expect(headingAfterDecision({ key: "tool:x", index: -1 }, shown, "list")).toBe("list");
+  });
+
+  function page(active: "body" | "nothing" | "elsewhere") {
+    const body = { tagName: "BODY" };
+    const focused: string[] = [];
+    const fake = {
+      body,
+      activeElement: active === "body" ? body : active === "nothing" ? null : { tagName: "BUTTON" },
+      getElementById: (id: string) => (id === "list" ? null : { focus: () => focused.push(id) }),
+    };
+    return { page: fake as unknown as Parameters<typeof focusAfterDecision>[0], focused };
+  }
+
+  it("moves focus there only once it was lost", () => {
+    for (const active of ["body", "nothing"] as const) {
+      const lost = page(active);
+      focusAfterDecision(lost.page, { key: "tool:x", index: 1 }, shown, "list");
+      expect(lost.focused).toEqual(["approval-heading-tool:b"]);
+    }
+
+    const moved = page("elsewhere");
+    focusAfterDecision(moved.page, { key: "tool:x", index: 1 }, shown, "list");
+    expect(moved.focused).toEqual([]);
+
+    // A heading no longer in the page is passed over.
+    const gone = page("body");
+    expect(() => focusAfterDecision(gone.page, { key: "tool:x", index: 0 }, [], "list")).not.toThrow();
+    expect(gone.focused).toEqual([]);
   });
 });

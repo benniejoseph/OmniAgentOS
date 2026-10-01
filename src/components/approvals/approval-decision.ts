@@ -97,6 +97,44 @@ export function approvalItemKey(item: Pick<ApprovalItem, "kind" | "id">) {
   return `${item.kind}:${item.id}`;
 }
 
+/** The id of the heading of the card with this key. */
+export function approvalHeadingId(key: string) {
+  return `approval-heading-${key}`;
+}
+
+/**
+ * Where focus goes once a decision is read back, so it is not lost with the
+ * card it was on: the decided card while it is still listed, else the card
+ * now in its place or the last one, else the heading of the list.
+ */
+export function headingAfterDecision(
+  decided: { key: string; index: number },
+  shownKeys: readonly string[],
+  listHeadingId: string,
+) {
+  const key = shownKeys.includes(decided.key)
+    ? decided.key
+    : shownKeys[Math.min(decided.index, shownKeys.length - 1)];
+  return key === undefined ? listHeadingId : approvalHeadingId(key);
+}
+
+/**
+ * Moves focus to the heading headingAfterDecision names, unless the approver
+ * has already moved it somewhere on the page.
+ */
+export function focusAfterDecision(
+  page: Pick<Document, "activeElement" | "body" | "getElementById">,
+  decided: { key: string; index: number },
+  shownKeys: readonly string[],
+  listHeadingId: string,
+) {
+  const active = page.activeElement;
+  if (active && active !== page.body) {
+    return;
+  }
+  page.getElementById(headingAfterDecision(decided, shownKeys, listHeadingId))?.focus();
+}
+
 /** The body of a decision. A reconciliation carries no note of its own. */
 export function approvalDecisionRequest(
   item: ApprovalItem,

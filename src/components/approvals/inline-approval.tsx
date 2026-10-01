@@ -3,14 +3,13 @@
 import Link from "next/link";
 import { useEffect, useState, type ReactNode } from "react";
 import { AlertTriangle, Loader2 } from "lucide-react";
-import { clsx } from "clsx";
 import {
   permissionMessage,
   useWorkspaceSession,
 } from "@/components/app-shell/session-context";
 import {
   ApprovalCard,
-  decisionNoticeClasses,
+  DecisionNoticeRegion,
 } from "@/components/approvals/approval-card";
 import {
   decideAndReread,
@@ -185,14 +184,7 @@ export function InlineApprovalView({
           {card ? "Open in Inbox" : "Review"}
         </Link>
       </div>
-      {notice ? (
-        <p
-          className={clsx("mt-3 rounded-md border px-3 py-2 text-sm", decisionNoticeClasses(notice.tone))}
-          role={notice.tone === "danger" ? "alert" : "status"}
-        >
-          {notice.message}
-        </p>
-      ) : null}
+      <DecisionNoticeRegion notice={notice} className="mt-3 rounded-md border px-3 py-2 text-sm" />
       {decisionError ? (
         <p className="mt-3 rounded-md border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger" role="alert">
           {decisionError}

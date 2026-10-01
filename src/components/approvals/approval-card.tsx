@@ -1,9 +1,12 @@
 "use client";
 
 import Link from "next/link";
+import type { ReactNode } from "react";
 import { Check, Loader2, MessageSquare, RefreshCw, X } from "lucide-react";
 import { clsx } from "clsx";
 import {
+  approvalHeadingId,
+  approvalItemKey,
   isReconciliationItem,
   type ApprovalItem,
   type DecisionNotice,
@@ -97,7 +100,7 @@ export function ApprovalCard({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <h3 className="text-base font-semibold">{item.title}</h3>
+            <h3 id={approvalHeadingId(approvalItemKey(item))} tabIndex={-1} className="text-base font-semibold">{item.title}</h3>
             <span className="rounded-md border border-line bg-background px-2 py-0.5 font-mono text-xs text-muted">{kindLabel(item.kind)}</span>
             <span className={clsx("rounded-md px-2 py-0.5 font-mono text-xs", riskPill(item.riskLevel))}>risk {item.riskLevel}</span>
             {reconciliationRequired ? (
@@ -413,6 +416,40 @@ function roleRank(role: string) {
     admin: 2,
     system: 3,
   }[role] ?? -1;
+}
+
+/**
+ * A decision's outcome, where the decision was made. Both regions are in the
+ * page before any outcome is, so each outcome is announced as it appears: a
+ * failure at once, anything else when the reader is next idle.
+ */
+export function DecisionNoticeRegion({
+  notice,
+  className,
+  children,
+}: {
+  notice?: DecisionNotice;
+  className: string;
+  /** What can be done next, shown with the outcome. */
+  children?: ReactNode;
+}) {
+  const shown = notice ? (
+    <div className={clsx(className, decisionNoticeClasses(notice.tone))}>
+      <p>{notice.message}</p>
+      {children}
+    </div>
+  ) : null;
+  const urgent = notice?.tone === "danger";
+  return (
+    <>
+      <div role="status" aria-live="polite" aria-atomic="true">
+        {urgent ? null : shown}
+      </div>
+      <div role="alert" aria-atomic="true">
+        {urgent ? shown : null}
+      </div>
+    </>
+  );
 }
 
 export function decisionNoticeClasses(tone: DecisionNotice["tone"]) {

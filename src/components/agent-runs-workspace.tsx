@@ -87,6 +87,7 @@ import {
   type ClientAgentMode,
 } from "@/lib/command/client-projection";
 import { startProgressiveThreadLoad } from "@/lib/command/progressive-thread-load";
+import { runStreamAnnouncement } from "@/lib/command/run-announcement";
 import {
   approvalInboxHref,
   commandConversationHref,
@@ -2477,7 +2478,6 @@ export function AgentRunsWorkspace({
           setGoal("");
           clearEphemeralCommandReferences();
           void refreshThreads();
-          setRunAnnouncement("Task moved to a durable background workflow.");
         }
         if (event.type === "clarification") {
           terminalEvent = "clarification";
@@ -2493,7 +2493,6 @@ export function AgentRunsWorkspace({
           ]);
           setGoal("");
           void refreshThreads();
-          setRunAnnouncement("The agent needs an exact target before it can continue.");
         }
         if (event.type === "done") {
           terminalEvent = "done";
@@ -2512,10 +2511,6 @@ export function AgentRunsWorkspace({
           setGoal("");
           clearEphemeralCommandReferences();
           void refreshThreads();
-          setRunAnnouncement("Agent run completed. Review the result and evidence.");
-        }
-        if (event.type === "status") {
-          setRunAnnouncement(streamEventLabel(event));
         }
         if (event.type === "waiting_approval") {
           terminalEvent = "waiting_approval";
@@ -2524,20 +2519,21 @@ export function AgentRunsWorkspace({
           setWaitingApproval(event);
           waitingApprovalEvent = event;
           clearEphemeralCommandReferences();
-          setRunAnnouncement("Agent run paused for approval.");
         }
         if (event.type === "error") {
           terminalEvent = "error";
           agentRequestIdRef.current = "";
           setClarificationRunId("");
           setError(event.message || "Agent run failed.");
-          setRunAnnouncement("Agent run failed.");
         }
         if (event.type === "canceled") {
           terminalEvent = "canceled";
           agentRequestIdRef.current = "";
           setClarificationRunId("");
-          setRunAnnouncement(event.message || "Agent run stopped.");
+        }
+        const announcement = runStreamAnnouncement(event);
+        if (announcement) {
+          setRunAnnouncement(announcement);
         }
       };
       const cursor: SseCursor = { lastEventId: "" };
@@ -3182,14 +3178,16 @@ export function AgentRunsWorkspace({
   }
 
   return (
+    <>
+    {/* Outside the busy view, so a phase is announced while a run streams. */}
+    <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+      {runAnnouncement}
+    </p>
     <div
       className={clsx("mx-auto max-w-[96rem] px-4 py-6 sm:px-7 lg:px-10", workspaceStyles.workspace)}
       aria-busy={Boolean(loading)}
       data-testid="work-workspace"
     >
-      <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
-        {runAnnouncement}
-      </p>
       <div className={workspaceStyles.ambientField} aria-hidden="true">
         <span />
         <span />
@@ -4371,6 +4369,7 @@ export function AgentRunsWorkspace({
         </div>
       ) : null}
     </div>
+    </>
   );
 }
 
