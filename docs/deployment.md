@@ -1145,6 +1145,18 @@ optional pgvector step. The path also upgrades the legacy timestamp-only marker.
 Versions already recorded in `omni_schema_version` are skipped, so rerunning the
 job is safe, but there is no automatic down-migration.
 
+`npm run db:verify`, run next from the same job with the same
+`MIGRATION_DATABASE_URL`, checks the database the job just migrated in one
+read-only transaction. The ledger must hold every version in
+`schema-migrations.json` with its name and checksum, and none later. Every
+tenant table must exist with its tenant column, enable and force row security,
+and have its expected policy, and an isolation class must cover every `omni_`
+table. A serving release accepts later versions, so that it can run on a schema
+a newer release migrated; this check does not. It logs
+`database_verification_completed`, or `database_verification_failed` with each
+problem and exits 1. The CI integration job runs `db:migrate` twice and then
+`db:verify` against an empty database before its tests.
+
 Every migration transaction waits for the advisory lock with no lock timeout, so
 a second runner waits for the first to finish. Only then does it set
 `lock_timeout` to `OMNIAGENT_MIGRATION_LOCK_TIMEOUT_MS` (5 s by default, clamped
@@ -1233,15 +1245,18 @@ For each rollout:
    (`apps/flutter/tool/run_macos_policy_tests.sh`), and type-checks every
    helper's production entry point.
 3. From a dedicated release job, set `MIGRATION_DATABASE_URL` to the
-   migration-owner connection and run `npm run db:migrate`. Set
+   migration-owner connection and run `npm run db:migrate`, then
+   `npm run db:verify`. Set
    `OMNIAGENT_MIGRATION_STATEMENT_TIMEOUT_MS` explicitly for large backfills and
    retain the JSON job logs. A few `database_migration_lock_retry` lines are
    normal on a busy database. If the job gives up, find the session holding the
    lock ([troubleshooting.md](troubleshooting.md)) before running it again.
 4. Deploy the serving canary with a separate non-owner, non-superuser runtime
    `DATABASE_URL`, then trigger `/api/health`.
-5. Inspect `omni_schema_version`, pgvector status, forced RLS, and worker logs.
-6. Confirm all expected migration versions before increasing traffic or worker count.
+5. Inspect pgvector status and worker logs. `db:verify` has checked
+   `omni_schema_version` and forced RLS.
+6. Confirm the job logged `database_verification_completed` before increasing
+   traffic or worker count.
 7. Run production smoke against the exact canary revision.
 
 The migration role needs permission to create/alter application tables,

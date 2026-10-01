@@ -223,6 +223,132 @@ export type TenantIsolationReport = {
   recommendations: string[];
 };
 
+export type TenantIsolationCatalog = {
+  tables: IsolationTableReport[];
+  unclassifiedTables: string[];
+  missingTables: string[];
+  missingTenantColumns: string[];
+  rlsDisabled: string[];
+  forceRlsDisabled: string[];
+  missingPolicies: string[];
+};
+
+/**
+ * Reads from the catalog whether each tenant table exists with a tenant column,
+ * enables and forces row security, and has its expected policy, and which app
+ * tables no isolation class covers. `query` binds `$1`, `$2`, … to `params`.
+ */
+export async function readTenantIsolationCatalog(
+  query: (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>,
+): Promise<TenantIsolationCatalog> {
+  const expectedTables = [...tenantPolicyTables, ...migrationScopedTenantTables];
+  const childTables = new Set<string>(tenantChildPolicyTables);
+  const placeholders = expectedTables.map((_, index) => `$${index + 1}`).join(", ");
+  // Every app table, so that one no isolation class covers is reported.
+  const catalogRows = await query(
+    `
+      SELECT c.relname AS table_name,
+             c.relrowsecurity AS rls_enabled,
+             c.relforcerowsecurity AS force_rls
+      FROM pg_class c
+      INNER JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = current_schema()
+        AND c.relkind IN ('r', 'p')
+        AND c.relname LIKE 'omni\\_%'
+    `,
+  );
+  // information_schema hides columns when the caller intentionally has no
+  // table privilege. Read the non-sensitive system catalogs so owner-only
+  // tenant authorities are still represented without widening their ACLs.
+  const columnRows = await query(
+    `
+      SELECT relation.relname AS table_name
+      FROM pg_attribute attribute
+      JOIN pg_class relation ON relation.oid = attribute.attrelid
+      JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+      WHERE namespace.nspname = current_schema()
+        AND relation.relkind = 'r'
+        AND relation.relname IN (${placeholders})
+        AND attribute.attname = 'tenant_id'
+        AND attribute.attnum > 0
+        AND NOT attribute.attisdropped
+    `,
+    expectedTables,
+  );
+  const policyRows = await query(
+    `
+      SELECT relation.relname AS table_name,
+             policy.polname AS policy_name,
+             policy.polpermissive AS permissive,
+             policy.polcmd AS command
+      FROM pg_policy policy
+      INNER JOIN pg_class relation ON relation.oid = policy.polrelid
+      INNER JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+      WHERE namespace.nspname = current_schema()
+        AND relation.relname IN (${placeholders})
+    `,
+    expectedTables,
+  );
+
+  const catalogByTable = new Map(catalogRows.map((row) => [String(row.table_name), row]));
+  const tenantColumnTables = new Set(columnRows.map((row) => String(row.table_name)));
+  const policies = policyRows.map<IsolationPolicyEvidence>((row) => ({
+    tableName: String(row.table_name),
+    policyName: String(row.policy_name),
+    permissive: Boolean(row.permissive),
+    command: String(row.command),
+  }));
+
+  const tables = expectedTables.map<IsolationTableReport>((tableName) => {
+    const row = catalogByTable.get(tableName);
+    const category: IsolationTableReport["category"] = childTables.has(tableName) ? "child" : "root";
+    const report = {
+      tableName: String(tableName),
+      category,
+      exists: Boolean(row),
+      tenantColumn: tenantColumnTables.has(tableName),
+      rlsEnabled: Boolean(row?.relrowsecurity ?? row?.rls_enabled),
+      forceRls: Boolean(row?.relforcerowsecurity ?? row?.force_rls),
+      policyPresent: hasExpectedTenantIsolationPolicy(tableName, policies),
+    };
+    return {
+      ...report,
+      status: report.exists && report.tenantColumn && report.rlsEnabled && report.forceRls && report.policyPresent
+        ? "pass"
+        : "fail",
+    };
+  });
+
+  return {
+    tables,
+    unclassifiedTables: unclassifiedTenantIsolationTables(catalogByTable.keys()),
+    missingTables: tables.filter((table) => !table.exists).map((table) => table.tableName),
+    missingTenantColumns: tables.filter((table) => !table.tenantColumn).map((table) => table.tableName),
+    rlsDisabled: tables.filter((table) => !table.rlsEnabled).map((table) => table.tableName),
+    forceRlsDisabled: tables.filter((table) => !table.forceRls).map((table) => table.tableName),
+    missingPolicies: tables.filter((table) => !table.policyPresent).map((table) => table.tableName),
+  };
+}
+
+/**
+ * The isolation problems a catalog read found, one entry for each kind. A
+ * missing table is listed only as missing.
+ */
+export function describeTenantIsolationProblems(catalog: TenantIsolationCatalog) {
+  const missing = new Set(catalog.missingTables);
+  const present = (tables: string[]) => tables.filter((table) => !missing.has(table));
+  return ([
+    ["tables no isolation class covers", catalog.unclassifiedTables],
+    ["missing tables", catalog.missingTables],
+    ["tables without a tenant column", present(catalog.missingTenantColumns)],
+    ["tables without row security", present(catalog.rlsDisabled)],
+    ["tables that do not force row security", present(catalog.forceRlsDisabled)],
+    ["tables without their expected policy", present(catalog.missingPolicies)],
+  ] as const)
+    .filter(([, tables]) => tables.length > 0)
+    .map(([kind, tables]) => `${kind}: ${tables.join(", ")}`);
+}
+
 export async function getTenantIsolationReport(tenantId: string): Promise<TenantIsolationReport> {
   const checkedAt = new Date().toISOString();
   const expectedTables = [...tenantPolicyTables, ...migrationScopedTenantTables];
@@ -266,106 +392,25 @@ export async function getTenantIsolationReport(tenantId: string): Promise<Tenant
   }
 
   await ensureDatabaseSchema();
-  const placeholders = expectedTables.map((_, index) => `$${index + 1}`).join(", ");
-  const evidence = await getSql().transaction(async (
+  const { catalog, latestEval } = await getSql().transaction(async (
     sql: ReturnType<typeof getSql>,
-  ) => {
-    // Every app table, so that one no isolation class covers is reported.
-    const catalogRows = await sql.query(
-      `
-        SELECT c.relname AS table_name,
-               c.relrowsecurity AS rls_enabled,
-               c.relforcerowsecurity AS force_rls
-        FROM pg_class c
-        INNER JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname = current_schema()
-          AND c.relkind IN ('r', 'p')
-          AND c.relname LIKE 'omni\\_%'
-      `,
-    );
-    // information_schema hides columns when the caller intentionally has no
-    // table privilege. Read the non-sensitive system catalogs so owner-only
-    // tenant authorities are still represented without widening their ACLs.
-    const columnRows = await sql.query(
-      `
-        SELECT relation.relname AS table_name
-        FROM pg_attribute attribute
-        JOIN pg_class relation ON relation.oid = attribute.attrelid
-        JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
-        WHERE namespace.nspname = current_schema()
-          AND relation.relkind = 'r'
-          AND relation.relname IN (${placeholders})
-          AND attribute.attname = 'tenant_id'
-          AND attribute.attnum > 0
-          AND NOT attribute.attisdropped
-      `,
-      expectedTables,
-    );
-    const policyRows = await sql.query(
-      `
-        SELECT relation.relname AS table_name,
-               policy.polname AS policy_name,
-               policy.polpermissive AS permissive,
-               policy.polcmd AS command
-        FROM pg_policy policy
-        INNER JOIN pg_class relation ON relation.oid = policy.polrelid
-        INNER JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
-        WHERE namespace.nspname = current_schema()
-          AND relation.relname IN (${placeholders})
-      `,
-      expectedTables,
-    );
-    const latestEval = await latestDatabaseTenantIsolationEval(sql);
-    return { catalogRows, columnRows, policyRows, latestEval };
-  }) as {
-    catalogRows: Record<string, unknown>[];
-    columnRows: Record<string, unknown>[];
-    policyRows: Record<string, unknown>[];
+  ) => ({
+    catalog: await readTenantIsolationCatalog((text, params) => sql.query(text, params)),
+    latestEval: await latestDatabaseTenantIsolationEval(sql),
+  })) as {
+    catalog: TenantIsolationCatalog;
     latestEval: LatestTenantIsolationEval | undefined;
   };
   const {
-    catalogRows,
-    columnRows,
-    policyRows,
-    latestEval,
-  } = evidence;
-
-  const catalogByTable = new Map(catalogRows.map((row) => [String(row.table_name), row]));
-  const tenantColumnTables = new Set(columnRows.map((row) => String(row.table_name)));
-  const policies = policyRows.map<IsolationPolicyEvidence>((row) => ({
-    tableName: String(row.table_name),
-    policyName: String(row.policy_name),
-    permissive: Boolean(row.permissive),
-    command: String(row.command),
-  }));
-
-  const tables = expectedTables.map<IsolationTableReport>((tableName) => {
-    const row = catalogByTable.get(tableName);
-    const category: IsolationTableReport["category"] = childTables.has(tableName) ? "child" : "root";
-    const report = {
-      tableName: String(tableName),
-      category,
-      exists: Boolean(row),
-      tenantColumn: tenantColumnTables.has(tableName),
-      rlsEnabled: Boolean(row?.relrowsecurity ?? row?.rls_enabled),
-      forceRls: Boolean(row?.relforcerowsecurity ?? row?.force_rls),
-      policyPresent: hasExpectedTenantIsolationPolicy(tableName, policies),
-    };
-    return {
-      ...report,
-      status: report.exists && report.tenantColumn && report.rlsEnabled && report.forceRls && report.policyPresent
-        ? "pass"
-        : "fail",
-    };
-  });
-
-  const missingTables = tables.filter((table) => !table.exists).map((table) => table.tableName);
-  const missingTenantColumns = tables.filter((table) => !table.tenantColumn).map((table) => table.tableName);
-  const rlsDisabled = tables.filter((table) => !table.rlsEnabled).map((table) => table.tableName);
-  const forceRlsDisabled = tables.filter((table) => !table.forceRls).map((table) => table.tableName);
-  const missingPolicies = tables.filter((table) => !table.policyPresent).map((table) => table.tableName);
+    tables,
+    unclassifiedTables,
+    missingTables,
+    missingTenantColumns,
+    rlsDisabled,
+    forceRlsDisabled,
+    missingPolicies,
+  } = catalog;
   const failingTables = tables.filter((table) => table.status === "fail");
-  const unclassifiedTables = unclassifiedTenantIsolationTables(catalogByTable.keys());
 
   return {
     tenantId,

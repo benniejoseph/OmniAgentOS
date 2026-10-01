@@ -61,16 +61,20 @@ second tenant until legacy rows have been reviewed. The runtime role must not
 own application tables. It must not be a superuser or
 have `BYPASSRLS`. Backups use a separate dedicated role through
 `OMNIAGENT_BACKUP_DATABASE_URL`; that role must have `BYPASSRLS` so forced-RLS
-tables cannot be silently omitted. After migration, verify every
-version/name/checksum row in `schema-migrations.json`, forced RLS on every table
-reported by the isolation endpoint, pgvector dimensions, and tenant-specific
-row counts.
+tables cannot be silently omitted. After migration, run `npm run db:verify` from
+the same job with the same `MIGRATION_DATABASE_URL`. In one read-only
+transaction it checks that the ledger holds every version, name and checksum in
+`schema-migrations.json` and none later, and that every tenant table exists with
+its tenant column, enables and forces row security, and has its expected
+policy. It exits 1 and logs `database_verification_failed`, naming each
+problem, when one does not hold. Check pgvector dimensions and tenant-specific
+row counts by hand.
 
 ## Canary
 
 - [ ] Deploy one web canary before scaling workers.
-- [ ] Run `npm run db:migrate` from the dedicated release job, then confirm `/api/health` returns `healthy` at the expected release revision and inspect `omni_schema_version`. The public migration endpoint is intentionally disabled.
-- [ ] Confirm pgvector dimensions/indexes and forced tenant RLS.
+- [ ] Run `npm run db:migrate` and then `npm run db:verify` from the dedicated release job, then confirm `/api/health` returns `healthy` at the expected release revision and inspect `omni_schema_version`. The public migration endpoint is intentionally disabled.
+- [ ] Confirm pgvector dimensions/indexes. `db:verify` has checked forced tenant RLS.
 - [ ] Confirm the v208 policy query now returns no rows, and `/api/security/isolation-report` lists no `missingPolicies`.
 - [ ] Build/deploy one worker with `--build-arg OMNIAGENT_RELEASE_SHA=<release-commit>`; verify its startup revision exactly matches the web canary, then confirm successful ticks and no queue/auth errors.
 - [ ] Before any paid evaluation, verify the bounded Fly `/healthz` gate reports service `asael-openai-egress`, region `iad`, the exact release revision, and protocol `1`; then verify both configured gateway tokens reach the authorization boundary without an OpenAI request. Evidence and logs must contain only match/configuration booleans.

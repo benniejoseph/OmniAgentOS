@@ -27,7 +27,10 @@ import {
   runWithDatabaseTenantScope,
   tenantIsolationExemptTables,
   tenantPolicyTables,
+  verifyDatabaseSchemaWithClient,
+  verifyMigratedDatabaseSchema,
 } from "@/lib/db/client";
+import { verifyMigratedDatabase } from "@/lib/db/migrated-database";
 import { sqlMigrationFileDigest } from "@/lib/db/sql-migration-files";
 import type { SqlClient } from "@/lib/db/sql-types";
 import { withHnswCandidateScan } from "@/lib/db/vector-search";
@@ -95,7 +98,10 @@ import {
   listAgentRunEventsAfter,
   markAgentRunResuming,
 } from "@/lib/runs/store";
-import { getTenantIsolationReport } from "@/lib/security/isolation-report";
+import {
+  expectedTenantIsolationPolicyName,
+  getTenantIsolationReport,
+} from "@/lib/security/isolation-report";
 import { sweepExpiredSensitiveData } from "@/lib/security/retention";
 import { saveModelCatalog } from "@/lib/settings/store";
 import {
@@ -8277,6 +8283,92 @@ databaseDescribe("Postgres schema integration", () => {
     });
     expect(stats.webVitals).toEqual(summarizeObservabilityEvents(recorded).webVitals);
     expect(stats.total).toBe(recorded.length);
+  });
+
+  test("verifies a migrated database against this release exactly", async () => {
+    const verified = {
+      migrations: databaseSchemaMigrations.length,
+      tenantTables: tenantPolicyTables.length + migrationScopedTenantTables.length,
+    };
+    await expect(verifyMigratedDatabase()).resolves.toEqual(verified);
+    // The check only reads.
+    await expect(
+      verifyMigratedDatabaseSchema((query) => query("CREATE TABLE omni_verify_probe_write (id integer)")),
+    ).rejects.toThrow("read-only transaction");
+
+    // A serving release accepts a later version; the check after a migration
+    // does not.
+    const latest = databaseSchemaMigrations.at(-1)!.version;
+    await admin`
+      INSERT INTO omni_schema_version (version, name, checksum)
+      VALUES (${latest + 1}, 'later_release_v1', ${"f".repeat(64)})
+    `;
+    try {
+      await expect(verifyDatabaseSchemaWithClient(admin)).resolves.toBeUndefined();
+      await expect(verifyMigratedDatabase()).rejects.toThrow(
+        `Database schema contains unknown migration versions: ${latest + 1}.`,
+      );
+    } finally {
+      await admin`DELETE FROM omni_schema_version WHERE version = ${latest + 1}`;
+    }
+    await withMigrationsPendingFrom(admin, latest, async () => {
+      await expect(verifyMigratedDatabase()).rejects.toThrow(
+        `Database schema is behind (pending versions: ${latest}).`,
+      );
+    });
+
+    const unforced = "omni_incident_events";
+    const unsecured = "omni_project_tasks";
+    const unpoliced = "omni_workflow_trigger_events";
+    const policy = expectedTenantIsolationPolicyName(unpoliced);
+    const untenanted = "omni_notification_dispositions";
+    const moved = "omni_market_analysis_events";
+    const restores: string[] = [];
+    const change = async (statement: string, restore: string) => {
+      await admin.unsafe(statement);
+      restores.unshift(restore);
+    };
+    try {
+      await change(
+        `ALTER TABLE ${unforced} NO FORCE ROW LEVEL SECURITY`,
+        `ALTER TABLE ${unforced} FORCE ROW LEVEL SECURITY`,
+      );
+      await expect(verifyMigratedDatabase()).rejects.toThrow(
+        `Tenant isolation does not match this release. tables that do not force row security: ${unforced}.`,
+      );
+      await change(
+        `ALTER TABLE ${unsecured} DISABLE ROW LEVEL SECURITY`,
+        `ALTER TABLE ${unsecured} ENABLE ROW LEVEL SECURITY`,
+      );
+      await change(
+        `ALTER POLICY ${policy} ON ${unpoliced} RENAME TO verify_probe_policy`,
+        `ALTER POLICY verify_probe_policy ON ${unpoliced} RENAME TO ${policy}`,
+      );
+      await change(
+        `ALTER TABLE ${untenanted} RENAME COLUMN tenant_id TO verify_probe_tenant`,
+        `ALTER TABLE ${untenanted} RENAME COLUMN verify_probe_tenant TO tenant_id`,
+      );
+      await change(
+        `ALTER TABLE ${moved} RENAME TO omni_verify_probe_moved`,
+        `ALTER TABLE omni_verify_probe_moved RENAME TO ${moved}`,
+      );
+
+      // Each problem is named, and a missing table only as missing.
+      await expect(verifyMigratedDatabase()).rejects.toThrow(
+        "Tenant isolation does not match this release. " +
+          "tables no isolation class covers: omni_verify_probe_moved; " +
+          `missing tables: ${moved}; ` +
+          `tables without a tenant column: ${untenanted}; ` +
+          `tables without row security: ${unsecured}; ` +
+          `tables that do not force row security: ${unforced}; ` +
+          `tables without their expected policy: ${unpoliced}.`,
+      );
+    } finally {
+      for (const restore of restores) {
+        await admin.unsafe(restore);
+      }
+    }
+    await expect(verifyMigratedDatabase()).resolves.toEqual(verified);
   });
 });
 

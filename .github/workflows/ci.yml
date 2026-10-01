@@ -154,6 +154,18 @@ jobs:
           docker logs "$POSTGRES_CONTAINER"
           exit 1
 
+      # The release job's own commands, on an empty database: the tests below
+      # reset the schema and migrate it again in-process.
+      - name: Migrate and verify with the release commands
+        env:
+          MIGRATION_DATABASE_URL: postgres://omniagent:local-integration-only@127.0.0.1:5432/omniagent_test
+        run: |
+          set -euo pipefail
+          npm run db:migrate
+          # With nothing pending, a second run changes nothing.
+          npm run db:migrate
+          npm run db:verify
+
       - name: Postgres schema and RLS integration tests
         env:
           DATABASE_URL: postgres://omniagent:local-integration-only@127.0.0.1:5432/omniagent_test

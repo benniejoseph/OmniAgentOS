@@ -925,7 +925,26 @@ async function verifyDatabaseSchema() {
   );
 }
 
-export async function verifyDatabaseSchemaWithClient(pg: AnyPg) {
+/**
+ * Checks a database this release has just migrated against the release
+ * exactly: its ledger holds every migration in schema-migrations.json, by name
+ * and checksum, and none later. A serving release accepts later versions, so
+ * that it can run on a schema a newer release migrated. `inspect` then reads
+ * the catalog in the same read-only transaction.
+ */
+export async function verifyMigratedDatabaseSchema<T>(
+  inspect: (query: (text: string, params?: unknown[]) => Promise<SqlRow[]>) => Promise<T>,
+): Promise<T> {
+  return getRawPg().begin("READ ONLY", async (tx) => {
+    await verifyDatabaseSchemaWithClient(tx, { allowFutureVersions: false });
+    return inspect((text, params) => tx.unsafe(text, (params ?? []) as never[]));
+  }) as Promise<T>;
+}
+
+export async function verifyDatabaseSchemaWithClient(
+  pg: AnyPg,
+  { allowFutureVersions = true }: { allowFutureVersions?: boolean } = {},
+) {
   let appliedRows: Record<string, unknown>[];
   try {
     const pendingQuery = pg`
@@ -958,11 +977,11 @@ export async function verifyDatabaseSchemaWithClient(pg: AnyPg) {
       name: row.name ? String(row.name) : null,
       checksum: row.checksum ? String(row.checksum) : null,
     })),
-    { allowFutureVersions: true },
+    { allowFutureVersions },
   );
   const pending = getPendingSchemaMigrationVersions(
     appliedRows.map((row) => Number(row.version)),
-    { allowFutureVersions: true },
+    { allowFutureVersions },
   );
   if (pending.length) {
     throw new Error(

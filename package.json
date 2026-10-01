@@ -50,6 +50,7 @@
     "generate:command-program-policy": "node scripts/generate-command-program-policy.mjs",
     "check:command-program-policy": "node scripts/generate-command-program-policy.mjs --check",
     "db:migrate": "tsx --conditions=react-server scripts/db-migrate.ts",
+    "db:verify": "tsx --conditions=react-server scripts/db-verify.ts",
     "db:backup": "node scripts/db-backup.mjs",
     "db:restore-drill": "node scripts/db-restore-drill.mjs",
     "sync:tradingview": "node scripts/sync-tradingview-library.mjs",
