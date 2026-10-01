@@ -170,6 +170,23 @@ export async function discardSmokeResponseBody(
   }
 }
 
+/**
+ * Why this release ships while its error budget is spent, from
+ * OMNIAGENT_RELEASE_ERROR_BUDGET_EXCEPTION, or undefined when it is unset.
+ * The release evidence records the reason with the release.
+ * @param {Record<string, string | undefined>} [env]
+ */
+export function releaseErrorBudgetException(env = process.env) {
+  const reason = env.OMNIAGENT_RELEASE_ERROR_BUDGET_EXCEPTION?.trim();
+  if (!reason) return undefined;
+  if (reason.length > 200 || /[\u0000-\u001f\u007f]/.test(reason)) {
+    throw new Error(
+      "OMNIAGENT_RELEASE_ERROR_BUDGET_EXCEPTION must be one line of at most 200 characters.",
+    );
+  }
+  return reason;
+}
+
 export function positiveInteger(value, fallback, maximum = Number.MAX_SAFE_INTEGER) {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0

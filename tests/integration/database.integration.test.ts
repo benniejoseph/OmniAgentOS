@@ -54,6 +54,7 @@ import {
   transitionMissionTask,
 } from "@/lib/missions/store";
 import { getAgentQualityStats } from "@/lib/observability/agent-quality";
+import { getReleaseErrorBudget, readErrorBudgetCounts } from "@/lib/release/error-budget";
 import {
   getDefaultObservabilitySloPolicies,
   getObservabilitySloSnapshot,
@@ -8888,6 +8889,104 @@ databaseDescribe("Postgres schema integration", () => {
         severity: "critical",
         message: "Agent run success rate breached: 66.67% is less than 80%.",
       }]);
+  });
+
+  test("spends the release error budget only on workspaces people sign in to", async () => {
+    const now = new Date();
+    const before = await readErrorBudgetCounts(now);
+    const workspace = async (tenantId: string, membershipStatus: string | null) => {
+      await admin`
+        INSERT INTO omni_auth_tenants (id, name, slug)
+        VALUES (${tenantId}, ${tenantId}, ${tenantId})
+      `;
+      if (!membershipStatus) return;
+      const userId = crypto.randomUUID();
+      await admin`
+        INSERT INTO omni_auth_users (id, email, password_hash)
+        VALUES (${userId}, ${`${tenantId}@example.test`}, 'test-only')
+      `;
+      await admin`
+        INSERT INTO omni_auth_memberships (id, tenant_id, user_id, role, status)
+        VALUES (${`${tenantId}-membership`}, ${tenantId}, ${userId}, 'admin', ${membershipStatus})
+      `;
+    };
+    const run = (tenant: string, id: string, status: string, completedAgo: string | null) => admin`
+      INSERT INTO omni_agent_runs (
+        id, tenant_id, owner_actor_id, mode, status, prompt, messages,
+        started_at, completed_at
+      )
+      VALUES (
+        ${id}, ${tenant}, 'budget_actor', 'orchestrate', ${status}, 'private', '[]'::jsonb,
+        NOW() - INTERVAL '9 days', NOW() - ${completedAgo}::interval
+      )
+    `;
+    const tool = (tenant: string, id: string, status: string, completedAgo: string) => admin`
+      INSERT INTO omni_tool_executions (
+        id, tool_id, tool_name, risk_level, status, tenant_id, actor_id, input,
+        created_at, completed_at
+      )
+      VALUES (
+        ${id}, 'tool', 'Tool', 2, ${status}, ${tenant}, 'budget_actor', '{}'::jsonb,
+        NOW() - INTERVAL '9 days', NOW() - ${completedAgo}::interval
+      )
+    `;
+    const memberA = "tenant_budget_member_a";
+    const memberB = "tenant_budget_member_b";
+    const disabled = "tenant_budget_disabled";
+    const smoke = "tenant_budget_smoke";
+    await workspace(memberA, "active");
+    await workspace(memberB, "active");
+    await workspace(disabled, "disabled");
+    await workspace(smoke, null);
+
+    await run(memberA, "budget-run-1", "completed", "1 hour");
+    await run(memberA, "budget-run-2", "failed", "2 hours");
+    await run(memberA, "budget-run-3", "completed", "3 days");
+    await run(memberA, "budget-run-4", "failed", "6 days");
+    await run(memberA, "budget-run-stale", "failed", "8 days");
+    await run(memberA, "budget-run-canceled", "canceled", "1 hour");
+    await run(memberA, "budget-run-active", "running", null);
+    await run(memberB, "budget-run-5", "failed", "30 hours");
+    await run(memberB, "budget-run-6", "completed", "23 hours");
+    await run(memberB, "budget-run-7", "completed", "4 days");
+    await run(disabled, "budget-run-disabled", "failed", "1 hour");
+    await run(smoke, "budget-run-smoke", "failed", "1 hour");
+
+    await tool(memberA, "budget-tool-1", "executed", "1 hour");
+    await tool(memberA, "budget-tool-2", "failed", "1 hour");
+    await tool(memberA, "budget-tool-3", "failed", "5 days");
+    await tool(memberA, "budget-tool-stale", "failed", "9 days");
+    await tool(memberA, "budget-tool-blocked", "blocked", "1 hour");
+    await tool(memberA, "budget-tool-rejected", "rejected", "1 hour");
+    await tool(memberA, "budget-tool-dry-run", "dry_run", "1 hour");
+    await tool(memberB, "budget-tool-4", "executed", "2 hours");
+    await tool(memberB, "budget-tool-5", "executed", "3 days");
+    await tool(disabled, "budget-tool-disabled", "failed", "1 hour");
+    await tool(smoke, "budget-tool-smoke", "failed", "1 hour");
+
+    const after = await readErrorBudgetCounts(now);
+    const added = (objective: keyof typeof after) => ({
+      week: {
+        finished: after[objective].week.finished - before[objective].week.finished,
+        failed: after[objective].week.failed - before[objective].week.failed,
+      },
+      day: {
+        finished: after[objective].day.finished - before[objective].day.finished,
+        failed: after[objective].day.failed - before[objective].day.failed,
+      },
+    });
+    expect(added("agent_runs")).toEqual({
+      week: { finished: 7, failed: 3 },
+      day: { finished: 3, failed: 1 },
+    });
+    expect(added("tool_calls")).toEqual({
+      week: { finished: 5, failed: 2 },
+      day: { finished: 3, failed: 1 },
+    });
+    const budget = await getReleaseErrorBudget(now);
+    expect(budget.measured).toBe(true);
+    expect(budget.objectives.map((objective) => objective.id))
+      .toEqual(["agent_runs", "tool_calls"]);
   });
 
   test("verifies a migrated database against this release exactly", async () => {

@@ -1011,6 +1011,12 @@ describe("paired production deployment", () => {
     expect(releaseEvidenceSmoke).toContain(
       'evidenceQuery.set(\n    "workerHeartbeatNotBefore"',
     );
+    expect(releaseEvidenceSmoke).toContain(
+      'evidenceQuery.set("errorBudgetException", errorBudgetException)',
+    );
+    expect(releaseEvidenceSmoke).toContain(
+      'gateById.get("agent_error_budget")?.status === "pass"',
+    );
   });
 });
 

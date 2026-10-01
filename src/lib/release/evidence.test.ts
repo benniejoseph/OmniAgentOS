@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   getMaintenanceDatabaseRoleSafety: vi.fn(),
   getOpenAIReadiness: vi.fn(),
   getLatestWorkerHeartbeats: vi.fn(),
+  getReleaseErrorBudget: vi.fn(),
 }));
 
 vi.mock("@/lib/config", () => ({
@@ -29,8 +30,13 @@ vi.mock("@/lib/operations/worker-heartbeat", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/operations/worker-heartbeat")>()),
   getLatestWorkerHeartbeats: mocks.getLatestWorkerHeartbeats,
 }));
+vi.mock("@/lib/release/error-budget", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/release/error-budget")>()),
+  getReleaseErrorBudget: mocks.getReleaseErrorBudget,
+}));
 
 import { getReleaseEvidenceReport } from "@/lib/release/evidence";
+import type { ErrorBudgetReport } from "@/lib/release/error-budget";
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -148,6 +154,9 @@ describe("release evidence", () => {
         },
       },
     }));
+    mocks.getReleaseErrorBudget.mockImplementation(
+      collector("error-budget", budgetReport("within")),
+    );
     mocks.getRuntimeDatabaseRoleSafety.mockImplementation(collector("runtime-role", {
       configured: true,
       safe: true,
@@ -186,6 +195,7 @@ describe("release evidence", () => {
     expect(order).toEqual([
       "tenant",
       "observability",
+      "error-budget",
       "runtime-role",
       "maintenance-role",
       "gateway",
@@ -693,7 +703,78 @@ describe("release evidence", () => {
       "agent_approval_latency_p95",
     )).toEqual([true, "warn", "5 advisory SLO breach(es) are active."]);
   });
+
+  it("holds the release while the agent error budget burns, unless the release names an exception", async () => {
+    const revision = "error-budget-release";
+    configurePassingEvidence(revision, [
+      "fast",
+      "background",
+      "maintenance",
+    ].map((lane) => ({
+      instanceId: "worker",
+      lane,
+      protocol: "1",
+      revision,
+      target: "https://release.example.test",
+      recordedAt: new Date().toISOString(),
+    })));
+    mocks.getReleaseErrorBudget.mockResolvedValue(budgetReport("exhausted"));
+    const release = async (errorBudgetException?: string) => {
+      const report = await getReleaseEvidenceReport("error-budget", {
+        expectedWorkerTarget: "https://release.example.test",
+        errorBudgetException,
+      });
+      const gate = report.gates.find((item) => item.id === "agent_error_budget");
+      return [report.releaseGate.approved, gate?.status, gate?.details.exception];
+    };
+
+    expect(await release()).toEqual([false, "fail", undefined]);
+    // A cached held report is not reused for a release that names an exception.
+    expect(await release("  Ships the fix for failing runs.  ")).toEqual([
+      true,
+      "pass",
+      { reason: "Ships the fix for failing runs.", applied: true },
+    ]);
+    // Nor is the excused report reused once the exception is gone.
+    expect(await release()).toEqual([false, "fail", undefined]);
+    // A reason the route would refuse excuses nothing.
+    expect(await release("first line\nsecond line")).toEqual([false, "fail", undefined]);
+    expect(mocks.getReleaseErrorBudget).toHaveBeenCalledTimes(2);
+
+    mocks.getReleaseErrorBudget.mockResolvedValue(budgetReport("recovering"));
+    const recovering = await getReleaseEvidenceReport("error-budget-recovering", {
+      expectedWorkerTarget: "https://release.example.test",
+    });
+    expect(recovering.releaseGate.approved).toBe(true);
+    expect(recovering.gates.find((item) => item.id === "agent_error_budget")?.summary)
+      .toBe("Agent runs have spent the week's error budget, but the last day is within the objective.");
+  });
 });
+
+function budgetReport(verdict: "within" | "recovering" | "exhausted"): ErrorBudgetReport {
+  return {
+    checkedAt: new Date().toISOString(),
+    measured: true,
+    objectives: [
+      {
+        id: "agent_runs",
+        objective: 0.95,
+        verdict,
+        successRate: verdict === "within" ? 1 : 0.8,
+        budgetSpent: verdict === "within" ? 0 : 4,
+        burnRate: verdict === "exhausted" ? 2 : 0,
+      },
+      {
+        id: "tool_calls",
+        objective: 0.9,
+        verdict: "within",
+        successRate: 1,
+        budgetSpent: 0,
+        burnRate: 0,
+      },
+    ],
+  };
+}
 
 function configurePassingEvidence(
   revision: string,
@@ -786,4 +867,5 @@ function configurePassingEvidence(
     checkedAt: new Date().toISOString(),
   });
   mocks.getLatestWorkerHeartbeats.mockResolvedValue(heartbeats);
+  mocks.getReleaseErrorBudget.mockResolvedValue(budgetReport("within"));
 }

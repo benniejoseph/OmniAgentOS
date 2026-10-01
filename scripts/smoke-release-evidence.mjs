@@ -1,4 +1,10 @@
-import { failSmoke, getSmokeBaseUrl, positiveInteger, smokeFetch } from "./smoke-helpers.mjs";
+import {
+  failSmoke,
+  getSmokeBaseUrl,
+  positiveInteger,
+  releaseErrorBudgetException,
+  smokeFetch,
+} from "./smoke-helpers.mjs";
 
 const baseUrl = getSmokeBaseUrl();
 const email = process.env.SMOKE_ADMIN_EMAIL || process.env.OMNIAGENT_BOOTSTRAP_EMAIL;
@@ -32,6 +38,16 @@ if (process.env.OMNIAGENT_REQUIRE_ACTIVE_WORKER_HEARTBEATS === "true") {
     new Date(notBeforeMs).toISOString(),
   );
 }
+let errorBudgetException;
+try {
+  errorBudgetException = releaseErrorBudgetException();
+} catch (error) {
+  failSmoke(error instanceof Error ? error.message : "invalid error budget exception");
+}
+if (errorBudgetException) {
+  // A release that is the fix ships while the error budget is spent.
+  evidenceQuery.set("errorBudgetException", errorBudgetException);
+}
 const response = await request(
   `/api/release/evidence?${evidenceQuery.toString()}`,
   { headers },
@@ -52,6 +68,7 @@ checks.push(assert(gateById.get("cron_auth")?.status === "pass", "cron authentic
 checks.push(assert(gateById.get("runtime_database_role")?.status === "pass", "runtime database role gate passes", gateDetail(gateById.get("runtime_database_role"))));
 checks.push(assert(gateById.get("dedicated_worker")?.status === "pass", "dedicated worker revision and heartbeat gate passes", gateDetail(gateById.get("dedicated_worker"))));
 checks.push(assert(gateById.get("observability_slo")?.status === "pass", "observability SLO gate passes", gateDetail(gateById.get("observability_slo"))));
+checks.push(assert(gateById.get("agent_error_budget")?.status === "pass", "agent error budget gate passes", gateDetail(gateById.get("agent_error_budget"))));
 checks.push(assert(gateById.get("eval_report_signing")?.status === "pass", "eval report signing gate passes", gateDetail(gateById.get("eval_report_signing"))));
 checks.push(report
   ? assert(await writeReleaseEvidenceArtifact(report), "release evidence artifact is present and bounded", "artifact validation failed")
