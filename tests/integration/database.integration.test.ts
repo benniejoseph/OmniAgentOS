@@ -73,7 +73,10 @@ import {
   getProject,
   updateProjectExecution,
 } from "@/lib/projects/store";
-import { createKnowledgeDocument } from "@/lib/rag/store";
+import {
+  createKnowledgeDocument,
+  listKnowledgeDocumentsBySourcePrefix,
+} from "@/lib/rag/store";
 import {
   cancelOperationJobByDedupeKey,
   completeOperationJob,
@@ -738,6 +741,68 @@ databaseDescribe("Postgres schema integration", () => {
         content: "A connected-source document must persist atomically.",
       }),
     ]);
+  });
+
+  test("lists a tenant's knowledge documents under a source prefix in id order", async () => {
+    const tenantId = "knowledge_prefix_listing_tenant";
+    // A prefix a LIKE pattern would widen: `_` and `%` match any character.
+    const prefix = "google:work:grant_1%:mail:";
+    const create = async (source: string, tenant = tenantId) => {
+      const { document } = await runWithDatabaseTenantScope(tenant, () =>
+        createKnowledgeDocument({
+          idempotencyKey: `prefix-listing:${source}`,
+          tenantId: tenant,
+          title: source,
+          content: `Content of ${source}`,
+          source,
+          sourceType: "api",
+          chunks: [{ index: 0, content: `Content of ${source}` }],
+        }),
+      );
+      return { id: document.id, source: document.source };
+    };
+    const held = [];
+    for (const item of ["a", "b", "c", "d"]) {
+      held.push(await create(`${prefix}${item}`));
+    }
+    const atTheTime = await create(`${prefix}at-the-time`);
+    const later = await create(`${prefix}later`);
+    await create("google:work:grantX1%:mail:e");
+    await create("google:work:grant_1zz:mail:f");
+    await create("google:work:grant_1%:drive:g");
+    await create(`${prefix}h`, "knowledge_prefix_listing_other");
+    await admin`
+      UPDATE omni_knowledge_documents
+      SET created_at = '2026-09-01T00:00:00Z'
+      WHERE tenant_id IN ('knowledge_prefix_listing_tenant', 'knowledge_prefix_listing_other')
+    `;
+    await admin`
+      UPDATE omni_knowledge_documents
+      SET created_at = '2026-09-15T00:00:00Z'
+      WHERE id = ${atTheTime.id}
+    `;
+    await admin`
+      UPDATE omni_knowledge_documents
+      SET created_at = '2026-09-20T00:00:00Z'
+      WHERE id = ${later.id}
+    `;
+    held.sort((left, right) => left.id < right.id ? -1 : 1);
+    const list = (after?: string, limit = 3) => runWithDatabaseTenantScope(tenantId, () =>
+      listKnowledgeDocumentsBySourcePrefix(prefix, {
+        tenantId,
+        createdBefore: "2026-09-15T00:00:00.000Z",
+        after,
+        limit,
+      }),
+    );
+
+    const first = await list();
+    expect(first).toEqual(held.slice(0, 3));
+    const second = await list(first[2].id);
+    expect(second).toEqual(held.slice(3));
+    await expect(list(second[0].id)).resolves.toEqual([]);
+    // A fractional limit lists whole documents.
+    await expect(list(undefined, 1.9)).resolves.toEqual(held.slice(0, 1));
   });
 
   test("stores structured parameters as native JSONB", async () => {

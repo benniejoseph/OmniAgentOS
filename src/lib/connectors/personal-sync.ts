@@ -27,6 +27,14 @@ import {
   type QuarantinedSourceItem,
   type SourceItemQuarantine,
 } from "@/lib/connectors/source-item-quarantine";
+import {
+  advanceSourceDocumentSweep,
+  readSourceDocumentSweep,
+  sourceDocumentSliceStops,
+  startSourceDocumentSweep,
+  SOURCE_DOCUMENT_SWEEP,
+  type SourceDocumentSweep,
+} from "@/lib/connectors/source-document-sweep";
 import { observeGoogleDriveCanonicalMetadata } from "@/lib/connectors/google-drive-canonical";
 import { observeGoogleDriveShadow } from "@/lib/connectors/google-drive-shadow";
 import { extractCaptureFile } from "@/lib/capture/files";
@@ -36,6 +44,8 @@ import {
   getActorOwnedKnowledgeForCognition,
   getCanonicalKnowledgeEvidenceByChunkIds,
   getKnowledgeDocumentByIdempotencyKey,
+  knowledgeDocumentId,
+  listKnowledgeDocumentsBySourcePrefix,
 } from "@/lib/rag/store";
 import { normalizeTextForChunking } from "@/lib/rag/chunk";
 import {
@@ -78,6 +88,8 @@ type SyncCursor = {
   driveChangesPageToken?: string;
   /** Each source's items set aside after they kept failing. */
   itemQuarantine?: Record<string, unknown>;
+  /** Each source's check of the documents it held when it started over. */
+  documentSweep?: Record<string, unknown>;
 };
 
 const GMAIL_ITEM_PAGE_SIZE = GOOGLE_SOURCE_ADAPTERS.mail.pageLimit;
@@ -132,8 +144,13 @@ type GoogleSourceObservation = Readonly<{
   source: PersonalSourceId;
   items: SyncItem[];
   cursor: Partial<SyncCursor>;
+  /** The source started over from a fresh listing. */
+  relisted?: true;
 }>;
-type GoogleSourcePage = Pick<GoogleSourceObservation, "items" | "cursor">;
+type GoogleSourcePage = Pick<
+  GoogleSourceObservation,
+  "items" | "cursor" | "relisted"
+>;
 type GoogleSourceObservationSettlement = Readonly<
   | {
       source: PersonalSourceId;
@@ -514,6 +531,116 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
         }
       }
     };
+    // Checks one slice of the documents a source held when it started over,
+    // and retires those whose item left the source meanwhile. A slice that
+    // fails to check leaves the sweep where it was for the next sync.
+    const sweepSourceDocuments = async (
+      source: PersonalSourceId,
+      sweep: SourceDocumentSweep,
+      count: (outcome: SourceItemOutcome) => void,
+    ): Promise<SourceDocumentSweep | undefined> => {
+      const prefix = `${sourceNamespace.sourcePrefix}:${source}:`;
+      const presence = async (id: string): Promise<GoogleSourcePresence> => {
+        try {
+          return await googleSourcePresence(
+            source,
+            id,
+            providerHeaders,
+            input.abortSignal,
+          );
+        } catch (error) {
+          if (
+            isPersonalSyncInterruption(error, input.abortSignal) ||
+            personalSourceFailureCode(error) !== "processing_failed"
+          ) throw error;
+          return "unknown";
+        }
+      };
+      try {
+        const listed = await listKnowledgeDocumentsBySourcePrefix(prefix, {
+          tenantId: input.tenantId,
+          createdBefore: sweep.since,
+          after: sweep.after,
+          limit: SOURCE_DOCUMENT_SWEEP.slice,
+        });
+        const checked: Array<Readonly<{ id: string; presence: GoogleSourcePresence }>> = [];
+        for (
+          let start = 0;
+          start < listed.length;
+          start += SOURCE_DOCUMENT_SWEEP.concurrency
+        ) {
+          checked.push(...await Promise.all(listed
+            .slice(start, start + SOURCE_DOCUMENT_SWEEP.concurrency)
+            .map(async (document) => {
+              const id = document.source.slice(prefix.length);
+              // Only a document this connection's sync wrote for the item
+              // is checked; any other is left as it is.
+              return {
+                id,
+                presence: id && knowledgeDocumentId(
+                  input.tenantId,
+                  `${sourceNamespace.idempotencyPrefix}:${source}:${id}`,
+                ) === document.id
+                  ? await presence(id)
+                  : "unknown" as const,
+              };
+            })));
+        }
+        const present = checked.filter((document) =>
+          document.presence === "present"
+        ).length;
+        const gone = checked.filter((document) =>
+          document.presence === "deleted" || document.presence === "excluded"
+        );
+        if (sourceDocumentSliceStops(sweep, { present, gone: gone.length })) {
+          sourceItemEvents.push(sourceSweepEvent(
+            "stopped",
+            secrets.grant.id,
+            source,
+            sweep,
+            { wouldRemove: gone.length },
+          ));
+          return undefined;
+        }
+        for (const document of gone) {
+          count(await settleSourceItem({
+            id: document.id,
+            kind: source,
+            title: "Removed source item",
+            content: "",
+            ...(document.presence === "deleted"
+              ? { deleted: true }
+              : { excluded: true }),
+          }));
+        }
+        const next = advanceSourceDocumentSweep(sweep, {
+          listed: listed.length,
+          lastId: listed.at(-1)?.id,
+          present,
+          gone: gone.length,
+        });
+        if (!next.finished) return next.sweep;
+        if (next.sweep.checked) {
+          sourceItemEvents.push(sourceSweepEvent(
+            "finished",
+            secrets.grant.id,
+            source,
+            next.sweep,
+            {},
+          ));
+        }
+        return undefined;
+      } catch (error) {
+        if (isPersonalSyncInterruption(error, input.abortSignal)) throw error;
+        console.warn(JSON.stringify({
+          level: "warn",
+          event: "connector.source_sweep.failed",
+          source,
+          diagnostic: safeSourceSyncError(error),
+        }));
+        return sweep;
+      }
+    };
     for (const observation of observations) {
       if (observation.status === "rejected") {
         if (isPersonalSyncInterruption(observation.reason, input.abortSignal)) {
@@ -538,6 +665,10 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
       let quarantine = readSourceItemQuarantine(
         record(nextCursor.itemQuarantine)[source],
       );
+      // A source that starts over checks again every document it held.
+      let sweep = observation.value.relisted
+        ? startSourceDocumentSweep(Date.now())
+        : readSourceDocumentSweep(record(nextCursor.documentSweep)[source]);
       const count = (outcome: SourceItemOutcome) => {
         if (outcome === "imported") sourceImported += 1;
         if (outcome === "removed") sourceRemoved += 1;
@@ -611,10 +742,15 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
           }
         }
         quarantine = settleSourceItems(quarantine);
-        const candidateCursor = withSourceItemQuarantine(
-          { ...nextCursor, ...observation.value.cursor },
+        if (sweep) sweep = await sweepSourceDocuments(source, sweep, count);
+        const candidateCursor = withSourceDocumentSweep(
+          withSourceItemQuarantine(
+            { ...nextCursor, ...observation.value.cursor },
+            source,
+            quarantine,
+          ),
           source,
-          quarantine,
+          sweep,
         );
         const lastSuccessfulAt = new Date().toISOString();
         const backfillState = googleSourceBackfillState(
@@ -800,6 +936,7 @@ async function observeGoogleSources(
             source,
             items: result.value.items,
             cursor: result.value.cursor,
+            ...(result.value.relisted ? { relisted: true } : {}),
           },
         }
       : { source, status: "rejected", reason: result.reason };
@@ -848,11 +985,59 @@ async function googleSourceItem(
     : googleDriveItem({ ...file, id }, headers, signal, identity);
 }
 
+type GoogleSourcePresence = "present" | "deleted" | "excluded" | "unknown";
+
+/**
+ * Whether a source still offers an item, read by its id with only the fields
+ * that tell. Only an answer about the item asked for removes it, so an answer
+ * about another item, or one that does not say, keeps it.
+ */
+async function googleSourcePresence(
+  source: PersonalSourceId,
+  id: string,
+  headers: Record<string, string>,
+  signal?: AbortSignal,
+): Promise<GoogleSourcePresence> {
+  if (source === "mail") {
+    const response = await providerJson(
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(id)}?format=minimal`,
+      headers,
+      signal,
+      [404],
+    );
+    if (response.status === 404) return "deleted";
+    if (response.body.id !== id) return "unknown";
+    return hasExcludedGmailLabel(response.body.labelIds) ? "excluded" : "present";
+  }
+  if (source === "calendar") {
+    const response = await providerJson(
+      `https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(id)}?fields=id%2Cstatus`,
+      headers,
+      signal,
+      [404, 410],
+    );
+    if (response.status === 404 || response.status === 410) return "deleted";
+    if (response.body.id !== id) return "unknown";
+    return response.body.status === "cancelled" ? "deleted" : "present";
+  }
+  const response = await providerJson(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?fields=id%2Ctrashed%2CownedByMe`,
+    headers,
+    signal,
+    [404],
+  );
+  if (response.status === 404) return "excluded";
+  if (response.body.id !== id) return "unknown";
+  return response.body.trashed === true || response.body.ownedByMe === false
+    ? "excluded"
+    : "present";
+}
+
 async function googleMail(
   headers: Record<string, string>,
   cursor: SyncCursor,
   signal?: AbortSignal,
-) {
+): Promise<GoogleSourcePage> {
   let addedIds: string[] = [];
   let deletedIds: string[] = [];
   if (cursor.gmailHistoryId) {
@@ -960,6 +1145,7 @@ async function googleMail(
   const nextPageToken = optionalProviderString(list.body.nextPageToken);
   return {
     items,
+    ...(cursor.gmailBackfillHistoryId ? {} : { relisted: true as const }),
     cursor: nextPageToken
       ? {
           gmailHistoryId: undefined,
@@ -1017,7 +1203,7 @@ async function googleCalendar(
   headers: Record<string, string>,
   cursor: SyncCursor,
   signal?: AbortSignal,
-) {
+): Promise<GoogleSourcePage> {
   const initial = new URL("https://www.googleapis.com/calendar/v3/calendars/primary/events");
   initial.searchParams.set("maxResults", String(CALENDAR_ITEM_PAGE_SIZE)); initial.searchParams.set("singleEvents", "true"); initial.searchParams.set("showDeleted", "true"); initial.searchParams.set("conferenceDataVersion", "1");
   const timeMin = cursor.calendarTimeMin || new Date(Date.now() - 30 * 86_400_000).toISOString();
@@ -1043,6 +1229,9 @@ async function googleCalendar(
   const nextPageToken = optionalProviderString(payload.nextPageToken);
   return {
     items,
+    ...(cursor.calendar || cursor.calendarPageToken
+      ? {}
+      : { relisted: true as const }),
     cursor: nextPageToken
       ? {
           calendar: cursor.calendar,
@@ -1127,6 +1316,7 @@ async function googleDrive(
   const nextPageToken = optionalProviderString(payload.nextPageToken);
   return {
     items: items.filter((item) => item.id),
+    ...(cursor.drivePageToken ? {} : { relisted: true as const }),
     cursor: nextPageToken
       ? {
           driveModifiedAfter: cursor.driveModifiedAfter,
@@ -1891,9 +2081,68 @@ function withSourceItemQuarantine(
   };
 }
 
-/** Where a cursor stands in its sources, apart from the items set aside. */
+/** The cursor with one source's document sweep, which it omits when none. */
+function withSourceDocumentSweep(
+  cursor: SyncCursor,
+  source: PersonalSourceId,
+  sweep: SourceDocumentSweep | undefined,
+): SyncCursor {
+  const documentSweep = { ...record(cursor.documentSweep) };
+  if (sweep) documentSweep[source] = sweep;
+  else delete documentSweep[source];
+  return {
+    ...cursor,
+    documentSweep: Object.keys(documentSweep).length
+      ? documentSweep
+      : undefined,
+  };
+}
+
+/**
+ * Where a cursor stands in its sources, apart from the items set aside and
+ * the documents being checked again.
+ */
 function sourcePosition(cursor: SyncCursor) {
-  return JSON.stringify({ ...cursor, itemQuarantine: undefined });
+  return JSON.stringify({
+    ...cursor,
+    itemQuarantine: undefined,
+    documentSweep: undefined,
+  });
+}
+
+/**
+ * The record of a document sweep that finished, or stopped before removing
+ * what it found gone. It carries counts only.
+ */
+function sourceSweepEvent(
+  type: "finished" | "stopped",
+  connectionId: string,
+  source: PersonalSourceId,
+  sweep: SourceDocumentSweep,
+  detail: Readonly<Record<string, number>>,
+): SourceItemEvent {
+  const adapter = GOOGLE_SOURCE_ADAPTERS[source];
+  return {
+    id: `source_sweep_event_${sourceContractSha256({
+      schemaVersion: 1,
+      connectionId,
+      source,
+      since: sweep.since,
+      type,
+    }).slice(0, 56)}`,
+    streamId: `connector:${connectionId}`,
+    type: `connector.source_sweep.${type}`,
+    payload: {
+      schemaVersion: 1,
+      connectionId,
+      source,
+      adapterId: adapter.adapterId,
+      adapterVersionId: adapter.adapterVersionId,
+      checked: sweep.checked,
+      removed: sweep.removed,
+      ...detail,
+    },
+  };
 }
 
 /**

@@ -1595,6 +1595,55 @@ export async function getKnowledgeDocumentByIdempotencyKey(
   return document ? sanitizeKnowledgeDocument(document) : undefined;
 }
 
+/**
+ * Lists a tenant's documents whose source begins with a prefix, matched
+ * literally, and that were created before a time, in id order from after an
+ * id, for a sweep that pages through them.
+ */
+export async function listKnowledgeDocumentsBySourcePrefix(
+  sourcePrefix: string,
+  options: {
+    tenantId: string;
+    createdBefore: string;
+    after?: string;
+    limit: number;
+  },
+): Promise<Array<{ id: string; source: string }>> {
+  if (!sourcePrefix) throw new Error("A source prefix is required.");
+  const createdBefore = Date.parse(options.createdBefore);
+  if (!Number.isFinite(createdBefore)) {
+    throw new Error("A creation bound is required.");
+  }
+  const tenantId = normalizeTenantId(options.tenantId);
+  const after = options.after || "";
+  const limit = Math.min(Math.max(Math.trunc(options.limit) || 1, 1), 500);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT id, source
+      FROM omni_knowledge_documents
+      WHERE tenant_id = ${tenantId}
+        AND starts_with(source, ${sourcePrefix})
+        AND created_at < ${new Date(createdBefore).toISOString()}::timestamptz
+        AND id COLLATE "C" > ${after}
+      ORDER BY id COLLATE "C"
+      LIMIT ${limit}
+    `;
+    return rows.map((row) => ({ id: String(row.id), source: String(row.source) }));
+  }
+  const ledger = await readKnowledgeLedger();
+  return ledger.documents
+    .filter((document) =>
+      normalizeTenantId(document.tenantId) === tenantId &&
+      document.source.startsWith(sourcePrefix) &&
+      Date.parse(document.createdAt) < createdBefore &&
+      document.id > after
+    )
+    .sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0)
+    .slice(0, limit)
+    .map((document) => ({ id: document.id, source: document.source }));
+}
+
 export async function listKnowledgeDocuments(limit = 20, options: { tenantId?: string } = {}) {
   const tenantId = normalizeTenantId(options.tenantId);
 

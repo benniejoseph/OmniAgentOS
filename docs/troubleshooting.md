@@ -251,6 +251,16 @@ A source that cannot process an item (`processing_failed`) keeps its place, so i
 - An embedding outage also fails as `processing_failed`, so it can set aside one item a source each hour it lasts. They are read again as they come due once it is over.
 - The list lives in the connection's sealed sync cursor, so reconnecting the account clears it along with the rest of the cursor.
 
+## A Google source started over and removed documents, or stopped checking them
+
+A listing cannot show an item that left, so a Google source that starts over would keep the documents of items that left the account while its place was lost. A source starts over on its first sync after the account connects, and when Google rejects its change position or sync token. When it does, it checks again, by their ids, the documents it held from before: 50 each sync, five at a time, once the source's page has been read. The connection's `connector:<connection id>` event stream shows `connector.source_sweep.finished` once every one is checked, with how many it checked and removed. The event names no document or item.
+
+- A document is removed only when its source answers, for that id, that the item left: Gmail answers 404, or the message is in spam or trash; Calendar answers 404 or 410, or the event is cancelled; Drive answers 404, or the file is trashed or not owned by the account. Any other answer, including an unreadable one or one about another item, keeps the document.
+- The sweep stops before it removes anything at a slice that would remove documents while its source confirms none of them still there, when no document it checked before was confirmed either, or when the slice would remove ten or more. `connector.source_sweep.stopped` records how many it would have removed. This keeps a sync that reads another account, or a source that answers 404 for everything, from emptying the account's knowledge. The documents stay indexed. A source whose held documents all left, or that lost ten or more in one slice, stops again the next time it starts over.
+- A provider failure while checking, such as `Connected source returned 503.`, keeps the sweep where it was, and the next sync checks the same slice again. Only the sweep waits; the source keeps its own progress. The worker logs `connector.source_sweep.failed`.
+- A source that starts over while its sweep runs starts the sweep again. The sweep checks only documents indexed before the source started over, so it never checks what the new listing indexed.
+- The sweep's place lives in the connection's sealed sync cursor, so reconnecting the account clears it, and the first sync after the reconnect starts a new one.
+
 ## Connector discovery or execution is blocked
 
 - Use an HTTPS hostname with public DNS; private, loopback, link-local, metadata, embedded-credential, and unsafe redirect targets are rejected.

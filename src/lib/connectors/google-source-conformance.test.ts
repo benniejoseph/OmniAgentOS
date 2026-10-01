@@ -6,10 +6,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // deleted, and reads only what the connection was granted. It keeps each item
 // under one key, bounds what it reads and keeps, fails without failing the
 // others, and stops when its connection is revoked. An item that keeps failing
-// is set aside, so its source moves on, and is read again later.
+// is set aside, so its source moves on, and is read again later. A source that
+// starts over checks again the documents it held, and retires those whose
+// item left it meanwhile.
 
 const mocks = vi.hoisted(() => ({
-  claimLease: vi.fn(), getSecrets: vi.fn(), updateState: vi.fn(), refresh: vi.fn(), ingest: vi.fn(), remove: vi.fn(), getDocument: vi.fn(), projectCalendar: vi.fn(), cancelCalendar: vi.fn(), mapInbound: vi.fn(), observeDrive: vi.fn(), observeCanonicalDrive: vi.fn(), appendEvent: vi.fn(),
+  claimLease: vi.fn(), getSecrets: vi.fn(), updateState: vi.fn(), refresh: vi.fn(), ingest: vi.fn(), remove: vi.fn(), getDocument: vi.fn(), projectCalendar: vi.fn(), cancelCalendar: vi.fn(), mapInbound: vi.fn(), observeDrive: vi.fn(), observeCanonicalDrive: vi.fn(), appendEvent: vi.fn(), listDocuments: vi.fn(),
 }));
 vi.mock("@/lib/events/store", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/lib/events/store")>(),
@@ -32,12 +34,18 @@ vi.mock("@/lib/connectors/google-drive-canonical", () => ({
   observeGoogleDriveCanonicalMetadata: mocks.observeCanonicalDrive,
 }));
 vi.mock("@/lib/rag/retriever", () => ({ ingestTextDocument: mocks.ingest }));
-vi.mock("@/lib/rag/store", () => ({ deleteKnowledgeDocumentByIdempotencyKey: mocks.remove, getKnowledgeDocumentByIdempotencyKey: mocks.getDocument }));
+vi.mock("@/lib/rag/store", async (importOriginal) => ({
+  knowledgeDocumentId: (await importOriginal<typeof import("@/lib/rag/store")>()).knowledgeDocumentId,
+  deleteKnowledgeDocumentByIdempotencyKey: mocks.remove,
+  getKnowledgeDocumentByIdempotencyKey: mocks.getDocument,
+  listKnowledgeDocumentsBySourcePrefix: mocks.listDocuments,
+}));
 vi.mock("@/lib/meetings/google-calendar-projection", () => ({ projectGoogleCalendarMeeting: mocks.projectCalendar, cancelGoogleCalendarMeeting: mocks.cancelCalendar }));
 vi.mock("@/lib/communications/store", () => ({ mapInboundCommunication: mocks.mapInbound }));
 
 import { GOOGLE_SOURCE_ADAPTERS } from "@/lib/connectors/google-source-adapters";
 import { syncPersonalProvider } from "@/lib/connectors/personal-sync";
+import { knowledgeDocumentId } from "@/lib/rag/store";
 
 type SourceId = "mail" | "calendar" | "drive";
 
@@ -58,6 +66,8 @@ const google = {
   drive: { pages: [[]] as Record<string, unknown>[][], changes: [] as unknown[], items: new Map<string, Record<string, unknown>>(), exports: new Map<string, () => Response>(), downloads: new Map<string, () => Response>(), status: 0 },
 };
 let requests: URL[] = [];
+// Sources whose provider refuses the change position the sync kept.
+const refused = new Set<SourceId>();
 
 type SourceCase = {
   source: SourceId;
@@ -168,6 +178,7 @@ beforeEach(() => {
   google.calendar = { pages: [[]], changes: [], items: new Map(), status: 0 };
   google.drive = { pages: [[]], changes: [], items: new Map(), exports: new Map(), downloads: new Map(), status: 0 };
   requests = [];
+  refused.clear();
   vi.stubGlobal("fetch", fakeGoogle);
   connect({});
   mocks.claimLease.mockResolvedValue({
@@ -179,6 +190,7 @@ beforeEach(() => {
   mocks.observeDrive.mockResolvedValue({ status: "shadow_observed" });
   mocks.observeCanonicalDrive.mockResolvedValue({ status: "settled" });
   mocks.appendEvent.mockResolvedValue({});
+  mocks.listDocuments.mockResolvedValue([]);
 });
 
 describe.each(SOURCES)("the Google $source source", (c) => {
@@ -772,6 +784,491 @@ describe.each(SOURCES)("the Google $source source, with an item that keeps faili
   }
 });
 
+describe.each(SOURCES)("the Google $source source, once it starts over", (c) => {
+  const T0 = Date.parse("2026-10-01T00:00:00.000Z");
+  const HOUR = 60 * 60_000;
+  const iso = (time: number) => new Date(time).toISOString();
+  // What the source's check of an item asks for: only the fields that tell.
+  const [checkParam, checkValue] = {
+    mail: ["format", "minimal"],
+    calendar: ["fields", "id,status"],
+    drive: ["fields", "id,trashed,ownedByMe"],
+  }[c.source];
+  const isCheck = (url: URL) => url.searchParams.get(checkParam) === checkValue;
+  const checkedIds = () => requests
+    .filter(isCheck)
+    .map((url) => decodeURIComponent(url.pathname.split("/").at(-1) ?? ""))
+    .sort();
+  // Knowledge holds these documents, and lists them as its store does: in id
+  // order, after a position, up to a limit.
+  const holdDocuments = (documents: Array<{ id: string; source: string }>) => {
+    const listed = [...documents].sort((left, right) =>
+      left.id < right.id ? -1 : left.id > right.id ? 1 : 0
+    );
+    mocks.listDocuments.mockImplementation(async (
+      _prefix: string,
+      options: { after?: string; limit: number },
+    ) => listed
+      .filter((document) => document.id > (options.after ?? ""))
+      .slice(0, options.limit));
+    return listed;
+  };
+  // Knowledge holds a document this connection's sync wrote for each item.
+  const hold = (...ids: string[]) => holdDocuments(ids.map((id) => ({
+    id: knowledgeDocumentId("personal", `oauth:google:${c.source}:${id}`),
+    source: `google:${c.source}:${id}`,
+  })));
+  // Syncs as of `time`, from `cursor`.
+  const syncAt = (time: number, cursor?: Record<string, unknown>) => {
+    vi.setSystemTime(time);
+    connect({ cursor });
+    return sync({ sources: [c.source] });
+  };
+  // Syncs once Google refuses the change position the cursor kept.
+  const syncRefused = (cursor: Record<string, unknown> = c.changesCursor) => {
+    refused.add(c.source);
+    return syncAt(T0, cursor);
+  };
+  // A cursor following changes, partway through checking what it held.
+  const sweeping = (fields: Record<string, unknown> = {}) => ({
+    ...c.changesCursor,
+    documentSweep: {
+      [c.source]: {
+        since: iso(T0 - HOUR),
+        after: "knowledge_0",
+        checked: 7,
+        removed: 2,
+        ...fields,
+      },
+    },
+  });
+  const sweepOf = (cursor = savedCursor()) =>
+    (cursor.documentSweep as Record<string, unknown> | undefined)?.[c.source];
+  const removedKeys = () => mocks.remove.mock.calls.map(([key]) => key);
+  const events = () => mocks.appendEvent.mock.calls.map(([event]) => event);
+  const answering = (id: string, response: () => Response) => {
+    vi.stubGlobal("fetch", async (input: string | URL | Request) =>
+      new URL(String(input)).pathname.endsWith(`/${id}`)
+        ? response()
+        : fakeGoogle(input)
+    );
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    // Each document the check finds gone is still in knowledge.
+    mocks.getDocument.mockResolvedValue({
+      id: "document",
+      sourceItemId: "item",
+      sourceRevisionId: "revision",
+      metadata: {},
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("checks each document it held once Google refuses its place, and retires the ones that left", async () => {
+    hold("kept", "left");
+    c.serve("kept");
+
+    const result = await syncRefused();
+
+    expect(result.sources).toMatchObject([{ source: c.source, status: "healthy" }]);
+    expect(result).toMatchObject({ imported: 0, removed: 1 });
+    expect(mocks.listDocuments).toHaveBeenCalledTimes(1);
+    expect(mocks.listDocuments).toHaveBeenCalledWith(`google:${c.source}:`, {
+      tenantId: "personal",
+      createdBefore: iso(T0),
+      limit: 50,
+    });
+    expect(checkedIds()).toEqual(["kept", "left"]);
+    expect(removedKeys()).toEqual([`oauth:google:${c.source}:left`]);
+    expect(savedCursor()).toMatchObject(c.changesCursor);
+    expect(savedCursor()).not.toHaveProperty("documentSweep");
+    expect(events()).toEqual([{
+      id: expect.stringMatching(/^source_sweep_event_[0-9a-f]{56}$/),
+      streamId: "connector:google-grant",
+      type: "connector.source_sweep.finished",
+      executionScope: expect.objectContaining({ tenantId: "personal" }),
+      payload: {
+        schemaVersion: 1,
+        connectionId: "google-grant",
+        source: c.source,
+        adapterId: GOOGLE_SOURCE_ADAPTERS[c.source].adapterId,
+        adapterVersionId: GOOGLE_SOURCE_ADAPTERS[c.source].adapterVersionId,
+        checked: 2,
+        removed: 1,
+      },
+    }]);
+    // The record carries counts only.
+    expect(JSON.stringify(events())).not.toContain("kept");
+  });
+
+  it("checks each document it held on its first sync after it connects", async () => {
+    hold("kept", "left");
+    c.serve("kept");
+
+    await syncAt(T0);
+
+    expect(checkedIds()).toEqual(["kept", "left"]);
+    expect(removedKeys()).toEqual([`oauth:google:${c.source}:left`]);
+  });
+
+  it("checks nothing it held while it pages through its listing or follows changes", async () => {
+    c.list([["one"], ["two"]]);
+    await syncAt(T0);
+    hold("left");
+    mocks.listDocuments.mockClear();
+
+    await syncAt(T0, savedCursor());
+    expect(savedCursor()).toMatchObject(c.changesCursor);
+    await syncAt(T0, savedCursor());
+
+    expect(mocks.listDocuments).not.toHaveBeenCalled();
+    expect(mocks.remove).not.toHaveBeenCalled();
+    // A check that found nothing held records nothing.
+    expect(events()).toEqual([]);
+  });
+
+  it("checks only a document this connection's sync wrote for an item", async () => {
+    holdDocuments([
+      ...hold("kept", "left"),
+      // One written under another key, and one naming no item.
+      { id: "knowledge_another", source: `google:${c.source}:another` },
+      {
+        id: knowledgeDocumentId("personal", `oauth:google:${c.source}:`),
+        source: `google:${c.source}:`,
+      },
+    ]);
+    c.serve("kept");
+
+    await syncRefused();
+
+    expect(checkedIds()).toEqual(["kept", "left"]);
+    expect(removedKeys()).toEqual([`oauth:google:${c.source}:left`]);
+    expect(events()).toMatchObject([{ payload: { checked: 2, removed: 1 } }]);
+  });
+
+  it("checks the documents of a work connection under that connection's names", async () => {
+    holdDocuments(["kept", "left"].map((id) => ({
+      id: knowledgeDocumentId(
+        "personal",
+        `oauth:google:work:google-grant:${c.source}:${id}`,
+      ),
+      source: `google:work:google-grant:${c.source}:${id}`,
+    })));
+    c.serve("kept");
+    refused.add(c.source);
+    vi.setSystemTime(T0);
+    connect({ cursor: c.changesCursor, purpose: "work" });
+
+    await sync({ sources: [c.source] });
+
+    expect(mocks.listDocuments).toHaveBeenCalledWith(
+      `google:work:google-grant:${c.source}:`,
+      expect.objectContaining({ tenantId: "personal" }),
+    );
+    expect(checkedIds()).toEqual(["kept", "left"]);
+    expect(removedKeys()).toEqual([`oauth:google:work:google-grant:${c.source}:left`]);
+  });
+
+  it("stops, and removes nothing, when Google confirms none of what it held", async () => {
+    hold("left", "also-left");
+
+    const result = await syncRefused();
+
+    expect(result).toMatchObject({ removed: 0 });
+    expect(checkedIds()).toEqual(["also-left", "left"]);
+    expect(mocks.remove).not.toHaveBeenCalled();
+    expect(savedCursor()).not.toHaveProperty("documentSweep");
+    expect(events()).toEqual([expect.objectContaining({
+      id: expect.stringMatching(/^source_sweep_event_[0-9a-f]{56}$/),
+      streamId: "connector:google-grant",
+      type: "connector.source_sweep.stopped",
+      payload: expect.objectContaining({ checked: 0, removed: 0, wouldRemove: 2 }),
+    })]);
+  });
+
+  it.each([
+    [9, 9, "finished", { checked: 16, removed: 11 }],
+    [10, 0, "stopped", { checked: 7, removed: 2, wouldRemove: 10 }],
+  ])("given %i documents at once that left, removes %i, and records the check %s", async (left, removed, type, counts) => {
+    hold(...Array.from({ length: left }, (_, index) => `left-${index}`));
+
+    const result = await syncAt(T0, sweeping());
+
+    expect(result).toMatchObject({ removed });
+    expect(mocks.remove).toHaveBeenCalledTimes(removed);
+    expect(savedCursor()).not.toHaveProperty("documentSweep");
+    expect(events()).toEqual([expect.objectContaining({
+      type: `connector.source_sweep.${type}`,
+      payload: expect.objectContaining(counts),
+    })]);
+  });
+
+  it("checks fifty documents a sync, five at a time, until it has checked them all", async () => {
+    const ids = Array.from({ length: 51 }, (_, index) => `item-${index}`);
+    const documents = hold(...ids);
+    for (const id of ids) c.serve(id);
+    let active = 0;
+    let most = 0;
+    vi.stubGlobal("fetch", async (input: string | URL | Request) => {
+      if (!isCheck(new URL(String(input)))) return fakeGoogle(input);
+      active += 1;
+      most = Math.max(most, active);
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      active -= 1;
+      return fakeGoogle(input);
+    });
+
+    const first = await syncRefused();
+
+    expect(checkedIds()).toHaveLength(50);
+    expect(most).toBe(5);
+    // Checking what it held does not move the source.
+    expect(first.cursorAdvanced).toBe(false);
+    expect(sweepOf()).toEqual({
+      since: iso(T0),
+      after: documents[49].id,
+      checked: 50,
+      removed: 0,
+    });
+    expect(events()).toEqual([]);
+
+    refused.clear();
+    requests = [];
+    await syncAt(T0 + HOUR, savedCursor());
+
+    expect(mocks.listDocuments).toHaveBeenLastCalledWith(`google:${c.source}:`, {
+      tenantId: "personal",
+      createdBefore: iso(T0),
+      after: documents[49].id,
+      limit: 50,
+    });
+    expect(checkedIds()).toEqual([documents[50].source.split(":").at(-1)]);
+    expect(savedCursor()).not.toHaveProperty("documentSweep");
+    expect(events()).toMatchObject([{
+      type: "connector.source_sweep.finished",
+      payload: { checked: 51, removed: 0 },
+    }]);
+  });
+
+  it("starts its check over when its source starts over again", async () => {
+    hold("kept");
+    c.serve("kept");
+
+    await syncRefused(sweeping());
+
+    expect(mocks.listDocuments).toHaveBeenCalledWith(`google:${c.source}:`, {
+      tenantId: "personal",
+      createdBefore: iso(T0),
+      limit: 50,
+    });
+    expect(events()).toMatchObject([{ payload: { checked: 1, removed: 0 } }]);
+  });
+
+  it("keeps its place in the check when Google fails to answer for a document", async () => {
+    hold("kept", "flaky");
+    c.serve("kept");
+    answering("flaky", () => json({ error: { code: 503 } }, 503));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const result = await syncRefused();
+
+    expect(result.sources).toMatchObject([{ source: c.source, status: "healthy" }]);
+    expect(mocks.remove).not.toHaveBeenCalled();
+    expect(sweepOf()).toEqual({ since: iso(T0), checked: 0, removed: 0 });
+    expect(warn.mock.calls.map(([line]) => JSON.parse(String(line)))).toContainEqual({
+      level: "warn",
+      event: "connector.source_sweep.failed",
+      source: c.source,
+      diagnostic: "Connected source returned 503.",
+    });
+    expect(events()).toEqual([]);
+    warn.mockRestore();
+
+    refused.clear();
+    vi.stubGlobal("fetch", fakeGoogle);
+    c.serve("flaky");
+    await syncAt(T0 + HOUR, savedCursor());
+
+    expect(mocks.listDocuments).toHaveBeenLastCalledWith(
+      `google:${c.source}:`,
+      expect.objectContaining({ createdBefore: iso(T0) }),
+    );
+    expect(savedCursor()).not.toHaveProperty("documentSweep");
+    expect(events()).toMatchObject([{ payload: { checked: 2, removed: 0 } }]);
+  });
+
+  it("leaves a document Google answers for unreadably, and checks the rest", async () => {
+    hold("kept", "unclear", "left");
+    c.serve("kept");
+    answering("unclear", () => json({ error: { code: 400 } }, 400));
+
+    await syncRefused();
+
+    expect(removedKeys()).toEqual([`oauth:google:${c.source}:left`]);
+    expect(savedCursor()).not.toHaveProperty("documentSweep");
+    expect(events()).toMatchObject([{ payload: { checked: 2, removed: 1 } }]);
+  });
+
+  it("keeps a document when Google answers for another item", async () => {
+    hold("kept", "asked");
+    c.serve("kept");
+    // The other item has left, so taking it for the one asked would remove it.
+    if (c.source === "mail") {
+      google.mail.messages.set("asked", { ...gmailMessage("another"), labelIds: ["TRASH"] });
+    }
+    if (c.source === "calendar") {
+      google.calendar.items.set("asked", { ...calendarEvent("another"), status: "cancelled" });
+    }
+    if (c.source === "drive") {
+      google.drive.items.set("asked", driveFile("another", { trashed: true }));
+    }
+
+    await syncRefused();
+
+    expect(mocks.remove).not.toHaveBeenCalled();
+    expect(events()).toMatchObject([{ payload: { checked: 1, removed: 0 } }]);
+  });
+
+  it("keeps its place in the check when its source fails", async () => {
+    hold("left");
+    google[c.source].status = 503;
+
+    await syncAt(T0, sweeping());
+
+    expect(mocks.listDocuments).not.toHaveBeenCalled();
+    expect(sweepOf()).toEqual(sweepOf(sweeping()));
+  });
+
+  it("keeps the check of another source as it was", async () => {
+    const other = SOURCES.find((source) => source !== c)!.source;
+    const otherSweep = { since: iso(T0 - HOUR), checked: 1, removed: 0 };
+    hold("kept");
+    c.serve("kept");
+
+    await syncAt(T0, {
+      ...sweeping(),
+      documentSweep: { ...sweeping().documentSweep, [other]: otherSweep },
+    });
+
+    expect(savedCursor().documentSweep).toEqual({ [other]: otherSweep });
+  });
+
+  it("drops a check it cannot read", async () => {
+    hold("left");
+
+    await syncAt(T0, sweeping({ since: "never" }));
+
+    expect(mocks.listDocuments).not.toHaveBeenCalled();
+    expect(savedCursor()).not.toHaveProperty("documentSweep");
+  });
+
+  it("names the record of a check by when its source started over", async () => {
+    hold("kept");
+    c.serve("kept");
+
+    await syncAt(T0, sweeping());
+    await syncAt(T0, sweeping());
+    await syncAt(T0, sweeping({ since: iso(T0 - 2 * HOUR) }));
+
+    const [first, again, later] = events().map((event) => event.id);
+    expect(again).toBe(first);
+    expect(later).not.toBe(first);
+  });
+
+  it("removes nothing, and keeps nothing, when the sync is interrupted checking a document", async () => {
+    hold("kept", "left");
+    c.serve("kept");
+    const caller = new AbortController();
+    vi.stubGlobal("fetch", async (input: string | URL | Request) => {
+      if (isCheck(new URL(String(input)))) {
+        caller.abort();
+        throw caller.signal.reason;
+      }
+      return fakeGoogle(input);
+    });
+    refused.add(c.source);
+    vi.setSystemTime(T0);
+    connect({ cursor: c.changesCursor });
+
+    await expect(sync({ sources: [c.source], abortSignal: caller.signal }))
+      .rejects.toMatchObject({ name: "AbortError" });
+
+    expect(mocks.remove).not.toHaveBeenCalled();
+    expect(mocks.updateState.mock.calls
+      .filter(([update]) => typeof update.cursor === "string")).toEqual([]);
+  });
+
+  // Google still answers for the item, though it no longer belongs in knowledge.
+  const LEFT_IN_PLACE: Record<SourceId, Array<[string, () => void]>> = {
+    mail: [
+      ["in the trash", () => {
+        google.mail.messages.set("left", { ...gmailMessage("left"), labelIds: ["TRASH"] });
+      }],
+      ["as spam", () => {
+        google.mail.messages.set("left", { ...gmailMessage("left"), labelIds: ["SPAM"] });
+      }],
+    ],
+    calendar: [
+      ["cancelled", () => {
+        google.calendar.items.set("left", { ...calendarEvent("left"), status: "cancelled" });
+      }],
+      ["gone", () => answering("left", () => json({ error: { code: 410 } }, 410))],
+    ],
+    drive: [
+      ["in the trash", () => {
+        google.drive.items.set("left", driveFile("left", { trashed: true }));
+      }],
+      ["given to another owner", () => {
+        google.drive.items.set("left", driveFile("left", { ownedByMe: false }));
+      }],
+    ],
+  };
+
+  it.each(LEFT_IN_PLACE[c.source])("retires a document whose item Google reports %s", async (_state, leave) => {
+    hold("kept", "left");
+    c.serve("kept");
+    leave();
+
+    await syncRefused();
+
+    expect(removedKeys()).toEqual([`oauth:google:${c.source}:left`]);
+    expect(events()).toMatchObject([{ payload: { checked: 2, removed: 1 } }]);
+  });
+
+  if (c.source === "calendar") {
+    it("cancels the meeting of an event that left", async () => {
+      hold("kept", "left");
+      c.serve("kept");
+
+      await syncRefused();
+
+      expect(mocks.cancelCalendar).toHaveBeenCalledTimes(1);
+      expect(mocks.cancelCalendar).toHaveBeenCalledWith(expect.objectContaining({
+        tenantId: "personal",
+        sourceItemId: "item",
+      }));
+    });
+  }
+
+  if (c.source === "drive") {
+    it("keeps a document when Drive does not say who owns the file", async () => {
+      hold("kept", "unsaid");
+      c.serve("kept");
+      answering("unsaid", () => json({ id: "unsaid", trashed: false }));
+
+      await syncRefused();
+
+      expect(mocks.remove).not.toHaveBeenCalled();
+      expect(events()).toMatchObject([{ payload: { checked: 2, removed: 0 } }]);
+    });
+  }
+});
+
 describe("the declared Google source adapters", () => {
   it("are each held to the source contract", () => {
     expect(SOURCES.map((c) => c.source)).toEqual(Object.keys(GOOGLE_SOURCE_ADAPTERS));
@@ -901,6 +1398,7 @@ async function fakeGoogle(input: string | URL | Request): Promise<Response> {
     page + 1 < pages.length ? `${source}-page-${page + 1}` : undefined;
   if (path === "/gmail/v1/users/me/profile") return json({ historyId: "mail-history-1" });
   if (path === "/gmail/v1/users/me/history") {
+    if (refused.has("mail")) return json({ error: { code: 404 } }, 404);
     return json({ history: google.mail.changes, historyId: "mail-history-2" });
   }
   if (path === "/gmail/v1/users/me/messages") {
@@ -921,6 +1419,7 @@ async function fakeGoogle(input: string | URL | Request): Promise<Response> {
   }
   if (path === "/calendar/v3/calendars/primary/events") {
     if (url.searchParams.has("syncToken")) {
+      if (refused.has("calendar")) return json({ error: { code: 410 } }, 410);
       return json({ items: google.calendar.changes, nextSyncToken: "calendar-sync-2" });
     }
     const nextPageToken = next(google.calendar.pages);
@@ -933,6 +1432,7 @@ async function fakeGoogle(input: string | URL | Request): Promise<Response> {
     return json({ startPageToken: "drive-changes" });
   }
   if (path === "/drive/v3/changes") {
+    if (refused.has("drive")) return json({ error: { code: 410 } }, 410);
     return json({ changes: google.drive.changes, newStartPageToken: "drive-changes-2" });
   }
   if (path === "/drive/v3/files") {
@@ -971,7 +1471,11 @@ function sync(options: { sources?: SourceId[]; abortSignal?: AbortSignal } = {})
   });
 }
 
-function connect(input: { cursor?: Record<string, unknown>; scopes?: string[] }) {
+function connect(input: {
+  cursor?: Record<string, unknown>;
+  scopes?: string[];
+  purpose?: "personal" | "work";
+}) {
   mocks.getSecrets.mockResolvedValue({
     grant: {
       id: "google-grant",
@@ -980,7 +1484,7 @@ function connect(input: { cursor?: Record<string, unknown>; scopes?: string[] })
       provider: "google",
       accountEmail: "owner@example.com",
       connectionLabel: "Personal",
-      connectionPurpose: "personal",
+      connectionPurpose: input.purpose ?? "personal",
       status: "active",
       authorizationGeneration: 1,
       expiresAt: new Date(Date.now() + 3600_000).toISOString(),
