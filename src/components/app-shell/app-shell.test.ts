@@ -130,3 +130,29 @@ describe("the inbox count in the other navigations", () => {
     expect(inside).toContain("bg-primary-ink text-primary");
   });
 });
+
+describe("the desktop navigation width", () => {
+  function shellWith(initialDesktopNavCollapsed: boolean | undefined) {
+    shell.pathname = "/app/command";
+    shell.pending = undefined;
+    return renderToStaticMarkup(createElement(
+      AppShell,
+      { initialDesktopNavCollapsed } as Parameters<typeof AppShell>[0],
+      createElement("p", null, "page"),
+    ));
+  }
+
+  it("renders at the width the request's cookie remembers", () => {
+    const collapsed = shellWith(true);
+    expect(collapsed).toContain("lg:pl-20");
+    expect(collapsed).not.toContain("lg:pl-60");
+    expect(collapsed).toContain('aria-label="Expand workspace navigation"');
+
+    for (const value of [false, undefined]) {
+      const expanded = shellWith(value);
+      expect(expanded).toContain("lg:pl-60");
+      expect(expanded).not.toContain("lg:pl-20");
+      expect(expanded).toContain('aria-label="Collapse workspace navigation"');
+    }
+  });
+});

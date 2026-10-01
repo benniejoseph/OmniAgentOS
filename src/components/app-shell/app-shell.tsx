@@ -30,27 +30,43 @@ import { useInboxCount } from "@/components/app-shell/use-inbox-count";
 import { ThemeToggle } from "@/components/theme/theme-toggle";
 import { NotificationCenter } from "@/components/app-shell/notification-center";
 import { AsaelMark } from "@/components/brand/asael-mark";
+import {
+  desktopNavCollapsedCookie,
+  moveStoredDesktopNavPreference,
+} from "@/components/app-shell/desktop-nav-preference";
 import styles from "./app-shell.module.css";
 
-export function AppShell({ children, banner }: { children: React.ReactNode; banner?: React.ReactNode }) {
+export function AppShell({
+  children,
+  banner,
+  initialDesktopNavCollapsed,
+}: {
+  children: React.ReactNode;
+  banner?: React.ReactNode;
+  /** From the request's cookie; undefined when it has none. */
+  initialDesktopNavCollapsed?: boolean;
+}) {
   const pathname = usePathname();
   const router = useRouter();
   const activeItem = appNav.find((item) => isActivePath(pathname, item.href));
   const { session, status: sessionStatus, error: sessionError, role, signOut } = useWorkspaceSession();
   const inboxCount = useInboxCount()?.pending;
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [desktopNavCollapsed, setDesktopNavCollapsed] = useState(false);
+  const [desktopNavCollapsed, setDesktopNavCollapsed] = useState(initialDesktopNavCollapsed ?? false);
   const [signingOut, setSigningOut] = useState(false);
   const [signOutError, setSignOutError] = useState<string>();
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const mobilePanelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    if (initialDesktopNavCollapsed !== undefined) return;
     const timer = window.setTimeout(() => {
-      setDesktopNavCollapsed(window.localStorage.getItem("omni-desktop-nav-collapsed") === "true");
+      setDesktopNavCollapsed(
+        moveStoredDesktopNavPreference(window.localStorage, rememberDesktopNavCollapsed),
+      );
     }, 0);
     return () => window.clearTimeout(timer);
-  }, []);
+  }, [initialDesktopNavCollapsed]);
 
   useEffect(() => {
     if (!mobileOpen) {
@@ -136,16 +152,14 @@ export function AppShell({ children, banner }: { children: React.ReactNode; bann
   }
 
   function toggleDesktopNavigation() {
-    setDesktopNavCollapsed((collapsed) => {
-      const next = !collapsed;
-      window.localStorage.setItem("omni-desktop-nav-collapsed", String(next));
-      return next;
-    });
+    const next = !desktopNavCollapsed;
+    setDesktopNavCollapsed(next);
+    rememberDesktopNavCollapsed(next);
   }
 
   function expandDesktopNavigation() {
     setDesktopNavCollapsed(false);
-    window.localStorage.setItem("omni-desktop-nav-collapsed", "false");
+    rememberDesktopNavCollapsed(false);
   }
 
   return (
@@ -725,6 +739,10 @@ function AccountPanel({
       {signOutError ? <p className="mt-2 text-xs text-danger" role="alert">{signOutError}</p> : null}
     </div>
   );
+}
+
+function rememberDesktopNavCollapsed(collapsed: boolean) {
+  document.cookie = desktopNavCollapsedCookie(collapsed, window.location.protocol === "https:");
 }
 
 function isActivePath(pathname: string, href: string) {
