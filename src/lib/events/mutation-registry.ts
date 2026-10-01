@@ -100,6 +100,7 @@ export const MUTATION_EVENT_CONTRACTS = Object.freeze([
       "workflow lifecycle and queue",
       "workflow plans",
       "plan-node executions",
+      "plan-node step journal",
       "workflow triggers and deliveries",
     ]),
     eventTypes: Object.freeze([
@@ -111,6 +112,9 @@ export const MUTATION_EVENT_CONTRACTS = Object.freeze([
       "workflow.plan.created",
       "workflow.plan.claimed",
       "workflow.plan_node.execution_upserted",
+      "workflow.journal.node_started",
+      "workflow.journal.node_settled",
+      "workflow.journal.node_interrupted",
       "workflow.trigger.created",
       "workflow.trigger.received",
       "workflow.trigger.counter.updated",

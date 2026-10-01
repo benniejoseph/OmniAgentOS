@@ -51,7 +51,9 @@ import {
   type ScheduledPolicyLeaseClaim,
 } from "@/lib/security/policy-lease-store";
 import {
+  appendDomainEvent,
   appendScopedDomainEvent,
+  listStreamEvents,
 } from "@/lib/events/store";
 import {
   deriveExecutionScope,
@@ -92,6 +94,24 @@ import {
   type WorkflowExecutionAuthority,
 } from "@/lib/workflows/store";
 import { resolveWorkflowReusedNodeExecutions } from "@/lib/workflows/replan";
+import {
+  foldWorkflowJournal,
+  isWorkflowJournalSettledStatus,
+  planWorkflowJournalTransition,
+  verifyWorkflowJournalReuse,
+  WORKFLOW_JOURNAL_EVENT_TYPES,
+  WORKFLOW_JOURNAL_READ_LIMIT,
+  WorkflowJournalDivergenceError,
+  workflowJournalEntryId,
+  workflowJournalErrorSha256,
+  workflowJournalEventType,
+  workflowJournalOutputSha256,
+  workflowJournalStreamId,
+  type WorkflowJournal,
+  type WorkflowJournalEntry,
+  type WorkflowJournalEvent,
+  type WorkflowJournalTransition,
+} from "@/lib/workflows/step-journal";
 import {
   createWorkflowBudgetSession,
   workflowRunBudgetAbortSignal,
@@ -241,14 +261,21 @@ export async function executeDynamicWorkflowPlan(
         }),
       }
     : rootExecutionAuthority;
-  const persistNodeExecution = (record: WorkflowPlanNodeExecutionRecord) =>
-    saveWorkflowPlanNodeExecution(
-      record,
-      executionAuthority?.executionScope,
-    );
+  const journalPass = workflowJournalPass(detail);
+  const persistNodeExecution = (
+    record: WorkflowPlanNodeExecutionRecord,
+    request: NodeJournalRequest,
+  ) => saveWorkflowPlanNodeExecution(
+    record,
+    executionAuthority?.executionScope,
+    { request, pass: journalPass },
+  );
 
   const sortedNodes = topologicalSort(parsedPlan.plan);
-  const priorRecords = await listWorkflowPlanNodeExecutionsForRun(detail.run.id, 250);
+  const { records: priorRecords, journal } = await readWorkflowPlanSnapshot(
+    detail.run.id,
+    normalizeTenantId(detail.run.tenantId),
+  );
   const planRecords = priorRecords.filter(
     (record) => record.planId === parsedPlan.id,
   );
@@ -286,14 +313,34 @@ export async function executeDynamicWorkflowPlan(
   );
   let processedNodes = 0;
   let hasPendingNodes = false;
+  const divergedNodes: { planId: string; nodeId: string; reason: string }[] = [];
   const pendingNodes = sortedNodes.filter((node) => {
     const existing = existingByNode.get(node.id);
     if (existing && isReusableNodeExecution(existing)) {
+      const verdict = verifyWorkflowJournalReuse(journal, existing);
+      if (!verdict.reusable) {
+        divergedNodes.push({
+          planId: existing.planId,
+          nodeId: existing.nodeId,
+          reason: verdict.reason,
+        });
+      }
       recordsByNode.set(node.id, existing);
       return false;
     }
     return true;
   });
+  // A row the journal does not account for was not written by a pass. Its
+  // output must not feed dependents, and a new attempt could repeat effects.
+  if (divergedNodes.length > 0) {
+    await appendWorkflowEvent(detail.run.id, "workflow.journal.diverged", {
+      planId: parsedPlan.id,
+      nodes: divergedNodes,
+    });
+    throw new WorkflowJournalDivergenceError(
+      `Workflow node ${divergedNodes[0].nodeId} diverged from its step journal: ${divergedNodes[0].reason}.`,
+    );
+  }
 
   const executeScheduledNode = async (node: WorkflowPlanNode) => {
     const existing = existingByNode.get(node.id);
@@ -324,7 +371,7 @@ export async function executeDynamicWorkflowPlan(
         })
       : undefined;
 
-    const runningRecord = await persistNodeExecution({
+    const { record: runningRecord, attempt: journalAttempt } = await persistNodeExecution({
       ...baseNodeExecutionRecord({
         detail,
         planId: parsedPlan.id,
@@ -337,7 +384,7 @@ export async function executeDynamicWorkflowPlan(
       status: "running",
       startedAt: new Date().toISOString(),
       error: undefined,
-    });
+    }, { kind: "start" });
     await appendWorkflowEvent(detail.run.id, "workflow.plan_node.started", {
       planId: parsedPlan.id,
       nodeId: node.id,
@@ -384,7 +431,7 @@ export async function executeDynamicWorkflowPlan(
           return toolExecution;
         },
       );
-      const record = await persistNodeExecution({
+      const { record } = await persistNodeExecution({
         ...baseNodeExecutionRecord({
           detail,
           planId: parsedPlan.id,
@@ -403,7 +450,7 @@ export async function executeDynamicWorkflowPlan(
         error: result.error,
         startedAt: runningRecord.startedAt || new Date().toISOString(),
         completedAt: new Date().toISOString(),
-      });
+      }, { kind: "settle", attempt: journalAttempt });
       recordsByNode.set(node.id, record);
       await appendWorkflowEvent(detail.run.id, "workflow.plan_node.completed", {
         planId: parsedPlan.id,
@@ -428,7 +475,7 @@ export async function executeDynamicWorkflowPlan(
           error: undefined,
           startedAt: undefined,
           completedAt: undefined,
-        });
+        }, { kind: "interrupt", attempt: journalAttempt, reason: "aborted" });
         await appendWorkflowEvent(detail.run.id, "workflow.plan_node.interrupted", {
           planId: parsedPlan.id,
           nodeId: node.id,
@@ -442,7 +489,7 @@ export async function executeDynamicWorkflowPlan(
         finalizedEffectReceipt
       ) {
         try {
-          const pendingRecord = await persistNodeExecution({
+          const { record: pendingRecord } = await persistNodeExecution({
             ...baseNodeExecutionRecord({
               detail,
               planId: parsedPlan.id,
@@ -458,6 +505,10 @@ export async function executeDynamicWorkflowPlan(
             error: undefined,
             startedAt: undefined,
             completedAt: undefined,
+          }, {
+            kind: "interrupt",
+            attempt: journalAttempt,
+            reason: "effect_receipt_pending",
           });
           recordsByNode.set(node.id, pendingRecord);
           hasPendingNodes = true;
@@ -475,7 +526,7 @@ export async function executeDynamicWorkflowPlan(
         }
       }
       const message = error instanceof Error ? error.message : "Plan node execution failed.";
-      const record = await persistNodeExecution({
+      const { record } = await persistNodeExecution({
         ...baseNodeExecutionRecord({
           detail,
           planId: parsedPlan.id,
@@ -489,7 +540,7 @@ export async function executeDynamicWorkflowPlan(
         error: message,
         startedAt: runningRecord.startedAt || new Date().toISOString(),
         completedAt: new Date().toISOString(),
-      });
+      }, { kind: "settle", attempt: journalAttempt });
       recordsByNode.set(node.id, record);
       await appendWorkflowEvent(detail.run.id, "workflow.plan_node.failed", {
         planId: parsedPlan.id,
@@ -520,7 +571,7 @@ export async function executeDynamicWorkflowPlan(
         const blockedDependencies = node.dependsOn
           .map((dependencyId) => recordsByNode.get(dependencyId))
           .filter((record) => record && record.status !== "completed");
-        const record = await persistNodeExecution({
+        const { record } = await persistNodeExecution({
           ...baseNodeExecutionRecord({
             detail,
             planId: parsedPlan.id,
@@ -536,7 +587,7 @@ export async function executeDynamicWorkflowPlan(
             })),
           },
           completedAt: new Date().toISOString(),
-        });
+        }, { kind: "skip" });
         recordsByNode.set(node.id, record);
         pendingNodes.splice(pendingNodes.indexOf(node), 1);
         processedNodes += 1;
@@ -694,14 +745,7 @@ export async function listWorkflowPlanNodeExecutionsForRun(workflowRunId: string
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`
-      SELECT *
-      FROM omni_workflow_node_executions
-      WHERE workflow_run_id = ${workflowRunId}
-      ORDER BY created_at ASC
-      LIMIT ${boundedLimit}
-    `;
-    return rows.map(workflowPlanNodeExecutionFromRow);
+    return selectWorkflowPlanNodeExecutionsForRun(getSql(), workflowRunId, boundedLimit);
   }
 
   const ledger = await readNodeExecutionLedger();
@@ -2143,23 +2187,194 @@ function buildBaseToolInput({
   );
 }
 
+type NodeJournalRequest =
+  | { kind: "start" }
+  | { kind: "skip" }
+  | { kind: "settle"; attempt: number }
+  | {
+      kind: "interrupt";
+      attempt: number;
+      reason: Extract<WorkflowJournalTransition, { kind: "interrupt" }>["reason"];
+    };
+
+/** The attempt of the claimed run step that executes this pass, if any. */
+function workflowJournalPass(detail: WorkflowRunDetail) {
+  const step = detail.steps.find((item) => item.stepKey === detail.run.currentStep);
+  return step?.status === "running" && step.attempt > 0 ? step.attempt : undefined;
+}
+
+/**
+ * Reads a run's node rows and step journal as one snapshot. Every journaled
+ * write holds the run's journal lock, so a pass never sees a row from one
+ * transition and the journal from another.
+ */
+async function readWorkflowPlanSnapshot(
+  workflowRunId: string,
+  tenantId: string,
+): Promise<{ records: WorkflowPlanNodeExecutionRecord[]; journal: WorkflowJournal }> {
+  if (!hasDatabaseUrl()) {
+    return {
+      records: await listWorkflowPlanNodeExecutionsForRun(workflowRunId, 250),
+      journal: await readWorkflowJournal(workflowRunId, tenantId),
+    };
+  }
+  await ensureDatabaseSchema();
+  return getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+    await lockWorkflowJournal(sql, workflowRunId);
+    return {
+      records: await selectWorkflowPlanNodeExecutionsForRun(sql, workflowRunId, 250),
+      journal: await readWorkflowJournal(workflowRunId, tenantId, sql),
+    };
+  }) as Promise<{ records: WorkflowPlanNodeExecutionRecord[]; journal: WorkflowJournal }>;
+}
+
+async function selectWorkflowPlanNodeExecutionsForRun(
+  sql: ReturnType<typeof getSql>,
+  workflowRunId: string,
+  limit: number,
+) {
+  const rows = await sql`
+    SELECT *
+    FROM omni_workflow_node_executions
+    WHERE workflow_run_id = ${workflowRunId}
+    ORDER BY created_at ASC
+    LIMIT ${limit}
+  `;
+  return rows.map(workflowPlanNodeExecutionFromRow);
+}
+
+async function lockWorkflowJournal(sql: ReturnType<typeof getSql>, workflowRunId: string) {
+  await sql`SELECT pg_advisory_xact_lock(hashtextextended(${workflowJournalStreamId(workflowRunId)}, 0))`;
+}
+
+async function readWorkflowJournal(
+  workflowRunId: string,
+  tenantId: string,
+  sql?: ReturnType<typeof getSql>,
+): Promise<WorkflowJournal> {
+  const streamId = workflowJournalStreamId(workflowRunId);
+  const types: string[] = Object.values(WORKFLOW_JOURNAL_EVENT_TYPES);
+  let events: WorkflowJournalEvent[];
+  let limit: number;
+  if (sql || hasDatabaseUrl()) {
+    limit = WORKFLOW_JOURNAL_READ_LIMIT;
+    const rows = await (sql || getSql())`
+      SELECT seq, type, payload - '_executionScope' AS payload
+      FROM omni_events
+      WHERE stream_id = ${streamId}
+        AND tenant_id = ${tenantId}
+        AND type = ANY(${types}::text[])
+      ORDER BY seq ASC
+      LIMIT ${limit + 1}
+    `;
+    events = rows.map((row: Record<string, unknown>) => ({
+      seq: Number(row.seq),
+      type: String(row.type),
+      payload: parseObject(row.payload) || {},
+    }));
+  } else {
+    limit = 1_999;
+    events = (await listStreamEvents(streamId, { tenantId, limit: limit + 1 }))
+      .filter((event) => types.includes(event.type));
+  }
+  if (events.length > limit) {
+    throw new Error("Workflow step journal is too long to replay.");
+  }
+  return foldWorkflowJournal(workflowRunId, events);
+}
+
+async function appendWorkflowJournalEntries(
+  entries: readonly WorkflowJournalEntry[],
+  tenantId: string,
+  executionScope?: ExecutionScope,
+  sql?: ReturnType<typeof getSql>,
+) {
+  for (const entry of entries) {
+    const event = {
+      id: workflowJournalEntryId(entry),
+      streamId: workflowJournalStreamId(entry.workflowRunId),
+      type: workflowJournalEventType(entry),
+      payload: entry,
+    };
+    if (executionScope) {
+      await appendScopedDomainEvent({
+        ...event,
+        executionScope: deriveExecutionScope(executionScope, {
+          causationId: event.id,
+          purpose: "workflow.journal.append",
+        }),
+      }, sql ? { sql } : {});
+    } else {
+      await appendDomainEvent({ ...event, tenantId }, sql ? { sql } : {});
+    }
+  }
+}
+
+/**
+ * The journal transition a node write makes. Digests are taken over the row
+ * as a later reader parses it, because redaction is not idempotent.
+ */
+function workflowJournalTransitionFor(
+  request: NodeJournalRequest,
+  record: WorkflowPlanNodeExecutionRecord,
+): WorkflowJournalTransition {
+  const inputSha256 = canonicalJsonSha256(record.input || {});
+  if (request.kind === "start") {
+    return { kind: "start", inputSha256 };
+  }
+  if (request.kind === "interrupt") {
+    return { kind: "interrupt", attempt: request.attempt, reason: request.reason };
+  }
+  const readBack = sanitizeWorkflowPlanNodeExecution(
+    JSON.parse(JSON.stringify(record)) as WorkflowPlanNodeExecutionRecord,
+  );
+  const outcome = {
+    outputSha256: workflowJournalOutputSha256(readBack),
+    errorSha256: workflowJournalErrorSha256(readBack),
+  };
+  if (request.kind === "skip") {
+    return { kind: "skip", inputSha256, ...outcome };
+  }
+  if (!isWorkflowJournalSettledStatus(record.status)) {
+    throw new Error(`Workflow node ${record.nodeId} cannot settle as ${record.status}.`);
+  }
+  return { kind: "settle", attempt: request.attempt, status: record.status, ...outcome };
+}
+
 async function saveWorkflowPlanNodeExecution(
   record: WorkflowPlanNodeExecutionRecord,
-  executionScope?: ExecutionScope,
-) {
+  executionScope: ExecutionScope | undefined,
+  journal: { request: NodeJournalRequest; pass?: number },
+): Promise<{ record: WorkflowPlanNodeExecutionRecord; attempt: number }> {
+  const tenantId = normalizeTenantId(record.tenantId);
   const nextRecord = sanitizeWorkflowPlanNodeExecution({
     ...record,
-    tenantId: normalizeTenantId(record.tenantId),
+    tenantId,
     toolExecutionIds: record.toolExecutionIds || [],
     updatedAt: new Date().toISOString(),
   });
+  const transition = workflowJournalTransitionFor(journal.request, nextRecord);
+  const planTransition = (current: WorkflowJournal) => planWorkflowJournalTransition(
+    current,
+    {
+      workflowRunId: nextRecord.workflowRunId,
+      planId: nextRecord.planId,
+      nodeId: nextRecord.nodeId,
+    },
+    transition,
+    journal.pass,
+  );
 
   if (hasDatabaseUrl()) {
     if (!executionScope) {
       throw new Error("Workflow node persistence requires bound execution authority.");
     }
     await ensureDatabaseSchema();
-    await getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+    const attempt = await getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      await lockWorkflowJournal(sql, nextRecord.workflowRunId);
+      const planned = planTransition(
+        await readWorkflowJournal(nextRecord.workflowRunId, tenantId, sql),
+      );
       await sql`
         INSERT INTO omni_workflow_node_executions (
           id, tenant_id, workflow_run_id, plan_id, node_id, node_label, node_kind, status,
@@ -2197,10 +2412,17 @@ async function saveWorkflowPlanNodeExecution(
         executionScope,
         sql,
       );
-    });
-    return nextRecord;
+      await appendWorkflowJournalEntries(planned.entries, tenantId, executionScope, sql);
+      return planned.attempt;
+    }) as number;
+    return { record: nextRecord, attempt };
   }
 
+  // Without a transaction the journal is written first. A crash between the
+  // writes leaves an attempt the next pass interrupts or runs again, never a
+  // row the journal cannot account for.
+  const planned = planTransition(await readWorkflowJournal(nextRecord.workflowRunId, tenantId));
+  await appendWorkflowJournalEntries(planned.entries, tenantId, executionScope);
   await mutateNodeExecutionLedger((ledger) => {
     ledger.records = [nextRecord, ...ledger.records.filter((item) => item.id !== nextRecord.id && !(item.planId === nextRecord.planId && item.nodeId === nextRecord.nodeId))];
     return trimNodeExecutionLedger(ledger);
@@ -2208,7 +2430,7 @@ async function saveWorkflowPlanNodeExecution(
   if (executionScope) {
     await appendWorkflowNodeMutationEvent(nextRecord, executionScope);
   }
-  return nextRecord;
+  return { record: nextRecord, attempt: planned.attempt };
 }
 
 async function appendWorkflowNodeMutationEvent(
