@@ -4,7 +4,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation";
 import { Search, X } from "lucide-react";
 import { clsx } from "clsx";
-import { appNav } from "@/lib/navigation";
+import { appNav, type AppNavItem } from "@/lib/navigation";
 
 export function CommandPalette() {
   const router = useRouter();
@@ -237,44 +237,72 @@ export function CommandPalette() {
             <p className="sr-only" role="status" aria-live="polite">
               {results.length} {results.length === 1 ? "workspace" : "workspaces"} available.
             </p>
-            <ul id={listboxId} className="max-h-[55vh] overflow-y-auto p-2" role="listbox" aria-label="Workspace results" data-testid="command-palette-listbox">
-              {results.length ? (
-                results.map((item, index) => {
-                  const Icon = item.icon;
-                  return (
-                    <li
-                      key={item.href}
-                      id={`${listboxId}-option-${index}`}
-                      role="option"
-                    aria-selected={index === currentIndex}
-                      onMouseEnter={() => setActiveIndex(index)}
-                      onPointerDown={(event) => {
-                        event.preventDefault();
-                        go(item.href);
-                      }}
-                    onClick={() => go(item.href)}
-                      className={clsx(
-                        "flex min-h-14 cursor-pointer items-center gap-3 rounded-md px-3 py-2.5 text-left text-sm",
-                      index === currentIndex ? "bg-primary text-primary-ink" : "text-foreground hover:bg-surface-raised",
-                      )}
-                    >
-                      <Icon size={16} className="shrink-0" aria-hidden="true" />
-                      <span className="min-w-0 flex-1">
-                        <span className="block font-medium">{item.label}</span>
-                      <span className={clsx("block truncate text-xs", index === currentIndex ? "text-primary-ink/85" : "text-muted")}>
-                          {item.description}
-                        </span>
-                      </span>
-                    </li>
-                  );
-                })
-              ) : (
-                <li className="px-3 py-8 text-center text-sm text-muted">No workspace matches “{query}”.</li>
-              )}
-            </ul>
+            <CommandPaletteResults
+              listboxId={listboxId}
+              query={query}
+              results={results}
+              currentIndex={currentIndex}
+              onHighlight={setActiveIndex}
+              onOpen={go}
+            />
           </div>
         </div>
       ) : null}
     </>
+  );
+}
+
+/**
+ * The palette's matches. An option opens on a click, which a touch that
+ * scrolls the list never makes, so starting a scroll on an option does not
+ * open it. The keyboard opens the active option with Enter.
+ */
+export function CommandPaletteResults({
+  listboxId,
+  query,
+  results,
+  currentIndex,
+  onHighlight,
+  onOpen,
+}: {
+  listboxId: string;
+  query: string;
+  results: AppNavItem[];
+  currentIndex: number;
+  onHighlight: (index: number) => void;
+  onOpen: (href: string) => void;
+}) {
+  return (
+    <ul id={listboxId} className="max-h-[55vh] overflow-y-auto p-2" role="listbox" aria-label="Workspace results" data-testid="command-palette-listbox">
+      {results.length ? (
+        results.map((item, index) => {
+          const Icon = item.icon;
+          return (
+            <li
+              key={item.href}
+              id={`${listboxId}-option-${index}`}
+              role="option"
+              aria-selected={index === currentIndex}
+              onMouseEnter={() => onHighlight(index)}
+              onClick={() => onOpen(item.href)}
+              className={clsx(
+                "flex min-h-14 cursor-pointer items-center gap-3 rounded-md px-3 py-2.5 text-left text-sm",
+                index === currentIndex ? "bg-primary text-primary-ink" : "text-foreground hover:bg-surface-raised",
+              )}
+            >
+              <Icon size={16} className="shrink-0" aria-hidden="true" />
+              <span className="min-w-0 flex-1">
+                <span className="block font-medium">{item.label}</span>
+                <span className={clsx("block truncate text-xs", index === currentIndex ? "text-primary-ink/85" : "text-muted")}>
+                  {item.description}
+                </span>
+              </span>
+            </li>
+          );
+        })
+      ) : (
+        <li className="px-3 py-8 text-center text-sm text-muted">No workspace matches “{query}”.</li>
+      )}
+    </ul>
   );
 }
