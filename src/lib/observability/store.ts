@@ -52,6 +52,9 @@ export type WebVitalsSummary = Record<WebVitalName, { samples: number; p75: numb
 
 const webVitalNames: readonly WebVitalName[] = ["LCP", "INP", "CLS"];
 
+/** The event the agent route records when a reply's first text is ready. */
+export const AGENT_FIRST_OUTPUT_ACTION = "agent.first_output";
+
 export type ObservabilityStats = {
   total: number;
   sloEligibleEvents: number;
@@ -76,6 +79,11 @@ export type ObservabilityStats = {
     latencyP95Ms: number;
   };
   webVitals: WebVitalsSummary;
+  /**
+   * How long agent requests in the window waited for the first text of their
+   * reply: how many did, and the time nineteen in twenty stayed within.
+   */
+  agentFirstOutput: { samples: number; p95Ms: number };
 };
 
 type ObservabilityLedger = {
@@ -491,9 +499,18 @@ export async function getObservabilityStats(
               FROM web_vital_samples
               GROUP BY name
             ) AS web_vitals
-          ), '{}'::jsonb) AS web_vitals
+          ), '{}'::jsonb) AS web_vitals,
+          (
+            SELECT COUNT(*)::int FROM windowed
+            WHERE action = $3 AND duration_ms IS NOT NULL
+          ) AS agent_first_output_samples,
+          COALESCE((
+            SELECT PERCENTILE_DISC(0.95) WITHIN GROUP (ORDER BY duration_ms)
+            FROM windowed
+            WHERE action = $3 AND duration_ms IS NOT NULL
+          ), 0) AS agent_first_output_p95_ms
       `,
-      [tenantId, since],
+      [tenantId, since, AGENT_FIRST_OUTPUT_ACTION],
     );
     return observabilityStatsFromAggregate(rows[0] || {});
   }
@@ -556,6 +573,10 @@ function observabilityStatsFromAggregate(
       latencyP95Ms: p95DurationMs,
     },
     webVitals: webVitalsFromAggregate(row.web_vitals),
+    agentFirstOutput: {
+      samples: Number(row.agent_first_output_samples || 0),
+      p95Ms: Number(row.agent_first_output_p95_ms || 0),
+    },
   };
 }
 
@@ -657,7 +678,18 @@ export function summarizeObservabilityEvents(
       latencyP95Ms: p95DurationMs,
     },
     webVitals: summarizeWebVitals(events),
+    agentFirstOutput: summarizeFirstOutput(events),
   };
+}
+
+/** The file-backed twin of the agent_first_output columns above. */
+function summarizeFirstOutput(events: ObservabilityEventRecord[]) {
+  const durations = events
+    .filter((event) => event.action === AGENT_FIRST_OUTPUT_ACTION)
+    .map((event) => event.durationMs)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value))
+    .sort((left, right) => left - right);
+  return { samples: durations.length, p95Ms: percentile(durations, 0.95) };
 }
 
 function isSloExcludedEvent(event: ObservabilityEventRecord) {

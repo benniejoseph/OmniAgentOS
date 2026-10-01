@@ -37,8 +37,15 @@ export const SLO_METRICS = [
   "lcpP75Ms",
   "inpP75Ms",
   "clsP75",
+  "runSuccessRate",
+  "toolFailureRate",
+  "agentFirstOutputP95Ms",
+  "costPerRunUsd",
+  "approvalLatencyP95Ms",
 ] as const;
 export type SloMetric = (typeof SLO_METRICS)[number];
+export const SLO_UNITS = ["ratio", "ms", "count", "usd"] as const;
+export type SloUnit = (typeof SLO_UNITS)[number];
 export type SloComparator = "greater_than" | "greater_than_or_equal" | "less_than" | "less_than_or_equal";
 
 export type ObservabilitySloPolicy = {
@@ -52,7 +59,7 @@ export type ObservabilitySloPolicy = {
   criticalThreshold: number;
   warningSeverity: IncidentSeverity;
   criticalSeverity: IncidentSeverity;
-  unit: "ratio" | "ms" | "count";
+  unit: SloUnit;
   componentId: string;
   enabled: boolean;
   alertTargetIds: string[];
@@ -385,6 +392,93 @@ export function getDefaultObservabilitySloPolicies(): ObservabilitySloPolicy[] {
       alertTargetIds: [],
       suppressionMinutes: 180,
       metadata: { source: "default", minimumSamples: 20 },
+    },
+    // How the agents themselves are doing. None is judged on a handful of
+    // runs: each waits for the samples its metadata names.
+    {
+      id: "agent_run_success_rate",
+      name: "Agent run success rate",
+      description: "Finished agent runs should complete rather than fail.",
+      metric: "runSuccessRate",
+      comparator: "less_than",
+      warningThreshold: 0.95,
+      criticalThreshold: 0.8,
+      warningSeverity: "warning",
+      criticalSeverity: "critical",
+      unit: "ratio",
+      componentId: "planner",
+      enabled: true,
+      alertTargetIds: [],
+      suppressionMinutes: 120,
+      metadata: { source: "default", minimumSamples: 10 },
+    },
+    {
+      id: "agent_tool_failure_rate",
+      name: "Agent tool failure rate",
+      description: "Tool calls that run should rarely fail. Health calls the tools degraded above one in ten.",
+      metric: "toolFailureRate",
+      comparator: "greater_than",
+      warningThreshold: 0.1,
+      criticalThreshold: 0.25,
+      warningSeverity: "warning",
+      criticalSeverity: "critical",
+      unit: "ratio",
+      componentId: "tools",
+      enabled: true,
+      alertTargetIds: [],
+      suppressionMinutes: 120,
+      metadata: { source: "default", minimumSamples: 20 },
+    },
+    {
+      id: "agent_first_output_p95",
+      name: "Agent time to first output (p95)",
+      description: "Nineteen in twenty agent requests should start streaming their reply within the threshold.",
+      metric: "agentFirstOutputP95Ms",
+      comparator: "greater_than",
+      warningThreshold: 10_000,
+      criticalThreshold: 30_000,
+      warningSeverity: "warning",
+      criticalSeverity: "critical",
+      unit: "ms",
+      componentId: "planner",
+      enabled: true,
+      alertTargetIds: [],
+      suppressionMinutes: 180,
+      metadata: { source: "default", minimumSamples: 20 },
+    },
+    {
+      id: "agent_cost_per_run",
+      name: "Agent cost per run",
+      description: "A finished agent run should cost, on average, no more than the threshold in estimated model spend.",
+      metric: "costPerRunUsd",
+      comparator: "greater_than",
+      warningThreshold: 0.5,
+      criticalThreshold: 2,
+      warningSeverity: "warning",
+      criticalSeverity: "critical",
+      unit: "usd",
+      componentId: "planner",
+      enabled: true,
+      alertTargetIds: [],
+      suppressionMinutes: 180,
+      metadata: { source: "default", minimumSamples: 10 },
+    },
+    {
+      id: "agent_approval_latency_p95",
+      name: "Approval decision time (p95)",
+      description: "Nineteen in twenty tool approvals should be decided within the threshold of being asked.",
+      metric: "approvalLatencyP95Ms",
+      comparator: "greater_than",
+      warningThreshold: 4 * 60 * 60 * 1_000,
+      criticalThreshold: 24 * 60 * 60 * 1_000,
+      warningSeverity: "warning",
+      criticalSeverity: "critical",
+      unit: "ms",
+      componentId: "tools",
+      enabled: true,
+      alertTargetIds: [],
+      suppressionMinutes: 360,
+      metadata: { source: "default", minimumSamples: 5 },
     },
   ];
 }
@@ -2480,9 +2574,8 @@ function normalizeComparator(value: unknown): SloComparator {
   return "greater_than";
 }
 
-function normalizeUnit(value: unknown): ObservabilitySloPolicy["unit"] {
-  const unit = String(value || "ratio");
-  return unit === "ms" || unit === "count" ? unit : "ratio";
+function normalizeUnit(value: unknown): SloUnit {
+  return SLO_UNITS.find((unit) => unit === value) || "ratio";
 }
 
 function normalizeSeverity(value: unknown, fallback: IncidentSeverity): IncidentSeverity {

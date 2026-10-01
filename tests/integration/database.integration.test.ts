@@ -53,6 +53,11 @@ import {
   transitionMissionAttempt,
   transitionMissionTask,
 } from "@/lib/missions/store";
+import { getAgentQualityStats } from "@/lib/observability/agent-quality";
+import {
+  getDefaultObservabilitySloPolicies,
+  getObservabilitySloSnapshot,
+} from "@/lib/observability/slo-monitor";
 import {
   getObservabilityStats,
   summarizeObservabilityEvents,
@@ -8283,6 +8288,164 @@ databaseDescribe("Postgres schema integration", () => {
     });
     expect(stats.webVitals).toEqual(summarizeObservabilityEvents(recorded).webVitals);
     expect(stats.total).toBe(recorded.length);
+  });
+
+  test("times a tenant's first agent output as the file ledger does", async () => {
+    const tenantId = "tenant_first_output";
+    let sequence = 0;
+    const streamed = async (tenant: string, durationMs: number | null, age = "0 seconds") => {
+      sequence += 1;
+      const event: ObservabilityEventRecord = {
+        id: `first-output-${sequence}`,
+        level: "info",
+        category: "api",
+        action: "agent.first_output",
+        route: "/api/agent",
+        method: "POST",
+        correlationId: `first-output-correlation-${sequence}`,
+        tenantId: tenant,
+        ...(durationMs === null ? {} : { durationMs }),
+        message: "Streamed the first text of an agent reply.",
+        metadata: { sloExcluded: true },
+        createdAt: new Date().toISOString(),
+      };
+      await admin`
+        INSERT INTO omni_observability_events (
+          id, level, category, action, route, method, duration_ms, correlation_id,
+          tenant_id, message, metadata, created_at
+        )
+        VALUES (
+          ${event.id}, 'info', 'api', 'agent.first_output', '/api/agent', 'POST', ${durationMs},
+          ${event.correlationId}, ${tenant}, ${event.message},
+          '{"sloExcluded":true}'::jsonb, NOW() - ${age}::interval
+        )
+      `;
+      return event;
+    };
+    const recorded: ObservabilityEventRecord[] = [];
+    for (const durationMs of [2_000, 100, 1_900, 300, 1_200, null]) {
+      recorded.push(await streamed(tenantId, durationMs));
+    }
+    for (let index = 0; index < 15; index += 1) {
+      recorded.push(await streamed(tenantId, 500 + index));
+    }
+    await streamed(tenantId, 90_000, "25 hours");
+    await streamed("tenant_first_output_neighbor", 90_000);
+
+    const stats = await runWithDatabaseTenantScope(tenantId, () =>
+      getObservabilityStats({ tenantId })
+    );
+
+    // Twenty timed replies: the 19th slowest is the 95th percentile.
+    expect(stats.agentFirstOutput).toEqual({ samples: 20, p95Ms: 1_900 });
+    expect(stats.agentFirstOutput).toEqual(summarizeObservabilityEvents(recorded).agentFirstOutput);
+    // Measured by its own SLO, not as a request.
+    expect(stats.slo.latencyP95Ms).toBe(0);
+  });
+
+  test("reads a tenant's day of agent runs, tool calls and approvals", async () => {
+    const tenantId = "tenant_agent_quality";
+    const neighbor = "tenant_agent_quality_neighbor";
+    const run = (tenant: string, id: string, status: string, completedAgo: string | null) => admin`
+      INSERT INTO omni_agent_runs (
+        id, tenant_id, owner_actor_id, mode, status, prompt, messages,
+        started_at, completed_at
+      )
+      VALUES (
+        ${id}, ${tenant}, 'quality_actor', 'orchestrate', ${status}, 'private', '[]'::jsonb,
+        NOW() - INTERVAL '2 days', NOW() - ${completedAgo}::interval
+      )
+    `;
+    const usage = (tenant: string, id: string, runId: string, costMicrousd: number | null) => admin`
+      INSERT INTO omni_ai_usage (
+        id, tenant_id, actor_id, source_stream_id, operation, purpose,
+        status, provider, model, usage, estimated_cost_microusd, recorded_at
+      )
+      VALUES (
+        ${id}, ${tenant}, 'quality_actor', ${`run:${runId}`}, 'tool_turn', 'agent', 'completed',
+        'openai', 'gpt-5.2', '{}'::jsonb, ${costMicrousd}, NOW()
+      )
+    `;
+    const tool = (
+      tenant: string,
+      id: string,
+      status: string,
+      completedAgo: string | null,
+      approval: { decision: string | null; createdAgo: string; decidedAgo: string | null } = {
+        decision: null,
+        createdAgo: "1 hour",
+        decidedAgo: null,
+      },
+    ) => admin`
+      INSERT INTO omni_tool_executions (
+        id, tool_id, tool_name, risk_level, status, tenant_id, actor_id, input,
+        approval_decision, approved_at, created_at, completed_at
+      )
+      VALUES (
+        ${id}, 'tool', 'Tool', 2, ${status}, ${tenant}, 'quality_actor', '{}'::jsonb,
+        ${approval.decision}, NOW() - ${approval.decidedAgo}::interval,
+        NOW() - ${approval.createdAgo}::interval, NOW() - ${completedAgo}::interval
+      )
+    `;
+
+    await run(tenantId, "quality-run-1", "completed", "1 hour");
+    await usage(tenantId, "quality-usage-1a", "quality-run-1", 100_000);
+    await usage(tenantId, "quality-usage-1b", "quality-run-1", 50_000);
+    await run(tenantId, "quality-run-2", "completed", "2 hours");
+    // A call with no known price adds nothing.
+    await usage(tenantId, "quality-usage-2a", "quality-run-2", null);
+    await usage(tenantId, "quality-usage-2b", "quality-run-2", 30_000);
+    await run(tenantId, "quality-run-3", "failed", "3 hours");
+    await run(tenantId, "quality-run-stale", "completed", "30 hours");
+    await usage(tenantId, "quality-usage-stale", "quality-run-stale", 9_000_000);
+    await run(tenantId, "quality-run-canceled", "canceled", "1 hour");
+    await usage(tenantId, "quality-usage-canceled", "quality-run-canceled", 9_000_000);
+    await run(tenantId, "quality-run-active", "running", null);
+    await run(neighbor, "quality-run-neighbor", "failed", "1 hour");
+    await usage(neighbor, "quality-usage-neighbor", "quality-run-1", 9_000_000);
+
+    await tool(tenantId, "quality-tool-1", "executed", "1 hour");
+    await tool(tenantId, "quality-tool-2", "executed", "2 hours");
+    await tool(tenantId, "quality-tool-3", "failed", "1 hour");
+    await tool(tenantId, "quality-tool-stale", "failed", "30 hours");
+    await tool(tenantId, "quality-tool-blocked", "blocked", "1 hour");
+    await tool(tenantId, "quality-tool-dry-run", "dry_run", "1 hour");
+    await tool(neighbor, "quality-tool-neighbor", "failed", "1 hour");
+
+    const decided = (decision: string, createdAgo: string, decidedAgo: string | null) =>
+      ({ decision, createdAgo, decidedAgo });
+    await tool(tenantId, "quality-approval-1", "approved", null, decided("approved", "3 hours", "2 hours"));
+    await tool(tenantId, "quality-approval-2", "rejected", "20 minutes", decided("rejected", "30 minutes", "20 minutes"));
+    await tool(tenantId, "quality-approval-3", "approved", null, decided("approved", "26 hours", "1 hour"));
+    await tool(tenantId, "quality-approval-stale", "approved", null, decided("approved", "50 hours", "30 hours"));
+    // Retention expired this one: it was never decided by anyone.
+    await tool(tenantId, "quality-approval-expired", "rejected", "1 hour", decided("rejected", "3 days", null));
+    await tool(tenantId, "quality-approval-pending", "approval_required", null);
+    await tool(neighbor, "quality-approval-neighbor", "approved", null, decided("approved", "100 hours", "1 hour"));
+
+    const quality = await runWithDatabaseTenantScope(tenantId, () =>
+      getAgentQualityStats({ tenantId, since: new Date(Date.now() - 24 * 60 * 60 * 1_000) })
+    );
+
+    expect(quality).toEqual({
+      runs: { finished: 3, completed: 2, successRate: 2 / 3, costPerRunUsd: 0.06 },
+      tools: { finished: 3, failed: 1, failureRate: 1 / 3 },
+      approvals: { decided: 3, latencyP95Ms: 25 * 60 * 60 * 1_000 },
+    });
+
+    const [runPolicy] = getDefaultObservabilitySloPolicies()
+      .filter((policy) => policy.id === "agent_run_success_rate");
+    const snapshot = await getObservabilitySloSnapshot({
+      tenantId,
+      policies: [{ ...runPolicy!, metadata: { minimumSamples: 3 } }],
+    });
+    expect(snapshot.agentQuality).toEqual(quality);
+    expect(snapshot.evaluations.map(({ value, severity, message }) => ({ value, severity, message })))
+      .toEqual([{
+        value: 0.6667,
+        severity: "critical",
+        message: "Agent run success rate breached: 66.67% is less than 80%.",
+      }]);
   });
 
   test("verifies a migrated database against this release exactly", async () => {

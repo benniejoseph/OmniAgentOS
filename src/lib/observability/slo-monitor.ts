@@ -16,6 +16,10 @@ import {
   type IncidentSeverity,
 } from "@/lib/diagnostics/incidents";
 import {
+  getAgentQualityStats,
+  type AgentQualityStats,
+} from "@/lib/observability/agent-quality";
+import {
   listObservabilitySloPolicies,
   type ObservabilitySloPolicy,
   type SloComparator,
@@ -40,9 +44,9 @@ export type ObservabilitySloEvaluation = {
   margin: number;
   message: string;
   /**
-   * Set when the metric is a percentile of sampled page views and the window
-   * holds too few of them to judge; the policy is then neither breached nor
-   * recovered.
+   * Set when the metric is judged on samples, such as page views or finished
+   * runs, and the window holds too few of them; the policy is then neither
+   * breached nor recovered.
    */
   insufficientSamples?: { samples: number; minimumSamples: number };
 };
@@ -51,6 +55,7 @@ export type ObservabilitySloSnapshot = {
   checkedAt: string;
   healthy: boolean;
   stats: ObservabilityStats;
+  agentQuality: AgentQualityStats;
   policies: ObservabilitySloPolicy[];
   evaluations: ObservabilitySloEvaluation[];
   breaches: ObservabilitySloEvaluation[];
@@ -124,19 +129,26 @@ async function buildObservabilitySloSnapshot({
   sql?: ReturnType<typeof getSql>;
 }): Promise<ObservabilitySloSnapshot> {
   const stats = await getObservabilityStats({ tenantId, sql });
+  // The same day the observability stats cover.
+  const agentQuality = await getAgentQualityStats({
+    tenantId,
+    since: new Date(Date.now() - 24 * 60 * 60 * 1_000),
+    sql,
+  });
   const enabledPolicies = (policies || await listObservabilitySloPolicies({
     tenantId,
     includeDisabled: false,
     sql,
   }))
     .filter((policy) => policy.enabled);
-  const evaluations = enabledPolicies.map((policy) => evaluateSloPolicy(policy, stats));
+  const evaluations = enabledPolicies.map((policy) => evaluateSloPolicy(policy, stats, agentQuality));
   const breaches = evaluations.filter((evaluation) => evaluation.breached);
 
   return {
     checkedAt: new Date().toISOString(),
     healthy: breaches.length === 0,
     stats,
+    agentQuality,
     policies: enabledPolicies,
     evaluations,
     breaches,
@@ -198,7 +210,7 @@ async function runObservabilitySloMonitorForTenant({
   for (const evaluation of snapshot.evaluations) {
     const fingerprint = createSloIncidentFingerprint(evaluation.policy);
     if (evaluation.insufficientSamples) {
-      // Too few page views to say either way: leave any incident as it is.
+      // Too few samples to say either way: leave any incident as it is.
       continue;
     }
     if (!evaluation.breached || !evaluation.severity) {
@@ -339,11 +351,15 @@ export function createSloIncidentFingerprint(policy: ObservabilitySloPolicy) {
   return `${observabilitySloIncidentPrefix}:${policy.id}`;
 }
 
-function evaluateSloPolicy(policy: ObservabilitySloPolicy, stats: ObservabilityStats): ObservabilitySloEvaluation {
-  const value = metricValue(policy.metric, stats);
-  const vital = webVitalOf(policy.metric);
-  if (vital) {
-    const samples = stats.webVitals[vital].samples;
+function evaluateSloPolicy(
+  policy: ObservabilitySloPolicy,
+  stats: ObservabilityStats,
+  agentQuality: AgentQualityStats,
+): ObservabilitySloEvaluation {
+  const value = metricValue(policy.metric, stats, agentQuality);
+  const sampled = samplesOf(policy.metric, stats, agentQuality);
+  if (sampled) {
+    const { samples, of } = sampled;
     const minimumSamples = minimumSamplesOf(policy);
     if (samples < minimumSamples) {
       return {
@@ -351,7 +367,7 @@ function evaluateSloPolicy(policy: ObservabilitySloPolicy, stats: ObservabilityS
         value,
         breached: false,
         margin: 0,
-        message: `${policy.name} is not judged yet: ${samples} of the ${minimumSamples} sampled page views it needs.`,
+        message: `${policy.name} is not judged yet: ${samples} of the ${minimumSamples} ${of} it needs.`,
         insufficientSamples: { samples, minimumSamples },
       };
     }
@@ -424,6 +440,34 @@ function webVitalOf(metric: SloMetric): WebVitalName | undefined {
   return undefined;
 }
 
+/**
+ * The samples a metric is judged on, for a metric that needs enough of them
+ * to mean anything, and what they are.
+ */
+function samplesOf(
+  metric: SloMetric,
+  stats: ObservabilityStats,
+  agentQuality: AgentQualityStats,
+): { samples: number; of: string } | undefined {
+  const vital = webVitalOf(metric);
+  if (vital) {
+    return { samples: stats.webVitals[vital].samples, of: "sampled page views" };
+  }
+  if (metric === "agentFirstOutputP95Ms") {
+    return { samples: stats.agentFirstOutput.samples, of: "streamed replies" };
+  }
+  if (metric === "runSuccessRate" || metric === "costPerRunUsd") {
+    return { samples: agentQuality.runs.finished, of: "finished runs" };
+  }
+  if (metric === "toolFailureRate") {
+    return { samples: agentQuality.tools.finished, of: "finished tool calls" };
+  }
+  if (metric === "approvalLatencyP95Ms") {
+    return { samples: agentQuality.approvals.decided, of: "approval decisions" };
+  }
+  return undefined;
+}
+
 const defaultMinimumSamples = 20;
 
 function minimumSamplesOf(policy: ObservabilitySloPolicy) {
@@ -433,10 +477,25 @@ function minimumSamplesOf(policy: ObservabilitySloPolicy) {
     : defaultMinimumSamples;
 }
 
-function metricValue(metric: SloMetric, stats: ObservabilityStats) {
+function metricValue(metric: SloMetric, stats: ObservabilityStats, agentQuality: AgentQualityStats) {
   const vital = webVitalOf(metric);
   if (vital) {
     return stats.webVitals[vital].p75;
+  }
+  if (metric === "agentFirstOutputP95Ms") {
+    return stats.agentFirstOutput.p95Ms;
+  }
+  if (metric === "runSuccessRate") {
+    return roundMetric(agentQuality.runs.successRate);
+  }
+  if (metric === "toolFailureRate") {
+    return roundMetric(agentQuality.tools.failureRate);
+  }
+  if (metric === "costPerRunUsd") {
+    return Math.round(agentQuality.runs.costPerRunUsd * 1_000_000) / 1_000_000;
+  }
+  if (metric === "approvalLatencyP95Ms") {
+    return agentQuality.approvals.latencyP95Ms;
   }
   if (metric === "errorRate") {
     return roundMetric(stats.slo.errorRate);
@@ -491,6 +550,9 @@ function formatMetric(value: number, unit: ObservabilitySloPolicy["unit"]) {
   }
   if (unit === "ms") {
     return `${value}ms`;
+  }
+  if (unit === "usd") {
+    return `$${Number(value.toFixed(4))}`;
   }
   return `${value}`;
 }

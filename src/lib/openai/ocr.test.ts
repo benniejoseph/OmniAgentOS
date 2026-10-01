@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  client: vi.fn(),
   create: vi.fn(),
   recordAiUsageSafely: vi.fn(),
 }));
@@ -16,7 +17,10 @@ vi.mock("@/lib/settings/specialized-runtime", () => ({
 
 vi.mock("@/lib/openai/client", () => ({
   classifyOpenAITerminalResponse: () => undefined,
-  getOpenAIClient: () => ({ responses: { create: mocks.create } }),
+  getOpenAIClient: (options: unknown) => {
+    mocks.client(options);
+    return { responses: { create: mocks.create } };
+  },
 }));
 
 vi.mock("@/lib/usage/ledger", () => ({
@@ -53,9 +57,15 @@ describe("image OCR usage", () => {
       sourceStreamId: "document-1",
       operation: "ocr",
       purpose: "Read a scanned page",
+      correlationId: "correlation-a",
     });
 
     expect(text).toBe("Page one");
+    // The deployment's client tells its gateway which work the call is for.
+    expect(mocks.client).toHaveBeenCalledWith({
+      apiKey: undefined,
+      correlationId: "correlation-a",
+    });
     expect(mocks.recordAiUsageSafely).toHaveBeenCalledWith(expect.objectContaining({
       provider: "openai",
       model: "gpt-5",

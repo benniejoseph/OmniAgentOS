@@ -52,13 +52,24 @@ export type OpenAIReadiness = {
   error?: string;
 };
 
-export function getOpenAIClient(options: { apiKey?: string } = {}) {
+/**
+ * A client for a request's key, or for the deployment's. The deployment's
+ * goes through its egress gateway when there is one, and tells the gateway
+ * which work each call belongs to, so the gateway's logs join the app's.
+ */
+export function getOpenAIClient(options: { apiKey?: string; correlationId?: string } = {}) {
   const requestApiKey = options.apiKey?.trim();
   if (requestApiKey) {
     return createOpenAIClient(requestApiKey, false);
   }
   if (!hasOpenAIKey()) {
     throw new Error("OPENAI_API_KEY is not configured.");
+  }
+  const correlationId = options.correlationId && GATEWAY_CORRELATION_ID.test(options.correlationId)
+    ? options.correlationId
+    : undefined;
+  if (correlationId && getOpenAIGatewayConfig()) {
+    return createOpenAIClient(process.env.OPENAI_API_KEY!, true, correlationId);
   }
 
   if (!client) {
@@ -68,7 +79,14 @@ export function getOpenAIClient(options: { apiKey?: string } = {}) {
   return client;
 }
 
-function createOpenAIClient(apiKey: string, useDeploymentGateway: boolean) {
+/** The correlation ids the gateway logs; it ignores any other. */
+const GATEWAY_CORRELATION_ID = /^[A-Za-z0-9:._-]{1,128}$/;
+
+function createOpenAIClient(
+  apiKey: string,
+  useDeploymentGateway: boolean,
+  correlationId?: string,
+) {
   const gateway = useDeploymentGateway ? getOpenAIGatewayConfig() : undefined;
   const scopedClient = new OpenAI({
     apiKey,
@@ -77,6 +95,7 @@ function createOpenAIClient(apiKey: string, useDeploymentGateway: boolean) {
           baseURL: gateway.baseURL,
           defaultHeaders: {
             "x-asael-gateway-token": gateway.token,
+            ...(correlationId ? { "x-omni-correlation-id": correlationId } : {}),
           },
         }
       : {}),
@@ -193,7 +212,7 @@ export async function embedTextsWithRuntime(
   const startedAt = Date.now();
   try {
     const response = await runtimeModel.withApiKey((apiKey) =>
-      getOpenAIClient(apiKey ? { apiKey } : undefined).embeddings.create(
+      getOpenAIClient({ apiKey, correlationId: usageScope?.correlationId }).embeddings.create(
         {
           model: runtimeModel.model,
           input,
@@ -413,7 +432,7 @@ export async function streamResponseTurn({
       selectedModel,
       reasoningEffort,
     );
-    return getOpenAIClient(apiKey ? { apiKey } : undefined).responses.create(
+    return getOpenAIClient({ apiKey, correlationId: usageScope?.correlationId }).responses.create(
     {
       model: selectedModel,
       ...(instructions ? { instructions } : {}),
@@ -1045,7 +1064,10 @@ export async function createStructuredResponseWithMetrics({
     reasoningEffort,
   );
   try {
-    const response = await getOpenAIClient(apiKey ? { apiKey } : undefined).responses.create(
+    const response = await getOpenAIClient({
+      apiKey,
+      correlationId: usageScope?.correlationId,
+    }).responses.create(
       {
         model,
         instructions,

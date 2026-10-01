@@ -15,6 +15,7 @@ import {
   resetObservabilitySloApprovalPolicyConfig,
   saveObservabilitySloApprovalPolicyConfig,
   SLO_METRICS,
+  SLO_UNITS,
   SloApprovalPolicyVersionConflictError,
 } from "@/lib/observability/slo-policy-store";
 import { getObservabilitySloSnapshot } from "@/lib/observability/slo-monitor";
@@ -28,7 +29,6 @@ export const POST = withDatabaseRequestScope(POSTHandler);
 
 const comparators = ["greater_than", "greater_than_or_equal", "less_than", "less_than_or_equal"] as const;
 const severities = ["info", "warning", "critical"] as const;
-const units = ["ratio", "ms", "count"] as const;
 const approvalActions = ["upsert_policy", "toggle_policy", "delete_policy", "reset_defaults", "rollback_policy", "any"] as const;
 const approvalRoles = ["operator", "admin", "system"] as const;
 const changeReason = z.string().max(1000).optional();
@@ -43,7 +43,7 @@ const policySchema = z.object({
   criticalThreshold: z.number().finite(),
   warningSeverity: z.enum(severities).optional().default("warning"),
   criticalSeverity: z.enum(severities).optional().default("critical"),
-  unit: z.enum(units),
+  unit: z.enum(SLO_UNITS),
   componentId: z.string().min(1).max(120).optional().default("observability"),
   enabled: z.boolean(),
   alertTargetIds: z.array(z.string().min(1).max(80)).max(10).optional().default([]),

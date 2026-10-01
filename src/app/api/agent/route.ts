@@ -89,6 +89,7 @@ import {
   SharedContextAuthorityError,
   type RequestSharedMemoryAccessV1,
 } from "@/lib/memory/shared-context";
+import { firstOutputTimer } from "@/lib/observability/agent-quality";
 import { runAgent } from "@/lib/orchestration/agent-runner";
 import type { AgentEvent } from "@/lib/orchestration/types";
 import {
@@ -1248,6 +1249,12 @@ async function POSTHandler(request: Request) {
   const execution = new Promise<void>((resolve) => {
     settleExecution = resolve;
   });
+  const firstOutput = firstOutputTimer({
+    tenantId: context.tenantId,
+    actorId: context.actorId,
+    correlationId: requestId,
+    receivedAtMs,
+  });
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       let queueReceiptFailureEmitted = false;
@@ -1261,6 +1268,7 @@ async function POSTHandler(request: Request) {
       };
       stopHeartbeat = startSseHeartbeat(write);
       const enqueueTransportEvent = (event: AgentEvent) => {
+        firstOutput.observe(event);
         write(encodeSse(event, { id: runEventCursor(event) }));
       };
       const enqueueEvent = async (event: AgentEvent) => {
@@ -2271,8 +2279,12 @@ async function POSTHandler(request: Request) {
   });
 
   // A detached run keeps executing after its response closes, so the
-  // function stays alive until the run settles.
-  after(() => execution);
+  // function stays alive until the run settles and its first output is
+  // recorded.
+  after(async () => {
+    await execution;
+    await firstOutput.settled();
+  });
   return sseResponse(stream, { "X-Asael-Run-Id": directRootRunId });
 }
 

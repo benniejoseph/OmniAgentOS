@@ -194,8 +194,10 @@ export async function startOpenAIEgressGateway(options = {}) {
 
     const requestId = randomUUID();
     response.setHeader("x-asael-gateway-request-id", requestId);
+    // Only an authenticated caller may name the request it belongs to.
+    const ids = { requestId };
     if (closing) {
-      rejectRequest(response, logger, requestId, parsed.routeId, 503, "closing");
+      rejectRequest(response, logger, ids, parsed.routeId, 503, "closing");
       return;
     }
     if (parsed.kind === "invalid") {
@@ -203,7 +205,7 @@ export async function startOpenAIEgressGateway(options = {}) {
       rejectRequest(
         response,
         logger,
-        requestId,
+        ids,
         parsed.routeId,
         parsed.status,
         parsed.reason,
@@ -215,29 +217,30 @@ export async function startOpenAIEgressGateway(options = {}) {
 
     const providedToken = singleHeader(request.headers["x-asael-gateway-token"]);
     if (!providedToken || !tokenMatchesAny(providedToken, acceptedTokenDigests)) {
-      rejectRequest(response, logger, requestId, parsed.route.id, 401, "authentication");
+      rejectRequest(response, logger, ids, parsed.route.id, 401, "authentication");
       request.resume();
       return;
     }
+    ids.correlationId = correlationIdOf(request.headers["x-omni-correlation-id"]);
     const authorization = singleHeader(request.headers.authorization);
     if (!isBearerAuthorization(authorization)) {
-      rejectRequest(response, logger, requestId, parsed.route.id, 400, "authorization");
+      rejectRequest(response, logger, ids, parsed.route.id, 400, "authorization");
       request.resume();
       return;
     }
     if (!contentTypeAllowed(request, parsed.route)) {
-      rejectRequest(response, logger, requestId, parsed.route.id, 415, "content_type");
+      rejectRequest(response, logger, ids, parsed.route.id, 415, "content_type");
       request.resume();
       return;
     }
     const declaredLength = declaredContentLength(request);
     if (declaredLength === null) {
-      rejectRequest(response, logger, requestId, parsed.route.id, 400, "content_length");
+      rejectRequest(response, logger, ids, parsed.route.id, 400, "content_length");
       request.resume();
       return;
     }
     if (declaredLength > parsed.route.maxBodyBytes) {
-      rejectRequest(response, logger, requestId, parsed.route.id, 413, "body_limit");
+      rejectRequest(response, logger, ids, parsed.route.id, 413, "body_limit");
       request.resume();
       return;
     }
@@ -248,7 +251,7 @@ export async function startOpenAIEgressGateway(options = {}) {
         rejectRequest(
           response,
           logger,
-          requestId,
+          ids,
           parsed.route.id,
           503,
           "concurrency",
@@ -258,7 +261,7 @@ export async function startOpenAIEgressGateway(options = {}) {
         rejectRequest(
           response,
           logger,
-          requestId,
+          ids,
           parsed.route.id,
           slot === "closing" ? 503 : 499,
           slot,
@@ -274,7 +277,7 @@ export async function startOpenAIEgressGateway(options = {}) {
         response,
         route: applyRouteOverrides(parsed.route, routeOverrides),
         authorization,
-        requestId,
+        ids,
         requestUpstream,
         upstreamHostname,
         agent,
@@ -427,7 +430,7 @@ function proxyToOpenAI({
   response,
   route,
   authorization,
-  requestId,
+  ids,
   requestUpstream,
   upstreamHostname,
   agent,
@@ -453,7 +456,7 @@ function proxyToOpenAI({
       if (upstream) liveUpstreams.delete(upstream);
       recordUpstreamOutcome(upstreamOutcome(statusCode, errorKind));
       emitLog(logger, errorKind ? "warn" : "info", "openai_egress.completed", {
-        requestId,
+        ...ids,
         route: route.id,
         method: route.method,
         statusCode,
@@ -701,9 +704,9 @@ function upstreamOutcome(statusCode, errorKind) {
   return statusCode >= 500 ? "failure" : "success";
 }
 
-function rejectRequest(response, logger, requestId, route, statusCode, reason, headers) {
+function rejectRequest(response, logger, ids, route, statusCode, reason, headers) {
   emitLog(logger, statusCode >= 500 ? "warn" : "info", "openai_egress.rejected", {
-    requestId,
+    ...ids,
     route,
     statusCode,
     reason,
@@ -752,6 +755,15 @@ function tokenMatchesAny(providedToken, acceptedTokenDigests) {
 
 function digestToken(token) {
   return createHash("sha256").update(token, "utf8").digest();
+}
+
+/**
+ * The id the app gave the work a request belongs to, when it is one the
+ * logs can carry safely. It is logged, and never sent to OpenAI.
+ */
+function correlationIdOf(value) {
+  const id = singleHeader(value);
+  return id && /^[A-Za-z0-9:._-]{1,128}$/.test(id) ? id : undefined;
 }
 
 function singleHeader(value) {

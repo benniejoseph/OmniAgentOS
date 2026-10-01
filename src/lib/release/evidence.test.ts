@@ -644,7 +644,7 @@ describe("release evidence", () => {
     expect(report.recommendations).toContain(classify);
   });
 
-  it("warns on a critical real-user Web Vitals breach without holding the release", async () => {
+  it("warns on a critical Web Vitals or agent quality breach without holding the release", async () => {
     const revision = "web-vitals-release";
     configurePassingEvidence(revision, [
       "fast",
@@ -685,6 +685,13 @@ describe("release evidence", () => {
       "fail",
       "1 blocking critical SLO breach(es) are active.",
     ]);
+    expect(await releaseWith(
+      "agent_run_success_rate",
+      "agent_tool_failure_rate",
+      "agent_first_output_p95",
+      "agent_cost_per_run",
+      "agent_approval_latency_p95",
+    )).toEqual([true, "warn", "5 advisory SLO breach(es) are active."]);
   });
 });
 

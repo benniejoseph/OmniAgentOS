@@ -123,6 +123,60 @@ describe("Fly OpenAI egress gateway", () => {
     expect(receivedBody).toContain("private prompt");
   });
 
+  it("logs which work an authenticated request is for, and never sends it on", async () => {
+    const lines: string[] = [];
+    const logger = {
+      log: (line: string) => lines.push(line),
+      warn: (line: string) => lines.push(line),
+      error: (line: string) => lines.push(line),
+    };
+    const received: IncomingHttpHeaders[] = [];
+    const upstream = await startServer(async (request, response) => {
+      received.push(request.headers);
+      for await (const chunk of request) void chunk;
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end('{"output":[]}');
+    });
+    const gateway = await startGateway(upstream.baseUrl, { logger });
+    const post = async (headers: Record<string, string>) =>
+      (await fetch(`${gateway.baseUrl}/v1/responses`, {
+        method: "POST",
+        headers: gatewayHeaders(headers),
+        body: "{}",
+      })).status;
+
+    expect(await post({ "x-omni-correlation-id": "req:run-1.a_b-c" })).toBe(200);
+    expect(await post({ "x-omni-correlation-id": "c".repeat(128) })).toBe(200);
+    // Ids the logs cannot carry safely are dropped, not refused.
+    expect(await post({ "x-omni-correlation-id": "two words" })).toBe(200);
+    expect(await post({ "x-omni-correlation-id": "c".repeat(129) })).toBe(200);
+    expect(await post({
+      "x-omni-correlation-id": "req-unauthenticated",
+      "x-asael-gateway-token": "not-the-gateway-token-but-long-enough",
+    })).toBe(401);
+    expect(await post({
+      "x-omni-correlation-id": "req-plain-text",
+      "content-type": "text/plain",
+    })).toBe(415);
+
+    const logged = lines
+      .map((line) => JSON.parse(line))
+      .filter((entry) => /^openai_egress\.(completed|rejected)$/.test(entry.event))
+      .map((entry) => [entry.event, entry.statusCode, entry.correlationId, typeof entry.requestId]);
+    expect(logged).toEqual([
+      ["openai_egress.completed", 200, "req:run-1.a_b-c", "string"],
+      ["openai_egress.completed", 200, "c".repeat(128), "string"],
+      ["openai_egress.completed", 200, undefined, "string"],
+      ["openai_egress.completed", 200, undefined, "string"],
+      ["openai_egress.rejected", 401, undefined, "string"],
+      ["openai_egress.rejected", 415, "req-plain-text", "string"],
+    ]);
+    expect(received).toHaveLength(4);
+    for (const headers of received) {
+      expect(headers["x-omni-correlation-id"]).toBeUndefined();
+    }
+  });
+
   it("mints only bounded transcription client secrets through the exact realtime route", async () => {
     const observations: RequestOptions[] = [];
     let receivedBody = "";

@@ -97,7 +97,7 @@ export async function runLiveWebSearch({
   try {
     const searchedAt = new Date().toISOString();
     response = await runtimeModel.withApiKey((apiKey) =>
-      getOpenAIClient(apiKey ? { apiKey } : undefined).responses.create(
+      getOpenAIClient({ apiKey, correlationId: usageScope?.correlationId }).responses.create(
         {
           model: runtimeModel.model,
           store: false,

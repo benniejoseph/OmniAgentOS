@@ -101,6 +101,13 @@ const advisorySloPolicyIds = new Set([
   "web_vitals_lcp_p75",
   "web_vitals_inp_p75",
   "web_vitals_cls_p75",
+  // How the agents are doing is watched, not a release gate: a fix has to
+  // ship while it is low, and approvals wait on people, not on code.
+  "agent_run_success_rate",
+  "agent_tool_failure_rate",
+  "agent_first_output_p95",
+  "agent_cost_per_run",
+  "agent_approval_latency_p95",
 ]);
 const openAIGatewayService = "asael-openai-egress";
 const openAIGatewayRegion = "iad";

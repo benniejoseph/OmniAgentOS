@@ -24,7 +24,7 @@ export async function extractTextFromImages(images: string[], usageScope?: AiUsa
   const startedAt = Date.now();
   try {
     const response = await runtimeModel.withApiKey((apiKey) =>
-      getOpenAIClient(apiKey ? { apiKey } : undefined).responses.create({
+      getOpenAIClient({ apiKey, correlationId: usageScope?.correlationId }).responses.create({
         model: runtimeModel.model,
         store: false,
         max_output_tokens: 12_000,

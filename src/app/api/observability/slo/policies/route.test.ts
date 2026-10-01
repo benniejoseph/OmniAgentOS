@@ -12,11 +12,11 @@ vi.mock("@/lib/security/guard", () => ({
 }));
 
 const { POST } = await import("@/app/api/observability/slo/policies/route");
-const { SLO_METRICS, getDefaultObservabilitySloPolicies } = await import(
+const { SLO_METRICS, SLO_UNITS, getDefaultObservabilitySloPolicies } = await import(
   "@/lib/observability/slo-policy-store"
 );
 
-function upsert(metric: string) {
+function upsert(metric: string, unit = "count") {
   return POST(
     new Request("https://asael.test/api/observability/slo/policies", {
       method: "POST",
@@ -30,7 +30,7 @@ function upsert(metric: string) {
           comparator: "greater_than",
           warningThreshold: 1,
           criticalThreshold: 2,
-          unit: "count",
+          unit,
           enabled: true,
         },
       }),
@@ -50,6 +50,19 @@ describe("saving an SLO policy", () => {
     // Every default can be saved back as it is.
     expect(SLO_METRICS).toEqual(
       expect.arrayContaining(getDefaultObservabilitySloPolicies().map((policy) => policy.metric)),
+    );
+  });
+
+  it("accepts every unit the monitor formats, and no other", async () => {
+    guard.authorizeRequest.mockClear();
+    expect(SLO_UNITS).toEqual(["ratio", "ms", "count", "usd"]);
+    for (const unit of SLO_UNITS) {
+      expect([unit, (await upsert("costPerRunUsd", unit)).status]).toEqual([unit, 403]);
+    }
+    expect((await upsert("costPerRunUsd", "eur")).status).toBe(400);
+    expect(guard.authorizeRequest).toHaveBeenCalledTimes(SLO_UNITS.length);
+    expect(SLO_UNITS).toEqual(
+      expect.arrayContaining(getDefaultObservabilitySloPolicies().map((policy) => policy.unit)),
     );
   });
 });

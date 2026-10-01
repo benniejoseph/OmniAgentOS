@@ -1002,6 +1002,56 @@ describe("agent run transport", () => {
       vi.useRealTimers();
     }
   });
+
+  it("records how long the request waited for its reply's first text", async () => {
+    const { listObservabilityEvents } = await import("@/lib/observability/store");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    // The wait starts when the request arrives, before it is authorized.
+    routeMocks.authorizeRequest.mockImplementationOnce(async () => {
+      vi.setSystemTime(Date.now() + 1_500);
+      return context;
+    });
+    routeMocks.runAgent.mockImplementation(async function* () {
+      yield { type: "run", runId: "run-first-output", threadId: "thread-a" };
+      yield { type: "status", label: "Planning" };
+      vi.setSystemTime(Date.now() + 250);
+      yield { type: "delta", text: "First" };
+      vi.setSystemTime(Date.now() + 4_000);
+      yield { type: "delta", text: " words." };
+      yield { type: "done", response: "First words." };
+    });
+
+    try {
+      const response = await POST(new Request("http://asael.test/api/agent", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          message: "Inspect the requested context.",
+          requestId: "first-output-a",
+          strategy: "direct",
+        }),
+      }));
+      await response.text();
+      await (routeMocks.after.mock.calls.at(-1)?.[0] as () => Promise<void>)();
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const events = await listObservabilityEvents({
+      action: "agent.first_output",
+      correlationId: "first-output-a",
+    });
+    expect(events).toEqual([expect.objectContaining({
+      category: "api",
+      route: "/api/agent",
+      method: "POST",
+      tenantId: "tenant-a",
+      actorId: "actor-a",
+      correlationId: "first-output-a",
+      durationMs: 1_750,
+      metadata: { sloExcluded: true },
+    })]);
+  });
 });
 
 describe("agent semantic intent routing", () => {

@@ -1,12 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  client: vi.fn(),
   create: vi.fn(),
   usage: vi.fn(),
 }));
 
 vi.mock("@/lib/config", () => ({
   DIARIZATION_MODEL: "gpt-4o-transcribe-diarize",
+  GOOGLE_TRANSCRIPTION_MODEL: "",
+  TRANSCRIPTION_PROVIDER: "openai",
   TRANSCRIPTION_MODEL: "gpt-4o-mini-transcribe",
   hasGoogleMediaKey: () => false,
   hasOpenAIKey: () => true,
@@ -15,17 +18,22 @@ vi.mock("@/lib/google/ai", () => ({
   transcribeGoogleAudio: vi.fn(),
 }));
 vi.mock("@/lib/openai/client", () => ({
-  getOpenAIClient: () => ({
-    audio: { transcriptions: { create: mocks.create } },
-  }),
+  getOpenAIClient: (options: unknown) => {
+    mocks.client(options);
+    return { audio: { transcriptions: { create: mocks.create } } };
+  },
 }));
 vi.mock("@/lib/usage/ledger", () => ({
   recordAiUsageSafely: mocks.usage,
 }));
 
-import { transcribeCaptureMediaDiarized } from "@/lib/capture/transcription";
+import {
+  transcribeCaptureMedia,
+  transcribeCaptureMediaDiarized,
+} from "@/lib/capture/transcription";
 
 beforeEach(() => {
+  mocks.client.mockReset();
   mocks.create.mockReset();
   mocks.usage.mockReset().mockResolvedValue(undefined);
 });
@@ -65,6 +73,10 @@ describe("background media diarization", () => {
       chunking_strategy: "auto",
     }), { signal: undefined });
     expect(mocks.create.mock.calls[0][0]).not.toHaveProperty("language");
+    expect(mocks.client).toHaveBeenCalledWith({
+      apiKey: undefined,
+      correlationId: "correlation-a",
+    });
     expect(result.segments).toEqual([
       expect.objectContaining({ speakerLabel: "A", startMilliseconds: 0, languageTag: "en-US" }),
       expect.objectContaining({ speakerLabel: "B", endMilliseconds: 4_000, languageTag: "en-US" }),
@@ -74,5 +86,34 @@ describe("background media diarization", () => {
       model: "gpt-4o-transcribe-diarize",
       usage: { inputBytes: 3 },
     }));
+  });
+});
+
+describe("background media transcription", () => {
+  it("tells the deployment's client which work a transcription is for", async () => {
+    mocks.create.mockResolvedValue({ text: " Hello there. " });
+    const media = new File([new Uint8Array([1, 2, 3])], "note.webm", {
+      type: "audio/webm",
+    });
+
+    const result = await transcribeCaptureMedia(media, undefined, {
+      tenantId: "tenant-a",
+      actorId: "actor-a",
+      sourceStreamId: "capture-recording:b",
+      operation: "transcription",
+      purpose: "capture.recording.transcribe",
+      correlationId: "correlation-b",
+      credentialSource: "deployment_environment",
+    });
+
+    expect(result.text).toBe("Hello there.");
+    expect(mocks.create).toHaveBeenCalledWith(expect.objectContaining({
+      model: "gpt-4o-mini-transcribe",
+      response_format: "json",
+    }), { signal: undefined });
+    expect(mocks.client.mock.calls).toEqual([[{
+      apiKey: undefined,
+      correlationId: "correlation-b",
+    }]]);
   });
 });

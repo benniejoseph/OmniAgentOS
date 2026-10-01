@@ -2,8 +2,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const openAiMocks = vi.hoisted(() => ({
   constructorOptions: vi.fn(),
+  createEmbedding: vi.fn(),
   createResponse: vi.fn(),
   retrieveModel: vi.fn(),
+  recordAiUsage: vi.fn(async () => undefined),
+}));
+
+vi.mock("@/lib/usage/ledger", () => ({
+  recordAiUsageSafely: openAiMocks.recordAiUsage,
 }));
 
 vi.mock("openai", () => ({
@@ -12,7 +18,7 @@ vi.mock("openai", () => ({
       openAiMocks.constructorOptions(options);
     }
     responses = { create: openAiMocks.createResponse };
-    embeddings = { create: vi.fn() };
+    embeddings = { create: openAiMocks.createEmbedding };
     models = { retrieve: openAiMocks.retrieveModel };
   },
 }));
@@ -26,6 +32,7 @@ const gatewayToken = "b".repeat(64);
 afterEach(() => {
   vi.resetModules();
   openAiMocks.constructorOptions.mockReset();
+  openAiMocks.createEmbedding.mockReset();
   openAiMocks.createResponse.mockReset();
   openAiMocks.retrieveModel.mockReset();
   vi.useRealTimers();
@@ -83,6 +90,124 @@ describe("OpenAI response privacy", () => {
         "x-asael-gateway-token": gatewayToken,
       },
     });
+  });
+
+  it("tells only the gateway which work a call belongs to", async () => {
+    process.env.OPENAI_API_KEY = "upstream-api-key";
+    process.env.OMNIAGENT_OPENAI_GATEWAY_URL =
+      "https://gateway.asael.example/openai/";
+    process.env.OMNIAGENT_OPENAI_GATEWAY_TOKEN = gatewayToken;
+    openAiMocks.createResponse.mockResolvedValue({});
+    const { getOpenAIClient } = await import("@/lib/openai/client");
+    const gateway = {
+      apiKey: "upstream-api-key",
+      baseURL: "https://gateway.asael.example/openai/v1",
+    };
+
+    const scoped = getOpenAIClient({ correlationId: "req:run-1.a_b-c" });
+    await (scoped.responses.create as unknown as (
+      body: Record<string, unknown>,
+    ) => Promise<unknown>)({ model: "test-model", input: "private", store: true });
+    // The gateway would not log these, so they are not sent at all.
+    const shared = getOpenAIClient({ correlationId: "two words" });
+    expect(getOpenAIClient({ correlationId: "a".repeat(129) })).toBe(shared);
+    expect(getOpenAIClient({ correlationId: "a".repeat(128) })).not.toBe(shared);
+    expect(getOpenAIClient()).toBe(shared);
+    getOpenAIClient({ apiKey: "request-key", correlationId: "req-2" });
+
+    expect(openAiMocks.constructorOptions.mock.calls.map(([options]) => options)).toEqual([
+      {
+        ...gateway,
+        defaultHeaders: {
+          "x-asael-gateway-token": gatewayToken,
+          "x-omni-correlation-id": "req:run-1.a_b-c",
+        },
+      },
+      { ...gateway, defaultHeaders: { "x-asael-gateway-token": gatewayToken } },
+      {
+        ...gateway,
+        defaultHeaders: {
+          "x-asael-gateway-token": gatewayToken,
+          "x-omni-correlation-id": "a".repeat(128),
+        },
+      },
+      { apiKey: "request-key" },
+    ]);
+    expect(openAiMocks.createResponse).toHaveBeenCalledWith(
+      expect.objectContaining({ store: false }),
+      undefined,
+    );
+  });
+
+  it("sends a turn's, a structured answer's and an embedding's correlation id to the gateway", async () => {
+    process.env.OPENAI_API_KEY = "upstream-api-key";
+    process.env.OMNIAGENT_OPENAI_GATEWAY_URL =
+      "https://gateway.asael.example/openai/";
+    process.env.OMNIAGENT_OPENAI_GATEWAY_TOKEN = gatewayToken;
+    openAiMocks.createResponse
+      .mockReturnValueOnce({
+        async *[Symbol.asyncIterator]() {
+          yield { type: "response.completed", response: { id: "response-1" } };
+        },
+      })
+      .mockResolvedValueOnce({ id: "response-2", status: "completed", output_text: "{}" });
+    openAiMocks.createEmbedding.mockResolvedValue({ data: [{ embedding: [0.1] }] });
+    vi.doMock("@/lib/settings/specialized-runtime", () => ({
+      resolveSpecializedRuntime: async () => ({
+        configured: true,
+        model: "text-embedding-3-large",
+        usageReceipt: { credentialSource: "deployment_environment" },
+        withApiKey: <T>(run: (apiKey?: string) => T) => run(undefined),
+      }),
+    }));
+    const {
+      createStructuredResponseWithMetrics,
+      embedTextsWithRuntime,
+      streamResponseTurn,
+    } = await import("@/lib/openai/client");
+    const usageScope = (correlationId: string) => ({
+      tenantId: "tenant-a",
+      actorId: "actor-a",
+      sourceStreamId: "run:1",
+      operation: "text_generation" as const,
+      purpose: "Answer the owner",
+      correlationId,
+    });
+
+    await streamResponseTurn({
+      input: "private",
+      onDelta: () => undefined,
+      model: "gpt-5",
+      usageScope: usageScope("req-turn"),
+    });
+    await createStructuredResponseWithMetrics({
+      instructions: "Classify",
+      input: "private",
+      schema: { type: "object", properties: {}, additionalProperties: false },
+      name: "classification",
+      model: "gpt-5",
+      usageScope: usageScope("req-structured"),
+    });
+    await expect(embedTextsWithRuntime(["private"], undefined, {
+      ...usageScope("req-embedding"),
+      operation: "embedding",
+    })).resolves.toMatchObject({ vectors: [[0.1]] });
+
+    expect(
+      openAiMocks.constructorOptions.mock.calls.map(
+        ([options]) => options.defaultHeaders["x-omni-correlation-id"],
+      ),
+    ).toEqual(["req-turn", "req-structured", "req-embedding"]);
+  });
+
+  it("sends no correlation id straight to OpenAI", async () => {
+    process.env.OPENAI_API_KEY = "test-key";
+    delete process.env.OMNIAGENT_OPENAI_GATEWAY_URL;
+    delete process.env.OMNIAGENT_OPENAI_GATEWAY_TOKEN;
+    const { getOpenAIClient } = await import("@/lib/openai/client");
+
+    expect(getOpenAIClient({ correlationId: "req-1" })).toBe(getOpenAIClient());
+    expect(openAiMocks.constructorOptions.mock.calls).toEqual([[{ apiKey: "test-key" }]]);
   });
 
   it("sends an opaque prompt cache bucket while retaining stateless storage", async () => {

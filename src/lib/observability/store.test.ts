@@ -173,6 +173,34 @@ describe("observability summaries", () => {
     });
   });
 
+  it("takes the 95th percentile of the waits for an agent reply's first text", () => {
+    const firstOutput = (id: number, durationMs?: number, action = "agent.first_output") => ({
+      id: `first-output-${id}`,
+      level: "info" as const,
+      category: "api" as const,
+      action,
+      route: "/api/agent",
+      method: "POST",
+      correlationId: `req-${id}`,
+      ...(durationMs === undefined ? {} : { durationMs }),
+      message: "Streamed the first text of an agent reply.",
+      metadata: { sloExcluded: true },
+      createdAt: "2026-10-01T00:00:00.000Z",
+    });
+    const waits = Array.from({ length: 20 }, (_, index) => firstOutput(index, (index + 1) * 100));
+
+    const stats = summarizeObservabilityEvents([
+      ...waits.reverse(),
+      firstOutput(30),
+      firstOutput(31, 99_000, "request.ok"),
+    ]);
+
+    // The 19th of 20 sorted waits, as PERCENTILE_DISC(0.95) takes it.
+    expect(stats.agentFirstOutput).toEqual({ samples: 20, p95Ms: 1_900 });
+    expect(stats.slo.latencyP95Ms).toBe(0);
+    expect(summarizeObservabilityEvents([]).agentFirstOutput).toEqual({ samples: 0, p95Ms: 0 });
+  });
+
   it("aggregates the complete indexed time window instead of a row cap", async () => {
     vi.stubEnv("DATABASE_URL", "postgres://example.invalid/omniagent");
     const query = vi.fn().mockResolvedValue([
@@ -198,6 +226,8 @@ describe("observability summaries", () => {
           LCP: { samples: 30, p75: 2_600 },
           CLS: { samples: 25, p75: 0.12 },
         },
+        agent_first_output_samples: 42,
+        agent_first_output_p95_ms: 3_250,
       },
     ]);
     try {
@@ -207,6 +237,7 @@ describe("observability summaries", () => {
       });
       expect(query.mock.calls[0][0]).toContain("created_at >= $2");
       expect(query.mock.calls[0][0]).not.toContain("LIMIT 500");
+      expect(query.mock.calls[0][1]).toEqual(["tenant-window", expect.any(Date), "agent.first_output"]);
       expect(stats).toMatchObject({
         total: 750,
         sloEligibleEvents: 700,
@@ -221,6 +252,7 @@ describe("observability summaries", () => {
           INP: { samples: 0, p75: 0 },
           CLS: { samples: 25, p75: 0.12 },
         },
+        agentFirstOutput: { samples: 42, p95Ms: 3_250 },
       });
     } finally {
       vi.unstubAllEnvs();

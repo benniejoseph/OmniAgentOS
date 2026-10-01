@@ -134,7 +134,7 @@ export async function transcribeCaptureMediaDiarized(
   const startedAt = Date.now();
   try {
     const result = await runtimeModel.withApiKey((apiKey) =>
-      getOpenAIClient(apiKey ? { apiKey } : undefined).audio.transcriptions.create({
+      getOpenAIClient({ apiKey, correlationId: usageScope?.correlationId }).audio.transcriptions.create({
         file: media,
         model: runtimeModel.model,
         response_format: "diarized_json",
@@ -315,9 +315,10 @@ export async function transcribeCaptureMedia(
     const startedAt = Date.now();
     try {
       const result = await withActiveApiKey(async (apiKey) => {
-        const transcriptions = getOpenAIClient(
-          apiKey ? { apiKey } : undefined,
-        ).audio.transcriptions;
+        const transcriptions = getOpenAIClient({
+          apiKey,
+          correlationId: usageScope?.correlationId,
+        }).audio.transcriptions;
         if (openAiTranscriptionSupportsVerboseJson(activeModel)) {
           return transcriptions.create(
             {
