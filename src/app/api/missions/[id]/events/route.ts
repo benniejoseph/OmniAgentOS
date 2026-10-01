@@ -1,5 +1,6 @@
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { listStreamEvents } from "@/lib/events/store";
+import { settledMissionEventCursor } from "@/lib/missions/event-cursor";
 import { getMission } from "@/lib/missions/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
@@ -42,16 +43,16 @@ async function GETHandler(
     return Response.json({ error: "Mission not found." }, { status: 404 });
   }
 
+  // Taken before the read: an event judged settled was at least that old
+  // when the read saw the log.
+  const nowMs = Date.now();
+  // Oldest first, so a burst longer than one page arrives over several reads.
   const events = await listStreamEvents(`mission:${mission.id}`, {
     ...owner,
     afterSeq,
     limit: Math.min(limit, MAX_EVENT_LIMIT),
-    order: "desc",
   });
-  const cursor = events.reduce(
-    (latest, event) => Math.max(latest, event.seq),
-    afterSeq,
-  );
+  const cursor = settledMissionEventCursor(events, afterSeq, nowMs);
 
   return Response.json({
     cursor,
@@ -60,7 +61,7 @@ async function GETHandler(
       status: mission.status,
       updatedAt: mission.updatedAt,
     },
-    events: [...events].reverse().map((event) => ({
+    events: events.map((event) => ({
       seq: event.seq,
       type: event.type,
       at: event.at,

@@ -9,7 +9,7 @@ import {
 import { getServerWorkspaceSession } from "@/lib/auth/server-workspace-session";
 import { searchCapabilities } from "@/lib/capabilities/catalog";
 import { runWithDatabaseTenantScope } from "@/lib/db/client";
-import { listStreamEvents } from "@/lib/events/store";
+import { readStartingMissionEventCursor } from "@/lib/missions/event-cursor";
 
 export const metadata: Metadata = { title: "Missions" };
 
@@ -60,13 +60,9 @@ async function loadMissionWorkspace() {
       if (!detail) {
         missions = missions.filter((mission) => mission.id !== selected.id);
       }
-      const latest = detail ? await listStreamEvents(`mission:${selected.id}`, {
-        tenantId,
-        actorId,
-        limit: 1,
-        order: "desc",
-      }) : [];
-      initialEventCursor = latest[0]?.seq || 0;
+      initialEventCursor = detail
+        ? await readStartingMissionEventCursor(selected.id, { tenantId, actorId })
+        : 0;
     }
     return {
       initialMissions: missions,

@@ -18,6 +18,7 @@ import {
   missionRouteSelection,
   missionSelectionMode,
   missionTaskActionBlocked,
+  newestMissionEventSeq,
   talkHref,
   normalizeMissionDetail,
   normalizeMissionSummaries,
@@ -300,6 +301,19 @@ describe("Mission request-readable and canonical WorkItem UI", () => {
     expect(missionFailureClearsCollection(401)).toBe(true);
     expect(missionFailureClearsCollection(403)).toBe(true);
     expect(missionFailureClearsCollection(404)).toBe(false);
+  });
+
+  it("counts only events newer than the ones already shown as news", () => {
+    expect(newestMissionEventSeq([{ seq: 7 }, { seq: 12 }, { seq: 9 }], 8)).toBe(12);
+    expect(newestMissionEventSeq([{ seq: 7 }, { seq: 8 }], 8)).toBe(8);
+    expect(newestMissionEventSeq([], 8)).toBe(8);
+    expect(newestMissionEventSeq([
+      null,
+      { seq: "20" },
+      { seq: 20.5 },
+      { seq: Number.MAX_SAFE_INTEGER + 2 },
+      { seq: 10 },
+    ], 8)).toBe(10);
   });
 
   it("accepts exact detail only for the requested mission and scoped children", () => {

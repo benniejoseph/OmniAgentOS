@@ -225,6 +225,19 @@ export function missionEventFailureClosesRow({
   return invalidDetail || status === 401 || status === 403 || status === 404;
 }
 
+/**
+ * The newest event a poll has shown, at least `newestSeen`. The server
+ * returns an event again until it settles, so only a newer one is news.
+ */
+export function newestMissionEventSeq(events: unknown[], newestSeen: number) {
+  return events.reduce<number>((newest, event) => {
+    const seq = (event as { seq?: unknown } | null)?.seq;
+    return typeof seq === "number" && Number.isSafeInteger(seq) && seq > newest
+      ? seq
+      : newest;
+  }, newestSeen);
+}
+
 export function missionFailureClearsCollection(status: number | undefined) {
   return status === 401 || status === 403;
 }
@@ -912,6 +925,7 @@ export function MissionWorkspace({
     let stopped = false;
     let inFlight = false;
     let cursor = safeInitialDetail?.mission.id === missionId ? initialEventCursor : 0;
+    let newestSeen = cursor;
     let visibleStatus = detailsRef.current[missionId]?.mission.status;
     let visibleUpdatedAt = detailsRef.current[missionId]?.mission.updatedAt;
     let consecutiveFailures = 0;
@@ -944,9 +958,10 @@ export function MissionWorkspace({
         if (!requestStillAllowed() || controller.signal.aborted) return;
         const events = Array.isArray(payload.events) ? payload.events : [];
         const nextCursor = missionEventCursor(payload.cursor, cursor);
+        const nextSeen = newestMissionEventSeq(events, newestSeen);
         const projection = missionEventProjection(payload.mission);
         const changed = Boolean(projection && (!visibleStatus || projection.status !== visibleStatus || projection.updatedAt !== visibleUpdatedAt));
-        if (events.length > 0 || changed) {
+        if (nextSeen > newestSeen || changed) {
           const detailRequest = ++detailRequestGeneration.current;
           const detailPayload = await readJson(`/api/missions/${encodeURIComponent(missionId)}`, { signal: controller.signal });
           if (
@@ -961,6 +976,7 @@ export function MissionWorkspace({
           visibleUpdatedAt = detail.mission.updatedAt;
         }
         cursor = nextCursor;
+        newestSeen = nextSeen;
         consecutiveFailures = 0;
       } catch (pollError) {
         if (!controller.signal.aborted && requestStillAllowed()) {
