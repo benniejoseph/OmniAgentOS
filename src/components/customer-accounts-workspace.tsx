@@ -31,13 +31,15 @@ import {
   canPerform,
   useWorkspaceSession,
 } from "@/components/app-shell/session-context";
+import type {
+  CustomerAccount360,
+  CustomerAccountRevision,
+  CustomerFactView,
+} from "@/lib/customer-success/contracts";
 import {
   CUSTOMER_FACT_KINDS,
-  type CustomerAccount360,
-  type CustomerAccountRevision,
   type CustomerFactKind,
-  type CustomerFactView,
-} from "@/lib/customer-success/contracts";
+} from "@/lib/customer-success/fact-kinds";
 import type {
   CustomerHealthPolicy,
   CustomerHealthScore,

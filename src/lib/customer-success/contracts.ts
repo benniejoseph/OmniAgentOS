@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { ASAEL_ONTOLOGY_VERSION_ID } from "@/lib/entities/ontology";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
+import { CUSTOMER_FACT_KINDS } from "@/lib/customer-success/fact-kinds";
 
 export const CUSTOMER_ACCOUNT_CONTRACT_VERSION =
   "p10.9-customer-account-360:1" as const;
@@ -14,20 +15,7 @@ export const CUSTOMER_DATA_PURPOSE_IDS = Object.freeze([
   "customer_success.crm_sync",
 ] as const);
 
-export const CUSTOMER_FACT_KINDS = Object.freeze([
-  "organization",
-  "contact",
-  "stakeholder",
-  "product",
-  "opportunity",
-  "case",
-  "usage",
-  "project",
-  "interaction",
-  "health",
-  "risk",
-  "renewal",
-] as const);
+export { CUSTOMER_FACT_KINDS };
 
 const opaqueIdSchema = z.string().trim().min(1).max(240).regex(
   /^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$/,
