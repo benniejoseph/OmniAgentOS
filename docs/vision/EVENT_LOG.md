@@ -2089,3 +2089,18 @@ content-free service receipt. A management read, missing validation receipt, or
 displayed digest never becomes authority. Lifecycle buttons must re-enter their
 existing governed mutation route; digest-bound execution grants remain
 immutable, and native management deliberately omits Agent retirement.
+
+## Connector source-item events
+
+The Google personal sync appends `connector.source_item.quarantined` when it
+sets aside an item that keeps failing, and `connector.source_item.released`
+when a set-aside item settles, to the `connector:<connection id>` stream under
+the sync's system execution scope. It appends them only after the cursor write
+that makes the decision durable. Payloads are metadata-only: schema version,
+connection ID, source, the declared adapter ID and version, a digest of the
+provider item ID, and either the attempt count and failure code or the outcome
+(`ingested` or `removed`) and redrive count. The event ID derives from the item
+digest, the time the item first failed, and the type, so a repeated append is
+idempotent and each time an item is set aside gets its own event. Item content,
+titles, provider IDs, and errors never enter an event. A sync that stops between
+its cursor write and the append loses the event but keeps the decision.

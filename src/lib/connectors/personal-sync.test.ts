@@ -1350,8 +1350,14 @@ describe("personal OAuth synchronization", () => {
       sources: [{ source: "drive", status: "error" }],
     });
     // The page is read again, and retiring the first file again is harmless.
+    // The cursor counts the failure, so a file that keeps failing is set aside.
     expect(savedCursor()).toEqual({
       driveChangesStartPageToken: "drive-changes-1",
+      itemQuarantine: {
+        drive: {
+          failing: { id: "drive-fails", attempts: 1, since: expect.any(String) },
+        },
+      },
     });
   });
 

@@ -1,3 +1,5 @@
+import { GOOGLE_SOURCE_ADAPTERS } from "@/lib/connectors/google-source-adapters";
+
 export const GOOGLE_OPENID_SCOPE = "openid";
 export const GOOGLE_EMAIL_SCOPE = "email";
 export const GOOGLE_GMAIL_READ_SCOPE =
@@ -190,11 +192,7 @@ export function googleSyncSourcesForScopes(
   scopes: readonly string[],
 ): readonly GoogleWorkspaceSyncSource[] {
   const capabilities = googleWorkspaceCapabilitiesForScopes(scopes);
-  return ([
-    ["mail", "gmail.read"],
-    ["calendar", "calendar.events.read"],
-    ["drive", "drive.read"],
-  ] as const)
-    .filter(([, capability]) => capabilities.has(capability))
-    .map(([source]) => source);
+  return Object.values(GOOGLE_SOURCE_ADAPTERS)
+    .filter((adapter) => capabilities.has(adapter.capability))
+    .map((adapter) => adapter.source);
 }

@@ -241,6 +241,16 @@ A connection whose last syncs reached none of its sources waits until `sync_retr
 
 Run a manual sync to try right away; it does not wait, and its outcome counts like a scheduled one.
 
+## A Google source keeps failing on one item, or an item is set aside
+
+A source that cannot process an item (`processing_failed`) keeps its place, so its next sync reads the same page again. Once the item has failed three times, over at least an hour, the sync sets it aside and the source moves past it. The connection's `connector:<connection id>` event stream shows `connector.source_item.quarantined`, which names the item only by a digest of its id.
+
+- The sync reads a set-aside item again by its id six hours later, then waits twice as long after each failure, up to a week, two items a source each sync. An item its source reports changed or removed comes due at once. Once the item ingests, or its source no longer has it, it leaves the list and `connector.source_item.released` records which.
+- Only a failure to process the item counts. A provider failure such as `Connected source returned 429.`, an interruption, or a revoked connection fails the source as before, and never sets an item aside.
+- A source keeps at most 20 items set aside. With 20, a failing item holds its source in place as before.
+- An embedding outage also fails as `processing_failed`, so it can set aside one item a source each hour it lasts. They are read again as they come due once it is over.
+- The list lives in the connection's sealed sync cursor, so reconnecting the account clears it along with the rest of the cursor.
+
 ## Connector discovery or execution is blocked
 
 - Use an HTTPS hostname with public DNS; private, loopback, link-local, metadata, embedded-credential, and unsafe redirect targets are rejected.
