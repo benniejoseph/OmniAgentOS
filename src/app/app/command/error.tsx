@@ -5,10 +5,10 @@ import { ArrowLeft, RefreshCw } from "lucide-react";
 
 export default function CommandError({
   error,
-  reset,
+  retry,
 }: {
   error: Error & { digest?: string };
-  reset: () => void;
+  retry: () => void;
 }) {
   useEffect(() => {
     console.error("Command workspace render failed", error);
@@ -23,7 +23,7 @@ export default function CommandError({
           Command hit a temporary display problem. Your conversation and completed work remain stored; retry this view or return to the workspace.
         </p>
         <div className="mt-6 flex flex-wrap gap-2">
-          <button type="button" onClick={() => reset()} className="primary-button">
+          <button type="button" onClick={() => retry()} className="primary-button">
             <RefreshCw size={15} aria-hidden="true" />
             Retry Command
           </button>

@@ -8,7 +8,7 @@ describe("Command error recovery", () => {
   it("keeps recovery inside the app with a retry and safe exit", () => {
     const html = renderToStaticMarkup(createElement(CommandError, {
       error: new Error("private implementation detail"),
-      reset: vi.fn(),
+      retry: vi.fn(),
     }));
 
     expect(html).toContain("The conversation is still safe");
