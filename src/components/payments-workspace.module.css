@@ -209,7 +209,7 @@
   padding: 0.24rem 0.55rem;
   color: var(--warning);
   background: color-mix(in oklab, var(--warning), transparent 90%);
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   font-weight: 760;
   letter-spacing: 0.08em;
   text-transform: uppercase;

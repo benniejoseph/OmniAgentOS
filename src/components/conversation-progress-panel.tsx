@@ -283,12 +283,12 @@ export function ConversationProgressPanel({
                       <p className="text-sm font-semibold">{item.title}</p>
                       <p className="mt-1 text-xs leading-5 text-muted">{item.summary}</p>
                     </div>
-                    <span className="shrink-0 rounded-full bg-surface-raised px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted">
+                    <span className="shrink-0 rounded-full bg-surface-raised px-2 py-1 text-xs font-semibold uppercase tracking-[0.12em] text-muted">
                       {item.category}
                     </span>
                   </div>
                   <div className="mt-2 flex flex-wrap items-center gap-2">
-                    <time className="text-[11px] text-muted" dateTime={item.at}>{relativeTime(item.at)}</time>
+                    <time className="text-xs text-muted" dateTime={item.at}>{relativeTime(item.at)}</time>
                     {item.action?.kind === "approval" ? (
                       <Link href="/app/approvals" className="inline-flex min-h-8 items-center gap-1 text-xs font-semibold text-primary">
                         Review <ChevronRight size={12} aria-hidden="true" />
@@ -299,7 +299,7 @@ export function ConversationProgressPanel({
                       </Link>
                     ) : null}
                   </div>
-                  <details className="mt-1 text-[11px] text-muted">
+                  <details className="mt-1 text-xs text-muted">
                     <summary className="min-h-8 cursor-pointer py-1 font-medium">Technical receipt</summary>
                     <dl className="grid gap-x-4 gap-y-1 rounded-md bg-surface px-3 py-2 font-mono sm:grid-cols-[8rem_1fr]">
                       <dt>event</dt><dd className="break-all">{item.eventRef}</dd>
@@ -321,7 +321,7 @@ export function ConversationProgressPanel({
       ) : (
         <p className="p-4 text-sm leading-6 text-muted">No progress item is shown until a real event or checkpoint has been durably recorded.</p>
       )}
-      <p className="border-t border-line px-3 py-2 text-[11px] leading-5 text-muted sm:px-4">
+      <p className="border-t border-line px-3 py-2 text-xs leading-5 text-muted sm:px-4">
         {progress.items.length} durable progress item{progress.items.length === 1 ? "" : "s"}. Event references are hashed; prompts, tool payloads, credentials, outputs, and private reasoning are excluded.
       </p>
     </section>
@@ -341,9 +341,9 @@ function ProgressFact({
 }) {
   return (
     <div className="min-w-0 bg-background px-3 py-3 sm:px-4">
-      <p className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted"><Icon size={13} aria-hidden="true" /> {label}</p>
+      <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-muted"><Icon size={13} aria-hidden="true" /> {label}</p>
       <p className="mt-2 truncate text-xs font-semibold capitalize">{value}</p>
-      <p className="mt-1 truncate text-[11px] text-muted">{detail}</p>
+      <p className="mt-1 truncate text-xs text-muted">{detail}</p>
     </div>
   );
 }
@@ -357,7 +357,7 @@ function ProgressStatePill({ state }: { state: string }) {
       : state.includes("waiting")
         ? "bg-warning/10 text-warning"
         : "bg-primary/10 text-primary";
-  return <span className={clsx("rounded-full px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.1em]", tone)}>{normalized}</span>;
+  return <span className={clsx("rounded-full px-2 py-1 text-xs font-semibold uppercase tracking-[0.1em]", tone)}>{normalized}</span>;
 }
 
 export function parseConversationProgress(value: unknown): ConversationProgress | undefined {

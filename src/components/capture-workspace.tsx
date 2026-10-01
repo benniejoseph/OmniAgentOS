@@ -945,7 +945,7 @@ export function CaptureWorkspace() {
 }
 
 function Metric({ value, label }: { value?: number; label: string }) {
-  return <div className="min-w-24 px-3 py-2.5 text-center"><p className="text-lg font-semibold tabular-nums">{value ?? "—"}</p><p className="text-[11px] font-medium text-muted">{label}</p></div>;
+  return <div className="min-w-24 px-3 py-2.5 text-center"><p className="text-lg font-semibold tabular-nums">{value ?? "—"}</p><p className="text-xs font-medium text-muted">{label}</p></div>;
 }
 
 function ModeButton({ active, onClick, icon: Icon, label }: { active: boolean; onClick: () => void; icon: typeof NotebookPen; label: string }) {

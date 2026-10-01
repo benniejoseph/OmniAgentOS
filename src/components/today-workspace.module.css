@@ -371,7 +371,7 @@
   gap: 0.55rem;
   margin-top: 0.8rem;
   color: var(--foreground);
-  font-size: 0.7rem;
+  font-size: 0.75rem;
 }
 
 .shell :global(.today-operating-line span) {
@@ -504,7 +504,7 @@
   padding: 0.4rem 0.75rem;
   color: var(--muted);
   background: var(--day-paper-soft);
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   font-variant-numeric: tabular-nums;
 }
 
@@ -660,7 +660,7 @@
   margin-top: 0.18rem;
   overflow: hidden;
   color: var(--muted);
-  font-size: 0.63rem;
+  font-size: 0.75rem;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -747,7 +747,7 @@
 .shell :global(.today-overview-dial small) {
   margin-top: 0.18rem;
   color: var(--muted);
-  font-size: 0.58rem;
+  font-size: 0.75rem;
 }
 
 .shell :global(.today-overview-featured-copy) {
@@ -764,7 +764,7 @@
 
 .shell :global(.today-overview-featured-copy > small) {
   color: var(--muted);
-  font-size: 0.64rem;
+  font-size: 0.75rem;
   line-height: 1.35;
 }
 
@@ -862,7 +862,7 @@
 .shell :global(.today-brief-meta) {
   margin-top: 0.8rem;
   color: var(--muted);
-  font-size: 0.68rem;
+  font-size: 0.75rem;
 }
 
 .shell :global(.today-brief-meta button),
@@ -877,7 +877,7 @@
   padding-inline: 0.8rem;
   color: var(--primary-ink);
   background: var(--primary);
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   font-weight: 750;
 }
 
@@ -896,7 +896,7 @@
 
 .shell :global(.today-brief-label) {
   color: var(--primary);
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   font-weight: 780;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -918,7 +918,7 @@
   padding: 0;
   color: var(--primary);
   background: var(--day-paper-soft);
-  font-size: 0.62rem;
+  font-size: 0.75rem;
 }
 
 .shell :global(.today-brief-priority strong) {
@@ -928,13 +928,13 @@
 .shell :global(.today-brief-priority p) {
   margin-top: 0.25rem;
   color: var(--muted);
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   line-height: 1.5;
 }
 
 .shell :global(.today-brief-placeholder) {
   color: var(--muted);
-  font-size: 0.73rem;
+  font-size: 0.75rem;
   line-height: 1.55;
 }
 
@@ -945,7 +945,7 @@
 
 .shell :global(.today-watchout) {
   color: var(--foreground);
-  font-size: 0.73rem;
+  font-size: 0.75rem;
   line-height: 1.55;
 }
 
@@ -959,7 +959,7 @@
 
 .shell :global(.today-resurfaced > p:last-child) {
   color: var(--muted);
-  font-size: 0.69rem;
+  font-size: 0.75rem;
 }
 
 .shell :global(.today-brief-schedule) {
@@ -969,7 +969,7 @@
 .shell :global(.today-brief-schedule summary) {
   min-height: 2rem;
   color: var(--muted);
-  font-size: 0.69rem;
+  font-size: 0.75rem;
 }
 
 .shell :global(.today-brief-schedule form) {
@@ -979,7 +979,7 @@
 .shell :global(.today-brief-schedule label) {
   grid-template-columns: 6rem minmax(0, 1fr);
   color: var(--muted);
-  font-size: 0.66rem;
+  font-size: 0.75rem;
 }
 
 .shell :global(.today-brief-schedule input:not([type="checkbox"])),
@@ -989,7 +989,7 @@
   border-radius: 0.75rem;
   color: var(--foreground);
   background: var(--day-input);
-  font-size: 0.68rem;
+  font-size: 0.75rem;
 }
 
 .shell :global(.today-brief-schedule button) {
@@ -997,7 +997,7 @@
   border-radius: 999px;
   background: var(--foreground);
   color: var(--background);
-  font-size: 0.68rem;
+  font-size: 0.75rem;
 }
 
 .sectionPicker {
@@ -1014,7 +1014,7 @@
 .sectionPicker legend {
   padding: 0 0.25rem;
   color: var(--muted);
-  font-size: 0.66rem;
+  font-size: 0.75rem;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -1047,13 +1047,13 @@
 .projectionStatus p {
   margin: 0;
   color: var(--muted);
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   line-height: 1.5;
 }
 
 .projectionKicker {
   color: var(--primary) !important;
-  font-size: 0.62rem !important;
+  font-size: 0.75rem !important;
   font-weight: 800;
   text-transform: uppercase;
   letter-spacing: 0.1em;
@@ -1078,14 +1078,14 @@
 .sourceState span,
 .sourceState small {
   color: var(--muted);
-  font-size: 0.62rem;
+  font-size: 0.75rem;
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
 
 .sourceState strong {
   color: var(--success);
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   text-transform: capitalize;
 }
 
@@ -1176,7 +1176,7 @@
 .shell :global(.today-section-copy) {
   margin-top: 0.25rem;
   color: var(--muted);
-  font-size: 0.74rem;
+  font-size: 0.75rem;
 }
 
 .shell :global(.today-progress) {
@@ -1194,7 +1194,7 @@
 }
 
 .shell :global(.today-progress span) {
-  font-size: 0.7rem;
+  font-size: 0.75rem;
 }
 
 .shell :global(.today-capture-panel) {
@@ -1225,7 +1225,7 @@
 
 .shell :global(.today-capture-heading span) {
   color: var(--muted);
-  font-size: 0.68rem;
+  font-size: 0.75rem;
 }
 
 .shell :global(.today-capture-row) {
@@ -1245,7 +1245,7 @@
   min-width: 0;
   gap: 0.35rem;
   color: var(--muted);
-  font-size: 0.64rem;
+  font-size: 0.75rem;
   font-weight: 700;
 }
 
@@ -1260,7 +1260,7 @@
   padding-inline: 0.85rem;
   color: var(--foreground);
   background: var(--day-input);
-  font-size: 0.74rem;
+  font-size: 0.75rem;
   outline: 0;
 }
 
@@ -1276,7 +1276,7 @@
   border-radius: 999px;
   color: var(--background);
   background: var(--foreground);
-  font-size: 0.72rem;
+  font-size: 0.75rem;
 }
 
 .shell :global(.today-focus-list) {
@@ -1324,13 +1324,13 @@
 .shell :global(.today-item-copy small) {
   margin-top: 0.2rem;
   color: var(--muted);
-  font-size: 0.67rem;
+  font-size: 0.75rem;
 }
 
 .shell :global(.today-priority) {
   border-radius: 999px;
   padding: 0.28rem 0.52rem;
-  font-size: 0.58rem;
+  font-size: 0.75rem;
 }
 
 .shell :global(.today-empty) {
@@ -1364,7 +1364,7 @@
 
 .shell :global(.today-timeline-item > span) {
   color: var(--muted);
-  font-size: 0.66rem;
+  font-size: 0.75rem;
   font-weight: 720;
 }
 
@@ -1384,7 +1384,7 @@
 .shell :global(.today-timeline-item small) {
   margin-top: 0.2rem;
   color: var(--muted);
-  font-size: 0.66rem;
+  font-size: 0.75rem;
 }
 
 .shell :global(.today-attention) {
@@ -1401,12 +1401,12 @@
 
 .shell :global(.today-attention p) {
   color: var(--muted);
-  font-size: 0.66rem;
+  font-size: 0.75rem;
 }
 
 .shell :global(.today-attention a) {
   color: var(--foreground);
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   text-decoration: underline;
   text-underline-offset: 0.2rem;
 }
@@ -1473,7 +1473,7 @@
 .shell :global(.today-context-heading p) {
   margin-top: 0.22rem;
   color: var(--muted);
-  font-size: 0.65rem;
+  font-size: 0.75rem;
   font-weight: 400;
   line-height: 1.45;
   letter-spacing: 0;
@@ -1482,7 +1482,7 @@
 
 .shell :global(.today-context-heading > a) {
   color: var(--foreground);
-  font-size: 0.65rem;
+  font-size: 0.75rem;
   font-weight: 740;
   text-decoration: underline;
   text-underline-offset: 0.2rem;
@@ -1524,7 +1524,7 @@
 .shell :global(.today-memory-row p),
 .shell :global(.today-project-row p) {
   color: var(--muted);
-  font-size: 0.64rem;
+  font-size: 0.75rem;
 }
 
 .shell :global(.today-live-dot) {
@@ -1542,7 +1542,7 @@
   padding: 0.2rem 0.38rem;
   color: var(--primary);
   background: var(--day-paper-soft);
-  font-size: 0.52rem;
+  font-size: 0.75rem;
 }
 
 .shell :global(.today-project-row > div > span) {
@@ -1559,7 +1559,7 @@
 .shell :global(.today-context-empty) {
   padding-block: 1rem;
   color: var(--muted);
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   line-height: 1.6;
 }
 
@@ -1657,7 +1657,7 @@
   align-items: center;
   gap: 0.45rem;
   color: var(--usage-current);
-  font-size: 0.67rem;
+  font-size: 0.75rem;
   font-weight: 790;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -1681,7 +1681,7 @@
   padding: 0.45rem 0.85rem;
   color: var(--muted);
   background: transparent;
-  font-size: 0.69rem;
+  font-size: 0.75rem;
   font-weight: 720;
   cursor: pointer;
   transition: color 160ms ease, background-color 160ms ease, transform 160ms ease;
@@ -1723,7 +1723,7 @@
 
 .usagePrimaryMetric > span:first-child {
   color: var(--muted);
-  font-size: 0.69rem;
+  font-size: 0.75rem;
   font-weight: 720;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -1742,7 +1742,7 @@
 .usagePrimaryMetric > small {
   margin-top: 0.5rem;
   color: var(--muted);
-  font-size: 0.68rem;
+  font-size: 0.75rem;
 }
 
 .usageDelta {
@@ -1752,7 +1752,7 @@
   margin-top: 0.55rem;
   border-radius: 999px;
   padding: 0.34rem 0.58rem;
-  font-size: 0.64rem;
+  font-size: 0.75rem;
   font-weight: 740;
 }
 
@@ -1780,7 +1780,7 @@
 
 .usageMetric > span {
   color: var(--muted);
-  font-size: 0.62rem;
+  font-size: 0.75rem;
   font-weight: 730;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -1799,7 +1799,7 @@
 
 .usageMetric > small {
   color: var(--muted);
-  font-size: 0.6rem;
+  font-size: 0.75rem;
   line-height: 1.45;
 }
 
@@ -1835,14 +1835,14 @@
 .usageBreakdown header p {
   margin-top: 0.2rem;
   color: var(--muted);
-  font-size: 0.64rem;
+  font-size: 0.75rem;
 }
 
 .usageLegend {
   display: flex;
   gap: 0.9rem;
   color: var(--muted);
-  font-size: 0.62rem;
+  font-size: 0.75rem;
 }
 
 .usageLegend span {
@@ -1884,7 +1884,7 @@
 .usageAxisLabel {
   fill: var(--muted);
   font-family: ui-sans-serif, system-ui, sans-serif;
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .usageCurrentLine,
@@ -1929,7 +1929,7 @@
 .usageDataTable {
   margin-top: 0.5rem;
   color: var(--muted);
-  font-size: 0.62rem;
+  font-size: 0.75rem;
 }
 
 .usageDataTable summary {
@@ -1976,7 +1976,7 @@
   gap: 0.8rem;
   margin-top: 0.55rem;
   color: var(--muted);
-  font-size: 0.59rem;
+  font-size: 0.75rem;
 }
 
 .usageComposition > p span { display: flex; align-items: center; gap: 0.28rem; }
@@ -2003,7 +2003,7 @@
   border: 1px solid var(--day-divider);
   border-radius: 50%;
   color: var(--muted);
-  font-size: 0.62rem;
+  font-size: 0.75rem;
 }
 
 .usageBreakdown ol {
@@ -2035,7 +2035,7 @@
   border-radius: 50%;
   color: var(--mix-color);
   background: oklch(from var(--mix-color) l c h / 0.12);
-  font-size: 0.52rem;
+  font-size: 0.75rem;
   font-weight: 820;
   letter-spacing: -0.02em;
 }
@@ -2047,12 +2047,12 @@
   min-width: 0;
   align-items: baseline;
   gap: 0.4rem;
-  font-size: 0.62rem;
+  font-size: 0.75rem;
 }
 
 .usageBreakdown li p strong {
   overflow: hidden;
-  font-size: 0.66rem;
+  font-size: 0.75rem;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2086,20 +2086,20 @@
   margin-top: 0.28rem;
   overflow: hidden;
   color: var(--muted);
-  font-size: 0.54rem;
+  font-size: 0.75rem;
   line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.usageMixEmpty { margin-top: 1rem; color: var(--muted); font-size: 0.65rem; }
-.usageMore { display: block; margin-top: 0.8rem; color: var(--muted); font-size: 0.58rem; text-align: right; }
+.usageMixEmpty { margin-top: 1rem; color: var(--muted); font-size: 0.75rem; }
+.usageMore { display: block; margin-top: 0.8rem; color: var(--muted); font-size: 0.75rem; text-align: right; }
 
 .usageDisclosure {
   align-items: center;
   border-top: 1px solid var(--day-divider);
   padding: 0.7rem clamp(1rem, 1.7vw, 1.45rem);
   color: var(--muted);
-  font-size: 0.59rem;
+  font-size: 0.75rem;
   line-height: 1.5;
 }
 
@@ -2128,7 +2128,7 @@
 
 .usageUnavailable > svg { color: var(--usage-current); }
 .usageUnavailable strong { font-size: 0.83rem; }
-.usageUnavailable p { margin-top: 0.2rem; color: var(--muted); font-size: 0.68rem; }
+.usageUnavailable p { margin-top: 0.2rem; color: var(--muted); font-size: 0.75rem; }
 .usageUnavailable button {
   min-height: 2.35rem;
   margin-left: auto;
@@ -2137,7 +2137,7 @@
   padding: 0.45rem 0.85rem;
   color: var(--foreground);
   background: var(--day-paper-strong);
-  font-size: 0.67rem;
+  font-size: 0.75rem;
   font-weight: 720;
   cursor: pointer;
 }
@@ -2375,7 +2375,7 @@
   .shell :global(.today-date span) {
     max-width: 3rem;
     padding-bottom: 0.15rem;
-    font-size: 0.65rem;
+    font-size: 0.75rem;
   }
 
   .shell :global(.today-intro) {

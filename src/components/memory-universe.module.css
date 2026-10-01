@@ -108,7 +108,7 @@
 }
 .modeSwitch button > span { display: grid; gap: .1rem; }
 .modeSwitch strong { font-size: .8rem; font-weight: 760; }
-.modeSwitch small { font-size: .7rem; }
+.modeSwitch small { font-size: .75rem; }
 .modeSwitch .activeMode {
   color: #effcf8;
   background: rgb(144 234 208 / .13);
@@ -291,7 +291,7 @@
   border-radius: 50%;
   box-shadow: 0 0 .7rem currentColor;
 }
-.legend button small { color: #7e9b95; font-size: .68rem; font-variant-numeric: tabular-nums; }
+.legend button small { color: #7e9b95; font-size: .75rem; font-variant-numeric: tabular-nums; }
 .legend .hiddenKind { opacity: .36; }
 
 .emptyVerified {
@@ -312,7 +312,7 @@
   transform: translate(-50%, -50%);
 }
 .emptyVerified > div { display: grid; width: 3.5rem; height: 3.5rem; place-items: center; border-radius: 50%; color: #90ead0; background: rgb(144 234 208 / .1); box-shadow: 0 0 0 .55rem rgb(144 234 208 / .035); }
-.emptyVerified > p { margin-top: 1.2rem; color: #90ead0; font-size: .74rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+.emptyVerified > p { margin-top: 1.2rem; color: #90ead0; font-size: .75rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
 .emptyVerified h3 { margin-top: .35rem; font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif; font-size: clamp(1.55rem, 2.3vw, 2.2rem); font-weight: 520; line-height: 1.08; }
 .emptyVerified > span { max-width: 28rem; margin-top: .75rem; color: #a3bbb6; font-size: .86rem; line-height: 1.6; }
 .emptyVerified button { display: inline-flex; min-height: 2.9rem; align-items: center; gap: .45rem; margin-top: 1.2rem; border-radius: 999px; padding: 0 1rem; color: #09221d; background: #90ead0; font-size: .8rem; font-weight: 780; }
@@ -336,7 +336,7 @@
 }
 .close { position: absolute; top: .8rem; right: .8rem; display: grid; width: 2.45rem; height: 2.45rem; place-items: center; border-radius: 50%; color: #9eb9b4; }
 .close:hover { color: #effcf8; background: rgb(144 234 208 / .1); }
-.inspector > p { display: flex; align-items: center; gap: .45rem; padding-right: 2.4rem; color: #90ead0; font-size: .74rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+.inspector > p { display: flex; align-items: center; gap: .45rem; padding-right: 2.4rem; color: #90ead0; font-size: .75rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
 .inspector h3 { margin-top: .75rem; padding-right: 1rem; overflow-wrap: anywhere; font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif; font-size: clamp(1.6rem, 2vw, 2rem); font-weight: 520; line-height: 1.12; }
 .inspector > span { display: block; margin-top: .8rem; color: #abc1bd; font-size: .86rem; line-height: 1.65; }
 .inspector dl { display: grid; gap: .7rem; margin-top: 1.2rem; border-top: 1px solid rgb(144 234 208 / .14); padding-top: 1rem; }
@@ -345,13 +345,13 @@
 .inspector dd { font-weight: 740; font-variant-numeric: tabular-nums; }
 .connections { display: grid; gap: .45rem; margin-top: 1.2rem; border-top: 1px solid rgb(144 234 208 / .14); padding-top: 1rem; }
 .connections > p { display: flex; align-items: center; gap: .4rem; margin-bottom: .15rem; color: #9fbab4; font-size: .75rem; font-weight: 760; }
-.connections > span { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: .45rem; border-radius: .7rem; padding: .5rem .6rem; color: #d6e7e3; background: rgb(144 234 208 / .055); font-size: .74rem; }
+.connections > span { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: .45rem; border-radius: .7rem; padding: .5rem .6rem; color: #d6e7e3; background: rgb(144 234 208 / .055); font-size: .75rem; }
 .connections > span > i { width: .36rem; height: .36rem; border-radius: 50%; background: #90ead0; }
-.connections small { color: #809c96; font-size: .68rem; }
+.connections small { color: #809c96; font-size: .75rem; }
 .tags { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: 1rem; }
-.tags em { border: 1px solid rgb(144 234 208 / .14); border-radius: 999px; padding: .3rem .55rem; color: #a9c0bc; font-size: .7rem; font-style: normal; }
+.tags em { border: 1px solid rgb(144 234 208 / .14); border-radius: 999px; padding: .3rem .55rem; color: #a9c0bc; font-size: .75rem; font-style: normal; }
 .detailLoading { display: flex; min-height: 11rem; align-items: center; justify-content: center; gap: .55rem; color: #9eb9b4; font-size: .82rem; }
-.cornerMark { position: absolute; z-index: 3; right: 1rem; bottom: 1.1rem; display: flex; align-items: center; gap: .38rem; color: #65827d; font-size: .68rem; letter-spacing: .08em; text-transform: uppercase; }
+.cornerMark { position: absolute; z-index: 3; right: 1rem; bottom: 1.1rem; display: flex; align-items: center; gap: .38rem; color: #65827d; font-size: .75rem; letter-spacing: .08em; text-transform: uppercase; }
 
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes universe-reveal { from { opacity: 0; transform: translateY(8px) scale(.995); } to { opacity: 1; transform: none; } }

@@ -526,7 +526,7 @@
   padding-inline: 1rem;
   color: var(--foreground);
   background: var(--surface);
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   font-weight: 760;
 }
 
@@ -592,7 +592,7 @@
 .projects :global(.projects-view-tabs small) {
   margin-top: 0.14rem;
   color: var(--muted);
-  font-size: 0.65rem;
+  font-size: 0.75rem;
 }
 
 .projects :global(.projects-view-tabs a) {
@@ -644,7 +644,7 @@
   max-width: 44rem;
   margin-top: 0.35rem;
   color: var(--muted);
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   line-height: 1.55;
 }
 
@@ -657,7 +657,7 @@
   padding: 0.45rem 0.7rem;
   color: var(--success);
   background: oklch(from var(--success) l c h / 0.1);
-  font-size: 0.62rem;
+  font-size: 0.75rem;
   font-weight: 740;
 }
 
@@ -689,7 +689,7 @@
 .projects :global(.projects-template-publish label > span) {
   margin-top: 0.25rem;
   color: var(--muted);
-  font-size: 0.58rem;
+  font-size: 0.75rem;
 }
 
 .projects :global(.projects-template-publish label > span) {
@@ -707,7 +707,7 @@
   padding-inline: 0.7rem;
   color: var(--foreground);
   background: var(--background);
-  font-size: 0.68rem;
+  font-size: 0.75rem;
 }
 
 .projects :global(.projects-template-publish input) {
@@ -759,7 +759,7 @@
 .projects :global(.projects-template-card-head em) {
   gap: 0.25rem;
   color: var(--muted);
-  font-size: 0.57rem;
+  font-size: 0.75rem;
   font-style: normal;
   font-weight: 720;
   text-transform: uppercase;
@@ -782,7 +782,7 @@
   margin-top: 0.35rem;
   overflow: hidden;
   color: var(--muted);
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   line-height: 1.5;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -802,7 +802,7 @@
 
 .projects :global(.projects-template-card dt) {
   color: var(--muted);
-  font-size: 0.5rem;
+  font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -810,7 +810,7 @@
 .projects :global(.projects-template-card dd) {
   overflow: hidden;
   margin-top: 0.2rem;
-  font-size: 0.65rem;
+  font-size: 0.75rem;
   font-weight: 720;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -829,7 +829,7 @@
   padding-inline: 0.65rem;
   color: var(--foreground);
   background: var(--background);
-  font-size: 0.6rem;
+  font-size: 0.75rem;
   font-weight: 720;
 }
 
@@ -858,7 +858,7 @@
 
 .projects :global(.projects-template-empty p) {
   margin-top: 0.2rem;
-  font-size: 0.65rem;
+  font-size: 0.75rem;
 }
 
 .projects :global(.projects-workspace) {
@@ -981,7 +981,7 @@
 .projects :global(.project-board-heading p:last-child) {
   margin-top: 0.25rem;
   color: var(--muted);
-  font-size: 0.62rem;
+  font-size: 0.75rem;
 }
 
 .projects :global(.project-board-heading > span) {
@@ -989,7 +989,7 @@
   align-items: center;
   gap: 0.4rem;
   color: var(--muted);
-  font-size: 0.52rem;
+  font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
@@ -1032,13 +1032,13 @@
 }
 
 .projects :global(.project-board-column h4) {
-  font-size: 0.7rem;
+  font-size: 0.75rem;
 }
 
 .projects :global(.project-board-column header p) {
   margin-top: 0.15rem;
   color: var(--muted);
-  font-size: 0.52rem;
+  font-size: 0.75rem;
 }
 
 .projects :global(.project-board-column header strong) {
@@ -1049,7 +1049,7 @@
   border-radius: 50%;
   color: var(--primary);
   background: oklch(from var(--primary) l c h / 0.09);
-  font-size: 0.58rem;
+  font-size: 0.75rem;
 }
 
 .projects :global(.project-board-cards) {
@@ -1077,12 +1077,12 @@
 
 .projects :global(.project-board-card-meta small) {
   color: var(--muted);
-  font-size: 0.49rem;
+  font-size: 0.75rem;
 }
 
 .projects :global(.project-board-card h5) {
   margin-top: 0.65rem;
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   line-height: 1.35;
 }
 
@@ -1091,7 +1091,7 @@
   margin-top: 0.3rem;
   overflow: hidden;
   color: var(--muted);
-  font-size: 0.56rem;
+  font-size: 0.75rem;
   line-height: 1.5;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
@@ -1103,7 +1103,7 @@
   gap: 0.3rem;
   margin-top: 0.5rem;
   color: var(--danger);
-  font-size: 0.51rem;
+  font-size: 0.75rem;
   font-style: normal;
   line-height: 1.4;
 }
@@ -1119,7 +1119,7 @@
 
 .projects :global(.project-board-card dt) {
   color: var(--muted);
-  font-size: 0.44rem;
+  font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -1127,7 +1127,7 @@
 .projects :global(.project-board-card dd) {
   overflow: hidden;
   margin-top: 0.16rem;
-  font-size: 0.53rem;
+  font-size: 0.75rem;
   font-weight: 720;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1149,7 +1149,7 @@
   border-radius: 999px;
   padding-inline: 0.55rem;
   color: var(--muted);
-  font-size: 0.5rem;
+  font-size: 0.75rem;
   font-weight: 750;
 }
 
@@ -1171,7 +1171,7 @@
   align-content: center;
   gap: 0.4rem;
   color: var(--muted);
-  font-size: 0.53rem;
+  font-size: 0.75rem;
 }
 
 @media (max-width: 760px) {

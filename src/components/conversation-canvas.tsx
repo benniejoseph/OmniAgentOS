@@ -164,7 +164,7 @@ export function ConversationCanvas({
           </button>
         </div>
         {projection ? (
-          <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-black/45 dark:text-white/45">
+          <div className="mt-2 flex flex-wrap gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-black/45 dark:text-white/45">
             <span>{projection.nodes.length} nodes</span>
             <span aria-hidden="true">·</span>
             <span>{projection.edges.length} canonical links</span>
@@ -178,7 +178,7 @@ export function ConversationCanvas({
         <button type="button" onClick={() => zoom(-0.1)} className="grid size-9 place-items-center rounded-full hover:bg-black/5 dark:hover:bg-white/10" aria-label="Zoom out">
           <Minus size={15} aria-hidden="true" />
         </button>
-        <span className="min-w-11 text-center text-[11px] font-semibold tabular-nums">{Math.round(view.scale * 100)}%</span>
+        <span className="min-w-11 text-center text-xs font-semibold tabular-nums">{Math.round(view.scale * 100)}%</span>
         <button type="button" onClick={() => zoom(0.1)} className="grid size-9 place-items-center rounded-full hover:bg-black/5 dark:hover:bg-white/10" aria-label="Zoom in">
           <Plus size={15} aria-hidden="true" />
         </button>
@@ -257,7 +257,7 @@ export function ConversationCanvas({
                       strokeWidth={edge.kind === "run_fork" ? 2.5 : 1.5}
                       strokeDasharray={edge.kind === "delegation_artifact_shared" ? "5 4" : undefined}
                     />
-                    <text x={labelX} y={labelY} textAnchor="middle" fill="currentColor" fillOpacity="0.48" fontSize="10" fontWeight="600">
+                    <text x={labelX} y={labelY} textAnchor="middle" fill="currentColor" fillOpacity="0.48" fontSize="12" fontWeight="600">
                       {edge.label}
                     </text>
                   </g>
@@ -279,7 +279,7 @@ export function ConversationCanvas({
       )}
 
       {projection ? (
-        <div className="absolute bottom-4 left-4 z-20 max-w-md rounded-xl border border-black/10 bg-white/90 px-3 py-2 text-[11px] leading-5 text-black/55 shadow-sm backdrop-blur dark:border-white/10 dark:bg-[#23231e]/90 dark:text-white/55">
+        <div className="absolute bottom-4 left-4 z-20 max-w-md rounded-xl border border-black/10 bg-white/90 px-3 py-2 text-xs leading-5 text-black/55 shadow-sm backdrop-blur dark:border-white/10 dark:bg-[#23231e]/90 dark:text-white/55">
           <span className="inline-flex items-center gap-1 font-semibold text-[#8b6825] dark:text-[#d9b86e]"><ShieldCheck size={12} aria-hidden="true" /> Context boundary</span>
           <span className="ml-2">{projection.memoryBoundary.detail}</span>
           {projection.truncated ? <span className="ml-2 font-semibold">This bounded view has more retained history.</span> : null}
@@ -310,13 +310,13 @@ function CanvasNodeCard({
     <>
       <span className="flex items-start justify-between gap-3">
         <span className="grid size-8 shrink-0 place-items-center rounded-xl bg-black/[0.045] text-[#9a762c] dark:bg-white/[0.07] dark:text-[#d9b86e]">{nodeIcon(node.kind)}</span>
-        <span className={clsx("rounded-full px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.1em]", active ? "bg-white/10 text-white/70 dark:bg-black/10 dark:text-black/60" : "bg-black/[0.045] text-black/50 dark:bg-white/[0.07] dark:text-white/55")}>{node.status.replaceAll("_", " ")}</span>
+        <span className={clsx("rounded-full px-2 py-0.5 text-xs font-semibold uppercase tracking-[0.1em]", active ? "bg-white/10 text-white/70 dark:bg-black/10 dark:text-black/60" : "bg-black/[0.045] text-black/50 dark:bg-white/[0.07] dark:text-white/55")}>{node.status.replaceAll("_", " ")}</span>
       </span>
       <span className="mt-3 block line-clamp-2 text-sm font-semibold leading-5">{node.title}</span>
-      <span className={clsx("mt-1 block line-clamp-2 text-[11px] leading-4", active ? "text-white/60 dark:text-black/55" : "text-black/50 dark:text-white/50")}>{node.detail}</span>
-      <span className={clsx("mt-2 block text-[10px]", active ? "text-white/50 dark:text-black/45" : "text-black/40 dark:text-white/40")}>{nodeKindLabel(node.kind)} · {formatDate(node.occurredAt)}</span>
+      <span className={clsx("mt-1 block line-clamp-2 text-xs leading-4", active ? "text-white/60 dark:text-black/55" : "text-black/50 dark:text-white/50")}>{node.detail}</span>
+      <span className={clsx("mt-2 block text-xs", active ? "text-white/50 dark:text-black/45" : "text-black/40 dark:text-white/40")}>{nodeKindLabel(node.kind)} · {formatDate(node.occurredAt)}</span>
       {node.kind === "run" ? (
-        <span className={clsx("mt-2 inline-flex rounded-full px-2 py-0.5 text-[9px] font-semibold", node.contextAccess.state === "granted" ? "bg-emerald-500/12 text-emerald-700 dark:text-emerald-300" : "bg-black/[0.045] text-black/45 dark:bg-white/[0.07] dark:text-white/45")} title={node.contextAccess.detail}>
+        <span className={clsx("mt-2 inline-flex rounded-full px-2 py-0.5 text-xs font-semibold", node.contextAccess.state === "granted" ? "bg-emerald-500/12 text-emerald-700 dark:text-emerald-300" : "bg-black/[0.045] text-black/45 dark:bg-white/[0.07] dark:text-white/45")} title={node.contextAccess.detail}>
           {node.contextAccess.state === "granted"
             ? `${node.contextAccess.grantCount} context grant${node.contextAccess.grantCount === 1 ? "" : "s"}`
             : node.contextAccess.state === "none" ? "No context grants" : "Scope receipt unavailable"}

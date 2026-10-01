@@ -111,7 +111,7 @@ export function GeneratedArtifactsShelfView({
                 Created files
               </h2>
               {hasItems ? (
-                <span className="rounded-md bg-surface-raised px-2 py-1 font-mono text-[0.6875rem] text-muted">
+                <span className="rounded-md bg-surface-raised px-2 py-1 font-mono text-xs text-muted">
                   {items.length} latest
                 </span>
               ) : null}
@@ -190,7 +190,7 @@ function GeneratedArtifactCard({ item }: { item: ResultsGeneratedArtifact }) {
         <span className="grid size-9 shrink-0 place-items-center rounded-md border border-line bg-surface text-primary">
           {artifactKindIcon(item.kind)}
         </span>
-        <span className={clsx("inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[0.6875rem] font-semibold", status.tone)}>
+        <span className={clsx("inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-semibold", status.tone)}>
           {artifactStatusIcon(item.status)}
           {status.label}
         </span>
@@ -203,14 +203,14 @@ function GeneratedArtifactCard({ item }: { item: ResultsGeneratedArtifact }) {
         <p className="mt-1 truncate text-xs text-muted" title={item.filename}>
           {item.filename}
         </p>
-        <p className="mt-3 text-[0.6875rem] text-muted">
+        <p className="mt-3 text-xs text-muted">
           {kindLabel(item.kind)} · v{item.currentVersion}
           {item.byteCount === null ? "" : ` · ${formatBytes(item.byteCount)}`}
         </p>
       </div>
 
       <div className="mt-4 flex items-end justify-between gap-3 border-t border-line pt-3">
-        <p className="text-[0.6875rem] text-muted" title={item.updatedAt}>
+        <p className="text-xs text-muted" title={item.updatedAt}>
           Updated {formatTimestamp(item.updatedAt)}
         </p>
         {item.status === "ready" && item.downloadUrl ? (
@@ -223,7 +223,7 @@ function GeneratedArtifactCard({ item }: { item: ResultsGeneratedArtifact }) {
             Download
           </a>
         ) : (
-          <span className="text-[0.6875rem] font-semibold text-muted">
+          <span className="text-xs font-semibold text-muted">
             {item.status === "failed" ? "Needs retry" : "Preparing"}
           </span>
         )}

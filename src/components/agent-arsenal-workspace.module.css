@@ -88,7 +88,7 @@
   content: "";
 }
 .headerCopy { max-width: 56rem; }
-.shell :global(.arsenal-kicker) { color: var(--arsenal-primary); font-size: .67rem; letter-spacing: .2em; }
+.shell :global(.arsenal-kicker) { color: var(--arsenal-primary); font-size: .75rem; letter-spacing: .2em; }
 .headerCopy h1 {
   margin-top: .45rem;
   color: var(--arsenal-ink);
@@ -164,7 +164,7 @@
 .workspaceTabs button > svg { flex: none; }
 .workspaceTabs button > span { display: grid; min-width: 0; gap: .12rem; }
 .workspaceTabs strong { color: currentColor; font-size: .78rem; }
-.workspaceTabs small { overflow: hidden; color: var(--arsenal-muted); font-size: .66rem; text-overflow: ellipsis; white-space: nowrap; }
+.workspaceTabs small { overflow: hidden; color: var(--arsenal-muted); font-size: .75rem; text-overflow: ellipsis; white-space: nowrap; }
 .workspaceTabs .activeTab {
   border-color: color-mix(in oklab, var(--arsenal-primary) 28%, var(--arsenal-line));
   color: var(--arsenal-primary);
@@ -192,14 +192,14 @@
   padding: 1.25rem 1.4rem;
   background: color-mix(in oklab, var(--arsenal-primary) 4%, transparent);
 }
-.outcomesHeader p { margin: 0; color: var(--arsenal-primary); font-size: .65rem; font-weight: 780; letter-spacing: .11em; text-transform: uppercase; }
+.outcomesHeader p { margin: 0; color: var(--arsenal-primary); font-size: .75rem; font-weight: 780; letter-spacing: .11em; text-transform: uppercase; }
 .outcomesHeader h2 { margin: .2rem 0 0; font-size: 1.3rem; letter-spacing: -.03em; }
 .outcomesHeader span { display: block; margin-top: .35rem; color: var(--arsenal-muted); font-size: .76rem; }
 .outcomeSummary { display: grid; grid-template-columns: repeat(4, 1fr); border-bottom: 1px solid var(--arsenal-line); }
 .outcomeSummary > div { min-height: 5.2rem; align-content: center; padding: .9rem 1.2rem; }
 .outcomeSummary > div + div { border-left: 1px solid var(--arsenal-line); }
 .outcomeMetric { display: grid; gap: .18rem; }
-.outcomeMetric span { color: var(--arsenal-muted); font-size: .66rem; font-weight: 690; text-transform: uppercase; }
+.outcomeMetric span { color: var(--arsenal-muted); font-size: .75rem; font-weight: 690; text-transform: uppercase; }
 .outcomeMetric strong { color: var(--arsenal-ink); font-size: .86rem; font-variant-numeric: tabular-nums; }
 .outcomeSummary .outcomeMetric strong { color: var(--arsenal-primary); font-size: 1.25rem; }
 .outcomeList { display: grid; }
@@ -214,9 +214,9 @@
 .outcomeList article + article { border-top: 1px solid var(--arsenal-line); }
 .outcomeList article:hover { background: color-mix(in oklab, var(--arsenal-primary) 4%, transparent); }
 .outcomeIdentity { display: grid; min-width: 0; gap: .08rem; }
-.outcomeIdentity > span { overflow: hidden; color: var(--arsenal-muted); font-size: .66rem; text-overflow: ellipsis; white-space: nowrap; }
+.outcomeIdentity > span { overflow: hidden; color: var(--arsenal-muted); font-size: .75rem; text-overflow: ellipsis; white-space: nowrap; }
 .outcomeIdentity > strong { font-size: .82rem; }
-.outcomeIdentity > small { color: var(--arsenal-muted); font-size: .66rem; }
+.outcomeIdentity > small { color: var(--arsenal-muted); font-size: .75rem; }
 .outcomeNotice { display: flex; min-height: 9rem; align-items: center; gap: .75rem; padding: 1.2rem 1.4rem; color: var(--arsenal-primary); }
 .outcomeNotice h2 { margin: 0; color: var(--arsenal-ink); font-size: 1rem; }
 .outcomeNotice p { margin: .25rem 0 0; color: var(--arsenal-muted); font-size: .76rem; }
@@ -247,8 +247,8 @@
   gap: .5rem;
   padding: 0 .65rem .8rem;
 }
-.rosterHeading :global(.arsenal-section-label) { padding: 0; color: var(--arsenal-muted); font-size: .66rem; }
-.rosterHeading > span { color: var(--arsenal-primary); font-size: .66rem; font-weight: 750; }
+.rosterHeading :global(.arsenal-section-label) { padding: 0; color: var(--arsenal-muted); font-size: .75rem; }
+.rosterHeading > span { color: var(--arsenal-primary); font-size: .75rem; font-weight: 750; }
 .shell :global(.arsenal-roster-item) {
   grid-template-columns: 3rem minmax(0, 1fr) auto;
   min-height: 5.2rem;
@@ -269,13 +269,13 @@
 .shell :global(.arsenal-node:focus-visible),
 .shell :global(.agent-custom-orbit button:focus-visible) { outline: 2px solid var(--arsenal-primary); outline-offset: 3px; }
 .shell :global(.arsenal-roster-item strong) { font-size: .86rem; }
-.shell :global(.arsenal-roster-item small) { color: var(--arsenal-muted); font-size: .65rem; }
+.shell :global(.arsenal-roster-item small) { color: var(--arsenal-muted); font-size: .75rem; }
 .shell :global(.arsenal-roster-item em) {
   display: block;
   margin-top: .28rem;
   overflow: hidden;
   color: color-mix(in oklab, var(--agent-color) 78%, var(--arsenal-ink));
-  font-size: .65rem;
+  font-size: .75rem;
   font-style: normal;
   font-weight: 720;
   letter-spacing: .02em;
@@ -376,14 +376,14 @@
 .shell :global(.arsenal-node:hover [data-agent]),
 .shell :global(.arsenal-node.is-selected [data-agent]) { filter: saturate(1.15); transform: scale(1.075); }
 .shell :global(.arsenal-node strong) { margin-top: .1rem; font-size: .8rem; }
-.shell :global(.arsenal-node small) { max-width: 9rem; color: var(--arsenal-muted); font-size: .66rem; }
+.shell :global(.arsenal-node small) { max-width: 9rem; color: var(--arsenal-muted); font-size: .75rem; }
 .nodeTheme {
   border: 1px solid color-mix(in oklab, var(--agent-color) 25%, transparent);
   border-radius: 999px;
   padding: .18rem .42rem;
   color: var(--agent-color);
   background: color-mix(in oklab, var(--agent-color) 8%, var(--arsenal-surface));
-  font-size: .62rem;
+  font-size: .75rem;
   font-weight: 800;
   letter-spacing: .11em;
   text-transform: uppercase;
@@ -440,9 +440,9 @@
 }
 .inspectorPortrait > [data-agent] { z-index: 1; }
 .inspectorPortrait > div { position: relative; z-index: 1; display: grid; justify-items: center; margin-top: -.65rem; }
-.inspectorPortrait span { color: var(--agent-color); font-size: .65rem; font-weight: 820; letter-spacing: .16em; text-transform: uppercase; }
+.inspectorPortrait span { color: var(--agent-color); font-size: .75rem; font-weight: 820; letter-spacing: .16em; text-transform: uppercase; }
 .inspectorPortrait strong { margin-top: .18rem; color: var(--arsenal-ink); font-size: .75rem; }
-.inspectorPortrait q { max-width: 15rem; margin-top: .32rem; color: var(--arsenal-muted); font-size: .68rem; font-style: italic; line-height: 1.4; }
+.inspectorPortrait q { max-width: 15rem; margin-top: .32rem; color: var(--arsenal-muted); font-size: .75rem; font-style: italic; line-height: 1.4; }
 .inspectorPortrait q::before, .inspectorPortrait q::after { color: var(--agent-color); }
 .shell :global(.inspector-identity) { grid-template-columns: minmax(0, 1fr) auto; margin-top: 1rem; }
 .shell :global(.inspector-identity p),
@@ -468,18 +468,18 @@
 .personaCard > p,
 .personaGrid span {
   color: var(--agent-color);
-  font-size: .65rem;
+  font-size: .75rem;
   font-weight: 800;
   letter-spacing: .1em;
   text-transform: uppercase;
 }
-.personaCard > strong { color: var(--arsenal-ink); font-size: .72rem; line-height: 1.5; }
+.personaCard > strong { color: var(--arsenal-ink); font-size: .75rem; line-height: 1.5; }
 .personaGrid { display: grid; gap: .65rem; }
 .personaGrid div { border-top: 1px solid var(--arsenal-line); padding-top: .55rem; }
-.personaGrid p { margin-top: .2rem; color: var(--arsenal-muted); font-size: .68rem; line-height: 1.45; }
+.personaGrid p { margin-top: .2rem; color: var(--arsenal-muted); font-size: .75rem; line-height: 1.45; }
 .personaDomains { display: flex; flex-wrap: wrap; gap: .3rem; }
-.personaDomains span { border-radius: 999px; padding: .23rem .45rem; color: var(--agent-color); background: color-mix(in oklab, var(--agent-color) 9%, transparent); font-size: .65rem; font-weight: 700; }
-.personaCard details { border-top: 1px solid var(--arsenal-line); padding-top: .55rem; color: var(--arsenal-muted); font-size: .67rem; }
+.personaDomains span { border-radius: 999px; padding: .23rem .45rem; color: var(--agent-color); background: color-mix(in oklab, var(--agent-color) 9%, transparent); font-size: .75rem; font-weight: 700; }
+.personaCard details { border-top: 1px solid var(--arsenal-line); padding-top: .55rem; color: var(--arsenal-muted); font-size: .75rem; }
 .personaCard summary { cursor: pointer; color: var(--arsenal-ink); font-weight: 700; }
 .personaCard ul { display: grid; gap: .3rem; margin-top: .5rem; padding-left: 1rem; line-height: 1.45; list-style: disc; }
 .shell :global(.agent-performance) {
@@ -513,7 +513,7 @@
 }
 .learningCardHeading p {
   color: var(--agent-color);
-  font-size: .62rem;
+  font-size: .75rem;
   font-weight: 800;
   letter-spacing: .12em;
   text-transform: uppercase;
@@ -528,7 +528,7 @@
   padding: .25rem .45rem;
   color: var(--agent-color);
   background: color-mix(in oklab, var(--agent-color) 10%, transparent);
-  font-size: .58rem;
+  font-size: .75rem;
   font-weight: 800;
   letter-spacing: .06em;
   text-transform: uppercase;
@@ -542,7 +542,7 @@
 .learningMetrics div { min-width: 0; padding-inline: .55rem; }
 .learningMetrics div:first-child { padding-left: 0; }
 .learningMetrics div + div { border-left: 1px solid var(--arsenal-line); }
-.learningMetrics dt { color: var(--arsenal-muted); font-size: .59rem; line-height: 1.25; }
+.learningMetrics dt { color: var(--arsenal-muted); font-size: .75rem; line-height: 1.25; }
 .learningMetrics dd {
   margin-top: .18rem;
   color: var(--arsenal-ink);
@@ -551,8 +551,8 @@
   font-weight: 650;
   line-height: 1;
 }
-.learningCycleScope { color: var(--arsenal-muted); font-size: .58rem; line-height: 1.45; }
-.learningEmpty { color: var(--arsenal-muted); font-size: .68rem; line-height: 1.55; }
+.learningCycleScope { color: var(--arsenal-muted); font-size: .75rem; line-height: 1.45; }
+.learningEmpty { color: var(--arsenal-muted); font-size: .75rem; line-height: 1.55; }
 .learningSkeleton { display: grid; grid-template-columns: repeat(3, 1fr); gap: .5rem; }
 .learningSkeleton span {
   height: 2.7rem;
@@ -566,7 +566,7 @@
   align-items: center;
   gap: .42rem;
   color: var(--arsenal-muted);
-  font-size: .65rem;
+  font-size: .75rem;
   font-weight: 720;
   line-height: 1.4;
 }
@@ -583,11 +583,11 @@
   align-items: center;
   gap: .35rem;
   color: color-mix(in oklab, var(--arsenal-muted) 82%, transparent);
-  font-size: .59rem;
+  font-size: .75rem;
   line-height: 1.4;
 }
 .learningPrivacy svg { flex: none; }
-.learningCardLink { display: inline-flex; width: fit-content; align-items: center; gap: .3rem; color: var(--agent-color); font-size: .68rem; font-weight: 760; }
+.learningCardLink { display: inline-flex; width: fit-content; align-items: center; gap: .3rem; color: var(--agent-color); font-size: .75rem; font-weight: 760; }
 .learningCardLink:hover { text-decoration: underline; text-underline-offset: .18rem; }
 @keyframes learning-shimmer { to { background-position: -220% 0; } }
 @keyframes learning-pulse {
@@ -660,7 +660,7 @@
   padding: .7rem .8rem;
   color: var(--arsenal-muted);
   background: color-mix(in oklab, var(--arsenal-primary) 5%, transparent);
-  font-size: .65rem;
+  font-size: .75rem;
   line-height: 1.5;
 }
 
@@ -714,7 +714,7 @@
   .shell :global(.node-scout), .shell :global(.node-sentinel) { left: 1%; }
   .shell :global(.node-forge), .shell :global(.node-memory) { right: 1%; }
   .shell :global(.arsenal-node small) { display: none; }
-  .nodeTheme { font-size: .62rem; }
+  .nodeTheme { font-size: .75rem; }
   .shell :global(.agent-custom-orbit) { inset: 31% 18%; }
   .shell :global(.arsenal-map-legend) { bottom: .75rem; width: calc(100% - 1.2rem); justify-content: center; text-align: center; }
   .shell :global(.skill-studio-heading) { padding: 1.2rem; }

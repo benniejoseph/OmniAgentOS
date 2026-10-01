@@ -65,8 +65,8 @@ export function NavCountPill({
       className={clsx(
         "inline-flex shrink-0 justify-center rounded-full font-semibold tabular-nums",
         compact
-          ? "absolute right-1 top-1 min-w-4 px-1 text-[10px] leading-4"
-          : "min-w-5 px-1.5 text-[11px] leading-5",
+          ? "absolute right-1 top-1 min-w-4 px-1 text-xs leading-4"
+          : "min-w-5 px-1.5 text-xs leading-5",
         active ? "bg-primary-ink text-primary" : "bg-primary text-primary-ink",
       )}
       aria-hidden="true"

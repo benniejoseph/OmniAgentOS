@@ -155,7 +155,7 @@ export function CommandPalette() {
       >
         <Search size={15} aria-hidden="true" />
         <span className="hidden sm:inline">Search</span>
-        <kbd className="hidden rounded border border-line bg-background px-1.5 py-0.5 font-mono text-[11px] md:inline">⌘K</kbd>
+        <kbd className="hidden rounded border border-line bg-background px-1.5 py-0.5 font-mono text-xs md:inline">⌘K</kbd>
       </button>
 
       {open ? (

@@ -422,7 +422,7 @@ export function CommandComposerField({
               <span className="max-w-44 truncate">{item.label}</span>
             </span>
           ))}
-          {uploadNotice ? <span className="basis-full text-[11px] leading-4 text-muted" role="status">{uploadNotice}</span> : null}
+          {uploadNotice ? <span className="basis-full text-xs leading-4 text-muted" role="status">{uploadNotice}</span> : null}
         </div>
       ) : null}
 
@@ -496,7 +496,7 @@ export function CommandComposerField({
               <span className="grid size-7 place-items-center rounded-full bg-primary/10 font-mono text-xs font-bold text-primary">{trigger.symbol}</span>
               <span className="min-w-0">
                 <strong className="block text-xs">{trigger.symbol === "/" ? "Use a Skill or choose an approach" : "Add context"}</strong>
-                <span className="block truncate text-[11px] text-muted">{trigger.symbol === "/" ? "Approaches guide the task; Skills teach Asael how to work." : "Agents, Files, Projects, Skills, Plugins, and Integrations."}</span>
+                <span className="block truncate text-xs text-muted">{trigger.symbol === "/" ? "Approaches guide the task; Skills teach Asael how to work." : "Agents, Files, Projects, Skills, Plugins, and Integrations."}</span>
               </span>
             </div>
             {catalogLoading || uploading ? <Loader2 size={14} className="animate-spin text-primary" aria-label="Loading command context" /> : null}
@@ -518,8 +518,8 @@ export function CommandComposerField({
                 <Fragment key={presentation.key}>
                   {startsGroup ? (
                     <div className={clsx("flex items-center gap-2 px-3 pb-1 pt-2", index ? "mt-1 border-t border-line/55" : "")} role="presentation">
-                      <span className="text-[10px] font-bold uppercase tracking-[.16em] text-muted">{group.label}</span>
-                      <span className="rounded-full bg-surface-raised px-1.5 py-0.5 text-[9px] font-semibold text-muted" aria-hidden="true">{groupSize}</span>
+                      <span className="text-xs font-bold uppercase tracking-[.16em] text-muted">{group.label}</span>
+                      <span className="rounded-full bg-surface-raised px-1.5 py-0.5 text-xs font-semibold text-muted" aria-hidden="true">{groupSize}</span>
                       <span className="h-px min-w-4 flex-1 bg-line/60" aria-hidden="true" />
                     </div>
                   ) : null}
@@ -541,7 +541,7 @@ export function CommandComposerField({
                         <strong className="truncate text-xs">{presentation.label}</strong>
                         {presentation.kind ? <small className="shrink-0 uppercase tracking-[.12em] text-muted">{presentation.kind}</small> : null}
                       </span>
-                      <span className="mt-0.5 block truncate text-[11px] text-muted">{presentation.description}</span>
+                      <span className="mt-0.5 block truncate text-xs text-muted">{presentation.description}</span>
                     </span>
                   </button>
                 </Fragment>
@@ -551,12 +551,12 @@ export function CommandComposerField({
               <div className="px-4 py-6 text-center">
                 <Search size={18} className="mx-auto text-muted" aria-hidden="true" />
                 <p className="mt-2 text-xs font-semibold">No matching context</p>
-                <p className="mt-1 text-[11px] text-muted">Try another name or open Capabilities to add it.</p>
+                <p className="mt-1 text-xs text-muted">Try another name or open Capabilities to add it.</p>
               </div>
             ) : null}
             {catalogError ? <p className="px-3 py-2 text-xs leading-5 text-danger" role="status">{catalogError}</p> : null}
           </div>
-          <div className="flex items-center justify-between border-t border-line/70 px-3 py-2 text-[10px] text-muted">
+          <div className="flex items-center justify-between border-t border-line/70 px-3 py-2 text-xs text-muted">
             <span>↑↓ choose · Enter add · Esc close</span>
             <span>{selected.length} attached</span>
           </div>

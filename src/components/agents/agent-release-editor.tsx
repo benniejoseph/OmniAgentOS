@@ -186,10 +186,10 @@ export function AgentReleaseEditor({
     <ReleaseShell compact={compact}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-primary">Release lifecycle</p>
+          <p className="text-xs font-bold uppercase tracking-[0.14em] text-primary">Release lifecycle</p>
           <h3 className="mt-1 text-sm font-semibold">{agentName}</h3>
         </div>
-        <span className={`rounded-full px-2 py-1 text-[10px] font-bold uppercase tracking-[0.08em] ${release.state === "active" ? "bg-success/10 text-success" : "bg-warning/10 text-warning"}`}>
+        <span className={`rounded-full px-2 py-1 text-xs font-bold uppercase tracking-[0.08em] ${release.state === "active" ? "bg-success/10 text-success" : "bg-warning/10 text-warning"}`}>
           {release.state}
         </span>
       </div>
@@ -204,7 +204,7 @@ export function AgentReleaseEditor({
         Edits create an immutable draft. New work keeps using the active version until an exact evaluation is promoted; existing runs remain pinned.
       </p>
 
-      <dl className="mt-3 grid gap-2 rounded-lg border border-border/70 bg-background/55 p-3 text-[10px]" aria-label="Exact release pins">
+      <dl className="mt-3 grid gap-2 rounded-lg border border-border/70 bg-background/55 p-3 text-xs" aria-label="Exact release pins">
         <ReleasePin label="Active version ID" value={pinMetadata.activeDefinitionVersionId} />
         {pinMetadata.selectedDefinitionVersionId ? <ReleasePin label="Selected version ID" value={pinMetadata.selectedDefinitionVersionId} /> : null}
         {pinMetadata.selectedDefinitionSha256 ? <ReleasePin label="Definition digest" value={pinMetadata.selectedDefinitionSha256} /> : (
@@ -325,7 +325,7 @@ function ReleaseShell({ compact, children }: {
 }
 
 function ReleaseMetric({ label, value }: { label: string; value: string }) {
-  return <div className="rounded-lg bg-background/70 p-2"><strong className="block text-sm">{value}</strong><span className="text-[10px] uppercase tracking-[0.08em] text-muted">{label}</span></div>;
+  return <div className="rounded-lg bg-background/70 p-2"><strong className="block text-sm">{value}</strong><span className="text-xs uppercase tracking-[0.08em] text-muted">{label}</span></div>;
 }
 
 function ReleasePin({ label, value }: { label: string; value: string }) {

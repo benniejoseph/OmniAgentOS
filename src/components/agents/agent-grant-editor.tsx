@@ -354,7 +354,7 @@ export function AgentGrantEditor({
     <section className="rounded-xl border border-border/70 bg-surface/70 p-4" aria-label={`${agentName} grants`}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="text-[0.68rem] font-bold uppercase tracking-[0.16em] text-primary">Authority</p>
+          <p className="text-xs font-bold uppercase tracking-[0.16em] text-primary">Authority</p>
           <h3 className="mt-1 text-base font-semibold">What {agentName} can see and do</h3>
           <p className="mt-1 text-xs leading-5 text-muted">
             Default-deny. Each grant is exact, budgeted, expiring, revocable, and pinned to one Agent identity generation.
@@ -373,12 +373,12 @@ export function AgentGrantEditor({
             <article key={grant.record.grantId} className="rounded-lg border border-border/70 bg-background/55 p-3">
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-1 text-[0.67rem] font-semibold text-primary">
+                  <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-1 text-xs font-semibold text-primary">
                     {grant.record.grantKind === "context" ? <Eye size={11} /> : <KeyRound size={11} />}
                     {grant.record.grantKind}
                   </span>
                   <p className="mt-2 text-xs leading-5 text-foreground">{grant.explanation}</p>
-                  <p className="mt-1 break-all text-[0.65rem] text-muted">{grant.record.purposeId} · {grant.record.grantId}</p>
+                  <p className="mt-1 break-all text-xs text-muted">{grant.record.purposeId} · {grant.record.grantId}</p>
                 </div>
                 <button
                   type="button"

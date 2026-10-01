@@ -126,7 +126,7 @@ export function AgentAdaptationEditor({
     <section className={`${compact ? "rounded-lg" : "rounded-xl"} border border-border/70 bg-surface-raised/45 p-4`}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-primary">Evidence-gated adaptation</p>
+          <p className="text-xs font-bold uppercase tracking-[0.14em] text-primary">Evidence-gated adaptation</p>
           <h3 className="mt-1 text-sm font-semibold">{agentName}</h3>
         </div>
         <button
@@ -193,7 +193,7 @@ function AdaptationCard({
   return (
     <article className="rounded-lg border border-border/70 bg-background/55 p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className={`rounded-full px-2 py-1 text-[10px] font-bold uppercase tracking-[0.08em] ${stateStyle(adaptation.state)}`}>
+        <span className={`rounded-full px-2 py-1 text-xs font-bold uppercase tracking-[0.08em] ${stateStyle(adaptation.state)}`}>
           {adaptation.state.replace("_", " ")}
         </span>
         <span className="text-xs font-semibold text-muted">{Math.round(adaptation.confidence * 100)}% confidence</span>

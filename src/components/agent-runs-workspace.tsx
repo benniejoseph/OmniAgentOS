@@ -3330,7 +3330,7 @@ export function AgentRunsWorkspace({
                   <button type="button" onClick={() => openTaskDetails("memory")} className="inline-flex min-h-9 items-center gap-1.5 rounded-full px-2.5 text-xs font-semibold text-muted transition hover:bg-surface-raised hover:text-foreground" aria-haspopup="dialog" title="Conversation memory">
                     <Database size={14} aria-hidden="true" />
                     <span className="hidden sm:inline">Memory</span>
-                    {conversationMemories.length ? <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">{conversationMemories.length}</span> : null}
+                    {conversationMemories.length ? <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-xs text-primary">{conversationMemories.length}</span> : null}
                   </button>
                 ) : null}
                 <button type="button" onClick={newThread} className="grid size-9 place-items-center rounded-full text-muted transition hover:bg-surface-raised hover:text-foreground" aria-label="New conversation" title="New conversation">
@@ -3424,7 +3424,7 @@ export function AgentRunsWorkspace({
                 <article className={clsx("flex justify-start", workspaceStyles.turn, workspaceStyles.assistantTurn)}>
                   <div className={clsx("min-w-0 max-w-full sm:pl-1", workspaceStyles.assistantMessage)}>
                     <div className="flex flex-wrap items-center justify-between gap-3">
-                      <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-primary">
+                      <p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">
                         {activeAssistantName}
                         {preferredAgent?.role ? <span className="ml-2 text-muted">· {preferredAgent.role}</span> : null}
                       </p>
@@ -3756,8 +3756,8 @@ export function AgentRunsWorkspace({
                           <div className="flex items-start justify-between gap-4">
                             <div className="min-w-0">
                               <div className="flex flex-wrap items-center gap-2">
-                                <span className="rounded-full bg-primary/10 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-primary">{memory.type}</span>
-                                <span className="text-[11px] text-muted">{formatRelativeThreadTime(memory.updatedAt)}</span>
+                                <span className="rounded-full bg-primary/10 px-2 py-1 text-xs font-semibold uppercase tracking-[0.12em] text-primary">{memory.type}</span>
+                                <span className="text-xs text-muted">{formatRelativeThreadTime(memory.updatedAt)}</span>
                               </div>
                               <h3 className="mt-2 text-sm font-semibold">{memory.title}</h3>
                               <p className="mt-1 line-clamp-3 whitespace-pre-wrap text-xs leading-5 text-muted">{memory.content}</p>
@@ -4441,12 +4441,12 @@ export const TranscriptTurn = memo(function TranscriptTurn({
     <article className={clsx("flex", workspaceStyles.turn, turn.role === "user" ? clsx("justify-end", workspaceStyles.userTurn) : clsx("justify-start", workspaceStyles.assistantTurn))}>
       {turn.role === "user" ? (
         <div className={clsx("max-w-[88%] rounded-2xl rounded-br-md bg-foreground px-4 py-3 text-background sm:max-w-[78%]", workspaceStyles.userBubble)}>
-          <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-background/60">You</p>
+          <p className="mb-1 text-xs font-semibold uppercase tracking-[0.14em] text-background/60">You</p>
           <p className="whitespace-pre-wrap text-sm leading-6">{turn.content}</p>
         </div>
       ) : (
         <div className={clsx("min-w-0 max-w-full sm:pl-1", workspaceStyles.assistantMessage)}>
-          <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-primary">
+          <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-primary">
             {assistantName}
             {assistantRole ? <span className="ml-2 text-muted">· {assistantRole}</span> : null}
           </p>
@@ -4530,7 +4530,7 @@ export const ConversationMessageContent = memo(function ConversationMessageConte
       if (index < lines.length) index += 1;
       blocks.push(
         <div key={`code-${index}`} className="my-4 overflow-hidden rounded-xl border border-line bg-foreground text-background">
-          {language ? <div className="border-b border-background/15 px-4 py-2 font-mono text-[10px] uppercase tracking-wide text-background/60">{language}</div> : null}
+          {language ? <div className="border-b border-background/15 px-4 py-2 font-mono text-xs uppercase tracking-wide text-background/60">{language}</div> : null}
           <pre className="overflow-x-auto p-4 text-xs leading-6"><code>{code.join("\n")}</code></pre>
         </div>,
       );
@@ -4725,7 +4725,7 @@ function CommandFileArtifactCard({ artifact }: { artifact: CommandFileArtifact }
     >
       <div className="grid min-h-52 bg-[radial-gradient(circle_at_72%_18%,color-mix(in_srgb,var(--color-primary)_18%,transparent),transparent_38%),linear-gradient(135deg,var(--color-foreground),color-mix(in_srgb,var(--color-foreground)_88%,var(--color-primary)))] px-5 py-6 text-background sm:grid-cols-[minmax(0,1fr)_14rem] sm:items-center sm:gap-8 sm:px-7">
         <div className="min-w-0">
-          <span className="inline-flex items-center gap-2 rounded-full border border-background/15 bg-background/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-background/75 backdrop-blur">
+          <span className="inline-flex items-center gap-2 rounded-full border border-background/15 bg-background/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] text-background/75 backdrop-blur">
             <FileText size={13} aria-hidden="true" />
             Created by Asael
           </span>
@@ -4798,7 +4798,7 @@ function CommandWorkspaceArtifactCard({
           <span className="grid size-11 shrink-0 place-items-center rounded-xl border border-primary/15 bg-primary/10 text-primary shadow-sm">
             <FileText size={20} aria-hidden="true" />
           </span>
-          <span className="rounded-full border border-line bg-background/80 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted backdrop-blur">
+          <span className="rounded-full border border-line bg-background/80 px-2.5 py-1 text-xs font-semibold uppercase tracking-[0.12em] text-muted backdrop-blur">
             Google Workspace
           </span>
         </div>
@@ -4858,7 +4858,7 @@ function CommandMediaArtifactCard({ artifact }: { artifact: CommandMediaArtifact
             </p>
           </div>
         </div>
-        <span className="rounded-full border border-line bg-background px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.1em] text-muted">
+        <span className="rounded-full border border-line bg-background px-2.5 py-1 text-xs font-semibold uppercase tracking-[0.1em] text-muted">
           {artifact.kind}
         </span>
       </header>
@@ -4923,7 +4923,7 @@ function MessageInline({
           const sourceUrl = safeExternalUrl(citation.source.url);
           const marker = (
             <span
-              className="inline-flex min-w-5 items-center justify-center rounded-md border border-primary/20 bg-primary/10 px-1.5 py-0.5 align-super font-mono text-[0.7em] font-semibold leading-none text-primary"
+              className="inline-flex min-w-5 items-center justify-center rounded-md border border-primary/20 bg-primary/10 px-1.5 py-0.5 align-super font-mono text-xs font-semibold leading-none text-primary"
               title={`${citation.source.title} · ${citation.source.kind}`}
             >
               {citation.index}
@@ -5025,7 +5025,7 @@ function ContextSelectionList({
               <span className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-sm font-semibold">{stringValue(item.title, "Context item")}</span>
                 <span className={clsx(
-                  "rounded-md px-2 py-1 font-mono text-[11px]",
+                  "rounded-md px-2 py-1 font-mono text-xs",
                   checked ? "bg-primary/10 text-primary" : "bg-surface-raised text-muted",
                 )}>
                   {checked ? "Included" : "Excluded"}
@@ -5034,7 +5034,7 @@ function ContextSelectionList({
               <span className="mt-1 line-clamp-3 block text-xs leading-5 text-muted">
                 {stringValue(item.content, "No excerpt available.")}
               </span>
-              <span className="mt-2 flex flex-wrap gap-2 text-[11px] text-muted">
+              <span className="mt-2 flex flex-wrap gap-2 text-xs text-muted">
                 <span className="rounded-md bg-surface-raised px-2 py-1">{stringValue(item.kind, "evidence")}</span>
                 {Number.isFinite(confidence) ? (
                   <span className="rounded-md bg-surface-raised px-2 py-1">{Math.round(confidence * 100)}% match</span>
@@ -5061,7 +5061,7 @@ function ContextUseReceiptCard({ receipt }: { receipt: ContextUseReceipt }) {
             The run-bound receipt records the reviewed inclusions, exclusions, and final compiled set.
           </p>
         </div>
-        <span className="font-mono text-[10px] text-muted" title={receipt.receiptSha256}>
+        <span className="font-mono text-xs text-muted" title={receipt.receiptSha256}>
           receipt {receipt.receiptSha256.slice(0, 12)}
         </span>
       </header>
@@ -5073,7 +5073,7 @@ function ContextUseReceiptCard({ receipt }: { receipt: ContextUseReceipt }) {
           ["Actually used", receipt.actualCount],
         ].map(([label, count]) => (
           <div key={String(label)} className="bg-background px-3 py-3">
-            <span className="block text-[10px] font-semibold uppercase tracking-wide text-muted">{label}</span>
+            <span className="block text-xs font-semibold uppercase tracking-wide text-muted">{label}</span>
             <span className="mt-1 block text-lg font-semibold">{count}</span>
           </div>
         ))}
@@ -5093,7 +5093,7 @@ function ContextUseReceiptCard({ receipt }: { receipt: ContextUseReceipt }) {
             </div>
           </details>
         ) : null}
-        <p className="font-mono text-[10px] text-muted" title={receipt.selectionSha256}>
+        <p className="font-mono text-xs text-muted" title={receipt.selectionSha256}>
           selection {receipt.selectionSha256.slice(0, 12)}
         </p>
       </div>
@@ -5116,7 +5116,7 @@ function ContextReceiptItems({
       {ids.length ? (
         <div className="flex flex-wrap gap-2">
           {ids.map((id) => (
-            <span key={id} className="rounded-md bg-surface-raised px-2 py-1 font-mono text-[10px] text-muted">
+            <span key={id} className="rounded-md bg-surface-raised px-2 py-1 font-mono text-xs text-muted">
               {id}
             </span>
           ))}
@@ -5204,7 +5204,7 @@ function RunTraceJourney({
           </p>
         </div>
         <div className="flex items-center gap-3">
-          {traceRef ? <span className="font-mono text-[10px] text-muted">trace {traceRef}</span> : null}
+          {traceRef ? <span className="font-mono text-xs text-muted">trace {traceRef}</span> : null}
           <button
             type="button"
             onClick={() => setRefreshVersion((version) => version + 1)}
@@ -5232,7 +5232,7 @@ function RunTraceJourney({
                 <summary className="flex min-h-24 cursor-pointer list-none flex-col justify-between gap-2 px-2.5 py-3 [&::-webkit-details-marker]:hidden">
                   <span className="flex items-center justify-between gap-2">
                     <span className={clsx(
-                      "grid size-6 shrink-0 place-items-center rounded-full text-[10px] font-semibold",
+                      "grid size-6 shrink-0 place-items-center rounded-full text-xs font-semibold",
                       traceStageClasses(stage.status),
                     )}>
                       {stage.status === "observed" ? <Check size={12} aria-hidden="true" /> : stage.ordinal + 1}
@@ -5241,20 +5241,20 @@ function RunTraceJourney({
                   </span>
                   <span>
                     <span className="block truncate text-xs font-semibold">{stage.label}</span>
-                    <span className="mt-1 block text-[10px] text-muted">{traceStageLabel(stage.status)}</span>
+                    <span className="mt-1 block text-xs text-muted">{traceStageLabel(stage.status)}</span>
                   </span>
                 </summary>
                 <div className="border-t border-line px-3 py-3">
                   {stage.events.length ? (
                     <ol className="space-y-2">
                       {stage.events.map((event) => (
-                        <li key={event.eventRef} className="rounded-md bg-surface px-2.5 py-2 text-[11px] leading-5">
+                        <li key={event.eventRef} className="rounded-md bg-surface px-2.5 py-2 text-xs leading-5">
                           <span className="flex items-center justify-between gap-2">
                             <span className="truncate font-mono text-primary">{event.type}</span>
                             <time className="shrink-0 text-muted" dateTime={event.at}>{formatRelativeThreadTime(event.at)}</time>
                           </span>
                           <span className="mt-0.5 block text-muted">{event.summary}</span>
-                          <span className="mt-0.5 block font-mono text-[10px] text-muted">
+                          <span className="mt-0.5 block font-mono text-xs text-muted">
                             {event.streamKind} · event {event.eventRef.slice(0, 8)}
                             {event.parentEventRef || event.causationRef ? " · linked" : ""}
                           </span>
@@ -5274,7 +5274,7 @@ function RunTraceJourney({
               </details>
             ))}
           </div>
-          <p className="border-t border-line px-3 py-2 text-[11px] leading-5 text-muted">
+          <p className="border-t border-line px-3 py-2 text-xs leading-5 text-muted">
             {observed} of 9 stages observed{gaps ? ` · ${gaps} required gap${gaps === 1 ? "" : "s"}` : ""}. Event references are hashed; prompts, outputs, credentials, and private reasoning are excluded.
           </p>
         </>
@@ -5386,7 +5386,7 @@ function TaskProgressTimeline({
           </div>
         </header>
         {Object.keys(workflowBudgetLimits).length ? (
-          <p className="border-b border-line px-3 py-2 text-[11px] leading-5 text-muted">
+          <p className="border-b border-line px-3 py-2 text-xs leading-5 text-muted">
             Budget used: {numberValue(workflowBudgetUsed.modelTurns, 0)} / {numberValue(workflowBudgetLimits.modelTurns, 0)} turns · {numberValue(workflowBudgetUsed.toolCalls, 0)} / {numberValue(workflowBudgetLimits.toolCalls, 0)} tools · {numberValue(workflowBudgetUsed.retries, 0)} / {numberValue(workflowBudgetLimits.retries, 0)} retries · {numberValue(workflowBudgetUsed.replans, 0)} / {numberValue(workflowBudgetLimits.replans, 0)} replans
           </p>
         ) : null}
@@ -5413,7 +5413,7 @@ function TaskProgressTimeline({
                 <span className="min-w-0 flex-1">
                   <span className="flex flex-wrap items-center justify-between gap-2">
                     <span className="text-sm font-semibold">{stringValue(step.label, humanizeWorkflowStep(stringValue(step.stepKey)))}</span>
-                    <span className="font-mono text-[11px] text-muted">{status.replaceAll("_", " ")}</span>
+                    <span className="font-mono text-xs text-muted">{status.replaceAll("_", " ")}</span>
                   </span>
                   <span className="mt-1 block text-xs leading-5 text-muted">
                     {error || reason || (isCurrent ? "Asael is working on this stage now." : workflowStepDescription(stringValue(step.stepKey)))}
@@ -5442,7 +5442,7 @@ function TaskProgressTimeline({
                       <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted">{stringValue(node.description, "Waiting to begin.")}</p>
                     </div>
                     <span className={clsx(
-                      "shrink-0 rounded-md px-2 py-1 font-mono text-[11px]",
+                      "shrink-0 rounded-md px-2 py-1 font-mono text-xs",
                       status === "completed"
                         ? "bg-success/10 text-success"
                         : status === "failed" || status === "interrupted"
@@ -5615,7 +5615,7 @@ function PromptQueuePanel({
                       ) : (
                         <p className="line-clamp-2 text-sm font-medium leading-5">{item.prompt}</p>
                       )}
-                      <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted">
+                      <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
                         <span className="font-semibold capitalize text-foreground">{item.state}</span>
                         <span>{item.agent.logicalAgentId} v{item.agent.definitionVersion}</span>
                         <span>
@@ -5844,7 +5844,7 @@ function GoalStage({
                 value={mode}
                 disabled={draftLocked}
                 onChange={(event) => onModeChange(event.currentTarget.value as AgentMode)}
-                className="min-h-8 shrink-0 rounded-full border-0 bg-surface-raised px-2.5 text-[11px] font-semibold text-muted outline-none hover:text-foreground"
+                className="min-h-8 shrink-0 rounded-full border-0 bg-surface-raised px-2.5 text-xs font-semibold text-muted outline-none hover:text-foreground"
               >
                 <option value="orchestrate">General</option>
                 <option value="research">Research</option>
@@ -5865,7 +5865,7 @@ function GoalStage({
                     value={projectId}
                     disabled={draftLocked || projectSelectionLocked}
                     onChange={(event) => onProjectChange(event.currentTarget.value)}
-                    className="min-h-8 max-w-44 shrink-0 rounded-full border-0 bg-surface-raised px-2.5 text-[11px] font-semibold text-muted outline-none hover:text-foreground"
+                    className="min-h-8 max-w-44 shrink-0 rounded-full border-0 bg-surface-raised px-2.5 text-xs font-semibold text-muted outline-none hover:text-foreground"
                   >
                     <option value="">Choose project</option>
                     {projects.map((project) => (
@@ -5879,7 +5879,7 @@ function GoalStage({
                 onClick={() => onApprovalChange(!approvalRequired)}
                 disabled={draftLocked}
                 className={clsx(
-                  "inline-flex min-h-8 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-[11px] font-semibold transition",
+                  "inline-flex min-h-8 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-xs font-semibold transition",
                   approvalRequired ? "bg-primary/10 text-primary" : "bg-surface-raised text-muted hover:text-foreground",
                 )}
                 aria-pressed={approvalRequired}
@@ -5896,7 +5896,7 @@ function GoalStage({
                 onChange={(event) => onContextScopeChange(
                   event.currentTarget.value as ActiveContextScopeId,
                 )}
-                className="min-h-8 shrink-0 rounded-full border-0 bg-surface-raised px-2.5 text-[11px] font-semibold text-muted outline-none hover:text-foreground"
+                className="min-h-8 shrink-0 rounded-full border-0 bg-surface-raised px-2.5 text-xs font-semibold text-muted outline-none hover:text-foreground"
               >
                 {CONTEXT_SCOPE_OPTIONS.map((option) => (
                   <option
@@ -5915,7 +5915,7 @@ function GoalStage({
                 disabled={contextLoading || goalMissing || Boolean(readDisabledReason)}
                 title={goalMissing ? "Write a message first." : readDisabledReason}
                 className={clsx(
-                  "inline-flex min-h-8 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-[11px] font-semibold transition",
+                  "inline-flex min-h-8 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-xs font-semibold transition",
                   contextLocked ? "bg-success/10 text-success" : contextReady || contextError ? "bg-warning/10 text-warning" : "bg-surface-raised text-muted hover:text-foreground",
                 )}
               >
@@ -5934,7 +5934,7 @@ function GoalStage({
                 onClick={onPlan}
                 disabled={Boolean(loading) || goalMissing || Boolean(workflowDisabledReason) || workflowInProgress}
                 title={goalMissing ? "Write a message first." : workflowDisabledReason}
-                className="inline-flex min-h-8 shrink-0 items-center gap-1.5 rounded-full bg-surface-raised px-2.5 text-[11px] font-semibold text-muted transition hover:text-foreground disabled:opacity-50"
+                className="inline-flex min-h-8 shrink-0 items-center gap-1.5 rounded-full bg-surface-raised px-2.5 text-xs font-semibold text-muted transition hover:text-foreground disabled:opacity-50"
               >
                 {loading === "plan" ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <GitBranch size={13} aria-hidden="true" />}
                 <span className="hidden sm:inline">Plan</span>
@@ -5944,7 +5944,7 @@ function GoalStage({
                   type="button"
                   onClick={onWorkflow}
                   disabled={Boolean(loading) || goalMissing || Boolean(workflowDisabledReason) || !workflowReady || workflowStarted}
-                  className="inline-flex min-h-8 shrink-0 items-center gap-1.5 rounded-full bg-primary/10 px-2.5 text-[11px] font-semibold text-primary disabled:opacity-50"
+                  className="inline-flex min-h-8 shrink-0 items-center gap-1.5 rounded-full bg-primary/10 px-2.5 text-xs font-semibold text-primary disabled:opacity-50"
                 >
                   <Workflow size={13} aria-hidden="true" />
                   {workflowStarted ? "Workflow active" : "Start plan"}
@@ -5968,7 +5968,7 @@ function GoalStage({
                 onClick={onQueue}
                 disabled={draftLocked || goalMissing || Boolean(runDisabledReason)}
                 title={goalMissing ? "Write a message first." : "Add to the persistent prompt queue"}
-                className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-full bg-primary/10 px-3 text-[11px] font-semibold text-primary transition hover:bg-primary/15 disabled:cursor-not-allowed disabled:opacity-35"
+                className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-full bg-primary/10 px-3 text-xs font-semibold text-primary transition hover:bg-primary/15 disabled:cursor-not-allowed disabled:opacity-35"
                 aria-label="Add prompt to queue"
               >
                 <Clock3 size={14} aria-hidden="true" />
@@ -5993,7 +5993,7 @@ function GoalStage({
             </div>
           </div>
         </div>
-        {workflowInProgress ? <p className="mt-1.5 px-2 text-center text-[10px] leading-4 text-muted">This conversation is locked while active work finishes. New messages can be added to the persistent queue.</p> : null}
+        {workflowInProgress ? <p className="mt-1.5 px-2 text-center text-xs leading-4 text-muted">This conversation is locked while active work finishes. New messages can be added to the persistent queue.</p> : null}
       </div>
     </section>
   );
@@ -6252,7 +6252,7 @@ function RunCheckpointForkPanel({
               ))}
             </select>
             {selected ? (
-              <p className="mt-2 font-mono text-[11px] leading-5 text-muted">
+              <p className="mt-2 font-mono text-xs leading-5 text-muted">
                 {selected.lifecycleState} · {selected.resumeDisposition} · {formatCheckpointTime(selected.recordedAt)} · {selected.checkpointId.slice(0, 18)}…
               </p>
             ) : null}
@@ -6332,7 +6332,7 @@ function WorkflowOutcomePill({ status }: { status: unknown }) {
     <span
       aria-label={`Workflow outcome: ${label}`}
       className={clsx(
-        "inline-flex shrink-0 items-center self-center rounded-md px-2 py-1 font-mono text-[11px]",
+        "inline-flex shrink-0 items-center self-center rounded-md px-2 py-1 font-mono text-xs",
         pillTone(toneForWorkflowOutcome(outcome)),
       )}
     >
@@ -6668,13 +6668,13 @@ function ClaimEvidencePanel({
               <div className="flex items-start justify-between gap-3">
                 <p className="min-w-0 leading-5 text-foreground">{claimText}</p>
                 <span className={clsx(
-                  "shrink-0 rounded-full px-2 py-1 text-[10px] font-semibold uppercase tracking-wide",
+                  "shrink-0 rounded-full px-2 py-1 text-xs font-semibold uppercase tracking-wide",
                   claimSupportTone(claim.supportState),
                 )}>
                   {claimSupportLabel(claim.supportState)}
                 </span>
               </div>
-              <p className="mt-1 text-[11px] text-muted">
+              <p className="mt-1 text-xs text-muted">
                 {claim.evidenceUnitIds.length
                   ? `${claim.evidenceUnitIds.length} authorized evidence ${claim.evidenceUnitIds.length === 1 ? "unit" : "units"}`
                   : "No authorized evidence established support"}

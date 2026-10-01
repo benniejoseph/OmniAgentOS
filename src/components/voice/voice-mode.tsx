@@ -931,7 +931,7 @@ export function VoiceMode({
                         <p className="text-sm font-semibold text-foreground">{pendingApproval.title}</p>
                         <p className="mt-1 text-xs leading-5 text-muted">{pendingApproval.description}</p>
                       </div>
-                      <span className="shrink-0 rounded-full bg-warning/15 px-2.5 py-1 text-[11px] font-semibold text-warning">Risk {pendingApproval.riskLevel}</span>
+                      <span className="shrink-0 rounded-full bg-warning/15 px-2.5 py-1 text-xs font-semibold text-warning">Risk {pendingApproval.riskLevel}</span>
                     </div>
                     <dl className="mt-3 grid grid-cols-2 gap-2 text-xs">
                       <div><dt className="text-muted">Tool</dt><dd className="mt-0.5 font-mono text-foreground">{pendingApproval.toolId}</dd></div>
@@ -939,8 +939,8 @@ export function VoiceMode({
                     </dl>
                     <p className="mt-3 text-xs leading-5 text-muted">{pendingApproval.reason}</p>
                     <div className="mt-3">
-                      <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted">Exact reviewed input</p>
-                      <pre className="mt-1.5 max-h-28 overflow-auto rounded-lg border border-line bg-background p-2.5 text-[11px] leading-5 text-foreground">{JSON.stringify(pendingApproval.input, null, 2)}</pre>
+                      <p className="text-xs font-semibold uppercase tracking-[0.12em] text-muted">Exact reviewed input</p>
+                      <pre className="mt-1.5 max-h-28 overflow-auto rounded-lg border border-line bg-background p-2.5 text-xs leading-5 text-foreground">{JSON.stringify(pendingApproval.input, null, 2)}</pre>
                     </div>
                     <label className="mt-3 block text-xs font-semibold text-foreground">
                       Decision note (optional)

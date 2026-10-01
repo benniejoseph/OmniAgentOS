@@ -382,7 +382,7 @@ function TrackRecord({
               : `${trust.cleanStreak}/${target} clean executions toward earning autonomy.`)}
           </p>
           {trust.autonomy ? (
-            <p className="mt-1 text-[11px] text-muted">
+            <p className="mt-1 text-xs text-muted">
               Reliability {Math.round(trust.autonomy.score * 100)}% · confidence {Math.round(trust.autonomy.confidence * 100)}% · budget {trust.autonomy.budget.maxActions}/hour
             </p>
           ) : null}

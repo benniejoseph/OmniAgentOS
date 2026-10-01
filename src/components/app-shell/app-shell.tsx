@@ -311,7 +311,7 @@ export function AppShell({
               href={item.href}
               aria-current={active ? "page" : undefined}
               className={clsx(
-                "flex min-h-14 flex-col items-center justify-center gap-1 rounded-md px-1 text-[11px] font-semibold transition",
+                "flex min-h-14 flex-col items-center justify-center gap-1 rounded-md px-1 text-xs font-semibold transition",
                 active ? "text-primary" : "text-muted hover:bg-surface-raised hover:text-foreground",
               )}
             >

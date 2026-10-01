@@ -28,7 +28,7 @@
 .heading p,
 .autonomyHeading p {
   color: var(--arsenal-muted);
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   font-weight: 780;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -61,7 +61,7 @@
   border-radius: 999px;
   padding: 0 0.7rem;
   color: var(--arsenal-muted);
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   font-weight: 760;
   white-space: nowrap;
 }
@@ -121,7 +121,7 @@
 
 .join label > span:first-child {
   color: var(--arsenal-muted);
-  font-size: 0.74rem;
+  font-size: 0.75rem;
   font-weight: 710;
 }
 
@@ -213,7 +213,7 @@
 .identity span {
   display: block;
   color: var(--arsenal-muted);
-  font-size: 0.65rem;
+  font-size: 0.75rem;
   font-weight: 730;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -333,7 +333,7 @@
   border-radius: 999px;
   padding: 0 0.7rem;
   color: var(--arsenal-muted);
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   font-weight: 760;
   white-space: nowrap;
 }
@@ -492,7 +492,7 @@
 
 .cycleStrip small {
   color: var(--arsenal-muted);
-  font-size: 0.65rem;
+  font-size: 0.75rem;
 }
 
 .cycleStrip strong {
@@ -536,7 +536,7 @@
 
 .sectionTitle small {
   color: var(--arsenal-muted);
-  font-size: 0.66rem;
+  font-size: 0.75rem;
 }
 
 .budgetRow {
@@ -565,13 +565,13 @@
 .budgetRow small {
   margin-top: 0.05rem;
   color: var(--arsenal-muted);
-  font-size: 0.65rem;
+  font-size: 0.75rem;
 }
 
 .budgetRow > span {
   color: var(--arsenal-muted);
   font-variant-numeric: tabular-nums;
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   text-align: right;
 }
 
@@ -614,7 +614,7 @@
 .interestRow small {
   margin-top: 0.08rem;
   color: var(--arsenal-muted);
-  font-size: 0.65rem;
+  font-size: 0.75rem;
 }
 
 .interestRow > span {
@@ -626,7 +626,7 @@
     color-mix(in oklab, var(--arsenal-cyan) 35%, var(--arsenal-line));
   border-radius: 50%;
   color: color-mix(in oklab, var(--arsenal-cyan) 70%, var(--arsenal-ink));
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   font-weight: 800;
   font-variant-numeric: tabular-nums;
 }
@@ -674,12 +674,12 @@
 .cycleReceipts small {
   margin-top: 0.05rem;
   color: var(--arsenal-muted);
-  font-size: 0.65rem;
+  font-size: 0.75rem;
 }
 
 .cycleReceipts code {
   color: var(--arsenal-muted);
-  font-size: 0.66rem;
+  font-size: 0.75rem;
 }
 
 .cycleStatus {
@@ -726,7 +726,7 @@
 
 .activityHeading small {
   color: var(--arsenal-muted);
-  font-size: 0.67rem;
+  font-size: 0.75rem;
 }
 
 .activities {
@@ -767,7 +767,7 @@
   display: block;
   margin-top: 0.14rem;
   color: var(--arsenal-muted);
-  font-size: 0.66rem;
+  font-size: 0.75rem;
 }
 
 .activities a {
