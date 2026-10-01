@@ -218,6 +218,14 @@ function safeSemanticSummaryLatency(value: unknown) {
     : undefined;
 }
 
+/**
+ * The share of its backoff a retry waits, between half and all of it, so jobs
+ * that failed together do not all retry at the same moment.
+ */
+function retryBackoffJitter() {
+  return 0.5 + Math.random() * 0.5;
+}
+
 export function operationJobEffectivePriority(
   job: Pick<OperationJobRecord, "priority" | "createdAt">,
   now = Date.now(),
@@ -350,11 +358,11 @@ export async function enqueueOperationJob(
             THEN omni_operation_jobs.status
             ELSE 'queued'
           END,
+          -- A queued job keeps its retry count, and so does a running one
+          -- whose lease lapsed: the attempt that died counts, as it does when
+          -- repair requeues it, or a job that kills its worker never fails.
           attempt = CASE
-            WHEN omni_operation_jobs.status = 'running'
-              AND omni_operation_jobs.lease_expires_at > NOW()
-            THEN omni_operation_jobs.attempt
-            WHEN omni_operation_jobs.status = 'queued'
+            WHEN omni_operation_jobs.status IN ('queued', 'running')
             THEN omni_operation_jobs.attempt
             ELSE 0
           END,
@@ -387,6 +395,13 @@ export async function enqueueOperationJob(
           last_error = CASE
             WHEN omni_operation_jobs.status = 'running'
               AND omni_operation_jobs.lease_expires_at > NOW()
+            THEN omni_operation_jobs.last_error
+            WHEN omni_operation_jobs.status = 'running'
+            THEN COALESCE(
+              omni_operation_jobs.last_error,
+              'Lease expired before completion.'
+            )
+            WHEN omni_operation_jobs.status = 'queued'
             THEN omni_operation_jobs.last_error
             ELSE NULL
           END,
@@ -467,7 +482,7 @@ export async function enqueueOperationJob(
           maxAttempts: job.maxAttempts,
           status: activeLease ? existing.status : "queued",
           attempt:
-            activeLease || existing.status === "queued"
+            existing.status === "queued" || existing.status === "running"
               ? existing.attempt
               : 0,
           runAt: activeLease
@@ -478,7 +493,11 @@ export async function enqueueOperationJob(
           lockedAt: activeLease ? existing.lockedAt : undefined,
           leaseOwner: activeLease ? existing.leaseOwner : undefined,
           leaseExpiresAt: activeLease ? existing.leaseExpiresAt : undefined,
-          lastError: activeLease ? existing.lastError : undefined,
+          lastError: activeLease || existing.status === "queued"
+            ? existing.lastError
+            : existing.status === "running"
+              ? existing.lastError || "Lease expired before completion."
+              : undefined,
           completedAt: undefined,
           updatedAt: now,
         };
@@ -725,10 +744,11 @@ export async function heartbeatOperationJob(
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
+    // The lease is checked against the database clock, so it is set by it.
     const rows = await getSql()`
       UPDATE omni_operation_jobs
-      SET lease_expires_at = ${leaseExpiresAt},
-          updated_at = ${now}
+      SET lease_expires_at = NOW() + (${leaseSeconds}::int * INTERVAL '1 second'),
+          updated_at = NOW()
       WHERE id = ${jobId}
         AND tenant_id = ${tenantId}
         AND status = 'running'
@@ -919,6 +939,7 @@ export async function failOperationJob(
   }
   const now = new Date().toISOString();
   const tenantId = normalizeTenantId(requestedTenantId);
+  const jitter = retryBackoffJitter();
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
@@ -947,7 +968,10 @@ export async function failOperationJob(
           run_at = CASE
             WHEN payload->>'__rerunRequested' = 'true' THEN NOW()
             WHEN attempt < max_attempts
-            THEN NOW() + (LEAST(300, POWER(2, GREATEST(attempt - 1, 0))::int * 15) * INTERVAL '1 second')
+            THEN NOW() + (
+              LEAST(300, POWER(2, GREATEST(attempt - 1, 0))::int * 15) *
+              ${jitter}::float8 * INTERVAL '1 second'
+            )
             ELSE run_at
           END,
           locked_at = NULL,
@@ -987,7 +1011,8 @@ export async function failOperationJob(
       }
       const rerunRequested = job.payload.__rerunRequested === true;
       const willRetry = rerunRequested || job.attempt < job.maxAttempts;
-      const delaySeconds = Math.min(300, 2 ** Math.max(job.attempt - 1, 0) * 15);
+      const delaySeconds =
+        Math.min(300, 2 ** Math.max(job.attempt - 1, 0) * 15) * jitter;
       const payload = { ...job.payload };
       delete payload.__rerunRequested;
       const terminalPayload = willRetry

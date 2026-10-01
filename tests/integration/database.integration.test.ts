@@ -80,6 +80,7 @@ import {
   enqueueOperationJob,
   failOperationJob,
   getAgentResumeJobDedupeKey,
+  heartbeatOperationJob,
   leaseOperationJobByDedupeKey,
   leaseOperationJobs,
   listActiveWorkflowTickRunIds,
@@ -4078,6 +4079,101 @@ databaseDescribe("Postgres schema integration", () => {
     expect(await jobRow(canceled.id)).toMatchObject({ status: "canceled" });
     await expect(leaseByKey("dedupe-lease-never-enqueued"))
       .resolves.toEqual({ outcome: "absent" });
+  });
+
+  test("keeps a lapsed attempt, spreads retries, and leases by the database clock", async () => {
+    const tenantId = "job_attempt_tenant";
+    const inTenant = <T,>(operation: () => Promise<T>) =>
+      runWithDatabaseTenantScope(tenantId, operation);
+    const enqueue = (dedupeKey: string) => inTenant(() => enqueueOperationJob({
+      tenantId,
+      type: "agent.resume",
+      dedupeKey,
+      payload: {},
+      maxAttempts: 3,
+    }));
+    const lease = async (dedupeKey: string) => {
+      const [leased] = await inTenant(() => leaseOperationJobs({
+        tenantId,
+        type: "agent.resume",
+        dedupeKey,
+        leaseSeconds: 60,
+      }));
+      return leased;
+    };
+
+    // Enqueuing the same work again keeps the attempt whose lease lapsed,
+    // and a queued retry keeps the error it waits out.
+    const lapsed = await enqueue("job-attempt-lapsed");
+    await lease("job-attempt-lapsed");
+    await admin`
+      UPDATE omni_operation_jobs
+      SET lease_expires_at = NOW() - INTERVAL '1 second'
+      WHERE id = ${lapsed.id}
+    `;
+    await expect(enqueue("job-attempt-lapsed")).resolves.toMatchObject({
+      id: lapsed.id,
+      status: "queued",
+      attempt: 1,
+      lastError: "Lease expired before completion.",
+    });
+    const retried = await lease("job-attempt-lapsed");
+    expect(retried).toMatchObject({ id: lapsed.id, attempt: 2 });
+    await inTenant(() => failOperationJob(
+      lapsed.id,
+      "transient",
+      retried.leaseOwner,
+      tenantId,
+    ));
+    await expect(enqueue("job-attempt-lapsed")).resolves.toMatchObject({
+      id: lapsed.id,
+      status: "queued",
+      attempt: 2,
+      lastError: "transient",
+    });
+
+    // A first retry waits between half and all of its 15 second backoff.
+    const spread = await enqueue("job-attempt-spread");
+    const spreadLease = await lease("job-attempt-spread");
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    try {
+      await inTenant(() => failOperationJob(
+        spread.id,
+        "transient",
+        spreadLease.leaseOwner,
+        tenantId,
+      ));
+    } finally {
+      random.mockRestore();
+    }
+    expect(await admin`
+      SELECT run_at > updated_at + INTERVAL '7 seconds' AS waits,
+        run_at < updated_at + INTERVAL '8 seconds' AS spread
+      FROM omni_operation_jobs
+      WHERE id = ${spread.id}
+    `).toEqual([{ waits: true, spread: true }]);
+
+    // A heartbeat extends the lease by the clock that checks it.
+    const beat = await enqueue("job-attempt-beat");
+    const beatLease = await lease("job-attempt-beat");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(Date.now() + 60 * 60_000);
+      await expect(inTenant(() => heartbeatOperationJob(
+        beat.id,
+        beatLease.leaseOwner!,
+        { tenantId, leaseSeconds: 60 },
+      ))).resolves.toMatchObject({ id: beat.id, status: "running" });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(await admin`
+      SELECT lease_expires_at > NOW() + INTERVAL '50 seconds' AS long_enough,
+        lease_expires_at <= NOW() + INTERVAL '60 seconds' AS bounded,
+        updated_at <= NOW() AS current
+      FROM omni_operation_jobs
+      WHERE id = ${beat.id}
+    `).toEqual([{ long_enough: true, bounded: true, current: true }]);
   });
 
   test("keeps request-derived run, thread, and turn identities single-use", async () => {

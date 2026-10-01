@@ -287,6 +287,91 @@ describe("operation job queue (file mode)", () => {
     });
   });
 
+  it("keeps a lapsed attempt's count and error when the same work is enqueued again", async () => {
+    const queue = await import("@/lib/operations/job-queue");
+    const tenantId = "tenant-lapsed-attempt";
+    const enqueue = () => queue.enqueueOperationJob({
+      tenantId,
+      type: "workflow.tick",
+      dedupeKey: "lapsed-attempt",
+      payload: { workflowRunId: "workflow-lapsed-attempt" },
+      maxAttempts: 3,
+    });
+    const job = await enqueue();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const [leased] = await queue.leaseOperationJobs({
+        tenantId,
+        dedupeKey: job.dedupeKey,
+        leaseSeconds: 10,
+      });
+      expect(leased).toMatchObject({ id: job.id, attempt: 1 });
+      vi.setSystemTime(Date.now() + 11_000);
+
+      await expect(enqueue()).resolves.toMatchObject({
+        id: job.id,
+        status: "queued",
+        attempt: 1,
+        lastError: "Lease expired before completion.",
+      });
+      const [retried] = await queue.leaseOperationJobs({
+        tenantId,
+        dedupeKey: job.dedupeKey,
+      });
+      expect(retried).toMatchObject({ id: job.id, attempt: 2 });
+      await queue.failOperationJob(
+        job.id,
+        "transient",
+        retried.leaseOwner,
+        tenantId,
+      );
+      await expect(enqueue()).resolves.toMatchObject({
+        id: job.id,
+        status: "queued",
+        attempt: 2,
+        lastError: "transient",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("waits between half and all of a retry's backoff", async () => {
+    const queue = await import("@/lib/operations/job-queue");
+    const tenantId = "tenant-retry-spread";
+    for (const [index, [draw, delayMs]] of [
+      [0, 7_500],
+      [0.5, 11_250],
+      [1, 15_000],
+    ].entries()) {
+      const job = await queue.enqueueOperationJob({
+        tenantId,
+        type: "workflow.tick",
+        dedupeKey: `retry-spread-${index}`,
+        payload: { workflowRunId: `workflow-retry-spread-${index}` },
+      });
+      const [leased] = await queue.leaseOperationJobs({
+        tenantId,
+        dedupeKey: job.dedupeKey,
+      });
+      const random = vi.spyOn(Math, "random").mockReturnValue(draw);
+      const before = Date.now();
+      try {
+        const failed = await queue.failOperationJob(
+          job.id,
+          "transient",
+          leased.leaseOwner,
+          tenantId,
+        );
+        const runAt = Date.parse(failed?.runAt || "");
+        expect(runAt).toBeGreaterThanOrEqual(before + delayMs);
+        expect(runAt).toBeLessThanOrEqual(Date.now() + delayMs);
+      } finally {
+        random.mockRestore();
+      }
+    }
+  });
+
   it("reuses a completed idempotent job without requeueing it", async () => {
     const queue = await import("@/lib/operations/job-queue");
     const tenantId = "tenant-idempotent-terminal";
