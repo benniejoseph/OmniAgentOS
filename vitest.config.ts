@@ -23,11 +23,13 @@ export default defineConfig({
       reportsDirectory: "coverage",
       include: ["src/lib/**/*.ts"],
       exclude: ["src/**/*.test.ts", "src/lib/**/types.ts"],
+      // Two points under the coverage last measured, so a change that leaves
+      // code untested fails. Raise the floor as coverage grows.
       thresholds: {
-        lines: 17,
-        statements: 17,
-        functions: 28,
-        branches: 65,
+        lines: 68,
+        statements: 68,
+        functions: 73,
+        branches: 73,
       },
     },
   },
