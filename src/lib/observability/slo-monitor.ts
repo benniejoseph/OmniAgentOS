@@ -21,7 +21,12 @@ import {
   type SloComparator,
   type SloMetric,
 } from "@/lib/observability/slo-policy-store";
-import { getObservabilityStats, recordRuntimeEventSafely, type ObservabilityStats } from "@/lib/observability/store";
+import {
+  getObservabilityStats,
+  recordRuntimeEventSafely,
+  type ObservabilityStats,
+  type WebVitalName,
+} from "@/lib/observability/store";
 
 export { getDefaultObservabilitySloPolicies } from "@/lib/observability/slo-policy-store";
 export type { ObservabilitySloPolicy, SloComparator, SloMetric } from "@/lib/observability/slo-policy-store";
@@ -34,6 +39,12 @@ export type ObservabilitySloEvaluation = {
   threshold?: number;
   margin: number;
   message: string;
+  /**
+   * Set when the metric is a percentile of sampled page views and the window
+   * holds too few of them to judge; the policy is then neither breached nor
+   * recovered.
+   */
+  insufficientSamples?: { samples: number; minimumSamples: number };
 };
 
 export type ObservabilitySloSnapshot = {
@@ -186,6 +197,10 @@ async function runObservabilitySloMonitorForTenant({
 
   for (const evaluation of snapshot.evaluations) {
     const fingerprint = createSloIncidentFingerprint(evaluation.policy);
+    if (evaluation.insufficientSamples) {
+      // Too few page views to say either way: leave any incident as it is.
+      continue;
+    }
     if (!evaluation.breached || !evaluation.severity) {
       if (resolveRecovered) {
         const resolved = await resolveIncidentByFingerprint(fingerprint, {
@@ -326,6 +341,21 @@ export function createSloIncidentFingerprint(policy: ObservabilitySloPolicy) {
 
 function evaluateSloPolicy(policy: ObservabilitySloPolicy, stats: ObservabilityStats): ObservabilitySloEvaluation {
   const value = metricValue(policy.metric, stats);
+  const vital = webVitalOf(policy.metric);
+  if (vital) {
+    const samples = stats.webVitals[vital].samples;
+    const minimumSamples = minimumSamplesOf(policy);
+    if (samples < minimumSamples) {
+      return {
+        policy,
+        value,
+        breached: false,
+        margin: 0,
+        message: `${policy.name} is not judged yet: ${samples} of the ${minimumSamples} sampled page views it needs.`,
+        insufficientSamples: { samples, minimumSamples },
+      };
+    }
+  }
   const critical = compare(value, policy.comparator, policy.criticalThreshold);
   const warning = compare(value, policy.comparator, policy.warningThreshold);
   const severity: IncidentSeverity | undefined = critical
@@ -381,7 +411,33 @@ function alertTargetsForPolicy(policy: ObservabilitySloPolicy, severity: Inciden
   return targets.filter((target) => allowed.has(target.id));
 }
 
+function webVitalOf(metric: SloMetric): WebVitalName | undefined {
+  if (metric === "lcpP75Ms") {
+    return "LCP";
+  }
+  if (metric === "inpP75Ms") {
+    return "INP";
+  }
+  if (metric === "clsP75") {
+    return "CLS";
+  }
+  return undefined;
+}
+
+const defaultMinimumSamples = 20;
+
+function minimumSamplesOf(policy: ObservabilitySloPolicy) {
+  const minimum = policy.metadata.minimumSamples;
+  return typeof minimum === "number" && Number.isSafeInteger(minimum) && minimum >= 1
+    ? minimum
+    : defaultMinimumSamples;
+}
+
 function metricValue(metric: SloMetric, stats: ObservabilityStats) {
+  const vital = webVitalOf(metric);
+  if (vital) {
+    return stats.webVitals[vital].p75;
+  }
   if (metric === "errorRate") {
     return roundMetric(stats.slo.errorRate);
   }

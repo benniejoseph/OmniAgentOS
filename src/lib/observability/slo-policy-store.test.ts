@@ -11,6 +11,19 @@ beforeAll(async () => {
 });
 
 describe("SLO policy governance (file mode)", () => {
+  it("lists each seeded default with the metric it measures", async () => {
+    const store = await import("@/lib/observability/slo-policy-store");
+    const byId = (left: { id: string }, right: { id: string }) => left.id.localeCompare(right.id);
+    const listed = await store.listObservabilitySloPolicies({
+      tenantId: "tenant-default-metrics",
+      includeDisabled: true,
+    });
+
+    expect(listed.sort(byId).map((policy) => [policy.id, policy.metric])).toEqual(
+      store.getDefaultObservabilitySloPolicies().sort(byId).map((policy) => [policy.id, policy.metric]),
+    );
+  });
+
   it("preserves the seeded approval-policy version on the first update", async () => {
     const store = await import("@/lib/observability/slo-policy-store");
     const defaults = store.getDefaultObservabilitySloApprovalPolicyConfig();

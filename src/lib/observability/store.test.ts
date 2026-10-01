@@ -7,6 +7,7 @@ import {
   getObservabilityStats,
   recordRuntimeEvent,
   summarizeObservabilityEvents,
+  type ObservabilityEventRecord,
 } from "@/lib/observability/store";
 
 describe("observability event ids", () => {
@@ -123,6 +124,55 @@ describe("observability summaries", () => {
     });
   });
 
+  it("summarizes each Core Web Vital at the 75th percentile of sampled page views", () => {
+    let next = 0;
+    const event = (action: string, metrics: unknown): ObservabilityEventRecord => ({
+      id: `vitals-${(next += 1)}`,
+      level: "info",
+      category: "api",
+      action,
+      route: "/app/agents",
+      method: "CLIENT",
+      correlationId: `vitals-${next}`,
+      message: "Sampled browser performance metrics.",
+      metadata: { metrics, sampled: true, sloExcluded: true },
+      createdAt: "2026-10-01T00:00:00.000Z",
+    });
+    const vital = (name: string, id: unknown, value: unknown) => ({ id, name, value, rating: "good" });
+
+    const stats = summarizeObservabilityEvents([
+      event("web_vitals.sample", [vital("LCP", "l1", 1_200)]),
+      event("web_vitals.sample", [vital("LCP", "l2", 2_600)]),
+      event("web_vitals.sample", [vital("LCP", "l3", 1_800), vital("INP", "i1", 180)]),
+      event("web_vitals.sample", [vital("LCP", "l4", 3_000)]),
+      // A page that reports again keeps the larger value.
+      event("web_vitals.sample", [vital("LCP", "l4", 1_000)]),
+      event("web_vitals.sample", [vital("CLS", "c1", 0.02)]),
+      event("web_vitals.sample", [vital("CLS", "c1", 0.31), vital("CLS", "c2", 0.05)]),
+      event("web_vitals.sample", [vital("INP", "i2", 350), vital("INP", "i3", 120)]),
+      event("web_vitals.sample", [vital("FCP", "f1", 9_000)]),
+      event("web_vitals.sample", [
+        vital("LCP", 7, 9_000),
+        vital("LCP", "l9", "9000"),
+        "LCP",
+        null,
+      ]),
+      event("web_vitals.sample", { LCP: vital("LCP", "l10", 9_000) }),
+      event("request.ok", [vital("LCP", "l11", 9_000)]),
+    ]);
+
+    expect(stats.webVitals).toEqual({
+      LCP: { samples: 4, p75: 2_600 },
+      INP: { samples: 3, p75: 350 },
+      CLS: { samples: 2, p75: 0.31 },
+    });
+    expect(summarizeObservabilityEvents([]).webVitals).toEqual({
+      LCP: { samples: 0, p75: 0 },
+      INP: { samples: 0, p75: 0 },
+      CLS: { samples: 0, p75: 0 },
+    });
+  });
+
   it("aggregates the complete indexed time window instead of a row cap", async () => {
     vi.stubEnv("DATABASE_URL", "postgres://example.invalid/omniagent");
     const query = vi.fn().mockResolvedValue([
@@ -144,6 +194,10 @@ describe("observability summaries", () => {
         by_category: { api: 750 },
         latest: [],
         recent_errors: [],
+        web_vitals: {
+          LCP: { samples: 30, p75: 2_600 },
+          CLS: { samples: 25, p75: 0.12 },
+        },
       },
     ]);
     try {
@@ -161,6 +215,11 @@ describe("observability summaries", () => {
         slo: {
           availability: 0.986,
           errorRate: 10 / 700,
+        },
+        webVitals: {
+          LCP: { samples: 30, p75: 2_600 },
+          INP: { samples: 0, p75: 0 },
+          CLS: { samples: 25, p75: 0.12 },
         },
       });
     } finally {

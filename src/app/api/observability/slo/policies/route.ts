@@ -14,6 +14,7 @@ import {
   listObservabilitySloPolicies,
   resetObservabilitySloApprovalPolicyConfig,
   saveObservabilitySloApprovalPolicyConfig,
+  SLO_METRICS,
   SloApprovalPolicyVersionConflictError,
 } from "@/lib/observability/slo-policy-store";
 import { getObservabilitySloSnapshot } from "@/lib/observability/slo-monitor";
@@ -25,7 +26,6 @@ export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
 export const POST = withDatabaseRequestScope(POSTHandler);
 
-const metrics = ["errorRate", "availability", "latencyP95Ms", "routeFailures"] as const;
 const comparators = ["greater_than", "greater_than_or_equal", "less_than", "less_than_or_equal"] as const;
 const severities = ["info", "warning", "critical"] as const;
 const units = ["ratio", "ms", "count"] as const;
@@ -37,7 +37,7 @@ const policySchema = z.object({
   id: z.string().min(2).max(80).regex(/^[a-z0-9_.:-]+$/),
   name: z.string().min(1).max(120),
   description: z.string().max(500).optional().default(""),
-  metric: z.enum(metrics),
+  metric: z.enum(SLO_METRICS),
   comparator: z.enum(comparators),
   warningThreshold: z.number().finite(),
   criticalThreshold: z.number().finite(),

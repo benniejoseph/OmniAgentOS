@@ -93,9 +93,14 @@ type ActiveWorkerHeartbeatRequirement = {
   cacheKey: string;
 };
 
+// Real-user Web Vitals measure the release already serving, and a release
+// may be the fix, so they alert but do not hold one.
 const advisorySloPolicyIds = new Set([
   "auth_failure_pressure",
   "security_policy_blocks",
+  "web_vitals_lcp_p75",
+  "web_vitals_inp_p75",
+  "web_vitals_cls_p75",
 ]);
 const openAIGatewayService = "asael-openai-egress";
 const openAIGatewayRegion = "iad";

@@ -51,6 +51,11 @@ import {
   transitionMissionTask,
 } from "@/lib/missions/store";
 import {
+  getObservabilityStats,
+  summarizeObservabilityEvents,
+  type ObservabilityEventRecord,
+} from "@/lib/observability/store";
+import {
   listPendingSloPolicyChangePage,
   requestObservabilitySloPolicyChange,
 } from "@/lib/observability/slo-policy-store";
@@ -8204,6 +8209,75 @@ databaseDescribe("Postgres schema integration", () => {
       }
     },
   );
+
+  test("summarizes a tenant's sampled Web Vitals as the file ledger does", async () => {
+    const tenantId = "tenant_web_vitals";
+    const vital = (name: string, id: unknown, value: unknown) => ({ id, name, value, rating: "good" });
+    const quoted = (value: string) => `'${value.replaceAll("'", "''")}'`;
+    let sequence = 0;
+    // Literal JSON, so the metadata is stored as the driver would store it.
+    const sampled = async (tenant: string, action: string, metrics: unknown, age = "0 seconds") => {
+      sequence += 1;
+      const event: ObservabilityEventRecord = {
+        id: `web-vitals-${sequence}`,
+        level: "info",
+        category: "api",
+        action,
+        route: "/app/agents",
+        method: "CLIENT",
+        correlationId: `web-vitals-correlation-${sequence}`,
+        tenantId: tenant,
+        message: "Sampled browser performance metrics.",
+        metadata: { metrics, sampled: true, sloExcluded: true },
+        createdAt: new Date().toISOString(),
+      };
+      await admin.unsafe(`
+        INSERT INTO omni_observability_events (
+          id, level, category, action, route, method, correlation_id,
+          tenant_id, message, metadata, created_at
+        )
+        VALUES (
+          ${quoted(event.id)}, 'info', 'api', ${quoted(action)}, '/app/agents', 'CLIENT',
+          ${quoted(event.correlationId)}, ${quoted(tenant)}, ${quoted(event.message)},
+          ${quoted(JSON.stringify(event.metadata))}::jsonb, NOW() - ${quoted(age)}::interval
+        )
+      `);
+      return event;
+    };
+    const recorded: ObservabilityEventRecord[] = [];
+    for (const [action, metrics] of [
+      ["web_vitals.sample", [vital("LCP", "l1", 1_200)]],
+      ["web_vitals.sample", [vital("LCP", "l2", 2_600)]],
+      ["web_vitals.sample", [vital("LCP", "l3", 1_800), vital("INP", "i1", 180)]],
+      ["web_vitals.sample", [vital("LCP", "l4", 3_000)]],
+      ["web_vitals.sample", [vital("LCP", "l4", 1_000)]],
+      ["web_vitals.sample", [vital("CLS", "c1", 0.02)]],
+      ["web_vitals.sample", [vital("CLS", "c1", 0.31), vital("CLS", "c2", 0.05)]],
+      ["web_vitals.sample", [vital("INP", "i2", 350), vital("INP", "i3", 120)]],
+      ["web_vitals.sample", [vital("FCP", "f1", 9_000)]],
+      ["web_vitals.sample", [vital("LCP", 7, 9_000), vital("LCP", "l9", "9000"), "LCP", null]],
+      ["web_vitals.sample", { LCP: vital("LCP", "l10", 9_000) }],
+      ["web_vitals.sample", "LCP"],
+      ["request.ok", [vital("LCP", "l11", 9_000)]],
+      ["request.ok", { requests: 3 }],
+    ] as const) {
+      recorded.push(await sampled(tenantId, action, metrics));
+    }
+    await sampled(tenantId, "web_vitals.sample", [vital("LCP", "stale", 9_000)], "25 hours");
+    await sampled("tenant_web_vitals_neighbor", "web_vitals.sample", [vital("LCP", "l1", 9_000)]);
+
+    const stats = await runWithDatabaseTenantScope(tenantId, () =>
+      getObservabilityStats({ tenantId })
+    );
+
+    expect(stats.webVitals).toEqual({
+      LCP: { samples: 4, p75: 2_600 },
+      INP: { samples: 3, p75: 350 },
+      CLS: { samples: 2, p75: 0.31 },
+    });
+    expect(stats.webVitals).toEqual(summarizeObservabilityEvents(recorded).webVitals);
+    expect(stats.total).toBe(recorded.length);
+  });
 });
 
 async function dropDatabaseRole(

@@ -42,6 +42,16 @@ export type ObservabilityEventRecord = {
   createdAt: string;
 };
 
+export type WebVitalName = "LCP" | "INP" | "CLS";
+
+/**
+ * Each Core Web Vital over the page views the browser sampled in the window:
+ * how many there were, and the value three in four of them stayed within.
+ */
+export type WebVitalsSummary = Record<WebVitalName, { samples: number; p75: number }>;
+
+const webVitalNames: readonly WebVitalName[] = ["LCP", "INP", "CLS"];
+
 export type ObservabilityStats = {
   total: number;
   sloEligibleEvents: number;
@@ -65,6 +75,7 @@ export type ObservabilityStats = {
     errorBudgetRemaining: number;
     latencyP95Ms: number;
   };
+  webVitals: WebVitalsSummary;
 };
 
 type ObservabilityLedger = {
@@ -355,6 +366,24 @@ export async function getObservabilityStats(
         ),
         eligible AS (
           SELECT * FROM windowed WHERE slo_eligible
+        ),
+        web_vital_samples AS (
+          -- A page reports a metric again as it changes; keep its largest.
+          SELECT
+            metric->>'name' AS name,
+            MAX((metric->>'value')::numeric) AS value
+          FROM windowed
+          CROSS JOIN LATERAL jsonb_array_elements(
+            CASE WHEN jsonb_typeof(windowed.metadata->'metrics') = 'array'
+              THEN windowed.metadata->'metrics'
+              ELSE '[]'::jsonb
+            END
+          ) AS metric
+          WHERE windowed.action = 'web_vitals.sample'
+            AND metric->>'name' IN ('LCP', 'INP', 'CLS')
+            AND jsonb_typeof(metric->'id') = 'string'
+            AND jsonb_typeof(metric->'value') = 'number'
+          GROUP BY metric->>'name', metric->>'id'
         )
         SELECT
           (SELECT COUNT(*)::int FROM windowed) AS total,
@@ -450,7 +479,19 @@ export async function getObservabilityStats(
               ORDER BY created_at DESC
               LIMIT 5
             ) AS recent_error
-          ), '[]'::jsonb) AS recent_errors
+          ), '[]'::jsonb) AS recent_errors,
+          COALESCE((
+            SELECT jsonb_object_agg(
+              name,
+              jsonb_build_object('samples', samples, 'p75', p75)
+            )
+            FROM (
+              SELECT name, COUNT(*)::int AS samples,
+                PERCENTILE_DISC(0.75) WITHIN GROUP (ORDER BY value) AS p75
+              FROM web_vital_samples
+              GROUP BY name
+            ) AS web_vitals
+          ), '{}'::jsonb) AS web_vitals
       `,
       [tenantId, since],
     );
@@ -514,7 +555,46 @@ function observabilityStatsFromAggregate(
       errorBudgetRemaining: Math.max(0, 0.02 - errorRate),
       latencyP95Ms: p95DurationMs,
     },
+    webVitals: webVitalsFromAggregate(row.web_vitals),
   };
+}
+
+function webVitalsFromAggregate(value: unknown): WebVitalsSummary {
+  const vitals = parseObject(value) || {};
+  const summary = (name: WebVitalName) => {
+    const vital = parseObject(vitals[name]) || {};
+    return { samples: Number(vital.samples || 0), p75: Number(vital.p75 || 0) };
+  };
+  return { LCP: summary("LCP"), INP: summary("INP"), CLS: summary("CLS") };
+}
+
+/** The file-backed twin of the web_vital_samples query above. */
+function summarizeWebVitals(events: ObservabilityEventRecord[]): WebVitalsSummary {
+  const largest = new Map<string, { name: WebVitalName; value: number }>();
+  for (const event of events) {
+    const metrics = event.metadata.metrics;
+    if (event.action !== "web_vitals.sample" || !Array.isArray(metrics)) {
+      continue;
+    }
+    for (const metric of metrics) {
+      const sample = parseObject(metric);
+      const name = webVitalNames.find((known) => known === sample?.name);
+      if (!name || typeof sample?.id !== "string" || typeof sample.value !== "number") {
+        continue;
+      }
+      const key = JSON.stringify([name, sample.id]);
+      const value = Math.max(sample.value, largest.get(key)?.value ?? sample.value);
+      largest.set(key, { name, value });
+    }
+  }
+  const summary = (name: WebVitalName) => {
+    const values = [...largest.values()]
+      .filter((sample) => sample.name === name)
+      .map((sample) => sample.value)
+      .sort((left, right) => left - right);
+    return { samples: values.length, p75: percentile(values, 0.75) };
+  };
+  return { LCP: summary("LCP"), INP: summary("INP"), CLS: summary("CLS") };
 }
 
 export function summarizeObservabilityEvents(
@@ -576,6 +656,7 @@ export function summarizeObservabilityEvents(
       errorBudgetRemaining: Math.max(0, 0.02 - errorRate),
       latencyP95Ms: p95DurationMs,
     },
+    webVitals: summarizeWebVitals(events),
   };
 }
 

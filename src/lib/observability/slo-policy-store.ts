@@ -24,15 +24,21 @@ import {
   withJsonFileLock,
 } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
+import performanceBudgets from "../../../performance-budgets.json";
 
-export type SloMetric =
-  | "errorRate"
-  | "availability"
-  | "latencyP95Ms"
-  | "routeFailures"
-  | "authFailures"
-  | "policyBlocks"
-  | "connectorFailures";
+export const SLO_METRICS = [
+  "errorRate",
+  "availability",
+  "latencyP95Ms",
+  "routeFailures",
+  "authFailures",
+  "policyBlocks",
+  "connectorFailures",
+  "lcpP75Ms",
+  "inpP75Ms",
+  "clsP75",
+] as const;
+export type SloMetric = (typeof SLO_METRICS)[number];
 export type SloComparator = "greater_than" | "greater_than_or_equal" | "less_than" | "less_than_or_equal";
 
 export type ObservabilitySloPolicy = {
@@ -326,6 +332,59 @@ export function getDefaultObservabilitySloPolicies(): ObservabilitySloPolicy[] {
       alertTargetIds: ["dashboard", "ops"],
       suppressionMinutes: 60,
       metadata: { source: "default", failureType: "connector_failure" },
+    },
+    // The warnings are the repository's Web Vitals budgets; the critical
+    // thresholds are where the web's guidance calls a page view poor.
+    {
+      id: "web_vitals_lcp_p75",
+      name: "Largest Contentful Paint (p75)",
+      description: "Three in four sampled page views should show their main content within the LCP budget.",
+      metric: "lcpP75Ms",
+      comparator: "greater_than",
+      warningThreshold: performanceBudgets.lcpMs,
+      criticalThreshold: 4000,
+      warningSeverity: "warning",
+      criticalSeverity: "critical",
+      unit: "ms",
+      componentId: "observability",
+      enabled: true,
+      alertTargetIds: [],
+      suppressionMinutes: 180,
+      metadata: { source: "default", minimumSamples: 20 },
+    },
+    {
+      id: "web_vitals_inp_p75",
+      name: "Interaction to Next Paint (p75)",
+      description: "Three in four sampled page views should respond to input within the INP budget.",
+      metric: "inpP75Ms",
+      comparator: "greater_than",
+      warningThreshold: performanceBudgets.inpMs,
+      criticalThreshold: 500,
+      warningSeverity: "warning",
+      criticalSeverity: "critical",
+      unit: "ms",
+      componentId: "observability",
+      enabled: true,
+      alertTargetIds: [],
+      suppressionMinutes: 180,
+      metadata: { source: "default", minimumSamples: 20 },
+    },
+    {
+      id: "web_vitals_cls_p75",
+      name: "Cumulative Layout Shift (p75)",
+      description: "Three in four sampled page views should shift their layout no more than the CLS budget.",
+      metric: "clsP75",
+      comparator: "greater_than",
+      warningThreshold: performanceBudgets.cls,
+      criticalThreshold: 0.25,
+      warningSeverity: "warning",
+      criticalSeverity: "critical",
+      unit: "count",
+      componentId: "observability",
+      enabled: true,
+      alertTargetIds: [],
+      suppressionMinutes: 180,
+      metadata: { source: "default", minimumSamples: 20 },
     },
   ];
 }
@@ -2410,15 +2469,7 @@ function sloPolicyChangeFromRow(row: Record<string, unknown>): ObservabilitySloP
 }
 
 function normalizeMetric(value: unknown): SloMetric {
-  const metric = String(value || "errorRate");
-  return metric === "availability" ||
-    metric === "latencyP95Ms" ||
-    metric === "routeFailures" ||
-    metric === "authFailures" ||
-    metric === "policyBlocks" ||
-    metric === "connectorFailures"
-    ? metric
-    : "errorRate";
+  return SLO_METRICS.find((metric) => metric === value) ?? "errorRate";
 }
 
 function normalizeComparator(value: unknown): SloComparator {

@@ -630,6 +630,49 @@ describe("release evidence", () => {
     });
     expect(report.recommendations).toContain(classify);
   });
+
+  it("warns on a critical real-user Web Vitals breach without holding the release", async () => {
+    const revision = "web-vitals-release";
+    configurePassingEvidence(revision, [
+      "fast",
+      "background",
+      "maintenance",
+    ].map((lane) => ({
+      instanceId: "worker",
+      lane,
+      protocol: "1",
+      revision,
+      target: "https://release.example.test",
+      recordedAt: new Date().toISOString(),
+    })));
+    const passing = await mocks.getObservabilitySloSnapshot();
+    const releaseWith = async (...policyIds: string[]) => {
+      mocks.getObservabilitySloSnapshot.mockResolvedValue({
+        ...passing,
+        healthy: false,
+        breaches: policyIds.map((id) => ({
+          policy: { id },
+          severity: "critical",
+          message: `${id} breached.`,
+        })),
+      });
+      const report = await getReleaseEvidenceReport("web-vitals", {
+        force: true,
+        expectedWorkerTarget: "https://release.example.test",
+      });
+      const gate = report.gates.find((item) => item.id === "observability_slo");
+      return [report.releaseGate.approved, gate?.status, gate?.summary];
+    };
+
+    expect(
+      await releaseWith("web_vitals_lcp_p75", "web_vitals_inp_p75", "web_vitals_cls_p75"),
+    ).toEqual([true, "warn", "3 advisory SLO breach(es) are active."]);
+    expect(await releaseWith("web_vitals_lcp_p75", "error_budget")).toEqual([
+      false,
+      "fail",
+      "1 blocking critical SLO breach(es) are active.",
+    ]);
+  });
 });
 
 function configurePassingEvidence(
