@@ -1262,5 +1262,12 @@
     "checksum": "3c2122c7222e4a5aafca6e5ef3eca7905353be7aae675367a16b9cdb4787fff3",
     "file": "20260929120000_oauth_sync_backoff.sql",
     "sha256": "3c2122c7222e4a5aafca6e5ef3eca7905353be7aae675367a16b9cdb4787fff3"
+  },
+  {
+    "version": 211,
+    "name": "rls_scope_initplans_v1",
+    "checksum": "84d660e88fc6bcdaf9bac76939d03ad470e2fe6fee615d52be55a16dda6a88e1",
+    "file": "20261001090000_rls_scope_initplans.sql",
+    "sha256": "84d660e88fc6bcdaf9bac76939d03ad470e2fe6fee615d52be55a16dda6a88e1"
   }
 ]

@@ -312,6 +312,39 @@ already stopped it 5 seconds before its own deadline.
   rolls back. See
   [troubleshooting.md](troubleshooting.md#schema-startup-fails).
 
+### Row security scope initplans (v211)
+
+Migration `20261001090000_rls_scope_initplans.sql` installs schema v211
+(`rls_scope_initplans_v1`) after v210. Apply it before deploying the code that
+needs it: until it runs, every database-backed request fails with
+`Database schema is behind (pending versions: 211)`. A release older than v211
+still serves against a v211 database.
+
+Row security policies called `omni_system_scope_enabled()`,
+`omni_current_actor_scope_v1()` and `omni_current_memory_access_scope_v1()`
+for every row they checked, and none of them can be inlined, so a scan paid
+for a function call, catalog lookups and a JSON parse per row. v211 rewrites
+the 191 policies on 152 tables that call them so that each runs once per
+query, as an initplan, and the actor and private memory row checks take the
+scope that initplan read. `omni_tenant_visible()` now reads
+`omni.system_scope` before it calls `omni_system_scope_enabled()`, so a query
+under a tenant scope makes no such call. Every policy admits the same rows as
+before. The two policies of `omni_tenant_memory_data_right_requests` stay as
+they were: its writer refuses to write unless they read exactly as created.
+
+- **Locks.** `ALTER POLICY` takes an `ACCESS EXCLUSIVE` lock on each of the 152
+  tables and holds it until the migration commits, so requests on those tables
+  wait for it. A table busy past the migration lock timeout rolls the
+  migration back to run again, as described in
+  [Schema and migration rollout](#schema-and-migration-rollout).
+- **Rollback.** A release older than v211 serves unchanged, because the
+  policies admit the same rows and no older code reads their text.
+- **Repeat.** The rewrite reads the text PostgreSQL renders and alters only
+  the clauses it would change, so running it again changes nothing.
+- **New policies.** A policy should call these helpers as a scalar subquery,
+  such as `(SELECT omni_system_scope_enabled())`. The integration suite fails
+  on a policy that calls one per row.
+
 ### Keyed memory text digests
 
 This release needs no migration. Memory events no longer keep a plain SHA-256
@@ -1252,6 +1285,7 @@ marker in the same transaction.
 | 208 | `schema_catalog_convergence_v1` | `514f00004c8726a2c762f6069728b20d4816a92731c72c125bf39cbca9a0371f` | actor policies alone on 38 tables, 43 missing CHECKs added `NOT VALID` and 8 renamed, and system scope for the `BYPASSRLS` maintenance role, on databases the old runner migrated |
 | 209 | `mobile_refresh_rotation_retry_v1` | `e78561b7a9b0c38fd91376d9f8fb094e3b629d5e5b94b3a48592a9b89855531f` | nullable rotation time and key on mobile sessions, so the refresh token a rotation replaced gets the same pair again for 60 seconds |
 | 210 | `oauth_sync_backoff_v1` | `3c2122c7222e4a5aafca6e5ef3eca7905353be7aae675367a16b9cdb4787fff3` | a failure count and retry time on OAuth grants, so a connection whose syncs reach no source waits five minutes, doubling up to six hours |
+| 211 | `rls_scope_initplans_v1` | `84d660e88fc6bcdaf9bac76939d03ad470e2fe6fee615d52be55a16dda6a88e1` | row security scope helpers run once per query as initplans, and `omni_tenant_visible()` reads the system scope setting before calling its check |
 
 Version 196 requires the exact predecessor marker v195
 `moltbook_autonomy_privilege_repair_v1` with checksum

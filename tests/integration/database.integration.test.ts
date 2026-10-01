@@ -177,6 +177,15 @@ const actorRlsRepairTables = [
   "omni_browser_profile_bindings",
   "omni_browser_takeovers",
 ] as const;
+// An actor policy as the files leave it: system scope and the actor scope
+// are each read once per query, as an initplan.
+const systemScopeInitplan =
+  "( SELECT omni_system_scope_enabled() AS omni_system_scope_enabled)";
+const actorScopeInitplan =
+  "( SELECT omni_current_actor_scope_v1() AS omni_current_actor_scope_v1)";
+function actorPolicyExpression(actorColumn: string) {
+  return `(${systemScopeInitplan} OR omni_actor_scope_v1_allows_validated(${actorScopeInitplan}, tenant_id, ${actorColumn}))`;
+}
 // The roles the migrations grant to by name.
 const migrationGranteeRoles = ["omni_backup", "omni_maintenance", "omni_runtime"];
 
@@ -865,10 +874,8 @@ databaseDescribe("Postgres schema integration", () => {
           permissive: false,
           command: "*",
           public_role: true,
-          using_expression:
-            "(omni_system_scope_enabled() OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id))",
-          check_expression:
-            "(omni_system_scope_enabled() OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id))",
+          using_expression: actorPolicyExpression("owner_actor_id"),
+          check_expression: actorPolicyExpression("owner_actor_id"),
         },
         {
           table_name: tableName,
@@ -881,6 +888,147 @@ databaseDescribe("Postgres schema integration", () => {
         },
       ]));
     }
+  });
+
+  test("calls no scope helper once per row from a row security policy", async () => {
+    const policies = await admin`
+      SELECT
+        relation.relname AS table_name,
+        policy.polname AS policy_name,
+        pg_get_expr(policy.polqual, policy.polrelid) AS using_expression,
+        pg_get_expr(policy.polwithcheck, policy.polrelid) AS check_expression
+      FROM pg_policy policy
+      JOIN pg_class relation ON relation.oid = policy.polrelid
+      WHERE relation.relnamespace = 'public'::regnamespace
+      ORDER BY relation.relname, policy.polname
+    `;
+    // Outside an initplan, a scope helper runs for each row a policy checks.
+    const perRowCall =
+      /\b(?:omni_system_scope_enabled\(\)|omni_current_actor_scope_v1\(\)|omni_current_memory_access_scope_v1\(\)|omni_actor_scope_v1_allows\(|omni_user_private_memory_scope_v1_allows\()/;
+    const callsPerRow = (expression: string | null) =>
+      expression !== null &&
+      perRowCall.test(expression.replace(/\( SELECT (\w+)\(\) AS \1\)/g, ""));
+
+    expect(policies.length).toBeGreaterThan(400);
+    // Its writer refuses to write unless the policy reads exactly this.
+    expect(policies.filter((policy) =>
+      callsPerRow(policy.using_expression) || callsPerRow(policy.check_expression)
+    )).toEqual([
+      {
+        table_name: "omni_tenant_memory_data_right_requests",
+        policy_name: "omni_memory_data_right_request_holdback",
+        using_expression: "omni_system_scope_enabled()",
+        check_expression: "omni_system_scope_enabled()",
+      },
+    ]);
+  });
+
+  test("reads the system and actor scope of a row security policy once per query", async () => {
+    const policies = await admin`
+      SELECT
+        policy.polname AS policy_name,
+        policy.polpermissive AS permissive,
+        policy.polcmd::TEXT AS command,
+        pg_get_expr(policy.polqual, policy.polrelid) AS using_expression,
+        pg_get_expr(policy.polwithcheck, policy.polrelid) AS check_expression
+      FROM pg_policy policy
+      WHERE policy.polrelid = 'public.omni_a2a_exchanges'::regclass
+      ORDER BY policy.polname
+    `;
+    expect(policies.map(({ policy_name, permissive, command }) => ({
+      policy_name,
+      permissive,
+      command,
+    }))).toEqual([
+      { policy_name: "omni_a2a_exchanges_actor", permissive: false, command: "*" },
+      { policy_name: "omni_tenant_isolation", permissive: true, command: "*" },
+    ]);
+    const helpers = [
+      "omni_system_scope_enabled()",
+      "omni_current_actor_scope_v1()",
+      "omni_actor_scope_v1_allows(text,text)",
+      "omni_tenant_visible(text)",
+    ];
+    let visibleRows: number | undefined;
+    let calls: Record<string, number> | undefined;
+    const rollbackScopeProbe = new Error(
+      "Rollback row security scope integration fixture",
+    );
+    await admin
+      .begin(async (transaction) => {
+        // The policies of omni_a2a_exchanges, over 40 rows of two tenants and
+        // two actors.
+        await transaction`
+          CREATE TABLE scope_initplan_rows (
+            tenant_id TEXT NOT NULL,
+            owner_actor_id TEXT NOT NULL
+          )
+        `;
+        await transaction`
+          INSERT INTO scope_initplan_rows (tenant_id, owner_actor_id)
+          SELECT
+            CASE WHEN row_number % 2 = 0 THEN 'scope-tenant-a' ELSE 'scope-tenant-b' END,
+            CASE WHEN row_number % 4 = 0 THEN 'scope-actor-a' ELSE 'scope-actor-b' END
+          FROM generate_series(1, 40) AS row_number
+        `;
+        await transaction`ALTER TABLE scope_initplan_rows ENABLE ROW LEVEL SECURITY`;
+        for (const policy of policies) {
+          await transaction.unsafe(`
+            CREATE POLICY ${policy.policy_name} ON scope_initplan_rows
+            AS ${policy.permissive ? "PERMISSIVE" : "RESTRICTIVE"} FOR ALL
+            USING (${policy.using_expression})
+            WITH CHECK (${policy.check_expression})
+          `);
+        }
+        await transaction`
+          CREATE ROLE scope_initplan_reader NOLOGIN NOSUPERUSER NOBYPASSRLS
+        `;
+        await transaction`GRANT USAGE ON SCHEMA public TO scope_initplan_reader`;
+        await transaction`GRANT SELECT ON scope_initplan_rows TO scope_initplan_reader`;
+        await transaction`SET LOCAL track_functions = 'all'`;
+        await transaction`
+          SELECT
+            set_config('omni.tenant_id', 'scope-tenant-a', true),
+            set_config('omni.actor_scope_v1', ${JSON.stringify({
+              version: "1",
+              tenantId: "scope-tenant-a",
+              actorIds: ["scope-actor-a"],
+            })}, true)
+        `;
+        await transaction`SET LOCAL ROLE scope_initplan_reader`;
+        const callCounts = async () => {
+          const [row] = await transaction.unsafe(`
+            SELECT ${helpers
+              .map((helper, index) =>
+                `pg_stat_get_xact_function_calls('public.${helper}'::regprocedure) AS calls_${index}`
+              )
+              .join(", ")}
+          `);
+          return helpers.map((_, index) => Number(row[`calls_${index}`] ?? 0));
+        };
+        const before = await callCounts();
+        [{ visible_rows: visibleRows }] = await transaction`
+          SELECT count(*)::int AS visible_rows FROM scope_initplan_rows
+        `;
+        const after = await callCounts();
+        calls = Object.fromEntries(
+          helpers.map((helper, index) => [helper, after[index] - before[index]]),
+        );
+        throw rollbackScopeProbe;
+      })
+      .catch((error) => {
+        if (error !== rollbackScopeProbe) throw error;
+      });
+
+    expect(visibleRows).toBe(10);
+    // omni_tenant_visible() is inlined, and under a tenant scope it does not
+    // call omni_system_scope_enabled().
+    expect(calls).toEqual({
+      "omni_system_scope_enabled()": 1,
+      "omni_current_actor_scope_v1()": 1,
+      "omni_actor_scope_v1_allows(text,text)": 0,
+      "omni_tenant_visible(text)": 0,
+    });
   });
 
   test("keeps a tenant-wide policy from widening any actor policy", async () => {
@@ -962,8 +1110,7 @@ databaseDescribe("Postgres schema integration", () => {
       "omni_tenant_execution_principals: omni_maintenance INSERT, SELECT",
       "omni_tenant_execution_principals: omni_runtime INSERT, SELECT",
     ]);
-    const actorExpression =
-      "(omni_system_scope_enabled() OR omni_actor_scope_v1_allows(tenant_id, controller_actor_id))";
+    const actorExpression = actorPolicyExpression("controller_actor_id");
     expect(policies).toEqual([
       {
         policy_name: "omni_execution_principal_actor_insert",
@@ -1487,8 +1634,7 @@ databaseDescribe("Postgres schema integration", () => {
         function_name: "omni_validate_memory_access_grant_insert",
       },
     ]);
-    const actorExpression =
-      "(omni_system_scope_enabled() OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id))";
+    const actorExpression = actorPolicyExpression("owner_actor_id");
     expect(policies).toEqual([
       {
         policy_name: "omni_memory_access_grant_actor",
@@ -8369,12 +8515,68 @@ function withUnvalidatedChecks(
 
 // Runs the operation with the schema catalog convergence migration and every
 // later one pending, then puts back any ledger row the operation did not
-// record again.
+// record again. That migration checks the actor policies of
+// oldRunnerTenantWidePolicyTables as the files wrote them before a later one
+// moved their scope helpers into initplans, so meanwhile they read that way,
+// and afterwards as they did.
 async function withSchemaConvergencePending<T>(
   client: ReturnType<typeof postgres>,
   operation: () => Promise<T>,
 ) {
-  return withMigrationsPendingFrom(client, schemaConvergenceVersion, operation);
+  const actorPolicies = () => client`
+    SELECT
+      relation.relname AS table_name,
+      policy.polname AS policy_name,
+      pg_get_expr(policy.polqual, policy.polrelid) AS using_expression,
+      pg_get_expr(policy.polwithcheck, policy.polrelid) AS check_expression
+    FROM pg_policy policy
+    JOIN pg_class relation ON relation.oid = policy.polrelid
+    WHERE relation.relnamespace = 'public'::regnamespace
+      AND relation.relname = ANY(${oldRunnerTenantWidePolicyTables})
+  `;
+  const alterPolicy = (
+    policy: postgres.Row,
+    expression: (text: string) => string,
+  ) => client.unsafe(`
+    ALTER POLICY ${policy.policy_name} ON public.${policy.table_name}
+    USING (${expression(policy.using_expression)})
+    WITH CHECK (${expression(policy.check_expression)})
+  `);
+  const filePolicies = await actorPolicies();
+  for (const policy of filePolicies) {
+    await alterPolicy(policy, withoutScopeInitplans);
+  }
+  try {
+    return await withMigrationsPendingFrom(client, schemaConvergenceVersion, operation);
+  } finally {
+    const leftPolicies = new Map((await actorPolicies()).map((policy) => [
+      `${policy.table_name}.${policy.policy_name}`,
+      policy,
+    ]));
+    for (const policy of filePolicies) {
+      const left = leftPolicies.get(`${policy.table_name}.${policy.policy_name}`);
+      if (
+        left && (
+          left.using_expression !== policy.using_expression ||
+          left.check_expression !== policy.check_expression
+        )
+      ) {
+        await alterPolicy(policy, (text) => text);
+      }
+    }
+  }
+}
+
+// A policy expression as the files wrote it before its scope helpers moved
+// into initplans. Exact for the actor policies the convergence migration
+// checks.
+function withoutScopeInitplans(expression: string) {
+  return expression
+    .replace(/\( SELECT (\w+)\(\) AS \1\)/g, "$1()")
+    .replaceAll(
+      "omni_actor_scope_v1_allows_validated(omni_current_actor_scope_v1(), ",
+      "omni_actor_scope_v1_allows(",
+    );
 }
 
 // Runs the operation with the given migration and every later one pending,
