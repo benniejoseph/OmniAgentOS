@@ -1565,10 +1565,18 @@ readiness require captured build logs and passing route smokes. The legacy
 `browserEvidence` field stays readable on historical checkpoints/deployments and
 is written as retired compatibility metadata for new records; it is not a gate.
 
-The browser-automation development dependency, CI job, benchmark, and visual-smoke
-scripts are removed. Use focused component/contract tests and the production build
-for web changes, and the signed native canary plus governed receipts for installed-
-Mac Computer Use.
+The browser-automation development dependency, its CI job, and the visual-smoke
+scripts are removed. The release benchmarks remain: `npm run benchmark:preview` and
+`npm run benchmark:dashboard` measure server-rendered responses without a browser,
+and `scripts/deploy-production.mjs` runs both before it exposes a release. Sampled
+Web Vitals stay the real-browser signal. CI fails a build when a route's first-load
+JavaScript exceeds its budget under `routeFirstLoadJs` in `performance-budgets.json`:
+`npm run check:route-js` reads the report a Turbopack `next build` writes to
+`.next/diagnostics/route-bundle-stats.json`, and fails when that report is missing.
+Workspace routes (`/app` and below) and public routes have one budget each, and the
+heaviest workspace routes have their own. Use focused component/contract tests and
+the production build for web changes, and the signed native canary plus governed
+receipts for installed-Mac Computer Use.
 
 ### Two-phase gateway token rotation
 

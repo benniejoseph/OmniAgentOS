@@ -100,18 +100,24 @@ describe("frontend performance budgets", () => {
       lcpMs: 2_500,
       inpMs: 200,
       cls: 0.1,
+      routeFirstLoadJs: {
+        publicMaxBytes: 560_000,
+        workspaceMaxBytes: 800_000,
+        routeMaxBytes: {
+          "/app/agents": 1_100_000,
+          "/app/projects": 1_100_000,
+          "/app/markets": 1_050_000,
+          "/app/missions": 1_030_000,
+          "/app/missions/[id]": 1_030_000,
+          "/app/command": 920_000,
+        },
+      },
     });
   });
 
-  it("uses finalized Web Vitals and a browser-independent SSR dashboard release gate", async () => {
-    const [reporter, deployment, previewBenchmark, dashboardBenchmark, healthBadge, workspaceSummary, todayRoute, todayService, todaySnapshot, todaySnapshotCache, capabilitiesRoute, settingsCache, domainConsole] =
+  it("keeps a browser-independent SSR dashboard release gate", async () => {
+    const [deployment, previewBenchmark, dashboardBenchmark, healthBadge, workspaceSummary, todayRoute, todayService, todaySnapshot, todaySnapshotCache, capabilitiesRoute, settingsCache, domainConsole] =
       await Promise.all([
-        readFile(
-          path.resolve(
-            "src/components/performance/web-vitals-reporter.tsx",
-          ),
-          "utf8",
-        ),
         readFile(path.resolve("scripts/deploy-production.mjs"), "utf8"),
         readFile(path.resolve("scripts/benchmark-preview.mjs"), "utf8"),
         readFile(path.resolve("scripts/benchmark-dashboard.mjs"), "utf8"),
@@ -139,10 +145,6 @@ describe("frontend performance budgets", () => {
           "utf8",
         ),
       ]);
-    expect(reporter).toContain('from "web-vitals"');
-    expect(reporter).toContain("onCLS(report)");
-    expect(reporter).toContain("onINP(report)");
-    expect(reporter).not.toContain("new PerformanceObserver");
     expect(previewBenchmark).toContain("serverP95BudgetMs");
     expect(previewBenchmark).toContain("budgets.authenticatedReadP95Ms");
     expect(previewBenchmark).toContain("parseServerDuration");

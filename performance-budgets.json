@@ -18,5 +18,17 @@
   "lcpMs": 2500,
   "inpMs": 200,
   "cls": 0.1,
-  "heroImageMaxBytes": 204800
+  "heroImageMaxBytes": 204800,
+  "routeFirstLoadJs": {
+    "publicMaxBytes": 560000,
+    "workspaceMaxBytes": 800000,
+    "routeMaxBytes": {
+      "/app/agents": 1100000,
+      "/app/projects": 1100000,
+      "/app/markets": 1050000,
+      "/app/missions": 1030000,
+      "/app/missions/[id]": 1030000,
+      "/app/command": 920000
+    }
+  }
 }
