@@ -44,6 +44,12 @@ type EnvironmentChanges = Record<string, string | undefined>;
 // and records which queries it was asked.
 const FAKE_PSQL = [
   "#!/bin/sh",
+  // Exits at once and answers later, from a child that holds the output open.
+  'if [ -n "$FAKE_PSQL_LATE_OUTPUT" ]; then',
+  "  unset FAKE_PSQL_LATE_OUTPUT",
+  '  (sleep 0.2; exec "$0" "$@") &',
+  "  exit 0",
+  "fi",
   'sql=""',
   'while [ "$#" -gt 0 ]; do',
   '  if [ "$1" = "--command" ]; then sql="$2"; shift; fi',
@@ -162,6 +168,16 @@ describe("database backup script", () => {
     expect(result.queries).not.toContain("forced-rls");
   });
 
+  it("reads each answer in full when psql exits before its output closes", async () => {
+    const result = await runBackup(ledgerRows, { FAKE_PSQL_LATE_OUTPUT: "1" });
+
+    // It fails once it opens its snapshot, with every answer read.
+    expect(result.code).toBe(1);
+    expect(result.stderr).not.toContain("Backup role must be");
+    expect(result.stderr).not.toContain("does not identify");
+    expect(result.queries).toContain("forced-rls");
+  });
+
   it("refuses to back up without an encryption key, before it reads the database", async () => {
     const result = await runBackup(ledgerRows, {
       OMNIAGENT_BACKUP_ENCRYPTION_KEY: undefined,
@@ -245,6 +261,20 @@ describe("database restore drill", () => {
     expect(evidence.validation).not.toHaveProperty("grants");
     expect(evidence.recovery.restoreSeconds).toBeLessThan(60);
     expect(evidence.recovery.backupAgeSeconds).toBeGreaterThanOrEqual(60);
+  });
+
+  it("reads each answer in full when psql exits before its output closes", async () => {
+    const result = await runRestoreDrill({ env: { FAKE_PSQL_LATE_OUTPUT: "1" } });
+
+    expect(result.stderr).toBe("");
+    expect(result.code).toBe(0);
+    expect(result.queries).toEqual([
+      "missing-roles",
+      "validation",
+      "unscoped-read",
+      "tenant-read",
+      "tenant-read",
+    ]);
   });
 
   it("rejects a backup manifest whose ledger rows differ from schema-migrations.json", async () => {

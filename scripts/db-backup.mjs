@@ -577,7 +577,8 @@ function runCapture(command, args, env) {
       stdout += chunk;
     });
     child.once("error", reject);
-    child.once("exit", (code, signal) => {
+    // A process can exit before the last of its output has been read.
+    child.once("close", (code, signal) => {
       if (code === 0) {
         resolve(stdout);
       } else {
