@@ -26,7 +26,7 @@ Every route that changes state through the application services shared with gove
 
 ## Public and authentication routes
 
-- `GET /api/health`: public liveness/readiness summary. Returns 200 for healthy or local degraded storage and 503 when a configured database is unhealthy.
+- `GET /api/health`: public liveness/readiness summary. Returns 200 for healthy or local degraded storage and 503 when a configured database is unhealthy. Responses carry the served `revision` and, on a deployment the release runner made, the `releaseManifest` it signed for that deployment.
 - `GET /api/health/worker`: public monitor of the dedicated worker for this deployment's revision. For each of the fast, background, and maintenance lanes it reports `fresh`, `stale`, or `missing` and the age of the lane's last release work on any worker machine; a lane that has not worked yet counts from its machine's activation. Returns 200 only when every lane is fresh within `OMNIAGENT_WORKER_HEARTBEAT_MAX_AGE_MS` and 503 otherwise, including while a release is held; a failed read returns 503 with `status: "unknown"`. It names no machine. `/api/health` does not depend on the worker, because the worker and the release runner read it before any work starts.
 - Public registration and access-request intake are disabled. `/signup` permanently redirects to `/login`.
 - `GET|POST /api/onboarding/access-requests`: admin-only list and approve/decline workflow for historical requests in the Inbox.

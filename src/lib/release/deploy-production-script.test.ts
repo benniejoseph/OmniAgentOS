@@ -1,14 +1,48 @@
 import { spawn } from "node:child_process";
+import { generateKeyPairSync } from "node:crypto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import {
   createServer,
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  copyFile,
+  mkdtemp,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
+import {
+  releaseSigningKeyId,
+  verifyReleaseManifest,
+} from "../../../scripts/release-manifest.mjs";
+import { assessReleaseManifestHealth } from "../../../scripts/smoke-release-manifest.mjs";
+
+// The runner signs each test release's manifest with this key: outside the
+// checkout and readable only by its owner, like the real one.
+const signingKeyDirectory = mkdtempSync(
+  path.join(tmpdir(), "asael-release-signing-"),
+);
+const signingKeyPair = generateKeyPairSync("ed25519");
+const signingKeyPem = String(
+  signingKeyPair.privateKey.export({ type: "pkcs8", format: "pem" }),
+);
+const signingKeyFile = path.join(signingKeyDirectory, "release-signing-key.pem");
+writeFileSync(signingKeyFile, signingKeyPem, { mode: 0o600 });
+const signingPublicKey = signingKeyPair.publicKey
+  .export({ type: "spki", format: "der" })
+  .toString("base64");
+const signingKeyId = releaseSigningKeyId(signingKeyPair.publicKey);
+afterAll(() => {
+  rmSync(signingKeyDirectory, { recursive: true, force: true });
+});
 
 describe("paired production deployment", () => {
   it("keeps the tenant-isolation workflow read to the scoped run list", async () => {
@@ -46,25 +80,29 @@ describe("paired production deployment", () => {
       "vercel deploy --prod --skip-domain --yes",
     );
     expect(commands[3]).toContain(
-      "--env OMNIAGENT_RELEASE_SHA=test-release",
+      "--env OMNIAGENT_RELEASE_SHA=test-release --env OMNIAGENT_RELEASE_MANIFEST=<release manifest signed with OMNIAGENT_RELEASE_SIGNING_KEY_FILE>",
     );
     expect(commands[4]).toContain(
       "wait for staged web readiness at https://staged-deployment.example/api/health revision=test-release",
     );
-    expect(commands[5]).toContain(
+    // The staged manifest is checked before anything production runs on.
+    expect(commands[5]).toBe(
+      "DRY RUN BASE_URL=https://staged-deployment.example SMOKE_EXPECTED_REVISION=test-release npm run smoke:manifest",
+    );
+    expect(commands[6]).toContain(
       "stage candidate gateway overlap on Fly through secret stdin; values redacted",
     );
-    expect(commands[6]).toContain(
+    expect(commands[7]).toContain(
       "fly deploy --app omniagent-os-worker --build-arg OMNIAGENT_RELEASE_SHA=test-release --env OMNIAGENT_WORKER_BASE_URL=https://staged-deployment.example",
     );
-    expect(commands[6]).toContain(
+    expect(commands[7]).toContain(
       "--env OMNIAGENT_WORKER_CANONICAL_BASE_URL=https://asael.bennierichard.com",
     );
-    expect(commands[6]).toContain(
+    expect(commands[7]).toContain(
       "--env OMNIAGENT_WORKER_RELEASE_HOLD=true",
     );
-    expect(commands[6]).toContain("--strategy bluegreen");
-    expect(commands[7]).toContain(
+    expect(commands[7]).toContain("--strategy bluegreen");
+    expect(commands[8]).toContain(
       "wait for staged gateway active+optional-previous token readiness at /healthz revision=test-release region=iad protocol=1",
     );
     const stagedSmokeIndex = commands.findIndex((command) =>
@@ -91,6 +129,9 @@ describe("paired production deployment", () => {
       command.includes("wait for canonical web readiness") &&
       command.includes("https://asael.bennierichard.com/api/health") &&
       command.includes("revision=test-release"),
+    );
+    const canonicalManifestIndex = commands.indexOf(
+      "DRY RUN BASE_URL=https://asael.bennierichard.com SMOKE_EXPECTED_REVISION=test-release npm run smoke:manifest",
     );
     const canonicalSmokeIndex = commands.findIndex((command) =>
       command.includes("BASE_URL=https://asael.bennierichard.com") &&
@@ -192,7 +233,7 @@ describe("paired production deployment", () => {
       command.includes("LIVE_VERIFY_PAID_OPENAI=CONFIRMED") &&
       command.includes("npm run smoke:paid-agent"),
     );
-    expect(gatewayTokenStageIndex).toBeGreaterThan(4);
+    expect(gatewayTokenStageIndex).toBeGreaterThan(5);
     expect(stagedWorkerIndex).toBeGreaterThan(gatewayTokenStageIndex);
     expect(stagedGatewayIndex).toBeGreaterThan(stagedWorkerIndex);
     expect(stagedWorkerSettleIndex).toBeGreaterThan(stagedGatewayIndex);
@@ -202,7 +243,8 @@ describe("paired production deployment", () => {
     expect(stagedDashboardIndex).toBeGreaterThan(stagedPreviewIndex);
     expect(promoteIndex).toBeGreaterThan(stagedDashboardIndex);
     expect(canonicalReadinessIndex).toBeGreaterThan(promoteIndex);
-    expect(canonicalWorkerIndex).toBeGreaterThan(canonicalReadinessIndex);
+    expect(canonicalManifestIndex).toBe(canonicalReadinessIndex + 1);
+    expect(canonicalWorkerIndex).toBeGreaterThan(canonicalManifestIndex);
     expect(canonicalGatewayIndex).toBeGreaterThan(canonicalWorkerIndex);
     expect(canonicalWorkerSettleIndex).toBeGreaterThan(canonicalGatewayIndex);
     expect(canonicalPaidIndex).toBeGreaterThan(canonicalWorkerSettleIndex);
@@ -390,6 +432,7 @@ describe("paired production deployment", () => {
       OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN: "",
       OMNIAGENT_OPENAI_GATEWAY_INITIAL_CUTOVER: "",
       OMNIAGENT_RELEASE_SPLIT_RECOVERY: "",
+      OMNIAGENT_RELEASE_SIGNING_KEY_FILE: signingKeyFile,
     };
     const missing = await runProcess(
       process.execPath,
@@ -415,6 +458,9 @@ describe("paired production deployment", () => {
     expect(valid.code).toBe(0);
     expect(valid.stdout).toContain(
       "Production release configuration is valid.",
+    );
+    expect(valid.stdout).toContain(
+      `Release manifests are signed with key ${signingKeyId}.`,
     );
     expect(`${valid.stdout}\n${valid.stderr}`).not.toContain(token);
 
@@ -588,6 +634,49 @@ describe("paired production deployment", () => {
       expect(invalid.stderr).toContain(
         "must be exactly https://omniagent-os-worker.fly.dev/v1",
       );
+    }
+  });
+
+  it("refuses a signing key that is missing, readable by others, or in the checkout", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "asael-signing-probe-"));
+    try {
+      const groupReadable = path.join(directory, "group-readable.pem");
+      await copyFile(signingKeyFile, groupReadable);
+      await chmod(groupReadable, 0o640);
+      // A link from outside resolves into the checkout the deploy uploads.
+      const intoCheckout = path.join(directory, "checkout-link.pem");
+      await symlink(path.resolve("package.json"), intoCheckout);
+      for (const [file, error] of [
+        [
+          "",
+          "Production release configuration is missing: OMNIAGENT_RELEASE_SIGNING_KEY_FILE.",
+        ],
+        [
+          groupReadable,
+          "OMNIAGENT_RELEASE_SIGNING_KEY_FILE must be readable only by its owner (chmod 600).",
+        ],
+        [
+          intoCheckout,
+          "OMNIAGENT_RELEASE_SIGNING_KEY_FILE must be outside the release checkout, which the deploy uploads.",
+        ],
+      ] as const) {
+        const probe = await runProcess(
+          process.execPath,
+          ["scripts/deploy-production.mjs", "--configuration-probe"],
+          {
+            ...process.env,
+            ...releaseConfigurationEnvironment(),
+            OMNIAGENT_RELEASE_SHA: "release-ready",
+            OMNIAGENT_RELEASE_SIGNING_KEY_FILE: file,
+          },
+        );
+        expect(probe.code).toBe(1);
+        expect(probe.stderr).toContain(error);
+        expect(probe.stdout).not.toContain("configuration is valid");
+        expectNoSigningKey(probe);
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true });
     }
   });
 
@@ -1053,6 +1142,80 @@ describe("rolling back a failed production release", () => {
     ["test:production-smoke", "benchmark:preview", "benchmark:dashboard"].map(
       (script) => `npm run ${script} against ${baseUrl} expecting ${head}`,
     );
+  const stagedDeploy = `vercel deploy --prod --skip-domain --yes --scope benniejosephs-projects --env OMNIAGENT_RELEASE_SHA=${head} --env OMNIAGENT_RELEASE_MANIFEST=<manifest>`;
+  const promotion = `vercel promote ${staged} --yes --scope benniejosephs-projects`;
+  const manifestCheck = (baseUrl: string) =>
+    `npm run smoke:manifest against ${baseUrl} expecting ${head}`;
+
+  it("signs the manifest it deploys and checks it staged, then canonical", async () => {
+    await withFakeReleasePlatform(async ({ deploy }) => {
+      const signingStarted = Date.now();
+      const stopped = await deploy({ FAKE_RELEASE_FAIL: manifestCheck(staged) });
+
+      expect(stopped.code).toBe(1);
+      expect(stopped.stderr).toBe(
+        "Production deployment failed: npm run smoke:manifest failed with exit code 1.\n",
+      );
+      expect(stopped.stdout).toContain(
+        `Signed the release manifest for ${head} with key ${signingKeyId}.`,
+      );
+      // A staged manifest that fails stops the release before the worker or
+      // production changes, so nothing is rolled back.
+      expect(stopped.log.slice(stopped.log.indexOf(stagedDeploy))).toEqual([
+        stagedDeploy,
+        `fetch ${staged}/api/health`,
+        manifestCheck(staged),
+      ]);
+      expect(stopped.manifests).toHaveLength(1);
+      const [manifest] = stopped.manifests;
+      const verified = verifyReleaseManifest(manifest, {
+        publicKeys: [signingPublicKey],
+      });
+      expect(verified).toEqual({
+        valid: true,
+        keyId: signingKeyId,
+        manifest: {
+          version: 1,
+          revision: head,
+          repository: "benniejoseph/OmniAgentOS",
+          branch: "main",
+          checks: ["audit", "build", "gitleaks", "integration", "quality", "worker"],
+          signedAt: expect.any(String),
+        },
+      });
+      const signedAt = verified.valid ? Date.parse(verified.manifest.signedAt) : NaN;
+      expect(signedAt).toBeGreaterThanOrEqual(signingStarted - 1000);
+      expect(signedAt).toBeLessThanOrEqual(Date.now());
+      // The smoke's own judge accepts what the runner deployed, and only
+      // with the runner's key.
+      expect(
+        assessReleaseManifestHealth({ revision: head, releaseManifest: manifest }, head, {
+          publicKeys: [signingPublicKey],
+        }).valid,
+      ).toBe(true);
+      expect(verifyReleaseManifest(manifest)).toEqual({
+        valid: false,
+        error: `is signed by key ${signingKeyId}, which this repository does not trust`,
+      });
+      expectNoSigningKey(stopped);
+
+      const rolledBack = await deploy({ FAKE_RELEASE_FAIL: manifestCheck(canonical) });
+      expect(rolledBack.code).toBe(1);
+      expect(rolledBack.log.slice(rolledBack.log.indexOf(promotion))).toEqual([
+        promotion,
+        `fetch ${canonical}/api/health`,
+        manifestCheck(canonical),
+        listSecrets,
+        stageSecrets,
+        staging(activeToken),
+        workerRollback,
+        webRollback,
+        `fetch ${canonical}/api/health`,
+        ...gatewayChecks(activeToken),
+        rollbackVerified,
+      ]);
+    });
+  });
 
   it("rolls a promoted release back worker first, then web, and verifies the prior pair", async () => {
     await withFakeReleasePlatform(async ({ deploy }) => {
@@ -1075,8 +1238,9 @@ describe("rolling back a failed production release", () => {
         // The token the prior release uses still reaches the running gateway.
         ...gatewayChecks(priorToken),
         `npm run smoke:release against ${canonical}`,
-        `vercel deploy --prod --skip-domain --yes --scope benniejosephs-projects --env OMNIAGENT_RELEASE_SHA=${head}`,
+        stagedDeploy,
         `fetch ${staged}/api/health`,
+        manifestCheck(staged),
         stageSecrets,
         staging(candidateToken, priorToken),
         releaseDeploy,
@@ -1084,8 +1248,9 @@ describe("rolling back a failed production release", () => {
         ...gatewayChecks(priorToken),
         `npm run smoke:paid-agent against ${staged} expecting ${head}`,
         ...verificationCommands(staged),
-        `vercel promote ${staged} --yes --scope benniejosephs-projects`,
+        promotion,
         `fetch ${canonical}/api/health`,
+        manifestCheck(canonical),
         expect.stringMatching(
           /^fly ssh console --app omniagent-os-worker --command sh -c '.*cat \/tmp\/asael-worker\.pid.*kill -HUP "\$worker_pid"'$/,
         ),
@@ -1117,7 +1282,6 @@ describe("rolling back a failed production release", () => {
   it("rolls the web back too when its promotion fails", async () => {
     await withFakeReleasePlatform(async ({ deploy }) => {
       // A promotion that fails may still have moved the domain.
-      const promotion = `vercel promote ${staged} --yes --scope benniejosephs-projects`;
       const result = await deploy({ FAKE_RELEASE_FAIL: promotion });
 
       expect(result.code).toBe(1);
@@ -1158,6 +1322,7 @@ describe("rolling back a failed production release", () => {
       const stagedHealth = `fetch ${staged}/api/health`;
       expect(result.log.slice(result.log.indexOf(stagedHealth))).toEqual([
         stagedHealth,
+        manifestCheck(staged),
         listSecrets,
         stageSecrets,
         staging(activeToken),
@@ -1235,7 +1400,6 @@ describe("rolling back a failed production release", () => {
 
   it("leaves both platforms alone until the worker changes, then restores it", async () => {
     await withFakeReleasePlatform(async ({ deploy }) => {
-      const stagedDeploy = `vercel deploy --prod --skip-domain --yes --scope benniejosephs-projects --env OMNIAGENT_RELEASE_SHA=${head}`;
       const untouched = await deploy({ FAKE_RELEASE_FAIL: stagedDeploy });
       expect(untouched.code).toBe(1);
       expect(untouched.stderr).toBe(
@@ -1256,6 +1420,7 @@ describe("rolling back a failed production release", () => {
         partlyStaged.log.slice(partlyStaged.log.indexOf(stagedHealth)),
       ).toEqual([
         stagedHealth,
+        manifestCheck(staged),
         // Fly may hold part of the candidate secrets, so the worker is restored.
         stageSecrets,
         stageSecrets,
@@ -1307,7 +1472,6 @@ describe("rolling back a failed production release", () => {
       expect(result.stderr).toBe(
         "Production deployment failed: npm run test:production-smoke failed with exit code 1.\n",
       );
-      const stagedDeploy = `vercel deploy --prod --skip-domain --yes --scope benniejosephs-projects --env OMNIAGENT_RELEASE_SHA=${head}`;
       expect(
         result.log.slice(
           result.log.indexOf(preDeploy[0]),
@@ -1471,6 +1635,7 @@ function releaseConfigurationEnvironment() {
     OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN: "",
     OMNIAGENT_OPENAI_GATEWAY_INITIAL_CUTOVER: "",
     OMNIAGENT_RELEASE_SPLIT_RECOVERY: "",
+    OMNIAGENT_RELEASE_SIGNING_KEY_FILE: signingKeyFile,
   };
 }
 
@@ -1547,8 +1712,10 @@ const FAKE_PLATFORM_PRELUDE = `
 log() { printf '%s\\n' "$1" >> "$FAKE_RELEASE_LOG"; }
 fails() { printf '%s\\n' "$FAKE_RELEASE_FAIL" | grep -qxF -e "$1" -e "\${2:-$1}"; }`;
 
-// npm logs the URL and revision a run targets. fly logs the secrets it is
-// asked to stage as a "fly staged" line, which a test can fail on its own.
+// npm logs the URL and revision a run targets. vercel logs a release manifest
+// as <manifest> and keeps the manifest itself beside the log. fly logs the
+// secrets it is asked to stage as a "fly staged" line, which a test can fail
+// on its own.
 const FAKE_PLATFORM_SCRIPTS: Record<string, string> = {
   npm: `${FAKE_PLATFORM_PRELUDE}
 expected="\${SMOKE_EXPECTED_REVISION:-$EXPECTED_REVISION}"
@@ -1556,8 +1723,14 @@ line="npm $*\${BASE_URL:+ against $BASE_URL}\${expected:+ expecting $expected}"
 log "$line"
 if fails "$line"; then exit 1; fi`,
   vercel: `${FAKE_PLATFORM_PRELUDE}
-log "vercel $*"
-if fails "vercel $*"; then exit 1; fi
+for argument in "$@"; do
+  case "$argument" in
+    OMNIAGENT_RELEASE_MANIFEST=*) printf '%s\\n' "\${argument#OMNIAGENT_RELEASE_MANIFEST=}" >> "$FAKE_RELEASE_LOG.manifests" ;;
+  esac
+done
+line="$(printf '%s' "vercel $*" | sed -E 's/(OMNIAGENT_RELEASE_MANIFEST=)[A-Za-z0-9_-]+/\\1<manifest>/')"
+log "$line"
+if fails "$line"; then exit 1; fi
 case "$1" in
   inspect) printf '%s\\n' '{"url":"omniagent-prior-benniejosephs-projects.vercel.app"}' ;;
   deploy) printf '%s\\n' "Inspect: https://vercel.com/benniejosephs-projects/omniagent" "https://omniagent-candidate-benniejosephs-projects.vercel.app" ;;
@@ -1640,6 +1813,8 @@ type FakeReleaseRun = {
   stdout: string;
   stderr: string;
   log: string[];
+  // Each release manifest vercel was asked to deploy, in order.
+  manifests: string[];
 };
 
 // Runs the whole deploy script against the platform stand-ins. The prior
@@ -1712,10 +1887,24 @@ async function withFakeReleasePlatform(
             ...overrides,
           },
         );
-        return { ...result, log: await readLog() };
+        const manifestFile = `${String(environment.FAKE_RELEASE_LOG)}.manifests`;
+        const manifests = await readFile(manifestFile, "utf8")
+          .then((content) => content.split("\n").filter(Boolean))
+          .catch(() => []);
+        await rm(manifestFile, { force: true });
+        return { ...result, log: await readLog(), manifests };
       },
     });
   }, FAKE_PLATFORM_SCRIPTS);
+}
+
+// The signing key's own lines never reach output or a command line.
+function expectNoSigningKey(run: { stdout: string; stderr: string; log?: string[] }) {
+  const visible = [...(run.log ?? []), run.stdout, run.stderr].join("\n");
+  expect(visible).not.toContain("PRIVATE KEY");
+  for (const line of signingKeyPem.split("\n").filter((part) => part && !part.startsWith("-----"))) {
+    expect(visible).not.toContain(line);
+  }
 }
 
 // Secret values reach Fly only on stdin, so no command line or output carries

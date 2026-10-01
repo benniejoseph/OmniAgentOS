@@ -265,10 +265,21 @@ It lists a table under `unclassifiedTables` when `src/lib/db/schema/tenant-isola
 - Timeout: inspect the failing method/path and `SMOKE_REQUEST_TIMEOUT_MS`; fix the slow dependency before increasing the bound.
 - Security: confirm anonymous protected routes return 401 and the admin cookie is secure.
 - Tenant/eval: confirm the internal secret is deployed and database RLS/evaluation state is current.
+- Manifest: see [The signed release manifest gate fails](#the-signed-release-manifest-gate-fails).
 - Release: inspect gate reasons and warnings in the bounded JSON artifact.
 - Artifact: the release step must create a non-empty file below `RELEASE_EVIDENCE_MAX_BYTES`; skipped or missing evidence is a failure.
 
 Synthetic smoke requests carry correlation IDs and are marked SLO-excluded. Search those IDs in observability when diagnosing a gate.
+
+## The signed release manifest gate fails
+
+- The release runner signs a manifest for each release it makes. It names the revision, the repository and branch, the green checks the runner verified, and the signing time. The runner signs it with the Ed25519 key that `OMNIAGENT_RELEASE_SIGNING_KEY_FILE` names and deploys it as `OMNIAGENT_RELEASE_MANIFEST`, and `/api/health` serves it as `releaseManifest`. `npm run smoke:manifest` checks it against the public keys in `RELEASE_SIGNING_PUBLIC_KEYS` in `scripts/release-manifest.mjs`: on the staged deployment before the worker or production changes, on the canonical domain after promotion, and nightly.
+- `the deployment's release manifest is missing.`: the served deployment was not made by the runner, or was made before releases were signed. Replace it with a runner release from `main`.
+- `the deployment's release manifest is signed by key <id>, which this repository does not trust.`: the release commit does not carry the public key of the key the runner signed with. Merge the public key that `npm run release:signing-key` printed to `main`, then release from that commit. On the nightly, the key may have been removed from `main` while production still serves a release it signed.
+- `the deployment's release manifest carries a signature key <id> did not make.`, or `the release manifest signs <revision>, but the deployment serves <revision>.`: the manifest was changed, or copied from another release. Treat it as an unreviewed production change.
+- `OMNIAGENT_RELEASE_SIGNING_KEY_FILE must be readable only by its owner (chmod 600).`, and the probe's other key file errors: fix the file the variable names. The runner never prints the key.
+- To rotate the key, create a new key at a new path and add its public key beside the old one. Release with the new key, and remove the old public key only after that release is promoted. If a private key is lost or exposed, remove its public key at once; every deployment it signed then fails the gate until a release replaces it.
+- The gate proves that the runner released the revision a deployment serves. It does not prove the deployment runs the code built from that revision: a manifest copied onto another deployment of the same revision still verifies.
 
 ## macOS packaging stops at the hardened runtime guard
 

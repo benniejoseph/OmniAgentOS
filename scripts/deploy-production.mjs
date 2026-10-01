@@ -11,6 +11,13 @@ import {
   REQUIRED_RELEASE_CHECKS,
   verifyReleaseProvenance,
 } from "./release-provenance.mjs";
+import {
+  RELEASE_MANIFEST_ENV,
+  RELEASE_MANIFEST_VERSION,
+  RELEASE_SIGNING_KEY_FILE_ENV,
+  loadReleaseSigningKey,
+  signReleaseManifest,
+} from "./release-manifest.mjs";
 
 class ReadinessAccessError extends Error {
   constructor(status) {
@@ -192,8 +199,9 @@ if (gatewayPaidProbeIndex >= 0) {
 }
 
 if (configurationProbe) {
-  validateReleaseConfiguration();
+  const { signingKey } = validateReleaseConfiguration();
   console.log("Production release configuration is valid.");
+  console.log(`Release manifests are signed with key ${signingKey.keyId}.`);
   process.exit(0);
 }
 
@@ -222,11 +230,14 @@ if (dryRun) {
       VERCEL_SCOPE,
       "--env",
       `OMNIAGENT_RELEASE_SHA=${revision}`,
+      "--env",
+      `${RELEASE_MANIFEST_ENV}=<release manifest signed with ${RELEASE_SIGNING_KEY_FILE_ENV}>`,
     ],
     vercelEnvironment,
   );
   const staged = "https://staged-deployment.example";
   printDryRunReadinessWait("staged web", staged, revision);
+  printDryRunManifestVerification(staged);
   printDryRunGatewayTokenStage("candidate gateway overlap");
   printDryRun(
     "fly",
@@ -246,6 +257,7 @@ if (dryRun) {
     PRODUCTION_BASE_URL,
     revision,
   );
+  printDryRunManifestVerification(PRODUCTION_BASE_URL);
   printDryRun("fly", workerCanonicalTargetArgs());
   printDryRunGatewayPairReadiness("canonical gateway", revision);
   printDryRunWorkerStartupWait("canonical worker");
@@ -266,10 +278,11 @@ const openAIGateway = releaseConfiguration.openAIGateway;
 const initialOpenAIGatewayCutover =
   releaseConfiguration.initialOpenAIGatewayCutover;
 const splitRecovery = releaseConfiguration.splitRecovery;
+const signingKey = releaseConfiguration.signingKey;
 await requireCleanWorkingTree();
 // Vercel and Fly build the checked-out tree, so prove that tree is a reviewed
 // commit on main with green CI before spending time on local verification.
-await verifyRunnerProvenance();
+const provenance = await verifyRunnerProvenance();
 await run("npm", ["run", "verify"]).catch((error) =>
   fail(`Production verification failed: ${errorMessage(error)}`),
 );
@@ -333,6 +346,22 @@ try {
       },
     });
   }
+  // The deployment serves this manifest, so the nightly smoke can tell a
+  // release this runner made from one made any other way.
+  const releaseManifest = signReleaseManifest(
+    {
+      version: RELEASE_MANIFEST_VERSION,
+      revision: provenance.revision,
+      repository: RELEASE_REPOSITORY,
+      branch: RELEASE_BRANCH,
+      checks: provenance.checks,
+      signedAt: new Date().toISOString(),
+    },
+    signingKey,
+  );
+  console.log(
+    `Signed the release manifest for ${provenance.revision} with key ${signingKey.keyId}.`,
+  );
   const deploymentOutput = await capture(
     "vercel",
     [
@@ -344,6 +373,8 @@ try {
       VERCEL_SCOPE,
       "--env",
       `OMNIAGENT_RELEASE_SHA=${revision}`,
+      "--env",
+      `${RELEASE_MANIFEST_ENV}=${releaseManifest}`,
     ],
     { environment: vercelEnvironment, echo: true },
   );
@@ -351,6 +382,9 @@ try {
   await waitForDeploymentReadiness(stagedBaseUrl, revision, {
     label: "Staged web",
   });
+  // A key the repository does not trust stops the release here, before
+  // anything production runs on has changed.
+  await runManifestVerification(stagedBaseUrl);
   workerMutationStarted = true;
   if (openAIGateway) {
     await stageFlyGatewayTokenOverlap(openAIGateway, {
@@ -382,6 +416,7 @@ try {
   await waitForDeploymentReadiness(productionBaseUrl, revision, {
     label: "Canonical web",
   });
+  await runManifestVerification(productionBaseUrl);
   // Rebind the already-running worker in place. A second Fly deploy would
   // restart the co-hosted OpenAI gateway on the single production machine.
   await run("fly", workerCanonicalTargetArgs());
@@ -505,6 +540,7 @@ async function verifyRunnerProvenance() {
   console.log(
     `Release ${revision} is ${position} on ${RELEASE_REPOSITORY} with green checks: ${provenance.checks.join(", ")}.`,
   );
+  return provenance;
 }
 
 function validateReleaseConfiguration() {
@@ -517,6 +553,7 @@ function validateReleaseConfiguration() {
         process.env.OMNIAGENT_INTERNAL_AUTH_SECRET,
     ],
     ["RELEASE_EVIDENCE_OUTPUT", process.env.RELEASE_EVIDENCE_OUTPUT],
+    [RELEASE_SIGNING_KEY_FILE_ENV, process.env[RELEASE_SIGNING_KEY_FILE_ENV]],
   ];
   const missing = required
     .filter(([, value]) => !value?.trim())
@@ -586,10 +623,17 @@ function validateReleaseConfiguration() {
   if (openAIGateway && openAIGateway.baseUrl.origin === productionOrigin) {
     fail("OMNIAGENT_OPENAI_GATEWAY_URL must use a separate gateway origin.");
   }
+  let signingKey;
+  try {
+    signingKey = loadReleaseSigningKey();
+  } catch (error) {
+    fail(errorMessage(error));
+  }
   return {
     baseUrl,
     initialOpenAIGatewayCutover,
     splitRecovery,
+    signingKey,
     openAIGateway: openAIGateway
       ? withPreviousGatewayToken(openAIGateway, previousToken)
       : undefined,
@@ -1112,6 +1156,12 @@ async function runVerificationCommands(baseUrl) {
   } finally {
     await rm(sessionDirectory, { recursive: true, force: true });
   }
+}
+
+async function runManifestVerification(baseUrl) {
+  await run("npm", ["run", "smoke:manifest"], {
+    environment: { BASE_URL: baseUrl, SMOKE_EXPECTED_REVISION: revision },
+  });
 }
 
 async function runPaidAgentVerification(baseUrl) {
@@ -1705,6 +1755,13 @@ function printDryRunGatewayPairReadiness(label, expectedRevision) {
   );
 }
 
+function printDryRunManifestVerification(baseUrl) {
+  printDryRun("npm", ["run", "smoke:manifest"], {
+    BASE_URL: baseUrl,
+    SMOKE_EXPECTED_REVISION: revision,
+  });
+}
+
 function printDryRunPaidAgentVerification(baseUrl, expectedRevision) {
   printDryRun("npm", ["run", "smoke:paid-agent"], {
     BASE_URL: baseUrl,
@@ -1890,11 +1947,20 @@ function run(command, args, options = {}) {
       }
       reject(
         new Error(
-          `${command} ${args.join(" ")} failed with ${signal || `exit code ${code}`}.`,
+          `${describeCommand(command, args)} failed with ${signal || `exit code ${code}`}.`,
         ),
       );
     });
   });
+}
+
+// A release manifest is long and public, so a failure names it, not its value.
+function describeCommand(command, args) {
+  const manifest = `${RELEASE_MANIFEST_ENV}=`;
+  return [
+    command,
+    ...args.map((arg) => (arg.startsWith(manifest) ? `${manifest}<manifest>` : arg)),
+  ].join(" ");
 }
 
 function runWithSensitiveStdin(command, args, input) {
