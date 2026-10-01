@@ -589,6 +589,9 @@ export async function listModelCatalogForRequest(input: {
   });
 }
 
+const RETIRING_MODEL_REASON =
+  "The model was returned previously but is absent from the latest provider catalog. Review its assignments before the next refresh.";
+
 export async function saveModelCatalog(input: {
   tenantId: string;
   actorId: string;
@@ -620,45 +623,66 @@ export async function saveModelCatalog(input: {
       .map((record): ModelCatalogEntry => ({
         ...record,
         lifecycle: "retiring",
-        lifecycleReason:
-          "The model was returned previously but is absent from the latest provider catalog. Review its assignments before the next refresh.",
+        lifecycleReason: RETIRING_MODEL_REASON,
         lifecycleCheckedAt: now,
         updatedAt: now,
       }));
     if (hasDatabaseUrl()) {
       await ensureDatabaseSchema();
-      for (const record of records) {
-        await getSql()`
-          INSERT INTO omni_model_catalog (
-            id, tenant_id, actor_id, provider, model_id, display_name,
-            capabilities, lifecycle, lifecycle_reason, lifecycle_checked_at,
-            discovered_at, updated_at
-          ) VALUES (
-            ${record.id}, ${record.tenantId}, ${record.actorId}, ${record.provider},
-            ${record.modelId}, ${record.displayName}, ${record.capabilities},
-            ${record.lifecycle}, ${record.lifecycleReason || null},
-            ${record.lifecycleCheckedAt || null}, ${record.discoveredAt}, ${record.updatedAt}
-          ) ON CONFLICT (tenant_id, actor_id, provider, model_id) DO UPDATE SET
-            display_name = EXCLUDED.display_name,
-            capabilities = EXCLUDED.capabilities,
-            lifecycle = EXCLUDED.lifecycle,
-            lifecycle_reason = EXCLUDED.lifecycle_reason,
-            lifecycle_checked_at = EXCLUDED.lifecycle_checked_at,
-            updated_at = EXCLUDED.updated_at
-        `;
-      }
-      for (const record of missingModels) {
-        await getSql()`
-          UPDATE omni_model_catalog SET
-            lifecycle = 'retiring',
-            lifecycle_reason = ${record.lifecycleReason || null},
-            lifecycle_checked_at = ${record.lifecycleCheckedAt || now},
-            updated_at = ${now}
-          WHERE id = ${record.id}
-            AND tenant_id = ${record.tenantId}
-            AND actor_id = ${record.actorId}
-        `;
-      }
+      // One transaction saves the whole catalog, so a refresh lands entirely
+      // or not at all. A model listed twice keeps its last entry, as each
+      // upsert of a row replaced the one before.
+      const rows = [
+        ...new Map(records.map((record) => [record.modelId, {
+          id: record.id,
+          model_id: record.modelId,
+          display_name: record.displayName,
+          capabilities: record.capabilities,
+          lifecycle: record.lifecycle,
+          lifecycle_reason: record.lifecycleReason || null,
+          lifecycle_checked_at: record.lifecycleCheckedAt || null,
+        }])).values(),
+      ];
+      await getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+        if (rows.length) {
+          await sql`
+            INSERT INTO omni_model_catalog (
+              id, tenant_id, actor_id, provider, model_id, display_name,
+              capabilities, lifecycle, lifecycle_reason, lifecycle_checked_at,
+              discovered_at, updated_at
+            )
+            SELECT
+              model.id, ${input.tenantId}, ${input.actorId}, ${input.provider},
+              model.model_id, model.display_name, model.capabilities,
+              model.lifecycle, model.lifecycle_reason, model.lifecycle_checked_at,
+              ${now}, ${now}
+            FROM jsonb_to_recordset(${rows}::jsonb) AS model(
+              id text, model_id text, display_name text, capabilities text[],
+              lifecycle text, lifecycle_reason text,
+              lifecycle_checked_at timestamptz
+            )
+            ON CONFLICT (tenant_id, actor_id, provider, model_id) DO UPDATE SET
+              display_name = EXCLUDED.display_name,
+              capabilities = EXCLUDED.capabilities,
+              lifecycle = EXCLUDED.lifecycle,
+              lifecycle_reason = EXCLUDED.lifecycle_reason,
+              lifecycle_checked_at = EXCLUDED.lifecycle_checked_at,
+              updated_at = EXCLUDED.updated_at
+          `;
+        }
+        if (missingModels.length) {
+          await sql`
+            UPDATE omni_model_catalog SET
+              lifecycle = 'retiring',
+              lifecycle_reason = ${RETIRING_MODEL_REASON},
+              lifecycle_checked_at = ${now},
+              updated_at = ${now}
+            WHERE tenant_id = ${input.tenantId}
+              AND actor_id = ${input.actorId}
+              AND id = ANY(${missingModels.map((record) => record.id)}::text[])
+          `;
+        }
+      });
     } else {
       await updateLedger((ledger) => ({
         ...ledger,

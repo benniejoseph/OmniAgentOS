@@ -92,6 +92,7 @@ import {
 } from "@/lib/runs/store";
 import { getTenantIsolationReport } from "@/lib/security/isolation-report";
 import { sweepExpiredSensitiveData } from "@/lib/security/retention";
+import { saveModelCatalog } from "@/lib/settings/store";
 import {
   appendThreadTurn,
   createThread,
@@ -7830,6 +7831,118 @@ databaseDescribe("Postgres schema integration", () => {
       );
       await admin.unsafe("DROP TABLE IF EXISTS retention_transaction_probe");
     }
+  });
+
+  test("saves a model catalog refresh whole or not at all", async () => {
+    const tenantId = "tenant-model-catalog-refresh";
+    const actorId = "catalog-refresh@example.test";
+    const model = (modelId: string, displayName: string, capabilities = ["text"]) => ({
+      modelId,
+      displayName,
+      capabilities,
+      lifecycle: "available" as const,
+    });
+    const refresh = (models: ReturnType<typeof model>[]) =>
+      saveModelCatalog({ tenantId, actorId, provider: "openai", models });
+    const catalog = () => admin`
+      SELECT model_id, display_name, capabilities, lifecycle,
+             lifecycle_reason IS NOT NULL AS has_reason,
+             lifecycle_checked_at IS NOT NULL AS checked
+      FROM omni_model_catalog
+      WHERE tenant_id = ${tenantId}
+      ORDER BY model_id
+    `;
+
+    await refresh([model("gpt-kept", "Kept"), model("gpt-gone", "Gone")]);
+    await admin.unsafe(`
+      CREATE FUNCTION a_fail_model_retirement() RETURNS trigger
+      LANGUAGE plpgsql AS $$
+      BEGIN
+        RAISE EXCEPTION 'model retirement probe';
+      END
+      $$
+    `);
+    await admin.unsafe(`
+      CREATE TRIGGER a_fail_model_retirement
+      BEFORE UPDATE ON omni_model_catalog
+      FOR EACH ROW WHEN (NEW.lifecycle = 'retiring')
+      EXECUTE FUNCTION a_fail_model_retirement()
+    `);
+    try {
+      await expect(refresh([model("gpt-kept", "Renamed"), model("gpt-new", "New")]))
+        .rejects.toThrow("model retirement probe");
+    } finally {
+      await admin.unsafe(
+        "DROP TRIGGER IF EXISTS a_fail_model_retirement ON omni_model_catalog",
+      );
+      await admin.unsafe("DROP FUNCTION IF EXISTS a_fail_model_retirement()");
+    }
+    const unchanged = [
+      {
+        model_id: "gpt-gone",
+        display_name: "Gone",
+        capabilities: ["text"],
+        lifecycle: "available",
+        has_reason: false,
+        checked: false,
+      },
+      {
+        model_id: "gpt-kept",
+        display_name: "Kept",
+        capabilities: ["text"],
+        lifecycle: "available",
+        has_reason: false,
+        checked: false,
+      },
+    ];
+    expect(await catalog()).toEqual(unchanged);
+
+    await refresh([
+      model("gpt-kept", "Kept, first listing"),
+      model("gpt-new", "New", ["text", "tools"]),
+      model("gpt-kept", "Kept again", ["text", "vision"]),
+    ]);
+    expect(await catalog()).toEqual([
+      { ...unchanged[0], lifecycle: "retiring", has_reason: true, checked: true },
+      {
+        ...unchanged[1],
+        display_name: "Kept again",
+        capabilities: ["text", "vision"],
+      },
+      {
+        model_id: "gpt-new",
+        display_name: "New",
+        capabilities: ["text", "tools"],
+        lifecycle: "available",
+        has_reason: false,
+        checked: false,
+      },
+    ]);
+  });
+
+  test("keeps scoped work at read committed when the session default is stricter", async () => {
+    const tenantId = "tenant-read-committed";
+    const isolation = (sql: SqlClient) => sql`
+      SELECT current_setting('transaction_isolation') AS isolation,
+             current_setting('omni.tenant_id') AS tenant_id
+    `;
+    const readCommitted = [{ isolation: "read committed", tenant_id: tenantId }];
+
+    await runWithDatabaseTenantScope(tenantId, async () => {
+      // The test pool has one connection, so the session default applies to
+      // every transaction that follows until it is reset.
+      await getSql().unsafe("SET default_transaction_isolation = 'repeatable read'");
+      try {
+        expect(await getSql()`
+          SELECT current_setting('default_transaction_isolation') AS isolation
+        `).toEqual([{ isolation: "repeatable read" }]);
+        expect(await isolation(getSql())).toEqual(readCommitted);
+        expect(await getSql().transaction((sql: SqlClient) => isolation(sql)))
+          .toEqual(readCommitted);
+      } finally {
+        await getSql().unsafe("RESET default_transaction_isolation");
+      }
+    });
   });
 
   test.skipIf(!requirePgvector)(

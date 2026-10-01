@@ -6,12 +6,19 @@ const dbMocks = vi.hoisted(() => {
   const state = { databaseEnabled: true };
   const rows: Record<string, unknown>[] = [];
   const statements: Array<{ text: string; params: unknown[] }> = [];
-  const sql = vi.fn(
+  const sql = Object.assign(vi.fn(
     (strings: TemplateStringsArray, ...params: unknown[]) => {
       statements.push({ text: renderStatement(strings, params), params });
       return Promise.resolve([...rows]);
     },
-  );
+  ), {
+    transaction: vi.fn(async (operation: (tx: unknown) => Promise<unknown>) => {
+      statements.push({ text: "BEGIN", params: [] });
+      const result = await operation(sql);
+      statements.push({ text: "COMMIT", params: [] });
+      return result;
+    }),
+  });
   return {
     ensureDatabaseSchema: vi.fn(async () => undefined),
     getSql: vi.fn(() => sql),
@@ -49,6 +56,7 @@ vi.mock("@/lib/events/store", () => ({
 import {
   SettingsStoreError,
   listModelCatalogForRequest,
+  saveModelCatalog,
 } from "@/lib/settings/store";
 
 const tenantId = "tenant-a";
@@ -286,6 +294,92 @@ describe("request-bound model catalog records", () => {
       actorId,
       requestActorBinding: binding,
     })).rejects.toBeInstanceOf(SettingsStoreError);
+  });
+});
+
+describe("model catalog refresh", () => {
+  it("saves the whole refresh in one transaction of two statements", async () => {
+    dbMocks.rows.push(
+      modelRow(actorId, "gpt-kept", "Kept model"),
+      modelRow(actorId, "gpt-gone", "Gone model"),
+    );
+    const model = (modelId: string, displayName: string) => ({
+      modelId,
+      displayName,
+      capabilities: ["text"],
+      lifecycle: "available" as const,
+    });
+
+    const saved = await saveModelCatalog({
+      tenantId,
+      actorId,
+      provider: "openai",
+      models: [
+        model("gpt-kept", "Kept model, first listing"),
+        model("gpt-new", "New model"),
+        model("gpt-kept", "Kept model"),
+      ],
+    });
+
+    expect(dbMocks.statements.map(({ text }) => text.trim().split(/\s+/)[0])).toEqual([
+      "SELECT",
+      "BEGIN",
+      "INSERT",
+      "UPDATE",
+      "COMMIT",
+    ]);
+    const [, , upsert, retire] = dbMocks.statements;
+    expect(upsert.text).toMatch(/FROM jsonb_to_recordset\(\$\d+::jsonb\)/);
+    expect(upsert.params.slice(0, 3)).toEqual([tenantId, actorId, "openai"]);
+    expect(upsert.params.find(Array.isArray)).toEqual([
+      expect.objectContaining({
+        id: catalogId(actorId, "openai", "gpt-kept"),
+        model_id: "gpt-kept",
+        display_name: "Kept model",
+        capabilities: ["text"],
+      }),
+      expect.objectContaining({
+        id: catalogId(actorId, "openai", "gpt-new"),
+        model_id: "gpt-new",
+      }),
+    ]);
+    expect(retire.text).toMatch(
+      /WHERE tenant_id = \$\d+\s+AND actor_id = \$\d+\s+AND id = ANY\(\$\d+::text\[\]\)/,
+    );
+    expect(retire.params.slice(-3)).toEqual([
+      tenantId,
+      actorId,
+      [catalogId(actorId, "openai", "gpt-gone")],
+    ]);
+    expect(saved.map(({ modelId, lifecycle }) => [modelId, lifecycle])).toEqual([
+      ["gpt-kept", "available"],
+      ["gpt-new", "available"],
+      ["gpt-kept", "available"],
+      ["gpt-gone", "retiring"],
+    ]);
+  });
+
+  it("skips the retiring update when every saved model is still listed", async () => {
+    dbMocks.rows.push(modelRow(actorId, "gpt-kept", "Kept model"));
+
+    await saveModelCatalog({
+      tenantId,
+      actorId,
+      provider: "openai",
+      models: [{
+        modelId: "gpt-kept",
+        displayName: "Kept model",
+        capabilities: ["text"],
+        lifecycle: "available",
+      }],
+    });
+
+    expect(dbMocks.statements.map(({ text }) => text.trim().split(/\s+/)[0])).toEqual([
+      "SELECT",
+      "BEGIN",
+      "INSERT",
+      "COMMIT",
+    ]);
   });
 });
 

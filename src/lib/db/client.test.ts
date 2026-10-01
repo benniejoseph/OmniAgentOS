@@ -220,14 +220,12 @@ describe("database pool acquisition", () => {
       expect(maintenance.reserved.release).toHaveBeenCalledOnce();
       expect(statementKinds(runtime.statements)).toEqual([
         "BEGIN",
-        "QUERY",
         "SCOPE",
         "QUERY",
         "COMMIT",
       ]);
       expect(statementKinds(maintenance.statements)).toEqual([
         "BEGIN",
-        "QUERY",
         "SCOPE",
         "QUERY",
         "COMMIT",
@@ -1219,7 +1217,6 @@ describe("database pool acquisition", () => {
       expect(postgresFactory).toHaveBeenCalledTimes(2);
       expect(statementKinds(replacementPool.statements)).toEqual([
         "BEGIN",
-        "QUERY",
         "SCOPE",
         "QUERY",
         "COMMIT",
@@ -1828,9 +1825,99 @@ describe("database pool acquisition", () => {
         ),
       ).rejects.toBe(beginError);
 
-      expect(statementKinds(pool.statements)).toEqual(["BEGIN"]);
-      expect(pool.reserved).not.toHaveBeenCalled();
+      // The scope shares BEGIN's round trip, so it was already sent. The
+      // caller's statement never runs and there is nothing to roll back.
+      expect(statementKinds(pool.statements)).toEqual(["BEGIN", "SCOPE"]);
+      expect(pool.reserved).toHaveBeenCalledOnce();
       expect(pool.reserved.release).toHaveBeenCalledOnce();
+    } finally {
+      vi.doUnmock("postgres");
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
+
+  it("sends the scope in BEGIN's round trip and runs the statement after both", async () => {
+    const pool = createMockPoolClient([{ ok: true }]);
+    let finishBegin = () => undefined as void;
+    pool.reserved.unsafe.mockImplementationOnce((text: string) => {
+      pool.statements.push({ text, params: [] });
+      return new Promise<never[]>((resolve) => {
+        finishBegin = () => resolve([]);
+      });
+    });
+    vi.doMock("postgres", () => ({ default: vi.fn(() => pool.pg) }));
+    vi.stubEnv("DATABASE_URL", "postgresql://runtime.invalid/asael");
+    vi.resetModules();
+
+    try {
+      const isolatedClient = await import("@/lib/db/client");
+      const pending = isolatedClient.runWithDatabaseTenantScope("tenant-a", () =>
+        isolatedClient.getSql()`SELECT 1`,
+      );
+      await vi.waitFor(() =>
+        expect(statementKinds(pool.statements)).toEqual(["BEGIN", "SCOPE"]),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(statementKinds(pool.statements)).toEqual(["BEGIN", "SCOPE"]);
+
+      finishBegin();
+      await expect(pending).resolves.toEqual([{ ok: true }]);
+      expect(statementKinds(pool.statements)).toEqual([
+        "BEGIN",
+        "SCOPE",
+        "QUERY",
+        "COMMIT",
+      ]);
+      expect(pool.statements[0].text).toBe("BEGIN ISOLATION LEVEL READ COMMITTED");
+      expect(pool.statements.some(({ text }) => /SET\s+TRANSACTION/i.test(text)))
+        .toBe(false);
+      expect(pool.reserved.release).toHaveBeenCalledOnce();
+    } finally {
+      vi.doUnmock("postgres");
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
+
+  it("rolls back without running the statement when the scope fails", async () => {
+    const scopeError = new Error("scope failed");
+    const pool = createMockPoolClient([{ ok: true }]);
+    pool.reserved.mockImplementationOnce(
+      (strings: TemplateStringsArray, ...params: unknown[]) => {
+        pool.statements.push({ text: strings.join("?"), params });
+        return Promise.reject(scopeError);
+      },
+    );
+    vi.doMock("postgres", () => ({ default: vi.fn(() => pool.pg) }));
+    vi.stubEnv("DATABASE_URL", "postgresql://runtime.invalid/asael");
+    vi.resetModules();
+
+    try {
+      const isolatedClient = await import("@/lib/db/client");
+      await expect(
+        isolatedClient.runWithDatabaseTenantScope("tenant-a", () =>
+          isolatedClient.getSql()`SELECT 1`,
+        ),
+      ).rejects.toBe(scopeError);
+      await expect(
+        isolatedClient.runWithDatabaseTenantScope("tenant-a", () =>
+          isolatedClient.getSql().transaction(
+            async (sql: ReturnType<typeof isolatedClient.getSql>) => sql`SELECT 1`,
+          ),
+        ),
+      ).resolves.toEqual([{ ok: true }]);
+
+      expect(statementKinds(pool.statements)).toEqual([
+        "BEGIN",
+        "SCOPE",
+        "ROLLBACK",
+        "BEGIN",
+        "SCOPE",
+        "QUERY",
+        "COMMIT",
+      ]);
+      expect(pool.reserved.release).toHaveBeenCalledTimes(2);
     } finally {
       vi.doUnmock("postgres");
       vi.unstubAllEnvs();
@@ -1855,7 +1942,6 @@ describe("database pool acquisition", () => {
 
       expect(statementKinds(pool.statements)).toEqual([
         "BEGIN",
-        "QUERY",
         "SCOPE",
         "QUERY",
         "COMMIT",
@@ -1968,7 +2054,8 @@ function isControlStatement(text: string) {
 
 function transactionCommand(text: string): TransactionCommand | undefined {
   const command = text.trim().toUpperCase();
-  return ["BEGIN", "COMMIT", "ROLLBACK"].includes(command)
+  if (command === "BEGIN ISOLATION LEVEL READ COMMITTED") return "BEGIN";
+  return ["COMMIT", "ROLLBACK"].includes(command)
     ? command as TransactionCommand
     : undefined;
 }

@@ -1311,10 +1311,7 @@ function createTenantScopedSqlClient(
       }
       const scope = snapshotDatabaseScope(databaseScope.getStore());
       const execute = (pool: AnyPg) =>
-        withReservedDatabaseTransaction(pool, async (tx) => {
-          await applyDatabaseScope(tx, scope);
-          return fn(tx);
-        });
+        withReservedDatabaseTransaction(pool, scope, fn);
       const initialPool = await resolveSchemaReadyDatabasePool(pg, resolvePool);
       try {
         return await execute(initialPool);
@@ -1382,8 +1379,7 @@ function createTenantScopedSqlClient(
         pg,
         resolvePool,
       );
-      return withReservedDatabaseTransaction(transactionPool, async (tx) => {
-        await applyDatabaseScope(tx, scope);
+      return withReservedDatabaseTransaction(transactionPool, scope, async (tx) => {
         const txScoped = createTenantScopedSqlClient(tx, true);
         const result = (queriesOrFn as (s: SqlClient) => unknown)(txScoped);
         return Array.isArray(result) ? Promise.all(result) : result;
@@ -1557,31 +1553,35 @@ function createDatabaseReservationUserClient(
 
 async function withReservedDatabaseTransaction<T>(
   pg: AnyPg,
+  scope: DatabaseScope | undefined,
   operation: (reserved: AnyPg) => Promise<T>,
 ): Promise<T> {
   return withReservedDatabaseConnection(pg, async (reserved, lease) => {
-    await executeDatabaseReservationControl(
+    // The deletion barrier relies on a fresh statement snapshot after a
+    // writer waits for the tenant graph lock. Pin managed transactions to
+    // READ COMMITTED as they begin, before applyDatabaseScope performs its
+    // first SELECT; inherited REPEATABLE READ/SERIALIZABLE defaults could
+    // otherwise retain a pre-forget snapshot and resurrect descendant lineage.
+    const begin = executeDatabaseReservationControl(
       pg,
       reserved,
       lease,
       "active",
-      "BEGIN",
+      "BEGIN ISOLATION LEVEL READ COMMITTED",
     );
     const userClient = createDatabaseReservationUserClient(pg, reserved, lease);
+    // The scope follows BEGIN on the connection without waiting for its
+    // reply, so both share one round trip. The driver writes queries in the
+    // order they are issued; if BEGIN fails, the scope ran on its own and its
+    // transaction-local settings ended with it.
+    const [begun, scoped] = await Promise.allSettled([
+      begin,
+      applyDatabaseScope(userClient, scope),
+    ]);
+    if (begun.status === "rejected") throw begun.reason;
     let result: T;
     try {
-      // The deletion barrier relies on a fresh statement snapshot after a
-      // writer waits for the tenant graph lock. Pin managed transactions to
-      // READ COMMITTED before applyDatabaseScope performs its first SELECT;
-      // inherited REPEATABLE READ/SERIALIZABLE defaults could otherwise retain
-      // a pre-forget snapshot and resurrect descendant lineage.
-      await executeDatabaseReservationControl(
-        pg,
-        reserved,
-        lease,
-        "active",
-        "SET TRANSACTION ISOLATION LEVEL READ COMMITTED",
-      );
+      if (scoped.status === "rejected") throw scoped.reason;
       result = await operation(userClient);
       assertNoInFlightDatabaseReservationOperations(pg, lease);
     } catch (error) {
