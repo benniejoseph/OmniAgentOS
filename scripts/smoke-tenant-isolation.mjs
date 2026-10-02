@@ -124,7 +124,28 @@ checks.push(assert(
   "tenant A workflow leaked into tenant B workflow list",
 ));
 
-const tenantBDelete = await jsonRequest(`/api/connectors/${connectorId}`, { method: "DELETE", tenantId: tenantB });
+// Deleting a connector moves it to Trash and must carry the preview its owner
+// was shown, so tenant B tries both the preview and a delete holding tenant A's.
+const tenantBPreview = await jsonRequest(`/api/connectors/${connectorId}`, { method: "POST", tenantId: tenantB });
+checks.push(assert(
+  tenantBPreview.status === 404,
+  "tenant B cannot preview deleting tenant A connector",
+  statusDetail(tenantBPreview),
+));
+
+const tenantAPreview = await jsonRequest(`/api/connectors/${connectorId}`, { method: "POST", tenantId: tenantA });
+const deletePreview = tenantAPreview.json?.preview;
+checks.push(assert(
+  tenantAPreview.status === 200 && deletePreview?.action === "trash" && deletePreview?.resourceId === connectorId,
+  "tenant A can preview deleting its connector",
+  statusDetail(tenantAPreview),
+));
+
+const tenantBDelete = await jsonRequest(`/api/connectors/${connectorId}`, {
+  method: "DELETE",
+  tenantId: tenantB,
+  body: { preview: deletePreview },
+});
 checks.push(assert(tenantBDelete.status === 404, "tenant B cannot delete tenant A connector", statusDetail(tenantBDelete)));
 
 if (workflowId) {
@@ -140,13 +161,36 @@ if (workflowId) {
   ));
 }
 
-if (connectorId) {
-  const tenantADelete = await jsonRequest(`/api/connectors/${connectorId}`, { method: "DELETE", tenantId: tenantA });
+if (connectorId && deletePreview) {
+  const tenantADelete = await jsonRequest(`/api/connectors/${connectorId}`, {
+    method: "DELETE",
+    tenantId: tenantA,
+    body: { preview: deletePreview },
+  });
+  const trashId = tenantADelete.json?.trash?.trashId;
   checks.push(assert(
-    tenantADelete.status === 200,
-    "synthetic connector is deleted after isolation checks",
+    tenantADelete.status === 200 && tenantADelete.json?.movedToTrash === true && Boolean(trashId),
+    "synthetic connector is moved to trash after isolation checks",
     statusDetail(tenantADelete),
   ));
+
+  // Purging the Trash item removes the synthetic connector for good.
+  if (trashId) {
+    const purgePath = `/api/trash/${encodeURIComponent(trashId)}/purge`;
+    const purgePreview = await jsonRequest(purgePath, { tenantId: tenantA });
+    const purged = purgePreview.status === 200
+      ? await jsonRequest(purgePath, {
+          method: "DELETE",
+          tenantId: tenantA,
+          body: { preview: purgePreview.json?.preview },
+        })
+      : purgePreview;
+    checks.push(assert(
+      purged.status === 200 && purged.json?.trash?.trashId === trashId && purged.json?.trash?.state === "purged",
+      "synthetic connector is purged after isolation checks",
+      statusDetail(purged),
+    ));
+  }
 }
 
 const failures = checks.filter((check) => !check.ok);
