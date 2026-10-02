@@ -5,6 +5,10 @@ const secureDeployment =
   production &&
   (Boolean(process.env.VERCEL) ||
     process.env.NEXT_PUBLIC_APP_URL?.startsWith("https://"));
+const WORKSPACE_PAGE_TRACE_EXCLUDES = [
+  "node_modules/ffmpeg-static/ffmpeg",
+  "node_modules/@napi-rs/canvas-*/**/*.node",
+];
 const nextConfig: NextConfig = {
   turbopack: {
     root: __dirname,
@@ -17,6 +21,16 @@ const nextConfig: NextConfig = {
     "/api/agent": ["node_modules/ffmpeg-static/ffmpeg"],
     "/api/tools/*": ["node_modules/ffmpeg-static/ffmpeg"],
     "/api/workflows/*": ["node_modules/ffmpeg-static/ffmpeg"],
+  },
+  // Workspace pages import the agent runner and the document parser, so their
+  // traces pick up ffmpeg and the canvas binding although only route handlers
+  // run them. Vercel ships every page in one function, and a cold dashboard
+  // load paid for both binaries. Turbopack matches exclude keys anywhere in
+  // the entry name, such as `/app/app/missions/page` or
+  // `/app/api/capture/route`, so a bare `/app` key would strip the binaries
+  // from every route handler too.
+  outputFileTracingExcludes: {
+    "/app/app/**": WORKSPACE_PAGE_TRACE_EXCLUDES,
   },
   async headers() {
     return [
