@@ -11,6 +11,7 @@ const paidResponse = "ASAEL_LIVE_OK";
 const paidResponseSha256 = createHash("sha256")
   .update(paidResponse)
   .digest("hex");
+const trashIdPattern = /^trash:[0-9a-f-]{36}$/;
 if (process.env.LIVE_VERIFY_PAID_OPENAI !== confirmation) {
   throw new Error(
     `Set LIVE_VERIFY_PAID_OPENAI=${confirmation} to authorize one paid OpenAI turn.`,
@@ -29,10 +30,19 @@ if (!internalSecret) {
 const bypassSecret =
   process.env.VERCEL_AUTOMATION_BYPASS_SECRET?.trim() || "";
 const baseUrl = validatedBaseUrl(required("BASE_URL"));
+// The verifier acts as a real account, because the app only resolves owners
+// that are active members of their tenant. Both values must already be in the
+// form the identity headers normalize to, so the server sees the same account.
+const tenantId = identity(
+  "SMOKE_PAID_AGENT_TENANT_ID",
+  /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,119}$/,
+);
+const actorId = identity(
+  "SMOKE_PAID_AGENT_ACTOR_ID",
+  /^[A-Za-z0-9_.:@-]{1,160}$/,
+);
 const marker = randomUUID();
 const suffix = marker.replaceAll("-", "").slice(0, 12);
-const tenantId = `paid_verify_${Date.now()}_${suffix}`;
-const actorId = `paid-verifier-${suffix}`;
 const requestId = `paid_verify:${marker}`;
 const headers = {
   "x-omni-internal-auth": internalSecret,
@@ -55,7 +65,8 @@ let tokenReceipt;
 let trajectoryRevision;
 let primaryFailure;
 let cleanupFailure;
-let agentDeleted = false;
+let trashId;
+let agentPurged = false;
 
 try {
   health = await jsonRequest("/api/health", {}, 200);
@@ -98,7 +109,7 @@ try {
   );
   assert(
     created.agent.tenantId === tenantId,
-    "Created agent escaped the synthetic tenant.",
+    "Created agent escaped the verification tenant.",
   );
 
   const patchedDescription =
@@ -245,7 +256,7 @@ try {
   assert(trajectory?.run?.id === runId, "Trajectory references the wrong run.");
   assert(
     trajectory?.run?.tenantId === tenantId,
-    "Trajectory escaped the synthetic tenant.",
+    "Trajectory escaped the verification tenant.",
   );
   assert(
     trajectory?.run?.agentId === agentId,
@@ -358,13 +369,8 @@ try {
 } finally {
   if (agentId) {
     try {
-      const deleted = await jsonRequest(
-        `/api/agents/${encodeURIComponent(agentId)}`,
-        { method: "DELETE" },
-        200,
-      );
-      assert(deleted.deleted === true, "Agent deletion was not acknowledged.");
-      agentDeleted = true;
+      await removeAgent(agentId);
+      agentPurged = true;
     } catch (error) {
       cleanupFailure = error;
     }
@@ -386,18 +392,64 @@ if (primaryFailure || cleanupFailure) {
         status: "PASS",
         revision: health.revision,
         trajectoryRevision,
-        tenantId,
         agentId,
         runId,
         provider: "openai",
         tokens: tokenReceipt,
         runReplayConsistent: true,
         trajectoryVerified: true,
-        agentDeleted,
+        trashId,
+        agentPurged,
       },
       null,
       2,
     ),
+  );
+}
+
+// Deleting an agent moves it to Trash; purging the Trash item then removes it
+// for good, so the verifier leaves no agent behind in the account it used.
+async function removeAgent(id) {
+  const agentPath = `/api/agents/${encodeURIComponent(id)}`;
+  const trashPreview = await jsonRequest(
+    `${agentPath}?mode=trash-preview`,
+    {},
+    200,
+  );
+  assert(
+    trashPreview.preview?.action === "trash" &&
+      trashPreview.preview?.resourceType === "custom_agent" &&
+      trashPreview.preview?.resourceId === id,
+    "Agent trash preview does not match the temporary agent.",
+  );
+  const trashed = await jsonRequest(
+    agentPath,
+    { method: "DELETE", body: { preview: trashPreview.preview } },
+    200,
+  );
+  assert(
+    trashed.movedToTrash === true &&
+      trashIdPattern.test(String(trashed.trash?.trashId)) &&
+      trashed.trash?.resourceId === id,
+    "Agent was not moved to Trash.",
+  );
+  trashId = trashed.trash.trashId;
+
+  const purgePath = `/api/trash/${encodeURIComponent(trashId)}/purge`;
+  const purgePreview = await jsonRequest(purgePath, {}, 200);
+  assert(
+    purgePreview.preview?.action === "purge" &&
+      purgePreview.preview?.trashId === trashId,
+    "Trash purge preview does not match the trashed agent.",
+  );
+  const purged = await jsonRequest(
+    purgePath,
+    { method: "DELETE", body: { preview: purgePreview.preview } },
+    200,
+  );
+  assert(
+    purged.trash?.trashId === trashId && purged.trash?.state === "purged",
+    "Trashed agent was not purged.",
   );
 }
 
@@ -511,6 +563,16 @@ function validatedBaseUrl(value) {
 function required(name) {
   const value = process.env[name]?.trim();
   if (!value) throw new Error(`${name} is required.`);
+  return value;
+}
+
+function identity(name, pattern) {
+  const value = required(name);
+  if (!pattern.test(value)) {
+    throw new Error(
+      `${name} has characters the identity headers would rewrite.`,
+    );
+  }
   return value;
 }
 

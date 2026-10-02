@@ -40,6 +40,8 @@ const signingPublicKey = signingKeyPair.publicKey
   .export({ type: "spki", format: "der" })
   .toString("base64");
 const signingKeyId = releaseSigningKeyId(signingKeyPair.publicKey);
+const paidVerifierTenantId = "tenant_owner.personal";
+const paidVerifierActorId = "owner@example.test";
 afterAll(() => {
   rmSync(signingKeyDirectory, { recursive: true, force: true });
 });
@@ -435,6 +437,8 @@ describe("paired production deployment", () => {
       OMNIAGENT_OPENAI_GATEWAY_INITIAL_CUTOVER: "",
       OMNIAGENT_RELEASE_SPLIT_RECOVERY: "",
       OMNIAGENT_RELEASE_SIGNING_KEY_FILE: signingKeyFile,
+      SMOKE_PAID_AGENT_TENANT_ID: paidVerifierTenantId,
+      SMOKE_PAID_AGENT_ACTOR_ID: paidVerifierActorId,
     };
     const missing = await runProcess(
       process.execPath,
@@ -680,6 +684,37 @@ describe("paired production deployment", () => {
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
+  });
+
+  it("requires the paid verification account before any deploy and never prints it", async () => {
+    const probe = (overrides: Record<string, string>) =>
+      runProcess(
+        process.execPath,
+        ["scripts/deploy-production.mjs", "--configuration-probe"],
+        {
+          ...process.env,
+          ...releaseConfigurationEnvironment(),
+          OMNIAGENT_RELEASE_SHA: "release-ready",
+          ...overrides,
+        },
+      );
+
+    const missing = await probe({
+      SMOKE_PAID_AGENT_TENANT_ID: "",
+      SMOKE_PAID_AGENT_ACTOR_ID: " ",
+    });
+    expect(missing.code).toBe(1);
+    expect(missing.stderr).toContain(
+      "Production release configuration is missing: SMOKE_PAID_AGENT_TENANT_ID, SMOKE_PAID_AGENT_ACTOR_ID.",
+    );
+    expect(missing.stdout).not.toContain("configuration is valid");
+
+    const valid = await probe({});
+    const output = `${valid.stdout}\n${valid.stderr}`;
+    expect(valid.code, output).toBe(0);
+    expect(valid.stdout).toContain("Production release configuration is valid.");
+    expect(output).not.toContain(paidVerifierTenantId);
+    expect(output).not.toContain(paidVerifierActorId);
   });
 
   it("requires a configured model only for the optional paid gateway diagnostic", async () => {
@@ -1655,6 +1690,8 @@ function releaseConfigurationEnvironment() {
     OMNIAGENT_OPENAI_GATEWAY_INITIAL_CUTOVER: "",
     OMNIAGENT_RELEASE_SPLIT_RECOVERY: "",
     OMNIAGENT_RELEASE_SIGNING_KEY_FILE: signingKeyFile,
+    SMOKE_PAID_AGENT_TENANT_ID: paidVerifierTenantId,
+    SMOKE_PAID_AGENT_ACTOR_ID: paidVerifierActorId,
   };
 }
 
