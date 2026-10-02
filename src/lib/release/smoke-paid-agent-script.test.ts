@@ -11,7 +11,10 @@ const revision = "release-ready";
 const internalSecret = "internal-paid-agent-secret";
 const bypassSecret = "vercel-paid-agent-bypass";
 const ownerTenantId = "tenant_owner.personal";
-const ownerActorId = "owner@example.test";
+const ownerEmail = "owner@example.test";
+const ownerPassword = "owner paid-agent password";
+const sessionToken = "paid-agent-session-token";
+const sessionCookie = `__Host-asael_session=${sessionToken}`;
 const agentPath = "/api/agents/agent_paid_verify";
 const trashId = "trash:0f0e0d0c-0b0a-4908-8706-050403020100";
 const purgePath = `/api/trash/${encodeURIComponent(trashId)}/purge`;
@@ -52,6 +55,7 @@ describe("paid agent release smoke", () => {
       expect(observed.healthChecks).toBe(2);
       expect(observed.requests).toEqual([
         "GET /api/health",
+        "POST /api/auth/login",
         "POST /api/agents",
         `PATCH ${agentPath}`,
         "POST /api/agent",
@@ -62,7 +66,13 @@ describe("paid agent release smoke", () => {
         `DELETE ${agentPath}`,
         `GET ${purgePath}`,
         `DELETE ${purgePath}`,
+        "POST /api/auth/logout",
       ]);
+      expect(observed.signInBody).toEqual({
+        email: ownerEmail,
+        password: ownerPassword,
+      });
+      expect(observed.sessionOpen).toBe(false);
       expect(observed.createBody).toMatchObject({
         instructions: "Reply only ASAEL_LIVE_OK",
         modelPolicy: "openai_fast",
@@ -84,8 +94,11 @@ describe("paid agent release smoke", () => {
       expect(result.stdout).toContain('"trajectoryVerified": true');
       expect(result.stdout).toContain(`"trashId": "${trashId}"`);
       expect(result.stdout).toContain('"agentPurged": true');
+      expect(result.stdout).toContain('"signedOut": true');
       expect(output).not.toContain(ownerTenantId);
-      expect(output).not.toContain(ownerActorId);
+      expect(output).not.toContain(ownerEmail);
+      expect(output).not.toContain(ownerPassword);
+      expect(output).not.toContain(sessionToken);
       expect(output).not.toContain(internalSecret);
       expect(output).not.toContain(bypassSecret);
     });
@@ -102,6 +115,8 @@ describe("paid agent release smoke", () => {
       expect(observed.requests).not.toContain(
         "GET /api/runs/run_paid_verify?replay=true",
       );
+      expect(observed.requests.at(-1)).toBe("POST /api/auth/logout");
+      expect(observed.sessionOpen).toBe(false);
       expect(result.stderr).toContain("Minimal OpenAI turn used a fallback.");
       expect(`${result.stdout}\n${result.stderr}`).not.toContain(internalSecret);
       expect(`${result.stdout}\n${result.stderr}`).not.toContain(bypassSecret);
@@ -122,6 +137,7 @@ describe("paid agent release smoke", () => {
       );
       expect(`${result.stdout}\n${result.stderr}`).not.toContain(internalSecret);
       expect(`${result.stdout}\n${result.stderr}`).not.toContain(bypassSecret);
+      expect(`${result.stdout}\n${result.stderr}`).not.toContain(ownerPassword);
     }
 
     const disallowedLoopback = await runProcess("http://127.0.0.1:1", {
@@ -133,34 +149,79 @@ describe("paid agent release smoke", () => {
     );
   });
 
-  it("refuses a missing or rewritable verification account before any request", async () => {
+  it("refuses a missing sign-in account before any request", async () => {
     await withPaidAgentServer({}, async (baseUrl, observed) => {
       for (const [environment, message] of [
+        [{ SMOKE_PAID_AGENT_EMAIL: " " }, "SMOKE_PAID_AGENT_EMAIL is required."],
         [
-          { SMOKE_PAID_AGENT_TENANT_ID: "" },
-          "SMOKE_PAID_AGENT_TENANT_ID is required.",
-        ],
-        [
-          { SMOKE_PAID_AGENT_ACTOR_ID: " " },
-          "SMOKE_PAID_AGENT_ACTOR_ID is required.",
-        ],
-        [
-          { SMOKE_PAID_AGENT_TENANT_ID: "owner tenant" },
-          "SMOKE_PAID_AGENT_TENANT_ID has characters the identity headers would rewrite.",
-        ],
-        [
-          { SMOKE_PAID_AGENT_ACTOR_ID: "owner+release@example.test" },
-          "SMOKE_PAID_AGENT_ACTOR_ID has characters the identity headers would rewrite.",
+          { SMOKE_PAID_AGENT_PASSWORD: " " },
+          "SMOKE_PAID_AGENT_PASSWORD is required.",
         ],
       ] as const) {
         const result = await runProcess(baseUrl, environment);
-        const output = `${result.stdout}\n${result.stderr}`;
         expect(result.code).toBe(1);
         expect(result.stderr).toContain(message);
-        expect(output).not.toContain("owner tenant");
-        expect(output).not.toContain("owner+release");
+        expect(`${result.stdout}\n${result.stderr}`).not.toContain(ownerPassword);
       }
       expect(observed.requests).toEqual([]);
+    });
+  });
+
+  it("creates nothing when sign-in is refused", async () => {
+    await withPaidAgentServer({ signInStatus: 401 }, async (baseUrl, observed) => {
+      const result = await runProcess(baseUrl);
+
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("Sign-in returned HTTP 401.");
+      expect(observed.requests).toEqual([
+        "GET /api/health",
+        "POST /api/auth/login",
+      ]);
+      expect(`${result.stdout}\n${result.stderr}`).not.toContain(ownerPassword);
+    });
+  });
+
+  it("signs out of a sign-in reply that is not a browser session", async () => {
+    await withPaidAgentServer({ sessionSource: "headers" }, async (baseUrl, observed) => {
+      const result = await runProcess(baseUrl);
+
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("Sign-in did not open a browser session.");
+      expect(observed.requests).toEqual([
+        "GET /api/health",
+        "POST /api/auth/login",
+        "POST /api/auth/logout",
+      ]);
+      expect(observed.sessionOpen).toBe(false);
+    });
+  });
+
+  it("fails when the session is not signed out, after removing the agent", async () => {
+    await withPaidAgentServer({ signOutStatus: 403 }, async (baseUrl, observed) => {
+      const result = await runProcess(baseUrl);
+
+      expect(result.code).toBe(1);
+      expect(observed.purgedAgents).toBe(1);
+      expect(result.stderr).toContain(
+        "FAIL paid agent verification: Sign-out: POST /api/auth/logout expected HTTP 200, received 403.",
+      );
+      expect(result.stdout).not.toContain('"status": "PASS"');
+    });
+  });
+
+  it("redacts the account, password, and session from a failure", async () => {
+    await withPaidAgentServer({ streamErrorEchoesAccount: true }, async (baseUrl, observed) => {
+      const result = await runProcess(baseUrl);
+      const output = `${result.stdout}\n${result.stderr}`;
+
+      expect(result.code).toBe(1);
+      expect(observed.sessionOpen).toBe(false);
+      expect(result.stderr).toContain("Agent stream failed:");
+      expect(result.stderr).toContain("[redacted-account]");
+      expect(result.stderr).toContain("[redacted-secret]");
+      expect(output).not.toContain(ownerPassword);
+      expect(output).not.toContain(sessionToken);
+      expect(output.toLowerCase()).not.toContain(ownerEmail);
     });
   });
 
@@ -179,6 +240,10 @@ describe("paid agent release smoke", () => {
 type PaidAgentServerOptions = {
   fallbackUsed?: boolean;
   purgedState?: string;
+  signInStatus?: number;
+  sessionSource?: string;
+  signOutStatus?: number;
+  streamErrorEchoesAccount?: boolean;
 };
 
 type ObservedRequests = {
@@ -187,6 +252,8 @@ type ObservedRequests = {
   purgedAgents: number;
   healthChecks: number;
   requests: string[];
+  sessionOpen: boolean;
+  signInBody?: Record<string, unknown>;
   createBody?: Record<string, unknown>;
   patchBody?: Record<string, unknown>;
   agentBody?: Record<string, unknown>;
@@ -202,6 +269,7 @@ async function withPaidAgentServer(
     purgedAgents: 0,
     healthChecks: 0,
     requests: [],
+    sessionOpen: false,
   };
   const server = createServer((request, response) => {
     handleRequest(request, response, options, observed).catch((error) => {
@@ -235,13 +303,51 @@ async function handleRequest(
 ) {
   const requestPath = request.url || "missing";
   observed.requests.push(`${request.method} ${requestPath}`);
-  expect(request.headers["x-omni-internal-auth"]).toBe(internalSecret);
+  // The check signs in like the app: no internal identity, and every request
+  // after sign-in carries the session from the app's own origin.
+  expect(request.headers["x-omni-internal-auth"]).toBeUndefined();
+  expect(request.headers["x-omni-tenant-id"]).toBeUndefined();
+  expect(request.headers["x-omni-user-id"]).toBeUndefined();
+  expect(request.headers["x-omni-user-role"]).toBeUndefined();
   expect(request.headers["x-omni-synthetic-auth"]).toBe(internalSecret);
   expect(request.headers["x-vercel-protection-bypass"]).toBe(bypassSecret);
   expect(request.headers.authorization).toBeUndefined();
-  expect(request.headers["x-omni-tenant-id"]).toBe(ownerTenantId);
-  expect(request.headers["x-omni-user-id"]).toBe(ownerActorId);
+  expect(request.headers.origin).toBe("https://asael.bennierichard.com");
+  expect(request.headers.cookie).toBe(
+    observed.sessionOpen ? sessionCookie : undefined,
+  );
   const tenantId = ownerTenantId;
+
+  if (request.method === "POST" && requestPath === "/api/auth/login") {
+    observed.signInBody = await readJsonBody(request);
+    if (options.signInStatus) {
+      return json(response, options.signInStatus, { error: "Unauthorized" });
+    }
+    observed.sessionOpen = true;
+    response.writeHead(200, {
+      "content-type": "application/json",
+      "set-cookie":
+        `${sessionCookie}; Path=/; Expires=Fri, 09 Oct 2026 00:00:00 GMT; HttpOnly; Secure; SameSite=Lax`,
+    });
+    response.end(JSON.stringify({
+      authenticated: true,
+      context: {
+        tenantId,
+        actorId: "actor:0f0e0d0c-0b0a-4908-8706-050403020100",
+        role: "admin",
+        source: options.sessionSource ?? "session",
+      },
+    }));
+    return;
+  }
+
+  if (request.method === "POST" && requestPath === "/api/auth/logout") {
+    if (options.signOutStatus) {
+      return json(response, options.signOutStatus, { error: "Forbidden" });
+    }
+    observed.sessionOpen = false;
+    return json(response, 200, { authenticated: false });
+  }
 
   if (request.method === "GET" && requestPath === "/api/health") {
     observed.healthChecks += 1;
@@ -285,6 +391,14 @@ async function handleRequest(
       observed.agentBody.requestId,
     );
     response.writeHead(200, { "content-type": "text/event-stream" });
+    if (options.streamErrorEchoesAccount) {
+      response.end(sse([{
+        type: "error",
+        message:
+          `Rejected ${ownerEmail.toUpperCase()} with ${ownerPassword} and ${request.headers.cookie}.`,
+      }]));
+      return;
+    }
     response.end(sse([
       { type: "run", runId: "run_paid_verify" },
       {
@@ -431,8 +545,8 @@ function runProcess(
         SMOKE_INTERNAL_AUTH_SECRET: internalSecret,
         OMNIAGENT_INTERNAL_AUTH_SECRET: internalSecret,
         VERCEL_AUTOMATION_BYPASS_SECRET: bypassSecret,
-        SMOKE_PAID_AGENT_TENANT_ID: ownerTenantId,
-        SMOKE_PAID_AGENT_ACTOR_ID: ownerActorId,
+        SMOKE_PAID_AGENT_EMAIL: ownerEmail,
+        SMOKE_PAID_AGENT_PASSWORD: ownerPassword,
         OPENAI_API_KEY: "",
         ...environment,
       },

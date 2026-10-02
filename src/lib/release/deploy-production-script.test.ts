@@ -40,8 +40,8 @@ const signingPublicKey = signingKeyPair.publicKey
   .export({ type: "spki", format: "der" })
   .toString("base64");
 const signingKeyId = releaseSigningKeyId(signingKeyPair.publicKey);
-const paidVerifierTenantId = "tenant_owner.personal";
-const paidVerifierActorId = "owner@example.test";
+const paidVerifierEmail = "owner@example.test";
+const paidVerifierPassword = "owner paid-agent password";
 afterAll(() => {
   rmSync(signingKeyDirectory, { recursive: true, force: true });
 });
@@ -437,8 +437,8 @@ describe("paired production deployment", () => {
       OMNIAGENT_OPENAI_GATEWAY_INITIAL_CUTOVER: "",
       OMNIAGENT_RELEASE_SPLIT_RECOVERY: "",
       OMNIAGENT_RELEASE_SIGNING_KEY_FILE: signingKeyFile,
-      SMOKE_PAID_AGENT_TENANT_ID: paidVerifierTenantId,
-      SMOKE_PAID_AGENT_ACTOR_ID: paidVerifierActorId,
+      SMOKE_PAID_AGENT_EMAIL: paidVerifierEmail,
+      SMOKE_PAID_AGENT_PASSWORD: paidVerifierPassword,
     };
     const missing = await runProcess(
       process.execPath,
@@ -700,12 +700,12 @@ describe("paired production deployment", () => {
       );
 
     const missing = await probe({
-      SMOKE_PAID_AGENT_TENANT_ID: "",
-      SMOKE_PAID_AGENT_ACTOR_ID: " ",
+      SMOKE_PAID_AGENT_EMAIL: "",
+      SMOKE_PAID_AGENT_PASSWORD: " ",
     });
     expect(missing.code).toBe(1);
     expect(missing.stderr).toContain(
-      "Production release configuration is missing: SMOKE_PAID_AGENT_TENANT_ID, SMOKE_PAID_AGENT_ACTOR_ID.",
+      "Production release configuration is missing: SMOKE_PAID_AGENT_EMAIL, SMOKE_PAID_AGENT_PASSWORD.",
     );
     expect(missing.stdout).not.toContain("configuration is valid");
 
@@ -713,8 +713,8 @@ describe("paired production deployment", () => {
     const output = `${valid.stdout}\n${valid.stderr}`;
     expect(valid.code, output).toBe(0);
     expect(valid.stdout).toContain("Production release configuration is valid.");
-    expect(output).not.toContain(paidVerifierTenantId);
-    expect(output).not.toContain(paidVerifierActorId);
+    expect(output).not.toContain(paidVerifierEmail);
+    expect(output).not.toContain(paidVerifierPassword);
   });
 
   it("requires a configured model only for the optional paid gateway diagnostic", async () => {
@@ -1330,6 +1330,14 @@ describe("rolling back a failed production release", () => {
         rollbackVerified,
       ]);
       expectNoSecretTokens(result, [candidateToken, priorToken]);
+      // Only the staged and canonical paid checks receive the sign-in password.
+      expect(result.passwordHolders).toEqual([
+        "npm run smoke:paid-agent",
+        "npm run smoke:paid-agent",
+      ]);
+      expect(`${result.stdout}\n${result.stderr}\n${result.log.join("\n")}`).not.toContain(
+        paidVerifierPassword,
+      );
     });
   });
 
@@ -1690,8 +1698,8 @@ function releaseConfigurationEnvironment() {
     OMNIAGENT_OPENAI_GATEWAY_INITIAL_CUTOVER: "",
     OMNIAGENT_RELEASE_SPLIT_RECOVERY: "",
     OMNIAGENT_RELEASE_SIGNING_KEY_FILE: signingKeyFile,
-    SMOKE_PAID_AGENT_TENANT_ID: paidVerifierTenantId,
-    SMOKE_PAID_AGENT_ACTOR_ID: paidVerifierActorId,
+    SMOKE_PAID_AGENT_EMAIL: paidVerifierEmail,
+    SMOKE_PAID_AGENT_PASSWORD: paidVerifierPassword,
   };
 }
 
@@ -1735,7 +1743,7 @@ async function withFakeReleaseTools(
       const file = path.join(directory, name);
       await writeFile(
         file,
-        `#!/bin/sh\n${scripts[name] ?? `printf '%s\\n' "${name} $*" >> "$FAKE_RELEASE_LOG"\n${body}`}\n`,
+        `#!/bin/sh\n${passwordWitness(name)}\n${scripts[name] ?? `printf '%s\\n' "${name} $*" >> "$FAKE_RELEASE_LOG"\n${body}`}\n`,
       );
       await chmod(file, 0o755);
     }
@@ -1758,6 +1766,12 @@ async function withFakeReleaseTools(
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+}
+
+// Notes each call that can read the paid check's sign-in password, so a test
+// can prove no other command receives it.
+function passwordWitness(name: string) {
+  return `if [ -n "$SMOKE_PAID_AGENT_PASSWORD" ]; then printf '%s\\n' "${name} $*" >> "$FAKE_RELEASE_LOG.password"; fi`;
 }
 
 const FAKE_RELEASE_HEAD = "a53a77aee2e1056f8989cc19b24b0a6a620cf084";
@@ -1871,6 +1885,8 @@ type FakeReleaseRun = {
   log: string[];
   // Each release manifest vercel was asked to deploy, in order.
   manifests: string[];
+  // Each tool call that received the paid check's sign-in password.
+  passwordHolders: string[];
 };
 
 // Runs the whole deploy script against the platform stand-ins. The prior
@@ -1948,7 +1964,12 @@ async function withFakeReleasePlatform(
           .then((content) => content.split("\n").filter(Boolean))
           .catch(() => []);
         await rm(manifestFile, { force: true });
-        return { ...result, log: await readLog(), manifests };
+        const passwordFile = `${String(environment.FAKE_RELEASE_LOG)}.password`;
+        const passwordHolders = await readFile(passwordFile, "utf8")
+          .then((content) => content.split("\n").filter(Boolean))
+          .catch(() => []);
+        await rm(passwordFile, { force: true });
+        return { ...result, log: await readLog(), manifests, passwordHolders };
       },
     });
   }, FAKE_PLATFORM_SCRIPTS);

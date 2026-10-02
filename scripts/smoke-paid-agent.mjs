@@ -30,34 +30,33 @@ if (!internalSecret) {
 const bypassSecret =
   process.env.VERCEL_AUTOMATION_BYPASS_SECRET?.trim() || "";
 const baseUrl = validatedBaseUrl(required("BASE_URL"));
-// The verifier acts as a real account, because the app only resolves owners
-// that are active members of their tenant. Both values must already be in the
-// form the identity headers normalize to, so the server sees the same account.
-const tenantId = identity(
-  "SMOKE_PAID_AGENT_TENANT_ID",
-  /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,119}$/,
-);
-const actorId = identity(
-  "SMOKE_PAID_AGENT_ACTOR_ID",
-  /^[A-Za-z0-9_.:@-]{1,160}$/,
-);
+// The agent runner runs turns only for a signed-in account, never for the
+// internal identity headers, so the verifier signs in the way the app does.
+const email = required("SMOKE_PAID_AGENT_EMAIL");
+const password = process.env.SMOKE_PAID_AGENT_PASSWORD || "";
+if (!password.trim()) {
+  throw new Error("SMOKE_PAID_AGENT_PASSWORD is required.");
+}
 const marker = randomUUID();
 const suffix = marker.replaceAll("-", "").slice(0, 12);
 const requestId = `paid_verify:${marker}`;
 const headers = {
-  "x-omni-internal-auth": internalSecret,
   "x-omni-synthetic-auth": internalSecret,
   "x-omni-synthetic-source": "paid-agent-release-verification",
   "x-omni-slo-excluded": "true",
   "x-omni-correlation-id": requestId,
-  "x-omni-tenant-id": tenantId,
-  "x-omni-user-id": actorId,
-  "x-omni-user-role": "admin",
+  // The app accepts a signed-in change only from its own origin, and a staged
+  // deployment trusts the production origin too.
+  origin: productionOrigin,
   ...(bypassSecret
     ? { "x-vercel-protection-bypass": bypassSecret }
     : {}),
 };
 
+let tenantId;
+let sessionCookie;
+let signedOut = false;
+let signOutFailure;
 let agentId;
 let runId;
 let health;
@@ -79,6 +78,9 @@ try {
     health.dependencies?.openAiConfigured === true,
     "OpenAI is not configured on this revision.",
   );
+
+  // Every record the check makes must stay in the tenant the session names.
+  tenantId = await signIn();
 
   const name = `Paid Release Verifier ${suffix}`;
   const created = await jsonRequest(
@@ -375,15 +377,27 @@ try {
       cleanupFailure = error;
     }
   }
+  if (sessionCookie) {
+    try {
+      await signOut();
+      signedOut = true;
+    } catch (error) {
+      signOutFailure = error;
+    }
+  }
 }
 
-if (primaryFailure || cleanupFailure) {
-  const reasons = [primaryFailure, cleanupFailure]
-    .filter(Boolean)
-    .map((error) =>
-      safeText(error instanceof Error ? error.message : String(error)),
+if (primaryFailure || cleanupFailure || signOutFailure) {
+  const reasons = [
+    [primaryFailure, ""],
+    [cleanupFailure, "Cleanup: "],
+    [signOutFailure, "Sign-out: "],
+  ]
+    .filter(([error]) => error)
+    .map(([error, label]) =>
+      label + safeText(error instanceof Error ? error.message : String(error)),
     );
-  console.error(`FAIL paid agent verification: ${reasons.join(" Cleanup: ")}`);
+  console.error(`FAIL paid agent verification: ${reasons.join(" ")}`);
   process.exitCode = 1;
 } else {
   console.log(
@@ -400,11 +414,50 @@ if (primaryFailure || cleanupFailure) {
         trajectoryVerified: true,
         trashId,
         agentPurged,
+        signedOut,
       },
       null,
       2,
     ),
   );
+}
+
+async function signIn() {
+  const response = await rawRequest("/api/auth/login", {
+    method: "POST",
+    body: { email, password },
+  });
+  const text = await readTextLimited(response, 100_000);
+  assert(response.status === 200, `Sign-in returned HTTP ${response.status}.`);
+  const cookies = response.headers
+    .getSetCookie()
+    .map((value) => value.split(";")[0].trim())
+    .filter((value) => /^[^=\s]+=\S+$/.test(value));
+  assert(cookies.length > 0, "Sign-in returned no session cookie.");
+  // Kept before the reply is checked, so the check still signs out of a
+  // session whose reply was wrong.
+  sessionCookie = cookies.join("; ");
+  headers.cookie = sessionCookie;
+  let body;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    body = {};
+  }
+  assert(
+    body.authenticated === true && body.context?.source === "session",
+    "Sign-in did not open a browser session.",
+  );
+  assert(
+    typeof body.context.tenantId === "string" && body.context.tenantId,
+    "Sign-in returned no tenant.",
+  );
+  return body.context.tenantId;
+}
+
+async function signOut() {
+  const body = await jsonRequest("/api/auth/logout", { method: "POST" }, 200);
+  assert(body.authenticated === false, "Sign-out did not end the session.");
 }
 
 // Deleting an agent moves it to Trash; purging the Trash item then removes it
@@ -566,16 +619,6 @@ function required(name) {
   return value;
 }
 
-function identity(name, pattern) {
-  const value = required(name);
-  if (!pattern.test(value)) {
-    throw new Error(
-      `${name} has characters the identity headers would rewrite.`,
-    );
-  }
-  return value;
-}
-
 function positive(value) {
   return Number.isFinite(Number(value)) && Number(value) > 0;
 }
@@ -588,9 +631,17 @@ function safeText(value) {
   let redacted = String(value)
     .replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
     .replace(/\bsk-[A-Za-z0-9_-]{12,}\b/g, "[redacted-api-key]");
-  for (const secret of [internalSecret, bypassSecret]) {
+  const sessionTokens = (sessionCookie || "")
+    .split("; ")
+    .map((pair) => pair.slice(pair.indexOf("=") + 1));
+  for (const secret of [internalSecret, bypassSecret, password, ...sessionTokens]) {
     if (secret) redacted = redacted.replaceAll(secret, "[redacted-secret]");
   }
+  // The app may echo the account in lower case.
+  redacted = redacted.replace(
+    new RegExp(email.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"),
+    "[redacted-account]",
+  );
   return redacted
     .replace(/[\u0000-\u001f\u007f<>]/g, " ")
     .slice(0, 500);
