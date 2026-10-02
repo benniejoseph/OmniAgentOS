@@ -557,6 +557,10 @@ function validateReleaseConfiguration() {
     ],
     ["RELEASE_EVIDENCE_OUTPUT", process.env.RELEASE_EVIDENCE_OUTPUT],
     [RELEASE_SIGNING_KEY_FILE_ENV, process.env[RELEASE_SIGNING_KEY_FILE_ENV]],
+    // The paid agent check runs as this account, so a release must name it
+    // before anything is deployed.
+    ["SMOKE_PAID_AGENT_TENANT_ID", process.env.SMOKE_PAID_AGENT_TENANT_ID],
+    ["SMOKE_PAID_AGENT_ACTOR_ID", process.env.SMOKE_PAID_AGENT_ACTOR_ID],
   ];
   const missing = required
     .filter(([, value]) => !value?.trim())

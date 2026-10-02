@@ -56,11 +56,17 @@ const FAKE_PSQL = [
   "  shift",
   "done",
   'record() { echo "$1" >> "$FAKE_PSQL_LOG"; }',
+  // How many functions a statement alters, and how many pg_restore runs came before it.
+  "altered() { printf '%s\\n' \"$sql\" | grep -c 'ALTER FUNCTION'; }",
+  "restored() { wc -l < \"$FAKE_PG_RESTORE_LOG\" | tr -d ' '; }",
   'case "$sql" in',
   '  *"unnest(ARRAY"*) record missing-roles; echo "${FAKE_PSQL_MISSING_ROLES:-[]}" ;;',
   '  *"SET LOCAL omni.tenant_id"*) record tenant-read; echo "$FAKE_PSQL_TENANT_READ" ;;',
   '  *"SET LOCAL ROLE"*) record unscoped-read; echo "$FAKE_PSQL_UNSCOPED_READ" ;;',
-  `  *"'tableRowCounts'"*) record validation; cat "$FAKE_PSQL_VALIDATION" ;;`,
+  `  *"'tableRowCounts'"*) record validation; printf '%s' "$sql" > "$FAKE_PSQL_VALIDATION_SQL"; cat "$FAKE_PSQL_VALIDATION" ;;`,
+  '  *"FROM pg_proc proc"*) record functions; echo "${FAKE_PSQL_FUNCTIONS:-[]}" ;;',
+  '  *"RESET search_path"*) record "reset $(altered) after $(restored) restores" ;;',
+  '  *"SET search_path = public, extensions"*) record "pin $(altered) after $(restored) restores" ;;',
   "  *rolbypassrls*) record role; echo safe ;;",
   '  *"current_database()"*) record database; echo prod ;;',
   "  *omni_database_identity*) record identity-table; echo f ;;",
@@ -227,10 +233,12 @@ describe("database restore drill", () => {
     expect(result.stderr).toBe("");
     expect(result.code).toBe(0);
     // pg_restore saw the decrypted archive, grants included.
-    expect(result.restores).toHaveLength(2);
+    expect(result.restores).toHaveLength(3);
     expect(result.restores[0]).toMatch(/^--list \S+\/\.asael-restore-[^/]+\/backup\.dump$/);
-    expect(result.restores[1]).toContain("--no-owner");
-    expect(result.restores[1]).not.toContain("--no-acl");
+    for (const restore of result.restores.slice(1)) {
+      expect(restore).toContain("--no-owner");
+      expect(restore).not.toContain("--no-acl");
+    }
     expect((await readFile(path.join(result.root, "restored.dump"))).equals(archive)).toBe(
       true,
     );
@@ -239,6 +247,7 @@ describe("database restore drill", () => {
     expect(list).toContain("\n215; 1259 16390 TABLE public omni_threads postgres");
     expect(result.queries).toEqual([
       "missing-roles",
+      "functions",
       "validation",
       "unscoped-read",
       "tenant-read",
@@ -270,11 +279,72 @@ describe("database restore drill", () => {
     expect(result.code).toBe(0);
     expect(result.queries).toEqual([
       "missing-roles",
+      "functions",
       "validation",
       "unscoped-read",
       "tenant-read",
       "tenant-read",
     ]);
+  });
+
+  it("loads the data and indexes while the backup's functions can find one another", async () => {
+    // Functions whose bodies name another function without its schema, as
+    // CHECK constraints call them.
+    const functions = [
+      "public.omni_source_contract_id_is_valid(value text)",
+      "public.omni_source_id_array_is_canonical(values_to_check text[], maximum_entries integer)",
+    ];
+    const result = await runRestoreDrill({
+      env: { FAKE_PSQL_FUNCTIONS: JSON.stringify(functions) },
+    });
+
+    expect(result.stderr).toBe("");
+    expect(result.code).toBe(0);
+    // The definitions load first, then the data and indexes.
+    expect(result.restores).toHaveLength(3);
+    expect(result.restores[1]).toContain("--section=pre-data --use-list");
+    expect(result.restores[2]).toContain("--section=data --section=post-data --use-list");
+    // Each function resolves names as production does while the data and
+    // indexes load, and then has the backup's definition again.
+    expect(result.queries).toEqual([
+      "missing-roles",
+      "functions",
+      "pin 2 after 2 restores",
+      "reset 2 after 3 restores",
+      "validation",
+      "unscoped-read",
+      "tenant-read",
+      "tenant-read",
+    ]);
+  });
+
+  it("counts the rows of more tables than one function call can take", async () => {
+    // Postgres passes a function at most 100 arguments, two for each of 50
+    // tables, and production has more.
+    const manyTableRowCounts = Object.fromEntries(
+      [
+        ...Object.entries(tableRowCounts),
+        ...Array.from({ length: 60 }, (_, index): [string, string] => [
+          `omni_table_${String(index).padStart(2, "0")}`,
+          String(index),
+        ]),
+      ].sort(([first], [second]) => (first < second ? -1 : 1)),
+    );
+    const result = await runRestoreDrill({
+      manifest: { tableRowCounts: manyTableRowCounts },
+      validation: {
+        omniTableNames: Object.keys(manyTableRowCounts),
+        tableRowCounts: manyTableRowCounts,
+      },
+    });
+
+    expect(result.stderr).toBe("");
+    expect(result.code).toBe(0);
+    const validationSql = await readFile(path.join(result.root, "validation.sql"), "utf8");
+    for (const tableName of Object.keys(manyTableRowCounts)) {
+      expect(validationSql).toContain(`(SELECT COUNT(*)::text FROM "${tableName}")`);
+    }
+    expect(mostCallArguments(validationSql)).toBeLessThanOrEqual(100);
   });
 
   it("rejects a backup manifest whose ledger rows differ from schema-migrations.json", async () => {
@@ -590,6 +660,7 @@ async function runRestoreDrill(
       RESTORE_CONFIRM: "restore-into-isolated-database:restore_drill",
       FAKE_PSQL_LOG: queryLog,
       FAKE_PSQL_VALIDATION: validationFile,
+      FAKE_PSQL_VALIDATION_SQL: path.join(root, "validation.sql"),
       FAKE_PSQL_UNSCOPED_READ: JSON.stringify(unscopedRead),
       FAKE_PSQL_TENANT_READ: JSON.stringify(tenantRead),
       FAKE_PG_RESTORE_LOG: restoreLog,
@@ -623,6 +694,33 @@ function failureMessage(stderr: string) {
   } catch {
     return line;
   }
+}
+
+// The most arguments any one function call in a statement passes.
+function mostCallArguments(sql: string) {
+  // For each open parenthesis, innermost last: how many arguments it has
+  // passed when a function name comes right before it, or null.
+  const open: (number | null)[] = [];
+  let most = 0;
+  let quoted = false;
+  for (let index = 0; index < sql.length; index += 1) {
+    const character = sql[index];
+    if (character === "'") {
+      quoted = !quoted;
+    } else if (quoted) {
+      continue;
+    } else if (character === "(") {
+      open.push(/\w/.test(sql[index - 1] ?? "") ? 1 : null);
+    } else if (character === ")") {
+      most = Math.max(most, open.pop() ?? 0);
+    } else if (character === ",") {
+      const passed = open.at(-1);
+      if (passed != null) {
+        open[open.length - 1] = passed + 1;
+      }
+    }
+  }
+  return most;
 }
 
 async function waitFor(ready: () => boolean) {
