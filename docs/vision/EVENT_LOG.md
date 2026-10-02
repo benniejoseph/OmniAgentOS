@@ -2089,3 +2089,28 @@ content-free service receipt. A management read, missing validation receipt, or
 displayed digest never becomes authority. Lifecycle buttons must re-enter their
 existing governed mutation route; digest-bound execution grants remain
 immutable, and native management deliberately omits Agent retirement.
+
+## Connector source-item events
+
+The Google personal sync appends `connector.source_item.quarantined` when it
+sets aside an item that keeps failing, and `connector.source_item.released`
+when a set-aside item settles, to the `connector:<connection id>` stream under
+the sync's system execution scope. It appends them only after the cursor write
+that makes the decision durable. Payloads are metadata-only: schema version,
+connection ID, source, the declared adapter ID and version, a digest of the
+provider item ID, and either the attempt count and failure code or the outcome
+(`ingested` or `removed`) and redrive count. The event ID derives from the item
+digest, the time the item first failed, and the type, so a repeated append is
+idempotent and each time an item is set aside gets its own event. Item content,
+titles, provider IDs, and errors never enter an event. A sync that stops between
+its cursor write and the append loses the event but keeps the decision.
+
+The same sync appends `connector.source_sweep.finished` when a source that
+started over has checked again every document it held from before, and
+`connector.source_sweep.stopped` when its safety stop ends the sweep before a
+slice removes anything. They follow the same cursor write. Payloads carry the
+schema version, connection ID, source, the declared adapter ID and version, and
+how many documents the sweep checked and removed; a stopped sweep adds how many
+it would have removed. Neither names a document or an item. The event ID derives
+from the connection, the source, the time the sweep started, and the type, so a
+repeated append is idempotent.

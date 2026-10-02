@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  claimLease: vi.fn(), getSecrets: vi.fn(), saveGrant: vi.fn(), updateState: vi.fn(), refresh: vi.fn(), ingest: vi.fn(), remove: vi.fn(), getDocument: vi.fn(), projectCalendar: vi.fn(), cancelCalendar: vi.fn(), mapInbound: vi.fn(), observeDrive: vi.fn(), observeCanonicalDrive: vi.fn(), fetch: vi.fn(), driveFence: vi.fn(), listGrants: vi.fn(),
+  claimLease: vi.fn(), getSecrets: vi.fn(), saveGrant: vi.fn(), updateState: vi.fn(), refresh: vi.fn(), ingest: vi.fn(), remove: vi.fn(), getDocument: vi.fn(), projectCalendar: vi.fn(), cancelCalendar: vi.fn(), mapInbound: vi.fn(), observeDrive: vi.fn(), observeCanonicalDrive: vi.fn(), fetch: vi.fn(), driveFence: vi.fn(), listGrants: vi.fn(), listDocuments: vi.fn(async () => []),
 }));
 vi.mock("@/lib/connectors/oauth-store", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/lib/connectors/oauth-store")>(),
@@ -22,7 +22,12 @@ vi.mock("@/lib/connectors/google-drive-canonical", () => ({
   observeGoogleDriveCanonicalMetadata: mocks.observeCanonicalDrive,
 }));
 vi.mock("@/lib/rag/retriever", () => ({ ingestTextDocument: mocks.ingest }));
-vi.mock("@/lib/rag/store", () => ({ deleteKnowledgeDocumentByIdempotencyKey: mocks.remove, getKnowledgeDocumentByIdempotencyKey: mocks.getDocument }));
+vi.mock("@/lib/rag/store", async (importOriginal) => ({
+  knowledgeDocumentId: (await importOriginal<typeof import("@/lib/rag/store")>()).knowledgeDocumentId,
+  deleteKnowledgeDocumentByIdempotencyKey: mocks.remove,
+  getKnowledgeDocumentByIdempotencyKey: mocks.getDocument,
+  listKnowledgeDocumentsBySourcePrefix: mocks.listDocuments,
+}));
 vi.mock("@/lib/meetings/google-calendar-projection", () => ({ projectGoogleCalendarMeeting: mocks.projectCalendar, cancelGoogleCalendarMeeting: mocks.cancelCalendar }));
 vi.mock("@/lib/communications/store", () => ({ mapInboundCommunication: mocks.mapInbound }));
 
@@ -1350,8 +1355,14 @@ describe("personal OAuth synchronization", () => {
       sources: [{ source: "drive", status: "error" }],
     });
     // The page is read again, and retiring the first file again is harmless.
+    // The cursor counts the failure, so a file that keeps failing is set aside.
     expect(savedCursor()).toEqual({
       driveChangesStartPageToken: "drive-changes-1",
+      itemQuarantine: {
+        drive: {
+          failing: { id: "drive-fails", attempts: 1, since: expect.any(String) },
+        },
+      },
     });
   });
 

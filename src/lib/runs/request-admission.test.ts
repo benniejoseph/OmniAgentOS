@@ -131,6 +131,8 @@ describe("request fingerprints", () => {
     expect(fingerprint({ message: "Summarize my month." })).not.toBe(original);
     expect(fingerprint({ message: "Summarize my week.", agentId: "nova" }))
       .not.toBe(original);
+    expect(fingerprint({ message: "Summarize my week.", requireReadOnlyAgent: true }))
+      .not.toBe(original);
   });
 });
 

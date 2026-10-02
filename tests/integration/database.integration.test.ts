@@ -33,6 +33,7 @@ import {
 import { verifyMigratedDatabase } from "@/lib/db/migrated-database";
 import { sqlMigrationFileDigest } from "@/lib/db/sql-migration-files";
 import type { SqlClient } from "@/lib/db/sql-types";
+import { tenantVectorIndexName } from "@/lib/db/tenant-vector-indexes";
 import { withHnswCandidateScan } from "@/lib/db/vector-search";
 import { checkSharedRateLimit } from "@/lib/http/rate-limit";
 import { memoryContentDigest } from "@/lib/memory/content-digest";
@@ -54,6 +55,7 @@ import {
   transitionMissionTask,
 } from "@/lib/missions/store";
 import { getAgentQualityStats } from "@/lib/observability/agent-quality";
+import { getReleaseErrorBudget, readErrorBudgetCounts } from "@/lib/release/error-budget";
 import {
   getDefaultObservabilitySloPolicies,
   getObservabilitySloSnapshot,
@@ -72,7 +74,10 @@ import {
   getProject,
   updateProjectExecution,
 } from "@/lib/projects/store";
-import { createKnowledgeDocument } from "@/lib/rag/store";
+import {
+  createKnowledgeDocument,
+  listKnowledgeDocumentsBySourcePrefix,
+} from "@/lib/rag/store";
 import {
   cancelOperationJobByDedupeKey,
   completeOperationJob,
@@ -83,9 +88,16 @@ import {
   heartbeatOperationJob,
   leaseOperationJobByDedupeKey,
   leaseOperationJobs,
+  discardQuarantinedOperationJob,
+  getOperationJobStats,
   listActiveWorkflowTickRunIds,
+  listOperationJobRecoveryRows,
+  listQuarantinedOperationJobs,
   listRunnableOperationDispatchTenants,
+  OPERATION_JOB_QUARANTINE_ERROR,
+  releaseQuarantinedOperationJob,
   repairExpiredOperationJobs,
+  requeueOperationJobByDedupeKey,
   wakeOperationJobByDedupeKey,
 } from "@/lib/operations/job-queue";
 import { getApprovalQueue, getApprovalQueueItem } from "@/lib/operations/queue";
@@ -135,6 +147,7 @@ import {
   sealToolExecutionInput,
   withdrawPendingToolApproval,
 } from "@/lib/tools/audit-store";
+import type { ToolExecutionRecord } from "@/lib/tools/types";
 import { AgentRunNotActiveError } from "@/lib/runs/active-run-fence";
 import {
   buildEffectIntentV2,
@@ -154,6 +167,7 @@ import {
   getWorkflowRunExecutionAuthority,
   listRunnableWorkflowRuns,
   listWorkflowApprovalPage,
+  reclaimWorkflowRunForQueueDelivery,
   recordWorkflowSpecialistsPending,
 } from "@/lib/workflows/store";
 import {
@@ -571,6 +585,82 @@ databaseDescribe("Postgres schema integration", () => {
     expect(eventCount.count).toBe(1);
   });
 
+  test("records an injection canary trip with the blocked tool execution", async () => {
+    const tenantId = "injection_canary_tenant";
+    const actorId = "injection-canary-actor";
+    const claimToken = "injection-canary-claim";
+    const record = (overrides: Partial<ToolExecutionRecord>) => createToolExecutionRecord({
+      tenantId,
+      actorId,
+      toolId: "memory.write",
+      toolName: "Write Memory",
+      riskLevel: 1,
+      status: "blocked",
+      dryRun: true,
+      approvalRequired: false,
+      input: { title: "Forwarded notes" },
+      output: undefined,
+      reason: "Blocked.",
+      ...overrides,
+    });
+    const blocked = record({});
+    const claimed = record({
+      status: "executing",
+      dryRun: false,
+      approvalRequired: true,
+      approvalDecision: "approved",
+      output: {
+        __executionClaim: { token: claimToken, claimedAt: new Date().toISOString() },
+      },
+    });
+
+    await runWithDatabaseTenantScope(tenantId, () => saveToolExecution(blocked, {
+      injectionCanaryTrip: { encoding: "hex", agentRunId: "injection-canary-run" },
+    }));
+    await runWithDatabaseTenantScope(tenantId, () => saveToolExecution(claimed));
+    const completed = await runWithDatabaseTenantScope(tenantId, () =>
+      completeClaimedToolExecution({
+        ...claimed,
+        status: "blocked",
+        output: undefined,
+        reason: "Blocked.",
+        completedAt: new Date().toISOString(),
+      }, claimToken, { injectionCanaryTrip: { encoding: "base64" } })
+    );
+
+    expect(completed?.status).toBe("blocked");
+    const rows = await admin`
+      SELECT id, stream_id, payload
+      FROM omni_events
+      WHERE tenant_id = ${tenantId}
+        AND type = 'injection.canary_tripped'
+    `;
+    expect(rows.map((row) => ({ id: row.id, streamId: row.stream_id, payload: row.payload })))
+      .toEqual(expect.arrayContaining([
+        {
+          id: `injection-canary:${blocked.id}`,
+          streamId: `tool_execution:${blocked.id}`,
+          payload: expect.objectContaining({
+            executionId: blocked.id,
+            dryRun: true,
+            encoding: "hex",
+            agentRunId: "injection-canary-run",
+          }),
+        },
+        {
+          id: `injection-canary:${claimed.id}`,
+          streamId: `tool_execution:${claimed.id}`,
+          payload: expect.objectContaining({
+            executionId: claimed.id,
+            dryRun: false,
+            encoding: "base64",
+            agentRunId: null,
+          }),
+        },
+      ]));
+    expect(rows).toHaveLength(2);
+  });
+
   test("returns newly inserted and replayed bulk memories", async () => {
     const tenantId = "bulk_memory_tenant";
     const executionScope = createExecutionScope({
@@ -653,6 +743,68 @@ databaseDescribe("Postgres schema integration", () => {
         content: "A connected-source document must persist atomically.",
       }),
     ]);
+  });
+
+  test("lists a tenant's knowledge documents under a source prefix in id order", async () => {
+    const tenantId = "knowledge_prefix_listing_tenant";
+    // A prefix a LIKE pattern would widen: `_` and `%` match any character.
+    const prefix = "google:work:grant_1%:mail:";
+    const create = async (source: string, tenant = tenantId) => {
+      const { document } = await runWithDatabaseTenantScope(tenant, () =>
+        createKnowledgeDocument({
+          idempotencyKey: `prefix-listing:${source}`,
+          tenantId: tenant,
+          title: source,
+          content: `Content of ${source}`,
+          source,
+          sourceType: "api",
+          chunks: [{ index: 0, content: `Content of ${source}` }],
+        }),
+      );
+      return { id: document.id, source: document.source };
+    };
+    const held = [];
+    for (const item of ["a", "b", "c", "d"]) {
+      held.push(await create(`${prefix}${item}`));
+    }
+    const atTheTime = await create(`${prefix}at-the-time`);
+    const later = await create(`${prefix}later`);
+    await create("google:work:grantX1%:mail:e");
+    await create("google:work:grant_1zz:mail:f");
+    await create("google:work:grant_1%:drive:g");
+    await create(`${prefix}h`, "knowledge_prefix_listing_other");
+    await admin`
+      UPDATE omni_knowledge_documents
+      SET created_at = '2026-09-01T00:00:00Z'
+      WHERE tenant_id IN ('knowledge_prefix_listing_tenant', 'knowledge_prefix_listing_other')
+    `;
+    await admin`
+      UPDATE omni_knowledge_documents
+      SET created_at = '2026-09-15T00:00:00Z'
+      WHERE id = ${atTheTime.id}
+    `;
+    await admin`
+      UPDATE omni_knowledge_documents
+      SET created_at = '2026-09-20T00:00:00Z'
+      WHERE id = ${later.id}
+    `;
+    held.sort((left, right) => left.id < right.id ? -1 : 1);
+    const list = (after?: string, limit = 3) => runWithDatabaseTenantScope(tenantId, () =>
+      listKnowledgeDocumentsBySourcePrefix(prefix, {
+        tenantId,
+        createdBefore: "2026-09-15T00:00:00.000Z",
+        after,
+        limit,
+      }),
+    );
+
+    const first = await list();
+    expect(first).toEqual(held.slice(0, 3));
+    const second = await list(first[2].id);
+    expect(second).toEqual(held.slice(3));
+    await expect(list(second[0].id)).resolves.toEqual([]);
+    // A fractional limit lists whole documents.
+    await expect(list(undefined, 1.9)).resolves.toEqual(held.slice(0, 1));
   });
 
   test("stores structured parameters as native JSONB", async () => {
@@ -4174,6 +4326,317 @@ databaseDescribe("Postgres schema integration", () => {
       FROM omni_operation_jobs
       WHERE id = ${beat.id}
     `).toEqual([{ long_enough: true, bounded: true, current: true }]);
+  });
+
+  test("quarantines a job whose leases keep lapsing until an operator decides", async () => {
+    const tenantId = "job_quarantine_tenant";
+    const inTenant = <T,>(operation: () => Promise<T>) =>
+      runWithDatabaseTenantScope(tenantId, operation);
+    type JobType = "memory.consolidate" | "workflow.tick";
+    const enqueue = (
+      dedupeKey: string,
+      type: JobType = "memory.consolidate",
+      payload: Record<string, unknown> = { request: { memoryId: dedupeKey } },
+    ) => inTenant(() => enqueueOperationJob({
+      tenantId,
+      type,
+      dedupeKey,
+      payload,
+      maxAttempts: 10,
+    }));
+    const lease = async (
+      jobId: string,
+      dedupeKey: string,
+      type: JobType = "memory.consolidate",
+    ) => {
+      const [leased] = await inTenant(() => leaseOperationJobs({
+        tenantId,
+        type,
+        dedupeKey,
+        leaseSeconds: 60,
+      }));
+      expect(leased?.id).toBe(jobId);
+      return leased;
+    };
+    const lapse = (jobId: string) => admin`
+      UPDATE omni_operation_jobs
+      SET lease_expires_at = NOW() - INTERVAL '1 second'
+      WHERE id = ${jobId}
+    `;
+    const leaseThenLapse = async (
+      jobId: string,
+      dedupeKey: string,
+      type: JobType = "memory.consolidate",
+    ) => {
+      await lease(jobId, dedupeKey, type);
+      await lapse(jobId);
+    };
+    const row = async (jobId: string) => (await admin`
+      SELECT status, attempt, lease_lapses, last_error, payload,
+        completed_at IS NOT NULL AS completed
+      FROM omni_operation_jobs
+      WHERE id = ${jobId}
+    `)[0];
+    const events = (jobId: string) => admin`
+      SELECT type, actor_id, (payload->>'leaseLapses')::int AS lease_lapses
+      FROM omni_events
+      WHERE stream_id = ${`operation-job:${jobId}`}
+      ORDER BY seq
+    `;
+    const quarantine = async (
+      dedupeKey: string,
+      type: JobType = "memory.consolidate",
+      payload?: Record<string, unknown>,
+    ) => {
+      const job = await enqueue(dedupeKey, type, payload);
+      for (let count = 0; count < 3; count += 1) {
+        await leaseThenLapse(job.id, dedupeKey, type);
+        await inTenant(() => repairExpiredOperationJobs({ tenantId }));
+      }
+      expect((await row(job.id)).status).toBe("quarantined");
+      return job;
+    };
+
+    // A lapse counts, and an outcome the worker reports clears the count.
+    const job = await enqueue("job-quarantine-memory");
+    await leaseThenLapse(job.id, "job-quarantine-memory");
+    await expect(inTenant(() => repairExpiredOperationJobs({ tenantId }))).resolves.toBe(1);
+    expect(await row(job.id)).toMatchObject({ status: "queued", lease_lapses: 1 });
+    const reported = await lease(job.id, "job-quarantine-memory");
+    await inTenant(() => failOperationJob(job.id, "transient", reported.leaseOwner, tenantId));
+    expect(await row(job.id)).toMatchObject({ status: "queued", lease_lapses: 0 });
+    await admin`UPDATE omni_operation_jobs SET run_at = NOW() WHERE id = ${job.id}`;
+    for (const outcome of ["complete", "defer"] as const) {
+      const dedupeKey = `job-quarantine-${outcome}`;
+      const settled = await enqueue(dedupeKey);
+      await leaseThenLapse(settled.id, dedupeKey);
+      await inTenant(() => repairExpiredOperationJobs({ tenantId }));
+      expect(await row(settled.id)).toMatchObject({ lease_lapses: 1 });
+      const leased = await lease(settled.id, dedupeKey);
+      await inTenant(() => outcome === "complete"
+        ? completeOperationJob(settled.id, leased.leaseOwner, tenantId)
+        : deferOperationJob(settled.id, leased.leaseOwner!, { tenantId }));
+      expect(await row(settled.id)).toMatchObject({ lease_lapses: 0 });
+    }
+
+    // Every path that would revive a lapsed job counts the lapse first, and
+    // the third in a row quarantines the job instead of redelivering it.
+    await leaseThenLapse(job.id, "job-quarantine-memory");
+    await expect(enqueue("job-quarantine-memory")).resolves.toMatchObject({
+      id: job.id,
+      status: "queued",
+      leaseLapses: 1,
+    });
+    await leaseThenLapse(job.id, "job-quarantine-memory");
+    await expect(inTenant(() => wakeOperationJobByDedupeKey(
+      "job-quarantine-memory",
+      { tenantId },
+    ))).resolves.toMatchObject([{ id: job.id, leaseLapses: 2 }]);
+    await leaseThenLapse(job.id, "job-quarantine-memory");
+    await expect(inTenant(() => leaseOperationJobByDedupeKey("job-quarantine-memory", {
+      tenantId,
+      type: "memory.consolidate",
+    }))).resolves.toEqual({ outcome: "busy" });
+    expect(await row(job.id)).toMatchObject({
+      status: "quarantined",
+      attempt: 5,
+      lease_lapses: 3,
+      last_error: OPERATION_JOB_QUARANTINE_ERROR,
+      payload: { request: { memoryId: "job-quarantine-memory" } },
+      completed: true,
+    });
+    expect(await events(job.id)).toEqual([
+      { type: "operation.job.quarantined", actor_id: "system", lease_lapses: 3 },
+    ]);
+
+    // Nothing revives it on its own, and recovery and stats still see it.
+    await expect(enqueue("job-quarantine-memory")).resolves.toMatchObject({
+      id: job.id,
+      status: "quarantined",
+    });
+    await expect(inTenant(() => wakeOperationJobByDedupeKey(
+      "job-quarantine-memory",
+      { tenantId },
+    ))).resolves.toEqual([]);
+    await expect(inTenant(() => requeueOperationJobByDedupeKey(
+      "job-quarantine-memory",
+      "again",
+      { tenantId },
+    ))).resolves.toEqual([]);
+    await expect(inTenant(() => leaseOperationJobs({ tenantId }))).resolves.toEqual([]);
+    const newer = await enqueue("job-quarantine-newer");
+    expect((await inTenant(() => listOperationJobRecoveryRows(1, { tenantId })))
+      .map((recoveryRow) => recoveryRow.id)).toEqual([newer.id, job.id]);
+    expect((await inTenant(() => getOperationJobStats({ tenantId }))).byStatus)
+      .toMatchObject({ quarantined: 1, queued: 2 });
+    expect((await inTenant(() => listQuarantinedOperationJobs(10, { tenantId })))
+      .map((quarantined) => quarantined.id)).toEqual([job.id]);
+
+    // A requeue, and an enqueue in the caller's transaction, count the lapse
+    // too; another tenant's lapsed lease is its own to settle.
+    const otherTenantId = "job_quarantine_other";
+    const bystander = await runWithDatabaseTenantScope(otherTenantId, async () => {
+      const otherJob = await enqueueOperationJob({
+        tenantId: otherTenantId,
+        type: "memory.consolidate",
+        dedupeKey: "job-quarantine-bystander",
+        payload: {},
+      });
+      await leaseOperationJobs({ tenantId: otherTenantId, leaseSeconds: 60 });
+      return otherJob;
+    });
+    await lapse(bystander.id);
+    const requeued = await enqueue("job-quarantine-requeue");
+    await leaseThenLapse(requeued.id, "job-quarantine-requeue");
+    await expect(inTenant(() => requeueOperationJobByDedupeKey(
+      "job-quarantine-requeue",
+      "again",
+      { tenantId },
+    ))).resolves.toMatchObject([{ id: requeued.id, leaseLapses: 1 }]);
+    await leaseThenLapse(requeued.id, "job-quarantine-requeue");
+    await expect(inTenant(() => getSql().transaction((sql: ReturnType<typeof getSql>) =>
+      enqueueOperationJob({
+        tenantId,
+        type: "memory.consolidate",
+        dedupeKey: "job-quarantine-requeue",
+        payload: {},
+      }, { sql })
+    ))).resolves.toMatchObject({ id: requeued.id, leaseLapses: 2 });
+    await inTenant(() => repairExpiredOperationJobs({ tenantId }));
+    expect(await row(bystander.id)).toMatchObject({ status: "running", lease_lapses: 0 });
+
+    // An operator's release starts it over, and the decision is an event.
+    await expect(runWithDatabaseTenantScope(
+      "job_quarantine_other",
+      () => releaseQuarantinedOperationJob(job.id, { tenantId: "job_quarantine_other" }),
+    )).resolves.toEqual({ outcome: "absent" });
+    await expect(inTenant(() => releaseQuarantinedOperationJob(job.id, {
+      tenantId,
+      actorId: "operator-q",
+    }))).resolves.toMatchObject({
+      outcome: "released",
+      job: { id: job.id, status: "queued", attempt: 0, leaseLapses: 0 },
+    });
+    expect(await row(job.id)).toMatchObject({ last_error: null, completed: false });
+    await expect(inTenant(() => releaseQuarantinedOperationJob(job.id, { tenantId })))
+      .resolves.toMatchObject({ outcome: "not_quarantined" });
+    await expect(lease(job.id, "job-quarantine-memory")).resolves.toMatchObject({ attempt: 1 });
+    expect(await events(job.id)).toEqual([
+      { type: "operation.job.quarantined", actor_id: "system", lease_lapses: 3 },
+      { type: "operation.job.released", actor_id: "operator-q", lease_lapses: 3 },
+    ]);
+
+    // A discard cancels background work and drops its request; a job a run
+    // owns is left for the run to cancel.
+    const doomed = await quarantine("job-quarantine-doomed", "memory.consolidate", {
+      request: { memoryId: "private" },
+      progress: { stage: "indexing" },
+      __rerunRequested: true,
+    });
+    await expect(inTenant(() => discardQuarantinedOperationJob(doomed.id, {
+      tenantId,
+      actorId: "operator-q",
+      reason: "Poison input.",
+    }))).resolves.toMatchObject({ outcome: "discarded", job: { status: "canceled" } });
+    const discarded = await row(doomed.id);
+    expect(discarded).toMatchObject({ status: "canceled", last_error: "Poison input." });
+    expect(discarded.payload).toEqual({ progress: { stage: "indexing" } });
+    expect(await events(doomed.id)).toEqual([
+      { type: "operation.job.quarantined", actor_id: "system", lease_lapses: 3 },
+      { type: "operation.job.discarded", actor_id: "operator-q", lease_lapses: 3 },
+    ]);
+
+    // A queued run whose tick is quarantined keeps it: dispatch neither
+    // bootstraps the run nor counts the tenant until the tick is canceled.
+    const { run } = await inTenant(() => createWorkflowRun({
+      tenantId,
+      goal: "Reconcile the archive.",
+    }));
+    // The oldest runnable work dispatches first, so this run is not cut by
+    // the dispatch limit.
+    await admin`
+      UPDATE omni_workflow_runs
+      SET updated_at = NOW() - INTERVAL '30 days'
+      WHERE id = ${run.id}
+    `;
+    const tick = await quarantine(`workflow:${run.id}`, "workflow.tick", {
+      workflowRunId: run.id,
+    });
+    await expect(inTenant(() => discardQuarantinedOperationJob(tick.id, { tenantId })))
+      .resolves.toMatchObject({ outcome: "owned_by_run" });
+    await expect(inTenant(() => listActiveWorkflowTickRunIds({ tenantId })))
+      .resolves.toEqual(new Set([run.id]));
+    const dispatchTenants = async () =>
+      (await listRunnableOperationDispatchTenants({ workflowLimit: 25 })).workflowTenantIds;
+    expect(await dispatchTenants()).not.toContain(tenantId);
+    await expect(inTenant(() => cancelOperationJobByDedupeKey(
+      `workflow:${run.id}`,
+      "Workflow canceled.",
+      { tenantId },
+    ))).resolves.toMatchObject([{ id: tick.id, status: "canceled" }]);
+    await expect(inTenant(() => listActiveWorkflowTickRunIds({ tenantId })))
+      .resolves.toEqual(new Set());
+    expect(await dispatchTenants()).toContain(tenantId);
+
+    // Reset queue attempts still recover the interrupted run on the first
+    // released delivery, using its persisted release marker and live lease.
+    const { run: releasedRun } = await inTenant(() => createWorkflowRun({
+      tenantId,
+      goal: "Continue the interrupted archive workflow.",
+    }));
+    await admin`
+      UPDATE omni_workflow_runs
+      SET status = 'running', current_step = 'preflight'
+      WHERE id = ${releasedRun.id}
+    `;
+    await admin`
+      UPDATE omni_workflow_steps
+      SET status = 'running', attempt = 1
+      WHERE workflow_run_id = ${releasedRun.id} AND step_key = 'preflight'
+    `;
+    const releasedKey = `workflow:${releasedRun.id}`;
+    const releasedTick = await quarantine(releasedKey, "workflow.tick", {
+      workflowRunId: releasedRun.id,
+    });
+    await expect(inTenant(() => releaseQuarantinedOperationJob(releasedTick.id, { tenantId })))
+      .resolves.toMatchObject({ outcome: "released", job: { attempt: 0 } });
+    await enqueue(releasedKey, "workflow.tick", { workflowRunId: releasedRun.id });
+    const releasedLease = await lease(releasedTick.id, releasedKey, "workflow.tick");
+    expect(releasedLease).toMatchObject({
+      attempt: 1, payload: { __workflowQuarantineReleased: true },
+    });
+    const reclaim = {
+      tenantId,
+      jobId: releasedTick.id,
+      leaseOwner: releasedLease.leaseOwner!,
+      deliveryAttempt: 1,
+      releasedFromQuarantine: true,
+    };
+    await expect(inTenant(() => reclaimWorkflowRunForQueueDelivery(releasedRun.id, {
+      ...reclaim, leaseOwner: "former-worker",
+    }))).resolves.toBe("stale");
+    await expect(inTenant(() => reclaimWorkflowRunForQueueDelivery(releasedRun.id, reclaim)))
+      .resolves.toBe("requeued");
+    expect(await admin`
+      SELECT runs.status AS run_status, steps.status AS step_status, steps.attempt
+      FROM omni_workflow_runs runs
+      JOIN omni_workflow_steps steps ON steps.workflow_run_id = runs.id
+      WHERE runs.id = ${releasedRun.id} AND steps.step_key = 'preflight'
+    `).toEqual([{ run_status: "queued", step_status: "pending", attempt: 1 }]);
+    await inTenant(() => completeOperationJob(releasedTick.id, releasedLease.leaseOwner, tenantId));
+    expect((await row(releasedTick.id)).payload).not.toHaveProperty("__workflowQuarantineReleased");
+
+    // Later dispatch tests count their own tenants within the same limit.
+    await admin`
+      UPDATE omni_workflow_runs
+      SET status = 'canceled', updated_at = NOW()
+      WHERE id IN (${run.id}, ${releasedRun.id})
+    `;
+    await admin`
+      UPDATE omni_operation_jobs
+      SET status = 'canceled', lease_expires_at = NULL, completed_at = NOW()
+      WHERE id = ${bystander.id}
+    `;
   });
 
   test("keeps request-derived run, thread, and turn identities single-use", async () => {
@@ -8317,6 +8780,252 @@ databaseDescribe("Postgres schema integration", () => {
     },
   );
 
+  test.skipIf(!requirePgvector)(
+    "gives each tenant with enough vectors an HNSW index of its own and keeps it in step",
+    async () => {
+      const tenantId = "tenant-own-hnsw";
+      const neighborTenantId = "tenant-own-hnsw-neighbor";
+      const smallTenantId = "tenant-own-hnsw-small";
+      const tenantIndex = tenantVectorIndexName("omni_memories", tenantId);
+      const neighborIndex = tenantVectorIndexName("omni_memories", neighborTenantId);
+      const ours = [tenantIndex, neighborIndex, tenantVectorIndexName("omni_memories", smallTenantId)];
+      // The schema, should this test run alone.
+      await migrateWithFreshClient();
+      const tenantIndexNames = async () => (await admin`
+        SELECT relname::text AS name
+        FROM pg_class
+        WHERE relkind = 'i'
+          AND strpos(relname::text, '_tenant_vector_') > 0
+      `).map((row) => String(row.name));
+      const before = new Set(await tenantIndexNames());
+      const ownIndexes = async () => (await admin`
+        SELECT
+          index_class.relname::text AS name,
+          pg_index.indisvalid AS valid,
+          pg_get_indexdef(index_class.oid) AS definition
+        FROM pg_index
+        JOIN pg_class index_class ON index_class.oid = pg_index.indexrelid
+        WHERE starts_with(index_class.relname::text, 'omni_memories_tenant_vector_')
+        ORDER BY index_class.relname
+      `).filter((row) => ours.includes(String(row.name))).map((row) => ({
+        name: String(row.name),
+        valid: row.valid === true,
+        definition: String(row.definition),
+      }));
+      const definition = (name: string, tenant: string) =>
+        `CREATE INDEX ${name} ON public.omni_memories USING hnsw ` +
+        `(embedding_vector vector_cosine_ops) WHERE (tenant_id = '${tenant}'::text)`;
+      // Each DDL command on these indexes, with its transaction and settings.
+      const ddl = async () => {
+        const rows = await admin`
+          SELECT tag, query, txid, lock_timeout, reason
+          FROM tenant_vector_index_ddl
+          ORDER BY seq
+        `;
+        await admin`DELETE FROM tenant_vector_index_ddl`;
+        return rows.flatMap((row) => {
+          const index = ours.find((name) => String(row.query).includes(name));
+          return index
+            ? [{
+              command: [String(row.tag), index],
+              txid: String(row.txid),
+              settings: `${row.lock_timeout} ${row.reason}`,
+            }]
+            : [];
+        });
+      };
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const failures = () => warn.mock.calls.flatMap(([line]) => {
+        try {
+          const parsed = JSON.parse(String(line)) as { event?: unknown };
+          return parsed.event === "database_tenant_vector_index_failed" ? [parsed] : [];
+        } catch {
+          return [];
+        }
+      });
+      const queryVector = `[${Array.from(
+        { length: VECTOR_INDEX_DIMENSIONS },
+        (_, index) => (index === 0 ? 1 : 0),
+      ).join(",")}]`;
+      const nearest = async (tenant: string) => (await admin`
+        SELECT count(*)::int AS memories
+        FROM (
+          SELECT id
+          FROM omni_memories
+          WHERE tenant_id = ${tenant}
+          ORDER BY embedding_vector <=> ${queryVector}::vector
+          LIMIT 120
+        ) nearest
+      `)[0];
+      vi.stubEnv("OMNIAGENT_TENANT_VECTOR_INDEX_MIN_ROWS", "250");
+      vi.stubEnv("OMNIAGENT_MIGRATION_LOCK_TIMEOUT_MS", "7000");
+      try {
+        // The neighbor's 500 memories all lie nearer the query than the
+        // tenant's 250 and the small tenant's 5.
+        await admin`
+          INSERT INTO omni_memories (
+            id, tenant_id, type, title, content, scope, source, embedding_vector
+          )
+          SELECT
+            'own-hnsw-' || owner.label || '-' || lpad(g::text, 3, '0'),
+            owner.tenant_id,
+            'fact',
+            'Own HNSW index',
+            'A memory for the tenant index search.',
+            'tenant',
+            'integration-test',
+            (
+              SELECT array_agg(
+                (CASE
+                  WHEN d = owner.axis THEN 1
+                  WHEN d = 1 THEN 0.1
+                  WHEN d = 4 THEN g / 1000.0
+                  ELSE 0
+                END)::real
+                ORDER BY d
+              )::vector
+              FROM generate_series(1, ${VECTOR_INDEX_DIMENSIONS}::int) d
+            )
+          FROM (
+            VALUES
+              (${tenantId}::text, 'far', 3, 250),
+              (${neighborTenantId}::text, 'near', 1, 500),
+              (${smallTenantId}::text, 'small', 3, 5)
+          ) AS owner(tenant_id, label, axis, memories)
+          CROSS JOIN LATERAL generate_series(1, owner.memories) g
+        `;
+        await admin`
+          CREATE TABLE tenant_vector_index_ddl (
+            seq BIGSERIAL PRIMARY KEY,
+            tag TEXT NOT NULL,
+            query TEXT NOT NULL,
+            txid TEXT NOT NULL,
+            lock_timeout TEXT NOT NULL,
+            reason TEXT
+          )
+        `;
+        await admin`CREATE TABLE tenant_vector_index_failures (name TEXT NOT NULL)`;
+        await admin.unsafe(`
+          CREATE FUNCTION tenant_vector_index_ddl_start() RETURNS event_trigger
+          LANGUAGE plpgsql AS $$
+          BEGIN
+            IF strpos(current_query(), '_tenant_vector_') = 0 THEN
+              RETURN;
+            END IF;
+            IF tg_tag = 'CREATE INDEX' AND EXISTS (
+              SELECT 1
+              FROM tenant_vector_index_failures failure
+              WHERE strpos(current_query(), failure.name) > 0
+            ) THEN
+              RAISE EXCEPTION 'simulated tenant vector index failure';
+            END IF;
+            INSERT INTO tenant_vector_index_ddl (tag, query, txid, lock_timeout, reason)
+            VALUES (
+              tg_tag,
+              current_query(),
+              txid_current()::text,
+              current_setting('lock_timeout'),
+              current_setting('omni.system_reason', true)
+            );
+          END
+          $$
+        `);
+        await admin`
+          CREATE EVENT TRIGGER tenant_vector_index_ddl
+          ON ddl_command_start
+          WHEN TAG IN ('CREATE INDEX', 'DROP INDEX')
+          EXECUTE FUNCTION tenant_vector_index_ddl_start()
+        `;
+
+        // The neighbor's build fails; the tenant's goes on after it.
+        await admin`INSERT INTO tenant_vector_index_failures (name) VALUES (${neighborIndex})`;
+        await migrateWithFreshClient();
+        const first = await ddl();
+        expect(first.map(({ command }) => command)).toEqual([["CREATE INDEX", tenantIndex]]);
+        expect(first.map(({ settings }) => settings)).toEqual([
+          "7s optional vector schema maintenance",
+        ]);
+        expect(failures()).toEqual([{
+          level: "warn",
+          event: "database_tenant_vector_index_failed",
+          table: "omni_memories",
+          index: neighborIndex,
+          error: "simulated tenant vector index failure",
+        }]);
+        expect(await ownIndexes()).toEqual([
+          { name: tenantIndex, valid: true, definition: definition(tenantIndex, tenantId) },
+        ]);
+        // Without a sequential scan or a sort, the search reads an HNSW index.
+        // At pgvector's defaults the tenant's own index yields 40 of its
+        // memories; the small tenant, with only the shared index, gets none.
+        await admin`SET enable_seqscan = off`;
+        await admin`SET enable_sort = off`;
+        try {
+          expect(await nearest(tenantId)).toEqual({ memories: 40 });
+          expect(await nearest(smallTenantId)).toEqual({ memories: 0 });
+        } finally {
+          await admin`RESET enable_seqscan`;
+          await admin`RESET enable_sort`;
+        }
+
+        // The next run builds the index that failed and keeps the other.
+        await admin`DELETE FROM tenant_vector_index_failures`;
+        warn.mockClear();
+        await migrateWithFreshClient();
+        expect((await ddl()).map(({ command }) => command)).toEqual([
+          ["CREATE INDEX", neighborIndex],
+        ]);
+        expect(failures()).toEqual([]);
+        expect(await ownIndexes()).toEqual([
+          { name: tenantIndex, valid: true, definition: definition(tenantIndex, tenantId) },
+          {
+            name: neighborIndex,
+            valid: true,
+            definition: definition(neighborIndex, neighborTenantId),
+          },
+        ].sort((left, right) => (left.name < right.name ? -1 : 1)));
+
+        // An index left invalid is dropped and built again; the index of a
+        // tenant that holds no vectors any more is dropped. Each command runs
+        // in a migration transaction of its own.
+        await admin`
+          UPDATE pg_index SET indisvalid = false WHERE indexrelid = ${tenantIndex}::regclass
+        `;
+        await admin`
+          UPDATE omni_memories SET embedding_vector = NULL WHERE tenant_id = ${neighborTenantId}
+        `;
+        await migrateWithFreshClient();
+        const third = await ddl();
+        expect(third.map(({ command }) => command)).toEqual([
+          ...[tenantIndex, neighborIndex].sort().map((name) => ["DROP INDEX", name]),
+          ["CREATE INDEX", tenantIndex],
+        ]);
+        expect(new Set(third.map(({ txid }) => txid)).size).toBe(3);
+        expect(new Set(third.map(({ settings }) => settings))).toEqual(
+          new Set(["7s optional vector schema maintenance"]),
+        );
+        expect(failures()).toEqual([]);
+        expect(await ownIndexes()).toEqual([
+          { name: tenantIndex, valid: true, definition: definition(tenantIndex, tenantId) },
+        ]);
+      } finally {
+        warn.mockRestore();
+        vi.unstubAllEnvs();
+        await admin`DROP EVENT TRIGGER IF EXISTS tenant_vector_index_ddl`;
+        await admin`DROP FUNCTION IF EXISTS tenant_vector_index_ddl_start()`;
+        await admin`DROP TABLE IF EXISTS tenant_vector_index_ddl`;
+        await admin`DROP TABLE IF EXISTS tenant_vector_index_failures`;
+        for (const name of await tenantIndexNames()) {
+          if (!before.has(name)) {
+            await admin.unsafe(`DROP INDEX IF EXISTS "${name}"`);
+          }
+        }
+        // Memory rows are never deleted; the tenant's vectors stay below the
+        // default threshold.
+      }
+    },
+  );
+
   test("summarizes a tenant's sampled Web Vitals as the file ledger does", async () => {
     const tenantId = "tenant_web_vitals";
     const vital = (name: string, id: unknown, value: unknown) => ({ id, name, value, rating: "good" });
@@ -8542,6 +9251,104 @@ databaseDescribe("Postgres schema integration", () => {
         severity: "critical",
         message: "Agent run success rate breached: 66.67% is less than 80%.",
       }]);
+  });
+
+  test("spends the release error budget only on workspaces people sign in to", async () => {
+    const now = new Date();
+    const before = await readErrorBudgetCounts(now);
+    const workspace = async (tenantId: string, membershipStatus: string | null) => {
+      await admin`
+        INSERT INTO omni_auth_tenants (id, name, slug)
+        VALUES (${tenantId}, ${tenantId}, ${tenantId})
+      `;
+      if (!membershipStatus) return;
+      const userId = crypto.randomUUID();
+      await admin`
+        INSERT INTO omni_auth_users (id, email, password_hash)
+        VALUES (${userId}, ${`${tenantId}@example.test`}, 'test-only')
+      `;
+      await admin`
+        INSERT INTO omni_auth_memberships (id, tenant_id, user_id, role, status)
+        VALUES (${`${tenantId}-membership`}, ${tenantId}, ${userId}, 'admin', ${membershipStatus})
+      `;
+    };
+    const run = (tenant: string, id: string, status: string, completedAgo: string | null) => admin`
+      INSERT INTO omni_agent_runs (
+        id, tenant_id, owner_actor_id, mode, status, prompt, messages,
+        started_at, completed_at
+      )
+      VALUES (
+        ${id}, ${tenant}, 'budget_actor', 'orchestrate', ${status}, 'private', '[]'::jsonb,
+        NOW() - INTERVAL '9 days', NOW() - ${completedAgo}::interval
+      )
+    `;
+    const tool = (tenant: string, id: string, status: string, completedAgo: string) => admin`
+      INSERT INTO omni_tool_executions (
+        id, tool_id, tool_name, risk_level, status, tenant_id, actor_id, input,
+        created_at, completed_at
+      )
+      VALUES (
+        ${id}, 'tool', 'Tool', 2, ${status}, ${tenant}, 'budget_actor', '{}'::jsonb,
+        NOW() - INTERVAL '9 days', NOW() - ${completedAgo}::interval
+      )
+    `;
+    const memberA = "tenant_budget_member_a";
+    const memberB = "tenant_budget_member_b";
+    const disabled = "tenant_budget_disabled";
+    const smoke = "tenant_budget_smoke";
+    await workspace(memberA, "active");
+    await workspace(memberB, "active");
+    await workspace(disabled, "disabled");
+    await workspace(smoke, null);
+
+    await run(memberA, "budget-run-1", "completed", "1 hour");
+    await run(memberA, "budget-run-2", "failed", "2 hours");
+    await run(memberA, "budget-run-3", "completed", "3 days");
+    await run(memberA, "budget-run-4", "failed", "6 days");
+    await run(memberA, "budget-run-stale", "failed", "8 days");
+    await run(memberA, "budget-run-canceled", "canceled", "1 hour");
+    await run(memberA, "budget-run-active", "running", null);
+    await run(memberB, "budget-run-5", "failed", "30 hours");
+    await run(memberB, "budget-run-6", "completed", "23 hours");
+    await run(memberB, "budget-run-7", "completed", "4 days");
+    await run(disabled, "budget-run-disabled", "failed", "1 hour");
+    await run(smoke, "budget-run-smoke", "failed", "1 hour");
+
+    await tool(memberA, "budget-tool-1", "executed", "1 hour");
+    await tool(memberA, "budget-tool-2", "failed", "1 hour");
+    await tool(memberA, "budget-tool-3", "failed", "5 days");
+    await tool(memberA, "budget-tool-stale", "failed", "9 days");
+    await tool(memberA, "budget-tool-blocked", "blocked", "1 hour");
+    await tool(memberA, "budget-tool-rejected", "rejected", "1 hour");
+    await tool(memberA, "budget-tool-dry-run", "dry_run", "1 hour");
+    await tool(memberB, "budget-tool-4", "executed", "2 hours");
+    await tool(memberB, "budget-tool-5", "executed", "3 days");
+    await tool(disabled, "budget-tool-disabled", "failed", "1 hour");
+    await tool(smoke, "budget-tool-smoke", "failed", "1 hour");
+
+    const after = await readErrorBudgetCounts(now);
+    const added = (objective: keyof typeof after) => ({
+      week: {
+        finished: after[objective].week.finished - before[objective].week.finished,
+        failed: after[objective].week.failed - before[objective].week.failed,
+      },
+      day: {
+        finished: after[objective].day.finished - before[objective].day.finished,
+        failed: after[objective].day.failed - before[objective].day.failed,
+      },
+    });
+    expect(added("agent_runs")).toEqual({
+      week: { finished: 7, failed: 3 },
+      day: { finished: 3, failed: 1 },
+    });
+    expect(added("tool_calls")).toEqual({
+      week: { finished: 5, failed: 2 },
+      day: { finished: 3, failed: 1 },
+    });
+    const budget = await getReleaseErrorBudget(now);
+    expect(budget.measured).toBe(true);
+    expect(budget.objectives.map((objective) => objective.id))
+      .toEqual(["agent_runs", "tool_calls"]);
   });
 
   test("verifies a migrated database against this release exactly", async () => {

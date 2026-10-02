@@ -72,6 +72,7 @@ describe("non-OpenAI governed provider tool loop", () => {
         source: "default",
       },
       runId: "run-child-three-turns",
+      requireReadOnly: true,
       maxToolSteps: 2,
       beforeModelTurn: beforeModelTurn as never,
       generateTurn,
@@ -84,6 +85,12 @@ describe("non-OpenAI governed provider tool loop", () => {
       toolSteps: 2,
     });
     expect(executeTool).toHaveBeenCalledTimes(2);
+    expect(executeTool).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      toolId: "read.a", requireReadOnly: true,
+    }));
+    expect(executeTool).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      toolId: "read.b", requireReadOnly: true,
+    }));
     expect(beforeModelTurn).toHaveBeenCalledTimes(3);
   });
 

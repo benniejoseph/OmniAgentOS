@@ -240,6 +240,8 @@ export type AgentRunRequest = {
   executionScope?: ExecutionScope;
   /** Exact immutable behavior and authority versions selected before execution. */
   agentIdentity?: ResolvedAgentIdentityV1;
+  /** Server-enforced replay constraint; preserves retrieval without forming new durable memory. */
+  memoryFormation?: "withheld";
   /** Server-validated saved-context selection using canonical `kind:id` evidence IDs. */
   contextSelection?: ContextSelectionLockBinding;
   /** User-reviewed P4.2 context boundary for this direct run. */

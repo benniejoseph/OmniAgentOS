@@ -48,6 +48,14 @@ authenticated model-readiness probe failed. Rotate or correct the deployment
 credential; a nonempty environment variable is not provider health. Provider
 error text and credential material are not persisted in the health record.
 
+## A tenant's own vector index is missing, or its build failed
+
+The migration gives a tenant its own HNSW index (`omni_memories_tenant_vector_…` or `omni_knowledge_chunks_tenant_vector_…`) once it holds `OMNIAGENT_TENANT_VECTOR_INDEX_MIN_ROWS` vectors in that table, 2,000 by default. Until then, and while its index is missing, the tenant's searches use the shared index and work as before.
+
+- A tenant past the threshold has no index yet: a run builds at most four a table, the largest tenants first, so the next migration run builds the rest. A tenant id with characters outside letters, digits, `_`, `.`, `:` and `-` never gets one.
+- `database_tenant_vector_index_failed`, with `table`, `index` and `error`: that drop or build failed and the run went on. A build that stopped part way leaves an index that is not valid (`pg_index.indisvalid = false`); the next run drops it and builds it again. Without `index`, the run could not read the tenant counts or the catalog, and changed nothing for that table.
+- A build holds a lock that blocks writes to its table until it finishes. To avoid that for a large tenant, build its index out of band with `CREATE INDEX CONCURRENTLY`, with the name the migration would use and the same definition; the migration then keeps it.
+
 ## Login does not work
 
 - Call `GET /api/auth/session` and inspect `authEnabled`, `bootstrapConfigured`, and `authenticated`.
@@ -73,6 +81,16 @@ A native app that signs out after a refresh answered 401 with `refresh_token_reu
 - Compare the interval with queue lease duration; too many replicas or a short interval can increase contention.
 - On Fly, inspect machine health and restart count. The container health probe uses only the public health endpoint and never sends the internal secret.
 - `GET /api/health/worker` shows which lanes of the deployed revision have worked recently. Every lane `missing` after a release means the worker is still held: it logged one registration per lane and waits for `SIGUSR1`. A restart on the same machine resumes by itself once canonical `/api/health` reports its revision, and logs `Release work resumed from this machine's recorded activation.`; a worker on a new machine stays held until the next activation signal. One `stale` lane has done no work within `OMNIAGENT_WORKER_HEARTBEAT_MAX_AGE_MS`; check that lane's tick records.
+
+## A job is quarantined, or a run waits on a quarantined job
+
+A job is quarantined after its lease lapsed on three deliveries in a row: each time, its worker stopped reporting before the lease ended, which is what a job that crashes or hangs its worker does. Its last error is `Quarantined after 3 deliveries in a row lapsed without an outcome.`, its payload is kept, and nothing runs it again on its own. The Workflows console lists it under Quarantined jobs, and its `operation-job:<id>` event stream shows `operation.job.quarantined`.
+
+- Find why its worker died before deciding. The worker's logs around the job's last three leases usually show an out-of-memory kill, a crash, or a step that hangs past its lease.
+- **Release** it once the cause is fixed. It runs again from its first attempt, with its lapse count cleared.
+- **Discard** background work that should not run again. The job is canceled and its request dropped.
+- A workflow tick or agent job cannot be discarded; the decision returns `409`. Release it, or cancel the run that owns it, which cancels the job. Until then the run waits, and recovery fails a stale workflow whose tick is quarantined, 10 minutes after the run last changed by default.
+- A single lapse that was not the job's fault, such as a worker stopped during a deploy, counts too. A completion, failure, or deferral clears the count.
 
 ## A queued workflow run waits, or one tenant's workflows stop
 
@@ -119,6 +137,12 @@ A native app that signs out after a refresh answered 401 with `refresh_token_reu
 - `<provider> returned tool calls after the governed tool-step budget was exhausted.`: the model called tools again when it was asked once more, and the run failed closed. On OpenAI, including a resumed run, the first such call fails the run, because `tool_choice: "none"` forbids it.
 - A run that drives This Mac also asks for at most one tool call per turn: `disable_parallel_tool_use` on Claude and `parallel_tool_calls: false` on OpenAI. Gemini and Bedrock have no such setting, so there the per-turn cap still skips the extra calls.
 
+## A tool call is blocked because it carried the context seal
+
+- A blocked tool execution with the reason `A tool argument carried this workspace's context seal, a marker planted in retrieved context, so retrieved content is steering this run. This call and the run's later tool calls are blocked.`: the agent loop plants the seal at the head of the retrieved context it gives the model. The call's arguments carried it, so something the model read told it to copy that context into a tool call. That could be a document, a message, a web page or a tool result. The tool did not run. The blocked record keeps only how many arguments the call had, because the arguments can hold private context. The tool execution's `tool_execution:<id>` event stream holds `injection.canary_tripped`, with the run ID and how the seal was written: `plain`, `separated`, `hex` or `base64`. Find the item in the run's retrieved context that carried the instruction, then remove or correct it before you repeat the request.
+- `An earlier tool call in this run carried this workspace's context seal, so the run's tool calls are blocked.`: the run already carried the seal into a call, so its later calls in that process are blocked without another event. Start a new run after you fix the content.
+- The seal is derived from `OMNIAGENT_INTERNAL_AUTH_SECRET`, so rotating the secret changes it. Production refuses to derive it without the secret, which fails the agent run before its first model turn.
+
 ## Structured output fails on a Claude model
 
 - A feature that asks the model for structured output (a workflow or project plan, for example) and fails on Claude with `Claude returned no structured tool result.`: the model did not call the tool that carries the result. Claude Opus 5.5, Claude Fable 5.1 and Claude Mythos 5.1 reject a forced tool call. On those models, and on any Claude model id not listed in `src/lib/models/anthropic-capabilities.ts`, the instructions ask for the call instead of forcing it. A model that answers in text gets one more turn asking for the call, and that turn's usage is added to the first. An answer cut off by the output token limit gets no second turn.
@@ -148,8 +172,21 @@ A native app that signs out after a refresh answered 401 with `refresh_token_reu
 
 - Five default policies judge a tenant's agents over the last 24 hours. `agent_run_success_rate` is the share of finished runs that completed rather than failed; canceled runs are left out. `agent_tool_failure_rate` is the share of tool calls that ran and failed. `agent_first_output_p95` is how long `/api/agent` took to stream a reply's first text, recorded as `agent.first_output` observability events. `agent_cost_per_run` is a finished run's estimated model spend from its usage receipts; a call with no known price adds nothing. `agent_approval_latency_p95` runs from a tool approval being asked to an operator approving or rejecting it.
 - `... is not judged yet: 3 of the 10 finished runs it needs.` or similar: the window holds fewer samples than the policy's `metadata.minimumSamples` (by default 10 runs for success rate and cost, 20 tool calls, 20 replies, and 5 approval decisions). Until it has them, the policy neither breaches nor resolves an incident. Only the database keeps runs, tool calls, and approvals, so without one those four are never judged.
-- A breach opens an incident and alerts like any other SLO. Release evidence counts it as advisory: it warns and does not hold a release, because the fix may be the next release and approvals wait on people.
+- A breach opens an incident and alerts like any other SLO. Release evidence counts it as advisory: it warns and does not hold a release, because the fix may be the next release and approvals wait on people. The `agent_error_budget` release gate judges a week of runs and tool calls across workspaces instead.
 - To find a slow or failed model call, search the egress gateway's logs for the work's correlation ID. The app sends it as `x-omni-correlation-id` on each call through the gateway, and the gateway logs it as `correlationId` on `openai_egress.completed` and `openai_egress.rejected` once the caller's gateway token checks out. An ID that is not 1 to 128 letters, digits, or `:._-` is not logged, and the header is never sent to OpenAI.
+
+## The agent error budget holds a release
+
+- The `agent_error_budget` gate counts the last 7 days of finished work in every workspace with an active member. Agent runs that completed or failed count, and canceled runs do not; 5% may fail. Tool calls that ran or failed count, and blocked, rejected, and dry-run calls do not; 10% may fail. The release smokes run in tenants with no members, so their work never counts.
+- The gate does not judge an objective until 20 runs or 20 tool calls finished in the week. Failures at or above the allowed share spend the budget.
+- `Agent runs have spent the week's error budget, and the last day still fails faster than the objective allows.`: the release is held. A spent budget holds a release only while the last 24 hours also fail at or above that share. Once the last day is within the objective, or nothing finished in it, the gate passes and says the budget is recovering.
+- The gate's details give each objective's `successRate` for the week, `budgetSpent` (1 is the whole budget), and `burnRate` (the last day's failures over what the objective allows; 1 keeps pace). They hold rates only, never counts.
+- `The agent error budget could not be read.`: the count query failed, so the gate fails closed. Check the database and the maintenance role.
+- On the first upgrade that adds this gate, the currently deployed release has no `agent_error_budget` entry. The release runner uses `smoke:release -- --previous-release` only for its initial check before deploying anything. That check accepts the missing entry, records `previousReleaseCompatibility` in its artifact, and still requires every other gate and an approved report. A present failing budget gate still blocks it. Staged, canonical, post-activation, and nightly checks require the budget gate; the compatibility argument is never passed to them.
+- To ship the fix while the budget is spent, export `OMNIAGENT_RELEASE_ERROR_BUDGET_EXCEPTION="<why this release ships>"` for that one `npm run deploy:production`, then unset it. The reason is one line of at most 200 characters; the release smoke refuses anything else, and the route answers `400`. The report records the reason and whether it was applied. Each evidence read that applies it records a `release.agent_error_budget.exception_applied` security event with the reason, the actor, and the revision.
+- The exception covers only this gate. It never passes a blocking SLO breach, such as the `error_budget` policy for runtime error events in the `observability_slo` gate.
+- A split recovery checks the web with `smoke:preflight` before it deploys, and preflight does not read the budget. Set the exception before such a release starts if the budget is held, or the post-activation `smoke:release` fails and the runner rolls the release back.
+- While the budget is held, the nightly `Production Smoke` fails its `release` gate too.
 
 ## The provider contract suite fails
 
@@ -213,6 +250,26 @@ A connection whose last syncs reached none of its sources waits until `sync_retr
 
 Run a manual sync to try right away; it does not wait, and its outcome counts like a scheduled one.
 
+## A Google source keeps failing on one item, or an item is set aside
+
+A source that cannot process an item (`processing_failed`) keeps its place, so its next sync reads the same page again. Once the item has failed three times, over at least an hour, the sync sets it aside and the source moves past it. The connection's `connector:<connection id>` event stream shows `connector.source_item.quarantined`, which names the item only by a digest of its id.
+
+- The sync reads a set-aside item again by its id six hours later, then waits twice as long after each failure, up to a week, two items a source each sync. An item its source reports changed or removed comes due at once. Once the item ingests, or its source no longer has it, it leaves the list and `connector.source_item.released` records which.
+- Only a failure to process the item counts. A provider failure such as `Connected source returned 429.`, an interruption, or a revoked connection fails the source as before, and never sets an item aside.
+- A source keeps at most 20 items set aside. With 20, a failing item holds its source in place as before.
+- An embedding outage also fails as `processing_failed`, so it can set aside one item a source each hour it lasts. They are read again as they come due once it is over.
+- The list lives in the connection's sealed sync cursor, so reconnecting the account clears it along with the rest of the cursor.
+
+## A Google source started over and removed documents, or stopped checking them
+
+A listing cannot show an item that left, so a Google source that starts over would keep the documents of items that left the account while its place was lost. A source starts over on its first sync after the account connects, and when Google rejects its change position or sync token. When it does, it checks again, by their ids, the documents it held from before: 50 each sync, five at a time, once the source's page has been read. The connection's `connector:<connection id>` event stream shows `connector.source_sweep.finished` once every one is checked, with how many it checked and removed. The event names no document or item.
+
+- A document is removed only when its source answers, for that id, that the item left: Gmail answers 404, or the message is in spam or trash; Calendar answers 404 or 410, or the event is cancelled; Drive answers 404, or the file is trashed or not owned by the account. Any other answer, including an unreadable one or one about another item, keeps the document.
+- The sweep stops before it removes anything at a slice that would remove documents while its source confirms none of them still there, when no document it checked before was confirmed either, or when the slice would remove ten or more. `connector.source_sweep.stopped` records how many it would have removed. This keeps a sync that reads another account, or a source that answers 404 for everything, from emptying the account's knowledge. The documents stay indexed. A source whose held documents all left, or that lost ten or more in one slice, stops again the next time it starts over.
+- A provider failure while checking, such as `Connected source returned 503.`, keeps the sweep where it was, and the next sync checks the same slice again. Only the sweep waits; the source keeps its own progress. The worker logs `connector.source_sweep.failed`.
+- A source that starts over while its sweep runs starts the sweep again. The sweep checks only documents indexed before the source started over, so it never checks what the new listing indexed.
+- The sweep's place lives in the connection's sealed sync cursor, so reconnecting the account clears it, and the first sync after the reconnect starts a new one.
+
 ## Connector discovery or execution is blocked
 
 - Use an HTTPS hostname with public DNS; private, loopback, link-local, metadata, embedded-credential, and unsafe redirect targets are rejected.
@@ -237,10 +294,21 @@ It lists a table under `unclassifiedTables` when `src/lib/db/schema/tenant-isola
 - Timeout: inspect the failing method/path and `SMOKE_REQUEST_TIMEOUT_MS`; fix the slow dependency before increasing the bound.
 - Security: confirm anonymous protected routes return 401 and the admin cookie is secure.
 - Tenant/eval: confirm the internal secret is deployed and database RLS/evaluation state is current.
+- Manifest: see [The signed release manifest gate fails](#the-signed-release-manifest-gate-fails).
 - Release: inspect gate reasons and warnings in the bounded JSON artifact.
 - Artifact: the release step must create a non-empty file below `RELEASE_EVIDENCE_MAX_BYTES`; skipped or missing evidence is a failure.
 
 Synthetic smoke requests carry correlation IDs and are marked SLO-excluded. Search those IDs in observability when diagnosing a gate.
+
+## The signed release manifest gate fails
+
+- The release runner signs a manifest for each release it makes. It names the revision, the repository and branch, the green checks the runner verified, and the signing time. The runner signs it with the Ed25519 key that `OMNIAGENT_RELEASE_SIGNING_KEY_FILE` names and deploys it as `OMNIAGENT_RELEASE_MANIFEST`, and `/api/health` serves it as `releaseManifest`. `npm run smoke:manifest` checks it against the public keys in `RELEASE_SIGNING_PUBLIC_KEYS` in `scripts/release-manifest.mjs`: on the staged deployment before the worker or production changes, on the canonical domain after promotion, and nightly.
+- `the deployment's release manifest is missing.`: the served deployment was not made by the runner, or was made before releases were signed. Replace it with a runner release from `main`.
+- `the deployment's release manifest is signed by key <id>, which this repository does not trust.`: the release commit does not carry the public key of the key the runner signed with. Merge the public key that `npm run release:signing-key` printed to `main`, then release from that commit. On the nightly, the key may have been removed from `main` while production still serves a release it signed.
+- `the deployment's release manifest carries a signature key <id> did not make.`, or `the release manifest signs <revision>, but the deployment serves <revision>.`: the manifest was changed, or copied from another release. Treat it as an unreviewed production change.
+- `OMNIAGENT_RELEASE_SIGNING_KEY_FILE must be readable only by its owner (chmod 600).`, and the probe's other key file errors: fix the file the variable names. The runner never prints the key.
+- To rotate the key, create a new key at a new path and add its public key beside the old one. Release with the new key, and remove the old public key only after that release is promoted. If a private key is lost or exposed, remove its public key at once; every deployment it signed then fails the gate until a release replaces it.
+- The gate proves that the runner released the revision a deployment serves. It does not prove the deployment runs the code built from that revision: a manifest copied onto another deployment of the same revision still verifies.
 
 ## macOS packaging stops at the hardened runtime guard
 

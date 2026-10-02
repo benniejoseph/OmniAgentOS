@@ -1,5 +1,9 @@
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { serverErrorResponse } from "@/lib/http/errors";
+import {
+  ERROR_BUDGET_EXCEPTION_MAX_CHARS,
+  normalizeErrorBudgetException,
+} from "@/lib/release/error-budget";
 import { getReleaseEvidenceReport } from "@/lib/release/evidence";
 import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observability/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -47,6 +51,17 @@ async function GETHandler(request: Request) {
         { status: 400 },
       );
     }
+    const errorBudgetException = normalizeErrorBudgetException(
+      requestUrl.searchParams.get("errorBudgetException"),
+    );
+    if (errorBudgetException === null) {
+      return Response.json(
+        {
+          error: `An error budget exception is one line of at most ${ERROR_BUDGET_EXCEPTION_MAX_CHARS} characters.`,
+        },
+        { status: 400 },
+      );
+    }
     const report = await getReleaseEvidenceReport(context.tenantId, {
       force,
       expectedWorkerTarget: requestUrl.origin,
@@ -54,7 +69,31 @@ async function GETHandler(request: Request) {
       workerHeartbeatNotBefore: requireActiveWorkerHeartbeats
         ? new Date(workerHeartbeatNotBeforeMs).toISOString()
         : undefined,
+      errorBudgetException,
     });
+    const budgetException = report.gates.find((gate) => gate.id === "agent_error_budget")
+      ?.details.exception as { reason: string; applied: boolean } | undefined;
+    if (budgetException?.applied) {
+      // Who approved a release past a spent budget, and why.
+      await recordRuntimeEventSafely({
+        level: "warn",
+        category: "security",
+        action: "release.agent_error_budget.exception_applied",
+        requestId: telemetry.requestId,
+        correlationId: telemetry.correlationId,
+        tenantId: context.tenantId,
+        actorId: context.actorId,
+        resourceType: "release_evidence",
+        message: "Approved a release while its error budget is spent.",
+        metadata: {
+          reason: budgetException.reason,
+          revision: report.deployment.commitSha,
+          ...telemetry.syntheticMetadata,
+          // A record of a decision, not traffic.
+          sloExcluded: true,
+        },
+      });
+    }
     await recordRuntimeEventSafely({
       category: "api",
       action: "release.evidence.read",

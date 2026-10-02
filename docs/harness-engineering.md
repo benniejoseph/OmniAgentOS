@@ -46,7 +46,16 @@ Evaluation surfaces have different effect boundaries and must not be treated as
 interchangeable:
 
 1. `evals/golden-tasks.json` and `scripts/run-evals.mjs` are the live model lane.
-   They call `/api/agent` and may consume provider capacity.
+   They call `/api/agent` and may consume provider capacity. A ledger-replay
+   corpus from `GET /api/evaluations/ledger-replay` runs in the same lane with
+   `EVAL_TASKS_FILE`. It replays the caller's completed read-only runs and
+   requires `EVAL_AGENT_ID` for a custom Agent with an active `read_only`
+   principal. The server checks that same resolved identity before admission,
+   forces direct execution, and withholds durable memory formation. A mutable
+   tool definition is refused at the governed executor even if it changed
+   after discovery. Run it against a candidate deployment, not production.
+   Scoring requires a successful `done` event; incomplete or failed streams
+   cannot pass, and any unpriced model call leaves the total cost unknown.
 2. `src/lib/evaluations/` is the governed operational lane. It persists runs and
    may exercise database, queue, connector, or workflow behavior according to
    each case's governance metadata.

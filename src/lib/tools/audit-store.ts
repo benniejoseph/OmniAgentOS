@@ -21,6 +21,7 @@ import {
   appendScopedDomainEvent,
 } from "@/lib/events/store";
 import { redactSensitive } from "@/lib/security/context";
+import type { InjectionCanaryEncoding } from "@/lib/security/context-seal";
 import type { SecurityRole } from "@/lib/security/types";
 import {
   consumeScheduledPolicyLeaseForEffectClaim,
@@ -119,6 +120,16 @@ export type ToolExecutionMutationOptions = {
    * re-checked under its lock.
    */
   retryFailed?: { operationClass: "read_only" | "mutation" };
+  /**
+   * The call carried the tenant's injection canary. Its
+   * `injection.canary_tripped` event is written with the blocked record.
+   */
+  injectionCanaryTrip?: InjectionCanaryTrip;
+};
+
+export type InjectionCanaryTrip = {
+  encoding: InjectionCanaryEncoding;
+  agentRunId?: string;
 };
 
 type ToolExecutionMutationOperation =
@@ -195,6 +206,15 @@ export async function saveToolExecution(
         idempotencyKey: options.idempotencyKey,
         sql,
       });
+      if (options.injectionCanaryTrip) {
+        await appendInjectionCanaryTripEvent({
+          record,
+          operation: "saved",
+          trip: options.injectionCanaryTrip,
+          executionScope: options.executionScope,
+          sql,
+        });
+      }
       if (scopeBound) {
         await appendDomainEvent(scopeBound, { sql });
       }
@@ -227,6 +247,14 @@ export async function saveToolExecution(
     executionScope: options.executionScope,
     idempotencyKey: options.idempotencyKey,
   });
+  if (options.injectionCanaryTrip) {
+    await appendInjectionCanaryTripEvent({
+      record,
+      operation: "saved",
+      trip: options.injectionCanaryTrip,
+      executionScope: options.executionScope,
+    });
+  }
   return record;
 }
 
@@ -883,6 +911,15 @@ export async function completeClaimedToolExecution(
         idempotencyKey: options.idempotencyKey || record.id,
         sql,
       });
+      if (options.injectionCanaryTrip) {
+        await appendInjectionCanaryTripEvent({
+          record: durableRecord,
+          operation: "completed",
+          trip: options.injectionCanaryTrip,
+          executionScope: options.executionScope,
+          sql,
+        });
+      }
       if (effectReceipt && options.executionScope) {
         await appendToolEffectReceiptEvent(
           effectReceipt,
@@ -929,6 +966,14 @@ export async function completeClaimedToolExecution(
       executionScope: options.executionScope,
       idempotencyKey: options.idempotencyKey || record.id,
     });
+    if (options.injectionCanaryTrip) {
+      await appendInjectionCanaryTripEvent({
+        record: completed,
+        operation: "completed",
+        trip: options.injectionCanaryTrip,
+        executionScope: options.executionScope,
+      });
+    }
   }
   if (completed && effectReceipt && options.executionScope) {
     try {
@@ -2379,6 +2424,40 @@ async function appendToolExecutionMutationEvent({
       completedAt: record.completedAt || null,
       stateSha256,
       idempotencyKeySha256,
+    },
+  }, sql ? { sql } : {});
+}
+
+/**
+ * The typed record that a call carried the tenant's injection canary. It
+ * holds no argument, only which encoding carried the canary.
+ */
+async function appendInjectionCanaryTripEvent({
+  record,
+  operation,
+  trip,
+  executionScope,
+  sql,
+}: {
+  record: ToolExecutionRecord;
+  operation: ToolExecutionMutationOperation;
+  trip: InjectionCanaryTrip;
+  executionScope?: ExecutionScope;
+  sql?: SqlClient;
+}) {
+  await appendScopedDomainEvent({
+    id: `injection-canary:${record.id}`,
+    streamId: `tool_execution:${record.id}`,
+    type: "injection.canary_tripped",
+    executionScope: toolExecutionMutationScope(record, operation, executionScope),
+    payload: {
+      schemaVersion: 1,
+      executionId: record.id,
+      toolId: record.toolId,
+      riskLevel: record.riskLevel,
+      dryRun: record.dryRun,
+      encoding: trip.encoding,
+      agentRunId: trip.agentRunId ?? null,
     },
   }, sql ? { sql } : {});
 }

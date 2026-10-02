@@ -10,6 +10,11 @@ import {
   workerHeartbeatMaxAgeMs as configuredWorkerHeartbeatMaxAgeMs,
 } from "@/lib/operations/worker-heartbeat";
 import { WORKER_PROTOCOL_VERSION } from "@/lib/operations/worker-request";
+import {
+  errorBudgetGate,
+  getReleaseErrorBudget,
+  normalizeErrorBudgetException,
+} from "@/lib/release/error-budget";
 import { getTenantIsolationReport, type TenantIsolationReport } from "@/lib/security/isolation-report";
 
 export type ReleaseEvidenceGateStatus = "pass" | "warn" | "fail";
@@ -82,6 +87,8 @@ export type ReleaseEvidenceOptions = {
   expectedWorkerTarget?: string;
   requireActiveWorkerHeartbeats?: boolean;
   workerHeartbeatNotBefore?: string;
+  /** Why this release ships while its error budget is spent. */
+  errorBudgetException?: string;
 };
 
 type ActiveWorkerHeartbeatRequirement = {
@@ -101,8 +108,9 @@ const advisorySloPolicyIds = new Set([
   "web_vitals_lcp_p75",
   "web_vitals_inp_p75",
   "web_vitals_cls_p75",
-  // How the agents are doing is watched, not a release gate: a fix has to
-  // ship while it is low, and approvals wait on people, not on code.
+  // One tenant's agent quality is watched, not a release gate: a fix has to
+  // ship while it is low, and approvals wait on people, not on code. The
+  // error budget gate judges runs and tool calls across workspaces instead.
   "agent_run_success_rate",
   "agent_tool_failure_rate",
   "agent_first_output_p95",
@@ -135,10 +143,15 @@ export async function getReleaseEvidenceReport(
   );
   const activeWorkerHeartbeatRequirement =
     getActiveWorkerHeartbeatRequirement(options);
+  const errorBudgetException =
+    normalizeErrorBudgetException(options.errorBudgetException) || undefined;
   const cacheKey = [
     tenantId,
     expectedWorkerTarget || "unknown-target",
     activeWorkerHeartbeatRequirement.cacheKey,
+    errorBudgetException
+      ? `error-budget-exception:${errorBudgetException}`
+      : "no-error-budget-exception",
   ].join("\n");
   const inFlight = releaseEvidenceInFlight.get(cacheKey);
   if (inFlight) {
@@ -153,6 +166,7 @@ export async function getReleaseEvidenceReport(
     tenantId,
     expectedWorkerTarget,
     activeWorkerHeartbeatRequirement,
+    errorBudgetException,
   )
     .then((report) => {
       releaseEvidenceCache.set(cacheKey, {
@@ -174,6 +188,7 @@ async function collectReleaseEvidenceReport(
   tenantId: string,
   expectedWorkerTarget: string | undefined,
   activeWorkerHeartbeatRequirement: ActiveWorkerHeartbeatRequirement,
+  errorBudgetException: string | undefined,
 ): Promise<ReleaseEvidenceReport> {
   const checkedAt = new Date().toISOString();
   const deployment = getDeploymentEvidence();
@@ -182,6 +197,7 @@ async function collectReleaseEvidenceReport(
   // collector waits for them under production load.
   const tenantIsolation = await getTenantIsolationReport(tenantId);
   const observabilitySlo = await getObservabilitySloSnapshot({ tenantId });
+  const errorBudget = await getReleaseErrorBudget();
   const databaseRole = await getRuntimeDatabaseRoleSafety();
   const maintenanceDatabaseRole = await getMaintenanceDatabaseRoleSafety();
   const openAIGateway = await getOpenAIGatewayEvidence(deployment, checkedAt);
@@ -459,6 +475,7 @@ async function collectReleaseEvidenceReport(
         advisoryPolicyIds: [...advisorySloPolicyIds],
       },
     },
+    errorBudgetGate(errorBudget, errorBudgetException),
     {
       id: "eval_report_signing",
       name: "Evaluation report signing",

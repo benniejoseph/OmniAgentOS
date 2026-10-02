@@ -22,6 +22,7 @@ import {
   type GroundingReport,
 } from "@/lib/rag/citations";
 import { createExecutionScope } from "@/lib/security/execution-scope";
+import { injectionCanaryToken } from "@/lib/security/context-seal";
 import type { SecurityContext } from "@/lib/security/types";
 import { sourceContractSha256 } from "@/lib/sources/contracts";
 import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
@@ -403,6 +404,18 @@ describe("agent memory scope", () => {
       .not.toContain("DURABLE_MEMORY_CONTEXT");
   });
 
+  it("plants the run tenant's context seal in the retrieved context, even session-only", async () => {
+    for (const memoryScope of ["all", "session"] as const) {
+      mocks.streamResponseTurn.mockClear();
+
+      await collectRun(memoryScope);
+
+      const input = JSON.stringify(mocks.streamResponseTurn.mock.calls[0]?.[0].input);
+      expect(input).toContain(injectionCanaryToken("paid-test-tenant"));
+      expect(input).not.toContain(injectionCanaryToken("default"));
+    }
+  });
+
   it("dates the prompt by the actor's own timezone, or says it is unknown", async () => {
     mocks.findActorTimezone.mockResolvedValueOnce("Asia/Kolkata");
 
@@ -442,6 +455,43 @@ describe("agent memory scope", () => {
       contextRationale: [
         "The user limited this run to the current conversation.",
       ],
+    }));
+  });
+
+  it("retrieves existing context but withholds durable formation for a constrained replay", async () => {
+    const scopedRequest = request("all");
+    scopedRequest.memoryFormation = "withheld";
+
+    const events = await collectRequest(scopedRequest);
+
+    expect(mocks.buildContextPack).toHaveBeenCalled();
+    expect(JSON.stringify(mocks.streamResponseTurn.mock.calls[0]?.[0].input))
+      .toContain("DURABLE_MEMORY_CONTEXT");
+    expect(mocks.enqueueMemoryConsolidationJob).not.toHaveBeenCalled();
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "harness", memoryFormation: "withheld", approvalPolicy: "read_only",
+    }));
+  });
+
+  it("keeps only read tools and carries the read-only constraint to the executor", async () => {
+    const read = getGovernedTool("runs.list")!;
+    const write = getGovernedTool("memory.write")!;
+    mocks.loadProgressiveAgentTools.mockResolvedValue({ definitions: [read, write] });
+    mocks.executeGovernedTool.mockResolvedValue({
+      record: localExecutionRecord(read.id, "execution-read-only"), result: { runs: [] },
+    });
+    mocks.streamResponseTurn
+      .mockResolvedValueOnce(openAITurn({ calls: [{ callId: "call-read-only", name: read.id }] }))
+      .mockResolvedValueOnce(openAITurn({ text: "Runs summarized." }));
+    const scopedRequest = request("session");
+    scopedRequest.agentProfile!.toolIds = [read.id, write.id];
+
+    await collectRequest(scopedRequest);
+
+    expect(mocks.streamResponseTurn.mock.calls[0]?.[0].tools.map((tool: { name: string }) => tool.name))
+      .toEqual([read.id]);
+    expect(mocks.executeGovernedTool).toHaveBeenCalledWith(expect.objectContaining({
+      toolId: read.id, requireReadOnly: true,
     }));
   });
 

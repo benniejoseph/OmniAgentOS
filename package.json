@@ -21,6 +21,7 @@
     "smoke:release": "node scripts/smoke-release-evidence.mjs",
     "smoke:preflight": "node scripts/smoke-preflight.mjs",
     "smoke:paid-agent": "node scripts/smoke-paid-agent.mjs",
+    "smoke:manifest": "node scripts/smoke-release-manifest.mjs",
     "test:security": "npm run smoke:security",
     "test:tenant": "npm run smoke:tenant",
     "test:production-smoke": "npm run smoke:preflight && npm run smoke:security && npm run smoke:tenant && npm run smoke:eval && npm run smoke:release",
@@ -56,6 +57,7 @@
     "sync:tradingview": "node scripts/sync-tradingview-library.mjs",
     "predeploy:production": "npm run sync:tradingview",
     "deploy:production": "node scripts/deploy-production.mjs",
+    "release:signing-key": "node scripts/release-signing-key.mjs",
     "verify": "npm run audit:production && npm run typecheck && npm run lint && npm run check:native-contracts && npm run test:coverage && npm run test:integration && npm run check:worker && npm run check:operations && NEXT_PUBLIC_APP_URL=http://127.0.0.1:3100 npm run build && npm run check:route-js",
     "eval:agents": "node scripts/run-evals.mjs",
     "worker": "node scripts/worker.mjs"

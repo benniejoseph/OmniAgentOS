@@ -12,6 +12,10 @@ export const maxDuration = 30;
 export const GET = withDatabaseRequestScope(GETHandler);
 
 const databaseReadinessCache = new AsyncTtlCache<boolean>(15_000, 1);
+// The release runner signs a manifest for each release it makes, and the
+// nightly smoke verifies it. It holds nothing secret; only a value in its
+// bounded encoded form is served.
+const RELEASE_MANIFEST = /^[A-Za-z0-9_-]{1,4096}$/;
 
 async function GETHandler(request: Request) {
   const startedAt = Date.now();
@@ -23,6 +27,10 @@ async function GETHandler(request: Request) {
     process.env.VERCEL_GIT_COMMIT_SHA ||
     process.env.OMNIAGENT_RELEASE_SHA ||
     undefined;
+  const configuredManifest = process.env.OMNIAGENT_RELEASE_MANIFEST?.trim();
+  const releaseManifest = configuredManifest && RELEASE_MANIFEST.test(configuredManifest)
+    ? configuredManifest
+    : undefined;
   const production =
     process.env.NODE_ENV === "production" ||
     process.env.VERCEL_ENV === "production";
@@ -39,6 +47,7 @@ async function GETHandler(request: Request) {
         checkedAt,
         requestId,
         revision,
+        releaseManifest,
         dependencies,
       },
       {
@@ -65,6 +74,7 @@ async function GETHandler(request: Request) {
           checkedAt,
           requestId,
           revision,
+          releaseManifest,
           dependencies,
         },
         {
@@ -75,7 +85,7 @@ async function GETHandler(request: Request) {
     }
     console.log(JSON.stringify({ level: "info", msg: "health ok", ms, route: "/api/health" }));
     return Response.json(
-      { status: "healthy", checkedAt, requestId, revision, dependencies },
+      { status: "healthy", checkedAt, requestId, revision, releaseManifest, dependencies },
       {
         status: 200,
         headers: healthCacheHeaders(publicSummary),
@@ -91,7 +101,7 @@ async function GETHandler(request: Request) {
       error: error instanceof Error ? error.message : String(error),
     }));
     return Response.json(
-      { status: "unhealthy", checkedAt, requestId, revision, dependencies },
+      { status: "unhealthy", checkedAt, requestId, revision, releaseManifest, dependencies },
       {
         status: 503,
         headers: healthCacheHeaders(publicSummary),

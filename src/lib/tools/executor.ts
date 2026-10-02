@@ -129,6 +129,11 @@ import {
 import { AgentRunNotActiveError } from "@/lib/runs/active-run-fence";
 import { redactSensitive } from "@/lib/security/context";
 import {
+  findInjectionCanary,
+  injectionCanaryRunLatched,
+  latchInjectionCanaryRun,
+} from "@/lib/security/context-seal";
+import {
   PolicyLeaseStoreError,
   type ScheduledPolicyLeaseClaim,
 } from "@/lib/security/policy-lease-store";
@@ -156,6 +161,7 @@ import {
   savePendingToolApproval,
   saveToolExecution,
   sealToolExecutionInput,
+  type InjectionCanaryTrip,
 } from "@/lib/tools/audit-store";
 import { approvalMaterialBindingSha256 } from "@/lib/tools/approval-binding";
 import { toolApprovalFingerprint } from "@/lib/tools/fingerprint";
@@ -490,6 +496,7 @@ export async function executeGovernedTool({
   abortSignal,
   idempotencyKey,
   forceApproval = false,
+  requireReadOnly = false,
   mcpSessionScope,
   executionScope,
   agentRunId,
@@ -515,6 +522,8 @@ export async function executeGovernedTool({
   idempotencyKey?: string;
   /** Hardens write tools for agents configured to approve every mutation. */
   forceApproval?: boolean;
+  /** Server-owned constraint checked against the current resolved tool contract. */
+  requireReadOnly?: boolean;
   /** Explicit owner/run boundary used only by stateful MCP transports. */
   mcpSessionScope?: McpSessionScope;
   /** Durable attribution inherited from the initiating run or request. */
@@ -576,70 +585,50 @@ export async function executeGovernedTool({
     getGovernedTool(toolId) ||
     (await getMcpGovernedTool(toolId, { tenantId: context?.tenantId })) ||
     (await getOpenApiGovernedTool(toolId, { tenantId: context?.tenantId }));
-  if (!registeredTool) {
-    const scopedRequest = await resolveToolExecutionScopeRequest({
-      record: existingRecord,
-      toolInput: input,
-      requestedScope: executionScope,
+  const blockBeforePolicy = (block: {
+    reason: string;
+    injectionCanaryTrip?: InjectionCanaryTrip;
+  }) =>
+    blockGovernedToolCall({
+      ...block,
+      toolId,
+      tool: registeredTool || undefined,
+      input,
+      dryRun,
       context,
+      existingRecord,
+      executionScope,
       executionClaimToken,
       mcpSessionScope,
+      idempotencyKey,
     });
-    const reason = "Unknown tools are blocked by default.";
-    const patch: Omit<ToolExecutionRecord, "id" | "createdAt"> = {
-      tenantId: existingRecord?.tenantId || context?.tenantId,
-      actorId: existingRecord?.actorId || context?.actorId,
-      toolId,
-      toolName: "Unknown tool",
-      riskLevel: 3,
-      status: "blocked",
-      dryRun,
-      approvalRequired: true,
-      input: redactSensitive(input) as Record<string, unknown>,
-      output: undefined,
-      reason,
-      completedAt: new Date().toISOString(),
-    };
-    const record = existingRecord
-      ? {
-          ...existingRecord,
-          ...patch,
-          id: existingRecord.id,
-          createdAt: existingRecord.createdAt,
-          input: existingRecord.input,
-        }
-      : createToolExecutionRecord(patch);
-    await recordToolPolicyBlock({
-      context,
-      executionScope: scopedRequest.executionScope,
-      toolId,
-      reason,
-      input,
-      riskLevel: 3,
+  // Before any policy, so a dry run or an approved call is refused too.
+  const canaryTenantId = normalizeTenantId(
+    existingRecord?.tenantId || context?.tenantId || executionScope?.tenantId,
+  );
+  if (agentRunId && injectionCanaryRunLatched(canaryTenantId, agentRunId)) {
+    return blockBeforePolicy({ reason: INJECTION_CANARY_LATCHED_REASON });
+  }
+  const canaryEncoding = findInjectionCanary(canaryTenantId, input);
+  if (canaryEncoding) {
+    if (agentRunId) latchInjectionCanaryRun(canaryTenantId, agentRunId);
+    return blockBeforePolicy({
+      reason: INJECTION_CANARY_REASON,
+      injectionCanaryTrip: {
+        encoding: canaryEncoding,
+        ...(agentRunId ? { agentRunId } : {}),
+      },
     });
-    const saved = executionClaimToken
-      ? await completeClaimedToolExecution(record, executionClaimToken, {
-          executionScope: scopedRequest.executionScope,
-          idempotencyKey,
-        })
-      : await saveToolExecution(record, {
-          executionScope: scopedRequest.executionScope,
-          idempotencyKey,
-        });
-    if (!saved) {
-      if (record.effectReceipt) {
-        throw new EffectReceiptFinalizationError({
-          cause: new ExecutionClaimLostError(),
-        });
-      }
-      throw new ExecutionClaimLostError();
-    }
-    await bindToolScopeIfPresent({
-      record: saved,
-      toolInput: input,
-      scopedRequest,
-    });
-    return { record: saved, result: null };
+  }
+  if (!registeredTool) {
+    return blockBeforePolicy({ reason: "Unknown tools are blocked by default." });
+  }
+  if (
+    requireReadOnly &&
+    (registeredTool.riskLevel !== 0 ||
+      governedToolOperationClass(registeredTool, input) !== "read_only")
+  ) {
+    return blockBeforePolicy({ reason: "This run permits only read-only tools." });
   }
   // Task authority brings forward only an app the user named in their
   // request; switching to any other app goes to the user for review.
@@ -1210,6 +1199,7 @@ export async function executeGovernedTool({
             abortSignal,
             idempotencyKey,
             forceApproval,
+            requireReadOnly,
             mcpSessionScope,
             executionScope,
             agentRunId,
@@ -1783,6 +1773,7 @@ export async function executeGovernedTool({
           abortSignal,
           idempotencyKey,
           forceApproval,
+          requireReadOnly,
           mcpSessionScope,
           executionScope,
           agentRunId,
@@ -2250,6 +2241,7 @@ export async function executeGovernedTool({
         abortSignal,
         idempotencyKey: idempotencyKey ? `${idempotencyKey}:review` : undefined,
         forceApproval: true,
+        requireReadOnly,
         mcpSessionScope,
         executionScope,
         agentRunId,
@@ -4913,6 +4905,112 @@ function toolAiUsageScope(
     executionScope,
     credentialSource: "deployment_environment",
   };
+}
+
+export const INJECTION_CANARY_REASON =
+  "A tool argument carried this workspace's context seal, a marker planted in retrieved context, so retrieved content is steering this run. This call and the run's later tool calls are blocked.";
+export const INJECTION_CANARY_LATCHED_REASON =
+  "An earlier tool call in this run carried this workspace's context seal, so the run's tool calls are blocked.";
+
+/**
+ * Persists a call refused before its tool's policy runs: an unknown tool, a
+ * read-only constraint, or arguments that carry the tenant's injection canary.
+ */
+async function blockGovernedToolCall({
+  reason,
+  injectionCanaryTrip,
+  toolId,
+  tool,
+  input,
+  dryRun,
+  context,
+  existingRecord,
+  executionScope,
+  executionClaimToken,
+  mcpSessionScope,
+  idempotencyKey,
+}: {
+  reason: string;
+  injectionCanaryTrip?: InjectionCanaryTrip;
+  toolId: string;
+  tool?: ToolDefinition;
+  input: Record<string, unknown>;
+  dryRun: boolean;
+  context?: SecurityContext;
+  existingRecord?: ToolExecutionRecord;
+  executionScope?: ExecutionScope;
+  executionClaimToken?: string;
+  mcpSessionScope?: McpSessionScope;
+  idempotencyKey?: string;
+}): Promise<GovernedToolExecutionResult> {
+  const scopedRequest = await resolveToolExecutionScopeRequest({
+    record: existingRecord,
+    toolInput: input,
+    requestedScope: executionScope,
+    context,
+    executionClaimToken,
+    mcpSessionScope,
+  });
+  const riskLevel = tool?.riskLevel ?? 3;
+  // Arguments that carried the canary were written from retrieved content
+  // and can hold private context, so neither ledger keeps them.
+  const recordedInput = injectionCanaryTrip
+    ? { withheld: "injection_canary", fieldCount: Object.keys(input).length }
+    : redactSensitive(input) as Record<string, unknown>;
+  const patch: Omit<ToolExecutionRecord, "id" | "createdAt"> = {
+    tenantId: existingRecord?.tenantId || context?.tenantId,
+    actorId: existingRecord?.actorId || context?.actorId,
+    toolId,
+    toolName: tool?.name ?? "Unknown tool",
+    riskLevel,
+    status: "blocked",
+    dryRun,
+    approvalRequired: tool?.approvalRequired ?? true,
+    input: recordedInput,
+    output: undefined,
+    reason,
+    completedAt: new Date().toISOString(),
+  };
+  const record = existingRecord
+    ? {
+        ...existingRecord,
+        ...patch,
+        id: existingRecord.id,
+        createdAt: existingRecord.createdAt,
+        input: existingRecord.input,
+      }
+    : createToolExecutionRecord(patch);
+  await recordToolPolicyBlock({
+    context,
+    executionScope: scopedRequest.executionScope,
+    toolId,
+    toolName: tool?.name,
+    reason,
+    input: injectionCanaryTrip ? recordedInput : input,
+    riskLevel,
+  });
+  const saveOptions = {
+    executionScope: scopedRequest.executionScope,
+    idempotencyKey,
+    ...(injectionCanaryTrip ? { injectionCanaryTrip } : {}),
+  };
+  const saved = executionClaimToken
+    ? await completeClaimedToolExecution(record, executionClaimToken, saveOptions)
+    : await saveToolExecution(record, saveOptions);
+  if (!saved) {
+    if (record.effectReceipt) {
+      throw new EffectReceiptFinalizationError({
+        cause: new ExecutionClaimLostError(),
+      });
+    }
+    throw new ExecutionClaimLostError();
+  }
+  await bindToolScopeIfPresent({
+    record: saved,
+    toolInput: input,
+    scopedRequest,
+  });
+  return { record: saved, result: null };
 }
 
 async function recordToolPolicyBlock({

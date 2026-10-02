@@ -176,10 +176,14 @@ vi.mock("@/lib/memory/shared-context", async (importOriginal) => ({
     routeMocks.requestSharedMemoryAccessFromSecurityContext,
 }));
 
-vi.mock("@/lib/memory/evidence-formation", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/lib/memory/evidence-formation")>()),
-  formAssistantInferenceCandidate: routeMocks.formAssistantInferenceCandidate,
-}));
+vi.mock("@/lib/memory/evidence-formation", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/memory/evidence-formation")>();
+  return {
+    ...actual,
+    formExplicitUserAssertionMemory: vi.fn(actual.formExplicitUserAssertionMemory),
+    formAssistantInferenceCandidate: routeMocks.formAssistantInferenceCandidate,
+  };
+});
 
 vi.mock("@/lib/memory/personal-context-access", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/memory/personal-context-access")>()),
@@ -194,11 +198,12 @@ vi.mock("@/lib/memory/personal-context-consent-store", async (importOriginal) =>
 }));
 
 import { POST } from "@/app/api/agent/route";
-import { buildAgentSkillPinV1 } from "@/lib/agents/identity-contracts";
+import { buildAgentSkillPinV1, buildCustomAgentIdentityV1 } from "@/lib/agents/identity-contracts";
 import { resolveCommandContextReferences } from "@/lib/command/context-reference-runtime";
 import { AGENT_RUN_BUDGET_LIMITS } from "@/lib/config";
 import { appendDomainEvent } from "@/lib/events/store";
 import { forgetMemory, saveMemory } from "@/lib/memory/store";
+import { formExplicitUserAssertionMemory } from "@/lib/memory/evidence-formation";
 import { customAgentInputSchema, skillInputSchema } from "@/lib/skills/schema";
 import { createAgentSkill, createCustomAgent, updateAgentSkill } from "@/lib/skills/store";
 import {
@@ -247,6 +252,7 @@ const context = {
 beforeEach(() => {
   vi.stubEnv("OMNIAGENT_INTERNAL_AUTH_SECRET", "agent-route-context-lock-test-secret");
   vi.mocked(resolveVoiceCommandGate).mockClear();
+  vi.mocked(formExplicitUserAssertionMemory).mockClear();
   vi.mocked(createWorkflowRun).mockClear();
   routeMocks.after.mockReset();
   routeMocks.appendScopedDomainEvent.mockReset().mockResolvedValue(undefined);
@@ -2605,6 +2611,120 @@ describe("agent direct-run memory formation", () => {
       }
     },
   );
+});
+
+describe("read-only replay admission", () => {
+  let readerCount = 0;
+  async function reader(policy: "read_only" | "risk_based" | "always") {
+    readerCount += 1;
+    const agent = await createCustomAgent(customAgentInputSchema.parse({
+      name: `Replay reader ${readerCount}`,
+      role: "Researcher",
+      description: "Summarizes existing project notes.",
+      instructions: "Read existing project notes and summarize them.",
+      approvalPolicy: "read_only",
+      memoryScope: "all",
+      toolIds: ["runs.list"],
+    }), { tenantId: context.tenantId, actorId: context.actorId });
+    const identity = buildCustomAgentIdentityV1({
+      agent: { ...agent, approvalPolicy: policy },
+      skills: [], definitionVersion: 1, principalGeneration: 1,
+    });
+    routeMocks.resolveAgentIdentityForExecution.mockResolvedValue(identity);
+    routeMocks.appendScopedDomainEvent.mockClear();
+    return { agent, identity };
+  }
+
+  const post = (body: Record<string, unknown>, headers: Record<string, string> = {}) =>
+    POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json", ...headers },
+      body: JSON.stringify({
+        messages: [{ role: "user", content: "Summarize my notes." }],
+        requireReadOnlyAgent: true,
+        ...body,
+      }),
+    }));
+
+  it.each(["risk_based", "always"] as const)(
+    "refuses a resolved %s principal before request admission even when its draft says read-only",
+    async (policy) => {
+      const { agent } = await reader(policy);
+
+      const response = await post({ agentId: agent.id, requestId: `replay-${policy}` });
+
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toMatchObject({ error: "Read-only Agent required" });
+      expect(routeMocks.appendScopedDomainEvent).not.toHaveBeenCalled();
+      expect(routeMocks.runAgent).not.toHaveBeenCalled();
+      expect(routeMocks.createThread).not.toHaveBeenCalled();
+      expect(createWorkflowRun).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([undefined, "atlas"])("requires a custom Agent instead of %s", async (agentId) => {
+    const response = await post({ agentId });
+
+    expect(response.status).toBe(409);
+    expect(routeMocks.runAgent).not.toHaveBeenCalled();
+    expect(routeMocks.appendScopedDomainEvent).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { message: "Summarize my notes." },
+    { threadId: "11111111-1111-4111-8111-111111111111" },
+    { threadId: "11111111-1111-4111-8111-111111111111", resumeRunId: "22222222-2222-4222-8222-222222222222" },
+    { missionId: "11111111-1111-4111-8111-111111111111" },
+    { computerUseTarget: "local_macos" },
+  ])("refuses an existing execution or conversation context: %j", async (body) => {
+    const response = await post(body);
+
+    expect(response.status).toBe(409);
+    expect(routeMocks.runAgent).not.toHaveBeenCalled();
+    expect(routeMocks.createThread).not.toHaveBeenCalled();
+    expect(routeMocks.startLocalComputerSession).not.toHaveBeenCalled();
+  });
+
+  it("refuses queued dispatch before its token can be consumed", async () => {
+    const response = await post({}, {
+      "x-asael-prompt-queue-item": "queued-item",
+      "x-asael-prompt-queue-token": "queued-token",
+    });
+
+    expect(response.status).toBe(409);
+    expect(routeMocks.validatePromptQueueDispatch).not.toHaveBeenCalled();
+  });
+
+  it("uses the exact checked identity on the direct path and withholds memory formation", async () => {
+    const { agent, identity } = await reader("read_only");
+    const resolve = routeMocks.resolveSemanticIntent.getMockImplementation()!;
+    routeMocks.resolveSemanticIntent.mockImplementation(async (input) => {
+      const result = await resolve(input);
+      return { ...result, decision: { ...result.decision, route: "durable_workflow" } };
+    });
+    routeMocks.runAgent.mockImplementation(async function* () {
+      yield { type: "harness", memoryFormation: "withheld" };
+      yield { type: "run", runId: "run-replay-readonly" };
+      yield { type: "done", response: "Project notes summarized." };
+    });
+
+    const response = await post({ agentId: agent.id });
+
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(routeMocks.resolveAgentIdentityForExecution).toHaveBeenCalledTimes(1);
+    expect(routeMocks.runAgent).toHaveBeenCalledWith(expect.objectContaining({
+      agentIdentity: identity,
+      agentProfile: expect.objectContaining({ approvalPolicy: "read_only", toolIds: ["runs.list"] }),
+      memoryFormation: "withheld",
+    }), expect.any(AbortSignal));
+    expect(createWorkflowRun).not.toHaveBeenCalled();
+    expect(routeMocks.createThread).not.toHaveBeenCalled();
+    expect(formExplicitUserAssertionMemory).not.toHaveBeenCalled();
+    expect(routeMocks.formAssistantInferenceCandidate).not.toHaveBeenCalled();
+    expect(routeMocks.resolveLoopV2ReadOnlyCanaryEnrollment).not.toHaveBeenCalled();
+    expect(routeMocks.resolveLoopV2ModelTextEnrollment).not.toHaveBeenCalled();
+  });
 });
 
 describe("agent custom Skill release pins", () => {

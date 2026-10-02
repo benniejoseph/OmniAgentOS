@@ -56,6 +56,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: RELEASE_REVISION="$SMOKE_EXPECTED_REVISION" node scripts/release-provenance.mjs
 
+      # The release runner signs a manifest for every release it makes. A red
+      # gate means the served deployment carries no manifest a key committed
+      # here signed for the revision it serves.
+      - name: Signed release manifest gate
+        id: manifest
+        continue-on-error: true
+        timeout-minutes: 2
+        run: node scripts/smoke-release-manifest.mjs
+
       - name: Install
         run: npm ci --omit=dev
 
@@ -135,6 +144,7 @@ jobs:
         if: always()
         env:
           PROVENANCE_OUTCOME: ${{ steps.provenance.outcome }}
+          MANIFEST_OUTCOME: ${{ steps.manifest.outcome }}
           PREFLIGHT_OUTCOME: ${{ steps.preflight.outcome }}
           SECURITY_OUTCOME: ${{ steps.security.outcome }}
           TENANT_OUTCOME: ${{ steps.tenant.outcome }}
@@ -145,7 +155,7 @@ jobs:
         run: |
           set -euo pipefail
           failures=()
-          for gate in PROVENANCE PREFLIGHT SECURITY TENANT EVALUATION RELEASE EVIDENCE UPLOAD; do
+          for gate in PROVENANCE MANIFEST PREFLIGHT SECURITY TENANT EVALUATION RELEASE EVIDENCE UPLOAD; do
             outcome_variable="${gate}_OUTCOME"
             outcome="${!outcome_variable}"
             if [ "$outcome" != "success" ]; then

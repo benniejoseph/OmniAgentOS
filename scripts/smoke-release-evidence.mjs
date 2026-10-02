@@ -1,4 +1,10 @@
-import { failSmoke, getSmokeBaseUrl, positiveInteger, smokeFetch } from "./smoke-helpers.mjs";
+import {
+  failSmoke,
+  getSmokeBaseUrl,
+  positiveInteger,
+  releaseErrorBudgetException,
+  smokeFetch,
+} from "./smoke-helpers.mjs";
 
 const baseUrl = getSmokeBaseUrl();
 const email = process.env.SMOKE_ADMIN_EMAIL || process.env.OMNIAGENT_BOOTSTRAP_EMAIL;
@@ -6,6 +12,9 @@ const password = process.env.SMOKE_ADMIN_PASSWORD || process.env.OMNIAGENT_BOOTS
 const internalSecret = process.env.SMOKE_INTERNAL_AUTH_SECRET || process.env.OMNIAGENT_INTERNAL_AUTH_SECRET;
 const checks = [];
 const syntheticHeaders = createSyntheticHeaders("release");
+// The runner uses this only before replacing the currently deployed release.
+// A CLI argument cannot carry over to staged, canonical, or scheduled checks.
+const previousRelease = process.argv.slice(2).includes("--previous-release");
 
 await clearReleaseEvidenceArtifact();
 const headers = await resolveAuthHeaders();
@@ -32,6 +41,16 @@ if (process.env.OMNIAGENT_REQUIRE_ACTIVE_WORKER_HEARTBEATS === "true") {
     new Date(notBeforeMs).toISOString(),
   );
 }
+let errorBudgetException;
+try {
+  errorBudgetException = releaseErrorBudgetException();
+} catch (error) {
+  failSmoke(error instanceof Error ? error.message : "invalid error budget exception");
+}
+if (errorBudgetException) {
+  // A release that is the fix ships while the error budget is spent.
+  evidenceQuery.set("errorBudgetException", errorBudgetException);
+}
 const response = await request(
   `/api/release/evidence?${evidenceQuery.toString()}`,
   { headers },
@@ -39,6 +58,7 @@ const response = await request(
 const json = await readJson(response);
 const report = json?.report;
 const gateById = new Map((report?.gates || []).map((gate) => [gate.id, gate]));
+const previousReleaseWithoutErrorBudget = previousRelease && !gateById.has("agent_error_budget");
 
 checks.push(assert(response.status === 200, "release evidence endpoint returns report", statusDetail(response.status, json)));
 checks.push(assert(Boolean(report), "release evidence report is present", "missing report"));
@@ -52,6 +72,9 @@ checks.push(assert(gateById.get("cron_auth")?.status === "pass", "cron authentic
 checks.push(assert(gateById.get("runtime_database_role")?.status === "pass", "runtime database role gate passes", gateDetail(gateById.get("runtime_database_role"))));
 checks.push(assert(gateById.get("dedicated_worker")?.status === "pass", "dedicated worker revision and heartbeat gate passes", gateDetail(gateById.get("dedicated_worker"))));
 checks.push(assert(gateById.get("observability_slo")?.status === "pass", "observability SLO gate passes", gateDetail(gateById.get("observability_slo"))));
+checks.push(previousReleaseWithoutErrorBudget
+  ? assert(true, "previous release predates the agent error budget gate")
+  : assert(gateById.get("agent_error_budget")?.status === "pass", "agent error budget gate passes", gateDetail(gateById.get("agent_error_budget"))));
 checks.push(assert(gateById.get("eval_report_signing")?.status === "pass", "eval report signing gate passes", gateDetail(gateById.get("eval_report_signing"))));
 checks.push(report
   ? assert(await writeReleaseEvidenceArtifact(report), "release evidence artifact is present and bounded", "artifact validation failed")
@@ -139,6 +162,9 @@ async function writeReleaseEvidenceArtifact(report) {
     generatedAt: new Date().toISOString(),
     baseUrl,
     smokeRunId: process.env.SMOKE_RUN_ID,
+    ...(previousReleaseWithoutErrorBudget
+      ? { previousReleaseCompatibility: { missingAgentErrorBudget: true } }
+      : {}),
     releaseGate: {
       ...report.releaseGate,
       reasons: limitStrings(report.releaseGate?.reasons),

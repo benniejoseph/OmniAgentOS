@@ -222,7 +222,8 @@ export function getBuiltInAgentPromptIdentity(agentId: BuiltInAgentId) {
 export function buildAgentInput({
   messages,
   commandContext,
-  memoryContext,
+  memoryContext: retrievedContext,
+  injectionCanary,
   liveWebContext,
   councilContext,
   workspaceCapabilityContext,
@@ -230,10 +231,15 @@ export function buildAgentInput({
   messages: ChatMessage[];
   commandContext?: string;
   memoryContext: string;
+  /** Planted at the head of the retrieved context, even when it is empty. */
+  injectionCanary?: string;
   liveWebContext?: string;
   councilContext?: string;
   workspaceCapabilityContext?: string;
 }): ModelConversationSeedItem[] {
+  const memoryContext = [injectionCanary, retrievedContext]
+    .filter(Boolean)
+    .join("\n\n");
   const observations: ModelConversationSeedItem[] = [
     ...(commandContext
       ? [{

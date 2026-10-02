@@ -203,6 +203,42 @@ const workflowPlanAction: DomainAction = {
   buildPayload: workflowPayload,
 };
 
+export const quarantinedJobAction: DomainAction = {
+  id: "decide-quarantined-job",
+  title: "Release or discard a quarantined job",
+  description: "Release a job to run it again from its first attempt, or discard it. Discard a workflow or agent job by canceling the run that owns it.",
+  method: "POST",
+  path: "/api/operations/jobs/:id",
+  fields: [
+    { name: "jobId", label: "Quarantined job ID", type: "text", placeholder: "operation job ID" },
+    {
+      name: "action",
+      label: "Decision",
+      type: "select",
+      defaultValue: "release",
+      options: [
+        { label: "Release", value: "release" },
+        { label: "Discard", value: "discard" },
+      ],
+    },
+    { name: "reason", label: "Discard reason (optional)", type: "textarea", placeholder: "Why this job should not run again." },
+  ],
+  buildPath: (values) => {
+    const jobId = textValue(values.jobId);
+    if (!jobId) {
+      throw new Error("Quarantined job ID is required.");
+    }
+    return `/api/operations/jobs/${encodeURIComponent(jobId)}`;
+  },
+  buildPayload: (values) => {
+    const action = textValue(values.action, "release");
+    return {
+      action,
+      reason: action === "discard" ? optionalText(values.reason) : undefined,
+    };
+  },
+};
+
 const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
   knowledge: {
     title: "Knowledge",
@@ -434,6 +470,12 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
             tone: toneForStatus(item.status),
           })),
       },
+      {
+        title: "Quarantined jobs",
+        description: "Jobs whose lease lapsed three times in a row. Nothing runs them until an operator releases or discards them.",
+        emptyLabel: "No jobs are quarantined.",
+        rows: (data) => arrayPath(data, "operations.latest.quarantinedJobs").map(quarantinedJobRow),
+      },
     ],
     actions: [
       workflowPlanAction,
@@ -512,6 +554,7 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
         fields: [{ name: "limit", label: "Limit", type: "select", defaultValue: "10", options: ["5", "10", "20", "50"].map((value) => ({ label: value, value })) }],
         buildPayload: (values) => ({ action: "inspect_recovery", limit: numberValue(values.limit, 10) }),
       },
+      quarantinedJobAction,
     ],
   },
   approvals: {
@@ -2414,6 +2457,17 @@ export function mcpConnectorRow(item: JsonRecord): Row {
       : stringValue(item.endpoint, "endpoint"),
     time: stringValue(item.updatedAt || item.createdAt),
     tone: needsReview ? "warning" : toneForStatus(connectorStatus),
+  };
+}
+
+export function quarantinedJobRow(item: JsonRecord): Row {
+  const lapses = numberValue(item.leaseLapses, 0);
+  return {
+    title: stringValue(item.type, "Operation job"),
+    status: "quarantined",
+    meta: `attempt ${stringValue(item.attempt, "0")}/${stringValue(item.maxAttempts, "?")} · ${lapses} lapsed ${lapses === 1 ? "lease" : "leases"} · ${stringValue(item.id, "unknown ID")}`,
+    time: stringValue(item.updatedAt),
+    tone: "danger",
   };
 }
 

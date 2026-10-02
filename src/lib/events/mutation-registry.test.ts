@@ -36,8 +36,10 @@ describe("Phase 1 mutation event registry", () => {
       "src/lib/workflows/planner.ts",
       "src/lib/workflows/executor.ts",
       "src/lib/workflows/triggers.ts",
+      "src/lib/operations/job-queue.ts",
     ]);
     expect(workflows.mutationSurfaces).toContain("plan-node executions");
+    expect(workflows.mutationSurfaces).toContain("operation job quarantine");
     expect(workflows.mutationSurfaces).toContain("workflow triggers and deliveries");
     expect(customerRecords).toMatchObject({
       status: "no_mutation_surface",

@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   discardSmokeResponseBody,
+  releaseErrorBudgetException,
   smokeFetch,
 } from "../../../scripts/smoke-helpers.mjs";
 
@@ -235,6 +236,22 @@ describe("smoke transport retry", () => {
     );
     expect(source).toContain("await discardResponseBody(response, label)");
     expect(source).toContain("await discardSmokeResponseBody(response, { label })");
+  });
+});
+
+describe("release error budget exception", () => {
+  it("reads one bounded line, or nothing", () => {
+    const read = (value?: string) =>
+      releaseErrorBudgetException({ OMNIAGENT_RELEASE_ERROR_BUDGET_EXCEPTION: value });
+    expect(read()).toBeUndefined();
+    expect(read("   ")).toBeUndefined();
+    expect(read("  Ships the fix for failing runs.  ")).toBe("Ships the fix for failing runs.");
+    expect(read("a".repeat(200))).toBe("a".repeat(200));
+    for (const value of ["a".repeat(201), "first line\nsecond line", "delete\u007f"]) {
+      expect(() => read(value)).toThrow(
+        "OMNIAGENT_RELEASE_ERROR_BUDGET_EXCEPTION must be one line of at most 200 characters.",
+      );
+    }
   });
 });
 

@@ -18,6 +18,7 @@ import {
 import {
   getOperationJobStats,
   listOperationJobRecoveryRows,
+  listQuarantinedOperationJobs,
 } from "@/lib/operations/job-queue";
 import { inspectOperationsRecovery } from "@/lib/operations/recovery";
 import {
@@ -301,6 +302,7 @@ export async function getOperationsOverview(options: { tenantId?: string } = {})
     openApiConnectors,
     operationJobStats,
     operationJobRows,
+    quarantinedJobs,
     recoveryEvents,
   ] = await Promise.all([
     getApprovalQueue(25, { tenantId: options.tenantId }),
@@ -313,6 +315,7 @@ export async function getOperationsOverview(options: { tenantId?: string } = {})
     listOpenApiConnectors(20, { tenantId: options.tenantId }),
     getOperationJobStats({ tenantId: options.tenantId, latestLimit: 20 }),
     listOperationJobRecoveryRows(100, { tenantId: options.tenantId }),
+    listQuarantinedOperationJobs(10, { tenantId: options.tenantId }),
     listWorkflowRecoveryEvents(10, { tenantId: options.tenantId }),
   ]);
   const workflowRuns = workflowRows.slice(0, 20);
@@ -351,6 +354,7 @@ export async function getOperationsOverview(options: { tenantId?: string } = {})
       queuedJobs: operationJobStats.byStatus.queued || 0,
       runningJobs: operationJobStats.byStatus.running || 0,
       failedJobs: operationJobStats.byStatus.failed || 0,
+      quarantinedJobs: operationJobStats.byStatus.quarantined || 0,
       runnableJobs: operationJobStats.runnable,
       expiredLeases: operationJobStats.expiredLeases,
       staleWorkflows: workflowHealth.staleRunnable,
@@ -362,6 +366,15 @@ export async function getOperationsOverview(options: { tenantId?: string } = {})
       toolExecutions,
       agentRuns: agentRuns.map(publicAgentRun),
       operationJobs: operationJobStats.latest,
+      quarantinedJobs: quarantinedJobs.map((job) => ({
+        id: job.id,
+        type: job.type,
+        attempt: job.attempt,
+        maxAttempts: job.maxAttempts,
+        leaseLapses: job.leaseLapses || 0,
+        lastError: job.lastError,
+        updatedAt: job.updatedAt,
+      })),
       recoveryEvents,
       connectors: [...mcpConnectors, ...openApiConnectors]
         .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))

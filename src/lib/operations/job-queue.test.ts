@@ -854,3 +854,545 @@ describe("operation job queue (file mode)", () => {
     }
   });
 });
+
+describe("operation job quarantine (file mode)", () => {
+  // Leases the job, lets the lease lapse, and settles the lapse.
+  async function lapse(
+    queue: typeof import("@/lib/operations/job-queue"),
+    tenantId: string,
+    dedupeKey: string,
+  ) {
+    const [leased] = await queue.leaseOperationJobs({ tenantId, dedupeKey, leaseSeconds: 10 });
+    expect(leased?.status).toBe("running");
+    vi.setSystemTime(Date.now() + 11_000);
+    await queue.repairExpiredOperationJobs({ tenantId });
+    return leased;
+  }
+
+  async function quarantinedJob(
+    tenantId: string,
+    dedupeKey: string,
+    input: {
+      type?: "memory.consolidate" | "workflow.tick" | "agent.execute" | "agent.resume";
+      payload?: Record<string, unknown>;
+    } = {},
+  ) {
+    const queue = await import("@/lib/operations/job-queue");
+    const job = await queue.enqueueOperationJob({
+      tenantId,
+      type: input.type || "memory.consolidate",
+      dedupeKey,
+      payload: input.payload || { request: { memoryId: "private-memory" } },
+      maxAttempts: 10,
+    });
+    for (let count = 0; count < queue.OPERATION_JOB_QUARANTINE_LAPSES; count += 1) {
+      await lapse(queue, tenantId, dedupeKey);
+    }
+    const quarantined = await queue.getOperationJob(job.id, { tenantId });
+    expect(quarantined?.status).toBe("quarantined");
+    return quarantined!;
+  }
+
+  async function streamTypes(jobId: string, tenantId: string) {
+    const [{ listStreamEvents }, queue] = await Promise.all([
+      import("@/lib/events/store"),
+      import("@/lib/operations/job-queue"),
+    ]);
+    return (await listStreamEvents(queue.operationJobStreamId(jobId), { tenantId }))
+      .map((event) => ({ type: event.type, actorId: event.actorId, payload: event.payload }));
+  }
+
+  it("redelivers a lapsed job until three lapses in a row quarantine it", async () => {
+    const queue = await import("@/lib/operations/job-queue");
+    const tenantId = "tenant-quarantine-lapses";
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const job = await queue.enqueueOperationJob({
+        tenantId,
+        type: "memory.consolidate",
+        dedupeKey: "lapsing",
+        payload: { request: { memoryId: "memory-a" } },
+        maxAttempts: 10,
+      });
+      await lapse(queue, tenantId, "lapsing");
+      await expect(queue.getOperationJob(job.id, { tenantId })).resolves.toMatchObject({
+        status: "queued",
+        attempt: 1,
+        leaseLapses: 1,
+        lastError: "Lease expired before completion.",
+      });
+      await lapse(queue, tenantId, "lapsing");
+      await expect(queue.getOperationJob(job.id, { tenantId })).resolves.toMatchObject({
+        status: "queued",
+        leaseLapses: 2,
+      });
+      expect(await streamTypes(job.id, tenantId)).toEqual([]);
+
+      await lapse(queue, tenantId, "lapsing");
+      const quarantined = await queue.getOperationJob(job.id, { tenantId });
+      expect(quarantined).toMatchObject({
+        status: "quarantined",
+        attempt: 3,
+        leaseLapses: 3,
+        lastError: queue.OPERATION_JOB_QUARANTINE_ERROR,
+        payload: { request: { memoryId: "memory-a" } },
+        completedAt: expect.any(String),
+      });
+      expect(quarantined?.leaseOwner).toBeUndefined();
+      expect(await queue.leaseOperationJobs({ tenantId })).toEqual([]);
+      expect(await streamTypes(job.id, tenantId)).toEqual([{
+        type: "operation.job.quarantined",
+        actorId: "system",
+        payload: expect.objectContaining({
+          jobId: job.id,
+          jobType: "memory.consolidate",
+          attempt: 3,
+          maxAttempts: 10,
+          leaseLapses: 3,
+        }),
+      }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("quarantines a workflow tick, which otherwise always redelivers", async () => {
+    const queue = await import("@/lib/operations/job-queue");
+    const tenantId = "tenant-quarantine-tick";
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const tick = await queue.enqueueOperationJob({
+        tenantId,
+        type: "workflow.tick",
+        dedupeKey: "workflow:run-q",
+        payload: { workflowRunId: "run-q" },
+        maxAttempts: 1,
+      });
+      await lapse(queue, tenantId, "workflow:run-q");
+      await lapse(queue, tenantId, "workflow:run-q");
+      await expect(queue.getOperationJob(tick.id, { tenantId })).resolves.toMatchObject({
+        status: "queued",
+        attempt: 2,
+        leaseLapses: 2,
+      });
+      await lapse(queue, tenantId, "workflow:run-q");
+      await expect(queue.getOperationJob(tick.id, { tenantId })).resolves.toMatchObject({
+        status: "quarantined",
+      });
+      await expect(queue.listActiveWorkflowTickRunIds({ tenantId })).resolves.toEqual(
+        new Set(["run-q"]),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears the count when the worker reports any outcome", async () => {
+    const queue = await import("@/lib/operations/job-queue");
+    const tenantId = "tenant-quarantine-outcomes";
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const job = await queue.enqueueOperationJob({
+        tenantId,
+        type: "memory.consolidate",
+        dedupeKey: "outcomes",
+        payload: {},
+        maxAttempts: 20,
+      });
+      const twoLapsesThen = async (report: (leased: Awaited<ReturnType<typeof lapse>>) => Promise<unknown>) => {
+        await lapse(queue, tenantId, "outcomes");
+        await lapse(queue, tenantId, "outcomes");
+        const [leased] = await queue.leaseOperationJobs({ tenantId, dedupeKey: "outcomes", leaseSeconds: 10 });
+        expect(leased.leaseLapses).toBe(2);
+        await report(leased);
+        const reported = await queue.getOperationJob(job.id, { tenantId });
+        expect(reported?.leaseLapses).toBe(0);
+        return reported;
+      };
+
+      await expect(twoLapsesThen((leased) =>
+        queue.failOperationJob(job.id, "transient", leased.leaseOwner, tenantId)
+      )).resolves.toMatchObject({ status: "queued" });
+      vi.setSystemTime(Date.now() + 3_600_000);
+
+      await expect(twoLapsesThen((leased) =>
+        queue.deferOperationJob(job.id, leased.leaseOwner!, { tenantId, delaySeconds: 0 })
+      )).resolves.toMatchObject({ status: "queued" });
+      vi.setSystemTime(Date.now() + 1_000);
+
+      await expect(twoLapsesThen((leased) =>
+        queue.completeOperationJob(job.id, leased.leaseOwner, tenantId)
+      )).resolves.toMatchObject({ status: "completed" });
+      expect(await streamTypes(job.id, tenantId)).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the count across heartbeats, which report no outcome", async () => {
+    const queue = await import("@/lib/operations/job-queue");
+    const tenantId = "tenant-quarantine-heartbeat";
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const job = await queue.enqueueOperationJob({
+        tenantId,
+        type: "memory.consolidate",
+        dedupeKey: "heartbeat",
+        payload: {},
+        maxAttempts: 10,
+      });
+      await lapse(queue, tenantId, "heartbeat");
+      await lapse(queue, tenantId, "heartbeat");
+      const [leased] = await queue.leaseOperationJobs({ tenantId, dedupeKey: "heartbeat", leaseSeconds: 10 });
+      await queue.heartbeatOperationJob(job.id, leased.leaseOwner!, { tenantId, leaseSeconds: 10 });
+      vi.setSystemTime(Date.now() + 11_000);
+      await queue.repairExpiredOperationJobs({ tenantId });
+
+      await expect(queue.getOperationJob(job.id, { tenantId })).resolves.toMatchObject({
+        status: "quarantined",
+        leaseLapses: 3,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("counts a lapse before any path revives the job, so the third quarantines it there", async () => {
+    const queue = await import("@/lib/operations/job-queue");
+    const tenantId = "tenant-quarantine-paths";
+    const otherTenantId = "tenant-quarantine-paths-other";
+    const revivals = {
+      enqueue: (dedupeKey: string) => queue.enqueueOperationJob({
+        tenantId,
+        type: "memory.consolidate",
+        dedupeKey,
+        payload: {},
+      }),
+      wake: (dedupeKey: string) => queue.wakeOperationJobByDedupeKey(dedupeKey, { tenantId }),
+      requeue: (dedupeKey: string) =>
+        queue.requeueOperationJobByDedupeKey(dedupeKey, "again", { tenantId }),
+      lease: (dedupeKey: string) => queue.leaseOperationJobByDedupeKey(dedupeKey, {
+        tenantId,
+        type: "memory.consolidate",
+      }),
+    };
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const other = await queue.enqueueOperationJob({
+        tenantId: otherTenantId,
+        type: "memory.consolidate",
+        dedupeKey: "enqueue",
+        payload: {},
+      });
+      await queue.leaseOperationJobs({ tenantId: otherTenantId, leaseSeconds: 10 });
+
+      // An idempotent enqueue revives nothing, so it leaves the lapse to
+      // repair.
+      const idle = await queue.enqueueOperationJob({
+        tenantId,
+        type: "memory.consolidate",
+        dedupeKey: "idempotent",
+        payload: {},
+      });
+      await queue.leaseOperationJobs({ tenantId, dedupeKey: "idempotent", leaseSeconds: 10 });
+      vi.setSystemTime(Date.now() + 11_000);
+      await expect(queue.enqueueOperationJob({
+        tenantId,
+        type: "memory.consolidate",
+        dedupeKey: "idempotent",
+        payload: {},
+        dedupeMode: "idempotent",
+      })).resolves.toMatchObject({ id: idle.id, status: "running" });
+
+      for (const [path, revive] of Object.entries(revivals)) {
+        const job = await queue.enqueueOperationJob({
+          tenantId,
+          type: "memory.consolidate",
+          dedupeKey: path,
+          payload: {},
+          maxAttempts: 10,
+        });
+        await lapse(queue, tenantId, path);
+        await lapse(queue, tenantId, path);
+        await queue.leaseOperationJobs({ tenantId, dedupeKey: path, leaseSeconds: 10 });
+        vi.setSystemTime(Date.now() + 11_000);
+
+        await revive(path);
+
+        await expect(queue.getOperationJob(job.id, { tenantId }), path).resolves.toMatchObject({
+          status: "quarantined",
+          leaseLapses: 3,
+        });
+        expect(await streamTypes(job.id, tenantId), path).toEqual([
+          expect.objectContaining({ type: "operation.job.quarantined" }),
+        ]);
+      }
+      // Another tenant's lapsed lease is its own to settle.
+      const untouched = await queue.getOperationJob(other.id, { tenantId: otherTenantId });
+      expect(untouched).toMatchObject({ status: "running", attempt: 1 });
+      expect(untouched?.leaseLapses).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never revives a quarantined job through enqueue, wake, requeue or an owner's lease", async () => {
+    const queue = await import("@/lib/operations/job-queue");
+    const tenantId = "tenant-quarantine-revival";
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const job = await quarantinedJob(tenantId, "revival");
+
+      await expect(queue.enqueueOperationJob({
+        tenantId,
+        type: "memory.consolidate",
+        dedupeKey: "revival",
+        payload: { request: { memoryId: "new-request" } },
+      })).resolves.toMatchObject({ id: job.id, status: "quarantined" });
+      await expect(queue.wakeOperationJobByDedupeKey("revival", { tenantId })).resolves.toEqual([]);
+      await expect(queue.requeueOperationJobByDedupeKey("revival", "again", { tenantId })).resolves.toEqual([]);
+      await expect(queue.leaseOperationJobByDedupeKey("revival", {
+        tenantId,
+        type: "memory.consolidate",
+      })).resolves.toEqual({ outcome: "busy" });
+      await expect(queue.leaseOperationJobs({ tenantId })).resolves.toEqual([]);
+
+      await expect(queue.getOperationJob(job.id, { tenantId })).resolves.toMatchObject({
+        status: "quarantined",
+        attempt: 3,
+        payload: { request: { memoryId: "private-memory" } },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancels a quarantined job for an owner that no longer wants its work", async () => {
+    const queue = await import("@/lib/operations/job-queue");
+    const tenantId = "tenant-quarantine-cancel";
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const job = await quarantinedJob(tenantId, "workflow:run-c", {
+        type: "workflow.tick",
+        payload: { workflowRunId: "run-c" },
+      });
+
+      await expect(queue.cancelOperationJobByDedupeKey(
+        "workflow:run-c",
+        "Workflow canceled.",
+        { tenantId },
+      )).resolves.toMatchObject([{ id: job.id, status: "canceled", lastError: "Workflow canceled." }]);
+      await expect(queue.releaseQuarantinedOperationJob(job.id, { tenantId })).resolves.toMatchObject({
+        outcome: "not_quarantined",
+      });
+      await expect(queue.listActiveWorkflowTickRunIds({ tenantId })).resolves.toEqual(new Set());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("releases a quarantined job to run again from its first attempt", async () => {
+    const queue = await import("@/lib/operations/job-queue");
+    const tenantId = "tenant-quarantine-release";
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const job = await quarantinedJob(tenantId, "release");
+      vi.setSystemTime(Date.now() + 1_000);
+
+      const released = await queue.releaseQuarantinedOperationJob(job.id, {
+        tenantId,
+        actorId: "operator-a",
+      });
+      expect(released).toMatchObject({
+        outcome: "released",
+        job: { id: job.id, status: "queued", attempt: 0, leaseLapses: 0 },
+      });
+      expect(released.outcome === "released" && released.job.lastError).toBeUndefined();
+      await expect(queue.releaseQuarantinedOperationJob(job.id, { tenantId })).resolves.toMatchObject({
+        outcome: "not_quarantined",
+      });
+
+      const [leased] = await queue.leaseOperationJobs({ tenantId, dedupeKey: "release" });
+      expect(leased).toMatchObject({
+        id: job.id,
+        attempt: 1,
+        payload: { request: { memoryId: "private-memory" } },
+      });
+      expect(await streamTypes(job.id, tenantId)).toEqual([
+        expect.objectContaining({ type: "operation.job.quarantined" }),
+        {
+          type: "operation.job.released",
+          actorId: "operator-a",
+          payload: expect.objectContaining({ jobId: job.id, attempt: 3, leaseLapses: 3 }),
+        },
+      ]);
+
+      // A released job that keeps crashing is quarantined again, as a new
+      // event.
+      vi.setSystemTime(Date.now() + 121_000);
+      await queue.repairExpiredOperationJobs({ tenantId });
+      await lapse(queue, tenantId, "release");
+      await lapse(queue, tenantId, "release");
+      expect((await streamTypes(job.id, tenantId)).map((event) => event.type)).toEqual([
+        "operation.job.quarantined",
+        "operation.job.released",
+        "operation.job.quarantined",
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("discards a background job without its request, and leaves run-owned jobs to their run", async () => {
+    const queue = await import("@/lib/operations/job-queue");
+    const tenantId = "tenant-quarantine-discard";
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const job = await quarantinedJob(tenantId, "discard", {
+        payload: { request: { memoryId: "private-memory" }, progress: { stage: "indexing" }, __rerunRequested: true },
+      });
+      const tick = await quarantinedJob(tenantId, "workflow:run-d", {
+        type: "workflow.tick",
+        payload: { workflowRunId: "run-d" },
+      });
+
+      const discarded = await queue.discardQuarantinedOperationJob(job.id, {
+        tenantId,
+        actorId: "operator-a",
+        reason: "Poison input.",
+      });
+      expect(discarded).toMatchObject({
+        outcome: "discarded",
+        job: { status: "canceled", lastError: "Poison input.", payload: { progress: { stage: "indexing" } } },
+      });
+      const stored = await queue.getOperationJob(job.id, { tenantId });
+      expect(stored?.payload).toEqual({ progress: { stage: "indexing" } });
+      expect(stored?.completedAt).toBeDefined();
+      expect(await streamTypes(job.id, tenantId)).toEqual([
+        expect.objectContaining({ type: "operation.job.quarantined" }),
+        expect.objectContaining({ type: "operation.job.discarded", actorId: "operator-a" }),
+      ]);
+
+      await expect(queue.discardQuarantinedOperationJob(tick.id, { tenantId })).resolves.toMatchObject({
+        outcome: "owned_by_run",
+      });
+      await expect(queue.getOperationJob(tick.id, { tenantId })).resolves.toMatchObject({
+        status: "quarantined",
+      });
+      for (const type of ["agent.execute", "agent.resume"] as const) {
+        const agentJob = await quarantinedJob(tenantId, `discard-${type}`, {
+          type,
+          payload: { runId: `run-${type}` },
+        });
+        await expect(queue.discardQuarantinedOperationJob(agentJob.id, { tenantId }))
+          .resolves.toMatchObject({ outcome: "owned_by_run" });
+      }
+      await expect(queue.discardQuarantinedOperationJob(tick.id, {
+        tenantId: "tenant-quarantine-other",
+      })).resolves.toEqual({ outcome: "absent" });
+      await expect(queue.discardQuarantinedOperationJob("job-missing", { tenantId })).resolves.toEqual({
+        outcome: "absent",
+      });
+      // The operator may still release a job its run owns.
+      await expect(queue.releaseQuarantinedOperationJob(tick.id, { tenantId })).resolves.toMatchObject({
+        outcome: "released",
+        job: { id: tick.id, status: "queued" },
+      });
+      const defaultReason = await quarantinedJob(tenantId, "discard-default");
+      await expect(queue.discardQuarantinedOperationJob(defaultReason.id, { tenantId })).resolves.toMatchObject({
+        job: { lastError: "Discarded from quarantine by an operator." },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows quarantined jobs to stats, recovery, the overview and status reads", async () => {
+    const queue = await import("@/lib/operations/job-queue");
+    const tenantId = "tenant-quarantine-reads";
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const job = await quarantinedJob(tenantId, "reads");
+      vi.setSystemTime(Date.now() + 1_000);
+      const newer = await queue.enqueueOperationJob({
+        tenantId,
+        type: "memory.consolidate",
+        dedupeKey: "newer",
+        payload: {},
+      });
+
+      const stats = await queue.getOperationJobStats({ tenantId });
+      expect(stats.byStatus.quarantined).toBe(1);
+      expect((await queue.listOperationJobRecoveryRows(1, { tenantId })).map((row) => row.id))
+        .toEqual([newer.id, job.id]);
+      expect((await queue.listQuarantinedOperationJobs(10, { tenantId })).map((item) => item.id))
+        .toEqual([job.id]);
+      expect(queue.projectOperationJobStatus(job)).toMatchObject({
+        status: "failed",
+        quarantined: true,
+      });
+      expect(queue.projectOperationJobStatus(newer)).not.toHaveProperty("quarantined");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps actor-private quarantined jobs off the tenant-wide list", async () => {
+    const queue = await import("@/lib/operations/job-queue");
+    const tenantId = "tenant-quarantine-private";
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const job = await queue.enqueueOperationJob({
+        tenantId,
+        type: "conversation.summary.enrich",
+        dedupeKey: "private",
+        payload: { actorId: "owner-a" },
+        maxAttempts: 10,
+      });
+      for (let count = 0; count < queue.OPERATION_JOB_QUARANTINE_LAPSES; count += 1) {
+        await lapse(queue, tenantId, "private");
+      }
+
+      await expect(queue.getOperationJob(job.id, { tenantId })).resolves.toMatchObject({
+        status: "quarantined",
+      });
+      await expect(queue.listQuarantinedOperationJobs(10, { tenantId })).resolves.toEqual([]);
+      expect((await queue.getOperationJobStats({ tenantId })).byStatus.quarantined).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a quarantined job when the ledger trims finished work", async () => {
+    const queue = await import("@/lib/operations/job-queue");
+    const dataDir = process.env.OMNIAGENT_DATA_DIR;
+    process.env.OMNIAGENT_DATA_DIR = await mkdtemp(path.join(tmpdir(), "omni-queue-trim-"));
+    const tenantId = "tenant-quarantine-trim";
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const job = await quarantinedJob(tenantId, "trim");
+      const { writeFile, readFile } = await import("node:fs/promises");
+      const file = path.join(process.env.OMNIAGENT_DATA_DIR, "operation-jobs.json");
+      const ledger = JSON.parse(await readFile(file, "utf8")) as { jobs: Record<string, unknown>[] };
+      const later = Date.now() + 1_000;
+      const finished = Array.from({ length: 500 }, (_, index) => ({
+        ...ledger.jobs[0],
+        id: `finished-${index}`,
+        dedupeKey: `finished-${index}`,
+        status: "completed",
+        updatedAt: new Date(later + index).toISOString(),
+      }));
+      await writeFile(file, JSON.stringify({ jobs: [...finished, ...ledger.jobs] }));
+      vi.setSystemTime(later + 10_000);
+
+      await queue.enqueueOperationJob({ tenantId, type: "memory.consolidate", dedupeKey: "trigger", payload: {} });
+
+      await expect(queue.getOperationJob(job.id, { tenantId })).resolves.toMatchObject({
+        status: "quarantined",
+      });
+    } finally {
+      vi.useRealTimers();
+      process.env.OMNIAGENT_DATA_DIR = dataDir;
+    }
+  });
+});

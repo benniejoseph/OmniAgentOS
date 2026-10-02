@@ -12,10 +12,29 @@ import {
   type OAuthSourceCoverageCheckpoint,
 } from "@/lib/connectors/oauth-store";
 import { getActiveGoogleWorkspaceAccess } from "@/lib/connectors/google-workspace-access";
+import { GOOGLE_SOURCE_ADAPTERS } from "@/lib/connectors/google-source-adapters";
+import { googleSyncSourcesForScopes } from "@/lib/connectors/google-workspace-capabilities";
 import {
-  googleSyncSourcesForScopes,
-  type GoogleWorkspaceCapability,
-} from "@/lib/connectors/google-workspace-capabilities";
+  deferSourceItem,
+  dueSourceItems,
+  noteSourceItemChange,
+  quarantinedSourceItem,
+  readSourceItemQuarantine,
+  recordSourceItemFailure,
+  releaseSourceItem,
+  settleSourceItems,
+  sourceItemQuarantineValue,
+  type QuarantinedSourceItem,
+  type SourceItemQuarantine,
+} from "@/lib/connectors/source-item-quarantine";
+import {
+  advanceSourceDocumentSweep,
+  readSourceDocumentSweep,
+  sourceDocumentSliceStops,
+  startSourceDocumentSweep,
+  SOURCE_DOCUMENT_SWEEP,
+  type SourceDocumentSweep,
+} from "@/lib/connectors/source-document-sweep";
 import { observeGoogleDriveCanonicalMetadata } from "@/lib/connectors/google-drive-canonical";
 import { observeGoogleDriveShadow } from "@/lib/connectors/google-drive-shadow";
 import { extractCaptureFile } from "@/lib/capture/files";
@@ -25,6 +44,8 @@ import {
   getActorOwnedKnowledgeForCognition,
   getCanonicalKnowledgeEvidenceByChunkIds,
   getKnowledgeDocumentByIdempotencyKey,
+  knowledgeDocumentId,
+  listKnowledgeDocumentsBySourcePrefix,
 } from "@/lib/rag/store";
 import { normalizeTextForChunking } from "@/lib/rag/chunk";
 import {
@@ -33,6 +54,7 @@ import {
   type GoogleCalendarMeetingEvent,
 } from "@/lib/meetings/google-calendar-projection";
 import { createExecutionScope } from "@/lib/security/execution-scope";
+import { appendScopedDomainEvent } from "@/lib/events/store";
 import { mapInboundCommunication } from "@/lib/communications/store";
 import { sourceContractSha256 } from "@/lib/sources/contracts";
 import { KNOWLEDGE_COGNIFY_PURPOSE_ID } from "@/lib/sources/purposes";
@@ -64,16 +86,20 @@ type SyncCursor = {
   driveChangesFence?: string;
   driveChangesStartPageToken?: string;
   driveChangesPageToken?: string;
+  /** Each source's items set aside after they kept failing. */
+  itemQuarantine?: Record<string, unknown>;
+  /** Each source's check of the documents it held when it started over. */
+  documentSweep?: Record<string, unknown>;
 };
 
-const GMAIL_ITEM_PAGE_SIZE = 5;
+const GMAIL_ITEM_PAGE_SIZE = GOOGLE_SOURCE_ADAPTERS.mail.pageLimit;
 const GMAIL_HISTORY_RECORD_PAGE_SIZE = 10;
 const GMAIL_PENDING_ITEM_LIMIT = 5_000;
 // Anyone can land mail in spam, and trash is mail the owner discarded, so
 // knowledge holds neither.
 const GMAIL_EXCLUDED_LABEL_IDS = new Set(["SPAM", "TRASH"]);
-const CALENDAR_ITEM_PAGE_SIZE = 10;
-const DRIVE_ITEM_PAGE_SIZE = 3;
+const CALENDAR_ITEM_PAGE_SIZE = GOOGLE_SOURCE_ADAPTERS.calendar.pageLimit;
+const DRIVE_ITEM_PAGE_SIZE = GOOGLE_SOURCE_ADAPTERS.drive.pageLimit;
 const GOOGLE_DRIVE_FILE_FIELDS =
   "id,name,mimeType,createdTime,modifiedTime,version,headRevisionId,webViewLink,description,trashed,size,fileExtension,ownedByMe";
 const GOOGLE_DRIVE_REVISION_MARKER_KEY = "googleDriveProviderRevision";
@@ -118,8 +144,13 @@ type GoogleSourceObservation = Readonly<{
   source: PersonalSourceId;
   items: SyncItem[];
   cursor: Partial<SyncCursor>;
+  /** The source started over from a fresh listing. */
+  relisted?: true;
 }>;
-type GoogleSourcePage = Pick<GoogleSourceObservation, "items" | "cursor">;
+type GoogleSourcePage = Pick<
+  GoogleSourceObservation,
+  "items" | "cursor" | "relisted"
+>;
 type GoogleSourceObservationSettlement = Readonly<
   | {
       source: PersonalSourceId;
@@ -148,6 +179,13 @@ type GoogleDriveSyncIdentity = Readonly<{
 type GoogleDriveRevisionMarker = Readonly<{
   schemaVersion: typeof GOOGLE_DRIVE_REVISION_MARKER_VERSION;
   snapshotSha256: string;
+}>;
+type SourceItemOutcome = "imported" | "removed" | "skipped";
+type SourceItemEvent = Readonly<{
+  id: string;
+  streamId: string;
+  type: string;
+  payload: Record<string, unknown>;
 }>;
 
 function googleConnectionSourceNamespace(grant: NormalizedOAuthGrant) {
@@ -263,30 +301,36 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
       parseCursor(secrets.syncCursor),
       grantedSources,
     );
+    const sourceNamespace = googleConnectionSourceNamespace(secrets.grant);
+    const sourceIdentity: GoogleDriveSyncIdentity = {
+      tenantId: input.tenantId,
+      actorId: input.actorId,
+      provider: input.provider,
+      idempotencyPrefix: sourceNamespace.idempotencyPrefix,
+    };
+    let providerHeaders: Record<string, string> = {};
     let observations: readonly GoogleSourceObservationSettlement[] = [];
     if (grantedSources.length) {
       const { accessToken } = await getActiveGoogleWorkspaceAccess({
         tenantId: input.tenantId,
         actorId: input.actorId,
         connectionId: secrets.grant.id,
-        capability: sourceCapability(grantedSources[0]),
+        capability: GOOGLE_SOURCE_ADAPTERS[grantedSources[0]].capability,
       });
       if (grantedSources.includes("drive")) {
         driveSidecarAccessToken = accessToken;
       }
+      providerHeaders = {
+        authorization: `Bearer ${accessToken}`,
+        accept: "application/json",
+      };
       sourceObservationStarted = true;
       observations = await observeGoogleSources(
-        accessToken,
+        providerHeaders,
         cursor,
         grantedSources,
         input.abortSignal,
-        {
-          tenantId: input.tenantId,
-          actorId: input.actorId,
-          provider: input.provider,
-          idempotencyPrefix:
-            googleConnectionSourceNamespace(secrets.grant).idempotencyPrefix,
-        },
+        sourceIdentity,
       );
     }
     const sourceExecutionScope = createExecutionScope({
@@ -306,6 +350,297 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
     let nextCursor = { ...cursor };
     const sources: PersonalSourceSettlement[] = [];
     let fenceLost = false;
+    // Settles one provider item into knowledge: retires it when its source no
+    // longer offers it, and otherwise ingests its current revision.
+    const settleSourceItem = async (item: SyncItem): Promise<SourceItemOutcome> => {
+      const idempotencyKey = `${sourceNamespace.idempotencyPrefix}:${item.kind}:${item.id}`;
+      if (item.excluded) {
+        // Retirement is a heavy transaction, and most excluded items were
+        // never indexed; one indexed earlier, before a move to trash for
+        // example, is retired.
+        if (!await getKnowledgeDocumentByIdempotencyKey(idempotencyKey, {
+          tenantId: input.tenantId,
+        })) return "skipped";
+        await deleteKnowledgeDocumentByIdempotencyKey(idempotencyKey, {
+          tenantId: input.tenantId,
+          executionScope: sourceExecutionScope,
+        });
+        return "removed";
+      }
+      if (item.deleted) {
+        if (item.kind === "calendar") {
+          const existingDocument = await getKnowledgeDocumentByIdempotencyKey(
+            idempotencyKey,
+            { tenantId: input.tenantId },
+          );
+          if (existingDocument?.sourceItemId) {
+            await cancelGoogleCalendarMeeting({
+              tenantId: input.tenantId,
+              actorId: input.actorId,
+              sourceItemId: existingDocument.sourceItemId,
+              sourceExecutionScope,
+              providerRevisionId: item.providerRevisionId || item.id,
+            });
+          }
+        }
+        await deleteKnowledgeDocumentByIdempotencyKey(idempotencyKey, {
+          tenantId: input.tenantId,
+          executionScope: sourceExecutionScope,
+        });
+        return "removed";
+      }
+      if (!item.content.trim()) return "skipped";
+      if (!item.capturedAt) {
+        throw new Error(
+          `Google ${item.kind} item is missing a canonical provider timestamp.`,
+        );
+      }
+      const capturedAt = item.capturedAt;
+      const existingCalendarDocument = item.calendarEvent
+        ? await getKnowledgeDocumentByIdempotencyKey(idempotencyKey, {
+            tenantId: input.tenantId,
+          })
+        : undefined;
+      let projectedExistingCalendar = false;
+      if (
+        item.calendarEvent &&
+        existingCalendarDocument?.sourceItemId &&
+        existingCalendarDocument.sourceRevisionId
+      ) {
+        // Calendar-to-Meeting projection is deliberately independent of
+        // the heavier embedding/canonicalization repair below. Existing
+        // Calendar evidence can therefore make the Meetings page current
+        // immediately, even while knowledge backfill continues.
+        await projectGoogleCalendarMeeting({
+          tenantId: input.tenantId,
+          actorId: input.actorId,
+          event: item.calendarEvent,
+          sourceItemId: existingCalendarDocument.sourceItemId,
+          sourceRevisionId: existingCalendarDocument.sourceRevisionId,
+          sourceExecutionScope,
+          providerRevisionId: item.providerRevisionId || item.id,
+        });
+        projectedExistingCalendar = true;
+      }
+      const ingest = () => ingestTextDocument({
+        idempotencyKey,
+        tenantId: input.tenantId,
+        title: item.title,
+        content: item.content,
+        source: `${sourceNamespace.sourcePrefix}:${item.kind}:${item.id}`,
+        sourceType: "api",
+        tags: ["connected-source", input.provider, item.kind],
+        metadata: item.metadata,
+        abortSignal: input.abortSignal,
+        // Provider backfills can touch several documents in one bounded
+        // page. Persist canonical evidence immediately; cognition owns
+        // semantic memory while the graph queue remains coalesced.
+        deferMemoryGraphIndex: true,
+        // A retry after the document commit must replay communication,
+        // meeting, entity, and graph projections without purchasing the
+        // same exact revision's embeddings again.
+        reuseExactCommittedRevision: true,
+        usageScope: {
+          tenantId: input.tenantId,
+          actorId: input.actorId,
+          sourceStreamId: `connector-sync:${input.provider}:${input.actorId}:${secrets.grant.id}:${item.kind}`,
+          operation: "embedding",
+          purpose: `connector.${input.provider}.${item.kind}.ingest`,
+          credentialSource: "deployment_environment",
+        },
+        sourceLineage: {
+          executionScope: sourceExecutionScope,
+          connectionId: secrets.grant.id,
+          adapterId: GOOGLE_SOURCE_ADAPTERS[item.kind].adapterId,
+          adapterVersionId: GOOGLE_SOURCE_ADAPTERS[item.kind].adapterVersionId,
+          externalItemId: `${item.kind}:${item.id}`,
+          providerRevisionId: item.providerRevisionId || null,
+          sourceKind: GOOGLE_SOURCE_ADAPTERS[item.kind].sourceKind,
+          sourceCreatedAt: item.sourceCreatedAt || null,
+          sourceUpdatedAt: item.sourceUpdatedAt || null,
+          capturedAt,
+        },
+      });
+      let knowledge;
+      try {
+        knowledge = await ingest();
+      } catch (error) {
+        if (!isReplaceableKnowledgeConflict(error)) throw error;
+        // Knowledge ids are stable for a provider item. If the provider
+        // publishes a new revision, retire the old derived document and
+        // retry the same governed ingest instead of binding one immutable
+        // id to two payloads.
+        await deleteKnowledgeDocumentByIdempotencyKey(idempotencyKey, {
+          tenantId: input.tenantId,
+          executionScope: sourceExecutionScope,
+        });
+        input.abortSignal?.throwIfAborted();
+        knowledge = await ingest();
+      }
+      if (
+        item.calendarEvent &&
+        !projectedExistingCalendar &&
+        knowledge?.document?.sourceItemId &&
+        knowledge.document.sourceRevisionId
+      ) {
+        await projectGoogleCalendarMeeting({
+          tenantId: input.tenantId,
+          actorId: input.actorId,
+          event: item.calendarEvent,
+          sourceItemId: knowledge.document.sourceItemId,
+          sourceRevisionId: knowledge.document.sourceRevisionId,
+          sourceExecutionScope,
+          providerRevisionId: item.providerRevisionId || item.id,
+        });
+      }
+      if (item.communication) {
+        await mapInboundCommunication({
+          ...item.communication,
+          providerMessageId: sourceNamespace.externalPrefix
+            ? `${sourceNamespace.externalPrefix}:${item.communication.providerMessageId}`
+            : item.communication.providerMessageId,
+          externalThreadId: sourceNamespace.externalPrefix
+            ? `${sourceNamespace.externalPrefix}:${item.communication.externalThreadId}`
+            : item.communication.externalThreadId,
+        }, {
+          tenantId: input.tenantId,
+          actorId: input.actorId,
+          executionScope: sourceExecutionScope,
+        });
+      }
+      return "imported";
+    };
+    const sourceItemEvents: SourceItemEvent[] = [];
+    // Records the set-aside decisions a write just made durable. The cursor
+    // holds each decision, so an event that fails to append loses only the
+    // record of it.
+    const recordSourceItemEvents = async () => {
+      for (const event of sourceItemEvents.splice(0)) {
+        try {
+          await appendScopedDomainEvent({
+            ...event,
+            executionScope: sourceExecutionScope,
+          });
+        } catch (error) {
+          console.warn(JSON.stringify({
+            level: "warn",
+            event: "connector.source_item.event_failed",
+            type: event.type,
+            diagnostic: safeSourceSyncError(error),
+          }));
+        }
+      }
+    };
+    // Checks one slice of the documents a source held when it started over,
+    // and retires those whose item left the source meanwhile. A slice that
+    // fails to check leaves the sweep where it was for the next sync.
+    const sweepSourceDocuments = async (
+      source: PersonalSourceId,
+      sweep: SourceDocumentSweep,
+      count: (outcome: SourceItemOutcome) => void,
+    ): Promise<SourceDocumentSweep | undefined> => {
+      const prefix = `${sourceNamespace.sourcePrefix}:${source}:`;
+      const presence = async (id: string): Promise<GoogleSourcePresence> => {
+        try {
+          return await googleSourcePresence(
+            source,
+            id,
+            providerHeaders,
+            input.abortSignal,
+          );
+        } catch (error) {
+          if (
+            isPersonalSyncInterruption(error, input.abortSignal) ||
+            personalSourceFailureCode(error) !== "processing_failed"
+          ) throw error;
+          return "unknown";
+        }
+      };
+      try {
+        const listed = await listKnowledgeDocumentsBySourcePrefix(prefix, {
+          tenantId: input.tenantId,
+          createdBefore: sweep.since,
+          after: sweep.after,
+          limit: SOURCE_DOCUMENT_SWEEP.slice,
+        });
+        const checked: Array<Readonly<{ id: string; presence: GoogleSourcePresence }>> = [];
+        for (
+          let start = 0;
+          start < listed.length;
+          start += SOURCE_DOCUMENT_SWEEP.concurrency
+        ) {
+          checked.push(...await Promise.all(listed
+            .slice(start, start + SOURCE_DOCUMENT_SWEEP.concurrency)
+            .map(async (document) => {
+              const id = document.source.slice(prefix.length);
+              // Only a document this connection's sync wrote for the item
+              // is checked; any other is left as it is.
+              return {
+                id,
+                presence: id && knowledgeDocumentId(
+                  input.tenantId,
+                  `${sourceNamespace.idempotencyPrefix}:${source}:${id}`,
+                ) === document.id
+                  ? await presence(id)
+                  : "unknown" as const,
+              };
+            })));
+        }
+        const present = checked.filter((document) =>
+          document.presence === "present"
+        ).length;
+        const gone = checked.filter((document) =>
+          document.presence === "deleted" || document.presence === "excluded"
+        );
+        if (sourceDocumentSliceStops(sweep, { present, gone: gone.length })) {
+          sourceItemEvents.push(sourceSweepEvent(
+            "stopped",
+            secrets.grant.id,
+            source,
+            sweep,
+            { wouldRemove: gone.length },
+          ));
+          return undefined;
+        }
+        for (const document of gone) {
+          count(await settleSourceItem({
+            id: document.id,
+            kind: source,
+            title: "Removed source item",
+            content: "",
+            ...(document.presence === "deleted"
+              ? { deleted: true }
+              : { excluded: true }),
+          }));
+        }
+        const next = advanceSourceDocumentSweep(sweep, {
+          listed: listed.length,
+          lastId: listed.at(-1)?.id,
+          present,
+          gone: gone.length,
+        });
+        if (!next.finished) return next.sweep;
+        if (next.sweep.checked) {
+          sourceItemEvents.push(sourceSweepEvent(
+            "finished",
+            secrets.grant.id,
+            source,
+            next.sweep,
+            {},
+          ));
+        }
+        return undefined;
+      } catch (error) {
+        if (isPersonalSyncInterruption(error, input.abortSignal)) throw error;
+        console.warn(JSON.stringify({
+          level: "warn",
+          event: "connector.source_sweep.failed",
+          source,
+          diagnostic: safeSourceSyncError(error),
+        }));
+        return sweep;
+      }
+    };
     for (const observation of observations) {
       if (observation.status === "rejected") {
         if (isPersonalSyncInterruption(observation.reason, input.abortSignal)) {
@@ -324,172 +659,107 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
         });
         continue;
       }
+      const source = observation.source;
       let sourceImported = 0;
       let sourceRemoved = 0;
+      let quarantine = readSourceItemQuarantine(
+        record(nextCursor.itemQuarantine)[source],
+      );
+      // A source that starts over checks again every document it held.
+      let sweep = observation.value.relisted
+        ? startSourceDocumentSweep(Date.now())
+        : readSourceDocumentSweep(record(nextCursor.documentSweep)[source]);
+      const count = (outcome: SourceItemOutcome) => {
+        if (outcome === "imported") sourceImported += 1;
+        if (outcome === "removed") sourceRemoved += 1;
+      };
       try {
+        let processingFailure: { error: unknown } | undefined;
         for (const item of observation.value.items) {
-          const sourceNamespace = googleConnectionSourceNamespace(secrets.grant);
-          const idempotencyKey = `${sourceNamespace.idempotencyPrefix}:${item.kind}:${item.id}`;
-          if (item.excluded) {
-            // Retirement is a heavy transaction, and most excluded items were
-            // never indexed; one indexed earlier, before a move to trash for
-            // example, is retired.
-            if (await getKnowledgeDocumentByIdempotencyKey(idempotencyKey, {
-              tenantId: input.tenantId,
-            })) {
-              await deleteKnowledgeDocumentByIdempotencyKey(idempotencyKey, {
-                tenantId: input.tenantId,
-                executionScope: sourceExecutionScope,
-              });
-              sourceRemoved += 1;
-            }
+          if (quarantinedSourceItem(quarantine, item.id)) {
+            // A set-aside item waits for its next read, which comes sooner
+            // when its source removed or changed it since it failed.
+            quarantine = noteSourceItemChange(quarantine, {
+              id: item.id,
+              revision: item.providerRevisionId,
+              removed: Boolean(item.deleted || item.excluded),
+            }, Date.now());
             continue;
           }
-          if (item.deleted) {
-            if (item.kind === "calendar") {
-              const existingDocument = await getKnowledgeDocumentByIdempotencyKey(
-                idempotencyKey,
-                { tenantId: input.tenantId },
-              );
-              if (existingDocument?.sourceItemId) {
-                await cancelGoogleCalendarMeeting({
-                  tenantId: input.tenantId,
-                  actorId: input.actorId,
-                  sourceItemId: existingDocument.sourceItemId,
-                  sourceExecutionScope,
-                  providerRevisionId: item.providerRevisionId || item.id,
-                });
-              }
+          try {
+            count(await settleSourceItem(item));
+          } catch (error) {
+            // Only a failure to process the item itself can set it aside.
+            if (
+              isPersonalSyncInterruption(error, input.abortSignal) ||
+              personalSourceFailureCode(error) !== "processing_failed"
+            ) throw error;
+            const failure = recordSourceItemFailure(quarantine, {
+              id: item.id,
+              revision: item.providerRevisionId,
+            }, Date.now());
+            quarantine = failure.state;
+            const { failing, quarantined } = failure;
+            if (!failing || !quarantined) {
+              // Keep the page in place, but let due items leave quarantine
+              // before reporting its failure. Otherwise a full quarantine
+              // could never free capacity while this item keeps failing.
+              processingFailure = { error };
+              break;
             }
-            await deleteKnowledgeDocumentByIdempotencyKey(idempotencyKey, {
-              tenantId: input.tenantId,
-              executionScope: sourceExecutionScope,
-            });
-            sourceRemoved += 1;
-            continue;
+            sourceItemEvents.push(sourceItemEvent(
+              "quarantined",
+              secrets.grant.id,
+              source,
+              quarantined,
+              { attempts: failing.attempts, failureCode: "processing_failed" },
+            ));
           }
-          if (!item.content.trim()) continue;
-          if (!item.capturedAt) {
-            throw new Error(
-              `Google ${item.kind} item is missing a canonical provider timestamp.`,
+        }
+        for (const due of dueSourceItems(quarantine, Date.now())) {
+          let read: SyncItem | undefined;
+          try {
+            read = await googleSourceItem(
+              source,
+              due.id,
+              providerHeaders,
+              input.abortSignal,
+              sourceIdentity,
+            );
+            count(await settleSourceItem(read));
+            quarantine = releaseSourceItem(quarantine, due.id);
+            sourceItemEvents.push(sourceItemEvent(
+              "released",
+              secrets.grant.id,
+              source,
+              due,
+              {
+                outcome: read.deleted || read.excluded ? "removed" : "ingested",
+                redrives: due.redrives,
+              },
+            ));
+          } catch (error) {
+            if (isPersonalSyncInterruption(error, input.abortSignal)) throw error;
+            quarantine = deferSourceItem(
+              quarantine,
+              due.id,
+              Date.now(),
+              read ? { revision: read.providerRevisionId } : undefined,
             );
           }
-          const capturedAt = item.capturedAt;
-          const existingCalendarDocument = item.calendarEvent
-            ? await getKnowledgeDocumentByIdempotencyKey(idempotencyKey, {
-                tenantId: input.tenantId,
-              })
-            : undefined;
-          let projectedExistingCalendar = false;
-          if (
-            item.calendarEvent &&
-            existingCalendarDocument?.sourceItemId &&
-            existingCalendarDocument.sourceRevisionId
-          ) {
-            // Calendar-to-Meeting projection is deliberately independent of
-            // the heavier embedding/canonicalization repair below. Existing
-            // Calendar evidence can therefore make the Meetings page current
-            // immediately, even while knowledge backfill continues.
-            await projectGoogleCalendarMeeting({
-              tenantId: input.tenantId,
-              actorId: input.actorId,
-              event: item.calendarEvent,
-              sourceItemId: existingCalendarDocument.sourceItemId,
-              sourceRevisionId: existingCalendarDocument.sourceRevisionId,
-              sourceExecutionScope,
-              providerRevisionId: item.providerRevisionId || item.id,
-            });
-            projectedExistingCalendar = true;
-          }
-          const ingest = () => ingestTextDocument({
-            idempotencyKey,
-            tenantId: input.tenantId,
-            title: item.title,
-            content: item.content,
-            source: `${sourceNamespace.sourcePrefix}:${item.kind}:${item.id}`,
-            sourceType: "api",
-            tags: ["connected-source", input.provider, item.kind],
-            metadata: item.metadata,
-            abortSignal: input.abortSignal,
-            // Provider backfills can touch several documents in one bounded
-            // page. Persist canonical evidence immediately; cognition owns
-            // semantic memory while the graph queue remains coalesced.
-            deferMemoryGraphIndex: true,
-            // A retry after the document commit must replay communication,
-            // meeting, entity, and graph projections without purchasing the
-            // same exact revision's embeddings again.
-            reuseExactCommittedRevision: true,
-            usageScope: {
-              tenantId: input.tenantId,
-              actorId: input.actorId,
-              sourceStreamId: `connector-sync:${input.provider}:${input.actorId}:${secrets.grant.id}:${item.kind}`,
-              operation: "embedding",
-              purpose: `connector.${input.provider}.${item.kind}.ingest`,
-              credentialSource: "deployment_environment",
-            },
-            sourceLineage: {
-              executionScope: sourceExecutionScope,
-              connectionId: secrets.grant.id,
-              adapterId: `google.personal_sync.${item.kind}`,
-              adapterVersionId: "1",
-              externalItemId: `${item.kind}:${item.id}`,
-              providerRevisionId: item.providerRevisionId || null,
-              sourceKind: personalSourceKind(item.kind),
-              sourceCreatedAt: item.sourceCreatedAt || null,
-              sourceUpdatedAt: item.sourceUpdatedAt || null,
-              capturedAt,
-            },
-          });
-          let knowledge;
-          try {
-            knowledge = await ingest();
-          } catch (error) {
-            if (!isReplaceableKnowledgeConflict(error)) throw error;
-            // Knowledge ids are stable for a provider item. If the provider
-            // publishes a new revision, retire the old derived document and
-            // retry the same governed ingest instead of binding one immutable
-            // id to two payloads.
-            await deleteKnowledgeDocumentByIdempotencyKey(idempotencyKey, {
-              tenantId: input.tenantId,
-              executionScope: sourceExecutionScope,
-            });
-            input.abortSignal?.throwIfAborted();
-            knowledge = await ingest();
-          }
-          if (
-            item.calendarEvent &&
-            !projectedExistingCalendar &&
-            knowledge?.document?.sourceItemId &&
-            knowledge.document.sourceRevisionId
-          ) {
-            await projectGoogleCalendarMeeting({
-              tenantId: input.tenantId,
-              actorId: input.actorId,
-              event: item.calendarEvent,
-              sourceItemId: knowledge.document.sourceItemId,
-              sourceRevisionId: knowledge.document.sourceRevisionId,
-              sourceExecutionScope,
-              providerRevisionId: item.providerRevisionId || item.id,
-            });
-          }
-          if (item.communication) {
-            await mapInboundCommunication({
-              ...item.communication,
-              providerMessageId: sourceNamespace.externalPrefix
-                ? `${sourceNamespace.externalPrefix}:${item.communication.providerMessageId}`
-                : item.communication.providerMessageId,
-              externalThreadId: sourceNamespace.externalPrefix
-                ? `${sourceNamespace.externalPrefix}:${item.communication.externalThreadId}`
-                : item.communication.externalThreadId,
-            }, {
-              tenantId: input.tenantId,
-              actorId: input.actorId,
-              executionScope: sourceExecutionScope,
-            });
-          }
-          sourceImported += 1;
         }
-        const candidateCursor = { ...nextCursor, ...observation.value.cursor };
+        if (processingFailure) throw processingFailure.error;
+        quarantine = settleSourceItems(quarantine);
+        if (sweep) sweep = await sweepSourceDocuments(source, sweep, count);
+        const candidateCursor = withSourceDocumentSweep(
+          withSourceItemQuarantine(
+            { ...nextCursor, ...observation.value.cursor },
+            source,
+            quarantine,
+          ),
+          source,
+          sweep,
+        );
         const lastSuccessfulAt = new Date().toISOString();
         const backfillState = googleSourceBackfillState(
           observation.source,
@@ -522,6 +792,7 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
           throw new Error("Connected source was revoked during synchronization.");
         }
         nextCursor = candidateCursor;
+        await recordSourceItemEvents();
         sources.push({
           source: observation.source,
           status: sourceStatus,
@@ -536,6 +807,8 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
         if (fenceLost || isPersonalSyncInterruption(error, input.abortSignal)) {
           throw error;
         }
+        // The source keeps its place, and what it learned about its items.
+        nextCursor = withSourceItemQuarantine(nextCursor, source, quarantine);
         const lastAttemptedAt = new Date().toISOString();
         sources.push({
           source: observation.source,
@@ -588,12 +861,13 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
     if (!grant) {
       throw new Error("Connected source synchronization lost its lease.");
     }
+    await recordSourceItemEvents();
     return {
       provider: input.provider,
       status,
       imported,
       removed,
-      cursorAdvanced: JSON.stringify(cursor) !== JSON.stringify(nextCursor),
+      cursorAdvanced: sourcePosition(cursor) !== sourcePosition(nextCursor),
       sources,
       error,
       grant,
@@ -643,13 +917,12 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
 }
 
 async function observeGoogleSources(
-  accessToken: string,
+  headers: Record<string, string>,
   cursor: SyncCursor,
   sources: readonly PersonalSourceId[],
   signal?: AbortSignal,
   identity?: GoogleDriveSyncIdentity,
 ): Promise<readonly GoogleSourceObservationSettlement[]> {
-  const headers = { authorization: `Bearer ${accessToken}`, accept: "application/json" };
   const requests = sources.map((source) => ({
     source,
     promise: source === "mail"
@@ -671,17 +944,115 @@ async function observeGoogleSources(
             source,
             items: result.value.items,
             cursor: result.value.cursor,
+            ...(result.value.relisted ? { relisted: true } : {}),
           },
         }
       : { source, status: "rejected", reason: result.reason };
   });
 }
 
+/**
+ * Reads one item again by its id, for a redrive. An item its source no longer
+ * has, or that is no longer the account's own, comes back removed.
+ */
+async function googleSourceItem(
+  source: PersonalSourceId,
+  id: string,
+  headers: Record<string, string>,
+  signal?: AbortSignal,
+  identity?: GoogleDriveSyncIdentity,
+): Promise<SyncItem> {
+  if (source === "mail") {
+    const [item] = await gmailItems(headers, [id], [], signal);
+    if (item?.id !== id) {
+      throw new Error("Gmail returned another item than the one requested.");
+    }
+    return item;
+  }
+  if (source === "calendar") {
+    const response = await providerJson(
+      `https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(id)}`,
+      headers,
+      signal,
+      [404, 410],
+    );
+    if (response.status === 404 || response.status === 410) {
+      return { id, kind: "calendar", title: "Removed calendar event", content: "", deleted: true };
+    }
+    if (response.body.id !== id) {
+      throw new Error("Google Calendar returned another item than the one requested.");
+    }
+    return googleEvent(response.body);
+  }
+  const response = await providerJson(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?fields=${encodeURIComponent(GOOGLE_DRIVE_FILE_FIELDS)}`,
+    headers,
+    signal,
+    [404],
+  );
+  const file = response.body;
+  if (response.status !== 404 && file.id !== id) {
+    throw new Error("Google Drive returned another item than the one requested.");
+  }
+  return response.status === 404 || file.trashed === true ||
+      file.ownedByMe !== true
+    ? { id, kind: "drive", title: "Removed Drive file", content: "", excluded: true }
+    : googleDriveItem(file, headers, signal, identity);
+}
+
+type GoogleSourcePresence = "present" | "deleted" | "excluded" | "unknown";
+
+/**
+ * Whether a source still offers an item, read by its id with only the fields
+ * that tell. Only an answer about the item asked for removes it, so an answer
+ * about another item, or one that does not say, keeps it.
+ */
+async function googleSourcePresence(
+  source: PersonalSourceId,
+  id: string,
+  headers: Record<string, string>,
+  signal?: AbortSignal,
+): Promise<GoogleSourcePresence> {
+  if (source === "mail") {
+    const response = await providerJson(
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(id)}?format=minimal`,
+      headers,
+      signal,
+      [404],
+    );
+    if (response.status === 404) return "deleted";
+    if (response.body.id !== id) return "unknown";
+    return hasExcludedGmailLabel(response.body.labelIds) ? "excluded" : "present";
+  }
+  if (source === "calendar") {
+    const response = await providerJson(
+      `https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(id)}?fields=id%2Cstatus`,
+      headers,
+      signal,
+      [404, 410],
+    );
+    if (response.status === 404 || response.status === 410) return "deleted";
+    if (response.body.id !== id) return "unknown";
+    return response.body.status === "cancelled" ? "deleted" : "present";
+  }
+  const response = await providerJson(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?fields=id%2Ctrashed%2CownedByMe`,
+    headers,
+    signal,
+    [404],
+  );
+  if (response.status === 404) return "excluded";
+  if (response.body.id !== id) return "unknown";
+  return response.body.trashed === true || response.body.ownedByMe === false
+    ? "excluded"
+    : "present";
+}
+
 async function googleMail(
   headers: Record<string, string>,
   cursor: SyncCursor,
   signal?: AbortSignal,
-) {
+): Promise<GoogleSourcePage> {
   let addedIds: string[] = [];
   let deletedIds: string[] = [];
   if (cursor.gmailHistoryId) {
@@ -789,6 +1160,7 @@ async function googleMail(
   const nextPageToken = optionalProviderString(list.body.nextPageToken);
   return {
     items,
+    ...(cursor.gmailBackfillHistoryId ? {} : { relisted: true as const }),
     cursor: nextPageToken
       ? {
           gmailHistoryId: undefined,
@@ -826,6 +1198,9 @@ async function gmailItems(
     if (response.status === 404) {
       return { id, kind: "mail", title: "Removed email", content: "", deleted: true };
     }
+    if (response.body.id !== id) {
+      throw new Error("Gmail returned another item than the one requested.");
+    }
     return hasExcludedGmailLabel(response.body.labelIds)
       ? { id, kind: "mail", title: "Excluded email", content: "", excluded: true }
       : googleMessage(response.body);
@@ -846,7 +1221,7 @@ async function googleCalendar(
   headers: Record<string, string>,
   cursor: SyncCursor,
   signal?: AbortSignal,
-) {
+): Promise<GoogleSourcePage> {
   const initial = new URL("https://www.googleapis.com/calendar/v3/calendars/primary/events");
   initial.searchParams.set("maxResults", String(CALENDAR_ITEM_PAGE_SIZE)); initial.searchParams.set("singleEvents", "true"); initial.searchParams.set("showDeleted", "true"); initial.searchParams.set("conferenceDataVersion", "1");
   const timeMin = cursor.calendarTimeMin || new Date(Date.now() - 30 * 86_400_000).toISOString();
@@ -872,6 +1247,9 @@ async function googleCalendar(
   const nextPageToken = optionalProviderString(payload.nextPageToken);
   return {
     items,
+    ...(cursor.calendar || cursor.calendarPageToken
+      ? {}
+      : { relisted: true as const }),
     cursor: nextPageToken
       ? {
           calendar: cursor.calendar,
@@ -956,6 +1334,7 @@ async function googleDrive(
   const nextPageToken = optionalProviderString(payload.nextPageToken);
   return {
     items: items.filter((item) => item.id),
+    ...(cursor.drivePageToken ? {} : { relisted: true as const }),
     cursor: nextPageToken
       ? {
           driveModifiedAfter: cursor.driveModifiedAfter,
@@ -1624,12 +2003,6 @@ function optionalProviderString(value: unknown) {
   return text;
 }
 
-function personalSourceKind(kind: SyncItem["kind"]) {
-  if (kind === "mail") return "email" as const;
-  if (kind === "calendar") return "calendar_event" as const;
-  return "file" as const;
-}
-
 function canonicalProviderEpochMilliseconds(value: unknown, field: string) {
   const milliseconds = Number(value);
   if (!Number.isSafeInteger(milliseconds) || milliseconds < 0) {
@@ -1708,12 +2081,125 @@ function personalSourceFailureCode(
   return "processing_failed";
 }
 
-function sourceCapability(
+/** The cursor with one source's set-aside items, which it omits when none. */
+function withSourceItemQuarantine(
+  cursor: SyncCursor,
   source: PersonalSourceId,
-): GoogleWorkspaceCapability {
-  if (source === "mail") return "gmail.read";
-  if (source === "calendar") return "calendar.events.read";
-  return "drive.read";
+  state: SourceItemQuarantine,
+): SyncCursor {
+  const value = sourceItemQuarantineValue(state);
+  const itemQuarantine = { ...record(cursor.itemQuarantine) };
+  if (value) itemQuarantine[source] = value;
+  else delete itemQuarantine[source];
+  return {
+    ...cursor,
+    itemQuarantine: Object.keys(itemQuarantine).length
+      ? itemQuarantine
+      : undefined,
+  };
+}
+
+/** The cursor with one source's document sweep, which it omits when none. */
+function withSourceDocumentSweep(
+  cursor: SyncCursor,
+  source: PersonalSourceId,
+  sweep: SourceDocumentSweep | undefined,
+): SyncCursor {
+  const documentSweep = { ...record(cursor.documentSweep) };
+  if (sweep) documentSweep[source] = sweep;
+  else delete documentSweep[source];
+  return {
+    ...cursor,
+    documentSweep: Object.keys(documentSweep).length
+      ? documentSweep
+      : undefined,
+  };
+}
+
+/**
+ * Where a cursor stands in its sources, apart from the items set aside and
+ * the documents being checked again.
+ */
+function sourcePosition(cursor: SyncCursor) {
+  return JSON.stringify({
+    ...cursor,
+    itemQuarantine: undefined,
+    documentSweep: undefined,
+  });
+}
+
+/**
+ * The record of a document sweep that finished, or stopped before removing
+ * what it found gone. It carries counts only.
+ */
+function sourceSweepEvent(
+  type: "finished" | "stopped",
+  connectionId: string,
+  source: PersonalSourceId,
+  sweep: SourceDocumentSweep,
+  detail: Readonly<Record<string, number>>,
+): SourceItemEvent {
+  const adapter = GOOGLE_SOURCE_ADAPTERS[source];
+  return {
+    id: `source_sweep_event_${sourceContractSha256({
+      schemaVersion: 1,
+      connectionId,
+      source,
+      since: sweep.since,
+      type,
+    }).slice(0, 56)}`,
+    streamId: `connector:${connectionId}`,
+    type: `connector.source_sweep.${type}`,
+    payload: {
+      schemaVersion: 1,
+      connectionId,
+      source,
+      adapterId: adapter.adapterId,
+      adapterVersionId: adapter.adapterVersionId,
+      checked: sweep.checked,
+      removed: sweep.removed,
+      ...detail,
+    },
+  };
+}
+
+/**
+ * The record of a set-aside decision. It names the item only by a digest,
+ * and carries no provider text and no error.
+ */
+function sourceItemEvent(
+  type: "quarantined" | "released",
+  connectionId: string,
+  source: PersonalSourceId,
+  item: QuarantinedSourceItem,
+  detail: Readonly<Record<string, string | number>>,
+): SourceItemEvent {
+  const adapter = GOOGLE_SOURCE_ADAPTERS[source];
+  const itemSha256 = sourceContractSha256({
+    schemaVersion: 1,
+    connectionId,
+    externalItemId: `${source}:${item.id}`,
+  });
+  return {
+    id: `source_item_event_${sourceContractSha256({
+      schemaVersion: 1,
+      connectionId,
+      itemSha256,
+      since: item.since,
+      type,
+    }).slice(0, 56)}`,
+    streamId: `connector:${connectionId}`,
+    type: `connector.source_item.${type}`,
+    payload: {
+      schemaVersion: 1,
+      connectionId,
+      source,
+      adapterId: adapter.adapterId,
+      adapterVersionId: adapter.adapterVersionId,
+      itemSha256,
+      ...detail,
+    },
+  };
 }
 
 function isPersonalSyncInterruption(

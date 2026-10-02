@@ -48,6 +48,20 @@ describe("agent input order", () => {
     ]);
   });
 
+  it("plants the context seal at the head of the retrieved context, even when it is empty", () => {
+    const memory = (memoryContext: string) => buildAgentInput({
+      messages: [{ role: "user", content: "Summarize it." }],
+      memoryContext,
+      injectionCanary: "Context seal abc.",
+    }).filter((item) => item.type === "observation" && item.source === "memory");
+
+    expect(memory("Remembered notes.")).toEqual([expect.objectContaining({
+      untrusted: true,
+      content: "Context seal abc.\n\nRemembered notes.",
+    })]);
+    expect(memory("")).toEqual([expect.objectContaining({ content: "Context seal abc." })]);
+  });
+
   it("keeps the context first when the conversation opens with the assistant", () => {
     expect(order([
       { role: "assistant", content: "hello" },

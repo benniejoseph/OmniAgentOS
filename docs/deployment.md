@@ -345,6 +345,76 @@ they were: its writer refuses to write unless they read exactly as created.
   such as `(SELECT omni_system_scope_enabled())`. The integration suite fails
   on a policy that calls one per row.
 
+### Operation job quarantine (v212)
+
+Migration `20261001120000_operation_job_quarantine.sql` installs schema v212
+(`operation_job_quarantine_v1`) after v211. Apply it before deploying the code
+that needs it: until it runs, every database-backed request fails with
+`Database schema is behind (pending versions: 212)`. A release older than v212
+still serves against a v212 database.
+
+v212 adds `lease_lapses` (`integer NOT NULL DEFAULT 0`) to
+`omni_operation_jobs`. The default is a constant, so the table is not
+rewritten. The `NOT VALID` check `omni_operation_jobs_lease_lapses_check`
+requires a count of at least 0. Every existing row has a count of 0, so
+leaving the check unvalidated skips no row.
+
+A job's lease lapses when its worker stops reporting before the lease ends,
+which is what a job that crashes or hangs its worker does on every delivery.
+Each lapse in a row adds one to the count. A completion, failure, or deferral
+the worker reports clears it; a heartbeat does not. The third lapse in a row
+quarantines the job, a workflow tick included, whatever attempts it has left:
+it keeps its payload, its last error reads `Quarantined after 3 deliveries in
+a row lapsed without an outcome.`, and nothing delivers it again. A repair, a
+lease, an enqueue or wake of its dedupe key, and a requeue all leave it as it
+is. Each quarantine, and the decision an operator makes on it, appends an
+`operation.job.quarantined`, `operation.job.released`, or
+`operation.job.discarded` event to the job's `operation-job:<id>` stream.
+
+The Workflows console lists quarantined jobs and decides each one through
+`POST /api/operations/jobs/:id` (see [api-reference.md](api-reference.md)). A
+release queues the job again with its attempts and lapses cleared. A discard
+cancels it and drops its request. A workflow tick or agent job is not
+discarded, because its run would deliver the work again: cancel the run, which
+cancels its job.
+
+- **Held runs.** A quarantined workflow tick or agent job holds its run until
+  an operator releases the job or cancels the run. Recovery fails a stale
+  workflow whose tick is quarantined, 10 minutes after its last update by
+  default, and failing it cancels the tick, so release a tick before then.
+- **Deploys.** A worker stopped mid-job during a deploy lapses the lease of
+  each job it held, and that lapse counts like any other.
+- **Rollback.** A release older than v212 neither reads nor writes the count
+  and never quarantines a job. It leaves a quarantined job alone unless it
+  enqueues the same dedupe key, which queues the job again from its first
+  attempt.
+- **Existing column.** If `lease_lapses` already exists with another type,
+  nullability, or default, v212 stops with `55000` and the whole migration
+  rolls back. See
+  [troubleshooting.md](troubleshooting.md#schema-startup-fails).
+
+### Injection canary
+
+This release needs no migration. The agent loop plants a per-tenant context
+seal at the head of its retrieved context, and the governed executor blocks a
+tool call whose arguments carry it (see
+[architecture.md](architecture.md#security-model) and
+[troubleshooting.md](troubleshooting.md#a-tool-call-is-blocked-because-it-carried-the-context-seal)).
+
+- In production the seal needs `OMNIAGENT_INTERNAL_AUTH_SECRET`, which the
+  worker and governed memory writes already need. Without it an agent run
+  fails before its first model turn, and every governed tool call fails.
+- Rotating the secret changes the seal. A run that resumes after a rotation
+  holds the old seal, which the executor no longer recognizes.
+- **Rollback.** A release without the canary neither plants nor checks the
+  seal, and ignores `injection.canary_tripped` events.
+
+Still open: the workflow planner, the council, and the loop summarizer read
+retrieved content without the seal. A run's later calls are blocked only in
+the process that saw the seal, so an approval resumed in another process is
+checked on its own arguments. A seal split across two fields, reversed, or
+otherwise rewritten is not recognized, and reply text is not checked.
+
 ### Keyed memory text digests
 
 This release needs no migration. Memory events no longer keep a plain SHA-256
@@ -1045,7 +1115,7 @@ Keep `OPENAI_API_KEY` only on Vercel; the normal release shell does not need it,
 - Model credentials and inbound MCP: `OMNIAGENT_CREDENTIAL_KEYRING`, `OMNIAGENT_MCP_ALLOWED_HOSTS`, and `OMNIAGENT_MCP_ALLOWED_ORIGINS`. MCP remains disabled per actor until enabled in Settings and requires a scoped, hash-only service key.
 - Model routing: a workspace model assignment that cannot be used as saved (Settings unreadable, provider disconnected, credential unopenable) stops the run with a `model_route_degraded` event and calls no model. Set `OMNIAGENT_MODEL_ROUTE_ALLOW_DEPLOYMENT_FALLBACK=true` only to let those runs use the deployment's own provider keys instead; each such run still records the event.
 - Workflow triggers: use dedicated `OMNIAGENT_TRIGGER_*` HMAC keys. Put legacy server-only names in `OMNIAGENT_TRIGGER_SECRET_ALLOWLIST`; platform credentials are always rejected, and unauthenticated triggers remain disabled at dispatch time in production.
-- Diagnostics/storage: `BLOB_READ_WRITE_TOKEN`, `OMNIAGENT_ASSET_DELIVERY_SECRET`, `OMNIAGENT_LOG_PGVECTOR_FAILURES`, `OMNIAGENT_DATA_DIR`, and the demo-storage switch.
+- Diagnostics/storage: `BLOB_READ_WRITE_TOKEN`, `OMNIAGENT_ASSET_DELIVERY_SECRET`, `OMNIAGENT_LOG_PGVECTOR_FAILURES`, `OMNIAGENT_TENANT_VECTOR_INDEX_MIN_ROWS` (the vectors a tenant holds in a table before the migration builds it an HNSW index of its own), `OMNIAGENT_DATA_DIR`, and the demo-storage switch.
 - Market research: server-only `TWELVE_DATA_API_KEY` for XAU/USD bars and the entitlement-gated NDX cash index, plus `FRED_API_KEY` for official release dates and ALFRED vintages. The public BLS calendar needs no credential and supplies reviewed CPI, PPI, Employment Situation, and JOLTS release times. Never expose market credentials through `NEXT_PUBLIC_*`; NDX time-series availability is plan-dependent and must fail closed when the account lacks the required Twelve Data entitlement.
 
 Platform-provided `VERCEL_*` values supply deployment metadata and are not copied into `.env.example`. See [api-reference.md](api-reference.md) for route authentication and response expectations.
@@ -1181,6 +1251,25 @@ before it. A batch skips rows another session has locked, which a later run
 fills, and embeddings shorter than the column or holding an element that is not
 a number, which stay JSON-only.
 
+Last, the step gives each tenant that holds at least
+`OMNIAGENT_TENANT_VECTOR_INDEX_MIN_ROWS` vectors in a table (2,000 by default)
+an HNSW index of its own, partial to its rows, beside the shared index. A
+search filtered to that tenant then walks a graph of the tenant's vectors,
+where the shared index makes it pass every nearer vector of other tenants
+first. The index is named `<table>_tenant_vector_` followed by the first 16 hex
+digits of the SHA-256 of the tenant id. One transaction reads each tenant's
+count and the tenant indexes the catalog holds; then each drop and each build
+runs in a transaction of its own. A run builds at most four indexes a table,
+the largest tenants first, so a tenant past that gets its index on a later
+run. An index that is not valid, which a failed build leaves, is dropped and
+built again; an index whose tenant holds no vectors any more is dropped; a
+tenant that falls below the threshold keeps its index. A failed drop or build
+logs a `database_tenant_vector_index_failed` JSON line, and the step goes on.
+A build locks its table against writes while it runs, so for a large tenant,
+build the index out of band first with `CREATE INDEX CONCURRENTLY`, under the
+same name and as `USING hnsw (embedding_vector vector_cosine_ops) WHERE
+tenant_id = '<tenant id>'`; the step then keeps it.
+
 Each file runs inside that transaction. The runner removes the file's own
 `BEGIN` and `COMMIT` and refuses any other transaction control, any statement
 that changes session state (`SET` without `LOCAL`, `SET LOCAL ROLE`, `RESET`,
@@ -1301,6 +1390,7 @@ marker in the same transaction.
 | 209 | `mobile_refresh_rotation_retry_v1` | `e78561b7a9b0c38fd91376d9f8fb094e3b629d5e5b94b3a48592a9b89855531f` | nullable rotation time and key on mobile sessions, so the refresh token a rotation replaced gets the same pair again for 60 seconds |
 | 210 | `oauth_sync_backoff_v1` | `3c2122c7222e4a5aafca6e5ef3eca7905353be7aae675367a16b9cdb4787fff3` | a failure count and retry time on OAuth grants, so a connection whose syncs reach no source waits five minutes, doubling up to six hours |
 | 211 | `rls_scope_initplans_v1` | `84d660e88fc6bcdaf9bac76939d03ad470e2fe6fee615d52be55a16dda6a88e1` | row security scope helpers run once per query as initplans, and `omni_tenant_visible()` reads the system scope setting before calling its check |
+| 212 | `operation_job_quarantine_v1` | `35fa5330f5f0577af4af9f95b5998954d7db829bff4e40c13e14a21461f67898` | a count of lease lapses in a row on operation jobs, so a job whose worker crashes or hangs on three deliveries in a row is quarantined until an operator releases or discards it |
 
 Version 196 requires the exact predecessor marker v195
 `moltbook_autonomy_privilege_repair_v1` with checksum

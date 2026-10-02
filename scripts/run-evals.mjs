@@ -5,25 +5,100 @@
  *
  *   BASE_URL=http://localhost:3000 node scripts/run-evals.mjs
  *
+ * EVAL_TASKS_FILE reads another task file, such as a ledger-replay corpus
+ * from GET /api/evaluations/ledger-replay. With SMOKE_INTERNAL_AUTH_SECRET,
+ * EVAL_TENANT_ID and EVAL_ACTOR_ID run the tasks as that workspace owner.
+ * EVAL_MODEL_SELECTION, a modelSelection JSON object, pins the candidate
+ * model. Ledger replay requires EVAL_AGENT_ID naming a custom Agent whose
+ * active principal has the read-only policy. The server checks the same
+ * identity it executes, forces direct execution, and withholds memory
+ * formation. Replay against a candidate deployment, not production.
+ *
  * Exits non-zero if the pass rate is below MIN_PASS_RATE (default 0.8), so it
  * can gate CI once a model key is configured. The assertion logic mirrors the
  * unit-tested reference in src/lib/evals2/scorer.ts.
  */
 
 import { readFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
 
-const BASE_URL = process.env.BASE_URL || "http://localhost:3000";
-const MIN_PASS_RATE = Number(process.env.MIN_PASS_RATE || 0.8);
-const REQUEST_TIMEOUT_MS = positiveInteger(
-  process.env.EVAL_REQUEST_TIMEOUT_MS,
-  60_000,
-  300_000,
-);
 const here = path.dirname(fileURLToPath(import.meta.url));
+const DEFAULT_TASKS_FILE = path.join(here, "..", "evals", "golden-tasks.json");
 
-function applyAssertion(assert, response, trajectory) {
+/** @param {Record<string, string | undefined>} [env] */
+export function evalConfig(env = process.env) {
+  const minPassRate = Number(env.MIN_PASS_RATE || 0.8);
+  if (!Number.isFinite(minPassRate) || minPassRate < 0 || minPassRate > 1) {
+    throw new Error("MIN_PASS_RATE must be a number from 0 to 1.");
+  }
+  const internalAuth = env.SMOKE_INTERNAL_AUTH_SECRET || undefined;
+  const tenantId = env.EVAL_TENANT_ID?.trim() || undefined;
+  const actorId = env.EVAL_ACTOR_ID?.trim() || undefined;
+  const agentId = env.EVAL_AGENT_ID?.trim() || undefined;
+  if (agentId && !/^[a-zA-Z0-9_.:-]{1,120}$/.test(agentId)) {
+    throw new Error("EVAL_AGENT_ID must be a valid Agent identifier.");
+  }
+  if ((tenantId || actorId) && !internalAuth) {
+    throw new Error("EVAL_TENANT_ID and EVAL_ACTOR_ID need SMOKE_INTERNAL_AUTH_SECRET.");
+  }
+  let modelSelection;
+  if (env.EVAL_MODEL_SELECTION) {
+    try {
+      modelSelection = JSON.parse(env.EVAL_MODEL_SELECTION);
+    } catch {
+      modelSelection = undefined;
+    }
+    if (!modelSelection || typeof modelSelection !== "object" || Array.isArray(modelSelection)) {
+      throw new Error("EVAL_MODEL_SELECTION must be a JSON object.");
+    }
+  }
+  return {
+    baseUrl: env.BASE_URL || "http://localhost:3000",
+    minPassRate,
+    requestTimeoutMs: positiveInteger(env.EVAL_REQUEST_TIMEOUT_MS, 60_000, 300_000),
+    tasksFile: env.EVAL_TASKS_FILE ? path.resolve(env.EVAL_TASKS_FILE) : DEFAULT_TASKS_FILE,
+    internalAuth,
+    tenantId,
+    actorId,
+    agentId,
+    modelSelection,
+  };
+}
+
+export function evalSuiteConfig(suite, config) {
+  const requireReadOnlyAgent = suite.kind === "ledger_replay";
+  if (requireReadOnlyAgent && !config.agentId) {
+    throw new Error("Ledger replay requires EVAL_AGENT_ID naming a custom Agent with the read-only approval policy.");
+  }
+  return { ...config, requireReadOnlyAgent };
+}
+
+export function agentRequestInit(task, config) {
+  return {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(config.internalAuth
+        ? {
+            "x-omni-internal-auth": config.internalAuth,
+            "x-omni-user-role": "operator",
+            ...(config.tenantId ? { "x-omni-tenant-id": config.tenantId } : {}),
+            ...(config.actorId ? { "x-omni-user-id": config.actorId } : {}),
+          }
+        : {}),
+    },
+    body: JSON.stringify({
+      mode: task.mode || "orchestrate",
+      messages: [{ role: "user", content: task.goal }],
+      ...(config.agentId ? { agentId: config.agentId } : {}),
+      ...(config.requireReadOnlyAgent ? { requireReadOnlyAgent: true } : {}),
+      ...(config.modelSelection ? { modelSelection: config.modelSelection } : {}),
+    }),
+  };
+}
+
+export function applyAssertion(assert, response, trajectory) {
   const text = (response || "").toLowerCase();
   const failures = [];
   if (assert.minLength !== undefined && response.trim().length < assert.minLength) {
@@ -59,44 +134,34 @@ function applyAssertion(assert, response, trajectory) {
   return failures;
 }
 
-async function runTask(task) {
-  const startedAt = Date.now();
-  let res;
-  try {
-    res = await fetch(`${BASE_URL}/api/agent`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        ...(process.env.SMOKE_INTERNAL_AUTH_SECRET
-          ? {
-              "x-omni-internal-auth": process.env.SMOKE_INTERNAL_AUTH_SECRET,
-              "x-omni-user-role": "operator",
-            }
-          : {}),
-      },
-      body: JSON.stringify({ mode: task.mode || "orchestrate", messages: [{ role: "user", content: task.goal }] }),
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : "unknown network error";
-    return { response: "", error: `request failed within ${REQUEST_TIMEOUT_MS}ms: ${detail}` };
-  }
-  if (!res.ok || !res.body) {
-    return { response: "", error: `HTTP ${res.status}` };
-  }
-  const text = await res.text();
+/** The answer and trajectory in an /api/agent event stream. */
+export function readAgentStream(text) {
   let response = "";
+  let costKnown = true;
+  let completed = false;
+  let error;
   const trajectory = { toolIds: new Set(), citationIds: new Set(), providers: new Set(), estimatedCostUsd: undefined, latencyMs: 0, fallbackCount: 0 };
   for (const line of text.split("\n")) {
     if (!line.startsWith("data:")) continue;
     try {
       const event = JSON.parse(line.slice(5).trim());
       if (event.type === "delta" && event.text) response += event.text;
-      if (event.type === "done" && event.response) response = event.response;
+      if (event.type === "done" && typeof event.response === "string") {
+        completed = true;
+        response = event.response;
+      }
+      if (["error", "canceled", "waiting_approval", "clarification", "delegated", "budget_exhausted", "execution_target_retired"].includes(event.type)) {
+        error = `Agent stream ended with ${event.type}.`;
+      }
       if (event.type === "tool" && event.toolId && event.status !== "running") trajectory.toolIds.add(event.toolId);
       if (event.type === "model") {
         if (event.provider) trajectory.providers.add(event.provider);
-        if (typeof event.estimatedCostUsd === "number") trajectory.estimatedCostUsd = (trajectory.estimatedCostUsd || 0) + event.estimatedCostUsd;
+        costKnown = costKnown && event.costKnown !== false &&
+          typeof event.estimatedCostUsd === "number" &&
+          Number.isFinite(event.estimatedCostUsd) && event.estimatedCostUsd >= 0;
+        trajectory.estimatedCostUsd = costKnown
+          ? (trajectory.estimatedCostUsd ?? 0) + event.estimatedCostUsd
+          : undefined;
         if (event.fallbackUsed) trajectory.fallbackCount += 1;
       }
       if (event.type === "done" && event.grounding?.citedIds) event.grounding.citedIds.forEach((id) => trajectory.citationIds.add(id));
@@ -104,20 +169,40 @@ async function runTask(task) {
       // ignore non-JSON keepalive lines
     }
   }
-  trajectory.latencyMs = Date.now() - startedAt;
-  return { response, trajectory };
+  if (!completed && !error) error = "Agent stream did not complete successfully.";
+  return { response, trajectory, ...(error ? { error } : {}) };
+}
+
+async function runTask(task, config) {
+  const startedAt = Date.now();
+  try {
+    const res = await fetch(`${config.baseUrl}/api/agent`, {
+      ...agentRequestInit(task, config),
+      signal: AbortSignal.timeout(config.requestTimeoutMs),
+    });
+    if (!res.ok || !res.body) {
+      return { response: "", error: `HTTP ${res.status}` };
+    }
+    const outcome = readAgentStream(await res.text());
+    outcome.trajectory.latencyMs = Date.now() - startedAt;
+    return outcome;
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : "unknown network error";
+    return { response: "", error: `request failed within ${config.requestTimeoutMs}ms: ${detail}` };
+  }
 }
 
 async function main() {
-  if (!Number.isFinite(MIN_PASS_RATE) || MIN_PASS_RATE < 0 || MIN_PASS_RATE > 1) {
-    throw new Error("MIN_PASS_RATE must be a number from 0 to 1.");
-  }
-
-  const raw = await readFile(path.join(here, "..", "evals", "golden-tasks.json"), "utf8");
+  const config = evalConfig();
+  const raw = await readFile(config.tasksFile, "utf8");
   const suite = JSON.parse(raw);
+  const requestConfig = evalSuiteConfig(suite, config);
+  if (suite.kind === "ledger_replay") {
+    console.log(`Replaying ${suite.tasks.length} recorded runs against ${config.baseUrl}.`);
+  }
   const results = [];
   for (const task of suite.tasks) {
-    const { response, trajectory, error } = await runTask(task);
+    const { response, trajectory, error } = await runTask(task, requestConfig);
     const failures = error ? [error] : applyAssertion(task.assert, response, trajectory);
     const passed = failures.length === 0;
     results.push({ id: task.id, passed, failures });
@@ -126,8 +211,8 @@ async function main() {
   const passed = results.filter((r) => r.passed).length;
   const passRate = results.length ? passed / results.length : 0;
   console.log(`\nScoreboard: ${passed}/${results.length} passed (${(passRate * 100).toFixed(0)}%)`);
-  if (passRate < MIN_PASS_RATE) {
-    console.error(`Below MIN_PASS_RATE (${(MIN_PASS_RATE * 100).toFixed(0)}%).`);
+  if (passRate < config.minPassRate) {
+    console.error(`Below MIN_PASS_RATE (${(config.minPassRate * 100).toFixed(0)}%).`);
     process.exit(1);
   }
 }
@@ -137,7 +222,12 @@ function positiveInteger(value, fallback, maximum = Number.MAX_SAFE_INTEGER) {
   return Number.isInteger(parsed) && parsed > 0 ? Math.min(parsed, maximum) : fallback;
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+if (
+  process.argv[1] &&
+  pathToFileURL(process.argv[1]).href === import.meta.url
+) {
+  main().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+}
