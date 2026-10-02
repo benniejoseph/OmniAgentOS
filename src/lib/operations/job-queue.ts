@@ -306,7 +306,7 @@ export type OperationJobDedupeLease =
 export async function enqueueOperationJob(
   input: EnqueueOperationJobInput,
   options: { sql?: ReturnType<typeof getSql> } = {},
-) {
+): Promise<OperationJobRecord> {
   const now = new Date().toISOString();
   const runAt = input.runAt || now;
   const tenantId = normalizeTenantId(input.tenantId);
@@ -328,6 +328,13 @@ export async function enqueueOperationJob(
   if (hasDatabaseUrl()) {
     if (!options.sql) {
       await ensureDatabaseSchema();
+      if (input.dedupeKey && input.dedupeMode !== "idempotent") {
+        // Settlement and coalescing share the transaction clock and lock:
+        // a lease cannot expire between them and be revived without counting.
+        return getSql().transaction((sql: ReturnType<typeof getSql>) =>
+          enqueueOperationJob(input, { sql }),
+        ) as Promise<OperationJobRecord>;
+      }
     }
     const sql = options.sql || getSql();
 
@@ -366,13 +373,7 @@ export async function enqueueOperationJob(
       // A lapsed delivery of this job counts before new work coalesces into
       // it, as it would had repair settled it first.
       const storedKey = storageDedupeKey(tenantId, dedupeKey);
-      if (options.sql) {
-        await settleLapsedOperationJobs(options.sql, tenantId, storedKey);
-      } else {
-        await getSql().transaction((tx: ReturnType<typeof getSql>) =>
-          settleLapsedOperationJobs(tx, tenantId, storedKey),
-        );
-      }
+      await settleLapsedOperationJobs(sql, tenantId, storedKey);
       const rows = await sql`
         INSERT INTO omni_operation_jobs (
           id, tenant_id, type, status, payload, dedupe_key, priority, attempt,
@@ -385,11 +386,17 @@ export async function enqueueOperationJob(
         )
         ON CONFLICT (dedupe_key) WHERE dedupe_key IS NOT NULL DO UPDATE SET
           type = EXCLUDED.type,
-          payload = CASE
+          payload = (CASE
             WHEN omni_operation_jobs.status = 'running'
               AND omni_operation_jobs.lease_expires_at > NOW()
             THEN EXCLUDED.payload || '{"__rerunRequested":true}'::jsonb
             ELSE EXCLUDED.payload
+          END) || CASE
+            WHEN omni_operation_jobs.type = 'workflow.tick'
+              AND EXCLUDED.type = 'workflow.tick'
+              AND omni_operation_jobs.payload->>'__workflowQuarantineReleased' = 'true'
+            THEN '{"__workflowQuarantineReleased":true}'::jsonb
+            ELSE '{}'::jsonb
           END,
           priority = GREATEST(omni_operation_jobs.priority, EXCLUDED.priority),
           max_attempts = EXCLUDED.max_attempts,
@@ -525,9 +532,14 @@ export async function enqueueOperationJob(
         saved = {
           ...existing,
           type: input.type,
-          payload: activeLease
-            ? { ...input.payload, __rerunRequested: true }
-            : input.payload,
+          payload: {
+            ...input.payload,
+            ...(activeLease ? { __rerunRequested: true } : {}),
+            ...(existing.type === "workflow.tick" && input.type === "workflow.tick" &&
+              existing.payload.__workflowQuarantineReleased === true
+              ? { __workflowQuarantineReleased: true }
+              : {}),
+          },
           priority: Math.max(existing.priority, job.priority),
           maxAttempts: job.maxAttempts,
           status: activeLease ? existing.status : "queued",
@@ -919,8 +931,8 @@ export async function completeOperationJob(jobId: string, leaseOwner?: string, r
             THEN CASE
               WHEN type = ANY(${[...BACKGROUND_OPERATION_JOB_TYPES]}::text[])
                 AND payload->>'__rerunRequested' IS DISTINCT FROM 'true'
-              THEN payload - '__rerunRequested' - 'request'
-              ELSE payload - '__rerunRequested'
+              THEN payload - '__rerunRequested' - '__workflowQuarantineReleased' - 'request'
+              ELSE payload - '__rerunRequested' - '__workflowQuarantineReleased'
             END
             ELSE '{}'::jsonb
           END,
@@ -968,6 +980,7 @@ export async function completeOperationJob(jobId: string, leaseOwner?: string, r
       const rerunRequested = job.payload.__rerunRequested === true;
       const payload = { ...job.payload };
       delete payload.__rerunRequested;
+      delete payload.__workflowQuarantineReleased;
       const terminalPayload = rerunRequested
         ? payload
         : sanitizeTerminalOperationPayload(job.type, payload);
@@ -1598,6 +1611,9 @@ export type OperationJobQuarantineDecision =
 /**
  * Returns a quarantined job to the queue with its attempts and lapses
  * cleared, for an operator who judged its work safe to run again.
+ * A workflow tick keeps an internal release flag until its next successful
+ * delivery so the reset attempt still reclaims its interrupted run. The
+ * flag survives coalescing and deferral; it grants no new run budget.
  */
 export async function releaseQuarantinedOperationJob(
   jobId: string,
@@ -1657,6 +1673,11 @@ async function decideQuarantinedOperationJob(
             SET status = 'queued',
                 attempt = 0,
                 lease_lapses = 0,
+                payload = CASE
+                  WHEN type = 'workflow.tick'
+                  THEN payload || '{"__workflowQuarantineReleased":true}'::jsonb
+                  ELSE payload
+                END,
                 run_at = NOW(),
                 locked_at = NULL,
                 lease_owner = NULL,
@@ -1728,6 +1749,9 @@ async function decideQuarantinedOperationJob(
           status: "queued",
           attempt: 0,
           leaseLapses: 0,
+          payload: current.type === "workflow.tick"
+            ? { ...current.payload, __workflowQuarantineReleased: true }
+            : current.payload,
           runAt: now,
           lockedAt: undefined,
           leaseOwner: undefined,

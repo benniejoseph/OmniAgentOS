@@ -58,7 +58,7 @@ describe("summarizing a recorded run", () => {
     expect(summarizeLedgerReplayRun([
       event("tool", { type: "tool", toolId: "web.search", status: "running", riskLevel: 0 }),
       event("tool", { type: "tool", toolId: "web.search", status: "executed", riskLevel: 0 }),
-      event("tool", { type: "tool", toolId: "memory.search", status: "dry_run", riskLevel: 1 }),
+      event("tool", { type: "tool", toolId: "memory.search", status: "dry_run", riskLevel: 0 }),
       event("tool", { type: "tool", toolId: "knowledge.search", status: "failed", riskLevel: 0 }),
       event("tool", { type: "tool", toolId: "drafts.list", status: "running" }),
       event("model", { type: "model", provider: "openai", estimatedCostUsd: 0.25 }),
@@ -119,7 +119,7 @@ describe("summarizing a recorded run", () => {
       .toEqual({ approvalNeeded: false, blocked: false });
   });
 
-  it("notes a tool that could write, unless it only dry-ran", () => {
+  it("excludes tool baselines that could write, including dry runs", () => {
     const effect = (payload: Record<string, unknown>) =>
       summarizeLedgerReplayRun([event("tool", { toolId: "memory.write", ...payload })]).effect;
 
@@ -128,7 +128,9 @@ describe("summarizing a recorded run", () => {
     expect(effect({ status: "executed" })).toBe(true);
     expect(effect({ status: "executed", riskLevel: 0 })).toBe(false);
     expect(effect({ status: "failed", riskLevel: 0 })).toBe(false);
-    expect(effect({ status: "dry_run", riskLevel: 1 })).toBe(false);
+    expect(effect({ status: "dry_run", riskLevel: 1 })).toBe(true);
+    expect(effect({ status: "dry_run" })).toBe(true);
+    expect(effect({ status: "dry_run", riskLevel: 0 })).toBe(false);
     expect(effect({ status: "running", riskLevel: 1 })).toBe(false);
     expect(effect({ status: "blocked", riskLevel: 1 })).toBe(false);
     expect(summarizeLedgerReplayRun([

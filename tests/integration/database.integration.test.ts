@@ -167,6 +167,7 @@ import {
   getWorkflowRunExecutionAuthority,
   listRunnableWorkflowRuns,
   listWorkflowApprovalPage,
+  reclaimWorkflowRunForQueueDelivery,
   recordWorkflowSpecialistsPending,
 } from "@/lib/workflows/store";
 import {
@@ -4576,11 +4577,60 @@ databaseDescribe("Postgres schema integration", () => {
     await expect(inTenant(() => listActiveWorkflowTickRunIds({ tenantId })))
       .resolves.toEqual(new Set());
     expect(await dispatchTenants()).toContain(tenantId);
+
+    // Reset queue attempts still recover the interrupted run on the first
+    // released delivery, using its persisted release marker and live lease.
+    const { run: releasedRun } = await inTenant(() => createWorkflowRun({
+      tenantId,
+      goal: "Continue the interrupted archive workflow.",
+    }));
+    await admin`
+      UPDATE omni_workflow_runs
+      SET status = 'running', current_step = 'preflight'
+      WHERE id = ${releasedRun.id}
+    `;
+    await admin`
+      UPDATE omni_workflow_steps
+      SET status = 'running', attempt = 1
+      WHERE workflow_run_id = ${releasedRun.id} AND step_key = 'preflight'
+    `;
+    const releasedKey = `workflow:${releasedRun.id}`;
+    const releasedTick = await quarantine(releasedKey, "workflow.tick", {
+      workflowRunId: releasedRun.id,
+    });
+    await expect(inTenant(() => releaseQuarantinedOperationJob(releasedTick.id, { tenantId })))
+      .resolves.toMatchObject({ outcome: "released", job: { attempt: 0 } });
+    await enqueue(releasedKey, "workflow.tick", { workflowRunId: releasedRun.id });
+    const releasedLease = await lease(releasedTick.id, releasedKey, "workflow.tick");
+    expect(releasedLease).toMatchObject({
+      attempt: 1, payload: { __workflowQuarantineReleased: true },
+    });
+    const reclaim = {
+      tenantId,
+      jobId: releasedTick.id,
+      leaseOwner: releasedLease.leaseOwner!,
+      deliveryAttempt: 1,
+      releasedFromQuarantine: true,
+    };
+    await expect(inTenant(() => reclaimWorkflowRunForQueueDelivery(releasedRun.id, {
+      ...reclaim, leaseOwner: "former-worker",
+    }))).resolves.toBe("stale");
+    await expect(inTenant(() => reclaimWorkflowRunForQueueDelivery(releasedRun.id, reclaim)))
+      .resolves.toBe("requeued");
+    expect(await admin`
+      SELECT runs.status AS run_status, steps.status AS step_status, steps.attempt
+      FROM omni_workflow_runs runs
+      JOIN omni_workflow_steps steps ON steps.workflow_run_id = runs.id
+      WHERE runs.id = ${releasedRun.id} AND steps.step_key = 'preflight'
+    `).toEqual([{ run_status: "queued", step_status: "pending", attempt: 1 }]);
+    await inTenant(() => completeOperationJob(releasedTick.id, releasedLease.leaseOwner, tenantId));
+    expect((await row(releasedTick.id)).payload).not.toHaveProperty("__workflowQuarantineReleased");
+
     // Later dispatch tests count their own tenants within the same limit.
     await admin`
       UPDATE omni_workflow_runs
       SET status = 'canceled', updated_at = NOW()
-      WHERE id = ${run.id}
+      WHERE id IN (${run.id}, ${releasedRun.id})
     `;
     await admin`
       UPDATE omni_operation_jobs

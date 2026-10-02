@@ -9,7 +9,10 @@
  * from GET /api/evaluations/ledger-replay. With SMOKE_INTERNAL_AUTH_SECRET,
  * EVAL_TENANT_ID and EVAL_ACTOR_ID run the tasks as that workspace owner.
  * EVAL_MODEL_SELECTION, a modelSelection JSON object, pins the candidate
- * model. Replay a corpus against a candidate deployment, not production.
+ * model. Ledger replay requires EVAL_AGENT_ID naming a custom Agent whose
+ * active principal has the read-only policy. The server checks the same
+ * identity it executes, forces direct execution, and withholds memory
+ * formation. Replay against a candidate deployment, not production.
  *
  * Exits non-zero if the pass rate is below MIN_PASS_RATE (default 0.8), so it
  * can gate CI once a model key is configured. The assertion logic mirrors the
@@ -32,6 +35,10 @@ export function evalConfig(env = process.env) {
   const internalAuth = env.SMOKE_INTERNAL_AUTH_SECRET || undefined;
   const tenantId = env.EVAL_TENANT_ID?.trim() || undefined;
   const actorId = env.EVAL_ACTOR_ID?.trim() || undefined;
+  const agentId = env.EVAL_AGENT_ID?.trim() || undefined;
+  if (agentId && !/^[a-zA-Z0-9_.:-]{1,120}$/.test(agentId)) {
+    throw new Error("EVAL_AGENT_ID must be a valid Agent identifier.");
+  }
   if ((tenantId || actorId) && !internalAuth) {
     throw new Error("EVAL_TENANT_ID and EVAL_ACTOR_ID need SMOKE_INTERNAL_AUTH_SECRET.");
   }
@@ -54,8 +61,17 @@ export function evalConfig(env = process.env) {
     internalAuth,
     tenantId,
     actorId,
+    agentId,
     modelSelection,
   };
+}
+
+export function evalSuiteConfig(suite, config) {
+  const requireReadOnlyAgent = suite.kind === "ledger_replay";
+  if (requireReadOnlyAgent && !config.agentId) {
+    throw new Error("Ledger replay requires EVAL_AGENT_ID naming a custom Agent with the read-only approval policy.");
+  }
+  return { ...config, requireReadOnlyAgent };
 }
 
 export function agentRequestInit(task, config) {
@@ -75,6 +91,8 @@ export function agentRequestInit(task, config) {
     body: JSON.stringify({
       mode: task.mode || "orchestrate",
       messages: [{ role: "user", content: task.goal }],
+      ...(config.agentId ? { agentId: config.agentId } : {}),
+      ...(config.requireReadOnlyAgent ? { requireReadOnlyAgent: true } : {}),
       ...(config.modelSelection ? { modelSelection: config.modelSelection } : {}),
     }),
   };
@@ -119,17 +137,31 @@ export function applyAssertion(assert, response, trajectory) {
 /** The answer and trajectory in an /api/agent event stream. */
 export function readAgentStream(text) {
   let response = "";
+  let costKnown = true;
+  let completed = false;
+  let error;
   const trajectory = { toolIds: new Set(), citationIds: new Set(), providers: new Set(), estimatedCostUsd: undefined, latencyMs: 0, fallbackCount: 0 };
   for (const line of text.split("\n")) {
     if (!line.startsWith("data:")) continue;
     try {
       const event = JSON.parse(line.slice(5).trim());
       if (event.type === "delta" && event.text) response += event.text;
-      if (event.type === "done" && event.response) response = event.response;
+      if (event.type === "done" && typeof event.response === "string") {
+        completed = true;
+        response = event.response;
+      }
+      if (["error", "canceled", "waiting_approval", "clarification", "delegated", "budget_exhausted", "execution_target_retired"].includes(event.type)) {
+        error = `Agent stream ended with ${event.type}.`;
+      }
       if (event.type === "tool" && event.toolId && event.status !== "running") trajectory.toolIds.add(event.toolId);
       if (event.type === "model") {
         if (event.provider) trajectory.providers.add(event.provider);
-        if (typeof event.estimatedCostUsd === "number") trajectory.estimatedCostUsd = (trajectory.estimatedCostUsd || 0) + event.estimatedCostUsd;
+        costKnown = costKnown && event.costKnown !== false &&
+          typeof event.estimatedCostUsd === "number" &&
+          Number.isFinite(event.estimatedCostUsd) && event.estimatedCostUsd >= 0;
+        trajectory.estimatedCostUsd = costKnown
+          ? (trajectory.estimatedCostUsd ?? 0) + event.estimatedCostUsd
+          : undefined;
         if (event.fallbackUsed) trajectory.fallbackCount += 1;
       }
       if (event.type === "done" && event.grounding?.citedIds) event.grounding.citedIds.forEach((id) => trajectory.citationIds.add(id));
@@ -137,39 +169,40 @@ export function readAgentStream(text) {
       // ignore non-JSON keepalive lines
     }
   }
-  return { response, trajectory };
+  if (!completed && !error) error = "Agent stream did not complete successfully.";
+  return { response, trajectory, ...(error ? { error } : {}) };
 }
 
 async function runTask(task, config) {
   const startedAt = Date.now();
-  let res;
   try {
-    res = await fetch(`${config.baseUrl}/api/agent`, {
+    const res = await fetch(`${config.baseUrl}/api/agent`, {
       ...agentRequestInit(task, config),
       signal: AbortSignal.timeout(config.requestTimeoutMs),
     });
+    if (!res.ok || !res.body) {
+      return { response: "", error: `HTTP ${res.status}` };
+    }
+    const outcome = readAgentStream(await res.text());
+    outcome.trajectory.latencyMs = Date.now() - startedAt;
+    return outcome;
   } catch (error) {
     const detail = error instanceof Error ? error.message : "unknown network error";
     return { response: "", error: `request failed within ${config.requestTimeoutMs}ms: ${detail}` };
   }
-  if (!res.ok || !res.body) {
-    return { response: "", error: `HTTP ${res.status}` };
-  }
-  const { response, trajectory } = readAgentStream(await res.text());
-  trajectory.latencyMs = Date.now() - startedAt;
-  return { response, trajectory };
 }
 
 async function main() {
   const config = evalConfig();
   const raw = await readFile(config.tasksFile, "utf8");
   const suite = JSON.parse(raw);
+  const requestConfig = evalSuiteConfig(suite, config);
   if (suite.kind === "ledger_replay") {
     console.log(`Replaying ${suite.tasks.length} recorded runs against ${config.baseUrl}.`);
   }
   const results = [];
   for (const task of suite.tasks) {
-    const { response, trajectory, error } = await runTask(task, config);
+    const { response, trajectory, error } = await runTask(task, requestConfig);
     const failures = error ? [error] : applyAssertion(task.assert, response, trajectory);
     const passed = failures.length === 0;
     results.push({ id: task.id, passed, failures });

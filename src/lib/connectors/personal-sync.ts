@@ -674,6 +674,7 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
         if (outcome === "removed") sourceRemoved += 1;
       };
       try {
+        let processingFailure: { error: unknown } | undefined;
         for (const item of observation.value.items) {
           if (quarantinedSourceItem(quarantine, item.id)) {
             // A set-aside item waits for its next read, which comes sooner
@@ -699,7 +700,13 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
             }, Date.now());
             quarantine = failure.state;
             const { failing, quarantined } = failure;
-            if (!failing || !quarantined) throw error;
+            if (!failing || !quarantined) {
+              // Keep the page in place, but let due items leave quarantine
+              // before reporting its failure. Otherwise a full quarantine
+              // could never free capacity while this item keeps failing.
+              processingFailure = { error };
+              break;
+            }
             sourceItemEvents.push(sourceItemEvent(
               "quarantined",
               secrets.grant.id,
@@ -741,6 +748,7 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
             );
           }
         }
+        if (processingFailure) throw processingFailure.error;
         quarantine = settleSourceItems(quarantine);
         if (sweep) sweep = await sweepSourceDocuments(source, sweep, count);
         const candidateCursor = withSourceDocumentSweep(
@@ -968,9 +976,13 @@ async function googleSourceItem(
       signal,
       [404, 410],
     );
-    return response.status === 404 || response.status === 410
-      ? { id, kind: "calendar", title: "Removed calendar event", content: "", deleted: true }
-      : googleEvent({ ...response.body, id });
+    if (response.status === 404 || response.status === 410) {
+      return { id, kind: "calendar", title: "Removed calendar event", content: "", deleted: true };
+    }
+    if (response.body.id !== id) {
+      throw new Error("Google Calendar returned another item than the one requested.");
+    }
+    return googleEvent(response.body);
   }
   const response = await providerJson(
     `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?fields=${encodeURIComponent(GOOGLE_DRIVE_FILE_FIELDS)}`,
@@ -979,10 +991,13 @@ async function googleSourceItem(
     [404],
   );
   const file = response.body;
+  if (response.status !== 404 && file.id !== id) {
+    throw new Error("Google Drive returned another item than the one requested.");
+  }
   return response.status === 404 || file.trashed === true ||
       file.ownedByMe !== true
     ? { id, kind: "drive", title: "Removed Drive file", content: "", excluded: true }
-    : googleDriveItem({ ...file, id }, headers, signal, identity);
+    : googleDriveItem(file, headers, signal, identity);
 }
 
 type GoogleSourcePresence = "present" | "deleted" | "excluded" | "unknown";
@@ -1182,6 +1197,9 @@ async function gmailItems(
     );
     if (response.status === 404) {
       return { id, kind: "mail", title: "Removed email", content: "", deleted: true };
+    }
+    if (response.body.id !== id) {
+      throw new Error("Gmail returned another item than the one requested.");
     }
     return hasExcludedGmailLabel(response.body.labelIds)
       ? { id, kind: "mail", title: "Excluded email", content: "", excluded: true }

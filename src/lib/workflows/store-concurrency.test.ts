@@ -1,7 +1,7 @@
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { listStreamEvents } from "@/lib/events/store";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 
@@ -360,6 +360,70 @@ describe("workflow conditional transitions (file mode)", () => {
         }),
       ]),
     });
+  });
+
+  it("reclaims a released workflow on its first reset delivery under its live lease", async () => {
+    const store = await import("@/lib/workflows/store");
+    const queue = await import("@/lib/operations/job-queue");
+    const tenantId = "tenant-quarantine-redelivery";
+    const detail = await store.createWorkflowRun({
+      tenantId, goal: "Recover a released interrupted workflow",
+    });
+    await store.transitionWorkflowRun(detail.run.id, ["queued"], {
+      status: "running", currentStep: "preflight",
+    }, { tenantId });
+    await store.updateWorkflowStep(detail.run.id, "preflight", {
+      status: "running", attempt: 1,
+    }, { tenantId, events: [{ type: "step.started" }] });
+    const input = {
+      tenantId,
+      type: "workflow.tick" as const,
+      dedupeKey: `workflow:${detail.run.id}`,
+      payload: { workflowRunId: detail.run.id },
+    };
+    const job = await queue.enqueueOperationJob(input);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      for (let lapse = 0; lapse < queue.OPERATION_JOB_QUARANTINE_LAPSES; lapse += 1) {
+        const [leased] = await queue.leaseOperationJobs({ tenantId, leaseSeconds: 10 });
+        if (lapse === 0) {
+          await expect(store.reclaimWorkflowRunForQueueDelivery(detail.run.id, {
+            tenantId, jobId: job.id, leaseOwner: leased.leaseOwner!,
+            deliveryAttempt: 1, releasedFromQuarantine: true,
+          })).resolves.toBe("stale");
+        }
+        vi.setSystemTime(Date.now() + 11_000);
+        await queue.repairExpiredOperationJobs({ tenantId });
+      }
+      await expect(queue.releaseQuarantinedOperationJob(job.id, { tenantId }))
+        .resolves.toMatchObject({ outcome: "released", job: { attempt: 0 } });
+      // Operator ticking/bootstrap can coalesce the tick before dispatch.
+      await queue.enqueueOperationJob(input);
+      const [leased] = await queue.leaseOperationJobs({ tenantId, leaseSeconds: 10 });
+      expect(leased).toMatchObject({
+        attempt: 1, payload: { __workflowQuarantineReleased: true },
+      });
+      const reclaim = {
+        tenantId, jobId: job.id, leaseOwner: leased.leaseOwner!,
+        deliveryAttempt: leased.attempt, releasedFromQuarantine: true,
+      };
+      await expect(store.reclaimWorkflowRunForQueueDelivery(detail.run.id, {
+        ...reclaim, leaseOwner: "former-worker",
+      })).resolves.toBe("stale");
+      await expect(store.reclaimWorkflowRunForQueueDelivery(detail.run.id, reclaim))
+        .resolves.toBe("requeued");
+      await expect(store.getWorkflowRunDetail(detail.run.id, { tenantId }))
+        .resolves.toMatchObject({
+          run: { status: "queued" },
+          steps: expect.arrayContaining([
+            expect.objectContaining({ stepKey: "preflight", status: "pending", attempt: 1 }),
+          ]),
+        });
+      const completed = await queue.completeOperationJob(job.id, leased.leaseOwner, tenantId);
+      expect(completed?.payload).not.toHaveProperty("__workflowQuarantineReleased");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("reuses one run when a reviewed plan start is retried", async () => {

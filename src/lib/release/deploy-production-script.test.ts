@@ -75,7 +75,9 @@ describe("paired production deployment", () => {
       "DRY RUN verify release provenance revision=test-release is clean HEAD on benniejoseph/OmniAgentOS main with green checks quality,build,audit,integration,worker,gitleaks",
     );
     expect(commands[1]).toBe("DRY RUN npm run verify");
-    expect(commands[2]).toContain("npm run smoke:release");
+    expect(commands[2]).toContain("npm run smoke:release -- --previous-release");
+    expect(commands.filter((command) => command.includes("--previous-release")))
+      .toEqual([commands[2]]);
     expect(commands[3]).toContain(
       "vercel deploy --prod --skip-domain --yes",
     );
@@ -1147,6 +1149,23 @@ describe("rolling back a failed production release", () => {
   const manifestCheck = (baseUrl: string) =>
     `npm run smoke:manifest against ${baseUrl} expecting ${head}`;
 
+  it("limits previous-release evidence compatibility to the initial production check", async () => {
+    await withFakeReleasePlatform(async ({ deploy }) => {
+      const result = await deploy();
+      const priorCheck = `npm run smoke:release -- --previous-release against ${canonical}`;
+
+      expect(result.code).toBe(0);
+      expect(result.log.filter((line) => line.includes("--previous-release")))
+        .toEqual([priorCheck]);
+      expect(result.log.indexOf(priorCheck)).toBeLessThan(result.log.indexOf(stagedDeploy));
+      expect(result.log).toContain(manifestCheck(staged));
+      expect(result.log).toContain(manifestCheck(canonical));
+      expect(result.log).toContain(`npm run test:production-smoke against ${staged} expecting ${head}`);
+      expect(result.log).toContain(`npm run test:production-smoke against ${canonical} expecting ${head}`);
+      expect(result.log).toContain(`npm run smoke:release against ${canonical} expecting ${head}`);
+    });
+  });
+
   it("signs the manifest it deploys and checks it staged, then canonical", async () => {
     await withFakeReleasePlatform(async ({ deploy }) => {
       const signingStarted = Date.now();
@@ -1237,7 +1256,7 @@ describe("rolling back a failed production release", () => {
         `fetch ${canonical}/api/health`,
         // The token the prior release uses still reaches the running gateway.
         ...gatewayChecks(priorToken),
-        `npm run smoke:release against ${canonical}`,
+        `npm run smoke:release -- --previous-release against ${canonical}`,
         stagedDeploy,
         `fetch ${staged}/api/health`,
         manifestCheck(staged),
@@ -1533,7 +1552,7 @@ describe("rolling back a failed production release", () => {
   it("rolls an initial gateway cutover back to the worker without a gateway", async () => {
     await withFakeReleasePlatform(async ({ deploy }) => {
       const failure = `npm run test:production-smoke against ${staged} expecting ${head}`;
-      const releaseSmoke = `npm run smoke:release against ${canonical}`;
+      const releaseSmoke = `npm run smoke:release -- --previous-release against ${canonical}`;
       const result = await deploy({
         OMNIAGENT_OPENAI_GATEWAY_INITIAL_CUTOVER: "CONFIRMED",
         // The running worker serves no gateway yet.

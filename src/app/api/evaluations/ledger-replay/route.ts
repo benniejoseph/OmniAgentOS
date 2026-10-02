@@ -7,7 +7,9 @@ import {
 import { parseBoundedInteger } from "@/lib/http/body";
 import { recordRuntimeEventSafely } from "@/lib/observability/store";
 import { listAgentRunEventsAfter, listAgentRuns } from "@/lib/runs/store";
+import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
+import { getOwnedThread } from "@/lib/threads/store";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
@@ -29,9 +31,30 @@ async function GETHandler(request: Request) {
   const limit = parseBoundedInteger(url.searchParams.get("limit"), 20, { max: 50 });
   const tenantId = context.tenantId;
   const now = new Date();
+  const requestActorBinding = canonicalRequestActorBindingFromSecurityContext(context);
+  const readableActors = new Set(requestActorBinding?.readableOwnerActorIds ?? [context.actorId]);
+  const candidates = await listAgentRuns(LEDGER_REPLAY_RUN_WINDOW, { tenantId });
+  const runs = [];
+  const readableThreads = new Map<string, boolean>();
+  // File-backed run lists do not have Postgres actor RLS. Enforce ownership
+  // before counting a run or reading any of its events in either store.
+  for (const run of candidates) {
+    if (!readableActors.has(run.ownerActorId)) continue;
+    if (run.threadId) {
+      if (!readableThreads.has(run.threadId)) {
+        readableThreads.set(run.threadId, Boolean(await getOwnedThread(run.threadId, {
+          tenantId,
+          actorId: context.actorId,
+          requestActorBinding,
+        })));
+      }
+      if (!readableThreads.get(run.threadId)) continue;
+    }
+    runs.push(run);
+  }
   const corpus = await buildLedgerReplayCorpus({
     tenantId,
-    runs: await listAgentRuns(LEDGER_REPLAY_RUN_WINDOW, { tenantId }),
+    runs,
     days,
     limit,
     now,

@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   listAgentRuns: vi.fn(),
   listAgentRunEventsAfter: vi.fn(),
   recordRuntimeEventSafely: vi.fn(),
+  getOwnedThread: vi.fn(),
 }));
 
 vi.mock("@/lib/db/client", async (importOriginal) => ({
@@ -24,6 +25,9 @@ vi.mock("@/lib/runs/store", () => ({
 }));
 vi.mock("@/lib/observability/store", () => ({
   recordRuntimeEventSafely: mocks.recordRuntimeEventSafely,
+}));
+vi.mock("@/lib/threads/store", () => ({
+  getOwnedThread: mocks.getOwnedThread,
 }));
 
 import { GET } from "@/app/api/evaluations/ledger-replay/route";
@@ -67,6 +71,7 @@ beforeEach(() => {
     createdAt: "2026-09-30T12:00:00.000Z",
   }]);
   mocks.recordRuntimeEventSafely.mockReset().mockResolvedValue(undefined);
+  mocks.getOwnedThread.mockReset().mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -137,6 +142,90 @@ describe("ledger-replay export route", () => {
     expect(mocks.recordRuntimeEventSafely).toHaveBeenLastCalledWith(expect.objectContaining({
       metadata: expect.objectContaining({ days: 30, limit: 50 }),
     }));
+  });
+
+  it.each(["viewer", "admin"])("exports only the caller's runs for a %s", async (role) => {
+    mocks.authorizeRequest.mockResolvedValue({
+      tenantId: "tenant-a", actorId: "owner-a", role, source: "session",
+    });
+    mocks.listAgentRuns.mockResolvedValue([
+      run("run-owned", "2026-09-30T12:00:00.000Z"),
+      { ...run("run-other", "2026-09-30T12:00:00.000Z"), ownerActorId: "owner-b" },
+    ]);
+
+    const body = await (await GET(new Request(
+      "http://asael.test/api/evaluations/ledger-replay",
+    ))).json();
+
+    expect(body).toMatchObject({
+      examined: 1,
+      skipped: {},
+      tasks: [{ id: "replay-run-owned" }],
+    });
+    expect(mocks.listAgentRunEventsAfter).toHaveBeenCalledTimes(1);
+    expect(mocks.listAgentRunEventsAfter).toHaveBeenCalledWith("run-owned", {
+      tenantId: "tenant-a", limit: 500,
+    });
+    expect(JSON.stringify(mocks.recordRuntimeEventSafely.mock.calls)).not.toContain("run-other");
+  });
+
+  it("requires an owned parent thread before reading a thread-linked run", async () => {
+    mocks.listAgentRuns.mockResolvedValue([
+      { ...run("run-owned-thread", "2026-09-30T12:00:00.000Z"), threadId: "thread-owned" },
+      { ...run("run-unreadable-thread", "2026-09-30T12:00:00.000Z"), threadId: "thread-unreadable" },
+    ]);
+    mocks.getOwnedThread.mockImplementation(async (id: string) =>
+      id === "thread-owned" ? { id, actorId: "owner-a" } : null
+    );
+
+    const body = await (await GET(new Request(
+      "http://asael.test/api/evaluations/ledger-replay",
+    ))).json();
+
+    expect(body).toMatchObject({ examined: 1, tasks: [{ id: "replay-run-owned-thread" }] });
+    expect(mocks.getOwnedThread).toHaveBeenCalledWith("thread-unreadable", {
+      tenantId: "tenant-a", actorId: "owner-a", requestActorBinding: undefined,
+    });
+    expect(mocks.listAgentRunEventsAfter).toHaveBeenCalledTimes(1);
+    expect(mocks.listAgentRunEventsAfter).toHaveBeenCalledWith("run-owned-thread", {
+      tenantId: "tenant-a", limit: 500,
+    });
+  });
+
+  it("recognizes only the server-derived canonical and current actor pair", async () => {
+    const userId = "11111111-2222-4333-8444-555555555555";
+    const actorId = "owner@example.test";
+    const canonicalActorId = `actor:${userId}`;
+    mocks.authorizeRequest.mockResolvedValue({
+      tenantId: "tenant-a", actorId, role: "viewer", source: "session",
+      auth: { userId, email: actorId, sessionId: "session-a", tenantName: "Test" },
+    });
+    mocks.listAgentRuns.mockResolvedValue([
+      { ...run("run-current", "2026-09-30T12:00:00.000Z"), ownerActorId: actorId },
+      {
+        ...run("run-canonical", "2026-09-30T12:00:00.000Z"),
+        ownerActorId: canonicalActorId,
+        threadId: "thread-canonical",
+      },
+      { ...run("run-unrelated", "2026-09-30T12:00:00.000Z"), ownerActorId: "prior@example.test" },
+    ]);
+    mocks.getOwnedThread.mockResolvedValue({ id: "thread-canonical", actorId });
+
+    const body = await (await GET(new Request(
+      "http://asael.test/api/evaluations/ledger-replay",
+    ))).json();
+
+    expect(body.examined).toBe(2);
+    expect(body.tasks.map((task: { id: string }) => task.id).sort())
+      .toEqual(["replay-run-canonical", "replay-run-current"]);
+    expect(mocks.getOwnedThread).toHaveBeenCalledWith("thread-canonical", {
+      tenantId: "tenant-a", actorId,
+      requestActorBinding: {
+        version: 1, kind: "auth_user", authUserId: userId, canonicalActorId,
+        legacyOwnerActorIds: [actorId], readableOwnerActorIds: [canonicalActorId, actorId],
+      },
+    });
+    expect(mocks.listAgentRunEventsAfter).toHaveBeenCalledTimes(2);
   });
 
   it("refuses a caller who cannot read runs", async () => {

@@ -496,6 +496,7 @@ export async function executeGovernedTool({
   abortSignal,
   idempotencyKey,
   forceApproval = false,
+  requireReadOnly = false,
   mcpSessionScope,
   executionScope,
   agentRunId,
@@ -521,6 +522,8 @@ export async function executeGovernedTool({
   idempotencyKey?: string;
   /** Hardens write tools for agents configured to approve every mutation. */
   forceApproval?: boolean;
+  /** Server-owned constraint checked against the current resolved tool contract. */
+  requireReadOnly?: boolean;
   /** Explicit owner/run boundary used only by stateful MCP transports. */
   mcpSessionScope?: McpSessionScope;
   /** Durable attribution inherited from the initiating run or request. */
@@ -619,6 +622,13 @@ export async function executeGovernedTool({
   }
   if (!registeredTool) {
     return blockBeforePolicy({ reason: "Unknown tools are blocked by default." });
+  }
+  if (
+    requireReadOnly &&
+    (registeredTool.riskLevel !== 0 ||
+      governedToolOperationClass(registeredTool, input) !== "read_only")
+  ) {
+    return blockBeforePolicy({ reason: "This run permits only read-only tools." });
   }
   // Task authority brings forward only an app the user named in their
   // request; switching to any other app goes to the user for review.
@@ -1189,6 +1199,7 @@ export async function executeGovernedTool({
             abortSignal,
             idempotencyKey,
             forceApproval,
+            requireReadOnly,
             mcpSessionScope,
             executionScope,
             agentRunId,
@@ -1762,6 +1773,7 @@ export async function executeGovernedTool({
           abortSignal,
           idempotencyKey,
           forceApproval,
+          requireReadOnly,
           mcpSessionScope,
           executionScope,
           agentRunId,
@@ -2229,6 +2241,7 @@ export async function executeGovernedTool({
         abortSignal,
         idempotencyKey: idempotencyKey ? `${idempotencyKey}:review` : undefined,
         forceApproval: true,
+        requireReadOnly,
         mcpSessionScope,
         executionScope,
         agentRunId,
@@ -4900,8 +4913,8 @@ export const INJECTION_CANARY_LATCHED_REASON =
   "An earlier tool call in this run carried this workspace's context seal, so the run's tool calls are blocked.";
 
 /**
- * Persists a call refused before its tool's policy runs: an unknown tool, or
- * arguments that carry the tenant's injection canary.
+ * Persists a call refused before its tool's policy runs: an unknown tool, a
+ * read-only constraint, or arguments that carry the tenant's injection canary.
  */
 async function blockGovernedToolCall({
   reason,

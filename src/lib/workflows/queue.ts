@@ -367,7 +367,8 @@ async function processWorkflowQueueInScope(
         continue;
       }
       earlierTickRan = true;
-      if (job.attempt > 1) {
+      const releasedFromQuarantine = job.payload.__workflowQuarantineReleased === true;
+      if (job.attempt > 1 || releasedFromQuarantine) {
         const budgetDetail = await getWorkflowRunDetail(workflowRunId, {
           tenantId: job.tenantId,
         });
@@ -514,6 +515,7 @@ async function processWorkflowQueueInScope(
           jobId: job.id,
           leaseOwner: job.leaseOwner || "",
           deliveryAttempt: job.attempt,
+          releasedFromQuarantine,
         },
       );
       if (reclaimDisposition === "stale") {

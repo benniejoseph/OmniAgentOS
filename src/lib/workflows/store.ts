@@ -18,6 +18,7 @@ import {
   listStreamEvents,
 } from "@/lib/events/store";
 import { syncMissionExecutorSafely } from "@/lib/missions/runtime";
+import { getOperationJob } from "@/lib/operations/job-queue";
 import { redactSensitive } from "@/lib/security/context";
 import {
   assertExecutionScopeTenant,
@@ -1122,16 +1123,30 @@ export async function reclaimWorkflowRunForQueueDelivery(
     jobId,
     leaseOwner,
     deliveryAttempt,
+    releasedFromQuarantine = false,
   }: {
     tenantId?: string;
     jobId: string;
     leaseOwner: string;
     deliveryAttempt: number;
+    /** A reset queue attempt still recovers the run its quarantined tick left. */
+    releasedFromQuarantine?: boolean;
   },
 ): Promise<"unchanged" | "requeued" | "failed" | "stale"> {
   const tenantId = normalizeTenantId(requestedTenantId);
-  if (deliveryAttempt <= 1 || !leaseOwner) {
+  if ((deliveryAttempt <= 1 && !releasedFromQuarantine) || !leaseOwner) {
     return "unchanged";
+  }
+  if (!hasDatabaseUrl() && releasedFromQuarantine) {
+    const job = await getOperationJob(jobId, { tenantId });
+    if (
+      !job || job.type !== "workflow.tick" || job.status !== "running" ||
+      job.leaseOwner !== leaseOwner || !(Date.parse(job.leaseExpiresAt || "") > Date.now()) ||
+      job.payload.workflowRunId !== runId ||
+      job.payload.__workflowQuarantineReleased !== true
+    ) {
+      return "stale";
+    }
   }
   const detail = await getWorkflowRunDetail(runId, { tenantId });
   const authority = detail?.run.input.executionAuthorityRequired
@@ -1158,6 +1173,10 @@ export async function reclaimWorkflowRunForQueueDelivery(
             AND lease_owner = ${leaseOwner}
             AND lease_expires_at > NOW()
             AND payload->>'workflowRunId' = ${runId}
+            AND (
+              ${!releasedFromQuarantine}
+              OR payload->>'__workflowQuarantineReleased' = 'true'
+            )
           FOR UPDATE
         `;
         if (!jobRows[0]) {

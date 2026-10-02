@@ -518,6 +518,49 @@ describe.each(SOURCES)("the Google $source source, with an item that keeps faili
     });
   });
 
+  it("frees due quarantine capacity while a failing item holds the source in place", async () => {
+    c.list([["poison"]]);
+    const full = Array.from({ length: 20 }, (_, index) => {
+      const id = `held-${index}`;
+      c.serve(id);
+      return {
+        id,
+        since: iso(T0 - 7 * HOUR),
+        retryAt: iso(T0),
+        redrives: 0,
+      };
+    });
+
+    const blocked = await syncAt(T0, {
+      itemQuarantine: {
+        [c.source]: {
+          failing: { id: "poison", attempts: 2, since: iso(T0 - 2 * HOUR) },
+          held: full,
+        },
+      },
+    });
+
+    expect(blocked).toMatchObject({ status: "error", imported: 2, cursorAdvanced: false });
+    expect(ingestedIds()).toEqual(["poison", "held-0", "held-1"]);
+    expect(quarantine()).toEqual({
+      failing: { id: "poison", attempts: 3, since: iso(T0 - 2 * HOUR) },
+      held: full.slice(2),
+    });
+    expect(mocks.appendEvent.mock.calls.map(([event]) => event.type)).toEqual([
+      "connector.source_item.released",
+      "connector.source_item.released",
+    ]);
+
+    const recovered = await syncAt(T0 + MINUTE, savedCursor());
+
+    expect(recovered).toMatchObject({ status: "healthy", cursorAdvanced: true });
+    expect(savedCursor()).toMatchObject(c.changesCursor);
+    expect(quarantine()).toMatchObject({ held: expect.arrayContaining([
+      expect.objectContaining({ id: "poison" }),
+    ]) });
+    expect(quarantine()).not.toHaveProperty("failing");
+  });
+
   it("reads a set-aside item again once it is due, and lets it go once it ingests", async () => {
     c.serve("poison");
     mocks.ingest.mockResolvedValue({});
@@ -739,17 +782,43 @@ describe.each(SOURCES)("the Google $source source, with an item that keeps faili
     expect(savedCursors()).toEqual([]);
   });
 
-  if (c.source === "mail") {
-    it("never takes another message for the one it reads again", async () => {
-      google.mail.messages.set("poison", gmailMessage("other"));
+  it.each(["present", "removed", "missing-id"])(
+    "keeps a set-aside item when its read answers for another or unidentified item (%s)",
+    async (answer) => {
+      const id = answer === "missing-id" ? undefined : "other";
+      if (c.source === "mail") {
+        google.mail.messages.set("poison", {
+          ...gmailMessage("other"),
+          id,
+          ...(answer === "removed" ? { labelIds: ["TRASH"] } : {}),
+        });
+      }
+      if (c.source === "calendar") {
+        google.calendar.items.set("poison", {
+          ...calendarEvent("other"),
+          id,
+          ...(answer === "removed" ? { status: "cancelled" } : {}),
+        });
+      }
+      if (c.source === "drive") {
+        google.drive.items.set("poison", {
+          ...driveFile("other", { trashed: answer === "removed" }),
+          id,
+        });
+      }
+      storeDocument();
       mocks.ingest.mockResolvedValue({});
 
       await syncAt(T0, held());
 
       expect(mocks.ingest).not.toHaveBeenCalled();
+      expect(mocks.remove).not.toHaveBeenCalled();
+      expect(mocks.cancelCalendar).not.toHaveBeenCalled();
+      expect(mocks.projectCalendar).not.toHaveBeenCalled();
       expect(quarantine()).toMatchObject({ held: [{ id: "poison", redrives: 1 }] });
-    });
-  }
+      expect(mocks.appendEvent).not.toHaveBeenCalled();
+    },
+  );
 
   if (c.source === "calendar") {
     it("retires a set-aside event Google reports gone", async () => {

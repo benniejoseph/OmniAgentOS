@@ -4,6 +4,7 @@ import {
   agentRequestInit,
   applyAssertion,
   evalConfig,
+  evalSuiteConfig,
   readAgentStream,
 } from "../../../scripts/run-evals.mjs";
 import { buildLedgerReplayCorpus } from "@/lib/evals2/ledger-replay";
@@ -27,6 +28,7 @@ describe("eval runner configuration", () => {
       internalAuth: undefined,
       tenantId: undefined,
       actorId: undefined,
+      agentId: undefined,
       modelSelection: undefined,
     });
   });
@@ -40,6 +42,7 @@ describe("eval runner configuration", () => {
       SMOKE_INTERNAL_AUTH_SECRET: "internal-secret",
       EVAL_TENANT_ID: " tenant-a ",
       EVAL_ACTOR_ID: " owner-a ",
+      EVAL_AGENT_ID: " replay-reader ",
       EVAL_MODEL_SELECTION: JSON.stringify(SELECTION),
     })).toEqual({
       baseUrl: "https://candidate.asael.test",
@@ -49,6 +52,7 @@ describe("eval runner configuration", () => {
       internalAuth: "internal-secret",
       tenantId: "tenant-a",
       actorId: "owner-a",
+      agentId: "replay-reader",
       modelSelection: SELECTION,
     });
   });
@@ -59,6 +63,7 @@ describe("eval runner configuration", () => {
     [{ MIN_PASS_RATE: "most" }, /MIN_PASS_RATE/],
     [{ EVAL_TENANT_ID: "tenant-a" }, /SMOKE_INTERNAL_AUTH_SECRET/],
     [{ EVAL_ACTOR_ID: "owner-a" }, /SMOKE_INTERNAL_AUTH_SECRET/],
+    [{ EVAL_AGENT_ID: "bad agent id" }, /EVAL_AGENT_ID/],
     [{ EVAL_MODEL_SELECTION: "{not json" }, /JSON object/],
     [{ EVAL_MODEL_SELECTION: "null" }, /JSON object/],
     [{ EVAL_MODEL_SELECTION: "[1]" }, /JSON object/],
@@ -70,6 +75,21 @@ describe("eval runner configuration", () => {
 
 describe("eval runner requests", () => {
   const task = { id: "t1", goal: "Summarize my notes.", mode: "research", assert: {} };
+
+  it("requires the server's read-only Agent constraint for every ledger replay task", () => {
+    const suite = { kind: "ledger_replay" };
+    expect(() => evalSuiteConfig(suite, evalConfig({}))).toThrow(/EVAL_AGENT_ID/);
+    const config = evalSuiteConfig(suite, evalConfig({ EVAL_AGENT_ID: "replay-reader" }));
+
+    expect(JSON.parse(agentRequestInit(task, config).body)).toEqual({
+      mode: "research",
+      messages: [{ role: "user", content: "Summarize my notes." }],
+      agentId: "replay-reader",
+      requireReadOnlyAgent: true,
+    });
+    expect(JSON.parse(agentRequestInit(task, evalSuiteConfig({ version: 2 }, evalConfig({}))).body))
+      .toEqual({ mode: "research", messages: [{ role: "user", content: "Summarize my notes." }] });
+  });
 
   it("sends the workspace headers only with internal auth", () => {
     const init = agentRequestInit(task, evalConfig({
@@ -130,13 +150,39 @@ describe("eval runner requests", () => {
       toolIds: new Set(["memory.search"]),
       citationIds: new Set(["m1"]),
       providers: new Set(["openai", "anthropic"]),
-      estimatedCostUsd: 0.75,
+      estimatedCostUsd: undefined,
       latencyMs: 0,
       fallbackCount: 1,
     });
   });
 
-  it("joins the deltas when the stream ends without a final answer", () => {
+  it("totals the candidate cost when every model call has a known price", () => {
+    const stream = [0, 0.25, 0.5].map((estimatedCostUsd) =>
+      `data: ${JSON.stringify({ type: "model", estimatedCostUsd, costKnown: true })}`
+    ).join("\n");
+
+    expect(readAgentStream(stream).trajectory.estimatedCostUsd).toBe(0.75);
+  });
+
+  it.each([
+    {},
+    { estimatedCostUsd: 0.01, costKnown: false },
+    { estimatedCostUsd: null },
+    { estimatedCostUsd: -0.01 },
+  ])("cannot pass a replay cost budget with an unpriced call: %j", (unpriced) => {
+    const known = { type: "model", estimatedCostUsd: 0.25, costKnown: true };
+    const unknown = { type: "model", ...unpriced };
+    for (const events of [[known, unknown], [unknown, known]]) {
+      const stream = events.map((event) => `data: ${JSON.stringify(event)}`).join("\n");
+      const { trajectory } = readAgentStream(stream);
+
+      expect(trajectory.estimatedCostUsd).toBeUndefined();
+      expect(applyAssertion({ maxEstimatedCostUsd: 1 }, "Answer.", trajectory))
+        .toEqual(["cost undefined exceeded 1"]);
+    }
+  });
+
+  it("retains partial text for diagnosis but fails a stream without a done event", () => {
     const stream = [
       `data: ${JSON.stringify({ type: "delta", text: "Draft " })}`,
       `data: ${JSON.stringify({ type: "delta", text: "answer." })}`,
@@ -144,6 +190,7 @@ describe("eval runner requests", () => {
 
     expect(readAgentStream(stream)).toEqual({
       response: "Draft answer.",
+      error: "Agent stream did not complete successfully.",
       trajectory: {
         toolIds: new Set(),
         citationIds: new Set(),
@@ -154,6 +201,19 @@ describe("eval runner requests", () => {
       },
     });
   });
+
+  it.each(["error", "canceled", "waiting_approval", "clarification", "delegated", "budget_exhausted"])(
+    "cannot score partial output followed by %s as a completed task", (type) => {
+      const stream = [
+        { type: "delta", text: "A long enough draft response." },
+        { type },
+      ].map((event) => `data: ${JSON.stringify(event)}`).join("\n");
+
+      expect(readAgentStream(stream)).toMatchObject({
+        response: "A long enough draft response.", error: `Agent stream ended with ${type}.`,
+      });
+    },
+  );
 });
 
 describe("scoring a replay corpus", () => {

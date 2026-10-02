@@ -783,6 +783,7 @@ async function* runAgentUntilStopped(
   // Decided once from the request's scope. An approval pause carries it, so a
   // resumed run can never form memory the original request withheld.
   const memoryFormation: "durable" | "withheld" = durableMemoryEnabled &&
+      request.memoryFormation !== "withheld" &&
       !promptMemoryAccessScope &&
       !sharedPromptMemoryAccessScope &&
       !personalPromptMemoryAccessScope
@@ -1859,6 +1860,7 @@ async function* runAgentUntilStopped(
             toolId: tool.id,
             input: toolInput,
             dryRun: false,
+            requireReadOnly: agentToolPolicy.readOnly,
             approved: false,
             context: securityContext,
             requestActorBinding: request.requestActorBinding,
@@ -1978,6 +1980,7 @@ async function* runAgentUntilStopped(
       if (modelRoute.provider !== "openai" || runtimeModel.allowCrossProviderFallback) {
         const securityContext = agentToolSecurityContext(request);
         const providerLoop = runNonOpenAIProviderToolLoop({
+          requireReadOnly: agentToolPolicy.readOnly,
           provider: modelRoute.provider,
           tier: modelRoute.tier,
           instructions,
@@ -2431,6 +2434,7 @@ async function* runAgentUntilStopped(
             toolId: item.entry.definition.id,
             input: item.input,
             dryRun: false,
+            requireReadOnly: agentToolPolicy.readOnly,
             approved: false,
             context: securityContext,
             requestActorBinding: request.requestActorBinding,
@@ -2559,6 +2563,7 @@ async function* runAgentUntilStopped(
               toolId: definition.id,
               input,
               dryRun: false,
+              requireReadOnly: agentToolPolicy.readOnly,
               approved: false,
               context: securityContext,
               requestActorBinding: request.requestActorBinding,
@@ -2995,6 +3000,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   abortSignal?: AbortSignal;
   forceApproval?: boolean;
   forceApprovalAboveRisk?: number;
+  requireReadOnly?: boolean;
   continuation?: ModelToolTurnResult["continuation"];
   toolResults?: readonly ModelToolResult[];
   /** In-memory only; never place this observation state in a provider continuation. */
@@ -3323,6 +3329,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
             toolId: item.entry.definition.id,
             input: item.arguments,
             dryRun: false,
+            requireReadOnly: input.requireReadOnly,
             approved: false,
             context: input.securityContext,
             requestActorBinding: input.requestActorBinding,
@@ -3449,6 +3456,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
             toolId: definition.id,
             input: parsedArguments,
             dryRun: false,
+            requireReadOnly: input.requireReadOnly,
             approved: false,
             context: input.securityContext,
             requestActorBinding: input.requestActorBinding,
@@ -4531,6 +4539,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
           toolId: definition.id,
           input,
           dryRun: false,
+          requireReadOnly: continuation.toolPolicy?.readOnly,
           approved: false,
           context: resumeAuthority.securityContext,
           requestActorBinding: resumeAuthority.actorBinding,
@@ -4888,6 +4897,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
             toolId: definition.id,
             input,
             dryRun: false,
+            requireReadOnly: continuation.toolPolicy?.readOnly,
             approved: false,
             context: resumeAuthority.securityContext,
             requestActorBinding: resumeAuthority.actorBinding,
@@ -5644,6 +5654,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
           toolId: definition.id,
           input: parsedArguments,
           dryRun: false,
+          requireReadOnly: continuation.toolPolicy?.readOnly,
           approved: false,
           context: resumeSecurityContext,
           requestActorBinding: resumeActorBinding,
@@ -5714,6 +5725,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
     }
 
     const providerLoop = runNonOpenAIProviderToolLoop({
+      requireReadOnly: continuation.toolPolicy?.readOnly,
       provider: providerState.provider,
       tier: providerState.tier,
       instructions: continuation.instructions,

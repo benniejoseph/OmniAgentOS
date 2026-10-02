@@ -206,6 +206,7 @@ const requestSchema = z.object({
   message: z.string().min(1).max(AGENT_MAX_MESSAGE_CHARS).optional(),
   mode: z.enum(["orchestrate", "research", "execute", "learn"]).optional(),
   agentId: z.string().min(1).max(120).regex(/^[a-zA-Z0-9_.:-]+$/).optional(),
+  requireReadOnlyAgent: z.boolean().optional(),
   specialistIds: z.array(z.enum(["atlas", "scout", "forge", "sentinel", "mnemosyne"])).max(5).optional(),
   strategy: z.enum(["auto", "direct", "durable"]).optional(),
   computerUseTarget: z.enum(["local_macos", "isolated_browser"]).optional(),
@@ -363,6 +364,30 @@ async function POSTHandler(request: Request) {
   }
   const queuedDispatchRevision = request.headers
     .get(PROMPT_QUEUE_DISPATCH_REVISION_HEADER)?.trim();
+  let requiredReadOnlyAgent: Awaited<ReturnType<typeof resolveRequestedAgent>> | undefined;
+  if (parsed.data.requireReadOnlyAgent) {
+    if (
+      parsed.data.message || parsed.data.threadId || parsed.data.resumeRunId ||
+      parsed.data.missionId || computerUseTarget ||
+      queuedItemId || queuedDispatchToken
+    ) {
+      return Response.json({
+        error: "Read-only replay requires a new direct run",
+        message: "Use messages for a fresh run without a conversation, mission, Computer Use, or queued dispatch.",
+      }, { status: 409, headers: { "cache-control": "private, no-store" } });
+    }
+    requiredReadOnlyAgent = await resolveRequestedAgent(context, parsed.data.agentId);
+    if (requiredReadOnlyAgent instanceof Response) return requiredReadOnlyAgent;
+    if (
+      !requiredReadOnlyAgent.customAgent ||
+      requiredReadOnlyAgent.requestedCustomIdentity?.principal.approvalPolicy !== "read_only"
+    ) {
+      return Response.json({
+        error: "Read-only Agent required",
+        message: "Select a custom Agent whose active execution principal has the read-only approval policy.",
+      }, { status: 409, headers: { "cache-control": "private, no-store" } });
+    }
+  }
   if (
     parsed.data.contextReferences?.length &&
     parsed.data.resumeRunId
@@ -888,53 +913,10 @@ async function POSTHandler(request: Request) {
   }
 
   const mode = parsed.data.mode || "orchestrate";
-  const requestedBuiltInAgent = isBuiltInAgentId(parsed.data.agentId) ? parsed.data.agentId : undefined;
-  const customAgent = parsed.data.agentId && !requestedBuiltInAgent
-    ? await getCustomAgent(parsed.data.agentId, { tenantId: context.tenantId, actorId: context.actorId })
-    : undefined;
-  if (parsed.data.agentId && !requestedBuiltInAgent && !customAgent) {
-    return Response.json({ error: "Agent not found." }, { status: 404 });
-  }
-  if (customAgent?.status === "paused") {
-    return Response.json({ error: "Agent paused", message: "Resume this agent in the Agent Builder before assigning work." }, { status: 409 });
-  }
-  const availableSkills = customAgent
-    ? await listAgentSkills({ tenantId: context.tenantId, actorId: context.actorId })
-    : [];
-  let requestedCustomIdentity;
-  let customSkills: typeof availableSkills = [];
-  try {
-    requestedCustomIdentity = customAgent
-      ? await resolveAgentIdentityForExecution({
-          tenantId: context.tenantId,
-          actorId: context.actorId,
-          agentId: customAgent.id,
-          customAgent,
-          customSkills: availableSkills.filter((skill) => customAgent.skillIds.includes(skill.id) && isAgentSkillRuntimeActive(skill)),
-        })
-      : undefined;
-    customSkills = requestedCustomIdentity
-      ? selectReleasedAgentSkills(requestedCustomIdentity, availableSkills)
-      : [];
-  } catch (error) {
-    if (error instanceof AgentSkillChangedSinceReleaseError) {
-      return Response.json({
-        error: "Agent release out of date",
-        message: error.message,
-      }, {
-        status: 409,
-        headers: { "cache-control": "private, no-store" },
-      });
-    }
-    if (!(error instanceof AgentIdentityResolutionError)) throw error;
-    return Response.json({
-      error: "Agent identity unavailable",
-      message: "The exact definition and authority versions could not be verified.",
-    }, {
-      status: 409,
-      headers: { "cache-control": "private, no-store" },
-    });
-  }
+  const requestedAgent = requiredReadOnlyAgent ||
+    await resolveRequestedAgent(context, parsed.data.agentId);
+  if (requestedAgent instanceof Response) return requestedAgent;
+  const { requestedBuiltInAgent, customAgent, requestedCustomIdentity, customSkills } = requestedAgent;
   const agentProfile = requestedCustomIdentity ? {
     name: requestedCustomIdentity.definition.name,
     role: requestedCustomIdentity.definition.role,
@@ -1083,13 +1065,19 @@ async function POSTHandler(request: Request) {
       getContextScopePolicy(parsed.data.contextScope).durableContext !== "none",
   );
   const preliminaryDecision =
-    computerUseTarget === "local_macos" || commandContext ||
+    parsed.data.requireReadOnlyAgent || computerUseTarget === "local_macos" || commandContext ||
       (scopeCarriesDurableContext && parsed.data.strategy !== "durable")
       ? requireDirectRoute(semanticResolution.decision)
       : applySupervisorStrategy(
           semanticResolution.decision,
           parsed.data.strategy,
         );
+  if (parsed.data.requireReadOnlyAgent && preliminaryDecision.route === "clarify") {
+    return Response.json({
+      error: "Read-only replay requires clarification",
+      message: "Clarify the task before replaying it as a new read-only run.",
+    }, { status: 409, headers: { "cache-control": "private, no-store" } });
+  }
   const semanticDecisionShadowScope = executionScopeFromSecurityContext(context, {
     executingPrincipalType: "agent",
     executingPrincipalId:
@@ -1344,7 +1332,7 @@ async function POSTHandler(request: Request) {
         let loopV2ModelTextEnrollment;
         let loopV2ContextTextEnrollment;
         try {
-          loopV2CanaryEnrollment = queuedDispatch || parsed.data.budgets || parsed.data.contextScope || commandContext ||
+          loopV2CanaryEnrollment = parsed.data.requireReadOnlyAgent || queuedDispatch || parsed.data.budgets || parsed.data.contextScope || commandContext ||
               voiceCommand || computerUseTarget
             ? undefined
             :
@@ -1364,6 +1352,7 @@ async function POSTHandler(request: Request) {
               resumeRunId: parsed.data.resumeRunId,
             });
           if (
+            !parsed.data.requireReadOnlyAgent &&
             !loopV2CanaryEnrollment &&
             !queuedDispatch &&
             !commandContext &&
@@ -1567,7 +1556,7 @@ async function POSTHandler(request: Request) {
             });
           }
           if (await stopBeforeMutationIfCanceled()) return;
-          const explicitMemory = await formExplicitUserAssertionMemory({
+          const explicitMemory = parsed.data.requireReadOnlyAgent ? undefined : await formExplicitUserAssertionMemory({
             context,
             requestId,
             threadId: thread.id,
@@ -2061,6 +2050,7 @@ async function POSTHandler(request: Request) {
                 specialistIds: decision.specialistIds,
                 adaptationEvidence: decision.adaptationEvidence,
                 agentProfile,
+                ...(parsed.data.requireReadOnlyAgent ? { memoryFormation: "withheld" as const } : {}),
                 budgetLimits,
                 maxToolSteps:
                   computerUseTarget === "local_macos"
@@ -2123,6 +2113,7 @@ async function POSTHandler(request: Request) {
             // candidate, so a scoped or session-only run saves none.
             if (
               event.type === "done" &&
+              !parsed.data.requireReadOnlyAgent &&
               directExecutorId &&
               !loopV2Enrollment &&
               directMemoryFormation === "durable"
@@ -2286,6 +2277,58 @@ async function POSTHandler(request: Request) {
     await firstOutput.settled();
   });
   return sseResponse(stream, { "X-Asael-Run-Id": directRootRunId });
+}
+
+async function resolveRequestedAgent(
+  context: Awaited<ReturnType<typeof authorizeRequest>>,
+  agentId?: string,
+) {
+  const requestedBuiltInAgent = isBuiltInAgentId(agentId) ? agentId : undefined;
+  const customAgent = agentId && !requestedBuiltInAgent
+    ? await getCustomAgent(agentId, { tenantId: context.tenantId, actorId: context.actorId })
+    : undefined;
+  if (agentId && !requestedBuiltInAgent && !customAgent) {
+    return Response.json({ error: "Agent not found." }, { status: 404 });
+  }
+  if (customAgent?.status === "paused") {
+    return Response.json({ error: "Agent paused", message: "Resume this agent in the Agent Builder before assigning work." }, { status: 409 });
+  }
+  const availableSkills = customAgent
+    ? await listAgentSkills({ tenantId: context.tenantId, actorId: context.actorId })
+    : [];
+  try {
+    const requestedCustomIdentity = customAgent
+      ? await resolveAgentIdentityForExecution({
+          tenantId: context.tenantId,
+          actorId: context.actorId,
+          agentId: customAgent.id,
+          customAgent,
+          customSkills: availableSkills.filter((skill) => customAgent.skillIds.includes(skill.id) && isAgentSkillRuntimeActive(skill)),
+        })
+      : undefined;
+    const customSkills = requestedCustomIdentity
+      ? selectReleasedAgentSkills(requestedCustomIdentity, availableSkills)
+      : [];
+    return { requestedBuiltInAgent, customAgent, requestedCustomIdentity, customSkills };
+  } catch (error) {
+    if (error instanceof AgentSkillChangedSinceReleaseError) {
+      return Response.json({
+        error: "Agent release out of date",
+        message: error.message,
+      }, {
+        status: 409,
+        headers: { "cache-control": "private, no-store" },
+      });
+    }
+    if (!(error instanceof AgentIdentityResolutionError)) throw error;
+    return Response.json({
+      error: "Agent identity unavailable",
+      message: "The exact definition and authority versions could not be verified.",
+    }, {
+      status: 409,
+      headers: { "cache-control": "private, no-store" },
+    });
+  }
 }
 
 function missionTitle(message: string) {

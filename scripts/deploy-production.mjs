@@ -216,7 +216,7 @@ if (dryRun) {
   printDryRun("npm", ["run", "verify"]);
   printDryRun(
     "npm",
-    ["run", "smoke:release"],
+    ["run", "smoke:release", "--", "--previous-release"],
     { BASE_URL: PRODUCTION_BASE_URL },
   );
   printDryRun(
@@ -335,7 +335,10 @@ try {
       },
     });
   } else {
-    await run("npm", ["run", "smoke:release"], {
+    // The prior release may predate the new agent error budget gate. Only
+    // this pre-deployment check permits its absence; all new-release checks
+    // require it, and a present failed gate still stops this check.
+    await run("npm", ["run", "smoke:release", "--", "--previous-release"], {
       environment: {
         BASE_URL: productionBaseUrl,
         // Release evidence intentionally performs ordered database, worker,

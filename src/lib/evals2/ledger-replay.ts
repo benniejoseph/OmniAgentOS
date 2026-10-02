@@ -49,7 +49,7 @@ export type LedgerReplayRunSummary = {
   estimatedCostUsd?: number;
   approvalNeeded: boolean;
   blocked: boolean;
-  /** A tool that can write ran, or ran and failed, outside a dry run. */
+  /** A completed tool call can write, even if its recorded outcome was a dry run. */
   effect: boolean;
   eventsComplete: boolean;
 };
@@ -108,7 +108,7 @@ export function summarizeLedgerReplayRun(
       if (payload.status === "blocked") blocked = true;
       // Only a risk-0 tool is read-only; an unknown risk counts as a write.
       if (
-        (payload.status === "executed" || payload.status === "failed") &&
+        (payload.status === "executed" || payload.status === "failed" || payload.status === "dry_run") &&
         payload.riskLevel !== 0
       ) {
         effect = true;
@@ -151,8 +151,8 @@ export function ledgerReplayRunSkip(
 
 /**
  * A completed run as a replay task, or why it is left out. A run that needed
- * an approval, was blocked, or wrote anything had an effect or a refusal a
- * replay must not repeat unattended, so a replay starts only read-only runs.
+ * an approval, was blocked, or called a tool capable of writing (including a
+ * dry run) cannot supply a baseline for a read-only candidate.
  */
 export function ledgerReplayCase(
   run: AgentRunRecord,
@@ -255,7 +255,7 @@ export async function buildLedgerReplayCorpus(input: {
     kind: "ledger_replay",
     schemaVersion: 1,
     description:
-      "Golden tasks replayed from this workspace's own completed runs. Run them against a candidate deployment, not production: each task calls /api/agent and may consume provider capacity. The goals are the runs' own words, so keep the file private.",
+      "Golden tasks replayed from this workspace's own completed runs. Set EVAL_AGENT_ID to a custom Agent with the read-only approval policy and run against a candidate deployment, not production: each task calls /api/agent and may consume provider capacity. The goals are the runs' own words, so keep the file private.",
     generatedAt: input.now.toISOString(),
     since: since.toISOString(),
     examined,
