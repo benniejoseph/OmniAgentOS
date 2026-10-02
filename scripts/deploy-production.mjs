@@ -71,6 +71,10 @@ const gatewayReadinessProbeIndex = process.argv.indexOf(
 );
 const gatewayPaidProbeIndex = process.argv.indexOf("--gateway-paid-probe");
 const flyApp = process.env.FLY_APP?.trim() || "omniagent-os-worker";
+// The paid agent check signs in with a real account password. Only that check
+// receives it; no other command this script starts inherits it.
+const paidAgentPassword = process.env.SMOKE_PAID_AGENT_PASSWORD || "";
+delete process.env.SMOKE_PAID_AGENT_PASSWORD;
 const revision =
   process.env.OMNIAGENT_RELEASE_SHA?.trim() ||
   await capture("git", ["rev-parse", "HEAD"]);
@@ -557,10 +561,10 @@ function validateReleaseConfiguration() {
     ],
     ["RELEASE_EVIDENCE_OUTPUT", process.env.RELEASE_EVIDENCE_OUTPUT],
     [RELEASE_SIGNING_KEY_FILE_ENV, process.env[RELEASE_SIGNING_KEY_FILE_ENV]],
-    // The paid agent check runs as this account, so a release must name it
-    // before anything is deployed.
-    ["SMOKE_PAID_AGENT_TENANT_ID", process.env.SMOKE_PAID_AGENT_TENANT_ID],
-    ["SMOKE_PAID_AGENT_ACTOR_ID", process.env.SMOKE_PAID_AGENT_ACTOR_ID],
+    // The paid agent check signs in as this account, so a release must name
+    // it before anything is deployed.
+    ["SMOKE_PAID_AGENT_EMAIL", process.env.SMOKE_PAID_AGENT_EMAIL],
+    ["SMOKE_PAID_AGENT_PASSWORD", paidAgentPassword],
   ];
   const missing = required
     .filter(([, value]) => !value?.trim())
@@ -1177,6 +1181,7 @@ async function runPaidAgentVerification(baseUrl) {
       BASE_URL: baseUrl,
       EXPECTED_REVISION: revision,
       LIVE_VERIFY_PAID_OPENAI: "CONFIRMED",
+      SMOKE_PAID_AGENT_PASSWORD: paidAgentPassword,
     },
   });
 }
