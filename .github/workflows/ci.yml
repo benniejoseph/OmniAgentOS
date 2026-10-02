@@ -72,6 +72,9 @@ jobs:
       - name: Route JavaScript budget
         run: npm run check:route-js
 
+      - name: Native binaries stay out of pages
+        run: npm run check:server-traces
+
   audit:
     name: audit
     runs-on: ubuntu-latest

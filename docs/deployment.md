@@ -1689,7 +1689,14 @@ JavaScript exceeds its budget under `routeFirstLoadJs` in `performance-budgets.j
 `npm run check:route-js` reads the report a Turbopack `next build` writes to
 `.next/diagnostics/route-bundle-stats.json`, and fails when that report is missing.
 Workspace routes (`/app` and below) and public routes have one budget each, and the
-heaviest workspace routes have their own. Use focused component/contract tests and
+heaviest workspace routes have their own. Vercel ships every page in one function, so
+a native binary in any page trace slows every cold page load: `npm run
+check:server-traces` fails a build when a page trace ships a `.node` binding or
+ffmpeg, or when a route handler traces the canvas or ffmpeg package without its
+binary. `outputFileTracingExcludes` in `next.config.ts` keeps both out of the
+workspace pages; Turbopack matches its keys anywhere in the entry name
+(`/app/app/missions/page`, `/app/api/capture/route`), so a key of `/app` would strip
+them from every route handler. Use focused component/contract tests and
 the production build for web changes, and the signed native canary plus governed
 receipts for installed-Mac Computer Use.
 
