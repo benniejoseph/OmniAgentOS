@@ -705,14 +705,20 @@ function sqlLiteral(value) {
   return `'${String(value).replaceAll("'", "''")}'`;
 }
 
+// One row per table, gathered in the inventory's order: a function takes at
+// most 100 arguments, fewer than two for each table once there are over 50.
 function tableRowCountsSql(expectedCounts) {
-  const fields = Object.keys(expectedCounts)
+  const rows = Object.keys(expectedCounts)
     .sort()
-    .flatMap((tableName) => [
-      sqlLiteral(tableName),
-      `(SELECT COUNT(*)::text FROM ${quoteIdentifier(tableName)})`,
-    ]);
-  return `json_build_object(${fields.join(", ")})`;
+    .map(
+      (tableName, tableOrder) =>
+        `(${tableOrder}, ${sqlLiteral(tableName)}, ` +
+        `(SELECT COUNT(*)::text FROM ${quoteIdentifier(tableName)}))`,
+    );
+  return `(
+          SELECT json_object_agg(table_name, row_count ORDER BY table_order)
+          FROM (VALUES ${rows.join(", ")}) AS counts (table_order, table_name, row_count)
+        )`;
 }
 
 function quoteIdentifier(value) {
