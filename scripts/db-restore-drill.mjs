@@ -200,17 +200,29 @@ try {
     mode: 0o600,
   });
 
-  await run("pg_restore", [
-    "--exit-on-error",
-    "--clean",
-    "--if-exists",
-    "--no-owner",
-    "--use-list",
-    restoreListPath,
-    "--dbname",
-    restoreEnvironment.PGDATABASE,
-    restoreInput,
-  ], restoreEnvironment);
+  const restoreSections = (sections) =>
+    run("pg_restore", [
+      "--exit-on-error",
+      "--clean",
+      "--if-exists",
+      "--no-owner",
+      ...sections.map((section) => `--section=${section}`),
+      "--use-list",
+      restoreListPath,
+      "--dbname",
+      restoreEnvironment.PGDATABASE,
+      restoreInput,
+    ], restoreEnvironment);
+  // pg_restore empties search_path. A function whose body names another
+  // public function or table without its schema then cannot find it when a
+  // CHECK constraint calls it as the data loads, or an index build after. So
+  // the definitions load first; then such functions resolve names as the
+  // database they were dumped from does until the data and indexes are in,
+  // and get the backup's definitions back.
+  await restoreSections(["pre-data"]);
+  const pinnedFunctions = await pinFunctionSearchPaths();
+  await restoreSections(["data", "post-data"]);
+  await alterFunctions(pinnedFunctions, "RESET search_path");
 
   const validationText = await runCapture("psql", [
     "--no-psqlrc",
@@ -432,6 +444,75 @@ async function assertRestoreRoles(roles) {
         `Create each first; NOLOGIN is enough, as in CREATE ROLE ${quoteIdentifier(missing[0])} NOLOGIN;`,
     );
   }
+}
+
+// Gives every restored public function that takes its search_path from the
+// caller (one an extension owns, or one that sets its own, does not) the
+// path the database serves with, and returns their signatures.
+async function pinFunctionSearchPaths() {
+  const signatures = JSON.parse(
+    (
+      await runCapture("psql", [
+        "--no-psqlrc",
+        "--tuples-only",
+        "--no-align",
+        "--set",
+        "ON_ERROR_STOP=1",
+        "--command",
+        `
+          SELECT COALESCE(json_agg(signature ORDER BY signature), '[]'::json)::text
+          FROM (
+            SELECT format(
+              '%I.%I(%s)',
+              namespace.nspname,
+              proc.proname,
+              pg_get_function_identity_arguments(proc.oid)
+            ) AS signature
+            FROM pg_proc proc
+            JOIN pg_namespace namespace ON namespace.oid = proc.pronamespace
+            WHERE namespace.nspname = 'public'
+              AND proc.prokind = 'f'
+              AND NOT EXISTS (
+                SELECT 1
+                FROM pg_depend dependency
+                WHERE dependency.classid = 'pg_proc'::regclass
+                  AND dependency.objid = proc.oid
+                  AND dependency.deptype = 'e'
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM unnest(proc.proconfig) AS config(setting)
+                WHERE starts_with(config.setting, 'search_path=')
+              )
+          ) listed;
+        `,
+      ], restoreEnvironment)
+    ).trim(),
+  );
+  if (
+    !Array.isArray(signatures) ||
+    !signatures.every((signature) => typeof signature === "string")
+  ) {
+    throw new Error("The restored function list is not a list of signatures.");
+  }
+  await alterFunctions(signatures, "SET search_path = public, extensions");
+  return signatures;
+}
+
+async function alterFunctions(signatures, action) {
+  if (!signatures.length) {
+    return;
+  }
+  await run("psql", [
+    "--no-psqlrc",
+    "--quiet",
+    "--set",
+    "ON_ERROR_STOP=1",
+    "--command",
+    signatures
+      .map((signature) => `ALTER FUNCTION ${signature} ${action};`)
+      .join("\n"),
+  ], restoreEnvironment);
 }
 
 // Reads the restored database the way the application does: as the runtime

@@ -56,11 +56,17 @@ const FAKE_PSQL = [
   "  shift",
   "done",
   'record() { echo "$1" >> "$FAKE_PSQL_LOG"; }',
+  // How many functions a statement alters, and how many pg_restore runs came before it.
+  "altered() { printf '%s\\n' \"$sql\" | grep -c 'ALTER FUNCTION'; }",
+  "restored() { wc -l < \"$FAKE_PG_RESTORE_LOG\" | tr -d ' '; }",
   'case "$sql" in',
   '  *"unnest(ARRAY"*) record missing-roles; echo "${FAKE_PSQL_MISSING_ROLES:-[]}" ;;',
   '  *"SET LOCAL omni.tenant_id"*) record tenant-read; echo "$FAKE_PSQL_TENANT_READ" ;;',
   '  *"SET LOCAL ROLE"*) record unscoped-read; echo "$FAKE_PSQL_UNSCOPED_READ" ;;',
   `  *"'tableRowCounts'"*) record validation; cat "$FAKE_PSQL_VALIDATION" ;;`,
+  '  *"FROM pg_proc proc"*) record functions; echo "${FAKE_PSQL_FUNCTIONS:-[]}" ;;',
+  '  *"RESET search_path"*) record "reset $(altered) after $(restored) restores" ;;',
+  '  *"SET search_path = public, extensions"*) record "pin $(altered) after $(restored) restores" ;;',
   "  *rolbypassrls*) record role; echo safe ;;",
   '  *"current_database()"*) record database; echo prod ;;',
   "  *omni_database_identity*) record identity-table; echo f ;;",
@@ -227,10 +233,12 @@ describe("database restore drill", () => {
     expect(result.stderr).toBe("");
     expect(result.code).toBe(0);
     // pg_restore saw the decrypted archive, grants included.
-    expect(result.restores).toHaveLength(2);
+    expect(result.restores).toHaveLength(3);
     expect(result.restores[0]).toMatch(/^--list \S+\/\.asael-restore-[^/]+\/backup\.dump$/);
-    expect(result.restores[1]).toContain("--no-owner");
-    expect(result.restores[1]).not.toContain("--no-acl");
+    for (const restore of result.restores.slice(1)) {
+      expect(restore).toContain("--no-owner");
+      expect(restore).not.toContain("--no-acl");
+    }
     expect((await readFile(path.join(result.root, "restored.dump"))).equals(archive)).toBe(
       true,
     );
@@ -239,6 +247,7 @@ describe("database restore drill", () => {
     expect(list).toContain("\n215; 1259 16390 TABLE public omni_threads postgres");
     expect(result.queries).toEqual([
       "missing-roles",
+      "functions",
       "validation",
       "unscoped-read",
       "tenant-read",
@@ -270,6 +279,38 @@ describe("database restore drill", () => {
     expect(result.code).toBe(0);
     expect(result.queries).toEqual([
       "missing-roles",
+      "functions",
+      "validation",
+      "unscoped-read",
+      "tenant-read",
+      "tenant-read",
+    ]);
+  });
+
+  it("loads the data and indexes while the backup's functions can find one another", async () => {
+    // Functions whose bodies name another function without its schema, as
+    // CHECK constraints call them.
+    const functions = [
+      "public.omni_source_contract_id_is_valid(value text)",
+      "public.omni_source_id_array_is_canonical(values_to_check text[], maximum_entries integer)",
+    ];
+    const result = await runRestoreDrill({
+      env: { FAKE_PSQL_FUNCTIONS: JSON.stringify(functions) },
+    });
+
+    expect(result.stderr).toBe("");
+    expect(result.code).toBe(0);
+    // The definitions load first, then the data and indexes.
+    expect(result.restores).toHaveLength(3);
+    expect(result.restores[1]).toContain("--section=pre-data --use-list");
+    expect(result.restores[2]).toContain("--section=data --section=post-data --use-list");
+    // Each function resolves names as production does while the data and
+    // indexes load, and then has the backup's definition again.
+    expect(result.queries).toEqual([
+      "missing-roles",
+      "functions",
+      "pin 2 after 2 restores",
+      "reset 2 after 3 restores",
       "validation",
       "unscoped-read",
       "tenant-read",
