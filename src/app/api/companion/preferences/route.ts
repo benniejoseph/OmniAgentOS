@@ -1,6 +1,7 @@
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { getCompanionPreferences, saveCompanionPreferences } from "@/lib/companion/service";
 import { CompanionPreferencesError } from "@/lib/companion/state";
+import { assertCompanionOwnerBinding } from "@/lib/companion/owner-binding";
 import { JsonBodyError, parseJsonBody } from "@/lib/http/body";
 import { requiredRequestIdempotencyKey, requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -14,17 +15,20 @@ async function GETHandler(request: Request) {
   let context;
   try { context = await authorizeRequest({ request, action: "read", resourceType: "companion_preferences" }); }
   catch (error) { return denial(error); }
-  try { return Response.json(await getCompanionPreferences(context), { headers: privateHeaders }); }
+  try {
+    assertCompanionOwnerBinding(request, context);
+    return Response.json(await getCompanionPreferences(context), { headers: privateHeaders });
+  }
   catch (error) { return failure(error); }
 }
 
 async function PATCHHandler(request: Request) {
   let context;
   try {
-    // Native mutation enrollment is intentionally absent; this adds no mobile write authority.
-    context = await authorizeRequest({ request, action: "manage.own_preferences", resourceType: "companion_preferences" });
+    context = await authorizeRequest({ request, action: "manage.own_preferences", resourceType: "companion_preferences", nativeMutationCapability: "companion.preferences.update" });
   } catch (error) { return denial(error); }
   try {
+    assertCompanionOwnerBinding(request, context);
     const body = await parseJsonBody(request, 4_096);
     return Response.json(await saveCompanionPreferences(context, body, requiredRequestIdempotencyKey(request)), { headers: privateHeaders });
   } catch (error) { return failure(error); }

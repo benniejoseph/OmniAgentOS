@@ -3,6 +3,7 @@ import 'package:asael/core/network/api_client.dart';
 import 'package:asael/core/platform/local_computer_bridge.dart';
 import 'package:asael/core/storage/secure_session_store.dart';
 import 'package:asael/features/computer_use/local_computer.dart';
+import 'package:asael/features/companion/companion_providers.dart';
 import 'package:asael/features/settings/model_settings_view.dart';
 import 'package:asael/generated/native_contract.g.dart';
 import 'package:dio/dio.dart';
@@ -11,6 +12,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import '../companion/companion_fixtures.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -38,6 +41,15 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
+          companionScopeProvider.overrideWithValue((
+            deployment: 'https://settings.example.test',
+            tenantId: 'settings-tenant',
+            actorId: 'settings-actor',
+            role: 'admin',
+          )),
+          companionRepositoryProvider.overrideWith(
+            (_) => FakeCompanionRepository(),
+          ),
           localComputerCoordinatorProvider.overrideWith((ref) => coordinator),
         ],
         child: MaterialApp(
@@ -49,6 +61,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Settings'), findsOneWidget);
+    expect(find.byKey(const ValueKey('companion-settings')), findsOneWidget);
     expect(find.text('Models & roles'), findsOneWidget);
     expect(
       find.byKey(const ValueKey('macos-settings-inspector')),

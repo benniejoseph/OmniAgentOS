@@ -2,7 +2,8 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
-import '../../app/brand/asael_mark.dart';
+import '../companion/companion_models.dart';
+import '../companion/companion_presence.dart';
 import 'realtime_voice_controller.dart' show AmbientVoiceConfidenceBand;
 
 enum AmbientVoicePhase {
@@ -50,6 +51,11 @@ class AmbientVoiceSurface extends StatelessWidget {
     this.reviewAttested = false,
     this.onReviewAttested,
     this.consentRequired = false,
+    this.companionPreferences,
+    this.replyReady = false,
+    this.microphoneActive = false,
+    this.playbackActive = false,
+    this.workStatus,
   });
 
   final AmbientVoicePhase phase;
@@ -81,6 +87,11 @@ class AmbientVoiceSurface extends StatelessWidget {
 
   /// Whether the next microphone press also agrees to the provider notice.
   final bool consentRequired;
+  final CompanionPreferences? companionPreferences;
+  final bool replyReady;
+  final bool microphoneActive;
+  final bool playbackActive;
+  final String? workStatus;
 
   bool get _capturing =>
       phase == AmbientVoicePhase.starting ||
@@ -96,14 +107,27 @@ class AmbientVoiceSurface extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
-    final reducedMotion = MediaQuery.disableAnimationsOf(context);
+    // This presence is static. Existing controls retain their own semantics.
+    const reducedMotion = true;
     final presentation = _presentation(phase, scheme);
     final recognized = transcript.trim();
     final reviewing =
-        phase == AmbientVoicePhase.review && recognized.isNotEmpty;
+        !replyReady &&
+        phase == AmbientVoicePhase.review &&
+        recognized.isNotEmpty;
     final attestationNeeded = reviewing && reviewRequired;
     final title = attestationNeeded
         ? 'Check the transcript'
+        : playbackActive
+        ? 'Responding'
+        : microphoneActive
+        ? 'Listening'
+        : replyReady
+        ? 'Reply ready'
+        : phase == AmbientVoicePhase.listening && !microphoneActive
+        ? 'Voice connection'
+        : phase == AmbientVoicePhase.speaking && !playbackActive
+        ? 'Preparing reply audio'
         : presentation.title;
     final band = reviewing ? confidenceBand : null;
     final bandLabel = band == null ? null : _confidenceLabel(band);
@@ -139,24 +163,12 @@ class AmbientVoiceSurface extends StatelessWidget {
             clipBehavior: Clip.antiAlias,
             child: Stack(
               children: [
-                Positioned.fill(
-                  child: IgnorePointer(
-                    child: _AmbientWash(
-                      color: presentation.color,
-                      reducedMotion: reducedMotion,
-                      active: _capturing || _working,
-                    ),
-                  ),
-                ),
                 Padding(
                   padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
                   child: Row(
                     children: [
-                      _AmbientPresence(
-                        phase: phase,
-                        level: level,
-                        color: presentation.color,
-                        reducedMotion: reducedMotion,
+                      CompanionPortrait(
+                        visible: companionPreferences?.visible == true,
                       ),
                       const SizedBox(width: 13),
                       Expanded(
@@ -167,30 +179,18 @@ class AmbientVoiceSurface extends StatelessWidget {
                             Row(
                               children: [
                                 AnimatedContainer(
-                                  duration: reducedMotion
-                                      ? Duration.zero
-                                      : const Duration(milliseconds: 180),
+                                  duration: Duration.zero,
                                   width: 6,
                                   height: 6,
                                   decoration: BoxDecoration(
                                     color: presentation.color,
                                     shape: BoxShape.circle,
-                                    boxShadow: [
-                                      BoxShadow(
-                                        color: presentation.color.withValues(
-                                          alpha: .42,
-                                        ),
-                                        blurRadius: 8,
-                                      ),
-                                    ],
                                   ),
                                 ),
                                 const SizedBox(width: 7),
                                 Expanded(
                                   child: AnimatedSwitcher(
-                                    duration: reducedMotion
-                                        ? Duration.zero
-                                        : const Duration(milliseconds: 170),
+                                    duration: Duration.zero,
                                     child: Text(
                                       title,
                                       key: ValueKey(title),
@@ -235,10 +235,14 @@ class AmbientVoiceSurface extends StatelessWidget {
                               ],
                             ),
                             const SizedBox(height: 4),
+                            if ((microphoneActive || playbackActive) &&
+                                workStatus != null)
+                              Text(
+                                'Work: $workStatus',
+                                style: const TextStyle(fontSize: 13),
+                              ),
                             AnimatedSwitcher(
-                              duration: reducedMotion
-                                  ? Duration.zero
-                                  : const Duration(milliseconds: 190),
+                              duration: Duration.zero,
                               transitionBuilder: (child, animation) =>
                                   FadeTransition(
                                     opacity: animation,
@@ -273,7 +277,7 @@ class AmbientVoiceSurface extends StatelessWidget {
                                           ),
                                     ),
                             ),
-                            if (_capturing) ...[
+                            if (microphoneActive) ...[
                               const SizedBox(height: 8),
                               _VoiceTrace(
                                 level: level,
@@ -285,7 +289,8 @@ class AmbientVoiceSurface extends StatelessWidget {
                           ],
                         ),
                       ),
-                      if (phase == AmbientVoicePhase.review &&
+                      if (!replyReady &&
+                          phase == AmbientVoicePhase.review &&
                           (thisMacAvailable || useThisMac)) ...[
                         const SizedBox(width: 10),
                         _TargetButton(
@@ -305,7 +310,7 @@ class AmbientVoiceSurface extends StatelessWidget {
                         const SizedBox(width: 2),
                       ],
                       _PrimaryAction(
-                        phase: phase,
+                        phase: replyReady ? AmbientVoicePhase.asleep : phase,
                         consentRequired: consentRequired,
                         useThisMac: useThisMac,
                         color: presentation.color,
@@ -320,7 +325,6 @@ class AmbientVoiceSurface extends StatelessWidget {
                       IconButton(
                         tooltip: 'Close Ambient Command (Esc)',
                         onPressed: onClose,
-                        visualDensity: VisualDensity.compact,
                         iconSize: 17,
                         color: muted,
                         icon: const Icon(Icons.close_rounded),
@@ -342,7 +346,8 @@ class AmbientVoiceSurface extends StatelessWidget {
       return errorMessage;
     }
     final result = lastResult;
-    if (phase == AmbientVoicePhase.completed && result != null) {
+    if ((phase == AmbientVoicePhase.completed || replyReady) &&
+        result != null) {
       return result;
     }
     if (phase == AmbientVoicePhase.running && result != null) {
@@ -382,7 +387,6 @@ class _ReviewAttestation extends StatelessWidget {
       child: Checkbox(
         value: attested,
         semanticLabel: statement,
-        visualDensity: VisualDensity.compact,
         onChanged: change == null ? null : (value) => change(value == true),
       ),
     );
@@ -465,7 +469,6 @@ class _ReviewTranscriptState extends State<_ReviewTranscript> {
               IconButton(
                 tooltip: 'Review the full recognized request',
                 onPressed: _showFullTranscript,
-                visualDensity: VisualDensity.compact,
                 iconSize: 15,
                 color: scheme.onSurfaceVariant,
                 icon: const Icon(Icons.open_in_full_rounded),
@@ -560,7 +563,6 @@ class _ExpandedReviewTranscriptState extends State<_ExpandedReviewTranscript> {
                 IconButton(
                   tooltip: 'Close transcript review',
                   onPressed: () => Navigator.of(context).pop(),
-                  visualDensity: VisualDensity.compact,
                   iconSize: 17,
                   icon: const Icon(Icons.close_rounded),
                 ),
@@ -568,115 +570,6 @@ class _ExpandedReviewTranscriptState extends State<_ExpandedReviewTranscript> {
             ),
           ),
         ),
-      ),
-    );
-  }
-}
-
-class _AmbientPresence extends StatefulWidget {
-  const _AmbientPresence({
-    required this.phase,
-    required this.level,
-    required this.color,
-    required this.reducedMotion,
-  });
-
-  final AmbientVoicePhase phase;
-  final double level;
-  final Color color;
-  final bool reducedMotion;
-
-  @override
-  State<_AmbientPresence> createState() => _AmbientPresenceState();
-}
-
-class _AmbientPresenceState extends State<_AmbientPresence>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController animation = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 1500),
-  );
-
-  @override
-  void initState() {
-    super.initState();
-    if (!widget.reducedMotion) animation.repeat();
-  }
-
-  @override
-  void didUpdateWidget(covariant _AmbientPresence oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.reducedMotion) {
-      animation
-        ..stop()
-        ..value = .32;
-    } else if (!animation.isAnimating) {
-      animation.repeat();
-    }
-  }
-
-  @override
-  void dispose() {
-    animation.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final active = switch (widget.phase) {
-      AmbientVoicePhase.starting ||
-      AmbientVoicePhase.listening ||
-      AmbientVoicePhase.transcribing ||
-      AmbientVoicePhase.running ||
-      AmbientVoicePhase.speaking => true,
-      _ => false,
-    };
-    return SizedBox.square(
-      dimension: 58,
-      child: AnimatedBuilder(
-        animation: animation,
-        builder: (context, _) {
-          final wave = (math.sin(animation.value * math.pi * 2) + 1) / 2;
-          final response = widget.phase == AmbientVoicePhase.listening
-              ? widget.level.clamp(.08, 1.0)
-              : .12 + wave * .16;
-          return Stack(
-            alignment: Alignment.center,
-            children: [
-              AnimatedContainer(
-                duration: const Duration(milliseconds: 110),
-                width: active ? 48 + response * 8 : 47,
-                height: active ? 48 + response * 8 : 47,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: widget.color.withValues(alpha: .07),
-                  border: Border.all(
-                    color: widget.color.withValues(
-                      alpha: active ? .28 + response * .18 : .18,
-                    ),
-                  ),
-                ),
-              ),
-              Container(
-                width: 39,
-                height: 39,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: Theme.of(context).colorScheme.surfaceContainerLow,
-                  boxShadow: [
-                    BoxShadow(
-                      color: widget.color.withValues(alpha: active ? .22 : .1),
-                      blurRadius: active ? 18 : 10,
-                      spreadRadius: active ? 1 : 0,
-                    ),
-                  ],
-                ),
-                alignment: Alignment.center,
-                child: const AsaelMark(size: 25),
-              ),
-            ],
-          );
-        },
       ),
     );
   }
@@ -729,74 +622,6 @@ class _VoiceTrace extends StatelessWidget {
   }
 }
 
-class _AmbientWash extends StatefulWidget {
-  const _AmbientWash({
-    required this.color,
-    required this.reducedMotion,
-    required this.active,
-  });
-
-  final Color color;
-  final bool reducedMotion;
-  final bool active;
-
-  @override
-  State<_AmbientWash> createState() => _AmbientWashState();
-}
-
-class _AmbientWashState extends State<_AmbientWash>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController animation = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 2400),
-  );
-
-  @override
-  void initState() {
-    super.initState();
-    if (!widget.reducedMotion) animation.repeat(reverse: true);
-  }
-
-  @override
-  void didUpdateWidget(covariant _AmbientWash oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.reducedMotion) {
-      animation
-        ..stop()
-        ..value = .4;
-    } else if (!animation.isAnimating) {
-      animation.repeat(reverse: true);
-    }
-  }
-
-  @override
-  void dispose() {
-    animation.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => AnimatedBuilder(
-    animation: animation,
-    builder: (context, _) => DecoratedBox(
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment(-1 + animation.value * .18, -1),
-          end: const Alignment(1, 1),
-          colors: [
-            widget.color.withValues(
-              alpha: widget.active ? .075 + animation.value * .025 : .025,
-            ),
-            Colors.transparent,
-            widget.color.withValues(alpha: widget.active ? .025 : .01),
-          ],
-          stops: const [0, .58, 1],
-        ),
-      ),
-    ),
-  );
-}
-
 class _TargetButton extends StatelessWidget {
   const _TargetButton({
     required this.useThisMac,
@@ -826,9 +651,7 @@ class _TargetButton extends StatelessWidget {
       child: IconButton(
         onPressed: interactive ? () => onChanged(!useThisMac) : null,
         tooltip: tooltip,
-        visualDensity: VisualDensity.compact,
         style: IconButton.styleFrom(
-          fixedSize: const Size.square(38),
           backgroundColor: useThisMac ? scheme.primaryContainer : null,
           foregroundColor: useThisMac
               ? scheme.onPrimaryContainer
@@ -912,9 +735,7 @@ class _PrimaryAction extends StatelessWidget {
       child: IconButton.filled(
         onPressed: action,
         tooltip: tooltip,
-        visualDensity: VisualDensity.compact,
         style: IconButton.styleFrom(
-          fixedSize: const Size.square(42),
           backgroundColor: color,
           foregroundColor: scheme.surface,
           disabledBackgroundColor: color.withValues(alpha: .32),
@@ -944,7 +765,7 @@ class _PrimaryAction extends StatelessWidget {
     title: 'Approval needed',
     color: scheme.tertiary,
   ),
-  AmbientVoicePhase.completed => (title: 'Done', color: scheme.tertiary),
+  AmbientVoicePhase.completed => (title: 'Completed', color: scheme.tertiary),
   AmbientVoicePhase.offline => (title: 'Offline', color: scheme.tertiary),
   AmbientVoicePhase.error => (title: 'Needs attention', color: scheme.error),
 };

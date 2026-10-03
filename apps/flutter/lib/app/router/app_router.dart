@@ -26,6 +26,9 @@ import '../../features/automation/macos_automation_studio_view.dart';
 import '../../features/capture/capture.dart';
 import '../../features/capture/capture_providers.dart';
 import '../../features/computer_use/local_computer.dart';
+import '../../features/companion/companion_entry.dart';
+import '../../features/companion/companion_models.dart';
+import '../../features/companion/companion_providers.dart';
 import '../../features/customers/accounts_view.dart';
 import '../../features/customers/customer_detail.dart';
 import '../../features/customers/macos_accounts_view.dart';
@@ -69,18 +72,73 @@ String appHomePath() => !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS
     ? '/talk'
     : '/today';
 
+bool isSafeInitialAppLocation(String route) {
+  final uri = Uri.tryParse(route);
+  if (uri == null ||
+      uri.hasScheme ||
+      uri.hasAuthority ||
+      !route.startsWith('/') ||
+      uri.normalizePath().toString() != route) {
+    return false;
+  }
+  try {
+    var decoded = uri.path;
+    for (var attempt = 0; attempt < 4; attempt++) {
+      if (RegExp(r'[\\\x00-\x20\x7f]').hasMatch(decoded) ||
+          decoded.split('/').any((part) => part == '.' || part == '..')) {
+        return false;
+      }
+      final next = Uri.decodeComponent(decoded);
+      if (next == decoded) break;
+      decoded = next;
+    }
+  } on FormatException {
+    return false;
+  }
+  if (DesktopHostBridge.isWorkspaceRoute(route)) return true;
+  final id = companionThreadId(uri.queryParameters['thread']);
+  return id != null && route == '/talk?thread=$id';
+}
+
 String initialAppLocation(List<String> arguments) {
   const prefix = '--asael-route=';
   final route = arguments
       .where((argument) => argument.startsWith(prefix))
       .map((argument) => argument.substring(prefix.length))
       .lastOrNull;
-  return route != null && DesktopHostBridge.isWorkspaceRoute(route)
+  return route != null && isSafeInitialAppLocation(route)
       ? route
       : appHomePath();
 }
 
+bool hasExplicitInitialAppLocation(List<String> arguments) {
+  const prefix = '--asael-route=';
+  final route = arguments
+      .where((argument) => argument.startsWith(prefix))
+      .map((argument) => argument.substring(prefix.length))
+      .lastOrNull;
+  return route != null && isSafeInitialAppLocation(route);
+}
+
 final appInitialLocationProvider = Provider<String>((_) => appHomePath());
+// Embedders that supply a location keep their explicit destination by default.
+// main supplies false only for an ordinary launch with no validated route.
+final appExplicitInitialLocationProvider = Provider<bool>((_) => true);
+final _entryIntentProvider = Provider<_EntryIntent>((_) => _EntryIntent());
+
+class _EntryIntent {
+  String? location;
+  bool hadSession = false;
+  void remember(String value) {
+    if (isSafeInitialAppLocation(value)) location = value;
+  }
+
+  String? take() {
+    final value = location;
+    location = null;
+    return value;
+  }
+}
 
 class ProviderBoundActivityRoute extends ConsumerWidget {
   const ProviderBoundActivityRoute({super.key});
@@ -122,15 +180,18 @@ class ProviderBoundTalkRoute extends ConsumerWidget {
     this.ambientVoice = false,
     this.onQuickEntryReady,
     this.onExitQuickEntry,
+    this.requestedThreadId,
   });
 
   final bool quickEntry;
   final bool ambientVoice;
   final VoidCallback? onQuickEntryReady;
   final VoidCallback? onExitQuickEntry;
+  final String? requestedThreadId;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) => TalkView(
+    key: ValueKey(ref.watch(companionScopeProvider)),
     controller: ref.watch(
       talkControllerProvider.select((controller) => controller),
     ),
@@ -160,6 +221,14 @@ class ProviderBoundTalkRoute extends ConsumerWidget {
         : null,
     onQuickEntryReady: onQuickEntryReady,
     onExitQuickEntry: onExitQuickEntry,
+    companionController: ref.watch(
+      companionControllerProvider.select((value) => value),
+    ),
+    requestedThreadId: companionThreadId(requestedThreadId),
+    onThreadAdopted: (id) {
+      // Same mounted Conversation, retained composer; only adopt confirmed ID.
+      if (context.mounted && !quickEntry) context.go('/talk?thread=$id');
+    },
   );
 
   static AmbientVoiceConsent? _ambientConsent(WidgetRef ref) {
@@ -199,8 +268,11 @@ class _WorkspaceLocked implements ValueListenable<bool> {
 final appRouterProvider = Provider<GoRouter>((ref) {
   final session = ref.watch(sessionControllerProvider);
   final initialLocation = ref.watch(appInitialLocationProvider);
-  final homePath = initialLocation;
+  final explicitEntry = ref.watch(appExplicitInitialLocationProvider);
+  final entryLocation = explicitEntry ? initialLocation : '/companion-entry';
+  final homePath = entryLocation;
   final reconnect = ref.read(reconnectCoordinatorProvider);
+  final entryIntent = ref.read(_entryIntentProvider);
   late final GoRouter router;
   void syncActiveFreshnessScope() {
     reconnect.setActiveFreshnessScope(
@@ -210,7 +282,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
 
   router = GoRouter(
     debugLogDiagnostics: kDebugMode,
-    initialLocation: initialLocation,
+    initialLocation: entryLocation,
     onEnter: (_, _, nextState, _) {
       if (!session.isLoading &&
           !session.hasError &&
@@ -224,13 +296,30 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       final atLogin = state.matchedLocation == '/login';
       final atBootstrap = state.matchedLocation == '/bootstrap';
       if (session.isLoading || session.hasError) {
+        if (!entryIntent.hadSession) entryIntent.remember(state.uri.toString());
         return atBootstrap ? null : '/bootstrap';
       }
-      if (session.value == null) return atLogin ? null : '/login';
-      if (atLogin || atBootstrap) return homePath;
+      if (session.value == null) {
+        if (!entryIntent.hadSession) {
+          entryIntent.remember(state.uri.toString());
+        } else {
+          entryIntent.location = null;
+        }
+        entryIntent.hadSession = false;
+        return atLogin ? null : '/login';
+      }
+      entryIntent.hadSession = true;
+      if (atLogin || atBootstrap) return entryIntent.take() ?? homePath;
       return null;
     },
     routes: [
+      GoRoute(
+        path: '/companion-entry',
+        builder: (_, _) => CompanionDefaultEntry(
+          key: ValueKey(ref.watch(companionScopeProvider)),
+          fallback: appHomePath(),
+        ),
+      ),
       GoRoute(path: '/login', builder: (_, _) => const LoginScreen()),
       GoRoute(
         path: '/bootstrap',
@@ -323,7 +412,9 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                               focusItemId:
                                   state.uri.queryParameters['workItemId'],
                             ),
-                    '/talk' => const ProviderBoundTalkRoute(),
+                    '/talk' => ProviderBoundTalkRoute(
+                      requestedThreadId: state.uri.queryParameters['thread'],
+                    ),
                     '/activity' => const ProviderBoundActivityRoute(),
                     '/capture' => CaptureView(
                       controller: ref.read(captureControllerProvider),

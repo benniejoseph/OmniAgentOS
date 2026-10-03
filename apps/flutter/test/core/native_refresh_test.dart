@@ -24,6 +24,39 @@ void main() {
   tearDown(() => debugDefaultTargetPlatformOverride = null);
 
   group('a request refused with a stale access token', () {
+    test('cancellable fresh reads retain explicit owner headers on the one 401 retry', () async {
+      final service = _Service()..issueRefreshOnly('refresh-1');
+      final store = await _signedIn('access-1', 'refresh-1');
+      final cancel = CancelToken();
+      expect(
+        await _client(store, service).getJsonFreshCancelable(
+          NativePaths.bootstrapGet,
+          cancelToken: cancel,
+          headers: {'x-asael-companion-owner-sha256': 'a' * 64},
+        ),
+        _bootstrap,
+      );
+      expect(service.readOwnerHeaders, ['a' * 64, 'a' * 64]);
+      expect(service.refreshes, ['refresh-1']);
+    });
+    test(
+      'already canceled fresh read sends no authenticated request',
+      () async {
+        final service = _Service()..issue('access-1', 'refresh-1');
+        final store = await _signedIn('access-1', 'refresh-1');
+        final cancel = CancelToken()..cancel('disposed');
+        await expectLater(
+          _client(store, service).getJsonFreshCancelable(
+            NativePaths.bootstrapGet,
+            cancelToken: cancel,
+            headers: {'x-asael-companion-owner-sha256': 'a' * 64},
+          ),
+          throwsA(isA<ApiException>()),
+        );
+        expect(service.readOwnerHeaders, isEmpty);
+        expect(service.refreshes, isEmpty);
+      },
+    );
     test('uses the pair another engine stored instead of refreshing', () async {
       final service = _Service()..issue('access-2', 'refresh-2');
       final store = await _signedIn('access-1', 'refresh-1');
@@ -359,6 +392,7 @@ class _Service implements HttpClientAdapter {
 
   /// The body of each form posted to the service, in order.
   final uploads = <String>[];
+  final readOwnerHeaders = <Object?>[];
 
   /// Runs when a refresh arrives, before the service answers it.
   Future<void> Function()? onRefresh;
@@ -388,6 +422,9 @@ class _Service implements HttpClientAdapter {
     Stream<List<int>>? requestStream,
     Future<void>? cancelFuture,
   ) async {
+    if (options.method == 'GET' && options.path == NativePaths.bootstrapGet) {
+      readOwnerHeaders.add(options.headers['x-asael-companion-owner-sha256']);
+    }
     if (options.path == NativePaths.authRefresh) {
       final presented = (options.data as Map)['refreshToken'] as String;
       refreshes.add(presented);

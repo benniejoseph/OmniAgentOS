@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Asael native API",
-    "version": "28",
+    "version": "31",
     "description": "Generated current native contract. Domain behavior remains in the authoritative server services used by web and native clients."
   },
   "servers": [
@@ -10690,6 +10690,452 @@
           }
         }
       }
+    },
+    "/api/voice/realtime/session": {
+      "post": {
+        "operationId": "voice.realtime.session.start",
+        "summary": "Create or reconnect one actor-owned ephemeral realtime transcription session.",
+        "tags": [
+          "voice"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeRealtimeVoiceSessionStartRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeRealtimeVoiceSessionStartResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bounded error response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bounded error response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Bounded error response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Bounded error response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "operationId": "voice.realtime.session.finish",
+        "summary": "Record bounded content-free review and confidence metadata for one voice session.",
+        "tags": [
+          "voice"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeRealtimeVoiceSessionFinishRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeRealtimeVoiceSessionFinishResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bounded error response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bounded error response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Bounded error response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Bounded error response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/media/speech": {
+      "post": {
+        "operationId": "voice.speech.stream",
+        "summary": "Stream an actor-scoped Agent reply under the pinned Asael voice profile without retaining audio.",
+        "tags": [
+          "voice"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeSpeechStreamRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "headers": {
+              "x-asael-audio-retention": {
+                "description": "Asael does not retain generated speech audio.",
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "not_stored_by_asael"
+                }
+              },
+              "x-asael-audio-encoding": {
+                "description": "PCM sample encoding.",
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "pcm_s16le"
+                }
+              },
+              "x-asael-audio-sample-rate": {
+                "description": "PCM sample rate in hertz.",
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "24000"
+                }
+              },
+              "x-asael-voice-profile": {
+                "description": "Pinned Asael voice profile version.",
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "asael-voice:1"
+                }
+              },
+              "x-asael-voice-profile-sha256": {
+                "description": "Digest of the exact resolved Agent voice profile.",
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                }
+              }
+            },
+            "content": {
+              "audio/pcm": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bounded error response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bounded error response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Bounded error response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Bounded error response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/companion/preferences": {
+      "get": {
+        "operationId": "companion.preferences.get",
+        "summary": "Read presentation preferences for the authenticated owner bound by the request digest.",
+        "tags": [
+          "companion"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-asael-companion-owner-sha256",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 64,
+              "maxLength": 64,
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeCompanionPreferencesResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bounded error response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bounded error response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Bounded error response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Bounded error response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "operationId": "companion.preferences.update",
+        "summary": "Save or reset the exact owner's presentation preferences with a revision and replayable receipt; grants no execution authority.",
+        "tags": [
+          "companion"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-asael-companion-owner-sha256",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 64,
+              "maxLength": 64,
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@/+~-]{0,511}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeCompanionPreferencesRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeCompanionPreferencesResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bounded error response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bounded error response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Bounded error response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Bounded error response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -10701,6 +11147,366 @@
       }
     },
     "schemas": {
+      "NativeCompanionPreferencesRequest": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "save"
+              },
+              "expectedRevision": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740990
+              },
+              "preferences": {
+                "type": "object",
+                "properties": {
+                  "intensity": {
+                    "type": "string",
+                    "enum": [
+                      "quiet",
+                      "balanced",
+                      "expressive"
+                    ]
+                  },
+                  "visible": {
+                    "type": "boolean"
+                  },
+                  "motion": {
+                    "type": "string",
+                    "enum": [
+                      "full",
+                      "reduced",
+                      "off"
+                    ]
+                  },
+                  "defaultDestination": {
+                    "type": "string",
+                    "enum": [
+                      "assistant",
+                      "today",
+                      "activity",
+                      "work"
+                    ]
+                  },
+                  "preferredThreadId": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "format": "uuid",
+                        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "intensity",
+                  "visible",
+                  "motion",
+                  "defaultDestination",
+                  "preferredThreadId"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "action",
+              "expectedRevision",
+              "preferences"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "reset"
+              },
+              "expectedRevision": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740990
+              }
+            },
+            "required": [
+              "action",
+              "expectedRevision"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "NativeCompanionPreferencesResponse": {
+        "type": "object",
+        "properties": {
+          "schemaVersion": {
+            "type": "number",
+            "const": 1
+          },
+          "contract": {
+            "type": "string",
+            "const": "asael-companion-preferences:1"
+          },
+          "snapshot": {
+            "type": "object",
+            "properties": {
+              "revision": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "persisted": {
+                "type": "boolean"
+              },
+              "updatedAt": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "preferences": {
+                "type": "object",
+                "properties": {
+                  "intensity": {
+                    "type": "string",
+                    "enum": [
+                      "quiet",
+                      "balanced",
+                      "expressive"
+                    ]
+                  },
+                  "visible": {
+                    "type": "boolean"
+                  },
+                  "motion": {
+                    "type": "string",
+                    "enum": [
+                      "full",
+                      "reduced",
+                      "off"
+                    ]
+                  },
+                  "defaultDestination": {
+                    "type": "string",
+                    "enum": [
+                      "assistant",
+                      "today",
+                      "activity",
+                      "work"
+                    ]
+                  },
+                  "preferredThreadId": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "format": "uuid",
+                        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "intensity",
+                  "visible",
+                  "motion",
+                  "defaultDestination",
+                  "preferredThreadId"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "revision",
+              "persisted",
+              "updatedAt",
+              "preferences"
+            ],
+            "additionalProperties": false
+          },
+          "home": {
+            "type": "object",
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "not_set",
+                  "available",
+                  "unavailable",
+                  "unconfirmed"
+                ]
+              },
+              "preferredThreadId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "href": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "fallbackHref": {
+                "type": "string",
+                "const": "/app/command"
+              }
+            },
+            "required": [
+              "state",
+              "preferredThreadId",
+              "href",
+              "fallbackHref"
+            ],
+            "additionalProperties": false
+          },
+          "destination": {
+            "type": "object",
+            "properties": {
+              "href": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "configured",
+                  "fallback"
+                ]
+              }
+            },
+            "required": [
+              "href",
+              "state"
+            ],
+            "additionalProperties": false
+          },
+          "mutation": {
+            "type": "object",
+            "properties": {
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "saved",
+                  "replayed"
+                ]
+              },
+              "receiptId": {
+                "type": "string",
+                "pattern": "^companion:[a-f0-9]{64}$"
+              },
+              "revision": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "savedAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+              },
+              "preferences": {
+                "type": "object",
+                "properties": {
+                  "intensity": {
+                    "type": "string",
+                    "enum": [
+                      "quiet",
+                      "balanced",
+                      "expressive"
+                    ]
+                  },
+                  "visible": {
+                    "type": "boolean"
+                  },
+                  "motion": {
+                    "type": "string",
+                    "enum": [
+                      "full",
+                      "reduced",
+                      "off"
+                    ]
+                  },
+                  "defaultDestination": {
+                    "type": "string",
+                    "enum": [
+                      "assistant",
+                      "today",
+                      "activity",
+                      "work"
+                    ]
+                  },
+                  "preferredThreadId": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "format": "uuid",
+                        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "intensity",
+                  "visible",
+                  "motion",
+                  "defaultDestination",
+                  "preferredThreadId"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "outcome",
+              "receiptId",
+              "revision",
+              "savedAt",
+              "preferences"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "contract",
+          "snapshot",
+          "home",
+          "destination"
+        ],
+        "additionalProperties": false
+      },
       "JsonObject": {
         "type": "object",
         "propertyNames": {
@@ -11008,11 +11814,11 @@
             "prefixItems": [
               {
                 "type": "number",
-                "const": 28
+                "const": 31
               },
               {
                 "type": "number",
-                "const": 27
+                "const": 30
               }
             ]
           },
@@ -11419,11 +12225,11 @@
                 "prefixItems": [
                   {
                     "type": "number",
-                    "const": 28
+                    "const": 31
                   },
                   {
                     "type": "number",
-                    "const": 27
+                    "const": 30
                   }
                 ]
               },
@@ -11582,11 +12388,11 @@
                 "prefixItems": [
                   {
                     "type": "number",
-                    "const": 28
+                    "const": 31
                   },
                   {
                     "type": "number",
-                    "const": 27
+                    "const": 30
                   }
                 ]
               },
@@ -11946,22 +12752,22 @@
                   },
                   "currentVersion": {
                     "type": "number",
-                    "const": 28
+                    "const": 31
                   },
                   "previousVersion": {
                     "type": "number",
-                    "const": 27
+                    "const": 30
                   },
                   "supportedVersions": {
                     "type": "array",
                     "prefixItems": [
                       {
                         "type": "number",
-                        "const": 28
+                        "const": 31
                       },
                       {
                         "type": "number",
-                        "const": 27
+                        "const": 30
                       }
                     ]
                   },
@@ -12050,11 +12856,11 @@
                 "prefixItems": [
                   {
                     "type": "number",
-                    "const": 28
+                    "const": 31
                   },
                   {
                     "type": "number",
-                    "const": 27
+                    "const": 30
                   }
                 ]
               },
@@ -14657,6 +15463,88 @@
                     "routingPolicySha256": {
                       "type": "string",
                       "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "commandSelection": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "schemaVersion": {
+                              "type": "number",
+                              "const": 1
+                            },
+                            "assignmentId": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 240
+                            },
+                            "assignmentRevision": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            },
+                            "assignmentConfigurationSha256": {
+                              "type": "string",
+                              "pattern": "^[a-f0-9]{64}$"
+                            },
+                            "route": {
+                              "type": "string",
+                              "enum": [
+                                "primary",
+                                "fallback"
+                              ]
+                            },
+                            "provider": {
+                              "type": "string",
+                              "enum": [
+                                "openai",
+                                "google",
+                                "anthropic",
+                                "aws_bedrock"
+                              ]
+                            },
+                            "modelId": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 240
+                            },
+                            "reasoningLevel": {
+                              "type": "string",
+                              "enum": [
+                                "low",
+                                "medium",
+                                "high",
+                                "extra_high",
+                                "ultra"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "schemaVersion",
+                            "assignmentId",
+                            "assignmentRevision",
+                            "assignmentConfigurationSha256",
+                            "route",
+                            "provider",
+                            "modelId"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "commandSelectionSha256": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -14669,6 +15557,88 @@
                     "routingPolicySha256"
                   ],
                   "additionalProperties": false
+                },
+                "context": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "schemaVersion": {
+                          "type": "number",
+                          "const": 1
+                        },
+                        "references": {
+                          "minItems": 1,
+                          "maxItems": 20,
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "agent",
+                                  "skill",
+                                  "plugin",
+                                  "project",
+                                  "integration",
+                                  "file"
+                                ]
+                              },
+                              "id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 320,
+                                "pattern": "^[A-Za-z0-9_.:@/+~=-]+$"
+                              },
+                              "expectedVersion": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 9007199254740991
+                              },
+                              "versionId": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 320
+                              },
+                              "bindingSha256": {
+                                "type": "string",
+                                "pattern": "^[a-f0-9]{64}$"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "id"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "selectionSha256": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        },
+                        "contextBlockSha256": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        },
+                        "receiptSha256": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        }
+                      },
+                      "required": [
+                        "schemaVersion",
+                        "references",
+                        "selectionSha256",
+                        "contextBlockSha256",
+                        "receiptSha256"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 },
                 "state": {
                   "type": "string",
@@ -14794,6 +15764,7 @@
                 "targetSha256",
                 "agent",
                 "model",
+                "context",
                 "state",
                 "position",
                 "lifecycleRevision",
@@ -14915,6 +15886,115 @@
               "missionId",
               "projectId",
               "executionTarget"
+            ],
+            "additionalProperties": false
+          },
+          "contextReferences": {
+            "maxItems": 20,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "agent",
+                    "skill",
+                    "plugin",
+                    "project",
+                    "integration",
+                    "file"
+                  ]
+                },
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 320,
+                  "pattern": "^[A-Za-z0-9_.:@/+~=-]+$"
+                },
+                "expectedVersion": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                },
+                "versionId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 320
+                },
+                "bindingSha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "kind",
+                "id"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "modelSelection": {
+            "type": "object",
+            "properties": {
+              "schemaVersion": {
+                "type": "number",
+                "const": 1
+              },
+              "assignmentId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 240
+              },
+              "assignmentRevision": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "assignmentConfigurationSha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "route": {
+                "type": "string",
+                "enum": [
+                  "primary",
+                  "fallback"
+                ]
+              },
+              "provider": {
+                "type": "string",
+                "enum": [
+                  "openai",
+                  "google",
+                  "anthropic",
+                  "aws_bedrock"
+                ]
+              },
+              "modelId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 240
+              },
+              "reasoningLevel": {
+                "type": "string",
+                "enum": [
+                  "low",
+                  "medium",
+                  "high",
+                  "extra_high",
+                  "ultra"
+                ]
+              }
+            },
+            "required": [
+              "schemaVersion",
+              "assignmentId",
+              "assignmentRevision",
+              "assignmentConfigurationSha256",
+              "route",
+              "provider",
+              "modelId"
             ],
             "additionalProperties": false
           }
@@ -15176,6 +16256,88 @@
                   "routingPolicySha256": {
                     "type": "string",
                     "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "commandSelection": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "schemaVersion": {
+                            "type": "number",
+                            "const": 1
+                          },
+                          "assignmentId": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 240
+                          },
+                          "assignmentRevision": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 9007199254740991
+                          },
+                          "assignmentConfigurationSha256": {
+                            "type": "string",
+                            "pattern": "^[a-f0-9]{64}$"
+                          },
+                          "route": {
+                            "type": "string",
+                            "enum": [
+                              "primary",
+                              "fallback"
+                            ]
+                          },
+                          "provider": {
+                            "type": "string",
+                            "enum": [
+                              "openai",
+                              "google",
+                              "anthropic",
+                              "aws_bedrock"
+                            ]
+                          },
+                          "modelId": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 240
+                          },
+                          "reasoningLevel": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "medium",
+                              "high",
+                              "extra_high",
+                              "ultra"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "schemaVersion",
+                          "assignmentId",
+                          "assignmentRevision",
+                          "assignmentConfigurationSha256",
+                          "route",
+                          "provider",
+                          "modelId"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "commandSelectionSha256": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   }
                 },
                 "required": [
@@ -15188,6 +16350,88 @@
                   "routingPolicySha256"
                 ],
                 "additionalProperties": false
+              },
+              "context": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "schemaVersion": {
+                        "type": "number",
+                        "const": 1
+                      },
+                      "references": {
+                        "minItems": 1,
+                        "maxItems": 20,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "agent",
+                                "skill",
+                                "plugin",
+                                "project",
+                                "integration",
+                                "file"
+                              ]
+                            },
+                            "id": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 320,
+                              "pattern": "^[A-Za-z0-9_.:@/+~=-]+$"
+                            },
+                            "expectedVersion": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            },
+                            "versionId": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 320
+                            },
+                            "bindingSha256": {
+                              "type": "string",
+                              "pattern": "^[a-f0-9]{64}$"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "id"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "selectionSha256": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      },
+                      "contextBlockSha256": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      },
+                      "receiptSha256": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      }
+                    },
+                    "required": [
+                      "schemaVersion",
+                      "references",
+                      "selectionSha256",
+                      "contextBlockSha256",
+                      "receiptSha256"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "state": {
                 "type": "string",
@@ -15313,6 +16557,7 @@
               "targetSha256",
               "agent",
               "model",
+              "context",
               "state",
               "position",
               "lifecycleRevision",
@@ -15356,6 +16601,122 @@
             "enum": [
               "queued",
               "paused"
+            ]
+          },
+          "contextReferences": {
+            "maxItems": 20,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "agent",
+                    "skill",
+                    "plugin",
+                    "project",
+                    "integration",
+                    "file"
+                  ]
+                },
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 320,
+                  "pattern": "^[A-Za-z0-9_.:@/+~=-]+$"
+                },
+                "expectedVersion": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                },
+                "versionId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 320
+                },
+                "bindingSha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "kind",
+                "id"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "modelSelection": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "schemaVersion": {
+                    "type": "number",
+                    "const": 1
+                  },
+                  "assignmentId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 240
+                  },
+                  "assignmentRevision": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "assignmentConfigurationSha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "route": {
+                    "type": "string",
+                    "enum": [
+                      "primary",
+                      "fallback"
+                    ]
+                  },
+                  "provider": {
+                    "type": "string",
+                    "enum": [
+                      "openai",
+                      "google",
+                      "anthropic",
+                      "aws_bedrock"
+                    ]
+                  },
+                  "modelId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 240
+                  },
+                  "reasoningLevel": {
+                    "type": "string",
+                    "enum": [
+                      "low",
+                      "medium",
+                      "high",
+                      "extra_high",
+                      "ultra"
+                    ]
+                  }
+                },
+                "required": [
+                  "schemaVersion",
+                  "assignmentId",
+                  "assignmentRevision",
+                  "assignmentConfigurationSha256",
+                  "route",
+                  "provider",
+                  "modelId"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
             ]
           }
         },
@@ -15611,6 +16972,88 @@
                   "routingPolicySha256": {
                     "type": "string",
                     "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "commandSelection": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "schemaVersion": {
+                            "type": "number",
+                            "const": 1
+                          },
+                          "assignmentId": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 240
+                          },
+                          "assignmentRevision": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 9007199254740991
+                          },
+                          "assignmentConfigurationSha256": {
+                            "type": "string",
+                            "pattern": "^[a-f0-9]{64}$"
+                          },
+                          "route": {
+                            "type": "string",
+                            "enum": [
+                              "primary",
+                              "fallback"
+                            ]
+                          },
+                          "provider": {
+                            "type": "string",
+                            "enum": [
+                              "openai",
+                              "google",
+                              "anthropic",
+                              "aws_bedrock"
+                            ]
+                          },
+                          "modelId": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 240
+                          },
+                          "reasoningLevel": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "medium",
+                              "high",
+                              "extra_high",
+                              "ultra"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "schemaVersion",
+                          "assignmentId",
+                          "assignmentRevision",
+                          "assignmentConfigurationSha256",
+                          "route",
+                          "provider",
+                          "modelId"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "commandSelectionSha256": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   }
                 },
                 "required": [
@@ -15623,6 +17066,88 @@
                   "routingPolicySha256"
                 ],
                 "additionalProperties": false
+              },
+              "context": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "schemaVersion": {
+                        "type": "number",
+                        "const": 1
+                      },
+                      "references": {
+                        "minItems": 1,
+                        "maxItems": 20,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "agent",
+                                "skill",
+                                "plugin",
+                                "project",
+                                "integration",
+                                "file"
+                              ]
+                            },
+                            "id": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 320,
+                              "pattern": "^[A-Za-z0-9_.:@/+~=-]+$"
+                            },
+                            "expectedVersion": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            },
+                            "versionId": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 320
+                            },
+                            "bindingSha256": {
+                              "type": "string",
+                              "pattern": "^[a-f0-9]{64}$"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "id"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "selectionSha256": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      },
+                      "contextBlockSha256": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      },
+                      "receiptSha256": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      }
+                    },
+                    "required": [
+                      "schemaVersion",
+                      "references",
+                      "selectionSha256",
+                      "contextBlockSha256",
+                      "receiptSha256"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "state": {
                 "type": "string",
@@ -15748,6 +17273,7 @@
               "targetSha256",
               "agent",
               "model",
+              "context",
               "state",
               "position",
               "lifecycleRevision",
@@ -16086,6 +17612,88 @@
                     "routingPolicySha256": {
                       "type": "string",
                       "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "commandSelection": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "schemaVersion": {
+                              "type": "number",
+                              "const": 1
+                            },
+                            "assignmentId": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 240
+                            },
+                            "assignmentRevision": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            },
+                            "assignmentConfigurationSha256": {
+                              "type": "string",
+                              "pattern": "^[a-f0-9]{64}$"
+                            },
+                            "route": {
+                              "type": "string",
+                              "enum": [
+                                "primary",
+                                "fallback"
+                              ]
+                            },
+                            "provider": {
+                              "type": "string",
+                              "enum": [
+                                "openai",
+                                "google",
+                                "anthropic",
+                                "aws_bedrock"
+                              ]
+                            },
+                            "modelId": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 240
+                            },
+                            "reasoningLevel": {
+                              "type": "string",
+                              "enum": [
+                                "low",
+                                "medium",
+                                "high",
+                                "extra_high",
+                                "ultra"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "schemaVersion",
+                            "assignmentId",
+                            "assignmentRevision",
+                            "assignmentConfigurationSha256",
+                            "route",
+                            "provider",
+                            "modelId"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "commandSelectionSha256": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -16098,6 +17706,88 @@
                     "routingPolicySha256"
                   ],
                   "additionalProperties": false
+                },
+                "context": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "schemaVersion": {
+                          "type": "number",
+                          "const": 1
+                        },
+                        "references": {
+                          "minItems": 1,
+                          "maxItems": 20,
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "agent",
+                                  "skill",
+                                  "plugin",
+                                  "project",
+                                  "integration",
+                                  "file"
+                                ]
+                              },
+                              "id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 320,
+                                "pattern": "^[A-Za-z0-9_.:@/+~=-]+$"
+                              },
+                              "expectedVersion": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 9007199254740991
+                              },
+                              "versionId": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 320
+                              },
+                              "bindingSha256": {
+                                "type": "string",
+                                "pattern": "^[a-f0-9]{64}$"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "id"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "selectionSha256": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        },
+                        "contextBlockSha256": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        },
+                        "receiptSha256": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        }
+                      },
+                      "required": [
+                        "schemaVersion",
+                        "references",
+                        "selectionSha256",
+                        "contextBlockSha256",
+                        "receiptSha256"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 },
                 "state": {
                   "type": "string",
@@ -16223,6 +17913,7 @@
                 "targetSha256",
                 "agent",
                 "model",
+                "context",
                 "state",
                 "position",
                 "lifecycleRevision",
@@ -16553,6 +18244,289 @@
         ],
         "additionalProperties": false
       },
+      "NativeRealtimeVoiceSessionStartRequest": {
+        "type": "object",
+        "properties": {
+          "sessionId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "conversationId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "mode": {
+            "default": "orchestrate",
+            "type": "string",
+            "enum": [
+              "orchestrate",
+              "research",
+              "execute",
+              "learn"
+            ]
+          },
+          "language": {
+            "type": "string",
+            "pattern": "^[a-z]{2}$"
+          },
+          "providerConsent": {
+            "type": "boolean",
+            "const": true
+          },
+          "audioRetention": {
+            "type": "string",
+            "const": "not_stored_by_asael"
+          },
+          "reconnectAttempt": {
+            "default": 0,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3
+          }
+        },
+        "required": [
+          "mode",
+          "providerConsent",
+          "audioRetention",
+          "reconnectAttempt"
+        ],
+        "additionalProperties": false
+      },
+      "NativeRealtimeVoiceSessionStartResponse": {
+        "type": "object",
+        "properties": {
+          "schemaVersion": {
+            "type": "number",
+            "const": 1
+          },
+          "sessionId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "conversationId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "clientSecret": {
+            "type": "string",
+            "minLength": 4,
+            "maxLength": 4096,
+            "pattern": "^ek_[A-Za-z0-9._:-]+$"
+          },
+          "clientSecretExpiresAt": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "transportUrl": {
+            "type": "string",
+            "const": "https://api.openai.com/v1/realtime/calls"
+          },
+          "provider": {
+            "type": "string",
+            "const": "openai"
+          },
+          "model": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240
+          },
+          "language": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "auto"
+              },
+              {
+                "type": "string",
+                "pattern": "^[a-z]{2}$"
+              }
+            ]
+          },
+          "turnDetection": {
+            "type": "string",
+            "const": "server_vad"
+          },
+          "audioRetention": {
+            "type": "string",
+            "const": "not_stored_by_asael"
+          },
+          "transcriptRetention": {
+            "type": "string",
+            "const": "command_draft_until_sent"
+          },
+          "reconnectAttempt": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "sessionId",
+          "conversationId",
+          "clientSecret",
+          "clientSecretExpiresAt",
+          "transportUrl",
+          "provider",
+          "model",
+          "language",
+          "turnDetection",
+          "audioRetention",
+          "transcriptRetention",
+          "reconnectAttempt"
+        ],
+        "additionalProperties": false
+      },
+      "NativeRealtimeVoiceSessionFinishRequest": {
+        "type": "object",
+        "properties": {
+          "sessionId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "conversationId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "sent",
+              "canceled",
+              "failed"
+            ]
+          },
+          "durationMilliseconds": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 600000
+          },
+          "turnCount": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000
+          },
+          "reconnectCount": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3
+          },
+          "transcriptCharacters": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100000
+          },
+          "confidenceBand": {
+            "type": "string",
+            "enum": [
+              "high",
+              "low",
+              "unavailable",
+              "edited"
+            ]
+          },
+          "confidenceMean": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "confidenceMinimum": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "confidenceSampleCount": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10000
+          },
+          "reviewRequired": {
+            "type": "boolean"
+          },
+          "reviewAttested": {
+            "type": "boolean"
+          },
+          "providerErrorCode": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9_.-]{0,63}$"
+          }
+        },
+        "required": [
+          "sessionId",
+          "conversationId",
+          "outcome",
+          "durationMilliseconds",
+          "turnCount",
+          "reconnectCount",
+          "transcriptCharacters",
+          "confidenceBand",
+          "confidenceSampleCount",
+          "reviewRequired",
+          "reviewAttested"
+        ],
+        "additionalProperties": false
+      },
+      "NativeRealtimeVoiceSessionFinishResponse": {
+        "type": "object",
+        "properties": {
+          "recorded": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": [
+          "recorded"
+        ],
+        "additionalProperties": false
+      },
+      "NativeSpeechStreamRequest": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "agentId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$"
+          },
+          "threadId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "runId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$"
+          },
+          "voiceProfileVersion": {
+            "type": "string",
+            "const": "asael-voice:1"
+          },
+          "audioRetention": {
+            "type": "string",
+            "const": "not_stored_by_asael"
+          }
+        },
+        "required": [
+          "text",
+          "voiceProfileVersion",
+          "audioRetention"
+        ],
+        "additionalProperties": false
+      },
       "NativeConversationRequest": {
         "type": "object",
         "properties": {
@@ -16662,6 +18636,80 @@
             "minLength": 1,
             "maxLength": 200,
             "pattern": "^[A-Za-z0-9._:-]+$"
+          },
+          "voiceInput": {
+            "type": "object",
+            "properties": {
+              "schemaVersion": {
+                "type": "number",
+                "const": 1
+              },
+              "source": {
+                "type": "string",
+                "const": "realtime_voice"
+              },
+              "sessionId": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              "conversationId": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              "provider": {
+                "type": "string",
+                "const": "openai"
+              },
+              "confidenceBand": {
+                "type": "string",
+                "enum": [
+                  "high",
+                  "low",
+                  "unavailable",
+                  "edited"
+                ]
+              },
+              "confidenceMean": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "confidenceMinimum": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "confidenceSampleCount": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 10000
+              },
+              "reviewMethod": {
+                "type": "string",
+                "enum": [
+                  "send_button",
+                  "explicit_checkbox"
+                ]
+              },
+              "reviewAttested": {
+                "type": "boolean",
+                "const": true
+              }
+            },
+            "required": [
+              "schemaVersion",
+              "source",
+              "sessionId",
+              "conversationId",
+              "provider",
+              "confidenceBand",
+              "confidenceSampleCount",
+              "reviewMethod",
+              "reviewAttested"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [
@@ -17642,6 +19690,10 @@
                     "type": "string",
                     "format": "date-time",
                     "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                  },
+                  "authority": {
+                    "type": "string",
+                    "const": "task"
                   }
                 },
                 "required": [
@@ -18191,22 +20243,22 @@
           },
           "currentVersion": {
             "type": "number",
-            "const": 28
+            "const": 31
           },
           "previousVersion": {
             "type": "number",
-            "const": 27
+            "const": 30
           },
           "supportedVersions": {
             "type": "array",
             "prefixItems": [
               {
                 "type": "number",
-                "const": 28
+                "const": 31
               },
               {
                 "type": "number",
-                "const": 27
+                "const": 30
               }
             ]
           },

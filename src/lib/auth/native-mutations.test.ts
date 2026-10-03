@@ -30,6 +30,14 @@ function context(
 }
 
 describe("native mutation capability enrollment", () => {
+  it("enrolls only fresh compatible v31 Companion writes on every native platform", () => {
+    for (const platform of ["android", "ios", "macos"] as const) {
+      expect(nativeMutationEnrollment(context(31, undefined, platform), "companion.preferences.update", asOf)).toEqual({ state: "active", minimumContractVersion: 31 });
+      for (const client of [context(30, undefined, platform), context(32, undefined, platform), context(31, "2026-01-01T00:00:00.000Z", platform)]) {
+        expect(nativeMutationEnrollment(client, "companion.preferences.update", asOf)).toMatchObject({ state: "held", minimumContractVersion: 31 });
+      }
+    }
+  });
   it("retains existing capability floors on both supported clients", () => {
     expect(nativeMutationEnrollment(context(NATIVE_API_PREVIOUS_VERSION), "markets.update", asOf)).toMatchObject({
       state: "active",

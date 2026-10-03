@@ -23,6 +23,10 @@ import '../ambient_voice/ambient_voice_consent.dart';
 import '../ambient_voice/ambient_voice_view.dart';
 import '../ambient_voice/realtime_voice_controller.dart';
 import '../computer_use/local_computer.dart';
+import '../companion/companion_controller.dart';
+import '../companion/companion_models.dart';
+import '../companion/companion_presence.dart';
+import '../companion/companion_presentation.dart';
 import 'talk_command_context.dart';
 import 'talk_history.dart';
 import 'talk_history_view.dart';
@@ -542,6 +546,7 @@ class TalkRunInspection {
     this.response,
     this.error,
     this.waitingApproval,
+    this.terminalReceipt,
   });
 
   final String runId;
@@ -550,6 +555,7 @@ class TalkRunInspection {
   final String? response;
   final String? error;
   final TalkWaitingApprovalSummary? waitingApproval;
+  final Object? terminalReceipt;
   final TalkGroundingSummary grounding;
   final TalkAgentIdentitySummary agentIdentity;
   final List<TalkMediaArtifactSummary> mediaArtifacts;
@@ -850,6 +856,7 @@ class TalkRunInspection {
     return TalkRunInspection(
       runId: runId,
       status: status,
+      terminalReceipt: run['terminalReceipt'],
       threadId: projectedThreadId.isEmpty ? null : projectedThreadId,
       response: response.isEmpty ? null : response,
       error: error.isEmpty ? null : error,
@@ -995,6 +1002,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   final _inspectedRunIds = <String>{};
   Object? _runMonitorToken;
   String? _runLifecycleStatus;
+  Object? _companionTerminalReceipt;
   String? runId;
   String? status;
   bool sending = false;
@@ -1144,7 +1152,28 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       : null;
 
   @override
-  bool get historyInteractionBusy => hasPendingConversationWork;
+  bool get historyInteractionBusy =>
+      hasPendingConversationWork ||
+      transcribing ||
+      canceling ||
+      promptQueueSyncing ||
+      _workflowMonitorTokens.isNotEmpty;
+
+  CompanionWork get companionStatus => companionWork(
+    runId: runId,
+    status:
+        _runLifecycleStatus ??
+        (runId != null
+            ? null
+            : sending
+            ? 'running'
+            : promptQueue.isNotEmpty
+            ? (queuePaused ? 'paused' : 'queued')
+            : _workflowMonitorTokens.isNotEmpty
+            ? 'running'
+            : null),
+    terminalReceipt: _companionTerminalReceipt,
+  );
 
   @override
   void applyHistoryThreadProjection(TalkThreadDetail detail) {
@@ -1257,6 +1286,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     }
     final correlationId =
         'flutter-${DateTime.now().microsecondsSinceEpoch}-${_promptSequence++}';
+    invalidateThreadRead();
     final prompt = TalkQueuedPrompt(
       id: 'local-$correlationId',
       clientCorrelationId: correlationId,
@@ -1692,6 +1722,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   }
 
   void _abandonAcceptedRun() {
+    _companionTerminalReceipt = null;
     final abandonedRunId = runId;
     if (abandonedRunId != null) {
       localComputerPreviews?.discardRunPreviews(abandonedRunId);
@@ -1704,6 +1735,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   Future<void> cancel() async {
     final id = runId;
     if (id == null || !sending || canceling) return;
+    invalidateThreadRead();
     canceling = true;
     _recordActivity(
       key: 'cancel',
@@ -1753,6 +1785,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     if (transcribing || bytes.isEmpty || bytes.length > 10 * 1024 * 1024) {
       return null;
     }
+    invalidateThreadRead();
     transcribing = true;
     voiceError = null;
     status = 'Transcribing voice draft';
@@ -1784,6 +1817,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   }) async {
     final text = input.trim();
     if (_disposed || text.isEmpty || sending) return;
+    invalidateThreadRead();
     activities.clear();
     _clearArtifacts();
     _abandonAcceptedRun();
@@ -2346,6 +2380,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       !_disposed && runId == id && identical(_runMonitorToken, token);
 
   void _applyRecoveredRun(TalkRunInspection inspection) {
+    _companionTerminalReceipt = inspection.terminalReceipt;
     _runLifecycleStatus = inspection.status;
     adoptConversationThreadId(inspection.threadId);
     _clearRetry();
@@ -2494,6 +2529,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
 
   void _startWorkflowMonitor(String workflowId) {
     if (_disposed || _workflowMonitorTokens.containsKey(workflowId)) return;
+    invalidateThreadRead();
     final token = Object();
     _workflowMonitorTokens[workflowId] = token;
     unawaited(_monitorWorkflow(workflowId, token));
@@ -3220,6 +3256,9 @@ class TalkView extends StatefulWidget {
     this.onQuickEntryReady,
     this.onExitQuickEntry,
     this.localComputer,
+    this.companionController,
+    this.requestedThreadId,
+    this.onThreadAdopted,
   });
 
   final TalkController controller;
@@ -3239,6 +3278,9 @@ class TalkView extends StatefulWidget {
   final VoidCallback? onQuickEntryReady;
   final VoidCallback? onExitQuickEntry;
   final LocalComputerCoordinator? localComputer;
+  final CompanionController? companionController;
+  final String? requestedThreadId;
+  final ValueChanged<String>? onThreadAdopted;
   @override
   State<TalkView> createState() => _TalkViewState();
 }
@@ -3276,6 +3318,152 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   String? ambientSpeechNotice;
   bool syncingRealtimeTranscript = false;
   DesktopAmbientVoiceState? lastPublishedAmbientState;
+  final companionHomeGate = CompanionHomeGate();
+  bool openingCompanionHome = false;
+  String? companionHomeNotice;
+  String? deferredCompanionThread;
+  Object? companionOpenToken;
+  bool openingAmbientWindow = false;
+
+  void _handleCompanionChanged() {
+    companionHomeGate.invalidate();
+    if (mounted) setState(() {});
+  }
+
+  String? get _companionNavigationBlocked =>
+      ModalRoute.of(context)?.isCurrent == false
+      ? 'Return to Conversation before adopting another conversation.'
+      : openingAmbientWindow
+      ? 'Wait for the voice window request to finish.'
+      : widget.workspaceLocked?.value == true
+      ? 'Unlock this workspace before opening another conversation.'
+      : widget.controller.historyInteractionBusy
+      ? 'Finish or stop pending conversation work before opening another conversation.'
+      : voiceDraftBusy ||
+            realtimeVoice?.microphoneActive == true ||
+            realtimeVoice?.isSpeechPlaying == true
+      ? 'Finish microphone, transcription, or playback activity before opening another conversation.'
+      : null;
+
+  void _invalidateCompanionHome() {
+    companionHomeGate.invalidate();
+    widget.controller.invalidateThreadRead();
+  }
+
+  void _handleRequestedConversation() {
+    final id = companionThreadId(widget.requestedThreadId);
+    if (id == null || id == widget.controller.threadId) return;
+    deferredCompanionThread = id;
+    if (_companionNavigationBlocked != null) {
+      setState(
+        () => companionHomeNotice = 'The requested conversation is waiting for your explicit selection. Your current draft and work are retained.',
+      );
+      return;
+    }
+    unawaited(_openCompanionConversation(id));
+  }
+
+  Future<void> _openCompanionConversation(String id) async {
+    if (openingCompanionHome ||
+        _companionNavigationBlocked != null ||
+        companionThreadId(id) == null) {
+      return;
+    }
+    final controller = widget.controller;
+    final epoch = companionHomeGate.capture();
+    final token = companionOpenToken = Object();
+    setState(() {
+      openingCompanionHome = true;
+      companionHomeNotice = null;
+    });
+    bool current() =>
+        mounted &&
+        identical(controller, widget.controller) &&
+        identical(token, companionOpenToken) &&
+        companionHomeGate.current(epoch) &&
+        _companionNavigationBlocked == null;
+    final adopted = await controller.openThread(id, canAdopt: current);
+    if (!mounted || !identical(token, companionOpenToken)) return;
+    if (!identical(controller, widget.controller) ||
+        !companionHomeGate.current(epoch)) {
+      setState(() => openingCompanionHome = false);
+      return;
+    }
+    final accepted = adopted && current() && controller.threadId == id;
+    setState(() {
+      openingCompanionHome = false;
+      if (accepted) {
+        deferredCompanionThread = null;
+        companionHomeNotice =
+            'Conversation opened. Your composer draft is retained.';
+      } else {
+        deferredCompanionThread = id;
+        companionHomeNotice = 'Conversation was not adopted. Your current draft and work are retained. Review activity, then retry.';
+      }
+    });
+    if (accepted) widget.onThreadAdopted?.call(id);
+  }
+
+  Widget _buildCompanionPresence() {
+    final preferences = widget.companionController?.current;
+    final homeId = preferences?.availableThreadId;
+    final blocked = _companionNavigationBlocked;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        CompanionPresence(
+          preferences: preferences?.preferences,
+          work: widget.controller.companionStatus,
+          microphoneActive:
+              recording || realtimeVoice?.microphoneActive == true,
+          playbackActive: realtimeVoice?.isSpeechPlaying == true,
+          agentIdentity: widget.controller.assignedAgent == null
+              ? null
+              : 'Selected Agent ${widget.controller.assignedAgent!.name} · ${widget.controller.assignedAgent!.id}',
+          onHome: homeId != null && blocked == null && !openingCompanionHome
+              ? () => unawaited(_openCompanionConversation(homeId))
+              : null,
+          homeDisabledReason: openingCompanionHome
+              ? 'Opening the exact owned conversation…'
+              : homeId != null
+              ? blocked
+              : preferences?.preferences.preferredThreadId != null
+              ? 'Saved home is unavailable or unconfirmed. Use conversation history to choose another.'
+              : null,
+        ),
+        if (companionHomeNotice != null || deferredCompanionThread != null)
+          Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (companionHomeNotice != null)
+                  Text(
+                    companionHomeNotice!,
+                    style: const TextStyle(fontSize: 13),
+                  ),
+                if (deferredCompanionThread != null) ...[
+                  SelectableText(
+                    deferredCompanionThread!,
+                    style: const TextStyle(fontSize: 13),
+                  ),
+                  TextButton(
+                    onPressed: blocked == null && !openingCompanionHome
+                        ? () => unawaited(
+                            _openCompanionConversation(
+                              deferredCompanionThread!,
+                            ),
+                          )
+                        : null,
+                    child: const Text('Open requested conversation'),
+                  ),
+                ],
+              ],
+            ),
+          ),
+      ],
+    );
+  }
 
   @override
   void initState() {
@@ -3288,6 +3476,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     }
     input.addListener(_handleComposerChanged);
     widget.workspaceLocked?.addListener(_handleWorkspaceLockChanged);
+    widget.companionController?.addListener(_handleCompanionChanged);
     WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) unawaited(loadCommandModelCatalog());
@@ -3301,6 +3490,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         widget.controller.reconcileAcceptedRun();
+        _handleRequestedConversation();
         if (widget.controller.conversationHistorySupported) {
           unawaited(widget.controller.loadRecentThreads());
         }
@@ -3311,6 +3501,18 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   @override
   void didUpdateWidget(covariant TalkView oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.companionController != widget.companionController) {
+      oldWidget.companionController?.removeListener(_handleCompanionChanged);
+      widget.companionController?.addListener(_handleCompanionChanged);
+      companionHomeGate.invalidate();
+    }
+    if (oldWidget.requestedThreadId != widget.requestedThreadId ||
+        oldWidget.controller != widget.controller) {
+      companionHomeGate.invalidate();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _handleRequestedConversation();
+      });
+    }
     if (widget.workspaceLocked != oldWidget.workspaceLocked) {
       oldWidget.workspaceLocked?.removeListener(_handleWorkspaceLockChanged);
       widget.workspaceLocked?.addListener(_handleWorkspaceLockChanged);
@@ -3355,11 +3557,14 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   }
 
   void _handleWorkspaceLockChanged() {
+    _invalidateCompanionHome();
     if (widget.workspaceLocked?.value == true) unawaited(interruptVoiceDraft());
   }
 
   @override
   void dispose() {
+    companionHomeGate.invalidate();
+    widget.companionController?.removeListener(_handleCompanionChanged);
     WidgetsBinding.instance.removeObserver(this);
     voiceDraftGeneration += 1;
     if (widget.ambientVoice) {
@@ -3494,6 +3699,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   };
 
   Future<void> _startAmbientVoice() async {
+    _invalidateCompanionHome();
     if (appDesktopHostBridge.supported) {
       try {
         final availability = await appDesktopHostBridge
@@ -3545,6 +3751,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   }
 
   Future<void> _toggleAmbientVoice() async {
+    _invalidateCompanionHome();
     final realtime = realtimeVoice;
     if (realtime == null) {
       await toggleVoiceDraft();
@@ -3735,6 +3942,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   }
 
   void submit({TalkVoiceInput? voiceInput}) {
+    _invalidateCompanionHome();
     if (voiceDraftBusy) return;
     final value = input.text.trim();
     if (value.isEmpty) return;
@@ -3745,6 +3953,15 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       return;
     }
     final controller = widget.controllerResolver?.call() ?? widget.controller;
+    if (!identical(controller, widget.controller)) {
+      // An owner replacement may precede the next frame. Never submit the
+      // previous owner's mounted draft through the replacement controller.
+      setState(
+        () => companionHomeNotice =
+            'The account changed. Reopen Conversation before sending.',
+      );
+      return;
+    }
     final exactModelSelection = commandModelSelection;
     input.clear();
     if (recordingError != null || voiceDraftNotice != null) {
@@ -3856,6 +4073,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   }
 
   Future<void> toggleVoiceDraft() async {
+    _invalidateCompanionHome();
     if (startingVoiceDraft ||
         finalizingVoiceDraft ||
         widget.controller.transcribing ||
@@ -3975,6 +4193,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   }
 
   Future<void> _openHistorySheet() async {
+    _invalidateCompanionHome();
     await showModalBottomSheet<void>(
       context: context,
       useSafeArea: true,
@@ -4091,7 +4310,9 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       final reply = widget.controller.messages.lastOrNull;
       if (reply?.failed == true) return AmbientVoicePhase.error;
       if (reply?.role == TalkRole.assistant && reply!.text.trim().isNotEmpty) {
-        return AmbientVoicePhase.completed;
+        return widget.controller.companionStatus.state == 'completed'
+            ? AmbientVoicePhase.completed
+            : AmbientVoicePhase.review;
       }
     }
     if (input.text.trim().isNotEmpty || voiceDraftNotice != null) {
@@ -4136,10 +4357,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
             : _humanCommandStatus(status),
       AmbientVoicePhase.speaking => 'Speak at any time to interrupt.',
       AmbientVoicePhase.approval => 'Open the visible approval to review the exact action. Voice cannot approve it.',
-      AmbientVoicePhase.completed =>
-        executionTarget == TalkExecutionTarget.thisMac
-            ? 'The requested Mac task has finished.'
-            : 'Asael has finished this request.',
+      AmbientVoicePhase.completed => 'The recorded outcome is verified.',
       AmbientVoicePhase.offline =>
         'Check your network and configured voice provider, then try again.',
       AmbientVoicePhase.error =>
@@ -4224,6 +4442,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   }
 
   Future<void> _submitAmbientVoice() async {
+    _invalidateCompanionHome();
     if (voiceDraftBusy || widget.controller.sending) return;
     final text = input.text.trim();
     if (text.isEmpty) return;
@@ -4293,7 +4512,14 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
 
   void _scheduleAmbientSpeech(AmbientVoicePhase phase) {
     final realtime = realtimeVoice;
-    if (realtime == null || phase != AmbientVoicePhase.completed) return;
+    // A ready reply can be spoken without claiming its work is verified.
+    if (realtime == null ||
+        !ambientSessionSent ||
+        widget.controller.sending ||
+        (phase != AmbientVoicePhase.completed &&
+            phase != AmbientVoicePhase.review)) {
+      return;
+    }
     final reply = widget.controller.messages.lastOrNull;
     if (reply?.role != TalkRole.assistant ||
         reply!.failed ||
@@ -4314,6 +4540,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     AmbientRealtimeVoiceController realtime,
     String text,
   ) async {
+    _invalidateCompanionHome();
     try {
       await realtime.speak(
         text,
@@ -4338,6 +4565,9 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   }
 
   Future<void> _openAmbientFromToolbar() async {
+    _invalidateCompanionHome();
+    if (openingAmbientWindow) return;
+    setState(() => openingAmbientWindow = true);
     try {
       final availability = await appDesktopHostBridge
           .getAmbientVoiceAvailability();
@@ -4362,6 +4592,8 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
           ),
         ),
       );
+    } finally {
+      if (mounted) setState(() => openingAmbientWindow = false);
     }
   }
 
@@ -4390,6 +4622,14 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       },
       child: AmbientVoiceSurface(
         phase: phase,
+        companionPreferences: widget.companionController?.current?.preferences,
+        microphoneActive: recording || realtimeVoice?.microphoneActive == true,
+        playbackActive: realtimeVoice?.isSpeechPlaying == true,
+        workStatus: widget.controller.companionStatus.label,
+        replyReady:
+            ambientSessionSent &&
+            phase == AmbientVoicePhase.review &&
+            widget.controller.messages.lastOrNull?.role == TalkRole.assistant,
         level: realtimeVoice?.level ?? voiceLevel,
         transcript: input.text,
         useThisMac: executionTarget == TalkExecutionTarget.thisMac,
@@ -4404,7 +4644,9 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                         widget.controller.voiceErrorMessage
             : null,
         lastResult: _ambientLastResult,
-        speechNotice: phase == AmbientVoicePhase.completed
+        speechNotice:
+            phase == AmbientVoicePhase.completed ||
+                (ambientSessionSent && phase == AmbientVoicePhase.review)
             ? ambientSpeechNotice
             : null,
         onDestinationChanged: _selectAmbientDestination,
@@ -4776,6 +5018,9 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                 recordingError ?? widget.controller.voiceErrorMessage;
             final conversation = Column(
               children: [
+                if (widget.companionController != null ||
+                    widget.requestedThreadId != null)
+                  _buildCompanionPresence(),
                 AnimatedSwitcher(
                   duration: const Duration(milliseconds: 180),
                   transitionBuilder: (child, animation) => FadeTransition(

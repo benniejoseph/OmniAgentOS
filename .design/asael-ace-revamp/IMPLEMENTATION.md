@@ -1135,3 +1135,53 @@ differential tests compare it with the authoritative server schema, including
 and presentation cases, strict lint and focused TypeScript pass. The failed
 budget evidence is retained in `companion-presence-hosted-build-second.log`;
 the correction still requires its own exact-head hosted budget check.
+
+PR [#37](https://github.com/benniejoseph/OmniAgentOS/pull/37) merged as
+`4879248c23fce356bf9bf2c5b5e50a8bc762fdcc`. All ten hosted checks passed on
+`d177222b7cd2721188d695ab9f6bef9a0f65f23e`. Command measured 849,796 bytes
+against its unchanged 920,000-byte budget; all 40 route budgets and 41 page
+trace boundaries passed. Full hosted quality, browser, PostgreSQL integration,
+worker and security scans also passed. No production promotion or device claim
+follows from this repository acceptance.
+
+## Native companion preferences, entry and presence — 4 October 2026
+
+Native contract v31 adds an explicitly enrolled presentation preference mutation
+and owner-bound GET/PATCH. The lowercase SHA-256 owner digest is derived from the
+authenticated tenant and actor, checked after authorization and before storage.
+Revision and idempotency remain mandatory; v30 is the byte-frozen rollback
+contract and v29 the retained archive. No agent/tool execution grant is added.
+
+Flutter preferences and presence are fenced by owner, role, deployment and
+bootstrap availability. Same-key uncertain retries retain their exact request;
+replayed old receipts remain distinct from a newer current snapshot. Entry has a
+finite Today fallback and explicit safe routes win. Home preserves the draft and
+adopts the exact confirmed conversation. Actual microphone end events clear the
+listening state; static ATLAS uses the approved reproducible crop. Reduced motion
+and visibility affect presentation only.
+
+The backend contract/authorization/owner-binding scope covers 56 unique cases
+after the recorded contract-fixture correction. Generated contract artifacts,
+strict lint and focused TypeScript pass. Thirty native source/test files were
+formatted and analyzed. The initial native run plus two corrected fixture tests
+cover 102 unique passing cases; the final targeted rerun passed all eleven
+History/Settings cases and both corrected files analyze cleanly. Evidence is in
+`native-companion-contract-unit.log`, `native-companion-contract-rerun.log`,
+`native-companion-contract-generation.log`, `native-companion-final-static.log`,
+`native-companion-validation.log` and `native-companion-history-settings-rerun.log`.
+The initial hosted run passed ten checks and exposed two acceptance-fixture
+issues: the generated Dart test still pinned v30/v29, and secret scanning treated
+the public frozen OpenAPI SHA-256 digest as a credential. The test now pins
+v31/v30; only that exact integrity-digest line is annotated. All five generated
+Dart contract tests and the generator/strict-lint recheck pass. Full exact-head
+hosted native/repository checks remain required. These local
+fixtures do not establish real microphone/WebRTC devices, final rig animation or
+physical cross-device continuity. Native Work and later family changes are
+released separately.
+
+The hosted browser gate also exposed a fast-response Meetings focus race: an
+animation frame could run before React committed the accepted receipt and editor
+replacement. Receipt focus now runs after that DOM commit, with the existing
+check that preserves an intervening user focus move. Strict lint, focused
+TypeScript and the full local Meetings browser suite pass; evidence is in
+`meetings-committed-focus/`. The exact-head hosted gate is rerun after this fix.
