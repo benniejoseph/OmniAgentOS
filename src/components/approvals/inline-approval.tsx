@@ -20,6 +20,7 @@ import {
   type TrustResponse,
 } from "@/components/approvals/approval-decision";
 import { approvalInboxHref } from "@/lib/approvals/inbox-link";
+import styles from "./approvals.module.css";
 
 export type InlineApprovalLoad =
   | { status: "ready"; item?: ApprovalItem; trust?: TrustResponse }
@@ -168,36 +169,36 @@ export function InlineApprovalView({
 }) {
   return (
     <section
-      className="rounded-xl border border-warning/40 bg-warning/10 px-4 py-3"
+      className={styles.inline}
       aria-label="Approval needed"
       data-inline-approval={card ? "card" : "link"}
     >
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex min-w-0 items-start gap-3">
-          <AlertTriangle size={16} className="mt-0.5 shrink-0 text-warning" aria-hidden="true" />
+      <div className={styles.inlineHeader}>
+        <div className={styles.inlineIdentity}>
+          <AlertTriangle size={16} aria-hidden="true" />
           <div>
-            <p className="text-sm font-semibold">Approval needed</p>
-            <p className="mt-1 text-xs leading-5 text-muted">{summary}</p>
+            <p className={styles.inlineTitle}>Approval needed</p>
+            <p className={styles.inlineSummary}>{summary}</p>
           </div>
         </div>
-        <Link href={inboxHref} className="action-link shrink-0">
+        <Link href={inboxHref} className={styles.textLink}>
           {card ? "Open in Inbox" : "Review"}
         </Link>
       </div>
-      <DecisionNoticeRegion notice={notice} className="mt-3 rounded-md border px-3 py-2 text-sm" />
+      <DecisionNoticeRegion notice={notice} className={styles.notice} />
       {decisionError ? (
-        <p className="mt-3 rounded-md border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger" role="alert">
+        <p className={styles.error} role="alert">
           {decisionError}
         </p>
       ) : null}
       {loading ? (
-        <p className="mt-3 flex items-center gap-2 text-xs text-muted">
+        <p className={styles.inlineStatus} role="status">
           <Loader2 size={13} className="animate-spin" aria-hidden="true" />
           Loading the approval…
         </p>
       ) : null}
-      {unavailable ? <p className="mt-3 text-xs leading-5 text-muted">{unavailable}</p> : null}
-      {card ? <div className="mt-3">{card}</div> : null}
+      {unavailable ? <p className={styles.inlineStatus}>{unavailable}</p> : null}
+      {card ? <div className={styles.inlineCard}>{card}</div> : null}
     </section>
   );
 }

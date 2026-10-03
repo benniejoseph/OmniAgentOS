@@ -70,7 +70,7 @@ describe("the inline approval banner", () => {
   it("links to the inbox when there is no card", () => {
     const html = view();
 
-    expect(html).toContain('aria-label="Approval needed"');
+    expect(html).toMatch(/^<section\b[^>]*aria-label="Approval needed"/);
     expect(html).toContain('data-inline-approval="link"');
     expect(html).toContain("Approval needed");
     expect(html).toContain("Waiting for approval: email.send");
@@ -86,7 +86,7 @@ describe("the inline approval banner", () => {
   it("says it is loading and why there is no card", () => {
     const loading = view({ loading: true });
     expect(loading).toContain("Loading the approval…");
-    expect(loading).toContain("animate-spin");
+    expect(loading).toMatch(/<p\b[^>]*role="status"[^>]*>[\s\S]*?Loading the approval…<\/p>/);
 
     const gone = view({ unavailable: "This approval is no longer waiting." });
     expect(gone).toContain("This approval is no longer waiting.");
@@ -97,7 +97,7 @@ describe("the inline approval banner", () => {
     const html = view({ card: createElement("div", { id: "card" }, "card body") });
 
     expect(html).toContain('data-inline-approval="card"');
-    expect(html).toContain('<div class="mt-3"><div id="card">card body</div></div>');
+    expect(html).toContain('<div id="card">card body</div>');
     expect(html).toContain(">Open in Inbox</a>");
     expect(html).not.toContain(">Review</a>");
   });
@@ -105,17 +105,23 @@ describe("the inline approval banner", () => {
   it("announces a decision and alerts on a failure", () => {
     const released = view({ notice: { message: "Approved and released: Send email.", tone: "success" } });
     expect(released).toMatch(new RegExp(
-      `${politeRegion}<div class="mt-3 rounded-md border px-3 py-2 text-sm border-success/40[^"]*"><p>Approved and released: Send email\\.</p></div></div>${alertRegion}</div>`,
+      `${politeRegion}<div[^>]*><p>Approved and released: Send email\\.</p></div></div>${alertRegion}</div>`,
     ));
+
+    expect(released.match(/Approved and released: Send email\./g)).toHaveLength(1);
+    expect(released.match(/role="(alert|status)"/g)).toHaveLength(2);
 
     const failed = view({ notice: { message: "Execution failed.", tone: "danger" } });
     expect(failed).toMatch(new RegExp(
-      `${politeRegion}</div>${alertRegion}<div class="mt-3 rounded-md border px-3 py-2 text-sm border-danger/40[^"]*"><p>Execution failed\\.</p></div></div>`,
+      `${politeRegion}</div>${alertRegion}<div[^>]*><p>Execution failed\\.</p></div></div>`,
     ));
+
+    expect(failed.match(/Execution failed\./g)).toHaveLength(1);
+    expect(failed.match(/role="(alert|status)"/g)).toHaveLength(2);
 
     const refused = view({ decisionError: "Already decided." });
     expect(refused).toContain(`${politeRegion}</div>${alertRegion}</div>`);
-    expect(refused).toMatch(/<p class="[^"]*" role="alert">Already decided\.<\/p>/);
+    expect(refused).toMatch(/<p\b[^>]*role="alert"[^>]*>Already decided\.<\/p>/);
   });
 });
 

@@ -1,6 +1,6 @@
 # ATLAS implementation evidence
 
-## First web slice — locally validated, 3 October 2026
+## First web slice — merged, 3 October 2026
 
 Source baseline: `dc1cfe6e9c51e84f85c78bb482fe1d082dfc735a` on `main`,
 including the merged operational follow-ups and ATLAS plan. The implementation
@@ -8,7 +8,7 @@ branch is `codex/atlas-web-foundation`.
 
 | Surface | Scope in this slice | Validation status |
 |---|---|---|
-| Shared foundation | Canonical light/dark tokens, shared controls, focus, motion and contrast modes | Local checks passed; hosted checks required |
+| Shared foundation | Canonical light/dark tokens, shared controls, focus, motion and contrast modes | Local and hosted checks passed; PR #14 merged |
 | Navigation | Existing expanded/compact rail and mobile navigation, simplified surfaces and sizing | Browser layouts and keyboard recovery passed |
 | Theme controls | Existing Light/Dark/System behavior with restrained segmented controls and explicit icon-only names | Light/dark rendering, System preference and accessibility passed |
 | Today | Useful agenda/attention first; remove ornamental scene; disclose usage/source detail | Unit, browser and accessibility checks passed |
@@ -99,11 +99,60 @@ live providers, populated queues, tool effects or Postgres-only sources.
 Detailed logs, screenshots and results are retained outside the repository in
 the dated release records under `2026-10-03-followups/ui-validation`.
 
+PR [#14](https://github.com/benniejoseph/OmniAgentOS/pull/14) merged as
+`10f877cb34ded10cc38c70564ac51aca326df4f6`. Hosted checks passed on implementation
+head `89fcdcb37824e9194188299aba74ae40cb87b0a5`: full types, lint, coverage,
+integration, production build, route JavaScript/server trace budgets, dependency
+audit, worker checks and secret scans. The Vercel preview also passed. This
+records repository acceptance, not a production promotion.
+
+## Inbox and shared approval presentation — 3 October 2026
+
+Inbox and the shared inline decision card now use a dedicated scoped module.
+The decision order is consequence, reversibility and reason, then expanded exact
+inputs, policy/trust context and labeled decision controls. Inputs remain complete,
+selectable and keyboard-scrollable; explanation IDs are unique to each card.
+The queue distinguishes a current empty result from the last loaded queue after
+a failed refresh. Access approval and unfinished identity provisioning remain
+distinct states.
+
+The change retains request bodies, permission checks, quorum, self-approval
+restrictions, emergency-policy gates, reconciliation, idempotency, rereads,
+return links and focus recovery. Both decision announcers remain mounted.
+Independent read-only review found no action-controller changes.
+
+Local focused runs passed 172 tests in nine files. One additional detail-route
+suite failed collection because the local shared installation could not resolve
+the existing `pptxgenjs` ESM entry; no assertion result is claimed for that suite.
+Targeted strict lint, CSS parsing and the 1,179-file minimum type-size check passed.
+An additional 15 shared-shell tests passed. Hosted full checks are required on
+the final head before merge.
+
+Headless Chrome completed 66 checks with no failures or uncaught exceptions.
+Three settled light/dark/phone axe-core 4.11 scans reported no violations.
+The real local pages and synthetic authenticated session used explicitly synthetic
+read responses for populated ordinary, quorum, self-blocked, emergency,
+reconciliation and access/provisioning states. Checks covered exact input content,
+keyboard scrolling, required-field explanation transitions, linked-item/return
+navigation, stale empty queues, 1440/768/720/390/320px layouts, coarse targets,
+200% root text, reduced motion and forced colors. No decision or provider request
+was attempted; automatic web-vitals posts were blocked with all other mutations.
+This does not validate live tool effects or physical-device/screen-reader behavior.
+
+The narrow-screen review found shared layout issues and corrected them: body
+width no longer grows with the text-size minimum; header actions can wrap; the
+smallest header flows with the document; document scroll padding keeps controls
+above the fixed dock without adding shell margins to nested dialogs/scrollers.
+The final phone checks include hit testing and full control visibility above the
+dock at 200% text. Theme scans wait for the existing transition to settle.
+A fresh 82-check Today/Command/voice browser regression passed after these shared
+changes, including all nine accessibility scans and dialog focus recovery.
+
 ## Remaining gates and scope
 
-- Hosted build, route budgets and required repository checks on the exact head.
-- Populated queue/approval and live microphone/device scenarios remain outside
-  this bounded fixture. Screen-reader and physical-device review are not claimed.
+- Hosted build, route budgets and required repository checks on each new exact head.
+- Live approval effects and microphone/device scenarios remain outside the
+  bounded presentation fixtures. Screen-reader and physical-device review are not claimed.
 - Production performance and full page-family acceptance remain later gates;
   development timings and axe scans are not a performance or accessibility certification.
 
