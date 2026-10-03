@@ -89,8 +89,8 @@ export const appNav: AppNavItem[] = [
   },
   {
     href: "/app/command",
-    label: "Command",
-    shortLabel: "Command",
+    label: "Assistant",
+    shortLabel: "Ask",
     description: "Ask Asael a question or hand off a task.",
     icon: TerminalSquare,
   },
@@ -102,9 +102,16 @@ export const appNav: AppNavItem[] = [
     icon: Activity,
   },
   {
+    href: "/app/activity",
+    label: "Activity",
+    shortLabel: "Activity",
+    description: "Work in progress, decisions and updates from the records you can access.",
+    icon: Activity,
+  },
+  {
     href: "/app/projects",
-    label: "Projects",
-    shortLabel: "Projects",
+    label: "Work",
+    shortLabel: "Work",
     description: "Plan, execute, review, and verify durable work.",
     icon: FolderKanban,
   },
@@ -131,7 +138,7 @@ export const appNav: AppNavItem[] = [
   {
     href: "/app/automation",
     label: "Capabilities",
-    shortLabel: "Capabilities",
+    shortLabel: "Tools",
     description: "Skills, Extensions, Connections, and repeatable work.",
     icon: Blocks,
   },
@@ -181,9 +188,9 @@ export const appNav: AppNavItem[] = [
   },
 ];
 
-// The five-item everyday loop stays reachable on mobile. Everything else is
-// progressively disclosed by the kind of work it supports.
-export const primaryNavHrefs = ["/app", "/app/command", "/app/capture", "/app/projects", "/app/memory"];
+// The five everyday destinations stay reachable on mobile. More retains every
+// existing specialist, review and settings destination without changing URLs.
+export const primaryNavHrefs = ["/app/command", "/app/projects", "/app/activity", "/app/memory", "/app/automation"];
 export const primaryNavItems = primaryNavHrefs.map((href) => {
   const item = appNav.find((entry) => entry.href === href);
   if (!item) throw new Error(`Missing primary navigation item for ${href}`);
@@ -193,41 +200,13 @@ export const primaryNavItems = primaryNavHrefs.map((href) => {
 export const appNavGroups: AppNavGroup[] = [
   {
     label: "Workspace",
-    items: [
-      ...primaryNavItems,
-      appNav.find((item) => item.href === "/app/agents")!,
-      appNav.find((item) => item.href === "/app/meetings")!,
-      appNav.find((item) => item.href === "/app/accounts")!,
-      appNav.find((item) => item.href === "/app/markets")!,
-    ],
+    items: primaryNavItems,
   },
   {
-    label: "Automation",
+    label: "More",
     collapsible: true,
-    items: [appNav.find((item) => item.href === "/app/automation")!],
-  },
-  {
-    label: "Review",
-    collapsible: true,
-    items: appNav.filter((item) =>
-      [
-        "/app/approvals",
-        "/app/payments",
-        "/app/results",
-        "/app/evaluations",
-      ].includes(item.href),
-    ),
-  },
-  {
-    label: "System",
-    collapsible: true,
-    items: appNav.filter((item) =>
-      [
-        "/app/observability",
-        "/app/security",
-        "/app/settings",
-      ].includes(item.href),
-    ),
+    items: ["/app", "/app/capture"].map((href) => appNav.find((item) => item.href === href)!)
+      .concat(appNav.filter((item) => !primaryNavHrefs.includes(item.href) && item.href !== "/app" && item.href !== "/app/capture")),
   },
 ];
 

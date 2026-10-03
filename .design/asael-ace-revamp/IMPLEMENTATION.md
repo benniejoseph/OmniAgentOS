@@ -828,6 +828,45 @@ conversation/approval checks. Hosted checks for this lifecycle slice remain
 required. Real provider effects and device/screen-reader acceptance are not
 claimed by these fixtures.
 
+## Activity projection and primary web navigation — 3 October 2026
+
+The new authenticated `/app/activity` reads bounded Working, Needs you, Updates
+and History projections through `GET /api/activity`. Each source reads at most
+100 authorized records; the view pages 25 rows and reports coverage/freshness.
+Unavailable sources never become zero counts. Tenant and actor ownership are
+checked before run/thread projection, approval access requires its existing role,
+and notifications are read without processing due work. Summaries contain fixed
+metadata, not prompts, output or approval inputs. Matching approval-wait rows fold
+only on exact identities; separate reminder occurrences remain distinct.
+
+Scope-bound cursors reject changed windows with 409. The view keeps previous rows
+explicitly stale through failures, fences late reads by request and identity, and
+focuses newly loaded rows only after successful pagination. Exact source links
+retain run/thread, approval kind/ID and return destinations. Verified completion
+requires the canonical terminal verification receipt; legacy completion, partial,
+failed and canceled outcomes stay distinct.
+
+Primary web navigation now offers Assistant, Work, Activity, Memory and
+Capabilities. More retains every existing destination. The phone dock uses short
+visible Ask/Tools labels with full Assistant/Capabilities accessible names.
+Existing route paths and advanced destinations remain compatible.
+
+Root validation ran serially on the 8 GB host: 33 Activity backend tests, seven
+response-validation tests and 11 navigation/shell/palette tests passed, with
+strict focused ESLint and TypeScript checks. The maintained Activity browser suite
+passed 129 assertions against real isolated authentication/SSR and wholly
+synthetic read fixtures: first-read failures, all groups, 25-row pagination,
+cursor expiry, retained rows/counts, malformed replies, A→B→A races and disposal.
+All four desktop/phone light/dark axe scans passed; the four viewport PNGs were
+visually inspected. No application write, unexpected request or uncaught browser
+error occurred. CI now runs this suite serially with the other browser suites.
+Evidence is under the external release record's `ui-validation/activity` directory.
+
+This closes the web Activity implementation checks, not the whole navigation or
+cross-platform plan: shell Capture/Voice utilities, broader conversation return
+behavior, native Activity, physical-device and assistive-technology review remain
+separate acceptance work. Source href checks do not claim a source action ran.
+
 ## Remaining gates and scope
 
 - Hosted build, route budgets and required repository checks on each new exact head.

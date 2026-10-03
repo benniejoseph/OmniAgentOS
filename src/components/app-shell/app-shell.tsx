@@ -305,6 +305,7 @@ export function AppShell({
             <Link
               key={item.href}
               href={item.href}
+              aria-label={item.label}
               aria-current={active ? "page" : undefined}
               className={clsx(
                 "flex min-h-14 flex-col items-center justify-center gap-1 rounded-md px-1 text-xs font-semibold transition",

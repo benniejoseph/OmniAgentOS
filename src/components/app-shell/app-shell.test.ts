@@ -61,7 +61,7 @@ describe("the inbox count in the app shell", () => {
     expect(inboxLinks).toHaveLength(1);
     expect(inboxLinks[0]).toContain('class="notification-trigger"');
     expect(inboxLinks[0]).toContain('aria-label="Inbox, 3 waiting"');
-    expect(html).toContain('aria-label="Review, 3 waiting"');
+    expect(html).toContain('aria-label="More, 3 waiting"');
     expect(html).toContain('data-nav-count="3"');
   });
 
@@ -74,7 +74,7 @@ describe("the inbox count in the app shell", () => {
     expect(inboxLinks[0]).toContain('aria-label="Inbox, 3 waiting"');
     expect(inboxLinks[0]).toContain('aria-current="page"');
     expect(inboxLinks[0]).toContain("bg-primary-ink text-primary");
-    expect(html).not.toContain('aria-label="Review, 3 waiting"');
+    expect(html).not.toContain('aria-label="More, 3 waiting"');
   });
 
   it("shows no count with nothing waiting", () => {
@@ -99,7 +99,7 @@ describe("the inbox count in the other navigations", () => {
     expect(inbox).toContain('aria-label="Inbox, 12 waiting"');
     expect(inbox).toContain("absolute right-1 top-1");
     expect(inbox).toContain('data-nav-count="12"');
-    expect(linkTo(html, "/app/command")[0]).toContain('aria-label="Command"');
+    expect(linkTo(html, "/app/command")[0]).toContain('aria-label="Assistant"');
     expect(html.match(/data-nav-count/g)).toHaveLength(1);
 
     const none = renderToStaticMarkup(createElement(CompactNavigation, { pathname: "/app/command" }));
