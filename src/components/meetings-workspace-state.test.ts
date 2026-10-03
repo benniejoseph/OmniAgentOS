@@ -241,3 +241,163 @@ describe("Visible pending media reads", () => {
     expect(env.focus.size).toBe(0);
   });
 });
+
+describe("Compact meeting response parser parity", () => {
+  function processedReceipt() {
+    const citations = [{ turnId: "turn:one", segmentIndex: 0, startMilliseconds: 0, endMilliseconds: 1000, speakerLabel: "A" }];
+    return {
+      recording: { id: "recording:one" }, job: { id: "job:one", status: "completed" },
+      media: {
+        recordingId: "recording:one", meetingId: "meeting:test", processingStatus: "ready", operationJobId: "job:one", rawAudioDeletedAt: null, updatedAt: stamp,
+        output: {
+          mediaRevisionId: "recording:one:media:v1", processedAt: stamp, languageTags: ["en"],
+          turns: [{ turnId: "turn:one", startMilliseconds: 0.5, endMilliseconds: 1000.25, languageTag: "en", speaker: { label: "A", identity: "diarized" }, text: "Exact transcript" }],
+          chapters: [{ chapterId: "chapter:one", title: "Chapter", text: "Exact chapter", citations, startMilliseconds: -0.5, endMilliseconds: 1000.25 }],
+          summary: { text: "Exact summary", citations },
+          actionItems: [{ actionItemId: "action:one", text: "Exact action", citations, ownershipEvidence: "unconfirmed", dueDateEvidence: "unconfirmed" }],
+          decisions: [{ decisionId: "decision:one", text: "Exact decision", citations }], warnings: ["Unconfirmed speaker"],
+        },
+      },
+    };
+  }
+  const parseMedia = (value: unknown) => parseMeetingMediaReceipt(value, "recording:one", "meeting:test");
+
+  it("copies every known media collection and nested record, retaining loose extensions", () => {
+    const raw = processedReceipt();
+    const extension = { future: ["retained extension identity"] };
+    Object.assign(raw.media, { extension });
+    Object.assign(raw.media.output.turns[0].speaker, { futureSpeaker: "preserved" });
+    Object.assign(raw.media.output.summary, { futureSummary: "preserved" });
+    const parsed = parseMedia(raw);
+    expect(parsed).toMatchObject({ extension, output: { summary: { futureSummary: "preserved" }, turns: [{ speaker: { futureSpeaker: "preserved" } }] } });
+    expect((parsed as unknown as Record<string, unknown>).extension).toBe(extension);
+    expect(parsed.output).not.toBe(raw.media.output);
+    expect(parsed.output?.turns).not.toBe(raw.media.output.turns);
+    expect(parsed.output?.turns[0].speaker).not.toBe(raw.media.output.turns[0].speaker);
+    expect(parsed.output?.summary.citations[0]).not.toBe(raw.media.output.summary.citations[0]);
+    raw.media.output.turns[0].speaker.label = "Changed after parse";
+    raw.media.output.summary.citations[0].speakerLabel = "Changed after parse";
+    raw.media.output.languageTags.push("fr");
+    expect(parsed.output?.turns[0].speaker.label).toBe("A");
+    expect(parsed.output?.summary.citations[0].speakerLabel).toBe("A");
+    expect(parsed.output?.languageTags).toEqual(["en"]);
+  });
+
+  it("preserves stripping at picker envelopes, rows and nested library versions", () => {
+    expect(parseMeetingOptions("projects", { envelopeExtra: true, projects: [{ id: "project:one", title: "", extra: true }] })).toEqual([{ id: "project:one", title: "" }]);
+    expect(parseMeetingOptions("entities", { entities: [{ entityId: "person:one", entityTypeId: "person", canonicalLabel: "", state: "active", extra: true }, { entityId: "other:one", entityTypeId: "unlisted", canonicalLabel: "Other", state: "active" }] })).toEqual([{ entityId: "person:one", entityTypeId: "person", canonicalLabel: "", state: "active" }]);
+    const item = { id: "library:one", kind: "capture", sourceAuthority: "owner", sourceId: "asset:one", title: "", sourceLabel: "", status: "ready", currentVersion: { sourceRevisionId: null, mediaType: "image/png", extra: true }, extra: true };
+    const parsed = parseMeetingOptions("library", { items: [item], extra: true });
+    expect(parsed[0]).not.toHaveProperty("extra"); expect(parsed[0].currentVersion).toEqual({ sourceRevisionId: null, mediaType: "image/png" });
+    item.currentVersion.mediaType = "changed";
+    expect(parsed[0].currentVersion.mediaType).toBe("image/png");
+  });
+
+  it("distinguishes optional absence/undefined from null and required nullable fields", () => {
+    const raw = processedReceipt();
+    const withoutOptional = parseMedia(raw);
+    expect(Object.hasOwn(withoutOptional.output!.turns[0].speaker, "participantId")).toBe(false);
+    Object.assign(raw.media.output.turns[0].speaker, { participantId: undefined, displayName: undefined });
+    const explicit = parseMedia(raw);
+    expect(Object.hasOwn(explicit.output!.turns[0].speaker, "participantId")).toBe(true);
+    expect(explicit.output!.turns[0].speaker.participantId).toBeUndefined();
+    Object.assign(raw.media.output.turns[0].speaker, { participantId: null });
+    expect(() => parseMedia(raw)).toThrow("incomplete");
+    expect(() => parseMeetingResolutionReceipt({ commitment: confirmed(), meeting: null }, proposal(), submitted)).toThrow("incomplete");
+    expect(parseMeetingResolutionReceipt({ commitment: confirmed(), draft: null }, proposal(), submitted).draftVerification).toBe("not_requested");
+    const invalid = meeting(); Reflect.deleteProperty(invalid.participants[0], "email");
+    expect(() => parseMeetingDetail(detail(invalid), "meeting:test")).toThrow("incomplete");
+  });
+
+  it("requires finite durations, keeps legal fractions and negative chapter offsets, and bounds integer citations", () => {
+    const raw = processedReceipt();
+    expect(parseMedia(raw).output?.turns[0].startMilliseconds).toBe(0.5);
+    expect(parseMedia(raw).output?.chapters[0].startMilliseconds).toBe(-0.5);
+    for (const value of [NaN, Infinity, -Infinity]) {
+      const next = processedReceipt(); next.media.output.chapters[0].endMilliseconds = value;
+      expect(() => parseMedia(next)).toThrow("incomplete");
+    }
+    for (const value of [-1, 0.25, Number.MAX_SAFE_INTEGER + 1]) {
+      const next = processedReceipt(); next.media.output.summary.citations[0].segmentIndex = value;
+      expect(() => parseMedia(next)).toThrow("incomplete");
+    }
+    raw.media.output.summary.citations[0].segmentIndex = Number.MAX_SAFE_INTEGER;
+    expect(parseMedia(raw).output?.summary.citations[0].segmentIndex).toBe(Number.MAX_SAFE_INTEGER);
+    raw.media.output.turns[0].startMilliseconds = -0.01;
+    expect(() => parseMedia(raw)).toThrow("incomplete");
+  });
+
+  it("retains canonical ISO equality, identity lengths and exact UTF-16 string bounds", () => {
+    for (const invalid of ["2026-02-30T12:00:00.000Z", "2026-10-03T12:00:00Z", "2026-10-03T12:00:00.000+00:00", "not a date"]) {
+      expect(() => parseMeetingDetail(detail({ ...meeting(), revisedAt: invalid }), "meeting:test")).toThrow("incomplete");
+    }
+    expect(parseMeetingDetail(detail({ ...meeting(), revisedAt: "+010000-01-01T00:00:00.000Z" }), "meeting:test").meeting.revisedAt).toBe("+010000-01-01T00:00:00.000Z");
+    expect(parseMeetingOptions("projects", { projects: [{ id: " ", title: "" }] })[0].id).toBe(" ");
+    expect(parseMeetingOptions("projects", { projects: [{ id: "x".repeat(512), title: "" }] })[0].id).toHaveLength(512);
+    expect(() => parseMeetingOptions("projects", { projects: [{ id: "x".repeat(513), title: "" }] })).toThrow("incomplete");
+    expect(parseMeetingDetail(detail({ ...meeting(), title: "🦉".repeat(120) }), "meeting:test").meeting.title).toHaveLength(240);
+    expect(() => parseMeetingDetail(detail({ ...meeting(), title: "🦉".repeat(121) }), "meeting:test")).toThrow("incomplete");
+  });
+
+  it("enforces media array and text bounds, including required sparse entries", () => {
+    const cases: Array<(value: ReturnType<typeof processedReceipt>) => void> = [
+      (value) => { value.media.output.languageTags = Array(25).fill("en"); },
+      (value) => { value.media.output.turns = Array(50001).fill(value.media.output.turns[0]); },
+      (value) => { value.media.output.chapters = Array(241).fill(value.media.output.chapters[0]); },
+      (value) => { value.media.output.actionItems = Array(501).fill(value.media.output.actionItems[0]); },
+      (value) => { value.media.output.decisions = Array(501).fill(value.media.output.decisions[0]); },
+      (value) => { value.media.output.warnings = Array(101).fill(""); },
+      (value) => { value.media.output.summary.citations = []; },
+      (value) => { value.media.output.summary.citations = Array(25).fill(value.media.output.summary.citations[0]); },
+      (value) => { value.media.output.turns[0].text = "x".repeat(24001); },
+      (value) => { value.media.output.summary.text = "x".repeat(12001); },
+      (value) => { value.media.output.summary.text = ""; },
+      (value) => { value.media.output.turns = Array(1); },
+    ];
+    for (const change of cases) { const value = processedReceipt(); change(value); expect(() => parseMedia(value)).toThrow("incomplete"); }
+    const accepted = processedReceipt(); accepted.media.output.turns[0].text = ""; accepted.media.output.summary.text = "x".repeat(12000);
+    expect(parseMedia(accepted).output?.summary.text).toHaveLength(12000);
+  });
+
+  it("preserves nullable linked-media rules and linked transcript/segment limits", () => {
+    const value = meeting();
+    value.sourceLinks = [{ linkId: "link:one", kind: "capture_recording", sourceId: "recording:one", sourceRevisionId: "recording:one:v1", sourceRevisionSha256: sha, sourceAuthoritySha256: sha, accessClass: "owner_private", mediaRole: "recording", label: "Recording" }];
+    const source = { linkId: "link:one", kind: "capture_recording", sourceId: "recording:one", mediaRole: "recording", label: "", revisionState: "exact", status: null, mediaType: null, durationMs: 0.5, byteCount: 1.25, updatedAt: null, transcript: "x".repeat(500000), transcriptTruncated: true, media: null, segments: [{ segmentIndex: 0, mimeType: "", durationMs: 0.25 }] };
+    const envelope = { ...detail(value), linkedSources: [source] };
+    expect(parseMeetingDetail(envelope, "meeting:test").linkedSources[0].byteCount).toBe(1.25);
+    expect(() => parseMeetingDetail({ ...envelope, linkedSources: [{ ...source, transcript: "x".repeat(500001) }] }, "meeting:test")).toThrow("incomplete");
+    expect(() => parseMeetingDetail({ ...envelope, linkedSources: [{ ...source, segments: Array(1441).fill(source.segments[0]) }] }, "meeting:test")).toThrow("incomplete");
+    expect(() => parseMeetingDetail({ ...envelope, linkedSources: [{ ...source, media: undefined }] }, "meeting:test")).toThrow("incomplete");
+    const head = processedReceipt().media;
+    Reflect.deleteProperty(head, "output");
+    expect(parseMedia({ ...processedReceipt(), media: head }).output).toBeNull();
+    expect(() => parseMeetingDetail({ ...envelope, linkedSources: [{ ...source, media: head }] }, "meeting:test")).toThrow("incomplete");
+  });
+
+  it("retains exact resolution requirements and forbids a dismissed work/draft result", () => {
+    const view = confirmed();
+    const dismissed = { ...view, resolution: { ...view.resolution, decision: "dismissed", ownerParticipantId: null, workItemId: null, draftId: null, communicationPolicyId: null } };
+    expect(parseMeetingResolutionReceipt({ commitment: dismissed }, proposal(), { decision: "dismissed" }).commitment.resolution?.decision).toBe("dismissed");
+    expect(() => parseMeetingResolutionReceipt({ commitment: { ...dismissed, resolution: { ...dismissed.resolution, workItemId: "unexpected" } } }, proposal(), { decision: "dismissed" })).toThrow("incomplete");
+    expect(() => parseMeetingResolutionReceipt({ commitment: { ...view, resolution: { ...view.resolution, ownerDisplayName: "" } } }, proposal(), submitted)).toThrow("incomplete");
+    expect(() => parseMeetingResolutionReceipt({ commitment: { ...view, resolution: { ...view.resolution, communicationPolicyId: "policy:one" } } }, proposal(), submitted)).toThrow("incomplete");
+  });
+
+  it("does not coerce primitive contracts or allow unsafe calendar counts", () => {
+    for (const imported of ["2", true, NaN, Infinity, -1, 0.5, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() => meetingCalendarReceipt({ provider: "google", sources: [{ source: "calendar", status: "healthy", imported }] })).toThrow("incomplete");
+    }
+    expect(meetingCalendarReceipt({ provider: "google", sources: [{ source: "calendar", status: "healthy", imported: Number.MAX_SAFE_INTEGER }] }).message).toContain(String(Number.MAX_SAFE_INTEGER));
+    const sparse = Array(1);
+    expect(() => parseMeetingOptions("projects", { projects: sparse })).toThrow("incomplete");
+  });
+
+  it("drops __proto__ passthrough keys without dropping ordinary extension fields", () => {
+    const raw = JSON.parse(JSON.stringify({ ...detail(), meeting: { ...meeting(), extension: "kept" } })) as ReturnType<typeof detail>;
+    Object.defineProperty(raw.meeting, "__proto__", { value: { polluted: true }, enumerable: true });
+    const parsed = parseMeetingDetail(raw, "meeting:test");
+    expect(Object.getPrototypeOf(parsed.meeting)).toBe(Object.prototype);
+    expect(Object.hasOwn(parsed.meeting, "__proto__")).toBe(false);
+    expect(parsed.meeting).toMatchObject({ extension: "kept" });
+  });
+});

@@ -1036,3 +1036,14 @@ string, collection, optional/nullable, extension and receipt constraints. Its
 (`ui-validation/meetings-mini-verified.log`). Final size and acceptance require
 the new exact-commit hosted build; the earlier failed build is retained as
 `ui-validation/meetings-hosted-build-failure.log`.
+
+The Zod Mini exact head still measured 922,501 bytes and did not pass the
+800,000-byte Meetings budget (`meetings-mini-hosted-build.log`). The browser
+response validator now uses compact explicit domain guards while retaining
+the original envelope stripping, loose domain extensions, nested projections,
+finite/safe numeric bounds, bounded strings/arrays, exact timestamps and receipt
+bindings. The authoritative server schemas are unchanged. Ten additional
+differential cases include sparse arrays, prototypes, number boundaries and media
+receipts. All 32 state cases and 12 server commitment cases pass, together with
+strict lint and focused TypeScript (`meetings-compact-verified.log`). The budget
+remains unchanged; acceptance still requires this committed head's hosted build.
