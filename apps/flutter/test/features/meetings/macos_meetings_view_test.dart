@@ -91,6 +91,7 @@ void main() {
 
     expect(find.text('Desktop evidence'), findsOneWidget);
     await tester.ensureVisible(find.byKey(const Key('macos-meeting-open')));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('macos-meeting-open')));
     expect(opened?.id, 'two');
   });

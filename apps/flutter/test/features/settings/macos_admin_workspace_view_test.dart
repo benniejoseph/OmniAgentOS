@@ -61,7 +61,8 @@ void main() {
             findsOneWidget,
           );
         }
-        expect(tester.takeException(), isNull, reason: 'width $width');
+        final error = tester.takeException();
+        expect(error, isNull, reason: 'width $width: $error');
       }
     },
   );

@@ -242,7 +242,15 @@ class _AdminToolbar extends StatelessWidget {
       return Row(
         key: const ValueKey('macos-admin-toolbar-wide'),
         children: [
-          SizedBox(width: 280, child: searchField),
+          Expanded(
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 280),
+                child: searchField,
+              ),
+            ),
+          ),
           const SizedBox(width: 14),
           SegmentedButton<_AreaFilter>(
             segments: const [
@@ -260,7 +268,7 @@ class _AdminToolbar extends StatelessWidget {
             showSelectedIcon: false,
             onSelectionChanged: (value) => onFilterChanged(value.first),
           ),
-          const Spacer(),
+          const SizedBox(width: 14),
           Text(countLabel, style: Theme.of(context).textTheme.bodySmall),
         ],
       );
