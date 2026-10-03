@@ -269,6 +269,7 @@ def analysis_and_journal(page, fixture, checks):
     fixture.expect_action("/api/market-research/journal/generate", {"instrumentId": GOLD, "horizon": "daily"}, {"forecast": generated, "reused": False}, hold="generate", after_fail=("journal:" + GOLD,))
     button(page, "Daily scenario").click()
     until(page, lambda: "generate" in fixture.held, "Generation request not held")
+    expect(button(page, "Daily scenario")).to_be_disabled()
     expect(button(page, "Weekly scenario")).to_be_disabled()
     fixture.release("generate")
     expect(receipt(page)).to_contain_text(generated["id"])

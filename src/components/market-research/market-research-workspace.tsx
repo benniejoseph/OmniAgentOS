@@ -130,12 +130,24 @@ function ScopedMarketWorkspace() {
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("overview");
   const [overviewChartActive, setOverviewChartActive] = useState(false);
   const [busy, setBusy] = useState<string>();
+  const actionFocus = useRef<HTMLButtonElement | null>(null);
   const [actionError, setActionError] = useState<string>();
   const [receipt, setReceipt] = useState<MarketEffectReceipt>();
   const [jobs, setJobs] = useState<Record<string, TrackedMarketJob>>({});
   const jobsRef = useRef(jobs);
   const [pollGeneration, setPollGeneration] = useState(0);
   const [layerSelection, setLayerSelection] = useState<{ snapshotId: string; ids: MarketTechnicalLayerId[] }>();
+  useLayoutEffect(() => {
+    if (busy) return;
+    const origin = actionFocus.current;
+    actionFocus.current = null;
+    // React must commit the enabling render before focus is restored. A frame
+    // scheduled from the promise can still see the previous disabled button.
+    if (origin?.isConnected && !origin.disabled &&
+        !origin.closest("[hidden], [inert]") && document.activeElement === document.body) {
+      origin.focus({ preventScroll: true });
+    }
+  }, [busy]);
   const overviewRead = useMarketResource("overview", "/api/market-research", parseMarketOverview);
   const overview = overviewRead.data;
   const selected = overview?.instruments.find((item) => item.instrumentId === selectedId) ?? overview?.instruments[0];
@@ -227,6 +239,7 @@ function ScopedMarketWorkspace() {
     if (reason) return undefined;
     const action = gate.beginWrite();
     if (!action) return undefined;
+    actionFocus.current = null;
     const returnFocus = document.activeElement instanceof HTMLButtonElement ? document.activeElement : undefined;
     setBusy(label); setActionError(undefined);
     let accepted = false;
@@ -240,14 +253,8 @@ function ScopedMarketWorkspace() {
       return undefined;
     } finally {
       if (action.current()) {
+        actionFocus.current = returnFocus ?? null;
         action.finish(); setBusy(undefined); if (accepted) after?.();
-        // Disabling the initiating control may move focus to the document.
-        // Restore it after rendering unless the user already chose another target.
-        requestAnimationFrame(() => {
-          if (returnFocus?.isConnected && !returnFocus.disabled && document.activeElement === document.body) {
-            returnFocus.focus({ preventScroll: true });
-          }
-        });
       }
     }
   }
