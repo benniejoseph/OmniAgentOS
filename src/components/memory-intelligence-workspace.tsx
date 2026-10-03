@@ -12,10 +12,8 @@ import {
   Archive,
   ArrowRight,
   BookOpen,
-  Bot,
   Brain,
   Check,
-  ChevronDown,
   CircleAlert,
   Database,
   FileStack,
@@ -169,6 +167,8 @@ export function MemoryIntelligenceWorkspace() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [indexLoading, setIndexLoading] = useState(false);
+  const [loadedIndexes, setLoadedIndexes] = useState({ memory: false, knowledge: false });
+  const [indexErrors, setIndexErrors] = useState<Partial<Record<"memory" | "knowledge", string>>>({});
   const [reviewsLoading, setReviewsLoading] = useState(false);
   const [busy, setBusy] = useState<string>();
   const [reviewErrors, setReviewErrors] = useState<Record<string, string>>({});
@@ -252,6 +252,7 @@ export function MemoryIntelligenceWorkspace() {
     const controller = new AbortController();
     indexRequestRef.current = controller;
     setIndexLoading(true);
+    setIndexErrors((current) => ({ ...current, [kind]: undefined }));
     try {
       const response = await fetch(`/api/memory/intelligence?${parameters}`, {
         cache: "no-store",
@@ -271,9 +272,13 @@ export function MemoryIntelligenceWorkspace() {
           : next);
       }
       indexSignatureRef.current[kind] = signature;
+      setLoadedIndexes((current) => ({ ...current, [kind]: true }));
       setError(undefined);
     } catch (loadError) {
-      if (!controller.signal.aborted) setError(message(loadError));
+      if (!controller.signal.aborted) {
+        setIndexErrors((current) => ({ ...current, [kind]: message(loadError) }));
+        setError(message(loadError));
+      }
     } finally {
       if (indexRequestRef.current === controller) setIndexLoading(false);
     }
@@ -486,7 +491,7 @@ export function MemoryIntelligenceWorkspace() {
 
   const embeddingCoverage = overview?.summary.knowledgeChunks
     ? Math.round(overview.summary.embeddedChunks / overview.summary.knowledgeChunks * 100)
-    : 100;
+    : undefined;
   const pendingCognitionReviewCount = cognitionReviews.filter(
     (review) => review.status === "pending_review",
   ).length;
@@ -858,16 +863,14 @@ export function MemoryIntelligenceWorkspace() {
   }
 
   return (
-    <main className={styles.shell}>
-      <div className={styles.orbit} aria-hidden="true"><i /><i /><i /></div>
+    <section className={styles.shell} aria-labelledby="memory-page-title">
       <header className={styles.hero}>
         <div className={styles.heroCopy}>
-          <p><Brain size={16} /> Memory observatory</p>
-          <h1>A living index of what Asael knows.</h1>
-          <span>Durable memory, source knowledge, evidence links and recall quality—organized in one place.</span>
+          <h1 id="memory-page-title">Memory</h1>
+          <span>Inspect what Asael remembers and the sources behind it.</span>
         </div>
         <div className={styles.heroActions}>
-          <label className={styles.search}>
+          <div className={styles.search}>
             <Search size={17} aria-hidden="true" />
             <input
               value={query}
@@ -876,7 +879,7 @@ export function MemoryIntelligenceWorkspace() {
               aria-label="Search memory and knowledge"
             />
             {query ? <button type="button" onClick={() => setQuery("")} aria-label="Clear search"><X size={15} /></button> : null}
-          </label>
+          </div>
           <button type="button" className={styles.secondaryAction} onClick={() => void loadOverview()} disabled={loading}>
             <RefreshCw size={16} className={loading ? styles.spin : undefined} /> Refresh
           </button>
@@ -889,18 +892,8 @@ export function MemoryIntelligenceWorkspace() {
         </div>
       </header>
 
-      {error ? <div className={styles.error}><CircleAlert size={17} /><span>{error}</span><button type="button" onClick={() => setError(undefined)}>Dismiss</button></div> : null}
+      {error ? <div className={styles.error} role="alert"><CircleAlert size={17} aria-hidden="true" /><span>{error}</span><button type="button" onClick={() => setError(undefined)}>Dismiss</button></div> : null}
       <p className={styles.announcement} role="status">{announcement}</p>
-
-      <section className={styles.metrics} aria-label="Memory health summary">
-        <Metric icon={<Brain />} value={overview?.summary.durableMemories} label="Durable memories" />
-        <Metric icon={<FileStack />} value={overview?.summary.knowledgeDocuments} label="Knowledge sources" />
-        <Metric icon={<Database />} value={`${embeddingCoverage}%`} label="Vector coverage" />
-        <Metric icon={<ShieldCheck />} value={overview?.summary.pendingReviews} label="Awaiting review" warning={Boolean(overview?.summary.pendingReviews)} />
-        <Metric icon={<GitBranch />} value={overview ? `${overview.summary.graphNodes.toLocaleString()} / ${overview.summary.graphEdges.toLocaleString()}` : undefined} label="Nodes / links" />
-      </section>
-
-      <MemoryGuide />
 
       <nav className={styles.tabs} aria-label="Memory workspace">
         <Tab active={view === "memory"} onClick={() => selectView("memory")} icon={<Brain size={17} />} label="Memory" count={overview?.summary.durableMemories} />
@@ -910,10 +903,22 @@ export function MemoryIntelligenceWorkspace() {
           onClick={() => selectView("reviews")}
           icon={<ShieldCheck size={17} />}
           label="Reviews"
-          count={(overview?.summary.pendingReviews || 0) + pendingCognitionReviewCount}
+          count={overview ? overview.summary.pendingReviews + pendingCognitionReviewCount : undefined}
         />
         <Tab active={view === "universe"} onClick={() => selectView("universe")} icon={<Layers3 size={17} />} label="Universe" />
       </nav>
+
+      <details className={styles.overviewDetails}>
+        <summary>Memory health and how it works</summary>
+        <section className={styles.metrics} aria-label="Memory health summary">
+          <Metric icon={<Brain />} value={overview?.summary.durableMemories} label="Durable memories" loading={loading} />
+          <Metric icon={<FileStack />} value={overview?.summary.knowledgeDocuments} label="Knowledge sources" loading={loading} />
+          <Metric icon={<Database />} value={embeddingCoverage !== undefined ? `${embeddingCoverage}%` : overview ? "No chunks" : undefined} label="Vector coverage" loading={loading} />
+          <Metric icon={<ShieldCheck />} value={overview?.summary.pendingReviews} label="Awaiting review" warning={Boolean(overview?.summary.pendingReviews)} loading={loading} />
+          <Metric icon={<GitBranch />} value={overview ? `${overview.summary.graphNodes.toLocaleString()} / ${overview.summary.graphEdges.toLocaleString()}` : undefined} label="Nodes / links" loading={loading} />
+        </section>
+        <MemoryGuide />
+      </details>
 
       {universeVisited ? (
         <div className={styles.universeWrap} hidden={view !== "universe"}>
@@ -943,6 +948,9 @@ export function MemoryIntelligenceWorkspace() {
                 selectedId={selectedMemoryId}
                 onSelect={setSelectedMemoryId}
                 loading={indexLoading}
+                loaded={loadedIndexes.memory}
+                error={indexErrors.memory}
+                onRetry={() => void loadIndex("memory", undefined, true)}
                 onMore={() => void loadIndex("memory", memoryPage.nextCursor || undefined)}
               />
             ) : view === "knowledge" ? (
@@ -952,6 +960,9 @@ export function MemoryIntelligenceWorkspace() {
                 category={knowledgeCategory}
                 onCategory={setKnowledgeCategory}
                 loading={indexLoading}
+                loaded={loadedIndexes.knowledge}
+                error={indexErrors.knowledge}
+                onRetry={() => void loadIndex("knowledge", undefined, true)}
                 onMore={() => void loadIndex("knowledge", knowledgePage.nextCursor || undefined)}
               />
             ) : (
@@ -980,6 +991,7 @@ export function MemoryIntelligenceWorkspace() {
 
           <MnemosynePanel
             overview={overview}
+            loading={loading}
             consent={consent}
             busy={busy}
             cognitionFeedback={cognitionQueueFeedback}
@@ -994,8 +1006,9 @@ export function MemoryIntelligenceWorkspace() {
 
       {selectedMemoryId && view === "memory" ? (
         <MemoryInspector
-          memory={selectedMemory}
+          memory={selectedMemory?.id === selectedMemoryId ? selectedMemory : undefined}
           loading={detailLoading}
+          error={error}
           busy={busy}
           preview={forgetPreview}
           onClose={() => setSelectedMemoryId(undefined)}
@@ -1009,6 +1022,7 @@ export function MemoryIntelligenceWorkspace() {
       {createOpen ? (
         <CreateMemoryDialog
           busy={busy === "create"}
+          error={error}
           intent={createIntent}
           onClose={() => setCreateOpen(false)}
           onCreate={async (draft) => {
@@ -1039,20 +1053,19 @@ export function MemoryIntelligenceWorkspace() {
           }}
         />
       ) : null}
-    </main>
+    </section>
   );
 }
 
-function Metric(props: { icon: React.ReactNode; value?: number | string; label: string; warning?: boolean }) {
-  return <article className={props.warning ? styles.metricWarning : undefined}><i>{props.icon}</i><div><strong>{props.value ?? "—"}</strong><span>{props.label}</span></div></article>;
+function Metric(props: { icon: React.ReactNode; value?: number | string; label: string; warning?: boolean; loading: boolean }) {
+  return <article className={props.warning ? styles.metricWarning : undefined}><i aria-hidden="true">{props.icon}</i><div><strong>{props.value ?? (props.loading ? "Loading…" : "Unavailable")}</strong><span>{props.label}</span></div></article>;
 }
 
 function MemoryGuide() {
   return <section className={styles.memoryGuide} aria-labelledby="memory-guide-title">
     <header>
-      <p>How memory works</p>
-      <h2 id="memory-guide-title">Four layers, each with a different job.</h2>
-      <span>When you ask something, Asael searches approved memory and source knowledge, follows useful links, then learns from corrections and review decisions.</span>
+      <h2 id="memory-guide-title">How memory works</h2>
+      <span>Personal memories and source documents keep their own scope and provenance.</span>
     </header>
     <div>
       <article><BookOpen size={18} /><span><strong>Knowledge</strong><small>Your documents and transcripts. Evidence to search—not automatically treated as personal truth.</small></span></article>
@@ -1064,7 +1077,7 @@ function MemoryGuide() {
 }
 
 function Tab(props: { active: boolean; onClick: () => void; icon: React.ReactNode; label: string; count?: number }) {
-  return <button type="button" className={props.active ? styles.activeTab : undefined} onClick={props.onClick} aria-current={props.active ? "page" : undefined}>{props.icon}<span>{props.label}</span>{props.count !== undefined ? <small>{props.count.toLocaleString()}</small> : null}</button>;
+  return <button type="button" className={props.active ? styles.activeTab : undefined} onClick={props.onClick} aria-pressed={props.active}>{props.icon}<span>{props.label}</span>{props.count !== undefined ? <small>{props.count.toLocaleString()}</small> : null}</button>;
 }
 
 function MemoryIndex(props: {
@@ -1079,21 +1092,39 @@ function MemoryIndex(props: {
   selectedId?: string;
   onSelect: (id: string) => void;
   loading: boolean;
+  loaded: boolean;
+  error?: string;
+  onRetry: () => void;
   onMore: () => void;
 }) {
   return <>
-    <IndexHeading eyebrow="Durable memory" title="Claims Asael can carry forward" detail={`${props.page.total.toLocaleString()} indexed memories. Exact content is revealed only when selected.`} />
-    <CategoryRail active={props.category} onSelect={props.onCategory} items={props.overview?.memoryCategories || []} />
+    <IndexHeading
+      eyebrow="Durable memory"
+      title="Memories"
+      detail={props.loaded ? `${props.page.total.toLocaleString()} memories in the last loaded view. Select one to inspect its exact content and scope.` : "Select a memory to inspect its exact content and scope."}
+    />
+    <CategoryRail active={props.category} onSelect={props.onCategory} items={props.overview?.memoryCategories} />
     <div className={styles.filters}>
-      <label>Tier <select value={props.tier} onChange={(event) => props.onTier(event.target.value as MemoryTier | "all")}>{memoryTiers.map((item) => <option key={item} value={item}>{startCase(item)}</option>)}</select><ChevronDown size={14} /></label>
-      <label>State <select value={props.state} onChange={(event) => props.onState(event.target.value as MemoryIndexItem["state"] | "all")}><option value="all">All states</option><option value="active">Active</option><option value="candidate">Candidate</option><option value="contradicted">Contradicted</option><option value="superseded">Superseded</option><option value="archived">Archived</option></select><ChevronDown size={14} /></label>
+      <label>Tier <select value={props.tier} onChange={(event) => props.onTier(event.target.value as MemoryTier | "all")}>{memoryTiers.map((item) => <option key={item} value={item}>{startCase(item)}</option>)}</select></label>
+      <label>State <select value={props.state} onChange={(event) => props.onState(event.target.value as MemoryIndexItem["state"] | "all")}><option value="all">All states</option><option value="active">Active</option><option value="candidate">Candidate</option><option value="contradicted">Contradicted</option><option value="superseded">Superseded</option><option value="archived">Archived</option></select></label>
     </div>
-    <div className={styles.table} role="table" aria-label="Memory index">
-      <div className={styles.tableHead} role="row"><span>Memory</span><span>Tier</span><span>State</span><span>Evidence</span><span>Updated</span></div>
-      {props.page.items.map((item) => <button role="row" type="button" key={item.id} className={props.selectedId === item.id ? styles.selectedRow : undefined} onClick={() => props.onSelect(item.id)}><span><i className={styles.categoryDot} /><strong>{item.title}</strong><small>{startCase(item.category)} · {startCase(item.scope)}</small></span><span>{startCase(item.tier)}</span><span><em className={`${styles.state} ${styles[`state${startCase(item.state)}`] || ""}`}>{startCase(item.state)}</em></span><span>{item.evidenceCount}</span><span>{relativeDate(item.updatedAt)} <ArrowRight size={14} /></span></button>)}
-      {!props.loading && !props.page.items.length ? <EmptyState icon={<Brain />} title="No memories match this view" detail="Try another category, tier, state or search phrase." /> : null}
-      {props.loading ? <LoadingRow /> : null}
-    </div>
+    {props.error ? <IndexUnavailable hasRecords={Boolean(props.page.items.length)} onRetry={props.onRetry} /> : null}
+    <ul className={styles.indexList} aria-label="Memory index" aria-busy={props.loading}>
+      {props.page.items.map((item) => <li key={item.id}>
+        <button type="button" className={`${styles.memoryRow} ${props.selectedId === item.id ? styles.selectedRow : ""}`} onClick={() => props.onSelect(item.id)} aria-pressed={props.selectedId === item.id}>
+          <span className={styles.rowTitle}><strong>{item.title}</strong><small>{startCase(item.category)} · {startCase(item.scope)}{item.pinned ? " · Pinned" : ""}</small></span>
+          <span className={styles.rowFacts}>
+            <span><span className={styles.factLabel}>Tier</span>{startCase(item.tier)}</span>
+            <span><span className={styles.factLabel}>State</span><em className={`${styles.state} ${styles[`state${startCase(item.state)}`] || ""}`}>{startCase(item.state)}</em></span>
+            <span><span className={styles.factLabel}>Evidence</span>{item.evidenceCount}</span>
+            <span><span className={styles.factLabel}>Updated</span>{relativeDate(item.updatedAt)}</span>
+          </span>
+          <ArrowRight size={16} aria-hidden="true" />
+        </button>
+      </li>)}
+    </ul>
+    {!props.loading && props.loaded && !props.error && !props.page.items.length ? <EmptyState icon={<Brain />} title="No memories match this view" detail="Try another category, tier, state or search phrase." /> : null}
+    {props.loading || (!props.loaded && !props.error) ? <LoadingRow /> : null}
     {props.page.nextCursor ? <button className={styles.loadMore} type="button" onClick={props.onMore} disabled={props.loading}>Load more memories</button> : null}
   </>;
 }
@@ -1104,19 +1135,42 @@ function KnowledgeIndex(props: {
   category: KnowledgeCategoryId | "all";
   onCategory: (value: KnowledgeCategoryId | "all") => void;
   loading: boolean;
+  loaded: boolean;
+  error?: string;
+  onRetry: () => void;
   onMore: () => void;
 }) {
   return <>
-    <IndexHeading eyebrow="Source knowledge" title="Documents available to retrieval" detail={`${props.page.total.toLocaleString()} sources grouped by provider and document purpose.`} />
-    <CategoryRail active={props.category} onSelect={props.onCategory} items={props.overview?.knowledgeCategories || []} />
-    <div className={`${styles.table} ${styles.knowledgeTable}`} role="table" aria-label="Knowledge source index">
-      <div className={styles.tableHead} role="row"><span>Source</span><span>Category</span><span>Chunks</span><span>Size</span><span>Indexed</span></div>
-      {props.page.items.map((item) => <div role="row" key={item.id}><span><i className={styles.sourceIcon}><FileStack size={16} /></i><strong>{item.title}</strong><small>{item.sourceLabel}{item.hasCanonicalLineage ? " · Canonical lineage" : ""}</small></span><span>{startCase(item.category)}</span><span>{item.chunkCount.toLocaleString()}</span><span>{formatBytes(item.totalCharacters)}</span><span>{relativeDate(item.indexedAt)}</span></div>)}
-      {!props.loading && !props.page.items.length ? <EmptyState icon={<BookOpen />} title="No knowledge sources match" detail="Adjust the category or search phrase." /> : null}
-      {props.loading ? <LoadingRow /> : null}
-    </div>
+    <IndexHeading
+      eyebrow="Source knowledge"
+      title="Knowledge sources"
+      detail={props.loaded ? `${props.page.total.toLocaleString()} sources in the last loaded view. Source documents provide evidence; they are not automatically personal memories.` : "Source documents provide evidence; they are not automatically personal memories."}
+    />
+    <CategoryRail active={props.category} onSelect={props.onCategory} items={props.overview?.knowledgeCategories} />
+    {props.error ? <IndexUnavailable hasRecords={Boolean(props.page.items.length)} onRetry={props.onRetry} /> : null}
+    <ul className={`${styles.indexList} ${styles.knowledgeList}`} aria-label="Knowledge source index" aria-busy={props.loading}>
+      {props.page.items.map((item) => <li key={item.id} className={styles.knowledgeRow}>
+        <span className={styles.rowTitle}><strong>{item.title}</strong><small>{item.sourceLabel}{item.hasCanonicalLineage ? " · Canonical lineage" : ""}</small></span>
+        <dl className={styles.rowFacts}>
+          <div><dt>Category</dt><dd>{startCase(item.category)}</dd></div>
+          <div><dt>Chunks</dt><dd>{item.chunkCount.toLocaleString()}</dd></div>
+          <div><dt>Size</dt><dd>{formatBytes(item.totalCharacters)}</dd></div>
+          <div><dt>Indexed</dt><dd>{relativeDate(item.indexedAt)}</dd></div>
+        </dl>
+      </li>)}
+    </ul>
+    {!props.loading && props.loaded && !props.error && !props.page.items.length ? <EmptyState icon={<BookOpen />} title="No knowledge sources match" detail="Adjust the category or search phrase." /> : null}
+    {props.loading || (!props.loaded && !props.error) ? <LoadingRow /> : null}
     {props.page.nextCursor ? <button className={styles.loadMore} type="button" onClick={props.onMore} disabled={props.loading}>Load more sources</button> : null}
   </>;
+}
+
+function IndexUnavailable(props: { hasRecords: boolean; onRetry: () => void }) {
+  return <div className={styles.indexUnavailable} role="status">
+    <CircleAlert size={17} aria-hidden="true" />
+    <span>{props.hasRecords ? "Showing previously loaded records. The current view could not be loaded." : "This index is unavailable. Its records could not be checked."}</span>
+    <button type="button" onClick={props.onRetry}>Retry index</button>
+  </div>;
 }
 
 function ReviewIndex(props: {
@@ -1384,13 +1438,17 @@ function IndexHeading(props: { eyebrow: string; title: string; detail: string })
   return <header className={styles.indexHeading}><p>{props.eyebrow}</p><h2>{props.title}</h2><span>{props.detail}</span></header>;
 }
 
-function CategoryRail<T extends string>(props: { active: T | "all"; onSelect: (value: T | "all") => void; items: readonly { id: T; label: string; count: number }[] }) {
-  const total = props.items.reduce((sum, item) => sum + item.count, 0);
-  return <div className={styles.categoryRail}><button type="button" className={props.active === "all" ? styles.activeCategory : undefined} onClick={() => props.onSelect("all")}>All <small>{total.toLocaleString()}</small></button>{props.items.map((item) => <button type="button" key={item.id} className={props.active === item.id ? styles.activeCategory : undefined} onClick={() => props.onSelect(item.id)}>{item.label} <small>{item.count.toLocaleString()}</small></button>)}</div>;
+function CategoryRail<T extends string>(props: { active: T | "all"; onSelect: (value: T | "all") => void; items?: readonly { id: T; label: string; count: number }[] }) {
+  const total = props.items?.reduce((sum, item) => sum + item.count, 0);
+  return <div className={styles.categoryRail} role="group" aria-label="Filter by category">
+    <button type="button" className={props.active === "all" ? styles.activeCategory : undefined} onClick={() => props.onSelect("all")} aria-pressed={props.active === "all"}>All{total !== undefined ? <small>{total.toLocaleString()}</small> : null}</button>
+    {props.items?.map((item) => <button type="button" key={item.id} className={props.active === item.id ? styles.activeCategory : undefined} onClick={() => props.onSelect(item.id)} aria-pressed={props.active === item.id}>{item.label} <small>{item.count.toLocaleString()}</small></button>)}
+  </div>;
 }
 
 function MnemosynePanel(props: {
   overview?: MemoryIntelligenceOverview;
+  loading: boolean;
   consent?: ConsentStatus;
   busy?: string;
   cognitionFeedback?: string;
@@ -1401,15 +1459,30 @@ function MnemosynePanel(props: {
   onRecommendation: (item: MemoryStewardRecommendation) => void;
 }) {
   const steward = props.overview?.steward;
-  return <aside className={styles.steward}>
-    <header><div className={styles.agentOrb}><Bot size={22} /><i /></div><div><p>Memory steward</p><h2>Mnemosyne</h2><span className={steward?.state === "attention" ? styles.attention : styles.healthy}><i /> {steward ? startCase(steward.state) : "Observing"}</span></div><strong style={{ "--score": `${steward?.healthScore || 0}%` } as React.CSSProperties}>{steward?.healthScore ?? "—"}<small>health</small></strong></header>
-    <p className={styles.autonomy}>{steward?.autonomy || "Reading the catalogue and checking retrieval quality…"}</p>
-    <p className={styles.scoreHelp}>This health score measures indexing coverage, unresolved reviews and ownership—not how intelligent Asael is.</p>
-    <div className={styles.learning}><p><Sparkles size={14} /> Learning signals</p><dl><div><dt>Recall uses</dt><dd>{steward?.learningSignals.retrievalUses.toLocaleString() ?? "—"}</dd></div><div><dt>Corrections learned</dt><dd>{steward?.learningSignals.corrections.toLocaleString() ?? "—"}</dd></div><div><dt>Reviews resolved</dt><dd>{steward?.learningSignals.resolvedReviews.toLocaleString() ?? "—"}</dd></div><div><dt>Forget receipts</dt><dd>{steward?.learningSignals.forgetRequests.toLocaleString() ?? "—"}</dd></div></dl></div>
-    {props.consent ? <section className={styles.recallControl}><div><strong>Personal automatic recall</strong><span>{props.consent.state === "active" ? "Available when selected in conversation" : "Off until you explicitly enable it"}</span></div><button type="button" className={props.consent.state === "active" ? styles.switchOn : undefined} onClick={props.onConsent} disabled={props.busy === "consent"} aria-pressed={props.consent.state === "active"}><i /></button></section> : null}
+  return <aside className={styles.steward} aria-labelledby="memory-steward-title">
+    <header>
+      <div><p>Memory steward</p><h2 id="memory-steward-title">Mnemosyne</h2></div>
+      <span className={steward?.state === "attention" ? styles.attention : steward?.state === "healthy" ? styles.healthy : undefined}>{steward ? startCase(steward.state) : props.loading ? "Loading…" : "Unavailable"}</span>
+    </header>
+    <p className={styles.autonomy}>{steward?.autonomy || (props.loading ? "Loading memory health and recommendations…" : "Memory health and recommendations are unavailable.")}</p>
+    <div className={styles.healthScore}><span>Index health</span><strong>{steward ? `${steward.healthScore} / 100` : props.loading ? "Loading…" : "Unavailable"}</strong></div>
+    <p className={styles.scoreHelp}>Based on indexing coverage, unresolved reviews and ownership.</p>
+    <details className={styles.learning}>
+      <summary>Learning signals</summary>
+      <dl><div><dt>Recall uses</dt><dd>{steward?.learningSignals.retrievalUses.toLocaleString() ?? "Unavailable"}</dd></div><div><dt>Corrections learned</dt><dd>{steward?.learningSignals.corrections.toLocaleString() ?? "Unavailable"}</dd></div><div><dt>Reviews resolved</dt><dd>{steward?.learningSignals.resolvedReviews.toLocaleString() ?? "Unavailable"}</dd></div><div><dt>Forget receipts</dt><dd>{steward?.learningSignals.forgetRequests.toLocaleString() ?? "Unavailable"}</dd></div></dl>
+    </details>
+    <section className={styles.recallControl} aria-labelledby="personal-recall-title">
+      <h3 id="personal-recall-title">Personal automatic recall</h3>
+      {props.consent ? <>
+        <p id="personal-recall-status">{props.consent.state === "active" ? "On · Available when selected in conversation" : "Off · Enable it to make personal recall available in conversation"}</p>
+        <details className={styles.consentNotice}><summary>Recall notice</summary><p id="personal-recall-notice">{props.consent.notice.text}</p></details>
+        <button type="button" onClick={props.onConsent} disabled={props.busy === "consent"} aria-pressed={props.consent.state === "active"} aria-describedby="personal-recall-status personal-recall-notice">
+          {props.busy === "consent" ? "Updating recall…" : props.consent.state === "active" ? "Turn off personal recall" : "Enable personal recall"}
+        </button>
+      </> : <p>Recall settings are unavailable.</p>}
+    </section>
     <section className={styles.cognifyControl}>
       <div className={styles.cognifyControlHeading}>
-        <i><FileStack size={16} /></i>
         <span><strong>Source maps</strong><small>Build quoted topics, claims and links from eligible knowledge.</small></span>
       </div>
       <button type="button" onClick={props.onCognify} disabled={Boolean(props.busy)}>
@@ -1417,16 +1490,70 @@ function MnemosynePanel(props: {
         {props.busy === "cognify-sources" ? "Queueing sources…" : "Build or refresh maps"}
       </button>
       {props.cognitionJobs.length ? <CognitionJobSummary jobs={props.cognitionJobs} /> : null}
-      <p aria-live="polite">{props.cognitionFeedback || "Resumes missing work. A new Settings model creates a separate review generation; every proposal still requires review."}</p>
+      <p aria-live="polite">{props.cognitionFeedback || "Resumes missing work. Each proposal stays outside recall until reviewed. Changing the model in Settings creates a separate review generation."}</p>
     </section>
-    <section className={styles.recommendations}><div className={styles.panelHeading}><p>Recommendations</p><span>{steward?.recommendations.length || 0}</span></div>{steward?.recommendations.length ? steward.recommendations.map((item) => <button type="button" key={item.id} onClick={() => props.onRecommendation(item)} disabled={item.action === "none" || Boolean(props.busy)}><i className={styles[`priority${startCase(item.priority)}`]} /><span><strong>{item.title}</strong><small>{item.detail}</small></span>{item.action !== "none" ? <ArrowRight size={15} /> : null}</button>) : <div className={styles.allClear}><Check size={16} /> No action needed right now.</div>}</section>
+    <section className={styles.recommendations}>
+      <div className={styles.panelHeading}><h3>Recommendations</h3>{steward ? <span>{steward.recommendations.length}</span> : null}</div>
+      {steward?.recommendations.length ? steward.recommendations.map((item) => <button type="button" key={item.id} onClick={() => props.onRecommendation(item)} disabled={item.action === "none" || Boolean(props.busy)}>
+        <span><strong>{item.title}</strong><small>{startCase(item.priority)} priority · {item.detail}</small></span>{item.action !== "none" ? <ArrowRight size={15} aria-hidden="true" /> : null}
+      </button>) : <p className={steward ? styles.allClear : styles.unavailable}>{steward ? <><Check size={16} aria-hidden="true" /> No action needed right now.</> : props.loading ? "Loading recommendations…" : "Recommendations are unavailable."}</p>}
+    </section>
     <button type="button" className={styles.scanButton} onClick={props.onScan} disabled={props.busy === "maintenance"}>{props.busy === "maintenance" ? <LoaderCircle size={16} className={styles.spin} /> : <Sparkles size={16} />} Run lifecycle scan</button>
-    <p className={styles.governance}><ShieldCheck size={14} /> Mnemosyne may classify, link and recommend. It cannot silently promote, rewrite or forget truth.</p>
+    <p className={styles.governance}><ShieldCheck size={16} aria-hidden="true" /> Mnemosyne may classify, link and recommend. It cannot silently promote, rewrite or forget truth.</p>
   </aside>;
 }
 
-function MemoryInspector(props: { memory?: MemoryRecord; loading: boolean; busy?: string; preview?: ForgetPreview; onClose: () => void; onLifecycle: (action: "pin" | "unpin" | "archive" | "restore") => void; onPreviewForget: () => void; onForget: () => void; onCancelForget: () => void }) {
-  return <div className={styles.inspectorLayer}><button type="button" className={styles.scrim} onClick={props.onClose} aria-label="Close memory details" /><aside className={styles.inspector} aria-label="Memory details"><header><p>Exact memory</p><button type="button" onClick={props.onClose} aria-label="Close"><X size={18} /></button></header>{props.loading ? <div className={styles.inspectorLoading}><LoaderCircle className={styles.spin} /> Decrypting selected memory…</div> : props.memory ? <><div className={styles.inspectorTitle}><span>{startCase(props.memory.tier || props.memory.type)} · {startCase(props.memory.scope)}</span><h2>{props.memory.title}</h2><p>{props.memory.content}</p></div><dl className={styles.memoryMetadata}><div><dt>Confidence</dt><dd>{Math.round((props.memory.confidence ?? .7) * 100)}%</dd></div><div><dt>Importance</dt><dd>{Math.round(props.memory.importance * 100)}%</dd></div><div><dt>Used</dt><dd>{props.memory.useCount || 0} times</dd></div><div><dt>Updated</dt><dd>{relativeDate(props.memory.updatedAt)}</dd></div></dl>{props.memory.tags.length ? <div className={styles.memoryTags}>{props.memory.tags.map((tag) => <span key={tag}>{tag}</span>)}</div> : null}<div className={styles.lifecycle}><button type="button" disabled={Boolean(props.busy) || Boolean(props.memory.archivedAt)} onClick={() => props.onLifecycle(props.memory?.pinnedAt ? "unpin" : "pin")}>{props.memory.pinnedAt ? <PinOff size={15} /> : <Pin size={15} />}{props.memory.pinnedAt ? "Unpin" : "Pin"}</button><button type="button" disabled={Boolean(props.busy) || Boolean(props.memory.pinnedAt)} onClick={() => props.onLifecycle(props.memory?.archivedAt ? "restore" : "archive")}>{props.memory.archivedAt ? <RotateCcw size={15} /> : <Archive size={15} />}{props.memory.archivedAt ? "Restore" : "Archive"}</button></div>{props.preview ? <section className={styles.forgetPreview}><p><CircleAlert size={16} /> Permanent forgetting</p><span>This removes the memory plus {props.preview.impact.descendantMemoryCount} derived memories, {props.preview.impact.graphNodeCount} graph points and {props.preview.impact.graphEdgeCount} links. A deletion receipt will be stored.</span><div><button type="button" onClick={props.onCancelForget}>Cancel</button><button type="button" onClick={props.onForget} disabled={props.busy === "forget"}>{props.busy === "forget" ? <LoaderCircle size={15} className={styles.spin} /> : <Trash2 size={15} />} Forget permanently</button></div></section> : <button type="button" className={styles.forgetButton} onClick={props.onPreviewForget} disabled={Boolean(props.busy)}><Trash2 size={15} /> Review forgetting impact</button>}</> : null}</aside></div>;
+function useMemoryDialog() {
+  const ref = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const dialog = ref.current;
+    if (!dialog) return;
+    const trigger = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
+    dialog.showModal();
+    return () => {
+      dialog.close();
+      if (trigger?.isConnected) trigger.focus({ preventScroll: true });
+    };
+  }, []);
+  return ref;
+}
+
+function MemoryInspector(props: { memory?: MemoryRecord; loading: boolean; busy?: string; error?: string; preview?: ForgetPreview; onClose: () => void; onLifecycle: (action: "pin" | "unpin" | "archive" | "restore") => void; onPreviewForget: () => void; onForget: () => void; onCancelForget: () => void }) {
+  const dialogRef = useMemoryDialog();
+  const lifecycleHelp = props.memory?.archivedAt
+    ? "Restore this memory before pinning it."
+    : props.memory?.pinnedAt
+      ? "Unpin this memory before archiving it."
+      : undefined;
+  return <dialog ref={dialogRef} className={styles.inspectorLayer} aria-labelledby="memory-details-title" onCancel={(event) => { event.preventDefault(); props.onClose(); }} onClick={(event) => { if (event.target === event.currentTarget) props.onClose(); }}>
+    <div className={styles.inspector}>
+      <header><p id="memory-details-title">Memory details</p><button type="button" onClick={props.onClose} aria-label="Close memory details"><X size={18} /></button></header>
+      {props.error ? <p className={styles.modalError} role="alert"><CircleAlert size={17} aria-hidden="true" />{props.error}</p> : null}
+      {props.loading ? <div className={styles.inspectorLoading} role="status">Loading selected memory…</div> : props.memory ? <>
+        <div className={styles.inspectorTitle}><span>{startCase(props.memory.tier || props.memory.type)} · {props.memory.scope === "user" ? "Personal" : startCase(props.memory.scope)}</span><h2>{props.memory.title}</h2><p>{props.memory.content}</p></div>
+        <dl className={styles.memoryMetadata}>
+          <div><dt>Confidence</dt><dd>{props.memory.confidence !== undefined ? `${Math.round(props.memory.confidence * 100)}%` : "Not recorded"}</dd></div>
+          <div><dt>Importance</dt><dd>{Math.round(props.memory.importance * 100)}%</dd></div>
+          <div><dt>Used</dt><dd>{props.memory.useCount !== undefined ? `${props.memory.useCount} times` : "Not recorded"}</dd></div>
+          <div><dt>Updated</dt><dd>{relativeDate(props.memory.updatedAt)}</dd></div>
+          <div><dt>Source</dt><dd>{props.memory.source}</dd></div>
+          <div><dt>Asserted by</dt><dd>{props.memory.assertedBy ? startCase(props.memory.assertedBy) : "Not recorded"}</dd></div>
+        </dl>
+        {props.memory.tags.length ? <div className={styles.memoryTags} aria-label="Memory tags">{props.memory.tags.map((tag) => <span key={tag}>{tag}</span>)}</div> : null}
+        <div className={styles.lifecycle}>
+          <button type="button" disabled={Boolean(props.busy) || Boolean(props.memory.archivedAt)} aria-describedby={lifecycleHelp ? "memory-lifecycle-help" : undefined} onClick={() => props.onLifecycle(props.memory?.pinnedAt ? "unpin" : "pin")}>{props.memory.pinnedAt ? <PinOff size={15} /> : <Pin size={15} />}{props.memory.pinnedAt ? "Unpin" : "Pin"}</button>
+          <button type="button" disabled={Boolean(props.busy) || Boolean(props.memory.pinnedAt)} aria-describedby={lifecycleHelp ? "memory-lifecycle-help" : undefined} onClick={() => props.onLifecycle(props.memory?.archivedAt ? "restore" : "archive")}>{props.memory.archivedAt ? <RotateCcw size={15} /> : <Archive size={15} />}{props.memory.archivedAt ? "Restore" : "Archive"}</button>
+        </div>
+        {lifecycleHelp ? <p id="memory-lifecycle-help" className={styles.lifecycleHelp}>{lifecycleHelp}</p> : null}
+        {props.preview ? <section className={styles.forgetPreview} aria-labelledby="forget-impact-title">
+          <h3 id="forget-impact-title"><CircleAlert size={16} aria-hidden="true" /> Permanent forgetting</h3>
+          <p>This removes the memory plus {props.preview.impact.descendantMemoryCount} derived memories, {props.preview.impact.graphNodeCount} graph points and {props.preview.impact.graphEdgeCount} links. A deletion receipt will be stored.</p>
+          <p>{props.preview.impact.retrievalTraceCount} retrieval traces are included. Deletion guarantee: {startCase(props.preview.guarantee)}.</p>
+          <div><button type="button" onClick={props.onCancelForget}>Cancel</button><button type="button" onClick={props.onForget} disabled={props.busy === "forget"}>{props.busy === "forget" ? <LoaderCircle size={15} className={styles.spin} /> : <Trash2 size={15} />} Forget permanently</button></div>
+        </section> : <button type="button" className={styles.forgetButton} onClick={props.onPreviewForget} disabled={Boolean(props.busy)}><Trash2 size={15} />{props.busy === "forget-preview" ? "Loading forgetting impact…" : "Review forgetting impact"}</button>}
+      </> : <div className={styles.inspectorLoading}>{props.error ? "This memory could not be loaded." : "Loading selected memory…"}</div>}
+    </div>
+  </dialog>;
 }
 
 function CognitionJobSummary(props: { jobs: CognificationJob[] }) {
@@ -1442,7 +1569,8 @@ function CognitionJobSummary(props: { jobs: CognificationJob[] }) {
   </dl>;
 }
 
-function CreateMemoryDialog(props: { busy: boolean; intent: CreateIntent; onClose: () => void; onCreate: (draft: { title: string; content: string; type: MemoryType; tier: MemoryTier; importance: number; confidence: number }) => Promise<void> }) {
+function CreateMemoryDialog(props: { busy: boolean; error?: string; intent: CreateIntent; onClose: () => void; onCreate: (draft: { title: string; content: string; type: MemoryType; tier: MemoryTier; importance: number; confidence: number }) => Promise<void> }) {
+  const dialogRef = useMemoryDialog();
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [type, setType] = useState<MemoryType>("fact");
@@ -1455,11 +1583,22 @@ function CreateMemoryDialog(props: { busy: boolean; intent: CreateIntent; onClos
       ? 'relation: assigned_to | work item: "Prepare launch brief" -> person: "Bennie"'
       : 'relation: belongs_to | work item: "Prepare launch brief" -> project: "Asael"');
   }
-  return <div className={styles.dialogLayer}><button type="button" className={styles.scrim} onClick={props.onClose} aria-label="Close new memory dialog" /><form className={styles.dialog} onSubmit={(event) => void submit(event)}><header><div><p>{props.intent === "connected_fact" ? "Connected fact" : "Explicit memory"}</p><h2>{props.intent === "connected_fact" ? "Which things are connected?" : "What should Asael remember?"}</h2></div><button type="button" onClick={props.onClose} aria-label="Close"><X size={18} /></button></header>{props.intent === "connected_fact" ? <section className={styles.relationshipGuide}><div><GitBranch size={17} /><span><strong>Verified links require explicit wording</strong><small>This prevents names guessed by AI from becoming facts. Choose a template, then replace its example values.</small></span></div><p><button type="button" onClick={() => applyRelationshipTemplate("assignment")}>Work item → person</button><button type="button" onClick={() => applyRelationshipTemplate("project")}>Work item → project</button></p></section> : null}<label>Category<select value={type} onChange={(event) => setType(event.target.value as MemoryType)}>{memoryTypes.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label><label>Short title<input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={240} required placeholder="e.g. Prefer meetings after 10 AM" /></label><label>Details<textarea value={content} onChange={(event) => setContent(event.target.value)} maxLength={200000} required rows={7} placeholder={props.intent === "connected_fact" ? 'relation: assigned_to | work item: "…" -> person: "…"' : "Add the precise context that should be recalled…"} /></label><label>Confidence <span>{Math.round(confidence * 100)}%</span><input type="range" min="0.5" max="1" step="0.05" value={confidence} onChange={(event) => setConfidence(Number(event.target.value))} /></label><footer><p><ShieldCheck size={14} /> You can inspect, correct or forget this later.</p><button type="submit" disabled={props.busy || !title.trim() || !content.trim()}>{props.busy ? <LoaderCircle size={16} className={styles.spin} /> : <Plus size={16} />} Save memory</button></footer></form></div>;
+  return <dialog ref={dialogRef} className={styles.dialogLayer} aria-labelledby="new-memory-title" onCancel={(event) => { event.preventDefault(); props.onClose(); }} onClick={(event) => { if (event.target === event.currentTarget) props.onClose(); }}>
+    <form className={styles.dialog} onSubmit={(event) => void submit(event)}>
+      <header><div><p>{props.intent === "connected_fact" ? "Connected fact" : "Explicit memory"}</p><h2 id="new-memory-title">{props.intent === "connected_fact" ? "Add a connected fact" : "Add a memory"}</h2></div><button type="button" onClick={props.onClose} aria-label="Close new memory dialog"><X size={18} /></button></header>
+      {props.error ? <p className={styles.modalError} role="alert"><CircleAlert size={17} aria-hidden="true" />{props.error}</p> : null}
+      {props.intent === "connected_fact" ? <section className={styles.relationshipGuide}><div><GitBranch size={17} /><span><strong>Verified links require explicit wording</strong><small>This prevents names guessed by AI from becoming facts. Choose a template, then replace its example values.</small></span></div><p><button type="button" onClick={() => applyRelationshipTemplate("assignment")}>Work item → person</button><button type="button" onClick={() => applyRelationshipTemplate("project")}>Work item → project</button></p></section> : null}
+      <label>Category<select value={type} onChange={(event) => setType(event.target.value as MemoryType)}>{memoryTypes.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
+      <label>Short title<input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={240} required placeholder="e.g. Prefer meetings after 10 AM" /></label>
+      <label>Details<textarea value={content} onChange={(event) => setContent(event.target.value)} maxLength={200000} required rows={7} placeholder={props.intent === "connected_fact" ? 'relation: assigned_to | work item: "…" -> person: "…"' : "Add the precise context that should be recalled…"} /></label>
+      <label>Confidence <span>{Math.round(confidence * 100)}%</span><input type="range" min="0.5" max="1" step="0.05" value={confidence} onChange={(event) => setConfidence(Number(event.target.value))} /></label>
+      <footer><p><ShieldCheck size={16} aria-hidden="true" /> You can inspect, archive or forget this later.</p><button type="submit" disabled={props.busy || !title.trim() || !content.trim()}>{props.busy ? <LoaderCircle size={16} className={styles.spin} /> : <Plus size={16} />}{props.busy ? "Saving memory…" : "Save memory"}</button></footer>
+    </form>
+  </dialog>;
 }
 
 function EmptyState(props: { icon: React.ReactNode; title: string; detail: string }) { return <div className={styles.empty}>{props.icon}<strong>{props.title}</strong><span>{props.detail}</span></div>; }
-function LoadingRow() { return <div className={styles.loadingRow}><LoaderCircle size={17} className={styles.spin} /> Updating index…</div>; }
+function LoadingRow() { return <div className={styles.loadingRow} role="status"><span aria-hidden="true" /> Updating index…</div>; }
 function startCase(value: string) { return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()); }
 function relativeDate(value: string) { const milliseconds = Date.now() - new Date(value).getTime(); const days = Math.floor(milliseconds / 86_400_000); if (days < 1) return "Today"; if (days === 1) return "Yesterday"; if (days < 30) return `${days}d ago`; return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date(value)); }
 function formatBytes(characters: number) { const bytes = characters * 2; if (bytes < 1024) return `${bytes} B`; if (bytes < 1_048_576) return `${(bytes / 1024).toFixed(1)} KB`; return `${(bytes / 1_048_576).toFixed(1)} MB`; }
