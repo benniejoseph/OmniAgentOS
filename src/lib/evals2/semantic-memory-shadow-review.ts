@@ -744,7 +744,12 @@ function reviewFromEvent(event: DomainEvent) {
 }
 
 function rankProbeFromEvent(event: DomainEvent) {
-  const parsed = rankProbeEventPayloadSchema.safeParse(event.payload);
+  const payload = objectValue(event.payload);
+  if (!payload) return undefined;
+  // Scoped event attribution is separate from the strict probe contract.
+  const { _executionScope: _scope, ...probePayload } = payload;
+  void _scope;
+  const parsed = rankProbeEventPayloadSchema.safeParse(probePayload);
   if (
     event.type !== SEMANTIC_MEMORY_SHADOW_RANK_PROBE_EVENT_TYPE ||
     !parsed.success ||

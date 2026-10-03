@@ -70,7 +70,10 @@ beforeEach(() => {
       type: input.type,
       tenantId: scope.tenantId,
       actorId: scope.initiatingActorId,
-      payload: input.payload,
+      payload: {
+        ...(input.payload as Record<string, unknown>),
+        _executionScope: scope,
+      },
       executionScope: scope,
       correlationId: scope.correlationId,
       causationId: scope.causationId,
@@ -243,7 +246,7 @@ describe("semantic shadow human review", () => {
     expect(mocks.append).not.toHaveBeenCalled();
   });
 
-  it("persists a separate measured rank probe without retaining its query", async () => {
+  it("projects a scoped persisted rank probe immediately and on a later current-source read", async () => {
     mocks.pairs = Array.from({ length: 24 }, (_, index) => {
       const summary = index === 23
         ? {
@@ -300,9 +303,16 @@ describe("semantic shadow human review", () => {
 
     expect(saved).toMatchObject({
       enrichmentId: candidate.id,
+      reviewSourceSha256: candidate.reviewSourceSha256,
       corpusCount: 24,
       semanticFirstRelevantRank: 1,
       humanConfirmedTarget: true,
+      probedAt: "2026-09-16T08:30:00.000Z",
+    });
+    expect(saved).not.toHaveProperty("_executionScope");
+    expect(saved).not.toHaveProperty("episodeSummaryId");
+    expect(mocks.events.at(-1)?.payload).toMatchObject({
+      _executionScope: rankProbeScope(candidate, probeCorrelationId),
     });
     const payload = JSON.stringify(
       (mocks.append.mock.calls.at(-1)?.[0] as Record<string, unknown>).payload,
@@ -315,10 +325,77 @@ describe("semantic shadow human review", () => {
       actorIds: [actorId],
       limit: 100,
     });
-    expect(projected.candidates[23].latestRankProbe).toMatchObject({
-      corpusCount: 24,
-      semanticFirstRelevantRank: 1,
+    expect(projected.candidates[23].latestRankProbe).toEqual(saved);
+
+    const stored = mocks.events.at(-1)!;
+    const storedPayload = stored.payload as Record<string, unknown>;
+    stored.payload = { ...storedPayload, reviewSourceSha256: "f".repeat(64) };
+    const changedSource = await getSemanticMemoryShadowReviewWorkspace({
+      tenantId,
+      actorIds: [actorId],
+      limit: 100,
     });
+    expect(changedSource.candidates[23].latestRankProbe).toBeUndefined();
+  });
+
+  it("rejects unknown probe fields after removing only scoped event attribution", async () => {
+    const candidate = (await getSemanticMemoryShadowReviewWorkspace({
+      tenantId,
+      actorIds: [actorId],
+    })).candidates[0];
+    const event = {
+      id: "rank-probe-event",
+      seq: 1,
+      type: "conversation.summary.semantic_shadow_rank_probed",
+      streamId: `conversation-summary:${fixture.episode.id}`,
+      actorId,
+      tenantId,
+      at: "2026-09-16T08:30:00.000Z",
+      payload: {
+        schemaVersion: 1,
+        contract: "semantic-memory-shadow-rank-probe:1",
+        episodeSummaryId: fixture.episode.id,
+        enrichmentId: candidate.id,
+        reviewSourceSha256: candidate.reviewSourceSha256,
+        querySha256: "a".repeat(64),
+        corpusSha256: "b".repeat(64),
+        corpusCount: 24,
+        baselineFirstRelevantRank: 4,
+        semanticFirstRelevantRank: 1,
+        rankDelta: 3,
+        rankingEngine: {
+          version: "p4.4-reranker-receipt:1",
+          modelVersion: "asael-local-pairwise-reranker:1",
+          algorithm: "pairwise_logistic_regression",
+          trainingFixtureVersion: "p4.4-reranker-training:1",
+          trainingCaseCount: 10,
+          candidateCount: 24,
+          externalDisclosure: false,
+        },
+        humanConfirmedTarget: true,
+        _executionScope: rankProbeScope(candidate, "persisted-probe"),
+      },
+    };
+    mocks.events = [event];
+    const current = await getSemanticMemoryShadowReviewWorkspace({
+      tenantId,
+      actorIds: [actorId],
+    });
+    expect(current.candidates[0].latestRankProbe).toMatchObject({
+      enrichmentId: candidate.id,
+      reviewSourceSha256: candidate.reviewSourceSha256,
+      rankDelta: 3,
+    });
+
+    mocks.events = [{
+      ...event,
+      payload: { ...event.payload, unexpectedDomainField: true },
+    }];
+    const unrecognized = await getSemanticMemoryShadowReviewWorkspace({
+      tenantId,
+      actorIds: [actorId],
+    });
+    expect(unrecognized.candidates[0].latestRankProbe).toBeUndefined();
   });
 });
 
