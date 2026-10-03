@@ -96,7 +96,13 @@ class Checks:
         page.evaluate("window.scrollTo(0, 0)")
         page.wait_for_timeout(200)
         self.check(name + ": expected pointer", page.evaluate("matchMedia('(pointer:coarse)').matches") == coarse)
-        self.check(name + ": no horizontal page overflow", page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"))
+        reflow = page.evaluate("""() => ({viewport:innerWidth, document:document.documentElement.scrollWidth,
+          outside:[...document.body.querySelectorAll('*')].filter(el=>{
+            const r=el.getBoundingClientRect();return r.width && (r.right>innerWidth+1 || r.left < -1);
+          }).map(el=>({tag:el.tagName,cls:typeof el.className==='string'?el.className:'',
+            left:el.getBoundingClientRect().left,right:el.getBoundingClientRect().right,
+            client:el.clientWidth,scroll:el.scrollWidth})).slice(0,20)})""")
+        self.check(name + ": no horizontal page overflow", reflow["document"] <= reflow["viewport"] + 1, reflow)
         page.screenshot(path=str(self.output / f"{name}.png"), full_page=False)
         self.check(name + ": screenshot preserved pointer", page.evaluate("matchMedia('(pointer:coarse)').matches") == coarse)
         page.add_script_tag(path=str(self.axe))

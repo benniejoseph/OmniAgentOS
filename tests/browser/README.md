@@ -74,3 +74,16 @@ colors. Viewport changes settle for two animation frames before reflow sampling.
 No real preference is saved and previews request no audio or execution. Durable
 persistence is covered separately by PostgreSQL integration tests; native
 adoption and final ATLAS rendering retain their own gates.
+
+`meetings.py` covers the list and exact detail route, independent unavailable or
+malformed sources, an outside-window meeting, repeated pending-media polls,
+A→B→A read races, frozen editor revisions, accepted receipts during failed reads,
+proposal digest drift, exact owner/due-date/recipient/draft review, consent, media
+identity, Calendar status and disposal. Desktop declares eleven business effects
+and thirteen Calendar requests; phone declares one creation and four Calendar
+requests. Every effect is fulfilled by the synthetic fixture. Six page-wide axe
+scans and desktop/phone detail/editor images accompany the assertions. Long source
+labels must reflow, transcripts retain list semantics, and editor controls expose
+stable names independently of option or textarea contents. The shared snapshot
+check records overflow geometry to make future failures actionable. Live calendar,
+media, WorkItem creation and message sending are outside this browser boundary.

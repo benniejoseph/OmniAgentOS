@@ -52,8 +52,11 @@ import {
 } from "@/lib/app-services/meetings";
 import {
   meetingCommitmentProposalId,
+  meetingCommitmentResolutionId,
   withMeetingCommitmentProposalDigest,
+  withMeetingCommitmentResolutionDigest,
 } from "@/lib/meetings/commitment-contracts";
+import { messageDraftSchema } from "@/lib/communications/contracts";
 import { buildMeetingRevision } from "@/lib/meetings/contracts";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
@@ -189,6 +192,55 @@ const policy = {
   allowedDisclosure: "relationship_context",
 };
 
+function recordedConfirmation() {
+  const communication = {
+    policyId: policy.id,
+    recipientParticipantId: participant.participantId,
+    subject: "Follow-up: Customer review",
+    body: "Here is the revised rollout plan we discussed.",
+  };
+  const body = {
+    version: "p9.14-governed-communication:1",
+    id: "message_draft:44444444-4444-4444-8444-444444444444",
+    intentId: "communication_intent:55555555-5555-4555-8555-555555555555",
+    policyId: policy.id,
+    channel: "email",
+    recipient: participant.email,
+    subject: communication.subject,
+    body: communication.body,
+    senderIdentity: "connected_account",
+    createdAt: timestamp,
+  };
+  const draft = messageDraftSchema.parse({
+    ...body, state: "ready", lifecycleRevision: 1, updatedAt: timestamp,
+    draftSha256: canonicalJsonSha256(body),
+  });
+  const resolution = withMeetingCommitmentResolutionDigest({
+    schemaVersion: 1,
+    contractVersion: "p10.8-meeting-commitment-conversion:1",
+    resolutionId: meetingCommitmentResolutionId(proposalId),
+    proposalId, proposalSha256: proposal.proposalSha256, decision: "confirmed",
+    ownerParticipantId: participant.participantId, ownerDisplayName: participant.displayName,
+    ownershipAuthority: "explicit_transcript", dueAt: actionItem.dueAt, dueDateAuthority: "explicit_transcript",
+    workItemId: "work-item-existing", draftId: draft.id, communicationPolicyId: policy.id,
+    meetingRevisionId: `${meetingId}:v2`, resolvedByActorId: canonicalActorId, resolvedAt: timestamp,
+  });
+  const commitment = { proposal, resolution };
+  mocks.getProposal.mockResolvedValue(commitment);
+  mocks.getDraft.mockResolvedValue(draft);
+  return { communication, draft, commitment, input: {
+    meetingId, proposalId, expectedProposalSha256: proposal.proposalSha256,
+    decision: "confirmed" as const, communication,
+  } };
+}
+
+function expectNoReplayedEffects() {
+  expect(mocks.createWorkItem).not.toHaveBeenCalled();
+  expect(mocks.createDraft).not.toHaveBeenCalled();
+  expect(mocks.saveMeeting).not.toHaveBeenCalled();
+  expect(mocks.recordResolution).not.toHaveBeenCalled();
+}
+
 function access() {
   return {
     actorBinding: {
@@ -245,6 +297,51 @@ beforeEach(() => {
 });
 
 describe("meeting commitment app services", () => {
+  it("reconciles the exact original draft on replay without creating any effect", async () => {
+    const recorded = recordedConfirmation();
+    const result = await resolveMeetingCommitmentService(mutationCaller("replay-exact"), recorded.input);
+    expect(result.data).toMatchObject({ commitment: recorded.commitment, draft: recorded.draft });
+    expect(mocks.getMeeting).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId: context.tenantId, workspaceId, canonicalActorId,
+    }), meetingId);
+    expect(mocks.getDraft).toHaveBeenCalledWith(recorded.draft.id, {
+      tenantId: context.tenantId, actorId: context.actorId,
+    });
+    expectNoReplayedEffects();
+  });
+
+  it("compares the selected recipient's email case-insensitively", async () => {
+    const recorded = recordedConfirmation();
+    mocks.getMeeting.mockResolvedValue({ ...meeting, participants: [{ ...participant, email: " Customer@Example.Test " }] });
+    await expect(resolveMeetingCommitmentService(mutationCaller("replay-email-case"), recorded.input)).resolves.toMatchObject({ data: { draft: recorded.draft } });
+    expectNoReplayedEffects();
+  });
+
+  it.each(["another_recipient", "changed_email", "removed_participant", "unavailable_meeting", "wrong_channel", "changed_subject", "changed_body"])(
+    "refuses replay with %s while preserving the existing effects",
+    async (change) => {
+      const recorded = recordedConfirmation();
+      if (change === "another_recipient") {
+        recorded.input.communication.recipientParticipantId = "participant:another";
+        mocks.getMeeting.mockResolvedValue({ ...meeting, participants: [participant, { ...participant, participantId: "participant:another", email: "another@example.test" }] });
+      } else if (change === "changed_email") {
+        mocks.getMeeting.mockResolvedValue({ ...meeting, participants: [{ ...participant, email: "changed@example.test" }] });
+      } else if (change === "removed_participant") {
+        mocks.getMeeting.mockResolvedValue({ ...meeting, participants: [] });
+      } else if (change === "unavailable_meeting") {
+        mocks.getMeeting.mockResolvedValue(undefined);
+      } else if (change === "wrong_channel") {
+        mocks.getDraft.mockResolvedValue({ ...recorded.draft, channel: "message" });
+      } else if (change === "changed_subject") {
+        recorded.input.communication.subject = "A different subject";
+      } else {
+        recorded.input.communication.body = "A different message";
+      }
+      await expect(resolveMeetingCommitmentService(mutationCaller(`replay-${change}`), recorded.input)).rejects.toThrow("different draft");
+      expectNoReplayedEffects();
+    },
+  );
+
   it("lists actor-owned eligible policies next to evidence-bound proposals", async () => {
     const result = await listMeetingCommitmentsService(
       createAppServiceCaller({ context }),

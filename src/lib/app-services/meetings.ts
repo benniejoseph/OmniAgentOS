@@ -321,13 +321,14 @@ export async function resolveMeetingCommitmentService(
     throw new MeetingConflictError("The exact commitment proposal was not found.");
   }
   if (view.resolution) {
-    await assertResolutionReplay(caller, {
+    const draft = await assertResolutionReplay(caller, authority, {
       ...view,
       resolution: view.resolution,
     }, value);
     return completeAppServiceCall(authorized, {
       context: publicMeetingContext(access),
       commitment: view,
+      ...(draft ? { draft } : {}),
     });
   }
   if (value.decision === "dismissed") {
@@ -686,6 +687,7 @@ function dismissedResolution(
 
 async function assertResolutionReplay(
   caller: AppServiceCaller,
+  authority: MeetingMutationAuthority,
   view: MeetingCommitmentView & { resolution: MeetingCommitmentResolution },
   value: z.output<typeof meetingCommitmentResolveServiceInputSchema>,
 ) {
@@ -709,12 +711,22 @@ async function assertResolutionReplay(
     throw new MeetingConflictError("This commitment confirmation is bound to different effects.");
   }
   if (value.communication && resolution.draftId) {
+    // A replay reconciles the original draft; it must not confirm a different
+    // selected participant merely because the policy and message text match.
+    const meeting = await getMeeting(authority, view.proposal.meetingId);
+    const recipient = meeting?.participants.find((participant) =>
+      participant.participantId === value.communication?.recipientParticipantId
+    );
     const draft = await getMessageDraft(resolution.draftId, {
       tenantId: caller.context.tenantId,
       actorId: caller.context.actorId,
     });
     if (
       !draft ||
+      !recipient?.email ||
+      draft.channel !== "email" ||
+      draft.recipient.trim().toLocaleLowerCase("en-US") !==
+        recipient.email.trim().toLocaleLowerCase("en-US") ||
       (value.communication.connectionId &&
         draft.googleConnectionId !== value.communication.connectionId) ||
       draft.policyId !== value.communication.policyId ||
@@ -723,6 +735,7 @@ async function assertResolutionReplay(
     ) {
       throw new MeetingConflictError("This confirmation is bound to a different draft.");
     }
+    return draft;
   }
 }
 
