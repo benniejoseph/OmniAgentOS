@@ -3,11 +3,12 @@
  * Agent quality scoreboard. Drives the real agent against evals/golden-tasks.json
  * and prints a pass rate. Run against a live server:
  *
- *   BASE_URL=http://localhost:3000 node scripts/run-evals.mjs
+ *   BASE_URL=http://localhost:3000 EVAL_EMAIL=<owner> EVAL_PASSWORD=<secret> npm run eval:agents
  *
  * EVAL_TASKS_FILE reads another task file, such as a ledger-replay corpus
- * from GET /api/evaluations/ledger-replay. With SMOKE_INTERNAL_AUTH_SECRET,
- * EVAL_TENANT_ID and EVAL_ACTOR_ID run the tasks as that workspace owner.
+ * from GET /api/evaluations/ledger-replay. EVAL_EMAIL and EVAL_PASSWORD sign
+ * in a real account; optional EVAL_TENANT_ID and EVAL_ACTOR_ID verify that
+ * session's identity and never select or impersonate an owner.
  * EVAL_MODEL_SELECTION, a modelSelection JSON object, pins the candidate
  * model. Ledger replay requires EVAL_AGENT_ID naming a custom Agent whose
  * active principal has the read-only policy. The server checks the same
@@ -22,6 +23,12 @@
 import { readFile } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
+import {
+  createOperatorSession,
+  operatorTarget,
+  readTextLimited,
+  requiredEnvironment,
+} from "./operator-session.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_TASKS_FILE = path.join(here, "..", "evals", "golden-tasks.json");
@@ -32,15 +39,11 @@ export function evalConfig(env = process.env) {
   if (!Number.isFinite(minPassRate) || minPassRate < 0 || minPassRate > 1) {
     throw new Error("MIN_PASS_RATE must be a number from 0 to 1.");
   }
-  const internalAuth = env.SMOKE_INTERNAL_AUTH_SECRET || undefined;
   const tenantId = env.EVAL_TENANT_ID?.trim() || undefined;
   const actorId = env.EVAL_ACTOR_ID?.trim() || undefined;
   const agentId = env.EVAL_AGENT_ID?.trim() || undefined;
   if (agentId && !/^[a-zA-Z0-9_.:-]{1,120}$/.test(agentId)) {
     throw new Error("EVAL_AGENT_ID must be a valid Agent identifier.");
-  }
-  if ((tenantId || actorId) && !internalAuth) {
-    throw new Error("EVAL_TENANT_ID and EVAL_ACTOR_ID need SMOKE_INTERNAL_AUTH_SECRET.");
   }
   let modelSelection;
   if (env.EVAL_MODEL_SELECTION) {
@@ -54,11 +57,10 @@ export function evalConfig(env = process.env) {
     }
   }
   return {
-    baseUrl: env.BASE_URL || "http://localhost:3000",
+    ...operatorTarget(env.BASE_URL || "http://localhost:3000", { allowLoopback: true }),
     minPassRate,
     requestTimeoutMs: positiveInteger(env.EVAL_REQUEST_TIMEOUT_MS, 60_000, 300_000),
     tasksFile: env.EVAL_TASKS_FILE ? path.resolve(env.EVAL_TASKS_FILE) : DEFAULT_TASKS_FILE,
-    internalAuth,
     tenantId,
     actorId,
     agentId,
@@ -79,14 +81,6 @@ export function agentRequestInit(task, config) {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      ...(config.internalAuth
-        ? {
-            "x-omni-internal-auth": config.internalAuth,
-            "x-omni-user-role": "operator",
-            ...(config.tenantId ? { "x-omni-tenant-id": config.tenantId } : {}),
-            ...(config.actorId ? { "x-omni-user-id": config.actorId } : {}),
-          }
-        : {}),
     },
     body: JSON.stringify({
       mode: task.mode || "orchestrate",
@@ -173,17 +167,21 @@ export function readAgentStream(text) {
   return { response, trajectory, ...(error ? { error } : {}) };
 }
 
-async function runTask(task, config) {
+async function runTask(task, config, session) {
   const startedAt = Date.now();
   try {
-    const res = await fetch(`${config.baseUrl}/api/agent`, {
+    const res = await session.rawRequest("/api/agent", {
       ...agentRequestInit(task, config),
-      signal: AbortSignal.timeout(config.requestTimeoutMs),
+      accept: "text/event-stream",
+      timeoutMs: config.requestTimeoutMs,
     });
     if (!res.ok || !res.body) {
       return { response: "", error: `HTTP ${res.status}` };
     }
-    const outcome = readAgentStream(await res.text());
+    if (!(res.headers.get("content-type") || "").includes("text/event-stream")) {
+      return { response: "", error: "Agent response was not an SSE stream." };
+    }
+    const outcome = readAgentStream(await readTextLimited(res, 4_000_000));
     outcome.trajectory.latencyMs = Date.now() - startedAt;
     return outcome;
   } catch (error) {
@@ -194,26 +192,54 @@ async function runTask(task, config) {
 
 async function main() {
   const config = evalConfig();
-  const raw = await readFile(config.tasksFile, "utf8");
-  const suite = JSON.parse(raw);
-  const requestConfig = evalSuiteConfig(suite, config);
-  if (suite.kind === "ledger_replay") {
-    console.log(`Replaying ${suite.tasks.length} recorded runs against ${config.baseUrl}.`);
+  const session = createOperatorSession({
+    ...config,
+    email: requiredEnvironment(process.env, "EVAL_EMAIL"),
+    password: requiredEnvironment(process.env, "EVAL_PASSWORD", { preserveWhitespace: true }),
+    expectedTenantId: config.tenantId,
+    expectedActorId: config.actorId,
+    syntheticSecret: process.env.SMOKE_INTERNAL_AUTH_SECRET?.trim() || "",
+    syntheticSource: "agent-quality-evaluation",
+    bypassSecret: process.env.VERCEL_AUTOMATION_BYPASS_SECRET?.trim() || "",
+  });
+  let primaryFailure;
+  let signOutFailure;
+  try {
+    const raw = await readFile(config.tasksFile, "utf8");
+    const suite = JSON.parse(raw);
+    const requestConfig = evalSuiteConfig(suite, config);
+    await session.signIn();
+    if (suite.kind === "ledger_replay") {
+      console.log(`Replaying ${suite.tasks.length} recorded runs against ${config.baseUrl}.`);
+    }
+    const results = [];
+    for (const task of suite.tasks) {
+      const { response, trajectory, error } = await runTask(task, requestConfig, session);
+      const failures = error ? [error] : applyAssertion(task.assert, response, trajectory);
+      const passed = failures.length === 0;
+      results.push({ id: task.id, passed, failures });
+      console.log(session.safeText(`${passed ? "PASS" : "FAIL"}  ${task.id}${failures.length ? `  — ${failures.join("; ")}` : ""}`));
+    }
+    const passed = results.filter((r) => r.passed).length;
+    const passRate = results.length ? passed / results.length : 0;
+    console.log(`\nScoreboard: ${passed}/${results.length} passed (${(passRate * 100).toFixed(0)}%)`);
+    if (passRate < config.minPassRate) {
+      throw new Error(`Below MIN_PASS_RATE (${(config.minPassRate * 100).toFixed(0)}%).`);
+    }
+  } catch (error) {
+    primaryFailure = error;
+  } finally {
+    try {
+      await session.signOut();
+    } catch (error) {
+      signOutFailure = error;
+    }
   }
-  const results = [];
-  for (const task of suite.tasks) {
-    const { response, trajectory, error } = await runTask(task, requestConfig);
-    const failures = error ? [error] : applyAssertion(task.assert, response, trajectory);
-    const passed = failures.length === 0;
-    results.push({ id: task.id, passed, failures });
-    console.log(`${passed ? "PASS" : "FAIL"}  ${task.id}${failures.length ? `  — ${failures.join("; ")}` : ""}`);
-  }
-  const passed = results.filter((r) => r.passed).length;
-  const passRate = results.length ? passed / results.length : 0;
-  console.log(`\nScoreboard: ${passed}/${results.length} passed (${(passRate * 100).toFixed(0)}%)`);
-  if (passRate < config.minPassRate) {
-    console.error(`Below MIN_PASS_RATE (${(config.minPassRate * 100).toFixed(0)}%).`);
-    process.exit(1);
+  if (primaryFailure || signOutFailure) {
+    for (const [error, label] of [[primaryFailure, ""], [signOutFailure, "Sign-out: "]]) {
+      if (error) console.error(label + session.safeText(error instanceof Error ? error.message : error));
+    }
+    process.exitCode = 1;
   }
 }
 
@@ -227,7 +253,7 @@ if (
   pathToFileURL(process.argv[1]).href === import.meta.url
 ) {
   main().catch((error) => {
-    console.error(error);
-    process.exit(1);
+    console.error(error instanceof Error ? error.message : "Evaluation configuration failed.");
+    process.exitCode = 1;
   });
 }

@@ -64,6 +64,18 @@ interchangeable:
    structured observations; parsing and scoring have no application side
    effects.
 
+The live CLI runner requires `EVAL_EMAIL` and `EVAL_PASSWORD` in the operator
+environment. It signs in through the app and runs with that account's session
+cookie and trusted `Origin`; internal identity headers are not an alternative.
+Optional `EVAL_TENANT_ID` and `EVAL_ACTOR_ID` assert the returned session identity
+before any model turn. `BASE_URL` must be an HTTP loopback development origin,
+the canonical production origin, or an Asael staged Vercel origin; ledger replay
+should target a candidate. `VERCEL_AUTOMATION_BYPASS_SECRET` can admit requests to
+a protected candidate. `SMOKE_INTERNAL_AUTH_SECRET` only labels synthetic
+telemetry. The runner never retries a paid POST, redacts credentials from its
+output, and attempts logout even when scoring or the stream fails. A failed
+logout also fails the command.
+
 The offline lane has no warning result. Every declared assertion is required,
 and its domain-separated suite digest plus declared scorer version are intended
 to bind later observed baselines. Scoring changes must bump that version. A
@@ -140,6 +152,29 @@ require model, tool, approval, delegation, and verifier phase coverage; check
 their exact pairs, chain and cumulative counters; and revalidate terminal
 tool/effect receipts.
 Incomplete coverage is a failing gate even when every observed row is valid.
+
+`scripts/smoke-expanded-checkpoints.mjs` is a separate live, paid verification
+that creates two temporary Agents and exercises an approved read plus a council
+run. Its operator environment must supply `BASE_URL`, `EXPECTED_REVISION`,
+`SMOKE_CHECKPOINT_EMAIL`, `SMOKE_CHECKPOINT_PASSWORD`, `SMOKE_TENANT_ID`, and
+`SMOKE_ACTOR_ID`. The tenant and actor values must match the real account's login
+response; they never establish execution identity. It also requires
+`SMOKE_INTERNAL_AUTH_SECRET` (or `OMNIAGENT_INTERNAL_AUTH_SECRET`) for synthetic
+telemetry only. The normal target remains the canonical production origin;
+`SMOKE_CHECKPOINT_ALLOW_LOOPBACK=CONFIRMED` permits the local mock-server
+regression harness. This switch changes only the client target allowlist, never
+application authentication or authorization.
+
+The checkpoint script follows each temporary Agent's exact Trash preview and
+then its distinct purge preview, and attempts logout after all cleanup attempts.
+It reports the original verification failure separately from cleanup and logout
+failures; a retained Agent or unconfirmed purge cannot produce a passing result.
+It never retries a paid agent POST. Run the local subprocess regressions before
+an authorized live invocation:
+
+```sh
+npm run test:unit -- src/lib/evals2/run-evals-script.test.ts src/lib/release/operator-scripts.test.ts src/lib/release/smoke-paid-agent-script.test.ts
+```
 
 Migration v69 provides the resume fence. Claims bind the exact
 checkpoint digest and operation job, persist only hashed credentials, advance
