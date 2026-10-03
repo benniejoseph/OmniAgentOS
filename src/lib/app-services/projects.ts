@@ -5,11 +5,6 @@ import {
   type AppServiceCaller,
 } from "@/lib/app-services/contracts";
 import { getAppServiceOperationContract } from "@/lib/app-services/registry";
-import {
-  signalProjectTask,
-  signalProjectWorkflows,
-  syncProjectExecution,
-} from "@/lib/projects/execution";
 import { decomposeProject } from "@/lib/projects/planner";
 import { reflectOnProjectArtifact } from "@/lib/projects/reflection";
 import {
@@ -255,6 +250,11 @@ export async function controlProjectExecutionService(
     }, { ...exactOwner(caller), mutation: mutationContext(caller) });
     return completeAppServiceCall(authorized, { snapshot: await projectSnapshot(value.projectId, scope) });
   }
+  // Pages import this service for project and work item reads. Execution
+  // reaches the workflow runtime, so it loads only when a run is controlled.
+  const { signalProjectTask, signalProjectWorkflows, syncProjectExecution } = await import(
+    "@/lib/projects/execution"
+  );
   if (value.action === "pause" || value.action === "resume") {
     const recordStatus = () => updateProjectExecution(value.projectId, {
       executionStatus: value.action === "pause" ? "paused" : "running",

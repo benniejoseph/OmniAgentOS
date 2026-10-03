@@ -20,7 +20,7 @@ afterEach(() => {
 describe("operations overview", () => {
   it("excludes actor-private semantic jobs and projects visible jobs", async () => {
     const queue = await import("@/lib/operations/job-queue");
-    const operations = await import("@/lib/operations/queue");
+    const operations = await import("@/lib/operations/overview");
     const tenantId = "tenant-overview-private-jobs";
     const visible = await queue.enqueueOperationJob({
       tenantId,
@@ -57,7 +57,7 @@ describe("operations overview", () => {
   it("lists quarantined jobs by their counts, without their payload", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     const queue = await import("@/lib/operations/job-queue");
-    const operations = await import("@/lib/operations/queue");
+    const operations = await import("@/lib/operations/overview");
     const tenantId = "tenant-overview-quarantine";
     const crashing = await queue.enqueueOperationJob({
       tenantId,
