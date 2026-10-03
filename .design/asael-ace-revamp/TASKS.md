@@ -1,6 +1,6 @@
 # Proposed delivery backlog
 
-**Status: web presentation migration in progress.** Shared foundation, Today/Command/voice presentation, Inbox, Results, Work overview and Memory index/inspector slices are merged in PRs #14–#18. Shared Library and Capture intake are in validation; deeper Execution, Builder, Reviews and Universe work remains. See [implementation evidence](IMPLEMENTATION.md). Unchecked boxes remain whole-task acceptance criteria, not completed work. No calendar estimates are committed before the renderer proof and first complete application slice.
+**Status: web presentation migration in progress.** Shared foundation, Today/Command/voice presentation, Inbox, Results, Work overview, Memory index/inspector, shared Library and Capture intake slices are merged in PRs #14–#20. Execution and Reviews are in validation; Builder and Universe work remains. See [implementation evidence](IMPLEMENTATION.md). Unchecked boxes remain whole-task acceptance criteria, not completed work. No calendar estimates are committed before the renderer proof and first complete application slice.
 
 **3 October 2026 decision:** ATLAS is the selected original eagle, with energetic quick wit, expressive reactions and Kevin-Hart-inspired comic timing in its own identity and voice. The approved light conversation/graphite UI is retained. The actual ATLAS study has been exported and visually inspected; its reference and provenance receipt are saved locally. There is no production model, rig or clip.
 

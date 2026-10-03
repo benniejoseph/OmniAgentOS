@@ -270,6 +270,67 @@
 .addTask input { flex: 1 1 10rem; }
 .addTask button { flex: 0 0 auto; }
 
+.executionDeck { min-width: 0; margin-block: 1.5rem 2rem; border-block: 1px solid var(--line); padding-block: 1.5rem; }
+.executionIntro { display: flex; min-width: 0; align-items: flex-start; gap: 0.75rem; }
+.executionIntro > svg { flex: 0 0 auto; margin-block-start: 0.25rem; color: var(--muted); }
+.executionIntro > div { min-width: 0; }
+.executionIntro h3 { font-size: 1.25rem; font-weight: 600; line-height: 1.75rem; letter-spacing: -0.01em; }
+.executionIntro p { max-width: 70ch; margin-block-start: 0.5rem; color: var(--muted); }
+.executionIntro .executionSnapshot { font-size: 0.8125rem; line-height: 1.25rem; }
+.executionMetrics { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr); gap: 1rem 1.5rem; margin-block: 1.5rem; border-block: 1px solid var(--line); padding-block: 1rem; }
+.executionMetrics > div { min-width: 0; }
+.executionMetrics dt { display: flex; min-width: 0; align-items: flex-start; gap: 0.5rem; color: var(--muted); font-size: 0.8125rem; line-height: 1.25rem; }
+.executionMetrics dt > svg { flex: 0 0 auto; margin-block-start: 0.125rem; }
+.executionMetrics dd { min-width: 0; margin-block-start: 0.5rem; font-size: 1rem; font-weight: 600; line-height: 1.5rem; font-variant-numeric: tabular-nums; }
+.executionMetrics small { display: block; margin-block-start: 0.25rem; color: var(--muted); font-size: 0.8125rem; font-weight: 400; line-height: 1.25rem; }
+.executionControls { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr); gap: 1rem; margin-block-end: 1rem; }
+.executionControls > label { display: grid; min-width: 0; align-content: start; gap: 0.5rem; color: var(--foreground); font-size: 0.875rem; font-weight: 500; line-height: 1.25rem; }
+.executionControls :is(select, input[type="number"]) { width: 100%; min-width: 0; min-height: 2.75rem; border: 1px solid var(--line-strong); border-radius: var(--radius-control); padding: 0.625rem 0.75rem; color: var(--foreground); background: var(--surface); font: inherit; font-weight: 400; line-height: 1.5rem; --focus-surface: var(--background); }
+.executionControls :is(select, input):disabled { border-color: var(--line-strong); color: var(--muted); background: var(--surface-raised); cursor: default; opacity: 1; }
+.executionControls > .approvalSwitch { display: flex; min-height: 2.75rem; align-items: center; align-self: end; gap: 0.75rem; border: 1px solid var(--line-strong); border-radius: var(--radius-control); padding: 0.625rem 0.75rem; background: var(--surface); --focus-surface: var(--surface); }
+.approvalSwitch input { width: 1.25rem; height: 1.25rem; flex: 0 0 auto; accent-color: var(--primary); }
+.approvalSwitch span { min-width: 0; }
+.approvalSwitch:has(input:disabled) { color: var(--muted); background: var(--surface-raised); --focus-surface: var(--surface-raised); }
+.executionActions { display: flex; min-width: 0; flex-wrap: wrap; gap: 0.75rem; margin-block-start: 1rem; }
+.executionSpinner { animation: project-execution-spin 1s linear infinite; }
+@keyframes project-execution-spin { to { transform: rotate(360deg); } }
+
+.executionBoard { min-width: 0; margin-block-start: 2rem; }
+.boardHeading { display: flex; min-width: 0; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 0.75rem 1.5rem; margin-block-end: 1.5rem; }
+.boardHeading > div { min-width: 0; }
+.boardHeading h3 { font-size: 1.25rem; font-weight: 600; line-height: 1.75rem; letter-spacing: -0.01em; }
+.boardHeading p { max-width: 70ch; margin-block-start: 0.5rem; color: var(--muted); }
+.boardHeading > span { min-width: 0; color: var(--muted); font-size: 0.8125rem; line-height: 1.25rem; }
+.boardColumns { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr); align-items: start; gap: 2rem 1.5rem; }
+.boardColumn { min-width: 0; border-block-start: 3px solid var(--line-strong); padding-block-start: 1rem; }
+.boardColumn[data-column="attention"] { border-block-start-color: var(--warning); }
+.boardColumn > header { display: flex; min-width: 0; align-items: flex-start; justify-content: space-between; gap: 0.75rem; margin-block-end: 1rem; }
+.boardColumn > header > div { min-width: 0; }
+.boardColumn h4 { font-size: 1rem; font-weight: 600; line-height: 1.5rem; }
+.boardColumn header p { margin-block-start: 0.25rem; color: var(--muted); font-size: 0.8125rem; line-height: 1.25rem; }
+.boardColumn header strong { font-size: 0.875rem; font-weight: 600; line-height: 1.5rem; font-variant-numeric: tabular-nums; }
+.boardTasks { min-width: 0; }
+.boardTask { min-width: 0; border-block-start: 1px solid var(--line); padding: 1.25rem 0.5rem; }
+.boardTaskMeta { display: flex; min-width: 0; flex-wrap: wrap; gap: 0.5rem 0.75rem; color: var(--muted); font-size: 0.8125rem; line-height: 1.25rem; }
+.boardTask h5 { min-width: 0; margin-block: 0.75rem; font-size: 1rem; font-weight: 600; line-height: 1.5rem; }
+.boardTaskDetail { max-width: 45rem; margin-block: 0.75rem; color: var(--foreground); font-size: 1rem; line-height: 1.625rem; white-space: pre-wrap; }
+.boardFacts { display: flex; min-width: 0; flex-wrap: wrap; gap: 0.75rem 1.5rem; margin-block: 1rem; font-size: 0.8125rem; line-height: 1.25rem; }
+.boardFacts > div { min-width: 0; }
+.boardFacts dt { color: var(--muted); }
+.boardFacts dd { min-width: 0; margin-block-start: 0.25rem; font-variant-numeric: tabular-nums; }
+.boardTaskActions { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 0.75rem; }
+.boardWorkflow { min-width: 0; flex: 1 1 8rem; color: var(--muted); font-size: 0.8125rem; line-height: 1.25rem; }
+.boardEmpty { display: flex; min-width: 0; align-items: flex-start; gap: 0.5rem; border-block-start: 1px solid var(--line); padding-block: 1rem; color: var(--muted); font-size: 0.8125rem; line-height: 1.25rem; }
+.boardEmpty > svg { flex: 0 0 auto; margin-block-start: 0.125rem; }
+
+@container project-detail (min-width: 30rem) { .executionMetrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@container project-detail (min-width: 42rem) {
+  .executionControls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .boardColumns { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@container project-detail (min-width: 66rem) { .executionMetrics { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+@container project-detail (min-width: 72rem) { .boardColumns { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+
 .artifactLedger { margin-block-start: 2rem; border-block-start: 1px solid var(--line); padding-block-start: 1.5rem; }
 .artifactLayout { display: grid; grid-template-columns: minmax(12rem, 0.65fr) minmax(0, 1.35fr); gap: 1.5rem; }
 .artifactList { min-width: 0; margin: 0; padding: 0.5rem; list-style: none; }
@@ -386,19 +447,25 @@
 @media (max-width: 47.999rem) {
   .header h1 { font-size: 1.5rem; line-height: 2rem; }
   .shell :is(input, textarea, select) { font-size: 1rem; }
+  .executionControls :is(select, input[type="number"]) { font-size: 1rem; }
 }
 @media (pointer: coarse) {
   .templatePublish input,
   .createForm input,
   .createForm textarea,
   .reflection textarea,
-  .addTask input { min-height: 3rem; }
+  .addTask input,
+  .executionControls :is(select, input[type="number"]),
+  .executionControls > .approvalSwitch { min-height: 3rem; }
   .shell :is(.button, .primaryButton, .templatePublish > button, .templateActions > button, .createForm > button, .error > button, .toolbar > button, .viewNavigation > button, .viewNavigation > a, .taskState, .sharedMemory button, .sharedMemory a, .sharedMemory input, .sharedMemory textarea) { min-height: 3rem; }
   .taskState { width: 3rem; }
   .task { grid-template-columns: 3rem 1.25rem minmax(0, 1fr) minmax(5rem, 7.5rem) minmax(4.5rem, auto); }
   @container project-detail (max-width: 43.999rem) { .task { grid-template-columns: 3rem minmax(0, 1fr); } }
 }
-@media (prefers-reduced-motion: reduce) { .shell :is(button, a) { transition: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .shell :is(button, a) { transition: none; }
+  .executionSpinner { animation: none; }
+}
 @media (prefers-contrast: more) { .shell { --muted: var(--foreground); --line: var(--line-strong); } }
 @media (forced-colors: active) {
   .shell { --background: Canvas; --surface: Canvas; --surface-raised: Canvas; --surface-overlay: Canvas; --foreground: CanvasText; --muted: CanvasText; --line: CanvasText; --line-strong: ButtonText; --primary: ButtonFace; --primary-ink: ButtonText; --primary-hover: ButtonFace; --primary-pressed: ButtonFace; --accent: LinkText; --accent-surface: Canvas; --success: CanvasText; --success-surface: Canvas; --danger: CanvasText; --danger-surface: Canvas; --info: CanvasText; --info-surface: Canvas; --warning: CanvasText; --focus: Highlight; }

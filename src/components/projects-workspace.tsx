@@ -209,6 +209,12 @@ export function ProjectsWorkspace({ initialView = "overview" }: { initialView?: 
   const taskBudget = hasExecutionDraft ? executionDraft!.taskBudget : selected?.taskBudget || 12;
   const maxParallelTasks = hasExecutionDraft ? executionDraft!.maxParallelTasks : selected?.maxParallelTasks || 1;
   const requireApproval = hasExecutionDraft ? executionDraft!.requireApproval : selected?.requireApproval ?? true;
+  const hasUnsavedExecutionDraft = hasExecutionDraft && Boolean(selected && (
+    autonomyMode !== (selected.autonomyMode === "autonomous" ? "autonomous" : "supervised")
+    || taskBudget !== (selected.taskBudget || 12)
+    || maxParallelTasks !== (selected.maxParallelTasks || 1)
+    || requireApproval !== (selected.requireApproval ?? true)
+  ));
   const activeProjects = projects.filter((project) => project.status === "active");
   const allTasks = projects.flatMap((project) => project.tasks);
   const closedTasks = allTasks.filter(taskIsClosed).length;
@@ -644,27 +650,36 @@ export function ProjectsWorkspace({ initialView = "overview" }: { initialView?: 
             </div> : null}
             {workspaceView !== "build" && selected.status === "active" && selected.tasks.some((task) => task.status !== "done") ? <p className={styles.helper}>Close every task before completing this project.</p> : null}
 
-            {workspaceView === "execution" ? <section className={clsx("project-execution-deck", `is-${selected.executionStatus}`)} aria-label="Autonomous project execution">
-              <div className="project-execution-intro">
-                <span className="project-execution-icon"><Bot size={18} aria-hidden="true" /></span>
-                <div><p className="projects-kicker">Agent execution</p><h3>{executionTitle(selected.executionStatus)}</h3><p>{executionDescription(selected.executionStatus, autonomyMode)}</p></div>
-              </div>
-              <div className="project-execution-metrics">
-                <div><span><Gauge size={13} aria-hidden="true" /> Budget</span><strong>{selected.tasksDispatched || 0}<small> / {taskBudget}</small></strong><i><b style={{ width: `${Math.min(100, ((selected.tasksDispatched || 0) / taskBudget) * 100)}%` }} /></i></div>
-                <div><span><GitBranch size={13} aria-hidden="true" /> Parallel</span><strong>{maxParallelTasks}</strong><small>agent lane{maxParallelTasks > 1 ? "s" : ""}</small></div>
-                <div><span><CircleDollarSign size={13} aria-hidden="true" /> AI cost</span><strong>{canonicalWorkItemCostLabel(selectedCost)}</strong><small>{selectedCost.totalTokens.toLocaleString()} recorded tokens</small></div>
-                <div><span><ShieldCheck size={13} aria-hidden="true" /> Guardrail</span><strong>{autonomyMode === "supervised" || requireApproval ? "Approval" : "Policy"}</strong><small>{autonomyMode === "autonomous" && !requireApproval ? "risky tools still gated" : "before each workflow"}</small></div>
-              </div>
-              <div className="project-execution-controls">
-                <label><span>Operating mode</span><select value={autonomyMode} onChange={(event) => { const mode = event.currentTarget.value as Project["autonomyMode"]; updateExecutionDraft({ autonomyMode: mode, requireApproval: mode === "supervised" ? true : requireApproval }); }} disabled={["running", "waiting_approval"].includes(selected.executionStatus)}><option value="supervised">Supervised</option><option value="autonomous">Autonomous</option></select></label>
-                <label><span>Task budget</span><input type="number" min={1} max={50} value={taskBudget} onChange={(event) => updateExecutionDraft({ taskBudget: Math.min(50, Math.max(1, Number(event.currentTarget.value))) })} disabled={["running", "waiting_approval"].includes(selected.executionStatus)} /></label>
-                <label><span>Parallel agents</span><select value={maxParallelTasks} onChange={(event) => updateExecutionDraft({ maxParallelTasks: Number(event.currentTarget.value) })} disabled={["running", "waiting_approval"].includes(selected.executionStatus)}><option value={1}>1 lane</option><option value={2}>2 lanes</option><option value={3}>3 lanes</option></select></label>
-                <label className="project-approval-switch"><input type="checkbox" checked={requireApproval} onChange={(event) => updateExecutionDraft({ requireApproval: event.currentTarget.checked })} disabled={autonomyMode === "supervised" || ["running", "waiting_approval"].includes(selected.executionStatus)} /><span>Approval gate</span></label>
-                <div className="project-execution-actions">
-                  {selected.executionStatus === "running" || selected.executionStatus === "waiting_approval" ? <button type="button" onClick={() => void executeProject("pause")} disabled={Boolean(executionBusy)}><Pause size={14} aria-hidden="true" /> Pause</button> : selected.executionStatus === "paused" ? <button type="button" className="is-primary" onClick={() => void executeProject("resume")} disabled={Boolean(executionBusy)}><Play size={14} aria-hidden="true" /> Resume</button> : <button type="button" className="is-primary" onClick={() => void executeProject("start")} disabled={Boolean(executionBusy) || !selected.tasks.length}><Zap size={14} aria-hidden="true" /> Start agents</button>}
-                  <button type="button" onClick={() => void executeProject("sync")} disabled={Boolean(executionBusy)} aria-label="Synchronize workflow progress"><RotateCw size={14} className={executionBusy === "sync" ? "animate-spin" : undefined} aria-hidden="true" /></button>
+            {workspaceView === "execution" ? <section className={styles.executionDeck} aria-label="Autonomous project execution" data-status={selected.executionStatus}>
+              <div className={styles.executionIntro}>
+                <Bot size={20} aria-hidden="true" />
+                <div>
+                  <h3>{executionTitle(selected.executionStatus)}</h3>
+                  <p>{executionDescription(selected.executionStatus, autonomyMode)}</p>
+                  <p className={styles.executionSnapshot}>Project snapshot · recorded update {formatTimestamp(selected.updatedAt)}</p>
                 </div>
               </div>
+              <dl className={styles.executionMetrics}>
+                <div><dt><Gauge size={16} aria-hidden="true" /> Task budget</dt><dd>{selected.tasksDispatched || 0} / {taskBudget}<small>tasks dispatched / {hasUnsavedExecutionDraft ? "draft" : "saved"} limit</small></dd></div>
+                <div><dt><GitBranch size={16} aria-hidden="true" /> Parallel agents</dt><dd>{maxParallelTasks}<small>{hasUnsavedExecutionDraft ? "Draft" : "Saved"} lane limit</small></dd></div>
+                <div><dt><CircleDollarSign size={16} aria-hidden="true" /> AI cost</dt><dd>{canonicalWorkItemCostLabel(selectedCost)}<small>{selectedCost.totalTokens.toLocaleString()} recorded tokens</small></dd></div>
+                <div><dt><ShieldCheck size={16} aria-hidden="true" /> Guardrail</dt><dd>{autonomyMode === "supervised" || requireApproval ? "Approval" : "Policy"}<small>{autonomyMode === "autonomous" && !requireApproval ? "Risky tools still require policy checks" : "Before each workflow"}</small></dd></div>
+              </dl>
+              <div className={styles.executionControls}>
+                <label><span>Operating mode</span><select value={autonomyMode} onChange={(event) => { const mode = event.currentTarget.value as Project["autonomyMode"]; updateExecutionDraft({ autonomyMode: mode, requireApproval: mode === "supervised" ? true : requireApproval }); }} disabled={["running", "waiting_approval"].includes(selected.executionStatus)} aria-describedby={["running", "waiting_approval"].includes(selected.executionStatus) ? "project-execution-settings-help" : "project-execution-draft-help"}><option value="supervised">Supervised</option><option value="autonomous">Autonomous</option></select></label>
+                <label><span>Task budget</span><input type="number" min={1} max={50} value={taskBudget} onChange={(event) => updateExecutionDraft({ taskBudget: Math.min(50, Math.max(1, Number(event.currentTarget.value))) })} disabled={["running", "waiting_approval"].includes(selected.executionStatus)} aria-describedby={["running", "waiting_approval"].includes(selected.executionStatus) ? "project-execution-settings-help" : "project-execution-draft-help"} /></label>
+                <label><span>Parallel agents</span><select value={maxParallelTasks} onChange={(event) => updateExecutionDraft({ maxParallelTasks: Number(event.currentTarget.value) })} disabled={["running", "waiting_approval"].includes(selected.executionStatus)} aria-describedby={["running", "waiting_approval"].includes(selected.executionStatus) ? "project-execution-settings-help" : "project-execution-draft-help"}><option value={1}>1 lane</option><option value={2}>2 lanes</option><option value={3}>3 lanes</option></select></label>
+                <label className={styles.approvalSwitch}><input type="checkbox" checked={requireApproval} onChange={(event) => updateExecutionDraft({ requireApproval: event.currentTarget.checked })} disabled={autonomyMode === "supervised" || ["running", "waiting_approval"].includes(selected.executionStatus)} aria-describedby={autonomyMode === "supervised" ? "project-execution-approval-help" : ["running", "waiting_approval"].includes(selected.executionStatus) ? "project-execution-settings-help" : undefined} /><span>Approval gate</span></label>
+              </div>
+              <p id="project-execution-draft-help" className={styles.helper}>These settings are sent when you start agents. Resume continues with the saved settings.</p>
+              {["running", "waiting_approval"].includes(selected.executionStatus) ? <p id="project-execution-settings-help" className={styles.helper}>Settings are locked while execution is running or waiting for approval.</p> : null}
+              {autonomyMode === "supervised" ? <p id="project-execution-approval-help" className={styles.helper}>Supervised mode requires the approval gate.</p> : null}
+              <div className={styles.executionActions}>
+                {selected.executionStatus === "running" || selected.executionStatus === "waiting_approval" ? <button type="button" className={styles.button} onClick={() => void executeProject("pause")} disabled={Boolean(executionBusy)} aria-describedby={executionBusy ? "project-execution-busy-help" : undefined}><Pause size={16} aria-hidden="true" /> Pause</button> : selected.executionStatus === "paused" ? <button type="button" className={styles.primaryButton} onClick={() => void executeProject("resume")} disabled={Boolean(executionBusy)} aria-describedby={executionBusy ? "project-execution-busy-help" : undefined}><Play size={16} aria-hidden="true" /> Resume</button> : <button type="button" className={styles.primaryButton} onClick={() => void executeProject("start")} disabled={Boolean(executionBusy) || !selected.tasks.length} aria-describedby={executionBusy ? "project-execution-busy-help" : !selected.tasks.length ? "project-execution-empty-help" : undefined}><Zap size={16} aria-hidden="true" /> Start agents</button>}
+                <button type="button" className={styles.button} onClick={() => void executeProject("sync")} disabled={Boolean(executionBusy)} aria-label="Synchronize workflow progress" aria-describedby={executionBusy ? "project-execution-busy-help" : undefined}><RotateCw size={16} className={executionBusy === "sync" ? styles.executionSpinner : undefined} aria-hidden="true" /> {executionBusy === "sync" ? "Syncing…" : "Sync progress"}</button>
+              </div>
+              {executionBusy ? <p id="project-execution-busy-help" className={styles.helper} role="status">An execution request is in progress. Wait for it to finish before sending another.</p> : null}
+              {!selected.tasks.length ? <p id="project-execution-empty-help" className={styles.helper}>Add a task in Plan & context before starting agents.</p> : null}
             </section> : null}
 
             {planRationale ? <div className={styles.planNote}><Sparkles size={15} aria-hidden="true" /><div><strong>Atlas added a plan</strong><p>{planRationale}</p></div></div> : null}
@@ -684,7 +699,7 @@ export function ProjectsWorkspace({ initialView = "overview" }: { initialView?: 
                   <span className={styles.taskIndex}>{String(index + 1).padStart(2, "0")}</span>
                   <div className={styles.taskCopy}><div><strong>{task.title}</strong><span className={styles.priority} data-priority={task.priority}>{task.priority}</span>{workflowStatus ? <span className={styles.workflowStatus} data-status={workflowStatus}>{workflowLabel(workflowStatus)}</span> : null}</div>{task.detail ? <p>{task.detail}</p> : null}<small>{workItemStatusLabel(task, dependencyNames)} · {task.workItem.artifacts.count} artifact{task.workItem.artifacts.count === 1 ? "" : "s"} · {canonicalWorkItemCostLabel(task.workItem.cost)}{task.dueAt ? ` · due ${formatDate(task.dueAt)}` : ""}</small>{task.executionError ? <em className={styles.taskError}><AlertTriangle size={11} aria-hidden="true" /> {task.executionError}</em> : null}</div>
                   <div className={styles.agent}><span>{agent.name.slice(0, 1)}</span><div><strong>{agent.name}</strong><small>{agent.role}</small></div></div>
-                  {workflowStatus === "waiting_approval" ? <button type="button" className={styles.button} onClick={() => void executeProject("approve", task.id)} disabled={Boolean(executionBusy)} aria-label={`Approve ${task.title}`}>Approve</button> : workflowStatus === "failed" ? <button type="button" className={styles.button} onClick={() => void executeProject("retry", task.id)} disabled={Boolean(executionBusy)} aria-label={`Retry ${task.title}`}>Retry</button> : task.workItem.execution.workflowRunId ? <span className={styles.taskLive}>{workflowLabel(workflowStatus || "queued")}</span> : <Link className={styles.button} href={commandHref(selected, task)} aria-label={`Assign ${task.title} to ${agent.name}`}>Run <ArrowRight size={13} aria-hidden="true" /></Link>}
+                  {workflowStatus === "waiting_approval" ? <button type="button" className={styles.button} onClick={() => void executeProject("approve", task.id)} disabled={Boolean(executionBusy)} aria-label={`Approve ${task.title}`}>Approve</button> : workflowStatus === "failed" ? <button type="button" className={styles.button} onClick={() => void executeProject("retry", task.id)} disabled={Boolean(executionBusy)} aria-label={`Retry ${task.title}`}>Retry</button> : task.workItem.execution.workflowRunId ? <span className={styles.taskLive}>{workflowStatus ? workflowLabel(workflowStatus) : "Workflow status unavailable"}</span> : <Link className={styles.button} href={commandHref(selected, task)} aria-label={`Assign ${task.title} to ${agent.name}`}>Run <ArrowRight size={13} aria-hidden="true" /></Link>}
                 </article>;
               }) : <div className={styles.emptyState} role="listitem"><Target size={22} aria-hidden="true" /><h3>No plan yet</h3><p>Let Atlas decompose the outcome or add the first task yourself.</p></div>}
             </div>
@@ -738,10 +753,10 @@ export function ProjectsWorkspace({ initialView = "overview" }: { initialView?: 
 }
 
 const PROJECT_BOARD_COLUMNS = [
-  { id: "ready", label: "Ready", detail: "Clear to begin" },
-  { id: "working", label: "Working", detail: "Agents in motion" },
+  { id: "ready", label: "Ready", detail: "No active workflow state available" },
+  { id: "working", label: "Working", detail: "Queued, running, or paused" },
   { id: "attention", label: "Needs you", detail: "Approval or intervention" },
-  { id: "closed", label: "Closed", detail: "Finished with a recorded outcome" },
+  { id: "closed", label: "Closed", detail: "Recorded terminal outcomes" },
 ] as const;
 
 function ProjectExecutionBoard({
@@ -757,30 +772,80 @@ function ProjectExecutionBoard({
   onMoveTask: (task: ProjectTask) => Promise<void>;
   onExecute: (action: "configure" | "start" | "pause" | "resume" | "sync" | "approve" | "retry", taskId?: string) => Promise<void>;
 }) {
+  const boardRef = useRef<HTMLElement>(null);
+  const moveButtonsRef = useRef(new Map<string, HTMLButtonElement>());
+  const taskCardsRef = useRef(new Map<string, HTMLElement>());
   const grouped = new Map(PROJECT_BOARD_COLUMNS.map((column) => [column.id, [] as ProjectTask[]]));
   for (const task of project.tasks) grouped.get(projectBoardColumn(task))!.push(task);
+  const moveBlocked = project.status !== "active"
+    ? "Reopen this project to change task status."
+    : ["running", "waiting_approval"].includes(project.executionStatus)
+      ? "Manual task status changes are unavailable while execution is running or waiting for approval."
+      : undefined;
 
-  return <section className="project-board" aria-labelledby="project-board-title">
-    <div className="project-board-heading"><div><p className="projects-kicker">Live work</p><h3 id="project-board-title">Execution board</h3><p>One view of what agents can start, what is moving, and where you are needed.</p></div><span><i /> synchronized from canonical work items</span></div>
-    <div className="project-board-columns">
-      {PROJECT_BOARD_COLUMNS.map((column) => <section key={column.id} className={clsx("project-board-column", `is-${column.id}`)} aria-labelledby={`project-column-${column.id}`}>
+  async function moveBoardTask(task: ProjectTask, trigger: HTMLButtonElement) {
+    const restoreFocus = document.activeElement === trigger;
+    const projectId = project.id;
+    await onMoveTask(task);
+    // Moving across columns remounts the task. Only the initiating action may
+    // restore its focus; passive refreshes and later user navigation must not.
+    if (!restoreFocus) return;
+    requestAnimationFrame(() => {
+      if (boardRef.current?.dataset.projectId !== projectId) return;
+      if (document.activeElement !== trigger && document.activeElement !== document.body && document.activeElement !== null) return;
+      const nextButton = moveButtonsRef.current.get(task.id);
+      if (nextButton && !nextButton.disabled) nextButton.focus();
+      else taskCardsRef.current.get(task.id)?.focus();
+    });
+  }
+
+  return <section ref={boardRef} className={styles.executionBoard} data-project-id={project.id} aria-labelledby="project-board-title">
+    <div className={styles.boardHeading}>
+      <div><h3 id="project-board-title">Execution board</h3><p>The latest loaded task states and workflow status.</p></div>
+      <span>Snapshot · project updated {formatTimestamp(project.updatedAt)}</span>
+    </div>
+    {moveBlocked ? <p id="project-board-move-help" className={styles.helper}>{moveBlocked}</p> : null}
+    {executionBusy ? <p id="project-board-execution-help" className={styles.helper}>An execution request is in progress. Approval and retry are unavailable until it finishes.</p> : null}
+    <div className={styles.boardColumns}>
+      {PROJECT_BOARD_COLUMNS.map((column) => <section key={column.id} className={styles.boardColumn} data-column={column.id} aria-labelledby={`project-column-${column.id}`}>
         <header><div><h4 id={`project-column-${column.id}`}>{column.label}</h4><p>{column.detail}</p></div><strong>{grouped.get(column.id)!.length}</strong></header>
-        <div className="project-board-cards">
+        <div className={styles.boardTasks}>
           {grouped.get(column.id)!.length ? grouped.get(column.id)!.map((task) => {
             const agent = agentFor(workItemAssignedAgent(task));
             const workflowStatus = workItemWorkflowStatus(task);
-            return <article key={task.id} className={clsx("project-board-card", `is-${task.workItem.status.status}`)}>
-              <div className="project-board-card-meta"><span className={clsx("project-task-priority", `is-${task.priority}`)}>{task.priority}</span><small>{canonicalWorkItemStatusLabel(task.workItem.status.status)}</small></div>
-              <h5>{task.title}</h5>
-              {task.detail ? <p>{task.detail}</p> : null}
-              {task.executionError ? <em><AlertTriangle size={11} aria-hidden="true" /> {task.executionError}</em> : null}
-              <dl><div><dt>Agent</dt><dd>{agent.name}</dd></div><div><dt>Evidence</dt><dd>{task.workItem.artifacts.count}</dd></div><div><dt>Cost</dt><dd>{canonicalWorkItemCostLabel(task.workItem.cost)}</dd></div></dl>
-              <footer>
-                {workflowStatus === "waiting_approval" ? <button type="button" className="is-primary" onClick={() => void onExecute("approve", task.id)} disabled={Boolean(executionBusy)}>Approve</button> : workflowStatus === "failed" ? <button type="button" className="is-danger" onClick={() => void onExecute("retry", task.id)} disabled={Boolean(executionBusy)}>Retry</button> : task.workItem.execution.workflowRunId ? <span className="project-task-live"><i /> {workflowLabel(workflowStatus || "queued")}</span> : <Link href={commandHref(project, task)}>Open in Command <ArrowRight size={12} aria-hidden="true" /></Link>}
-                <button type="button" onClick={() => void onMoveTask(task)} disabled={actingId === task.id || project.status !== "active" || ["running", "waiting_approval"].includes(project.executionStatus)}>{taskIsClosed(task) ? "Reopen" : "Advance"}</button>
+            const taskDomId = `project-board-${encodeURIComponent(project.id)}-${encodeURIComponent(task.id)}`;
+            return <article
+              key={task.id}
+              ref={(node) => { if (node) taskCardsRef.current.set(task.id, node); else taskCardsRef.current.delete(task.id); }}
+              tabIndex={-1}
+              className={styles.boardTask}
+              data-status={task.workItem.status.status}
+              aria-labelledby={`${taskDomId}-title`}
+            >
+              <div className={styles.boardTaskMeta}><span className={styles.priority} data-priority={task.priority}>{task.priority} priority</span><span>{canonicalWorkItemStatusLabel(task.workItem.status.status)}</span></div>
+              <h5 id={`${taskDomId}-title`}>{task.title}</h5>
+              {task.detail ? <p className={styles.boardTaskDetail}>{task.detail}</p> : null}
+              {task.executionError ? <p className={styles.taskError}><AlertTriangle size={16} aria-hidden="true" /><span>{task.executionError}</span></p> : null}
+              <dl className={styles.boardFacts}>
+                <div><dt>Agent</dt><dd>{agent.name}</dd></div>
+                <div><dt>Evidence</dt><dd>{task.workItem.artifacts.count} artifact{task.workItem.artifacts.count === 1 ? "" : "s"}</dd></div>
+                <div><dt>Cost</dt><dd>{canonicalWorkItemCostLabel(task.workItem.cost)}</dd></div>
+              </dl>
+              <footer className={styles.boardTaskActions}>
+                {workflowStatus === "waiting_approval" ? <button type="button" className={styles.primaryButton} onClick={() => void onExecute("approve", task.id)} disabled={Boolean(executionBusy)} aria-label={`Approve ${task.title}`} aria-describedby={executionBusy ? "project-board-execution-help" : undefined}>Approve</button> : workflowStatus === "failed" ? <button type="button" className={styles.button} onClick={() => void onExecute("retry", task.id)} disabled={Boolean(executionBusy)} aria-label={`Retry ${task.title}`} aria-describedby={executionBusy ? "project-board-execution-help" : undefined}>Retry</button> : task.workItem.execution.workflowRunId ? <span className={styles.boardWorkflow}>{workflowStatus ? workflowLabel(workflowStatus) : "Workflow status unavailable"}</span> : <Link className={styles.button} href={commandHref(project, task)} aria-label={`Open ${task.title} in Command`}>Open in Command <ArrowRight size={16} aria-hidden="true" /></Link>}
+                <button
+                  type="button"
+                  ref={(node) => { if (node) moveButtonsRef.current.set(task.id, node); else moveButtonsRef.current.delete(task.id); }}
+                  className={styles.button}
+                  onClick={(event) => void moveBoardTask(task, event.currentTarget)}
+                  disabled={actingId === task.id || project.status !== "active" || ["running", "waiting_approval"].includes(project.executionStatus)}
+                  aria-label={`${taskIsClosed(task) ? "Reopen" : "Advance"} ${task.title}`}
+                  aria-describedby={actingId === task.id ? `${taskDomId}-moving` : moveBlocked ? "project-board-move-help" : undefined}
+                >{taskIsClosed(task) ? "Reopen" : "Advance"}</button>
               </footer>
+              {actingId === task.id ? <p id={`${taskDomId}-moving`} className={styles.helper}>Updating this task…</p> : null}
             </article>;
-          }) : <div className="project-board-empty"><Circle size={13} aria-hidden="true" /><span>Nothing here</span></div>}
+          }) : <div className={styles.boardEmpty}><Circle size={16} aria-hidden="true" /><span>No tasks in this state.</span></div>}
         </div>
       </section>)}
     </div>
@@ -832,14 +897,15 @@ function templateMutationKey(keys: Map<string, string>, name: string) {
 }
 function commandHref(project: Project, task: ProjectTask) { const prompt = `Project: ${project.title}\nObjective: ${project.objective}\nAssigned task: ${task.title}\n${task.detail}\nComplete this bounded task, verify the outcome, and report evidence plus the next recommended project state.`; return `/app/command?agent=${encodeURIComponent(workItemAssignedAgent(task))}&project=${encodeURIComponent(project.id)}&context=project&prompt=${encodeURIComponent(prompt)}`; }
 function executionTitle(status: Project["executionStatus"]) {
-  return ({ idle: "Ready for deployment", running: "Agents are advancing this project", paused: "Execution is safely paused", waiting_approval: "Your approval is needed", completed: "Execution plan completed", failed: "An agent needs intervention" })[status];
+  return ({ idle: "Execution is idle", running: "Project execution is running", paused: "Project execution is paused", waiting_approval: "Execution needs approval", completed: "Execution is marked completed", failed: "Execution needs attention" })[status];
 }
 function executionDescription(status: Project["executionStatus"], mode: Project["autonomyMode"]) {
   if (status === "waiting_approval") return "Review the highlighted workflow before the agent team continues.";
   if (status === "failed") return "Inspect the failed task, retry it, or take over in Command.";
-  if (status === "completed") return "Every planned task has synchronized back into the project ledger.";
+  if (status === "completed") return "Review each task’s recorded outcome in the snapshot below.";
+  if (status === "paused") return "Resume to continue with the saved execution settings.";
   if (status === "running") return `${mode === "autonomous" ? "Autonomous" : "Supervised"} execution respects dependencies, budget, and tool policies.`;
-  return "Choose the operating envelope, then dispatch dependency-ready work into governed workflows.";
+  return "Set the operating limits, then start eligible tasks through governed workflows.";
 }
 function workflowLabel(status: NonNullable<ProjectTask["workflowStatus"]>) { return status.replace("_", " "); }
 function taskIsClosed(task: ProjectTask) {

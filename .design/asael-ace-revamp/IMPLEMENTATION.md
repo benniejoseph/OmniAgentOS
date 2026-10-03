@@ -300,8 +300,12 @@ Browser fixtures used normal synthetic authentication and explicit read response
 All API mutations and external requests were blocked; only automatic telemetry
 posts were attempted. Clipboard writes were stubbed, and original-file links were
 inspected without being followed. Accessibility claims cover the shared Library
-region, not the separate Capture studios or other page-family internals. Hosted
-acceptance remains required before merge.
+region, not the separate Capture studios or other page-family internals.
+
+PR [#19](https://github.com/benniejoseph/OmniAgentOS/pull/19) merged as
+`6c0d43a4a1da290e42099718c66dde7f922833fa`. Exact implementation head
+`249993fb4116a94afaf88ff044cfbbab7b00ae58` passed all hosted quality,
+integration, build/budget, audit, worker, secret-scan and preview checks.
 
 ## Capture intake and source management presentation — 3 October 2026
 
@@ -337,7 +341,46 @@ layouts, light/dark, 44/48px controls, 200% text, reduced motion and forced colo
 The one accepted file remained an in-memory staged selection. No upload, save,
 management, recording, connector or provider mutation was attempted; API mutations
 and external requests were blocked, and download links were only inspected.
-Hosted acceptance remains required before merge.
+PR [#20](https://github.com/benniejoseph/OmniAgentOS/pull/20) merged as
+`3b8169968bcb1a2adcd99ecf370800696bb7a30a`. Exact implementation head
+`551d75f867c746aec2b559de927d16839ef3b610` passed all hosted quality,
+integration, build/budget, audit, worker, secret-scan and preview checks.
+
+## Work execution board and settings — 3 October 2026
+
+The execution board and settings deck now use scoped canonical styles instead
+of the orphaned legacy board selectors. The board responds to the detail
+container with one, two or four columns. Full task titles, descriptions, errors,
+canonical agent assignment, evidence counts and exact known/partial/unknown cost
+remain visible. Snapshot wording no longer implies live synchronization, and an
+unavailable workflow status is never replaced by a stale queued hint.
+
+The exact grouping precedence, request bodies, idempotency, approval/retry
+callbacks, manual status gates and 12-second refresh controller are preserved.
+Draft controls keep their values across view changes and failed reads; labels
+compare them with returned saved settings. Disabled controls explain their
+running/approval, supervised, busy, archived or empty-task constraint. A task
+move restores focus to the same task after its column changes, while passive
+refreshes preserve the current focus.
+
+Eighteen focused WorkItem, refresh-controller and execution-route tests passed,
+as did targeted lint, the Work TypeScript graph, CSS parsing and type-scale
+checks. Independent review corrected an unreachable four-column breakpoint and
+a draft-label comparison. Browser review corrected coarse select specificity.
+
+The final headless Chrome pass completed 165 checks and four clean axe scans.
+Coverage includes thirteen canonical task states, grouping precedence, exact
+identity/evidence/cost, unavailable status, drafts and server reconciliation,
+failed reads, guarded actions, the existing Build mount, keyboard focus,
+320–1920px layouts, light/dark, 44/48px controls, 200% text, reduced motion and
+forced colors. Screenshots were visually inspected on wide and phone layouts.
+
+One exact synthetic task-advance PATCH was intercepted and fulfilled entirely
+inside Playwright, with its idempotency header and canonical response validated;
+it never reached the application server. All other action mutations and external
+requests were blocked. Approve, retry, execution and Build creation were not
+invoked, and Command links were inspected only. This verifies presentation and
+focus behavior, not a live workflow effect. Hosted checks remain required.
 
 ## Remaining gates and scope
 
