@@ -990,17 +990,19 @@ export function AgentRunsWorkspace({
     if (sessionStatus === "ready") {
       void refreshThreads();
       if (initialThreadId && !initialThreadLoadedRef.current) {
-        initialThreadLoadedRef.current = true;
         if (initialRunId && !initialRunLoadedRef.current) {
           // Coming back to a conversation on one of its runs keeps following
           // that run without opening its details over the conversation.
+          initialThreadLoadedRef.current = true;
           initialRunLoadedRef.current = true;
           void loadRunActivity(initialRunId, {
             openDetails: false,
             threadId: initialThreadId,
           });
         } else {
-          void loadThread(initialThreadId);
+          // A canceled setup has not loaded the conversation. React's effect
+          // replay must be able to start it again after cleanup aborts it.
+          void loadThread(initialThreadId, { initialSelection: true });
         }
       } else if (initialRunId && !initialRunLoadedRef.current) {
         initialRunLoadedRef.current = true;
@@ -2840,6 +2842,7 @@ export function AgentRunsWorkspace({
     options: {
       restoreLatestRun?: boolean;
       preserveActivity?: boolean;
+      initialSelection?: boolean;
     } = {},
   ) {
     const version = ++threadLoadVersionRef.current;
@@ -2864,6 +2867,9 @@ export function AgentRunsWorkspace({
         )),
         isCurrent: () => threadLoadVersionRef.current === version,
         onThreadReady: (result, latestRunId) => {
+          if (options.initialSelection && id === initialThreadId) {
+            initialThreadLoadedRef.current = true;
+          }
           const thread = asRecord(result.thread);
           const loadedTurns = projectClientThreadTurns(readPath(result, "turns"));
           setThreadId(stringValue(thread.id));
