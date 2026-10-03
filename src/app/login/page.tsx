@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { AuthShell } from "@/components/onboarding/auth-shell";
+import { AccessShell } from "@/components/access-recovery/access-shell";
 import { LoginForm } from "@/components/onboarding/login-form";
 
 export const metadata: Metadata = {
@@ -9,8 +9,8 @@ export const metadata: Metadata = {
 
 export default function LoginPage() {
   return (
-    <AuthShell>
+    <AccessShell>
       <LoginForm />
-    </AuthShell>
+    </AccessShell>
   );
 }

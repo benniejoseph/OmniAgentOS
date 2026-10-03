@@ -5,6 +5,10 @@ import { describe, expect, it } from "vitest";
 const publicEntryFiles = [
   "src/components/marketing/public-header.tsx",
   "src/components/marketing/docs-guide.tsx",
+  "src/components/marketing/public-frame.tsx",
+  "src/components/marketing/landing-hero.tsx",
+  "src/components/marketing/landing-cta.tsx",
+  "src/components/marketing/marketing-page.tsx",
   "src/components/onboarding/demo-workspace.tsx",
   "src/components/onboarding/login-form.tsx",
 ];

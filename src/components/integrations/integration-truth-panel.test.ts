@@ -17,7 +17,8 @@ const workspaceSource = readFileSync(
 describe("Integrations truth client boundary", () => {
   it("loads one private truth projection and rejects unknown contract versions", () => {
     expect(source).toContain('fetch("/api/integrations/overview"');
-    expect(source).toContain('payload.overview?.version !== OVERVIEW_VERSION');
+    expect(source).toContain('parseIntegrationOverview(payload.overview)');
+    expect(source).not.toContain('truthfulIntegrationsOverviewSchema');
     expect(source).toContain('Catalog ideas never count as connected');
     expect(source).toContain('Unknown never means free');
   });

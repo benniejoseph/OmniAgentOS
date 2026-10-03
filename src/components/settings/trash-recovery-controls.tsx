@@ -1,213 +1,68 @@
 "use client";
 
-import { Loader2, RotateCcw, ShieldCheck, Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
-import { clsx } from "clsx";
-
-type TrashItem = {
-  trashId: string;
-  resourceType: "custom_agent" | "agent_skill" | "mcp_connector" | "openapi_connector";
-  resourceId: string;
-  displayLabel: string;
-  state: "retained" | "restored" | "purged" | "expired";
-  restoreUntil: string;
-  compensation: {
-    kind: "exact_restore" | "equivalent_action" | "unavailable";
-    limitation: string | null;
-  };
-};
-
-type TrashPreview = {
-  version: "p9.3-trash-preview:1";
-  action: "restore" | "purge";
-  trashId: string;
-  resourceType: TrashItem["resourceType"];
-  resourceId: string;
-  lifecycleRevision: number;
-  targetSha256: string;
-  effectSummary: string;
-  reversible: boolean;
-  issuedAt: string;
-  expiresAt: string;
-  previewSha256: string;
-};
+import { useCallback, useEffect, useState } from "react";
+import type { TrashActionPreviewV1, TrashItemV1 } from "@/lib/trash/contracts";
+import { mutationOptions, settingsJson, useAdvancedSettingsActions } from "./settings-advanced-lifecycle";
+import { readTrashList, readTrashPreview, readTrashReceipt } from "./settings-recovery-state";
+import { Metadata, ReadNotice, SettingsDialog } from "./settings-advanced-ui";
+import styles from "./settings-advanced.module.css";
 
 export function TrashRecoveryControls() {
-  const [items, setItems] = useState<TrashItem[]>([]);
+  const actions = useAdvancedSettingsActions();
+  const [items, setItems] = useState<TrashItemV1[]>();
   const [loading, setLoading] = useState(true);
-  const [busyId, setBusyId] = useState<string>();
-  const [message, setMessage] = useState<{
-    tone: "success" | "error";
-    text: string;
-  }>();
-
-  useEffect(() => {
-    const controller = new AbortController();
-    void load(controller.signal);
-    return () => controller.abort();
-  }, []);
-
-  async function load(signal?: AbortSignal) {
+  const [fresh, setFresh] = useState(false);
+  const [error, setError] = useState<string>();
+  const [page, setPage] = useState(0);
+  const [review, setReview] = useState<{ item: TrashItemV1; preview: TrashActionPreviewV1 }>();
+  const [receipt, setReceipt] = useState<Awaited<ReturnType<typeof readTrashReceipt>>>();
+  const blocked = actions.blocked("manage.workflow");
+  const load = useCallback(async () => {
+    if (blocked) return;
+    const ticket = actions.gate.read("trash"); setLoading(true); setFresh(false); setError(undefined);
+    try { const value = await readTrashList(await settingsJson("/api/trash?state=retained&limit=100", { signal: ticket.signal })); if (ticket.current()) { setItems(value); setFresh(true); } else if (ticket.owned()) setError("Trash read interrupted by a settings action. Refresh to recheck."); }
+    catch (failure) { if (ticket.owned()) setError(ticket.current() ? failure instanceof Error ? failure.message : "Trash could not be checked." : "Trash read interrupted by a settings action. Refresh to recheck."); }
+    finally { if (ticket.owned()) setLoading(false); }
+  }, [actions.gate, blocked]);
+  useEffect(() => { const timer = setTimeout(() => void load(), 0); return () => clearTimeout(timer); }, [load]);
+  async function preview(item: TrashItemV1, action: "restore" | "purge") {
+    if (actions.busy || blocked || !fresh || loading) return;
+    const ticket = actions.gate.read("trash-preview"); setError(undefined);
     try {
-      const payload = await requestJson<{ items?: TrashItem[] }>(
-        "/api/trash?state=retained&limit=100",
-        { cache: "no-store", signal },
-      );
-      setItems(payload.items || []);
-    } catch (error) {
-      if (!signal?.aborted) {
-        setMessage({
-          tone: "error",
-          text: error instanceof Error ? error.message : "Trash could not be loaded.",
-        });
-      }
-    } finally {
-      if (!signal?.aborted) setLoading(false);
-    }
+      const value = await readTrashPreview(await settingsJson(`/api/trash/${encodeURIComponent(item.trashId)}/${action}`, { signal: ticket.signal }), item, action);
+      if (ticket.current()) setReview({ item, preview: value });
+    } catch (failure) { if (ticket.current()) setError(failure instanceof Error ? failure.message : "The recovery preview could not be checked."); }
   }
-
-  async function restore(item: TrashItem) {
-    setBusyId(item.trashId);
-    setMessage(undefined);
-    try {
-      const prepared = await requestJson<{ preview?: TrashPreview }>(
-        `/api/trash/${encodeURIComponent(item.trashId)}/restore`,
-        { cache: "no-store" },
-      );
-      if (!prepared.preview) throw new Error("Restore preview was not returned.");
-      const limitation = item.compensation.limitation
-        ? `\n\nLimitation: ${item.compensation.limitation}`
-        : "";
-      if (!window.confirm(`${prepared.preview.effectSummary}${limitation}`)) return;
-      const result = await requestJson<{
-        effectReceipt?: { receiptSha256?: string };
-        restoredResourceIds?: string[];
-      }>(`/api/trash/${encodeURIComponent(item.trashId)}/restore`, {
-        method: "POST",
-        headers: mutationHeaders(),
-        body: JSON.stringify({ preview: prepared.preview }),
-      });
-      setMessage({
-        tone: "success",
-        text: `Restored ${item.displayLabel}${receiptSuffix(result.effectReceipt?.receiptSha256)}.`,
-      });
-      await load();
-    } catch (error) {
-      setMessage({
-        tone: "error",
-        text: error instanceof Error ? error.message : "Restore failed.",
-      });
-    } finally {
-      setBusyId(undefined);
-    }
+  async function commit() {
+    if (!review || actions.busy || blocked || !fresh || loading) return;
+    const submitted = review;
+    if (items?.find((item) => item.trashId === submitted.item.trashId)?.itemSha256 !== submitted.item.itemSha256 || Date.parse(submitted.preview.expiresAt) <= Date.now()) { setError("This reviewed item changed or the preview expired. Refresh and review it again."); return; }
+    const result = await actions.run({ label: submitted.preview.action === "restore" ? "Restore trash item" : "Permanently purge trash item", permission: "manage.workflow", fingerprint: JSON.stringify(["trash", submitted.preview]), replayable: true,
+      success: submitted.preview.action === "restore" ? "The restoration receipt was confirmed." : "The permanent deletion receipt was confirmed.", execute: async ({ idempotencyKey }) => {
+        const value = await settingsJson(`/api/trash/${encodeURIComponent(submitted.item.trashId)}/${submitted.preview.action}`, mutationOptions(submitted.preview.action === "restore" ? "POST" : "DELETE", { preview: submitted.preview }, idempotencyKey));
+        return readTrashReceipt(value, submitted.preview, submitted.item);
+      } });
+    if (result) { setReceipt(result.value); setReview(undefined); setFresh(false); void load(); }
   }
-
-  async function purge(item: TrashItem) {
-    setBusyId(item.trashId);
-    setMessage(undefined);
-    try {
-      const prepared = await requestJson<{ preview?: TrashPreview }>(
-        `/api/trash/${encodeURIComponent(item.trashId)}/purge`,
-        { cache: "no-store" },
-      );
-      if (!prepared.preview) throw new Error("Purge preview was not returned.");
-      if (!window.confirm(
-        `${prepared.preview.effectSummary}\n\nThis permanently removes the restore snapshot. The audit receipt remains.`,
-      )) return;
-      const result = await requestJson<{
-        finalDeletionReceipt?: { receiptSha256?: string };
-      }>(`/api/trash/${encodeURIComponent(item.trashId)}/purge`, {
-        method: "DELETE",
-        headers: mutationHeaders(),
-        body: JSON.stringify({ preview: prepared.preview }),
-      });
-      setMessage({
-        tone: "success",
-        text: `Permanently purged ${item.displayLabel}${receiptSuffix(result.finalDeletionReceipt?.receiptSha256)}.`,
-      });
-      await load();
-    } catch (error) {
-      setMessage({
-        tone: "error",
-        text: error instanceof Error ? error.message : "Permanent purge failed.",
-      });
-    } finally {
-      setBusyId(undefined);
-    }
-  }
-
-  return (
-    <section className="mt-4 overflow-hidden rounded-lg border border-line bg-surface p-5 sm:p-6" aria-labelledby="trash-recovery-title">
-      <div className="flex items-start gap-3">
-        <span className="grid size-10 shrink-0 place-items-center rounded-full bg-primary/10 text-primary">
-          <RotateCcw size={18} aria-hidden="true" />
-        </span>
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">Reversible changes</p>
-          <h2 id="trash-recovery-title" className="mt-1 text-lg font-semibold">Trash and recovery</h2>
-          <p className="mt-1 max-w-3xl text-sm leading-6 text-muted">Deleted Agents, Skills, and connectors remain actor-private and restorable for 30 days. Permanent purge always requires a separate exact preview.</p>
-        </div>
-      </div>
-
-      {message ? (
-        <p role={message.tone === "error" ? "alert" : "status"} className={clsx("mt-4 rounded-md border px-3 py-2 text-sm", message.tone === "success" ? "border-primary/30 bg-primary/8" : "border-danger/35 bg-danger/10 text-danger")}>{message.text}</p>
-      ) : null}
-
-      {loading ? (
-        <p className="mt-5 flex items-center gap-2 text-sm text-muted"><Loader2 size={15} className="animate-spin" aria-hidden="true" />Loading retained items…</p>
-      ) : items.length ? (
-        <div className="mt-5 space-y-3">
-          {items.map((item) => (
-            <article key={item.trashId} className="flex flex-col gap-3 rounded-lg border border-line bg-background p-4 sm:flex-row sm:items-center sm:justify-between">
-              <div className="min-w-0">
-                <h3 className="truncate text-sm font-semibold">{item.displayLabel}</h3>
-                <p className="mt-1 text-xs leading-5 text-muted">{resourceLabel(item.resourceType)} · restore until {formatDate(item.restoreUntil)}</p>
-                {item.compensation.limitation ? <p className="mt-1 text-xs leading-5 text-warning">{item.compensation.limitation}</p> : null}
-              </div>
-              <div className="flex shrink-0 flex-wrap gap-2">
-                <button type="button" className="action-button" disabled={Boolean(busyId)} onClick={() => void restore(item)}>{busyId === item.trashId ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <RotateCcw size={14} aria-hidden="true" />}Restore</button>
-                <button type="button" className="inline-flex min-h-10 items-center gap-2 rounded-md border border-danger/35 px-3 text-sm font-semibold text-danger disabled:opacity-50" disabled={Boolean(busyId)} onClick={() => void purge(item)}><Trash2 size={14} aria-hidden="true" />Purge permanently</button>
-              </div>
-            </article>
-          ))}
-        </div>
-      ) : (
-        <div className="mt-5 flex items-center gap-2 rounded-lg border border-dashed border-line bg-background p-4 text-sm text-muted"><ShieldCheck size={16} aria-hidden="true" />Trash is empty.</div>
-      )}
-    </section>
-  );
-}
-
-async function requestJson<T>(url: string, init: RequestInit) {
-  const response = await fetch(url, init);
-  const payload = await response.json().catch(() => ({})) as T & { error?: string; message?: string };
-  if (!response.ok) throw new Error(payload.message || payload.error || "Request failed.");
-  return payload;
-}
-
-function mutationHeaders() {
-  return {
-    "content-type": "application/json",
-    "idempotency-key": crypto.randomUUID(),
-  };
-}
-
-function resourceLabel(value: TrashItem["resourceType"]) {
-  return ({
-    custom_agent: "Custom Agent",
-    agent_skill: "Custom Skill",
-    mcp_connector: "MCP connector",
-    openapi_connector: "OpenAPI connector",
-  } as const)[value];
-}
-
-function formatDate(value: string) {
-  const date = new Date(value);
-  return Number.isFinite(date.getTime())
-    ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date)
-    : value;
-}
-
-function receiptSuffix(value?: string) {
-  return value ? ` · receipt ${value.slice(0, 12)}` : "";
+  const count = items?.length ?? 0;
+  const start = Math.min(page * 10, Math.max(0, Math.floor((count - 1) / 10) * 10));
+  const changed = review && items?.find((item) => item.trashId === review.item.trashId)?.itemSha256 !== review.item.itemSha256;
+  return <section className={styles.panel} aria-labelledby="trash-recovery-title">
+    <div className={styles.rowHeader}><div><h3 id="trash-recovery-title">Trash recovery</h3><p>Review an exact restore or purge preview. Permanent deletion cannot be undone.</p></div><button type="button" disabled={Boolean(actions.busy) || Boolean(blocked)} onClick={() => void load()}>Refresh trash</button></div>
+    <ReadNotice loaded={Boolean(items)} loading={loading && !blocked} error={blocked || error} label="Trash records" />
+    {items ? <p className={styles.support}>{fresh ? "Loaded" : "Last loaded"}: {items.length} retained item{items.length === 1 ? "" : "s"}. This view is bounded to 100 returned items.</p> : <p className={styles.support}>Count unavailable.</p>}
+    <ul className={styles.rows}>{items?.slice(start, start + 10).map((item) => <li key={item.trashId} className={styles.panel}><h4>{item.displayLabel}</h4><Metadata items={[{ label: "Trash ID", value: item.trashId }, { label: "Resource ID", value: item.resourceId }, { label: "Resource type", value: item.resourceType }, { label: "Owner", value: item.ownerActorId }, { label: "State", value: item.state }, { label: "Revision", value: item.lifecycleRevision }, { label: "Restore until", value: item.restoreUntil }, { label: "Compensation", value: item.compensation.kind }, { label: "Target digest", value: item.targetSha256 }]} />{item.compensation.limitation ? <p>{item.compensation.limitation}</p> : null}<div className={styles.actions}><button type="button" disabled={Boolean(actions.busy) || Boolean(blocked) || !fresh || loading || item.compensation.kind === "unavailable"} onClick={() => void preview(item, "restore")}>Review restore {item.displayLabel}</button><button type="button" disabled={Boolean(actions.busy) || Boolean(blocked) || !fresh || loading} onClick={() => void preview(item, "purge")}>Review purge {item.displayLabel}</button></div></li>)}</ul>
+    {items?.length === 0 ? <p className={styles.empty}>{fresh ? "No retained items were returned by this successful read." : "The last successful read returned no retained items. Current trash is unavailable."}</p> : null}
+    {items && count > 10 ? <div className={styles.pagination}><button type="button" disabled={!start} onClick={() => setPage(start / 10 - 1)}>Previous trash items</button><span>{start + 1}–{Math.min(start + 10, count)} of {count}</span><button type="button" disabled={start + 10 >= count} onClick={() => setPage(start / 10 + 1)}>Next trash items</button></div> : null}
+    {review ? <SettingsDialog title={review.preview.action === "restore" ? "Review restoration" : "Review permanent deletion"} busy={Boolean(actions.busy)} onClose={() => setReview(undefined)}>
+      <h3>{review.item.displayLabel}</h3><p>{review.preview.effectSummary}</p>
+      {review.item.compensation.limitation ? <p>{review.item.compensation.limitation}</p> : null}
+      <Metadata items={[{ label: "Trash ID", value: review.preview.trashId }, { label: "Resource ID", value: review.preview.resourceId }, { label: "Lifecycle revision", value: review.preview.lifecycleRevision }, { label: "Preview digest", value: review.preview.previewSha256 }, { label: "Expires", value: review.preview.expiresAt }]} />
+      <details><summary>Exact reviewed preview</summary><pre>{JSON.stringify(review.preview, null, 2)}</pre></details>
+      {changed ? <p className={styles.error}>The current item differs from this preview. Close it and review the current item.</p> : null}
+      {error || actions.error ? <p role="alert" className={styles.error}>{error || actions.error}</p> : null}
+      <button type="button" disabled={Boolean(actions.busy) || Boolean(blocked) || !fresh || loading || Boolean(changed)} onClick={() => void commit()}>{review.preview.action === "restore" ? "Confirm restore" : "Confirm permanent purge"}</button>
+    </SettingsDialog> : null}
+    {receipt ? <div className={styles.receipt}><p role="status">{receipt.item.state === "restored" ? "Restoration confirmed" : "Permanent deletion confirmed"}: {receipt.item.displayLabel}</p><Metadata items={[{ label: "Receipt digest", value: receipt.receipt.receiptSha256 }, { label: "Outcome", value: receipt.receipt.outcome }, { label: "Affected resource IDs", value: receipt.receipt.affectedResourceIds.join(" · ") || "None" }, { label: "Restored resource IDs", value: receipt.restoredResourceIds?.join(" · ") || "Not applicable" }]} />{receipt.limitation ? <p>{receipt.limitation}</p> : null}<details><summary>Full recovery receipt</summary><pre>{JSON.stringify(receipt.receipt, null, 2)}</pre></details></div> : null}
+  </section>;
 }

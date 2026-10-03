@@ -8,7 +8,10 @@ import {
   Loader2,
   RotateCcw,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
+import { AgentsLifecycleBoundary, useAgentRead, useAgentsLifecycle } from "./agents-workspace-lifecycle";
+import { agentsActionRequest, releaseRead, releaseReceipt } from "@/components/agents-workspace-state";
+import styles from "./agent-inspectors.module.css";
 
 import type {
   AgentReleaseEvaluationV1,
@@ -86,60 +89,28 @@ export function agentReleaseActionForSelection(
     : { kind: "evaluate", definitionVersion };
 }
 
-export function AgentReleaseEditor({
-  agentId,
-  agentName,
-  compact = false,
-}: {
-  agentId: string;
-  agentName: string;
-  compact?: boolean;
-}) {
-  const [release, setRelease] = useState<AgentReleaseView>();
-  const [selectedVersion, setSelectedVersion] = useState<number>();
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState<string>();
+export function AgentReleaseEditor(props: { agentId: string; agentName: string; compact?: boolean }) {
+  return <AgentsLifecycleBoundary scope={props.agentId}><ReleaseEditor {...props} /></AgentsLifecycleBoundary>;
+}
+function ReleaseEditor({ agentId, agentName, compact = false }: { agentId: string; agentName: string; compact?: boolean }) {
+  const { gate, busy, reason } = useAgentsLifecycle();
+  const floor = useRef<AgentReleaseView | undefined>(undefined);
+  const read = useAgentRead(`/api/agents/${encodeURIComponent(agentId)}/release`, (value) => {
+    const next = releaseRead(value, agentId);
+    if (floor.current && (next.releaseRevision < floor.current.releaseRevision || (next.releaseRevision === floor.current.releaseRevision && floor.current.evaluations.some((old) => !next.evaluations.some((item) => item.evaluationId === old.evaluationId && item.evaluationSha256 === old.evaluationSha256))))) throw new Error("The read predates the confirmed release. Last confirmed details are retained.");
+    return next;
+  });
+  const release = read.data;
+  const [versionDraft, setVersionDraft] = useState<{ value: number; identity: string }>();
+  const selectedVersion = versionDraft?.value ?? (release ? suggestedVersion(release) : undefined);
   const [error, setError] = useState<string>();
   const [message, setMessage] = useState<string>();
   const [retireOpen, setRetireOpen] = useState(false);
   const [retireConfirmation, setRetireConfirmation] = useState("");
-  const loadGeneration = useRef(0);
-
-  useEffect(() => {
-    const generation = ++loadGeneration.current;
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => {
-      setRelease(undefined);
-      setSelectedVersion(undefined);
-      setLoading(true);
-      setBusy(undefined);
-      setError(undefined);
-      setMessage(undefined);
-      setRetireOpen(false);
-      setRetireConfirmation("");
-      void requestRelease(agentId, undefined, controller.signal)
-        .then((next) => {
-          if (
-            generation !== loadGeneration.current ||
-            next.agentId !== agentId
-          ) return;
-          setRelease(next);
-          setSelectedVersion(suggestedVersion(next));
-        })
-        .catch((caught) => {
-          if (controller.signal.aborted || generation !== loadGeneration.current) return;
-          setError(messageFrom(caught, "Release history could not be loaded."));
-        })
-        .finally(() => {
-          if (generation === loadGeneration.current) setLoading(false);
-        });
-    }, 0);
-    return () => {
-      window.clearTimeout(timer);
-      controller.abort();
-    };
-  }, [agentId]);
-
+  const [reviewedIdentity, setReviewedIdentity] = useState<string>();
+  const identity = release ? JSON.stringify([release.agentId, release.releaseRevision, release.state, release.activeDefinitionVersionId, release.latestDefinitionVersionId, release.evaluations.map((item) => [item.evaluationId, item.evaluationSha256])]) : "";
+  const identityChanged = Boolean(release && ((versionDraft && versionDraft.identity !== identity) || (retireOpen && reviewedIdentity !== identity)));
+  const disabled = Boolean(busy || reason || !read.current || identityChanged);
   const action = useMemo(() => release && selectedVersion
     ? agentReleaseActionForSelection(release, selectedVersion)
     : undefined, [release, selectedVersion]);
@@ -149,35 +120,29 @@ export function AgentReleaseEditor({
     body: Record<string, unknown>,
     successMessage: string,
   ) {
-    const mutationAgentId = agentId;
-    if (!agentReleaseMatchesAgent(release, mutationAgentId)) {
-      setError("The selected Agent changed. Reload its release before making changes.");
-      return;
-    }
-    setBusy(key);
+    if (!release || disabled) return;
+    const token = gate.begin(`/api/agents/${encodeURIComponent(agentId)}/release`, "POST", body, key, identity);
+    if (!token) return;
     setError(undefined);
-    setMessage(undefined);
     try {
-      const next = await requestRelease(mutationAgentId, body);
-      if (next.agentId !== mutationAgentId) return;
-      setRelease(next);
-      setSelectedVersion(suggestedVersion(next));
+      const payload = await agentsActionRequest(token);
+      if (!gate.current(token)) return;
+      const next = releaseReceipt(payload, release, body);
+      floor.current = next; read.accept(next);
       setMessage(successMessage);
-      setRetireOpen(false);
-      setRetireConfirmation("");
+      setVersionDraft(undefined); setRetireOpen(false); setRetireConfirmation("");
+      gate.finish(token, true);
     } catch (caught) {
-      setError(messageFrom(caught, "The release action could not be completed."));
-    } finally {
-      setBusy(undefined);
-    }
+      if (gate.current(token)) setError(messageFrom(caught, "The release action was not confirmed. Refresh before retrying."));
+    } finally { gate.finish(token, false); }
   }
 
-  if (loading || (release !== undefined && !agentReleaseMatchesAgent(release, agentId))) {
-    return <ReleaseShell compact={compact}><p className="flex items-center gap-2 text-sm text-muted"><Loader2 size={14} className="animate-spin" /> Loading release history…</p></ReleaseShell>;
-  }
-  if (!release) {
-    return <ReleaseShell compact={compact}><p className="text-sm text-danger" role="alert">{error || "Release history is unavailable."}</p></ReleaseShell>;
-  }
+  if (!release) return <ReleaseShell compact={compact}>
+    <h3>{agentName} release lifecycle</h3>
+    <p role="status">{read.loading ? "Loading release history…" : "Release history is unavailable."}</p>
+    {read.error ? <p role="alert">{read.error}</p> : null}
+    <button className="secondary-button" disabled={Boolean(busy)} onClick={() => void read.refresh()}>Retry release history</button>
+  </ReleaseShell>;
   const selected = release.versions.find((version) =>
     version.definitionVersion === selectedVersion
   );
@@ -194,6 +159,11 @@ export function AgentReleaseEditor({
         </span>
       </div>
 
+      <div className={styles.toolbar}><span role="status">{read.label}</span><button className="secondary-button" disabled={Boolean(busy)} onClick={() => void read.refresh()}>Refresh release history</button></div>
+      <p>Agent ID: {agentId}</p>
+      {read.error ? <p role="alert">{read.error}</p> : null}
+      {reason ? <p>{reason}</p> : null}
+      {identityChanged ? <div className={styles.notice}><p>The release changed. Your draft is retained; review the current version before submitting.</p><button className="secondary-button" disabled={Boolean(busy) || !read.current} onClick={() => { setVersionDraft(selectedVersion ? { value: selectedVersion, identity } : undefined); setReviewedIdentity(identity); }}>Review current release</button></div> : null}
       <div className="mt-4 grid grid-cols-3 gap-2 text-center text-xs">
         <ReleaseMetric label="Active" value={`v${release.activeDefinitionVersion}`} />
         <ReleaseMetric label="Latest" value={`v${release.latestDefinitionVersion}`} />
@@ -208,7 +178,7 @@ export function AgentReleaseEditor({
         <ReleasePin label="Active version ID" value={pinMetadata.activeDefinitionVersionId} />
         {pinMetadata.selectedDefinitionVersionId ? <ReleasePin label="Selected version ID" value={pinMetadata.selectedDefinitionVersionId} /> : null}
         {pinMetadata.selectedDefinitionSha256 ? <ReleasePin label="Definition digest" value={pinMetadata.selectedDefinitionSha256} /> : (
-          <div className="text-muted">The read model exposes this version&apos;s exact ID. Its definition digest appears after evaluation.</div>
+          <div className="grid gap-1"><dt className="text-muted">Definition digest</dt><dd className="m-0 text-muted">Available after evaluation. This read identifies the version by its exact ID.</dd></div>
         )}
         {pinMetadata.evaluationId ? <ReleasePin label="Evaluation ID" value={pinMetadata.evaluationId} /> : null}
         {pinMetadata.evaluationSha256 ? <ReleasePin label="Evaluation digest" value={pinMetadata.evaluationSha256} /> : null}
@@ -220,9 +190,11 @@ export function AgentReleaseEditor({
             Review version
             <select
               value={selectedVersion || ""}
-              onChange={(event) => setSelectedVersion(Number(event.currentTarget.value))}
+              disabled={Boolean(busy)}
+              onChange={(event) => setVersionDraft({ value: Number(event.currentTarget.value), identity })}
               className="min-h-10 rounded-md border border-border bg-background px-3 text-sm"
             >
+              {selectedVersion && !release.versions.some((version) => version.definitionVersion === selectedVersion) ? <option value={selectedVersion} disabled>v{selectedVersion} · no longer available</option> : null}
               {release.versions.filter((version) => !version.active).map((version) => (
                 <option key={version.definitionVersion} value={version.definitionVersion}>
                   v{version.definitionVersion} · {version.definitionVersion > release.activeDefinitionVersion ? "draft" : "rollback target"}
@@ -234,7 +206,7 @@ export function AgentReleaseEditor({
             <button
               type="button"
               className="secondary-button justify-center"
-              disabled={Boolean(busy)}
+              disabled={disabled}
               onClick={() => void mutate(
                 `evaluate:${action.definitionVersion}`,
                 { action: "evaluate", definitionVersion: action.definitionVersion },
@@ -255,7 +227,7 @@ export function AgentReleaseEditor({
               <button
                 type="button"
                 className="primary-button mt-3 w-full justify-center"
-                disabled={Boolean(busy)}
+                disabled={disabled}
                 onClick={() => void mutate(
                   action.kind,
                   { action: action.kind, evaluationId: action.evaluationId },
@@ -275,24 +247,25 @@ export function AgentReleaseEditor({
       {release.state === "active" ? (
         <div className="mt-4 border-t border-border/70 pt-4">
           {!retireOpen ? (
-            <button type="button" className="text-xs font-semibold text-danger" onClick={() => setRetireOpen(true)}>
+            <button type="button" className="text-xs font-semibold text-danger" disabled={disabled} onClick={() => { setRetireOpen(true); setReviewedIdentity(identity); }}>
               <Archive size={13} className="mr-1 inline" /> Retire Agent
             </button>
           ) : (
             <div className="grid gap-2">
               <p className="text-xs leading-5 text-muted">Retirement is terminal and blocks new runs. Type <strong>RETIRE AGENT</strong> to confirm.</p>
               <input
+                disabled={Boolean(busy)}
                 value={retireConfirmation}
                 onChange={(event) => setRetireConfirmation(event.currentTarget.value)}
                 className="min-h-10 rounded-md border border-danger/40 bg-background px-3 text-sm"
                 aria-label="Retirement confirmation"
               />
               <div className="flex gap-2">
-                <button type="button" className="secondary-button flex-1 justify-center" onClick={() => { setRetireOpen(false); setRetireConfirmation(""); }}>Cancel</button>
+                <button type="button" className="secondary-button flex-1 justify-center" disabled={Boolean(busy)} onClick={() => { setRetireOpen(false); setRetireConfirmation(""); }}>Cancel</button>
                 <button
                   type="button"
                   className="secondary-button flex-1 justify-center text-danger"
-                  disabled={Boolean(busy) || retireConfirmation !== "RETIRE AGENT"}
+                  disabled={disabled || retireConfirmation !== "RETIRE AGENT"}
                   onClick={() => void mutate("retire", { action: "retire", confirmation: retireConfirmation }, `${agentName} is retired.`)}
                 >
                   Retire
@@ -318,7 +291,7 @@ function ReleaseShell({ compact, children }: {
   children: React.ReactNode;
 }) {
   return (
-    <section className={`${compact ? "rounded-xl" : "rounded-2xl"} border border-border/70 bg-surface-raised/35 p-4`} aria-label="Agent release lifecycle">
+    <section className={styles.panel} data-compact={compact || undefined} aria-label="Agent release lifecycle">
       {children}
     </section>
   );
@@ -338,35 +311,6 @@ function suggestedVersion(release: AgentReleaseView) {
   }
   return release.previousDefinitionVersion ||
     release.versions.filter((version) => !version.active).at(-1)?.definitionVersion;
-}
-
-async function requestRelease(
-  agentId: string,
-  body?: Record<string, unknown>,
-  signal?: AbortSignal,
-) {
-  const response = await fetch(
-    `/api/agents/${encodeURIComponent(agentId)}/release`,
-    {
-      method: body ? "POST" : "GET",
-      headers: body
-        ? {
-            "content-type": "application/json",
-            "idempotency-key": crypto.randomUUID(),
-          }
-        : undefined,
-      body: body ? JSON.stringify(body) : undefined,
-      signal,
-    },
-  );
-  const payload = await response.json().catch(() => ({})) as {
-    release?: AgentReleaseView;
-    error?: string;
-  };
-  if (!response.ok || !payload.release) {
-    throw new Error(payload.error || "The Agent release request failed.");
-  }
-  return payload.release;
 }
 
 function messageFrom(value: unknown, fallback: string) {

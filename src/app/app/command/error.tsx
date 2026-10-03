@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect } from "react";
-import { ArrowLeft, RefreshCw } from "lucide-react";
+import { RecoveryFrame, RecoveryReference } from "@/components/access-recovery/recovery-frame";
+import styles from "@/components/access-recovery/access-recovery.module.css";
 
 export default function CommandError({
   error,
@@ -15,24 +16,20 @@ export default function CommandError({
   }, [error]);
 
   return (
-    <main className="grid min-h-[60vh] place-items-center px-5 py-16">
-      <section className="w-full max-w-xl rounded-2xl border border-line bg-surface p-7 shadow-sm sm:p-9" aria-labelledby="command-recovery-title">
-        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Command recovery</p>
-        <h1 id="command-recovery-title" className="mt-2 text-2xl font-semibold tracking-tight">The conversation is still safe</h1>
-        <p className="mt-3 text-sm leading-6 text-muted">
-          Command hit a temporary display problem. Your conversation and completed work remain stored; retry this view or return to the workspace.
+    <RecoveryFrame id="command-recovery-title" eyebrow="Assistant recovery" title="This conversation could not open">
+        <p className={styles.reading}>
+          Retry this view at the same address. A display problem does not confirm whether pending work finished; check the conversation and Activity before sending it again.
         </p>
-        <div className="mt-6 flex flex-wrap gap-2">
-          <button type="button" onClick={() => retry()} className="primary-button">
-            <RefreshCw size={15} aria-hidden="true" />
-            Retry Command
+        <p className={styles.support}>An unsent draft may need to be entered again.</p>
+        <div className={styles.actions}>
+          <button type="button" onClick={() => retry()} className={styles.primaryButton}>
+            Retry Assistant
           </button>
-          <a href="/app" className="action-button">
-            <ArrowLeft size={15} aria-hidden="true" />
-            Back to workspace
+          <a href="/app" className={styles.button}>
+            Back to Today
           </a>
         </div>
-      </section>
-    </main>
+        <RecoveryReference digest={error.digest} />
+    </RecoveryFrame>
   );
 }

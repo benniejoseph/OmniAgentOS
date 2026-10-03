@@ -46,13 +46,20 @@ describe("Moltbook Agent console boundaries", () => {
   });
 
   it("shows management only for the exact isolated Moltbook boundary", () => {
-    expect(arsenal).toContain(
-      "isExactMoltbookAgentCapabilityBoundary(selected.custom)",
+    const boundary = arsenal.match(
+      /const\s+(\w+)\s*=\s*Boolean\(selected\?\.custom\s*&&\s*isExactMoltbookAgentCapabilityBoundary\(selected\.custom\)\)/,
     );
-    expect(arsenal).toContain("{selectedIsExactMoltbook ? (");
-    expect(arsenal).toContain(
-      "selected.custom?.manageable === true && !selectedIsExactMoltbook",
-    );
+    expect(boundary).not.toBeNull();
+    const exactBoundary = boundary![1];
+    expect(arsenal).toMatch(new RegExp(
+      `\\{${exactBoundary}\\s*\\?\\s*<MoltbookAgentPanel\\s+key=\\{selected\\.id\\}\\s+agentId=\\{selected\\.id\\}`,
+    ));
+    // The isolated Agent must not inherit ordinary profile, grant, release or
+    // adaptation editors simply because its owner can manage it.
+    expect(arsenal).toContain(`!${exactBoundary} && (!selected.custom || (selected.custom.manageable && selected.custom.releaseState !== "retired")) ? <AgentAdaptationEditor`);
+    expect(arsenal).toContain(`selected.custom && !${exactBoundary} && (selected.custom.manageable || selected.custom.releaseState === "retired") ? <AgentReleaseEditor`);
+    expect(arsenal).toContain(`selected.custom?.manageable && !${exactBoundary} && selected.custom.releaseState !== "retired" ? <AgentGrantEditor`);
+    expect(arsenal).toContain(`selected.custom?.manageable && !${exactBoundary} ? <><button`);
     expect(arsenal).not.toContain("selectedHasMoltbook");
   });
 

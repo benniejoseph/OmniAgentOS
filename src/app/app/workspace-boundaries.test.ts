@@ -41,6 +41,7 @@ const { default: WorkspaceLoading } = await import("@/app/app/loading");
 const { default: WorkspaceError } = await import("@/app/app/error");
 const { default: CommandError } = await import("@/app/app/command/error");
 const { default: GlobalError } = await import("@/app/global-error");
+const { default: PageError } = await import("@/app/error");
 const { TodayWorkspace } = await import("@/components/today-workspace");
 
 afterEach(() => {
@@ -102,9 +103,10 @@ describe("the workspace loading state", () => {
 });
 
 describe("recovering from a view that fails to render", () => {
-  for (const [name, Boundary] of [
-    ["the workspace", WorkspaceError],
-    ["Command", CommandError],
+  for (const [name, Boundary, destination] of [
+    ["the workspace", WorkspaceError, "/app"],
+    ["Command", CommandError, "/app"],
+    ["the page", PageError, "/"],
   ] as const) {
     it(`fetches ${name} view again on retry, and offers a way back`, () => {
       const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -118,7 +120,7 @@ describe("recovering from a view that fails to render", () => {
 
       expect(retry).toHaveBeenCalledTimes(1);
       expect(reset).not.toHaveBeenCalled();
-      expect(elements(tree).some((element) => element.type === "a" && element.props.href === "/app"))
+      expect(elements(tree).some((element) => element.type === "a" && element.props.href === destination))
         .toBe(true);
       expect(logged).toHaveBeenCalledWith(expect.any(String), error);
     });

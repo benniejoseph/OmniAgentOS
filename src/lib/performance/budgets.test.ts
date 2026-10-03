@@ -1,10 +1,14 @@
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { PrivateWorkspaceCta } from "@/components/marketing/landing-cta";
+import { LandingHero } from "@/components/marketing/landing-hero";
 import budgets from "../../../performance-budgets.json";
 
 describe("frontend performance budgets", () => {
-  it("keeps the LCP hero compact, modern, and server-rendered", async () => {
+  it("keeps the text hero server-rendered and public image assets bounded", async () => {
     const root = path.resolve(".");
     const heroAsset = path.join(
       root,
@@ -39,10 +43,15 @@ describe("frontend performance budgets", () => {
 
     expect(metadata.size).toBeLessThanOrEqual(budgets.heroImageMaxBytes);
     expect(markMetadata.size).toBeLessThanOrEqual(8_000);
-    expect(hero).toContain('src="/asael-command-center.webp"');
-    expect(hero).toContain("preload");
-    expect(hero).toContain("unoptimized");
-    expect(hero).toContain("sizes=");
+    const markup = renderToStaticMarkup(createElement(LandingHero));
+    expect(markup).toContain('<h1 id="landing-title">Give agents goals. Keep the controls.</h1>');
+    expect(markup).toContain('href="/login"');
+    expect(markup).toContain('href="/demo"');
+    expect(markup).toContain('href="/docs"');
+    expect(markup).toContain('data-status="checking"');
+    expect(markup).not.toMatch(/<(?:img|picture|video|canvas)\b/);
+    expect(hero).not.toContain('"use client"');
+    expect(hero).not.toContain('"next/image"');
     expect(hero).not.toContain("animate-drift");
     expect(landing).not.toContain('"use client"');
     await expect(
@@ -50,34 +59,38 @@ describe("frontend performance budgets", () => {
     ).rejects.toThrow();
   });
 
-  it("keeps inverted CTA link focus visible in both themes", async () => {
-    const [cta, styles] = await Promise.all([
+  it("keeps both public CTA links on a theme-aware visible focus surface", async () => {
+    const [cta, frame, styles, tokens] = await Promise.all([
       readFile(
         path.resolve("src/components/marketing/landing-cta.tsx"),
         "utf8",
       ),
+      readFile(path.resolve("src/components/marketing/public-frame.tsx"), "utf8"),
+      readFile(path.resolve("src/components/marketing/public-surface.module.css"), "utf8"),
       readFile(path.resolve("src/app/globals.css"), "utf8"),
     ]);
 
-    expect(cta).toContain(
-      'className="inverse-focus border-t border-line bg-foreground text-background"',
-    );
-    expect(cta.match(/<Link/g)).toHaveLength(2);
+    const markup = renderToStaticMarkup(createElement(PrivateWorkspaceCta));
+    expect(markup.match(/<a\b/g)).toHaveLength(2);
+    expect(markup).toContain('href="/login"');
+    expect(markup).toContain('href="/demo"');
+    expect(cta).toContain("className={styles.primaryButton}");
+    expect(cta).toContain("className={styles.button}");
+    expect(frame).toContain('className={styles.page} data-testid="public-page"');
 
-    const inverseFocusRule = styles.match(
-      /\.inverse-focus a:focus-visible\s*\{([^}]*)\}/,
+    const focusRule = styles.match(
+      /\.page :is\(a, button, summary\):focus-visible[^{}]*\{([^}]*)\}/,
     )?.[1];
-    expect(inverseFocusRule).toContain(
-      "outline: 3px solid var(--background);",
-    );
-    expect(inverseFocusRule).not.toContain("!important");
-    expect(styles).toContain("a:focus-visible,");
-    expect(styles.match(/:root\s*\{([^}]*)\}/)?.[1]).toContain(
-      "--background:",
-    );
-    expect(
-      styles.match(/:root\[data-theme="dark"\]\s*\{([^}]*)\}/)?.[1],
-    ).toContain("--background:");
+    expect(focusRule).toContain("outline: 3px solid var(--focus);");
+    expect(focusRule).toContain("outline-offset: 3px;");
+    expect(focusRule).toContain("box-shadow: 0 0 0 3px var(--focus-surface, var(--background));");
+    expect(focusRule).not.toContain("!important");
+    expect(styles.match(/\.page\s*\{([^}]*)\}/)?.[1]).toContain("--focus-surface: var(--background);");
+    for (const theme of [/:root\s*\{([^}]*)\}/, /:root\[data-theme="dark"\]\s*\{([^}]*)\}/]) {
+      const themeTokens = tokens.match(theme)?.[1];
+      expect(themeTokens).toContain("--background:");
+      expect(themeTokens).toContain("--focus:");
+    }
   });
 
   it("records the release budgets used by preview verification", () => {
@@ -217,7 +230,11 @@ describe("frontend performance budgets", () => {
       '["promote", stagedBaseUrl, "--yes", "--scope", VERCEL_SCOPE]',
     );
     expect(healthBadge).toContain("/api/health?public=1");
-    expect(healthBadge).toContain('cache: "force-cache"');
+    expect(healthBadge).toContain('cache: "no-store"');
+    expect(healthBadge).not.toContain('cache: "force-cache"');
+    expect(healthBadge).toContain('document.readyState === "complete"');
+    expect(healthBadge).toContain('window.addEventListener("load", schedule, { once: true })');
+    expect(healthBadge).toContain("parsePublicHealth(response.status, body)");
     expect(workspaceSummary).toContain("actorScopedCache(");
     expect(workspaceSummary).toContain('["workspace-summary-v2"]');
     expect(workspaceSummary).toContain("{ revalidate: 15 }");

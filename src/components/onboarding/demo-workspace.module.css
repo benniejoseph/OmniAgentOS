@@ -1,0 +1,45 @@
+.page { min-inline-size: 0; background: var(--background); color: var(--foreground); font-family: var(--font-geist-sans), sans-serif; font-size: 0.875rem; line-height: 1.25rem; padding: 3rem 2rem; max-inline-size: 80rem; margin-inline: auto; outline: none; --focus-surface: var(--background); }
+.page * { box-sizing: border-box; }
+.skip { position: absolute; inset-block-start: 0.5rem; inset-inline-start: 1rem; z-index: 60; transform: translateY(-200%); }
+.skip:focus { transform: none; outline: 3px solid var(--focus); outline-offset: 3px; box-shadow: 0 0 0 3px var(--background); }
+.page :is(p, h1, h2, h3, dl, dd) { margin: 0; }
+.page :is(p, h1, h2, h3, dt, dd, button, a, code) { overflow-wrap: anywhere; }
+.page h2 { font-size: 1.25rem; line-height: 1.75rem; font-weight: 600; letter-spacing: -0.01em; }
+.page h3 { font-size: 1rem; line-height: 1.5rem; font-weight: 600; }
+.intro { display: grid; gap: 1.5rem; max-inline-size: 45rem; padding-block-end: 3rem; }
+.page .title { font-size: 1.75rem; line-height: 2.25rem; font-weight: 600; letter-spacing: -0.02em; }
+.eyebrow { color: var(--accent); font-size: 0.8125rem; line-height: 1.25rem; font-weight: 600; }
+.reading { font-size: 1rem; line-height: 1.625rem; max-inline-size: 45rem; }
+.support { color: var(--muted); font-size: 0.8125rem; line-height: 1.25rem; }
+.actions { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; padding-block: 0.5rem; }
+.button, .primaryButton, .step { display: inline-flex; min-block-size: 2.75rem; min-inline-size: 0; align-items: center; justify-content: center; gap: 0.75rem; padding: 0.625rem 1rem; border: 1px solid var(--line-strong); border-radius: 0.625rem; background: var(--surface); color: var(--foreground); font-family: inherit; font-size: 0.875rem; line-height: 1.25rem; font-weight: 500; text-align: center; text-decoration: none; cursor: pointer; }
+.primaryButton { background: var(--primary); border-color: var(--primary); color: var(--primary-ink); }
+.button:hover:not(:disabled), .step:hover { background: var(--surface-raised); }
+.button:active:not(:disabled), .step:active { background: var(--surface-overlay); }
+.primaryButton:hover { background: var(--primary-hover); }
+.primaryButton:active { background: var(--primary-pressed); }
+.button:disabled { background: var(--surface-raised); color: var(--muted); cursor: not-allowed; }
+.page :is(button, a):focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; box-shadow: 0 0 0 3px var(--focus-surface); }
+.walkthrough { display: grid; gap: 1.5rem; padding-block: 2rem; border-block: 1px solid var(--line); }
+.walkthroughHeader { display: flex; flex-wrap: wrap; gap: 1rem; justify-content: space-between; align-items: baseline; }
+.steps { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 1rem; }
+.step { justify-content: start; text-align: start; padding: 1rem; border-block-end-width: 3px; }
+.step[aria-pressed="true"] { background: var(--accent-surface); color: var(--foreground); border-block-end-color: var(--accent); font-weight: 600; }
+.stepNumber { font-variant-numeric: tabular-nums; font-size: 0.8125rem; line-height: 1.25rem; }
+.detail { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 2rem; padding-block: 0.5rem; }
+.explanation, .example { min-inline-size: 0; display: grid; align-content: start; gap: 1rem; }
+.example { padding: 1.5rem; border-inline-start: 3px solid var(--line-strong); background: var(--surface); }
+.exampleLabel { font-size: 0.875rem; line-height: 1.25rem; font-weight: 600; }
+.scope { display: grid; gap: 1.5rem; padding-block: 2rem 0; }
+.facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1.5rem; }
+.facts > div { min-inline-size: 0; display: grid; align-content: start; gap: 0.5rem; }
+.facts dt { color: var(--muted); font-size: 0.8125rem; line-height: 1.25rem; }
+.facts code { font-family: var(--font-geist-mono), monospace; font-size: 0.8125rem; line-height: 1.25rem; }
+.textLink { display: inline-flex; min-block-size: 2.75rem; align-items: center; padding: 0.5rem; color: var(--accent); text-decoration: underline; text-underline-offset: 0.2em; }
+@media (max-width: 1023px) { .page { padding: 2rem 1.5rem; } .steps { grid-template-columns: repeat(3, minmax(0, 1fr)); } .detail { grid-template-columns: minmax(0, 1fr); } .facts { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 767px) { .page { padding-inline: 1rem; } .page .title { font-size: 1.5rem; line-height: 2rem; } .steps { grid-template-columns: repeat(2, minmax(0, 1fr)); } .actions > * { flex: 1 1 12rem; } .example { padding: 1rem; } }
+@media (max-width: 359px) { .steps, .facts { grid-template-columns: minmax(0, 1fr); } }
+@media (pointer: coarse) { .button, .primaryButton, .step, .textLink { min-block-size: 3rem; } }
+@media (prefers-reduced-motion: reduce) { .page * { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
+@media (prefers-contrast: more) { .page { --muted: var(--foreground); --line: var(--line-strong); } }
+@media (forced-colors: active) { .page { --background: Canvas; --surface: Canvas; --surface-raised: Canvas; --surface-overlay: Canvas; --foreground: CanvasText; --muted: CanvasText; --line: CanvasText; --line-strong: ButtonText; --primary: ButtonFace; --primary-ink: ButtonText; --primary-hover: ButtonFace; --primary-pressed: ButtonFace; --accent: LinkText; --accent-surface: Canvas; --focus: Highlight; } .step[aria-pressed="true"] { border-block-end-color: Highlight; } .button:disabled { color: GrayText; } }

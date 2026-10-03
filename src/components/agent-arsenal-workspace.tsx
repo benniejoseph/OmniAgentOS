@@ -11,20 +11,17 @@ import {
   Eye,
   Layers3,
   Loader2,
-  Network,
   Pencil,
   Plus,
   Sparkles,
   Trash2,
   Users,
-  Wrench,
   X,
 } from "lucide-react";
 import { clsx } from "clsx";
 import {
-  AgentMascot,
-  getAgentMascotIdentity,
-} from "@/components/agents/agent-mascot";
+  AgentIdentityMark,
+} from "@/components/agents/agent-identity-mark";
 import { AgentGrantEditor } from "@/components/agents/agent-grant-editor";
 import { AgentAdaptationEditor } from "@/components/agents/agent-adaptation-editor";
 import { AgentReleaseEditor } from "@/components/agents/agent-release-editor";
@@ -36,18 +33,19 @@ import {
   safeParseAgentCouncilMap,
   type AgentCouncilMap,
 } from "@/lib/agents/council-map-contract";
+import { customAgentInputSchema, skillInputSchema } from "@/lib/skills/schema";
 import { DEFAULT_CUSTOM_AGENT_PERSONA } from "@/lib/agents/persona";
 import type { AgentPerformance } from "@/lib/agents/performance";
 import type { AgentDailyLearningStatusV1 } from "@/lib/agents/learning-contracts";
 import type {
   AgentSkill,
-  CustomAgentDefinition,
   RequestCustomAgentDefinition,
 } from "@/lib/skills/types";
 import { MAX_ASSIGNED_SKILLS } from "@/lib/skills/limits";
 import { isExactMoltbookAgentCapabilityBoundary } from "@/lib/moltbook/contracts";
 import styles from "@/components/agent-arsenal-workspace.module.css";
-import type { TrashActionPreviewV1 } from "@/lib/trash/contracts";
+import { AgentsLifecycleBoundary, useAgentRead, useAgentsLifecycle } from "@/components/agents/agents-workspace-lifecycle";
+import { agentsActionRequest, agentsRead, agentTrashPreview, agentTrashReceipt, builderReceipt, learningRead, performanceRead, readAgentsJson, sameAgentJson, skillsRead, toolsRead } from "@/components/agents-workspace-state";
 
 type ToolOption = {
   id: string;
@@ -66,687 +64,175 @@ type BuilderSaveResult =
     }
   | { kind: "skill"; skill: AgentSkill; message: string };
 
-export function AgentArsenalWorkspace({
-  initialView,
-  initialRunId,
-  initialTaskId,
-}: {
-  initialView?: string;
-  initialRunId?: string;
-  initialTaskId?: string;
-}) {
-  const [activeView, setActiveView] = useState<WorkspaceView>(
-    isWorkspaceView(initialView) ? initialView : "live",
-  );
+export function AgentArsenalWorkspace(props: { initialView?: string; initialRunId?: string; initialTaskId?: string }) {
+  return <AgentsLifecycleBoundary scope={JSON.stringify([props.initialView, props.initialRunId, props.initialTaskId])}><ArsenalWorkspace {...props} /></AgentsLifecycleBoundary>;
+}
+function ArsenalWorkspace({ initialView, initialRunId, initialTaskId }: { initialView?: string; initialRunId?: string; initialTaskId?: string }) {
+  const { gate, busy, reason, session } = useAgentsLifecycle();
+  const [activeView, setActiveView] = useState<WorkspaceView>(isWorkspaceView(initialView) ? initialView : "live");
   const [selectedId, setSelectedId] = useState("atlas");
-  const [customAgents, setCustomAgents] = useState<RequestCustomAgentDefinition[]>([]);
-  const [skills, setSkills] = useState<AgentSkill[]>([]);
-  const [tools, setTools] = useState<ToolOption[]>([]);
-  const [performance, setPerformance] = useState<AgentPerformance[]>([]);
-  const [learning, setLearning] = useState<{
-    agentId: string;
-    status?: AgentDailyLearningStatusV1;
-    state: "ready" | "unavailable";
-  }>();
-  const [councilMap, setCouncilMap] = useState<AgentCouncilMap>();
-  const [councilState, setCouncilState] = useState<"loading" | "ready" | "unavailable">("loading");
-  const [state, setState] = useState<"loading" | "ready" | "unavailable">(
-    "loading",
-  );
+  const [mobileDetail, setMobileDetail] = useState(false);
   const [editor, setEditor] = useState<EditorState>();
   const [message, setMessage] = useState<string>();
-  const loadController = useRef<AbortController | null>(null);
-  const loadVersion = useRef(0);
-
-  const agents = useMemo<AgentView[]>(
-    () => [
-      ...arsenalAgents,
-      ...customAgents.map((agent) => ({
-        id: agent.id,
-        name: agent.name,
-        role: agent.role,
-        description: agent.description,
-        persona: agent.persona,
-        status: agent.status === "ready" ? "ready" as const : "watching" as const,
-        accent: agent.accent,
-        capabilities: agent.skillIds
-          .map((id) => skills.find((skill) => skill.id === id)?.name)
-          .filter((value): value is string => Boolean(value)),
-        tools: agent.toolIds.map(
-          (id) => tools.find((tool) => tool.id === id)?.name || id,
-        ),
-        adaptationSignals: ["Run outcomes", "Your feedback", "Skill performance"],
-        autonomy: `${agent.autonomy} · ${agent.approvalPolicy.replaceAll("_", " ")} approvals · ${agent.memoryScope} memory`,
-        custom: agent,
-      })),
-    ],
-    [customAgents, skills, tools],
-  );
-  const selected = agents.find((agent) => agent.id === selectedId) || agents[0];
-  const selectedPerformance = performance.find(
-    (item) => item.agentId === selected.id,
-  );
-  const selectedLearning = learning?.agentId === selected.id ? learning : undefined;
-  const selectedIdentity = getAgentMascotIdentity(selected.id);
-  const selectedIsExactMoltbook = Boolean(
-    selected.custom && isExactMoltbookAgentCapabilityBoundary(selected.custom),
-  );
-
-  async function load(saved?: BuilderSaveResult) {
-    const version = ++loadVersion.current;
-    loadController.current?.abort();
-    const controller = new AbortController();
-    loadController.current = controller;
-    try {
-      const [agentPayload, skillPayload, toolPayload, performancePayload] =
-        await Promise.all([
-          readJson<{ agents?: RequestCustomAgentDefinition[] }>(
-            "/api/agents?ownerScope=readable",
-            { signal: controller.signal },
-          ),
-          readJson<{ skills?: AgentSkill[] }>("/api/skills", {
-            signal: controller.signal,
-          }),
-          readJson<{ tools?: ToolOption[] }>("/api/tools", {
-            signal: controller.signal,
-          }),
-          readJson<{ agents?: AgentPerformance[] }>(
-            "/api/agents/performance",
-            { signal: controller.signal },
-          ),
-        ]);
-      if (controller.signal.aborted || version !== loadVersion.current) return;
-      const nextAgents = agentPayload.agents || [];
-      const nextSkills = skillPayload.skills || [];
-      setCustomAgents(
-        saved?.kind === "agent"
-          ? upsertById(nextAgents, saved.agent)
-          : nextAgents,
-      );
-      setSkills(
-        saved?.kind === "skill"
-          ? upsertById(nextSkills, saved.skill)
-          : nextSkills,
-      );
-      setTools(toolPayload.tools || []);
-      setPerformance(performancePayload.agents || []);
-      setState("ready");
-    } catch {
-      if (controller.signal.aborted || version !== loadVersion.current) return;
-      setState("unavailable");
-    }
-  }
+  const [error, setError] = useState<string>();
+  const [query, setQuery] = useState("");
+  const [visibleSkills, setVisibleSkills] = useState(30);
+  const [visibleAgents, setVisibleAgents] = useState(30);
+  const detailHeading = useRef<HTMLHeadingElement>(null);
+  const rosterButtons = useRef(new Map<string, HTMLButtonElement>());
+  const canceled = useRef(new Map<string, number>());
+  const savedAgents = useRef(new Map<string, RequestCustomAgentDefinition>());
+  const savedSkills = useRef(new Map<string, AgentSkill>());
+  const trashed = useRef(new Map<string, string>());
+  const agentRead = useAgentRead("/api/agents?ownerScope=readable", (payload) => {
+    const rows = agentsRead(payload, session?.context?.tenantId);
+    if (rows.some((row) => (trashed.current.has(`agent:${row.id}`) && Date.parse(row.updatedAt) <= Date.parse(trashed.current.get(`agent:${row.id}`)!))) || [...savedAgents.current.values()].some((old) => { const next = rows.find((row) => row.id === old.id); return Boolean(next && Date.parse(next.updatedAt) < Date.parse(old.updatedAt)); })) throw new Error("The Agent read predates a confirmed change. Last confirmed profiles are retained.");
+    return rows;
+  });
+  const skillRead = useAgentRead("/api/skills", (payload) => {
+    const rows = skillsRead(payload, session?.context?.tenantId);
+    if (rows.some((row) => (trashed.current.has(`skill:${row.id}`) && Date.parse(row.updatedAt) <= Date.parse(trashed.current.get(`skill:${row.id}`)!))) || [...savedSkills.current.values()].some((old) => { const next = rows.find((row) => row.id === old.id); return Boolean(next && next.version < old.version); })) throw new Error("The Skill read predates a confirmed change. Last confirmed Skills are retained.");
+    return rows;
+  });
+  const toolRead = useAgentRead("/api/tools", toolsRead);
+  const outcomeRead = useAgentRead("/api/agents/performance", performanceRead);
+  const councilRead = useAgentRead("/api/agents/council?limit=60", (payload) => {
+    const map = safeParseAgentCouncilMap(payload.map);
+    if (!map) throw new Error("The live work projection is unavailable.");
+    if (map.executions.some((execution) => execution.members.some((member) => (canceled.current.get(member.taskId) || 0) > member.lifecycleRevision))) throw new Error("The live read predates a confirmed cancellation. Last confirmed details are retained.");
+    return map;
+  });
+  const customAgents = useMemo(() => agentRead.data ?? [], [agentRead.data]);
+  const skills = useMemo(() => skillRead.data ?? [], [skillRead.data]);
+  const tools = useMemo(() => toolRead.data ?? [], [toolRead.data]);
+  const performance = outcomeRead.data || [];
+  const agents = useMemo<AgentView[]>(() => [...arsenalAgents, ...customAgents.map((agent) => ({
+    id: agent.id, name: agent.name, role: agent.role, description: agent.description, persona: agent.persona,
+    status: agent.status === "ready" ? "ready" as const : "watching" as const, accent: agent.accent,
+    capabilities: agent.skillIds.map((id) => `${skills.find((skill) => skill.id === id)?.name || "Unavailable skill"} · ${id}`),
+    tools: agent.toolIds.map((id) => `${tools.find((tool) => tool.id === id)?.name || "Unavailable action"} · ${id}`),
+    adaptationSignals: ["Run outcomes", "Your feedback", "Skill performance"],
+    autonomy: `${agent.autonomy} · ${agent.approvalPolicy.replaceAll("_", " ")} approvals · ${agent.memoryScope} memory`, custom: agent,
+  }))], [customAgents, skills, tools]);
+  const selected = agents.find((agent) => agent.id === selectedId);
+  const learningReadState = useAgentRead(`/api/agents/${encodeURIComponent(selectedId)}/learning`, (payload) => learningRead(payload, selectedId));
+  const selectedMoltbook = Boolean(selected?.custom && isExactMoltbookAgentCapabilityBoundary(selected.custom));
+  const managementReady = !reason && agentRead.current && skillRead.current && toolRead.current;
+  const filteredAgents = agents.filter((agent) => `${agent.name} ${agent.role} ${agent.id}`.toLowerCase().includes(query.toLowerCase()));
+  const filteredSkills = skills.filter((skill) => `${skill.name} ${skill.id} ${skill.description}`.toLowerCase().includes(query.toLowerCase()));
+  const refreshCouncil = councilRead.refresh;
+  const refreshLearning = learningReadState.refresh;
   useEffect(() => {
-    const timer = window.setTimeout(() => void load(), 0);
-    return () => {
-      window.clearTimeout(timer);
-      loadController.current?.abort();
-    };
-  }, []);
-  useEffect(() => {
-    if (activeView !== "live") return;
-    let controller: AbortController | undefined;
-    let timer: number | undefined;
-    let disposed = false;
-    const loadCouncil = async () => {
-      if (document.hidden) return;
-      controller?.abort();
-      const requestController = new AbortController();
-      controller = requestController;
-      try {
-        const payload = await readJson<{ map?: unknown }>("/api/agents/council?limit=60", {
-          signal: requestController.signal,
-        });
-        if (disposed || requestController.signal.aborted) return;
-        const parsed = safeParseAgentCouncilMap(payload.map);
-        if (!parsed) throw new Error("Agent Council response is invalid.");
-        setCouncilMap(parsed);
-        setCouncilState("ready");
-      } catch {
-        if (disposed || requestController.signal.aborted) return;
-        setCouncilMap(undefined);
-        setCouncilState("unavailable");
-      } finally {
-        if (
-          !disposed &&
-          !document.hidden &&
-          controller === requestController
-        ) {
-          timer = window.setTimeout(() => void loadCouncil(), 12_000);
-        }
-      }
-    };
-    const onVisibilityChange = () => {
-      if (timer !== undefined) window.clearTimeout(timer);
-      if (document.hidden) controller?.abort();
-      else void loadCouncil();
-    };
-    timer = window.setTimeout(() => void loadCouncil(), 0);
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    return () => {
-      disposed = true;
-      if (timer !== undefined) window.clearTimeout(timer);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-      controller?.abort();
-    };
-  }, [activeView]);
-  useEffect(() => {
-    if (activeView !== "roster") return;
-    const agentId = selected.id;
-    let controller: AbortController | undefined;
-    let timer: number | undefined;
-    let disposed = false;
-    const loadLearning = async () => {
-      if (document.hidden) return;
-      controller?.abort();
-      const requestController = new AbortController();
-      controller = requestController;
-      try {
-        const payload = await readJson<{ learning?: AgentDailyLearningStatusV1 }>(
-          `/api/agents/${encodeURIComponent(agentId)}/learning`,
-          { signal: requestController.signal },
-        );
-        if (disposed || requestController.signal.aborted) return;
-        if (!payload.learning) throw new Error("Daily learning status is missing.");
-        setLearning({ agentId, status: payload.learning, state: "ready" });
-      } catch {
-        if (disposed || requestController.signal.aborted) return;
-        setLearning({ agentId, state: "unavailable" });
-      } finally {
-        if (!disposed && !document.hidden && controller === requestController) {
-          timer = window.setTimeout(() => void loadLearning(), 30_000);
-        }
-      }
-    };
-    const onVisibilityChange = () => {
-      if (timer !== undefined) window.clearTimeout(timer);
-      if (document.hidden) controller?.abort();
-      else void loadLearning();
-    };
-    timer = window.setTimeout(() => void loadLearning(), 0);
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    return () => {
-      disposed = true;
-      if (timer !== undefined) window.clearTimeout(timer);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-      controller?.abort();
-    };
-  }, [activeView, selected.id]);
-
+    if (activeView !== "live" && activeView !== "roster") return;
+    const timer = window.setInterval(() => { if (!document.hidden && !gate.busy()) void (activeView === "live" ? refreshCouncil() : refreshLearning()); }, activeView === "live" ? 12_000 : 30_000);
+    return () => window.clearInterval(timer);
+  }, [activeView, gate, refreshCouncil, refreshLearning]);
+  function refreshAll() { if (gate.busy()) return; void agentRead.refresh(); void skillRead.refresh(); void toolRead.refresh(); void outcomeRead.refresh(); void councilRead.refresh(); void learningReadState.refresh(); }
   function changeView(view: WorkspaceView) {
+    if (gate.busy()) return;
     setActiveView(view);
-    const url = new URL(window.location.href);
-    url.searchParams.set("view", view);
-    if (view !== "live") {
-      url.searchParams.delete("run");
-      url.searchParams.delete("task");
-    }
+    const url = new URL(window.location.href); url.searchParams.set("view", view);
+    if (view !== "live") { url.searchParams.delete("run"); url.searchParams.delete("task"); }
     window.history.replaceState(window.history.state, "", url);
   }
-
-  async function removeSelectedAgent() {
-    if (
-      !selected.custom ||
-      selected.custom.manageable !== true
-    )
-      return;
-    const prepared = await readJson<{
-      preview?: TrashActionPreviewV1;
-      compensation?: string | null;
-    }>(`/api/agents/${encodeURIComponent(selected.id)}?mode=trash-preview`);
-    if (!prepared.preview) throw new Error("Agent trash preview was not returned.");
-    if (!window.confirm(
-      `${prepared.preview.effectSummary}\n\nExisting run history remains. Recovery is available in Settings → Data & privacy → Trash.`,
-    )) return;
-    await mutate(`/api/agents/${encodeURIComponent(selected.id)}`, {
-      method: "DELETE",
-      headers: {
-        "content-type": "application/json",
-        "idempotency-key": crypto.randomUUID(),
-      },
-      body: JSON.stringify({ preview: prepared.preview }),
-    });
-    setSelectedId("atlas");
-    setMessage(`${selected.name} moved to Trash. Undo is available for 30 days.`);
-    await load();
+  function chooseAgent(id: string) {
+    if (gate.busy()) return;
+    setSelectedId(id); setMobileDetail(true);
+    requestAnimationFrame(() => detailHeading.current?.focus());
   }
-  async function removeSkill(skill: AgentSkill) {
-    if (!skill.manageable) return;
-    const prepared = await readJson<{ preview?: TrashActionPreviewV1 }>(
-      `/api/skills/${encodeURIComponent(skill.id)}?mode=trash-preview`,
-    );
-    if (!prepared.preview) throw new Error("Skill trash preview was not returned.");
-    if (!window.confirm(
-      `${prepared.preview.effectSummary}\n\nRecovery is available in Settings → Data & privacy → Trash.`,
-    )) return;
-    await mutate(`/api/skills/${encodeURIComponent(skill.id)}`, {
-      method: "DELETE",
-      headers: {
-        "content-type": "application/json",
-        "idempotency-key": crypto.randomUUID(),
-      },
-      body: JSON.stringify({ preview: prepared.preview }),
-    });
-    setMessage(`${skill.name} moved to Trash. Undo is available for 30 days.`);
-    await load();
+  async function remove(kind: "agent" | "skill", item: RequestCustomAgentDefinition | AgentSkill) {
+    if (!managementReady || gate.busy() || !item.manageable) return;
+    const path = `/api/${kind === "agent" ? "agents" : "skills"}/${encodeURIComponent(item.id)}`;
+    // Preview owns the same synchronous slot as the effect, so selection cannot drift between them.
+    const preparation = gate.begin(`${path}?mode=trash-preview`, "GET", undefined, `Review removal of ${item.name}`);
+    if (!preparation) return;
+    setError(undefined);
+    try {
+      const prepared = await readAgentsJson(preparation.path);
+      if (!gate.current(preparation)) return;
+      const preview = agentTrashPreview(prepared.preview, item.id, kind);
+      if (!window.confirm(`${preview.effectSummary}\n\nExact ${kind} ID: ${item.id}\nRecovery is available in Settings → Data & privacy → Trash.`)) return;
+      gate.finish(preparation, true);
+      const token = gate.begin(path, "DELETE", { preview }, `Removing ${item.name}`, { id: item.id, updatedAt: item.updatedAt });
+      if (!token) return;
+      try {
+        const payload = await agentsActionRequest(token);
+        if (!gate.current(token)) return;
+        const until = agentTrashReceipt(payload, preview);
+        trashed.current.set(`${kind}:${item.id}`, item.updatedAt); savedAgents.current.delete(item.id); savedSkills.current.delete(item.id);
+        if (kind === "agent") { agentRead.accept((current) => current?.filter((row) => row.id !== item.id)); setSelectedId("atlas"); }
+        else skillRead.accept((current) => current?.filter((row) => row.id !== item.id));
+        setMessage(`${item.name} moved to Trash. Recovery is available until ${until}.`);
+        gate.finish(token, true);
+      } catch (caught) { if (gate.current(token)) setError(caught instanceof Error ? caught.message : "Removal was not confirmed."); }
+      finally { gate.finish(token, false); }
+    } catch (caught) { if (gate.current(preparation)) setError(caught instanceof Error ? caught.message : "The removal preview is unavailable."); }
+    finally { gate.finish(preparation, false); }
   }
-
-  return (
-    <div className={clsx("arsenal-shell workspace-enter", styles.shell)}>
-      <header className="arsenal-header">
-        <div className={styles.headerCopy}>
-          <p className="arsenal-kicker">Living intelligence</p>
-          <h1>
-            Your <span>Agents</span>
-          </h1>
-          <p>
-            Meet the specialists who help with your work. Each one has a clear
-            purpose, a recognizable personality, and boundaries you control.
-          </p>
-          <div className="arsenal-header-meta" aria-label="Agent workspace summary">
-            <span><strong>{agents.length}</strong> agents</span>
-            <span><strong>{skills.length}</strong> skills</span>
-            <span><strong>{tools.length}</strong> available actions</span>
-          </div>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() => setEditor({ kind: "skill" })}
-            className="action-button"
-          >
-            <Layers3 size={15} aria-hidden="true" />
-            New skill
-          </button>
-          <button
-            type="button"
-            onClick={() => setEditor({ kind: "agent" })}
-            className="primary-button"
-          >
-            <Plus size={15} aria-hidden="true" />
-            Create agent
-          </button>
-        </div>
-      </header>
-      {message ? (
-        <p
-          className="mx-4 mt-3 rounded-md border border-primary/25 bg-primary/8 px-3 py-2 text-sm text-primary"
-          role="status"
-        >
-          {message}
-        </p>
-      ) : null}
-      <WorkspaceTabs activeView={activeView} onChange={changeView} />
-      {activeView === "live" ? (
-        <CouncilExecutionMap
-          map={councilMap}
-          state={councilState}
-          initialRunId={initialRunId}
-          initialTaskId={initialTaskId}
-          onTaskCanceled={(task) => setCouncilMap((current) =>
-            current ? applyCouncilTaskCancellation(current, task) : current
-          )}
-        />
-      ) : null}
-      {activeView === "roster" ? (
-        <div className="arsenal-layout">
-        <nav className="arsenal-roster" aria-label="Agent roster">
-          <div className={styles.rosterHeading}>
-            <p className="arsenal-section-label">The companions</p>
-            <span>{agents.filter((agent) => agent.status === "ready").length} ready now</span>
-          </div>
-          {agents.map((agent) => (
-            <RosterButton
-              key={agent.id}
-              agent={agent}
-              selected={selected.id === agent.id}
-              onSelect={setSelectedId}
-            />
-          ))}
-        </nav>
-        <section className="arsenal-map" aria-label="Living agent constellation">
-          <div className={styles.mapGlow} aria-hidden="true" />
-          <div className={styles.mapStars} aria-hidden="true" />
-          <div className="arsenal-map-heading">
-            <div>
-              <strong>Living constellation</strong>
-              <span>Select a companion to reveal its craft and boundaries.</span>
-            </div>
-            <span><Network size={13} aria-hidden="true" />Atlas holds the center</span>
-          </div>
-          <div className="arsenal-map-grid" aria-hidden="true" />
-          <svg
-            className="arsenal-links"
-            viewBox="0 0 700 560"
-            preserveAspectRatio="none"
-            aria-hidden="true"
-          >
-            <path d="M350 280 L130 120 M350 280 L570 120 M350 280 L130 440 M350 280 L570 440" />
-            <circle cx="350" cy="280" r="122" />
-            <circle cx="350" cy="280" r="205" />
-          </svg>
-          {arsenalAgents.map((agent, index) => (
-            <AgentNode
-              key={agent.id}
-              agent={agent}
-              selected={selected.id === agent.id}
-              onSelect={setSelectedId}
-              className={
-                [
-                  "node-atlas",
-                  "node-scout",
-                  "node-forge",
-                  "node-sentinel",
-                  "node-memory",
-                ][index]
-              }
-            />
-          ))}
-          {customAgents.length ? (
-            <div className="agent-custom-orbit" aria-label="Custom agents">
-              {customAgents.map((agent) => (
-                <button
-                  key={agent.id}
-                  type="button"
-                  onClick={() => setSelectedId(agent.id)}
-                  className={clsx(
-                    `agent-${agent.accent}`,
-                    selected.id === agent.id && "is-selected",
-                  )}
-                  aria-pressed={selected.id === agent.id}
-                  aria-label={`${agent.name}, custom agent`}
-                >
-                  <AgentMascot
-                    agentId={agent.id}
-                    agentName={agent.name}
-                    size="small"
-                    decorative
-                  />
-                  <span>{agent.name}</span>
-                </button>
-              ))}
-            </div>
-          ) : null}
-          <div className="arsenal-map-legend">
-            <Network size={14} aria-hidden="true" />
-            <span>
-              Intent travels through Atlas. Every action stays within your permissions.
-            </span>
-          </div>
-        </section>
-        <aside
-          className={clsx("arsenal-inspector", `agent-${selected.accent}`)}
-          aria-live="polite"
-        >
-          <p className="arsenal-inspector-label">Selected agent</p>
-          <div className={styles.inspectorPortrait}>
-            <AgentMascot
-              agentId={selected.id}
-              agentName={selected.name}
-              size="hero"
-            />
-            <div>
-              <span>{selectedIdentity.theme}</span>
-              <strong>{selectedIdentity.companion}</strong>
-              <q>{selectedIdentity.motto}</q>
-            </div>
-          </div>
-          <div className="inspector-identity">
-            <div>
-              <p>{selected.role}</p>
-              <h2>{selected.name}</h2>
-            </div>
-            <span
-              className={clsx("agent-status-chip", `status-${selected.status}`)}
-            >
-              {statusDisplayLabel(selected.status)}
-            </span>
-          </div>
-          <p className="inspector-description">{selected.description}</p>
-          <section className={styles.personaCard} aria-label={`${selected.name} behavioral identity`}>
-            <p>Charter</p>
-            <strong>{selected.persona.charter}</strong>
-            <div className={styles.personaGrid}>
-              <div><span>Operating style</span><p>{selected.persona.operatingStyle}</p></div>
-              <div><span>Voice</span><p>{selected.persona.voice}</p></div>
-              <div><span>Visual identity</span><p>{selected.persona.visualIdentity}</p></div>
-              <div><span>Escalation</span><p>{selected.persona.escalationBehavior}</p></div>
-            </div>
-            <div className={styles.personaDomains} aria-label="Allowed subject domains">
-              {selected.persona.allowedDomains.map((domain) => <span key={domain}>{domain}</span>)}
-            </div>
-            <details>
-              <summary>Success measures</summary>
-              <ul>{selected.persona.successMeasures.map((measure) => <li key={measure}>{measure}</li>)}</ul>
-            </details>
-          </section>
-          <AgentPerformancePanel
-            performance={selectedPerformance}
-            state={state}
-          />
-          <DailyLearningCard
-            status={selectedLearning?.status}
-            state={selectedLearning?.state ?? "loading"}
-          />
-          {selectedIsExactMoltbook ? (
-            <MoltbookAgentPanel
-              key={selected.id}
-              agentId={selected.id}
-              agentName={selected.name}
-            />
-          ) : null}
-          {!selectedIsExactMoltbook && (!selected.custom || (
-            selected.custom.manageable === true &&
-            selected.custom.releaseState !== "retired"
-          )) ? (
-            <div className="mt-4">
-              <AgentAdaptationEditor
-                agentId={selected.id}
-                agentName={selected.name}
-                compact
-              />
-            </div>
-          ) : null}
-          <InspectorList
-            title="Skills"
-            items={
-              selected.capabilities.length
-                ? selected.capabilities
-                : ["No reusable skills assigned"]
-            }
-            icon="check"
-          />
-          <InspectorList
-            title="What this Agent can do"
-            items={
-              selected.tools.length ? selected.tools : ["No actions assigned"]
-            }
-            icon="eye"
-          />
-          {selected.custom?.manageable === true && !selectedIsExactMoltbook ? (
-            <div className="mt-4 grid gap-4">
-              <AgentReleaseEditor
-                agentId={selected.id}
-                agentName={selected.name}
-                compact
-              />
-              <AgentGrantEditor
-                agentId={selected.id}
-                agentName={selected.name}
-                compact
-              />
-            </div>
-          ) : selected.custom?.releaseState === "retired" ? (
-            <div className="mt-4">
-              <AgentReleaseEditor
-                agentId={selected.id}
-                agentName={selected.name}
-                compact
-              />
-            </div>
-          ) : (
-            <div className="autonomy-note mt-4">
-              <strong>Context and capability grants</strong>
-              <p>
-                {selected.custom
-                  ? "This compatibility profile is read only. Its explicit authority cannot be changed here."
-                  : "Built-in Agent authority is reviewed server policy. It has no user-authored explicit grant IDs."}
-              </p>
-            </div>
-          )}
-          <InspectorList
-            title="Adaptation evidence"
-            items={selected.adaptationSignals}
-            icon="spark"
-          />
-          <div className="autonomy-note">
-            <strong>Autonomy boundary</strong>
-            <p>{selected.autonomy}</p>
-          </div>
-          <div className="mt-4 grid gap-2">
-            {!selected.custom || selected.custom.selectable === true ? (
-              <Link
-                href={`/app/command?agent=${encodeURIComponent(selected.id)}`}
-                className="primary-button justify-center"
-              >
-                Assign work to {selected.name}
-                <ArrowRight size={15} aria-hidden="true" />
-              </Link>
-            ) : (
-              <p className="rounded-md border border-border/70 bg-muted/40 px-3 py-2 text-center text-sm text-muted-foreground">
-                Read-only compatibility profile
-              </p>
-            )}
-          {selected.custom?.manageable === true && !selectedIsExactMoltbook ? (
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setEditor({ kind: "agent", id: selected.id })}
-                  className="action-button justify-center"
-                >
-                  <Pencil size={14} aria-hidden="true" />
-                  Edit
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void removeSelectedAgent()}
-                  className="action-button justify-center text-danger"
-                >
-                  <Trash2 size={14} aria-hidden="true" />
-                  Delete
-                </button>
-              </div>
-            ) : null}
-            {selected.custom?.manageable === true && selectedIsExactMoltbook ? (
-              <div className="autonomy-note">
-                <strong>Isolated Moltbook identity</strong>
-                <p>
-                  Its exact actions and lifecycle are locked while its private
-                  connection and append-only activity history are retained.
-                  Pause or resume the connection from the Moltbook console.
-                </p>
-              </div>
-            ) : null}
-          </div>
-        </aside>
-        </div>
-      ) : null}
-      {activeView === "skills" ? (
-        <section className="skill-studio" aria-labelledby="skill-studio-title">
-        <div className="skill-studio-heading">
-          <div>
-            <p>Reusable behavior</p>
-            <h2 id="skill-studio-title">Skills</h2>
-            <span>
-              Reusable instructions, actions, and knowledge conventions that can be
-              composed across agents.
-            </span>
-          </div>
-          <button
-            type="button"
-            className="action-button"
-            onClick={() => setEditor({ kind: "skill" })}
-          >
-            <Plus size={15} aria-hidden="true" />
-            Create skill
-          </button>
-        </div>
-        <div className="skill-studio-list">
-          {skills.map((skill) => (
-            <article key={skill.id}>
-              <div className="skill-studio-mark">
-                <Wrench size={16} aria-hidden="true" />
-              </div>
-              <div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <h3>{skill.name}</h3>
-                  <span>
-                    {skill.builtIn ? "Asael core" : `v${skill.version}`}
-                  </span>
-                  <span>{skill.status}</span>
-                </div>
-                <p>{skill.description}</p>
-                <small>
-                  {skill.category} · {skill.toolIds.length} actions ·{" "}
-                  {skill.tags.join(" · ") || "untagged"}
-                </small>
-              </div>
-              <div className="skill-studio-actions">
-                {skill.manageable ? (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => setEditor({ kind: "skill", id: skill.id })}
-                      aria-label={`Edit ${skill.name}`}
-                    >
-                      <Pencil size={14} />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void removeSkill(skill)}
-                      aria-label={`Delete ${skill.name}`}
-                    >
-                      <Trash2 size={14} />
-                    </button>
-                  </>
-                ) : skill.builtIn ? (
-                  <Check size={15} aria-label="Built in" />
-                ) : null}
-              </div>
-            </article>
-          ))}
-        </div>
-        </section>
-      ) : null}
-      {activeView === "outcomes" ? (
-        <AgentOutcomes
-          agents={agents}
-          performance={performance}
-          state={state}
-        />
-      ) : null}
-      {editor ? (
-        <BuilderDialog
-          editor={editor}
-          agents={customAgents}
-          skills={skills}
-          tools={tools}
-          onClose={() => setEditor(undefined)}
-          onSaved={async (result) => {
-            setEditor(undefined);
-            setMessage(result.message);
-            if (result.kind === "agent") {
-              setCustomAgents((current) => upsertById(current, result.agent));
-              setSelectedId(result.agent.id);
-            } else {
-              setSkills((current) => upsertById(current, result.skill));
-            }
-            await load(result);
-          }}
-        />
-      ) : null}
+  return <div className={styles.shell} data-testid="agents-workspace">
+    <header className={styles.header}>
+      <div><h1>Agents</h1><p>Follow the executing Agent, inspect its evidence, and manage its exact boundaries.</p></div>
+      <div className={styles.actions}>
+        <button className="secondary-button" disabled={Boolean(busy)} onClick={refreshAll}>Refresh Agents</button>
+        <button className="secondary-button" disabled={Boolean(busy) || !managementReady} onClick={() => setEditor({ kind: "skill" })}><Layers3 size={16} aria-hidden="true" />New skill</button>
+        <button className="primary-button" disabled={Boolean(busy) || !managementReady} onClick={() => setEditor({ kind: "agent" })}><Plus size={16} aria-hidden="true" />Create agent</button>
+      </div>
+    </header>
+    <dl className={styles.readStates} aria-label="Agent source availability">
+      <div><dt>Custom Agents</dt><dd>{agentRead.label}{agentRead.data ? ` · ${agentRead.data.length}` : ""}</dd></div>
+      <div><dt>Skills</dt><dd>{skillRead.label}{skillRead.data ? ` · ${skillRead.data.length}` : ""}</dd></div>
+      <div><dt>Actions</dt><dd>{toolRead.label}{toolRead.data ? ` · ${toolRead.data.length}` : ""}</dd></div>
+      <div><dt>Outcomes</dt><dd>{outcomeRead.label}</dd></div>
+    </dl>
+    {reason ? <p className={styles.notice}>{reason}</p> : null}
+    {!managementReady && !reason ? <p className={styles.notice}>Creation and profile changes require current Agent, Skill and action lists. Refresh unavailable sources to continue.</p> : null}
+    {[agentRead.error, skillRead.error, toolRead.error, outcomeRead.error].filter(Boolean).length ? <details className={styles.notice}><summary>Source read details</summary>{[["Custom Agents",agentRead.error],["Skills",skillRead.error],["Actions",toolRead.error],["Outcomes",outcomeRead.error]].map(([label,value]) => value ? <p key={label}>{label}: {value}</p> : null)}</details> : null}
+    <p role="status" className={styles.status}>{busy ? `Pending: ${busy}. The reviewed target is fixed until the response returns.` : message}</p>
+    {error ? <p role="alert" className={styles.error}>{error}</p> : null}
+    <WorkspaceTabs activeView={activeView} onChange={changeView} disabled={Boolean(busy)} />
+    {activeView === "live" ? <>
+      <p className={styles.sourceStatus} role="status">{councilRead.label} · Bounded live work window.</p>
+      {councilRead.error ? <p className={styles.error} role="alert">{councilRead.error}</p> : null}
+      <CouncilExecutionMap map={councilRead.data} state={councilRead.loading ? "loading" : councilRead.error ? "unavailable" : "ready"} initialRunId={initialRunId} initialTaskId={initialTaskId} onTaskCanceled={(task) => { canceled.current.set(task.executionId, task.lifecycleRevision); councilRead.accept((current) => current ? applyCouncilTaskCancellation(current, task) : current); }} />
+    </> : null}
+    {/* Keep the selected inspector mounted across workspace views so local authority drafts survive. */}
+    <div hidden={activeView !== "roster"} className={styles.rosterWorkspace} data-detail={mobileDetail}>
+      <nav className={styles.roster} aria-label="Agent roster">
+        <h2>Roster</h2><p>{arsenalAgents.length} built-in Agents · custom profiles {agentRead.label.toLowerCase()}.</p>
+        <label>Search roster<input value={query} onChange={(event) => { setQuery(event.currentTarget.value); setVisibleAgents(30); }} type="search" /></label>
+        {filteredAgents.slice(0, visibleAgents).map((agent) => <button ref={(node) => { if (node) rosterButtons.current.set(agent.id, node); else rosterButtons.current.delete(agent.id); }} key={agent.id} disabled={Boolean(busy)} onClick={() => chooseAgent(agent.id)} aria-pressed={selectedId === agent.id} className={styles.rosterRow}><AgentIdentityMark agentId={agent.id} agentName={agent.name} size="small" decorative /><span><strong>{agent.name}</strong><span>{agent.role}</span><small>{agent.id}</small><small>{agent.custom?.status || statusDisplayLabel(agent.status)}{agent.custom?.releaseState === "retired" ? " · retired" : ""}</small></span></button>)}
+        {!filteredAgents.length ? <p>No loaded Agent matches this search.</p> : null}
+        {filteredAgents.length > visibleAgents ? <button className="secondary-button" onClick={() => setVisibleAgents((count) => count + 30)}>Show more Agents</button> : null}
+      </nav>
+      <section className={styles.inspector} aria-label="Selected Agent">
+        <button className={`${styles.back} secondary-button`} disabled={Boolean(busy)} onClick={() => { setMobileDetail(false); requestAnimationFrame(() => rosterButtons.current.get(selectedId)?.focus()); }}>Back to roster</button>
+        {selected ? <>
+          <div className={styles.identity}><AgentIdentityMark agentId={selected.id} agentName={selected.name} size="small" decorative /><div><p>{selected.role}</p><h2 ref={detailHeading} tabIndex={-1}>{selected.name}</h2><p>Agent ID: {selected.id}</p></div></div>
+          <p>{selected.description}</p>
+          {selected.custom ? <details><summary>Stored profile instructions and routing</summary><p className={styles.exactText}>{selected.custom.instructions}</p><p>Model policy: {selected.custom.modelPolicy} · memory scope: {selected.custom.memoryScope} · approval policy: {selected.custom.approvalPolicy}</p></details> : null}
+          <dl className={styles.metadata}><div><dt>Status</dt><dd>{selected.custom?.status || statusDisplayLabel(selected.status)}</dd></div>{selected.custom ? <><div><dt>Owner actor</dt><dd>{selected.custom.actorId}</dd></div><div><dt>Tenant</dt><dd>{selected.custom.tenantId}</dd></div><div><dt>Profile updated</dt><dd>{selected.custom.updatedAt}</dd></div><div><dt>Active / latest release</dt><dd>{selected.custom.activeDefinitionVersion ?? "Unavailable"} / {selected.custom.latestDefinitionVersion ?? "Unavailable"}</dd></div></> : <div><dt>Identity</dt><dd>Built-in Agent · version pins appear on each execution.</dd></div>}</dl>
+          <section className={styles.personaCard} aria-label={`${selected.name} behavioral identity`}><h3>Charter</h3><p>{selected.persona.charter}</p><dl className={styles.metadata}><div><dt>Operating style</dt><dd>{selected.persona.operatingStyle}</dd></div><div><dt>Voice</dt><dd>{selected.persona.voice}</dd></div><div><dt>Visual identity</dt><dd>{selected.persona.visualIdentity}</dd></div><div><dt>Escalation</dt><dd>{selected.persona.escalationBehavior}</dd></div></dl><p>Subject domains: {selected.persona.allowedDomains.join(", ")}</p><details><summary>Success measures</summary><ul>{selected.persona.successMeasures.map((measure) => <li key={measure}>{measure}</li>)}</ul></details></section>
+          <AgentPerformancePanel performance={performance.find((item) => item.agentId === selectedId)} state={outcomeRead.error ? "unavailable" : outcomeRead.loading ? "loading" : "ready"} />
+          <p className={styles.sourceStatus}>{learningReadState.label}</p><DailyLearningCard status={learningReadState.data?.agentId === selectedId ? learningReadState.data : undefined} state={learningReadState.loading ? "loading" : learningReadState.error ? "unavailable" : "ready"} />
+          {selectedMoltbook ? <MoltbookAgentPanel key={selected.id} agentId={selected.id} agentName={selected.name} /> : null}
+          <InspectorList title="Assigned Skills" items={selected.capabilities.length ? selected.capabilities : ["No reusable Skills assigned in this profile."]} icon="check" />
+          <InspectorList title="Configured actions" items={selected.tools.length ? selected.tools : ["No actions assigned in this profile."]} icon="eye" />
+          <p className={styles.notice}>Behavioral instructions and action labels do not create authority. {selected.autonomy}</p>
+          {!selectedMoltbook && (!selected.custom || (selected.custom.manageable && selected.custom.releaseState !== "retired")) ? <AgentAdaptationEditor agentId={selected.id} agentName={selected.name} compact /> : null}
+          {selected.custom && !selectedMoltbook && (selected.custom.manageable || selected.custom.releaseState === "retired") ? <AgentReleaseEditor agentId={selected.id} agentName={selected.name} compact /> : null}
+          {selected.custom?.manageable && !selectedMoltbook && selected.custom.releaseState !== "retired" ? <AgentGrantEditor agentId={selected.id} agentName={selected.name} compact /> : <p className={styles.notice}>{selectedMoltbook ? "Moltbook uses its existing restricted capability boundary." : selected.custom ? "This profile is read only. Its authority cannot be changed here." : "Built-in authority is reviewed server policy and cannot be widened here."}</p>}
+          <div className={styles.actions}>{!selected.custom || selected.custom.selectable ? <Link className="primary-button" href={`/app/command?agent=${encodeURIComponent(selected.id)}`}>Work with {selected.name}<ArrowRight size={16} aria-hidden="true" /></Link> : null}
+          {selected.custom?.manageable && !selectedMoltbook ? <><button className="secondary-button" disabled={Boolean(busy) || !managementReady} onClick={() => setEditor({ kind: "agent", id: selected.id })}><Pencil size={16} aria-hidden="true" />Edit profile</button><button className="secondary-button" disabled={Boolean(busy) || !managementReady} onClick={() => void remove("agent", selected.custom!)}><Trash2 size={16} aria-hidden="true" />Move Agent to Trash</button></> : null}</div>
+        </> : <><h2 ref={detailHeading} tabIndex={-1}>Agent unavailable</h2><p>The selected ID is not in the current authorized list: {selectedId}. Select an available Agent or refresh.</p></>}
+      </section>
     </div>
-  );
+    {activeView === "skills" ? <section aria-labelledby="agent-skills-title"><header className={styles.sectionHeader}><div><h2 id="agent-skills-title">Skills</h2><p>{skillRead.label} · exact playbooks and versions.</p></div><label>Search Skills<input type="search" value={query} onChange={(event) => { setQuery(event.currentTarget.value); setVisibleSkills(30); }} /></label></header>
+      {!skillRead.data ? <p>{skillRead.loading ? "Loading Skills…" : "Skills are unavailable. No empty count has been confirmed."}</p> : !filteredSkills.length ? <p>{skills.length ? "No loaded Skill matches this search." : "No Skills in this successful snapshot."}</p> : <div className={styles.skillList}>{filteredSkills.slice(0,visibleSkills).map((skill) => <article key={skill.id}><div><h3>{skill.name}</h3><p>{skill.description}</p><p>{skill.id} · v{skill.version} · {skill.status} · {skill.category}</p><details><summary>Instructions, provenance and actions</summary><p className={styles.exactText}>{skill.instructions}</p><p>Owner: {skill.actorId} · tenant: {skill.tenantId}</p><p>Updated: {skill.updatedAt}</p>{skill.sourcePluginInstallationId ? <dl className={styles.metadata}><div><dt>Plugin installation</dt><dd>{skill.sourcePluginInstallationId}</dd></div><div><dt>Plugin identity</dt><dd>{skill.sourcePluginId} · {skill.sourcePluginVersion} · {skill.sourcePluginSkillKey}</dd></div><div><dt>Manifest digest</dt><dd>{skill.sourcePluginManifestSha256}</dd></div><div><dt>Skill digest</dt><dd>{skill.sourcePluginSkillSha256}</dd></div></dl> : null}<ul>{skill.toolIds.map((id) => <li key={id}>{id}</li>)}</ul><p>Tags: {skill.tags.join(", ") || "None"}</p></details></div>{skill.manageable ? <div className={styles.actions}><button className="secondary-button" disabled={Boolean(busy) || !managementReady} onClick={() => setEditor({kind:"skill",id:skill.id})}>Edit {skill.name}</button><button className="secondary-button" disabled={Boolean(busy) || !managementReady} onClick={() => void remove("skill", skill)}>Move {skill.name} to Trash</button></div> : <p>Read only</p>}</article>)}</div>}
+      {filteredSkills.length > visibleSkills ? <button className="secondary-button" onClick={() => setVisibleSkills((count) => count + 30)}>Show more Skills</button> : null}
+    </section> : null}
+    {activeView === "outcomes" ? <><p className={styles.sourceStatus}>{outcomeRead.label} · bounded source projection, not a lifetime total. Custom Agent outcomes may be absent from this projection.</p><AgentOutcomes agents={agents} performance={performance} state={outcomeRead.data ? "ready" : outcomeRead.loading ? "loading" : "unavailable"} /></> : null}
+    {editor ? <BuilderDialog key={`${editor.kind}:${editor.id || "new"}`} editor={editor} agents={customAgents} skills={skills} tools={tools} sourcesCurrent={managementReady} onClose={() => { if (!gate.busy()) setEditor(undefined); }} onSaved={async (result) => { if (result.kind === "agent") { savedAgents.current.set(result.agent.id, result.agent); agentRead.accept((current) => upsertById(current || [], result.agent)); setSelectedId(result.agent.id); setMobileDetail(true); setActiveView("roster"); } else { savedSkills.current.set(result.skill.id, result.skill); skillRead.accept((current) => upsertById(current || [], result.skill)); setActiveView("skills"); } setMessage(result.message); setEditor(undefined); }} /> : null}
+  </div>;
 }
 
 function applyCouncilTaskCancellation(
@@ -802,7 +288,9 @@ function applyCouncilTaskCancellation(
 function WorkspaceTabs({
   activeView,
   onChange,
+  disabled,
 }: {
+  disabled: boolean;
   activeView: WorkspaceView;
   onChange: (view: WorkspaceView) => void;
 }) {
@@ -825,6 +313,7 @@ function WorkspaceTabs({
           return (
             <button
               key={item.id}
+              disabled={disabled}
               type="button"
               aria-pressed={activeView === item.id}
               className={activeView === item.id ? styles.activeTab : undefined}
@@ -899,16 +388,16 @@ function AgentOutcomes({
           const item = performance.find((entry) => entry.agentId === agent.id);
           return (
             <article key={agent.id}>
-              <AgentMascot agentId={agent.id} agentName={agent.name} size="small" decorative />
+              <AgentIdentityMark agentId={agent.id} agentName={agent.name} size="small" decorative />
               <div className={styles.outcomeIdentity}>
                 <span>{agent.role}</span>
                 <strong>{agent.name}</strong>
-                <small>{item?.lastActiveAt ? `Last active ${formatAgentTime(item.lastActiveAt)}` : "No recorded activity"}</small>
+                <small>{item?.lastActiveAt ? `Last active ${formatAgentTime(item.lastActiveAt)}` : item ? "No recorded activity" : "Not reported in this projection"}</small>
               </div>
-              <OutcomeMetric label="Assignments" value={(item?.primaryAssignments || 0).toLocaleString()} />
-              <OutcomeMetric label="Completion" value={item?.completionRate === null || item?.completionRate === undefined ? "No terminal runs" : `${Math.round(item.completionRate * 100)}%`} />
-              <OutcomeMetric label="Verified" value={(item?.verifiedAnswers || 0).toLocaleString()} />
-              <OutcomeMetric label="User approval" value={item?.userApprovalRate === null || item?.userApprovalRate === undefined ? "No reviews" : `${Math.round(item.userApprovalRate * 100)}%`} />
+              <OutcomeMetric label="Assignments" value={item ? item.primaryAssignments.toLocaleString() : "Not reported"} />
+              <OutcomeMetric label="Completion" value={!item ? "Not reported" : item?.completionRate === null || item?.completionRate === undefined ? "No terminal runs" : `${Math.round(item.completionRate * 100)}%`} />
+              <OutcomeMetric label="Verified" value={item ? item.verifiedAnswers.toLocaleString() : "Not reported"} />
+              <OutcomeMetric label="User approval" value={!item ? "Not reported" : item?.userApprovalRate === null || item?.userApprovalRate === undefined ? "No reviews" : `${Math.round(item.userApprovalRate * 100)}%`} />
             </article>
           );
         })}
@@ -934,6 +423,7 @@ function BuilderDialog({
   agents,
   skills,
   tools,
+  sourcesCurrent,
   onClose,
   onSaved,
 }: {
@@ -941,19 +431,18 @@ function BuilderDialog({
   agents: RequestCustomAgentDefinition[];
   skills: AgentSkill[];
   tools: ToolOption[];
+  sourcesCurrent: boolean;
   onClose: () => void;
   onSaved: (result: BuilderSaveResult) => Promise<void>;
 }) {
-  const existingAgent =
-    editor.kind === "agent"
-      ? agents.find((item) => item.id === editor.id)
-      : undefined;
-  const existingSkill =
-    editor.kind === "skill"
-      ? skills.find((item) => item.id === editor.id)
-      : undefined;
-  const dialogRef = useRef<HTMLElement>(null);
-  const [saving, setSaving] = useState(false);
+  const { gate, busy, reason, session } = useAgentsLifecycle();
+  const latest = editor.kind === "agent" ? agents.find((item) => item.id === editor.id) : skills.find((item) => item.id === editor.id);
+  const [baseline, setBaseline] = useState(latest);
+  const existingAgent = editor.kind === "agent" ? baseline as RequestCustomAgentDefinition | undefined : undefined;
+  const existingSkill = editor.kind === "skill" ? baseline as AgentSkill | undefined : undefined;
+  const changed = Boolean(editor.id && (!latest || !sameAgentJson(latest, baseline)));
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const saving = Boolean(busy);
   const [error, setError] = useState<string>();
   const [name, setName] = useState(
     existingAgent?.name || existingSkill?.name || "",
@@ -980,9 +469,7 @@ function BuilderDialog({
     persona.successMeasures.join("\n"),
   );
   const [selectedSkills, setSelectedSkills] = useState(
-    (existingAgent?.skillIds || []).filter((id) =>
-      skills.some((skill) => skill.id === id && skill.selectable),
-    ),
+    existingAgent?.skillIds || [],
   );
   const assignedSkillLimitReached =
     selectedSkills.length >= MAX_ASSIGNED_SKILLS;
@@ -1006,51 +493,27 @@ function BuilderDialog({
     existingSkill?.category || "personal",
   );
   const [tags, setTags] = useState(existingSkill?.tags.join(", ") || "");
+  const unavailableSkills = selectedSkills.filter((id) => !skills.some((skill) => skill.id === id && skill.selectable && skill.status === "active"));
+  const unavailableTools = selectedTools.filter((id) => !tools.some((tool) => tool.id === id));
+  const disabled = saving || Boolean(reason) || !sourcesCurrent || (Boolean(editor.id) && latest?.manageable !== true) || changed || unavailableSkills.length > 0 || unavailableTools.length > 0;
   useEffect(() => {
-    const previous =
-      document.activeElement instanceof HTMLElement
-        ? document.activeElement
-        : undefined;
-    dialogRef.current
-      ?.querySelector<HTMLElement>("input, select, textarea, button")
-      ?.focus();
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") onClose();
-      if (event.key !== "Tab" || !dialogRef.current) return;
-      const focusable = [
-        ...dialogRef.current.querySelectorAll<HTMLElement>(
-          "button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href]",
-        ),
-      ];
-      const first = focusable[0];
-      const last = focusable.at(-1);
-      if (!first || !last) return;
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    }
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("keydown", handleKeyDown);
-      previous?.focus();
-    };
-  }, [onClose]);
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
+    const dialog = dialogRef.current;
+    dialog?.showModal();
+    return () => { dialog?.close(); if (previous?.isConnected) previous.focus(); };
+  }, []);
   async function submit(event: FormEvent) {
     event.preventDefault();
-    setSaving(true);
+    if (disabled || gate.busy()) return;
     setError(undefined);
     try {
-      const body =
+      const draft =
         editor.kind === "agent"
           ? {
-              name,
-              role,
-              description,
-              instructions,
+              name: name.trim(),
+              role: role.trim(),
+              description: description.trim(),
+              instructions: instructions.trim(),
               persona: {
                 schemaVersion: 1,
                 charter,
@@ -1071,71 +534,33 @@ function BuilderDialog({
               toolIds: selectedTools,
             }
           : {
-              name,
-              description,
-              instructions,
+              name: name.trim(),
+              description: description.trim(),
+              instructions: instructions.trim(),
               category,
               status: existingSkill?.status || "active",
               toolIds: selectedTools,
-              tags: tags
-                .split(",")
-                .map((item) => item.trim())
-                .filter(Boolean),
+              tags: splitList(tags, ","),
               knowledgeTags: existingSkill?.knowledgeTags || [],
             };
+      if (selectedTools.length > (editor.kind === "skill" ? 40 : 50)) throw new Error(`Choose at most ${editor.kind === "skill" ? 40 : 50} actions before saving.`);
+      const body = editor.kind === "agent" ? customAgentInputSchema.parse(draft) : skillInputSchema.parse(draft);
       const base = editor.kind === "agent" ? "/api/agents" : "/api/skills";
-      const request = {
-        method: editor.id ? "PATCH" : "POST",
-        headers: {
-          "content-type": "application/json",
-          "idempotency-key": crypto.randomUUID(),
-        },
-        body: JSON.stringify(body),
-      };
-      const message = `${name} ${editor.id ? "updated" : "created"}.`;
-      if (editor.kind === "agent") {
-        const payload = await mutate<{ agent?: CustomAgentDefinition }>(
-          editor.id ? `${base}/${encodeURIComponent(editor.id)}` : base,
-          request,
-        );
-        if (!payload.agent) throw new Error("The saved agent was not returned.");
-        await onSaved({
-          kind: "agent",
-          agent: agentAfterExactWrite(payload.agent),
-          message,
-        });
-      } else {
-        const payload = await mutate<{ skill?: AgentSkill }>(
-          editor.id ? `${base}/${encodeURIComponent(editor.id)}` : base,
-          request,
-        );
-        if (!payload.skill) throw new Error("The saved skill was not returned.");
-        await onSaved({
-          kind: "skill",
-          skill: skillAfterExactWrite(payload.skill),
-          message,
-        });
-      }
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Save failed.");
-      setSaving(false);
-    }
+      const token = gate.begin(editor.id ? `${base}/${encodeURIComponent(editor.id)}` : base, editor.id ? "PATCH" : "POST", body, `Saving ${name}`, baseline);
+      if (!token) return;
+      try {
+        const payload = await agentsActionRequest(token);
+        if (!gate.current(token)) return;
+        const row = builderReceipt(payload[editor.kind], editor.kind, body, baseline, { tenantId: session?.context?.tenantId, actorId: session?.context?.actorId });
+        const message = `${name} ${editor.id ? "updated" : "created"}. The exact stored receipt was confirmed.`;
+        gate.finish(token, true);
+        await onSaved(editor.kind === "agent" ? { kind: "agent", agent: row as RequestCustomAgentDefinition, message } : { kind: "skill", skill: row as AgentSkill, message });
+      } catch (caught) { if (gate.current(token)) setError(caught instanceof Error ? caught.message : "The saved record was not confirmed."); }
+      finally { gate.finish(token, false); }
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Save failed."); }
   }
   return (
-    <div
-      className="builder-dialog-backdrop"
-      role="presentation"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
-    >
-      <section
-        ref={dialogRef}
-        className="builder-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="builder-dialog-title"
-      >
+    <dialog ref={dialogRef} className={styles.builderDialog} aria-labelledby="builder-dialog-title" onCancel={(event) => { event.preventDefault(); if (!gate.busy()) onClose(); }}>
         <header>
           <div>
             <p>{editor.id ? "Edit" : "Create"}</p>
@@ -1143,11 +568,18 @@ function BuilderDialog({
               {editor.kind === "agent" ? "Agent" : "Skill"}
             </h2>
           </div>
-          <button type="button" onClick={onClose} aria-label="Close builder">
+          <button type="button" disabled={saving} onClick={onClose} aria-label="Close builder">
             <X size={18} />
           </button>
         </header>
-        <form onSubmit={(event) => void submit(event)}>
+        {baseline ? <p>Editing {baseline.id} · snapshot {baseline.updatedAt}</p> : null}
+        {reason ? <p>{reason}</p> : null}
+        {changed ? <div className={styles.notice}><p>The stored record changed. Your draft is retained. Review the current record before applying it.</p>{latest ? <><details><summary>Current stored record</summary><p>{latest.name}</p><p>{latest.description}</p><p className={styles.exactText}>{latest.instructions}</p><p>Updated: {latest.updatedAt}</p>{editor.kind === "agent" ? <p>Charter: {(latest as RequestCustomAgentDefinition).persona.charter}</p> : null}</details><button type="button" className="secondary-button" disabled={saving || !sourcesCurrent || latest.manageable !== true} onClick={() => setBaseline(latest)}>Use this current record as the reviewed baseline</button></> : <p>The record is no longer in the authorized list. Saving is unavailable.</p>}</div> : null}
+        {editor.id && latest?.manageable !== true ? <p>This stored record is read only or unavailable. Your draft is retained; saving is disabled.</p> : null}
+        {!sourcesCurrent ? <p>Agent, Skill and action sources must be current before saving. Your draft is retained.</p> : null}
+        {unavailableSkills.map((id) => <p key={id} className={styles.notice}>Unavailable assigned Skill: {id}<button type="button" className="secondary-button" disabled={saving} onClick={() => setSelectedSkills((current) => current.filter((value) => value !== id))}>Remove unavailable Skill {id}</button></p>)}
+        {unavailableTools.map((id) => <p key={id} className={styles.notice}>Unavailable assigned action: {id}<button type="button" className="secondary-button" disabled={saving} onClick={() => setSelectedTools((current) => current.filter((value) => value !== id))}>Remove unavailable action {id}</button></p>)}
+        <form onSubmit={(event) => void submit(event)}><fieldset className={styles.builderFields} disabled={saving}>
           <label>
             Name
             <input
@@ -1400,10 +832,10 @@ function BuilderDialog({
             </p>
           ) : null}
           <footer className="full">
-            <button type="button" onClick={onClose} className="action-button">
+            <button type="button" disabled={saving} onClick={onClose} className="action-button">
               Cancel
             </button>
-            <button type="submit" disabled={saving} className="primary-button">
+            <button type="submit" disabled={disabled} className="primary-button">
               {saving ? <Loader2 size={15} className="animate-spin" /> : null}
               {saving
                 ? "Saving…"
@@ -1412,9 +844,8 @@ function BuilderDialog({
                   : `Create ${editor.kind}`}
             </button>
           </footer>
-        </form>
-      </section>
-    </div>
+        </fieldset></form>
+    </dialog>
   );
 }
 
@@ -1460,96 +891,8 @@ function toggle(values: string[], value: string) {
 function splitList(value: string, separator: string) {
   return [...new Set(value.split(separator).map((item) => item.trim()).filter(Boolean))];
 }
-function skillAfterExactWrite(skill: AgentSkill): AgentSkill {
-  return { ...skill, selectable: true, manageable: true };
-}
-function agentAfterExactWrite(
-  agent: CustomAgentDefinition,
-): RequestCustomAgentDefinition {
-  return { ...agent, selectable: true, manageable: true };
-}
 function statusDisplayLabel(status: ArsenalAgent["status"]) {
   return status === "ready" ? "Ready" : "Observing";
-}
-function RosterButton({
-  agent,
-  selected,
-  onSelect,
-}: {
-  agent: AgentView;
-  selected: boolean;
-  onSelect: (id: string) => void;
-}) {
-  const identity = getAgentMascotIdentity(agent.id);
-  return (
-    <button
-      type="button"
-      onClick={() => onSelect(agent.id)}
-      className={clsx(
-        "arsenal-roster-item",
-        `agent-${agent.accent}`,
-        selected && "is-selected",
-      )}
-      aria-pressed={selected}
-      aria-label={`${agent.name}, ${agent.role}, ${identity.companion}, ${agent.status}`}
-    >
-      <span className={styles.rosterMascot}>
-        <AgentMascot
-          agentId={agent.id}
-          agentName={agent.name}
-          size="small"
-          decorative
-        />
-      </span>
-      <span>
-        <strong>{agent.name}</strong>
-        <small>{agent.role}</small>
-        <em>{identity.companion}</em>
-      </span>
-      <span
-        className={clsx("agent-status-dot", `status-${agent.status}`)}
-        aria-label={agent.status}
-      />
-    </button>
-  );
-}
-function AgentNode({
-  agent,
-  selected,
-  onSelect,
-  className,
-}: {
-  agent: ArsenalAgent;
-  selected: boolean;
-  onSelect: (id: string) => void;
-  className: string;
-}) {
-  const identity = getAgentMascotIdentity(agent.id);
-  return (
-    <button
-      type="button"
-      onClick={() => onSelect(agent.id)}
-      className={clsx(
-        "arsenal-node",
-        `agent-${agent.accent}`,
-        className,
-        selected && "is-selected",
-      )}
-      aria-pressed={selected}
-      aria-label={`${agent.name}, ${agent.role}, ${identity.companion}, ${agent.status}`}
-    >
-      <span className="node-signal" aria-hidden="true" />
-      <AgentMascot
-        agentId={agent.id}
-        agentName={agent.name}
-        size={agent.id === "atlas" ? "hero" : "large"}
-        decorative
-      />
-      <span className={styles.nodeTheme}>{identity.theme}</span>
-      <strong>{agent.name}</strong>
-      <small>{identity.companion}</small>
-    </button>
-  );
 }
 function AgentPerformancePanel({
   performance,
@@ -1558,71 +901,7 @@ function AgentPerformancePanel({
   performance?: AgentPerformance;
   state: "loading" | "ready" | "unavailable";
 }) {
-  const completionRate = performance?.completionRate;
-  return (
-    <section className="agent-performance" aria-label="Agent performance">
-      <div className="agent-performance-heading">
-        <h3>Performance</h3>
-        <span>
-          {state === "loading"
-            ? "Syncing"
-            : state === "unavailable"
-              ? "Offline"
-              : "Live"}
-        </span>
-      </div>
-      <div className="agent-performance-grid">
-        <PerformanceMetric
-          label="Assignments"
-          value={
-            state === "loading"
-              ? "..."
-              : String(performance?.primaryAssignments || 0)
-          }
-        />
-        <PerformanceMetric
-          label="Completion"
-          value={
-            state === "loading"
-              ? "..."
-              : completionRate == null
-                ? "New"
-                : `${Math.round(completionRate * 100)}%`
-          }
-        />
-        <PerformanceMetric
-          label="Verified"
-          value={
-            state === "loading"
-              ? "..."
-              : String(performance?.verifiedAnswers || 0)
-          }
-        />
-        <PerformanceMetric
-          label="Approval"
-          value={
-            state === "loading"
-              ? "..."
-              : performance?.userApprovalRate == null
-                ? "New"
-                : `${Math.round(performance.userApprovalRate * 100)}%`
-          }
-        />
-      </div>
-      {performance?.latestOutcomeNotes?.length ? (
-        <div className="agent-latest-lessons">
-          <strong>
-            <ClipboardCheck size={13} /> Reviewed outcome notes
-          </strong>
-          <ul>
-            {performance.latestOutcomeNotes.map((lesson) => (
-              <li key={lesson}>{lesson}</li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-    </section>
-  );
+  return <section className={styles.performance} aria-label="Agent performance"><h3>Performance</h3><p>{performance ? state === "ready" ? "Loaded evidence" : "Last loaded evidence · refresh unavailable or pending" : state === "loading" ? "Loading performance…" : "Performance is not reported for this Agent in the current projection."}</p>{performance ? <div className={styles.outcomeSummary}><PerformanceMetric label="Assignments" value={String(performance.primaryAssignments)} /><PerformanceMetric label="Completion" value={performance.completionRate === null ? "No terminal runs" : `${Math.round(performance.completionRate * 100)}%`} /><PerformanceMetric label="Verified answers" value={String(performance.verifiedAnswers)} /><PerformanceMetric label="User approval" value={performance.userApprovalRate === null ? "No reviews" : `${Math.round(performance.userApprovalRate * 100)}%`} /></div> : null}</section>;
 }
 
 function DailyLearningCard({
@@ -1639,16 +918,15 @@ function DailyLearningCard({
     <section
       className={styles.learningCard}
       aria-label="Daily learning status"
-      aria-live="polite"
-    >
+      >
       <div className={styles.learningCardHeading}>
         <span><Sparkles size={14} aria-hidden="true" /></span>
         <div>
           <p>Daily learning</p>
           <strong>
-            {state === "loading"
+            {!status && state === "loading"
               ? "Reading the latest learning receipt"
-              : state === "unavailable" || !available
+              : !available
                 ? "Learning status is unavailable"
                 : latest
                   ? `${formatLearningDate(latest.localDate)} completed`
@@ -1658,14 +936,14 @@ function DailyLearningCard({
         <span className={styles.learningFreshness}>
           {state === "loading" ? (
             <><Loader2 size={11} className="animate-spin" aria-hidden="true" /> Syncing</>
-          ) : available ? "Live" : "Offline"}
+          ) : available ? state === "unavailable" ? "Last loaded" : "Loaded" : "Unavailable"}
         </span>
       </div>
-      {state === "loading" ? (
+      {!status && state === "loading" ? (
         <div className={styles.learningSkeleton} aria-hidden="true">
           <span /><span /><span />
         </div>
-      ) : state === "unavailable" || !available ? (
+      ) : !available ? (
         <p className={styles.learningEmpty}>
           Asael could not verify the canonical learning record. No learning
           state is being inferred from cached or partial data.
@@ -1782,25 +1060,4 @@ function friendlyActionCategory(category: string) {
   const normalized = category.trim().replaceAll(/[._-]+/g, " ");
   if (!normalized) return "Asael";
   return normalized.replace(/\b\w/g, (letter) => letter.toUpperCase());
-}
-
-async function readJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, { ...init, cache: "no-store" });
-  const payload = (await response.json().catch(() => ({}))) as T & {
-    error?: string;
-    message?: string;
-  };
-  if (!response.ok)
-    throw new Error(payload.message || payload.error || "Request failed.");
-  return payload;
-}
-async function mutate<T = unknown>(url: string, init: RequestInit): Promise<T> {
-  const response = await fetch(url, init);
-  const payload = (await response.json().catch(() => ({}))) as {
-    error?: string;
-    message?: string;
-  };
-  if (!response.ok)
-    throw new Error(payload.message || payload.error || "Request failed.");
-  return payload as T;
 }

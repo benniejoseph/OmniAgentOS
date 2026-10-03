@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import {
   Activity,
   ArrowRight,
@@ -34,7 +34,11 @@ import {
   type FormEvent,
   type KeyboardEvent,
   type ReactNode,
+  type SyntheticEvent,
 } from "react";
+import { permissionMessage, useWorkspaceSession } from "@/components/app-shell/session-context";
+import { parseCapabilityInventory, parsePluginInstallation, parsePluginPreview, parseScheduleControl, parseScheduleCreated, parseScheduleDetail } from "./capability-state";
+import { useCapabilityActions, type CapabilityActions } from "./use-capability-actions";
 import {
   automationResourceDefinitions,
   buildCapabilitySummary,
@@ -82,6 +86,7 @@ const tabs: ReadonlyArray<{
   { id: "skills", label: "Skills" },
   { id: "connections", label: "Connections" },
   { id: "plugins", label: "Extensions" },
+  { id: "advanced", label: "Advanced" },
 ] as const;
 
 const initialLedger = Object.fromEntries(
@@ -105,14 +110,19 @@ export function AutomationStudioFallback() {
 }
 
 export function AutomationStudio() {
+  const { session, status } = useWorkspaceSession();
+  return <AutomationWorkspace key={JSON.stringify([session?.context?.tenantId, session?.context?.actorId])} disabledReason={permissionMessage(session, status, "manage.workflow")} />;
+}
+
+function AutomationWorkspace({ disabledReason }: { disabledReason?: string }) {
   const pathname = usePathname();
-  const router = useRouter();
   const searchParams = useSearchParams();
   const activeTab = studioTab(searchParams.get("view"));
   const [ledger, setLedger] = useState<ResourceLedger>(initialLedger);
   const [refreshedAt, setRefreshedAt] = useState<string>();
   const generationRef = useRef(0);
   const controllerRef = useRef<AbortController | undefined>(undefined);
+  const actions = useCapabilityActions();
 
   const refresh = useCallback(async () => {
     controllerRef.current?.abort();
@@ -125,7 +135,7 @@ export function AutomationStudio() {
       Object.fromEntries(
         automationResourceDefinitions.map(({ key }) => [
           key,
-          { status: "loading", data: current[key].data },
+          { status: "loading", data: current[key].data, error: current[key].error },
         ]),
       ) as ResourceLedger,
     );
@@ -134,7 +144,7 @@ export function AutomationStudio() {
     await Promise.allSettled(
       automationResourceDefinitions.map(async ({ key, label, endpoint }) => {
         try {
-          const data = await readAutomationResource(endpoint, controller.signal);
+          const data = parseCapabilityInventory(key, await readAutomationResource(endpoint, controller.signal));
           if (generationRef.current !== generation) return;
           setLedger((current) => ({
             ...current,
@@ -145,7 +155,7 @@ export function AutomationStudio() {
           const message = resourceErrorMessage(key, label, error);
           setLedger((current) => ({
             ...current,
-            [key]: { status: "error", error: message },
+            [key]: { status: "error", error: message, data: current[key].data },
           }));
         }
       }),
@@ -160,6 +170,7 @@ export function AutomationStudio() {
     const timer = window.setTimeout(() => void refresh(), 0);
     return () => {
       window.clearTimeout(timer);
+      generationRef.current += 1;
       controllerRef.current?.abort();
     };
   }, [refresh]);
@@ -167,7 +178,7 @@ export function AutomationStudio() {
   const snapshot = useMemo<AutomationSnapshot>(() => {
     const ready: AutomationSnapshot = {};
     for (const { key } of automationResourceDefinitions) {
-      if (ledger[key].status === "ready" && ledger[key].data) {
+      if (ledger[key].data) {
         ready[key] = ledger[key].data;
       }
     }
@@ -182,8 +193,10 @@ export function AutomationStudio() {
     if (tab === "overview") next.delete("view");
     else next.set("view", tab);
     const query = next.toString();
-    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
-  }, [pathname, router, searchParams]);
+    // These sections share one loaded inventory. Native history updates the
+    // supported Next search-parameter subscription without a second route read.
+    window.history.replaceState(null, "", (query ? `${pathname}?${query}` : pathname) + window.location.hash);
+  }, [pathname, searchParams]);
 
   function moveTabFocus(event: KeyboardEvent<HTMLElement>) {
     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
@@ -247,27 +260,32 @@ export function AutomationStudio() {
         ))}
       </nav>
 
-      <section
-        id={`automation-panel-${activeTab}`}
+      {errorCount || loading ? <p className={styles.readNotice} role="status">{Object.values(ledger).some((resource) => resource.data) ? "Previously loaded records remain visible while current source status is checked. Counts describe the last successful read for each source." : "Inventory counts are unavailable until their source responds."}</p> : null}
+      {actions.pending ? <p className={styles.readNotice} role="status">An action is pending. Leaving this workspace stops local follow-up reads; already submitted server work may still complete.</p> : null}
+      {tabs.map((tab) => <section
+        key={tab.id}
+        hidden={activeTab !== tab.id}
+        id={`automation-panel-${tab.id}`}
         role="tabpanel"
-        aria-labelledby={`automation-tab-${activeTab}`}
+        aria-labelledby={`automation-tab-${tab.id}`}
         className={styles.panel}
       >
-        {activeTab === "overview" ? (
+        {tab.id === "overview" ? (
           <OverviewPanel snapshot={snapshot} ledger={ledger} onNavigate={navigateToTab} />
         ) : null}
-        {activeTab === "automations" ? (
-          <AutomationsPanel ledger={ledger} onRefresh={refresh} />
+        {tab.id === "automations" ? (
+          <AutomationsPanel ledger={ledger} onRefresh={refresh} actions={actions} disabledReason={disabledReason} />
         ) : null}
-        {activeTab === "skills" ? <SkillsPanel ledger={ledger} /> : null}
-        {activeTab === "connections" ? (
+        {tab.id === "skills" ? <SkillsPanel ledger={ledger} /> : null}
+        {tab.id === "connections" ? (
           <ConnectionsPanel ledger={ledger} />
         ) : null}
-        {activeTab === "plugins" ? <PluginsPanel ledger={ledger} onRefresh={refresh} /> : null}
-        {activeTab === "advanced" ? (
+        {tab.id === "plugins" ? <PluginsPanel active={activeTab === "plugins"} ledger={ledger} onRefresh={refresh} actions={actions} disabledReason={disabledReason} /> : null}
+        {tab.id === "advanced" ? (
           <AdvancedPanel snapshot={snapshot} ledger={ledger} />
         ) : null}
-      </section>
+      </section>)}
+      <p className={styles.readNotice}>Inventory is a bounded snapshot: up to 24 workflow runs and 48 trigger records, with the recent connector inventory plus records awaiting review. Loaded counts do not establish complete workspace coverage.</p>
     </div>
   );
 }
@@ -362,9 +380,13 @@ function OverviewPanel({
 function AutomationsPanel({
   ledger,
   onRefresh,
+  actions,
+  disabledReason,
 }: {
   ledger: ResourceLedger;
   onRefresh: () => Promise<void>;
+  actions: CapabilityActions;
+  disabledReason?: string;
 }) {
   const triggers = recordsAt(ledger.triggers.data, "triggers");
   const schedules = triggers.filter((trigger) =>
@@ -388,49 +410,76 @@ function AutomationsPanel({
   const [previews, setPreviews] = useState<Record<string, JsonRecord>>({});
   const [historyId, setHistoryId] = useState<string>();
   const [historyLoads, setHistoryLoads] = useState<Record<string, ResourceLoad>>({});
+  const newScheduleButton = useRef<HTMLButtonElement>(null);
+  const detailReads = useRef(new Map<string, AbortController>());
+  useEffect(() => {
+    const reads = detailReads.current;
+    return () => {
+      for (const controller of reads.values()) controller.abort();
+      reads.clear();
+    };
+  }, []);
 
   async function controlSchedule(
     triggerId: string,
     action: "pause" | "resume" | "run_once",
   ) {
+    if (disabledReason || ledger.triggers.status !== "ready") {
+      setError(disabledReason || "Refresh schedule ownership and its current version before changing it.");
+      return;
+    }
+    const attempt = actions.begin(`${triggerId}:${action}`);
+    if (!attempt) return;
     setMutationId(`${triggerId}:${action}`);
     setMessage(undefined);
     setError(undefined);
     try {
-      await mutateAutomation(`/api/triggers/${encodeURIComponent(triggerId)}`, {
+      const scheduledFor = action === "run_once" ? new Date().toISOString() : undefined;
+      const result = await mutateAutomation(`/api/triggers/${encodeURIComponent(triggerId)}`, {
         action,
         ...(action === "run_once"
-          ? { scheduledFor: new Date().toISOString() }
+          ? { scheduledFor }
           : {}),
       }, `workflow-schedule-${action}`);
+      if (!actions.current(attempt)) return;
+      const receipt = parseScheduleControl(result, triggerId, action, scheduledFor);
       setMessage(action === "run_once"
-        ? "The read-only occurrence was queued."
+        ? `Occurrence ${String(receipt.id)} was accepted with state ${String(receipt.status)} for schedule ${triggerId}.`
         : action === "pause"
-          ? "Schedule paused."
-          : "Schedule resumed.");
-      await onRefresh();
-      if (historyId === triggerId) await loadHistory(triggerId);
+          ? `Schedule ${triggerId} paused.`
+          : `Schedule ${triggerId} resumed.`);
+      actions.finish(attempt);
+      setMutationId(undefined);
+      void onRefresh();
+      if (historyId === triggerId) void loadHistory(triggerId);
     } catch (caught) {
+      if (!actions.current(attempt)) return;
       setError(safeMutationError(caught, "The schedule could not be changed."));
     } finally {
-      setMutationId(undefined);
+      if (actions.current(attempt)) { setMutationId(undefined); actions.finish(attempt); }
     }
   }
 
   async function loadPreview(triggerId: string) {
+    const key = `preview:${triggerId}`;
+    detailReads.current.get(key)?.abort();
+    const controller = new AbortController();
+    detailReads.current.set(key, controller);
     setMutationId(`${triggerId}:preview`);
     setError(undefined);
     try {
-      const result = await readAutomationResource(
+      const result = parseScheduleDetail(await readAutomationResource(
         `/api/triggers/${encodeURIComponent(triggerId)}`,
-        new AbortController().signal,
-      );
+        controller.signal,
+      ), triggerId);
+      if (controller.signal.aborted || detailReads.current.get(key) !== controller) return;
       const preview = recordAt(result, "preview");
       if (preview) setPreviews((current) => ({ ...current, [triggerId]: preview }));
     } catch (caught) {
+      if (controller.signal.aborted || detailReads.current.get(key) !== controller) return;
       setError(safeMutationError(caught, "The next occurrences could not be previewed."));
     } finally {
-      setMutationId(undefined);
+      if (!controller.signal.aborted && detailReads.current.get(key) === controller) setMutationId(undefined);
     }
   }
 
@@ -444,24 +493,31 @@ function AutomationsPanel({
   }
 
   async function loadHistory(triggerId: string) {
+    const key = `history:${triggerId}`;
+    detailReads.current.get(key)?.abort();
+    const controller = new AbortController();
+    detailReads.current.set(key, controller);
     setHistoryLoads((current) => ({
       ...current,
-      [triggerId]: { status: "loading" },
+      [triggerId]: { status: "loading", data: current[triggerId]?.data, error: current[triggerId]?.error },
     }));
     try {
-      const data = await readAutomationResource(
+      const data = parseScheduleDetail(await readAutomationResource(
         `/api/triggers/${encodeURIComponent(triggerId)}`,
-        new AbortController().signal,
-      );
+        controller.signal,
+      ), triggerId);
+      if (controller.signal.aborted || detailReads.current.get(key) !== controller) return;
       setHistoryLoads((current) => ({
         ...current,
         [triggerId]: { status: "ready", data },
       }));
     } catch (caught) {
+      if (controller.signal.aborted || detailReads.current.get(key) !== controller) return;
       setHistoryLoads((current) => ({
         ...current,
         [triggerId]: {
           status: "error",
+          data: current[triggerId]?.data,
           error: safeMutationError(caught, "Schedule history could not be loaded."),
         },
       }));
@@ -477,13 +533,14 @@ function AutomationsPanel({
         action={<Link href="/app/workflows">Manage workflows <ExternalLink size={14} aria-hidden="true" /></Link>}
       />
       <section className={styles.scheduleWorkspace}>
+        {disabledReason ? <p className={styles.readNotice}>{disabledReason}</p> : null}
         <div className={styles.scheduleIntro}>
           <div>
             <span><CalendarClock size={16} aria-hidden="true" />Reviewed routines</span>
             <h2>Run known procedures on time</h2>
             <p>Schedules replay one immutable saved procedure with its exact Agent, policy, and budget. Read-only routines stay automatic; reviewed reversible changes receive one short-lived PolicyLease per exact action.</p>
           </div>
-          <button type="button" onClick={() => {
+          <button ref={newScheduleButton} type="button" disabled={Boolean(actions.pending || disabledReason)} onClick={() => {
             setReplacementId(undefined);
             setFormOpen((open) => !open);
           }}>
@@ -493,6 +550,8 @@ function AutomationsPanel({
 
         {formOpen ? (
           <ScheduleBuilder
+            actions={actions}
+            disabledReason={disabledReason || (ledger.triggers.status !== "ready" ? "Refresh the current procedure and Agent inventory before scheduling." : undefined)}
             procedures={procedures}
             agents={agents}
             replacementId={replacementId}
@@ -501,10 +560,15 @@ function AutomationsPanel({
               setReplacementId(undefined);
             }}
             onCreated={async (text) => {
+              const restoreFocus = document.activeElement instanceof HTMLElement && Boolean(document.activeElement.closest("#schedule-builder"));
               setMessage(text);
               setFormOpen(false);
               setReplacementId(undefined);
-              await onRefresh();
+              void onRefresh();
+              if (restoreFocus) window.requestAnimationFrame(() => {
+                const button = newScheduleButton.current;
+                if (button?.isConnected && !button.closest("[hidden]") && document.activeElement === document.body) button.focus({ preventScroll: true });
+              });
             }}
             onError={setError}
           />
@@ -515,7 +579,7 @@ function AutomationsPanel({
 
         {ledger.triggers.status === "loading" && !ledger.triggers.data ? <LoadingRows /> : null}
         {ledger.triggers.status === "error" ? <InlineError>{ledger.triggers.error}</InlineError> : null}
-        {ledger.triggers.status !== "error" && schedules.length === 0 ? (
+        {ledger.triggers.status === "ready" && schedules.length === 0 ? (
           <EmptyState>{procedures.length
             ? "No reviewed routine is scheduled yet. Build one above when you want a read-only procedure to repeat."
             : "Create a saved procedure with exact read-only Tool inputs first; it will then become available here."}</EmptyState>
@@ -562,8 +626,9 @@ function AutomationsPanel({
                   <div><dt>Next run</dt><dd>{scheduleDate(textAt(state, ["nextDueAt"], ""), textAt(config, ["timezone"], "UTC"))}</dd></div>
                   <div><dt>Recurrence</dt><dd>{friendlyRrule(textAt(config, ["rrule"], ""))}</dd></div>
                   <div><dt>Circuit</dt><dd data-state={circuit}>{circuit}{numberAt(state, "consecutiveFailureCount") ? ` · ${numberAt(state, "consecutiveFailureCount")} failures` : ""}</dd></div>
-                  <div><dt>Review</dt><dd title={textAt(config, ["configSha256"], "")}>{shortDigest(textAt(config, ["configSha256"], ""))}</dd></div>
-                  {authorityMode === "reviewed_mutation" ? <div><dt>Change policy</dt><dd title={textAt(mutationPolicy, ["policySha256"], "")}>{shortDigest(textAt(mutationPolicy, ["policySha256"], ""))}</dd></div> : null}
+                  <div><dt>Schedule identity</dt><dd><code>{id}</code></dd></div>
+                  <div><dt>Review</dt><dd><code>{textAt(config, ["configSha256"], "Unavailable")}</code></dd></div>
+                  {authorityMode === "reviewed_mutation" ? <div><dt>Change policy</dt><dd><code>{textAt(mutationPolicy, ["policySha256"], "Unavailable")}</code></dd></div> : null}
                 </dl>
                 {latest ? (
                   <div className={styles.scheduleReceipt}>
@@ -571,27 +636,29 @@ function AutomationsPanel({
                     <span>
                       <strong>{textAt(latest, ["status"], "unknown")}</strong>
                       {scheduleDate(textAt(latest, ["scheduledFor"], ""), textAt(config, ["timezone"], "UTC"))}
-                      {latestReceipt ? <code title={textAt(latestReceipt, ["receiptSha256"], "")}>receipt {shortDigest(textAt(latestReceipt, ["receiptSha256"], ""))}</code> : null}
+                      {latestReceipt ? <code>receipt {textAt(latestReceipt, ["receiptSha256"], "Unavailable")}</code> : null}
                     </span>
                   </div>
                 ) : null}
                 {upcoming.length ? (
+                  <div><p className={styles.readNotice}>Last-loaded next occurrences for this schedule</p>
                   <ol className={styles.schedulePreview}>
                     {upcoming.map((value) => <li key={value}>{scheduleDate(value, textAt(config, ["timezone"], "UTC"))}</li>)}
                   </ol>
+                  </div>
                 ) : null}
                 <div className={styles.scheduleActions}>
                   <button type="button" disabled={Boolean(mutationId)} onClick={() => void loadPreview(id)}><Clock3 size={14} aria-hidden="true" />Preview</button>
                   <button type="button" aria-expanded={historyId === id} aria-controls={`schedule-history-${id}`} onClick={() => void toggleHistory(id)}><ReceiptText size={14} aria-hidden="true" />{historyId === id ? "Close history" : "History"}</button>
-                  <button type="button" disabled={Boolean(mutationId) || status !== "active" || circuit !== "closed"} onClick={() => void controlSchedule(id, "run_once")}><CirclePlay size={14} aria-hidden="true" />Run once</button>
-                  <button type="button" disabled={Boolean(mutationId)} onClick={() => void controlSchedule(id, status === "active" ? "pause" : "resume")}>
+                  <button type="button" disabled={Boolean(actions.pending || disabledReason) || ledger.triggers.status !== "ready" || status !== "active" || circuit !== "closed"} onClick={() => void controlSchedule(id, "run_once")}><CirclePlay size={14} aria-hidden="true" />Run once</button>
+                  <button type="button" disabled={Boolean(actions.pending || disabledReason) || ledger.triggers.status !== "ready"} onClick={() => void controlSchedule(id, status === "active" ? "pause" : "resume")}>
                     {status === "active" ? <Pause size={14} aria-hidden="true" /> : <Play size={14} aria-hidden="true" />}
                     {status === "active" ? "Pause" : "Resume"}
                   </button>
-                  <button type="button" disabled={Boolean(mutationId)} onClick={() => {
+                  <button type="button" disabled={Boolean(actions.pending || disabledReason) || ledger.triggers.status !== "ready"} onClick={() => {
                     setReplacementId(id);
                     setFormOpen(true);
-                    window.requestAnimationFrame(() => document.getElementById("schedule-builder")?.scrollIntoView({ behavior: "smooth", block: "start" }));
+                    window.requestAnimationFrame(() => document.getElementById("schedule-builder")?.scrollIntoView({ behavior: "instant", block: "start" }));
                   }}>Replace</button>
                 </div>
                 {historyId === id ? (
@@ -660,29 +727,31 @@ export function ScheduleOutcomeHistory({
   load: ResourceLoad;
   timezone?: string;
 }) {
-  if (load.status === "loading") {
+  if (load.status === "loading" && !load.data) {
     return <section id={id} className={styles.scheduleHistory} aria-label="Schedule outcome history" aria-busy="true"><Loader2 size={16} className={styles.spin} /><p>Loading exact occurrence and PolicyLease receipts…</p></section>;
   }
-  if (load.status === "error" || !load.data) {
+  if (!load.data) {
     return <section id={id} className={styles.scheduleHistory} aria-label="Schedule outcome history"><p role="alert">{load.error || "Schedule history is unavailable."}</p></section>;
   }
   const occurrences = recordsAt(load.data, "occurrences");
   const receipts = recordsAt(load.data, "receipts");
   const policyLeaseProjection = recordAt(load.data, "policyLeases");
   const leases = recordsAt(policyLeaseProjection, "outcomes");
-  const leaseAvailable = policyLeaseProjection?.available !== false;
+  const leaseAvailable = policyLeaseProjection?.available === true;
   if (!occurrences.length && !receipts.length && !leases.length && leaseAvailable) {
     return (
       <section id={id} className={styles.scheduleHistory} aria-label="Schedule outcome history">
-        <p>No runs or PolicyLease decisions have been recorded for this schedule.</p>
+        {load.status !== "ready" ? <p role="status">{load.error || "Refreshing schedule history."} This is the last-loaded empty history.</p> : null}
+        <p>No runs or PolicyLease decisions were returned in the loaded history.</p>
       </section>
     );
   }
   return (
     <section id={id} className={styles.scheduleHistory} aria-label="Schedule outcome history">
+      {load.status !== "ready" ? <p role="status">{load.error || "Refreshing schedule history."} Last-loaded receipts remain visible.</p> : null}
       <header>
         <div><strong>Outcome history</strong><span>Content-free receipts</span></div>
-        <small>{occurrences.length} run{occurrences.length === 1 ? "" : "s"} · {leases.length} lease{leases.length === 1 ? "" : "s"}</small>
+        <small>{occurrences.length} loaded run{occurrences.length === 1 ? "" : "s"} · {leaseAvailable ? `${leases.length} loaded leases` : "lease count unavailable"}</small>
       </header>
       <div className={styles.outcomeList}>
         {occurrences.slice(0, 8).map((occurrence, index) => {
@@ -737,6 +806,8 @@ function ScheduleBuilder({
   onCancel,
   onCreated,
   onError,
+  actions,
+  disabledReason,
 }: {
   procedures: JsonRecord[];
   agents: JsonRecord[];
@@ -744,6 +815,8 @@ function ScheduleBuilder({
   onCancel: () => void;
   onCreated: (message: string) => Promise<void>;
   onError: (message: string | undefined) => void;
+  actions: CapabilityActions;
+  disabledReason?: string;
 }) {
   const [name, setName] = useState("");
   const [procedureId, setProcedureId] = useState(
@@ -757,7 +830,7 @@ function ScheduleBuilder({
   const [frequency, setFrequency] = useState("daily");
   const [maxOccurrences, setMaxOccurrences] = useState(365);
   const [missedPolicy, setMissedPolicy] = useState("skip");
-  const [mutationAcknowledged, setMutationAcknowledged] = useState(false);
+  const [acknowledgedVersion, setAcknowledgedVersion] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
   const selectedProcedureId = procedureId || textAt(procedures[0], ["id"], "");
   const selectedProcedure = procedures.find((procedure) =>
@@ -770,13 +843,18 @@ function ScheduleBuilder({
   );
   const mutationBindings = recordsAt(selectedProcedure, "mutationBindings");
   const mutationReviewDigest = textAt(selectedProcedure, ["reviewDigest"], "");
+  const reviewVersion = JSON.stringify([selectedProcedureId, mutationReviewDigest, agentId, maxOccurrences]);
+  const mutationAcknowledged = acknowledgedVersion === reviewVersion;
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (disabledReason) { onError(disabledReason); return; }
+    const attempt = actions.begin("schedule:create");
+    if (!attempt) return;
     onError(undefined);
     setSubmitting(true);
     try {
-      if (!selectedProcedureId) {
+      if (!selectedProcedureId || !selectedProcedure) {
         throw new Error("Choose a schedulable saved procedure first.");
       }
       if (authorityMode === "reviewed_mutation" && !mutationAcknowledged) {
@@ -797,7 +875,7 @@ function ScheduleBuilder({
           : "";
       const interval = frequency === "weekly" ? 1 : 1;
       const freq = frequency === "weekly" ? "WEEKLY" : "DAILY";
-      await mutateAutomation("/api/triggers", {
+      const submitted = {
         triggerKind: "schedule",
         name,
         procedureId: selectedProcedureId,
@@ -816,16 +894,22 @@ function ScheduleBuilder({
             }
           : {}),
         ...(replacementId ? { replacesTriggerId: replacementId } : {}),
-      }, replacementId ? "workflow-schedule-replace" : "workflow-schedule-create");
-      await onCreated(replacementId
-        ? "The replacement schedule is active and the previous version is paused."
+      };
+      const result = await mutateAutomation("/api/triggers", submitted, replacementId ? "workflow-schedule-replace" : "workflow-schedule-create");
+      if (!actions.current(attempt)) return;
+      const receipt = parseScheduleCreated(result, submitted);
+      actions.finish(attempt);
+      setSubmitting(false);
+      void onCreated((replacementId
+        ? "The replacement schedule was accepted."
         : authorityMode === "reviewed_mutation"
-          ? "The reviewed change schedule is active. Each exact action will use one PolicyLease."
-          : "The reviewed read-only schedule is active.");
+          ? "The reviewed change schedule was accepted. Each exact action uses one PolicyLease."
+          : "The reviewed read-only schedule was accepted.") + ` Schedule ${String(receipt.id)} · ${String(receipt.status)}. Refresh status is reported separately.`);
     } catch (caught) {
+      if (!actions.current(attempt)) return;
       onError(safeMutationError(caught, "The schedule could not be created."));
     } finally {
-      setSubmitting(false);
+      if (actions.current(attempt)) { setSubmitting(false); actions.finish(attempt); }
     }
   }
 
@@ -839,7 +923,7 @@ function ScheduleBuilder({
         </div>
         <span><ShieldCheck size={15} aria-hidden="true" />{authorityMode === "reviewed_mutation" ? "PolicyLease changes" : "Read-only"}</span>
       </header>
-      <div className={styles.scheduleFields}>
+      <fieldset className={styles.scheduleFields} disabled={Boolean(actions.pending || disabledReason)}>
         <label>
           <span>Routine name</span>
           <input value={name} onChange={(event) => setName(event.target.value)} required maxLength={120} placeholder="Morning research review" />
@@ -848,7 +932,7 @@ function ScheduleBuilder({
           <span>Saved procedure</span>
           <select value={selectedProcedureId} onChange={(event) => {
             setProcedureId(event.target.value);
-            setMutationAcknowledged(false);
+            setAcknowledgedVersion(undefined);
           }} required disabled={!procedures.length}>
             {!procedures.length ? <option value="">No read-only procedures available</option> : null}
             {procedures.map((procedure, index) => (
@@ -895,19 +979,19 @@ function ScheduleBuilder({
             <option value="run_once">Run the latest once</option>
           </select>
         </label>
-      </div>
+      </fieldset>
       {authorityMode === "reviewed_mutation" ? (
         <div className={styles.scheduleBoundary} role="note">
           <ShieldCheck size={15} aria-hidden="true" />
           <span>
             This routine can change external state. Only the exact reversible risk-1/2 actions below are eligible; dynamic inputs, destructive actions, Computer Use, and changed targets return to ordinary approval.
             {mutationBindings.map((binding, index) => (
-              <code key={recordKey(binding, index)} title={textAt(binding, ["targetSha256"], "")}>
-                {textAt(binding, ["toolId"], "Tool")} · risk {numberAt(binding, "riskLevel")} · target {shortDigest(textAt(binding, ["targetSha256"], ""))}
+              <code key={recordKey(binding, index)}>
+                {textAt(binding, ["toolId"], "Tool")} · risk {numberAt(binding, "riskLevel")} · target {textAt(binding, ["targetSha256"], "Unavailable")}
               </code>
             ))}
             <label>
-              <input type="checkbox" checked={mutationAcknowledged} onChange={(event) => setMutationAcknowledged(event.target.checked)} />
+              <input type="checkbox" disabled={Boolean(actions.pending || disabledReason)} checked={mutationAcknowledged} onChange={(event) => setAcknowledgedVersion(event.target.checked ? reviewVersion : undefined)} />
               I reviewed these exact change targets and maximum of {maxOccurrences} occurrences.
             </label>
           </span>
@@ -917,7 +1001,7 @@ function ScheduleBuilder({
       )}
       <div className={styles.scheduleBuilderActions}>
         <button type="button" onClick={onCancel} disabled={submitting}>Cancel</button>
-        <button type="submit" disabled={submitting || !procedures.length || (authorityMode === "reviewed_mutation" && !mutationAcknowledged)}>{submitting ? "Reviewing…" : replacementId ? "Create replacement" : authorityMode === "reviewed_mutation" ? "Approve exact changes & schedule" : "Review & schedule"}</button>
+        <button type="submit" disabled={Boolean(actions.pending || disabledReason) || !procedures.length || (authorityMode === "reviewed_mutation" && !mutationAcknowledged)}>{submitting ? "Reviewing…" : replacementId ? "Create replacement" : authorityMode === "reviewed_mutation" ? "Approve exact changes & schedule" : "Review & schedule"}</button>
       </div>
     </form>
   );
@@ -1041,15 +1125,21 @@ function ConnectionsPanel({ ledger }: { ledger: ResourceLedger }) {
 }
 
 type PluginDialog =
-  | { kind: "install"; source: "catalog" | "import"; plugin: JsonRecord; preview: JsonRecord; manifest: JsonRecord }
-  | { kind: "uninstall"; plugin: JsonRecord };
+  | { kind: "install"; source: "catalog" | "import"; plugin: JsonRecord; preview: JsonRecord; manifest: JsonRecord; origin?: HTMLElement }
+  | { kind: "uninstall"; plugin: JsonRecord; origin?: HTMLElement };
 
 function PluginsPanel({
+  active,
   ledger,
   onRefresh,
+  actions,
+  disabledReason,
 }: {
+  active: boolean;
   ledger: ResourceLedger;
   onRefresh: () => Promise<void>;
+  actions: CapabilityActions;
+  disabledReason?: string;
 }) {
   const unifiedPlugins = recordsAt(ledger.plugins.data, "plugins");
   const catalog = (unifiedPlugins.length
@@ -1067,26 +1157,54 @@ function PluginsPanel({
   const [notice, setNotice] = useState<string>();
   const [importDraft, setImportDraft] = useState("");
   const [importError, setImportError] = useState<string>();
+  const [receipt, setReceipt] = useState<JsonRecord>();
+  const receiptSummary = useRef<HTMLElement>(null);
+  const focusAfterInventory = useRef<{ origin: HTMLElement; armed: boolean } | undefined>(undefined);
+  const onOriginRestored = useCallback((origin: HTMLElement | undefined, hadFocus: boolean) => {
+    const pending = focusAfterInventory.current;
+    if (!pending || pending.origin !== origin) return;
+    if (hadFocus && (document.activeElement === origin || document.activeElement === document.body)) pending.armed = true;
+    else focusAfterInventory.current = undefined;
+  }, []);
+  useEffect(() => {
+    const abandon = () => { if (focusAfterInventory.current?.armed) focusAfterInventory.current = undefined; };
+    const focusChanged = (event: FocusEvent) => {
+      if (focusAfterInventory.current?.armed && event.target !== document.body && event.target !== focusAfterInventory.current.origin) abandon();
+    };
+    document.addEventListener("focusin", focusChanged);
+    document.addEventListener("pointerdown", abandon);
+    document.addEventListener("keydown", abandon);
+    return () => {
+      focusAfterInventory.current = undefined;
+      document.removeEventListener("focusin", focusChanged);
+      document.removeEventListener("pointerdown", abandon);
+      document.removeEventListener("keydown", abandon);
+    };
+  }, []);
+  useEffect(() => {
+    const pending = focusAfterInventory.current;
+    if (!pending || !active) return;
+    const frame = window.requestAnimationFrame(() => {
+      if (focusAfterInventory.current !== pending || !pending.armed ||
+        (pending.origin.isConnected && !pending.origin.matches(":disabled") && pending.origin.getClientRects().length) ||
+        document.activeElement !== document.body || !document.hasFocus()) return;
+      const target = receiptSummary.current;
+      if (target?.isConnected && target.getClientRects().length) {
+        focusAfterInventory.current = undefined;
+        target.focus({ preventScroll: true });
+      }
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [active, ledger.plugins.data, receipt, dialog]);
   const importBytes = useMemo(
     () => pluginManifestByteLength(importDraft),
     [importDraft],
   );
 
-  useEffect(() => {
-    if (!dialog) return;
-    const priorOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    function closeOnEscape(event: globalThis.KeyboardEvent) {
-      if (event.key === "Escape") setDialog(undefined);
-    }
-    document.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.body.style.overflow = priorOverflow;
-      document.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [dialog]);
+  const unavailable = disabledReason || (ledger.plugins.status !== "ready" ? "Refresh the current Extension inventory before changing it." : undefined);
 
-  async function reviewPlugin(plugin: JsonRecord) {
+  async function reviewPlugin(plugin: JsonRecord, origin: HTMLElement) {
+    if (unavailable) { setError(unavailable); return; }
     const pluginId = textAt(plugin, ["pluginId"], "");
     const version = textAt(plugin, ["version"], "");
     const manifestSha256 = textAt(plugin, ["manifestSha256"], "");
@@ -1094,7 +1212,9 @@ function PluginsPanel({
       setError("This catalog record does not contain an exact reviewable manifest identity.");
       return;
     }
-    setBusyId(`review:${pluginId}`);
+    const attempt = actions.begin(`review:${pluginId}`);
+    if (!attempt) return;
+    setBusyId(attempt.name);
     setError(undefined);
     setNotice(undefined);
     try {
@@ -1103,19 +1223,23 @@ function PluginsPanel({
         version,
         manifestSha256,
       }, "plugin-preview");
-      const preview = recordAt(result, "preview");
-      const manifest = recordAt(result, "manifest");
-      if (!preview || !manifest) throw new Error("Asael could not prepare this Extension preview.");
-      setDialog({ kind: "install", source: "catalog", plugin, preview, manifest });
+      if (!actions.current(attempt)) return;
+      const { preview, manifest } = await parsePluginPreview(result, { pluginId, version, manifestSha256 });
+      if (!actions.current(attempt)) return;
+      setDialog({ kind: "install", source: "catalog", plugin, preview, manifest, origin });
     } catch (reviewError) {
+      if (!actions.current(attempt)) return;
       setError(safeMutationError(reviewError, "Extension preview could not be prepared."));
     } finally {
-      setBusyId(undefined);
+      if (actions.current(attempt)) { setBusyId(undefined); actions.finish(attempt); }
     }
   }
 
   async function reviewImportedManifest(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const source = event.nativeEvent instanceof SubmitEvent ? event.nativeEvent.submitter : document.activeElement;
+    const origin = source instanceof HTMLElement ? source : undefined;
+    if (disabledReason) { setImportError(disabledReason); return; }
     let previewRequest: { manifest: JsonRecord };
     try {
       previewRequest = importedPluginPreviewPayload(importDraft);
@@ -1124,7 +1248,9 @@ function PluginsPanel({
       return;
     }
 
-    setBusyId("review:import");
+    const attempt = actions.begin("review:import");
+    if (!attempt) return;
+    setBusyId(attempt.name);
     setError(undefined);
     setImportError(undefined);
     setNotice(undefined);
@@ -1135,64 +1261,79 @@ function PluginsPanel({
         previewRequest,
         "plugin-import-preview",
       );
-      const preview = recordAt(result, "preview");
-      const reviewedManifest = recordAt(result, "manifest");
-      if (!preview || !reviewedManifest) {
-        throw new Error("Asael could not prepare this Extension preview.");
-      }
+      if (!actions.current(attempt)) return;
+      const { preview, manifest: reviewedManifest } = await parsePluginPreview(result, {
+        pluginId: textAt(previewRequest.manifest, ["pluginId"], ""),
+        version: textAt(previewRequest.manifest, ["version"], ""),
+        submittedManifest: previewRequest.manifest,
+      });
+      if (!actions.current(attempt)) return;
       setDialog({
         kind: "install",
         source: "import",
         plugin: reviewedManifest,
         preview,
         manifest: reviewedManifest,
+        origin,
       });
     } catch (reviewError) {
+      if (!actions.current(attempt)) return;
       setImportError(safeMutationError(reviewError, "Imported Extension preview could not be prepared."));
     } finally {
-      setBusyId(undefined);
+      if (actions.current(attempt)) { setBusyId(undefined); actions.finish(attempt); }
     }
   }
 
   async function installReviewedPlugin(review: Extract<PluginDialog, { kind: "install" }>) {
+    if (disabledReason) { setError(disabledReason); return; }
     const previewId = textAt(review.preview, ["previewId"], "");
     const manifestSha256 = textAt(review.preview, ["manifestSha256"], "");
-    if (!previewId || !/^[a-f0-9]{64}$/.test(manifestSha256)) {
+    if (!previewId || !/^[a-f0-9]{64}$/.test(manifestSha256) || Date.parse(String(review.preview.expiresAt)) <= Date.now()) {
       setError("This Extension preview expired or is incomplete. Prepare it again.");
       setDialog(undefined);
       return;
     }
-    setBusyId(`install:${previewId}`);
+    const attempt = actions.begin(`install:${previewId}`);
+    if (!attempt) return;
+    setBusyId(attempt.name);
     setError(undefined);
     try {
       const result = await mutatePlugin("/api/plugins/install", "POST", {
         previewId,
         manifestSha256,
       }, "plugin-install");
-      const activation = recordAt(result, "activation");
+      if (!actions.current(attempt)) return;
+      const installation = await parsePluginInstallation(result, {
+        pluginId: String(review.preview.pluginId), version: String(review.preview.pluginVersion), manifestSha256, state: "enabled",
+      });
+      if (!actions.current(attempt)) return;
+      setReceipt(installation);
+      if (review.origin) focusAfterInventory.current = { origin: review.origin, armed: false };
       setDialog(undefined);
       if (review.source === "import") setImportDraft("");
-      setNotice(textAt(
-        activation,
-        ["explanation"],
-        `${pluginTitle(review.plugin)} was installed. Any Custom Connection it offers still needs its own setup.`,
-      ));
-      await onRefresh();
+      setNotice(`${pluginTitle(review.plugin)} was installed with its declared Skills enabled. MCP connections and Automation templates still require their existing setup and review. Inventory refresh is separate.`);
+      setBusyId(undefined);
+      actions.finish(attempt);
+      void onRefresh();
     } catch (installError) {
+      if (!actions.current(attempt)) return;
       setError(safeMutationError(installError, "Extension installation failed."));
     } finally {
-      setBusyId(undefined);
+      if (actions.current(attempt)) { setBusyId(undefined); actions.finish(attempt); }
     }
   }
 
   async function transitionPlugin(plugin: JsonRecord, action: "enable" | "disable" | "uninstall") {
+    if (unavailable) { setError(unavailable); return; }
     const installationId = textAt(plugin, ["installationId"], "");
     const expectedRevision = numberAt(plugin, "revision");
     if (!installationId || expectedRevision < 1) {
       setError("This Extension is out of date. Refresh and try again.");
       return;
     }
-    setBusyId(`${action}:${installationId}`);
+    const attempt = actions.begin(`${action}:${installationId}`);
+    if (!attempt) return;
+    setBusyId(attempt.name);
     setError(undefined);
     setNotice(undefined);
     try {
@@ -1202,18 +1343,31 @@ function PluginsPanel({
         action === "uninstall" ? { expectedRevision } : { action, expectedRevision },
         `plugin-${action}`,
       );
-      const activation = recordAt(result, "activation");
+      if (!actions.current(attempt)) return;
+      const installation = await parsePluginInstallation(result, {
+        installationId, revision: expectedRevision,
+        pluginId: textAt(plugin, ["pluginId"], ""),
+        version: textAt(plugin, ["installedVersion", "pluginVersion", "version"], ""),
+        manifestSha256: textAt(plugin, ["installedManifestSha256", "manifestSha256"], ""),
+        state: action === "enable" ? "enabled" : action === "disable" ? "disabled" : "uninstalled",
+      });
+      if (!actions.current(attempt)) return;
+      setReceipt(installation);
+      if (dialog?.kind === "uninstall" && dialog.origin) focusAfterInventory.current = { origin: dialog.origin, armed: false };
       setDialog(undefined);
       setNotice(
         action === "uninstall"
           ? `${pluginTitle(plugin)} was uninstalled from this workspace.`
-          : textAt(activation, ["explanation"], `${pluginTitle(plugin)} is now ${action === "enable" ? "enabled" : "disabled"}.`),
+          : `${pluginTitle(plugin)} is now ${action === "enable" ? "enabled" : "disabled"}. Separate connections and workflow authority are unchanged.`,
       );
-      await onRefresh();
+      setBusyId(undefined);
+      actions.finish(attempt);
+      void onRefresh();
     } catch (transitionError) {
+      if (!actions.current(attempt)) return;
       setError(safeMutationError(transitionError, `Extension ${action} failed.`));
     } finally {
-      setBusyId(undefined);
+      if (actions.current(attempt)) { setBusyId(undefined); actions.finish(attempt); }
     }
   }
 
@@ -1232,7 +1386,9 @@ function PluginsPanel({
         </div>
       </div>
       {error ? <InlineError>{error}</InlineError> : null}
+      {disabledReason ? <p className={styles.readNotice}>{disabledReason}</p> : null}
       {notice ? <div className={styles.inlineNotice} role="status"><CheckCircle2 size={16} aria-hidden="true" /><span>{notice}</span></div> : null}
+      {receipt ? <details className={styles.reviewDigest}><summary ref={receiptSummary}>Last confirmed Extension receipt</summary><dl>{["installationId", "pluginId", "pluginVersion", "manifestSha256", "state", "revision", "installationSha256"].map((key) => <div key={key}><dt>{key}</dt><dd><code>{String(receipt[key])}</code></dd></div>)}</dl></details> : null}
       <div className={styles.splitInventory}>
         <InventorySection
           title="Installed"
@@ -1259,11 +1415,11 @@ function PluginsPanel({
                       plugin,
                       textAt(plugin, ["status", "state"], "disabled") === "enabled" ? "disable" : "enable",
                     )}
-                    disabled={Boolean(busyId)}
+                    disabled={Boolean(actions.pending || unavailable)}
                   >
                     {textAt(plugin, ["status", "state"], "disabled") === "enabled" ? "Disable" : "Enable"}
                   </button>
-                  <button type="button" onClick={() => setDialog({ kind: "uninstall", plugin })} disabled={Boolean(busyId)}>
+                  <button type="button" onClick={(event) => setDialog({ kind: "uninstall", plugin, origin: event.currentTarget })} disabled={Boolean(actions.pending || unavailable)}>
                     Uninstall
                   </button>
                 </div>
@@ -1290,8 +1446,8 @@ function PluginsPanel({
                 <button
                   type="button"
                   className={styles.rowAction}
-                  onClick={() => void reviewPlugin(plugin)}
-                  disabled={Boolean(busyId)}
+                  onClick={(event) => void reviewPlugin(plugin, event.currentTarget)}
+                  disabled={Boolean(actions.pending || unavailable)}
                 >
                   {busyId === `review:${textAt(plugin, ["pluginId"], "")}` ? "Preparing…" : "Review"}
                 </button>
@@ -1323,6 +1479,7 @@ function PluginsPanel({
           <textarea
             id="automation-plugin-manifest"
             value={importDraft}
+            disabled={Boolean(actions.pending)}
             onChange={(event) => {
               setImportDraft(event.target.value);
               if (importError) setImportError(undefined);
@@ -1336,17 +1493,19 @@ function PluginsPanel({
           <p id="automation-plugin-manifest-help" className={styles.importHelp}>JSON is parsed locally first, then the server validates its exact schema and returns immutable effects and limitations for review. Pasting does not install anything.</p>
           {importError ? <p id="automation-plugin-manifest-error" className={styles.importError} role="alert">{importError}</p> : <span id="automation-plugin-manifest-error" />}
           <div className={styles.importActions}>
-            <button type="button" onClick={() => { setImportDraft(""); setImportError(undefined); }} disabled={!importDraft || Boolean(busyId)}>Clear</button>
-            <button type="submit" disabled={!importDraft.trim() || importBytes > MAX_PLUGIN_MANIFEST_BYTES || Boolean(busyId)}>
+            <button type="button" onClick={() => { setImportDraft(""); setImportError(undefined); }} disabled={!importDraft || Boolean(actions.pending)}>Clear</button>
+            <button type="submit" disabled={!importDraft.trim() || importBytes > MAX_PLUGIN_MANIFEST_BYTES || Boolean(actions.pending || disabledReason)}>
               {busyId === "review:import" ? "Preparing review…" : "Prepare immutable review"}
             </button>
           </div>
         </form>
       </details>
-      {dialog ? (
+      {dialog && active ? (
         <PluginDialogSurface
           dialog={dialog}
           busy={Boolean(busyId)}
+          error={error}
+          onOriginRestored={onOriginRestored}
           onClose={() => setDialog(undefined)}
           onInstall={() => dialog.kind === "install" ? void installReviewedPlugin(dialog) : undefined}
           onUninstall={() => dialog.kind === "uninstall" ? void transitionPlugin(dialog.plugin, "uninstall") : undefined}
@@ -1359,30 +1518,45 @@ function PluginsPanel({
 function PluginDialogSurface({
   dialog,
   busy,
+  error,
+  onOriginRestored,
   onClose,
   onInstall,
   onUninstall,
 }: {
   dialog: PluginDialog;
   busy: boolean;
+  error?: string;
+  onOriginRestored: (origin: HTMLElement | undefined, hadFocus: boolean) => void;
   onClose: () => void;
   onInstall: () => void;
   onUninstall: () => void;
 }) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const element = dialogRef.current;
+    const origin = dialog.origin;
+    element?.showModal();
+    return () => {
+      const hadFocus = element?.contains(document.activeElement) || document.activeElement === document.body;
+      element?.close();
+      if (hadFocus && origin?.isConnected && origin.getClientRects().length) origin.focus({ preventScroll: true });
+      onOriginRestored(origin, Boolean(hadFocus));
+    };
+  }, [dialog.origin, onOriginRestored]);
+  const onCancel = (event: SyntheticEvent<HTMLDialogElement>) => { event.preventDefault(); if (!busy) onClose(); };
   if (dialog.kind === "uninstall") {
     return (
-      <div className={styles.dialogLayer}>
-        <button type="button" className={styles.dialogDismiss} aria-label="Close Extension confirmation" onClick={onClose} disabled={busy} />
-        <section className={styles.dialog} role="alertdialog" aria-modal="true" aria-labelledby="plugin-uninstall-title">
+        <dialog ref={dialogRef} onCancel={onCancel} className={styles.dialog} aria-labelledby="plugin-uninstall-title">
           <span className={styles.dialogEyebrow}>Confirm removal</span>
           <h2 id="plugin-uninstall-title">Uninstall {pluginTitle(dialog.plugin)}?</h2>
           <p>The Extension will leave this workspace. Accounts and external Connections configured separately will stay connected.</p>
+          {error ? <p role="alert" className={styles.importError}>{error}</p> : null}
           <div className={styles.dialogActions}>
             <button type="button" onClick={onClose} disabled={busy} autoFocus>Cancel</button>
             <button type="button" className={styles.dangerAction} onClick={onUninstall} disabled={busy}>{busy ? "Uninstalling…" : "Uninstall Extension"}</button>
           </div>
-        </section>
-      </div>
+        </dialog>
     );
   }
 
@@ -1392,12 +1566,11 @@ function PluginDialogSurface({
   const effects = stringListAt(preview, "effects");
   const limitations = stringListAt(preview, "limitations");
   return (
-    <div className={styles.dialogLayer}>
-      <button type="button" className={styles.dialogDismiss} aria-label="Close Extension review" onClick={onClose} disabled={busy} />
-      <section className={styles.dialog} role="dialog" aria-modal="true" aria-labelledby="plugin-review-title">
+      <dialog ref={dialogRef} onCancel={onCancel} className={styles.dialog} aria-labelledby="plugin-review-title">
         <span className={styles.dialogEyebrow}>Extension preview</span>
         <h2 id="plugin-review-title">Review {textAt(preview, ["name"], pluginTitle(dialog.plugin))}</h2>
         <p>Published by {textAt(preview, ["publisherName"], textAt(publisher, ["name"], "Unknown publisher"))}. Confirm the exact declared effects and limitations before installing.</p>
+        {error ? <p role="alert" className={styles.importError}>{error}</p> : null}
         <div className={styles.reviewCounts}>
           <div><strong>{numberAt(counts, "skills")}</strong><span>Skills</span></div>
           <div><strong>{numberAt(counts, "mcpTemplates")}</strong><span>MCP templates</span></div>
@@ -1410,16 +1583,19 @@ function PluginDialogSurface({
         <details className={styles.reviewDigest}>
           <summary>Technical verification</summary>
           <dl>
+            <div><dt>Plugin identity</dt><dd><code>{String(preview.pluginId)} · {String(preview.pluginVersion)}</code></dd></div>
+            <div><dt>Preview identity</dt><dd><code>{String(preview.previewId)}</code></dd></div>
             <div><dt>Manifest fingerprint</dt><dd><code>{textAt(preview, ["manifestSha256"], "Unavailable")}</code></dd></div>
+            <div><dt>Preview fingerprint</dt><dd><code>{String(preview.previewSha256)}</code></dd></div>
             <div><dt>Preview expires</dt><dd>{formatDateTime(textAt(preview, ["expiresAt"], ""))}</dd></div>
           </dl>
+          <details><summary>Full reviewed declarative manifest</summary><pre>{JSON.stringify(dialog.manifest, null, 2)}</pre></details>
         </details>
         <div className={styles.dialogActions}>
           <button type="button" onClick={onClose} disabled={busy} autoFocus>Cancel</button>
           <button type="button" className={styles.installAction} onClick={onInstall} disabled={busy}>{busy ? "Installing…" : "Install Extension"}</button>
         </div>
-      </section>
-    </div>
+      </dialog>
   );
 }
 
@@ -1511,9 +1687,9 @@ function InventorySection({
     <section className={wide ? styles.inventoryWide : styles.inventory}>
       <header><div><h2>{title}</h2><p>{note}</p></div><ResourceState state={resource.status} /></header>
       {resource.status === "loading" && !resource.data ? <LoadingRows /> : null}
-      {resource.status === "error" ? <InlineError>{resource.error}</InlineError> : null}
+      {resource.status === "error" ? <InlineError>{resource.error}{resource.data ? " Last-loaded records remain visible." : ""}</InlineError> : null}
       {resource.status === "ready" && !hasChildren ? <EmptyState>{empty}</EmptyState> : null}
-      {resource.status === "ready" && hasChildren ? <div className={styles.inventoryRows}>{children}</div> : null}
+      {resource.data && hasChildren ? <div className={styles.inventoryRows}>{children}</div> : null}
     </section>
   );
 }
@@ -1871,10 +2047,6 @@ function friendlyRrule(value: string) {
   if (fields.BYDAY === "MO,TU,WE,TH,FR") return `Weekdays · ${time}`;
   if (fields.FREQ === "MONTHLY") return `Monthly · ${time}`;
   return `Daily · ${time}`;
-}
-
-function shortDigest(value: string) {
-  return value ? `${value.slice(0, 12)}…` : "Unavailable";
 }
 
 export function capabilityStateLabel(state: CapabilityState) {

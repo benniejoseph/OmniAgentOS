@@ -23,12 +23,12 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { TruthfulIntegrationsOverview } from "@/lib/connectors/truthful-overview";
+import { parseIntegrationOverview } from "./integration-overview-parser";
 import styles from "./integrations-workspace.module.css";
 
-const OVERVIEW_VERSION = "p11.7-truthful-integrations:1";
 const INTEGRATION_STATUS_CHANGED_EVENT = "asael:integration-status-changed";
 
 type OAuthCallbackNotice = {
@@ -44,38 +44,37 @@ export function IntegrationTruthPanel({ children }: { children?: ReactNode }) {
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [error, setError] = useState<string>();
   const [oauthNotice, setOAuthNotice] = useState<OAuthCallbackNotice>();
+  const read = useRef<AbortController | undefined>(undefined);
 
   const load = useCallback(async () => {
+    read.current?.abort();
+    const controller = new AbortController();
+    read.current = controller;
     setState("loading");
-    setError(undefined);
     try {
-      setOverview(await fetchIntegrationOverview());
+      const loaded = await fetchIntegrationOverview(AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]));
+      if (read.current !== controller || controller.signal.aborted) return;
+      setOverview(loaded);
+      setError(undefined);
       setState("ready");
     } catch (loadError) {
+      if (read.current !== controller || controller.signal.aborted) return;
       setState("error");
       setError(loadError instanceof Error ? loadError.message : "Integration access could not be loaded.");
     }
   }, []);
 
   useEffect(() => {
-    let active = true;
     const callback = readOAuthCallbackNotice(window.location.href);
     if (callback) {
       window.history.replaceState(window.history.state, "", callback.cleanUrl);
     }
-    void fetchIntegrationOverview().then((loaded) => {
-      if (!active) return;
+    const timer = window.setTimeout(() => {
       if (callback) setOAuthNotice(callback.notice);
-      setOverview(loaded);
-      setState("ready");
-    }).catch((loadError: unknown) => {
-      if (!active) return;
-      if (callback) setOAuthNotice(callback.notice);
-      setState("error");
-      setError(loadError instanceof Error ? loadError.message : "Integration access could not be loaded.");
-    });
-    return () => { active = false; };
-  }, []);
+      void load();
+    }, 0);
+    return () => { window.clearTimeout(timer); read.current?.abort(); read.current = undefined; };
+  }, [load]);
 
   useEffect(() => {
     const refreshOverview = () => { void load(); };
@@ -139,6 +138,7 @@ export function IntegrationTruthPanel({ children }: { children?: ReactNode }) {
 
         {overview ? (
           <>
+            {state !== "ready" ? <p className={styles.partialNotice} role="status">Last-loaded connection status from {overview.generatedAt}. Current status {state === "loading" ? "is being checked" : "could not be confirmed"}; these counts are retained evidence.</p> : null}
             <div className={styles.truthSummary} aria-label="Integration status summary">
               <SummaryStat label="Connected" description="Installed records" value={overview.summary.installed} icon={DatabaseZap} />
               <SummaryStat label="Working" description="Ready to use" value={overview.summary.working} icon={CheckCircle2} tone="working" />
@@ -192,7 +192,8 @@ export function IntegrationTruthPanel({ children }: { children?: ReactNode }) {
                   <span key={name} className={source.state === "ready" ? styles.inventoryReady : styles.inventoryUnavailable} title={source.detail}>
                     {source.state === "ready" ? <CheckCircle2 size={13} aria-hidden="true" /> : <CircleHelp size={13} aria-hidden="true" />}
                     <strong>{inventoryLabel(name)}</strong>
-                    <small>{source.state === "ready" ? "Current" : "Unavailable"}</small>
+                    <small>{source.state === "ready" ? state === "ready" ? "Read succeeded" : "Last loaded" : "Unavailable"}</small>
+                    <span>{source.detail}</span>
                   </span>
                 ))}
               </div>
@@ -294,6 +295,8 @@ function IntegrationSourceRow({ integration }: { integration: InstalledIntegrati
       <details className={styles.technicalDetails}>
         <summary>Technical details</summary>
         <dl>
+          <div><dt>Integration identity</dt><dd><code>{integration.id}</code></dd></div>
+          {integration.account ? <div><dt>Account identity</dt><dd><code>{integration.account.connectionId}</code> · {integration.account.email || "Email unavailable"} · {integration.installation === "retained_read_only" ? "Retained read-only" : integration.manageable ? "Manageable by this account" : "Read-only access"}</dd></div> : null}
           <div><dt><KeyRound size={13} aria-hidden="true" />Sync checkpoint</dt><dd>{cursorLabel(integration.sync.cursor.state)}. {integration.sync.cursor.detail}</dd></div>
           <div><dt><DatabaseZap size={13} aria-hidden="true" />Operations</dt><dd>{integration.permissions.activeOperations} active, {integration.permissions.pendingReviewOperations} awaiting review, {integration.permissions.disabledOperations} disabled.</dd></div>
           <div><dt><ShieldCheck size={13} aria-hidden="true" />Granted access</dt><dd>{integration.permissions.granted.length ? integration.permissions.granted.join(" · ") : "No active access has been verified."}</dd></div>
@@ -403,7 +406,8 @@ function costLabel(cost: InstalledIntegration["cost"]) {
   if (cost.state === "unavailable") return "Not available";
   if (cost.state === "unknown") return "Not measured";
   if (cost.state === "no_recorded_activity") return "No recorded usage";
-  const value = (cost.knownEstimatedCostMicrousd || 0) / 1_000_000;
+  if (cost.knownEstimatedCostMicrousd === null) return "Recorded cost amount unavailable";
+  const value = cost.knownEstimatedCostMicrousd / 1_000_000;
   return `${cost.state === "partial" ? "Partial, " : ""}$${value.toFixed(value < 0.01 ? 4 : 2)}`;
 }
 
@@ -426,22 +430,22 @@ function inventoryLabel(value: string) {
   return ({ oauth: "Personal connections", mcp: "MCP servers", openapi: "REST APIs", salesforce: "Salesforce", usage: "Usage records" } as Record<string, string>)[value] || value;
 }
 
-async function fetchIntegrationOverview() {
+async function fetchIntegrationOverview(signal: AbortSignal) {
   const response = await fetch("/api/integrations/overview", {
     headers: { accept: "application/json" },
     cache: "no-store",
+    signal,
   });
   const payload = await response.json().catch(() => ({})) as {
     overview?: TruthfulIntegrationsOverview;
     error?: string;
   };
   if (!response.ok) throw new Error(payload.error || "Integration access could not be loaded.");
-  if (payload.overview?.version !== OVERVIEW_VERSION ||
-      !Array.isArray(payload.overview.installed) ||
-      !Array.isArray(payload.overview.suggestions)) {
+  const parsed = parseIntegrationOverview(payload.overview);
+  if (!parsed.success) {
     throw new Error("Integration access returned an unsupported contract.");
   }
-  return payload.overview;
+  return parsed.data;
 }
 
 function readOAuthCallbackNotice(value: string): {

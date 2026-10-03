@@ -11,9 +11,12 @@ describe("Command error recovery", () => {
       retry: vi.fn(),
     }));
 
-    expect(html).toContain("The conversation is still safe");
-    expect(html).toContain("Retry Command");
+    expect(html).toContain("This conversation could not open");
+    expect(html).toContain("Retry Assistant");
     expect(html).toContain('href="/app"');
     expect(html).not.toContain("private implementation detail");
+    expect(html).not.toContain("<main");
+    expect(html).not.toContain("remain stored");
+    expect(html).toContain("does not confirm whether pending work finished");
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pushCanaryOutcomeCopy } from "@/components/settings/push-canary-panel";
+import { pushCanaryOutcomeCopy, readPushCanaryResult, readPushTargets } from "@/components/settings/push-canary-panel";
 
 const base = {
   schemaVersion: 1 as const,
@@ -52,5 +52,27 @@ describe("push receipt canary presentation", () => {
       tone: "warning",
       title: "Device receipt timed out",
     });
+  });
+
+  it("requires an exact delivery ID and canary cause before showing an outcome", () => {
+    const value = { ...base, outcome: "timed_out", timedOut: true, state: { ...base.state, id: base.deliveryId, causeKind: "canary", causeId: base.canaryId } };
+    expect(readPushCanaryResult(value).outcome).toBe("timed_out");
+    expect(() => readPushCanaryResult({ ...value, state: { ...value.state, id: "other-delivery" } })).toThrow("unconfirmed");
+    expect(() => readPushCanaryResult({ ...value, state: { ...value.state, causeId: "other-canary" } })).toThrow("unconfirmed");
+  });
+
+  it("rejects contradictory delivery claims rather than turning them into success", () => {
+    const state = { ...base.state, id: base.deliveryId, causeKind: "canary", causeId: base.canaryId };
+    expect(() => readPushCanaryResult({ ...base, outcome: "received", state })).toThrow("unconfirmed");
+    expect(() => readPushCanaryResult({ ...base, outcome: "timed_out", timedOut: false, state })).toThrow("unconfirmed");
+    expect(() => readPushCanaryResult({ ...base, outcome: "provider_failed", state })).toThrow("unconfirmed");
+    expect(readPushCanaryResult({ ...base, outcome: "received", state: { ...state, appState: "received", receivedAt: "2026-09-18T10:00:01.000Z" } }).outcome).toBe("received");
+  });
+
+  it("distinguishes successful empty target reads from malformed/unavailable reads", () => {
+    const value = { schemaVersion: 1, registrations: [], providers: { apns: "configured", fcm: "configuration_required" } };
+    expect(readPushTargets(value).registrations).toEqual([]);
+    expect(() => readPushTargets({ ...value, registrations: undefined })).toThrow("incomplete");
+    expect(() => readPushTargets({ ...value, providers: { apns: ["configured"], fcm: "configured" } })).toThrow("incomplete");
   });
 });

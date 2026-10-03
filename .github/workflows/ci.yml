@@ -71,6 +71,59 @@ jobs:
           path: test-results/browser
           retention-days: 14
 
+  browser-families:
+    name: browser-families (${{ matrix.group }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: specialists
+            suites: markets agents capabilities workflows
+          - group: operations
+            suites: payments operational_views settings_advanced
+          - group: public
+            suites: public_pages access_recovery
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install application and browser tools
+        run: |
+          npm ci
+          python3 -m venv /tmp/asael-browser-venv
+          /tmp/asael-browser-venv/bin/pip install -r tests/browser/requirements.txt
+          /tmp/asael-browser-venv/bin/python -m playwright install --with-deps chromium
+          npm install --prefix /tmp/asael-browser-tools --ignore-scripts --no-audit --no-fund axe-core@4.11.0
+
+      - name: Isolated family interactions and accessibility
+        env:
+          BROWSER_SUITES: ${{ matrix.suites }}
+        run: |
+          set -euo pipefail
+          for suite in $BROWSER_SUITES; do
+            /tmp/asael-browser-venv/bin/python "tests/browser/${suite}.py" \
+              --axe /tmp/asael-browser-tools/node_modules/axe-core/axe.min.js \
+              --output "test-results/browser/${suite}"
+          done
+
+      - name: Browser family evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: browser-families-${{ matrix.group }}-${{ github.sha }}
+          path: test-results/browser
+          retention-days: 14
+
   quality:
     name: quality
     runs-on: ubuntu-latest

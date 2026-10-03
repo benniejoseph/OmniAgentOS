@@ -9,7 +9,10 @@ describe("offline page", () => {
     const html = renderToStaticMarkup(createElement(OfflinePage));
 
     expect(html).toContain("You are offline.");
-    expect(html).toContain("A Capture page that is already open still saves notes on this device");
+    expect(html).toContain("A Capture page that is already open can save notes on this device");
+    expect(html).toContain("Check for its saved confirmation");
+    expect(html).toContain("same account and workspace");
+    expect(html).toContain("cannot confirm your queue");
     expect(html).toContain('href="/app"');
     // Capture cannot open while offline; the worker would show this page again.
     expect(html).not.toContain('href="/app/capture"');

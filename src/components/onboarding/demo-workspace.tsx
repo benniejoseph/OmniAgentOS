@@ -1,163 +1,103 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowRight, Brain, CheckCircle2, Loader2, LockKeyhole, Play, Workflow, Wrench } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useState } from "react";
+import styles from "./demo-workspace.module.css";
 
 const demoSteps = [
   {
-    label: "Goal",
-    title: "Launch onboarding agent",
-    body: "Capture objective, tenant, actor role, and operating constraints.",
-    icon: Play,
+    label: "Goal", title: "Define the sample goal",
+    body: "Prepare a welcome checklist for a fictional project. In a real workspace, the goal, account, and constraints determine the work you request.",
+    example: "Draft a welcome checklist for the sample project. Leave external messages for review.",
+    detail: "This text is an example. It has not been submitted to an agent.",
   },
   {
-    label: "Memory",
-    title: "Assemble governed context",
-    body: "Retrieve policies, prior runs, source chunks, and graph hints.",
-    icon: Brain,
+    label: "Memory", title: "Inspect the example context",
+    body: "Context can include relevant source material and prior work. This walkthrough uses a short fictional policy instead of reading private memory.",
+    example: "Sample policy: introductions should name the project owner and explain the first review step.",
+    detail: "No memory search, source retrieval, or account read is performed.",
   },
   {
-    label: "Workflow",
-    title: "Create durable execution plan",
-    body: "Split work into queued nodes with approval and recovery rules.",
-    icon: Workflow,
+    label: "Workflow", title: "Read the example plan",
+    body: "A plan separates drafting from actions that may require a decision. Real progress comes from the workspace's recorded execution state.",
+    example: "1. Draft the checklist. 2. Review its sources. 3. Ask before sending an external message.",
+    detail: "These steps are illustrative. No workflow has been queued or started.",
   },
   {
-    label: "Tools",
-    title: "Classify side effects",
-    body: "Dry-run connector actions before live operations are allowed.",
-    icon: Wrench,
+    label: "Tools", title: "Understand the review point",
+    body: "An external action can require approval under the workspace's policy. A real approval must name the exact action and current request.",
+    example: "Example action: send the reviewed welcome message. Example review point: inspect recipient and message before deciding.",
+    detail: "There is no approval request here. Selecting this step does not authorize anything.",
   },
   {
-    label: "Proof",
-    title: "Close with release evidence",
-    body: "Record SLO, tenant isolation, signing, and audit status.",
-    icon: CheckCircle2,
+    label: "Evidence", title: "Know what a result needs",
+    body: "A real result should show what happened and the evidence available for review. A finished walkthrough is not proof of a completed run.",
+    example: "Example review: compare the checklist with its sources and inspect the returned action receipt, if an action was authorized.",
+    detail: "No run, release, health, isolation, or signing checks were performed by this demo.",
   },
-];
-
-const sampleSignals = [
-  ["Tenant", "sample-tenant"],
-  ["Auth", "demo mode"],
-  ["Memory", "23 chunks"],
-  ["Risk", "approval gated"],
-  ["Release", "passed"],
-  ["SLO", "clear"],
-];
+] as const;
 
 export function DemoWorkspace() {
   const [active, setActive] = useState(0);
   const [started, setStarted] = useState(false);
-  const [running, setRunning] = useState(false);
-  const progress = useMemo(
-    () => started ? Math.round(((active + 1) / demoSteps.length) * 100) : 0,
-    [active, started],
-  );
+  const step = demoSteps[active];
 
-  async function runDemo() {
+  function selectStep(index: number) {
     setStarted(true);
-    setRunning(true);
-    for (let index = 0; index < demoSteps.length; index++) {
-      setActive(index);
-      await new Promise((resolve) => setTimeout(resolve, 460));
-    }
-    setRunning(false);
+    setActive(index);
   }
 
-  const step = demoSteps[active];
-  const Icon = step.icon;
+  return <main id="main-content" tabIndex={-1} className={styles.page} data-testid="demo-workspace">
+    <header className={styles.intro}>
+      <p className={styles.eyebrow}>Demo workspace · Simulated</p>
+      <h1 className={styles.title}>Explore a sample agent workflow.</h1>
+      <p className={styles.reading}>Step through a fictional goal, context, plan, review point, and result. Everything in this walkthrough stays on this page.</p>
+      <div className={styles.actions}>
+        <button type="button" className={styles.primaryButton} onClick={() => selectStep(0)}>{started ? "Restart walkthrough" : "Start walkthrough"}</button>
+        <Link href="/login" prefetch={false} className={styles.button}>Sign in to workspace</Link>
+      </div>
+      <p className={styles.support}>No model, connector, or private workspace is accessed. The walkthrough does not run work or grant permission.</p>
+    </header>
 
-  return (
-    <main className="min-h-screen bg-background text-foreground">
-      <section className="border-b border-line pt-16">
-        <div className="mx-auto grid max-w-7xl gap-12 px-4 py-16 sm:px-6 lg:grid-cols-[0.78fr_1.22fr] lg:px-8">
-          <div>
-            <p className="text-sm font-semibold text-primary">Demo workspace</p>
-            <h1 className="mt-4 max-w-3xl text-4xl font-semibold tracking-normal sm:text-5xl">
-              Experience the onboarding loop with sample data.
-            </h1>
-            <p className="mt-6 max-w-2xl text-lg leading-8 text-muted">
-              This public mode shows how goals become memory-backed, approval-aware, auditable agent work without touching private systems.
-            </p>
-            <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-              <button
-                type="button"
-                onClick={runDemo}
-                disabled={running}
-                className="inline-flex h-12 items-center justify-center gap-2 rounded-md bg-primary px-5 text-sm font-semibold text-primary-ink transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {running ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <Play size={16} aria-hidden="true" />}
-                {running ? "Running demo" : "Run sample agent"}
-              </button>
-              <Link
-                href="/login"
-                className="inline-flex h-12 items-center justify-center gap-2 rounded-md border border-line bg-surface px-5 text-sm font-semibold transition hover:bg-surface-raised"
-              >
-                Sign in to workspace
-                <ArrowRight size={16} aria-hidden="true" />
-              </Link>
-            </div>
-          </div>
-
-          <div className="rounded-lg border border-line bg-surface p-5 sm:p-6">
-            <div className="flex items-center justify-between gap-4 border-b border-line pb-5">
-              <div>
-                <p className="text-sm text-muted">Sample run</p>
-                <p className="mt-1 text-2xl font-semibold">Onboarding agent</p>
-              </div>
-              <div className="rounded-md border border-line bg-background px-3 py-2 font-mono text-sm text-primary">
-                {progress}%
-              </div>
-            </div>
-
-            <div className="mt-6 grid gap-px overflow-hidden rounded-lg border border-line bg-line sm:grid-cols-5">
-              {demoSteps.map((item, index) => (
-                <button
-                  key={item.label}
-                  type="button"
-                  onClick={() => {
-                    setStarted(true);
-                    setActive(index);
-                  }}
-                  className={index === active ? "bg-primary p-4 text-left text-primary-ink" : "bg-background p-4 text-left transition hover:bg-surface-raised"}
-                >
-                  <p className="font-mono text-xs opacity-70">0{index + 1}</p>
-                  <p className="mt-8 text-sm font-semibold">{item.label}</p>
-                </button>
-              ))}
-            </div>
-
-            <div className="mt-6 grid gap-6 lg:grid-cols-[0.8fr_1.2fr]">
-              <div className="rounded-lg border border-line bg-background p-5">
-                <div className="grid size-12 place-items-center rounded-md bg-primary/12 text-primary">
-                  <Icon size={22} aria-hidden="true" />
-                </div>
-                <h2 className="mt-8 text-2xl font-semibold tracking-normal">{step.title}</h2>
-                <p className="mt-4 text-sm leading-6 text-muted">{step.body}</p>
-              </div>
-
-              <div className="rounded-lg border border-line bg-surface-raised p-5 text-foreground">
-                <p className="text-sm font-semibold">Sample signals</p>
-                <div className="mt-6 grid gap-px overflow-hidden rounded-lg border border-line bg-line sm:grid-cols-2">
-                  {sampleSignals.map(([label, value]) => (
-                    <div key={label} className="bg-surface p-4">
-                      <p className="text-xs text-muted">{label}</p>
-                      <p className="mt-2 font-mono text-sm">{value}</p>
-                    </div>
-                  ))}
-                </div>
-                <div className="mt-6 flex items-start gap-3 border-t border-line pt-5">
-                  <LockKeyhole size={17} className="mt-0.5 text-primary" aria-hidden="true" />
-                  <p className="text-sm leading-6 text-muted">
-                    Demo mode never executes external connectors or writes private tenant data.
-                  </p>
-                </div>
-              </div>
-            </div>
-          </div>
+    <section className={styles.walkthrough} aria-labelledby="demo-walkthrough-title">
+      <div className={styles.walkthroughHeader}>
+        <h2 id="demo-walkthrough-title">Sample onboarding workflow</h2>
+        <p className={styles.support} role="status">{started ? `Viewing step ${active + 1} of ${demoSteps.length}` : "Choose a step or start the walkthrough."}</p>
+      </div>
+      <div className={styles.steps} role="group" aria-label="Simulation steps">
+        {demoSteps.map((item, index) => <button key={item.label} type="button" className={styles.step}
+          aria-pressed={index === active} aria-controls="demo-step-detail" onClick={() => selectStep(index)}>
+          <span className={styles.stepNumber} aria-hidden="true">{index + 1}</span><span>{item.label}</span>
+        </button>)}
+      </div>
+      <div id="demo-step-detail" className={styles.detail}>
+        <div className={styles.explanation}>
+          <p className={styles.eyebrow}>Simulated step {active + 1} · {step.label}</p>
+          <h3>{step.title}</h3>
+          <p className={styles.reading}>{step.body}</p>
         </div>
-      </section>
-    </main>
-  );
+        <div className={styles.example}>
+          <p className={styles.exampleLabel}>Fictional example</p>
+          <p className={styles.reading}>{step.example}</p>
+          <p className={styles.support}>{step.detail}</p>
+        </div>
+      </div>
+      <div className={styles.actions}>
+        <button type="button" className={styles.button} disabled={active === 0} onClick={() => selectStep(active - 1)}>Previous step</button>
+        <button type="button" className={styles.button} disabled={active === demoSteps.length - 1} onClick={() => selectStep(active + 1)}>Next step</button>
+      </div>
+      {active === demoSteps.length - 1 ? <p className={styles.support}>Last step of the walkthrough. No work was executed or verified.</p> : null}
+    </section>
+
+    <section className={styles.scope} aria-labelledby="demo-scope-title">
+      <h2 id="demo-scope-title">Simulation boundaries</h2>
+      <dl className={styles.facts}>
+        <div><dt>Tenant shown</dt><dd><code>sample-tenant</code> · Fictional</dd></div>
+        <div><dt>Account access</dt><dd>None</dd></div>
+        <div><dt>External actions</dt><dd>None</dd></div>
+        <div><dt>Release and health checks</dt><dd>Not performed</dd></div>
+      </dl>
+      <p className={styles.support}>The private workspace is available to approved accounts. <Link href="/docs" prefetch={false} className={styles.textLink}>Read the product guide</Link></p>
+    </section>
+  </main>;
 }

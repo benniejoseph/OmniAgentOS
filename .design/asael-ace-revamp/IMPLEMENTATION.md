@@ -1185,3 +1185,82 @@ replacement. Receipt focus now runs after that DOM commit, with the existing
 check that preserves an intervening user focus move. Strict lint, focused
 TypeScript and the full local Meetings browser suite pass; evidence is in
 `meetings-committed-focus/`. The exact-head hosted gate is rerun after this fix.
+
+
+PR [#38](https://github.com/benniejoseph/OmniAgentOS/pull/38) merged as
+`e3a3105eb291702a15743a48d2a82099f80aef25`. All twelve hosted checks passed on
+`03309757b62980ea024a82cf9508bc7e2039cccb`, including full Flutter, macOS policy,
+quality, build, PostgreSQL integration, browser, worker and security checks.
+The retained exact-head record is `native-companion-exact-head-hosted.json`.
+Repository acceptance does not claim production promotion or physical-device
+acceptance.
+
+
+## Specialist, operations, public and access families — 4 October 2026
+
+The Phase 4.3–4.11 presentation families now use the shared semantic surfaces and
+resource patterns while retaining their existing authorization and effect
+contracts. Markets preserves all five analytical views and exact snapshot
+context. Agent inspectors preserve immutable execution identity, releases and
+grants. Capabilities distinguishes available, installed, connected, reviewed and
+indexed state. Workflow operations keeps exact schedules, policy/procedure pins,
+quarantine and recovery distinct from the later Responsibility domain.
+
+Payments retains exact mandate review and explicit authenticator outcomes.
+Quality, Monitoring and Security remain separate role-aware workspaces. Advanced
+Settings retains dirty edits, conflict handling, one-time secrets and exact
+uncertain retries. Public/legal templates preserve legal meaning and factual
+private availability. Access/recovery preserves validated return destinations,
+credential error handling, explicit simulation, supported offline behavior and
+accessible loading/error/404 paths.
+
+The final local browser evidence uses the real Next application and external
+Chrome, isolated accounts and wholly intercepted domain effects:
+
+| Family | Assertions passed | Axe scans | Evidence directory under `ui-validation/` |
+| --- | ---: | ---: | --- |
+| Markets | 100 | 14 | `markets-browser-final` |
+| Agents | 239 | 10 | `agents-browser-final` |
+| Capabilities | 200 | 27 | `capabilities-browser-complete` |
+| Workflows | 154 | 8 | `workflows-browser-verified` |
+| Payments | 128 | 6 | `payments-browser-review` |
+| Quality / Monitoring / Security | 136 | 21 | `operations-browser-padded` |
+| Advanced Settings | 135 | 9 | `settings-advanced-complete` |
+| Public and legal | 275 | 42 | `public-pages-access-final` |
+| Access / simulation / recovery | 218 | 28 | `access-recovery-browser-complete` |
+
+All 1,585 assertions and 165 scans passed. Checks include both themes, narrow
+phone layouts, 200% text, forced colors, keyboard/focus behavior, failed reads,
+retained drafts and exact accepted-receipt boundaries as applicable. The public
+suite was rerun after the access/demo changes. Focused family units, strict lint
+and TypeScript passed during each family handoff; the combined committed scope
+still requires hosted quality/build acceptance. Local Chrome fixture success is
+not evidence of a live licensed chart adapter, physical WebAuthn signer, provider
+connection, external payment or production effect.
+
+CI adds three browser-family jobs (specialists, operations and public); each runs
+its member suites serially and retains head-specific evidence for 14 days. The
+existing core browser, native, database, worker and security gates remain in
+place. Route JavaScript and trace budgets are unchanged. Whole-task checkboxes
+remain open until the remaining native/device/performance acceptance is resolved;
+this family release does not establish full-program or production completion.
+
+The first combined hosted pass completed all four browser jobs, integration,
+worker, audit and security checks. Quality found five stale presentation
+assertions plus one deleted CSS registration; build reported the Connectors
+route at 1,089,596 bytes against its unchanged 800,000-byte budget. The overview
+client had pulled in the full runtime schema package. A compact parser now
+retains the same strict response boundary, with differential tests against the
+authoritative server schema for every nested field, format, enum, limit and
+normalization. The server schema stays authoritative. Forty-five focused checks
+and strict lint pass across the parser and repaired regression gates; focused
+parser TypeScript also passes. Hosted bundle and full-suite acceptance is rerun
+on the amended head; the earlier failures are not treated as a passing release.
+
+The second hosted build confirms that the compact parser removed 284,348 bytes
+from the Connectors first visit. At 805,248 bytes, it still exceeded the unchanged
+budget by 5,248 bytes. The shared domain component also eagerly imported Settings
+export/restore controls that Connectors never renders. That Settings-only
+dependency now has its own conditional chunk, retaining server rendering when
+the Settings surface actually uses it. Thirteen focused checks, strict lint and
+focused TypeScript pass for this boundary; the hosted build is rerun again.

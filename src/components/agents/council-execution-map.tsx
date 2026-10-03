@@ -23,9 +23,11 @@ import {
   Wrench,
 } from "lucide-react";
 import { clsx } from "clsx";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useMemo, useRef, useState, type ReactNode } from "react";
 
-import { AgentMascot } from "@/components/agents/agent-mascot";
+import { AgentIdentityMark } from "@/components/agents/agent-identity-mark";
+import { AgentsLifecycleBoundary, useAgentRead, useAgentsLifecycle } from "./agents-workspace-lifecycle";
+import { agentsActionRequest, agentTaskAuthorityRead, agentTaskCancelReceipt } from "@/components/agents-workspace-state";
 import styles from "@/components/agents/council-execution-map.module.css";
 import type {
   AgentCouncilMap,
@@ -78,19 +80,10 @@ export type AgentTaskAuthorityDetail = Readonly<{
   }>[];
 }>;
 
-type AgentTaskDetailPayload = Readonly<{
-  task: Readonly<{
-    executionId: string;
-    authority: AgentTaskAuthorityDetail;
-    controls: Readonly<{
-      grantsImmutable: true;
-      allowedActions: readonly string[];
-      cancelHref: string | null;
-    }>;
-  }>;
-}>;
-
-export function CouncilExecutionMap({
+export function CouncilExecutionMap(props: { map?: AgentCouncilMap; state: CouncilLoadState; initialRunId?: string; initialTaskId?: string; onTaskCanceled?: (task: CanceledTaskProjection) => void }) {
+  return <AgentsLifecycleBoundary><CouncilMap {...props} /></AgentsLifecycleBoundary>;
+}
+function CouncilMap({
   map,
   state,
   initialRunId,
@@ -103,6 +96,8 @@ export function CouncilExecutionMap({
   initialTaskId?: string;
   onTaskCanceled?: (task: CanceledTaskProjection) => void;
 }) {
+  const { gate, busy } = useAgentsLifecycle();
+  const heading = useRef<HTMLHeadingElement>(null);
   const [selection, setSelection] = useState<{ runId?: string; taskId?: string }>({
     runId: initialRunId,
     taskId: initialTaskId,
@@ -110,13 +105,14 @@ export function CouncilExecutionMap({
 
   const selected = useMemo(() => selectCouncilItem(map, selection), [map, selection]);
 
-  if (state === "loading") return <CouncilNotice kind="loading" />;
-  if (state === "unavailable" || map?.state === "unavailable") {
+  if (!map && state === "loading") return <CouncilNotice kind="loading" />;
+  if ((!map && state === "unavailable") || map?.state === "unavailable") {
     return <CouncilNotice kind="unavailable" />;
   }
   if (!map || map.state === "empty") return <CouncilNotice kind="empty" />;
 
   const choose = (execution: CouncilExecution, member?: AgentCouncilMapMember) => {
+    if (gate.busy()) return;
     const next = {
       runId: execution.parentExecutionId,
       taskId: member?.taskId || execution.members[0]?.taskId,
@@ -127,6 +123,7 @@ export function CouncilExecutionMap({
     url.searchParams.set("run", next.runId);
     if (next.taskId) url.searchParams.set("task", next.taskId);
     window.history.replaceState(window.history.state, "", url);
+    requestAnimationFrame(() => heading.current?.focus());
   };
 
   return (
@@ -136,7 +133,7 @@ export function CouncilExecutionMap({
           <span className={styles.titleIcon} aria-hidden="true"><Network size={20} /></span>
           <div>
             <p className={styles.eyebrow}>Canonical delegation ledger</p>
-            <h2>Live work</h2>
+            <h2 ref={heading} tabIndex={-1}>Live work</h2>
             <p>Follow each execution, its delegated team, shared work, and verification boundary.</p>
           </div>
         </div>
@@ -148,6 +145,8 @@ export function CouncilExecutionMap({
         </div>
       </header>
 
+      {state !== "ready" ? <p className={styles.cancelNotice}>Last loaded live work · current status could not be confirmed. Task changes are disabled until a successful refresh.</p> : null}
+      {(selection.runId && !map.executions.some((item) => item.parentExecutionId === selection.runId)) || (selection.taskId && !map.executions.some((item) => item.members.some((member) => member.taskId === selection.taskId))) ? <p className={styles.cancelNotice}>The requested execution or task is outside this bounded authorized window. Select an available row to inspect its identity.</p> : null}
       <div className={styles.workspace}>
         <aside className={styles.executionRail} aria-label="Executions and team members">
           <div className={styles.paneHeading}>
@@ -161,6 +160,7 @@ export function CouncilExecutionMap({
                 <section className={styles.executionGroup} key={execution.parentExecutionId}>
                   <button
                     type="button"
+                    disabled={Boolean(busy)}
                     className={clsx(styles.executionButton, executionSelected && styles.isSelected)}
                     onClick={() => choose(execution)}
                     aria-pressed={executionSelected}
@@ -174,18 +174,19 @@ export function CouncilExecutionMap({
                   {executionSelected ? (
                     <div className={styles.teamTree} aria-label="Delegated team">
                       <div className={styles.parentNode}>
-                        <AgentMascot agentId="atlas" agentName="Atlas" size="small" decorative />
+                        <AgentIdentityMark agentId="atlas" agentName="Atlas" size="small" decorative />
                         <span><strong>Atlas</strong><small>Coordinator</small></span>
                       </div>
                       {execution.members.map((member) => (
                         <button
                           type="button"
                           key={member.taskId}
+                          disabled={Boolean(busy)}
                           className={clsx(styles.memberButton, member.taskId === selected.member.taskId && styles.isSelected)}
                           onClick={() => choose(execution, member)}
                           aria-pressed={member.taskId === selected.member.taskId}
                         >
-                          <AgentMascot agentId={member.identity.agentId} agentName={member.identity.name} size="small" decorative />
+                          <AgentIdentityMark agentId={member.identity.agentId} agentName={member.identity.name} size="small" decorative />
                           <span><strong>{member.identity.name}</strong><small>{taskStateLabel(member.state)}</small></span>
                           <ChevronRight size={14} aria-hidden="true" />
                         </button>
@@ -198,16 +199,18 @@ export function CouncilExecutionMap({
           </div>
         </aside>
 
-        <main className={styles.activityPane} aria-live="polite">
+        <div className={styles.activityPane}>
           <ExecutionOverview
+            key={selected.member.taskId}
+            current={state === "ready"}
             execution={selected.execution}
             member={selected.member}
             onTaskCanceled={onTaskCanceled}
           />
-        </main>
+        </div>
 
         <aside className={styles.inspector} aria-label="Selected worker authority and budget">
-          <WorkerInspector member={selected.member} />
+          <WorkerInspector key={selected.member.taskId} member={selected.member} />
         </aside>
       </div>
     </section>
@@ -224,65 +227,40 @@ type CanceledTaskProjection = Readonly<{
 }>;
 
 function ExecutionOverview({
+  current,
   execution,
   member,
   onTaskCanceled,
 }: {
+  current: boolean;
   execution: CouncilExecution;
   member: AgentCouncilMapMember;
   onTaskCanceled?: (task: CanceledTaskProjection) => void;
 }) {
+  const { gate, busy, reason } = useAgentsLifecycle();
   const [cancelState, setCancelState] = useState<"idle" | "canceling" | "failed">("idle");
   const [cancelMessage, setCancelMessage] = useState<string>();
-  const cancellationAttempt = useRef<{
-    taskId: string;
-    idempotencyKey: string;
-  } | undefined>(undefined);
-
   const cancelTask = async () => {
-    if (member.canCancel !== true || cancelState === "canceling") return;
-    if (!window.confirm(`Stop ${member.identity.name}'s current task? Completed work remains inspectable.`)) return;
-    setCancelState("canceling");
-    setCancelMessage(undefined);
+    if (!current || reason || gate.busy() || member.canCancel !== true) return;
+    if (!window.confirm(`Stop ${member.identity.name}'s task ${member.taskId} at revision ${member.lifecycleRevision}? Completed work remains inspectable.`)) return;
+    const token = gate.begin(`/api/agents/tasks/${encodeURIComponent(member.taskId)}/cancel`, "POST", { expectedRevision: member.lifecycleRevision }, `Canceling ${member.identity.name}`, { taskId: member.taskId, revision: member.lifecycleRevision });
+    if (!token) return;
+    setCancelState("canceling"); setCancelMessage(undefined);
     try {
-      if (cancellationAttempt.current?.taskId !== member.taskId) {
-        cancellationAttempt.current = {
-          taskId: member.taskId,
-          idempotencyKey: crypto.randomUUID(),
-        };
-      }
-      const response = await fetch(
-        `/api/agents/tasks/${encodeURIComponent(member.taskId)}/cancel`,
-        {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "idempotency-key": cancellationAttempt.current.idempotencyKey,
-          },
-          body: JSON.stringify({ expectedRevision: member.lifecycleRevision }),
-        },
-      );
-      const payload = await response.json().catch(() => ({})) as {
-        error?: string;
-        task?: CanceledTaskProjection;
-      };
-      if (!response.ok || !payload.task) {
-        throw new Error(payload.error || "The delegated task could not be canceled.");
-      }
-      onTaskCanceled?.(payload.task);
-      setCancelState("idle");
-      setCancelMessage("Task canceled. Its recorded work remains available.");
-    } catch (error) {
-      setCancelState("failed");
-      setCancelMessage(error instanceof Error ? error.message : "The delegated task could not be canceled.");
-    }
+      const payload = await agentsActionRequest(token);
+      if (!gate.current(token)) return;
+      const task = agentTaskCancelReceipt(payload, member.taskId, member.lifecycleRevision);
+      onTaskCanceled?.(task); setCancelState("idle"); setCancelMessage(`Task ${task.executionId} canceled at revision ${task.lifecycleRevision}. Its recorded work remains available.`);
+      gate.finish(token, true);
+    } catch (error) { if (gate.current(token)) { setCancelState("failed"); setCancelMessage(error instanceof Error ? error.message : "Task cancellation was not confirmed."); } }
+    finally { gate.finish(token, false); }
   };
 
   return (
     <>
       <header className={styles.activityHeader}>
         <div className={styles.activityIdentity}>
-          <AgentMascot agentId={member.identity.agentId} agentName={member.identity.name} size="medium" />
+          <AgentIdentityMark agentId={member.identity.agentId} agentName={member.identity.name} size="medium" />
           <div>
             <p>{member.identity.role} · definition v{member.identity.definitionVersion}</p>
             <h3>{member.identity.name}</h3>
@@ -297,7 +275,7 @@ function ExecutionOverview({
             <button
               type="button"
               className={styles.cancelButton}
-              disabled={cancelState === "canceling"}
+              disabled={Boolean(busy || reason) || !current}
               onClick={() => void cancelTask()}
             >
               {cancelState === "canceling" ? <Loader2 size={14} className={styles.spin} aria-hidden="true" /> : <OctagonX size={14} aria-hidden="true" />}
@@ -309,6 +287,8 @@ function ExecutionOverview({
           </Link>
         </div>
       </header>
+      {reason ? <p className={styles.cancelNotice}>{reason}</p> : null}
+      <dl className={styles.inspectorRows}><div><dt>Executing Agent ID</dt><dd>{member.identity.agentId}</dd></div><div><dt>Definition version</dt><dd>{member.identity.definitionVersion}</dd></div><div><dt>Task ID</dt><dd>{member.taskId}</dd></div><div><dt>Delegation ID</dt><dd>{member.delegationId}</dd></div><div><dt>Parent execution</dt><dd>{execution.parentExecutionId}</dd></div><div><dt>Lifecycle revision</dt><dd>{member.lifecycleRevision}</dd></div></dl>
       {cancelMessage ? (
         <p className={clsx(styles.cancelNotice, cancelState === "failed" && styles.isError)} role="status">
           {cancelMessage}
@@ -345,7 +325,7 @@ function ExecutionOverview({
             <article className={styles.exchangeItem} key={`${message.messageId}:${message.direction}`}>
               <div><strong>{message.direction === "sent" ? "Sent" : "Received"} · {message.kind}</strong><time>{formatTime(message.createdAt)}</time></div>
               <p>{message.body}</p>
-              <small>Untrusted shared content</small>
+              <small>Message ID: {message.messageId} · untrusted shared content</small>
             </article>
           )) : <EmptyExchange text="No team messages have been shared for this worker." />}
         </ExchangePanel>
@@ -354,7 +334,7 @@ function ExecutionOverview({
             <article className={styles.exchangeItem} key={output.artifactId}>
               <div><strong>{output.title}</strong><time>{formatTime(output.createdAt)}</time></div>
               <p>{output.content}</p>
-              <small>{output.kind} · untrusted shared content</small>
+              <small>{output.kind} · {output.mediaType} · artifact ID: {output.artifactId} · untrusted shared content</small>
             </article>
           )) : <EmptyExchange text="No shared artifacts have been recorded yet." />}
         </ExchangePanel>
@@ -362,7 +342,7 @@ function ExecutionOverview({
 
       <section className={styles.verification} aria-label="Verification status">
         <div className={styles.verifierIdentity}>
-          <AgentMascot agentId={member.verifier.identity.agentId} agentName={member.verifier.identity.name} size="small" decorative />
+          <AgentIdentityMark agentId={member.verifier.identity.agentId} agentName={member.verifier.identity.name} size="small" decorative />
           <div><span>Independent verifier</span><strong>{member.verifier.identity.name}</strong><small>{verifierMethodLabel(member.verifier.method)}</small></div>
         </div>
         <div className={styles.verdict} data-verdict={member.verifier.verdict}>
@@ -385,36 +365,8 @@ function ExecutionOverview({
 
 function WorkerInspector({ member }: { member: AgentCouncilMapMember }) {
   const budget = member.authority.budgets;
-  const [detailLoad, setDetailLoad] = useState<{
-    taskId: string;
-    state: "ready" | "error";
-    detail?: AgentTaskAuthorityDetail;
-  }>();
-
-  useEffect(() => {
-    const controller = new AbortController();
-    void fetch(`/api/agents/tasks/${encodeURIComponent(member.taskId)}`, {
-      cache: "no-store",
-      signal: controller.signal,
-    })
-      .then(async (response) => {
-        const payload = await response.json().catch(() => ({})) as Partial<AgentTaskDetailPayload> & { error?: string };
-        if (!response.ok || !payload.task?.authority) {
-          throw new Error(payload.error || "Task authority could not be loaded.");
-        }
-        return payload.task.authority;
-      })
-      .then((authority) => {
-        if (controller.signal.aborted) return;
-        setDetailLoad({ taskId: member.taskId, state: "ready", detail: authority });
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) {
-          setDetailLoad({ taskId: member.taskId, state: "error" });
-        }
-      });
-    return () => controller.abort();
-  }, [member.taskId]);
+  const { busy } = useAgentsLifecycle();
+  const detail = useAgentRead(`/api/agents/tasks/${encodeURIComponent(member.taskId)}`, (payload) => agentTaskAuthorityRead(payload, member.taskId, member.identity.agentId));
 
   return (
     <>
@@ -437,10 +389,8 @@ function WorkerInspector({ member }: { member: AgentCouncilMapMember }) {
         {member.authority.tools.ids.length ? <div className={styles.chips}>{member.authority.tools.ids.map((toolId) => <span key={toolId}>{toolId}</span>)}</div> : null}
       </section>
 
-      <TaskAuthorityGrantInspector
-        state={detailLoad?.taskId === member.taskId ? detailLoad.state : "loading"}
-        authority={detailLoad?.taskId === member.taskId ? detailLoad.detail : undefined}
-      />
+      <div className={styles.inspectorSection}><p role="status">{detail.label}</p><button className="secondary-button" disabled={Boolean(busy)} onClick={() => void detail.refresh()}>Refresh task authority</button>{detail.error ? <p className={styles.isError} role="alert">{detail.error}</p> : null}</div>
+      <TaskAuthorityGrantInspector state={detail.data ? "ready" : detail.loading ? "loading" : "error"} authority={detail.data} />
 
       <section className={styles.inspectorSection}>
         <InspectorTitle icon={<Bot size={15} />} title="Model route" />

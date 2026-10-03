@@ -2,7 +2,6 @@ import Link from "next/link";
 import {
   Activity,
   ArrowRight,
-  BookOpen,
   Brain,
   Cable,
   CheckCircle2,
@@ -11,14 +10,14 @@ import {
   Layers3,
   LockKeyhole,
   Play,
-  Route,
   ShieldCheck,
   TerminalSquare,
   Workflow,
   Wrench,
 } from "lucide-react";
-import { PublicHeader } from "@/components/marketing/public-header";
-import { appNav, productPages } from "@/lib/navigation";
+import { PublicFrame } from "./public-frame";
+import styles from "./public-surface.module.css";
+import { appNav } from "@/lib/navigation";
 
 const guideNav = [
   ["Start", "#start"],
@@ -54,14 +53,14 @@ const quickStart = [
 ];
 
 const operatingFlow = [
-  ["01", "Goal", "Operator submits intent in Command or Demo.", TerminalSquare],
+  ["01", "Goal", "An operator submits a goal in Assistant; Demo uses sample content.", TerminalSquare],
   ["02", "Identity", "Session, tenant, actor, and role are resolved.", LockKeyhole],
   ["03", "Context", "Memory, RAG chunks, graph hints, and run history are assembled.", Brain],
   ["04", "Plan", "The goal becomes workflow nodes with risk and verification.", Workflow],
   ["05", "Tools", "MCP, OpenAPI, and internal tools are classified before side effects.", Wrench],
   ["06", "Approval", "Risky work pauses for human or policy approval.", ShieldCheck],
   ["07", "Observe", "Runtime events, SLOs, incidents, alerts, and diagnostics are recorded.", Layers3],
-  ["08", "Release", "Evaluation reports and release gates prove production readiness.", CheckCircle2],
+  ["08", "Release", "Evaluation reports and release gates provide evidence for release review.", CheckCircle2],
   ["09", "Learn", "Useful results can become durable memory and future context.", Database],
 ] as const;
 
@@ -77,7 +76,7 @@ const userSurfaces = [
   ["/platform", "Platform overview and product architecture"],
   ["/solutions", "Use cases and deployment patterns"],
   ["/security", "Security, governance, and compliance posture"],
-  ["/pricing", "Commercial packaging placeholder"],
+  ["/pricing", "Private availability; no public plans or checkout"],
   ["/docs", "This complete product guide"],
   ["/changelog", "Shipped slices and platform progress"],
   ["/demo", "Public sample workspace"],
@@ -223,348 +222,53 @@ const productionChecklist = [
   "Use demo mode for prospects and dashboard readiness for new workspaces before connecting real systems.",
   "Register one connector at a time, start with dry runs, and require approval for high-risk operations.",
   "Review SLO warnings after smoke tests; cold-start latency warnings can be advisory when availability and errors are clean.",
-  "Keep access requests separate from real account creation until admin invitation, billing, and SSO policies are finalized.",
+  "Use approved private accounts. This deployment does not offer public registration or commercial checkout.",
   "Check observability, incidents, alert deliveries, and workflow queues after smoke runs or high-risk demos.",
 ];
 
 export function DocsGuide() {
-  return (
-    <main className="min-h-screen bg-background text-foreground">
-      <PublicHeader />
-
-      <section id="start" className="border-b border-line pt-16">
-        <div className="mx-auto grid max-w-7xl gap-12 px-4 py-20 sm:px-6 lg:grid-cols-[0.78fr_1.22fr] lg:px-8">
-          <div>
-            <p className="text-sm font-semibold uppercase tracking-[0.22em] text-primary">Product guide</p>
-            <h1 className="mt-4 max-w-3xl text-5xl font-semibold tracking-normal sm:text-7xl">
-              How to use Asael.
-            </h1>
-            <p className="mt-6 max-w-2xl text-lg leading-8 text-muted">
-              A complete operating manual for the public site, dashboard readiness, command center, memory, workflows, connectors, governed tools, evaluations, observability, security, and production release gates.
-            </p>
-            <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-              <Link
-                href="/login"
-                className="inline-flex h-12 items-center justify-center gap-2 rounded-md bg-primary px-5 text-sm font-semibold text-primary-ink transition hover:brightness-105"
-              >
-                Sign in
-                <ArrowRight size={16} aria-hidden="true" />
-              </Link>
-              <Link
-                href="/demo"
-                className="inline-flex h-12 items-center justify-center gap-2 rounded-md border border-line bg-surface px-5 text-sm font-semibold transition hover:bg-surface-raised"
-              >
-                Try demo
-                <Play size={16} aria-hidden="true" />
-              </Link>
-            </div>
-          </div>
-
-          <div className="rounded-lg border border-line bg-foreground p-5 text-background sm:p-6">
-            <div className="flex items-center justify-between border-b border-background/14 pb-5">
-              <div>
-                <p className="text-sm opacity-64">System map</p>
-                <p className="mt-1 text-2xl font-semibold">From request to release evidence</p>
-              </div>
-              <Route size={24} className="text-primary" aria-hidden="true" />
-            </div>
-            <div className="mt-6 grid gap-px overflow-hidden rounded-lg border border-background/14 bg-background/14 sm:grid-cols-3">
-              {operatingFlow.map(([index, title, body, Icon]) => (
-                <div key={title} className="min-h-40 bg-background/8 p-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <p className="font-mono text-xs opacity-56">{index}</p>
-                    <Icon size={16} className="text-primary" aria-hidden="true" />
-                  </div>
-                  <p className="mt-8 text-base font-semibold">{title}</p>
-                  <p className="mt-3 text-xs leading-5 opacity-70">{body}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <nav className="sticky top-16 z-20 border-b border-line bg-background/86 backdrop-blur-xl" aria-label="Guide sections">
-        <div className="mx-auto flex max-w-7xl gap-2 overflow-x-auto px-4 py-3 sm:px-6 lg:px-8">
-          {guideNav.map(([label, href]) => (
-            <a key={href} href={href} className="shrink-0 rounded-md border border-line bg-surface px-3 py-2 text-sm font-medium text-muted transition hover:border-primary/50 hover:text-foreground">
-              {label}
-            </a>
-          ))}
-        </div>
-      </nav>
-
-      <section className="border-b border-line bg-surface">
-        <div className="mx-auto max-w-7xl px-4 py-20 sm:px-6 lg:px-8">
-          <div className="grid gap-10 lg:grid-cols-[0.72fr_1.28fr]">
-            <div>
-              <p className="text-sm font-semibold uppercase tracking-[0.22em] text-primary">Quick path</p>
-              <h2 className="mt-4 text-4xl font-semibold tracking-normal sm:text-5xl">Start with the safest path to value.</h2>
-              <p className="mt-5 text-base leading-7 text-muted">
-                Approved users can understand the product in demo mode, sign in to their isolated account, then follow readiness from the dashboard and command center.
-              </p>
-            </div>
-            <div className="grid gap-px overflow-hidden rounded-lg border border-line bg-line md:grid-cols-2">
-              {quickStart.map((step, index) => {
-                const Icon = step.icon;
-                return (
-                  <Link key={step.title} href={step.href} className="group min-h-72 bg-background p-6 transition hover:bg-surface-raised">
-                    <div className="flex items-center justify-between">
-                      <p className="font-mono text-sm text-muted">0{index + 1}</p>
-                      <Icon size={20} className="text-primary" aria-hidden="true" />
-                    </div>
-                    <h3 className="mt-12 text-2xl font-semibold tracking-normal">{step.title}</h3>
-                    <p className="mt-4 text-sm leading-6 text-muted">{step.body}</p>
-                    <p className="mt-8 inline-flex items-center gap-2 text-sm font-semibold text-primary">
-                      {step.action}
-                      <ArrowRight size={14} className="transition group-hover:translate-x-1" aria-hidden="true" />
-                    </p>
-                  </Link>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section id="flow" className="mx-auto max-w-7xl px-4 py-24 sm:px-6 lg:px-8">
-        <div className="grid gap-12 lg:grid-cols-[0.8fr_1.2fr] lg:items-start">
-          <div className="lg:sticky lg:top-36">
-            <p className="text-sm font-semibold uppercase tracking-[0.22em] text-primary">App flow</p>
-            <h2 className="mt-4 text-4xl font-semibold tracking-normal sm:text-5xl">The workspace has one main loop.</h2>
-            <p className="mt-5 text-base leading-7 text-muted">
-              Every serious task should pass through identity, context, planning, governed execution, observability, release evidence, and memory.
-            </p>
-          </div>
-          <div className="space-y-4">
-            {operatingFlow.map(([index, title, body, Icon]) => (
-              <article key={title} className="rounded-lg border border-line bg-surface p-5 transition hover:border-primary/40 hover:bg-surface-raised">
-                <div className="flex gap-5">
-                  <div className="grid size-12 shrink-0 place-items-center rounded-md bg-primary/12 text-primary">
-                    <Icon size={20} aria-hidden="true" />
-                  </div>
-                  <div className="min-w-0">
-                    <p className="font-mono text-sm text-primary">{index}</p>
-                    <h3 className="mt-2 text-2xl font-semibold tracking-normal">{title}</h3>
-                    <p className="mt-3 text-sm leading-6 text-muted">{body}</p>
-                  </div>
-                </div>
-              </article>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      <section className="border-y border-line bg-foreground text-background">
-        <div className="mx-auto grid max-w-7xl gap-12 px-4 py-20 sm:px-6 lg:grid-cols-[0.75fr_1.25fr] lg:px-8">
-          <div>
-            <TerminalSquare size={24} className="text-primary" aria-hidden="true" />
-            <p className="mt-8 text-sm font-semibold uppercase tracking-[0.22em] opacity-68">Command center</p>
-            <h2 className="mt-4 text-4xl font-semibold tracking-normal sm:text-5xl">Use Command when you want the system to act.</h2>
-            <p className="mt-5 text-base leading-7 opacity-72">
-              The command center is the working surface for goals, modes, context, tool calls, approvals, run history, and execution evidence.
-            </p>
-            <Link href="/app/command" className="mt-8 inline-flex h-11 items-center gap-2 rounded-md bg-background px-4 text-sm font-semibold text-foreground transition hover:opacity-90">
-              Open command center
-              <ArrowRight size={15} aria-hidden="true" />
-            </Link>
-          </div>
-          <div className="grid gap-px overflow-hidden rounded-lg border border-background/14 bg-background/14 sm:grid-cols-2">
-            {commandModes.map(([mode, body]) => (
-              <div key={mode} className="min-h-56 bg-background/8 p-5">
-                <p className="font-mono text-sm text-primary">{mode}</p>
-                <p className="mt-12 text-sm leading-6 opacity-76">{body}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      <section id="features" className="mx-auto max-w-7xl px-4 py-24 sm:px-6 lg:px-8">
-        <div className="grid gap-12 lg:grid-cols-[0.72fr_1.28fr]">
-          <div>
-            <p className="text-sm font-semibold uppercase tracking-[0.22em] text-primary">Feature guide</p>
-            <h2 className="mt-4 text-4xl font-semibold tracking-normal sm:text-5xl">Every feature and what to use it for.</h2>
-            <p className="mt-5 text-base leading-7 text-muted">
-              Use the app surfaces as a sequence: dashboard for posture, command for work, memory and connectors for inputs, tools and workflows for action, evaluations and observability for proof, security and settings for control.
-            </p>
-          </div>
-          <div className="grid gap-px overflow-hidden rounded-lg border border-line bg-line md:grid-cols-2">
-            {appNav.map((item) => {
-              const Icon = item.icon;
-              const key = item.href.split("/").pop() || "overview";
-              const product = productPages[key];
-              return (
-                <Link key={item.href} href={item.href} className="group bg-surface p-5 transition hover:bg-surface-raised">
-                  <div className="flex items-center justify-between gap-4">
-                    <div className="grid size-10 place-items-center rounded-md bg-primary/12 text-primary">
-                      <Icon size={18} aria-hidden="true" />
-                    </div>
-                    <ArrowRight size={15} className="text-muted transition group-hover:translate-x-1 group-hover:text-primary" aria-hidden="true" />
-                  </div>
-                  <h3 className="mt-8 text-xl font-semibold">{item.label}</h3>
-                  <p className="mt-3 text-sm leading-6 text-muted">{item.description}</p>
-                  {product ? (
-                    <div className="mt-6 flex flex-wrap gap-2">
-                      {product.metrics.map((metric) => (
-                        <span key={metric.label} className="rounded-full border border-line bg-background px-3 py-1 font-mono text-xs text-muted">
-                          {metric.label}: {metric.value}
-                        </span>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="mt-6 flex flex-wrap gap-2">
-                      <span className="rounded-full border border-line bg-background px-3 py-1 font-mono text-xs text-muted">posture</span>
-                      <span className="rounded-full border border-line bg-background px-3 py-1 font-mono text-xs text-muted">health</span>
-                      <span className="rounded-full border border-line bg-background px-3 py-1 font-mono text-xs text-muted">release</span>
-                    </div>
-                  )}
-                </Link>
-              );
-            })}
-          </div>
-        </div>
-      </section>
-
-      <section className="border-y border-line bg-surface">
-        <div className="mx-auto max-w-7xl px-4 py-24 sm:px-6 lg:px-8">
-          <div className="grid gap-12 lg:grid-cols-[0.75fr_1.25fr]">
-            <div>
-              <p className="text-sm font-semibold uppercase tracking-[0.22em] text-primary">Routes</p>
-              <h2 className="mt-4 text-4xl font-semibold tracking-normal sm:text-5xl">Where everything lives.</h2>
-              <p className="mt-5 text-base leading-7 text-muted">
-                The product is split into public education, private access, and authenticated operations.
-              </p>
-            </div>
-            <div className="grid gap-px overflow-hidden rounded-lg border border-line bg-line sm:grid-cols-2">
-              {userSurfaces.map(([routePath, description]) => (
-                <Link key={routePath} href={routePath} className="group flex min-h-24 items-center justify-between gap-4 bg-background p-4 transition hover:bg-surface-raised">
-                  <div className="min-w-0">
-                    <p className="font-mono text-sm text-primary">{routePath}</p>
-                    <p className="mt-2 text-sm leading-5 text-muted">{description}</p>
-                  </div>
-                  <ArrowRight size={14} className="shrink-0 text-muted transition group-hover:translate-x-1 group-hover:text-primary" aria-hidden="true" />
-                </Link>
-              ))}
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section id="use-cases" className="mx-auto max-w-7xl px-4 py-24 sm:px-6 lg:px-8">
-        <div className="grid gap-12 lg:grid-cols-[0.7fr_1.3fr]">
-          <div>
-            <p className="text-sm font-semibold uppercase tracking-[0.22em] text-primary">Use cases</p>
-            <h2 className="mt-4 text-4xl font-semibold tracking-normal sm:text-5xl">What teams can get done.</h2>
-            <p className="mt-5 text-base leading-7 text-muted">
-              Asael is useful whenever AI work needs memory, tools, approvals, repeatability, and production evidence.
-            </p>
-          </div>
-          <div className="grid gap-4 md:grid-cols-2">
-            {useCases.map((useCase) => (
-              <article key={useCase.title} className="rounded-lg border border-line bg-surface p-5">
-                <h3 className="text-xl font-semibold">{useCase.title}</h3>
-                <p className="mt-3 text-sm leading-6 text-muted">{useCase.outcome}</p>
-                <div className="mt-6 grid gap-px overflow-hidden rounded-md border border-line bg-line">
-                  {useCase.flow.map((step, index) => (
-                    <div key={step} className="flex items-center gap-3 bg-background px-3 py-3 text-sm">
-                      <span className="font-mono text-xs text-primary">0{index + 1}</span>
-                      <span>{step}</span>
-                    </div>
-                  ))}
-                </div>
-              </article>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      <section id="api-map" className="border-y border-line bg-surface">
-        <div className="mx-auto max-w-7xl px-4 py-24 sm:px-6 lg:px-8">
-          <div className="grid gap-12 lg:grid-cols-[0.75fr_1.25fr]">
-            <div>
-              <p className="text-sm font-semibold uppercase tracking-[0.22em] text-primary">API map</p>
-              <h2 className="mt-4 text-4xl font-semibold tracking-normal sm:text-5xl">The backend surface behind the UI.</h2>
-              <p className="mt-5 text-base leading-7 text-muted">
-                These route handlers power the product. Anonymous users can access public surfaces; protected operational routes require session or trusted internal context.
-              </p>
-            </div>
-            <div className="space-y-3">
-              {apiGroups.map((group) => {
-                const Icon = group.icon;
-                return (
-                  <details key={group.title} className="group rounded-lg border border-line bg-background p-5 open:bg-surface-raised">
-                    <summary className="flex cursor-pointer list-none items-center justify-between gap-4">
-                      <span className="flex items-center gap-3">
-                        <span className="grid size-10 place-items-center rounded-md bg-primary/12 text-primary">
-                          <Icon size={18} aria-hidden="true" />
-                        </span>
-                        <span className="font-semibold">{group.title}</span>
-                      </span>
-                      <span className="font-mono text-sm text-muted">{group.routes.length} routes</span>
-                    </summary>
-                    <div className="mt-5 grid gap-px overflow-hidden rounded-md border border-line bg-line sm:grid-cols-2">
-                      {group.routes.map((routePath) => (
-                        <div key={routePath} className="bg-background px-3 py-3 font-mono text-xs text-muted">
-                          {routePath}
-                        </div>
-                      ))}
-                    </div>
-                  </details>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section id="checklist" className="mx-auto max-w-7xl px-4 py-24 sm:px-6 lg:px-8">
-        <div className="grid gap-12 lg:grid-cols-[0.75fr_1.25fr]">
-          <div>
-            <p className="text-sm font-semibold uppercase tracking-[0.22em] text-primary">Production checklist</p>
-            <h2 className="mt-4 text-4xl font-semibold tracking-normal sm:text-5xl">Use this before and after every serious run.</h2>
-            <p className="mt-5 text-base leading-7 text-muted">
-              The app can connect to real systems, so the operating discipline matters as much as the model output.
-            </p>
-          </div>
-          <div className="rounded-lg border border-line bg-surface p-5 sm:p-6">
-            <div className="grid gap-3">
-              {productionChecklist.map((item, index) => (
-                <div key={item} className="flex items-start gap-4 border-b border-line pb-4 last:border-b-0 last:pb-0">
-                  <span className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-md bg-primary/12 font-mono text-xs text-primary">
-                    {index + 1}
-                  </span>
-                  <p className="text-sm leading-6 text-muted">{item}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section className="border-t border-line bg-foreground text-background">
-        <div className="mx-auto grid max-w-7xl gap-10 px-4 py-16 sm:px-6 lg:grid-cols-[1fr_auto] lg:items-center lg:px-8">
-          <div>
-            <BookOpen size={24} className="text-primary" aria-hidden="true" />
-            <h2 className="mt-4 text-3xl font-semibold tracking-normal">Run the guide with the product open.</h2>
-            <p className="mt-3 max-w-2xl text-sm leading-6 opacity-72">
-              Keep this page beside the app while you follow dashboard readiness, connect your first source, run your first workflow, and inspect release evidence.
-            </p>
-          </div>
-          <div className="flex flex-col gap-3 sm:flex-row">
-            <Link href="/app" className="inline-flex h-12 items-center justify-center gap-2 rounded-md bg-background px-5 text-sm font-semibold text-foreground transition hover:opacity-90">
-              Open app
-              <ArrowRight size={16} aria-hidden="true" />
-            </Link>
-            <Link
-              href="/login"
-              className="inline-flex h-12 items-center justify-center rounded-md border border-background/20 px-5 text-sm font-semibold transition hover:bg-background/10"
-            >
-              Sign in
-            </Link>
-          </div>
-        </div>
-      </section>
-    </main>
-  );
+  return <PublicFrame>
+    <header id="start" className={styles.hero}><div className={styles.container}><div className={styles.heroContent}>
+      <p className={styles.eyebrow}>Product guide</p><h1>How to use Asael.</h1>
+      <p className={styles.reading}>A guide to Assistant, memory, workflows, connections, governed tools, evaluations, system health, and release evidence.</p>
+      <div className={styles.actions}><Link href="/login" prefetch={false} className={styles.primaryButton}>Sign in</Link><Link href="/demo" prefetch={false} className={styles.button}>Explore simulated demo</Link></div>
+      <p className={styles.support}>Private workspace links require an approved account. The demo uses sample content.</p>
+    </div></div></header>
+    <nav aria-label="Guide sections" className={`${styles.container} ${styles.sectionNav}`}>
+      {guideNav.map(([label, href]) => <a key={href} href={href}>{label}</a>)}
+    </nav>
+    <section className={styles.section}><div className={`${styles.container} ${styles.split}`}>
+      <header className={styles.sectionHeader}><p className={styles.eyebrow}>Quick start</p><h2>Explore, sign in, then operate.</h2><p className={styles.reading}>Try the sample workspace first. Approved users can then sign in to their own account.</p></header>
+      <ol className={styles.steps}>{quickStart.map((step, index) => <li key={step.title}><span className={styles.step}>{index + 1}</span><Link href={step.href} prefetch={false} className={styles.rowLink}><span className={styles.stack}><strong>{step.title}</strong><span className={styles.reading}>{step.body}</span><span className={styles.support}>{step.action}</span></span><ArrowRight size={18} aria-hidden="true" /></Link></li>)}</ol>
+    </div></section>
+    <section id="flow" className={styles.section}><div className={`${styles.container} ${styles.split}`}>
+      <header className={styles.sectionHeader}><p className={styles.eyebrow}>Working flow</p><h2>Follow the goal through its controls.</h2><p className={styles.reading}>Identity, source context, policy, evidence, and your review remain part of the work.</p></header>
+      <ol className={styles.steps}>{operatingFlow.map(([index, title, body]) => <li key={title}><span className={styles.step}>{index}</span><div className={styles.stack}><h3>{title}</h3><p className={styles.reading}>{body}</p></div></li>)}</ol>
+    </div></section>
+    <section className={styles.section}><div className={`${styles.container} ${styles.split}`}>
+      <header className={styles.sectionHeader}><p className={styles.eyebrow}>Assistant</p><h2>Choose how to approach the request.</h2><p className={styles.reading}>Keep the goal, mode, source context, tools, approvals, history, and evidence together.</p><Link href="/app/command" prefetch={false} className={styles.button}>Open Assistant</Link></header>
+      <ul className={styles.rows}>{commandModes.map(([mode, body]) => <li key={mode}><div className={styles.stack}><h3>{mode}</h3><p className={styles.reading}>{body}</p></div></li>)}</ul>
+    </div></section>
+    <section id="features" className={styles.section}><div className={styles.container}>
+      <header className={styles.sectionHeader}><p className={styles.eyebrow}>Feature guide</p><h2>Find the view for your work.</h2><p className={styles.reading}>Each link opens the corresponding private workspace view. Access depends on your account and permissions.</p></header>
+      <ul className={`${styles.rows} ${styles.columns}`}>{appNav.map((item) => <li key={item.href}><Link href={item.href} prefetch={false} className={styles.rowLink}><span className={styles.stack}><strong>{item.label}</strong><span className={styles.reading}>{item.description}</span></span><ArrowRight size={18} aria-hidden="true" /></Link></li>)}</ul>
+    </div></section>
+    <section className={styles.section}><div className={`${styles.container} ${styles.split}`}>
+      <header className={styles.sectionHeader}><p className={styles.eyebrow}>Routes</p><h2>Public pages and private workspace views.</h2></header>
+      <ul className={styles.rows}>{userSurfaces.map(([href, description]) => <li key={href}><Link href={href} prefetch={false} className={styles.rowLink}><span className={styles.stack}><strong className={styles.code}>{href}</strong><span>{description}</span></span><ArrowRight size={18} aria-hidden="true" /></Link></li>)}</ul>
+    </div></section>
+    <section id="use-cases" className={styles.section}><div className={styles.container}>
+      <header className={styles.sectionHeader}><p className={styles.eyebrow}>Use cases</p><h2>Examples of governed work.</h2><p className={styles.reading}>These are example approaches. Available actions depend on connected sources, configuration, permissions, and required approvals.</p></header>
+      <ul className={`${styles.rows} ${styles.columns}`}>{useCases.map((item) => <li key={item.title}><div className={styles.stack}><h3>{item.title}</h3><p className={styles.reading}>{item.outcome}</p><ol className={styles.checklist}>{item.flow.map((step) => <li key={step}>{step}</li>)}</ol></div></li>)}</ul>
+    </div></section>
+    <section id="api-map" className={styles.section}><div className={`${styles.container} ${styles.split}`}>
+      <header className={styles.sectionHeader}><p className={styles.eyebrow}>API map</p><h2>Operating references.</h2><p className={styles.reading}>These are route references, not executable examples. Protected operations require their existing authorization and review controls.</p></header>
+      <div>{apiGroups.map((group) => <details key={group.title} className={styles.disclosure}><summary>{group.title} <span className={styles.support}>· {group.routes.length} routes</span></summary><ul className={styles.codeList}>{group.routes.map((routePath) => <li key={routePath}><code className={styles.code}>{routePath}</code></li>)}</ul></details>)}</div>
+    </div></section>
+    <section id="checklist" className={styles.section}><div className={`${styles.container} ${styles.split}`}>
+      <header className={styles.sectionHeader}><p className={styles.eyebrow}>Operations checklist</p><h2>Review readiness before consequential work.</h2><p className={styles.reading}>The application can connect to real systems. Review the relevant evidence and controls before running work.</p></header>
+      <ol className={`${styles.checklist} ${styles.reading}`}>{productionChecklist.map((item) => <li key={item}>{item}</li>)}</ol>
+    </div></section>
+    <section className={styles.section}><div className={`${styles.container} ${styles.split}`}><div className={styles.stack}><h2>Keep the guide beside your work.</h2><p className={styles.reading}>Use it while you connect a source, inspect a workflow, or review evidence.</p></div><div className={styles.actions}><Link href="/app" prefetch={false} className={styles.primaryButton}>Open app</Link><Link href="/login" prefetch={false} className={styles.button}>Sign in</Link></div></div></section>
+  </PublicFrame>;
 }
