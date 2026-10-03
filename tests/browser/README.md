@@ -53,3 +53,12 @@ Seven desktop and two phone evaluation POSTs are wholly intercepted; no real
 evaluation or activation runs. Its axe scope is the semantic review bench and
 its screenshots retain the surrounding application for context. CI runs it
 serially after the conversation/approval suite.
+
+`activity.py` exercises the actual primary Activity navigation and a real isolated
+authenticated read before intercepting synthetic records. It checks bounded
+grouping/paging, exact source hrefs, cursor expiry, retained stale data, malformed
+responses, request races, disposal and unavailable-versus-empty states. It allows
+no application writes. Desktop and phone each receive light/dark screenshots and
+axe scans; CI runs this suite serially after the semantic review suite. Source href
+assertions preserve identities but do not by themselves prove a destination's
+domain action or native conversation continuity.

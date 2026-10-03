@@ -186,9 +186,14 @@ describe("Automation Studio contracts", () => {
     expect(source).toContain("ArrowLeft");
   });
 
-  it("makes Automation primary while retaining legacy destinations", async () => {
-    const automationGroup = appNavGroups.find((group) => group.label === "Automation");
-    expect(automationGroup?.items.map((item) => item.href)).toEqual(["/app/automation"]);
+  it("keeps Capabilities primary while retaining legacy destinations in More", async () => {
+    const primaryGroup = appNavGroups.find((group) => group.label === "Workspace");
+    expect(primaryGroup?.items.map(({ label, href }) => ({ label, href }))).toEqual(expect.arrayContaining([
+      { label: "Capabilities", href: "/app/automation" },
+    ]));
+    expect(appNavGroups.find((group) => group.label === "More")?.items.map((item) => item.href)).toEqual(expect.arrayContaining([
+      "/app/workflows", "/app/connectors",
+    ]));
     expect(appNav.some((item) => item.href === "/app/workflows")).toBe(true);
     expect(appNav.some((item) => item.href === "/app/connectors")).toBe(true);
     // Tools now live inside Capabilities; the legacy URL redirects there.
