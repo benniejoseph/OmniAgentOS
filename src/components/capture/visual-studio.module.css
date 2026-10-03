@@ -1,0 +1,133 @@
+.shell {
+  container: visual-studio / inline-size;
+  min-inline-size: 0;
+  border-block-start: 1px solid var(--line);
+  padding-block-start: 1.5rem;
+  color: var(--foreground);
+  background: var(--background);
+  font-family: var(--font-sans);
+  font-size: .875rem;
+  line-height: 1.4286;
+  overflow-wrap: anywhere;
+  --focus-surface: var(--background);
+}
+.shell :is(h2, h3, p, dl, dd) { margin: 0; }
+.shell :is(button, select, input, textarea) { font-family: inherit; }
+.shell svg { flex-shrink: 0; }
+.header { display: flex; flex-wrap: wrap; align-items: start; justify-content: space-between; gap: 1rem 1.5rem; }
+.header > div { min-inline-size: 0; flex: 1 1 24rem; }
+.title { font-size: 1.25rem; font-weight: 600; line-height: 1.4; letter-spacing: -.01em; }
+.intro { max-inline-size: 70ch; padding-block-start: .5rem; color: var(--muted); font-size: 1rem; line-height: 1.625; }
+.routes { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(20rem, 100%), 1fr)); gap: .75rem 1.5rem; padding-block: 1.25rem; }
+.route { display: grid; min-inline-size: 0; align-content: start; gap: .25rem; }
+.routeLabel { font-weight: 500; }
+.route .identity { color: var(--muted); }
+.readStatus { padding-block: .5rem; color: var(--muted); font-size: .8125rem; line-height: 1.5385; }
+.modes, .operationButtons, .actions { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; }
+.modes { border-block: 1px solid var(--line); padding-block: .75rem; }
+.operationButtons { margin-block: .25rem; }
+.button, .primaryButton, .modeButton, .preview :global(.action-button) {
+  display: inline-flex;
+  min-inline-size: 0;
+  min-block-size: 2.75rem;
+  align-items: center;
+  justify-content: center;
+  gap: .5rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  padding: .5rem .75rem;
+  color: var(--foreground);
+  background: var(--surface);
+  font-size: .875rem;
+  font-weight: 500;
+  line-height: 1.4286;
+  text-align: center;
+  text-decoration: none;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+  box-shadow: none;
+}
+.primaryButton { border-color: var(--primary); color: var(--primary-ink); background: var(--primary); }
+.modeButton { position: relative; }
+.modeButton[aria-pressed="true"] { border-color: var(--foreground); font-weight: 600; background: var(--surface-overlay); }
+.modeButton[aria-pressed="true"]::after { content: ""; position: absolute; inset-inline: .75rem; inset-block-end: 0; block-size: 3px; background: var(--foreground); }
+.workspace { display: grid; min-inline-size: 0; gap: 1.5rem; padding-block-start: 1.5rem; }
+.editor, .resultPane { display: grid; min-inline-size: 0; align-content: start; gap: 1rem; }
+.editorHeading { display: grid; min-inline-size: 0; gap: .25rem; }
+.itemTitle { min-inline-size: 0; font-size: 1rem; font-weight: 600; line-height: 1.5; }
+.field { display: grid; min-inline-size: 0; align-content: start; gap: .5rem; font-size: .875rem; font-weight: 500; line-height: 1.4286; }
+.fieldsRow { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(11rem, 100%), 1fr)); gap: 1rem; }
+.input, .select, .textarea { inline-size: 100%; min-inline-size: 0; max-inline-size: 100%; min-block-size: 2.75rem; border: 1px solid var(--line-strong); border-radius: var(--radius-control); padding: .625rem .75rem; color: var(--foreground); background: var(--surface); font-size: .875rem; font-weight: 400; line-height: 1.4286; }
+.textarea { min-block-size: 12rem; resize: vertical; font-size: 1rem; line-height: 1.625; }
+.textarea::placeholder { color: var(--muted); opacity: 1; }
+.input[aria-invalid="true"] { border-color: var(--danger); }
+.supporting { display: block; min-inline-size: 0; max-inline-size: 75ch; color: var(--muted); font-size: .8125rem; font-weight: 400; line-height: 1.5385; }
+.reading { min-inline-size: 0; max-inline-size: 70ch; font-size: 1rem; font-weight: 400; line-height: 1.625; white-space: pre-wrap; overflow-wrap: anywhere; }
+.metadata, .submitted { display: grid; min-inline-size: 0; gap: .75rem; }
+.metadata > div, .submitted > div { display: grid; min-inline-size: 0; align-content: start; gap: .25rem; }
+.metadata dt, .submitted dt { color: var(--muted); font-size: .8125rem; line-height: 1.5385; }
+.metadata dd, .submitted dd { min-inline-size: 0; font-size: .875rem; line-height: 1.4286; font-variant-numeric: tabular-nums; }
+.submitted dd.reading { font-size: 1rem; line-height: 1.625; }
+.identity { display: block; min-inline-size: 0; max-inline-size: 100%; font-family: var(--font-mono); font-size: .8125rem; font-weight: 400; line-height: 1.5385; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.sourceDetails { display: grid; min-inline-size: 0; gap: 1rem; border-inline-start: 2px solid var(--line); padding-inline-start: 1rem; }
+.resultPane { border-block-start: 1px solid var(--line); padding-block-start: 1.5rem; }
+.details { min-inline-size: 0; border-block: 1px solid var(--line); padding-block: .5rem; }
+.details summary { min-block-size: 2.75rem; padding: .625rem .5rem; font-size: .875rem; font-weight: 500; line-height: 1.4286; cursor: pointer; }
+.details[open] > summary { margin-block-end: .5rem; }
+.details .submitted { padding: .5rem; }
+.notice { display: grid; min-inline-size: 0; gap: .5rem; border-inline-start: 3px solid var(--line-strong); padding: 1rem; color: var(--foreground); background: var(--surface-raised); --focus-surface: var(--surface-raised); }
+.notice .submitted { padding-block-start: .5rem; }
+.success { border-color: var(--success); color: var(--success); background: var(--success-surface); --focus-surface: var(--success-surface); }
+.warning { border-color: var(--warning); color: var(--warning); background: var(--warning-surface); --focus-surface: var(--warning-surface); }
+.danger { border-color: var(--danger); color: var(--danger); background: var(--danger-surface); --focus-surface: var(--danger-surface); }
+.dangerText { color: var(--danger); }
+.receipt { display: grid; min-inline-size: 0; gap: .5rem; border-block-start: 1px solid var(--line); padding-block-start: 1rem; }
+.empty { display: grid; min-inline-size: 0; min-block-size: 12rem; align-content: center; gap: .75rem; padding-block: 1.5rem; }
+.empty .reading { color: var(--muted); }
+/* These slot rules are confined to Visual Studio; the shared preview controller is unchanged. */
+.preview { inline-size: 100%; min-inline-size: 0; max-inline-size: 100%; min-block-size: 10rem; border: 1px solid var(--line); border-radius: var(--radius-surface); background: var(--surface-raised); overflow: visible; --focus-surface: var(--surface-raised); }
+.preview .sourceMedia { max-block-size: 20rem; }
+.preview .resultMedia { max-block-size: 32rem; }
+.preview :is(img, video) { min-inline-size: 0; max-inline-size: 100%; block-size: auto; object-fit: contain; }
+.preview[data-private-media-readiness="preparing"] > :is(img, video), .preview[data-private-media-readiness="failed"] > :is(img, video) { position: absolute; block-size: 0; overflow: hidden; }
+.preview > :is([role="status"], [role="alert"]) { position: relative; inset: auto; inline-size: 100%; min-inline-size: 0; padding: 1.25rem; background: var(--surface-raised); border-radius: inherit; }
+.preview > :is([role="status"], [role="alert"]) > div { inline-size: 100%; min-inline-size: 0; max-inline-size: 38rem; }
+.preview :is([role="status"], [role="alert"]) p { margin-block-start: .5rem; font-size: .875rem; line-height: 1.4286; }
+.preview :is([role="status"], [role="alert"]) p + p { color: var(--muted); font-size: .8125rem; line-height: 1.5385; }
+.preview :global(.action-button) { margin-block-start: 1rem; }
+.spinner { animation: visual-spin 1s linear infinite; }
+@keyframes visual-spin { to { transform: rotate(360deg); } }
+.shell :is(button, select):disabled { opacity: 1; cursor: not-allowed; border-color: var(--line-strong); color: var(--muted); background: var(--surface-raised); }
+.shell :is(button, select, input, textarea, a, summary, video, [tabindex]):focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; box-shadow: 0 0 0 3px var(--focus-surface); }
+@container visual-studio (min-width: 58rem) {
+  .workspace { grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: 2rem; }
+  .resultPane { border-block-start: 0; border-inline-start: 1px solid var(--line); padding-block-start: 0; padding-inline-start: 2rem; }
+}
+@container visual-studio (max-width: 36rem) {
+  .header > .button { inline-size: 100%; }
+  .actions > :is(button, a) { flex: 1 1 10rem; }
+  .fieldsRow { grid-template-columns: minmax(0, 1fr); }
+  .shell :is(.input, .select) { font-size: 1rem; }
+  .sourceDetails { padding-inline-start: .75rem; }
+}
+@media (hover: hover) {
+  .button:not(:disabled):hover, .modeButton:not(:disabled):hover, .preview :global(.action-button):hover { color: var(--foreground); background: var(--surface-raised); }
+  .primaryButton:not(:disabled):hover { color: var(--primary-ink); background: var(--primary-hover); }
+  .details summary:hover { background: var(--surface-raised); }
+}
+.button:not(:disabled):active, .modeButton:not(:disabled):active { background: var(--surface-overlay); }
+.primaryButton:not(:disabled):active { background: var(--primary-pressed); }
+@media (pointer: coarse) {
+  .shell :is(button, input, select, summary), .button, .primaryButton, .modeButton, .preview :global(.action-button) { min-block-size: 3rem; }
+  .shell :is(.input, .select) { font-size: 1rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .shell *, .shell *::before, .shell *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
+@media (prefers-contrast: more) { .shell { --muted: var(--foreground); --line: var(--line-strong); } }
+@media (forced-colors: active) {
+  .shell { --background: Canvas; --surface: Canvas; --surface-raised: Canvas; --surface-overlay: Canvas; --foreground: CanvasText; --muted: CanvasText; --line: CanvasText; --line-strong: ButtonText; --focus: Highlight; --focus-surface: Canvas; --primary: ButtonFace; --primary-ink: ButtonText; --primary-hover: ButtonFace; --primary-pressed: ButtonFace; --success: CanvasText; --success-surface: Canvas; --warning: CanvasText; --warning-surface: Canvas; --danger: CanvasText; --danger-surface: Canvas; }
+  .shell :is(button, input, select, textarea, summary), .button, .primaryButton, .modeButton, .preview :global(.action-button) { border: 1px solid ButtonText; }
+  .modeButton[aria-pressed="true"]::after { background: Highlight; }
+}

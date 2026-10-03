@@ -619,6 +619,66 @@ external request or microphone access occurred. The browser race does not create
 a second Photos session; additional lifecycle cases are covered by the focused
 helper tests. Live provider behavior remains outside this presentation evidence.
 
+PR [#26](https://github.com/benniejoseph/OmniAgentOS/pull/26) merged as
+`a281ae40a923076ce57109b30b51fedbd97ba6fa`. Implementation head
+`329def4e1e7ee5f484bdfa930277f8c7869daddd` passed all hosted quality,
+integration, build/budget, audit, worker, secret-scan and preview checks.
+
+## Capture Visual Studio — 3 October 2026
+
+Visual Studio now uses canonical responsive controls, complete source/result
+identities and normal-flow previews, status and actions. Source read failures,
+empty lists and unavailable model configuration are distinct. The parent supplies
+its existing source/configuration read states and separate generation/indexing
+permission messages. The existing `#media-studio-title` deep link remains valid.
+
+Editable drafts and the last created result are separate. Each result retains
+the submitted prompt, source, operation, canvas, quality or clip range. Create
+and indexing share an exclusive request guard; late or disposed callbacks cannot
+replace current output, and an older indexing result cannot mark a newer asset
+saved. Source and result preview readiness bind to their current identities.
+Pending, unavailable and ready previews retain the shared bounded retry behavior.
+
+Creation receipts validate the submitted operation/source and the returned asset
+descriptor against the existing route contract. Indexing receipts require the
+exact asset and a recognized job status; complete returned job metadata still
+reaches the parent. An accepted receipt ends pending state before follow-up reads
+settle. Read failures retain the confirmed result/job and cannot overwrite newer
+feedback. Queued indexing stays labelled queued; page exit does not claim that
+server work was canceled.
+
+Provider and clip endpoints, request payloads, indexing UUID idempotency keys,
+private media/download routes and backend permission boundaries are unchanged.
+The new receipt size and storage-kind checks match every successful creation path.
+Current account switching leaves Capture, disposing its request guard.
+
+Independent implementation and API-contract review passed. Sixty-six focused
+request/receipt, shared-preview, asset-service/store, idempotency and indexing-route
+tests passed, including ten new lifecycle/receipt regressions. Strict targeted
+lint, the Capture TypeScript graph, all 42 CSS bindings and the 1,189-file type-scale
+check passed.
+
+Headless Chrome passed 190 checks and eight clean scoped axe scans, with 24
+viewport screenshots. Coverage includes source/configuration read states,
+per-mode drafts, immutable submitted/result details, pending request exclusivity,
+malformed receipts, indexing failure/retry, queued status and held/failed follow-up
+reads. Desktop and 320/390px phone layouts passed in both themes, including
+44/48px targets, 200% text, reduced motion and forced colors. Representative
+desktop and phone screenshots were visually inspected.
+
+Eight exact POSTs were wholly intercepted and fulfilled with synthetic receipts;
+no model/provider generation, FFmpeg, indexing, ingestion or storage effect ran.
+Image previews decoded an in-memory synthetic PNG. Video readiness used documented
+synthetic metadata events against held content reads; video decoding/playback is
+not claimed. Seventeen private-content GETs stayed within exact fixture identities
+and finite budgets. No unexpected mutation, external request, popup, download,
+playback, microphone, recorder or audio-processing attempt occurred.
+
+The initial passing browser run exposed a harness teardown cancellation while
+closing held video routes. Its raw evidence is retained. Explicitly settling held
+routes before context closure produced the final clean 190-check run; application
+source did not change for that harness repair.
+
 ## Remaining gates and scope
 
 - Hosted build, route budgets and required repository checks on each new exact head.
