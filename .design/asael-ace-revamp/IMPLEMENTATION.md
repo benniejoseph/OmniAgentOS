@@ -754,9 +754,44 @@ The persistence mock now models the actual stored envelope. Twelve focused
 service/route tests passed, including immediate saved receipt, identical later
 projection, stale-source exclusion and rejection of unknown domain fields.
 Strict targeted lint and the focused service/route TypeScript graph passed.
-This is local synthetic evidence; hosted checks on this correction are still
-required. Browser lifecycle work is independently reviewable and is not included
-in this backend prerequisite.
+PR #29 passed all nine hosted checks on
+`2444972c19bf8c251e0a3dae78399e349cde6645` and merged as
+`6b06132d0e2acb9bd685448d51b2797a713fd5a8`. The focused service evidence is
+synthetic; it does not claim provider execution. Browser lifecycle work is
+independently reviewable and is not included in this backend prerequisite.
+
+## Maintained browser interaction gate — 3 October 2026
+
+`tests/browser/` now runs the actual Next application with a temporary private
+bootstrap account, isolated application data and an explicit environment. The
+runner owns its loopback preview and headless browser, cleans them up on exit,
+and refuses checkouts containing development dotenv files. Browser writes are
+blocked except exact synthetic conversation and approval requests fulfilled
+inside the runner. Its CI job saves the report, viewport screenshots, axe reports
+and failure diagnostics; it never records the login password or session cookies.
+
+The first application finding was an initial-conversation lifecycle bug: React
+development effect replay aborted the first thread read after its loaded flag
+had already been set. The selected thread is now marked loaded only when its
+current, uncanceled read supplies the thread. The maintained reopening check
+failed before this correction and passes with it.
+
+The final local run passed 81 assertions across desktop and coarse-pointer phone,
+including sending/reopening, safe text rendering, Chat/Map draft preservation,
+voice consent and focus, phone menu Escape recovery, exact approval inputs and
+queue refresh. Eight axe WCAG A/AA scans had no violations; eight light/dark
+viewport screenshots were saved and representative phone/desktop states were
+visually inspected. Four exact writes were wholly intercepted across the two
+viewports. No unexpected browser write, external request, popup, download,
+uncaught error or microphone request occurred. Earlier raw logs retain the
+reopening failure and corrected harness selectors; they are not passing runs.
+
+Twenty-one tests in five focused Command, thread-loading, shell, palette and
+permission suites passed. Strict component lint, the focused Command TypeScript
+graph, Python compilation and CI YAML parsing passed. Hosted checks on the new
+browser job are pending. Screenshots are review evidence rather than a claim of
+cross-platform pixel equivalence. Actual provider/approval effects, screen-reader
+walkthroughs, device audio and production performance remain separate gates.
 
 ## Remaining gates and scope
 

@@ -16,6 +16,43 @@ env:
   NODE_VERSION: "24.13.0"
 
 jobs:
+  browser-ui:
+    name: browser-ui
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install application and browser tools
+        run: |
+          npm ci
+          python3 -m venv /tmp/asael-browser-venv
+          /tmp/asael-browser-venv/bin/pip install -r tests/browser/requirements.txt
+          /tmp/asael-browser-venv/bin/python -m playwright install --with-deps chromium
+          npm install --prefix /tmp/asael-browser-tools --ignore-scripts --no-audit --no-fund axe-core@4.11.0
+
+      - name: Isolated browser interactions and accessibility
+        run: |
+          /tmp/asael-browser-venv/bin/python tests/browser/run.py \
+            --axe /tmp/asael-browser-tools/node_modules/axe-core/axe.min.js
+
+      - name: Browser evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: browser-ui-${{ github.sha }}
+          path: test-results/browser
+          retention-days: 14
+
   quality:
     name: quality
     runs-on: ubuntu-latest
