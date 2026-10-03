@@ -470,6 +470,11 @@ commands, workspace creation, deployment and release were not invoked, and
 hosted links were inspected only. Real provider effects remain outside this
 presentation evidence.
 
+PR [#23](https://github.com/benniejoseph/OmniAgentOS/pull/23) merged as
+`a727b6c75a783019e137bfb6803ce5745821514f`. Implementation head
+`a6c2dfbeaf5872a870837818730ef541a94d7a1b` passed all hosted quality,
+integration, build/budget, audit, worker, secret-scan and preview checks.
+
 ## Memory Universe — 3 October 2026
 
 Universe now pairs the canonical graph canvas with a keyboard-accessible,
@@ -513,6 +518,51 @@ border, while still requiring an eight-pixel content margin.
 All action mutations and external requests were blocked; no rebuild, creation
 or provider action was attempted. These bounded headless fixtures do not certify
 physical-device GPU behavior, large-graph performance or screen-reader operation.
+
+## Capture recording studio — 3 October 2026
+
+Record now uses canonical responsive controls, readable history and transcript
+views, full session/segment identities and native focus-contained dialogs.
+Owner audio/transcript and retained metadata remain separate capabilities.
+Initial loading, unavailable, successful empty and last-loaded history states
+are explicit; a failed refresh removes unverified actions while retaining the
+last visible identities. Refresh does not discard recording form drafts.
+
+Title, tags and raw-audio retention preference now live in Capture across
+Record/Note/Upload switches, with a local fallback for standalone callers.
+Leaving Record still unmounts its device lifecycle. Explicit Discard/New
+recording keeps the existing field-reset behavior; a late unmounted reset cannot
+clear a newer draft.
+
+A startup-attempt fence fixes late microphone or session responses arriving
+after Discard/unmount. Late tracks stop before session creation, canceled setup
+cannot activate a recorder or deliver new data/timer callbacks, and a returned
+late session ID uses the existing exact deletion request. Cleanup failures remain
+visible while mounted. If no usable ID returns, or the page exits before cleanup
+finishes, deletion cannot be confirmed; the client never claims otherwise.
+Existing segment identity, upload ordering, accepted-chunk flush, completion,
+request payloads, idempotency and authorization boundaries are preserved.
+
+Independent lifecycle and draft review passed. Forty-six focused component,
+startup and recording collection/detail/segment/completion route tests passed,
+including eleven new mocked cancellation regressions. The final nineteen
+component/startup tests were rerun after the parent draft follow-up. Strict
+lint, the Capture/Recording TypeScript graph, CSS parsing and type-scale checks
+passed.
+
+Headless Chrome passed 122 checks and eight clean scoped axe scans. Coverage
+includes exact history states/contracts, owner/retained capabilities, eight-to-ten
+segment pagination, full transcript as ordinary text, audio URL/preload metadata,
+draft retention, modal background inertness and opener focus, 320–1440px, both
+themes, 44/48px controls, 200% text, reduced motion and forced colors. Desktop and
+phone screenshots were visually inspected. Native keyboard checks permit focus
+in browser chrome while forbidding focus in inert app content.
+
+One Start click used a preinstalled rejecting getUserMedia stub. No actual
+permission prompt, microphone, MediaRecorder or AudioContext was invoked; no
+session POST followed. Every mutation, external request and audio-data read was
+blocked, and no playback/copy/download/delete/transcription action was invoked.
+Real-device recording and provider processing remain outside these fixtures.
 
 ## Remaining gates and scope
 

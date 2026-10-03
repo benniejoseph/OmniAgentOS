@@ -23,7 +23,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { clsx } from "clsx";
 import { ConnectedSources, type OAuthGrantItem, type OAuthProviderItem } from "@/components/capture/connected-sources";
-import { LongRecordingStudio } from "@/components/capture/long-recording-studio";
+import { LongRecordingStudio, type LongRecordingDraft } from "@/components/capture/long-recording-studio";
 import { VisualStudio } from "@/components/capture/visual-studio";
 import { permissionMessage, useWorkspaceSession } from "@/components/app-shell/session-context";
 import { WorkspaceLibrary } from "@/components/workspace-library";
@@ -122,6 +122,11 @@ type CaptureBatchItem = {
 export function CaptureWorkspace() {
   const { session, status } = useWorkspaceSession();
   const [mode, setMode] = useState<CaptureMode>("note");
+  const [recordingDraft, setRecordingDraft] = useState<LongRecordingDraft>({
+    title: "",
+    tags: "",
+    deleteRawAudioAfterProcessing: false,
+  });
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [tags, setTags] = useState("");
@@ -789,7 +794,7 @@ export function CaptureWorkspace() {
           </div>
 
           {mode === "record" ? (
-            <LongRecordingStudio disabledReason={captureBlocked} onJob={(job) => { completedJobRef.current = undefined; setActiveJob(job); }} onIndexed={loadWorkspace} />
+            <LongRecordingStudio draft={recordingDraft} onDraftChange={setRecordingDraft} disabledReason={captureBlocked} onJob={(job) => { completedJobRef.current = undefined; setActiveJob(job); }} onIndexed={loadWorkspace} />
           ) : (
             <div className={styles.editor}>
               {mode === "note" ? (
