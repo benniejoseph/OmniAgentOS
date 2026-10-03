@@ -1,11 +1,22 @@
 import { describe, expect, it } from "vitest";
 import {
+  formatTodayDate,
   formatTodayDue,
   formatTodayRelative,
   formatTodayTime,
 } from "@/lib/today/presentation";
 
 describe("Today timestamp presentation", () => {
+  it("keeps the date heading usable while a timezone preference is being edited", () => {
+    const instant = new Date("2026-10-03T19:00:00.000Z");
+    expect(formatTodayDate(instant, "UTC")).toBe("Saturday, October 3");
+    expect(formatTodayDate(instant, "Asia/Kolkata")).toBe("Sunday, October 4");
+    for (const draft of ["", "Asia/", "not/a-timezone"]) {
+      expect(formatTodayDate(instant, draft)).toBe("Saturday, October 3");
+    }
+    expect(formatTodayDate(new Date("invalid"), "UTC")).toBe("Your day");
+  });
+
   it("formats the same instant in the explicitly selected timezone", () => {
     const instant = "2026-08-26T08:04:00.000Z";
 

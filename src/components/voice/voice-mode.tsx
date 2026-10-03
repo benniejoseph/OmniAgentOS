@@ -27,10 +27,7 @@ import {
   type VoiceCommandReply,
   type VoiceCommandReview,
 } from "@/lib/voice/command-review";
-import {
-  AsaelLottieMascot,
-  type AsaelMascotState,
-} from "@/components/mascot/asael-lottie-mascot";
+import styles from "./voice-mode.module.css";
 
 type VoicePhase =
   | "consent"
@@ -861,7 +858,7 @@ export function VoiceMode({
         onClick={() => { resetSession(); setPhase("consent"); setOpen(true); }}
         disabled={disabled}
         title={disabledReason || (disabled ? "Voice mode is unavailable while work is active." : "Start realtime voice mode")}
-        className="grid size-9 shrink-0 place-items-center rounded-full text-muted transition hover:bg-surface-raised hover:text-foreground disabled:cursor-not-allowed disabled:opacity-35"
+        className={styles.trigger}
         aria-label={`Start voice mode with ${agentName}`}
         aria-haspopup="dialog"
       >
@@ -869,63 +866,57 @@ export function VoiceMode({
       </button>
 
       {open ? (
-        <div className="fixed inset-0 z-[130] grid place-items-end bg-foreground/45 p-0 backdrop-blur-md sm:place-items-center sm:p-6">
+        <div className={styles.backdrop}>
           <section
             ref={dialogRef}
             role="dialog"
             aria-modal="true"
             aria-labelledby="voice-mode-title"
             aria-describedby="voice-mode-status voice-mode-detail"
-            className="relative flex min-h-[34rem] w-full max-w-lg flex-col overflow-hidden rounded-t-[2rem] border border-line/80 bg-background shadow-2xl outline-none sm:min-h-[36rem] sm:rounded-[2rem]"
+            className={styles.dialog}
           >
-            <div className="pointer-events-none absolute inset-x-0 top-0 h-64 bg-[radial-gradient(circle_at_50%_-15%,color-mix(in_oklab,var(--color-primary)_24%,transparent),transparent_68%)]" />
-            <header className="relative flex items-center justify-between px-5 py-4">
-              <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.16em] text-muted">
+            <header className={styles.header}>
+              <div className={styles.title}>
                 <Mic size={14} className="text-primary" aria-hidden="true" />
-                <span id="voice-mode-title">Realtime voice to {agentName}</span>
+                <h2 id="voice-mode-title">Realtime voice to {agentName}</h2>
               </div>
-              <button type="button" onClick={() => closeDialog()} className="grid size-10 place-items-center rounded-full text-muted transition hover:bg-surface-raised hover:text-foreground" aria-label="Cancel voice mode">
+              <button type="button" onClick={() => closeDialog()} className={styles.close} aria-label="Cancel voice mode">
                 <X size={18} aria-hidden="true" />
               </button>
             </header>
 
             {phase === "consent" ? (
-              <div className="relative flex flex-1 flex-col px-6 pb-5 pt-3 text-left">
-                <div className="relative mx-auto">
-                  <AsaelLottieMascot state="idle" size="large" decorative />
-                  <span className="absolute bottom-1 right-0 grid size-8 place-items-center rounded-full border border-line bg-background text-primary shadow-sm" aria-hidden="true">
-                    <ShieldCheck size={15} />
-                  </span>
-                </div>
-                <h3 className="mt-6 text-center text-lg font-semibold">Live transcription session</h3>
-                <p className="mt-2 text-center text-sm leading-6 text-muted">OpenAI processes live microphone audio to produce partial text. Asael does not store the audio. The transcript remains an editable command draft until you send it, then the exact agent result streams back in Asael&apos;s versioned voice. Speaking interrupts playback.</p>
-                <div className="mt-5 rounded-xl border border-line bg-surface px-4 py-3 text-xs leading-5 text-muted">
+              <div className={styles.consent}>
+                <ShieldCheck size={28} className={styles.consentIcon} aria-hidden="true" />
+                <h3 id="voice-mode-status" className={styles.consentTitle}>Live transcription session</h3>
+                <p id="voice-mode-detail" className={styles.consentDescription}>OpenAI processes live microphone audio to produce partial text. Asael does not store the audio. The transcript remains an editable command draft until you send it, then the exact agent result streams back in Asael&apos;s versioned voice. Speaking interrupts playback.</p>
+                <div className={styles.providerDetails}>
                   <p><strong className="text-foreground">Provider:</strong> OpenAI</p>
                   <p><strong className="text-foreground">Turn detection:</strong> server voice activity detection</p>
                   <p><strong className="text-foreground">Audio retention:</strong> not stored by Asael</p>
                 </div>
-                <label className="mt-4 text-xs font-semibold text-foreground">
+                <label className={styles.field}>
                   Spoken language
-                  <select value={language} onChange={(event) => setLanguage(event.currentTarget.value)} className="mt-1.5 h-11 w-full rounded-lg border border-line bg-background px-3 text-sm font-normal outline-none focus:border-primary">
+                  <select value={language} onChange={(event) => setLanguage(event.currentTarget.value)} className={styles.input}>
                     {languageOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                   </select>
                 </label>
               </div>
             ) : (
-              <div className="relative flex flex-1 flex-col items-center overflow-y-auto px-6 pb-4 pt-2 text-center">
-                <div className={clsx("relative grid size-32 place-items-center rounded-full border transition-all duration-300", ["speaking", "replying"].includes(phase) ? "border-primary/40 bg-primary/10 shadow-[0_0_55px_color-mix(in_oklab,var(--color-primary)_25%,transparent)]" : "border-line bg-surface")} aria-hidden="true">
-                  <AsaelLottieMascot state={voiceMascotState(phase)} size="large" decorative />
-                  <div className="absolute -bottom-2 flex h-8 items-center gap-0.5 rounded-full border border-line/80 bg-background/90 px-2.5 shadow-sm backdrop-blur">
-                    {meterLevels.map((level, index) => <span key={index} className={clsx("w-0.5 rounded-full transition-[height,opacity] duration-100", isActivePhase(phase) ? "bg-primary opacity-90" : "bg-muted/45 opacity-55")} style={{ height: `${Math.round(4 + level * 18)}px` }} />)}
+              <div className={styles.session}>
+                <div className={styles.audioStatus} aria-hidden="true">
+                  {["requesting", "connecting", "finishing", "reconnecting", "sending", "waiting", "deciding"].includes(phase) ? (
+                    <Loader2 size={28} className={styles.progress} />
+                  ) : phase === "replying" ? <AudioLines size={28} /> : phase === "resolved" ? <Check size={28} /> : <Mic size={28} />}
+                  <div className={clsx(styles.meter, isActivePhase(phase) && styles.meterActive)}>
+                    {meterLevels.map((level, index) => <span key={index} style={{ transform: `scaleY(${(4 + level * 18) / 22})` }} />)}
                   </div>
-                  {["requesting", "connecting", "finishing", "reconnecting", "sending", "waiting", "deciding"].includes(phase) ? <span className="absolute inset-0 grid place-items-center rounded-full bg-background/72 backdrop-blur-sm"><Loader2 size={28} className="animate-spin text-primary" /></span> : null}
-                  {phase === "error" ? <span className="absolute inset-0 grid place-items-center rounded-full bg-background/80"><Mic size={28} className="text-danger" /></span> : null}
                 </div>
-                <p id="voice-mode-status" className="mt-5 text-lg font-semibold tracking-tight">{status.title}</p>
-                <p id="voice-mode-detail" className={clsx("mt-1.5 max-w-sm text-sm leading-6", phase === "error" ? "text-danger" : "text-muted")}>{status.detail}</p>
+                <p id="voice-mode-status" className={styles.statusTitle}>{status.title}</p>
+                <p id="voice-mode-detail" className={clsx(styles.statusDetail, phase === "error" && styles.error)}>{status.detail}</p>
                 <p role="status" aria-live="polite" className="sr-only">{announcement}</p>
                 {pendingApproval && ["approval", "deciding", "resolved"].includes(phase) ? (
-                  <div className="mt-4 w-full rounded-xl border border-warning/40 bg-warning/5 p-4 text-left">
+                  <div className={styles.approval}>
                     <div className="flex items-start justify-between gap-3">
                       <div>
                         <p className="text-sm font-semibold text-foreground">{pendingApproval.title}</p>
@@ -933,18 +924,18 @@ export function VoiceMode({
                       </div>
                       <span className="shrink-0 rounded-full bg-warning/15 px-2.5 py-1 text-xs font-semibold text-warning">Risk {pendingApproval.riskLevel}</span>
                     </div>
-                    <dl className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                    <dl className={styles.approvalFacts}>
                       <div><dt className="text-muted">Tool</dt><dd className="mt-0.5 font-mono text-foreground">{pendingApproval.toolId}</dd></div>
                       <div><dt className="text-muted">Reversible</dt><dd className="mt-0.5 font-semibold text-foreground">{pendingApproval.reversible ? "Yes" : "No"}</dd></div>
                     </dl>
                     <p className="mt-3 text-xs leading-5 text-muted">{pendingApproval.reason}</p>
                     <div className="mt-3">
                       <p className="text-xs font-semibold uppercase tracking-[0.12em] text-muted">Exact reviewed input</p>
-                      <pre className="mt-1.5 max-h-28 overflow-auto rounded-lg border border-line bg-background p-2.5 text-xs leading-5 text-foreground">{JSON.stringify(pendingApproval.input, null, 2)}</pre>
+                      <pre className={styles.exactInput}>{JSON.stringify(pendingApproval.input, null, 2)}</pre>
                     </div>
-                    <label className="mt-3 block text-xs font-semibold text-foreground">
+                    <label className={styles.field}>
                       Decision note (optional)
-                      <textarea value={approvalNote} onChange={(event) => setApprovalNote(event.currentTarget.value)} maxLength={1_000} rows={2} disabled={phase !== "approval"} className="mt-1.5 w-full resize-none rounded-lg border border-line bg-background px-3 py-2 text-sm font-normal outline-none focus:border-primary disabled:opacity-60" />
+                      <textarea value={approvalNote} onChange={(event) => setApprovalNote(event.currentTarget.value)} maxLength={1_000} rows={2} disabled={phase !== "approval"} className={styles.input} />
                     </label>
                     <p className="mt-2 flex items-start gap-2 text-xs leading-5 text-warning"><AlertTriangle size={14} className="mt-0.5 shrink-0" aria-hidden="true" />Spoken words cannot approve this action. Use a visible button below.</p>
                     {pendingApproval.approvalProgress.required > 1 ? <p className="mt-1 text-xs text-muted">{pendingApproval.approvalProgress.approvals}/{pendingApproval.approvalProgress.required} eligible approvals recorded.</p> : null}
@@ -954,7 +945,7 @@ export function VoiceMode({
                   </div>
                 ) : (
                   <>
-                    <label className="mt-4 block w-full text-left text-xs font-semibold text-foreground">
+                    <label className={styles.field}>
                       Editable transcript
                       <textarea
                         value={transcript}
@@ -968,11 +959,11 @@ export function VoiceMode({
                         maxLength={100_000}
                         disabled={["requesting", "connecting", "sending", "waiting", "replying"].includes(phase)}
                         placeholder={isActivePhase(phase) ? "Partial transcription will appear here…" : "No speech recognized yet."}
-                        className="mt-1.5 min-h-28 w-full resize-none rounded-xl border border-line bg-surface px-3 py-2.5 text-sm font-normal leading-6 outline-none focus:border-primary disabled:opacity-65"
+                        className={clsx(styles.input, styles.transcript)}
                       />
                     </label>
                     {phase === "review" && confidence.requiresExplicitAttestation ? (
-                      <label className="mt-3 flex w-full items-start gap-2 rounded-lg border border-warning/35 bg-warning/5 px-3 py-2.5 text-left text-xs leading-5 text-foreground">
+                      <label className={styles.attestation}>
                         <input type="checkbox" checked={reviewAttested} onChange={(event) => {
                           reviewAttestedRef.current = event.currentTarget.checked;
                           setReviewAttested(event.currentTarget.checked);
@@ -988,43 +979,43 @@ export function VoiceMode({
               </div>
             )}
 
-            <footer className="relative flex min-h-24 items-center justify-center gap-3 border-t border-line/70 bg-surface/65 px-5 py-4">
+            <footer className={styles.footer}>
               {phase === "consent" ? (
                 <>
-                  <button type="button" onClick={() => closeDialog()} className="min-h-11 rounded-full px-5 text-sm font-semibold text-muted transition hover:bg-surface-raised hover:text-foreground">Cancel</button>
-                  <button ref={primaryActionRef} type="button" onClick={() => void startRealtime()} className="inline-flex min-h-12 items-center gap-2 rounded-full bg-foreground px-6 text-sm font-semibold text-background transition hover:opacity-90"><Mic size={15} aria-hidden="true" />Agree &amp; start</button>
+                  <button type="button" onClick={() => closeDialog()} className={clsx("action-button", styles.action)}>Cancel</button>
+                  <button ref={primaryActionRef} type="button" onClick={() => void startRealtime()} className={clsx("primary-button", styles.action)}><Mic size={15} aria-hidden="true" />Agree &amp; start</button>
                 </>
               ) : ["listening", "speaking", "reconnecting"].includes(phase) ? (
                 <>
-                  <button type="button" onClick={() => closeDialog()} className="min-h-11 rounded-full px-5 text-sm font-semibold text-muted transition hover:bg-surface-raised hover:text-foreground">Cancel</button>
-                  <button ref={primaryActionRef} type="button" onClick={() => void finishListening()} className="inline-flex min-h-12 items-center gap-2 rounded-full bg-foreground px-6 text-sm font-semibold text-background transition hover:opacity-90"><Square size={14} fill="currentColor" aria-hidden="true" />Stop &amp; review</button>
+                  <button type="button" onClick={() => closeDialog()} className={clsx("action-button", styles.action)}>Cancel</button>
+                  <button ref={primaryActionRef} type="button" onClick={() => void finishListening()} className={clsx("primary-button", styles.action)}><Square size={14} fill="currentColor" aria-hidden="true" />Stop &amp; review</button>
                 </>
               ) : phase === "review" ? (
                 <>
-                  <button type="button" onClick={() => closeDialog()} className="min-h-11 rounded-full px-5 text-sm font-semibold text-muted transition hover:bg-surface-raised hover:text-foreground">Cancel</button>
-                  <button ref={primaryActionRef} type="button" onClick={() => void sendTranscript()} disabled={!transcript.trim() || (confidence.requiresExplicitAttestation && !reviewAttested)} className="inline-flex min-h-12 items-center gap-2 rounded-full bg-foreground px-6 text-sm font-semibold text-background transition hover:opacity-90 disabled:opacity-35"><Send size={15} aria-hidden="true" />Send to {agentName}</button>
+                  <button type="button" onClick={() => closeDialog()} className={clsx("action-button", styles.action)}>Cancel</button>
+                  <button ref={primaryActionRef} type="button" onClick={() => void sendTranscript()} disabled={!transcript.trim() || (confidence.requiresExplicitAttestation && !reviewAttested)} className={clsx("primary-button", styles.action)}><Send size={15} aria-hidden="true" />Send to {agentName}</button>
                 </>
               ) : phase === "approval" && pendingApproval ? (
                 <>
-                  <button type="button" onClick={() => void decideApproval("reject")} disabled={!pendingApproval.canReject} className="min-h-11 rounded-full px-5 text-sm font-semibold text-danger transition hover:bg-danger/10 disabled:opacity-35">Reject</button>
-                  <button ref={primaryActionRef} type="button" onClick={() => void decideApproval("approve")} disabled={!pendingApproval.canApprove} title={pendingApproval.blockReason} className="inline-flex min-h-12 items-center gap-2 rounded-full bg-foreground px-6 text-sm font-semibold text-background transition hover:opacity-90 disabled:opacity-35"><Check size={15} aria-hidden="true" />Approve exact action</button>
+                  <button type="button" onClick={() => void decideApproval("reject")} disabled={!pendingApproval.canReject} className={clsx("action-button", styles.action)}>Reject</button>
+                  <button ref={primaryActionRef} type="button" onClick={() => void decideApproval("approve")} disabled={!pendingApproval.canApprove} title={pendingApproval.blockReason} className={clsx("primary-button", styles.action)}><Check size={15} aria-hidden="true" />Approve exact action</button>
                 </>
               ) : phase === "deciding" ? (
-                <button type="button" disabled className="inline-flex min-h-12 items-center gap-2 rounded-full bg-foreground px-6 text-sm font-semibold text-background opacity-60"><Loader2 size={15} className="animate-spin" aria-hidden="true" />Recording decision</button>
+                <button type="button" disabled className={clsx("primary-button", styles.action)}><Loader2 size={15} className="animate-spin" aria-hidden="true" />Recording decision</button>
               ) : phase === "resolved" ? (
-                <button ref={primaryActionRef} type="button" onClick={() => closeDialog("sent")} className="inline-flex min-h-12 items-center gap-2 rounded-full bg-foreground px-6 text-sm font-semibold text-background"><Check size={15} aria-hidden="true" />Done</button>
+                <button ref={primaryActionRef} type="button" onClick={() => closeDialog("sent")} className={clsx("primary-button", styles.action)}><Check size={15} aria-hidden="true" />Done</button>
               ) : phase === "replying" ? (
                 <>
-                  <button type="button" onClick={() => closeDialog()} className="min-h-11 rounded-full px-5 text-sm font-semibold text-muted transition hover:bg-surface-raised hover:text-foreground">End voice mode</button>
-                  <button ref={primaryActionRef} type="button" onClick={interruptReply} className="inline-flex min-h-12 items-center gap-2 rounded-full bg-foreground px-6 text-sm font-semibold text-background transition hover:opacity-90"><Square size={14} fill="currentColor" aria-hidden="true" />Interrupt reply</button>
+                  <button type="button" onClick={() => closeDialog()} className={clsx("action-button", styles.action)}>End voice mode</button>
+                  <button ref={primaryActionRef} type="button" onClick={interruptReply} className={clsx("primary-button", styles.action)}><Square size={14} fill="currentColor" aria-hidden="true" />Interrupt reply</button>
                 </>
               ) : phase === "error" ? (
                 <>
-                  <button type="button" onClick={() => closeDialog("failed")} className="min-h-11 rounded-full px-5 text-sm font-semibold text-muted transition hover:bg-surface-raised hover:text-foreground">Close</button>
-                  <button ref={primaryActionRef} type="button" onClick={retryVoice} className="inline-flex min-h-12 items-center gap-2 rounded-full bg-foreground px-6 text-sm font-semibold text-background transition hover:opacity-90"><RotateCcw size={15} aria-hidden="true" />Try again</button>
+                  <button type="button" onClick={() => closeDialog("failed")} className={clsx("action-button", styles.action)}>Close</button>
+                  <button ref={primaryActionRef} type="button" onClick={retryVoice} className={clsx("primary-button", styles.action)}><RotateCcw size={15} aria-hidden="true" />Try again</button>
                 </>
               ) : (
-                <button ref={primaryActionRef} type="button" onClick={() => closeDialog()} className="min-h-11 rounded-full px-5 text-sm font-semibold text-muted transition hover:bg-surface-raised hover:text-foreground">Cancel</button>
+                <button ref={primaryActionRef} type="button" onClick={() => closeDialog()} className={clsx("action-button", styles.action)}>Cancel</button>
               )}
             </footer>
           </section>
@@ -1110,14 +1101,6 @@ function voiceStatus(phase: VoicePhase, elapsedSeconds: number, error: string) {
   if (phase === "resolved") return { title: "Decision recorded", detail: "The durable approval record is available in Activity." };
   if (phase === "error") return { title: "Voice mode needs attention", detail: error || "Nothing was sent." };
   return { title: "Realtime voice", detail: "Review provider use before starting." };
-}
-
-function voiceMascotState(phase: VoicePhase): AsaelMascotState {
-  if (["listening", "speaking", "replying"].includes(phase)) return "listening";
-  if (phase === "resolved") return "success";
-  if (["review", "approval", "error"].includes(phase)) return "attention";
-  if (["requesting", "connecting", "finishing", "reconnecting", "sending", "waiting", "deciding"].includes(phase)) return "thinking";
-  return "idle";
 }
 
 function confidenceLabel(

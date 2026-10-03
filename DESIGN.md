@@ -2,6 +2,19 @@
 
 This document is the Stitch-compatible design handoff for the Flutter product.
 
+## ATLAS revamp in progress
+
+The owner selected the original ATLAS eagle and authorized the warm-neutral /
+graphite revamp on 3 October 2026. The current target for new and migrated
+surfaces is [the ATLAS system specification](.design/asael-ace-revamp/SYSTEM_SPEC.md).
+It takes precedence over the older emerald palette and typography below.
+The first web slice covers shared tokens, navigation, theme controls, Today and
+Command. Other web pages and Flutter/macOS surfaces still need their individual
+migration and validation; global token inheritance alone does not complete them.
+Keep the platform behavior and governed action requirements in this document.
+The ATLAS raster study is reference art; its production model, rig and clips are
+still outstanding.
+
 ## Direction
 
 **Scene:** One owner checks a long-running agent system throughout the day, often one-handed on a phone and later at a wide desktop, under changing ambient light. The interface must remain calm, exact, and immediately legible while work is moving.

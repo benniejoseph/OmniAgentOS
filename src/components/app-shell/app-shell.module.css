@@ -1,213 +1,277 @@
 .shell {
-  --daybook-serif: Iowan Old Style, Baskerville, Georgia, ui-serif, serif;
+  --app-header-height: 3.5rem;
+  --app-dock-height: calc(4.5rem + env(safe-area-inset-bottom, 0px));
   position: relative;
   isolation: isolate;
   min-height: 100svh;
-  overflow-x: clip;
-  transition: background-color 220ms ease, color 220ms ease;
+  color: var(--foreground);
+  background: var(--background);
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
 }
 
-.daybook {
-  --background: oklch(0.982 0.018 89);
-  --foreground: oklch(0.255 0.042 205);
-  --surface: oklch(0.997 0.008 90);
-  --surface-raised: oklch(0.957 0.026 88);
-  --surface-overlay: oklch(0.925 0.04 84);
-  --muted: oklch(0.46 0.035 210);
-  --line: oklch(0.84 0.035 88);
-  --line-strong: oklch(0.72 0.045 84);
-  --primary: oklch(0.5 0.12 164);
-  --primary-ink: oklch(0.99 0.008 95);
-  --accent: oklch(0.68 0.14 65);
-  --success: oklch(0.48 0.12 154);
-  --warning: oklch(0.61 0.14 70);
-  --danger: oklch(0.53 0.18 28);
-  --info: oklch(0.49 0.1 225);
-  --daybook-nav-top: oklch(0.994 0.014 92 / 0.97);
-  --daybook-nav-bottom: oklch(0.952 0.03 84 / 0.97);
-  --daybook-header: oklch(0.982 0.018 89 / 0.86);
-  --daybook-paper-glass: oklch(1 0 0 / 0.64);
-  --daybook-canvas-glow: oklch(0.9 0.09 69 / 0.22);
-  --daybook-sky-glow: oklch(0.9 0.055 223 / 0.28);
-  --daybook-shadow: oklch(0.33 0.04 75 / 0.08);
-  --daybook-divider: oklch(0.7 0.05 84 / 0.28);
-  background:
-    radial-gradient(circle at 91% 4%, var(--daybook-canvas-glow), transparent 24rem),
-    radial-gradient(circle at 13% 30%, var(--daybook-sky-glow), transparent 32rem),
-    var(--background);
-}
-
-:global(:root[data-theme="dark"]) .daybook {
-  --background: oklch(0.145 0.018 213);
-  --foreground: oklch(0.93 0.015 88);
-  --surface: oklch(0.18 0.02 211);
-  --surface-raised: oklch(0.225 0.023 207);
-  --surface-overlay: oklch(0.28 0.028 205);
-  --muted: oklch(0.72 0.025 205);
-  --line: oklch(0.32 0.025 205);
-  --line-strong: oklch(0.46 0.035 192);
-  --primary: oklch(0.72 0.105 159);
-  --primary-ink: oklch(0.14 0.026 175);
-  --accent: oklch(0.75 0.115 70);
-  --success: oklch(0.71 0.105 153);
-  --warning: oklch(0.77 0.12 73);
-  --danger: oklch(0.7 0.15 28);
-  --info: oklch(0.72 0.08 225);
-  --daybook-nav-top: oklch(0.19 0.022 210 / 0.97);
-  --daybook-nav-bottom: oklch(0.16 0.019 214 / 0.98);
-  --daybook-header: oklch(0.145 0.018 213 / 0.86);
-  --daybook-paper-glass: oklch(0.22 0.022 208 / 0.72);
-  --daybook-canvas-glow: oklch(0.55 0.1 65 / 0.1);
-  --daybook-sky-glow: oklch(0.48 0.07 218 / 0.12);
-  --daybook-shadow: oklch(0.03 0.01 220 / 0.28);
-  --daybook-divider: oklch(0.55 0.045 87 / 0.2);
-}
-
-.shell::before,
-.shell::after {
-  position: fixed;
-  z-index: -1;
-  border-radius: 999px;
-  pointer-events: none;
-  content: "";
-}
-
-.shell::before {
-  top: 18rem;
-  right: -15rem;
-  width: 34rem;
-  height: 34rem;
-  background: var(--daybook-canvas-glow);
-  filter: blur(12px);
-}
-
-.shell::after {
-  bottom: -18rem;
-  left: 10%;
-  width: 46rem;
-  height: 34rem;
-  background: var(--daybook-sky-glow);
-  filter: blur(18px);
+.sidebar,
+.mobilePanel {
+  --focus-surface: var(--surface);
+  border-color: var(--line);
+  background: var(--surface);
 }
 
 .sidebar {
-  border-color: var(--daybook-divider);
-  background:
-    radial-gradient(circle at 52% 2%, var(--daybook-canvas-glow), transparent 14rem),
-    linear-gradient(180deg, var(--daybook-nav-top), var(--daybook-nav-bottom));
-  box-shadow: 1rem 0 3.5rem var(--daybook-shadow);
-  backdrop-filter: blur(22px);
+  /* Keep the existing 240/80px preference without reflow animation. */
+  transition: none;
 }
 
-.sidebar::after {
-  position: absolute;
-  right: -1px;
-  top: 5.4rem;
-  width: 1px;
-  height: calc(100% - 9rem);
-  background: linear-gradient(transparent, var(--primary), transparent);
-  opacity: 0.22;
-  content: "";
+.homeLink {
+  min-height: 2.75rem;
+  min-width: 2.75rem;
+  border-radius: var(--radius-control);
 }
 
 .sidebar :global(nav a),
-.sidebar :global(nav button) {
-  border-radius: 999px;
+.sidebar :global(nav button),
+.mobilePanel :global(nav a) {
+  position: relative;
+  min-height: 2.75rem;
+  border-radius: var(--radius-control);
+  color: var(--muted);
+  font-weight: 500;
+  line-height: 1.25rem;
+  transition:
+    background-color var(--duration-control) var(--ease-standard),
+    color var(--duration-control) var(--ease-standard);
 }
 
-.sidebar :global(nav a[aria-current="page"]) {
-  box-shadow:
-    0 0 0 1px oklch(from var(--primary) l c h / 0.18),
-    0 0.65rem 1.8rem oklch(from var(--primary) l c h / 0.12);
+.sidebar :global(nav a),
+.mobilePanel :global(nav a) {
+  border-inline-start: 3px solid transparent;
 }
 
-.sidebar :global(nav > div + div) {
-  border-color: var(--daybook-divider);
+.sidebar :global(nav a:hover),
+.sidebar :global(nav button:hover),
+.mobilePanel :global(nav a:hover) {
+  color: var(--foreground);
+  background: var(--surface-raised);
+}
+
+.sidebar :global(nav a[aria-current="page"]),
+.mobilePanel :global(nav a[aria-current="page"]) {
+  border-inline-start-color: var(--accent);
+  color: var(--foreground);
+  background: var(--accent-surface);
+  font-weight: 600;
+  box-shadow: none;
+}
+
+.sidebar :global(nav a:focus-visible),
+.sidebar :global(nav button:focus-visible),
+.mobilePanel :global(nav a:focus-visible) {
+  outline: 3px solid var(--focus);
+  outline-offset: 3px;
+  box-shadow: 0 0 0 3px var(--surface);
+}
+
+.sidebar :global(nav [data-nav-count]),
+.mobilePanel :global(nav [data-nav-count]) {
+  color: var(--primary-ink);
+  background: var(--primary);
+}
+
+.compactLabel {
+  position: absolute;
+  inset: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-control);
+  padding: 0.25rem;
+  color: var(--foreground);
+  background: var(--surface-raised);
+  font-size: 0.75rem;
+  line-height: 1rem;
+  text-align: center;
+  overflow-wrap: anywhere;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--duration-control) var(--ease-standard);
+}
+
+.compactLink:hover .compactLabel,
+.compactLink:focus-visible .compactLabel {
+  opacity: 1;
+}
+
+.compactLink:global([aria-current="page"]) .compactLabel {
+  background: var(--accent-surface);
 }
 
 .header {
-  border-color: var(--daybook-divider);
-  background: var(--daybook-header);
-  box-shadow: 0 0.7rem 2rem var(--daybook-shadow);
-  backdrop-filter: blur(24px) saturate(118%);
+  --focus-surface: var(--background);
+  border-color: var(--line);
+  background: var(--background);
 }
 
-.header::after {
-  position: absolute;
-  right: clamp(1rem, 6vw, 7rem);
-  bottom: -1px;
-  width: clamp(4rem, 13vw, 12rem);
-  height: 1px;
-  background: linear-gradient(90deg, transparent, var(--accent), transparent);
-  opacity: 0.48;
-  content: "";
+.topBar {
+  min-height: calc(var(--app-header-height) - 1px);
+  gap: 0.5rem;
+  padding: 0.1875rem 1rem;
 }
 
-.header :global(button) {
-  border-radius: 999px;
+.headerIdentity {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.headerActions {
+  flex: 0 0 auto;
+}
+
+.headerIdentity > button,
+.headerActions > button,
+.headerActions > a {
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  border-color: var(--line-strong);
+  border-radius: var(--radius-control);
+  box-shadow: none;
+  transition:
+    background-color var(--duration-control) var(--ease-standard),
+    color var(--duration-control) var(--ease-standard);
+}
+
+.headerActions > :global(.notification-trigger:hover) {
+  border-color: var(--line-strong);
+  background: var(--surface-raised);
+  transform: none;
+}
+
+.headerIdentity > button:focus-visible,
+.headerActions > button:focus-visible,
+.headerActions > a:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 3px;
+  box-shadow: 0 0 0 3px var(--background);
 }
 
 .main {
   position: relative;
-  min-height: calc(100svh - 4rem);
-}
-
-.main::before {
-  position: absolute;
-  z-index: -1;
-  top: 2.2rem;
-  right: 2%;
-  width: min(36rem, 48vw);
-  height: 13rem;
-  border-top: 1px solid var(--daybook-divider);
-  border-radius: 50% 50% 0 0;
-  opacity: 0.44;
-  pointer-events: none;
-  transform: rotate(-4deg);
-  content: "";
+  min-height: calc(100svh - var(--app-header-height));
+  padding-bottom: var(--app-dock-height);
 }
 
 .mobileDock {
-  border-color: var(--daybook-divider);
-  border-radius: 1.6rem 1.6rem 0 0;
-  background: var(--daybook-header);
-  box-shadow: 0 -1rem 3rem var(--daybook-shadow);
+  --focus-surface: var(--background);
+  min-height: var(--app-dock-height);
+  border-color: var(--line);
+  padding: 0.25rem 0.5rem calc(0.25rem + env(safe-area-inset-bottom, 0px));
+  background: var(--background);
 }
 
 .mobileDock :global(a) {
-  border-radius: 1.15rem;
+  min-width: 0;
+  min-height: 3rem;
+  border-block-start: 3px solid transparent;
+  border-radius: var(--radius-control);
+  line-height: 1rem;
+  overflow-wrap: anywhere;
+  transition:
+    background-color var(--duration-control) var(--ease-standard),
+    color var(--duration-control) var(--ease-standard);
+}
+
+.mobileDock :global(a[aria-current="page"]) {
+  border-block-start-color: var(--accent);
+  color: var(--foreground);
+  background: var(--accent-surface);
+}
+
+.mobileScrim {
+  background: var(--scrim);
 }
 
 .mobilePanel {
-  border-color: var(--daybook-divider);
-  background:
-    radial-gradient(circle at 45% 0%, var(--daybook-canvas-glow), transparent 17rem),
-    linear-gradient(180deg, var(--daybook-nav-top), var(--daybook-nav-bottom));
-  box-shadow: 2rem 0 5rem var(--daybook-shadow);
+  box-shadow: var(--shadow-floating);
 }
 
-@media (max-width: 47.99rem) {
-  .header > div {
-    padding-inline: 0.7rem;
+.mobilePanel > div:first-child > button {
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  border-color: var(--line-strong);
+  border-radius: var(--radius-control);
+}
+
+@media (min-width: 48rem) {
+  .shell {
+    --app-header-height: 4rem;
   }
 
-  .main::before {
-    right: -25%;
-    width: 85vw;
+  .topBar {
+    padding-inline: 1.5rem;
+  }
+}
+
+@media (min-width: 64rem) {
+  .shell {
+    --app-header-height: 4rem;
+    --app-dock-height: 0rem;
+  }
+
+  .topBar {
+    padding-inline: 2rem;
+  }
+}
+
+@media (max-width: 22rem) {
+  .shell {
+    --app-header-height: 7rem;
+  }
+
+  .topBar {
+    flex-wrap: wrap;
+  }
+
+  .headerIdentity {
+    flex-basis: 100%;
+  }
+
+  .headerActions {
+    margin-inline-start: auto;
+  }
+}
+
+@media (pointer: coarse) {
+  .homeLink,
+  .sidebar :global(nav a),
+  .sidebar :global(nav button),
+  .mobilePanel :global(nav a),
+  .mobilePanel > div:first-child > button,
+  .headerIdentity > button,
+  .headerActions > button,
+  .headerActions > a {
+    min-height: 3rem;
+    min-width: 3rem;
+  }
+}
+
+@media (min-width: 48rem) and (pointer: coarse) {
+  .shell {
+    --app-header-height: 4.25rem;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .shell {
+  .compactLabel {
     transition: none;
   }
 }
 
-@media (prefers-contrast: more) {
-  .sidebar,
-  .header,
-  .mobileDock,
+@media (forced-colors: active) {
+  .sidebar :global(nav a[aria-current="page"]),
+  .mobilePanel :global(nav a[aria-current="page"]),
+  .mobileDock :global(a[aria-current="page"]) {
+    border-color: Highlight;
+  }
+
   .mobilePanel {
-    border-color: var(--line-strong);
+    box-shadow: none;
   }
 }

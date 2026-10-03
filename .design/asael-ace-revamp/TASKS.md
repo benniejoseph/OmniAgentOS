@@ -1,6 +1,6 @@
 # Proposed delivery backlog
 
-**Status: preparation only; revamp implementation has not started.** The owner has authorized implementation after the operational follow-ups are complete. All checkboxes remain future acceptance criteria. The handoff baseline is `origin/main` `89f65c2f`; reconfirm it before branching. No calendar estimates are committed before the renderer proof and first complete application slice.
+**Status: first web presentation slice in progress.** Operational code follow-ups are merged; implementation starts from `origin/main` `dc1cfe6e`. See [implementation evidence](IMPLEMENTATION.md). Unchecked boxes remain acceptance criteria, not completed work. No calendar estimates are committed before the renderer proof and first complete application slice.
 
 **3 October 2026 decision:** ATLAS is the selected original eagle, with energetic quick wit, expressive reactions and Kevin-Hart-inspired comic timing in its own identity and voice. The approved light conversation/graphite UI is retained. The actual ATLAS study has been exported and visually inspected; its reference and provenance receipt are saved locally. There is no production model, rig or clip.
 

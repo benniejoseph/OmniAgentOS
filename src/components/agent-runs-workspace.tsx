@@ -62,7 +62,6 @@ import {
   type CommandSlashAction,
 } from "@/components/command/command-composer-field";
 import { CommandModelPicker } from "@/components/command/command-model-picker";
-import { AsaelLottieMascot } from "@/components/mascot/asael-lottie-mascot";
 import workspaceStyles from "@/components/agent-runs-workspace.module.css";
 import {
   modelRouteDegradedActivity,
@@ -585,7 +584,7 @@ export function AgentRunsWorkspace({
   const [conversationCanvas, setConversationCanvas] = useState<unknown>();
   const [conversationCanvasState, setConversationCanvasState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [conversationCanvasError, setConversationCanvasError] = useState<string>();
-  const [conversationsCollapsed, setConversationsCollapsed] = useState(false);
+  const [conversationsCollapsed, setConversationsCollapsed] = useState(true);
   const [mobileConversationsOpen, setMobileConversationsOpen] = useState(false);
   const [conversationMemories, setConversationMemories] = useState<ConversationMemory[]>([]);
   const [memoryState, setMemoryState] = useState<"idle" | "loading" | "ready" | "error">("idle");
@@ -947,7 +946,7 @@ export function AgentRunsWorkspace({
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
       const stored = window.localStorage.getItem("asael-conversations-collapsed");
-      setConversationsCollapsed(stored === "true");
+      setConversationsCollapsed(stored !== "false");
     });
     return () => window.cancelAnimationFrame(frame);
   }, []);
@@ -3198,24 +3197,15 @@ export function AgentRunsWorkspace({
       {runAnnouncement}
     </p>
     <div
-      className={clsx("mx-auto max-w-[96rem] px-4 py-6 sm:px-7 lg:px-10", workspaceStyles.workspace)}
+      className={workspaceStyles.workspace}
       aria-busy={Boolean(loading)}
       data-testid="work-workspace"
     >
-      <div className={workspaceStyles.ambientField} aria-hidden="true">
-        <span />
-        <span />
-        <span />
-      </div>
-      <section className={clsx("border-b border-line/80 pb-6", workspaceStyles.topbar)}>
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+      <section className={workspaceStyles.topbar}>
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div className={clsx("min-w-0", workspaceStyles.pageIdentity)}>
-            <span className={workspaceStyles.pageOrb} aria-hidden="true"><Sparkles size={18} /></span>
             <div>
-              <h1 className="text-2xl font-semibold tracking-tight">Asael</h1>
-              <p className="mt-2 max-w-3xl text-sm leading-6 text-muted">
-                One conversation for questions, follow-ups, plans, and finished work.
-              </p>
+              <h1>Assistant</h1>
             </div>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -3253,12 +3243,12 @@ export function AgentRunsWorkspace({
       </section>
 
       <section className={clsx(
-        "mt-6 grid gap-5 transition-[grid-template-columns]",
+        "grid",
         workspaceStyles.conversationLayout,
         conversationsCollapsed ? "lg:grid-cols-1" : "lg:grid-cols-[14rem_minmax(0,1fr)]",
       )}>
         {!conversationsCollapsed ? (
-        <aside className={clsx("hidden min-w-0 lg:sticky lg:top-24 lg:block lg:self-start lg:border-r lg:pr-4", workspaceStyles.threadRail)} aria-label="Recent conversations">
+        <aside className={clsx("hidden min-w-0 lg:block", workspaceStyles.threadRail)} aria-label="Recent conversations">
           <div className="flex items-center justify-between gap-2">
             <h2 className="text-sm font-semibold">Conversations</h2>
             <div className="flex items-center gap-1">
@@ -3270,11 +3260,11 @@ export function AgentRunsWorkspace({
               </button>
             </div>
           </div>
-          <div className={clsx("mt-3 max-h-[calc(100vh-11rem)] space-y-1 overflow-y-auto pr-1", workspaceStyles.threadList)}>
+          <div className={workspaceStyles.threadList}>
             {threads.map((thread) => (
-              <button key={thread.id} type="button" onClick={() => void loadThread(thread.id)} className={clsx("block w-full rounded-xl px-3 py-2.5 text-left transition", workspaceStyles.threadItem, thread.id === threadId ? clsx("bg-foreground text-background", workspaceStyles.threadItemActive) : "text-muted hover:bg-surface-raised hover:text-foreground")}>
+              <button key={thread.id} type="button" onClick={() => void loadThread(thread.id)} aria-current={thread.id === threadId ? "true" : undefined} className={clsx(workspaceStyles.threadItem, thread.id === threadId && workspaceStyles.threadItemActive)}>
                 <span className="block truncate text-sm font-semibold">{thread.title}</span>
-                <span className={clsx("mt-1 block text-xs", thread.id === threadId ? "text-background/65" : "text-muted")}>{formatRelativeThreadTime(thread.updatedAt)}</span>
+                <span className="mt-1 block text-xs text-muted">{formatRelativeThreadTime(thread.updatedAt)}</span>
               </button>
             ))}
             {!threads.length ? <p className="max-w-48 py-2 text-xs leading-5 text-muted">Start a task and your conversations will appear here.</p> : null}
@@ -3282,9 +3272,9 @@ export function AgentRunsWorkspace({
         </aside>
         ) : null}
 
-        <div className="min-w-0">
-          <section className={clsx("min-w-0 overflow-hidden rounded-2xl border border-line/80 bg-surface shadow-[0_24px_70px_-52px_rgba(0,0,0,0.45)]", workspaceStyles.chatShell)}>
-            <header className={clsx("flex items-center justify-between gap-3 border-b border-line/80 px-3 py-2.5 sm:px-5", workspaceStyles.chatHeader)}>
+        <div className={workspaceStyles.conversationColumn}>
+          <section className={workspaceStyles.chatShell}>
+            <header className={workspaceStyles.chatHeader}>
               <div className="flex min-w-0 items-center gap-3">
                 <button
                   ref={conversationsButtonRef}
@@ -3307,22 +3297,22 @@ export function AgentRunsWorkspace({
                     <PanelLeftOpen size={16} aria-hidden="true" />
                   </button>
                 ) : null}
-                <span className={clsx("grid size-9 shrink-0 place-items-center rounded-full bg-primary/10 text-primary", workspaceStyles.intelligenceOrb)}>
+                <span className={workspaceStyles.conversationIcon} aria-hidden="true">
                   {conversationView === "map" ? <MapIcon size={16} aria-hidden="true" /> : <MessageSquareText size={16} aria-hidden="true" />}
                 </span>
                 <div className="min-w-0">
                   <h2 className="truncate text-sm font-semibold">
-                    {conversationView === "map" ? "Canonical Conversation map" : threads.find((thread) => thread.id === threadId)?.title || "New conversation"}
+                    {conversationView === "map" ? "Conversation map" : threads.find((thread) => thread.id === threadId)?.title || "New conversation"}
                   </h2>
-                  <p className="hidden truncate text-xs text-muted sm:block">{conversationView === "map" ? "Real runs, forks, delegations, Projects, and shared artifacts." : "Ask, refine, and continue in the same thread."}</p>
+                  {conversationView === "map" ? <p className="text-xs text-muted">Runs, projects, and shared artifacts.</p> : null}
                 </div>
               </div>
-              <div className="flex shrink-0 items-center gap-1">
-                <div className="flex items-center rounded-full bg-surface-raised p-1" role="group" aria-label="Conversation view">
-                  <button type="button" onClick={() => setConversationView("chat")} className={clsx("inline-flex min-h-8 items-center gap-1.5 rounded-full px-2.5 text-xs font-semibold transition", conversationView === "chat" ? "bg-surface text-foreground shadow-sm" : "text-muted hover:text-foreground")} aria-pressed={conversationView === "chat"}>
+              <div className={workspaceStyles.headerActions}>
+                <div className={workspaceStyles.viewSwitch} role="group" aria-label="Conversation view">
+                  <button type="button" onClick={() => setConversationView("chat")} aria-label="Chat view" aria-pressed={conversationView === "chat"}>
                     <MessagesSquare size={13} aria-hidden="true" /><span className="hidden sm:inline">Chat</span>
                   </button>
-                  <button type="button" onClick={() => setConversationView("map")} className={clsx("inline-flex min-h-8 items-center gap-1.5 rounded-full px-2.5 text-xs font-semibold transition", conversationView === "map" ? "bg-surface text-foreground shadow-sm" : "text-muted hover:text-foreground")} aria-pressed={conversationView === "map"}>
+                  <button type="button" onClick={() => setConversationView("map")} aria-label="Map view" aria-pressed={conversationView === "map"}>
                     <MapIcon size={13} aria-hidden="true" /><span className="hidden sm:inline">Map</span>
                   </button>
                 </div>
@@ -3372,9 +3362,9 @@ export function AgentRunsWorkspace({
                 transcriptPinnedRef.current =
                   target.scrollHeight - target.scrollTop - target.clientHeight < 96;
               }}
-              className={clsx("min-h-[25rem] max-h-[calc(100vh-17rem)] overflow-y-auto px-4 py-6 sm:px-7 sm:py-8", workspaceStyles.transcript)}
+              className={workspaceStyles.transcript}
             >
-              <div className={clsx("mx-auto max-w-3xl space-y-7", workspaceStyles.transcriptInner)}>
+              <div className={workspaceStyles.transcriptInner}>
               {visibleTurns.map((turn) => (
                 <TranscriptTurn
                   key={turn.id}
@@ -3421,10 +3411,10 @@ export function AgentRunsWorkspace({
               ) : null}
 
               {currentAssistantResponse ? (
-                <article className={clsx("flex justify-start", workspaceStyles.turn, workspaceStyles.assistantTurn)}>
+                <article className={clsx("flex justify-start", workspaceStyles.turn)}>
                   <div className={clsx("min-w-0 max-w-full sm:pl-1", workspaceStyles.assistantMessage)}>
                     <div className="flex flex-wrap items-center justify-between gap-3">
-                      <p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">
+                      <p className="text-[13px] font-semibold text-foreground">
                         {activeAssistantName}
                         {preferredAgent?.role ? <span className="ml-2 text-muted">· {preferredAgent.role}</span> : null}
                       </p>
@@ -3541,17 +3531,11 @@ export function AgentRunsWorkspace({
                 </article>
               ) : null}
               {!turns.length && !currentAssistantResponse ? (
-                <div className={clsx("grid min-h-64 place-items-center text-center", workspaceStyles.emptyConversation)}>
-                  <div className="w-full max-w-2xl px-4">
-                    <AsaelLottieMascot
-                      state="idle"
-                      size="hero"
-                      className={clsx("mx-auto", workspaceStyles.emptyMascot)}
-                      decorative
-                    />
-                    <h2 className="mt-1 text-xl font-semibold tracking-tight">What should we work through?</h2>
-                    <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-muted">Start with a question or outcome. Follow up naturally, and Asael keeps this conversation together.</p>
-                    <div className="mt-5 grid gap-2 text-left sm:grid-cols-3" aria-label="Document creation examples">
+                <div className={workspaceStyles.emptyConversation}>
+                  <div>
+                    <h2>What are we working on?</h2>
+                    <p>Ask a question or describe what you need. Asael can help you take it from here.</p>
+                    <div className={workspaceStyles.startingPrompts} aria-label="Document creation examples">
                       {[
                         "Create an editable PowerPoint presentation",
                         "Draft a collaborative Google Doc",
@@ -3561,10 +3545,11 @@ export function AgentRunsWorkspace({
                           key={prompt}
                           type="button"
                           onClick={() => changeGoal(prompt)}
-                          className="flex min-h-14 items-center gap-2 rounded-xl border border-line/80 bg-surface px-3 py-2.5 text-xs font-semibold leading-5 text-foreground transition hover:border-primary/40 hover:bg-primary/5"
+                          className={workspaceStyles.startingPrompt}
                         >
-                          <FileText size={15} className="shrink-0 text-primary" aria-hidden="true" />
+                          <FileText size={16} className="shrink-0 text-muted" aria-hidden="true" />
                           <span>{prompt}</span>
+                          <ChevronRight size={14} className="shrink-0 text-muted" aria-hidden="true" />
                         </button>
                       ))}
                     </div>
@@ -3656,7 +3641,7 @@ export function AgentRunsWorkspace({
 
           {detailsOpen ? (
           <div
-            className="fixed inset-0 z-[90] flex items-end justify-center bg-foreground/35 p-0 backdrop-blur-sm sm:items-center sm:p-6"
+            className={clsx("fixed inset-0 z-[90] flex items-end justify-center p-0 sm:items-center sm:p-6", workspaceStyles.dialogScrim)}
             onMouseDown={(event) => {
               if (event.target === event.currentTarget) closeTaskDetails();
             }}
@@ -3668,7 +3653,7 @@ export function AgentRunsWorkspace({
             aria-labelledby="task-details-title"
             tabIndex={-1}
             className={clsx(
-              "command-details max-h-[92vh] w-full overflow-y-auto rounded-t-2xl border border-line/80 bg-surface shadow-2xl outline-none sm:rounded-2xl",
+              "command-details max-h-[92dvh] w-full overflow-y-auto rounded-t-3xl border border-line bg-surface outline-none sm:rounded-3xl",
               activeTab === "execute" ? "max-w-6xl" : "max-w-4xl",
             )}
           >
@@ -4308,7 +4293,7 @@ export function AgentRunsWorkspace({
         <div className="fixed inset-0 z-[60] lg:hidden">
           <button
             type="button"
-            className="absolute inset-0 bg-foreground/35 backdrop-blur-sm"
+            className={clsx("absolute inset-0", workspaceStyles.dialogScrim)}
             onClick={() => {
               setMobileConversationsOpen(false);
               conversationsButtonRef.current?.focus();
@@ -4336,9 +4321,9 @@ export function AgentRunsWorkspace({
             </header>
             <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-3">
               {threads.map((thread) => (
-                <button key={thread.id} type="button" onClick={() => void loadThread(thread.id)} className={clsx("block w-full rounded-xl px-3 py-3 text-left transition", thread.id === threadId ? "bg-foreground text-background" : "text-muted hover:bg-surface-raised hover:text-foreground")}>
+                <button key={thread.id} type="button" onClick={() => void loadThread(thread.id)} aria-current={thread.id === threadId ? "true" : undefined} className={clsx(workspaceStyles.threadItem, thread.id === threadId && workspaceStyles.threadItemActive)}>
                   <span className="block truncate text-sm font-semibold">{thread.title}</span>
-                  <span className={clsx("mt-1 block text-xs", thread.id === threadId ? "text-background/65" : "text-muted")}>{formatRelativeThreadTime(thread.updatedAt)}</span>
+                  <span className="mt-1 block text-xs text-muted">{formatRelativeThreadTime(thread.updatedAt)}</span>
                 </button>
               ))}
               {!threads.length ? <p className="p-3 text-sm leading-6 text-muted">Start a conversation and it will appear here.</p> : null}
@@ -4372,24 +4357,23 @@ function InlineTaskProgress({
         : `Worked through ${count || 1} ${count === 1 ? "update" : "updates"}`
     : "Asael is working";
   return (
-    <article className={clsx("flex justify-start", workspaceStyles.progressTurn)}>
+    <article className="flex min-w-0 justify-start">
       <button
         type="button"
         onClick={onOpen}
-        className={clsx("group ml-0 flex max-w-2xl items-center gap-3 rounded-xl px-2 py-2 text-left transition hover:bg-surface-raised sm:ml-8", workspaceStyles.progressFlow)}
+        className={clsx("group text-left", workspaceStyles.progressFlow)}
         aria-haspopup="dialog"
       >
-        <AsaelLottieMascot
-          state={terminal ? (tone === "success" ? "success" : "attention") : "thinking"}
-          size="small"
-          className={workspaceStyles.progressNode}
-          decorative
-        />
+        <span className={workspaceStyles.progressNode} aria-hidden="true">
+          {terminal
+            ? tone === "success" ? <CheckCircle2 size={18} /> : <AlertTriangle size={18} />
+            : <Loader2 size={18} className="animate-spin" />}
+        </span>
         <span className="min-w-0 flex-1">
           <span className="block text-sm font-semibold">{title}</span>
           <span className="mt-0.5 block truncate text-xs text-muted">{summary}</span>
         </span>
-        <span className="inline-flex shrink-0 items-center gap-1 text-xs font-semibold text-primary">
+        <span className={workspaceStyles.progressAction}>
           View activity <ChevronRight size={13} className="transition group-hover:translate-x-0.5" aria-hidden="true" />
         </span>
       </button>
@@ -4438,15 +4422,15 @@ export const TranscriptTurn = memo(function TranscriptTurn({
 }: TranscriptTurnProps) {
   const runId = turn.runId;
   return (
-    <article className={clsx("flex", workspaceStyles.turn, turn.role === "user" ? clsx("justify-end", workspaceStyles.userTurn) : clsx("justify-start", workspaceStyles.assistantTurn))}>
+    <article className={clsx("flex", workspaceStyles.turn, turn.role === "user" ? "justify-end" : "justify-start")}>
       {turn.role === "user" ? (
-        <div className={clsx("max-w-[88%] rounded-2xl rounded-br-md bg-foreground px-4 py-3 text-background sm:max-w-[78%]", workspaceStyles.userBubble)}>
-          <p className="mb-1 text-xs font-semibold uppercase tracking-[0.14em] text-background/60">You</p>
-          <p className="whitespace-pre-wrap text-sm leading-6">{turn.content}</p>
+        <div className={workspaceStyles.userBubble}>
+          <p className="mb-1 text-[13px] font-medium text-muted">You</p>
+          <p className="whitespace-pre-wrap text-base leading-relaxed">{turn.content}</p>
         </div>
       ) : (
         <div className={clsx("min-w-0 max-w-full sm:pl-1", workspaceStyles.assistantMessage)}>
-          <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-primary">
+          <p className="mb-2 text-[13px] font-semibold text-foreground">
             {assistantName}
             {assistantRole ? <span className="ml-2 text-muted">· {assistantRole}</span> : null}
           </p>
@@ -4530,7 +4514,7 @@ export const ConversationMessageContent = memo(function ConversationMessageConte
       if (index < lines.length) index += 1;
       blocks.push(
         <div key={`code-${index}`} className="my-4 overflow-hidden rounded-xl border border-line bg-foreground text-background">
-          {language ? <div className="border-b border-background/15 px-4 py-2 font-mono text-xs uppercase tracking-wide text-background/60">{language}</div> : null}
+          {language ? <div className="border-b border-background/30 px-4 py-2 font-mono text-[13px] text-background">{language}</div> : null}
           <pre className="overflow-x-auto p-4 text-xs leading-6"><code>{code.join("\n")}</code></pre>
         </div>,
       );
@@ -4544,7 +4528,7 @@ export const ConversationMessageContent = memo(function ConversationMessageConte
         ? "mt-7 text-xl font-semibold tracking-tight first:mt-0"
         : level === 2
           ? "mt-6 text-lg font-semibold tracking-tight first:mt-0"
-          : "mt-5 text-sm font-semibold uppercase tracking-[0.1em] text-muted first:mt-0";
+          : "mt-5 text-base font-semibold text-foreground first:mt-0";
       blocks.push(level === 1
         ? <h2 key={`heading-${index}`} className={className}><MessageInline text={heading[2]} citations={citations} /></h2>
         : level === 2
@@ -4561,7 +4545,7 @@ export const ConversationMessageContent = memo(function ConversationMessageConte
         index += 1;
       }
       blocks.push(
-        <ul key={`bullets-${index}`} className="my-4 space-y-2 pl-5 text-sm leading-7 text-foreground/90">
+        <ul key={`bullets-${index}`} className="my-4 space-y-2 pl-5 text-base leading-relaxed text-foreground">
           {items.map((item, itemIndex) => <li key={`${item}-${itemIndex}`} className="list-disc pl-1"><MessageInline text={item} citations={citations} /></li>)}
         </ul>,
       );
@@ -4575,7 +4559,7 @@ export const ConversationMessageContent = memo(function ConversationMessageConte
         index += 1;
       }
       blocks.push(
-        <ol key={`numbers-${index}`} className="my-4 space-y-2 pl-5 text-sm leading-7 text-foreground/90">
+        <ol key={`numbers-${index}`} className="my-4 space-y-2 pl-5 text-base leading-relaxed text-foreground">
           {items.map((item, itemIndex) => <li key={`${item}-${itemIndex}`} className="list-decimal pl-1"><MessageInline text={item} citations={citations} /></li>)}
         </ol>,
       );
@@ -4589,7 +4573,7 @@ export const ConversationMessageContent = memo(function ConversationMessageConte
         index += 1;
       }
       blocks.push(
-        <blockquote key={`quote-${index}`} className="my-4 border-l-2 border-primary pl-4 text-sm italic leading-7 text-muted">
+        <blockquote key={`quote-${index}`} className="my-4 border-l-2 border-line-strong pl-4 text-base leading-relaxed text-muted">
           <MessageInline text={quote.join(" ")} citations={citations} />
         </blockquote>,
       );
@@ -4609,14 +4593,14 @@ export const ConversationMessageContent = memo(function ConversationMessageConte
       index += 1;
     }
     blocks.push(
-      <p key={`paragraph-${index}`} className="my-3 text-sm leading-7 text-foreground/90 first:mt-0 last:mb-0">
+      <p key={`paragraph-${index}`} className="my-3 text-base leading-relaxed text-foreground first:mt-0 last:mb-0">
         <MessageInline text={paragraph.join(" ")} citations={citations} />
       </p>,
     );
   }
 
   return (
-    <div className="min-w-0 max-w-3xl">
+    <div className="min-w-0 max-w-[45rem]">
       {blocks.length ? <div className="max-w-[72ch]">{blocks}</div> : null}
       {renderedMedia.length ? (
         <div className={clsx("space-y-4", blocks.length ? "mt-5" : "mt-0")}>
@@ -5798,11 +5782,10 @@ function GoalStage({
             : `Review ${contextSelectedCount}/${contextTotalCount}`
           : "Context";
   return (
-    <section className={clsx("border-t border-line/70 bg-background/95 px-3 py-2 backdrop-blur sm:px-5", workspaceStyles.composerDock)} aria-labelledby="command-composer-title">
-      <div className={clsx("mx-auto max-w-3xl", workspaceStyles.composerWidth)}>
+    <section className={workspaceStyles.composerDock} aria-labelledby="command-composer-title">
+      <div className={workspaceStyles.composerWidth}>
         <h2 id="command-composer-title" className="sr-only">Message Asael</h2>
-        <div className={clsx("rounded-[1.35rem] border border-line bg-surface shadow-[0_10px_32px_-28px_rgba(0,0,0,0.5)] focus-within:border-primary/60", workspaceStyles.composer)}>
-          <span className={workspaceStyles.composerAura} aria-hidden="true"><Sparkles size={15} /></span>
+        <div className={workspaceStyles.composer}>
           {preferredAgent ? (
             <div className="flex items-center justify-between gap-3 border-b border-line/70 px-3 py-1.5">
               <span className="min-w-0 truncate text-xs text-muted" title={`${preferredAgent.visualIdentity} Voice: ${preferredAgent.voice}`}>
@@ -5815,6 +5798,7 @@ function GoalStage({
             </div>
           ) : null}
 
+          <div className={workspaceStyles.composerField}>
           <CommandComposerField
             value={goal}
             disabled={draftLocked}
@@ -5835,9 +5819,10 @@ function GoalStage({
             onSelectReference={onSelectCommandReference}
             onRemoveReference={onRemoveCommandReference}
           />
+          </div>
 
-          <div className="flex items-center justify-between gap-2 px-2 pb-2">
-            <div className="flex min-w-0 items-center gap-1 overflow-x-auto">
+          <div className={workspaceStyles.composerToolbar}>
+            <div className={workspaceStyles.composerOptions}>
               <label className="sr-only" htmlFor="command-mode">Approach</label>
               <select
                 id="command-mode"
@@ -5883,6 +5868,7 @@ function GoalStage({
                   approvalRequired ? "bg-primary/10 text-primary" : "bg-surface-raised text-muted hover:text-foreground",
                 )}
                 aria-pressed={approvalRequired}
+                aria-label={`Approvals ${approvalRequired ? "on" : "off"}`}
                 title={`Approvals ${approvalRequired ? "on" : "off"}`}
               >
                 <ShieldCheck size={12} aria-hidden="true" />
@@ -5914,6 +5900,7 @@ function GoalStage({
                 onClick={contextReady || contextError ? onReviewContext : onContext}
                 disabled={contextLoading || goalMissing || Boolean(readDisabledReason)}
                 title={goalMissing ? "Write a message first." : readDisabledReason}
+                aria-label={`Context: ${contextLabel}`}
                 className={clsx(
                   "inline-flex min-h-8 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-xs font-semibold transition",
                   contextLocked ? "bg-success/10 text-success" : contextReady || contextError ? "bg-warning/10 text-warning" : "bg-surface-raised text-muted hover:text-foreground",
@@ -5934,6 +5921,7 @@ function GoalStage({
                 onClick={onPlan}
                 disabled={Boolean(loading) || goalMissing || Boolean(workflowDisabledReason) || workflowInProgress}
                 title={goalMissing ? "Write a message first." : workflowDisabledReason}
+                aria-label="Create a plan"
                 className="inline-flex min-h-8 shrink-0 items-center gap-1.5 rounded-full bg-surface-raised px-2.5 text-xs font-semibold text-muted transition hover:text-foreground disabled:opacity-50"
               >
                 {loading === "plan" ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <GitBranch size={13} aria-hidden="true" />}
@@ -5952,7 +5940,7 @@ function GoalStage({
               ) : null}
             </div>
 
-            <div className="flex shrink-0 items-center gap-1">
+            <div className={workspaceStyles.composerActions}>
               <VoiceMode
                 disabled={draftLocked || contextLoading || Boolean(voiceDisabledReason)}
                 disabledReason={voiceDisabledReason}
@@ -5975,7 +5963,7 @@ function GoalStage({
                 <span className="hidden sm:inline">Queue</span>
               </button>
               {loading === "agent" ? (
-                <button type="button" onClick={onStop} className="grid size-9 shrink-0 place-items-center rounded-full bg-danger text-white" aria-label="Stop response">
+                <button type="button" onClick={onStop} className={workspaceStyles.sendButton} aria-label="Stop response">
                   <Square size={13} aria-hidden="true" />
                 </button>
               ) : activeRun ? null : (
@@ -5984,7 +5972,7 @@ function GoalStage({
                   onClick={onAgent}
                   disabled={draftLocked || goalMissing || Boolean(runDisabledReason)}
                   title={goalMissing ? "Write a message first." : runDisabledReason}
-                  className="grid size-9 shrink-0 place-items-center rounded-full bg-foreground text-background transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-35"
+                  className={workspaceStyles.sendButton}
                   aria-label={hasConversation ? "Send follow-up" : "Send message"}
                 >
                   <ArrowUp size={17} aria-hidden="true" />

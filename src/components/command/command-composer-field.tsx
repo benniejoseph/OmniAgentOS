@@ -391,6 +391,7 @@ export function CommandComposerField({
       <input
         ref={fileInputRef}
         type="file"
+        aria-label="Attach files to conversation"
         multiple
         className="sr-only"
         onChange={(event) => void uploadFiles(event.currentTarget.files)}
@@ -467,11 +468,11 @@ export function CommandComposerField({
             if (["ArrowDown", "ArrowUp", "Enter", "Escape"].includes(event.key)) return;
             updateTrigger(event.currentTarget.value, event.currentTarget.selectionStart);
           }}
-          rows={2}
+          rows={1}
           required
           disabled={disabled}
           placeholder={placeholder}
-          className="max-h-40 min-h-14 w-full resize-none bg-transparent px-4 pb-2 pt-3 text-sm leading-6 outline-none placeholder:text-muted/75 disabled:cursor-not-allowed disabled:opacity-60"
+          className="max-h-60 min-h-11 w-full resize-none bg-transparent px-3 py-2.5 text-base leading-relaxed outline-none placeholder:text-muted disabled:cursor-not-allowed"
           role="combobox"
           aria-autocomplete="list"
           aria-expanded={Boolean(trigger)}

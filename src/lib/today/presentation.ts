@@ -1,6 +1,16 @@
 const formatterCache = new Map<string, Intl.DateTimeFormat>();
 const timezoneCache = new Map<string, string>();
 
+export function formatTodayDate(value: Date, timezone: string) {
+  if (Number.isNaN(value.getTime())) return "Your day";
+  return value.toLocaleDateString("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    timeZone: validTimezone(timezone),
+  });
+}
+
 export function formatTodayTime(value: string, timezone: string) {
   const parts = dateTimeParts(value, timezone);
   return parts

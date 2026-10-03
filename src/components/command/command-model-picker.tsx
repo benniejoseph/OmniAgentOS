@@ -93,7 +93,7 @@ export function CommandModelPicker({
     : catalog?.message || "Loading the validated Settings model route.";
   return (
     <div
-      className="inline-flex min-h-10 shrink-0 items-center gap-2 rounded-full bg-surface-raised px-3 text-muted"
+      className="inline-flex min-h-10 min-w-0 max-w-full flex-wrap items-center gap-2 rounded-[.625rem] bg-surface-raised px-2 text-muted"
       title={statusTitle}
     >
       {state === "loading"
@@ -106,7 +106,7 @@ export function CommandModelPicker({
         value={selectedChoiceId}
         disabled={disabled || state !== "ready" || !catalog?.choices.length}
         onChange={(event) => chooseModel(event.currentTarget.value)}
-        className="min-h-9 max-w-[11rem] bg-transparent px-1 text-[13px] font-semibold text-muted outline-none hover:text-foreground disabled:opacity-60 sm:max-w-[17rem]"
+        className="min-h-9 min-w-0 max-w-[11rem] flex-1 bg-transparent px-1 text-[13px] font-semibold text-muted outline-none hover:text-foreground sm:max-w-[17rem]"
       >
         <option value="auto">Settings default</option>
         {catalog?.choices.map((choice) => (
