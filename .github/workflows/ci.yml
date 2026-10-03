@@ -44,6 +44,9 @@ jobs:
         run: |
           /tmp/asael-browser-venv/bin/python tests/browser/run.py \
             --axe /tmp/asael-browser-tools/node_modules/axe-core/axe.min.js
+          /tmp/asael-browser-venv/bin/python tests/browser/semantic_reviews.py \
+            --axe /tmp/asael-browser-tools/node_modules/axe-core/axe.min.js \
+            --output test-results/browser/semantic-reviews
 
       - name: Browser evidence
         if: always()

@@ -788,10 +788,45 @@ reopening failure and corrected harness selectors; they are not passing runs.
 
 Twenty-one tests in five focused Command, thread-loading, shell, palette and
 permission suites passed. Strict component lint, the focused Command TypeScript
-graph, Python compilation and CI YAML parsing passed. Hosted checks on the new
-browser job are pending. Screenshots are review evidence rather than a claim of
+graph, Python compilation and CI YAML parsing passed. PR #30 passed all ten
+hosted checks, including the new browser job, on
+`f4526869021a5033421138d3aa024c8f17fa303a` and merged as
+`fcf1d30aa45dafd6fe220a448f28b88b84dad2ef`.
+Screenshots are review evidence rather than a claim of
 cross-platform pixel equivalence. Actual provider/approval effects, screen-reader
 walkthroughs, device audio and production performance remain separate gates.
+
+## Semantic review lifecycle — 3 October 2026
+
+The review bench now fences list/detail reads by selection, source digest and
+mounted generation, and takes one synchronous mutation slot across review and
+rank-probe actions. Submitted judgments are frozen and successful HTTP status is
+insufficient: accepted receipts must match the exact submitted source, judgments,
+metrics or query/corpus/ranking contract. A confirmed write ends pending before
+independent reads start. Its receipt remains visible if those reads fail, drafts
+and focus survive same-source retries, and older list counts remain explicitly
+last loaded until a validated refresh succeeds. Leaving Reviews suppresses late
+UI updates without claiming to cancel an already submitted request.
+
+Fifty-five focused review, route, service, permission and complexity-registry
+tests passed, including 17 new behavioral/receipt cases. Strict targeted lint and
+the focused TypeScript graph passed. The maintained
+`tests/browser/semantic_reviews.py` passed 45 assertions across 1440px desktop
+and 320px coarse-pointer phone: delayed A→B→A and list reads, same-ID new digest,
+malformed/mismatched HTTP-200 receipts, exact review/probe submissions,
+cross-button exclusion, accepted writes followed by separately failed reads,
+draft/focus recovery, unmount/remount and unavailable versus confirmed-empty
+lists. Nine exact POSTs were wholly intercepted; no actual evaluation, provider,
+collection, activation or live ranking ran. Four bench-scoped axe scans had no
+violations, and four light/dark screenshots were saved with representative visual
+inspection. Surrounding in-progress navigation is context, outside this slice.
+
+The first selector run and sampled-telemetry rejection remain in raw logs. The
+isolated preview now sets the existing web-vitals sampling option to zero; this
+does not change application defaults. CI runs the new suite serially after the
+conversation/approval checks. Hosted checks for this lifecycle slice remain
+required. Real provider effects and device/screen-reader acceptance are not
+claimed by these fixtures.
 
 ## Remaining gates and scope
 

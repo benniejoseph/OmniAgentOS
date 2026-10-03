@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   BadgeCheck,
   ChevronRight,
@@ -13,6 +13,21 @@ import {
 } from "lucide-react";
 
 import styles from "@/components/semantic-shadow-review-queue.module.css";
+import { permissionMessage, useWorkspaceSession } from "@/components/app-shell/session-context";
+import {
+  createSemanticReviewGate,
+  freezeSemanticSubmission,
+  parseSemanticProbeReceipt,
+  parseSemanticReviewReceipt,
+  parseSemanticReviewWorkspace,
+  preserveSemanticDraft,
+  reviewTargetKey,
+  semanticProbeQuerySha256,
+  type AcceptedSemanticReceipt,
+  type BoundReviewDraft,
+  type ReviewTarget,
+  type ReviewWorkspace,
+} from "@/components/semantic-shadow-review-state";
 
 const dimensions = [
   ["decision", "Decision"],
@@ -95,22 +110,6 @@ export type SemanticShadowReviewCandidate = {
   };
 };
 
-type GateReport = {
-  caseCount: number;
-  distinctThreadCount: number;
-  rankProbeCaseCount: number;
-  coveredDimensions: string[];
-  missingDimensions: string[];
-  failureCodes: string[];
-  activationReady: boolean;
-};
-
-type WorkspaceResponse = {
-  candidates: SemanticShadowReviewCandidate[];
-  report: GateReport | null;
-  reviewedCaseCount: number;
-};
-
 export type SemanticShadowReviewDraft = {
   dimension: Dimension | "";
   itemDecisions: Record<string, Decision | undefined>;
@@ -183,90 +182,147 @@ export function buildSemanticShadowReviewPayload(
 export function SemanticShadowReviewQueue(props: {
   onProgressChanged: () => Promise<void>;
 }) {
-  const [workspace, setWorkspace] = useState<WorkspaceResponse>();
-  const [selectedId, setSelectedId] = useState<string>();
+  const { session, status } = useWorkspaceSession();
+  const permissionReason = permissionMessage(session, status, "write.memory");
+  const [gate] = useState(createSemanticReviewGate);
+  const [workspace, setWorkspace] = useState<ReviewWorkspace>();
+  const [selected, setSelected] = useState<ReviewTarget>();
   const [detail, setDetail] = useState<SemanticShadowReviewCandidate>();
-  const [draft, setDraft] = useState<SemanticShadowReviewDraft>(emptyDraft());
+  const [draftState, setDraftState] = useState<BoundReviewDraft>();
+  const [queryState, setQueryState] = useState<{ key: string; value: { query: string; confirmed: boolean } }>();
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [probing, setProbing] = useState(false);
-  const [probeQuery, setProbeQuery] = useState("");
-  const [humanConfirmedTarget, setHumanConfirmedTarget] = useState(false);
+  const [pending, setPending] = useState<"review" | "probe">();
   const [error, setError] = useState<string>();
   const [workspaceLoadError, setWorkspaceLoadError] = useState<string>();
+  const [workspaceNeedsRefresh, setWorkspaceNeedsRefresh] = useState(false);
   const [detailLoadError, setDetailLoadError] = useState<string>();
-  const [feedback, setFeedback] = useState<string>();
+  const [versionNotice, setVersionNotice] = useState("");
+  const [receipt, setReceipt] = useState<AcceptedSemanticReceipt>();
+  const [overviewRefreshError, setOverviewRefreshError] = useState("");
   const workspaceRequestRef = useRef<AbortController | null>(null);
   const detailRequestRef = useRef<AbortController | null>(null);
+  const loadedTargetRef = useRef("");
+  const feedbackRevision = useRef(0);
+  const permissionRef = useRef(permissionReason);
+  const selectedId = selected?.id;
+  const selectedKey = reviewTargetKey(selected);
+  const detailKey = reviewTargetKey(detail);
+  const saving = pending === "review";
+  const probing = pending === "probe";
+  const busy = Boolean(pending);
+  const draft = draftState?.key === detailKey ? draftState.value : emptyDraft();
+  const probeQuery = queryState?.key === detailKey ? queryState.value.query : "";
+  const humanConfirmedTarget = queryState?.key === detailKey ? queryState.value.confirmed : false;
+  const actionReason = permissionReason || (busy ? "An evaluation request is in progress. Episode selection and edits are paused until its receipt returns." : undefined) ||
+    (detailKey !== selectedKey ? "The episode source changed. Wait for current evidence before judging it again." : undefined) ||
+    (detailLoadError ? "Current episode evidence could not be verified. Retry the evidence read before submitting." : undefined);
+  const feedback = receipt ? receipt.kind === "review"
+    ? "Review saved as evaluation evidence. Live answers and memory ranking are unchanged."
+    : "Retrieval ranks measured and sealed. Live memory ranking is unchanged." : undefined;
 
-  const loadWorkspace = useCallback(async (preferredId?: string) => {
+  useLayoutEffect(() => { permissionRef.current = permissionReason; }, [permissionReason]);
+
+  useLayoutEffect(() => {
+    gate.mount();
+    return () => {
+      gate.dispose();
+      feedbackRevision.current += 1;
+      workspaceRequestRef.current?.abort();
+      detailRequestRef.current?.abort();
+    };
+  }, [gate]);
+
+  const selectTarget = useCallback((target: ReviewTarget | undefined) => {
+    if (!gate.select(target)) return;
+    workspaceRequestRef.current?.abort();
+    detailRequestRef.current?.abort();
+    setSelected(target);
+    setLoading(false);
+    setDetailLoading(false);
+    setDetailLoadError(undefined);
+  }, [gate]);
+
+  const loadWorkspace = useCallback(async () => {
+    if (!gate.isMounted() || gate.isBusy()) return;
     workspaceRequestRef.current?.abort();
     const controller = new AbortController();
     workspaceRequestRef.current = controller;
+    const latest = gate.read("workspace");
+    const current = () => latest() && !controller.signal.aborted;
     setLoading(true);
-    setError(undefined);
     try {
       const response = await fetch("/api/memory/semantic-shadow?limit=24", {
         cache: "no-store",
         signal: controller.signal,
       });
       const body = await response.json().catch(() => ({}));
+      if (!current()) return;
       if (!response.ok) throw new Error(apiError(body, "Evaluation reviews could not be loaded."));
-      const next = body as WorkspaceResponse;
+      const next = parseSemanticReviewWorkspace(body, 24);
+      if (!next) throw new Error("The evaluation list response could not be verified. Previously loaded records are retained.");
       setWorkspace(next);
       setWorkspaceLoadError(undefined);
-      const nextId = preferredId && next.candidates.some(({ id }) => id === preferredId)
-        ? preferredId
-        : next.candidates.find((candidate) => candidate.reviewable && !candidate.latestReview)?.id ||
-          next.candidates.find((candidate) => candidate.reviewable)?.id;
-      setSelectedId(nextId);
-      if (!nextId) {
-        setDetail(undefined);
-        setDraft(emptyDraft());
+      setWorkspaceNeedsRefresh(false);
+      const previous = gate.target();
+      const candidate = previous ? next.candidates.find((row) => row.id === previous.id)
+        : next.candidates.find((row) => row.reviewable && !row.latestReview) || next.candidates.find((row) => row.reviewable);
+      if (candidate) {
+        if (previous && reviewTargetKey(candidate) !== reviewTargetKey(previous)) {
+          setVersionNotice("This episode has a new source version. Previous evidence is shown until the current version loads; compare it again before submitting.");
+        }
+        selectTarget({ id: candidate.id, reviewSourceSha256: candidate.reviewSourceSha256 });
+      } else if (previous) {
+        setDetailLoadError("The selected episode was not returned in this 24-episode list. Retry its evidence read to check the current source.");
       }
     } catch (loadError) {
-      if (controller.signal.aborted) return;
+      if (!current()) return;
       setWorkspaceLoadError(message(loadError));
-      setError(message(loadError));
     } finally {
-      if (workspaceRequestRef.current === controller) setLoading(false);
+      if (current()) setLoading(false);
     }
-  }, []);
+  }, [gate, selectTarget]);
 
-  const loadDetail = useCallback(async (candidateId: string) => {
+  const loadDetail = useCallback(async (target: ReviewTarget) => {
+    if (!gate.isMounted() || gate.isBusy() || reviewTargetKey(gate.target()) !== reviewTargetKey(target)) return;
     detailRequestRef.current?.abort();
     const controller = new AbortController();
     detailRequestRef.current = controller;
+    const latest = gate.read("detail");
+    const current = () => latest() && !controller.signal.aborted;
     setDetailLoading(true);
-    setError(undefined);
     try {
       const response = await fetch(
-        `/api/memory/semantic-shadow?limit=100&id=${encodeURIComponent(candidateId)}`,
+        `/api/memory/semantic-shadow?limit=100&id=${encodeURIComponent(target.id)}`,
         { cache: "no-store", signal: controller.signal },
       );
       const body = await response.json().catch(() => ({}));
+      if (!current()) return;
       if (!response.ok) throw new Error(apiError(body, "This evaluation episode could not be opened."));
-      const candidate = (body as WorkspaceResponse).candidates.find(
-        ({ id }) => id === candidateId,
-      );
+      const next = parseSemanticReviewWorkspace(body, 100, target.id);
+      if (!next) throw new Error("The episode evidence response could not be verified. Your existing draft is retained.");
+      const candidate = next.candidates.find(({ id }) => id === target.id);
       if (!candidate?.semanticItems || !candidate.sourceTurns) {
         throw new Error("This evaluation episode is no longer available.");
       }
+      const key = reviewTargetKey(candidate);
+      if (key !== reviewTargetKey(target)) setWorkspaceNeedsRefresh(true);
+      setVersionNotice((currentNotice) => key !== reviewTargetKey(target) || currentNotice ? "The current source version is loaded. Compare the evidence and attest again; judgments from the previous version were not carried forward." : "");
+      loadedTargetRef.current = key;
+      selectTarget({ id: candidate.id, reviewSourceSha256: candidate.reviewSourceSha256 });
       setDetail(candidate);
       setDetailLoadError(undefined);
-      setDraft(draftFromReview(candidate));
-      setProbeQuery("");
-      setHumanConfirmedTarget(false);
+      setError(undefined);
+      setDraftState((previous) => preserveSemanticDraft(previous, key, draftFromReview(candidate)));
+      setQueryState((previous) => preserveSemanticDraft(previous, key, { query: "", confirmed: false }));
+      setDetailLoading(false);
     } catch (loadError) {
-      if (controller.signal.aborted) return;
-      setDetail(undefined);
+      if (!current()) return;
       setDetailLoadError(message(loadError));
-      setError(message(loadError));
     } finally {
-      if (detailRequestRef.current === controller) setDetailLoading(false);
+      if (current()) setDetailLoading(false);
     }
-  }, []);
+  }, [gate, selectTarget]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void loadWorkspace(), 0);
@@ -274,15 +330,10 @@ export function SemanticShadowReviewQueue(props: {
   }, [loadWorkspace]);
 
   useEffect(() => {
-    if (!selectedId) return;
-    const timer = window.setTimeout(() => void loadDetail(selectedId), 0);
+    if (!selected || loadedTargetRef.current === selectedKey) return;
+    const timer = window.setTimeout(() => void loadDetail(selected), 0);
     return () => window.clearTimeout(timer);
-  }, [loadDetail, selectedId]);
-
-  useEffect(() => () => {
-    workspaceRequestRef.current?.abort();
-    detailRequestRef.current?.abort();
-  }, []);
+  }, [loadDetail, selected, selectedKey]);
 
   const reviewedCount = workspace?.reviewedCaseCount || 0;
   const coveredDimensions = new Set(workspace?.report?.coveredDimensions || []);
@@ -291,82 +342,81 @@ export function SemanticShadowReviewQueue(props: {
     [detail, draft],
   );
 
-  async function submitReview() {
-    if (!detail || !payloadState?.payload || saving) {
-      setError(payloadState?.error || "Open an evaluation episode first.");
+  async function submitEvaluation(kind: "review" | "probe") {
+    if (gate.isBusy()) return;
+    if (!detail || actionReason || !detail.reviewable || detailKey !== selectedKey) {
+      setError(actionReason || detail?.unavailableReason || "Open a reviewable evaluation episode first.");
       return;
     }
-    setSaving(true);
-    setError(undefined);
-    setFeedback(undefined);
-    try {
-      const response = await fetch("/api/memory/semantic-shadow", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-idempotency-key": crypto.randomUUID(),
-        },
-        body: JSON.stringify(payloadState.payload),
-      });
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(apiError(body, "The evaluation review could not be saved."));
-      setFeedback("Review saved as evaluation evidence. Live answers and memory ranking are unchanged.");
-      await Promise.all([
-        loadWorkspace(detail.id),
-        loadDetail(detail.id),
-        props.onProgressChanged(),
-      ]);
-    } catch (saveError) {
-      setError(message(saveError));
-    } finally {
-      setSaving(false);
+    if (kind === "review" && !payloadState?.payload) {
+      setError(payloadState?.error || "Complete the human review first.");
+      return;
     }
-  }
-
-  async function submitRankProbe() {
-    if (!detail || probing) return;
     const query = probeQuery.trim();
-    if (query.length < 3) {
-      setError("Write a retrieval question with at least three characters.");
+    if (kind === "probe" && (query.length < 3 || query.length > 500 || !humanConfirmedTarget)) {
+      setError(!humanConfirmedTarget ? "Confirm that this episode is a relevant answer to the query." : "Write a retrieval question with 3 to 500 characters.");
       return;
     }
-    if (!humanConfirmedTarget) {
-      setError("Confirm that this episode is a relevant answer to the query.");
-      return;
-    }
-    setProbing(true);
+    const token = gate.begin();
+    if (!token) return;
+    const submitted = kind === "review" && payloadState?.payload ? freezeSemanticSubmission(payloadState.payload) : undefined;
+    const selectedDetail = detail;
+    const revision = ++feedbackRevision.current;
+    workspaceRequestRef.current?.abort();
+    detailRequestRef.current?.abort();
+    setLoading(false);
+    setDetailLoading(false);
+    setPending(kind);
     setError(undefined);
-    setFeedback(undefined);
+    setOverviewRefreshError("");
+    let sent = false;
     try {
-      const response = await fetch("/api/memory/semantic-shadow/rank-probe", {
+      const querySha256 = kind === "probe" ? await semanticProbeQuerySha256(query) : "";
+      if (!gate.current(token)) return;
+      if (permissionRef.current) { setError(permissionRef.current); return; }
+      const requestBody = submitted || { enrichmentId: token.target.id, reviewSourceSha256: token.target.reviewSourceSha256, query, humanConfirmedTarget: true };
+      sent = true;
+      const response = await fetch(kind === "review" ? "/api/memory/semantic-shadow" : "/api/memory/semantic-shadow/rank-probe", {
         method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-idempotency-key": crypto.randomUUID(),
-        },
-        body: JSON.stringify({
-          enrichmentId: detail.id,
-          reviewSourceSha256: detail.reviewSourceSha256,
-          query,
-          humanConfirmedTarget: true,
-        }),
+        headers: { "content-type": "application/json", "x-idempotency-key": crypto.randomUUID() },
+        body: JSON.stringify(requestBody),
       });
-      const body = await response.json().catch(() => ({}));
+      const body: unknown = await response.json().catch(() => undefined);
+      if (!gate.current(token)) return;
       if (!response.ok) {
-        throw new Error(apiError(body, "The retrieval probe could not run."));
+        const failure = apiError(body, "The evaluation request was not accepted.");
+        setError(failure);
+        if (response.status === 409) setDetailLoadError("The server could not accept this episode version or evaluation context. Retry its evidence read before submitting again.");
+        return;
       }
-      setFeedback(
-        "Retrieval ranks measured and sealed. Live memory ranking is unchanged.",
-      );
-      await Promise.all([
-        loadWorkspace(detail.id),
-        loadDetail(detail.id),
-        props.onProgressChanged(),
-      ]);
-    } catch (probeError) {
-      setError(message(probeError));
+      const accepted = submitted ? parseSemanticReviewReceipt(body, submitted, selectedDetail) : parseSemanticProbeReceipt(body, token.target, querySha256);
+      if (!accepted) {
+        setError("The evaluation response could not confirm the submitted result. It may have been recorded. Refresh the episode evidence before deciding whether to submit again.");
+        setDetailLoadError("The submitted outcome is unconfirmed. Retry the evidence read to check for a recorded result.");
+        return;
+      }
+      setReceipt(accepted);
+      setWorkspaceNeedsRefresh(true);
+      setDetail((current) => reviewTargetKey(current) === reviewTargetKey(token.target) && current ? {
+        ...current, ...(accepted.kind === "review" ? { latestReview: accepted.review } : { latestRankProbe: accepted.probe }),
+      } : current);
+      if (accepted.kind === "review") setDraftState((current) => current?.key === reviewTargetKey(token.target) ? { ...current, value: { ...current.value, humanReviewed: false } } : current);
+      else setQueryState((current) => current?.key === reviewTargetKey(token.target) ? { ...current, value: { ...current.value, confirmed: false } } : current);
+      // A confirmed write ends pending before any independent read starts.
+      gate.finish(token);
+      setPending(undefined);
+      void loadWorkspace();
+      void loadDetail(token.target);
+      void props.onProgressChanged().catch(() => {
+        if (gate.isMounted() && feedbackRevision.current === revision) setOverviewRefreshError("The accepted receipt is retained. Memory overview counts could not be refreshed.");
+      });
+    } catch {
+      if (gate.current(token)) {
+        setError(sent ? "The evaluation outcome is unconfirmed. The request may have reached the server; refresh episode evidence before submitting again." : "The evaluation request could not be prepared. No request was sent.");
+        if (sent) setDetailLoadError("The submitted outcome is unconfirmed. Retry the evidence read to check for a recorded result.");
+      }
     } finally {
-      setProbing(false);
+      if (gate.current(token)) { gate.finish(token); setPending(undefined); }
     }
   }
 
@@ -379,7 +429,7 @@ export function SemanticShadowReviewQueue(props: {
           <h3 id="semantic-review-bench-title">Semantic review bench</h3>
           <span>Compare each private source episode with the deterministic baseline and the proposed semantic memory.</span>
         </div>
-        <button type="button" onClick={() => void loadWorkspace(selectedId)} disabled={loading || saving} aria-label="Refresh semantic evaluation episodes" aria-describedby="semantic-review-resource-state">
+        <button type="button" onClick={() => void loadWorkspace()} disabled={busy} aria-label="Refresh semantic evaluation episodes" aria-describedby="semantic-review-resource-state semantic-review-action-state">
           <RefreshCw size={14} className={loading ? styles.spin : undefined} /> Refresh
         </button>
       </header>
@@ -394,7 +444,8 @@ export function SemanticShadowReviewQueue(props: {
           <span>activation gate</span>
         </div>
       </div>
-      <p id="semantic-review-resource-state" className={styles.resourceState} role="status">{saving ? "Saving an evaluation review. Refresh will be available when it finishes." : workspace && (workspaceLoadError || loading) ? "Showing last loaded evaluation counts and episodes." : !workspace && workspaceLoadError ? "Evaluation counts and episodes could not be checked." : ""}</p>
+      <p id="semantic-review-resource-state" className={styles.resourceState} role="status">{busy ? saving ? "Saving an evaluation review. Read refresh is paused until its receipt returns." : "Measuring retrieval ranks. Read refresh is paused until its receipt returns." : workspace && (workspaceLoadError || loading || workspaceNeedsRefresh) ? "Showing last loaded evaluation counts and episodes." : !workspace && workspaceLoadError ? "Evaluation counts and episodes could not be checked." : loading ? "Loading evaluation counts and episodes…" : "Counts and gate results describe the loaded 24-episode window."}</p>
+      <p className={styles.error} role="alert">{workspaceLoadError ? <><CircleAlert size={16} aria-hidden="true" />{workspaceLoadError}</> : null}</p>
 
       {workspace?.report ? <div className={styles.dimensionRail} aria-label="Evaluation scenario coverage">
         {dimensions.map(([id, label]) => (
@@ -406,17 +457,38 @@ export function SemanticShadowReviewQueue(props: {
 
       <p className={styles.error} role="alert">{error ? <><CircleAlert size={16} aria-hidden="true" />{error}</> : null}</p>
       <p className={styles.feedback} role="status">{feedback ? <><BadgeCheck size={16} aria-hidden="true" />{feedback}</> : null}</p>
+      {receipt ? <details className={styles.evaluationIdentity}>
+        <summary>Confirmed evaluation receipt</summary>
+        <dl>
+          <div><dt>Recorded result</dt><dd>{receipt.kind === "review" ? "Human review" : "Measured rank probe"} · {formatDate(receipt.at)}</dd></div>
+          <div><dt>Episode</dt><dd><code>{receipt.target.id}</code></dd></div>
+          <div><dt>Source digest</dt><dd><code>{receipt.target.reviewSourceSha256}</code></dd></div>
+          {receipt.kind === "probe" ? <>
+            <div><dt>Query digest</dt><dd><code>{receipt.querySha256}</code></dd></div>
+            <div><dt>Corpus digest</dt><dd><code>{receipt.corpusSha256}</code></dd></div>
+          </> : null}
+        </dl>
+      </details> : null}
+      <p className={styles.resourceState} role="status">{overviewRefreshError}</p>
+      <p id="semantic-review-action-state" className={styles.resourceState} role="status">{actionReason}{busy ? " Leaving Reviews does not cancel a request already sent to the server." : ""}</p>
 
       <div className={styles.benchGrid}>
         <aside className={styles.queue} aria-label="Semantic evaluation episodes">
-          <header><span>Evaluation episodes</span><small>{workspace ? `${workspace.candidates.length} available${workspaceLoadError || loading ? " · Last loaded" : ""}` : loading ? "Loading…" : "Unavailable"}</small></header>
+          <header><span>Evaluation episodes</span><small>{workspace ? `${workspace.candidates.length} available${workspaceLoadError || loading || workspaceNeedsRefresh ? " · Last loaded" : ""}` : loading ? "Loading…" : "Unavailable"}</small></header>
           <div role="region" aria-label="Available evaluation episodes" tabIndex={0}>
             {workspace?.candidates.map((candidate, index) => (
               <button
                 type="button"
                 key={candidate.id}
                 className={candidate.id === selectedId ? styles.selected : undefined}
-                onClick={() => setSelectedId(candidate.id)}
+                onClick={() => {
+                  if (gate.isBusy() || gate.target()?.id === candidate.id) return;
+                  setVersionNotice("");
+                  setError(undefined);
+                  selectTarget({ id: candidate.id, reviewSourceSha256: candidate.reviewSourceSha256 });
+                }}
+                disabled={busy}
+                aria-describedby={busy ? "semantic-review-action-state" : undefined}
                 aria-pressed={candidate.id === selectedId}
               >
                 <span>
@@ -427,7 +499,7 @@ export function SemanticShadowReviewQueue(props: {
                 <ChevronRight size={15} />
               </button>
             ))}
-            {!loading && workspace && !workspaceLoadError && !workspace.candidates.length ? (
+            {!loading && workspace && !workspaceLoadError && !workspaceNeedsRefresh && !workspace.candidates.length ? (
               <div className={styles.queueEmpty}><Eye size={20} /><strong>No episodes collected yet</strong><span>Use the collection step above when conversations contain complete 12-turn episodes.</span></div>
             ) : null}
             {loading ? <div className={styles.queueLoading} role="status">Loading episodes…</div> : null}
@@ -435,21 +507,25 @@ export function SemanticShadowReviewQueue(props: {
         </aside>
 
         <div className={styles.reviewPane}>
-          {detailLoading ? (
-            <div className={styles.detailLoading} role="status">Opening private source evidence…</div>
-          ) : detail && detail.id === selectedId ? (
+          <div className={styles.detailReadState}>
+            <p role="status">{[detailLoading ? detail?.id === selectedId ? "Refreshing episode evidence. Your current draft is retained." : "Opening private source evidence…" : "", detailLoadError || versionNotice].filter(Boolean).join(" ")}</p>
+            {selected ? <button type="button" onClick={() => void loadDetail(selected)} disabled={busy} aria-describedby="semantic-review-action-state">Retry episode evidence</button> : null}
+          </div>
+          {detail && detail.id === selectedId ? (
             <ReviewForm
               candidate={detail}
               draft={draft}
-              onDraft={setDraft}
-              onSubmit={() => void submitReview()}
+              onDraft={(value) => { if (!gate.isBusy() && detailKey === reviewTargetKey(gate.target())) setDraftState({ key: detailKey, value }); }}
+              onSubmit={() => void submitEvaluation("review")}
               probeQuery={probeQuery}
-              onProbeQuery={setProbeQuery}
+              onProbeQuery={(query) => { if (!gate.isBusy() && detailKey === reviewTargetKey(gate.target())) setQueryState({ key: detailKey, value: { query, confirmed: humanConfirmedTarget } }); }}
               humanConfirmedTarget={humanConfirmedTarget}
-              onHumanConfirmedTarget={setHumanConfirmedTarget}
-              onProbe={() => void submitRankProbe()}
+              onHumanConfirmedTarget={(confirmed) => { if (!gate.isBusy() && detailKey === reviewTargetKey(gate.target())) setQueryState({ key: detailKey, value: { query: probeQuery, confirmed } }); }}
+              onProbe={() => void submitEvaluation("probe")}
               probing={probing}
               saving={saving}
+              editsDisabled={busy || detailKey !== selectedKey}
+              blockedReason={actionReason}
               submitError={payloadState?.error}
             />
           ) : (
@@ -477,6 +553,8 @@ function ReviewForm(props: {
   onProbe: () => void;
   probing: boolean;
   saving: boolean;
+  editsDisabled: boolean;
+  blockedReason?: string;
   submitError?: string;
 }) {
   const { candidate, draft } = props;
@@ -519,7 +597,7 @@ function ReviewForm(props: {
               <p>{item.text}</p>
               {item.evidence.length ? item.evidence.map((evidence, index) => <blockquote key={`${evidence.turnId}:${index}`} data-valid={evidence.valid ? "true" : undefined}><p>{evidence.quote}</p><small>{evidence.valid ? "Exact source span" : "Source mismatch"}</small></blockquote>) : <p className={styles.missingEvidence}>No supporting quote was returned for this item.</p>}
             </div>
-            <fieldset>
+            <fieldset disabled={props.editsDisabled} aria-describedby={props.editsDisabled ? "semantic-review-action-state" : undefined}>
               <legend>Is this fully supported?</legend>
               {(["supported", "unsupported"] as const).map((decision) => (
                 <label key={decision} data-selected={draft.itemDecisions[item.id] === decision ? "true" : undefined}>
@@ -540,14 +618,14 @@ function ReviewForm(props: {
       <section className={styles.scorecard}>
         <header><span>4 · Quality scorecard</span><small>Count only important facts you can point to in the source.</small></header>
         <div className={styles.scoreGrid}>
-          <label>Scenario<select value={draft.dimension} onChange={(event) => update({ dimension: event.target.value as Dimension })}><option value="">Choose one…</option>{dimensions.map(([id, label]) => <option value={id} key={id}>{label}</option>)}</select></label>
-          <label>Important source facts<input type="number" min="1" max="128" inputMode="numeric" value={draft.importantFactCount} onChange={(event) => update({ importantFactCount: event.target.value })} /></label>
-          <label>Facts in baseline<input type="number" min="0" max="128" inputMode="numeric" value={draft.baselineImportantFactHitCount} onChange={(event) => update({ baselineImportantFactHitCount: event.target.value })} /></label>
-          <label>Facts in semantic result<input type="number" min="0" max="128" inputMode="numeric" value={draft.semanticImportantFactHitCount} onChange={(event) => update({ semanticImportantFactHitCount: event.target.value })} /></label>
-          <label>Unrelated or cross-scope facts<input type="number" min="0" max="128" inputMode="numeric" value={draft.scopeLeakCount} onChange={(event) => update({ scopeLeakCount: event.target.value })} /></label>
-          <label>Useful compression<select value={draft.compressionJudgment} onChange={(event) => update({ compressionJudgment: event.target.value as SemanticShadowReviewDraft["compressionJudgment"] })}><option value="">Choose…</option><option value="good">Good — concise and complete</option><option value="needs_work">Needs work</option></select></label>
+          <label>Scenario<select disabled={props.editsDisabled} value={draft.dimension} onChange={(event) => update({ dimension: event.target.value as Dimension })}><option value="">Choose one…</option>{dimensions.map(([id, label]) => <option value={id} key={id}>{label}</option>)}</select></label>
+          <label>Important source facts<input disabled={props.editsDisabled} type="number" min="1" max="128" inputMode="numeric" value={draft.importantFactCount} onChange={(event) => update({ importantFactCount: event.target.value })} /></label>
+          <label>Facts in baseline<input disabled={props.editsDisabled} type="number" min="0" max="128" inputMode="numeric" value={draft.baselineImportantFactHitCount} onChange={(event) => update({ baselineImportantFactHitCount: event.target.value })} /></label>
+          <label>Facts in semantic result<input disabled={props.editsDisabled} type="number" min="0" max="128" inputMode="numeric" value={draft.semanticImportantFactHitCount} onChange={(event) => update({ semanticImportantFactHitCount: event.target.value })} /></label>
+          <label>Unrelated or cross-scope facts<input disabled={props.editsDisabled} type="number" min="0" max="128" inputMode="numeric" value={draft.scopeLeakCount} onChange={(event) => update({ scopeLeakCount: event.target.value })} /></label>
+          <label>Useful compression<select disabled={props.editsDisabled} value={draft.compressionJudgment} onChange={(event) => update({ compressionJudgment: event.target.value as SemanticShadowReviewDraft["compressionJudgment"] })}><option value="">Choose…</option><option value="good">Good — concise and complete</option><option value="needs_work">Needs work</option></select></label>
         </div>
-        <label className={styles.attestation}><input type="checkbox" checked={draft.humanReviewed} onChange={(event) => update({ humanReviewed: event.target.checked })} /><span><strong>I compared the source, baseline and every semantic item.</strong><small>This is a human evidence judgment, not an automatic model score.</small></span></label>
+        <label className={styles.attestation}><input disabled={props.editsDisabled} type="checkbox" checked={draft.humanReviewed} onChange={(event) => update({ humanReviewed: event.target.checked })} /><span><strong>I compared the source, baseline and every semantic item.</strong><small>This is a human evidence judgment, not an automatic model score.</small></span></label>
       </section>
 
       <section className={styles.rankProbe}>
@@ -563,13 +641,14 @@ function ReviewForm(props: {
             Retrieval question
             <input
               type="text"
+              disabled={props.editsDisabled}
               maxLength={500}
               placeholder="What decision did we make about the Apollo release?"
               value={props.probeQuery}
               onChange={(event) => props.onProbeQuery(event.target.value)}
             />
           </label>
-          <button type="button" onClick={props.onProbe} disabled={props.probing || !candidate.reviewable} aria-describedby={!candidate.reviewable ? unavailableId : undefined}>
+          <button type="button" onClick={props.onProbe} disabled={props.probing || Boolean(props.blockedReason) || !candidate.reviewable} aria-describedby={`semantic-review-action-state${!candidate.reviewable ? ` ${unavailableId}` : ""}`}>
             {props.probing ? <LoaderCircle size={16} className={styles.spin} /> : <Eye size={16} />}
             {props.probing ? "Measuring…" : "Measure ranks"}
           </button>
@@ -577,6 +656,7 @@ function ReviewForm(props: {
         <label className={styles.probeAttestation}>
           <input
             type="checkbox"
+            disabled={props.editsDisabled}
             checked={props.humanConfirmedTarget}
             onChange={(event) => props.onHumanConfirmedTarget(event.target.checked)}
           />
@@ -594,7 +674,7 @@ function ReviewForm(props: {
 
       <footer className={styles.submitBar}>
         <div><strong>{candidate.latestReview ? "Update this review" : "Save this review"}</strong><span id={submitHelpId}>{props.submitError || "This records evaluation evidence only."}</span></div>
-        <button type="button" onClick={props.onSubmit} disabled={props.saving || !candidate.reviewable || Boolean(props.submitError)} aria-describedby={submitHelpId}>{props.saving ? <LoaderCircle size={16} className={styles.spin} /> : <ClipboardCheck size={16} />}{props.saving ? "Saving evidence…" : candidate.latestReview ? "Update review" : "Save review"}</button>
+        <button type="button" onClick={props.onSubmit} disabled={props.saving || Boolean(props.blockedReason) || !candidate.reviewable || Boolean(props.submitError)} aria-describedby={`${submitHelpId} semantic-review-action-state`}>{props.saving ? <LoaderCircle size={16} className={styles.spin} /> : <ClipboardCheck size={16} />}{props.saving ? "Saving evidence…" : candidate.latestReview ? "Update review" : "Save review"}</button>
       </footer>
     </>
   );
@@ -638,7 +718,7 @@ function requiredCount(value: string) {
 function apiError(value: unknown, fallback: string) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return fallback;
   const record = value as Record<string, unknown>;
-  return typeof record.error === "string" ? record.error : fallback;
+  return typeof record.message === "string" && record.message.trim() ? record.message : typeof record.error === "string" ? record.error : fallback;
 }
 
 function message(error: unknown) {

@@ -120,6 +120,7 @@ export const COMPLEXITY_REGISTRY: readonly ComplexityEntry[] = Object.freeze((
         "src/components/semantic-shadow-collector-state.ts",
         "src/components/semantic-shadow-review-queue.tsx",
         "src/components/semantic-shadow-review-queue.module.css",
+        "src/components/semantic-shadow-review-state.ts",
         "scripts/check-semantic-memory-shadow.ts",
       ],
     },

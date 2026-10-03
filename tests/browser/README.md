@@ -12,6 +12,8 @@ passes an explicit environment with no database/provider/connector credentials,
 creates a temporary application data directory, and signs in through the real
 login route so server-rendered permissions are authentic. It deletes that data
 after the run and never writes the password or session cookies to an artifact.
+The preview disables sampled web-vitals telemetry so random diagnostic POSTs
+cannot change an interaction test's request budget.
 
 Every browser API write is blocked except one exact, wholly intercepted
 conversation request and one exact approval request per viewport. Optional read
@@ -43,3 +45,11 @@ Screenshots are review artifacts, not a claim of pixel equivalence across OS/fon
 versions. Automated visual regressions currently cover overflow, pointer mode and
 accessibility; screen-reader, physical-device, performance/energy and reviewed
 pixel baselines remain additional acceptance gates.
+
+`semantic_reviews.py` uses the same runner options for the actual Memory → Reviews
+route. It checks stale reads and source-version changes, exact review/probe
+receipts, independent refresh failures, draft/focus retention and disposal.
+Seven desktop and two phone evaluation POSTs are wholly intercepted; no real
+evaluation or activation runs. Its axe scope is the semantic review bench and
+its screenshots retain the surrounding application for context. CI runs it
+serially after the conversation/approval suite.
