@@ -737,6 +737,27 @@ role browser state was not exercised because the mounted synthetic session comes
 from SSR; permission wiring/event guards and existing permission/route tests were
 verified separately. Physical-device and screen-reader acceptance remain separate.
 
+## Semantic rank-probe projection prerequisite — 3 October 2026
+
+PR #28 merged the semantic shadow collector after all nine required hosted checks
+passed on `e0579f01b105320e8aca0f04ca1b5d1cfafa4ed0`; its merge commit is
+`f5e57b1d6b032019821be3fa70a4c981e31bfe33`.
+
+Review-bench inspection found that the scoped event writer adds `_executionScope`
+to rank-probe payloads, while the strict domain reader rejected that envelope.
+The reader now removes only that known attribution field before the unchanged
+strict probe validation. Tenant/actor reads, stream identity, source-hash matching,
+scoped writes and idempotency remain unchanged; unrelated payload keys still fail.
+No schema migration, provider call, live ranking or activation change is involved.
+
+The persistence mock now models the actual stored envelope. Twelve focused
+service/route tests passed, including immediate saved receipt, identical later
+projection, stale-source exclusion and rejection of unknown domain fields.
+Strict targeted lint and the focused service/route TypeScript graph passed.
+This is local synthetic evidence; hosted checks on this correction are still
+required. Browser lifecycle work is independently reviewable and is not included
+in this backend prerequisite.
+
 ## Remaining gates and scope
 
 - Hosted build, route budgets and required repository checks on each new exact head.
