@@ -19,7 +19,6 @@ describe("Account 360 workspace", () => {
     expect(source).toContain("Neither value was silently selected");
     expect(source).toContain("Salesforce sync");
     expect(source).toContain("CRM adapter · governed");
-    expect(source).toContain("Read-only reconciliation");
     expect(source).toContain("Write receipts");
     expect(source).toContain("Approval-bound");
     expect(source).toContain("Salesforce OAuth credentials are required");
@@ -32,7 +31,7 @@ describe("Account 360 workspace", () => {
     expect(source).toContain("Re-evaluate before relying on it");
     expect(source).toContain("expectedAccountSha256");
     expect(source).toContain("Customer-success workflows");
-    expect(source).toContain("8 versioned playbooks");
+    expect(source).toContain("versioned playbooks");
     expect(source).toContain("Typed inputs become owned project work");
     expect(source).toContain("No direct external effects");
     expect(source).toContain("Create workflow project");

@@ -87,3 +87,12 @@ labels must reflow, transcripts retain list semantics, and editor controls expos
 stable names independently of option or textarea contents. The shared snapshot
 check records overflow geometry to make future failures actionable. Live calendar,
 media, WorkItem creation and message sending are outside this browser boundary.
+
+`accounts.py` exercises the Accounts list and exact dossier, six independent
+source reads, outside-window selection, retained failures, conflicts, copied
+identities, exact approval return links and legacy CRM restrictions. Its five
+desktop mutations are exact intercepted synthetic requests; phone performs no
+mutations. The suite checks frozen write inputs, receipt-versus-refresh behavior,
+retained drafts, dialog/focus behavior, long evidence, 320px reflow, text scaling,
+forced colors and six scoped axe scans. It does not sync a live CRM, create real
+work, contact an OAuth provider or execute an agent.

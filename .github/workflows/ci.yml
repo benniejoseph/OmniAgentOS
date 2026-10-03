@@ -56,6 +56,9 @@ jobs:
           /tmp/asael-browser-venv/bin/python tests/browser/meetings.py \
             --axe /tmp/asael-browser-tools/node_modules/axe-core/axe.min.js \
             --output test-results/browser/meetings
+          /tmp/asael-browser-venv/bin/python tests/browser/accounts.py \
+            --axe /tmp/asael-browser-tools/node_modules/axe-core/axe.min.js \
+            --output test-results/browser/accounts
 
       - name: Browser evidence
         if: always()
