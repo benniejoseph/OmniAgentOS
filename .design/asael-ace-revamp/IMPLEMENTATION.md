@@ -592,9 +592,11 @@ for selection cleanup. A failed or timed-out close releases the selector with an
 unconfirmed-cleanup message. Late cleanup only affects its original handle;
 provider closure is never inferred from a client timeout.
 
-Independent controller and CSS review passed. Twenty-four focused tests passed:
+Independent controller and CSS review passed. Twenty-nine focused tests passed:
 ten identity/cleanup regressions, seven existing Photos lifecycle tests, six
-OAuth route tests and one Photos import route test. Strict targeted lint, the
+OAuth route tests, one Photos import route test and five Google UI contract tests.
+The UI contract assertions now follow the revised ownership/OAuth wording and
+verify the repair link independently of its CSS class. Strict targeted lint, the
 Connected Sources TypeScript graph, CSS parsing and type-scale checks passed.
 
 Headless Chrome passed 140 checks and eight clean scoped axe scans. Coverage
@@ -604,9 +606,14 @@ full identities/scopes, draft and selection retention, local confirmation cancel
 forced colors. The delayed Photos poll and cleanup preserve a newer account,
 confirmation and Capture draft after the local cleanup timeout.
 
+A supplemental visual pass passed 57 checks and captured sixteen viewport
+screenshots of actual source rows, the Photos region and timeout notice.
+Representative desktop/phone views in both themes were visually inspected.
+
 The harness wholly intercepted one exact Photos-creation POST, one held poll GET
 and one cleanup DELETE. A plain-object popup stub records the picker target and
-URL without opening a window. No request was forwarded to a provider, no real
+URL without opening a window. The supplemental visual run separately used the
+same single-session fixture budget. No request was forwarded to a provider, no real
 session was created or deleted, and no unexpected mutation, OAuth navigation,
 external request or microphone access occurred. The browser race does not create
 a second Photos session; additional lifecycle cases are covered by the focused

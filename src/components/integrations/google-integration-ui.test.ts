@@ -36,7 +36,9 @@ describe("Google integration UI consistency", () => {
     expect(personalConnections).toContain("grant && grant.manageable !== true");
     expect(personalConnections).toContain("only its stored owner can use or change it");
     expect(personalConnections).toContain("if (!grant || blockUnavailableAction()) return;");
-    expect(connectedSources).toContain("Managed by owner");
+    expect(connectedSources).toContain("Read-only retained connection");
+    expect(connectedSources).toContain("grant && grant.manageable !== true");
+    expect(connectedSources).toContain("only its stored owner can use or change it");
     expect(truthPanel).toContain('return integration.permissions.mode === "no_access" ? "No access" : "User-picked only"');
   });
 
@@ -47,10 +49,11 @@ describe("Google integration UI consistency", () => {
       expect(source).toContain('status !== "failed"');
       expect(source).toContain('url.searchParams.delete("oauth")');
       expect(source).toContain('url.searchParams.delete("provider")');
-      expect(source).toContain("Google connected");
       expect(source).toContain("Google connection was not completed");
       expect(source).toContain("Google could not be connected");
     }
+    expect(truthPanel).toContain("Google connected");
+    expect(connectedSources).toContain("The Google connection flow completed. Check the latest connection snapshot below to verify access.");
     expect(truthPanel).toContain("window.history.replaceState");
     expect(connectedSources).toContain("window.history.replaceState");
   });
@@ -77,7 +80,8 @@ describe("Google integration UI consistency", () => {
     expect(connectedSources).toContain('intent: "repair"');
     expect(connectedSources).toContain('if (grant?.id) params.set("connectionId", grant.id);');
     expect(connectedSources).toContain('addReturnTo(provider?.authorizeUrl || "/api/oauth/google/authorize")');
-    expect(connectedSources).toContain('<a href={repairUrl} className="action-button">Manage access</a>');
+    expect(connectedSources).toMatch(/<a href=\{repairUrl\}[^>]*>Manage access<\/a>/);
+    expect(connectedSources).toMatch(/busy \? <button[^>]*disabled>Manage access<\/button>/);
   });
 
   it("asks for a service's write scope only when the owner allows its changes", () => {
