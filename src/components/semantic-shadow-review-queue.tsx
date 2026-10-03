@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   BadgeCheck,
   ChevronRight,
@@ -194,6 +194,8 @@ export function SemanticShadowReviewQueue(props: {
   const [probeQuery, setProbeQuery] = useState("");
   const [humanConfirmedTarget, setHumanConfirmedTarget] = useState(false);
   const [error, setError] = useState<string>();
+  const [workspaceLoadError, setWorkspaceLoadError] = useState<string>();
+  const [detailLoadError, setDetailLoadError] = useState<string>();
   const [feedback, setFeedback] = useState<string>();
   const workspaceRequestRef = useRef<AbortController | null>(null);
   const detailRequestRef = useRef<AbortController | null>(null);
@@ -213,6 +215,7 @@ export function SemanticShadowReviewQueue(props: {
       if (!response.ok) throw new Error(apiError(body, "Evaluation reviews could not be loaded."));
       const next = body as WorkspaceResponse;
       setWorkspace(next);
+      setWorkspaceLoadError(undefined);
       const nextId = preferredId && next.candidates.some(({ id }) => id === preferredId)
         ? preferredId
         : next.candidates.find((candidate) => candidate.reviewable && !candidate.latestReview)?.id ||
@@ -224,6 +227,7 @@ export function SemanticShadowReviewQueue(props: {
       }
     } catch (loadError) {
       if (controller.signal.aborted) return;
+      setWorkspaceLoadError(message(loadError));
       setError(message(loadError));
     } finally {
       if (workspaceRequestRef.current === controller) setLoading(false);
@@ -250,12 +254,14 @@ export function SemanticShadowReviewQueue(props: {
         throw new Error("This evaluation episode is no longer available.");
       }
       setDetail(candidate);
+      setDetailLoadError(undefined);
       setDraft(draftFromReview(candidate));
       setProbeQuery("");
       setHumanConfirmedTarget(false);
     } catch (loadError) {
       if (controller.signal.aborted) return;
       setDetail(undefined);
+      setDetailLoadError(message(loadError));
       setError(message(loadError));
     } finally {
       if (detailRequestRef.current === controller) setDetailLoading(false);
@@ -373,45 +379,46 @@ export function SemanticShadowReviewQueue(props: {
           <h3 id="semantic-review-bench-title">Semantic review bench</h3>
           <span>Compare each private source episode with the deterministic baseline and the proposed semantic memory.</span>
         </div>
-        <button type="button" onClick={() => void loadWorkspace(selectedId)} disabled={loading || saving}>
+        <button type="button" onClick={() => void loadWorkspace(selectedId)} disabled={loading || saving} aria-label="Refresh semantic evaluation episodes" aria-describedby="semantic-review-resource-state">
           <RefreshCw size={14} className={loading ? styles.spin : undefined} /> Refresh
         </button>
       </header>
 
       <div className={styles.gateStrip}>
-        <div><strong>{reviewedCount}</strong><span>of 24 reviewed cases</span></div>
-        <div><strong>{workspace?.report?.distinctThreadCount || 0}</strong><span>of 6 conversations</span></div>
-        <div><strong>{coveredDimensions.size}</strong><span>of 10 scenarios</span></div>
-        <div><strong>{workspace?.report?.rankProbeCaseCount || 0}</strong><span>of {reviewedCount || 24} rank probes</span></div>
+        <div><strong>{workspace ? reviewedCount : loading ? "Loading…" : "Unavailable"}</strong><span>of 24 reviewed cases</span></div>
+        <div><strong>{workspace?.report ? workspace.report.distinctThreadCount : workspace ? "Not evaluated" : loading ? "Loading…" : "Unavailable"}</strong><span>of 6 conversations</span></div>
+        <div><strong>{workspace?.report ? coveredDimensions.size : workspace ? "Not evaluated" : loading ? "Loading…" : "Unavailable"}</strong><span>of 10 scenarios</span></div>
+        <div><strong>{workspace?.report ? workspace.report.rankProbeCaseCount : workspace ? "Not evaluated" : loading ? "Loading…" : "Unavailable"}</strong><span>of {reviewedCount || 24} rank probes</span></div>
         <div data-ready={workspace?.report?.activationReady ? "true" : undefined}>
-          <strong>{workspace?.report?.activationReady ? "Passed" : "Locked"}</strong>
+          <strong>{workspace?.report ? workspace.report.activationReady ? "Passed" : "Locked" : workspace ? "Not evaluated" : loading ? "Loading…" : "Unavailable"}</strong>
           <span>activation gate</span>
         </div>
       </div>
+      <p id="semantic-review-resource-state" className={styles.resourceState} role="status">{saving ? "Saving an evaluation review. Refresh will be available when it finishes." : workspace && (workspaceLoadError || loading) ? "Showing last loaded evaluation counts and episodes." : !workspace && workspaceLoadError ? "Evaluation counts and episodes could not be checked." : ""}</p>
 
-      <div className={styles.dimensionRail} aria-label="Evaluation scenario coverage">
+      {workspace?.report ? <div className={styles.dimensionRail} aria-label="Evaluation scenario coverage">
         {dimensions.map(([id, label]) => (
           <span key={id} data-covered={coveredDimensions.has(id) ? "true" : undefined}>
-            {coveredDimensions.has(id) ? <BadgeCheck size={13} /> : <i />}{label}
+            {coveredDimensions.has(id) ? <BadgeCheck size={13} aria-hidden="true" /> : null}{label}<small>{coveredDimensions.has(id) ? "Covered" : "Not covered"}</small>
           </span>
         ))}
-      </div>
+      </div> : null}
 
-      {error ? <p className={styles.error} role="alert"><CircleAlert size={16} />{error}</p> : null}
-      {feedback ? <p className={styles.feedback} role="status"><BadgeCheck size={16} />{feedback}</p> : null}
+      <p className={styles.error} role="alert">{error ? <><CircleAlert size={16} aria-hidden="true" />{error}</> : null}</p>
+      <p className={styles.feedback} role="status">{feedback ? <><BadgeCheck size={16} aria-hidden="true" />{feedback}</> : null}</p>
 
       <div className={styles.benchGrid}>
         <aside className={styles.queue} aria-label="Semantic evaluation episodes">
-          <header><span>Evaluation episodes</span><small>{workspace?.candidates.length || 0} available</small></header>
-          <div>
+          <header><span>Evaluation episodes</span><small>{workspace ? `${workspace.candidates.length} available${workspaceLoadError || loading ? " · Last loaded" : ""}` : loading ? "Loading…" : "Unavailable"}</small></header>
+          <div role="region" aria-label="Available evaluation episodes" tabIndex={0}>
             {workspace?.candidates.map((candidate, index) => (
               <button
                 type="button"
                 key={candidate.id}
                 className={candidate.id === selectedId ? styles.selected : undefined}
                 onClick={() => setSelectedId(candidate.id)}
+                aria-pressed={candidate.id === selectedId}
               >
-                <i data-state={candidate.latestReview ? "reviewed" : candidate.reviewable ? "ready" : "blocked"} />
                 <span>
                   <strong>Episode {index + 1}</strong>
                   <small>{formatDate(candidate.endsAt)} · {candidate.metrics.semanticItemCount} semantic items</small>
@@ -420,17 +427,17 @@ export function SemanticShadowReviewQueue(props: {
                 <ChevronRight size={15} />
               </button>
             ))}
-            {!loading && !workspace?.candidates.length ? (
+            {!loading && workspace && !workspaceLoadError && !workspace.candidates.length ? (
               <div className={styles.queueEmpty}><Eye size={20} /><strong>No episodes collected yet</strong><span>Use the collection step above when conversations contain complete 12-turn episodes.</span></div>
             ) : null}
-            {loading ? <div className={styles.queueLoading}><LoaderCircle size={17} className={styles.spin} /> Loading episodes…</div> : null}
+            {loading ? <div className={styles.queueLoading} role="status">Loading episodes…</div> : null}
           </div>
         </aside>
 
         <div className={styles.reviewPane}>
           {detailLoading ? (
-            <div className={styles.detailLoading}><LoaderCircle size={20} className={styles.spin} /> Opening private source evidence…</div>
-          ) : detail ? (
+            <div className={styles.detailLoading} role="status">Opening private source evidence…</div>
+          ) : detail && detail.id === selectedId ? (
             <ReviewForm
               candidate={detail}
               draft={draft}
@@ -446,7 +453,7 @@ export function SemanticShadowReviewQueue(props: {
               submitError={payloadState?.error}
             />
           ) : (
-            <div className={styles.detailEmpty}><ClipboardCheck size={28} /><strong>Select an evaluation episode</strong><span>Source text is returned to this page only when you open an episode.</span></div>
+            <div className={styles.detailEmpty}><ClipboardCheck size={28} aria-hidden="true" /><strong>{detailLoadError && selectedId ? "Episode evidence is unavailable" : selectedId ? "Opening selected episode…" : "Select an evaluation episode"}</strong><span>{detailLoadError && selectedId ? detailLoadError : "Source text is returned to this page only when you open an episode."}</span></div>
           )}
         </div>
       </div>
@@ -473,6 +480,8 @@ function ReviewForm(props: {
   submitError?: string;
 }) {
   const { candidate, draft } = props;
+  const submitHelpId = useId();
+  const unavailableId = useId();
   const update = (patch: Partial<SemanticShadowReviewDraft>) =>
     props.onDraft({ ...draft, ...patch });
   return (
@@ -481,15 +490,23 @@ function ReviewForm(props: {
         <div><p>Private episode · {formatDate(candidate.endsAt)}</p><h4>Compare the evidence</h4></div>
         <span>{candidate.model.provider} · {candidate.model.model}</span>
       </header>
-      {!candidate.reviewable ? <p className={styles.unavailable}><CircleAlert size={16} />{candidate.unavailableReason}</p> : null}
+      {!candidate.reviewable ? <p id={unavailableId} className={styles.unavailable}><CircleAlert size={16} aria-hidden="true" />{candidate.unavailableReason || "This episode is not ready to review."}</p> : null}
+      <details className={styles.evaluationIdentity}>
+        <summary>Evaluation identity</summary>
+        <dl>
+          <div><dt>Episode</dt><dd><code>{candidate.id}</code></dd></div>
+          <div><dt>Source digest</dt><dd><code>{candidate.reviewSourceSha256}</code></dd></div>
+          <div><dt>Generation model</dt><dd>{candidate.model.provider} · {candidate.model.model}</dd></div>
+        </dl>
+      </details>
       <div className={styles.comparison}>
         <section className={styles.sourcePanel}>
           <header><span>1 · Source conversation</span><small>{candidate.metrics.sourceCharacterCount.toLocaleString()} characters</small></header>
-          <div>{candidate.sourceTurns?.map((turn) => <article key={turn.id} data-role={turn.role}><strong>{turn.role === "user" ? "You" : "Asael"}</strong><p>{turn.content}</p></article>)}</div>
+          <div role="region" aria-label="Source conversation evidence" tabIndex={0}>{candidate.sourceTurns?.length ? candidate.sourceTurns.map((turn) => <article key={turn.id} data-role={turn.role}><strong>{turn.role === "user" ? "You" : "Asael"}</strong><p>{turn.content}</p></article>) : <p>No source turns were returned for this episode.</p>}</div>
         </section>
         <section className={styles.baselinePanel}>
           <header><span>2 · Deterministic baseline</span><small>Current sealed summary</small></header>
-          <p>{candidate.deterministicSummary}</p>
+          <div role="region" aria-label="Deterministic baseline evidence" tabIndex={0}><p>{candidate.deterministicSummary || "No deterministic summary was returned for this episode."}</p></div>
         </section>
       </div>
 
@@ -500,7 +517,7 @@ function ReviewForm(props: {
             <div className={styles.itemCopy}>
               <span>{startCase(item.kind)} · {Math.round(item.confidenceBasisPoints / 100)}% confidence</span>
               <p>{item.text}</p>
-              {item.evidence.map((evidence, index) => <blockquote key={`${evidence.turnId}:${index}`} data-valid={evidence.valid ? "true" : undefined}>“{evidence.quote}” <small>{evidence.valid ? "Exact source span" : "Source mismatch"}</small></blockquote>)}
+              {item.evidence.length ? item.evidence.map((evidence, index) => <blockquote key={`${evidence.turnId}:${index}`} data-valid={evidence.valid ? "true" : undefined}><p>{evidence.quote}</p><small>{evidence.valid ? "Exact source span" : "Source mismatch"}</small></blockquote>) : <p className={styles.missingEvidence}>No supporting quote was returned for this item.</p>}
             </div>
             <fieldset>
               <legend>Is this fully supported?</legend>
@@ -517,7 +534,7 @@ function ReviewForm(props: {
               ))}
             </fieldset>
           </article>
-        ))}</div>
+        ))}{!candidate.semanticItems?.length ? <p className={styles.missingEvidence}>No proposed semantic items were returned for this episode.</p> : null}</div>
       </section>
 
       <section className={styles.scorecard}>
@@ -552,7 +569,7 @@ function ReviewForm(props: {
               onChange={(event) => props.onProbeQuery(event.target.value)}
             />
           </label>
-          <button type="button" onClick={props.onProbe} disabled={props.probing || !candidate.reviewable}>
+          <button type="button" onClick={props.onProbe} disabled={props.probing || !candidate.reviewable} aria-describedby={!candidate.reviewable ? unavailableId : undefined}>
             {props.probing ? <LoaderCircle size={16} className={styles.spin} /> : <Eye size={16} />}
             {props.probing ? "Measuring…" : "Measure ranks"}
           </button>
@@ -576,8 +593,8 @@ function ReviewForm(props: {
       </section>
 
       <footer className={styles.submitBar}>
-        <div><strong>{candidate.latestReview ? "Update this review" : "Save this review"}</strong><span>{props.submitError || "This records evaluation evidence only."}</span></div>
-        <button type="button" onClick={props.onSubmit} disabled={props.saving || !candidate.reviewable || Boolean(props.submitError)}>{props.saving ? <LoaderCircle size={16} className={styles.spin} /> : <ClipboardCheck size={16} />}{props.saving ? "Saving evidence…" : candidate.latestReview ? "Update review" : "Save review"}</button>
+        <div><strong>{candidate.latestReview ? "Update this review" : "Save this review"}</strong><span id={submitHelpId}>{props.submitError || "This records evaluation evidence only."}</span></div>
+        <button type="button" onClick={props.onSubmit} disabled={props.saving || !candidate.reviewable || Boolean(props.submitError)} aria-describedby={submitHelpId}>{props.saving ? <LoaderCircle size={16} className={styles.spin} /> : <ClipboardCheck size={16} />}{props.saving ? "Saving evidence…" : candidate.latestReview ? "Update review" : "Save review"}</button>
       </footer>
     </>
   );
