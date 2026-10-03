@@ -1,5 +1,8 @@
+import { once } from "node:events";
 import { readFile } from "node:fs/promises";
 import { registerHooks } from "node:module";
+import { setFlagsFromString } from "node:v8";
+import { type ResourceLimits, Worker } from "node:worker_threads";
 import { inflateRawSync } from "node:zlib";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -21,6 +24,21 @@ import { extractCaptureFile } from "@/lib/capture/files";
 vi.mock("node:zlib", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:zlib")>();
   return { ...actual, inflateRawSync: vi.fn(actual.inflateRawSync) };
+});
+
+const liveWorkers = vi.hoisted(() => new Set<Worker>());
+
+// Tracks every worker until it has exited.
+vi.mock("node:worker_threads", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:worker_threads")>();
+  class TrackedWorker extends actual.Worker {
+    constructor(...args: ConstructorParameters<typeof actual.Worker>) {
+      super(...args);
+      liveWorkers.add(this);
+      this.once("exit", () => liveWorkers.delete(this));
+    }
+  }
+  return { ...actual, Worker: TrackedWorker };
 });
 
 describe("contained document parsing", () => {
@@ -185,19 +203,39 @@ describe("contained document parsing", () => {
     expect(Date.now() - started).toBeLessThan(10_000);
   });
 
-  it("stops a parse that exhausts its heap", async () => {
-    // Fits the expansion budget, but every text run becomes a live match.
-    const workbook = await zipArchive({
-      "xl/sharedStrings.xml": `<sst>${"<t>a</t>".repeat(1_400_000)}</sst>`,
-    }, "DEFLATE");
+  const smallHeap = { maxOldGenerationSizeMb: 32, maxYoungGenerationSizeMb: 4 };
 
-    await expectResourceLimit("heap", () => parseDocumentContained({ format: "xlsx", bytes: workbook }, {
-      maxOldGenerationSizeMb: 32,
-      maxYoungGenerationSizeMb: 4,
-    }));
+  it("stops a parse that exhausts its heap", async () => {
+    const bytes = await heapHoldingWorkbook();
+
+    await expectResourceLimit("heap", () => parseDocumentContained({ format: "xlsx", bytes }, smallHeap));
+  });
+
+  it("stops a parse that exhausts its heap when a process-wide flag lifts the worker's limits", async () => {
+    const bytes = await heapHoldingWorkbook();
+    // NODE_OPTIONS=--max-old-space-size=8192 does the same: Node lets the
+    // process flag replace a worker's resourceLimits without any error.
+    setFlagsFromString("--max-old-space-size=8192");
+    // A sample taken before the worker is running rejects; sampling must go on.
+    const sample = vi.spyOn(Worker.prototype, "getHeapStatistics")
+      .mockRejectedValueOnce(new Error("Worker instance not running"));
+    try {
+      expect(await workerHeapSizeLimitMb(smallHeap)).toBeGreaterThanOrEqual(8_192);
+
+      await expectResourceLimit("heap", () => parseDocumentContained({ format: "xlsx", bytes }, smallHeap));
+      expect(sample.mock.calls.length).toBeGreaterThan(1);
+    } finally {
+      sample.mockRestore();
+      // V8's default; the other tests pass with the flag or without it.
+      setFlagsFromString("--max-old-space-size=0");
+    }
   });
 
   it("stops a parse whose process memory grows past the watchdog limit", async () => {
+    // The watchdog measures the whole process, whose RSS falls while a worker
+    // stopped by an earlier test is still exiting.
+    await Promise.all([...liveWorkers].map((worker) => once(worker, "exit")));
+
     await expectResourceLimit("rss", () => parseDocumentContained({
       format: "html",
       bytes: new TextEncoder().encode("<p>Hi</p>"),
@@ -372,6 +410,27 @@ function withDeclaredSizes(zip: Uint8Array, declaredBytes: number) {
 /** Unclosed rows make the row pattern rescan the rest of the sheet from every start. */
 function quadraticWorkbook() {
   return zipArchive({ "xl/worksheets/sheet1.xml": "<row>".repeat(100_000) });
+}
+
+/**
+ * Fits the expansion budget, but every closed row becomes a live match, and
+ * the unclosed rows after them keep those matches live while the pattern
+ * rescans, so the parse cannot finish before a heap limit stops it.
+ */
+function heapHoldingWorkbook() {
+  return zipArchive({
+    "xl/worksheets/sheet1.xml": `${"<row></row>".repeat(1_000_000)}${"<row>".repeat(100_000)}`,
+  }, "DEFLATE");
+}
+
+/** The heap limit V8 actually gives a worker started with these resourceLimits. */
+async function workerHeapSizeLimitMb(resourceLimits: ResourceLimits) {
+  const worker = new Worker(
+    "require('node:worker_threads').parentPort.postMessage(require('node:v8').getHeapStatistics().heap_size_limit)",
+    { eval: true, resourceLimits },
+  );
+  const [limitBytes] = await once(worker, "message");
+  return limitBytes / 1024 / 1024;
 }
 
 function textPdf(text: string) {

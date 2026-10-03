@@ -21,6 +21,7 @@ export type DocumentParseLimits = Readonly<{
   maxYoungGenerationSizeMb: number;
   /** Growth of the whole process RSS, which also catches native allocations the heap limits miss. */
   rssGrowthLimitBytes: number;
+  /** How often the watchdog checks RSS and samples the worker's heap. */
   rssPollIntervalMs: number;
 }>;
 
@@ -108,10 +109,11 @@ let activeParses = 0;
 const waitingParses: Array<() => void> = [];
 
 /**
- * Parses an untrusted document in a worker thread with heap limits, an RSS
- * watchdog, a wall-clock timeout, and an empty environment, and validates
- * what comes back. At most two parses run at once; a slot is held until its
- * worker has actually exited, so a parse stuck in native code keeps its slot.
+ * Parses an untrusted document in a worker thread with heap limits, a
+ * watchdog on its heap and the process RSS, a wall-clock timeout, and an
+ * empty environment, and validates what comes back. At most two parses run
+ * at once; a slot is held until its worker has actually exited, so a parse
+ * stuck in native code keeps its slot.
  */
 export async function parseDocumentContained(
   request: DocumentParseRequest,
@@ -147,11 +149,16 @@ export async function parseDocumentContained(
   return new Promise<DocumentParseResult>((resolve, reject) => {
     let settled = false;
     const baselineRss = process.memoryUsage.rss();
+    // A process-wide V8 heap flag, such as --max-old-space-size in
+    // NODE_OPTIONS, silently replaces the worker's resourceLimits, so the
+    // heap they allow is also checked from here.
+    const heapLimitBytes = (settings.maxOldGenerationSizeMb + settings.maxYoungGenerationSizeMb) * 1024 * 1024;
+    let heapSampleInFlight = false;
     const settle = (outcome: Readonly<{ result: DocumentParseResult }> | Readonly<{ error: Error }>) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
-      clearInterval(rssWatchdog);
+      clearInterval(watchdog);
       void worker.terminate();
       setTimeout(releaseSlot, WORKER_EXIT_GRACE_MS).unref();
       if ("result" in outcome) resolve(outcome.result);
@@ -169,8 +176,17 @@ export async function parseDocumentContained(
       });
     };
     const timeout = setTimeout(() => stopAtResourceLimit("timeout"), settings.timeoutMs);
-    const rssWatchdog = setInterval(() => {
+    const watchdog = setInterval(() => {
       if (process.memoryUsage.rss() - baselineRss > settings.rssGrowthLimitBytes) stopAtResourceLimit("rss");
+      if (settled || heapSampleInFlight) return;
+      heapSampleInFlight = true;
+      // Answered even while the worker is busy; rejects until it is online and after it exits.
+      worker.getHeapStatistics().then((heap) => {
+        heapSampleInFlight = false;
+        if (heap.used_heap_size > heapLimitBytes) stopAtResourceLimit("heap");
+      }, () => {
+        heapSampleInFlight = false;
+      });
     }, settings.rssPollIntervalMs);
 
     worker.once("message", (message: unknown) => {

@@ -2,10 +2,10 @@
  * Contained document parser.
  *
  * PDF, DOCX, office and ebook archive, and markup parsing runs here, inside a
- * worker thread that `document-parse.ts` starts with heap limits, an RSS
- * watchdog, a wall-clock timeout, and an empty environment. ZIP entries are
- * inflated against one shared output budget instead of the sizes an archive
- * declares.
+ * worker thread that `document-parse.ts` starts with heap limits, a watchdog
+ * on its heap and the process RSS, a wall-clock timeout, and an empty
+ * environment. ZIP entries are inflated against one shared output budget
+ * instead of the sizes an archive declares.
  *
  * Node loads this file directly in tests (native type stripping) and
  * Turbopack emits it as its own worker chunk, so it must stay self-contained:
