@@ -215,6 +215,46 @@ Accessibility scans start at the top of the document to avoid measuring controls
 partly behind the sticky header at an arbitrary retained scroll position;
 separate interaction checks still verify control reachability and focus recovery.
 
+## Memory index, Knowledge and inspector presentation — 3 October 2026
+
+The active Memory intelligence page now has a compact heading/search, selectable
+memory rows, readable knowledge source rows and explicit filter controls. Health
+details are disclosed on demand, with actual steward state, unavailable values
+and the existing recall notice and consent action. Source knowledge remains
+distinct from personal truth. Reviews and Universe detail presentation remain
+separate work; their controllers and shared semantic-shadow style exports remain.
+
+Native inspector and creation dialogs make background content inert, support
+Escape and restore trigger focus. Exact content, source and attribution remain
+visible. Lifecycle restrictions explain the disabled action, and the existing
+two-stage forgetting preview exposes its impact and guarantee. A selected-ID
+guard prevents a previous record from appearing while another detail loads or
+fails. Index state distinguishes initial unavailable, successful empty and
+previously loaded records after a failed request.
+
+Independent review found no changes to the existing mutation endpoints, bodies,
+idempotency, ownership manifests, consent hashes, deletion-preview binding,
+40-record cursor pagination, debounce/abort guards or Universe suspension.
+Thirty-five tests in eight projection, lifecycle, consent, deletion-preview and
+route files passed, as did targeted lint, the Memory TypeScript dependency graph,
+CSS parsing and minimum type-size checks.
+
+The final main browser pass completed 108 checks and 20 clean axe scans. A
+subsequent small phone-label correction passed 14 focused checks and two more
+clean scans at 320/390px with normal/200% text. Coverage includes 1440/768/390/320px,
+fine/coarse pointers, both themes, exact long content, bounded paging/filter
+requests, stale-detail isolation, source errors, unknown health, pinned/archived
+restrictions, GET-only forgetting impact followed by Cancel, unsaved creation
+drafts, Escape/focus restoration, reduced motion and forced colors. All mutation
+and external requests were blocked, with no action mutation attempted.
+
+Browser review corrected coarse dialog-button specificity and made the inspector
+surface grow around long content. Both the top and bottom of long inspectors
+were scanned in each theme. Native-dialog focus checks distinguish Chrome's own
+toolbar from application background content; no inert background element receives
+focus. This is synthetic presentation evidence, not a live memory mutation,
+physical-device or screen-reader certification. Hosted acceptance remains required.
+
 ## Remaining gates and scope
 
 - Hosted build, route budgets and required repository checks on each new exact head.
