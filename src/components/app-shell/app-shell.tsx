@@ -163,7 +163,7 @@ export function AppShell({
   }
 
   return (
-    <div className={clsx("min-h-screen bg-background text-foreground", styles.shell, styles.daybook)}>
+    <div className={clsx("min-h-screen bg-background text-foreground", styles.shell)}>
       <a
         href="#workspace-content"
         className="fixed left-3 top-3 z-[70] -translate-y-24 rounded-md bg-foreground px-4 py-3 text-sm font-semibold text-background focus:translate-y-0"
@@ -174,7 +174,7 @@ export function AppShell({
       <aside
         id="desktop-workspace-navigation"
         className={clsx(
-          "fixed inset-y-0 left-0 z-30 hidden border-r border-line/80 bg-surface transition-[width] duration-200 motion-reduce:transition-none lg:flex lg:flex-col",
+          "fixed inset-y-0 left-0 z-30 hidden border-r border-line bg-surface lg:flex lg:flex-col",
           styles.sidebar,
           desktopNavCollapsed ? "w-20" : "w-60",
         )}
@@ -188,7 +188,8 @@ export function AppShell({
           <Link
             href="/app"
             className={clsx(
-              "flex min-w-0 items-center rounded-md focus-visible:outline-none",
+              "flex min-w-0 items-center",
+              styles.homeLink,
               desktopNavCollapsed ? "justify-center" : "gap-3",
             )}
             aria-label="Asael workspace home"
@@ -242,16 +243,11 @@ export function AppShell({
         </div>
       </aside>
 
-      <div
-        className={clsx(
-          "transition-[padding] duration-200 motion-reduce:transition-none",
-          desktopNavCollapsed ? "lg:pl-20" : "lg:pl-60",
-        )}
-      >
+      <div className={desktopNavCollapsed ? "lg:pl-20" : "lg:pl-60"}>
         {banner}
-        <header className={clsx("sticky top-0 z-20 border-b border-line/70 bg-background/85 backdrop-blur-xl", styles.header)}>
-          <div className="flex min-h-16 items-center justify-between gap-3 px-3 py-2 sm:px-6 lg:px-8">
-            <div className="flex min-w-0 items-center gap-3">
+        <header className={clsx("sticky top-0 z-20 border-b", styles.header)}>
+          <div className={clsx("flex items-center justify-between", styles.topBar)}>
+            <div className={clsx("flex items-center gap-3", styles.headerIdentity)}>
               <button
                 ref={menuButtonRef}
                 type="button"
@@ -286,7 +282,7 @@ export function AppShell({
                 </p>
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className={clsx("flex items-center gap-2", styles.headerActions)}>
               <CommandPalette />
               <InboxHeaderLink count={inboxCount} pathname={pathname} />
               <NotificationCenter />
@@ -296,12 +292,12 @@ export function AppShell({
           </div>
         </header>
 
-        <main id="workspace-content" tabIndex={-1} className={clsx("workspace-enter pb-20 lg:pb-0", styles.main)}>
+        <main id="workspace-content" tabIndex={-1} className={styles.main}>
           {children}
         </main>
       </div>
 
-      <nav className={clsx("fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-line/80 bg-background/95 px-1 pb-[max(.35rem,env(safe-area-inset-bottom))] pt-1 backdrop-blur-xl lg:hidden", styles.mobileDock)} aria-label="Everyday workspace navigation">
+      <nav className={clsx("fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t lg:hidden", styles.mobileDock)} aria-label="Everyday workspace navigation">
         {primaryNavItems.map((item) => {
           const Icon = item.icon;
           const active = isActivePath(pathname, item.href);
@@ -326,7 +322,7 @@ export function AppShell({
         <div className="fixed inset-0 z-50 lg:hidden">
           <button
             type="button"
-            className="absolute inset-0 bg-black/55"
+            className={clsx("absolute inset-0", styles.mobileScrim)}
             onClick={() => {
               setMobileOpen(false);
               menuButtonRef.current?.focus();
@@ -347,7 +343,7 @@ export function AppShell({
               <Link
                 href="/app"
                 onClick={closeMobileNavigation}
-                className="flex min-w-0 items-center gap-3"
+                className={clsx("flex min-w-0 items-center gap-3", styles.homeLink)}
                 aria-label="Asael workspace home"
               >
                 <AsaelMark size={36} />
@@ -461,20 +457,15 @@ export function CompactNavigation({ pathname, inboxCount }: { pathname: string; 
                 title={`${item.label} — ${item.description}`}
                 className={clsx(
                   "group relative grid min-h-11 w-full place-items-center rounded-md transition",
+                  styles.compactLink,
                   active
                     ? "bg-primary text-primary-ink shadow-sm"
                     : "text-muted hover:bg-surface-raised hover:text-foreground",
                 )}
               >
                 <Icon size={18} aria-hidden="true" />
-                <span className="sr-only">{item.label}</span>
+                <span className={styles.compactLabel} aria-hidden="true">{item.label}</span>
                 <NavCountPill badge={badge} active={active} compact />
-                {active ? (
-                  <span
-                    className="absolute -left-2 h-5 w-0.5 rounded-r-full bg-primary"
-                    aria-hidden="true"
-                  />
-                ) : null}
               </Link>
             );
           })}
@@ -629,7 +620,7 @@ function NavGroup({
                 )}
               >
                 <Icon size={17} className="shrink-0" aria-hidden="true" />
-                <span className="min-w-0 flex-1 truncate font-medium">{item.label}</span>
+                <span className="min-w-0 flex-1 font-medium">{item.label}</span>
                 <NavCountPill badge={badge} active={active} />
                 {active ? <ArrowRight size={14} className="shrink-0" aria-hidden="true" /> : null}
               </Link>

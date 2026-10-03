@@ -2,7 +2,7 @@
 
 **Coverage:** all 38 current web page routes: 24 private app routes and 14 public/access/offline routes. API-wired means connected to code contracts, not a production readiness claim. Every migrated page must use the shared theme, navigation, typography and resource states. Phase references match [the task plan](TASKS.md).
 
-**Decision and baseline, 3 October 2026:** ATLAS is the selected original eagle. Implementation is authorized after the operational follow-ups; current work is preparation only. All 38 web page routes and native route definitions in this inventory remain unchanged at `origin/main` `89f65c2f`. ATLAS production assets are not yet available.
+**Decision and baseline, 3 October 2026:** ATLAS is the selected original eagle. The first shared-web, Today and Command slice is in progress; see [implementation evidence](IMPLEMENTATION.md). All 38 web page routes and native route definitions in this inventory remain unchanged at the implementation baseline `origin/main` `dc1cfe6e`. ATLAS production assets are not yet available.
 
 ## Private workspace: all 24 routes
 

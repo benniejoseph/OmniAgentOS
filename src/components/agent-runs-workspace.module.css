@@ -1,486 +1,285 @@
 .workspace {
-  --daybook-canvas: oklch(0.982 0.018 89);
-  --daybook-paper: oklch(0.997 0.008 90);
-  --daybook-paper-soft: oklch(0.988 0.018 88 / 0.82);
-  --daybook-paper-raised: oklch(0.957 0.026 88);
-  --daybook-ink: oklch(0.255 0.042 205);
-  --daybook-muted: oklch(0.46 0.035 210);
-  --daybook-line: oklch(0.77 0.04 88 / 0.46);
-  --daybook-line-strong: oklch(0.65 0.055 86 / 0.58);
-  --daybook-primary: oklch(0.5 0.12 164);
-  --daybook-primary-ink: oklch(0.99 0.008 95);
-  --daybook-success: oklch(0.48 0.12 154);
-  --daybook-warning: oklch(0.61 0.14 70);
-  --daybook-danger: oklch(0.53 0.18 28);
-  --daybook-apricot: oklch(0.9 0.105 67);
-  --daybook-peach: oklch(0.94 0.06 47);
-  --daybook-sky: oklch(0.91 0.055 223);
-  --daybook-mint: oklch(0.92 0.06 158);
-  --daybook-wash-left: oklch(0.9 0.06 220 / 0.42);
-  --daybook-wash-right: oklch(0.89 0.13 70 / 0.4);
-  --daybook-arc: oklch(0.56 0.11 164 / 0.38);
-  --daybook-shadow: oklch(0.35 0.045 78 / 0.1);
-  --daybook-user: oklch(0.29 0.052 211);
-  --daybook-user-ink: oklch(0.99 0.008 95);
-  --daybook-orb-ink: oklch(0.26 0.05 166);
-  --background: var(--daybook-canvas);
-  --surface: var(--daybook-paper);
-  --surface-raised: var(--daybook-paper-raised);
-  --surface-overlay: var(--daybook-paper-raised);
-  --foreground: var(--daybook-ink);
-  --muted: var(--daybook-muted);
-  --line: var(--daybook-line);
-  --line-strong: var(--daybook-line-strong);
-  --primary: var(--daybook-primary);
-  --primary-ink: var(--daybook-primary-ink);
-  --success: var(--daybook-success);
-  --warning: var(--daybook-warning);
-  --danger: var(--daybook-danger);
   position: relative;
-  isolation: isolate;
-  width: 100%;
-  max-width: none;
-  min-height: calc(100svh - 4rem);
-  overflow: clip;
+  display: flex;
+  flex-direction: column;
+  inline-size: 100%;
+  block-size: calc(100dvh - var(--app-header-height, 4rem) - var(--app-dock-height, 0rem));
+  min-block-size: 0;
+  padding: 1.5rem 2rem 1rem;
   color: var(--foreground);
-  background:
-    radial-gradient(circle at 14% 18%, var(--daybook-wash-left), transparent 29rem),
-    radial-gradient(circle at 88% 5%, var(--daybook-wash-right), transparent 25rem),
-    linear-gradient(145deg, var(--daybook-paper) 0%, var(--daybook-canvas) 52%, var(--daybook-paper-raised) 100%);
+  background: var(--background);
 }
 
-:global(:root[data-theme="dark"]) .workspace {
-  --daybook-canvas: oklch(0.17 0.025 215);
-  --daybook-paper: oklch(0.215 0.027 213);
-  --daybook-paper-soft: oklch(0.205 0.025 215 / 0.88);
-  --daybook-paper-raised: oklch(0.265 0.03 207);
-  --daybook-ink: oklch(0.94 0.018 170);
-  --daybook-muted: oklch(0.72 0.028 190);
-  --daybook-line: oklch(0.46 0.045 190 / 0.45);
-  --daybook-line-strong: oklch(0.58 0.065 178 / 0.58);
-  --daybook-primary: oklch(0.76 0.13 164);
-  --daybook-primary-ink: oklch(0.16 0.035 175);
-  --daybook-success: oklch(0.75 0.14 151);
-  --daybook-warning: oklch(0.82 0.14 78);
-  --daybook-danger: oklch(0.72 0.17 28);
-  --daybook-apricot: oklch(0.38 0.09 66);
-  --daybook-peach: oklch(0.32 0.06 45);
-  --daybook-sky: oklch(0.3 0.055 225);
-  --daybook-mint: oklch(0.3 0.065 160);
-  --daybook-wash-left: oklch(0.48 0.1 221 / 0.18);
-  --daybook-wash-right: oklch(0.62 0.13 66 / 0.16);
-  --daybook-arc: oklch(0.76 0.13 164 / 0.3);
-  --daybook-shadow: oklch(0.055 0.018 220 / 0.4);
-  --daybook-user: oklch(0.34 0.065 205);
-  --daybook-user-ink: oklch(0.97 0.012 170);
-  --daybook-orb-ink: oklch(0.17 0.038 173);
-}
-
-.ambientField {
-  position: absolute;
-  z-index: -1;
-  inset: 0;
-  overflow: hidden;
-  pointer-events: none;
-}
-
-.ambientField::before,
-.ambientField::after {
-  position: absolute;
-  width: 39rem;
-  height: 18rem;
-  border: 1px solid var(--daybook-arc);
-  border-radius: 50%;
-  content: "";
-}
-
-.ambientField::before { top: 4rem; right: -15rem; transform: rotate(-14deg); }
-.ambientField::after { bottom: 1rem; left: -20rem; transform: rotate(17deg); }
-
-.ambientField span {
-  position: absolute;
-  display: block;
-  width: .42rem;
-  height: .42rem;
-  border: 2px solid var(--daybook-paper);
-  border-radius: 50%;
-  background: var(--daybook-apricot);
-  box-shadow: 0 0 0 .32rem color-mix(in oklab, var(--daybook-apricot) 18%, transparent);
-  animation: daybookDrift 8s ease-in-out infinite alternate;
-}
-
-.ambientField span:nth-child(1) { top: 17%; left: 31%; }
-.ambientField span:nth-child(2) { top: 48%; right: 7%; animation-delay: -2.5s; }
-.ambientField span:nth-child(3) { bottom: 8%; left: 19%; animation-delay: -5s; }
-
-.topbar {
-  position: relative;
-  border-bottom: 0;
-  padding: 1.1rem .35rem 1.5rem;
-}
-
-.topbar::after {
-  display: block;
-  width: min(16rem, 42vw);
-  height: 1px;
-  margin: 1.25rem 0 0 3.9rem;
-  background: linear-gradient(90deg, var(--daybook-primary), transparent);
-  content: "";
-}
-
-.pageIdentity { display: flex; align-items: center; gap: 1rem; }
+.topbar { flex: 0 0 auto; padding-block-end: 1rem; }
 .pageIdentity h1 {
-  font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif;
-  font-size: 2rem;
-  font-weight: 560;
-  letter-spacing: -.035em;
+  margin: 0;
+  font-size: 1.75rem;
+  font-weight: 600;
+  line-height: 1.2858;
+  letter-spacing: -.02em;
 }
 
-.pageIdentity p { color: var(--daybook-muted); }
+.conversationLayout { flex: 1; gap: 1.5rem; min-block-size: 0; min-inline-size: 0; }
+.conversationColumn,
+.chatShell { display: flex; flex-direction: column; min-inline-size: 0; min-block-size: 0; }
+.chatShell { flex: 1; }
 
-.pageOrb,
-.intelligenceOrb,
-.emptyOrb {
-  position: relative;
-  display: grid;
-  flex: 0 0 auto;
-  place-items: center;
-  border-radius: 50%;
-  color: var(--daybook-orb-ink);
-  background:
-    radial-gradient(circle at 35% 28%, var(--daybook-paper) 0 12%, transparent 28%),
-    linear-gradient(145deg, var(--daybook-apricot), var(--daybook-primary));
-  box-shadow: 0 .55rem 1.4rem color-mix(in oklab, var(--daybook-apricot) 26%, transparent);
-}
-
-.pageOrb { width: 3rem; height: 3rem; }
-
-.pageOrb::after,
-.intelligenceOrb::after,
-.emptyOrb::after {
-  position: absolute;
-  inset: -.45rem;
-  border: 1px solid var(--daybook-arc);
-  border-radius: 50%;
-  content: "";
-  animation: daybookOrbit 6s ease-in-out infinite;
-}
-
-.conversationLayout { position: relative; align-items: start; margin-top: 1rem; }
-
-.threadRail {
-  border-right: 0;
-  padding: .85rem .85rem .85rem 0;
-}
-
-.threadRail::after {
-  position: absolute;
-  top: 3.6rem;
-  bottom: 1rem;
-  left: .45rem;
-  width: 1px;
-  background: linear-gradient(180deg, transparent, var(--daybook-arc) 12%, var(--daybook-primary) 54%, transparent);
-  content: "";
-}
-
-.threadRail h2 {
-  font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif;
-  font-size: 1.05rem;
-  font-weight: 560;
-}
-
-.threadList { position: relative; padding-left: .95rem; scrollbar-width: thin; }
-
+.threadRail { min-block-size: 0; padding: .5rem 1rem .5rem 0; border-inline-end: 1px solid var(--line); }
+.threadRail h2 { font-size: .875rem; font-weight: 600; line-height: 1.4286; }
+.threadList { max-block-size: calc(100% - 3.5rem); margin-block-start: .75rem; padding: .5rem; overflow-y: auto; scrollbar-width: thin; }
 .threadItem {
   position: relative;
-  min-height: 3.5rem;
+  display: block;
+  inline-size: 100%;
+  min-block-size: 4rem;
+  padding: .75rem;
   border: 0;
-  border-radius: .9rem;
+  border-block-end: 1px solid var(--line);
+  border-radius: 0;
+  color: var(--foreground);
   background: transparent;
+  text-align: start;
+  transition: background-color 120ms ease;
 }
-
-.threadItem::before {
-  position: absolute;
-  top: 1.18rem;
-  left: -.76rem;
-  width: .42rem;
-  height: .42rem;
-  border: 1px solid var(--daybook-line-strong);
-  border-radius: 50%;
-  background: var(--daybook-canvas);
-  content: "";
-}
-
-.threadItem:hover { background: color-mix(in oklab, var(--daybook-mint) 48%, transparent); }
-
-.threadItemActive {
-  color: var(--daybook-ink);
-  background: linear-gradient(110deg, var(--daybook-mint), color-mix(in oklab, var(--daybook-sky) 62%, transparent));
-  box-shadow: inset 0 0 0 1px var(--daybook-line);
-}
-
+.threadItem:hover,
+.threadItemActive { background: var(--surface-raised); }
 .threadItemActive::before {
-  border: 2px solid var(--daybook-paper);
-  background: var(--daybook-primary);
-  box-shadow: 0 0 0 .25rem color-mix(in oklab, var(--daybook-primary) 14%, transparent);
-}
-
-:global(:root[data-theme="dark"]) .threadItemActive { color: var(--daybook-ink); }
-
-.chatShell {
-  position: relative;
-  border: 0;
-  border-radius: 1.8rem 4.2rem 1.8rem 1.8rem;
-  background: var(--daybook-paper-soft);
-  box-shadow: 0 1.35rem 3.8rem var(--daybook-shadow);
-  backdrop-filter: blur(18px);
-}
-
-.chatShell::before {
   position: absolute;
-  z-index: -1;
-  top: -3rem;
-  right: -2rem;
-  width: 11rem;
-  height: 11rem;
-  border: 1px solid var(--daybook-arc);
-  border-radius: 50%;
-  box-shadow: 0 0 0 1.8rem color-mix(in oklab, var(--daybook-apricot) 9%, transparent);
+  inset-block: .75rem;
+  inset-inline-start: 0;
+  inline-size: 3px;
+  border-radius: 2px;
+  background: var(--accent);
   content: "";
 }
 
 .chatHeader {
-  min-height: 4.6rem;
-  border-bottom: 1px dashed var(--daybook-line);
-  background: transparent;
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: .75rem;
+  min-block-size: 3.5rem;
+  padding: .5rem;
+  border-block-end: 1px solid var(--line);
 }
-
-.chatHeader h2 {
-  font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif;
-  font-size: 1.05rem;
-  font-weight: 560;
+.chatHeader > :first-child { flex: 1 1 12rem; }
+.chatHeader h2 { font-size: .875rem; line-height: 1.4286; }
+.conversationIcon {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  inline-size: 2.25rem;
+  block-size: 2.25rem;
+  border-radius: .625rem;
+  color: var(--muted);
+  background: var(--surface-raised);
 }
-
-.intelligenceOrb { box-shadow: 0 .35rem 1rem color-mix(in oklab, var(--daybook-primary) 22%, transparent); }
+.headerActions,
+.viewSwitch { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+.viewSwitch { gap: .25rem; padding: .25rem; border: 1px solid var(--line); border-radius: .75rem; }
+.viewSwitch button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: .5rem;
+  padding-inline: .75rem;
+  color: var(--muted);
+  font-size: .8125rem;
+  font-weight: 500;
+  line-height: 1.5385;
+}
+.viewSwitch button[aria-pressed="true"] { color: var(--foreground); background: var(--surface-raised); box-shadow: inset 0 -2px var(--accent); }
+.chatHeader button,
+.threadRail button:not(.threadItem) { min-inline-size: 2.25rem; min-block-size: 2.25rem; border-radius: .625rem; }
 
 .transcript {
   position: relative;
-  min-height: 31rem;
-  background:
-    radial-gradient(circle at 78% 17%, color-mix(in oklab, var(--daybook-sky) 48%, transparent), transparent 19rem),
-    radial-gradient(circle at 10% 79%, color-mix(in oklab, var(--daybook-mint) 42%, transparent), transparent 22rem);
-  scrollbar-color: var(--daybook-line-strong) transparent;
+  flex: 1 1 auto;
+  min-block-size: 8rem;
+  padding: 1.5rem .5rem;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scroll-padding-block: 1rem;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
 }
-
-.transcript::before {
-  position: absolute;
-  inset: 0;
-  opacity: .38;
-  background-image: radial-gradient(circle, var(--daybook-arc) .65px, transparent .72px);
-  background-size: 30px 30px;
-  content: "";
-  mask-image: linear-gradient(to bottom, transparent, black 22%, black 80%, transparent);
-  pointer-events: none;
+.transcriptInner {
+  display: flex;
+  flex-direction: column;
+  gap: 1.75rem;
+  inline-size: 100%;
+  max-inline-size: 45rem;
+  min-block-size: 100%;
+  margin-inline: auto;
 }
-
-.transcriptInner { position: relative; }
-.turn { position: relative; }
-.userTurn { padding-right: .2rem; }
-.assistantTurn { padding-left: 1.3rem; }
-
-.assistantTurn::before {
-  position: absolute;
-  top: .28rem;
-  left: 0;
-  width: .48rem;
-  height: .48rem;
-  border: 2px solid var(--daybook-paper);
-  border-radius: 50%;
-  background: var(--daybook-primary);
-  box-shadow: 0 0 0 .25rem color-mix(in oklab, var(--daybook-primary) 13%, transparent);
-  content: "";
-}
-
-.assistantMessage { max-width: min(100%, 46rem); }
+.turn { position: relative; min-inline-size: 0; overflow-wrap: anywhere; }
+.assistantMessage { max-inline-size: 100%; }
 .assistantMessage p { text-wrap: pretty; }
-
 .userBubble {
-  border-radius: 1.25rem .5rem 1.25rem 1.25rem;
-  color: var(--daybook-user-ink);
-  background: var(--daybook-user);
-  box-shadow: 0 .45rem 1.2rem var(--daybook-shadow);
+  max-inline-size: 85%;
+  padding: 1rem;
+  border-radius: .75rem;
+  color: var(--foreground);
+  background: var(--surface-raised);
+  box-shadow: none;
 }
-
-.progressTurn { padding-left: .9rem; }
+.userBubble > p:last-child { font-size: 1rem; line-height: 1.625; }
 
 .progressFlow {
-  position: relative;
-  width: min(100%, 43rem);
-  min-height: 4.25rem;
-  border-radius: 1.25rem 1.25rem 2.3rem 1.25rem;
-  background: linear-gradient(100deg, color-mix(in oklab, var(--daybook-mint) 72%, transparent), color-mix(in oklab, var(--daybook-sky) 52%, transparent), transparent);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .75rem;
+  inline-size: 100%;
+  max-inline-size: 45rem;
+  min-block-size: 4rem;
+  margin-inline: 0;
+  padding: .75rem;
+  border: 1px solid var(--line);
+  border-radius: .75rem;
+  background: var(--surface);
+  transition: background-color 120ms ease;
 }
+.progressFlow:hover { background: var(--surface-raised); }
+.progressNode { display: grid; flex: 0 0 auto; place-items: center; inline-size: 2.25rem; block-size: 2.25rem; color: var(--muted); }
+.progressAction { display: inline-flex; align-items: center; gap: .25rem; color: var(--accent); font-size: .8125rem; font-weight: 500; line-height: 1.5385; }
 
-.progressFlow::before {
-  position: absolute;
-  top: 50%;
-  right: calc(100% - 1.15rem);
-  width: 2.2rem;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, var(--daybook-primary));
-  content: "";
+.emptyConversation { display: grid; flex: 1; align-content: center; padding-block: 1.5rem; }
+.emptyConversation > div { max-inline-size: 32rem; }
+.emptyConversation h2 { margin: 0; font-size: 1.5rem; font-weight: 600; line-height: 1.3334; letter-spacing: -.02em; }
+.emptyConversation p { max-inline-size: 29rem; margin-block-start: .75rem; color: var(--muted); font-size: .875rem; line-height: 1.7143; }
+.startingPrompts { display: grid; gap: .25rem; margin-block-start: 1.5rem; }
+.startingPrompt {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  min-block-size: 2.75rem;
+  padding: .75rem .5rem;
+  border: 0;
+  border-block-end: 1px solid var(--line);
+  border-radius: 0;
+  color: var(--foreground);
+  background: transparent;
+  font-size: .875rem;
+  font-weight: 400;
+  line-height: 1.4286;
+  text-align: start;
+  transition: background-color 120ms ease;
 }
+.startingPrompt span { flex: 1; }
+.startingPrompt:hover { background: var(--surface-raised); }
 
-.progressNode { box-shadow: 0 0 0 .28rem color-mix(in oklab, var(--daybook-primary) 10%, transparent); }
-
-.emptyConversation { position: relative; min-height: 27rem; }
-.emptyConversation > div { position: relative; max-width: 31rem; }
-.emptyMascot { position: relative; z-index: 1; }
-.emptyConversation h2 {
-  font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif;
-  font-size: 1.65rem;
-  font-weight: 560;
-}
-
-.emptyConversation > div::before,
-.emptyConversation > div::after {
-  position: absolute;
-  top: 2.15rem;
-  left: 50%;
-  width: min(23rem, 86vw);
-  height: 7.5rem;
-  border: 1px solid var(--daybook-arc);
-  border-radius: 50%;
-  content: "";
-  transform: translateX(-50%) rotate(-7deg);
-  pointer-events: none;
-}
-
-.emptyConversation > div::after {
-  top: 3.7rem;
-  width: min(17rem, 68vw);
-  height: 5rem;
-  opacity: .72;
-  transform: translateX(-50%) rotate(6deg);
-}
-.emptyOrb { width: 3.35rem; height: 3.35rem; }
-
-.composerDock {
-  position: relative;
-  border-top: 0;
-  padding-block: .7rem .9rem;
-  background: linear-gradient(180deg, transparent, var(--daybook-paper-soft) 42%);
-  backdrop-filter: none;
-}
-
-.queueDock {
-  position: relative;
-  width: min(100% - 1.5rem, 48rem);
-  margin: 0 auto .15rem;
-  padding-top: .25rem;
-}
-
-.queueCard {
-  overflow: hidden;
-  border: 1px solid var(--daybook-line);
-  border-radius: 1.35rem 1.35rem 2rem 1.35rem;
-  background:
-    linear-gradient(115deg, color-mix(in oklab, var(--daybook-mint) 48%, var(--daybook-paper)), var(--daybook-paper) 52%, color-mix(in oklab, var(--daybook-sky) 35%, var(--daybook-paper)));
-  box-shadow: 0 .6rem 1.8rem var(--daybook-shadow);
-  backdrop-filter: blur(16px);
-}
-
-.composerWidth { position: relative; }
-
+.composerDock { position: relative; flex: 0 0 auto; padding: .5rem; background: var(--background); }
+.composerWidth { inline-size: 100%; max-inline-size: 45rem; margin-inline: auto; }
 .composer {
   position: relative;
-  overflow: hidden;
-  border: 0;
-  border-radius: 1.6rem 1.6rem 2.8rem 1.6rem;
-  background: var(--daybook-paper);
-  box-shadow: 0 .8rem 2.4rem var(--daybook-shadow), inset 0 0 0 1px var(--daybook-line);
-  transition: box-shadow 180ms cubic-bezier(.2,.8,.2,1), background-color 180ms ease;
+  padding: .5rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 1rem;
+  background: var(--surface);
+  box-shadow: 0 2px 8px rgb(24 23 21 / .06), 0 12px 32px rgb(24 23 21 / .04);
 }
-
-.composer:focus-within {
-  box-shadow: 0 .9rem 2.6rem var(--daybook-shadow), inset 0 0 0 1px var(--daybook-primary), 0 0 0 .22rem color-mix(in oklab, var(--daybook-primary) 10%, transparent);
+:global(:root[data-theme="dark"]) .composer { box-shadow: 0 8px 32px rgb(0 0 0 / .24); }
+.composerField textarea {
+  field-sizing: content;
+  min-block-size: 2.75rem;
+  max-block-size: min(15rem, 35dvh);
+  padding: .625rem .75rem;
+  color: var(--foreground);
+  font-size: 1rem;
+  line-height: 1.625;
+  overflow-y: auto;
 }
+.composerField textarea::placeholder { color: var(--muted); opacity: 1; }
+.composerToolbar { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: flex-end; gap: .5rem; padding: .5rem; }
+.composerOptions { display: flex; flex: 1 1 24rem; flex-wrap: wrap; align-items: center; gap: .5rem; min-inline-size: 0; }
+.composerOptions button,
+.composerOptions select { min-block-size: 2.25rem; min-inline-size: 2.25rem; max-inline-size: 100%; border-radius: .625rem; font-size: .8125rem; font-weight: 500; line-height: 1.5385; }
+.composerOptions select { border: 1px solid var(--line-strong); }
+.composerActions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: .5rem; margin-inline-start: auto; }
+.composerActions > button { min-inline-size: 2.75rem; min-block-size: 2.75rem; border-radius: .625rem; }
+.sendButton { display: grid; flex: 0 0 auto; place-items: center; color: var(--primary-ink); background: var(--primary); transition: background-color 120ms ease; }
+.sendButton:hover:not(:disabled) { background: var(--primary-hover); }
+.sendButton:active:not(:disabled) { background: var(--primary-pressed); }
+.composerField button:disabled,
+.composerOptions button:disabled,
+.composerActions > button:disabled,
+.composerOptions select:disabled,
+.composerField textarea:disabled,
+.queueCard button:disabled { color: var(--muted); background: var(--surface-raised); opacity: 1; cursor: not-allowed; }
 
-.composer textarea { padding-right: 3.7rem; color: var(--daybook-ink); }
-
-.composerAura {
-  position: absolute;
-  z-index: 1;
-  top: .72rem;
-  right: 1rem;
-  display: grid;
-  width: 2.2rem;
-  height: 2.2rem;
-  place-items: center;
-  border-radius: 50%;
-  color: var(--daybook-orb-ink);
-  background: linear-gradient(145deg, var(--daybook-apricot), var(--daybook-primary));
-  box-shadow: 0 .35rem 1rem color-mix(in oklab, var(--daybook-apricot) 24%, transparent);
-  pointer-events: none;
-}
-
-.mobileConversationSheet {
-  color: var(--daybook-ink);
-  background: var(--daybook-paper);
-}
+.queueDock { flex: 0 1 auto; min-block-size: 0; max-block-size: min(18rem, 30dvh); inline-size: calc(100% - 1rem); max-inline-size: 45rem; margin: .25rem auto; overflow-y: auto; }
+.queueCard { border: 1px solid var(--line); border-radius: .75rem; background: var(--surface); }
+.queueCard > ol { max-block-size: none; }
+.queueCard > ol > li { border: 0; border-block-end: 1px solid var(--line); border-radius: 0; background: transparent; }
+.mobileConversationSheet { color: var(--foreground); background: var(--surface); }
+.dialogScrim { background: rgb(12 12 12 / .4); }
+:global(:root[data-theme="dark"]) .dialogScrim { background: rgb(12 12 12 / .6); }
 
 .workspace button:focus-visible,
 .workspace a:focus-visible,
 .workspace textarea:focus-visible,
-.workspace select:focus-visible {
-  outline: 2px solid var(--daybook-primary);
-  outline-offset: 2px;
-}
+.workspace select:focus-visible,
+.workspace summary:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; box-shadow: 0 0 0 3px var(--background); }
+.composerField :is(button, textarea):focus-visible,
+.composerOptions :is(button, select):focus-visible,
+.composerActions > button:focus-visible,
+.queueCard :is(button, textarea):focus-visible,
+.mobileConversationSheet button:focus-visible,
+.workspace :global(.command-details) :focus-visible { box-shadow: 0 0 0 3px var(--surface); }
 
-@keyframes daybookDrift {
-  from { transform: translate3d(-.35rem, -.45rem, 0); opacity: .5; }
-  to { transform: translate3d(.4rem, .5rem, 0); opacity: 1; }
+@media (max-width: 63.999rem) {
+  .workspace { padding: 1rem 1.5rem .5rem; }
 }
-
-@keyframes daybookOrbit {
-  50% { transform: scale(1.08); opacity: .62; }
-}
-
-@media (max-width: 64rem) {
+@media (max-width: 47.999rem) {
   .workspace { padding-inline: 1rem; }
-  .conversationLayout { margin-top: .6rem; }
-  .chatShell { border-radius: 1.45rem 3rem 1.45rem 1.45rem; }
+  .pageIdentity h1 { font-size: 1.5rem; line-height: 1.3334; }
+  .topbar { padding-block-end: .5rem; }
+  .chatHeader { padding-inline: .5rem; }
+  .conversationIcon { display: none; }
+  .transcript { padding-block: 1rem; }
+  .emptyConversation { padding-block: 1rem; }
+  .emptyConversation h2 { font-size: 1.25rem; line-height: 1.4; }
+  .startingPrompts { margin-block-start: 1rem; }
+  .composerOptions { flex-basis: 100%; }
+  .composerActions { inline-size: 100%; }
+  .composerToolbar { padding: .25rem; }
+  .userBubble { max-inline-size: 90%; }
 }
 
-@media (max-width: 40rem) {
-  .workspace { padding: .85rem .55rem 0; }
-  .topbar { padding-inline: .45rem; }
-  .topbar::after { margin-left: 3rem; }
-  .pageOrb { width: 2.4rem; height: 2.4rem; }
-  .pageIdentity h1 { font-size: 1.55rem; }
-  .pageIdentity p { margin-top: .2rem; font-size: .75rem; line-height: 1.35rem; }
-  .chatShell { border-radius: 1.2rem 2.25rem 1.2rem 1.2rem; }
-  .chatHeader { min-height: 3.8rem; padding-inline: .55rem; }
-  .transcript { min-height: calc(100svh - 18rem); padding-inline: .85rem; }
-  .assistantTurn { padding-left: .95rem; }
-  .progressTurn { padding-left: 0; }
-  .progressFlow { margin-left: 0; border-radius: 1rem 1rem 1.8rem 1rem; }
-  .progressFlow::before { display: none; }
-  .composerDock { padding-inline: .45rem; }
-  .queueDock { width: calc(100% - .9rem); }
-  .composer { border-radius: 1.15rem 1.15rem 2rem 1.15rem; }
-  .composerAura { display: none; }
-  .composer textarea { padding-right: 1rem; }
+/* Phone toolbars wrap, and a long draft may outgrow the remaining viewport.
+   Keep that content in document flow so the shell reserves the dock space
+   after the composer, including in short windows and at larger text sizes. */
+@media (max-height: 44rem), (max-width: 47.999rem) {
+  .workspace { block-size: auto; min-block-size: calc(100dvh - var(--app-header-height, 4rem) - var(--app-dock-height, 0rem)); }
+  .conversationLayout { flex: auto; }
+  .transcript { flex: auto; min-block-size: 12rem; max-block-size: 42dvh; }
+  .threadList { max-block-size: 55dvh; }
+  .emptyConversation { padding-block: .5rem; }
 }
-
+@media (pointer: coarse) {
+  .chatHeader button,
+  .threadRail button:not(.threadItem),
+  .startingPrompt,
+  .composerField button,
+  .composerOptions button,
+  .composerActions > button,
+  .composerOptions select,
+  .mobileConversationSheet button { min-inline-size: 3rem; min-block-size: 3rem; }
+}
 @media (prefers-reduced-motion: reduce) {
-  .ambientField span,
-  .pageOrb::after,
-  .intelligenceOrb::after,
-  .emptyOrb::after { animation: none; }
+  .workspace *,
+  .workspace *::before,
+  .workspace *::after { transition: none !important; animation: none !important; scroll-behavior: auto; }
+}
+@media (forced-colors: active) {
   .composer,
-  .threadItem,
-  .progressFlow { transition: none; }
-  .workspace :global(.animate-pulse),
-  .workspace :global(.animate-spin) { animation: none !important; }
+  .progressFlow,
+  .queueCard,
+  .viewSwitch { border-color: CanvasText; box-shadow: none; }
+  .threadItemActive::before { background: Highlight; }
+  .viewSwitch button[aria-pressed="true"] { border-block-end: 2px solid Highlight; box-shadow: none; }
+  .workspace :focus-visible { outline-color: Highlight; box-shadow: 0 0 0 3px Canvas; }
 }

@@ -1,6 +1,6 @@
 # Quality, validation and rollout plan
 
-**Implementation quality gates; current revamp work is preparation only.** The owner selected ATLAS and authorized implementation after the operational follow-ups. No revamp application tests or deployments were run by this documentation update. The baseline is `origin/main` `89f65c2f`. Validate the complete experience, including slow, stale, interrupted and inaccessible states; design screenshots do not establish functional, accessibility or performance readiness.
+**Implementation quality gates.** Current progress and observed results are tracked in [implementation evidence](IMPLEMENTATION.md). The owner selected ATLAS and authorized implementation after the operational follow-ups. No revamp application tests or deployments were run by this documentation update. The original planning baseline was `89f65c2f`; implementation starts from `origin/main` `dc1cfe6e`. Validate the complete experience, including slow, stale, interrupted and inaccessible states; design screenshots do not establish functional, accessibility or performance readiness.
 
 ## Definition of a completed page family
 
@@ -101,4 +101,4 @@ Rollback must not erase work created during the migration. Prefer compatible add
 | Deployment/configuration may differ from source; production credentials are owner-held | Release owner verifies actual availability, readiness and credential access through the existing promotion process; locally verified implementation alone is not a deployment claim |
 | Effort and schedule depend on asset/device proof | Re-estimate after Phase 0 and a representative vertical slice; report milestones and remaining evidence rather than invented dates |
 
-ATLAS selection is settled on 3 October 2026. The remaining decisions concern asset inspection, original-character production fidelity, measurable performance and functional scope. Implementation is authorized after the operational follow-ups, with current work limited to preparation. Production promotion remains contingent on the documented release evidence and the owner-held production credentials/signing materials; report a pending promotion honestly while completing all independent work.
+ATLAS selection is settled on 3 October 2026. The remaining decisions concern asset inspection, original-character production fidelity, measurable performance and functional scope. Implementation is authorized after the operational follow-ups, with the first web presentation slice now in progress. Production promotion remains contingent on the documented release evidence and the owner-held production credentials/signing materials; report a pending promotion honestly while completing all independent work.
