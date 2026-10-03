@@ -1047,3 +1047,32 @@ differential cases include sparse arrays, prototypes, number boundaries and medi
 receipts. All 32 state cases and 12 server commitment cases pass, together with
 strict lint and focused TypeScript (`meetings-compact-verified.log`). The budget
 remains unchanged; acceptance still requires this committed head's hosted build.
+
+PR [#35](https://github.com/benniejoseph/OmniAgentOS/pull/35) merged as
+`4f839462b7bb0ed82c15ad8daf63a210221aedea`. All ten hosted checks passed on
+`11ee6f225f5b743ee4c7c57cd280063cca9e3791`, including the unchanged Meetings
+route budget, full quality, PostgreSQL integration and browser coverage.
+The compact validator resolves both earlier build failures. No production
+migration, Calendar action or deployment was performed.
+
+## Customer Accounts list and dossier — 4 October 2026
+
+Customer Accounts now presents six independently recoverable sources with exact
+account, fact, source and revision identities. Failed reads retain labelled
+snapshots; forbidden sources clear inaccessible records. A single action gate
+binds writes to the reviewed account and submitted draft, keeps accepted receipts
+separate from failed refreshes, and fences old selection/owner/disposal responses.
+Existing restricted CRM actions remain restricted. Canonical approval links carry
+the exact dossier return path, and conflicting evidence is shown without silently
+choosing a fact.
+
+The final external Chrome suite passed 129 assertions and six scoped axe scans
+across desktop/phone themes, long content, 320px, 200% text, forced colors, keyboard
+focus and recovery states. Five desktop synthetic writes were intercepted; phone
+performed none. No live CRM, OAuth, provider or execution effect occurred. Saved
+representative images were reviewed. Sixteen focused Accounts cases pass; the
+combined Meetings/Accounts run passed 52 cases with strict lint and focused
+TypeScript. Evidence is in `ui-validation/accounts-final`,
+`meetings-accounts-final-unit.log` and `meetings-accounts-final-lint-types.log`.
+Hosted checks and the unchanged route budget remain required on the committed
+Accounts head.
