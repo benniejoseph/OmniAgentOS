@@ -365,6 +365,7 @@ async function runProcess(script: Script, baseUrl: string, overrides: Record<str
       const child = spawn(process.execPath, [path.resolve("scripts", script)], {
         cwd: process.cwd(),
         env: {
+          NODE_ENV: "test",
           PATH: process.env.PATH,
           BASE_URL: baseUrl,
           EXPECTED_REVISION: "test-revision",
