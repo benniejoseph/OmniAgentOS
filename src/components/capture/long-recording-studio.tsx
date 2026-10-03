@@ -5,7 +5,6 @@ import {
   ChevronRight,
   CirclePause,
   CirclePlay,
-  Clock3,
   Copy,
   Headphones,
   Loader2,
@@ -15,13 +14,19 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { clsx } from "clsx";
 import type {
   CaptureRecordingStatus,
   RequestCaptureRecordingMetadataDetail,
   RequestCaptureRecordingSummary,
 } from "@/lib/capture/types";
+import styles from "./long-recording-studio.module.css";
+import {
+  createCaptureRecordingStartAttempt,
+  startCaptureRecording,
+  type CaptureRecordingStartAttempt,
+} from "./long-recording-start";
 
 type RecordingStatus = CaptureRecordingStatus;
 type RecordingSummary = RequestCaptureRecordingSummary;
@@ -62,7 +67,21 @@ type RecordingPhase =
   | "complete"
   | "error";
 
-type Props = {
+export type LongRecordingDraft = {
+  title: string;
+  tags: string;
+  deleteRawAudioAfterProcessing: boolean;
+};
+
+type RecordingDraftProps = {
+  draft: LongRecordingDraft;
+  onDraftChange: Dispatch<SetStateAction<LongRecordingDraft>>;
+} | {
+  draft?: undefined;
+  onDraftChange?: undefined;
+};
+
+type Props = RecordingDraftProps & {
   disabledReason?: string;
   onJob?: (job: {
     id: string;
@@ -159,27 +178,37 @@ export function captureRecordingMetadataDetailIsSafe(
   return recording.segments.every(isRecordingMetadataSegment);
 }
 
-export function LongRecordingStudio({ disabledReason, onJob, onIndexed }: Props) {
+export function LongRecordingStudio({ disabledReason, onJob, onIndexed, draft, onDraftChange }: Props) {
   const [phase, setPhase] = useState<RecordingPhase>("idle");
   const [recordingId, setRecordingId] = useState<string>();
-  const [title, setTitle] = useState("");
-  const [tags, setTags] = useState("");
-  const [deleteRawAudioAfterProcessing, setDeleteRawAudioAfterProcessing] =
-    useState(false);
+  const [localDraft, setLocalDraft] = useState<LongRecordingDraft>({
+    title: "",
+    tags: "",
+    deleteRawAudioAfterProcessing: false,
+  });
+  const { title, tags, deleteRawAudioAfterProcessing } = draft ?? localDraft;
+  const setRecordingDraft = onDraftChange ?? setLocalDraft;
   const [elapsedMs, setElapsedMs] = useState(0);
   const [level, setLevel] = useState(0);
   const [uploadedSegments, setUploadedSegments] = useState(0);
   const [pendingSegments, setPendingSegments] = useState(0);
   const [liveTranscript, setLiveTranscript] = useState("");
   const [error, setError] = useState<string>();
+  const [cleanupWarning, setCleanupWarning] = useState<string>();
   const [recordings, setRecordings] = useState<RecordingSummary[]>([]);
   const [recordingsError, setRecordingsError] = useState<string>();
-  const [loadingRecordings, setLoadingRecordings] = useState(false);
+  const [loadingRecordings, setLoadingRecordings] = useState(true);
+  const [recordingsLoaded, setRecordingsLoaded] = useState(false);
   const [viewingRecording, setViewingRecording] = useState<RecordingDetail>();
   const [viewingMetadataRecording, setViewingMetadataRecording] =
     useState<RecordingMetadataDetail>();
   const [loadingDetailId, setLoadingDetailId] = useState<string>();
   const [visibleSegments, setVisibleSegments] = useState(8);
+  const [transcriptFeedback, setTranscriptFeedback] = useState<{
+    message: string;
+    failed: boolean;
+  }>();
+  const studioId = useId();
 
   const recorderRef = useRef<MediaRecorder | undefined>(undefined);
   const streamRef = useRef<MediaStream | undefined>(undefined);
@@ -198,6 +227,8 @@ export function LongRecordingStudio({ disabledReason, onJob, onIndexed }: Props)
   const recordingsRef = useRef<RecordingSummary[]>([]);
   const recordingsControllerRef = useRef<AbortController | null>(null);
   const detailControllerRef = useRef<AbortController | null>(null);
+  const startAttemptRef = useRef<CaptureRecordingStartAttempt | null>(null);
+  const mountedRef = useRef(true);
 
   const stopLocalMedia = useCallback(() => {
     if (timerRef.current) window.clearInterval(timerRef.current);
@@ -268,6 +299,7 @@ export function LongRecordingStudio({ disabledReason, onJob, onIndexed }: Props)
         return "superseded";
       }
       replaceRecordings(nextRecordings);
+      setRecordingsLoaded(true);
       return "success";
     } catch (loadError) {
       if (!captureRecordingRequestIsCurrent(recordingsControllerRef.current, controller)) {
@@ -300,31 +332,17 @@ export function LongRecordingStudio({ disabledReason, onJob, onIndexed }: Props)
     };
   }, [loadRecordings]);
 
-  useEffect(() => () => {
-    stopLocalMedia();
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      startAttemptRef.current?.cancel();
+      startAttemptRef.current = null;
+      stopLocalMedia();
+    };
   }, [stopLocalMedia]);
 
-  const detailModalOpen = Boolean(viewingRecording || viewingMetadataRecording);
-
-  useEffect(() => {
-    if (!detailModalOpen) return;
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setViewingRecording(undefined);
-        setViewingMetadataRecording(undefined);
-      }
-    };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => {
-      window.removeEventListener("keydown", closeOnEscape);
-      document.body.style.overflow = previousOverflow;
-    };
-  }, [detailModalOpen]);
-
   async function startRecording() {
-    let createdRecordingId: string | undefined;
     setError(undefined);
     if (disabledReason) {
       setError(disabledReason);
@@ -335,90 +353,93 @@ export function LongRecordingStudio({ disabledReason, onJob, onIndexed }: Props)
       return;
     }
 
+    startAttemptRef.current?.cancel();
+    stopLocalMedia();
+    const attempt = createCaptureRecordingStartAttempt();
+    startAttemptRef.current = attempt;
     setPhase("requesting");
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
+      await startCaptureRecording({
+        attempt,
+        requestMicrophone: () => navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        }),
+        createRecording: () => fetch("/api/capture/recordings", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            title: title.trim() || `Conversation · ${new Date().toLocaleDateString()}`,
+            language: "en-US",
+            tags: splitTags(tags),
+            metadata: { captureMode: "long_conversation" },
+          }),
+        }),
+        discardRecording: async (id) => {
+          const response = await fetch(`/api/capture/recordings/${encodeURIComponent(id)}`, {
+            method: "DELETE",
+            headers: { "idempotency-key": crypto.randomUUID() },
+          });
+          if (!response.ok) throw new Error("Recording cleanup could not be confirmed.");
+        },
+        onCleanupIssue: (message) => {
+          if (mountedRef.current) setCleanupWarning(message);
+        },
+        activateRecorder: (stream, createdId) => {
+          streamRef.current = stream;
+          const mimeType = preferredAudioMimeType();
+          const recorder = new MediaRecorder(stream, {
+            ...(mimeType ? { mimeType } : {}),
+            audioBitsPerSecond: 64_000,
+          });
+          recorderRef.current = recorder;
+          setRecordingId(createdId);
+          setLiveTranscript("");
+          setUploadedSegments(0);
+          setPendingSegments(0);
+          setElapsedMs(0);
+          segmentIndexRef.current = 0;
+          uploadQueueRef.current = Promise.resolve();
+          uploadErrorRef.current = undefined;
+          discardRef.current = false;
+          // This runs after a user-triggered async permission and API flow.
+          startedAtRef.current = Date.now();
+          segmentStartedAtRef.current = Date.now();
+          totalPausedMsRef.current = 0;
+
+          recorder.ondataavailable = attempt.guard((event: BlobEvent) => {
+            if (!event.data.size || discardRef.current) return;
+            const index = segmentIndexRef.current++;
+            const durationMs = Math.max(1, Date.now() - segmentStartedAtRef.current);
+            segmentStartedAtRef.current = Date.now();
+            queueSegment(createdId, index, durationMs, event.data);
+          });
+          recorder.onstop = () => {
+            stopResolverRef.current?.();
+            stopResolverRef.current = undefined;
+          };
+          recorder.onerror = attempt.guard(() => {
+            uploadErrorRef.current = new Error("The browser stopped the recording unexpectedly.");
+            setError(uploadErrorRef.current.message);
+            setPhase("error");
+          });
+
+          startMeter(stream);
+          timerRef.current = window.setInterval(attempt.guard(() => {
+            const paused = pausedAtRef.current ? Date.now() - pausedAtRef.current : 0;
+            setElapsedMs(Date.now() - startedAtRef.current - totalPausedMsRef.current - paused);
+          }), 250);
+          recorder.start(segmentDurationMs);
+          setPhase("recording");
         },
       });
-      streamRef.current = stream;
-      const response = await fetch("/api/capture/recordings", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          title: title.trim() || `Conversation · ${new Date().toLocaleDateString()}`,
-          language: "en-US",
-          tags: splitTags(tags),
-          metadata: { captureMode: "long_conversation" },
-        }),
-      });
-      const payload = (await response.json().catch(() => ({}))) as {
-        recording?: { id: string };
-        error?: string;
-      };
-      const createdId = payload.recording?.id;
-      if (!response.ok || !createdId) {
-        throw new Error(payload.error || "The recording could not be started.");
-      }
-      createdRecordingId = createdId;
-
-      const mimeType = preferredAudioMimeType();
-      const recorder = new MediaRecorder(stream, {
-        ...(mimeType ? { mimeType } : {}),
-        audioBitsPerSecond: 64_000,
-      });
-      recorderRef.current = recorder;
-      setRecordingId(createdId);
-      setLiveTranscript("");
-      setUploadedSegments(0);
-      setPendingSegments(0);
-      setElapsedMs(0);
-      segmentIndexRef.current = 0;
-      uploadQueueRef.current = Promise.resolve();
-      uploadErrorRef.current = undefined;
-      discardRef.current = false;
-      // This runs after a user-triggered async permission and API flow.
-      // eslint-disable-next-line react-hooks/purity
-      startedAtRef.current = Date.now();
-      // eslint-disable-next-line react-hooks/purity
-      segmentStartedAtRef.current = Date.now();
-      totalPausedMsRef.current = 0;
-
-      recorder.ondataavailable = (event) => {
-        if (!event.data.size || discardRef.current) return;
-        const index = segmentIndexRef.current++;
-        const durationMs = Math.max(1, Date.now() - segmentStartedAtRef.current);
-        segmentStartedAtRef.current = Date.now();
-        queueSegment(createdId, index, durationMs, event.data);
-      };
-      recorder.onstop = () => {
-        stopResolverRef.current?.();
-        stopResolverRef.current = undefined;
-      };
-      recorder.onerror = () => {
-        uploadErrorRef.current = new Error("The browser stopped the recording unexpectedly.");
-        setError(uploadErrorRef.current.message);
-        setPhase("error");
-      };
-
-      startMeter(stream);
-      timerRef.current = window.setInterval(() => {
-        const paused = pausedAtRef.current ? Date.now() - pausedAtRef.current : 0;
-        setElapsedMs(Date.now() - startedAtRef.current - totalPausedMsRef.current - paused);
-      }, 250);
-      recorder.start(segmentDurationMs);
-      setPhase("recording");
     } catch (startError) {
+      if (!mountedRef.current || startAttemptRef.current !== attempt || !attempt.isCurrent()) return;
+      attempt.cancel();
       stopLocalMedia();
-      if (createdRecordingId) {
-        void fetch(`/api/capture/recordings/${encodeURIComponent(createdRecordingId)}`, {
-          method: "DELETE",
-          headers: { "idempotency-key": crypto.randomUUID() },
-        }).catch(() => undefined);
-      }
       setError(startError instanceof Error ? startError.message : "Microphone access was not granted.");
       setPhase("error");
     }
@@ -524,6 +545,8 @@ export function LongRecordingStudio({ disabledReason, onJob, onIndexed }: Props)
   async function discardRecording() {
     const id = recordingId;
     discardRef.current = true;
+    startAttemptRef.current?.cancel();
+    startAttemptRef.current = null;
     const recorder = recorderRef.current;
     if (recorder && recorder.state !== "inactive") {
       const stopped = new Promise<void>((resolve) => {
@@ -588,6 +611,7 @@ export function LongRecordingStudio({ disabledReason, onJob, onIndexed }: Props)
     detailControllerRef.current = controller;
     setLoadingDetailId(id);
     setError(undefined);
+    setTranscriptFeedback(undefined);
     setViewingRecording(undefined);
     setViewingMetadataRecording(undefined);
     try {
@@ -653,7 +677,15 @@ export function LongRecordingStudio({ disabledReason, onJob, onIndexed }: Props)
 
   async function copyTranscript() {
     if (!viewingRecording?.transcript) return;
-    await navigator.clipboard.writeText(viewingRecording.transcript);
+    try {
+      await navigator.clipboard.writeText(viewingRecording.transcript);
+      setTranscriptFeedback({ message: "Transcript copied.", failed: false });
+    } catch {
+      setTranscriptFeedback({
+        message: "The transcript could not be copied. You can select the text or download it instead.",
+        failed: true,
+      });
+    }
   }
 
   function downloadTranscript() {
@@ -667,6 +699,8 @@ export function LongRecordingStudio({ disabledReason, onJob, onIndexed }: Props)
   }
 
   function resetDraft() {
+    startAttemptRef.current?.cancel();
+    startAttemptRef.current = null;
     stopLocalMedia();
     setPhase("idle");
     setRecordingId(undefined);
@@ -674,9 +708,9 @@ export function LongRecordingStudio({ disabledReason, onJob, onIndexed }: Props)
     setUploadedSegments(0);
     setPendingSegments(0);
     setLiveTranscript("");
-    setTitle("");
-    setTags("");
-    setDeleteRawAudioAfterProcessing(false);
+    if (mountedRef.current) {
+      setRecordingDraft({ title: "", tags: "", deleteRawAudioAfterProcessing: false });
+    }
     setError(undefined);
   }
 
@@ -701,191 +735,257 @@ export function LongRecordingStudio({ disabledReason, onJob, onIndexed }: Props)
   const active = ["requesting", "recording", "paused", "stopping", "indexing"].includes(phase);
 
   return (
-    <div className="grid gap-6 2xl:grid-cols-[minmax(0,1fr)_22rem]">
-      <div className="min-w-0 border-t border-line pt-5">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-end">
-          <label className="min-w-0 flex-1 text-xs font-semibold text-muted">
-            Conversation title
-            <input
-              value={title}
-              onChange={(event) => setTitle(event.target.value)}
-              disabled={active}
-              maxLength={240}
-              placeholder="Weekly project review"
-              className="mt-2 w-full rounded-md border border-line bg-background px-3 py-3 text-sm text-foreground outline-none focus:border-primary disabled:opacity-60"
-            />
-          </label>
-          <label className="min-w-0 flex-1 text-xs font-semibold text-muted">
-            Tags
-            <input
-              value={tags}
-              onChange={(event) => setTags(event.target.value)}
-              disabled={active}
-              placeholder="meeting, research, project"
-              className="mt-2 w-full rounded-md border border-line bg-background px-3 py-3 text-sm text-foreground outline-none focus:border-primary disabled:opacity-60"
-            />
-          </label>
-        </div>
-
-        <label className="mt-4 flex items-start gap-3 rounded-lg border border-line bg-background p-3 text-sm">
-          <input
-            type="checkbox"
-            checked={deleteRawAudioAfterProcessing}
-            onChange={(event) => setDeleteRawAudioAfterProcessing(event.currentTarget.checked)}
-            disabled={active}
-            className="mt-0.5 size-4 accent-primary"
-          />
-          <span>
-            <strong className="block text-xs">Delete raw audio after processing</strong>
-            <small className="mt-1 block text-xs leading-5 text-muted">The timestamped transcript and cited outputs remain durable; original audio segments are deleted only after every transcript checkpoint succeeds.</small>
-          </span>
-        </label>
-
-        <div className="mt-5 overflow-hidden rounded-xl border border-line bg-background">
-          <div className="flex min-h-48 flex-col items-center justify-center px-5 py-7 text-center">
-            <div className={clsx(
-              "relative grid size-20 place-items-center rounded-full border transition-colors",
-              phase === "recording" ? "border-danger/50 bg-danger/10 text-danger" : "border-line bg-surface-raised text-primary",
-            )}>
-              {phase === "requesting" || phase === "stopping" || phase === "indexing" ? (
-                <Loader2 size={30} className="animate-spin" aria-hidden="true" />
-              ) : phase === "complete" ? (
-                <CheckCircle2 size={31} aria-hidden="true" />
-              ) : (
-                <Mic size={31} aria-hidden="true" />
-              )}
-              {phase === "recording" ? <span className="absolute inset-[-9px] rounded-full border border-danger/25" aria-hidden="true" /> : null}
+    <div className={styles.studio} data-testid="long-recording-studio">
+      <div className={styles.layout}>
+        <section className={styles.recorder} aria-label="Record a conversation">
+          <div className={styles.fields}>
+            <label className={styles.field}>
+              Conversation title
+              <input
+                value={title}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  setRecordingDraft((current) => ({ ...current, title: value }));
+                }}
+                disabled={active}
+                maxLength={240}
+                placeholder="Weekly project review"
+                className={styles.input}
+              />
+            </label>
+            <div className={styles.field}>
+              <label htmlFor={`${studioId}-tags`}>Tags</label>
+              <input
+                id={`${studioId}-tags`}
+                value={tags}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  setRecordingDraft((current) => ({ ...current, tags: value }));
+                }}
+                disabled={active}
+                placeholder="meeting, research, project"
+                aria-describedby={`${studioId}-tags-help`}
+                className={styles.input}
+              />
+              <span id={`${studioId}-tags-help`} className={styles.supporting}>Separate tags with commas.</span>
             </div>
-            <p className="mt-4 text-xl font-semibold tracking-tight">
-              {recordingPhaseTitle(phase)}
-            </p>
-            <p className="mt-1 max-w-xl text-sm leading-6 text-muted">
-              {phase === "idle" || phase === "error"
-                ? "Record for up to 24 hours. Private one-minute audio checkpoints upload continuously, then diarization and cited extraction resume safely in the background."
-                : phase === "complete"
-                  ? "Audio is safely stored. Timestamping, speaker diarization, chapters, cited extraction, and indexing will continue if you close this page."
-                  : `${formatDuration(elapsedMs)} · ${uploadedSegments} stored${pendingSegments ? ` · ${pendingSegments} uploading` : ""}`}
-            </p>
+          </div>
+
+          <label className={styles.retention}>
+            <input
+              type="checkbox"
+              checked={deleteRawAudioAfterProcessing}
+              onChange={(event) => {
+                const checked = event.currentTarget.checked;
+                setRecordingDraft((current) => ({ ...current, deleteRawAudioAfterProcessing: checked }));
+              }}
+              disabled={active}
+              aria-labelledby={`${studioId}-retention-label`}
+              aria-describedby={`${studioId}-retention-help`}
+              className={styles.checkbox}
+            />
+            <span>
+              <strong id={`${studioId}-retention-label`}>Delete raw audio after processing</strong>
+              <span id={`${studioId}-retention-help`} className={styles.supporting}>The timestamped transcript and cited outputs are kept. Original audio segments are deleted only after every transcript checkpoint succeeds.</span>
+            </span>
+          </label>
+          {active ? <p className={styles.supporting}>Title, tags, and audio retention are fixed for this recording.</p> : null}
+
+          <div className={styles.stage}>
+            <div className={styles.phaseHeader}>
+              <span className={clsx(styles.phaseIcon, phase === "recording" && styles.recordingIcon)}>
+                {phase === "requesting" || phase === "stopping" || phase === "indexing" ? (
+                  <Loader2 size={24} className={styles.spinner} aria-hidden="true" />
+                ) : phase === "complete" ? (
+                  <CheckCircle2 size={24} aria-hidden="true" />
+                ) : (
+                  <Mic size={24} aria-hidden="true" />
+                )}
+              </span>
+              <div className={styles.phaseText}>
+                <h3 className={styles.sectionTitle} aria-live="polite">{recordingPhaseTitle(phase)}</h3>
+                <p className={styles.reading}>{recordingPhaseDescription(phase)}</p>
+              </div>
+            </div>
+
+            {phase !== "idle" && phase !== "requesting" ? (
+              <dl className={styles.counters}>
+                <div><dt>Recorded time</dt><dd>{formatDuration(elapsedMs)}</dd></div>
+                <div><dt>Segments uploaded</dt><dd>{uploadedSegments}</dd></div>
+                <div><dt>Uploads pending</dt><dd>{pendingSegments}</dd></div>
+              </dl>
+            ) : null}
+            {recordingId ? <p className={styles.identity}>Session ID: {recordingId}</p> : null}
+
             {phase === "recording" || phase === "paused" ? (
-              <div className="mt-4 flex h-8 w-full max-w-sm items-end justify-center gap-1" aria-label="Microphone level">
-                {Array.from({ length: 24 }, (_, index) => {
-                  const threshold = index / 28;
-                  return <span key={index} className={clsx("w-1 rounded-full transition-all", level > threshold && phase === "recording" ? "bg-primary" : "bg-line")} style={{ height: `${8 + ((index * 11) % 22)}px` }} />;
-                })}
+              <div className={styles.meterRow}>
+                <label htmlFor={`${studioId}-level`} className={styles.supporting}>
+                  {phase === "paused" ? "Recording paused" : "Microphone level"}
+                </label>
+                <meter
+                  id={`${studioId}-level`}
+                  className={styles.meter}
+                  min={0}
+                  max={1}
+                  value={phase === "recording" ? level : 0}
+                  aria-label="Microphone level"
+                />
               </div>
             ) : null}
-          </div>
 
-          <div className="flex flex-wrap items-center justify-center gap-2 border-t border-line bg-surface px-4 py-3">
-            {!active && phase !== "complete" ? (
-              <button type="button" onClick={() => void startRecording()} className="primary-button" disabled={Boolean(disabledReason)} title={disabledReason}>
-                <Mic size={16} aria-hidden="true" />Start long recording
-              </button>
-            ) : null}
-            {phase === "recording" ? (
-              <button type="button" onClick={pauseRecording} className="action-button"><CirclePause size={16} aria-hidden="true" />Pause</button>
-            ) : null}
-            {phase === "paused" ? (
-              <button type="button" onClick={resumeRecording} className="action-button"><CirclePlay size={16} aria-hidden="true" />Resume</button>
-            ) : null}
-            {phase === "recording" || phase === "paused" ? (
-              <button type="button" onClick={() => void finishRecording()} className="primary-button"><Square size={14} aria-hidden="true" />Finish and process</button>
-            ) : null}
-            {active && phase !== "indexing" ? (
-              <button type="button" onClick={() => void discardRecording()} className="action-button text-danger"><Trash2 size={15} aria-hidden="true" />Discard</button>
-            ) : null}
-            {phase === "complete" || phase === "error" ? (
-              <button type="button" onClick={resetDraft} className="action-button"><RotateCcw size={15} aria-hidden="true" />New recording</button>
-            ) : null}
-          </div>
-        </div>
-
-        {error ? <p role="alert" className="mt-3 text-sm text-danger">{error}</p> : null}
-        {liveTranscript ? (
-          <div className="mt-5 border-l-2 border-primary pl-4">
-            <div className="flex items-center gap-2 text-xs font-semibold text-muted"><Headphones size={14} aria-hidden="true" />Live transcript</div>
-            <p className="mt-2 whitespace-pre-wrap text-sm leading-7 text-foreground">{liveTranscript}</p>
-          </div>
-        ) : null}
-      </div>
-
-      <aside className="border-t border-line pt-5 2xl:border-l 2xl:border-t-0 2xl:pl-6 2xl:pt-0" aria-label="Recent recordings">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <p className="text-sm font-semibold">Recent recordings</p>
-            <p className="mt-1 text-xs text-muted">Your recordings and retained history.</p>
-          </div>
-          {loadingRecordings ? <Loader2 size={16} className="animate-spin text-muted" aria-label="Loading recordings" /> : null}
-        </div>
-        {recordingsError ? (
-          <p role="alert" className="mt-3 text-xs leading-5 text-danger">
-            {recordingsError} Recording details and actions are unavailable until history is verified.
-          </p>
-        ) : null}
-        <div className="mt-3 divide-y divide-line">
-          {recordings.length ? recordings.map((recording) => (
-            <div key={recording.id} className="group py-3">
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-medium">{recording.title}</p>
-                  <p className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-muted">
-                    <Clock3 size={12} aria-hidden="true" />
-                    {formatDuration(recording.durationMs)} · {recording.segmentCount} segments
-                  </p>
-                </div>
-                <div className="flex shrink-0 gap-1">
-                  {captureRecordingOpenMode(recording) ? (
-                    <button type="button" onClick={() => void openRecording(recording.id)} className="grid size-9 place-items-center rounded-md text-muted hover:bg-background hover:text-foreground" aria-label={`Open ${recording.title}`}>
-                      {loadingDetailId === recording.id ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <ChevronRight size={15} aria-hidden="true" />}
-                    </button>
-                  ) : null}
-                  {captureRecordingCanDelete(recording, disabledReason) ? (
-                    <button type="button" onClick={() => void deleteRecording(recording.id)} className="grid size-9 place-items-center rounded-md text-muted opacity-0 transition hover:bg-danger/10 hover:text-danger group-hover:opacity-100 focus:opacity-100" aria-label={`Delete ${recording.title}`}>
-                      <Trash2 size={14} aria-hidden="true" />
-                    </button>
-                  ) : null}
-                </div>
-              </div>
-              <p className={clsx("mt-2 text-xs font-semibold", recording.status === "failed" ? "text-danger" : recording.status === "ready" ? "text-success" : "text-warning")}>{recordingStatusLabel(recording.status)}</p>
-              {loadingRecordings ? (
-                <p className="mt-1 text-xs text-muted">Refreshing recording access…</p>
-              ) : recordingsError ? (
-                <p className="mt-1 text-xs text-muted">Recording access is not currently verified</p>
-              ) : recording.metadataDetailAvailable === true && recording.detailAvailable !== true ? (
-                <p className="mt-1 text-xs text-muted">Retained history · recording and segment metadata are available read only; transcript, audio, and actions remain with its stored owner</p>
-              ) : recording.detailAvailable !== true ? (
-                <p className="mt-1 text-xs text-muted">Retained history · transcript, audio, and actions remain with its stored owner</p>
+            <div className={styles.actions}>
+              {!active && phase !== "complete" ? (
+                <button
+                  type="button"
+                  onClick={() => void startRecording()}
+                  className={styles.primaryButton}
+                  disabled={Boolean(disabledReason)}
+                  aria-describedby={`${studioId}-consent${disabledReason ? ` ${studioId}-permission` : ""}`}
+                >
+                  <Mic size={16} aria-hidden="true" />Start long recording
+                </button>
+              ) : null}
+              {phase === "recording" ? (
+                <button type="button" onClick={pauseRecording} className={styles.button}><CirclePause size={16} aria-hidden="true" />Pause</button>
+              ) : null}
+              {phase === "paused" ? (
+                <button type="button" onClick={resumeRecording} className={styles.button}><CirclePlay size={16} aria-hidden="true" />Resume</button>
+              ) : null}
+              {phase === "recording" || phase === "paused" ? (
+                <button type="button" onClick={() => void finishRecording()} className={styles.primaryButton}><Square size={16} aria-hidden="true" />Finish and process</button>
+              ) : null}
+              {active && phase !== "indexing" ? (
+                <button type="button" onClick={() => void discardRecording()} className={clsx(styles.button, styles.dangerButton)}><Trash2 size={16} aria-hidden="true" />Discard</button>
+              ) : null}
+              {phase === "complete" || phase === "error" ? (
+                <button type="button" onClick={resetDraft} className={styles.button}><RotateCcw size={16} aria-hidden="true" />New recording</button>
               ) : null}
             </div>
-          )) : <p className="py-5 text-sm leading-6 text-muted">Finished conversations will appear here with their indexing status.</p>}
-        </div>
-      </aside>
+            <p id={`${studioId}-consent`} className={styles.supporting}>Starting asks for microphone permission. Record only with everyone’s consent. Keep this page open while recording and uploading.</p>
+            {disabledReason ? <p id={`${studioId}-permission`} className={styles.permission}>{disabledReason}</p> : null}
+          </div>
+
+          {error ? <p role="alert" className={styles.error}>{error}</p> : null}
+          {cleanupWarning ? <p role="alert" className={styles.error}>{cleanupWarning}</p> : null}
+          {liveTranscript ? (
+            <section className={styles.liveTranscript} aria-label="Transcript received so far">
+              <h4 className={styles.itemTitle}><Headphones size={16} aria-hidden="true" />Transcript received so far</h4>
+              <p className={styles.transcript}>{liveTranscript}</p>
+            </section>
+          ) : null}
+        </section>
+
+        <aside className={styles.history} aria-label="Recent recordings">
+          <div className={styles.sectionHeader}>
+            <div>
+              <h3 className={styles.sectionTitle}>Recent recordings</h3>
+              <p className={styles.supporting}>Up to six recent recordings and retained history.</p>
+            </div>
+            <button type="button" className={styles.button} onClick={() => void loadRecordings()} disabled={loadingRecordings} aria-label="Refresh recording history">
+              <RotateCcw size={16} aria-hidden="true" />Refresh
+            </button>
+          </div>
+          <p className={styles.readStatus} role="status">
+            {loadingRecordings
+              ? recordingsLoaded ? "Refreshing recording history and access… Any rows below are from the last successful snapshot." : "Loading recording history…"
+              : recordingsError
+                ? recordingsLoaded ? "History could not be refreshed. Any rows below are from the last successful snapshot." : "Recording history is unavailable."
+                : "Recording history snapshot. Refresh to check the latest status."}
+          </p>
+          {recordingsError ? (
+            <p role="alert" className={styles.error}>
+              {recordingsError} Recording details and actions are unavailable until history is verified.
+            </p>
+          ) : null}
+          {loadingDetailId ? <p className={styles.readStatus} role="status">Opening recording details…</p> : null}
+          <div className={styles.recordingList} aria-busy={loadingRecordings}>
+            {recordings.map((recording) => (
+              <article key={recording.id} className={styles.recordingRow} data-recording-id={recording.id}>
+                <div className={styles.rowHeader}>
+                  <h4 className={styles.itemTitle}>{recording.title}</h4>
+                  <div className={styles.rowActions}>
+                    {captureRecordingOpenMode(recording) ? (
+                      <button type="button" onClick={() => void openRecording(recording.id)} className={styles.iconButton} aria-label={`Open ${recording.title}`}>
+                        {loadingDetailId === recording.id ? <Loader2 size={16} className={styles.spinner} aria-hidden="true" /> : <ChevronRight size={16} aria-hidden="true" />}
+                      </button>
+                    ) : null}
+                    {captureRecordingCanDelete(recording, disabledReason) ? (
+                      <button type="button" onClick={() => void deleteRecording(recording.id)} className={clsx(styles.iconButton, styles.dangerButton)} aria-label={`Delete ${recording.title}`}>
+                        <Trash2 size={16} aria-hidden="true" />
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+                <p className={styles.identity}>Session ID: {recording.id}</p>
+                <p className={styles.supporting}>{formatDuration(recording.durationMs)} · {recording.segmentCount} segments</p>
+                <p className={clsx(styles.status, recording.status === "failed" ? styles.dangerText : recording.status === "ready" ? styles.successText : styles.supporting)}>{recordingStatusLabel(recording.status)}</p>
+                <p className={styles.supporting}>Updated {formatDateTime(recording.updatedAt)}</p>
+                {loadingRecordings ? (
+                  <p className={styles.supporting}>Refreshing recording access… Details and actions are unavailable during this check.</p>
+                ) : recordingsError ? (
+                  <p className={styles.supporting}>Recording access is not currently verified.</p>
+                ) : recording.metadataDetailAvailable === true && recording.detailAvailable !== true ? (
+                  <p className={styles.supporting}>Retained history · recording and segment metadata are available read only. Transcript, audio, and actions remain with the stored owner.</p>
+                ) : recording.detailAvailable !== true ? (
+                  <p className={styles.supporting}>Retained history · transcript, audio, and actions remain with the stored owner.</p>
+                ) : recording.manageable !== true ? (
+                  <p className={styles.supporting}>This recording can be read but cannot be deleted by this session.</p>
+                ) : disabledReason ? (
+                  <p className={styles.supporting}>Delete is unavailable: {disabledReason}</p>
+                ) : null}
+              </article>
+            ))}
+            {!recordings.length && recordingsLoaded && !loadingRecordings && !recordingsError ? (
+              <p className={styles.empty}>No recordings are available in this history yet. Saved conversations will appear here with their processing status.</p>
+            ) : null}
+          </div>
+        </aside>
+      </div>
 
       {viewingRecording ? (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-background/75 p-3 backdrop-blur-sm sm:p-6" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setViewingRecording(undefined); }}>
-          <section role="dialog" aria-modal="true" aria-labelledby="recording-detail-title" className="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-2xl">
-            <header className="flex items-start justify-between gap-4 border-b border-line px-5 py-4 sm:px-6">
-              <div className="min-w-0"><p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Recorded conversation</p><h3 id="recording-detail-title" className="mt-1 truncate text-xl font-semibold">{viewingRecording.title}</h3><p className="mt-1 text-xs text-muted">{formatDuration(viewingRecording.durationMs)} · {viewingRecording.segmentCount} audio segments · {recordingStatusLabel(viewingRecording.status)}</p></div>
-              <button type="button" onClick={() => setViewingRecording(undefined)} className="grid size-10 shrink-0 place-items-center rounded-md hover:bg-surface-raised" aria-label="Close recording"><X size={17} /></button>
-            </header>
-            <div className="grid min-h-0 flex-1 overflow-y-auto lg:grid-cols-[minmax(0,1.3fr)_minmax(16rem,.7fr)]">
-              <div className="p-5 sm:p-6">
-                <div className="flex flex-wrap items-center justify-between gap-3"><h4 className="font-semibold">Full transcript</h4><div className="flex gap-2"><button type="button" onClick={() => void copyTranscript()} className="action-button"><Copy size={14} />Copy</button><button type="button" onClick={downloadTranscript} className="action-button"><Headphones size={14} />Download text</button></div></div>
-                <div className="mt-4 max-h-[58vh] overflow-y-auto whitespace-pre-wrap rounded-lg bg-background p-4 text-sm leading-7">{viewingRecording.transcript || "No completed transcript is available yet. Stored audio remains available by segment."}</div>
+        <RecordingDialog labelledBy={`${studioId}-detail-title`} onClose={() => setViewingRecording(undefined)}>
+          <header className={styles.dialogHeader}>
+            <div>
+              <p className={styles.supporting}>Recorded conversation</p>
+              <h3 id={`${studioId}-detail-title`} className={styles.dialogTitle}>{viewingRecording.title}</h3>
+              <p className={styles.identity}>Session ID: {viewingRecording.id}</p>
+              <p className={styles.supporting}>{formatDuration(viewingRecording.durationMs)} · {viewingRecording.segmentCount} audio segments · {recordingStatusLabel(viewingRecording.status)}</p>
+              <p className={styles.supporting}>Updated {formatDateTime(viewingRecording.updatedAt)}</p>
+            </div>
+            <button type="button" onClick={() => setViewingRecording(undefined)} className={styles.iconButton} aria-label="Close recording"><X size={18} aria-hidden="true" /></button>
+          </header>
+          <div className={styles.dialogContent}>
+            <section className={styles.transcriptSection} aria-label="Full transcript">
+              <div className={styles.sectionHeader}>
+                <h4 className={styles.itemTitle}>Full transcript</h4>
+                <div className={styles.rowActions}>
+                  <button type="button" onClick={() => void copyTranscript()} className={styles.button} disabled={!viewingRecording.transcript}><Copy size={16} aria-hidden="true" />Copy</button>
+                  <button type="button" onClick={downloadTranscript} className={styles.button} disabled={!viewingRecording.transcript}><Headphones size={16} aria-hidden="true" />Download text</button>
+                </div>
               </div>
-              <aside className="border-t border-line p-5 lg:border-l lg:border-t-0 sm:p-6">
-                <h4 className="font-semibold">Stored audio</h4>
-                <p className="mt-1 text-xs leading-5 text-muted">Each segment is private and playable from your database-backed recording.</p>
-                <div className="mt-4 space-y-3">
+              {transcriptFeedback ? <p role={transcriptFeedback.failed ? "alert" : "status"} className={transcriptFeedback.failed ? styles.error : styles.readStatus}>{transcriptFeedback.message}</p> : null}
+              {viewingRecording.transcript ? (
+                <p className={styles.transcript}>{viewingRecording.transcript}</p>
+              ) : (
+                <p className={styles.empty}>No completed transcript is available yet. Copy and text download become available when transcript text is returned.</p>
+              )}
+            </section>
+            <section className={styles.segmentSection} aria-label="Audio segments">
+              <h4 className={styles.itemTitle}>Audio segments</h4>
+              <p className={styles.supporting}>Playback is available while the original audio is retained and this session can access it.</p>
+              {viewingRecording.segments.length ? (
+                <div className={styles.segmentList}>
                   {viewingRecording.segments.slice(0, visibleSegments).map((segment) => (
-                    <div key={segment.id} className="rounded-lg border border-line bg-background p-3"><div className="flex items-center justify-between gap-2"><span className="text-xs font-semibold">Segment {segment.segmentIndex + 1}</span><span className="text-xs text-muted">{formatDuration(segment.durationMs)}</span></div><audio controls preload="none" className="mt-2 h-9 w-full" src={`/api/capture/recordings/${encodeURIComponent(viewingRecording.id)}/segments?audio=${segment.segmentIndex}`} /><p className={clsx("mt-2 text-xs", segment.transcriptionStatus === "failed" ? "text-danger" : "text-muted")}>{segment.transcriptionStatus === "completed" ? "Timestamped transcript ready" : segment.transcriptionStatus === "failed" ? "Audio stored · processing will retry" : "Diarization queued"}</p></div>
+                    <RecordingAudioSegment key={segment.id} recordingId={viewingRecording.id} segment={segment} />
                   ))}
                 </div>
-                {visibleSegments < viewingRecording.segments.length ? <button type="button" onClick={() => setVisibleSegments((current) => current + 8)} className="mt-4 action-button w-full justify-center">Show more segments</button> : null}
-              </aside>
-            </div>
-          </section>
-        </div>
+              ) : <p className={styles.empty}>No audio segments were returned for this recording.</p>}
+              {visibleSegments < viewingRecording.segments.length ? (
+                <button type="button" onClick={() => setVisibleSegments((current) => current + 8)} className={styles.button}>Show more segments</button>
+              ) : null}
+            </section>
+          </div>
+        </RecordingDialog>
       ) : null}
       {viewingMetadataRecording ? (
         <RetainedRecordingMetadataDialog
@@ -897,147 +997,148 @@ export function LongRecordingStudio({ disabledReason, onJob, onIndexed }: Props)
   );
 }
 
-export function RetainedRecordingMetadataDialog({
-  recording,
-  onClose,
-}: {
+function RecordingDialog({ labelledBy, onClose, children }: {
+  labelledBy: string;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    dialog.showModal();
+    return () => {
+      if (dialog.open) dialog.close();
+      document.body.style.overflow = previousOverflow;
+      if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
+    };
+  }, []);
+
+  return (
+    <dialog
+      ref={dialogRef}
+      className={styles.dialog}
+      aria-labelledby={labelledBy}
+      onCancel={(event) => { event.preventDefault(); onClose(); }}
+      onClick={(event) => {
+        if (event.target !== event.currentTarget) return;
+        const bounds = event.currentTarget.getBoundingClientRect();
+        if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) onClose();
+      }}
+    >
+      {children}
+    </dialog>
+  );
+}
+
+function RecordingAudioSegment({ recordingId, segment }: { recordingId: string; segment: RecordingSegment }) {
+  const [audioUnavailable, setAudioUnavailable] = useState(false);
+  return (
+    <article className={styles.segment}>
+      <div className={styles.rowHeader}>
+        <h5 className={styles.rowTitle}>Segment {segment.segmentIndex + 1}</h5>
+        <p className={styles.supporting}>{formatDuration(segment.durationMs)}</p>
+      </div>
+      <p className={styles.identity}>Segment ID: {segment.id}</p>
+      <audio
+        controls
+        preload="none"
+        className={styles.audio}
+        aria-label={`Audio for segment ${segment.segmentIndex + 1}`}
+        src={`/api/capture/recordings/${encodeURIComponent(recordingId)}/segments?audio=${segment.segmentIndex}`}
+        onError={() => setAudioUnavailable(true)}
+      />
+      {audioUnavailable ? <p role="alert" className={styles.error}>Audio could not be loaded. It may have been removed or may no longer be available to this session.</p> : null}
+      <p className={clsx(styles.supporting, segment.transcriptionStatus === "failed" && styles.dangerText)}>{recordingTranscriptionStatusLabel(segment.transcriptionStatus)}</p>
+    </article>
+  );
+}
+
+export function RetainedRecordingMetadataDialog({ recording, onClose }: {
   recording: RecordingMetadataDetail;
   onClose: () => void;
 }) {
   const [visibleSegments, setVisibleSegments] = useState(8);
   const metadataAvailable = recording.metadataAvailable === true;
-  const segmentMetadataAvailable =
-    recording.segmentMetadataAvailable === true;
+  const segmentMetadataAvailable = recording.segmentMetadataAvailable === true;
+  const titleId = useId();
 
   return (
-    <div
-      className="fixed inset-0 z-50 grid place-items-center bg-background/75 p-3 backdrop-blur-sm sm:p-6"
-      role="presentation"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
-    >
-      <section
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="retained-recording-detail-title"
-        className="flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-2xl"
-      >
-        <header className="flex items-start justify-between gap-4 border-b border-line px-5 py-4 sm:px-6">
-          <div className="min-w-0">
-            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">
-              Retained recording metadata
-            </p>
-            <h3
-              id="retained-recording-detail-title"
-              className="mt-1 truncate text-xl font-semibold"
-            >
-              {metadataAvailable ? recording.title : "Retained recording"}
-            </h3>
-            {metadataAvailable ? (
-              <p className="mt-1 text-xs text-muted">
-                {formatDuration(recording.durationMs)} · {recording.segmentCount} segment summaries · {recordingStatusLabel(recording.status)}
-              </p>
-            ) : null}
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="grid size-10 shrink-0 place-items-center rounded-md hover:bg-surface-raised"
-            aria-label="Close retained recording metadata"
-          >
-            <X size={17} />
-          </button>
-        </header>
-
-        <div className="min-h-0 flex-1 overflow-y-auto p-5 sm:p-6">
-          <div className="rounded-lg border border-line bg-background p-4">
-            <p className="text-sm font-semibold">Read-only retained history</p>
-            <p className="mt-1 text-sm leading-6 text-muted">
-              This session can inspect recording and segment metadata only. Transcript content, audio playback, and recording actions remain with the stored owner.
-            </p>
-          </div>
-
+    <RecordingDialog labelledBy={titleId} onClose={onClose}>
+      <header className={styles.dialogHeader}>
+        <div>
+          <p className={styles.supporting}>Retained recording metadata</p>
+          <h3 id={titleId} className={styles.dialogTitle}>{metadataAvailable ? recording.title : "Retained recording"}</h3>
           {metadataAvailable ? (
-            <dl className="mt-5 grid gap-4 sm:grid-cols-2">
-              <MetadataValue label="Started" value={formatDateTime(recording.startedAt)} />
-              <MetadataValue
-                label="Completed"
-                value={recording.completedAt ? formatDateTime(recording.completedAt) : "Not completed"}
-              />
-              <MetadataValue label="Duration" value={formatDuration(recording.durationMs)} />
-              <MetadataValue label="Stored size" value={formatByteCount(recording.byteCount)} />
-              <MetadataValue label="Language" value={recording.language || "Not specified"} />
-              <MetadataValue
-                label="Tags"
-                value={recording.tags.length ? recording.tags.join(" · ") : "None"}
-              />
-            </dl>
-          ) : (
-            <p className="mt-5 text-sm text-muted">
-              Recording metadata is not available to this request actor.
-            </p>
-          )}
-
-          <div className="mt-6 border-t border-line pt-5">
-            <h4 className="font-semibold">Segment summaries</h4>
-            <p className="mt-1 text-xs leading-5 text-muted">
-              Status, duration, size, and media type are shown without audio or transcript content.
-            </p>
-            {segmentMetadataAvailable ? (
-              recording.segments.length ? (
-                <div className="mt-4 space-y-3">
-                  {recording.segments.slice(0, visibleSegments).map((segment) => (
-                    <div
-                      key={segment.id}
-                      className="rounded-lg border border-line bg-background p-3"
-                    >
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <span className="text-xs font-semibold">
-                          Segment {segment.segmentIndex + 1}
-                        </span>
-                        <span className="text-xs text-muted">
-                          {formatDuration(segment.durationMs)} · {formatByteCount(segment.byteCount)}
-                        </span>
-                      </div>
-                      <p className="mt-2 text-xs text-muted">
-                        {segment.mimeType} · {recordingTranscriptionStatusLabel(segment.transcriptionStatus)}
-                      </p>
-                      <p className="mt-1 text-xs text-muted">
-                        Updated {formatDateTime(segment.updatedAt)}
-                      </p>
-                    </div>
-                  ))}
-                  {visibleSegments < recording.segments.length ? (
-                    <button
-                      type="button"
-                      onClick={() => setVisibleSegments((current) => current + 8)}
-                      className="action-button w-full justify-center"
-                    >
-                      Show more segment summaries
-                    </button>
-                  ) : null}
-                </div>
-              ) : (
-                <p className="mt-4 text-sm text-muted">No segment summaries are stored.</p>
-              )
-            ) : (
-              <p className="mt-4 text-sm text-muted">
-                Segment metadata is not available to this request actor.
-              </p>
-            )}
-          </div>
+            <>
+              <p className={styles.identity}>Session ID: {recording.id}</p>
+              <p className={styles.supporting}>{formatDuration(recording.durationMs)} · {recording.segmentCount} segment summaries · {recordingStatusLabel(recording.status)}</p>
+            </>
+          ) : null}
         </div>
-      </section>
-    </div>
+        <button type="button" onClick={onClose} className={styles.iconButton} aria-label="Close retained recording metadata"><X size={18} aria-hidden="true" /></button>
+      </header>
+
+      <div className={styles.metadataContent}>
+        <div className={styles.retainedNotice}>
+          <p className={styles.itemTitle}>Read-only retained history</p>
+          <p className={styles.reading}>This session can inspect recording and segment metadata only. Transcript content, audio playback, and recording actions remain with the stored owner.</p>
+        </div>
+        {metadataAvailable ? (
+          <dl className={styles.metadata}>
+            <MetadataValue label="Started" value={formatDateTime(recording.startedAt)} />
+            <MetadataValue label="Completed" value={recording.completedAt ? formatDateTime(recording.completedAt) : "Not completed"} />
+            <MetadataValue label="Duration" value={formatDuration(recording.durationMs)} />
+            <MetadataValue label="Stored size" value={formatByteCount(recording.byteCount)} />
+            <MetadataValue label="Language" value={recording.language || "Not specified"} />
+            <MetadataValue label="Tags" value={recording.tags.length ? recording.tags.join(" · ") : "None"} />
+            <MetadataValue label="Updated" value={formatDateTime(recording.updatedAt)} />
+          </dl>
+        ) : (
+          <p className={styles.empty}>Recording metadata is not available to this request actor.</p>
+        )}
+
+        <section className={styles.retainedSegments} aria-label="Segment summaries">
+          <h4 className={styles.itemTitle}>Segment summaries</h4>
+          <p className={styles.supporting}>Status, duration, size, and media type are shown without audio or transcript content.</p>
+          {segmentMetadataAvailable ? (
+            recording.segments.length ? (
+              <>
+                <div className={styles.segmentList}>
+                  {recording.segments.slice(0, visibleSegments).map((segment) => (
+                    <article key={segment.id} className={styles.segment}>
+                      <div className={styles.rowHeader}>
+                        <h5 className={styles.rowTitle}>Segment {segment.segmentIndex + 1}</h5>
+                        <p className={styles.supporting}>{formatDuration(segment.durationMs)} · {formatByteCount(segment.byteCount)}</p>
+                      </div>
+                      <p className={styles.identity}>Segment ID: {segment.id}</p>
+                      <p className={styles.supporting}>{segment.mimeType}</p>
+                      <p className={clsx(styles.supporting, segment.transcriptionStatus === "failed" && styles.dangerText)}>{recordingTranscriptionStatusLabel(segment.transcriptionStatus)}</p>
+                      <p className={styles.supporting}>Updated {formatDateTime(segment.updatedAt)}</p>
+                    </article>
+                  ))}
+                </div>
+                {visibleSegments < recording.segments.length ? (
+                  <button type="button" onClick={() => setVisibleSegments((current) => current + 8)} className={styles.button}>Show more segment summaries</button>
+                ) : null}
+              </>
+            ) : <p className={styles.empty}>No segment summaries are stored.</p>
+          ) : <p className={styles.empty}>Segment metadata is not available to this request actor.</p>}
+        </section>
+      </div>
+    </RecordingDialog>
   );
 }
 
 function MetadataValue({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <dt className="text-xs font-semibold text-muted">{label}</dt>
-      <dd className="mt-1 text-sm text-foreground">{value}</dd>
+      <dt>{label}</dt>
+      <dd>{value}</dd>
     </div>
   );
 }
@@ -1226,21 +1327,32 @@ function formatDateTime(value: string) {
 }
 
 function recordingPhaseTitle(phase: RecordingPhase) {
-  if (phase === "requesting") return "Opening your microphone…";
+  if (phase === "requesting") return "Requesting microphone access…";
   if (phase === "recording") return "Recording conversation";
   if (phase === "paused") return "Recording paused";
   if (phase === "stopping") return "Saving the final segment…";
-  if (phase === "indexing") return "Queueing resumable processing…";
-  if (phase === "complete") return "Conversation processing queued";
+  if (phase === "indexing") return "Submitting recording for processing…";
+  if (phase === "complete") return "Recording submitted";
   if (phase === "error") return "Recording needs attention";
   return "Record a long conversation";
 }
 
+function recordingPhaseDescription(phase: RecordingPhase) {
+  if (phase === "requesting") return "Check your browser’s microphone prompt. Recording begins after permission is granted and the session is created.";
+  if (phase === "recording") return "Your microphone is recording. Audio is uploaded in one-minute segments; transcription is a separate processing step.";
+  if (phase === "paused") return "Recording is paused. Pending segments can still upload. Resume to continue, or finish to process the saved audio.";
+  if (phase === "stopping") return "The microphone is stopping and pending audio segments are being uploaded. Keep this page open until the upload finishes.";
+  if (phase === "indexing") return "Audio uploads have finished. Waiting for the server to accept the processing request.";
+  if (phase === "complete") return "The server accepted the recording for processing. Check recording history and the processing summary for the latest status.";
+  if (phase === "error") return "Review the error below. Uploaded segments and transcript availability can be checked in recording history.";
+  return "Audio is saved in one-minute segments. Finish the recording to request transcription and indexing.";
+}
+
 function recordingStatusLabel(status: RecordingStatus) {
-  if (status === "ready") return "Searchable in Command";
-  if (status === "processing") return "Indexing";
-  if (status === "failed") return "Needs attention";
-  return "Recording in progress";
+  if (status === "ready") return "Processing complete";
+  if (status === "processing") return "Processing";
+  if (status === "failed") return "Processing needs attention";
+  return "Recording session open";
 }
 
 function recordingTranscriptionStatusLabel(
