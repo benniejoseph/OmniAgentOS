@@ -6742,8 +6742,9 @@ databaseDescribe("Postgres schema integration", () => {
       expect(await systemScopeEnabledFor(admin, scopeProbeRole)).toBe(false);
       const oldReport = await isolationReport();
       expect(oldReport.status).toBe("degraded");
+      expect([...oldReport.summary.missingTables].sort()).toEqual(companionReplayTables);
       expect([...oldReport.summary.missingPolicies].sort()).toEqual(
-        oldRunnerTenantWidePolicyTables,
+        [...oldRunnerTenantWidePolicyTables, ...companionReplayTables].sort(),
       );
 
       // A CHECK that matches neither catalog stops the migration, and what it
@@ -6815,7 +6816,14 @@ databaseDescribe("Postgres schema integration", () => {
     `;
     // Each one covers every command and role, as its restore below does.
     expect(restrictivePolicies.map(({ command, roles }) => ({ command, roles })))
-      .toEqual(Array(49).fill({ command: "*", roles: "{0}" }));
+      .toEqual(Array(51).fill({ command: "*", roles: "{0}" }));
+    expect(restrictivePolicies.filter((policy) =>
+      companionReplayTables.includes(policy.table_name),
+    ).map(({ table_name, policy_name }) => ({ table_name, policy_name })))
+      .toEqual(companionReplayTables.map((tableName) => ({
+        table_name: tableName,
+        policy_name: `${tableName}_actor`,
+      })));
     const catalog = await schemaCatalogSnapshot(admin);
     const dropped: typeof restrictivePolicies[number][] = [];
 
@@ -7105,7 +7113,7 @@ databaseDescribe("Postgres schema integration", () => {
           `;
         }
         await migrateWithFreshClient();
-      });
+      }, { replay: true });
     } finally {
       await admin`DROP TABLE IF EXISTS mobile_refresh_rotation_backup`;
     }
@@ -7455,7 +7463,7 @@ databaseDescribe("Postgres schema integration", () => {
           `;
         }
         await migrateWithFreshClient();
-      });
+      }, { replay: true });
     } finally {
       await admin`DROP TABLE IF EXISTS oauth_sync_backoff_backup`;
     }
@@ -9499,6 +9507,11 @@ function migrationLockLogLines(calls: readonly unknown[][]) {
 const schemaConvergenceVersion = 208;
 const refreshRotationRetryVersion = 209;
 const oauthSyncBackoffVersion = 210;
+const companionPreferencesVersion = 215;
+const companionReplayTables: readonly string[] = [
+  "omni_companion_preference_mutations",
+  "omni_companion_preferences",
+];
 
 // A native client that attests an Android build.
 const androidClient = {
@@ -9783,7 +9796,7 @@ async function withSchemaConvergencePending<T>(
     await alterPolicy(policy, withoutScopeInitplans);
   }
   try {
-    return await withMigrationsPendingFrom(client, schemaConvergenceVersion, operation);
+    return await withMigrationsPendingFrom(client, schemaConvergenceVersion, operation, { replay: true });
   } finally {
     const leftPolicies = new Map((await actorPolicies()).map((policy) => [
       `${policy.table_name}.${policy.policy_name}`,
@@ -9815,12 +9828,16 @@ function withoutScopeInitplans(expression: string) {
     );
 }
 
-// Runs the operation with the given migration and every later one pending,
-// then puts back any ledger row the operation did not record again.
+// Ledger-only verification probes keep the catalog intact. Historical replay
+// also removes v215's additive objects: its CREATE statements must encounter
+// the actual predecessor schema, not tables left behind after a ledger reset.
+// This is only for this suite's empty, disposable Companion tables. A later
+// migration or seeded Companion data requires an explicit fixture adaptation.
 async function withMigrationsPendingFrom<T>(
   client: ReturnType<typeof postgres>,
   version: number,
   operation: () => Promise<T>,
+  { replay = false }: { replay?: boolean } = {},
 ) {
   const recorded = await client`
     SELECT version, name, checksum, applied_at
@@ -9828,14 +9845,34 @@ async function withMigrationsPendingFrom<T>(
     WHERE version >= ${version}
   `;
   expect(recorded.map((row) => row.version)).toContain(version);
-  await client`
-    DELETE FROM omni_schema_version
-    WHERE version >= ${version}
-  `;
+  if (replay) {
+    expect(recorded.map((row) => row.version)).toContain(companionPreferencesVersion);
+    expect(recorded.every((row) => row.version <= companionPreferencesVersion)).toBe(true);
+  }
+  await client.begin(async (transaction) => {
+    if (replay) {
+      expect(await transaction`
+        SELECT
+          (SELECT count(*)::int FROM public.omni_companion_preferences) AS preferences,
+          (SELECT count(*)::int FROM public.omni_companion_preference_mutations) AS receipts
+      `).toEqual([{ preferences: 0, receipts: 0 }]);
+      await transaction`DROP TABLE public.omni_companion_preference_mutations`;
+      await transaction`DROP TABLE public.omni_companion_preferences`;
+      await transaction`DROP FUNCTION public.omni_protect_companion_preference_mutations_v1()`;
+      await transaction`DROP FUNCTION public.omni_protect_companion_preferences_v1()`;
+    }
+    await transaction`
+      DELETE FROM omni_schema_version
+      WHERE version >= ${version}
+    `;
+  });
   try {
     return await operation();
   } finally {
     for (const row of recorded) {
+      // A replay that stopped before v215 must restore its objects through the
+      // unmodified migration, not mark absent tables as already migrated.
+      if (replay && row.version === companionPreferencesVersion) continue;
       await client`
         INSERT INTO omni_schema_version (version, name, checksum, applied_at)
         SELECT ${row.version}::int, ${row.name}::text, ${row.checksum}::text,
@@ -9844,6 +9881,19 @@ async function withMigrationsPendingFrom<T>(
           SELECT 1 FROM omni_schema_version WHERE version = ${row.version}::int
         )
       `;
+    }
+    if (replay) {
+      const restored = await client`
+        SELECT version FROM omni_schema_version WHERE version = ${companionPreferencesVersion}
+      `;
+      if (!restored.length) await migrateWithFreshClient();
+      expect(await client`
+        SELECT
+          to_regclass('public.omni_companion_preferences') IS NOT NULL AS preferences,
+          to_regclass('public.omni_companion_preference_mutations') IS NOT NULL AS receipts,
+          to_regprocedure('public.omni_protect_companion_preferences_v1()') IS NOT NULL AS preference_guard,
+          to_regprocedure('public.omni_protect_companion_preference_mutations_v1()') IS NOT NULL AS receipt_guard
+      `).toEqual([{ preferences: true, receipts: true, preference_guard: true, receipt_guard: true }]);
     }
   }
 }

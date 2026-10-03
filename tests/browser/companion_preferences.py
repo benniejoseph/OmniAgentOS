@@ -106,6 +106,7 @@ def isolated_defaults(context, origin, checks, label):
 
 def pending_save(page, fixture, checks, label):
     root = workspace(page)
+    checks.check(label + ": General opens without fetching advanced configuration", "/api/settings" not in fixture.reads)
     style(page, "Quiet").check()
     categories = page.get_by_role("navigation", name="Settings categories", exact=True)
     categories.get_by_role("button", name=re.compile(r"^Workspace(?:\s|$)")).click()

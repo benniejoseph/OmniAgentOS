@@ -930,6 +930,14 @@ selection is bounded and excludes unsupported or unverified identities. The stat
 writing preview performs no execution or audio, and device reduced motion is a
 floor.
 
+Advanced Settings controllers now load only after an advanced category is opened,
+then remain mounted across local category changes. General opens without reading
+advanced configuration and retains its own draft. This addresses the hosted
+Settings entry budget failure without changing the 800,000-byte limit; the next
+exact-head build supplies the production measurement. The isolation health
+report now requires both exact restrictive Companion actor policies in addition
+to the tenant policies.
+
 Serial root validation passed 120 backend/RBAC/migration unit cases, 28 UI/state
 cases, strict focused lint/types and six integration cases in a disposable
 PostgreSQL 17 cluster with all 215 migrations. The temporary cluster was stopped
@@ -946,6 +954,21 @@ Evidence is in `ui-validation/companion-preferences-rerun` and adjacent backend,
 integration and UI logs under the external release record. CI runs the browser
 suite serially. Presence/default-entry adoption, native preferences and final
 ATLAS assets/renderer proof remain separate work; this does not close task 2.6.
+
+The release-fix browser rerun passed 84 assertions and nine scoped axe scans,
+including the lazy General entry and retained category drafts. Eight isolation
+policy unit cases pass. Historical migration fixtures now remove the exact empty
+v215 schema alongside its ledger before replay, restore through the unchanged
+migration runner, and assert the intended missing/drifted constraint error.
+All three affected PostgreSQL files passed together: 94 cases, with the existing
+pgvector-specific case skipped on the local Homebrew cluster. Hosted integration
+retains that extension check. The disposable cluster used a one-connection test
+pool and sufficient lock slots for schema teardown; an unchanged local copy of
+the installed presentation dependency resolved the external-volume path issue.
+Production schema and application dependencies were unchanged. Final focused
+lint and TypeScript checks passed. Evidence is in
+`ui-validation/companion-settings-lazy-entry`, `companion-replay-integration-final.log`
+and `companion-release-fix-lint-types.log`.
 
 ## Remaining gates and scope
 

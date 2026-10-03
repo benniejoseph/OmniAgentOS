@@ -2,7 +2,6 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import {
-  SettingsWorkspace,
   McpConfigurationSurface,
   mcpConfigurationActionBlocked,
   mcpConfigurationIsEditable,
@@ -10,7 +9,8 @@ import {
   settingsLoadMayClearLoading,
   settingsLoadNeedsVerificationWarning,
   settingsRequestResultIsCurrent,
-} from "@/components/settings/settings-workspace";
+} from "@/components/settings/settings-advanced-workspace";
+import { SettingsWorkspace } from "@/components/settings/settings-workspace";
 import { WorkspaceSessionProvider } from "@/components/app-shell/session-context";
 import type { RequestMcpExportConfiguration } from "@/lib/settings/types";
 
