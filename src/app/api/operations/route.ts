@@ -2,7 +2,7 @@ import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { serverErrorResponse } from "@/lib/http/errors";
-import { getOperationsOverview } from "@/lib/operations/queue";
+import { getOperationsOverview } from "@/lib/operations/overview";
 import { reconcileOperationsRecovery } from "@/lib/operations/recovery";
 import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observability/store";
 import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";

@@ -66,7 +66,8 @@ import {
 } from "@/lib/observability/store";
 import { getMemoryGraphStats, rebuildMemoryGraph, searchMemoryGraph } from "@/lib/memory/graph";
 import { listMemories, saveMemory, searchMemories } from "@/lib/memory/store";
-import { getApprovalQueue, getOperationsOverview } from "@/lib/operations/queue";
+import { getOperationsOverview } from "@/lib/operations/overview";
+import { getApprovalQueue } from "@/lib/operations/queue";
 import { reconcileOperationsRecovery } from "@/lib/operations/recovery";
 import { buildContextPack, getContextEngineStats } from "@/lib/rag/context-engine";
 import { retrieveContext } from "@/lib/rag/retriever";

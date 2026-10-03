@@ -6,10 +6,7 @@ import {
   type CommandContextKind,
   type CommandContextReference,
 } from "@/lib/command/composer-context-contract";
-import {
-  resolveCommandContextReferences,
-  type ResolvedCommandContextV1,
-} from "@/lib/command/context-reference-runtime";
+import type { ResolvedCommandContextV1 } from "@/lib/command/context-reference-runtime";
 import {
   CommandModelSelectionError,
   commandModelSelectionRequestSchema,
@@ -250,6 +247,12 @@ export async function resolveWorkflowCommandContext(input: {
   );
   const agentId = referenceId(binding.references, "agent");
   const projectId = referenceId(binding.references, "project");
+  // Pages that read workflow records import this module for its boundary keys
+  // and parsers. The resolver reaches the project and workflow runtimes, so it
+  // loads only when a run resolves its context.
+  const { resolveCommandContextReferences } = await import(
+    "@/lib/command/context-reference-runtime"
+  );
   const resolved = await resolveCommandContextReferences({
     context,
     references: binding.references,
