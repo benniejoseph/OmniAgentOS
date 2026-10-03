@@ -10,7 +10,6 @@ import {
   ChevronDown,
   Loader2,
   RefreshCw,
-  ShieldCheck,
   UserPlus,
   X,
 } from "lucide-react";
@@ -51,7 +50,7 @@ import {
   type ApprovalKind,
 } from "@/lib/approvals/inbox-link";
 import { ASAEL_PENDING_USER_PROVISION_KEY } from "@/lib/browser-storage-keys";
-import styles from "./daybook-workspaces.module.css";
+import styles from "./approvals/approvals.module.css";
 
 type AccessRequestItem = {
   id: string;
@@ -458,22 +457,14 @@ export function ApprovalsWorkspace({
   }
 
   return (
-    <div className={clsx("mx-auto max-w-[100rem] px-4 py-6 sm:px-6 lg:px-8", styles.daybook, styles.approvals)} aria-busy={firstLoad} data-testid="inbox-workspace">
-      <section className="rounded-lg border border-line bg-surface p-5" data-daybook="hero">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-center gap-3">
-            <span className="grid size-10 place-items-center rounded-md bg-primary text-primary-ink">
-              <ShieldCheck size={18} aria-hidden="true" />
-            </span>
-            <div>
-              <p className="text-xs font-semibold text-primary">Approvals</p>
-              <h1 className="mt-1 text-xl font-semibold">Decide what can proceed.</h1>
-              <p className="mt-1 text-sm text-muted">
-                Review agent actions and workspace access requests from one queue.
-              </p>
-            </div>
+    <div className={styles.workspace} aria-busy={firstLoad} data-testid="inbox-workspace">
+      <header className={styles.pageHeader}>
+        <div className={styles.headerRow}>
+          <div className={styles.pageIdentity}>
+            <h1>Inbox</h1>
+            <p>Review agent actions and workspace access requests.</p>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
+          <div className={styles.headerActions}>
             {returnTo ? (
               <Link href={returnTo} className="action-link">
                 <ArrowLeft size={15} aria-hidden="true" />
@@ -493,6 +484,11 @@ export function ApprovalsWorkspace({
                   ? decisionPermission
                   : undefined
               }
+              aria-describedby={
+                decisionPermission && accessPermission && sessionStatus !== "loading"
+                  ? "approval-access-limited"
+                  : undefined
+              }
             >
               {state === "loading" ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <RefreshCw size={15} aria-hidden="true" />}
               Refresh
@@ -500,91 +496,99 @@ export function ApprovalsWorkspace({
           </div>
         </div>
         {queue || accessQueue ? (
-          <p className="mt-4 text-sm text-muted">
+          <p className={styles.queueSummary}>
+            {state === "error" ? "Last loaded queue: " : ""}
             {visiblePendingCount ? (
               <>
-                <span className="font-semibold text-foreground">
+                <strong>
                   {visiblePendingCount} pending
-                </span>
+                </strong>
                 {`: ${pendingBreakdown.join(", ")}.`}
               </>
             ) : (
               <>
-                Nothing is waiting in the queues you can access.
-                {!accessQueue ? " Workspace access requests are visible to admins." : ""}
+                {state === "error"
+                  ? "No pending items in the last loaded queue. Refresh to check for updates."
+                  : "Nothing is waiting in the queues you can access."}
+                {!accessQueue && accessPermission ? " Workspace access requests are visible to admins." : ""}
               </>
             )}
           </p>
         ) : null}
-      </section>
+      </header>
 
       {decisionPermission && sessionStatus !== "loading" ? (
-        <section className="mt-4 flex flex-col gap-3 rounded-md border border-warning/45 bg-warning/10 p-4 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-start gap-3">
-            <AlertTriangle size={18} className="mt-0.5 shrink-0 text-warning" aria-hidden="true" />
+        <section className={clsx(styles.permissionNotice, styles.warning)}>
+          <div className={styles.permissionCopy}>
+            <AlertTriangle size={18} aria-hidden="true" />
             <div>
-              <h2 className="text-sm font-semibold">Approval access is limited</h2>
-              <p className="mt-1 text-sm leading-6 text-muted">{decisionPermission} Current role: {role}.</p>
+              <h2>Approval access is limited</h2>
+              <p id="approval-access-limited">{decisionPermission} Current role: {role}.</p>
             </div>
           </div>
           {session?.authEnabled && !session.authenticated ? (
-            <Link href="/login" className="primary-button shrink-0">Sign in</Link>
+            <Link href="/login" className="primary-button">Sign in</Link>
           ) : null}
         </section>
       ) : null}
 
       <DecisionNoticeRegion
         notice={lastDecision}
-        className="mt-4 flex flex-col gap-3 rounded-md border px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between"
+        className={styles.notice}
       >
         {approvedAccessRequest ? (
           <button
             type="button"
             onClick={() => beginProvisioning(approvedAccessRequest)}
-            className="action-button shrink-0"
+            className="action-button"
           >
             Provision {approvedAccessRequest.name}
           </button>
         ) : null}
       </DecisionNoticeRegion>
       {error ? (
-        <p className="mt-4 rounded-md border border-danger/40 bg-danger/10 px-4 py-2 text-sm text-danger" role="alert">
+        <p className={styles.error} role="alert">
           {error}
         </p>
       ) : null}
 
       {firstLoad ? (
-        <div className="mt-4 rounded-lg border border-dashed border-line p-8 text-center text-sm text-muted">
-          Loading decisions…
+        <div className={styles.loadingState}>
+          <p role="status">Loading decisions…</p>
+          <div className={styles.loadingGeometry} aria-hidden="true">
+            <span />
+            <span />
+            <span />
+          </div>
         </div>
       ) : null}
 
       {focus && !decisionPermission && !(focusDecided && focused?.status === "missing") ? (
-        <section className="mt-6 space-y-4" aria-labelledby="focused-approval-heading" data-daybook="section">
-          <div>
-            <h2 id="focused-approval-heading" className="text-base font-semibold">The approval you opened</h2>
-            <p className="text-sm text-muted">
+        <section className={styles.section} aria-labelledby="focused-approval-heading">
+          <div className={styles.sectionHeader}>
+            <h2 id="focused-approval-heading">The approval you opened</h2>
+            <p>
               {returnTo
                 ? "Decide it here. Once the decision goes through, you go back to where you came from."
                 : "Decide it here. The rest of the queue follows."}
             </p>
           </div>
           {!focused ? (
-            <div className="rounded-lg border border-dashed border-line p-6 text-center text-sm text-muted">
+            <div className={styles.emptyState}>
               Loading the approval you opened…
             </div>
           ) : focused.status === "error" ? (
-            <p className="rounded-md border border-danger/40 bg-danger/10 px-4 py-2 text-sm text-danger" role="alert">
+            <p className={styles.error} role="alert">
               {focused.message}
             </p>
           ) : focused.status === "missing" ? (
-            <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed border-line p-6 text-center text-sm text-muted" data-focused="missing">
+            <div className={styles.emptyState} data-focused="missing">
               <p>
                 This approval is no longer waiting. It was decided, withdrawn,
                 or expired.
               </p>
               {returnTo ? (
-                <Link href={returnTo} className="action-link">
+                <Link href={returnTo} className={styles.textLink}>
                   <ArrowLeft size={15} aria-hidden="true" />
                   {approvalReturnLabel(returnTo)}
                 </Link>
@@ -597,18 +601,13 @@ export function ApprovalsWorkspace({
       ) : null}
 
       {!accessPermission ? (
-        <section className="mt-6 space-y-4" aria-labelledby={ACCESS_LIST_HEADING_ID} data-daybook="section">
-          <div className="flex items-center gap-3">
-            <span className="grid size-9 place-items-center rounded-md border border-line bg-surface">
-              <UserPlus size={16} aria-hidden="true" />
-            </span>
-            <div>
-              <h2 id={ACCESS_LIST_HEADING_ID} tabIndex={-1} className="text-base font-semibold">Workspace access</h2>
-              <p className="text-sm text-muted">Review who is asking to join this tenant.</p>
-            </div>
+        <section className={styles.section} aria-labelledby={ACCESS_LIST_HEADING_ID}>
+          <div className={styles.sectionHeader}>
+            <h2 id={ACCESS_LIST_HEADING_ID} tabIndex={-1}>Workspace access</h2>
+            <p>Review who is asking to join this tenant.</p>
           </div>
           {state === "ready" && !accessRequests.length ? (
-            <div className="rounded-lg border border-dashed border-line p-6 text-center text-sm text-muted">
+            <div className={styles.emptyState}>
               No pending access requests.
             </div>
           ) : null}
@@ -632,20 +631,20 @@ export function ApprovalsWorkspace({
       ) : null}
 
       {!decisionPermission ? (
-        <section className="mt-6 space-y-4" aria-labelledby={ACTION_LIST_HEADING_ID} data-daybook="section">
-          <div>
-            <h2 id={ACTION_LIST_HEADING_ID} tabIndex={-1} className="text-base font-semibold">Agent and workflow actions</h2>
-            <p className="text-sm text-muted">Review new approvals and safely reconcile previously approved actions with unresolved outcomes. The riskiest and longest-waiting come first.</p>
+        <section className={styles.section} aria-labelledby={ACTION_LIST_HEADING_ID}>
+          <div className={styles.sectionHeader}>
+            <h2 id={ACTION_LIST_HEADING_ID} tabIndex={-1}>Agent and workflow actions</h2>
+            <p>Review new approvals and safely reconcile previously approved actions with unresolved outcomes. The riskiest and longest-waiting come first.</p>
           </div>
           {state === "ready" && !items.length ? (
-            <div className="rounded-lg border border-dashed border-line p-6 text-center text-sm text-muted">
+            <div className={styles.emptyState}>
               {focusedItem ? "Nothing else is waiting." : "No pending action approvals."}
             </div>
           ) : null}
           {items.map((item) => approvalCard(item))}
           {queue?.nextCursor ? (
-            <div className="flex flex-col items-center gap-2 pt-2">
-              <p className="text-xs text-muted">
+            <div className={styles.pagination}>
+              <p>
                 Showing {queue.items.length} of {queue.stats.total}.
               </p>
               {shownLimit < MAX_REFRESHED_APPROVALS ? (
@@ -659,7 +658,7 @@ export function ApprovalsWorkspace({
                   Show more
                 </button>
               ) : (
-                <p className="text-xs text-muted">Decide some of these to see the rest.</p>
+                <p>Decide some of these to see the rest.</p>
               )}
             </div>
           ) : null}
@@ -686,74 +685,83 @@ function AccessRequestCard({
 }) {
   const needsProvisioning =
     item.status === "approved" || item.status === "provisioning_pending";
+  const headingId = approvalHeadingId(accessRequestKey(item));
+  const consequenceId = `${headingId}-consequence`;
   return (
-    <article className="rounded-lg border border-line bg-surface p-5" data-daybook="approval-item">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h3 id={approvalHeadingId(accessRequestKey(item))} tabIndex={-1} className="text-base font-semibold">{item.name}</h3>
-          <p className="mt-1 text-sm text-muted">
-            {item.email} · {item.company}
-          </p>
-          <p className="mt-1 text-xs text-muted">
-            Requested {formatTime(item.createdAt)} · {accessRoleLabel(item.role)} · {timelineLabel(item.timeline)}
-          </p>
+    <article className={styles.decision} data-daybook="approval-item" aria-labelledby={headingId}>
+      <header className={styles.decisionHeader}>
+        <div className={styles.titleRow}>
+          <h3 id={headingId} tabIndex={-1} className={styles.itemTitle}>{item.name}</h3>
+          <span className={clsx(styles.badge, styles.warning)}>
+            {needsProvisioning ? "provisioning needed" : "access request"}
+          </span>
         </div>
-        <span className="rounded-md border border-warning/40 bg-warning/10 px-2 py-1 text-xs font-medium text-warning">
-          {needsProvisioning ? "provisioning needed" : "access request"}
-        </span>
-      </div>
-      <div className="mt-4 rounded-md border border-line bg-background p-3">
-        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted">What they want to do</p>
-        <p className="mt-2 whitespace-pre-wrap text-sm leading-6">{item.useCase}</p>
+        <p className={styles.metadata}>{item.email} · {item.company}</p>
+        <p className={styles.metadata}>
+          Requested {formatTime(item.createdAt)} · {accessRoleLabel(item.role)} · {timelineLabel(item.timeline)}
+        </p>
+      </header>
+      <div className={styles.useCase}>
+        <p className={styles.detailLabel}>What they want to do</p>
+        <p>{item.useCase}</p>
       </div>
       {needsProvisioning ? (
-        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-md border border-warning/40 bg-warning/10 p-3">
-          <p className="text-sm">
+        <div className={styles.decisionControls}>
+          <p id={consequenceId} className={clsx(styles.policyNote, styles.warning)}>
             Access is approved. Finish creating the workspace identity; this
             request stays here until provisioning succeeds.
           </p>
-          <button
-            type="button"
-            onClick={onProvision}
-            className="primary-button shrink-0"
-          >
-            <UserPlus size={14} aria-hidden="true" />
-            Resume provisioning
-          </button>
+          <div className={styles.actions}>
+            <button
+              type="button"
+              onClick={onProvision}
+              aria-describedby={consequenceId}
+              className="primary-button"
+            >
+              <UserPlus size={14} aria-hidden="true" />
+              Resume provisioning
+            </button>
+          </div>
         </div>
       ) : (
         <>
-          <p className="mt-3 text-xs leading-5 text-muted">
+          <p id={consequenceId} className={styles.accessConsequence}>
             Approving records the decision and keeps this request in Approvals
             until the workspace identity is provisioned.
           </p>
-          <div className="mt-4 flex flex-wrap items-center gap-2">
-            <input
-              value={note}
-              onChange={(event) => onNote(event.target.value)}
-              placeholder="Optional review note"
-              className="min-h-11 min-w-0 flex-1 rounded-md border border-line bg-background px-3 text-sm placeholder:text-muted"
-              aria-label={`Review note for ${item.name}`}
-            />
-            <button
-              type="button"
-              onClick={() => onDecide("declined")}
-              disabled={Boolean(inFlight)}
-              className="action-button"
-            >
-              {inFlight === "declined" ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <X size={14} aria-hidden="true" />}
-              Decline
-            </button>
-            <button
-              type="button"
-              onClick={() => onDecide("approved")}
-              disabled={Boolean(inFlight)}
-              className="primary-button"
-            >
-              {inFlight === "approved" ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <Check size={14} aria-hidden="true" />}
-              Approve request
-            </button>
+          <div className={styles.decisionControls}>
+            <label className={styles.field}>
+              <span>Review note</span>
+              <input
+                value={note}
+                onChange={(event) => onNote(event.target.value)}
+                placeholder="Optional review note"
+                aria-label={`Review note for ${item.name}`}
+              />
+            </label>
+            <div className={styles.actions}>
+              <button
+                type="button"
+                onClick={() => onDecide("declined")}
+                disabled={Boolean(inFlight)}
+                className="action-button"
+              >
+                {inFlight === "declined" ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <X size={14} aria-hidden="true" />}
+                Decline
+              </button>
+              <button
+                type="button"
+                onClick={() => onDecide("approved")}
+                disabled={Boolean(inFlight)}
+                aria-describedby={consequenceId}
+                className="primary-button"
+              >
+                {inFlight === "approved" ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <Check size={14} aria-hidden="true" />}
+                Approve request
+              </button>
+            </div>
           </div>
+          {inFlight ? <p className={styles.pending}>Recording decision…</p> : null}
         </>
       )}
     </article>

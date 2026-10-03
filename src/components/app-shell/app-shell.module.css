@@ -122,7 +122,9 @@
 }
 
 .headerActions {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  max-width: 100%;
 }
 
 .headerIdentity > button,
@@ -156,6 +158,10 @@
   position: relative;
   min-height: calc(100svh - var(--app-header-height));
   padding-bottom: var(--app-dock-height);
+}
+
+:global(html):has(.shell) {
+  scroll-padding-bottom: calc(5.5rem + env(safe-area-inset-bottom, 0px));
 }
 
 .mobileDock {
@@ -210,6 +216,10 @@
 }
 
 @media (min-width: 64rem) {
+  :global(html):has(.shell) {
+    scroll-padding-bottom: 1rem;
+  }
+
   .shell {
     --app-header-height: 4rem;
     --app-dock-height: 0rem;
@@ -221,6 +231,14 @@
 }
 
 @media (max-width: 22rem) {
+  :global(html):has(.shell) {
+    scroll-padding-top: 1rem;
+  }
+
+  .header {
+    position: relative;
+  }
+
   .shell {
     --app-header-height: 7rem;
   }

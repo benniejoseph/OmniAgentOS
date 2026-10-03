@@ -57,6 +57,7 @@ describe("ApprovalsWorkspace", () => {
     session.role = "operator";
     const html = render();
 
+    expect(html).toMatch(/<h1\b[^>]*>Inbox<\/h1>/);
     expect(html).not.toContain("The approval you opened");
     expect(html).not.toContain("Back to conversation");
     expect(html).not.toContain("Go back");
@@ -75,19 +76,21 @@ describe("ApprovalsWorkspace", () => {
     session.role = "admin";
     const html = render();
 
-    expect(html).toMatch(/^<div class="[^"]*" aria-busy="true" data-testid="inbox-workspace">/);
+    expect(html).toMatch(/^<div\b[^>]*aria-busy="true"[^>]*data-testid="inbox-workspace"/);
     expect(html).toContain("Loading decisions…");
     // A decision is announced in regions already in the page.
     expect(html).toContain(
       '<div role="status" aria-live="polite" aria-atomic="true"></div><div role="alert" aria-atomic="true"></div>',
     );
     // Focus can be put on a list's heading once its last card is decided.
-    expect(html).toContain(
-      '<h2 id="access-request-heading" tabindex="-1" class="text-base font-semibold">Workspace access</h2>',
+    expect(html).toMatch(
+      /<h2\b[^>]*id="access-request-heading"[^>]*tabindex="-1"[^>]*>Workspace access<\/h2>/,
     );
-    expect(html).toContain(
-      '<h2 id="action-approval-heading" tabindex="-1" class="text-base font-semibold">Agent and workflow actions</h2>',
+    expect(html).toMatch(
+      /<h2\b[^>]*id="action-approval-heading"[^>]*tabindex="-1"[^>]*>Agent and workflow actions<\/h2>/,
     );
+    expect(html).toMatch(/<section\b[^>]*aria-labelledby="access-request-heading"/);
+    expect(html).toMatch(/<section\b[^>]*aria-labelledby="action-approval-heading"/);
   });
 
   it("shows no linked item to a role that cannot decide it", () => {
