@@ -106,11 +106,12 @@ describe("ApprovalCard", () => {
 
     // Focus can be put on the heading once a decision is read back.
     const heading = elements(html, "h3")[0];
-    expect(heading).toBeDefined();
+    const article = elements(html, "article")[0];
+    if (!heading || !article) throw new Error("Missing approval heading or article.");
     expect(attribute(heading, "id")).toBe("approval-heading-tool:exec-1");
     expect(attribute(heading, "tabindex")).toBe("-1");
     expect(textContent(heading)).toBe("Send email");
-    expect(attribute(elements(html, "article")[0], "aria-labelledby"))
+    expect(attribute(article, "aria-labelledby"))
       .toBe(attribute(heading, "id"));
     expect(html).toContain("tool call");
     expect(html).toContain("risk 2");
