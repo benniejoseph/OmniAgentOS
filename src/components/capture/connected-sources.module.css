@@ -1,0 +1,124 @@
+.shell {
+  container: connected-sources / inline-size;
+  min-inline-size: 0;
+  border-block-start: 1px solid var(--line);
+  padding-block-start: 1.5rem;
+  color: var(--foreground);
+  background: var(--background);
+  font-family: var(--font-sans);
+  font-size: .875rem;
+  line-height: 1.4286;
+  overflow-wrap: anywhere;
+  --focus-surface: var(--background);
+}
+.shell :is(h2, h3, h4, p, dl, dd, ul) { margin: 0; }
+.shell :is(button, select, input) { font: inherit; }
+.shell svg { flex-shrink: 0; }
+.shell a:not(.button):not(.primaryButton) { color: var(--accent); text-decoration: underline; text-underline-offset: .2em; }
+.header { display: flex; flex-wrap: wrap; align-items: start; justify-content: space-between; gap: 1rem 1.5rem; }
+.header > div { min-inline-size: 0; }
+.title { font-size: 1.25rem; font-weight: 600; line-height: 1.4; letter-spacing: -.01em; }
+.intro { max-inline-size: 70ch; padding-block-start: .5rem; color: var(--muted); font-size: 1rem; line-height: 1.625; }
+.actions { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; }
+.button, .primaryButton, .iconButton {
+  display: inline-flex;
+  min-inline-size: 0;
+  min-block-size: 2.75rem;
+  align-items: center;
+  justify-content: center;
+  gap: .5rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  padding: .5rem .75rem;
+  color: var(--foreground);
+  background: var(--surface);
+  font-size: .875rem;
+  font-weight: 500;
+  line-height: 1.4286;
+  text-align: center;
+  text-decoration: none;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.primaryButton { border-color: var(--primary); color: var(--primary-ink); background: var(--primary); }
+.iconButton { min-inline-size: 2.75rem; }
+.field { display: grid; min-inline-size: 0; gap: .5rem; padding-block: 1rem; font-weight: 500; }
+.select { inline-size: 100%; min-inline-size: 0; min-block-size: 2.75rem; border: 1px solid var(--line-strong); border-radius: var(--radius-control); padding: .625rem .75rem; color: var(--foreground); background: var(--surface); line-height: 1.4286; }
+.readStatus { padding-block: .75rem; color: var(--muted); font-size: .8125rem; line-height: 1.5385; }
+.notice { margin-block: 1rem; border-inline-start: 3px solid var(--line-strong); padding: .75rem; color: var(--foreground); background: var(--surface-raised); --focus-surface: var(--surface-raised); }
+.notice > :is(p, div) + :is(p, div) { margin-block-start: .5rem; }
+.neutral { border-color: var(--line-strong); color: var(--foreground); background: var(--surface-raised); --focus-surface: var(--surface-raised); }
+.success { border-color: var(--success); color: var(--success); background: var(--success-surface); --focus-surface: var(--success-surface); }
+.warning { border-color: var(--warning); color: var(--warning); background: var(--warning-surface); --focus-surface: var(--warning-surface); }
+.danger { border-color: var(--danger); color: var(--danger); background: var(--danger-surface); --focus-surface: var(--danger-surface); }
+.metadata { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(16rem, 100%), 1fr)); gap: .75rem 1.5rem; padding-block: 1rem; }
+.metadata > div { display: grid; min-inline-size: 0; align-content: start; gap: .25rem; }
+.metadata dt { color: var(--muted); font-size: .8125rem; line-height: 1.5385; }
+.metadata dd { min-inline-size: 0; font-size: .875rem; line-height: 1.4286; font-variant-numeric: tabular-nums; }
+.identity { display: block; min-inline-size: 0; max-inline-size: 100%; font-family: var(--font-mono); font-size: .8125rem; font-weight: 400; line-height: 1.5385; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.account { min-inline-size: 0; border-block: 1px solid var(--line); padding-block: 1rem; }
+.accountTitle { min-inline-size: 0; font-size: 1rem; font-weight: 600; line-height: 1.5; }
+.details { min-inline-size: 0; border-block-start: 1px solid var(--line); padding-block: .5rem; }
+.details summary { min-block-size: 2.75rem; padding: .625rem .5rem; color: var(--foreground); font-size: .875rem; font-weight: 500; line-height: 1.4286; cursor: pointer; }
+.details[open] > summary { margin-block-end: .5rem; }
+.scopeList { display: grid; min-inline-size: 0; gap: .5rem; padding: .5rem .75rem .75rem 1.5rem; color: var(--muted); font-family: var(--font-mono); font-size: .8125rem; line-height: 1.5385; }
+.scopeList li { min-inline-size: 0; overflow-wrap: anywhere; }
+.sourceList { min-inline-size: 0; padding-block-start: 1rem; }
+.sourceRow { display: grid; min-inline-size: 0; gap: 1rem; border-block-start: 1px solid var(--line); padding-block: 1.5rem; align-items: start; }
+.sourceHeading { display: flex; min-inline-size: 0; align-items: start; gap: .75rem; }
+.sourceHeading > div { min-inline-size: 0; }
+.sourceIcon { display: inline-flex; inline-size: 2.75rem; min-block-size: 2.75rem; flex: 0 0 auto; align-items: center; justify-content: center; border: 1px solid var(--line); border-radius: var(--radius-control); color: var(--foreground); background: var(--surface); }
+.sourceTitle { font-size: 1rem; font-weight: 600; line-height: 1.5; }
+.sourceStatus { display: block; padding-block-start: .25rem; color: var(--muted); font-size: .8125rem; line-height: 1.5385; }
+.sourceDescription { display: grid; min-inline-size: 0; gap: .5rem; color: var(--muted); font-size: .875rem; line-height: 1.4286; }
+.sourceDescription .identity { color: var(--muted); }
+.sourceControls { display: flex; min-inline-size: 0; flex-wrap: wrap; align-items: center; gap: .75rem; }
+.confirmation { display: flex; min-inline-size: 0; flex-wrap: wrap; align-items: center; gap: 1rem; border-inline-start: 3px solid var(--warning); padding: 1rem; color: var(--foreground); background: var(--warning-surface); --focus-surface: var(--warning-surface); }
+.confirmationText { min-inline-size: 0; flex: 1 1 24rem; font-size: .875rem; line-height: 1.4286; }
+.photoPanel { display: grid; min-inline-size: 0; gap: 1rem; border: 1px solid var(--line-strong); border-radius: var(--radius-surface); padding: 1rem; background: var(--surface); --focus-surface: var(--surface); }
+.photoHeader { display: flex; flex-wrap: wrap; align-items: start; justify-content: space-between; gap: .75rem; }
+.photoHeader > div { min-inline-size: 0; }
+.photoHeader .sourceTitle { display: flex; align-items: center; gap: .5rem; }
+.supporting { min-inline-size: 0; max-inline-size: 75ch; color: var(--muted); font-size: .8125rem; font-weight: 400; line-height: 1.5385; }
+.pending { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .5rem; color: var(--muted); font-size: .8125rem; line-height: 1.5385; }
+.footer { display: flex; align-items: start; gap: .5rem; border-block-start: 1px solid var(--line); padding-block-start: 1rem; color: var(--muted); font-size: .8125rem; line-height: 1.5385; }
+.footer > span { min-inline-size: 0; }
+.dangerText { color: var(--danger); }
+.successText { color: var(--success); }
+.spinner { animation: source-spin 1s linear infinite; }
+@keyframes source-spin { to { transform: rotate(360deg); } }
+.shell :is(button, select):disabled { opacity: 1; cursor: not-allowed; border-color: var(--line-strong); color: var(--muted); background: var(--surface-raised); }
+.shell :is(button, select, a, summary, [tabindex]):focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; box-shadow: 0 0 0 3px var(--focus-surface); }
+@container connected-sources (min-width: 58rem) {
+  .sourceRow { grid-template-columns: minmax(10rem, .7fr) minmax(0, 1.5fr) minmax(11rem, .7fr); gap: 1.5rem; }
+  .sourceControls { justify-content: flex-end; }
+  .sourceRow > :is(.confirmation, .photoPanel, .notice) { grid-column: 1 / -1; }
+}
+@container connected-sources (max-width: 36rem) {
+  .header > .actions { inline-size: 100%; }
+  .sourceControls > :is(button, a), .confirmation > .actions { flex: 1 1 10rem; }
+  .shell .select { font-size: 1rem; }
+}
+@media (hover: hover) {
+  .button:not(:disabled):hover, .iconButton:not(:disabled):hover { color: var(--foreground); background: var(--surface-raised); }
+  .primaryButton:not(:disabled):hover { color: var(--primary-ink); background: var(--primary-hover); }
+  .details summary:hover { background: var(--surface-raised); }
+}
+.button:not(:disabled):active, .iconButton:not(:disabled):active { background: var(--surface-overlay); }
+.primaryButton:not(:disabled):active { background: var(--primary-pressed); }
+@media (pointer: coarse) {
+  .shell :is(button, select, summary), .button, .primaryButton, .iconButton { min-block-size: 3rem; }
+  .shell .iconButton { min-inline-size: 3rem; }
+  .shell .select { font-size: 1rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .shell *, .shell *::before, .shell *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
+@media (prefers-contrast: more) {
+  .shell { --muted: var(--foreground); --line: var(--line-strong); }
+}
+@media (forced-colors: active) {
+  .shell { --background: Canvas; --surface: Canvas; --surface-raised: Canvas; --surface-overlay: Canvas; --foreground: CanvasText; --muted: CanvasText; --line: CanvasText; --line-strong: ButtonText; --focus: Highlight; --focus-surface: Canvas; --primary: ButtonFace; --primary-ink: ButtonText; --primary-hover: ButtonFace; --primary-pressed: ButtonFace; --accent: LinkText; --success: CanvasText; --success-surface: Canvas; --warning: CanvasText; --warning-surface: Canvas; --danger: CanvasText; --danger-surface: Canvas; }
+  .shell :is(button, select, summary), .button, .primaryButton, .iconButton { border: 1px solid ButtonText; }
+}

@@ -13,7 +13,7 @@ import {
   Trash2,
   Unplug,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { clsx } from "clsx";
 
 import {
@@ -25,6 +25,8 @@ import {
   type GooglePhotosPickerSession,
 } from "@/components/capture/google-photos-session";
 import { googleWorkspaceCapabilitiesForScopes } from "@/lib/connectors/google-workspace-capabilities";
+import { createConnectedSourceIdentity, waitForConnectedSourceClose, type ConnectedSourceIdentityToken } from "./connected-source-identity";
+import styles from "./connected-sources.module.css";
 
 const INTEGRATION_STATUS_CHANGED_EVENT = "asael:integration-status-changed";
 
@@ -66,6 +68,17 @@ type Props = {
     lastError?: string;
   }) => void;
 };
+
+type BoundPhotoSession = ClientGooglePhotosPickerSession & { connectionId: string };
+type SourceEffect = { name: string; identity: ConnectedSourceIdentityToken; connectionId: string };
+type SourceMessage = {
+  tone: "success" | "warning" | "error";
+  text: string;
+  connectionId?: string;
+  cleanup?: boolean;
+};
+
+class SupersededPhotoSelectionError extends Error {}
 
 class GooglePhotosPickerSessionRequestError extends Error {
   constructor(
@@ -128,13 +141,27 @@ export function ConnectedSources({
     : grant && grant.manageable !== true
       ? "This retained connection is visible for continuity, but only its stored owner can use or change it."
       : disabledReason;
-  const [action, setAction] = useState<string>();
-  const [confirming, setConfirming] = useState<string>();
-  const [message, setMessage] = useState<{ tone: "success" | "warning" | "error"; text: string }>();
-  const [photoSession, setPhotoSession] = useState<ClientGooglePhotosPickerSession>();
-  const photoSessionRef = useRef<ClientGooglePhotosPickerSession | undefined>(undefined);
+  const [action, setAction] = useState<SourceEffect>();
+  const [confirming, setConfirming] = useState<{ kind: string; connectionId: string }>();
+  const [message, setMessage] = useState<SourceMessage>();
+  const [photoSession, setPhotoSession] = useState<BoundPhotoSession>();
+  const photoSessionRef = useRef<BoundPhotoSession | undefined>(undefined);
   const mountedRef = useRef(false);
   const [photoImportContinuation, setPhotoImportContinuation] = useState(false);
+  const connectionIdentityRef = useRef(createConnectedSourceIdentity(grant?.id));
+  const actionRef = useRef<SourceEffect | undefined>(undefined);
+  const photoReadRevisionRef = useRef(0);
+
+  useLayoutEffect(() => {
+    const identity = connectionIdentityRef.current;
+    identity.select(grant?.id);
+    if (actionRef.current && !identity.isCurrent(actionRef.current.identity)) {
+      actionRef.current = undefined;
+      // Release the UI when a refreshed grant list changes the effective account.
+      setAction(undefined);
+    }
+    return () => identity.invalidate();
+  }, [grant?.id]);
 
   const sourceAccess = useMemo(
     () => googleSourceAccess(grant?.scopes || []),
@@ -146,7 +173,7 @@ export function ConnectedSources({
     await onRefresh().catch(() => undefined);
   }, [onRefresh]);
 
-  const storePhotoSession = useCallback((session?: ClientGooglePhotosPickerSession) => {
+  const storePhotoSession = useCallback((session?: BoundPhotoSession) => {
     photoSessionRef.current = session;
     setPhotoSession(session);
   }, []);
@@ -167,9 +194,12 @@ export function ConnectedSources({
   }, [clearPhotoSession]);
 
   useEffect(() => {
+    const identity = connectionIdentityRef.current;
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      identity.invalidate();
+      photoReadRevisionRef.current += 1;
       const activeSession = photoSessionRef.current;
       photoSessionRef.current = undefined;
       if (activeSession) {
@@ -191,37 +221,46 @@ export function ConnectedSources({
   }, [refreshIntegrationViews]);
 
   const refreshPhotoSession = useCallback(async (handle: string) => {
+    const identity = connectionIdentityRef.current.capture();
+    const initial = photoSessionRef.current;
+    if (!initial || initial.handle !== handle || initial.connectionId !== identity.connectionId) {
+      throw new SupersededPhotoSelectionError("This Google Photos selection belongs to another connection.");
+    }
+    const readRevision = ++photoReadRevisionRef.current;
+    const currentRead = () => mountedRef.current &&
+      connectionIdentityRef.current.isCurrent(identity) &&
+      photoReadRevisionRef.current === readRevision;
     const response = await fetch(`/api/oauth/google/photos/sessions/${encodeURIComponent(handle)}`, {
       cache: "no-store",
     });
+    if (!currentRead()) throw new SupersededPhotoSelectionError("This Google Photos read was superseded.");
     const payload = (await response.json().catch(() => ({}))) as {
       session?: GooglePhotosPickerSession;
       error?: string;
     };
-    if (!response.ok || !payload.session) {
+    if (!currentRead()) throw new SupersededPhotoSelectionError("This Google Photos read was superseded.");
+    if (!response.ok || !payload.session || payload.session.handle !== handle) {
       throw new GooglePhotosPickerSessionRequestError(
         payload.error || "Google Photos selection could not be checked.",
         response.status,
       );
     }
     const current = photoSessionRef.current;
-    if (!current || current.handle !== handle) {
-      throw new Error("This Google Photos selection is no longer active.");
+    if (!current || current.handle !== handle || current.connectionId !== identity.connectionId) {
+      throw new SupersededPhotoSelectionError("This Google Photos selection is no longer active.");
     }
-    if (!mountedRef.current) {
-      throw new Error("This Google Photos selection was closed when the page changed.");
-    }
-    const session = withGooglePhotosPollDeadline({
+    const session = { ...withGooglePhotosPollDeadline({
       ...payload.session,
       pickerUri: payload.session.pickerUri ||
         current.pickerUri,
-    }, current);
+    }, current), connectionId: current.connectionId };
     if (googlePhotosSessionDeadlineElapsed(session)) {
       try {
         await closeGooglePhotosPickerSession(handle);
       } finally {
         if (photoSessionRef.current?.handle === handle) clearPhotoSession();
       }
+      if (!currentRead()) throw new SupersededPhotoSelectionError("This Google Photos read was superseded.");
       throw new Error("This Google Photos selection expired. Start a new selection to continue.");
     }
     storePhotoSession(session);
@@ -229,13 +268,15 @@ export function ConnectedSources({
   }, [clearPhotoSession, storePhotoSession]);
 
   const expirePhotoSession = useCallback(async (handle: string) => {
-    if (photoSessionRef.current?.handle !== handle) return;
+    const expiredSession = photoSessionRef.current;
+    if (expiredSession?.handle !== handle) return;
     try {
       await closeGooglePhotosPickerSession(handle);
       if (photoSessionRef.current?.handle === handle) {
         clearPhotoSession();
         setMessage({
           tone: "warning",
+          connectionId: expiredSession.connectionId,
           text: "The Google Photos selection expired and was closed. Start a new selection to continue.",
         });
       }
@@ -244,6 +285,8 @@ export function ConnectedSources({
         clearPhotoSession();
         setMessage({
           tone: "error",
+          cleanup: true,
+          connectionId: expiredSession.connectionId,
           text: closeError instanceof Error
             ? closeError.message
             : "The Google Photos selection expired, but its closure could not be confirmed.",
@@ -262,7 +305,7 @@ export function ConnectedSources({
       const activeSession = photoSessionRef.current;
       if (canceled || !activeSession || activeSession.handle !== handle) return;
       const nowMs = Date.now();
-      const delay = actionDisabledReason
+      const delay = actionDisabledReason || action || activeSession.connectionId !== grant?.id
         ? Math.max(0, activeSession.clientPollDeadlineAt - nowMs)
         : nextGooglePhotosSessionWakeDelayMs(activeSession, nowMs);
       timer = window.setTimeout(() => {
@@ -278,19 +321,20 @@ export function ConnectedSources({
         return;
       }
 
-      if (!actionDisabledReason && !activeSession.mediaItemsSet) {
+      if (!actionDisabledReason && !action && activeSession.connectionId === grant?.id && !activeSession.mediaItemsSet) {
         try {
           await refreshPhotoSession(handle);
         } catch (refreshError) {
-          if (canceled) return;
+          if (canceled || refreshError instanceof SupersededPhotoSelectionError) return;
           if (refreshError instanceof GooglePhotosPickerSessionRequestError &&
             (refreshError.status === 404 || refreshError.status === 410)) {
             if (photoSessionRef.current?.handle === handle) clearPhotoSession();
-            setMessage({ tone: "warning", text: "The Google Photos selection is no longer active." });
+            setMessage({ tone: "warning", connectionId: activeSession.connectionId, text: "The Google Photos selection is no longer active." });
             return;
           }
           setMessage({
             tone: "error",
+            connectionId: activeSession.connectionId,
             text: refreshError instanceof Error
               ? refreshError.message
               : "Google Photos selection could not be checked.",
@@ -305,60 +349,123 @@ export function ConnectedSources({
       canceled = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [actionDisabledReason, clearPhotoSession, expirePhotoSession, photoSession, refreshPhotoSession]);
+  }, [action, actionDisabledReason, clearPhotoSession, expirePhotoSession, grant?.id, photoSession, refreshPhotoSession]);
 
   function blockUnavailableAction() {
     if (!actionDisabledReason) return false;
-    setMessage({ tone: "error", text: actionDisabledReason });
+    setMessage({ tone: "error", text: actionDisabledReason, connectionId: grant?.id });
     return true;
   }
 
-  async function syncGoogle() {
-    if (blockUnavailableAction()) return;
-    setAction("sync");
+  function beginSourceAction(name: string): SourceEffect | undefined {
+    if (actionRef.current || loading || blockUnavailableAction()) return undefined;
+    const identity = connectionIdentityRef.current.capture();
+    if (!identity.connectionId || !connectionIdentityRef.current.isCurrent(identity)) return undefined;
+    let connectionId: string;
+    try {
+      connectionId = requiredConnectionId(grant);
+    } catch (identityError) {
+      setMessage({ tone: "error", text: identityError instanceof Error ? identityError.message : "Choose the Google account to use." });
+      return undefined;
+    }
+    const effect = { name, identity, connectionId };
+    actionRef.current = effect;
+    setAction(effect);
     setMessage(undefined);
+    return effect;
+  }
+
+  function sourceActionIsCurrent(effect: SourceEffect) {
+    return mountedRef.current && actionRef.current === effect &&
+      connectionIdentityRef.current.isCurrent(effect.identity);
+  }
+
+  function reportSourceAction(effect: SourceEffect, nextMessage: SourceMessage) {
+    if (sourceActionIsCurrent(effect)) {
+      setMessage({ ...nextMessage, connectionId: effect.identity.connectionId });
+    }
+  }
+
+  function endSourceAction(effect: SourceEffect) {
+    if (actionRef.current !== effect) return;
+    actionRef.current = undefined;
+    if (mountedRef.current) setAction(undefined);
+  }
+
+  async function selectGoogleConnection(connectionId: string) {
+    if (actionRef.current || loading || connectionId === grant?.id) return;
+    // Invalidate pending reads immediately, before waiting for the existing close.
+    connectionIdentityRef.current.invalidate();
+    connectionIdentityRef.current.select(grant?.id);
+    photoReadRevisionRef.current += 1;
+    const effect = { name: "account:change", identity: connectionIdentityRef.current.capture(), connectionId: grant?.id || "" };
+    actionRef.current = effect;
+    setAction(effect);
+    setConfirming(undefined);
+    setMessage(undefined);
+    const previousSession = photoSessionRef.current;
+    try {
+      await waitForConnectedSourceClose(closeActivePhotoSession());
+    } catch (closeError) {
+      if (mountedRef.current) setMessage({
+        tone: "error",
+        cleanup: true,
+        connectionId: previousSession?.connectionId || effect.identity.connectionId,
+        text: `The previous Photos selection${previousSession ? ` ${previousSession.handle}` : ""} could not be confirmed closed. ${closeError instanceof Error ? closeError.message : "Return to its account to retry canceling it."}`,
+      });
+    } finally {
+      if (sourceActionIsCurrent(effect)) {
+        connectionIdentityRef.current.select(connectionId);
+        setSelectedConnectionId(connectionId);
+      }
+      endSourceAction(effect);
+    }
+  }
+
+  async function syncGoogle() {
+    const effect = beginSourceAction("sync");
+    if (!effect) return;
     try {
       const response = await fetch(
-        `/api/oauth/google/sync?connectionId=${encodeURIComponent(requiredConnectionId(grant))}`,
+        `/api/oauth/google/sync?connectionId=${encodeURIComponent(effect.connectionId)}`,
         { method: "POST" },
       );
-      const payload = (await response.json().catch(() => ({}))) as {
-        imported?: number;
-        removed?: number;
-        error?: string;
-      };
+      const payload = (await response.json().catch(() => ({}))) as { imported?: number; removed?: number; error?: string };
+      if (!sourceActionIsCurrent(effect)) return;
       if (!response.ok) throw new Error(payload.error || "Google sync failed.");
-      setMessage({
+      reportSourceAction(effect, {
         tone: "success",
-        text: `Google is up to date · ${payload.imported || 0} imported${payload.removed ? ` · ${payload.removed} removed` : ""}.`,
+        text: `Google sync finished. ${typeof payload.imported === "number" ? `${payload.imported} imported` : "Import count unavailable"}${typeof payload.removed === "number" ? ` · ${payload.removed} removed` : ""}.`,
       });
       await refreshIntegrationViews();
     } catch (syncError) {
-      setMessage({ tone: "error", text: syncError instanceof Error ? syncError.message : "Google sync failed." });
+      if (!sourceActionIsCurrent(effect)) return;
+      reportSourceAction(effect, { tone: "error", text: syncError instanceof Error ? syncError.message : "Google sync failed." });
       await refreshIntegrationViews();
     } finally {
-      setAction(undefined);
+      endSourceAction(effect);
     }
   }
 
   async function disconnectGoogle() {
-    if (blockUnavailableAction()) return;
-    setAction("disconnect");
-    setMessage(undefined);
+    const effect = beginSourceAction("disconnect");
+    if (!effect) return;
     try {
       await closeActivePhotoSession();
+      if (!sourceActionIsCurrent(effect)) return;
       const response = await fetch(
-        `/api/oauth/google?connectionId=${encodeURIComponent(requiredConnectionId(grant))}`,
+        `/api/oauth/google?connectionId=${encodeURIComponent(effect.connectionId)}`,
         { method: "DELETE" },
       );
       const payload = (await response.json().catch(() => ({}))) as {
         error?: string;
         providerRevocation?: "revoked" | "not_needed" | "failed";
       };
+      if (!sourceActionIsCurrent(effect)) return;
       if (!response.ok) throw new Error(payload.error || "Google could not be disconnected.");
       clearPhotoSession();
       setConfirming(undefined);
-      setMessage({
+      reportSourceAction(effect, {
         tone: payload.providerRevocation === "failed" ? "error" : "success",
         text: payload.providerRevocation === "failed"
           ? "Google is disconnected from Asael, but Google did not confirm remote revocation. Remove Asael from your Google account security page if needed."
@@ -366,121 +473,119 @@ export function ConnectedSources({
       });
       await refreshIntegrationViews();
     } catch (disconnectError) {
-      setMessage({ tone: "error", text: disconnectError instanceof Error ? disconnectError.message : "Google could not be disconnected." });
+      reportSourceAction(effect, { tone: "error", text: disconnectError instanceof Error ? disconnectError.message : "Google could not be disconnected." });
     } finally {
-      setAction(undefined);
+      endSourceAction(effect);
     }
   }
 
   async function removeImportedSource(id: string, prefix: string) {
-    if (blockUnavailableAction()) return;
-    setAction(`remove:${id}`);
-    setMessage(undefined);
+    const effect = beginSourceAction(`remove:${id}`);
+    if (!effect) return;
     try {
+      const sourcePrefix = googleSourcePrefix(grant, prefix);
       if (id === "photos") await closeActivePhotoSession();
+      if (!sourceActionIsCurrent(effect)) return;
       const response = id === "photos"
         ? await fetch(
-            `/api/oauth/google/photos?connectionId=${encodeURIComponent(requiredConnectionId(grant))}`,
+            `/api/oauth/google/photos?connectionId=${encodeURIComponent(effect.connectionId)}`,
             { method: "DELETE" },
           )
         : await fetch(
-            `/api/knowledge?source=${encodeURIComponent(googleSourcePrefix(grant, prefix))}`,
+            `/api/knowledge?source=${encodeURIComponent(sourcePrefix)}`,
             { method: "DELETE", headers: { "idempotency-key": crypto.randomUUID() } },
           );
-      const payload = (await response.json().catch(() => ({}))) as {
-        deleted?: { documents?: number; memories?: number };
-        error?: string;
-      };
+      const payload = (await response.json().catch(() => ({}))) as { error?: string };
+      if (!sourceActionIsCurrent(effect)) return;
       if (!response.ok) throw new Error(payload.error || `${id} data could not be removed.`);
       if (id === "photos") clearPhotoSession();
       setConfirming(undefined);
-      setMessage({ tone: "success", text: `${sourceLabel(id)} data was removed from knowledge and linked memory.` });
+      reportSourceAction(effect, { tone: "success", text: `${sourceLabel(id)} data was removed from knowledge and linked memory.` });
       await refreshIntegrationViews();
     } catch (removeError) {
-      setMessage({ tone: "error", text: removeError instanceof Error ? removeError.message : `${sourceLabel(id)} data could not be removed.` });
+      reportSourceAction(effect, { tone: "error", text: removeError instanceof Error ? removeError.message : `${sourceLabel(id)} data could not be removed.` });
     } finally {
-      setAction(undefined);
+      endSourceAction(effect);
+    }
+  }
+
+  async function closeCreatedPhotoSession(session: BoundPhotoSession) {
+    try {
+      await waitForConnectedSourceClose(
+        closeGooglePhotosPickerSession(session.handle, { keepalive: !mountedRef.current }).then(() => {
+          if (photoSessionRef.current?.handle === session.handle) clearPhotoSession();
+        }),
+      );
+      return true;
+    } catch (closeError) {
+      if (mountedRef.current) setMessage({
+        tone: "error",
+        cleanup: true,
+        connectionId: session.connectionId,
+        text: `Closure of Photos selection ${session.handle} could not be confirmed. ${closeError instanceof Error ? closeError.message : "The selection may remain open until it expires."}`,
+      });
+      return false;
     }
   }
 
   async function beginPhotoSelection() {
-    if (blockUnavailableAction()) return;
-    setAction("photos:create");
-    setMessage(undefined);
-    const pickerWindow = window.open("about:blank", "asael-google-photos");
-    let createdSession: ClientGooglePhotosPickerSession | undefined;
+    const effect = beginSourceAction("photos:create");
+    if (!effect) return;
+    const pickerWindow = window.open("about:blank", `asael-google-photos-${crypto.randomUUID()}`);
+    let createdSession: BoundPhotoSession | undefined;
     try {
       await closeActivePhotoSession();
+      if (!sourceActionIsCurrent(effect)) { pickerWindow?.close(); return; }
       const response = await fetch("/api/oauth/google/photos/sessions", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          maxItemCount: 12,
-          connectionId: requiredConnectionId(grant),
-        }),
+        body: JSON.stringify({ maxItemCount: 12, connectionId: effect.connectionId }),
       });
-      const payload = (await response.json().catch(() => ({}))) as {
-        session?: GooglePhotosPickerSession;
-        error?: string;
-      };
-      if (!response.ok || !payload.session?.pickerUri) throw new Error(payload.error || "Google Photos could not be opened.");
-      createdSession = withGooglePhotosPollDeadline(payload.session);
-      if (googlePhotosSessionDeadlineElapsed(createdSession)) {
-        await closeGooglePhotosPickerSession(createdSession.handle);
-        createdSession = undefined;
-        throw new Error("Google returned an expired Photos selection. Try again.");
+      // Read a superseded create response only to close its exact returned handle.
+      const payload = (await response.json().catch(() => ({}))) as { session?: GooglePhotosPickerSession; error?: string };
+      if (payload.session?.handle) {
+        createdSession = { ...withGooglePhotosPollDeadline(payload.session), connectionId: effect.identity.connectionId! };
       }
-      if (!mountedRef.current) {
-        await closeGooglePhotosPickerSession(createdSession.handle, { keepalive: true });
-        createdSession = undefined;
+      if (!sourceActionIsCurrent(effect)) {
+        pickerWindow?.close();
+        if (createdSession) await closeCreatedPhotoSession(createdSession);
         return;
       }
+      if (!response.ok || !createdSession?.pickerUri) throw new Error(payload.error || "Google Photos could not be opened.");
+      if (googlePhotosSessionDeadlineElapsed(createdSession)) throw new Error("Google returned an expired Photos selection. Try again.");
       storePhotoSession(createdSession);
       setPhotoImportContinuation(false);
       if (pickerWindow) {
         pickerWindow.opener = null;
-        pickerWindow.location.replace(createdSession.pickerUri || payload.session.pickerUri);
+        pickerWindow.location.replace(createdSession.pickerUri);
       } else {
-        setMessage({ tone: "error", text: "Your browser blocked the photo picker. Use Open picker below." });
+        reportSourceAction(effect, { tone: "error", text: "Your browser blocked the photo picker. Use Open picker below." });
       }
     } catch (photoError) {
       pickerWindow?.close();
-      let surfacedError = photoError;
-      if (createdSession) {
-        try {
-          await closeGooglePhotosPickerSession(createdSession.handle);
-          if (photoSessionRef.current?.handle === createdSession.handle) clearPhotoSession();
-        } catch (closeError) {
-          surfacedError = closeError;
-          if (mountedRef.current && photoSessionRef.current?.handle !== createdSession.handle) {
-            storePhotoSession(createdSession);
-          }
-        }
-      }
-      if (mountedRef.current) {
-        setMessage({ tone: "error", text: surfacedError instanceof Error ? surfacedError.message : "Google Photos could not be opened." });
-      }
+      const closed = !createdSession || await closeCreatedPhotoSession(createdSession);
+      if (closed) reportSourceAction(effect, {
+        tone: "error",
+        text: photoError instanceof Error ? photoError.message : "Google Photos could not be opened.",
+      });
     } finally {
-      setAction(undefined);
+      endSourceAction(effect);
     }
   }
 
   async function importSelectedPhotos() {
-    if (blockUnavailableAction()) return;
-    if (!photoSession) return;
-    setAction("photos:import");
-    setMessage(undefined);
+    const effect = beginSourceAction("photos:import");
+    if (!effect) return;
+    const initial = photoSessionRef.current;
     try {
-      const latest = photoSession.mediaItemsSet
-        ? photoSession
-        : await refreshPhotoSession(photoSession.handle);
+      if (!initial || initial.connectionId !== effect.identity.connectionId) return;
+      const latest = initial.mediaItemsSet ? initial : await refreshPhotoSession(initial.handle);
+      if (!sourceActionIsCurrent(effect) || photoSessionRef.current?.handle !== latest.handle) return;
       if (!latest.mediaItemsSet) {
-        setMessage({ tone: "error", text: "Finish choosing photos in Google Photos, then return here." });
+        reportSourceAction(effect, { tone: "error", text: "Finish choosing photos in Google Photos, then return here." });
         return;
       }
-      const response = await fetch(`/api/oauth/google/photos/sessions/${encodeURIComponent(latest.handle)}/import`, {
-        method: "POST",
-      });
+      const response = await fetch(`/api/oauth/google/photos/sessions/${encodeURIComponent(latest.handle)}/import`, { method: "POST" });
       const payload = (await response.json().catch(() => ({}))) as {
         imported?: number;
         skipped?: Array<{ filename: string; code: string; reason: string }>;
@@ -494,6 +599,7 @@ export function ConnectedSources({
         }>;
         error?: string;
       };
+      if (!sourceActionIsCurrent(effect)) return;
       if (!response.ok) throw new Error(payload.error || "Selected photos could not be imported.");
       if (payload.jobs?.[0]) onJob?.(payload.jobs[0]);
       const needsContinuation = payload.sessionDeleted !== true;
@@ -503,77 +609,89 @@ export function ConnectedSources({
       } else {
         clearPhotoSession();
       }
-      const skippedCount = Array.isArray(payload.skipped)
-        ? payload.skipped.length
-        : 0;
+      const skippedCount = Array.isArray(payload.skipped) ? payload.skipped.length : 0;
       const transferLimited = payload.skipped?.some((item) => item.code === "batch_transfer_limit") === true;
       const continuationCopy = needsContinuation
         ? transferLimited
           ? " Continue import to process the remaining photos."
           : skippedCount
             ? " Retry the skipped items or cancel this selection when you are done."
-            : " Your photos are saved; continue once to finish the Google session, or cancel it."
+            : " Continue once to finish the Google session, or cancel it."
         : "";
-      setMessage({
+      reportSourceAction(effect, {
         tone: needsContinuation ? "warning" : "success",
-        text: `${payload.imported || 0} photo${payload.imported === 1 ? "" : "s"} saved for indexing${skippedCount ? ` · ${skippedCount} skipped` : ""}${payload.selectionTruncated ? " · selection limit reached" : ""}.${continuationCopy}`,
+        text: `${typeof payload.imported === "number" ? `${payload.imported} photo${payload.imported === 1 ? "" : "s"} saved for indexing` : "Photo import finished; saved count unavailable"}${skippedCount ? ` · ${skippedCount} skipped` : ""}${payload.selectionTruncated ? " · selection limit reached" : ""}.${continuationCopy}`,
       });
       await refreshIntegrationViews();
     } catch (importError) {
-      setMessage({ tone: "error", text: importError instanceof Error ? importError.message : "Selected photos could not be imported." });
+      if (importError instanceof SupersededPhotoSelectionError) return;
+      reportSourceAction(effect, { tone: "error", text: importError instanceof Error ? importError.message : "Selected photos could not be imported." });
     } finally {
-      setAction(undefined);
+      endSourceAction(effect);
     }
   }
 
   async function cancelPhotoSelection() {
-    if (blockUnavailableAction()) return;
-    if (!photoSession) return;
-    setAction("photos:cancel");
-    setMessage(undefined);
+    const effect = beginSourceAction("photos:cancel");
+    if (!effect) return;
     try {
+      if (photoSessionRef.current?.connectionId !== effect.identity.connectionId) return;
       await closeActivePhotoSession();
-      setMessage({ tone: "success", text: "Google Photos selection canceled." });
+      reportSourceAction(effect, { tone: "success", text: "Google Photos selection canceled." });
     } catch (cancelError) {
-      setMessage({
+      reportSourceAction(effect, {
         tone: "error",
-        text: cancelError instanceof Error
-          ? cancelError.message
-          : "Google Photos could not confirm that the selection was canceled.",
+        text: cancelError instanceof Error ? cancelError.message : "Google Photos could not confirm that the selection was canceled.",
       });
     } finally {
-      setAction(undefined);
+      endSourceAction(effect);
     }
   }
 
-  const busy = Boolean(action) || loading;
+  const busy = Boolean(action) || Boolean(loading);
+  const accessVerified = requestReadContract === "readable_v1" && !loading;
+  const hasSnapshot = providers.length > 0 || grants.length > 0;
+  const confirmation = confirming?.connectionId === grant?.id ? confirming?.kind : undefined;
+  const visibleMessage = message && (message.cleanup || !message.connectionId || message.connectionId === grant?.id) ? message : undefined;
+  const photoBelongsToAccount = photoSession?.connectionId === grant?.id;
   const connectUrl = addReturnTo(provider?.authorizeUrl || "/api/oauth/google/authorize");
-  const repairUrl = googleAccountAuthorizeUrl(
-    provider?.authorizeUrl || "/api/oauth/google/authorize",
-    grant,
-  );
+  const repairUrl = googleAccountAuthorizeUrl(provider?.authorizeUrl || "/api/oauth/google/authorize", grant);
 
   return (
-    <section aria-labelledby="connected-sources-title" className="border-t border-line pt-7">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+    <section aria-labelledby="connected-sources-title" className={styles.shell} data-testid="connected-sources">
+      <div className={styles.header}>
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Connected sources</p>
-          <h2 id="connected-sources-title" className="mt-2 text-xl font-semibold tracking-tight">Bring your working world into one index.</h2>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-muted">Sync reads permitted sources into a private index. Gmail, Calendar, and Drive changes use separately governed actions; Photos includes only the items you choose.</p>
-          {grant ? <p className={clsx("mt-2 text-xs font-semibold", grant.syncStatus === "error" ? "text-danger" : "text-muted")}>{grant.syncStatus === "error" ? grant.syncError || "The last Google sync needs attention." : grant.lastSyncedAt ? `Last synced ${formatSourceTime(grant.lastSyncedAt)} · ${grant.syncedItems || 0} items imported` : "Connected · waiting for the first sync"}</p> : null}
+          <h2 id="connected-sources-title" className={styles.title}>Connected sources</h2>
+          <p className={styles.intro}>Sync permitted sources into your private index. Changes to Gmail, Calendar, and Drive use separately governed actions. Photos includes only the items you choose.</p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <button type="button" onClick={() => void refreshIntegrationViews()} disabled={busy} className={styles.button} aria-label="Refresh connected sources"><RefreshCw size={16} aria-hidden="true" />Refresh</button>
+      </div>
+
+      <p className={styles.readStatus} role="status">
+        {loading
+          ? hasSnapshot ? "Refreshing connection access. Last-loaded details are shown below." : "Loading connected sources…"
+          : requestReadContract !== "readable_v1"
+            ? hasSnapshot ? "Connection access is unverified. Last-loaded details are shown below; source actions are unavailable." : "Connection information is unavailable until ownership is verified."
+            : "Connection snapshot. Refresh to check the latest access and sync status."}
+      </p>
+
+      <div className={styles.header}>
+        <div>
+          <h3 className={styles.accountTitle}>{provider?.label || "Google"}</h3>
+          <p className={styles.identity}>Provider ID: {provider?.id || "Unavailable"}</p>
+          {accessVerified && provider?.configured === false ? <p className={styles.supporting}>Google OAuth setup is required before connecting an account.</p> : null}
+          {accessVerified && !provider ? <p className={styles.supporting}>The Google provider was not returned in this snapshot.</p> : null}
+          {accessVerified && !connected ? <p className={styles.supporting}>No active Google connections were returned. Connect an account to review its permitted sources.</p> : null}
+        </div>
+        <div className={styles.actions}>
           {googleGrants.length > 1 ? (
-            <label className="grid gap-1 text-xs font-semibold text-muted">
+            <label className={styles.field}>
               Google account
               <select
                 value={grant?.id || ""}
-                onChange={(event) => {
-                  void closeActivePhotoSession().catch(() => undefined);
-                  setSelectedConnectionId(event.target.value);
-                  setConfirming(undefined);
-                }}
-                className="min-h-10 rounded-md border border-line bg-background px-3 text-sm text-foreground"
+                onChange={(event) => void selectGoogleConnection(event.target.value)}
+                disabled={busy}
+                className={styles.select}
               >
                 {googleGrants.map((item) => (
                   <option key={item.id} value={item.id}>
@@ -586,104 +704,167 @@ export function ConnectedSources({
           ) : null}
           {connected && !actionDisabledReason ? (
             <>
-              <button type="button" onClick={() => void syncGoogle()} disabled={busy} className="primary-button">
-                {action === "sync" ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <RefreshCw size={15} aria-hidden="true" />}
-                {action === "sync" ? "Syncing…" : "Sync Google"}
+              <button type="button" onClick={() => void syncGoogle()} disabled={busy} className={styles.primaryButton}>
+                {action?.name === "sync" ? <Loader2 size={16} className={styles.spinner} aria-hidden="true" /> : <RefreshCw size={16} aria-hidden="true" />}Sync Google
               </button>
-              <a href={repairUrl} className="action-button">Manage access</a>
-              <button type="button" onClick={() => setConfirming("disconnect")} disabled={busy} className="action-button text-muted"><Unplug size={15} aria-hidden="true" />Disconnect</button>
+              {busy ? <button type="button" className={styles.button} disabled>Manage access</button> : <a href={repairUrl} className={styles.button}>Manage access</a>}
+              <button type="button" onClick={() => setConfirming({ kind: "disconnect", connectionId: grant!.id! })} disabled={busy} className={styles.button}><Unplug size={16} aria-hidden="true" />Disconnect</button>
             </>
           ) : connected ? (
-            <span
-              className="rounded-md border border-line bg-surface-raised px-3 py-2 text-sm font-semibold text-muted"
-              title={actionDisabledReason}
-            >
-              Managed by owner
-            </span>
-          ) : provider?.configured && !actionDisabledReason ? (
-            <a href={connectUrl} className="primary-button">Connect Google</a>
-          ) : provider?.configured ? (
-            <button type="button" disabled className="primary-button" title={actionDisabledReason}>
-              Connect Google
-            </button>
+            <p className={styles.supporting}>{accessVerified && grant?.manageable !== true ? "Read-only connection" : "Connection actions unavailable"}</p>
+          ) : provider?.configured && !actionDisabledReason && !busy ? (
+            <a href={connectUrl} className={styles.primaryButton}>Connect Google</a>
           ) : (
-            <span className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm font-semibold text-warning">Google OAuth setup required</span>
+            <button type="button" disabled className={styles.primaryButton}>Connect Google</button>
           )}
         </div>
       </div>
 
-      {confirming === "disconnect" && !actionDisabledReason ? (
-        <div className="mt-4 flex flex-col gap-3 border-l-2 border-warning bg-warning/5 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-sm leading-6">Disconnect Google? Indexed copies stay searchable until you remove them below.</p>
-          <div className="flex gap-2"><button type="button" onClick={() => setConfirming(undefined)} className="action-button">Keep connected</button><button type="button" onClick={() => void disconnectGoogle()} className="primary-button">Disconnect</button></div>
+      {action ? <p className={styles.pending} role="status">{sourceActionLabel(action.name)}{action.identity.connectionId ? <> · Connection ID: <span className={styles.identity}>{action.identity.connectionId}</span></> : null}</p> : null}
+      {actionDisabledReason ? <p className={clsx(styles.notice, styles.neutral)}>{actionDisabledReason}</p> : null}
+
+      {grant ? (
+        <section className={styles.account} aria-label="Selected Google account">
+          <h3 className={styles.accountTitle}>{grant.connectionLabel || (grant.connectionPurpose === "work" ? "Work account" : "Personal account")}</h3>
+          <p className={styles.supporting}>{grant.accountEmail || "Account email unavailable"}</p>
+          <p className={styles.identity}>Connection ID: {grant.id}</p>
+          <p className={clsx(styles.readStatus, grant.syncStatus === "error" && styles.dangerText)}>{googleSyncStatusLabel(grant)}</p>
+          <details className={styles.details}>
+            <summary>Connection details</summary>
+            <dl className={styles.metadata}>
+              <div><dt>Account email</dt><dd>{grant.accountEmail || "Unavailable"}</dd></div>
+              <div><dt>Connection label</dt><dd>{grant.connectionLabel || "Not specified"}</dd></div>
+              <div><dt>Account type</dt><dd>{grant.connectionPurpose || "Not specified"}</dd></div>
+              <div><dt>Grant status</dt><dd>{grant.status || "Unavailable"}</dd></div>
+              <div><dt>Access</dt><dd>{accessVerified ? grant.manageable === true ? "Manageable by this session" : "Read-only retained connection" : "Ownership unverified"}</dd></div>
+              <div><dt>Updated</dt><dd>{formatSourceTime(grant.updatedAt)}</dd></div>
+              <div><dt>Last synced</dt><dd>{grant.lastSyncedAt ? formatSourceTime(grant.lastSyncedAt) : "No timestamp returned"}</dd></div>
+              <div><dt>Imported items</dt><dd>{typeof grant.syncedItems === "number" ? grant.syncedItems : "Count unavailable"}</dd></div>
+            </dl>
+            <h4 className={styles.sourceTitle}>{accessVerified ? "Granted scopes" : "Last-loaded scopes"}</h4>
+            {grant.scopes.length ? <ul className={styles.scopeList}>{grant.scopes.map((scope) => <li key={scope} className={styles.identity}>{scope}</li>)}</ul> : <p className={styles.supporting}>No scopes were returned for this connection.</p>}
+          </details>
+        </section>
+      ) : null}
+
+      {confirmation === "disconnect" && !actionDisabledReason ? (
+        <div className={styles.confirmation} role="group" aria-label="Confirm Google disconnect">
+          <div className={styles.confirmationText}>
+            <p>Disconnect {grant?.accountEmail || grant?.connectionLabel || "this Google account"}?</p>
+            <p className={styles.supporting}>Indexed copies stay searchable until you remove them below.</p>
+            <p className={styles.identity}>Connection ID: {grant?.id}</p>
+          </div>
+          <div className={styles.actions}>
+            <button type="button" onClick={() => setConfirming(undefined)} disabled={busy} className={styles.button}>Keep connected</button>
+            <button type="button" onClick={() => void disconnectGoogle()} disabled={busy} className={styles.primaryButton}>Confirm disconnect</button>
+          </div>
         </div>
       ) : null}
 
-      <div className="mt-5 overflow-hidden rounded-xl border border-line bg-surface">
-        <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-4 border-b border-line bg-surface-raised px-4 py-3 text-xs font-semibold text-muted sm:grid-cols-[minmax(12rem,.8fr)_minmax(16rem,1.4fr)_auto]">
-          <span>Source</span><span className="hidden sm:block">What Asael can use</span><span>Control</span>
-        </div>
-        {[...sourceRows, {
-          id: "photos" as const,
-          label: "Photos",
-          prefix: "google:photos:" as const,
-          icon: Images,
-        }].map((source) => {
+      <div className={styles.sourceList}>
+        {[...sourceRows, { id: "photos" as const, label: "Photos", prefix: "google:photos:" as const, icon: Images }].map((source) => {
           const Icon = source.icon;
           const access = sourceAccess[source.id];
           const sourceConnected = access.granted;
-          const removing = action === `remove:${source.id}`;
+          const sourcePrefix = grant?.id?.trim() ? googleSourcePrefix(grant, source.prefix) : undefined;
           return (
-            <div key={source.id} className="grid grid-cols-[minmax(0,1fr)_auto] gap-4 border-b border-line px-4 py-4 last:border-b-0 sm:grid-cols-[minmax(12rem,.8fr)_minmax(16rem,1.4fr)_auto] sm:items-center">
-              <div className="flex min-w-0 items-center gap-3">
-                <span className="grid size-10 shrink-0 place-items-center rounded-lg bg-surface-raised text-primary"><Icon size={18} aria-hidden="true" /></span>
-                <div className="min-w-0"><p className="font-semibold">{source.label}</p><p className={clsx("mt-0.5 text-xs", sourceConnected ? "text-success" : "text-muted")}>{sourceConnected ? access.label : connected ? "Not granted" : "Not connected"}</p></div>
+            <article key={source.id} className={styles.sourceRow} aria-label={`${source.label} source`}>
+              <div className={styles.sourceHeading}>
+                <span className={styles.sourceIcon}><Icon size={18} aria-hidden="true" /></span>
+                <div>
+                  <h3 className={styles.sourceTitle}>{source.label}</h3>
+                  <p className={clsx(styles.sourceStatus, accessVerified && sourceConnected && styles.successText)}>
+                    {!accessVerified ? sourceConnected ? `Last loaded: ${access.label}` : "Access unverified" : sourceConnected ? access.label : connected ? "Not granted" : "Not connected"}
+                  </p>
+                </div>
               </div>
-              <p className="hidden text-sm leading-6 text-muted sm:block">{access.detail}</p>
-              <div className="flex flex-wrap justify-end gap-2">
+              <div className={styles.sourceDescription}>
+                <p>{accessVerified || grant ? access.detail : "Source permissions are unavailable until connection ownership is verified."}</p>
+                {sourcePrefix ? <p className={styles.identity}>Source prefix: {sourcePrefix}</p> : null}
+              </div>
+              <div className={styles.sourceControls}>
                 {source.id === "photos" && sourceConnected && !actionDisabledReason ? (
-                  <button type="button" onClick={() => void beginPhotoSelection()} disabled={busy} className="action-button">
-                    {action === "photos:create" ? <Loader2 size={14} className="animate-spin" /> : <Images size={14} />}
-                    Choose
+                  <button type="button" onClick={() => void beginPhotoSelection()} disabled={busy} className={styles.button}>
+                    {action?.name === "photos:create" ? <Loader2 size={16} className={styles.spinner} aria-hidden="true" /> : <Images size={16} aria-hidden="true" />}Choose photos
                   </button>
                 ) : null}
                 {connected && sourceConnected && !actionDisabledReason ? (
-                  confirming === source.id ? (
-                    <div className="flex gap-1"><button type="button" onClick={() => setConfirming(undefined)} className="action-button">Cancel</button><button type="button" onClick={() => void removeImportedSource(source.id, source.prefix)} disabled={removing} className="action-button text-danger">{removing ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}Remove</button></div>
-                  ) : (
-                    <button type="button" onClick={() => setConfirming(source.id)} disabled={busy} className="grid size-10 place-items-center rounded-md text-muted hover:bg-danger/10 hover:text-danger" aria-label={`Remove indexed ${source.label} data`}><Trash2 size={15} /></button>
-                  )
+                  <button type="button" onClick={() => setConfirming({ kind: source.id, connectionId: grant!.id! })} disabled={busy} className={styles.iconButton} aria-label={`Remove indexed ${source.label} data`}><Trash2 size={16} aria-hidden="true" /></button>
                 ) : connected && source.id === "photos" && !actionDisabledReason ? (
-                  <a href={connectUrl} className="action-button">Enable <ChevronRight size={14} /></a>
+                  busy ? <button type="button" disabled className={styles.button}>Enable Photos</button> : <a href={connectUrl} className={styles.button}>Enable Photos<ChevronRight size={16} aria-hidden="true" /></a>
                 ) : null}
               </div>
-            </div>
+              {confirmation === source.id && !actionDisabledReason ? (
+                <div className={styles.confirmation} role="group" aria-label={`Confirm removing ${source.label} data`}>
+                  <div className={styles.confirmationText}>
+                    <p>Remove indexed {source.label} copies and their linked memories?</p>
+                    <p className={styles.identity}>Connection ID: {grant?.id}</p>
+                  </div>
+                  <div className={styles.actions}>
+                    <button type="button" onClick={() => setConfirming(undefined)} disabled={busy} className={styles.button} aria-label={`Cancel removing ${source.label} data`}>Cancel</button>
+                    <button type="button" onClick={() => void removeImportedSource(source.id, source.prefix)} disabled={busy} className={styles.button} aria-label={`Confirm removing ${source.label} data`}><Trash2 size={16} aria-hidden="true" />Remove</button>
+                  </div>
+                </div>
+              ) : null}
+            </article>
           );
         })}
       </div>
 
-      {photoSession && !actionDisabledReason ? (
-        <div className="mt-4 flex flex-col gap-3 border-l-2 border-primary bg-primary/5 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <p className="flex items-center gap-2 text-sm font-semibold"><Images size={16} aria-hidden="true" />Google Photos selection</p>
-            <p className="mt-1 text-xs leading-5 text-muted">{photoImportContinuation ? "Part of this selection is already saved. Continue safely without downloading completed photos again." : photoSession.mediaItemsSet ? "Your selection is ready to import." : "Choose photos in the Google window, then return here."}</p>
+      {photoSession && photoBelongsToAccount ? (
+        <section className={styles.photoPanel} aria-label="Google Photos selection">
+          <div className={styles.photoHeader}>
+            <div>
+              <h3 className={styles.sourceTitle}><Images size={18} aria-hidden="true" />Google Photos selection</h3>
+              <p className={styles.supporting}>{photoImportContinuation ? "Part of this selection is already saved. Continue import to retry the remaining items." : photoSession.mediaItemsSet ? "Your selection is ready to import." : "Choose photos in the Google window, then return here."}</p>
+              <p className={styles.identity}>Connection ID: {photoSession.connectionId}</p>
+              <p className={styles.identity}>Selection ID: {photoSession.handle}</p>
+              <p className={styles.supporting}>Expires {formatSourceTime(photoSession.expiresAt)}</p>
+            </div>
+            <div className={styles.actions}>
+              {photoSession.pickerUri ? busy || actionDisabledReason ? <button type="button" disabled className={styles.button}>Open picker</button> : <a href={photoSession.pickerUri} target="_blank" rel="noreferrer" className={styles.button}>Open picker</a> : null}
+              <button type="button" onClick={() => void cancelPhotoSelection()} disabled={busy || Boolean(actionDisabledReason)} className={styles.button} aria-label="Cancel Photos selection">Cancel</button>
+              <button type="button" onClick={() => void importSelectedPhotos()} disabled={busy || Boolean(actionDisabledReason)} className={styles.primaryButton}>
+                {action?.name === "photos:import" ? <Loader2 size={16} className={styles.spinner} aria-hidden="true" /> : <CheckCircle2 size={16} aria-hidden="true" />}
+                {photoImportContinuation ? "Continue import" : photoSession.mediaItemsSet ? "Import selected" : "Check selection"}
+              </button>
+            </div>
           </div>
-          <div className="flex flex-wrap gap-2">
-            {photoSession.pickerUri ? <a href={photoSession.pickerUri} target="_blank" rel="noreferrer" className="action-button">Open picker</a> : null}
-            <button type="button" onClick={() => void cancelPhotoSelection()} disabled={Boolean(action)} className="action-button">Cancel</button>
-            <button type="button" onClick={() => void importSelectedPhotos()} disabled={Boolean(action)} className="primary-button">
-              {action === "photos:import" ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
-              {photoImportContinuation ? "Continue import" : photoSession.mediaItemsSet ? "Import selected" : "Check selection"}
-            </button>
-          </div>
-        </div>
+          {actionDisabledReason ? <p className={styles.supporting}>{actionDisabledReason}</p> : null}
+        </section>
+      ) : photoSession ? (
+        <p className={clsx(styles.notice, styles.warning)}>A Photos selection for connection <span className={styles.identity}>{photoSession.connectionId}</span> has not been confirmed closed. Select its account to retry cancellation. It is unavailable to the currently selected account.</p>
       ) : null}
 
-      {message ? <p role={message.tone === "error" ? "alert" : "status"} className={clsx("mt-3 text-sm", message.tone === "error" ? "text-danger" : message.tone === "warning" ? "text-warning" : "text-success")}>{message.text}</p> : null}
-      {actionDisabledReason ? <p className="mt-3 text-xs text-muted">{actionDisabledReason}</p> : null}
-      <p className="mt-3 flex items-center gap-2 text-xs text-muted"><ShieldCheck size={14} aria-hidden="true" />Connect and disconnect apply to the Google account. Removing a category deletes only its indexed copies and linked memories.</p>
+      {visibleMessage ? (
+        <div role={visibleMessage.tone === "error" ? "alert" : "status"} className={clsx(styles.notice, visibleMessage.tone === "error" ? styles.danger : visibleMessage.tone === "warning" ? styles.warning : styles.success)}>
+          <p>{visibleMessage.text}</p>
+          {visibleMessage.connectionId ? <p className={styles.identity}>Connection ID: {visibleMessage.connectionId}</p> : null}
+        </div>
+      ) : null}
+      <p className={styles.footer}><ShieldCheck size={16} aria-hidden="true" /><span>Connect and disconnect apply to the selected Google account. Removing a category deletes its indexed copies and linked memories.</span></p>
     </section>
   );
+}
+
+function sourceActionLabel(action: string) {
+  if (action === "account:change") return "Closing the previous Photos selection before switching accounts…";
+  if (action === "sync") return "Google sync is running…";
+  if (action === "disconnect") return "Disconnecting Google…";
+  if (action === "photos:create") return "Opening a Google Photos selection…";
+  if (action === "photos:import") return "Checking or importing the selected photos…";
+  if (action === "photos:cancel") return "Closing the Google Photos selection…";
+  if (action.startsWith("remove:")) return `Removing indexed ${sourceLabel(action.slice(7))} data…`;
+  return "Source action in progress…";
+}
+
+function googleSyncStatusLabel(grant: OAuthGrantItem) {
+  if (grant.syncStatus === "error") return grant.syncError || "The last reported Google sync needs attention.";
+  if (grant.syncStatus === "syncing") return "Last reported sync status: in progress.";
+  if (grant.lastSyncedAt) return `Last synced ${formatSourceTime(grant.lastSyncedAt)} · ${typeof grant.syncedItems === "number" ? `${grant.syncedItems} items imported` : "import count unavailable"}`;
+  if (grant.syncStatus === "healthy") return "Last reported sync status: healthy. No sync timestamp was returned.";
+  if (grant.syncStatus === "idle") return "Last reported sync status: idle. No completed sync timestamp was returned.";
+  return "Sync status is unavailable in this snapshot.";
 }
 
 function addReturnTo(url: string, intent?: "repair") {
@@ -728,9 +909,7 @@ function sourceLabel(id: string) {
 
 function formatSourceTime(value: string) {
   const date = new Date(value);
-  return Number.isNaN(date.getTime())
-    ? "recently"
-    : new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(date);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
 function googleSourceAccess(scopes: readonly string[]) {
@@ -803,7 +982,7 @@ function readOAuthCallbackNotice(value: string): {
     return undefined;
   }
   const message = status === "connected"
-    ? { tone: "success" as const, text: "Google connected. Granted permissions and source status are refreshed below." }
+    ? { tone: "success" as const, text: "The Google connection flow completed. Check the latest connection snapshot below to verify access." }
     : status === "denied"
       ? { tone: "warning" as const, text: "Google connection was not completed. No new access was granted." }
       : { tone: "error" as const, text: "Google could not be connected. Try again, then check OAuth configuration if it keeps failing." };

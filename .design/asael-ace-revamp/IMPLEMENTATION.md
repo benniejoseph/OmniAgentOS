@@ -519,6 +519,11 @@ All action mutations and external requests were blocked; no rebuild, creation
 or provider action was attempted. These bounded headless fixtures do not certify
 physical-device GPU behavior, large-graph performance or screen-reader operation.
 
+PR [#24](https://github.com/benniejoseph/OmniAgentOS/pull/24) merged as
+`c61db0b42a7ec6caf0eb6a27fb7e02857d81e8ab`. Implementation head
+`3ad851e221a46f2478053b656362840d81d9a367` passed all hosted quality,
+integration, build/budget, audit, worker, secret-scan and preview checks.
+
 ## Capture recording studio — 3 October 2026
 
 Record now uses canonical responsive controls, readable history and transcript
@@ -563,6 +568,56 @@ permission prompt, microphone, MediaRecorder or AudioContext was invoked; no
 session POST followed. Every mutation, external request and audio-data read was
 blocked, and no playback/copy/download/delete/transcription action was invoked.
 Real-device recording and provider processing remain outside these fixtures.
+
+PR [#25](https://github.com/benniejoseph/OmniAgentOS/pull/25) merged as
+`788e30c3b6216ce3993027aa9bf05de116a3ba22`. Implementation head
+`9bec075e37afdf2c0c787e5d13aa9a0682bb3cd3` passed all hosted quality,
+integration, build/budget, audit, worker, secret-scan and preview checks.
+
+## Capture connected sources — 3 October 2026
+
+Connected Sources now uses canonical responsive account, scope and source rows,
+with complete connection, provider, source-prefix and Photos-selection identities.
+Loading, unavailable, verified empty and last-loaded snapshots are distinct.
+Missing import counts and sync status remain unavailable. Account management,
+source removal and Photos controls retain their existing ownership and capability
+checks, request payloads and headers.
+
+Async Photos reads and effects bind to the originating connection and selection
+revision. Returning from account A to B to A cannot revive an old response.
+Confirmations and feedback stay with their exact account; each picker attempt
+uses a unique window target so an old response cannot close a newer picker.
+Account switching invalidates old reads immediately and waits at most ten seconds
+for selection cleanup. A failed or timed-out close releases the selector with an
+unconfirmed-cleanup message. Late cleanup only affects its original handle;
+provider closure is never inferred from a client timeout.
+
+Independent controller and CSS review passed. Twenty-nine focused tests passed:
+ten identity/cleanup regressions, seven existing Photos lifecycle tests, six
+OAuth route tests, one Photos import route test and five Google UI contract tests.
+The UI contract assertions now follow the revised ownership/OAuth wording and
+verify the repair link independently of its CSS class. Strict targeted lint, the
+Connected Sources TypeScript graph, CSS parsing and type-scale checks passed.
+
+Headless Chrome passed 140 checks and eight clean scoped axe scans. Coverage
+includes source read states and contracts, retained versus manageable accounts,
+full identities/scopes, draft and selection retention, local confirmation cancel,
+320–1440px layouts, both themes, 44/48px targets, 200% text, reduced motion and
+forced colors. The delayed Photos poll and cleanup preserve a newer account,
+confirmation and Capture draft after the local cleanup timeout.
+
+A supplemental visual pass passed 57 checks and captured sixteen viewport
+screenshots of actual source rows, the Photos region and timeout notice.
+Representative desktop/phone views in both themes were visually inspected.
+
+The harness wholly intercepted one exact Photos-creation POST, one held poll GET
+and one cleanup DELETE. A plain-object popup stub records the picker target and
+URL without opening a window. The supplemental visual run separately used the
+same single-session fixture budget. No request was forwarded to a provider, no real
+session was created or deleted, and no unexpected mutation, OAuth navigation,
+external request or microphone access occurred. The browser race does not create
+a second Photos session; additional lifecycle cases are covered by the focused
+helper tests. Live provider behavior remains outside this presentation evidence.
 
 ## Remaining gates and scope
 
