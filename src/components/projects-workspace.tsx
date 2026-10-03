@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   Archive,
   AlertTriangle,
+  ArrowLeft,
   ArrowRight,
   Bot,
   Brain,
@@ -49,7 +50,7 @@ import {
   parseCanonicalWorkItemSurface,
   type CanonicalWorkItemSurface,
 } from "@/lib/workspaces/surface";
-import styles from "./daybook-workspaces.module.css";
+import styles from "./projects-workspace.module.css";
 
 const PROJECT_LIBRARY_KINDS = [
   "generated_artifact",
@@ -162,6 +163,9 @@ export function ProjectsWorkspace({ initialView = "overview" }: { initialView?: 
   const [templates, setTemplates] = useState<WorkspaceTemplate[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [loading, setLoading] = useState(true);
+  const [hasLoaded, setHasLoaded] = useState(false);
+  const [projectDetailOpen, setProjectDetailOpen] = useState(initialView !== "overview");
+  const [artifactDetailOpen, setArtifactDetailOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [planning, setPlanning] = useState(false);
   const [addingTask, setAddingTask] = useState(false);
@@ -188,9 +192,15 @@ export function ProjectsWorkspace({ initialView = "overview" }: { initialView?: 
     requireApproval: boolean;
   }>();
   const [error, setError] = useState<string>();
-  const [announcement, setAnnouncement] = useState("Projects are ready.");
+  const [announcement, setAnnouncement] = useState("");
   const [workspaceView, setWorkspaceView] = useState<"overview" | "execution" | "build">(initialView);
   const controllerRef = useRef<AbortController | null>(null);
+  const projectListRef = useRef<HTMLElement>(null);
+  const projectHeadingRef = useRef<HTMLHeadingElement>(null);
+  const artifactListRef = useRef<HTMLUListElement>(null);
+  const artifactHeadingRef = useRef<HTMLHeadingElement>(null);
+  const projectListScrollRef = useRef(0);
+  const artifactListScrollRef = useRef(0);
   const templateMutationKeysRef = useRef(new Map<string, string>());
   const available = Boolean(session && (!session.authEnabled || session.authenticated));
   const selected = projects.find((project) => project.id === selectedId) || projects[0];
@@ -218,6 +228,7 @@ export function ProjectsWorkspace({ initialView = "overview" }: { initialView?: 
       const next = normalizeProjects(payload.projects);
       if (!next) throw new Error("Projects returned an invalid canonical WorkItem projection.");
       setProjects(next);
+      setHasLoaded(true);
       setTemplates(templatePayload.templates as WorkspaceTemplate[]);
       const requestedProjectId = new URL(window.location.href).searchParams.get("project") || "";
       const requestedArtifactId = new URL(window.location.href).searchParams.get("artifact") || "";
@@ -228,9 +239,16 @@ export function ProjectsWorkspace({ initialView = "overview" }: { initialView?: 
             ? current
             : next[0]?.id || "",
       );
+      if (!hasLoaded && requestedProjectId && next.some((item) => item.id === requestedProjectId)) setProjectDetailOpen(true);
       if (requestedArtifactId && next.some((item) =>
         item.artifacts.some((artifact) => artifact.id === requestedArtifactId)
-      )) setSelectedArtifactId(requestedArtifactId);
+      )) {
+        setSelectedArtifactId(requestedArtifactId);
+        if (!hasLoaded) {
+          setProjectDetailOpen(true);
+          setArtifactDetailOpen(true);
+        }
+      }
       setError(undefined);
     } catch (loadError) {
       if (!controller.signal.aborted) setError(message(loadError));
@@ -273,6 +291,7 @@ export function ProjectsWorkspace({ initialView = "overview" }: { initialView?: 
       const project = payload.project as Project;
       setProjects((current) => [project, ...current]);
       setSelectedId(project.id);
+      setProjectDetailOpen(true);
       setTitle(""); setObjective(""); setTargetDate(""); setShowCreate(false);
       setAnnouncement("Project created and activated.");
     } catch (createError) { setError(message(createError)); }
@@ -340,6 +359,7 @@ export function ProjectsWorkspace({ initialView = "overview" }: { initialView?: 
       const project = payload.project as Project;
       setProjects((current) => [project, ...current.filter((item) => item.id !== project.id)]);
       setSelectedId(project.id);
+      setProjectDetailOpen(true);
       templateMutationKeysRef.current.delete(keyName);
       setAnnouncement(`${project.title} was created from ${template.name} version ${template.version}.`);
       setError(undefined);
@@ -502,98 +522,127 @@ export function ProjectsWorkspace({ initialView = "overview" }: { initialView?: 
   const selectedLesson = selectedReflectionDraft?.lesson ?? selectedArtifact?.lesson ?? "";
   const selectedReflectionState = reflectionState && reflectionState.artifactId === selectedArtifact?.id ? reflectionState.status : "idle";
 
+  function selectProject(projectId: string) {
+    projectListScrollRef.current = window.scrollY;
+    setSelectedId(projectId);
+    setPlanRationale("");
+    setProjectDetailOpen(true);
+    setArtifactDetailOpen(false);
+    requestAnimationFrame(() => projectHeadingRef.current?.focus());
+  }
+
+  function returnToProjects() {
+    setProjectDetailOpen(false);
+    requestAnimationFrame(() => {
+      projectListRef.current?.focus({ preventScroll: true });
+      window.scrollTo({ top: projectListScrollRef.current, behavior: "instant" });
+    });
+  }
+
+  function selectArtifact(artifactId: string) {
+    artifactListScrollRef.current = window.scrollY;
+    setSelectedArtifactId(artifactId);
+    setArtifactDetailOpen(true);
+    requestAnimationFrame(() => artifactHeadingRef.current?.focus());
+  }
+
+  function returnToOutputs() {
+    setArtifactDetailOpen(false);
+    requestAnimationFrame(() => {
+      artifactListRef.current?.focus({ preventScroll: true });
+      window.scrollTo({ top: artifactListScrollRef.current, behavior: "instant" });
+    });
+  }
+
   return (
-    <main className={clsx("projects-shell workspace-enter", styles.daybook, styles.projects)} aria-busy={loading}>
-      <p className="sr-only" role="status" aria-live="polite">{announcement}</p>
-      <header className="projects-header" data-daybook="hero">
+    <div className={styles.shell}>
+      <p className="sr-only" role="status" aria-live="polite">{loading ? hasLoaded ? "Refreshing projects." : "Loading projects." : announcement}</p>
+      <header className={styles.header}>
         <div>
-          <p className="projects-kicker">Personal operating system</p>
-          <h1>Projects</h1>
-          <p>Turn outcomes into durable plans your agents can advance with you.</p>
+          <h1>Work</h1>
+          <p>Projects, plans, and the outputs they produce.</p>
         </div>
-        <div className="projects-header-actions">
-          <button type="button" className="projects-template-button" onClick={() => setShowTemplates((value) => !value)} aria-expanded={showTemplates}><LayoutTemplate size={15} aria-hidden="true" /> Templates{templates.length ? ` · ${templates.length}` : ""}</button>
-          <button type="button" className="projects-create-button" onClick={() => setShowCreate((value) => !value)}><Plus size={15} aria-hidden="true" /> New project</button>
+        <div className={styles.headerActions}>
+          <button type="button" className={styles.button} onClick={() => void load()} disabled={loading}><RotateCw size={16} aria-hidden="true" /> {loading && hasLoaded ? "Refreshing…" : "Refresh"}</button>
+          <button type="button" className={styles.button} onClick={() => setShowTemplates((value) => !value)} aria-expanded={showTemplates} aria-controls="project-templates"><LayoutTemplate size={16} aria-hidden="true" /> Templates{templates.length ? ` · ${templates.length}` : ""}</button>
+          <button type="button" className={styles.primaryButton} onClick={() => setShowCreate((value) => !value)} aria-expanded={showCreate} aria-controls="project-create"><Plus size={16} aria-hidden="true" /> New project</button>
         </div>
       </header>
 
-      <div className="projects-stats" aria-label="Project overview" data-daybook="metrics">
-        <div><strong>{activeProjects.length}</strong><span>active projects</span></div>
-        <div><strong>{allTasks.length}</strong><span>planned tasks</span></div>
-        <div><strong>{allTasks.length ? `${Math.round(closedTasks / allTasks.length * 100)}%` : "—"}</strong><span>work closed</span></div>
-      </div>
+      <p className={styles.summary}>{hasLoaded ? <><span>{activeProjects.length} active project{activeProjects.length === 1 ? "" : "s"}</span><span>{allTasks.length} planned task{allTasks.length === 1 ? "" : "s"}</span><span>{closedTasks} closed task{closedTasks === 1 ? "" : "s"}</span>{error ? <span>Last loaded view</span> : null}</> : loading ? "Loading project overview…" : "Project overview unavailable."}</p>
 
-      <nav className="projects-view-tabs" aria-label="Project workspace views">
-        <button type="button" className={workspaceView === "overview" ? "is-selected" : undefined} aria-current={workspaceView === "overview" ? "page" : undefined} onClick={() => setWorkspaceView("overview")}><FolderKanban size={14} aria-hidden="true" /><span><strong>Plan & context</strong><small>Tasks, outputs, library, and memory</small></span></button>
-        <button type="button" className={workspaceView === "build" ? "is-selected" : undefined} aria-current={workspaceView === "build" ? "page" : undefined} onClick={() => setWorkspaceView("build")}><Code2 size={14} aria-hidden="true" /><span><strong>Build</strong><small>Forge, code, checks, and live preview</small></span></button>
-        <button type="button" className={workspaceView === "execution" ? "is-selected" : undefined} aria-current={workspaceView === "execution" ? "page" : undefined} onClick={() => setWorkspaceView("execution")}><Bot size={14} aria-hidden="true" /><span><strong>Execution</strong><small>Agent lanes, approvals, and blockers</small></span></button>
-        <Link href="/app/missions?legacy=1"><History size={14} aria-hidden="true" /><span><strong>Legacy history</strong><small>Earlier Mission runs</small></span></Link>
+      <nav className={styles.viewNavigation} aria-label="Project workspace views">
+        <button type="button" aria-pressed={workspaceView === "overview"} onClick={() => setWorkspaceView("overview")}><FolderKanban size={16} aria-hidden="true" /> Plan & context</button>
+        <button type="button" aria-pressed={workspaceView === "execution"} onClick={() => setWorkspaceView("execution")}><Bot size={16} aria-hidden="true" /> Execution</button>
+        <button type="button" aria-pressed={workspaceView === "build"} onClick={() => setWorkspaceView("build")}><Code2 size={16} aria-hidden="true" /> Build</button>
+        <Link href="/app/missions?legacy=1"><History size={16} aria-hidden="true" /> Legacy history</Link>
       </nav>
 
-      {showTemplates ? <section className="projects-template-deck" aria-label="Workspace templates">
-        <div className="projects-template-heading">
-          <div><p className="projects-kicker">Versioned workspace library</p><h2>Templates & deterministic playbooks</h2><p>Each published version is immutable. New projects receive a copy, so later template changes never rewrite active work.</p></div>
+      {showTemplates ? <section id="project-templates" className={styles.templateDeck} aria-label="Workspace templates">
+        <div className={styles.sectionHeading}>
+          <div><h2>Templates & playbooks</h2><p>New projects receive a copy of the published version. Later edits leave active projects unchanged.</p></div>
           <span><ShieldCheck size={14} aria-hidden="true" /> {templates.filter((template) => template.playbook).length} typed playbook{templates.filter((template) => template.playbook).length === 1 ? "" : "s"}</span>
         </div>
-        {selected ? <div className="projects-template-publish">
+        {selected ? <div className={styles.templatePublish}>
           <div><strong>Save “{selected.title}” as a template</strong><small>Copies its outcome, work items, assignments, and dependency graph.</small></div>
           <label><span>Template name</span><input value={templateName} onChange={(event) => setTemplateName(event.currentTarget.value)} maxLength={120} placeholder="e.g. Product release" /></label>
           <label><span>Description</span><input value={templateDescription} onChange={(event) => setTemplateDescription(event.currentTarget.value)} maxLength={1000} placeholder="When should this be used?" /></label>
           <button type="button" onClick={() => void publishSelectedProjectAsTemplate()} disabled={!templateName.trim() || Boolean(templateBusyId)}>{templateBusyId === "new-template" ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <Plus size={14} aria-hidden="true" />} Publish</button>
         </div> : null}
-        <div className="projects-template-grid">
-          {templates.length ? templates.map((template) => <article key={template.templateVersionId} className="projects-template-card">
-            <div className="projects-template-card-head"><span><LayoutTemplate size={14} aria-hidden="true" /> v{template.version}</span>{template.playbook ? <em><Zap size={12} aria-hidden="true" /> typed playbook</em> : <em>project blueprint</em>}</div>
+        <div className={styles.templateList}>
+          {templates.length ? templates.map((template) => <article key={template.templateVersionId} className={styles.templateRow}>
+            <div className={styles.templateMeta}><span><LayoutTemplate size={14} aria-hidden="true" /> v{template.version}</span>{template.playbook ? <em><Zap size={12} aria-hidden="true" /> typed playbook</em> : <em>project blueprint</em>}</div>
             <h3>{template.name}</h3>
             <p>{template.description || template.project.objective}</p>
             <dl><div><dt>Work items</dt><dd>{template.project.tasks.length}</dd></div><div><dt>Default state</dt><dd>{template.project.status}</dd></div><div><dt>Procedure</dt><dd>{template.playbook?.aliases[0] || "Open-ended"}</dd></div></dl>
-            <div className="projects-template-card-actions">
-              <button type="button" className="is-primary" onClick={() => void instantiateTemplate(template)} disabled={Boolean(templateBusyId)}>{templateBusyId === template.templateVersionId ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <ArrowRight size={13} aria-hidden="true" />} Use template</button>
+            <div className={styles.templateActions}>
+              <button type="button" className={styles.primaryButton} onClick={() => void instantiateTemplate(template)} disabled={Boolean(templateBusyId)}>{templateBusyId === template.templateVersionId ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <ArrowRight size={13} aria-hidden="true" />} Use template</button>
               {selected ? <button type="button" onClick={() => void publishSelectedProjectAsTemplate(template)} disabled={Boolean(templateBusyId)}>{templateBusyId === template.templateId ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <History size={13} aria-hidden="true" />} Update from project</button> : null}
             </div>
-          </article>) : <div className="projects-template-empty"><LayoutTemplate size={22} aria-hidden="true" /><div><strong>No workspace templates yet</strong><p>Publish the selected project to create an immutable reusable version.</p></div></div>}
+          </article>) : <div className={styles.emptyRow}><LayoutTemplate size={22} aria-hidden="true" /><div><strong>{loading ? "Loading templates…" : !hasLoaded ? "Templates unavailable" : error ? "No templates in the last loaded view" : "No workspace templates yet"}</strong><p>{!hasLoaded ? "Published templates will appear when the workspace loads." : error ? "Retry to check for updates." : "Publish the selected project to create a reusable version."}</p></div></div>}
         </div>
       </section> : null}
 
-      {showCreate ? <form className="projects-create-form" onSubmit={create}>
+      {showCreate ? <form id="project-create" className={styles.createForm} onSubmit={create} aria-label="New project">
         <div><label htmlFor="project-title">Project name</label><input id="project-title" value={title} onChange={(event) => setTitle(event.currentTarget.value)} placeholder="Launch the personal research system" maxLength={180} autoFocus /></div>
-        <div className="project-objective-field"><label htmlFor="project-objective">Successful outcome</label><textarea id="project-objective" value={objective} onChange={(event) => setObjective(event.currentTarget.value)} placeholder="Describe what will be observably true when this project succeeds." maxLength={2000} rows={2} /></div>
+        <div className={styles.objectiveField}><label htmlFor="project-objective">Successful outcome</label><textarea id="project-objective" value={objective} onChange={(event) => setObjective(event.currentTarget.value)} placeholder="Describe what will be observably true when this project succeeds." maxLength={2000} rows={2} /></div>
         <div><label htmlFor="project-target">Target date</label><input id="project-target" type="date" value={targetDate} onChange={(event) => setTargetDate(event.currentTarget.value)} /></div>
         <button type="submit" disabled={creating || !title.trim() || !objective.trim()}>{creating ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <ArrowRight size={14} aria-hidden="true" />} Create</button>
       </form> : null}
 
-      {error ? <div className="projects-error" role="alert"><span>{error}</span><button type="button" onClick={() => { setError(undefined); void load(); }}>Retry</button></div> : null}
+      {error ? <div className={styles.error} role="alert"><span>{error}</span><button type="button" onClick={() => { setError(undefined); void load(); }}>Retry</button></div> : null}
 
-      <div className="projects-workspace" data-daybook="spread">
-        <aside className="projects-rail" aria-label="Project list">
-          <div className="projects-rail-heading"><span>Portfolio</span><strong>{projects.length}</strong></div>
+      <div className={styles.workspace} data-project-panel={projectDetailOpen ? "detail" : "list"}>
+        <aside ref={projectListRef} tabIndex={-1} className={styles.projectList} aria-label="Project list" aria-busy={loading}>
+          <div className={styles.listHeading}><h2>Projects</h2><span>{hasLoaded ? projects.length : "—"}</span></div>
           {projects.length ? projects.map((project) => {
             const closed = project.tasks.filter(taskIsClosed).length;
-            const progress = project.tasks.length ? closed / project.tasks.length : 0;
-            return <button key={project.id} type="button" onClick={() => { setSelectedId(project.id); setPlanRationale(""); }} className={clsx("projects-rail-item", selected?.id === project.id && "is-selected")}>
-              <span className={clsx("projects-status-mark", `is-${project.status}`)} />
-              <span><strong>{project.title}</strong><small>{project.status} · {closed}/{project.tasks.length} closed</small><i><b style={{ width: `${progress * 100}%` }} /></i></span>
+            return <button key={project.id} type="button" onClick={() => selectProject(project.id)} className={styles.projectItem} aria-pressed={selected?.id === project.id}>
+              <span className={styles.statusMark} data-status={project.status} aria-hidden="true" />
+              <span><strong>{project.title}</strong><small>{project.status} · {closed}/{project.tasks.length} closed</small></span>
               <ChevronRight size={14} aria-hidden="true" />
             </button>;
-          }) : <div className="projects-rail-empty"><FolderKanban size={20} aria-hidden="true" /><p>Your project portfolio is empty.</p></div>}
+          }) : loading ? <div className={styles.listLoading} aria-hidden="true"><span /><span /><span /></div> : <div className={styles.emptyRow}><FolderKanban size={20} aria-hidden="true" /><p>{hasLoaded && !error ? "No projects in this workspace yet." : "The project list is unavailable. Retry to load your work."}</p></div>}
         </aside>
 
-        <section className="project-canvas" aria-live="polite" data-daybook="canvas">
+        <section className={styles.canvas} aria-label="Selected project">
           {selected ? <>
-            <div className="project-canvas-head">
-              <div className="project-title-block">
-                <div><span className={clsx("project-status", `is-${selected.status}`)}>{selected.status}</span>{selected.targetDate ? <span className="project-target"><CalendarDays size={12} aria-hidden="true" /> {formatDate(selected.targetDate)}</span> : null}</div>
-                <h2>{selected.title}</h2>
+            <button type="button" className={clsx(styles.button, styles.backButton)} onClick={returnToProjects}><ArrowLeft size={16} aria-hidden="true" /> Back to projects</button>
+            <div className={styles.canvasHeading}>
+              <div className={styles.titleBlock}>
+                <div className={styles.projectMeta}><span className={styles.status} data-status={selected.status}>{selected.status}</span>{selected.targetDate ? <span className={styles.target}><CalendarDays size={14} aria-hidden="true" /> Due {formatDate(selected.targetDate)}</span> : null}<span>Updated {formatTimestamp(selected.updatedAt)}</span></div>
+                <h2 ref={projectHeadingRef} tabIndex={-1}>{selected.title}</h2>
                 <p>{selected.objective}</p>
+                <p className={styles.projectProgress}>{selectedClosed} of {selected.tasks.length} tasks closed{selected.tasks.length ? ` · ${Math.round(selectedProgress * 100)}%` : ""} · {canonicalWorkItemCostLabel(selectedCost)}</p>
               </div>
-              <div className="project-progress-orbit" aria-label={`${selectedClosed} of ${selected.tasks.length} work items closed`} style={{ "--project-progress": `${selectedProgress * 360}deg` } as React.CSSProperties}><div><strong>{selected.tasks.length ? `${Math.round(selectedProgress * 100)}%` : "—"}</strong><span>closed</span></div></div>
             </div>
 
-            {workspaceView !== "build" ? <div className="project-toolbar">
-              {selected.status === "active" ? <button type="button" className="project-plan-button" onClick={() => void generatePlan()} disabled={planning}><Sparkles size={14} aria-hidden="true" />{planning ? "Atlas is planning…" : selected.tasks.length ? "Extend plan" : "Plan with Atlas"}</button> : null}
+            {workspaceView !== "build" ? <div className={styles.toolbar}>
+              {selected.status === "active" ? <button type="button" className={styles.primaryButton} onClick={() => void generatePlan()} disabled={planning}><Sparkles size={14} aria-hidden="true" />{planning ? "Atlas is planning…" : selected.tasks.length ? "Extend plan" : "Plan with Atlas"}</button> : null}
               {selected.status === "active" ? <button type="button" onClick={() => void transitionProject("completed")} disabled={actingId === selected.id || (selected.tasks.length > 0 && selected.tasks.some((task) => task.status !== "done"))} title={selected.tasks.length > 0 && selected.tasks.some((task) => task.status !== "done") ? "Close every task first" : undefined}><Check size={14} aria-hidden="true" /> Complete project</button> : <button type="button" onClick={() => void transitionProject("active")} disabled={actingId === selected.id}><Play size={14} aria-hidden="true" /> Reopen project</button>}
               {selected.status !== "archived" ? <button type="button" onClick={() => void transitionProject("archived")} disabled={actingId === selected.id}><Archive size={14} aria-hidden="true" /> Archive</button> : null}
             </div> : null}
+            {workspaceView !== "build" && selected.status === "active" && selected.tasks.some((task) => task.status !== "done") ? <p className={styles.helper}>Close every task before completing this project.</p> : null}
 
             {workspaceView === "execution" ? <section className={clsx("project-execution-deck", `is-${selected.executionStatus}`)} aria-label="Autonomous project execution">
               <div className="project-execution-intro">
@@ -618,49 +667,52 @@ export function ProjectsWorkspace({ initialView = "overview" }: { initialView?: 
               </div>
             </section> : null}
 
-            {planRationale ? <div className="project-plan-note"><Sparkles size={15} aria-hidden="true" /><div><strong>Atlas added a plan</strong><p>{planRationale}</p></div></div> : null}
+            {planRationale ? <div className={styles.planNote}><Sparkles size={15} aria-hidden="true" /><div><strong>Atlas added a plan</strong><p>{planRationale}</p></div></div> : null}
 
-            {workspaceView === "overview" ? <><div className="project-task-heading"><div><p className="projects-kicker">Execution plan</p><h3>Next moves</h3></div><span>{selected.tasks.filter((task) => !taskIsClosed(task)).length} open</span></div>
-            <div className="project-task-list">
+            {workspaceView === "overview" ? <><div className={styles.sectionHeading}><h3>Tasks</h3><span>{selected.tasks.filter((task) => !taskIsClosed(task)).length} open · execution {selected.executionStatus.replace("_", " ")}</span></div>
+            {selected.status !== "active" || ["running", "waiting_approval"].includes(selected.executionStatus) ? <p id="project-task-state-help" className={styles.helper}>{selected.status !== "active" ? "Reopen this project to change task status." : "Manual task status changes are unavailable while execution is running or awaiting approval."}</p> : null}
+            <div className={styles.taskList} role="list" aria-label="Project tasks">
               {selected.tasks.length ? selected.tasks.map((task, index) => {
                 const agent = agentFor(workItemAssignedAgent(task));
                 const canonicalState = task.workItem.status.status;
                 const workflowStatus = workItemWorkflowStatus(task);
                 const dependencyNames = (task.dependsOn || []).map((id) => selected.tasks.find((item) => item.id === id)?.title).filter(Boolean);
-                return <article key={task.id} className={clsx("project-task", `is-${canonicalState}`)} style={{ animationDelay: `${Math.min(index, 8) * 35}ms` }}>
-                  <button type="button" className="project-task-state" onClick={() => void moveTask(task)} disabled={actingId === task.id || selected.status !== "active" || ["running", "waiting_approval"].includes(selected.executionStatus)} aria-label={`${canonicalTaskAction(canonicalState)} ${task.title}`}>
+                return <article key={task.id} className={styles.task} data-status={canonicalState} role="listitem">
+                  <button type="button" className={styles.taskState} onClick={() => void moveTask(task)} disabled={actingId === task.id || selected.status !== "active" || ["running", "waiting_approval"].includes(selected.executionStatus)} aria-label={`${canonicalTaskAction(canonicalState)} ${task.title}`} aria-describedby={selected.status !== "active" || ["running", "waiting_approval"].includes(selected.executionStatus) ? "project-task-state-help" : undefined}>
                     {taskIsClosed(task) ? <Check size={14} aria-hidden="true" /> : canonicalState === "running" ? <Pause size={13} aria-hidden="true" /> : <Circle size={14} aria-hidden="true" />}
                   </button>
-                  <span className="project-task-index">{String(index + 1).padStart(2, "0")}</span>
-                  <div className="project-task-copy"><div><strong>{task.title}</strong><span className={clsx("project-task-priority", `is-${task.priority}`)}>{task.priority}</span>{workflowStatus ? <span className={clsx("project-workflow-badge", `is-${workflowStatus}`)}>{workflowLabel(workflowStatus)}</span> : null}</div>{task.detail ? <p>{task.detail}</p> : null}<small>{workItemStatusLabel(task, dependencyNames)} · {task.workItem.artifacts.count} artifact{task.workItem.artifacts.count === 1 ? "" : "s"} · {canonicalWorkItemCostLabel(task.workItem.cost)}{task.dueAt ? ` · due ${formatDate(task.dueAt)}` : ""}</small>{task.executionError ? <em className="project-task-error"><AlertTriangle size={11} aria-hidden="true" /> {task.executionError}</em> : null}</div>
-                  <div className={clsx("project-agent", `agent-${agent.accent}`)}><span>{agent.name.slice(0, 1)}</span><div><strong>{agent.name}</strong><small>{agent.role}</small></div></div>
-                  {workflowStatus === "waiting_approval" ? <button type="button" className="project-task-action" onClick={() => void executeProject("approve", task.id)} disabled={Boolean(executionBusy)}>Approve</button> : workflowStatus === "failed" ? <button type="button" className="project-task-action is-danger" onClick={() => void executeProject("retry", task.id)} disabled={Boolean(executionBusy)}>Retry</button> : task.workItem.execution.workflowRunId ? <span className="project-task-live"><i /> {workflowLabel(workflowStatus || "queued")}</span> : <Link href={commandHref(selected, task)} aria-label={`Assign ${task.title} to ${agent.name}`}>Run <ArrowRight size={13} aria-hidden="true" /></Link>}
+                  <span className={styles.taskIndex}>{String(index + 1).padStart(2, "0")}</span>
+                  <div className={styles.taskCopy}><div><strong>{task.title}</strong><span className={styles.priority} data-priority={task.priority}>{task.priority}</span>{workflowStatus ? <span className={styles.workflowStatus} data-status={workflowStatus}>{workflowLabel(workflowStatus)}</span> : null}</div>{task.detail ? <p>{task.detail}</p> : null}<small>{workItemStatusLabel(task, dependencyNames)} · {task.workItem.artifacts.count} artifact{task.workItem.artifacts.count === 1 ? "" : "s"} · {canonicalWorkItemCostLabel(task.workItem.cost)}{task.dueAt ? ` · due ${formatDate(task.dueAt)}` : ""}</small>{task.executionError ? <em className={styles.taskError}><AlertTriangle size={11} aria-hidden="true" /> {task.executionError}</em> : null}</div>
+                  <div className={styles.agent}><span>{agent.name.slice(0, 1)}</span><div><strong>{agent.name}</strong><small>{agent.role}</small></div></div>
+                  {workflowStatus === "waiting_approval" ? <button type="button" className={styles.button} onClick={() => void executeProject("approve", task.id)} disabled={Boolean(executionBusy)} aria-label={`Approve ${task.title}`}>Approve</button> : workflowStatus === "failed" ? <button type="button" className={styles.button} onClick={() => void executeProject("retry", task.id)} disabled={Boolean(executionBusy)} aria-label={`Retry ${task.title}`}>Retry</button> : task.workItem.execution.workflowRunId ? <span className={styles.taskLive}>{workflowLabel(workflowStatus || "queued")}</span> : <Link className={styles.button} href={commandHref(selected, task)} aria-label={`Assign ${task.title} to ${agent.name}`}>Run <ArrowRight size={13} aria-hidden="true" /></Link>}
                 </article>;
-              }) : <div className="project-task-empty"><Target size={22} aria-hidden="true" /><h3>No plan yet</h3><p>Let Atlas decompose the outcome or add the first task yourself.</p></div>}
+              }) : <div className={styles.emptyState} role="listitem"><Target size={22} aria-hidden="true" /><h3>No plan yet</h3><p>Let Atlas decompose the outcome or add the first task yourself.</p></div>}
             </div>
 
-            {selected.status === "active" ? <form className="project-add-task" onSubmit={addTask}><Plus size={15} aria-hidden="true" /><label className="sr-only" htmlFor="project-task-title">Add project task</label><input id="project-task-title" value={taskTitle} onChange={(event) => setTaskTitle(event.currentTarget.value)} placeholder="Add a task to this plan…" maxLength={240} /><button type="submit" disabled={addingTask || !taskTitle.trim()}>{addingTask ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : "Add task"}</button></form> : null}</> : workspaceView === "execution" ? <ProjectExecutionBoard project={selected} actingId={actingId} executionBusy={executionBusy} onMoveTask={moveTask} onExecute={executeProject} /> : <AppBuilderStudio key={selected.id} project={selected} />}
+            {selected.status === "active" ? <form className={styles.addTask} onSubmit={addTask}><label htmlFor="project-task-title">Add project task</label><div><input id="project-task-title" value={taskTitle} onChange={(event) => setTaskTitle(event.currentTarget.value)} placeholder="Describe the next task" maxLength={240} /><button type="submit" className={styles.button} disabled={addingTask || !taskTitle.trim()}>{addingTask ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <Plus size={14} aria-hidden="true" />} {addingTask ? "Adding…" : "Add task"}</button></div></form> : null}</> : workspaceView === "execution" ? <ProjectExecutionBoard project={selected} actingId={actingId} executionBusy={executionBusy} onMoveTask={moveTask} onExecute={executeProject} /> : <AppBuilderStudio key={selected.id} project={selected} />}
 
-            {workspaceView === "overview" ? <><section className="project-artifact-ledger" aria-label="Project outputs and reviewed outcomes">
-              <div className="project-artifact-heading"><div><p className="projects-kicker">Output ledger</p><h3>Verified work becomes memory</h3></div><span><History size={13} aria-hidden="true" /> {canonicalArtifactCount} canonical artifact{canonicalArtifactCount === 1 ? "" : "s"}</span></div>
-              {canonicalArtifacts.length ? <div className="project-artifact-layout">
-                <div className="project-artifact-timeline" role="list" aria-label="Artifact timeline">{canonicalArtifacts.map((artifact, index) => {
+            {workspaceView === "overview" ? <><section className={styles.artifactLedger} aria-label="Project outputs and reviewed outcomes">
+              <div className={styles.sectionHeading}><h3>Outputs & evidence</h3><span>{canonicalArtifactCount} artifact{canonicalArtifactCount === 1 ? "" : "s"} linked to work items</span></div>
+              {canonicalArtifacts.length ? <div className={styles.artifactLayout} data-artifact-panel={artifactDetailOpen ? "detail" : "list"}>
+                <ul ref={artifactListRef} tabIndex={-1} className={styles.artifactList} aria-label="Project outputs">{canonicalArtifacts.map((artifact) => {
                   const artifactAgent = agentFor(artifact.agentId);
-                  return <button key={artifact.id} type="button" role="listitem" className={clsx(selectedArtifact?.id === artifact.id && "is-selected", `is-${artifact.status}`)} onClick={() => setSelectedArtifactId(artifact.id)} style={{ animationDelay: `${Math.min(index, 8) * 40}ms` }}><i /><span><strong>{artifact.title}</strong><small>{artifactAgent.name} · {formatTimestamp(artifact.createdAt)}</small></span><em>{artifact.status}</em></button>;
-                })}</div>
-                {selectedArtifact ? <article key={selectedArtifact.id} className="project-artifact-detail">
-                  <div className="project-artifact-detail-head"><span className={clsx(`is-${selectedArtifact.status}`)}><FileCheck2 size={14} aria-hidden="true" /> {selectedArtifact.status}</span>{selectedArtifact.memoryId ? <Link href="/app/memory"><Brain size={13} aria-hidden="true" /> Retained</Link> : null}</div>
-                  <h4>{selectedArtifact.title}</h4>
-                  <pre>{selectedArtifact.content}</pre>
-                  <div className="project-artifact-reflection">
+                  return <li key={artifact.id}><button type="button" className={styles.artifactItem} aria-pressed={selectedArtifact?.id === artifact.id} onClick={() => selectArtifact(artifact.id)}><span><strong>{artifact.title}</strong><small>{artifactAgent.name} · {formatTimestamp(artifact.createdAt)}</small></span><span className={styles.status} data-status={artifact.status}>{artifact.status}</span></button></li>;
+                })}</ul>
+                {selectedArtifact ? <article key={selectedArtifact.id} className={styles.artifactDetail}>
+                  <button type="button" className={clsx(styles.button, styles.backButton)} onClick={returnToOutputs}><ArrowLeft size={16} aria-hidden="true" /> Back to outputs</button>
+                  <div className={styles.artifactMeta}><span className={styles.status} data-status={selectedArtifact.status}><FileCheck2 size={14} aria-hidden="true" /> {selectedArtifact.status}</span>{selectedArtifact.memoryId ? <Link href="/app/memory"><Brain size={13} aria-hidden="true" /> Retained in memory</Link> : null}</div>
+                  <h4 id="project-output-title" ref={artifactHeadingRef} tabIndex={-1}>{selectedArtifact.title}</h4>
+                  <pre tabIndex={0} role="region" aria-labelledby="project-output-title">{selectedArtifact.content}</pre>
+                  <div className={styles.reflection}>
                     <div><span>Your review</span><small>{selectedArtifact.reviewedAt ? `Last reviewed ${formatTimestamp(selectedArtifact.reviewedAt)}` : "Record what should be repeated or changed."}</small></div>
-                    <div className="project-reflection-verdict" role="group" aria-label="Outcome rating"><button type="button" className={clsx(selectedVerdict === "useful" && "is-selected")} onClick={() => { setReflectionDraft({ artifactId: selectedArtifact.id, verdict: "useful", lesson: selectedLesson }); setReflectionState({ artifactId: selectedArtifact.id, status: "idle" }); }}><ThumbsUp size={13} aria-hidden="true" /> Useful</button><button type="button" className={clsx(selectedVerdict === "needs_work" && "is-selected", "is-needs-work")} onClick={() => { setReflectionDraft({ artifactId: selectedArtifact.id, verdict: "needs_work", lesson: selectedLesson }); setReflectionState({ artifactId: selectedArtifact.id, status: "idle" }); }}><ThumbsDown size={13} aria-hidden="true" /> Needs work</button></div>
-                    <label><span className="sr-only">Outcome note for future Agent work</span><textarea value={selectedLesson} onChange={(event) => { setReflectionDraft({ artifactId: selectedArtifact.id, verdict: selectedVerdict, lesson: event.currentTarget.value }); setReflectionState({ artifactId: selectedArtifact.id, status: "idle" }); }} placeholder="What should this Agent repeat or change next time?" maxLength={1200} rows={2} /></label>
-                    <button type="button" className="project-reflection-save" onClick={() => void saveReflection()} disabled={!selectedVerdict || selectedLesson.trim().length < 3 || selectedReflectionState === "submitting"}>{selectedReflectionState === "submitting" ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <Brain size={13} aria-hidden="true" />} {selectedReflectionState === "saved" ? "Recorded" : "Save outcome note"}</button>
+                    <div className={styles.verdict} role="group" aria-label="Outcome rating"><button type="button" className={styles.button} aria-pressed={selectedVerdict === "useful"} onClick={() => { setReflectionDraft({ artifactId: selectedArtifact.id, verdict: "useful", lesson: selectedLesson }); setReflectionState({ artifactId: selectedArtifact.id, status: "idle" }); }}><ThumbsUp size={13} aria-hidden="true" /> Useful</button><button type="button" className={styles.button} aria-pressed={selectedVerdict === "needs_work"} onClick={() => { setReflectionDraft({ artifactId: selectedArtifact.id, verdict: "needs_work", lesson: selectedLesson }); setReflectionState({ artifactId: selectedArtifact.id, status: "idle" }); }}><ThumbsDown size={13} aria-hidden="true" /> Needs work</button></div>
+                    <label><span>Outcome note for future Agent work</span><textarea value={selectedLesson} onChange={(event) => { setReflectionDraft({ artifactId: selectedArtifact.id, verdict: selectedVerdict, lesson: event.currentTarget.value }); setReflectionState({ artifactId: selectedArtifact.id, status: "idle" }); }} placeholder="What should this Agent repeat or change next time?" maxLength={1200} rows={2} aria-describedby="project-reflection-help" /></label>
+                    <p id="project-reflection-help" className={styles.helper}>Choose a rating and add at least 3 characters before saving.</p>
+                    <button type="button" className={styles.primaryButton} onClick={() => void saveReflection()} disabled={!selectedVerdict || selectedLesson.trim().length < 3 || selectedReflectionState === "submitting"}>{selectedReflectionState === "submitting" ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <Brain size={13} aria-hidden="true" />} {selectedReflectionState === "saved" ? "Recorded" : "Save outcome note"}</button>
                   </div>
                   <footer><span>Provenance</span><div>{selectedArtifact.evidenceRefs.map((reference) => <code key={reference}>{reference}</code>)}</div></footer>
                 </article> : null}
-              </div> : <div className="project-artifact-empty"><FileCheck2 size={20} aria-hidden="true" /><div><strong>No verified outputs yet</strong><p>Completed agent workflows will appear here with their report, provenance, and linked project memory.</p></div></div>}
+              </div> : <div className={styles.emptyRow}><FileCheck2 size={20} aria-hidden="true" /><div><strong>No linked outputs available</strong><p>Outputs linked to this project’s work items will appear here with their recorded status and evidence.</p></div></div>}
             </section>
 
             <WorkspaceLibrary
@@ -671,17 +723,17 @@ export function ProjectsWorkspace({ initialView = "overview" }: { initialView?: 
               compact
               limit={12}
               refreshKey={`${selected.updatedAt}:${selected.artifacts?.length || 0}`}
-              className="project-artifact-ledger"
+              className={styles.library}
             />
-            <ProjectSharedMemory
+            <div className={styles.sharedMemory}><ProjectSharedMemory
               projectId={selected.id}
               projectTitle={selected.title}
-            />
+            /></div>
             </> : null}
-          </> : <div className="project-canvas-empty"><FolderKanban size={30} aria-hidden="true" /><h2>Create your first project</h2><p>Give an outcome a durable home, then let your agent team turn it into executable work.</p><button type="button" onClick={() => setShowCreate(true)}><Plus size={14} aria-hidden="true" /> New project</button></div>}
+          </> : loading ? <div className={styles.loading} aria-hidden="true"><span /><span /><span /></div> : error || !hasLoaded ? <div className={styles.emptyState}><AlertTriangle size={24} aria-hidden="true" /><h2>Projects unavailable</h2><p>Retry the workspace read to load your projects and their plans.</p><button type="button" className={styles.button} onClick={() => void load()}>Retry</button></div> : <div className={styles.emptyState}><FolderKanban size={24} aria-hidden="true" /><h2>Create your first project</h2><p>Add an outcome to begin planning tasks and keeping their outputs together.</p><button type="button" className={styles.primaryButton} onClick={() => setShowCreate(true)}><Plus size={16} aria-hidden="true" /> New project</button></div>}
         </section>
       </div>
-    </main>
+    </div>
   );
 }
 
